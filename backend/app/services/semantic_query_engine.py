@@ -158,6 +158,11 @@ class SemanticQueryEngine:
         # Phase 3 — per-request compile-time relation cache + drop diagnostics.
         self._relation_sql_cache: Dict[int, Optional[str]] = {}
         self._propagation_drops: list = []
+        # Calendar materialization — per-request memo of "the generated-calendar
+        # table's snapshot ref among _snapshot_overrides" so role-played date-dim
+        # views (dataset_table_id is None) can read the flat snapshot too. False =
+        # not yet computed; None = no materialized calendar; str = the physical ref.
+        self._calendar_ref_cache: Any = False
 
     def run(self, spec) -> Tuple[str, List[str], List[PivotedColumn]]:
         """Single engine entry: execute a ``SemanticQuerySpec`` (the one input
@@ -2863,6 +2868,20 @@ class SemanticQueryEngine:
             return None
         tid = getattr(view, "dataset_table_id", None)
         ref = self._snapshot_overrides.get(tid) if tid is not None else None
+        if not ref and tid is None:
+            # Role-played date-dim views (``dataset_table_587__sale_date__date_dim``)
+            # carry NO dataset_table_id — they render the calendar inline via
+            # ``sql_table_name``. When the dataset's generated-calendar table IS
+            # materialized in the snapshot, point these role views at that same
+            # physical table. It is column- AND row-identical to the inline calendar
+            # (both are produced by ``build_calendar_live_sql`` on the same calendar
+            # settings), so the M:1 date join, grain, and every measure are unchanged
+            # — only the FROM operand swaps recursive-CTE generation for a flat read.
+            # This is what makes date-intelligence charts "query entirely on the BQ
+            # snapshot" rather than regenerating the calendar per request.
+            name = str(getattr(view, "name", "") or "")
+            if name.endswith("_date_dim"):
+                ref = self._calendar_snapshot_ref()
         if not ref:
             return None
         # Refactor Phase 3 — quote the physical ref for THIS engine's dialect
@@ -2875,6 +2894,30 @@ class SemanticQueryEngine:
             return f"(SELECT * FROM `{ref}`)"
         quoted = ".".join('"' + p.replace('"', "") + '"' for p in str(ref).split("."))
         return f"(SELECT * FROM {quoted})"
+
+    def _calendar_snapshot_ref(self) -> Optional[str]:
+        """The physical snapshot ref of the dataset's generated-calendar table,
+        if it is present among ``_snapshot_overrides``. Role-played date-dim views
+        reuse it (see ``_snapshot_ref_for_view``). Memoised per request; there is
+        at most one generated-calendar table per dataset."""
+        if self._calendar_ref_cache is not False:
+            return self._calendar_ref_cache
+        out: Optional[str] = None
+        try:
+            from app.models.dataset import DatasetTable
+            from app.services.dataset_calendar_service import is_generated_calendar_table
+
+            for tid, ref in (self._snapshot_overrides or {}).items():
+                if not ref:
+                    continue
+                t = self.db.query(DatasetTable).filter(DatasetTable.id == tid).first()
+                if t is not None and is_generated_calendar_table(t):
+                    out = ref
+                    break
+        except Exception:  # noqa: BLE001 — no calendar redirect on any lookup error
+            out = None
+        self._calendar_ref_cache = out
+        return out
 
     def _relation_sql_for_view(self, view) -> Optional[str]:
         """Refactor Phase 3 — the PHYSICAL relation a view reads from, rendered

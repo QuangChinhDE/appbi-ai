@@ -325,6 +325,9 @@ def _validate_generation(db: Session, dataset_id: int, generation: Optional[int]
     if not generation:
         return False, "Sync không tạo được generation nào (không có bảng để đồng bộ hoặc build lỗi)."
     tables = db.query(DatasetTable).filter(DatasetTable.dataset_id == dataset_id).all()
+    # The calendar is materialized best-effort (its snapshot is used when present,
+    # else the engine falls back to inline calendar SQL), so it is NOT part of the
+    # mandatory coverage gate — a calendar-build hiccup must not fail a publish.
     want = [
         t.id for t in tables
         if not is_generated_calendar_table(t)

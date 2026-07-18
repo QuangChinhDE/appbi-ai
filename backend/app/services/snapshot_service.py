@@ -460,6 +460,95 @@ def build_table_snapshot(
     return _qc.single_flight(f"snapbuild::{table.id}::{fp}", _do)
 
 
+def build_calendar_snapshot(
+    db: Session, dataset_obj: Dataset, table: DatasetTable, host: DataSource,
+    *, generation: Optional[int] = None, force: bool = True,
+) -> Optional[DatasetTableSnapshot]:
+    """Materialize the generated_calendar (Date) as a REAL snapshot table via CTAS
+    on the host BigQuery (self-contained calendar SQL — no source read, so the
+    write SA can run it). Makes the Date table uniform with every other snapshot
+    table ("query only the BQ snapshot") AND pins it to the generation — the
+    previous inline calendar regenerated from LIVE settings on every query, which
+    could drift a published dashboard's date range without a re-publish. Fingerprint
+    = the calendar SQL, so it rebuilds only when calendar settings change; otherwise
+    it clones the metadata into the new generation (tiny table, reused)."""
+    from app.services.dataset_calendar_service import get_calendar_settings, build_calendar_live_sql
+    from app.services.datasource_service import _build_bigquery_client, _materialization_bq_config
+
+    settings = get_calendar_settings(dataset_obj, enabled_default=False)
+    cal_sql = build_calendar_live_sql(settings, "bigquery")
+    fp = hashlib.sha256(("calendar:" + cal_sql).encode("utf-8")).hexdigest()  # 64-char (col limit)
+    cfg = settings_for(host)
+    snap_dataset = cfg["dataset"]
+    project = str((host.config or {}).get("project_id") or "").strip()
+
+    def _do() -> Optional[DatasetTableSnapshot]:
+        current = (
+            db.query(DatasetTableSnapshot)
+            .filter(DatasetTableSnapshot.dataset_table_id == table.id,
+                    DatasetTableSnapshot.is_current.is_(True),
+                    DatasetTableSnapshot.status == "ready")
+            .first()
+        )
+        # Unchanged calendar → clone metadata into the new generation (reuse table).
+        if (current and current.fingerprint == fp and generation is not None
+                and current.generation != generation):
+            reuse = DatasetTableSnapshot(
+                dataset_id=dataset_obj.id, dataset_table_id=table.id,
+                version=int(time.time() * 1000), physical_ref=current.physical_ref,
+                fingerprint=fp, status="ready", is_current=False, generation=generation,
+                host_datasource_id=current.host_datasource_id, host_project=current.host_project,
+                host_location=current.host_location, row_count=current.row_count,
+                built_at=current.built_at, build_ms=0,
+            )
+            current.is_current = False; current.status = "superseded"; reuse.is_current = True
+            db.add(reuse); db.commit()
+            return reuse
+        if current and current.fingerprint == fp and not force:
+            return current
+
+        version = int(time.time() * 1000)
+        table_name = f"snap_t{table.id}_date_v{version}"
+        ref = f"{project}.{snap_dataset}.{table_name}"
+        row = DatasetTableSnapshot(
+            dataset_id=dataset_obj.id, dataset_table_id=table.id, version=version,
+            physical_ref=ref, fingerprint=fp, status="building", is_current=False,
+            generation=generation, host_datasource_id=host.id, host_project=project,
+        )
+        db.add(row); db.commit()
+        t0 = time.time()
+        try:
+            location = _source_location(host)
+            row.host_location = location
+            DataSourceConnectionService.ensure_bigquery_dataset(host.config, snap_dataset, location=location)
+            DataSourceConnectionService.execute_bigquery_ddl(
+                host.config, f"CREATE OR REPLACE TABLE `{ref}` AS {cal_sql}",
+                timeout_seconds=_DDL_TIMEOUT_SEC, location=location,
+            )
+            client = _build_bigquery_client(_materialization_bq_config(host.config))
+            row.row_count = int(getattr(client.get_table(ref), "num_rows", 0) or 0)
+        except Exception as exc:  # noqa: BLE001
+            db.rollback()
+            row = db.query(DatasetTableSnapshot).get(row.id)
+            if row is not None:
+                row.status = "failed"; row.error = str(exc)[:2000]; db.commit()
+            logger.warning("[snapshot] calendar build failed table=%s ref=%s: %s", table.id, ref, exc)
+            return None
+        for p in db.query(DatasetTableSnapshot).filter(
+                DatasetTableSnapshot.dataset_table_id == table.id,
+                DatasetTableSnapshot.is_current.is_(True)).all():
+            p.is_current = False; p.status = "superseded"
+        row.status = "ready"; row.is_current = True
+        row.built_at = datetime.utcnow(); row.build_ms = int((time.time() - t0) * 1000)
+        row.source_watermark = None  # generated → no source watermark
+        db.commit()
+        logger.info("[snapshot] built CALENDAR table=%s ref=%s rows=%s gen=%s",
+                    table.id, ref, row.row_count, generation)
+        return row
+
+    return _qc.single_flight(f"snapbuild::{table.id}::{fp}", _do)
+
+
 def resolve_current_ref(db: Session, table_id: int, *, ttl_minutes: Optional[int] = None) -> Optional[str]:
     """Physical ref of the current ready snapshot, or None if missing/stale-per-TTL."""
     row = (
@@ -762,25 +851,37 @@ def refresh_all_for_dataset(db: Session, dataset_id: int, *, force: bool = True)
     generation = int(time.time() * 1000)
     built, skipped = [], []
     from app.services import sync_progress as _sp
-    _to_build = [
-        t for t in tables
-        if not (host is None or datasource_by_id.get(t.datasource_id) is None
-                or is_generated_calendar_table(t) or not is_federated_materializable(t)
-                or getattr(t, "enabled", True) is False)
-    ]
+
+    def _eligible(t) -> bool:
+        if host is None or getattr(t, "enabled", True) is False:
+            return False
+        # The generated calendar materializes via a host-side CTAS (no source
+        # datasource) — it must be a snapshot table too, so the whole dataset is
+        # queried from BigQuery snapshots and the Date range is pinned to the
+        # generation (not regenerated from live settings each query).
+        if is_generated_calendar_table(t):
+            return True
+        return datasource_by_id.get(t.datasource_id) is not None and is_federated_materializable(t)
+
+    _to_build = [t for t in tables if _eligible(t)]
     _total = len(_to_build)
     for t in tables:
-        ds = datasource_by_id.get(t.datasource_id)
-        if (host is None or ds is None or is_generated_calendar_table(t)
-                or not is_federated_materializable(t)
-                or getattr(t, "enabled", True) is False):
+        if not _eligible(t):
             skipped.append(t.id)
             continue
         _sp.note_table(dataset_id, getattr(t, "display_name", None) or f"table {t.id}", len(built), _total)
-        row = build_table_snapshot(
-            db, dataset_obj, t, ds, force=force, host_datasource=host,
-            generation=generation,
-        )
+        try:
+            if is_generated_calendar_table(t):
+                row = build_calendar_snapshot(db, dataset_obj, t, host, generation=generation, force=force)
+            else:
+                row = build_table_snapshot(
+                    db, dataset_obj, t, datasource_by_id.get(t.datasource_id),
+                    force=force, host_datasource=host, generation=generation,
+                )
+        except Exception as exc:  # noqa: BLE001 — one table's failure must not crash the refresh
+            db.rollback()
+            logger.warning("[snapshot] build raised for table=%s: %s", t.id, exc)
+            row = None
         if row is not None:
             built.append({"table_id": t.id, "row_count": row.row_count, "build_ms": row.build_ms})
         else:

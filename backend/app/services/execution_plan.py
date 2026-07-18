@@ -480,6 +480,16 @@ def _plan_published(db: Session, dataset_obj, base_view_name: str, *, is_preview
     if parent_ovr:
         refs = {**refs, **parent_ovr}
 
+    # Calendar (best-effort): point the Date view at its snapshot table when THIS
+    # generation materialized it; older generations built before calendar
+    # materialization have none → engine falls back to inline calendar SQL. Never
+    # blocks — the calendar is generated, not source data.
+    cal_ids = [t.id for t in tables if is_generated_calendar_table(t)]
+    if cal_ids:
+        cal_refs, _cf, _ca = snapshot_service.resolve_specific_generation_refs(db, cal_ids, pg)
+        if cal_refs:
+            refs = {**refs, **cal_refs}
+
     if not refs:
         return blocked_plan(
             "Snapshot đã publish không còn đầy đủ (có thể đã hết hạn/bị xoá) — bấm “Sync & Publish” "
