@@ -1298,6 +1298,13 @@ def _render_step_join_condition(
     Prefers the raw `sql_on` template when present (replacing ${TABLE} →
     from_alias and ${view} / ${alias} → to_alias). Falls back to
     from_column/to_column equality when the template is absent.
+
+    NOTE (semantic-audit 2026-07 #1): the ENGINE's renderer
+    (`SemanticQueryEngine._typed_join_condition`) additionally coerces
+    mixed STRING/number join keys (Sheets/Airbyte keys stored as text →
+    BigQuery 400 on `STRING = INT64`). This live-path helper renders the
+    raw template untyped — if a mixed-type key join surfaces here (filter
+    EXISTS on the live path / distinct cascade), port that coercion.
     """
     sql_on = str(edge.sql_on or "").strip()
     if sql_on:

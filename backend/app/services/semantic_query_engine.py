@@ -3049,6 +3049,95 @@ class SemanticQueryEngine:
 
         return from_clause, joined_nodes
 
+    # Semantic-audit 2026-07 (#1) — canonical equality template our join
+    # builders emit (`${TABLE}.a = ${target}.b`, AND-joined for composite
+    # keys). ONLY conditions that fullmatch this shape are eligible for
+    # type-aware key coercion; anything else (calendar CAST joins, custom
+    # user SQL) renders through the legacy path byte-identical.
+    _CANON_JOIN_EQ_RE = re.compile(
+        r"^\s*\$\{TABLE\}\.([A-Za-z_][A-Za-z0-9_]*)\s*=\s*"
+        r"\$\{([^}]+)\}\.([A-Za-z_][A-Za-z0-9_]*)\s*$"
+    )
+    _JOINKEY_NUMBER_PHYSICAL = {
+        "int", "integer", "bigint", "smallint", "tinyint", "int64", "int32",
+        "number", "numeric", "decimal", "float", "float64", "double",
+        "double precision", "real",
+    }
+    _JOINKEY_STRING_PHYSICAL = {
+        "string", "text", "varchar", "char", "nvarchar", "nchar",
+        "character varying", "character", "bpchar", "clob", "str", "utf8",
+    }
+
+    def _joinkey_family(self, view, col: str) -> Optional[str]:
+        """'number' | 'string' | None for a join-key column's PHYSICAL type."""
+        t = (self._physical_source_type(view, col) or "").strip().lower()
+        if not t:
+            return None
+        base = t.split("(", 1)[0].strip()
+        if base in self._JOINKEY_NUMBER_PHYSICAL:
+            return "number"
+        if base in self._JOINKEY_STRING_PHYSICAL:
+            return "string"
+        return None
+
+    def _typed_join_condition(self, edge, condition: str) -> Optional[str]:
+        """Type-aware rebuild of a CANONICAL key-equality join condition.
+
+        Sheets/Airbyte/CSV sources store numeric keys as physical STRING while
+        the other side is INT64/NUMERIC — a raw `a = b` ON clause then 400s on
+        BigQuery/Postgres ("No matching signature for operator = STRING,
+        INT64") or silently no-matches on MySQL ('007' vs 7). The WHERE and
+        measure paths already SAFE_CAST for exactly this; joins were the gap.
+
+        Returns the rebuilt condition ONLY when (a) the sql_on is exactly the
+        canonical builder template and (b) at least one key pair mixes a
+        physical string with a physical number — the string side is coerced
+        via build_safe_cast_sql(..., "float") (the filter-path convention; a
+        no-op on genuine numerics, NULL → no-match on real text, never a type
+        error). Every other case returns None → legacy render, byte-identical.
+        """
+        try:
+            parts = [p.strip() for p in condition.split(" AND ")]
+            pairs: list[tuple[str, str]] = []
+            for p in parts:
+                m = self._CANON_JOIN_EQ_RE.fullmatch(p)
+                if not m:
+                    return None
+                target_ph = m.group(2).strip()
+                if target_ph not in {edge.to_view, edge.to_node}:
+                    return None
+                pairs.append((m.group(1), m.group(3)))
+            if not pairs:
+                return None
+            from_view = self._get_view_for_node(edge.from_node)
+            # to_node (not to_view) — resolves role-play aliases through the
+            # cache first, exactly like every other field lookup.
+            to_view_obj = self._get_view_for_node(edge.to_node)
+            if from_view is None or to_view_obj is None:
+                return None
+
+            from app.services.type_override_service import build_safe_cast_sql
+
+            rebuilt: list[str] = []
+            any_cast = False
+            for fc, tc in pairs:
+                ff = self._joinkey_family(from_view, fc)
+                tf = self._joinkey_family(to_view_obj, tc)
+                lhs = f"{edge.from_node}.{fc}"
+                rhs = f"{edge.to_node}.{tc}"
+                if {ff, tf} == {"number", "string"}:
+                    if ff == "string":
+                        lhs = build_safe_cast_sql(lhs, "float", self.database_type)
+                    else:
+                        rhs = build_safe_cast_sql(rhs, "float", self.database_type)
+                    any_cast = True
+                rebuilt.append(f"{lhs} = {rhs}")
+            if not any_cast:
+                return None  # same-family keys → legacy path, byte-identical
+            return " AND ".join(rebuilt)
+        except Exception:  # noqa: BLE001 — never let coercion break rendering
+            return None
+
     def _render_edge_join_condition(self, edge) -> str:
         """Render a JOIN ON condition for a resolved join edge."""
         condition = str(edge.sql_on or "").strip()
@@ -3056,6 +3145,12 @@ class SemanticQueryEngine:
             if edge.from_column and edge.to_column:
                 return f"{edge.from_node}.{edge.from_column} = {edge.to_node}.{edge.to_column}"
             return ""
+
+        # Audit #1 — type-aware key coercion for canonical equality joins
+        # (physical STRING key vs numeric key). None → legacy render below.
+        typed = self._typed_join_condition(edge, condition)
+        if typed is not None:
+            return typed
 
         rendered = condition.replace("${TABLE}", edge.from_node)
         if edge.to_node and edge.to_node != edge.to_view:
