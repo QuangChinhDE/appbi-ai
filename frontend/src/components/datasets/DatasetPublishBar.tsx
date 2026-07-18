@@ -34,6 +34,7 @@ import {
   type DatasetPublishState,
 } from '@/hooks/use-datasets';
 import { DatasetGrantsModal } from './DatasetGrantsModal';
+import { SyncPublishModal } from './SyncPublishModal';
 
 function formatWhen(iso: string | null): string {
   if (!iso) return '';
@@ -70,6 +71,7 @@ export function DatasetPublishControls({ datasetId, canEditFallback }: ControlsP
   const { data: grants } = useDatasetGrants(datasetId);
   const publish = useSyncAndPublishDataset();
   const [grantsOpen, setGrantsOpen] = useState(false);
+  const [syncOpen, setSyncOpen] = useState(false);
 
   const caps = grants?.my_capabilities ?? [];
   const canManage = caps.includes('manage') || (grants === undefined && !!canEditFallback);
@@ -77,18 +79,6 @@ export function DatasetPublishControls({ datasetId, canEditFallback }: ControlsP
 
   const state = status?.publish_state ?? null;
   const syncing = status?.syncing || state === 'syncing' || publish.isPending;
-
-  const onPublish = async () => {
-    try {
-      const res = await publish.mutateAsync(datasetId);
-      if (res.started === false) toast.info(t('datasets.publish.toastAlreadySyncing'));
-      else toast.success(t('datasets.publish.toastStarted'));
-    } catch (e: any) {
-      toast.error(t('datasets.publish.toastFailed'), {
-        description: e?.response?.data?.detail ?? e?.message,
-      });
-    }
-  };
 
   // Badge — legacy (null) shows "Live"; otherwise the lifecycle state.
   const badge = state === null ? (
@@ -133,7 +123,7 @@ export function DatasetPublishControls({ datasetId, canEditFallback }: ControlsP
           variant={state === 'changes_pending' || state === 'draft' || state === null ? 'primary' : 'secondary'}
           leadingIcon={syncing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <UploadCloud className="h-3.5 w-3.5" />}
           disabled={syncing}
-          onClick={onPublish}
+          onClick={() => setSyncOpen(true)}
         >
           {publishLabel}
         </Button>
@@ -149,6 +139,7 @@ export function DatasetPublishControls({ datasetId, canEditFallback }: ControlsP
         </Button>
       )}
       {grantsOpen && <DatasetGrantsModal datasetId={datasetId} onClose={() => setGrantsOpen(false)} />}
+      {syncOpen && <SyncPublishModal datasetId={datasetId} onClose={() => setSyncOpen(false)} />}
     </div>
   );
 }

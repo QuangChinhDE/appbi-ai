@@ -615,6 +615,61 @@ export function useSetDatasetGrant() {
   });
 }
 
+// ===== Snapshot storage (partition/cluster) + refresh schedule (Pha A+B) =====
+
+export type SnapshotScheduleMode = 'manual' | 'hourly' | 'daily' | 'cron';
+export interface SnapshotSchedule {
+  mode: SnapshotScheduleMode;
+  at?: string;      // "HH:MM" for daily
+  cron?: string;    // crontab for cron mode
+  timezone?: string;
+}
+export interface SnapshotTableConfig {
+  partition_field?: string | null;
+  partition_granularity?: 'HOUR' | 'DAY' | 'MONTH' | 'YEAR';
+  cluster_fields?: string[];
+}
+export interface SnapshotTableInfo {
+  id: number;
+  display_name: string;
+  source_kind: string;
+  date_columns: string[];   // partition-eligible (DATE/TIMESTAMP/DATETIME)
+  columns: string[];        // all columns (clustering)
+  config: SnapshotTableConfig;
+}
+export interface SnapshotConfigResponse {
+  schedule: SnapshotSchedule;
+  tables: SnapshotTableInfo[];
+}
+
+export function useDatasetSnapshotConfig(datasetId: number | null, enabled = true) {
+  return useQuery({
+    queryKey: [...datasetKeys.detail(datasetId!), 'snapshot-config'],
+    queryFn: async () => {
+      const response = await api.get<SnapshotConfigResponse>(`/datasets/${datasetId}/snapshot-config`);
+      return response.data;
+    },
+    enabled: datasetId !== null && enabled,
+  });
+}
+
+export function useSaveSnapshotConfig() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ datasetId, schedule, tables }: {
+      datasetId: number;
+      schedule?: SnapshotSchedule;
+      tables?: Record<string, SnapshotTableConfig>;
+    }) => {
+      const response = await api.put(`/datasets/${datasetId}/snapshot-config`, { schedule, tables });
+      return response.data;
+    },
+    onSuccess: (_data, variables) => {
+      queryClient.invalidateQueries({ queryKey: [...datasetKeys.detail(variables.datasetId), 'snapshot-config'] });
+    },
+  });
+}
+
 export function useRevokeDatasetGrant() {
   const queryClient = useQueryClient();
   return useMutation({
