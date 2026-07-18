@@ -517,6 +517,15 @@ export type DatasetPublishState =
   | 'sync_failed'
   | 'disabled';
 
+export interface DatasetSyncProgress {
+  phase: 'syncing' | 'validating' | 'publishing' | 'done' | 'failed';
+  current: string | null;   // table being built now
+  built: number;            // tables completed
+  total: number;            // tables to build
+  rows: number;             // rows loaded for the current table
+  trigger?: string;         // 'manual' | 'scheduled'
+}
+
 export interface DatasetPublishStatus {
   /** null = legacy dataset (never entered the publish lifecycle → live path). */
   publish_state: DatasetPublishState | null;
@@ -525,6 +534,7 @@ export interface DatasetPublishStatus {
   last_sync_error: string | null;
   syncing: boolean;
   has_published_data: boolean;
+  progress?: DatasetSyncProgress | null;
 }
 
 export type DatasetVerb = 'view' | 'explore' | 'build' | 'reshare' | 'edit' | 'manage';
