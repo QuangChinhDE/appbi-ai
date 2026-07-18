@@ -60,7 +60,19 @@ def _run_scheduled_refresh(dataset_id: int) -> None:
     db = SessionLocal()
     try:
         ds = db.query(Dataset).filter(Dataset.id == dataset_id).first()
-        if ds is None or getattr(ds, "publish_state", None) in (None, "disabled"):
+        if ds is None:
+            return
+        state = getattr(ds, "publish_state", None)
+        # Power BI-standard: a SCHEDULED refresh reloads DATA on the currently
+        # PUBLISHED design. It must NEVER auto-deploy an in-progress design edit —
+        # a dataset in draft / changes_pending / sync_failed is skipped; the DA
+        # deploys design changes explicitly via the Sync & Publish button. (This
+        # keeps "scheduled = data refresh", "manual = deploy + refresh", like PBI.)
+        if state != "published":
+            logger.info(
+                "[snapshot_scheduler] skip dataset=%s (state=%s — scheduled refresh runs only on a clean published design)",
+                dataset_id, state,
+            )
             return
         from app.services import dataset_publish_service
         res = dataset_publish_service.start_sync_and_publish(dataset_id)
