@@ -153,11 +153,34 @@ export interface UpdateDatasetInput {
 
 export interface AddTableInput {
   datasource_id?: number | null;
-  source_kind?: "physical_table" | "sql_query" | "derived_table";
+  source_kind?: "physical_table" | "sql_query" | "derived_table" | "dataset";
   source_table_name?: string;
   source_query?: string;
   display_name: string;
   enabled?: boolean;
+  // Dataset-on-Dataset composition (source_kind === "dataset"):
+  parent_dataset_id?: number;
+  parent_dataset_table_id?: number;
+}
+
+/** A published dataset the user can build on + its referenceable tables. */
+export interface ComposableParent {
+  id: number;
+  name: string;
+  published_generation: number | null;
+  tables: { id: number; display_name: string; source_kind: string }[];
+}
+
+export function useComposableParents(excludeDatasetId: number | null, enabled = true) {
+  return useQuery({
+    queryKey: ['datasets', 'composable-parents', excludeDatasetId],
+    queryFn: async () => {
+      const q = excludeDatasetId ? `?exclude_dataset_id=${excludeDatasetId}` : '';
+      const response = await api.get<ComposableParent[]>(`/datasets/composable-parents${q}`);
+      return response.data;
+    },
+    enabled,
+  });
 }
 
 export interface UpdateTableInput {
