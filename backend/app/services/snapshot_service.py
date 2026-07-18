@@ -262,6 +262,60 @@ def build_table_snapshot(
         if current and current.fingerprint == fp and not force:
             return current
 
+        # Nấc A — watermark-gated REUSE on the forced (Sync&Publish / scheduled)
+        # path. A forced refresh normally re-scans the whole source and rewrites
+        # the table (WRITE_TRUNCATE) even when nothing changed. Instead: if the
+        # design is unchanged (same fingerprint) AND the BigQuery source has not
+        # been modified since this snapshot was built (same watermark), CLONE the
+        # metadata into the NEW generation reusing the SAME physical table — no
+        # re-scan, no re-load, no BQ cost. Only for BigQuery sources (non-BQ has
+        # no cheap watermark → always rebuilt). The generation stays COMPLETE, so
+        # publish's coverage check + pinned reads still pass.
+        if (
+            force
+            and current is not None
+            and current.fingerprint == fp
+            and generation is not None
+            and current.generation != generation
+            and _ds_type(datasource) == "bigquery"
+            and resolved_sql is not None
+            and current.source_watermark is not None
+        ):
+            try:
+                cur_wm = DataSourceConnectionService.bigquery_source_watermark(
+                    datasource.config, resolved_sql
+                )
+            except Exception:  # noqa: BLE001
+                cur_wm = None
+            if cur_wm is not None and cur_wm == current.source_watermark:
+                reuse = DatasetTableSnapshot(
+                    dataset_id=dataset_obj.id,
+                    dataset_table_id=table.id,
+                    version=int(time.time() * 1000),
+                    physical_ref=current.physical_ref,  # SHARE the existing table
+                    fingerprint=fp,
+                    status="ready",
+                    is_current=False,
+                    generation=generation,
+                    host_datasource_id=current.host_datasource_id,
+                    host_project=current.host_project,
+                    host_location=current.host_location,
+                    row_count=current.row_count,
+                    source_watermark=current.source_watermark,
+                    built_at=current.built_at,
+                    build_ms=0,
+                )
+                current.is_current = False
+                current.status = "superseded"
+                reuse.is_current = True
+                db.add(reuse)
+                db.commit()
+                logger.info(
+                    "[snapshot] REUSED table=%s ref=%s gen=%s (source unchanged — no re-scan)",
+                    table.id, current.physical_ref, generation,
+                )
+                return reuse
+
         version = int(time.time() * 1000)
         table_name = f"snap_t{table.id}_v{version}"
         ref = f"{project}.{snap_dataset}.{table_name}"
@@ -607,21 +661,33 @@ def gc_dataset_snapshots(db: Session, dataset_id: int, host: DataSource) -> int:
             pass
 
         now = datetime.utcnow()
-        retired = 0
-        for r in rows:
+
+        def _is_kept(r) -> bool:
             if r.status == "building":
-                continue  # in-flight build — not ours to touch
+                return True
             if r.generation is not None and int(r.generation) in keep_gens:
-                continue
+                return True
             born = r.built_at or r.created_at
             if born is not None and (now - born).total_seconds() < _GC_GRACE_SECONDS:
-                continue
+                return True
             if r.generation is None and r.is_current and r.status == "ready":
-                continue  # legacy current pointer — still the fallback read path
-            try:
-                DataSourceConnectionService.drop_bigquery_table(host.config, r.physical_ref)
-            except Exception:  # noqa: BLE001 — already gone / permission: retire anyway
-                pass
+                return True
+            return False
+
+        # Nấc A ref-count safety: watermark-reuse SHARES one physical table across
+        # generations. Never DROP a physical_ref that a kept row still references —
+        # only retire the metadata row. The physical is dropped only once NO kept
+        # row references it (i.e. the table was actually rebuilt into a new file).
+        kept_refs = {r.physical_ref for r in rows if _is_kept(r)}
+        retired = 0
+        for r in rows:
+            if _is_kept(r):
+                continue
+            if r.physical_ref not in kept_refs:
+                try:
+                    DataSourceConnectionService.drop_bigquery_table(host.config, r.physical_ref)
+                except Exception:  # noqa: BLE001 — already gone / permission: retire anyway
+                    pass
             r.retired_at = now
             if r.status == "ready":
                 r.is_current = False
