@@ -603,6 +603,11 @@ export const datasetsCatalog: ModuleCatalog = {
     "datasets.sync.clusterFields": "Cluster by",
     "datasets.sync.noDateCols": "No date/timestamp column — set a column's type to a date type to enable partitioning.",
     "datasets.sync.noTables": "No materializable tables.",
+    "datasets.sync.clusterPick": "click columns to select (max 4)",
+    "datasets.sync.typeStandard": "Standard",
+    "datasets.sync.typePartitioned": "Partitioned",
+    "datasets.sync.typeClustered": "Clustered",
+    "datasets.sync.typePartitionCluster": "Partition + Cluster",
   },
   vi: {
     "datasets.addColumnModal.availableColumns": "Cột khả dụng",
@@ -1205,5 +1210,10 @@ export const datasetsCatalog: ModuleCatalog = {
     "datasets.sync.clusterFields": "Cluster theo",
     "datasets.sync.noDateCols": "Không có cột date/timestamp — đặt kiểu cột thành kiểu ngày để bật partition.",
     "datasets.sync.noTables": "Không có bảng nào materialize được.",
+    "datasets.sync.clusterPick": "bấm cột để chọn (tối đa 4)",
+    "datasets.sync.typeStandard": "Chuẩn (Standard)",
+    "datasets.sync.typePartitioned": "Partitioned",
+    "datasets.sync.typeClustered": "Clustered",
+    "datasets.sync.typePartitionCluster": "Partition + Cluster",
   },
 };

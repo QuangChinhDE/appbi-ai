@@ -11,8 +11,9 @@
  */
 
 import { useEffect, useMemo, useState } from 'react';
-import { CalendarClock, Database, Loader2, UploadCloud, Layers, Rows3 } from 'lucide-react';
+import { CalendarClock, Check, Database, Loader2, UploadCloud, Layers, Rows3 } from 'lucide-react';
 import { AppModalShell } from '@/components/common/AppModalShell';
+import { Badge, type BadgeProps } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
 import { Input, Select } from '@/components/ui/Input';
 import { toast } from '@/lib/toast';
@@ -26,6 +27,18 @@ import {
 } from '@/hooks/use-datasets';
 
 const MAX_CLUSTER = 4;
+
+/** Derived BigQuery storage type from the partition/cluster choice, so the user
+ * sees exactly which of Standard / Partitioned / Clustered / Partition+Cluster
+ * their config produces. */
+function storageType(cfg: SnapshotTableConfig): { key: string; variant: BadgeProps['variant'] } {
+  const p = !!cfg.partition_field;
+  const c = (cfg.cluster_fields?.length ?? 0) > 0;
+  if (p && c) return { key: 'datasets.sync.typePartitionCluster', variant: 'success' };
+  if (p) return { key: 'datasets.sync.typePartitioned', variant: 'info' };
+  if (c) return { key: 'datasets.sync.typeClustered', variant: 'info' };
+  return { key: 'datasets.sync.typeStandard', variant: 'neutral' };
+}
 
 export function SyncPublishModal({ datasetId, onClose }: { datasetId: number; onClose: () => void }) {
   const { t } = useI18n();
@@ -143,8 +156,12 @@ export function SyncPublishModal({ datasetId, onClose }: { datasetId: number; on
                 const cluster = cfg.cluster_fields ?? [];
                 return (
                   <div key={tb.id} className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 p-3">
-                    <div className="mb-2 flex items-center gap-2 text-caption font-emphasis text-text-primary">
-                      <Database className="h-3.5 w-3.5 text-text-tertiary" />{tb.display_name}
+                    <div className="mb-2 flex items-center gap-2">
+                      <Database className="h-3.5 w-3.5 text-text-tertiary" />
+                      <span className="text-caption font-emphasis text-text-primary">{tb.display_name}</span>
+                      {(() => { const st = storageType(cfg); return (
+                        <Badge variant={st.variant} size="sm" className="ml-auto">{t(st.key)}</Badge>
+                      ); })()}
                     </div>
                     <div className="flex flex-wrap items-end gap-3">
                       <label className="w-48">
@@ -166,7 +183,10 @@ export function SyncPublishModal({ datasetId, onClose }: { datasetId: number; on
                       )}
                     </div>
                     <div className="mt-3">
-                      <span className="mb-1.5 flex items-center gap-1 text-tiny text-text-tertiary"><Layers className="h-3 w-3" />{t('datasets.sync.clusterFields')} ({cluster.length}/{MAX_CLUSTER})</span>
+                      <span className="mb-1.5 flex items-center gap-1 text-tiny text-text-tertiary">
+                        <Layers className="h-3 w-3" />{t('datasets.sync.clusterFields')} ({cluster.length}/{MAX_CLUSTER})
+                        <span className="text-text-quaternary">— {t('datasets.sync.clusterPick')}</span>
+                      </span>
                       <div className="flex flex-wrap gap-1.5">
                         {tb.columns.map((c) => {
                           const on = cluster.includes(c);
@@ -174,10 +194,11 @@ export function SyncPublishModal({ datasetId, onClose }: { datasetId: number; on
                           return (
                             <button key={c} type="button" disabled={disabled}
                               onClick={() => toggleCluster(tb.id, c)}
-                              className={`rounded-full px-2.5 py-1 text-tiny transition-colors ${
-                                on ? 'bg-brand/12 text-brand ring-1 ring-brand/30'
-                                   : disabled ? 'bg-surface-2 text-text-quaternary opacity-50'
-                                   : 'bg-surface-2 text-text-secondary hover:bg-surface-3'}`}>
+                              className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-tiny transition-colors ${
+                                on ? 'border-brand bg-brand text-text-inverse'
+                                   : disabled ? 'border-[rgb(var(--border-line))] bg-surface-2 text-text-quaternary opacity-50 cursor-not-allowed'
+                                   : 'border-[rgb(var(--border-strong))] bg-surface-1 text-text-secondary hover:border-brand hover:text-brand'}`}>
+                              {on ? <Check className="h-3 w-3" /> : <span className="text-text-quaternary">+</span>}
                               {c}
                             </button>
                           );
