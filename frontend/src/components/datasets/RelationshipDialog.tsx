@@ -190,6 +190,9 @@ export function RelationshipDialog({
   );
   const [error, setError] = useState('');
   const [relationshipTouched, setRelationshipTouched] = useState(false);
+  // F4 — track whether the user manually picked a join type, so auto-detect can
+  // pre-fill the suggested type only while it is still "untouched".
+  const [joinTypeTouched, setJoinTypeTouched] = useState(false);
   const [autoSuggestRelationship, setAutoSuggestRelationship] = useState(!initialValue?.relationship);
   const [previousSelectionKey, setPreviousSelectionKey] = useState('');
   const suppressSelectionResetRef = useRef(false);
@@ -210,6 +213,7 @@ export function RelationshipDialog({
     setPrimaryKeyOnToView(initialValue?.primaryKeyOnToView ?? []);
     setError('');
     setRelationshipTouched(false);
+    setJoinTypeTouched(Boolean(initialValue?.joinType));
     setAutoSuggestRelationship(!initialValue?.relationship);
     setPreviousSelectionKey(buildSelectionKey(initialValue?.fromViewId ?? '', initialValue?.toViewId ?? '', nextPairs));
     suppressSelectionResetRef.current = true;
@@ -224,6 +228,7 @@ export function RelationshipDialog({
     if (previousSelectionKey === selectionKey) return;
     setPreviousSelectionKey(selectionKey);
     setRelationshipTouched(false);
+    setJoinTypeTouched(false);
     setAutoSuggestRelationship(true);
   }, [isOpen, previousSelectionKey, selectionKey]);
 
@@ -274,7 +279,14 @@ export function RelationshipDialog({
   useEffect(() => {
     if (!isOpen || !joinSuggestion || !autoSuggestRelationship || relationshipTouched) return;
     setRelationship(joinSuggestion.relationship);
-  }, [autoSuggestRelationship, isOpen, joinSuggestion, relationshipTouched]);
+    // F4 — the backend now suggests the JOIN TYPE too (previously always LEFT).
+    // Adopt it only while the user hasn't manually chosen one, so auto-detect
+    // fills the correct fact-anchored join type. Backwards-compatible: if the
+    // field is absent (older backend) the current joinType is untouched.
+    if (joinSuggestion.suggested_join_type && !joinTypeTouched) {
+      setJoinType(joinSuggestion.suggested_join_type);
+    }
+  }, [autoSuggestRelationship, isOpen, joinSuggestion, relationshipTouched, joinTypeTouched]);
 
   if (!isOpen) return null;
 
@@ -562,6 +574,15 @@ export function RelationshipDialog({
                   : t('datasets.relationshipDialog.suggestedFromData', { label: `${suggestedRelationshipLabel}${suggestedUniquenessLabel}` })}
               </p>
             )}
+            {/* F4 (DA feedback) — when the drawn direction is 1:N it will be
+                auto-oriented to N:1 on the many/fact side at save time so a
+                measure chart on the fact can use it. Tell the user up-front so
+                the flipped FROM/TO in the saved model is not a surprise. */}
+            {joinSuggestion?.will_auto_orient && !relationshipTouched && (
+              <p className="rounded-md border border-brand/30 bg-brand/5 px-2 py-1.5 text-[11px] leading-snug text-brand">
+                {t('datasets.relationshipDialog.autoOrientHint')}
+              </p>
+            )}
             {/* Phase-3b: many-to-many is allowed but high-risk. Show a red
                 banner whenever the user (or auto-suggestion) selects it so
                 they're nudged toward a bridge-table design. */}
@@ -578,7 +599,10 @@ export function RelationshipDialog({
             </label>
             <Select
               value={joinType}
-              onChange={(value) => setJoinType(value as JoinType)}
+              onChange={(value) => {
+                setJoinType(value as JoinType);
+                setJoinTypeTouched(true);
+              }}
               options={JOIN_TYPE_OPTIONS}
             />
           </div>

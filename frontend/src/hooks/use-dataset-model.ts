@@ -200,6 +200,17 @@ export interface JoinSuggestionResponse {
   can_create: boolean;
   blocking_code: 'cycle_detected' | 'many_to_many' | null;
   message: string | null;
+  // Semantic-audit 2026-07 (DA feedback, F4) — the backend now also suggests the
+  // JOIN TYPE and the CANONICAL (auto-oriented to the many/fact side) shape, so
+  // the dialog can pre-fill the correct fact-anchored relationship. Optional so
+  // an older backend response still type-checks.
+  suggested_join_type?: 'left' | 'inner' | 'right' | 'full';
+  suggested_cardinality?: 'one_to_one' | 'one_to_many' | 'many_to_one' | 'many_to_many';
+  canonical_from_view?: string;
+  canonical_to_view?: string;
+  canonical_from_columns?: string[];
+  canonical_to_columns?: string[];
+  will_auto_orient?: boolean;
 }
 
 function normalizeJoinColumnList(values?: string[] | null, fallback?: string | null): string[] {
