@@ -204,6 +204,16 @@ def _source_select_sql(source_ds: DataSource, table: DatasetTable) -> str:
     return f"SELECT * FROM {q}"
 
 
+def _sanitize_name_part(name: Optional[str]) -> str:
+    """BigQuery-safe fragment from a user display name for the snapshot table name:
+    lowercase, non-alphanumerics → '_', collapsed, trimmed, length-bounded.
+    Empty/none → 't'."""
+    import re
+    s = re.sub(r"[^a-z0-9]+", "_", str(name or "").strip().lower())
+    s = re.sub(r"_+", "_", s).strip("_")
+    return s[:40] or "t"
+
+
 def build_table_snapshot(
     db: Session,
     dataset_obj: Dataset,
@@ -317,7 +327,13 @@ def build_table_snapshot(
                 return reuse
 
         version = int(time.time() * 1000)
-        table_name = f"snap_t{table.id}_v{version}"
+        # Human-readable snapshot name: snap_t<id>_<display-name>_v<version>. Keeps
+        # the table-id KEY (stable, unambiguous) AND the user's name (easy to find
+        # in BigQuery). Zero-cost on rename: each refresh builds a fresh table with
+        # the CURRENT name, so a rename flows through on the next publish — no BQ
+        # ALTER, no scan. (A pure rename with no data change reuses the old-named
+        # table until the next real rebuild.)
+        table_name = f"snap_t{table.id}_{_sanitize_name_part(getattr(table, 'display_name', None))}_v{version}"
         ref = f"{project}.{snap_dataset}.{table_name}"
         row = DatasetTableSnapshot(
             dataset_id=dataset_obj.id,
