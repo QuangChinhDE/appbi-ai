@@ -1027,6 +1027,16 @@ def get_chart_data(
     if perm == "none":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
 
+    # Composition principle #3: if this chart's dataset references parent datasets,
+    # the viewer must also have View on every parent. No-op for non-composition
+    # datasets (the vast majority) — zero impact on existing charts.
+    if chart.dataset_table_id is not None:
+        from app.services.dataset_crud import DatasetCRUDService
+        from app.services import dataset_grants_service
+        _dt = DatasetCRUDService.get_table_by_id(db, chart.dataset_table_id)
+        if _dt is not None and getattr(_dt, "dataset_id", None) is not None:
+            dataset_grants_service.require_view_lineage(db, current_user, _dt.dataset_id)
+
     extra_filters = None
     if filters:
         try:

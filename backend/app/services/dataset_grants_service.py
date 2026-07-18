@@ -119,6 +119,39 @@ def require_capability(db: Session, user: User, dataset: Dataset, capability: st
         )
 
 
+def require_view_lineage(db: Session, user: User, child_dataset_id: int) -> None:
+    """Composition principle #3: a viewer of a composed dataset needs View on it
+    AND on EVERY parent dataset (transitively). This is a NO-OP for datasets with
+    no parent-ref tables, so existing (non-composition) reads are unaffected —
+    the check only ever fires for a Dataset-on-Dataset composition. Owner /
+    module-full / explicit grants all satisfy `view` via dataset_capabilities."""
+    from app.services import dataset_composition_service as comp
+    # Collect all transitive parents.
+    seen: set[int] = set()
+    stack: list[int] = list(comp.parent_dataset_ids(db, child_dataset_id))
+    stack += comp._direct_parents(db, child_dataset_id)
+    all_parents: set[int] = set()
+    while stack:
+        pid = stack.pop()
+        if pid in seen:
+            continue
+        seen.add(pid)
+        all_parents.add(pid)
+        stack.extend(comp._direct_parents(db, pid))
+    if not all_parents:
+        return
+    from fastapi import HTTPException, status
+    for pid in all_parents:
+        parent = db.query(Dataset).filter(Dataset.id == pid).first()
+        if parent is None:
+            continue
+        if not can(db, user, parent, "view"):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Bạn cần quyền View trên Dataset cha '{parent.name}' để xem báo cáo dựng trên Dataset này.",
+            )
+
+
 def set_grant(db: Session, dataset_id: int, *, verb: str,
               user_id=None, team_id=None, granted_by=None) -> DatasetGrant:
     """Upsert a single grant (one verb per principal per dataset)."""

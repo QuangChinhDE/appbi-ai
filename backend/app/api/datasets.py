@@ -2530,6 +2530,35 @@ def revoke_dataset_grant(
     return {"ok": True, "revoked": n}
 
 
+@router.get("/composable-parents")
+def list_composable_parents(
+    exclude_dataset_id: int | None = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Published datasets the current user can BUILD on (candidate composition
+    parents), each with its referenceable tables. Powers the 'reference a Dataset'
+    picker. Declared BEFORE /{dataset_id} so the static path is not shadowed."""
+    from app.models.dataset import Dataset as _DS
+    from app.services import dataset_grants_service
+    from app.services.dataset_calendar_service import is_generated_calendar_table
+    out = []
+    rows = db.query(_DS).filter(_DS.publish_state == "published").all()
+    for d in rows:
+        if exclude_dataset_id and d.id == exclude_dataset_id:
+            continue
+        if not dataset_grants_service.can(db, current_user, d, "build"):
+            continue
+        tables = [
+            {"id": t.id, "display_name": t.display_name, "source_kind": t.source_kind}
+            for t in db.query(DatasetTable).filter(DatasetTable.dataset_id == d.id).all()
+            if not is_generated_calendar_table(t) and t.source_kind != "dataset"
+        ]
+        if tables:
+            out.append({"id": d.id, "name": d.name, "published_generation": d.published_generation, "tables": tables})
+    return out
+
+
 @router.get("/{dataset_id}", response_model=DatasetWithTables)
 def get_dataset(
     dataset_id: int,
@@ -2624,6 +2653,31 @@ def delete_dataset(
                 "constraints": [
                     {"type": "workboard", "id": wb.id, "name": wb.name}
                     for wb in blocking_workboards
+                ],
+            },
+        )
+
+    # Block deletion of a PARENT that a composed child dataset pins (Dataset-on-
+    # Dataset composition). The FK is ON DELETE RESTRICT so the DB would refuse
+    # anyway; this returns a clear 409 with the dependent children instead.
+    from app.models.dataset import DatasetDependency
+    dependent = (
+        db.query(DatasetDependency, Dataset)
+        .join(Dataset, Dataset.id == DatasetDependency.child_dataset_id)
+        .filter(DatasetDependency.parent_dataset_id == dataset_id)
+        .all()
+    )
+    if dependent:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": (
+                    f"Dataset \"{dataset_obj.name}\" đang được tham chiếu bởi "
+                    f"{len(dependent)} Dataset con (composition) và không thể xóa."
+                ),
+                "constraints": [
+                    {"type": "dataset", "id": child.id, "name": child.name}
+                    for _dep, child in dependent
                 ],
             },
         )
@@ -2815,6 +2869,36 @@ def add_table_to_dataset(
         if not ds:
             raise HTTPException(status_code=404, detail="Dataset not found")
         require_edit_access(db, current_user, ds, "datasets")
+
+        # ── Dataset-on-Dataset composition: reference a parent dataset's table ──
+        if table.source_kind == "dataset":
+            from app.services import dataset_grants_service, dataset_composition_service
+            parent = db.query(Dataset).filter(Dataset.id == table.parent_dataset_id).first()
+            if parent is None:
+                raise HTTPException(status_code=404, detail="Parent dataset not found")
+            # Principle #3: the creator needs BUILD on the parent dataset.
+            dataset_grants_service.require_capability(db, current_user, parent, "build")
+            try:
+                new_ref = dataset_composition_service.add_parent_ref_table(
+                    db, dataset_id, table.parent_dataset_id, table.parent_dataset_table_id,
+                    table.display_name or "Parent reference",
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            _sync_dataset_model_safely(db, dataset_id)
+            db.refresh(new_ref)
+            return {
+                "id": new_ref.id, "dataset_id": new_ref.dataset_id, "datasource_id": None,
+                "source_kind": new_ref.source_kind, "source_table_name": None, "source_query": None,
+                "display_name": new_ref.display_name, "enabled": new_ref.enabled,
+                "transformations": new_ref.transformations, "columns_cache": new_ref.columns_cache,
+                "sample_cache": None, "type_overrides": new_ref.type_overrides, "column_formats": None,
+                "query_mode": "synced",
+                "parent_dataset_id": new_ref.parent_dataset_id,
+                "parent_dataset_table_id": new_ref.parent_dataset_table_id,
+                "created_at": new_ref.created_at.isoformat() if new_ref.created_at else None,
+                "updated_at": new_ref.updated_at.isoformat() if new_ref.updated_at else None,
+            }
 
         datasource: Optional[DataSource] = None
         inferred_metadata: List[DatasetColumnMetadata] = []
