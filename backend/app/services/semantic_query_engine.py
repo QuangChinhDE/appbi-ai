@@ -711,12 +711,27 @@ class SemanticQueryEngine:
             where_filters, having_filters = self._split_filters_by_role(
                 filters, measures,
             )
+            # Concept-1 (model-structure) filter anchor: the set of views that are
+            # forward-M:1 reachable from each MEASURE'S FACT (+ the facts). A filter
+            # on any of these is a standard dim→fact filter that must apply
+            # irrespective of the chart's base view or cross-filter direction —
+            # see the drop gate in _build_where_clause. Empty for pure-dim charts
+            # with no fact measure (keeps the direction gate authoritative there).
+            _measure_fact_views: set[str] = set()
+            for _m in (measures or []):
+                try:
+                    _mf = self._measure_fact_view(_m)
+                except Exception:  # noqa: BLE001 — never block on measure parse
+                    _mf = None
+                if _mf:
+                    _measure_fact_views |= self._m1_reachable_views(_mf) | {_mf}
             where_clause = self._build_where_clause(
                 where_filters, time_grains,
                 exists_views=exists_views,
                 explore=explore,
                 select_side_views=select_side_views,
                 joined_nodes=joined_nodes,
+                measure_fact_views=_measure_fact_views,
             )
             having_clause = self._build_having_clause(
                 having_filters, time_grains,
@@ -3233,6 +3248,7 @@ class SemanticQueryEngine:
         explore: SemanticExplore | None = None,
         select_side_views: set[str] | None = None,
         joined_nodes: set[str] | None = None,
+        measure_fact_views: set[str] | None = None,
     ) -> str:
         """Build WHERE clause from filters.
 
@@ -3493,6 +3509,25 @@ class SemanticQueryEngine:
                             _strict_unreachable = not _drop_gate_resolver.resolve_paths(view_name)
                         except Exception:  # noqa: BLE001 — fall back to legacy on resolver error
                             _strict_unreachable = False
+                    # ── Separate the TWO filter concepts (root-cause of the ds84
+                    # "slicer wrong" report) ─────────────────────────────────
+                    # 1) HOW data is filtered = the MODEL structure. A filter on a
+                    #    dimension that is forward-M:1 reachable from a MEASURE'S
+                    #    FACT is the standard star-schema dim→fact filter and MUST
+                    #    apply — regardless of the chart's arbitrary base view and
+                    #    regardless of cross-filter direction.
+                    # 2) Cross-filter DIRECTION (single/both) is an add-on that
+                    #    only governs the genuinely direction-dependent cases
+                    #    (fact→dim reverse, dim→dim / fact→fact bridging).
+                    # The base-anchored strict resolver above conflates the two:
+                    # it drops a dim that IS related to the measure's fact merely
+                    # because the chart base is a *different* table needing a
+                    # reverse hop. Un-drop when the view is structurally related
+                    # to a measure's fact; the cross-fact/bridge protection (the
+                    # real Concept-2 case, unreachable from every measure fact)
+                    # is untouched.
+                    if _strict_unreachable and measure_fact_views and view_name in measure_fact_views:
+                        _strict_unreachable = False
                     if _strict_unreachable:
                         propagation_drops.append({
                             "field": field_ref,
