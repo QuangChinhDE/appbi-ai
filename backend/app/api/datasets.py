@@ -5855,11 +5855,22 @@ def add_model_join(
         return result
     except ValueError as e:
         # Phase-3 cascade: surface structured payload as 409 when present so
-        # the FE can show a confirm dialog rather than a generic error.
+        # the FE can show a confirm dialog rather than a generic error. Humanise
+        # internal dataset_table_<id> tokens → friendly table names for the DA.
+        from app.services.dataset_model_service import humanize_view_tokens
         payload_attr = getattr(e, "cascade_payload", None)
         if payload_attr:
+            if isinstance(payload_attr, dict) and payload_attr.get("message"):
+                payload_attr = {
+                    **payload_attr,
+                    "message": humanize_view_tokens(str(payload_attr["message"]), db, dataset_id),
+                    **(
+                        {"join_view": humanize_view_tokens(str(payload_attr["join_view"]), db, dataset_id)}
+                        if payload_attr.get("join_view") else {}
+                    ),
+                }
             raise HTTPException(status_code=409, detail=payload_attr)
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=humanize_view_tokens(str(e), db, dataset_id))
     except Exception as e:
         logger.error(f"Failed to add join for dataset {dataset_id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))

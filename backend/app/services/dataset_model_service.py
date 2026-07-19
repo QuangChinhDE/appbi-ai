@@ -423,6 +423,30 @@ def _heuristic_relationship_for_columns(from_column: str, to_column: str) -> str
     return "many_to_one"
 
 
+_VIEW_TOKEN_RE = re.compile(r"dataset_table_(\d+)")
+
+
+def humanize_view_tokens(text: str, db: Session, dataset_id: int) -> str:
+    """Replace internal ``dataset_table_<id>`` tokens in a user-facing message
+    with the table's friendly display name (e.g. ``dim_customer``,
+    ``fact_sales``) so DAs read the names they know from the canvas rather than
+    internal view identifiers. No-op when the text has no such token. Best
+    effort: on any error the original text is returned unchanged (a message must
+    never fail to render)."""
+    if not text or "dataset_table_" not in text:
+        return text
+    try:
+        labels = {
+            t.id: (t.display_name or t.source_table_name or f"dataset_table_{t.id}")
+            for t in db.query(DatasetTable).filter(DatasetTable.dataset_id == dataset_id).all()
+        }
+        return _VIEW_TOKEN_RE.sub(
+            lambda m: labels.get(int(m.group(1)), m.group(0)), text
+        )
+    except Exception:  # noqa: BLE001 — never let humanisation break the response
+        return text
+
+
 def _ensure_no_chart_depends_on_join(
     db: Session,
     *,
