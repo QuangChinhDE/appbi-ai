@@ -2351,8 +2351,39 @@ def _execute_semantic_chart_runtime(
         raise ValueError(plan.blocked)
 
     cache_enabled = _should_cache_live_query(ds_type)
+    # Model join-graph identity in the cache key. A relationship edit — toggling
+    # is_active / cross_filter, changing cardinality, adding/removing a join —
+    # changes query SEMANTICS without changing dims/measures/filters/snapshot.
+    # Without folding the join graph into the key, the result cache would serve a
+    # STALE pre-edit result (e.g. an inactivated join still applied, or a
+    # single↔both filter-direction change ignored). Hash every explore's joins
+    # JSON for this model — the same data the join-graph cache keys on — so any
+    # relationship change busts the cache. Cheap: a handful of small JSON blobs.
+    _model_join_sig = None
+    try:
+        import hashlib as _hl, json as _json
+        if model_id:
+            _explores_for_sig = (
+                db.query(SemanticExplore)
+                .filter(SemanticExplore.model_id == model_id)
+                .all()
+            )
+            _join_sig_src = _json.dumps(
+                [
+                    [e.id, str(e.base_view_name or ""), e.joins or []]
+                    for e in sorted(_explores_for_sig, key=lambda x: x.id or 0)
+                ],
+                sort_keys=True,
+                separators=(",", ":"),
+                default=str,
+            )
+            _model_join_sig = _hl.sha256(_join_sig_src.encode("utf-8")).hexdigest()[:16]
+    except Exception:  # noqa: BLE001 — cache-key aug must never break a chart
+        _model_join_sig = None
     cache_role_config = {
         "_semantic_chart_runtime": True,
+        # Relationship-graph identity — busts the cache on any join edit.
+        "_model_join_sig": _model_join_sig,
         "_dimensions": dimension_refs,
         "_measures": measure_refs,
         "_agg_overrides": agg_overrides,

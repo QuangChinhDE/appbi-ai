@@ -4312,6 +4312,11 @@ class SemanticQueryEngine:
         for j in (getattr(exp, "joins", None) or []):
             if not isinstance(j, dict):
                 continue
+            # Inactive joins are invisible to the resolver — treat as absent here
+            # too (see _m1_reachable_views) so relatedness checks stay consistent
+            # with the path the query builder actually renders.
+            if j.get("is_active") is False:
+                continue
             tgt = j.get("view") or j.get("to_view") or j.get("target") or j.get("name")
             if tgt:
                 out.add(str(tgt))
@@ -4380,6 +4385,15 @@ class SemanticQueryEngine:
             ).first()
             for j in (getattr(exp, "joins", None) or []):
                 if not isinstance(j, dict):
+                    continue
+                # INACTIVE joins are invisible to the SemanticJoinResolver
+                # (skipped at graph construction), so the grain guard + measure
+                # isolation MUST ignore them too — otherwise a dim reachable ONLY
+                # via an inactive edge is wrongly classified "M:1-safe", and the
+                # isolation logic picks a path the query builder can't/ won't
+                # render (loud error at best, wrong-number isolation decision at
+                # worst). Default is active when the key is absent (legacy joins).
+                if j.get("is_active") is False:
                     continue
                 # Semantic-audit 2026-07 (#9): CARDINALITY first — it is the
                 # canonical Phase-1 field and what SemanticJoinResolver reads;
