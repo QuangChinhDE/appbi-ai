@@ -551,6 +551,13 @@ export interface AddJoinParams {
    * the view's PK declaration unchanged.
    */
   primaryKeyOnToView?: string[] | null;
+  /**
+   * Confirm-and-override the cascade guard. When the edit would deactivate a
+   * relationship that charts still reference, the BE returns 409
+   * JOIN_INACTIVE_CASCADE; the dialog asks the user to confirm and re-submits
+   * with force=true to proceed (charts then need re-binding).
+   */
+  force?: boolean;
 }
 
 export function useAddJoin() {
@@ -575,6 +582,9 @@ export function useAddJoin() {
           ...(params.primaryKeyOnToView && params.primaryKeyOnToView.length > 0
             ? { primary_key_on_to_view: params.primaryKeyOnToView }
             : {}),
+          // Cascade override: re-submit with force after the user confirms the
+          // JOIN_INACTIVE_CASCADE warning (charts referencing the disabled join).
+          ...(params.force ? { force: true } : {}),
         }
       );
       return response.data;

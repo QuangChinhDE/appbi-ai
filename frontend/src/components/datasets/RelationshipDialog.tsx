@@ -260,6 +260,11 @@ export function RelationshipDialog({
     initialValue?.primaryKeyOnToView ?? [],
   );
   const [error, setError] = useState('');
+  // Cascade confirmation: when saving would deactivate a relationship that
+  // charts still reference, the BE returns 409 JOIN_INACTIVE_CASCADE. We show a
+  // confirm panel (with the affected charts) instead of a dead-end error, and
+  // re-submit with force=true when the user confirms.
+  const [cascade, setCascade] = useState<{ message: string; charts: string[] } | null>(null);
   const [relationshipTouched, setRelationshipTouched] = useState(false);
   // Keep the default view simple (cardinality + cross-filter); the remaining
   // SQL-level knobs (alias, primary key) live under Advanced. Join type is no
@@ -283,6 +288,7 @@ export function RelationshipDialog({
     setCrossFilter(initialValue?.crossFilter ?? 'single');
     setPrimaryKeyOnToView(initialValue?.primaryKeyOnToView ?? []);
     setError('');
+    setCascade(null);
     setRelationshipTouched(false);
     setAutoSuggestRelationship(!initialValue?.relationship);
     setPreviousSelectionKey(buildSelectionKey(initialValue?.fromViewId ?? '', initialValue?.toViewId ?? '', nextPairs));
@@ -406,8 +412,9 @@ export function RelationshipDialog({
     ));
   };
 
-  const handleSave = async () => {
+  const handleSave = async (force = false) => {
     setError('');
+    if (!force) setCascade(null);
     if (!fromViewId || !toViewId) {
       setError(t('datasets.relationshipDialog.errorSelectBothTables'));
       return;
@@ -436,12 +443,26 @@ export function RelationshipDialog({
         isActive,
         crossFilter,
         primaryKeyOnToView: primaryKeyOnToView.length > 0 ? primaryKeyOnToView : null,
+        force,
       });
+      setCascade(null);
       onClose();
     } catch (saveError: unknown) {
-      // BE có thể trả detail dạng object (vd JOIN_INACTIVE_CASCADE 409) —
-      // dùng extractApiError để chuyển an toàn về string, tránh React #31
-      // khi render object trực tiếp vào JSX.
+      // The BE returns a 409 with a structured detail when deactivating a
+      // relationship charts still use (code JOIN_INACTIVE_CASCADE). Surface it
+      // as a CONFIRM panel (list the charts) with an override, not a dead-end
+      // error — the DA can proceed and re-bind the charts afterwards.
+      const detail = (saveError as { response?: { data?: { detail?: unknown } } })?.response?.data?.detail;
+      if (detail && typeof detail === 'object' && (detail as { code?: string }).code === 'JOIN_INACTIVE_CASCADE') {
+        const d = detail as { message?: string; affected_charts?: string[] };
+        setCascade({
+          message: d.message || t('datasets.relationshipDialog.cascadeMessage'),
+          charts: Array.isArray(d.affected_charts) ? d.affected_charts : [],
+        });
+        return;
+      }
+      // Any other failure: plain error (extractApiError avoids React #31 on
+      // object details).
       setError(extractApiError(saveError, t('datasets.relationshipDialog.errorSaveFailed')));
     }
   };
@@ -492,7 +513,7 @@ export function RelationshipDialog({
             {t('common.cancel')}
           </button>
           <button
-            onClick={handleSave}
+            onClick={() => handleSave()}
             disabled={
               isSaving
               || !fromViewId
@@ -866,10 +887,44 @@ export function RelationshipDialog({
           )}
         </div>
 
-        {(blockingMessage || error) && (
+        {(blockingMessage || error) && !cascade && (
           <p className="rounded-md bg-danger/10 px-3 py-2 text-sm text-danger">
             {blockingMessage || error}
           </p>
+        )}
+
+        {/* Cascade confirmation — deactivating a relationship that charts still
+            reference. Show which charts break and let the DA proceed (they can
+            re-bind those charts afterwards) instead of hitting a dead-end error. */}
+        {cascade && (
+          <div className="space-y-2 rounded-md border border-warning/40 bg-warning/10 px-3 py-3">
+            <p className="text-sm font-medium text-text-primary">
+              {cascade.message}
+            </p>
+            {cascade.charts.length > 0 && (
+              <ul className="max-h-28 list-disc space-y-0.5 overflow-y-auto pl-5 text-xs text-text-secondary">
+                {cascade.charts.map((c, i) => (
+                  <li key={i}>{c}</li>
+                ))}
+              </ul>
+            )}
+            <div className="flex items-center justify-end gap-2 pt-1">
+              <button
+                onClick={() => setCascade(null)}
+                disabled={isSaving}
+                className="rounded-md border border-[rgb(var(--border-strong))] px-3 py-1.5 text-xs font-medium text-text-secondary transition-colors hover:bg-surface-2 disabled:opacity-50"
+              >
+                {t('datasets.relationshipDialog.cascadeKeep')}
+              </button>
+              <button
+                onClick={() => handleSave(true)}
+                disabled={isSaving}
+                className="rounded-md bg-warning px-3 py-1.5 text-xs font-medium text-white transition-colors hover:opacity-90 disabled:opacity-50"
+              >
+                {t('datasets.relationshipDialog.cascadeConfirm')}
+              </button>
+            </div>
+          </div>
         )}
       </div>
     </AppModalShell>
