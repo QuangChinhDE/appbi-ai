@@ -4109,6 +4109,48 @@ _RESERVED_NON_JOIN_COLUMNS = {"miniapp_user"}
 # direction is already covered by pass 2 (name heuristic).
 _SAME_NAME_SKIP = {"id", "pk", "key", "_id", "uuid"}
 
+# Additive / measure-value columns are NEVER join keys. The overlap probe
+# treats any numeric column as key-like, so a column holding a quantity /
+# amount / price trips false-positive joins (e.g. product_id ↔ quantity)
+# purely because small integers overlap. Exclude by name — but a key-suffixed
+# name (`*_id`/`*_key`/…) always wins, so `amount_id` stays joinable.
+_VALUE_COLUMN_NAMES = {
+    "quantity", "qty", "amount", "amt", "revenue", "sales", "price", "cost",
+    "total", "subtotal", "value", "balance", "tax", "discount", "profit",
+    "margin", "score", "rating", "age", "salary", "weight", "height", "width",
+    "length", "duration", "count", "sum", "avg", "average", "min", "max",
+    # Vietnamese business columns
+    "so_luong", "soluong", "gia", "don_gia", "dongia", "gia_tri", "giatri",
+    "thanh_tien", "thanhtien", "doanh_thu", "doanhthu", "so_tien", "sotien",
+    "tong", "tong_tien", "tongtien", "chiet_khau", "chietkhau", "thue",
+    "khoi_luong", "khoiluong", "trong_luong", "trongluong", "dien_tich", "dientich",
+}
+_VALUE_COLUMN_SUFFIXES = (
+    "_amount", "_amt", "_revenue", "_qty", "_quantity", "_price", "_cost",
+    "_total", "_value", "_sum", "_balance", "_tax", "_discount", "_gia",
+    "_tien", "_doanh_thu", "_so_luong",
+)
+
+
+def _is_value_like_column_name(col_name: str) -> bool:
+    """True when a column name denotes an aggregatable value (not an id)."""
+    name = str(col_name or "").strip().lower()
+    if not name or any(name.endswith(suffix) for suffix in _FK_SUFFIXES):
+        return False  # key-suffixed names are always keys
+    return name in _VALUE_COLUMN_NAMES or any(
+        name.endswith(suffix) for suffix in _VALUE_COLUMN_SUFFIXES
+    )
+
+
+def _key_stem(col_name: str) -> str:
+    """Strip a trailing key suffix so `product_id` → `product`, `sale_id` →
+    `sale`. Used to detect coincidental cross-entity id↔id overlaps."""
+    name = str(col_name or "").strip().lower()
+    for suffix in _FK_SUFFIXES:
+        if name.endswith(suffix) and len(name) > len(suffix):
+            return name[: -len(suffix)]
+    return name
+
 
 def _is_key_like_column(column: dict) -> bool:
     """A column is "key-like" if its values look like identifiers we could
@@ -4120,6 +4162,11 @@ def _is_key_like_column(column: dict) -> bool:
     """
     col_name = str(column.get("name") or "").strip().lower()
     if col_name in _RESERVED_NON_JOIN_COLUMNS:
+        return False
+    # Additive / measure-value columns (quantity, revenue, price, …) are never
+    # join keys — exclude them so deep-scan doesn't propose joins on values that
+    # merely overlap numerically. `*_id`-style names are exempt (handled inside).
+    if _is_value_like_column_name(col_name):
         return False
     raw_type = str(column.get("type") or column.get("data_type") or "").strip().lower()
     if not raw_type:
@@ -5116,6 +5163,22 @@ def _generate_join_suggestions(
                         if (
                             fc_lower in _SAME_NAME_SKIP
                             and tc_lower in _SAME_NAME_SKIP
+                        ):
+                            continue
+                        # Coincidental cross-entity id↔id overlap: two columns
+                        # that BOTH end in a key suffix but name DIFFERENT
+                        # entities (product_id ↔ sale_id) almost never join. A
+                        # real cross-name FK targets a plain `id` / same-stem PK,
+                        # and same-entity keys share a name (handled by pass 2.5
+                        # + the same-name branch here). These overlap only because
+                        # both are 1..N integer sequences — skip to cut noise.
+                        fc_keyish = any(fc_lower.endswith(s) for s in _FK_SUFFIXES)
+                        tc_keyish = any(tc_lower.endswith(s) for s in _FK_SUFFIXES)
+                        if (
+                            fc_lower != tc_lower
+                            and fc_keyish
+                            and tc_keyish
+                            and _key_stem(fc_lower) != _key_stem(tc_lower)
                         ):
                             continue
                         score = _score_candidate_pair(
