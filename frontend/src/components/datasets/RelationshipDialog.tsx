@@ -13,6 +13,7 @@ import {
   type DatasetModelView,
   type AddJoinParams,
 } from '@/hooks/use-dataset-model';
+import { useDatasetTables } from '@/hooks/use-datasets';
 import { extractApiError } from '@/lib/api-errors';
 import { useI18n } from '@/providers/LanguageProvider';
 
@@ -81,6 +82,79 @@ const CROSS_FILTER_META: { value: CrossFilter; labelKey: string }[] = [
   { value: 'single', labelKey: 'datasets.relationshipDialog.crossFilterSingle' },
   { value: 'both', labelKey: 'datasets.relationshipDialog.crossFilterBoth' },
 ];
+
+function formatPreviewCell(v: unknown): string {
+  if (v === null || v === undefined) return '∅';
+  if (typeof v === 'object') return JSON.stringify(v);
+  const s = String(v);
+  return s.length > 24 ? s.slice(0, 23) + '…' : s;
+}
+
+/**
+ * Compact sample-rows preview for the relationship editor (PBI-parity): shows a
+ * few real rows of the table with the selected join column highlighted, so the
+ * modeller SEES the values being matched. The highlighted column is pinned to
+ * the first position so it's always visible without scrolling.
+ */
+function TablePreviewGrid({
+  rows,
+  highlight,
+  emptyLabel,
+}: {
+  rows?: Record<string, unknown>[];
+  highlight?: string;
+  emptyLabel: string;
+}) {
+  if (!rows || rows.length === 0) {
+    return (
+      <div className="rounded-md border border-dashed border-[rgb(var(--border-line))] bg-surface-2 px-3 py-4 text-center text-[11px] text-text-quaternary">
+        {emptyLabel}
+      </div>
+    );
+  }
+  const allCols = Object.keys(rows[0] ?? {});
+  const cols = highlight && allCols.includes(highlight)
+    ? [highlight, ...allCols.filter((c) => c !== highlight)]
+    : allCols;
+  const shown = rows.slice(0, 5);
+  return (
+    <div className="overflow-auto rounded-md border border-[rgb(var(--border-line))] max-h-[140px]">
+      <table className="w-full border-collapse text-[11px]">
+        <thead>
+          <tr>
+            {cols.map((c) => (
+              <th
+                key={c}
+                className={`sticky top-0 whitespace-nowrap border-b border-[rgb(var(--border-line))] px-2 py-1 text-left font-semibold ${
+                  c === highlight ? 'bg-success/20 text-success' : 'bg-surface-2 text-text-tertiary'
+                }`}
+              >
+                {c}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {shown.map((r, i) => (
+            <tr key={i} className="border-b border-[rgb(var(--border-line))] last:border-0">
+              {cols.map((c) => (
+                <td
+                  key={c}
+                  className={`max-w-[160px] truncate whitespace-nowrap px-2 py-1 ${
+                    c === highlight ? 'bg-success/10 font-medium text-text-primary' : 'text-text-secondary'
+                  }`}
+                  title={r[c] === null || r[c] === undefined ? '' : String(r[c])}
+                >
+                  {formatPreviewCell(r[c])}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
 
 function Select({
   value,
@@ -278,6 +352,19 @@ export function RelationshipDialog({
     setRelationship(joinSuggestion.relationship);
   }, [autoSuggestRelationship, isOpen, joinSuggestion, relationshipTouched]);
 
+  // Sample rows per table (PBI-style data preview). Fetched once while the
+  // dialog is open; keyed by DatasetTable id (view.dataset_table_id).
+  const { data: datasetTables } = useDatasetTables(isOpen ? datasetId : null);
+  const sampleByTableId = useMemo(() => {
+    const map = new Map<number, Record<string, unknown>[]>();
+    for (const tbl of datasetTables ?? []) {
+      if (Array.isArray(tbl.sample_cache) && tbl.sample_cache.length > 0) {
+        map.set(tbl.id, tbl.sample_cache as Record<string, unknown>[]);
+      }
+    }
+    return map;
+  }, [datasetTables]);
+
   if (!isOpen) return null;
 
   const handleFromViewChange = (id: string) => {
@@ -462,6 +549,34 @@ export function RelationshipDialog({
             />
           </div>
         </div>
+
+        {/* PBI-parity data preview: sample rows of each table with the selected
+            join column highlighted, so the modeller sees the values matched. */}
+        {(fromView || toView) && (
+          <div className="grid grid-cols-[1fr_auto_1fr] gap-3">
+            <div className="min-w-0 space-y-1">
+              <div className="text-[10px] font-medium uppercase tracking-wide text-text-quaternary truncate">
+                {fromView ? (fromView.table_display_name || fromView.name) : t('datasets.relationshipDialog.fromTable')}
+              </div>
+              <TablePreviewGrid
+                rows={fromView?.dataset_table_id != null ? sampleByTableId.get(fromView.dataset_table_id) : undefined}
+                highlight={joinPairs[0]?.fromColumn || undefined}
+                emptyLabel={t('datasets.relationshipDialog.previewEmpty')}
+              />
+            </div>
+            <div className="w-4" />
+            <div className="min-w-0 space-y-1">
+              <div className="text-[10px] font-medium uppercase tracking-wide text-text-quaternary truncate">
+                {toView ? (toView.table_display_name || toView.name) : t('datasets.relationshipDialog.toTable')}
+              </div>
+              <TablePreviewGrid
+                rows={toView?.dataset_table_id != null ? sampleByTableId.get(toView.dataset_table_id) : undefined}
+                highlight={joinPairs[0]?.toColumn || undefined}
+                emptyLabel={t('datasets.relationshipDialog.previewEmpty')}
+              />
+            </div>
+          </div>
+        )}
 
         <div className="space-y-3">
           <div className="flex items-center justify-between">

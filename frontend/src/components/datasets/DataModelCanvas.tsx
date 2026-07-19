@@ -35,6 +35,10 @@ import {
   Plus,
   Trash2,
   Link2,
+  List,
+  X,
+  ArrowLeftRight,
+  ArrowRight,
 } from 'lucide-react';
 import {
   useDatasetModel,
@@ -161,14 +165,6 @@ function cardinalityLabels(rel?: string): { src: string; tgt: string } {
     case 'many_to_many': return { src: 'N', tgt: 'N' };
     default:             return { src: 'N', tgt: '1' };
   }
-}
-
-/** Compact cardinality label for the mid-edge chip. The chip carries the
- *  relationship's semantic identity (its cardinality) — NOT the SQL join type,
- *  which is always the derived FACT LEFT JOIN DIM and not a modelling concept. */
-function cardinalityChip(rel?: string): string {
-  const { src, tgt } = cardinalityLabels(rel);
-  return `${src} : ${tgt}`;
 }
 
 /**
@@ -503,6 +499,11 @@ function RelLine({
   const path = makeBezierPath(sx, sy, sDir, tx, ty, tDir);
   const { mx: chipX, my: chipY } = bezierMidpoint(sx, sy, sDir, tx, ty, tDir);
   const { src, tgt } = cardinalityLabels(relationship);
+  // Cross-filter single flows from the "1" (dimension) side to the "N" (fact)
+  // side. The source endpoint carries the "N" badge (see cardinalityLabels), so
+  // the filter-direction arrow points toward the source. sign() picks the
+  // horizontal facing since cards exit left/right.
+  const dirToSrc = (sx - tx) >= 0 ? 1 : -1;
   const active = isSelected || hovered;
   // Phase-3b: dim inactive edges so they're visually muted. Selected /
   // hovered still take precedence so the user can interact with them.
@@ -613,38 +614,36 @@ function RelLine({
         </text>
       </g>
 
-      {/* ── Cardinality chip — rides the bezier midpoint so it tracks the line
-          cleanly. Shows the relationship's cardinality (its semantic identity),
-          NOT the SQL join type (always the derived FACT LEFT JOIN DIM). ── */}
+      {/* ── Cross-filter direction indicator — rides the bezier midpoint. This is
+          the ONE concept the mid-edge marker carries (cardinality lives on the
+          endpoint 1/N badges; join type is the derived FACT LEFT JOIN DIM and is
+          never drawn). PBI-parity: a single-direction relationship shows one
+          arrow pointing toward the "many" side (filters flow 1 → N); a two-way
+          relationship shows opposing arrows (◄►). ── */}
       <g transform={`translate(${chipX}, ${chipY})`} style={{ pointerEvents: 'none' }}>
         <rect
-          x={-22} y={-9} width={44} height={18} rx={9}
-          fill={active ? '#6366f1' : (isActive ? '#94a3b8' : '#cbd5e1')}
-          opacity={isActive ? 1 : 0.75}
+          x={-11} y={-8} width={22} height={16} rx={8}
+          fill={active ? '#eef2ff' : (isActive ? '#f8fafc' : '#f1f5f9')}
+          stroke={stroke} strokeWidth={active ? 1.5 : 1}
+          opacity={isActive ? 1 : 0.7}
         />
-        <text
-          textAnchor="middle" dominantBaseline="central"
-          fontSize={8} fontWeight="700" fill="white" letterSpacing={0.5}
-        >
-          {cardinalityChip(relationship)}
-        </text>
+        {crossFilter === 'both' ? (
+          <g fill={stroke}>
+            <polygon points="-2,-4 -2,4 -7,0" />
+            <polygon points="2,-4 2,4 7,0" />
+          </g>
+        ) : (
+          <polygon fill={stroke} points={dirToSrc > 0 ? '-4,-4 -4,4 4,0' : '4,-4 4,4 -4,0'} />
+        )}
       </g>
 
-      {/* Phase-3b: small badges hugging the cardinality chip.
-          Inactive → "OFF" pill (left). Bidirectional → "↔" pill (right). */}
+      {/* Inactive relationships show a small "OFF" pill above the direction
+          marker so an ignored join reads at a glance. */}
       {!isActive && (
-        <g transform={`translate(${chipX - 32}, ${chipY})`} style={{ pointerEvents: 'none' }}>
+        <g transform={`translate(${chipX}, ${chipY - 15})`} style={{ pointerEvents: 'none' }}>
           <rect x={-12} y={-7} width={24} height={14} rx={7} fill="#fde68a" stroke="#f59e0b" strokeWidth={0.6} />
           <text textAnchor="middle" dominantBaseline="central" fontSize={6.5} fontWeight="700" fill="#92400e">
             OFF
-          </text>
-        </g>
-      )}
-      {crossFilter === 'both' && (
-        <g transform={`translate(${chipX + 32}, ${chipY})`} style={{ pointerEvents: 'none' }}>
-          <rect x={-9} y={-7} width={18} height={14} rx={7} fill="#dbeafe" stroke="#3b82f6" strokeWidth={0.6} />
-          <text textAnchor="middle" dominantBaseline="central" fontSize={9} fontWeight="700" fill="#1d4ed8">
-            ↔
           </text>
         </g>
       )}
@@ -909,6 +908,8 @@ export function DataModelCanvas({
   const [dictModalOpen, setDictModalOpen] = useState(false);
   const [reviewOpen, setReviewOpen] = useState(false);
   const [zoom, setZoom] = useState(1);
+  const [relListOpen, setRelListOpen] = useState(false);
+  const [legendOpen, setLegendOpen] = useState(true);
   const [dialogInitialValue, setDialogInitialValue] = useState<Partial<RelationshipDialogValue> | undefined>(undefined);
   const [relationshipDrag, setRelationshipDrag] = useState<{
     fromViewId: number;
@@ -1258,6 +1259,32 @@ export function DataModelCanvas({
     : null;
   const canDeleteSelectedRelationship = Boolean(selectedRelationship && canEdit);
 
+  // Open the relationship editor pre-filled for any relationship (used by both
+  // the selected-relationship header action and the relationships list panel).
+  const openEditForRel = (rel: ModelRelationship) => {
+    if (rel.origin === 'auto_calendar') return;
+    const toView =
+      viewByName[rel.presentationViewName]
+      ?? allViewsByName[rel.presentationViewName]
+      ?? allViewsByName[rel.toViewName];
+    if (!toView) return;
+    setSelectedRelKey(rel.key);
+    setDialogInitialValue({
+      fromViewId: rel.fromViewId,
+      toViewId: toView.id,
+      fromColumn: rel.fromCol ?? rel.fromCols[0] ?? '',
+      toColumn: rel.toCol ?? rel.toCols[0] ?? '',
+      fromColumns: rel.fromCols,
+      toColumns: rel.toCols,
+      joinType: (rel.joinType as 'left' | 'inner' | 'right' | 'full') ?? 'left',
+      relationship: (rel.relationship as 'one_to_one' | 'one_to_many' | 'many_to_one' | 'many_to_many' | undefined) ?? 'many_to_one',
+      alias: rel.alias ?? null,
+      isActive: rel.isActive,
+      crossFilter: rel.crossFilter,
+    });
+    setDialogOpen(true);
+  };
+
   const handleGenerate = async (force = false) => {
     try {
       const r = await generateModel.mutateAsync({ datasetId, force });
@@ -1562,24 +1589,7 @@ export function DataModelCanvas({
               is_active / cross_filter without having to delete + recreate. */}
           {canDeleteSelectedRelationship && selectedRelationship && selectedRelationship.origin !== 'auto_calendar' && (
             <button
-              onClick={() => {
-                const toView = selectedToView ?? allViewsByName[selectedRelationship.toViewName];
-                if (!toView) return;
-                setDialogInitialValue({
-                  fromViewId: selectedRelationship.fromViewId,
-                  toViewId: toView.id,
-                  fromColumn: selectedRelationship.fromCol ?? selectedRelationship.fromCols[0] ?? '',
-                  toColumn: selectedRelationship.toCol ?? selectedRelationship.toCols[0] ?? '',
-                  fromColumns: selectedRelationship.fromCols,
-                  toColumns: selectedRelationship.toCols,
-                  joinType: (selectedRelationship.joinType as 'left' | 'inner' | 'right' | 'full') ?? 'left',
-                  relationship: (selectedRelationship.relationship as 'one_to_one' | 'one_to_many' | 'many_to_one' | 'many_to_many' | undefined) ?? 'many_to_one',
-                  alias: selectedRelationship.alias ?? null,
-                  isActive: selectedRelationship.isActive,
-                  crossFilter: selectedRelationship.crossFilter,
-                });
-                setDialogOpen(true);
-              }}
+              onClick={() => openEditForRel(selectedRelationship)}
               className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-brand
                 border border-brand/40 rounded-md hover:bg-brand/10 transition-colors"
               title={t('datasets.dataModel.editRelationshipTitle')}
@@ -1629,6 +1639,19 @@ export function DataModelCanvas({
               <Plus className="h-3.5 w-3.5" />
             </button>
           </div>
+          {/* Relationships list panel toggle */}
+          <button
+            onClick={() => setRelListOpen((v) => !v)}
+            className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border transition-colors ${
+              relListOpen
+                ? 'border-brand/40 bg-brand/10 text-brand'
+                : 'border-[rgb(var(--border-strong))] text-text-secondary hover:bg-surface-2'
+            }`}
+            title={t('datasets.dataModel.relationshipsListTitle')}
+          >
+            <List className="w-3.5 h-3.5" />
+            {t('datasets.dataModel.relationshipsListLabel', { count: relationships.length })}
+          </button>
           {/* Dictionary modal button */}
           <button
             onClick={() => setDictModalOpen(true)}
@@ -1699,10 +1722,11 @@ export function DataModelCanvas({
         onToggleCalendarLayer={() => setShowCalendarLayer((value) => !value)}
       />
 
-      {/* Canvas */}
+      {/* Canvas (relative wrapper hosts pinned overlays: legend + relationships list) */}
+      <div className="relative flex-1 min-h-0">
       <div
         ref={viewportRef}
-        className="flex-1 overflow-auto bg-[#f8f9fc]"
+        className="absolute inset-0 overflow-auto bg-[#f8f9fc]"
         onClick={() => setSelectedRelKey(null)}
         style={{
           backgroundImage: 'radial-gradient(circle, #cdd0d8 1px, transparent 1px)',
@@ -1817,6 +1841,111 @@ export function DataModelCanvas({
             })}
           </div>
         </div>
+      </div>
+
+      {/* Legend — pinned to the canvas corner; explains how to read the diagram */}
+      <div className="absolute bottom-3 left-3 z-10 rounded-lg border border-[rgb(var(--border-line))] bg-surface-1/95 shadow-linear-sm backdrop-blur">
+        <button
+          onClick={() => setLegendOpen((v) => !v)}
+          className="flex w-full items-center gap-1.5 px-2.5 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-text-quaternary hover:bg-surface-2"
+        >
+          {legendOpen ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+          {t('datasets.dataModel.legendTitle')}
+        </button>
+        {legendOpen && (
+          <div className="space-y-1.5 border-t border-[rgb(var(--border-line))] px-3 py-2 text-[11px] text-text-secondary">
+            <div className="flex items-center gap-2">
+              <svg width="26" height="8"><line x1="0" y1="4" x2="26" y2="4" stroke="#94a3b8" strokeWidth="2" /></svg>
+              {t('datasets.dataModel.legendActive')}
+            </div>
+            <div className="flex items-center gap-2">
+              <svg width="26" height="8"><line x1="0" y1="4" x2="26" y2="4" stroke="#cbd5e1" strokeWidth="2" strokeDasharray="4 4" /></svg>
+              {t('datasets.dataModel.legendInactive')}
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="inline-flex h-4 w-4 items-center justify-center rounded-full border border-[rgb(var(--border-strong))] text-[9px] font-bold text-text-secondary">1</span>
+              <span className="inline-flex h-4 w-4 items-center justify-center rounded-full border border-[rgb(var(--border-strong))] text-[9px] font-bold text-text-secondary">N</span>
+              {t('datasets.dataModel.legendCardinality')}
+            </div>
+            <div className="flex items-center gap-2">
+              <ArrowLeftRight className="h-3.5 w-3.5 text-brand" />
+              {t('datasets.dataModel.legendFilterDir')}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Relationships list panel — pinned top-right; click a row to focus its edge */}
+      {relListOpen && (
+        <div className="absolute right-3 top-3 z-10 flex max-h-[calc(100%-24px)] w-72 flex-col rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 shadow-linear">
+          <div className="flex items-center justify-between border-b border-[rgb(var(--border-line))] px-3 py-2">
+            <span className="text-xs font-semibold text-text-primary">
+              {t('datasets.dataModel.relationshipsListLabel', { count: relationships.length })}
+            </span>
+            <button
+              onClick={() => setRelListOpen(false)}
+              className="rounded p-0.5 text-text-quaternary hover:bg-surface-2 hover:text-text-secondary"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </div>
+          <div className="min-h-0 flex-1 overflow-y-auto p-1.5">
+            {relationships.length === 0 ? (
+              <div className="px-2 py-6 text-center text-[11px] text-text-quaternary">
+                {t('datasets.dataModel.relationshipsListEmpty')}
+              </div>
+            ) : (
+              relationships.map((rel) => {
+                const active = rel.key === selectedRelKey;
+                const fromLbl = getViewLabel(allViewsByName[rel.fromViewName] ?? viewByName[rel.fromViewName]);
+                const toLbl = getViewLabel(
+                  allViewsByName[rel.presentationViewName] ?? allViewsByName[rel.toViewName] ?? viewByName[rel.toViewName],
+                );
+                const { src, tgt } = cardinalityLabels(rel.relationship);
+                const isCal = rel.origin === 'auto_calendar';
+                return (
+                  <div
+                    key={rel.key}
+                    onClick={() => setSelectedRelKey(active ? null : rel.key)}
+                    className={`group mb-1 cursor-pointer rounded-md border px-2 py-1.5 text-[11px] transition-colors ${
+                      active ? 'border-brand/50 bg-brand/10' : 'border-transparent hover:bg-surface-2'
+                    }`}
+                  >
+                    <div className="flex items-center gap-1.5">
+                      <span className="inline-flex items-center gap-0.5 rounded bg-surface-2 px-1 text-[9px] font-bold text-text-tertiary">
+                        {src}<ArrowRight className="h-2.5 w-2.5" />{tgt}
+                      </span>
+                      {!rel.isActive && (
+                        <span className="rounded bg-amber-100 px-1 text-[8px] font-bold uppercase text-amber-700">off</span>
+                      )}
+                      {rel.crossFilter === 'both' && <ArrowLeftRight className="h-3 w-3 text-brand" />}
+                      {isCal && <Calendar className="h-3 w-3 text-success" />}
+                      {canEdit && !isCal && (
+                        <button
+                          onClick={(e) => { e.stopPropagation(); openEditForRel(rel); }}
+                          className="ml-auto rounded p-0.5 text-text-quaternary opacity-0 transition-opacity hover:bg-surface-1 hover:text-brand group-hover:opacity-100"
+                          title={t('datasets.dataModel.edit')}
+                        >
+                          <Pencil className="h-3 w-3" />
+                        </button>
+                      )}
+                    </div>
+                    <div className="mt-1 truncate">
+                      <span className="font-medium text-text-primary">{fromLbl}</span>
+                      <span className="text-text-quaternary"> · {rel.fromCol}</span>
+                    </div>
+                    <div className="truncate">
+                      <span className="text-text-quaternary">→ </span>
+                      <span className="font-medium text-text-primary">{toLbl}</span>
+                      <span className="text-text-quaternary"> · {rel.toCol}</span>
+                    </div>
+                  </div>
+                );
+              })
+            )}
+          </div>
+        </div>
+      )}
       </div>
 
       {/* Add Relationship Dialog */}
