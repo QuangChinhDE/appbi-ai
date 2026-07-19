@@ -367,32 +367,31 @@ def _normalize_relationship_type(relationship: str | None) -> str:
 
 def _canonicalize_join_orientation(
     cardinality_canonical: str,
-    join_type: str,
     *,
     has_alias: bool,
     both_real_tables: bool,
-) -> tuple[bool, str, str]:
-    """Semantic-audit 2026-07 (DA feedback) — decide whether a relationship must
-    be RE-ORIENTED so it is stored on the MANY side as ``many_to_one`` (Power-BI
-    parity: measure charts anchor on the fact/many side, so the join must live
-    there to be usable).
+) -> tuple[bool, str]:
+    """ONE canonical semantic rule (refactor 2026-07): a Fact–Dimension
+    relationship is always stored on the MANY side as ``many_to_one``
+    (FACT(N) → DIM(1)) — the user may draw it either way, but the canonical
+    model is identical. This function decides DIRECTION only.
 
-    Returns ``(swap, new_join_type, new_cardinality)``:
-      • swap=True → caller swaps from<->to (views, ids, columns). Only a plain
-        ``one_to_many`` real-table<->real-table join without an alias is
-        re-oriented; aliased/role-played joins and generated views keep their
-        authored direction.
-      • Swapping direction swaps LEFT<->RIGHT so WHICH side's rows are kept is
-        preserved (a 1:N LEFT that kept the ONE side becomes an N:1 RIGHT that
-        still keeps that same side); INNER/FULL are symmetric and unchanged.
+    Returns ``(swap, new_cardinality)``:
+      • swap=True → caller swaps from<->to (views, ids, columns) so a
+        ``one_to_many`` drawn dim→fact becomes ``many_to_one`` on the fact side.
+        Only a plain real-table<->real-table join without an alias is
+        re-oriented; aliased/role-played joins keep their authored direction.
 
-    Pure + deterministic so it is unit-testable and reusable by the one-time
-    migration that canonicalizes already-stored relationships.
+    NOTE — SQL join type is NOT part of the semantic identity and is NOT
+    swapped here. The runtime join is ALWAYS ``FACT LEFT JOIN DIM`` (derived
+    from cardinality by the caller / query engine). Cardinality is the single
+    source of truth; cross-filter and join-type are separate concerns and must
+    not be mixed into direction. Pure + deterministic (unit-testable + reused by
+    the migration).
     """
     if cardinality_canonical == "one_to_many" and not has_alias and both_real_tables:
-        swapped_type = {"left": "right", "right": "left"}.get(join_type, join_type)
-        return True, swapped_type, "many_to_one"
-    return False, join_type, cardinality_canonical
+        return True, "many_to_one"
+    return False, cardinality_canonical
 
 
 def _infer_relationship_from_uniqueness(
@@ -2194,19 +2193,12 @@ def add_join(
     if not join_validation.get("can_create"):
         raise ValueError(str(join_validation.get("message") or "Relationship cannot be created"))
 
-    normalized_join_type = _normalize_join_type(join_type)
-    # Phase-1 (PBI-parity) — explicit cardinality drives the Phase-2 propagation
-    # engine and Phase-4 symmetric aggregates. Caller can pass `cardinality=...`
-    # directly; otherwise we map the legacy `relationship` string through the
-    # canonical alias table (resolver module). Default 'many_to_one' matches
-    # the FK→PK star-schema majority.
-    #
-    # Semantic-audit 2026-07 (#9) — `relationship` is DERIVED from the canonical
-    # cardinality below, never stored independently: callers passing only
-    # `cardinality="one_to_many"` used to leave relationship at its
-    # 'many_to_one' default, and the grain guard (which read relationship
-    # first) then classified a fanning join as safe M:1 → silent double-count.
-    # One source of truth: cardinality wins; relationship mirrors it.
+    # ── CARDINALITY = single source of truth (refactor 2026-07) ──────────────
+    # Everything downstream (direction, runtime join, filter propagation) is
+    # derived from cardinality. The caller may pass `cardinality=...` directly;
+    # else map the legacy `relationship` string through the canonical alias
+    # table. `relationship` is only ever a MIRROR of cardinality (kept for legacy
+    # readers) — never an independent value that can diverge.
     from app.services.semantic_join_resolver import (
         ALLOWED_CARDINALITY, normalize_cardinality,
     )
@@ -2272,12 +2264,17 @@ def add_join(
         getattr(from_view, "dataset_table_id", None) is not None
         and getattr(to_view, "dataset_table_id", None) is not None
     )
-    _swap, normalized_join_type, cardinality_canonical = _canonicalize_join_orientation(
+    _swap, cardinality_canonical = _canonicalize_join_orientation(
         cardinality_canonical,
-        normalized_join_type,
         has_alias=bool((alias or "").strip()),
         both_real_tables=_both_real_tables,
     )
+    # ONE rule: the SQL join type is DERIVED, never authored. Runtime is always
+    # FACT LEFT JOIN DIM (the many side keeps all its rows; unmatched dim → NULL).
+    # Join type is no longer part of the semantic identity, so it is not swapped
+    # with direction and callers cannot set INNER/RIGHT/FULL here. `join_type`
+    # (param) is accepted for API back-compat but ignored.
+    normalized_join_type = "left"
     canonicalized = False
     if _swap:
         drawn_dim, drawn_fact = from_view.name, to_view.name
@@ -2289,8 +2286,9 @@ def add_join(
         primary_from_column, primary_to_column = primary_to_column, primary_from_column
         canonicalized = True
         logger.info(
-            "[join-canon] 1:N drawn %s->%s canonicalized to N:1 on many side %s (join_type=%s)",
-            drawn_dim, drawn_fact, from_view.name, normalized_join_type,
+            "[join-canon] 1:N drawn %s->%s canonicalized to N:1 on many side %s "
+            "(runtime=FACT LEFT JOIN DIM)",
+            drawn_dim, drawn_fact, from_view.name,
         )
 
     explore = db.query(SemanticExplore).filter(
@@ -2698,21 +2696,30 @@ def suggest_join_relationship(
 
 
 def canonicalize_dataset_relationships(db: Session, dataset_id: int) -> dict:
-    """One-time, IDEMPOTENT migration — re-orient stored ``one_to_many`` joins to
-    ``many_to_one`` on the many side, exactly matching ``add_join``'s save-time
-    canonicalization (semantic-audit 2026-07, DA feedback). A relationship drawn
-    dim(1)->fact(N) was stored on the DIM explore, so a measure chart on the FACT
-    could not traverse it; this moves the join to the FACT (many) explore as N:1
-    with LEFT<->RIGHT swapped (keeps the same side's rows).
+    """One-time, IDEMPOTENT migration to the ONE canonical semantic rule
+    (refactor 2026-07). Two things happen:
 
-    Only plain real-table<->real-table joins without an alias are moved; aliased
-    / role-played / generated-view joins keep their authored orientation. Safe to
-    re-run: an equivalent canonical join already present is not duplicated.
-    Returns ``{"moved": [...], "skipped": [...]}``. Caller commits.
+    1. **Orient** — a stored ``one_to_many`` join (drawn dim(1)->fact(N), living
+       on the DIM explore where a measure chart on the FACT could never traverse
+       it) is re-oriented to ``many_to_one`` on the FACT (many) explore.
+    2. **Normalize join type** — the SQL join type is DERIVED, never authored.
+       Every to-one relationship (``many_to_one`` / ``one_to_one``) is forced to
+       ``left`` so the runtime is ALWAYS FACT LEFT JOIN DIM. This removes the
+       legacy LEFT<->RIGHT swap that the old orient step baked in (a moved 1:N
+       used to become N:1 with type flipped to ``right``), which mixed join-type
+       into direction and confused the model. Cardinality is the single source of
+       truth; join-type and cross-filter are separate, derived/independent.
+
+    Only plain real-table<->real-table joins without an alias are re-oriented;
+    aliased / role-played / generated-view joins keep their authored orientation
+    (their type is still normalized to ``left`` when to-one). Safe to re-run: an
+    equivalent canonical join already present is not duplicated, and type
+    normalization is idempotent. Returns ``{"moved": [...], "normalized": [...],
+    "skipped": [...]}``. Caller commits.
     """
     model = db.query(SemanticModel).filter(SemanticModel.dataset_id == dataset_id).first()
     if model is None:
-        return {"moved": [], "skipped": []}
+        return {"moved": [], "normalized": [], "skipped": []}
     explores = {
         e.base_view_name: e
         for e in db.query(SemanticExplore).filter(SemanticExplore.model_id == model.id).all()
@@ -2731,9 +2738,29 @@ def canonicalize_dataset_relationships(db: Session, dataset_id: int) -> dict:
         if str(v.name or "").strip()
     }
     moved: list[dict] = []
+    normalized: list[dict] = []
     skipped: list[dict] = []
+
+    def _force_left_if_to_one(join: dict, explore_name: str) -> dict:
+        """Derived-type rule: a to-one relationship always runs FACT LEFT JOIN
+        DIM. Normalize a stored ``right``/``inner``/``full`` type to ``left``
+        (idempotent). one_to_many/many_to_many are left untouched (advanced /
+        can't-be-oriented cases)."""
+        c = str(join.get("cardinality") or join.get("relationship") or "").strip().lower()
+        cur = str(join.get("type") or "left").strip().lower()
+        if c in ("many_to_one", "one_to_one") and cur != "left":
+            fixed = dict(join)
+            fixed["type"] = "left"
+            normalized.append({
+                "explore": explore_name, "view": join.get("view"),
+                "from_type": cur, "to_type": "left",
+            })
+            return fixed
+        return join
+
     for base_name, explore in list(explores.items()):
         remaining: list[dict] = []
+        changed_types = False
         for j in (explore.joins or []):
             card = str(j.get("cardinality") or j.get("relationship") or "").strip().lower()
             alias = str(j.get("alias") or "").strip()
@@ -2746,7 +2773,10 @@ def canonicalize_dataset_relationships(db: Session, dataset_id: int) -> dict:
                 and getattr(tv, "dataset_table_id", None) is not None
             )
             if card != "one_to_many" or alias or not both_real:
-                remaining.append(j)
+                j2 = _force_left_if_to_one(j, base_name)
+                if j2 is not j:
+                    changed_types = True
+                remaining.append(j2)
                 continue
             # Build the canonical N:1 join to place on the MANY (target) explore.
             fcols = j.get("from_columns") or ([j.get("from_column")] if j.get("from_column") else [])
@@ -2756,9 +2786,10 @@ def canonicalize_dataset_relationships(db: Session, dataset_id: int) -> dict:
             if not fcols or not tcols:
                 remaining.append(j)  # malformed — leave untouched
                 continue
-            new_type = {"left": "right", "right": "left"}.get(
-                str(j.get("type") or "left").lower(), str(j.get("type") or "left").lower()
-            )
+            # Derived type: runtime is ALWAYS FACT LEFT JOIN DIM. The moved join
+            # now lives on the FACT (many) explore joining OUT to the DIM, so the
+            # canonical type is plain ``left`` — no LEFT<->RIGHT swap.
+            new_type = "left"
             canon = {
                 "name": base_name,
                 "view": base_name,
@@ -2801,10 +2832,10 @@ def canonicalize_dataset_relationships(db: Session, dataset_id: int) -> dict:
                 "from_explore": base_name, "to_explore": tview_name,
                 "type": new_type, "dup_skipped": already,
             })
-        if len(remaining) != len(explore.joins or []):
+        if changed_types or len(remaining) != len(explore.joins or []):
             explore.joins = remaining
     db.flush()
-    return {"moved": moved, "skipped": skipped}
+    return {"moved": moved, "normalized": normalized, "skipped": skipped}
 
 
 def remove_join(

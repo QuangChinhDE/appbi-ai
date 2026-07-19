@@ -61,13 +61,6 @@ interface RelationshipDialogProps {
   isSaving?: boolean;
 }
 
-const JOIN_TYPE_OPTIONS: { value: JoinType; label: string }[] = [
-  { value: 'left', label: 'LEFT JOIN' },
-  { value: 'inner', label: 'INNER JOIN' },
-  { value: 'right', label: 'RIGHT JOIN' },
-  { value: 'full', label: 'FULL OUTER JOIN' },
-];
-
 // Structural cardinality metadata (from/to badge). Labels are localized in the
 // component via i18n (labelKey) so the dropdown isn't hardcoded to one language.
 const RELATIONSHIP_META: {
@@ -179,7 +172,10 @@ export function RelationshipDialog({
   const [fromViewId, setFromViewId] = useState<number | ''>(initialValue?.fromViewId ?? '');
   const [toViewId, setToViewId] = useState<number | ''>(initialValue?.toViewId ?? '');
   const [joinPairs, setJoinPairs] = useState<JoinPair[]>(() => buildJoinPairsFromInitialValue(initialValue));
-  const [joinType, setJoinType] = useState<JoinType>(initialValue?.joinType ?? 'left');
+  // ONE canonical rule: the SQL join type is DERIVED, never authored. Every
+  // Fact–Dimension relationship runs at query time as FACT LEFT JOIN DIM.
+  // Cardinality (below) is the single source of truth; join type is not a knob.
+  const joinType: JoinType = 'left';
   const [relationship, setRelationship] = useState<RelationshipType>(
     initialValue?.relationship ?? 'many_to_one',
   );
@@ -191,11 +187,9 @@ export function RelationshipDialog({
   );
   const [error, setError] = useState('');
   const [relationshipTouched, setRelationshipTouched] = useState(false);
-  // F4 — track whether the user manually picked a join type, so auto-detect can
-  // pre-fill the suggested type only while it is still "untouched".
-  const [joinTypeTouched, setJoinTypeTouched] = useState(false);
-  // PBI-style UX: keep the default view simple (cardinality + cross-filter);
-  // SQL-level knobs (join type, alias, primary key) live under Advanced.
+  // Keep the default view simple (cardinality + cross-filter); the remaining
+  // SQL-level knobs (alias, primary key) live under Advanced. Join type is no
+  // longer a knob — it is always the canonical LEFT JOIN.
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [autoSuggestRelationship, setAutoSuggestRelationship] = useState(!initialValue?.relationship);
   const [previousSelectionKey, setPreviousSelectionKey] = useState('');
@@ -209,7 +203,6 @@ export function RelationshipDialog({
     setFromViewId(initialValue?.fromViewId ?? '');
     setToViewId(initialValue?.toViewId ?? '');
     setJoinPairs(nextPairs);
-    setJoinType(initialValue?.joinType ?? 'left');
     setRelationship(initialValue?.relationship ?? 'many_to_one');
     setAlias(initialValue?.alias ?? '');
     setIsActive(initialValue?.isActive ?? true);
@@ -217,7 +210,6 @@ export function RelationshipDialog({
     setPrimaryKeyOnToView(initialValue?.primaryKeyOnToView ?? []);
     setError('');
     setRelationshipTouched(false);
-    setJoinTypeTouched(Boolean(initialValue?.joinType));
     setAutoSuggestRelationship(!initialValue?.relationship);
     setPreviousSelectionKey(buildSelectionKey(initialValue?.fromViewId ?? '', initialValue?.toViewId ?? '', nextPairs));
     suppressSelectionResetRef.current = true;
@@ -232,7 +224,6 @@ export function RelationshipDialog({
     if (previousSelectionKey === selectionKey) return;
     setPreviousSelectionKey(selectionKey);
     setRelationshipTouched(false);
-    setJoinTypeTouched(false);
     setAutoSuggestRelationship(true);
   }, [isOpen, previousSelectionKey, selectionKey]);
 
@@ -282,15 +273,10 @@ export function RelationshipDialog({
 
   useEffect(() => {
     if (!isOpen || !joinSuggestion || !autoSuggestRelationship || relationshipTouched) return;
+    // Only the CARDINALITY is auto-suggested from the profiled data; the join
+    // type is always the canonical LEFT and is not adopted from anywhere.
     setRelationship(joinSuggestion.relationship);
-    // F4 — the backend now suggests the JOIN TYPE too (previously always LEFT).
-    // Adopt it only while the user hasn't manually chosen one, so auto-detect
-    // fills the correct fact-anchored join type. Backwards-compatible: if the
-    // field is absent (older backend) the current joinType is untouched.
-    if (joinSuggestion.suggested_join_type && !joinTypeTouched) {
-      setJoinType(joinSuggestion.suggested_join_type);
-    }
-  }, [autoSuggestRelationship, isOpen, joinSuggestion, relationshipTouched, joinTypeTouched]);
+  }, [autoSuggestRelationship, isOpen, joinSuggestion, relationshipTouched]);
 
   if (!isOpen) return null;
 
@@ -671,20 +657,9 @@ export function RelationshipDialog({
           </button>
           {showAdvanced && (
             <div className="space-y-4 border-t border-[rgb(var(--border-line))] px-3 py-3">
-              <div className="space-y-1.5">
-                <label className="text-xs font-medium uppercase tracking-wide text-text-secondary">
-                  {t('datasets.relationshipDialog.joinType')}
-                </label>
-                <Select
-                  value={joinType}
-                  onChange={(value) => {
-                    setJoinType(value as JoinType);
-                    setJoinTypeTouched(true);
-                  }}
-                  options={JOIN_TYPE_OPTIONS}
-                />
+              <div className="rounded-md border border-[rgb(var(--border-line))] bg-surface-2 px-3 py-2">
                 <p className="text-xs text-text-quaternary leading-snug">
-                  {t('datasets.relationshipDialog.joinTypeHelp')}
+                  {t('datasets.relationshipDialog.joinTypeDerivedNote')}
                 </p>
               </div>
 
@@ -752,7 +727,7 @@ export function RelationshipDialog({
               {fromView && toView && previewPairs.length > 0 && (
                 <div className="rounded-md border border-[rgb(var(--border-line))] bg-surface-2 px-3 py-2 text-xs font-mono text-text-tertiary">
                   <div className="mb-1">
-                    <span className="font-semibold uppercase text-brand">{joinType} JOIN</span>{' '}
+                    <span className="font-semibold uppercase text-brand">LEFT JOIN</span>{' '}
                     <span className="text-text-secondary">{toView.table_display_name || toView.name}</span>{' '}
                     <span className="text-text-tertiary">ON</span>
                   </div>

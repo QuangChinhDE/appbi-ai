@@ -163,6 +163,14 @@ function cardinalityLabels(rel?: string): { src: string; tgt: string } {
   }
 }
 
+/** Compact cardinality label for the mid-edge chip. The chip carries the
+ *  relationship's semantic identity (its cardinality) — NOT the SQL join type,
+ *  which is always the derived FACT LEFT JOIN DIM and not a modelling concept. */
+function cardinalityChip(rel?: string): string {
+  const { src, tgt } = cardinalityLabels(rel);
+  return `${src} : ${tgt}`;
+}
+
 /**
  * Cubic bezier path from (sx,sy) exiting in direction sDir (+1 right / −1 left)
  * to (tx,ty) entered in direction tDir. Control-point pull is adaptive to
@@ -472,10 +480,9 @@ interface RelLineProps {
   fromCol?: string;
   toCol?: string;
   relationship?: string;
-  joinType: string;
   // Phase-3b: edge controls. `isActive=false` renders dashed + dimmed so the
   // user sees at-a-glance the join is stored but ignored by the engine.
-  // `crossFilter='both'` adds a small "↔" badge near the joinType chip.
+  // `crossFilter='both'` adds a small "↔" badge near the cardinality chip.
   isActive?: boolean;
   crossFilter?: 'single' | 'both';
   isSelected: boolean;
@@ -486,7 +493,7 @@ function RelLine({
   sx, sy, tx, ty,
   sDir, tDir,
   fromCol, toCol,
-  relationship, joinType,
+  relationship,
   isActive = true,
   crossFilter = 'single',
   isSelected, onClick,
@@ -606,7 +613,9 @@ function RelLine({
         </text>
       </g>
 
-      {/* ── Join-type chip — rides the bezier midpoint so it tracks the line cleanly ── */}
+      {/* ── Cardinality chip — rides the bezier midpoint so it tracks the line
+          cleanly. Shows the relationship's cardinality (its semantic identity),
+          NOT the SQL join type (always the derived FACT LEFT JOIN DIM). ── */}
       <g transform={`translate(${chipX}, ${chipY})`} style={{ pointerEvents: 'none' }}>
         <rect
           x={-22} y={-9} width={44} height={18} rx={9}
@@ -615,13 +624,13 @@ function RelLine({
         />
         <text
           textAnchor="middle" dominantBaseline="central"
-          fontSize={7} fontWeight="700" fill="white" letterSpacing={0.3}
+          fontSize={8} fontWeight="700" fill="white" letterSpacing={0.5}
         >
-          {joinType.toUpperCase()}
+          {cardinalityChip(relationship)}
         </text>
       </g>
 
-      {/* Phase-3b: small badges hugging the join-type chip.
+      {/* Phase-3b: small badges hugging the cardinality chip.
           Inactive → "OFF" pill (left). Bidirectional → "↔" pill (right). */}
       {!isActive && (
         <g transform={`translate(${chipX - 32}, ${chipY})`} style={{ pointerEvents: 'none' }}>
@@ -1536,7 +1545,9 @@ export function DataModelCanvas({
               {' · '}
               {selectedRelationship.relationship?.replace(/_/g, ':') ?? 'N:1'}
               {' · '}
-              {selectedRelationship.joinType.toUpperCase()}
+              {selectedRelationship.crossFilter === 'both'
+                ? t('datasets.relationshipDialog.crossFilterBoth')
+                : t('datasets.relationshipDialog.crossFilterSingle')}
               {selectedRelationship.origin === 'auto_calendar'
                 ? ` | ${t('datasets.dataModel.autoDateLink')}`
                 : selectedRelationship.managed
@@ -1737,7 +1748,6 @@ export function DataModelCanvas({
                   fromCol={rel.fromCol}
                   toCol={rel.toCol}
                   relationship={rel.relationship}
-                  joinType={rel.joinType}
                   isActive={rel.isActive}
                   crossFilter={rel.crossFilter}
                   isSelected={selectedRelKey === rel.key}
