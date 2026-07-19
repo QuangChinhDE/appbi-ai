@@ -4957,7 +4957,10 @@ def _generate_join_suggestions(
     def _normalise_col_name(name: str) -> str:
         return str(name or "").strip().lower()
 
-    sorted_tables = sorted(tables, key=lambda t: t.id)
+    sorted_tables = sorted(
+        (t for t in tables if not is_generated_calendar_table(t)),
+        key=lambda t: t.id,
+    )
     for i, from_table in enumerate(sorted_tables):
         from_view = table_views.get(from_table.id)
         if from_view is None or from_table.id in distinct_cache._failed_views:
@@ -5054,7 +5057,10 @@ def _generate_join_suggestions(
         # used to be Sheets quota which is now decoupled from probe count.
         MAX_PROBES = 200
         probes_run = 0
-        sorted_tables = sorted(tables, key=lambda t: t.id)
+        sorted_tables = sorted(
+            (t for t in tables if not is_generated_calendar_table(t)),
+            key=lambda t: t.id,
+        )
         for i, from_table in enumerate(sorted_tables):
             if probes_run >= MAX_PROBES:
                 warnings.append({
