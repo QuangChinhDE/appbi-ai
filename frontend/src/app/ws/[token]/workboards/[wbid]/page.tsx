@@ -77,6 +77,7 @@ import {
 } from '@/lib/wb-theme';
 import { enqueueSubmit, newOpId } from '@/lib/offline/queue';
 import { isNetworkError } from '@/lib/offline/sync';
+import { toast } from '@/lib/toast';
 
 // Icon mapping is centralised in ScreenIconRegistry so the builder
 // picker and the runtime can't drift. Anything not in the registry
@@ -4651,6 +4652,9 @@ function TableScreen({
   // 'edit' opens an existing row; 'create' opens a blank row (same side panel,
   // one consistent concept for add + edit) — used by the calendar day-click.
   const [panelMode, setPanelMode] = useState<'edit' | 'create'>('edit');
+  // Multi-select (bulk "gom" actions): set of selected row keys + busy flag.
+  const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set());
+  const [bulkBusy, setBulkBusy] = useState(false);
 
   useEffect(() => {
     setCurrent(spec);
@@ -4662,6 +4666,7 @@ function TableScreen({
     setPanelDetail(null);
     setPanelDraft({});
     setPanelError(null);
+    setSelectedKeys(new Set());
   }, [spec]);
 
   const tv = (current.table_view as TableScreenResponse['table_view']) || {};
@@ -4781,6 +4786,20 @@ function TableScreen({
   });
   const empty = tv.empty_state_message || 'No data yet.';
 
+  // Bulk "gom" actions (select many → combine into one parent). Role-filtered
+  // exactly like row_actions; presence toggles the checkbox column + action bar.
+  const bulkActionsRaw = (tv.bulk_actions || []) as NonNullable<
+    TableScreenResponse['table_view']
+  >['bulk_actions'];
+  const bulkActions = (bulkActionsRaw || []).filter((a) => {
+    const allow = a.visible_for_roles;
+    if (!allow || allow.length === 0) return true;
+    if (!viewerRole) return true;
+    const target = viewerRole.toLowerCase();
+    return allow.some((r) => r.toLowerCase() === target);
+  });
+  const selectionEnabled = bulkActions.length > 0 && pkCols.length > 0;
+
   // FE no longer evaluates computed columns locally — the server-side
   // QuickJS sandbox is the only place that runs ``formula`` bodies. When
   // an inline cell edit changes a non-derived column, we mark the row
@@ -4873,6 +4892,85 @@ function TableScreen({
   // Filter apply/clear always restarts at page 1.
   const reloadRows = async (values: Record<string, string>) => {
     await loadRows(values, 1);
+  };
+
+  // ── Multi-select "gom" ──────────────────────────────────────────────────
+  const toggleRowSelected = (rowKey: string) => {
+    setSelectedKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(rowKey)) next.delete(rowKey);
+      else next.add(rowKey);
+      return next;
+    });
+  };
+  const allRowKeys = () => rows.map((r) => tableRowKey(r, pkCols));
+  const toggleSelectAll = () => {
+    setSelectedKeys((prev) => {
+      const keys = allRowKeys();
+      const allSelected = keys.length > 0 && keys.every((k) => prev.has(k));
+      return allSelected ? new Set() : new Set(keys);
+    });
+  };
+
+  const runBulkAction = async (
+    action: NonNullable<NonNullable<TableScreenResponse['table_view']>['bulk_actions']>[number],
+  ) => {
+    if (bulkBusy) return;
+    const keys = [...selectedKeys];
+    const min = action.min_selection || 1;
+    if (keys.length < min) {
+      toast.warning(`Chọn tối thiểu ${min} dòng.`);
+      return;
+    }
+    if (action.confirm_message) {
+      const msg = action.confirm_message.replace('{n}', String(keys.length));
+      if (!window.confirm(msg)) return;
+    }
+    setBulkBusy(true);
+    try {
+      // Generate a readable, unique code client-side (prefix + YYMMDD-HHMMSS).
+      const d = new Date();
+      const p = (n: number) => String(n).padStart(2, '0');
+      const code =
+        `${action.code_prefix || 'HD'}-${String(d.getFullYear()).slice(2)}${p(d.getMonth() + 1)}` +
+        `${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+      // 1) Create the ONE parent row (invoice / trip); screen default_values
+      //    fill date + creator server-side.
+      await workspaceApi.insertScreenRow(token, workboardId, action.parent_screen_id, {
+        [action.parent_code_column]: code,
+        ...((action.parent_defaults as Record<string, unknown>) || {}),
+      });
+      // 2) Link each selected child row to the new parent.
+      let ok = 0;
+      const failed: string[] = [];
+      for (const key of keys) {
+        const row = rows.find((r) => tableRowKey(r, pkCols) === key);
+        if (!row) continue;
+        const pk: Record<string, unknown> = {};
+        for (const c of pkCols) pk[c] = row[c];
+        try {
+          await workspaceApi.updateScreenRow(token, workboardId, current.screen_id, pk, {
+            [action.set_column]: code,
+            ...((action.also_set as Record<string, unknown>) || {}),
+          });
+          ok += 1;
+        } catch {
+          failed.push(key);
+        }
+      }
+      const base = (action.success_message || 'Đã gộp {n} dòng').replace('{n}', String(ok));
+      if (failed.length) toast.warning(`${base} → ${code} (${failed.length} lỗi)`);
+      else toast.success(`${base} → ${code}`);
+      setSelectedKeys(new Set());
+      await reloadRows(filterValues);
+    } catch (err: unknown) {
+      const msg =
+        (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ||
+        'Không tạo được bản ghi tổng hợp.';
+      toast.error(`Gộp thất bại: ${String(msg)}`);
+    } finally {
+      setBulkBusy(false);
+    }
   };
 
   // A full page implies there may be more rows — cheap "has next" without a
@@ -5297,6 +5395,49 @@ function TableScreen({
           onAddOnDate={(d) => openCreatePanel({ [tv.calendar_config!.date_column]: d })}
         />
       ) : (
+      <>
+      {selectionEnabled && selectedKeys.size > 0 ? (
+        <div className="sticky top-0 z-20 mb-2 flex flex-wrap items-center gap-3 rounded-xl border border-slate-200 bg-white/95 px-4 py-2.5 shadow-md backdrop-blur">
+          <span className="text-sm font-semibold text-slate-800">
+            Đã chọn {selectedKeys.size} dòng
+          </span>
+          <button
+            type="button"
+            onClick={() => setSelectedKeys(new Set())}
+            className="text-xs font-medium text-slate-500 hover:text-slate-700 hover:underline"
+          >
+            Bỏ chọn
+          </button>
+          <div className="ml-auto flex flex-wrap items-center gap-2">
+            {bulkActions.map((a) => {
+              const style = a.style || 'primary';
+              const cls =
+                style === 'danger'
+                  ? 'bg-rose-600 text-white hover:bg-rose-700'
+                  : style === 'secondary'
+                    ? 'border border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
+                    : style === 'ghost'
+                      ? 'text-slate-700 hover:bg-slate-100'
+                      : 'text-white';
+              const inlineStyle = style === 'primary' ? { backgroundColor: accent } : undefined;
+              return (
+                <button
+                  key={a.id}
+                  type="button"
+                  disabled={bulkBusy}
+                  onClick={() => void runBulkAction(a)}
+                  className={`inline-flex items-center gap-1.5 rounded-lg px-3.5 py-1.5 text-sm font-semibold shadow-sm disabled:opacity-50 ${cls}`}
+                  style={inlineStyle}
+                >
+                  {bulkBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+                  {a.icon ? <span>{a.icon}</span> : null}
+                  {a.label}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      ) : null}
       <div className="max-w-full overflow-x-auto overscroll-x-contain">
         <table className="min-w-max w-full text-sm">
           <thead>
@@ -5304,6 +5445,19 @@ function TableScreen({
               <tr className="border-b border-slate-200 bg-slate-100">
                 {(() => {
                   const cells: React.ReactNode[] = [];
+                  if (selectionEnabled) {
+                    cells.push(
+                      <th key="g:sel" rowSpan={2} className="w-10 px-2 text-center align-middle">
+                        <input
+                          type="checkbox"
+                          aria-label="Chọn tất cả"
+                          className="h-4 w-4 cursor-pointer accent-teal-600"
+                          checked={rows.length > 0 && rows.every((r) => selectedKeys.has(tableRowKey(r, pkCols)))}
+                          onChange={toggleSelectAll}
+                        />
+                      </th>,
+                    );
+                  }
                   let i = 0;
                   while (i < cols.length) {
                     const col = cols[i];
@@ -5340,6 +5494,17 @@ function TableScreen({
               </tr>
             ) : null}
             <tr className="border-b border-slate-200 bg-slate-50">
+              {selectionEnabled && columnGroups.length === 0 ? (
+                <th className="w-10 px-2 text-center align-middle">
+                  <input
+                    type="checkbox"
+                    aria-label="Chọn tất cả"
+                    className="h-4 w-4 cursor-pointer accent-teal-600"
+                    checked={rows.length > 0 && rows.every((r) => selectedKeys.has(tableRowKey(r, pkCols)))}
+                    onChange={toggleSelectAll}
+                  />
+                </th>
+              ) : null}
               {cols.map((c) => {
                 if (columnGroups.length > 0 && !groupedColumns.has(c)) return null;
                 const computedSpec = computedSpecs.find((cc) => cc.name === c);
@@ -5398,7 +5563,11 @@ function TableScreen({
             {rows.length === 0 && !allowAdd ? (
               <tr>
                 <td
-                  colSpan={cols.length + (rowActions.length > 0 || isEditable ? 1 : 0)}
+                  colSpan={
+                    cols.length +
+                    (rowActions.length > 0 || isEditable ? 1 : 0) +
+                    (selectionEnabled ? 1 : 0)
+                  }
                   className="p-10 text-center text-sm text-slate-500"
                 >
                   {empty}
@@ -5423,6 +5592,20 @@ function TableScreen({
                   } ${panelEnabled && pkCols.length > 0 ? 'cursor-pointer' : ''}`}
                   onClick={(event) => onRowClick(row, event)}
                 >
+                  {selectionEnabled ? (
+                    <td
+                      className="w-10 px-2 text-center align-middle"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <input
+                        type="checkbox"
+                        aria-label="Chọn dòng"
+                        className="h-4 w-4 cursor-pointer accent-teal-600"
+                        checked={selectedKeys.has(rowKey)}
+                        onChange={() => toggleRowSelected(rowKey)}
+                      />
+                    </td>
+                  ) : null}
                   {cols.map((c) => {
                     if (mergeHiddenCells.has(`${c}:${idx}`)) return null;
                     const rowspan = mergeByColRow.get(`${c}:${idx}`);
@@ -5518,6 +5701,7 @@ function TableScreen({
             })}
             {allowAdd ? (
               <tr className="border-b border-slate-100 bg-slate-50/40">
+                {selectionEnabled ? <td className="w-10" /> : null}
                 {cols.map((c) => {
                   const derived = derivedCols.has(c);
                   const editable = !derived && (editableCols.has(c) || requiredCols.has(c));
@@ -5575,6 +5759,7 @@ function TableScreen({
             ) : null}
             {totalsRow && Object.keys(totalsRow).length > 0 ? (
               <tr className="border-t-2 border-slate-300 bg-slate-100/80 font-medium">
+                {selectionEnabled ? <td className="w-10" /> : null}
                 {cols.map((c) => {
                   const total = totalsRow[c];
                   const kind = totalsSpec[c];
@@ -5602,6 +5787,7 @@ function TableScreen({
           </tbody>
         </table>
       </div>
+      </>
       )}
 
       {(tablePage > 1 || hasNextPage) && (

@@ -195,6 +195,12 @@ export interface PersonalAccessTokenCreateResponse {
   item: PersonalAccessTokenRecord;
 }
 
+export interface AdminPersonalAccessTokenRecord extends PersonalAccessTokenRecord {
+  owner_id: string;
+  owner_email: string;
+  owner_name: string;
+}
+
 export interface PersonalAccessTokenUpsertPayload {
   name: string;
   scopes: Record<string, string>;
@@ -223,6 +229,16 @@ export const personalAccessTokensApi = {
 
   deletePermanently: async (tokenId: string) => {
     await apiClient.delete(`/auth/personal-access-tokens/${tokenId}/permanent`);
+  },
+
+  // Admin oversight (settings=full): every user's tokens + revoke any.
+  adminList: async (): Promise<AdminPersonalAccessTokenRecord[]> => {
+    const response = await apiClient.get('/auth/personal-access-tokens/admin');
+    return response.data;
+  },
+
+  adminRevoke: async (tokenId: string) => {
+    await apiClient.delete(`/auth/personal-access-tokens/admin/${tokenId}`);
   },
 };
 
@@ -326,7 +342,23 @@ export const usersApi = {
   deactivate: async (id: string) => {
     await apiClient.delete(`/users/${id}`);
   },
+
+  deletionImpact: async (id: string): Promise<UserDeletionImpact> => {
+    const response = await apiClient.get(`/users/${id}/deletion-impact`);
+    return response.data;
+  },
+
+  deletePermanently: async (id: string) => {
+    await apiClient.delete(`/users/${id}/permanent`);
+  },
 };
+
+export interface UserDeletionImpact {
+  status: string;
+  counts: Record<string, number>;
+  total_owned: number;
+  reassign_to_email: string;
+}
 
 // Shares API
 export const sharesApi = {

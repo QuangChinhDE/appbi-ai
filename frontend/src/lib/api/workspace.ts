@@ -306,6 +306,22 @@ export interface TableScreenResponse {
     } | null;
     stat_tiles?: Array<{ label: string; column: string; agg?: string; format?: string | null; unit?: string | null }>;
     pos_cart?: PosCartConfig | null;
+    bulk_actions?: Array<{
+      id: string;
+      label: string;
+      icon?: string | null;
+      style?: 'primary' | 'secondary' | 'ghost' | 'danger';
+      set_column: string;
+      also_set?: Record<string, unknown>;
+      parent_screen_id: string;
+      parent_code_column: string;
+      code_prefix?: string;
+      parent_defaults?: Record<string, unknown>;
+      confirm_message?: string | null;
+      min_selection?: number;
+      success_message?: string | null;
+      visible_for_roles?: string[];
+    }>;
   };
   pos_catalog?: {
     match_column?: string | null;

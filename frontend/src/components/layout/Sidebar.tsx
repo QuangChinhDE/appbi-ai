@@ -28,7 +28,6 @@ import {
   KeyRound,
   Shield,
   Settings,
-  Users,
   HelpCircle,
   Info,
   Trash2,
@@ -125,7 +124,6 @@ export function Sidebar({ isCollapsed, onToggleCollapse }: SidebarProps) {
   const [showChangePassword, setShowChangePassword] = useState(false);
   const [showGuide, setShowGuide] = useState(false);
   const [showNotifications, setShowNotifications] = useState(false);
-  const [showSettings, setShowSettings] = useState(false);
   const pathname = usePathname();
   const router = useRouter();
   const queryClient = useQueryClient();
@@ -422,15 +420,17 @@ export function Sidebar({ isCollapsed, onToggleCollapse }: SidebarProps) {
         {canSettings && (
           <div className="px-2 pt-2">
             <button
-              onClick={() => setShowSettings(true)}
+              onClick={() => router.push(SETTINGS_ITEM.href)}
               className={cn(
                 'group flex w-full items-center rounded-md h-8 transition-colors',
-                'text-text-tertiary hover:bg-surface-2 hover:text-text-primary',
+                isActive(SETTINGS_ITEM.href)
+                  ? 'bg-surface-2 text-text-primary'
+                  : 'text-text-tertiary hover:bg-surface-2 hover:text-text-primary',
                 isCollapsed ? 'justify-center' : 'px-2.5 gap-2',
               )}
               title={isCollapsed ? t('sidebar.nav.settings') : undefined}
             >
-              <span className="flex-shrink-0 text-text-tertiary group-hover:text-text-secondary">
+              <span className={cn('flex-shrink-0', isActive(SETTINGS_ITEM.href) ? 'text-brand' : 'text-text-tertiary group-hover:text-text-secondary')}>
                 <Settings className="h-4 w-4" />
               </span>
               {!isCollapsed && (
@@ -473,79 +473,7 @@ export function Sidebar({ isCollapsed, onToggleCollapse }: SidebarProps) {
         onMarkAllRead={markAllNotificationsRead}
         onClearAll={clearNotifications}
       />
-      <SettingsModal
-        open={showSettings}
-        onClose={() => setShowSettings(false)}
-        onGoPermissions={() => {
-          setShowSettings(false);
-          router.push(SETTINGS_ITEM.href);
-        }}
-      />
     </aside>
-  );
-}
-
-function SettingsModal({
-  open,
-  onClose,
-  onGoPermissions,
-}: {
-  open: boolean;
-  onClose: () => void;
-  onGoPermissions: () => void;
-}) {
-  const { t } = useI18n();
-
-  useEffect(() => {
-    if (!open) return;
-    const onKeyDown = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
-    document.addEventListener('keydown', onKeyDown);
-    return () => document.removeEventListener('keydown', onKeyDown);
-  }, [open, onClose]);
-
-  if (!open) return null;
-
-  return (
-    <div
-      className="fixed inset-0 z-[60] flex items-center justify-center bg-overlay/84 backdrop-blur-[3px] px-4 animate-fade-in"
-      onMouseDown={onClose}
-    >
-      <div
-        className="w-full max-w-md overflow-hidden rounded-xl border border-[rgb(var(--border-strong))] bg-surface-1 shadow-linear-lg animate-slide-up"
-        onMouseDown={(e) => e.stopPropagation()}
-      >
-        <div className="flex items-start justify-between gap-3 border-b border-[rgb(var(--border-line))] px-5 py-4">
-          <div className="flex items-center gap-3">
-            <div className="rounded-lg bg-brand/10 p-2 text-brand">
-              <Settings className="h-4 w-4" />
-            </div>
-            <div>
-              <h2 className="text-small font-strong text-text-primary">{t('sidebar.nav.settings')}</h2>
-              <p className="text-caption text-text-tertiary">{t('sidebar.settings.description')}</p>
-            </div>
-          </div>
-          <IconButton aria-label={t('common.close')} variant="ghost" size="sm" onClick={onClose}>
-            <X className="h-4 w-4" />
-          </IconButton>
-        </div>
-
-        <div className="p-4">
-          <button
-            onClick={onGoPermissions}
-            className="group flex w-full items-center gap-3 rounded-lg border border-[rgb(var(--border-line))] bg-surface-0 px-4 py-3 text-left transition-colors hover:border-brand/40 hover:bg-surface-2"
-          >
-            <div className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg bg-brand/10 text-brand">
-              <Users className="h-4 w-4" />
-            </div>
-            <div className="min-w-0 flex-1">
-              <p className="text-caption font-emphasis text-text-primary">{t('sidebar.settings.permissions')}</p>
-              <p className="truncate text-tiny text-text-tertiary">{t('sidebar.settings.permissionsDesc')}</p>
-            </div>
-            <ChevronRight className="h-4 w-4 flex-shrink-0 text-text-quaternary group-hover:text-text-secondary" />
-          </button>
-        </div>
-      </div>
-    </div>
   );
 }
 

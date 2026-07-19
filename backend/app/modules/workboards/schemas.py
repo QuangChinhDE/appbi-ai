@@ -1129,6 +1129,58 @@ class PosCartConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class BulkAction(BaseModel):
+    """A "select many rows → combine into one parent" action on a table screen.
+
+    When a table screen declares ``bulk_actions`` the runtime renders a
+    checkbox column + a sticky action bar ("Đã chọn N — [actions]"). Clicking an
+    action GROUPS the selected child rows under one newly-created parent:
+
+    1. The runtime creates ONE parent row via ``parent_screen_id`` — a
+       client-generated code (``code_prefix`` + date/time) is written to the
+       parent's ``parent_code_column`` along with ``parent_defaults``.
+    2. Every selected child row is then updated: ``set_column`` = that code
+       (plus any ``also_set`` columns), through the normal per-row update path
+       so RLS/writable-column rules still apply.
+
+    This is exactly "gom nhiều đơn thành 1 hóa đơn" / "gom nhiều hóa đơn vào 1
+    chuyến giao" — no bespoke bulk-write endpoint, just orchestration over the
+    existing insert + update paths.
+    """
+
+    id: str = Field(..., min_length=1, max_length=64)
+    label: str = Field(..., min_length=1, max_length=120)
+    icon: Optional[str] = None
+    style: Literal["primary", "secondary", "ghost", "danger"] = "primary"
+    set_column: str = Field(
+        ..., min_length=1, max_length=120,
+        description="Child column set to the new parent's code on every selected row (the FK link).",
+    )
+    also_set: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Extra child columns to set on every selected row (e.g. {'trang_thai': 'Đã gom vào hóa đơn'}).",
+    )
+    parent_screen_id: str = Field(
+        ..., min_length=1, max_length=64,
+        description="Screen id (bound to the parent table, e.g. hóa đơn / chuyến giao) used to create the ONE parent row.",
+    )
+    parent_code_column: str = Field(
+        ..., min_length=1, max_length=120,
+        description="Column on the parent row that receives the generated code (e.g. ma_hoa_don / ma_chuyen).",
+    )
+    code_prefix: str = Field(default="HD", max_length=12, description="Prefix of the generated code (e.g. HD / CH).")
+    parent_defaults: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Other values for the new parent row (e.g. {'trang_thai': 'Nháp'}). Supports {{today}}/{{app_user.x}}.",
+    )
+    confirm_message: Optional[str] = Field(default=None, max_length=200)
+    min_selection: int = Field(default=1, ge=1, le=200)
+    success_message: Optional[str] = Field(default=None, max_length=200)
+    visible_for_roles: List[str] = Field(default_factory=list)
+
+    model_config = ConfigDict(extra="forbid")
+
+
 class TableScreenSpec(BaseModel):
     """A spreadsheet-style screen bound to one dataset table.
 
@@ -1249,6 +1301,15 @@ class TableScreenSpec(BaseModel):
             "scan → on-screen line list → one Submit persists all lines via "
             "bulk-insert. The read side attaches the resolved product catalog as "
             "``pos_catalog``. None = ordinary editable/read-only grid."
+        ),
+    )
+    bulk_actions: List[BulkAction] = Field(
+        default_factory=list,
+        description=(
+            "Select-many → combine-into-one actions. When non-empty the runtime "
+            "renders a per-row checkbox + a sticky action bar; each action creates "
+            "one parent row and links the selected rows to it (gom đơn → hóa đơn, "
+            "gom hóa đơn → chuyến giao)."
         ),
     )
 

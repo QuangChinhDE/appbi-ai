@@ -44,3 +44,11 @@ class PersonalAccessTokenResponse(BaseModel):
 class PersonalAccessTokenCreateResponse(BaseModel):
     token: str
     item: PersonalAccessTokenResponse
+
+
+class AdminPersonalAccessTokenResponse(PersonalAccessTokenResponse):
+    """Token row enriched with owner identity — for the admin oversight view."""
+
+    owner_id: uuid.UUID
+    owner_email: str
+    owner_name: str
