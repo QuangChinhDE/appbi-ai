@@ -128,7 +128,13 @@ async def require_integration_client(
     if not hmac.compare_digest(expected, str(x_signature)):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid signature.")
 
-    # 4. Replay protection: a (client, nonce) may be used once in the window.
+    # 4. IP allowlist (empty/null = any). Checked BEFORE consuming the nonce so a
+    #    wrong-IP request doesn't burn a nonce or touch the replay store.
+    allowed_ips = client.allowed_ips or []
+    if allowed_ips and _client_ip(request) not in {str(ip).strip() for ip in allowed_ips}:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Client IP not allowed.")
+
+    # 5. Replay protection: a (client, nonce) may be used once in the window.
     _prune_expired_nonces(db)
     nonce_row = IntegrationNonce(
         client_id=client.id,
@@ -141,12 +147,6 @@ async def require_integration_client(
     except IntegrityError:
         db.rollback()
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Replay detected (nonce already used).")
-
-    # 5. IP allowlist (empty/null = any).
-    allowed_ips = client.allowed_ips or []
-    if allowed_ips:
-        if _client_ip(request) not in {str(ip).strip() for ip in allowed_ips}:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Client IP not allowed.")
 
     client.last_used_at = datetime.now(timezone.utc)
     db.commit()

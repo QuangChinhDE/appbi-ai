@@ -20,6 +20,7 @@ from slowapi import Limiter
 from slowapi.util import get_remote_address
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.core.database import get_db
 from app.core.dependencies import get_current_user
 from app.core.integration_auth import (
@@ -179,6 +180,12 @@ def revoke_integration_client(
 # ---------------------------------------------------------------------------
 
 def _request_origin(request: Request) -> str:
+    # Prefer the explicitly configured public URL so the returned embed_url is
+    # correct even when the API is reached through a reverse proxy (which may
+    # expose an internal Host). Falls back to the request's forwarded/Host.
+    configured = (settings.PUBLIC_BASE_URL or "").strip().rstrip("/")
+    if configured:
+        return configured
     proto = request.headers.get("x-forwarded-proto") or request.url.scheme
     host = request.headers.get("x-forwarded-host") or request.headers.get("host") or request.url.netloc
     return f"{proto}://{host}".rstrip("/")
