@@ -34,6 +34,7 @@ from app.services.dashboard_ai_bot.public_link_config import (
     sanitize_report_context_note,
     web_search_enabled,
 )
+from app.services.embed_link_service import resolve_embed_grant_link
 from app.services.filter_layered_merge import (
     apply_link_scope_bounds,
     link_entry_has_value,
@@ -804,6 +805,28 @@ def _get_dashboard_by_token(
 ) -> tuple[Dashboard, list[dict], str | None, dict]:
     """Look up dashboard by token. Checks new multi-link table first, falls back to legacy share_token.
     Returns (dashboard, filters_config_for_this_link, link_name, appearance_config)."""
+    # Embed-grant tokens (from the M2M /integrations/embed/resolve endpoint)
+    # resolve to a managed link WITHOUT exposing that link's own token. Purely
+    # additive: normal public/share tokens never start with the grant prefix, so
+    # the entire block below is unchanged for them. Grants carry their own
+    # expiry/revocation (checked in resolve_embed_grant_link); they are gated by
+    # the HMAC endpoint, not by a viewer password.
+    grant_link = resolve_embed_grant_link(token, db)
+    if grant_link is not None:
+        dash = (
+            db.query(Dashboard)
+            .options(joinedload(Dashboard.dashboard_charts).joinedload(DashboardChart.chart))
+            .filter(Dashboard.id == grant_link.dashboard_id)
+            .first()
+        )
+        if not dash:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dashboard not found.")
+        if track_access:
+            grant_link.access_count = (grant_link.access_count or 0) + 1
+            grant_link.last_accessed_at = datetime.now(timezone.utc)
+            db.commit()
+        return dash, grant_link.filters_config or [], grant_link.name, grant_link.appearance_config or {}
+
     # Try new multi-link table first
     link = db.query(DashboardPublicLink).filter(
         DashboardPublicLink.token == token,
@@ -2117,6 +2140,55 @@ if settings.WORKBOARDS_ENABLED:
             "failure": failure_count,
             "results": results,
         }
+
+
+    @router.post("/workspaces/{token}/workboards/{workboard_id}/screens/{screen_id}/bulk-action")
+    def workspace_screen_bulk_action(
+        token: str,
+        workboard_id: int,
+        screen_id: str,
+        body: dict,
+        request: Request,
+        db: Session = Depends(get_db),
+    ):
+        """Run an advanced bulk "gộp & điều phối" recipe (BulkAction.steps) server-side.
+
+        Body: ``{action_id, selected_pks:[{pk}], resources:{resource_id:{row}}}``.
+        Creates the parent + detail lines + updates the sources in one call, with
+        compensation rollback on failure. Returns ``{ok, primary_code, per_step, …}``.
+        """
+        from app.modules.workboards.services import bulk_action_service
+
+        ws = _load_workspace_or_404(db, token)
+        app_user = _require_workspace_app_user(request, ws, db=db)
+        wb = _resolve_workboard_for_workspace(
+            db, ws, workboard_id, request=request, app_user=app_user
+        )
+        identity = identity_from_app_user(app_user)
+        layout = screen_runtime.parse_layout(wb)
+        screen = screen_runtime.get_screen(layout, screen_id)
+        if not screen_runtime.is_screen_visible_for(screen, identity) or screen.id in _public_hidden_screen_ids(ws, wb):
+            raise HTTPException(status_code=403, detail="You don't have access to that screen.")
+        action_id = str(body.get("action_id") or "").strip() if isinstance(body, dict) else ""
+        if not action_id:
+            raise HTTPException(status_code=400, detail="action_id is required.")
+        selected_pks = body.get("selected_pks") if isinstance(body, dict) else None
+        if not isinstance(selected_pks, list) or not selected_pks:
+            raise HTTPException(status_code=400, detail="selected_pks (non-empty list) is required.")
+        resources = body.get("resources") if isinstance(body, dict) else {}
+        try:
+            return bulk_action_service.run_bulk_action(
+                db, wb, screen,
+                action_id=action_id,
+                selected_pks=[p for p in selected_pks if isinstance(p, dict)],
+                resources=resources if isinstance(resources, dict) else {},
+                identity=identity,
+            )
+        except bulk_action_service.BulkActionError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail={"message": exc.message, "per_step": exc.per_step},
+            ) from exc
 
 
     @router.patch("/workspaces/{token}/workboards/{workboard_id}/screens/{screen_id}/rows")
