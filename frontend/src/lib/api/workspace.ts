@@ -321,6 +321,8 @@ export interface TableScreenResponse {
       min_selection?: number;
       success_message?: string | null;
       visible_for_roles?: string[];
+      require_same?: string[];
+      preview_aggregates?: Array<{ column: string; agg?: 'sum' | 'avg' | 'min' | 'max' | 'count'; label: string; format?: string | null }>;
     }>;
   };
   pos_catalog?: {

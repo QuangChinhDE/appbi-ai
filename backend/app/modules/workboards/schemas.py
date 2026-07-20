@@ -1129,6 +1129,23 @@ class PosCartConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class BulkPreviewAggregate(BaseModel):
+    """A running total of the SELECTED rows, shown on the bulk-action bar before
+    commit (Phase-1 "tự tính tổng"). Computed client-side over the loaded
+    selection — no query — so a user sees e.g. "Tổng tiền: 57.800.000đ · 3 đơn"
+    before pressing the gộp button.
+    """
+
+    column: str = Field(..., min_length=1, max_length=120)
+    agg: Literal["sum", "avg", "min", "max", "count"] = "sum"
+    label: str = Field(..., min_length=1, max_length=80)
+    format: Optional[str] = Field(
+        default=None, description="Cell format key: number|integer|currency|percent|…"
+    )
+
+    model_config = ConfigDict(extra="forbid")
+
+
 class BulkAction(BaseModel):
     """A "select many rows → combine into one parent" action on a table screen.
 
@@ -1177,6 +1194,19 @@ class BulkAction(BaseModel):
     min_selection: int = Field(default=1, ge=1, le=200)
     success_message: Optional[str] = Field(default=None, max_length=200)
     visible_for_roles: List[str] = Field(default_factory=list)
+    # ── Phase-1 precondition guard + running totals (FE-evaluated) ──────────
+    require_same: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Precondition: every selected row must share the SAME value in each of "
+            "these columns or the action is blocked with a reason (e.g. ['ma_kh'] = "
+            "chỉ gộp các đơn CÙNG khách hàng / ['nha_cung_cap'] = cùng nhà cung cấp)."
+        ),
+    )
+    preview_aggregates: List[BulkPreviewAggregate] = Field(
+        default_factory=list,
+        description="Running totals of the selected rows shown on the action bar before commit (tự tính tổng).",
+    )
 
     model_config = ConfigDict(extra="forbid")
 

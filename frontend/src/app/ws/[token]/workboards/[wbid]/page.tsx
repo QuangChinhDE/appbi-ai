@@ -4800,6 +4800,46 @@ function TableScreen({
   });
   const selectionEnabled = bulkActions.length > 0 && pkCols.length > 0;
 
+  // Phase-1 helpers: totals of the selected rows (tự tính tổng) + the
+  // require_same precondition (all selected rows must share a value, e.g. same
+  // customer/supplier) — both evaluated client-side over the loaded selection.
+  const selectedRows = rows.filter((r) => selectedKeys.has(tableRowKey(r, pkCols)));
+  const bulkGuardBad = (action: { require_same?: string[] }): string[] => {
+    const same = action.require_same || [];
+    if (!same.length || selectedRows.length <= 1) return [];
+    return same.filter(
+      (c) => new Set(selectedRows.map((r) => JSON.stringify(r[c] ?? null))).size > 1,
+    );
+  };
+  const bulkAggValue = (a: { column: string; agg?: string }): number | null => {
+    const agg = a.agg || 'sum';
+    if (agg === 'count')
+      return selectedRows.filter((r) => r[a.column] !== null && r[a.column] !== undefined && r[a.column] !== '').length;
+    const nums = selectedRows
+      .map((r) => Number(r[a.column]))
+      .filter((n) => !Number.isNaN(n));
+    if (!nums.length) return null;
+    if (agg === 'sum') return nums.reduce((s, n) => s + n, 0);
+    if (agg === 'avg') return nums.reduce((s, n) => s + n, 0) / nums.length;
+    if (agg === 'min') return Math.min(...nums);
+    if (agg === 'max') return Math.max(...nums);
+    return null;
+  };
+  // Deduped preview chips across all actions (usually one primary action).
+  const previewChips = (() => {
+    const seen = new Set<string>();
+    const out: Array<{ label: string; column: string; agg?: string; format?: string | null }> = [];
+    for (const a of bulkActions) {
+      for (const agg of a.preview_aggregates || []) {
+        if (agg && agg.label && !seen.has(agg.label)) {
+          seen.add(agg.label);
+          out.push(agg);
+        }
+      }
+    }
+    return out;
+  })();
+
   // FE no longer evaluates computed columns locally — the server-side
   // QuickJS sandbox is the only place that runs ``formula`` bodies. When
   // an inline cell edit changes a non-derived column, we mark the row
@@ -4920,6 +4960,13 @@ function TableScreen({
     const min = action.min_selection || 1;
     if (keys.length < min) {
       toast.warning(`Chọn tối thiểu ${min} dòng.`);
+      return;
+    }
+    const badSame = bulkGuardBad(action);
+    if (badSame.length) {
+      toast.warning(
+        `Chỉ gộp được các dòng cùng: ${badSame.map((c) => colLabels[c] || c).join(', ')}.`,
+      );
       return;
     }
     if (action.confirm_message) {
@@ -5408,8 +5455,28 @@ function TableScreen({
           >
             Bỏ chọn
           </button>
+          {previewChips.length > 0 ? (
+            <div className="flex flex-wrap items-center gap-1.5">
+              {previewChips.map((c) => {
+                const v = bulkAggValue(c);
+                return (
+                  <span
+                    key={c.label}
+                    className="inline-flex items-baseline gap-1 rounded-full bg-slate-100 px-2.5 py-1 text-xs text-slate-600"
+                  >
+                    {c.label}:
+                    <span className="font-semibold text-slate-800">
+                      {v === null ? '—' : <FormattedCell value={v} format={c.format ?? 'number'} />}
+                    </span>
+                  </span>
+                );
+              })}
+            </div>
+          ) : null}
           <div className="ml-auto flex flex-wrap items-center gap-2">
             {bulkActions.map((a) => {
+              const bad = bulkGuardBad(a);
+              const blocked = bad.length > 0;
               const style = a.style || 'primary';
               const cls =
                 style === 'danger'
@@ -5419,13 +5486,18 @@ function TableScreen({
                     : style === 'ghost'
                       ? 'text-slate-700 hover:bg-slate-100'
                       : 'text-white';
-              const inlineStyle = style === 'primary' ? { backgroundColor: accent } : undefined;
+              const inlineStyle = style === 'primary' && !blocked ? { backgroundColor: accent } : undefined;
               return (
                 <button
                   key={a.id}
                   type="button"
-                  disabled={bulkBusy}
+                  disabled={bulkBusy || blocked}
                   onClick={() => void runBulkAction(a)}
+                  title={
+                    blocked
+                      ? `Chỉ gộp được các dòng cùng: ${bad.map((c) => colLabels[c] || c).join(', ')}`
+                      : a.label
+                  }
                   className={`inline-flex items-center gap-1.5 rounded-lg px-3.5 py-1.5 text-sm font-semibold shadow-sm disabled:opacity-50 ${cls}`}
                   style={inlineStyle}
                 >
