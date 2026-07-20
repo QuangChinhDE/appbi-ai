@@ -323,6 +323,26 @@ export interface TableScreenResponse {
       visible_for_roles?: string[];
       require_same?: string[];
       preview_aggregates?: Array<{ column: string; agg?: 'sum' | 'avg' | 'min' | 'max' | 'count'; label: string; format?: string | null }>;
+      // Phase-2 advanced (server-executed recipe + pickers + guards)
+      resource_inputs?: Array<{
+        id: string;
+        label: string;
+        source_screen_id: string;
+        value_column: string;
+        label_column?: string | null;
+        required?: boolean;
+        capacity_column?: string | null;
+      }>;
+      constraints?: Array<{
+        agg_column: string;
+        agg?: 'sum' | 'count' | 'avg' | 'min' | 'max';
+        op?: '<=' | '<' | '>=' | '>';
+        limit?: number | null;
+        limit_from_resource?: string | null;
+        label?: string | null;
+        error_message?: string | null;
+      }>;
+      steps?: Array<Record<string, unknown>>;
     }>;
   };
   pos_catalog?: {
@@ -590,6 +610,27 @@ export const workspaceApi = {
     const r = await client.delete(
       `/public/workspaces/${token}/workboards/${workboardId}/screens/${screenId}/rows`,
       { data: { pk } },
+    );
+    return r.data;
+  },
+  // Advanced "gộp & điều phối" — server-executed recipe (BulkAction.steps).
+  async bulkAction(
+    token: string,
+    workboardId: number,
+    screenId: string,
+    body: { action_id: string; selected_pks: Array<Record<string, unknown>>; resources?: Record<string, Record<string, unknown>> },
+  ): Promise<{
+    ok: boolean;
+    primary_code?: string | null;
+    codes?: Record<string, string>;
+    created?: number;
+    updated?: number;
+    per_step?: Array<Record<string, unknown>>;
+    success_message?: string;
+  }> {
+    const r = await client.post(
+      `/public/workspaces/${token}/workboards/${workboardId}/screens/${screenId}/bulk-action`,
+      body,
     );
     return r.data;
   },
