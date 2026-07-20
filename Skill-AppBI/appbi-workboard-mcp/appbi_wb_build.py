@@ -170,6 +170,18 @@ def _validate_doc_blocks(
             errors=errors,
             warnings=warnings,
         )
+        # context_filters bind a block column to a runtime shared-context value
+        # (per-record printable phiếu). The `column` must exist on the block source.
+        for cf in block.get("context_filters") or []:
+            if not isinstance(cf, dict):
+                errors.append(f"{location}: context_filters must contain objects.")
+                continue
+            _add_column_issues(
+                refs=[cf.get("column")], columns=block_columns, allowed=set(),
+                location=f"{location}.context_filters", errors=errors, warnings=warnings,
+            )
+            if not str(cf.get("from_shared") or "").strip():
+                errors.append(f"{location}: context_filters.from_shared is required.")
         for trigger in block.get("sync_triggers") or []:
             if not isinstance(trigger, dict):
                 errors.append(f"{location}: sync_triggers must contain objects.")
@@ -189,6 +201,7 @@ def _validate_screen_columns(
     *,
     tables: dict[int, dict[str, Any]],
     webhook_ids: set[str],
+    screen_ids: set[str],
     errors: list[str],
     warnings: list[str],
 ) -> None:
@@ -259,7 +272,9 @@ def _validate_screen_columns(
     spec = screen.get("table") if isinstance(screen.get("table"), dict) else {}
     derived = {
         str(row.get("name"))
-        for key in ("computed_columns", "lookup_columns")
+        # rollup_columns are derived read-only columns too — allow their names in
+        # `columns` (mirrors the backend audit's valid_table_cols).
+        for key in ("computed_columns", "lookup_columns", "rollup_columns")
         for row in spec.get(key) or []
         if isinstance(row, dict) and row.get("name")
     }
@@ -276,6 +291,18 @@ def _validate_screen_columns(
     if isinstance(detail, dict):
         refs.extend(detail.get("columns") or [])
         refs.extend(detail.get("editable_columns") or [])
+    # KPI tiles + conditional-format columns + calendar reference real columns.
+    refs.extend(
+        row.get("column") for row in spec.get("stat_tiles") or [] if isinstance(row, dict)
+    )
+    for rule in spec.get("format_rules") or []:
+        if isinstance(rule, dict):
+            refs.extend(rule.get("columns") or [])
+    cal = spec.get("calendar_config")
+    if isinstance(cal, dict):
+        refs.extend(
+            cal.get(k) for k in ("date_column", "title_column", "color_column") if cal.get(k)
+        )
     _add_column_issues(
         refs=refs,
         columns=columns,
@@ -335,6 +362,89 @@ def _validate_screen_columns(
             errors=errors,
             warnings=warnings,
         )
+
+    # rollup_columns — reverse aggregate over a child table (mirror lookup checks).
+    for index, roll in enumerate(spec.get("rollup_columns") or []):
+        if not isinstance(roll, dict):
+            errors.append(f"screen '{screen_id}' table.rollup_columns[{index}] must be an object.")
+            continue
+        foreign_id = roll.get("from_table_id")
+        if not isinstance(foreign_id, int) or foreign_id not in tables:
+            errors.append(
+                f"screen '{screen_id}' table.rollup_columns[{index}].from_table_id is not attached."
+            )
+            continue
+        remote = _columns(tables[foreign_id])
+        _add_column_issues(
+            refs=[roll.get("match_column_local")], columns=columns, allowed=set(),
+            location=f"screen '{screen_id}' rollup local", errors=errors, warnings=warnings,
+        )
+        remote_refs = [roll.get("match_column_remote")]
+        if str(roll.get("agg") or "").lower() != "count" and roll.get("value_column"):
+            remote_refs.append(roll.get("value_column"))
+        _add_column_issues(
+            refs=remote_refs, columns=remote, allowed=set(),
+            location=f"screen '{screen_id}' rollup remote table {foreign_id}",
+            errors=errors, warnings=warnings,
+        )
+
+    # bulk_actions — select-many → create one parent + link selected rows.
+    for index, action in enumerate(spec.get("bulk_actions") or []):
+        if not isinstance(action, dict):
+            errors.append(f"screen '{screen_id}' table.bulk_actions[{index}] must be an object.")
+            continue
+        loc = f"screen '{screen_id}' bulk_actions[{index}]"
+        set_col = action.get("set_column")
+        _add_column_issues(
+            refs=[set_col] + list((action.get("also_set") or {}).keys()),
+            columns=columns, allowed=set(), location=f"{loc} set_column/also_set",
+            errors=errors, warnings=warnings,
+        )
+        parent_screen = str(action.get("parent_screen_id") or "").strip()
+        if not parent_screen:
+            errors.append(f"{loc}.parent_screen_id is required (screen that creates the parent).")
+        elif parent_screen not in screen_ids:
+            errors.append(f"{loc}.parent_screen_id '{parent_screen}' is not a screen in this layout.")
+        if not str(action.get("parent_code_column") or "").strip():
+            errors.append(f"{loc}.parent_code_column is required.")
+        # Phase-1: require_same + preview_aggregates reference the screen's columns.
+        _add_column_issues(
+            refs=list(action.get("require_same") or [])
+            + [a.get("column") for a in action.get("preview_aggregates") or [] if isinstance(a, dict)],
+            columns=columns, allowed=derived, location=f"{loc} require_same/preview_aggregates",
+            errors=errors, warnings=warnings,
+        )
+
+    # pos_cart — supermarket scan-cart (line columns + catalog + header screen).
+    pos = spec.get("pos_cart")
+    if isinstance(pos, dict):
+        loc = f"screen '{screen_id}' pos_cart"
+        _add_column_issues(
+            refs=[pos.get("barcode_column"), pos.get("quantity_column"),
+                  pos.get("amount_column"), pos.get("order_id_column"), pos.get("date_column")],
+            columns=columns, allowed=set(), location=f"{loc} line columns",
+            errors=errors, warnings=warnings,
+        )
+        catalog_id = pos.get("catalog_table_id")
+        if not isinstance(catalog_id, int) or catalog_id not in tables:
+            errors.append(f"{loc}.catalog_table_id is not an attached dataset table.")
+        for key in ("header_screen_id", "after_submit_screen"):
+            sid = str(pos.get(key) or "").strip()
+            if sid and sid not in screen_ids:
+                errors.append(f"{loc}.{key} '{sid}' is not a screen in this layout.")
+        if not spec.get("allow_add_row") or not (spec.get("editable_columns") or []):
+            errors.append(
+                f"{loc}: a pos_cart line screen needs allow_add_row=true AND >=1 editable_column "
+                "or the bulk-insert is refused at runtime ('Adding rows is disabled')."
+            )
+
+    # calendar display mode requires a date_column that is in `columns`.
+    if spec.get("display_mode") == "calendar":
+        cal = spec.get("calendar_config")
+        if not isinstance(cal, dict) or not str(cal.get("date_column") or "").strip():
+            errors.append(
+                f"screen '{screen_id}' table: display_mode='calendar' requires calendar_config.date_column."
+            )
 
 
 def _webhook_index(
@@ -436,6 +546,7 @@ async def _validate_bundle(bundle: dict[str, Any]) -> dict[str, Any]:
                 screen,
                 tables=tables,
                 webhook_ids=webhook_ids,
+                screen_ids=ids,
                 errors=errors,
                 warnings=warnings,
             )
@@ -687,15 +798,33 @@ _SCREEN_SCHEMA_REFERENCE = {
         "sections": "[str] section headings within a page",
         "ocr": "{enabled, provider, model, hint} photo-to-fields (BYOK api_key)",
     },
+    "form_spec_geo": {
+        "geo_stamp_column": "form_spec: capture device GPS at submit and write 'lat,lng' into this column (readonly anti-fraud geo-audit)",
+    },
     "form_field": {
         "column": "required db column",
-        "widget": "text|textarea|number|select|date|datetime|checkbox|lookup|file|image|map",
-        "required/readonly/default/help_text/placeholder/label": "presentation",
-        "lookup": "LookupConfig when widget=lookup/select/map",
+        "widget": (
+            "text|textarea|number|select|date|datetime|checkbox|lookup|file|image|map|"
+            "geopoint|images|signature|barcode|audio|computed|status|"
+            "email|phone|url|rich_text|enum_list|rating|slider|currency|percent|time|duration|color|video|qr"
+        ),
+        "required/readonly/default/help_text/placeholder/label/section/page": "presentation + placement",
+        "lookup": "LookupConfig when widget=lookup/select/map/enum_list",
         "map_widget": "widget=map: tap a polygon/point on a satellite basemap to pick a value. Options + geometry come from a dataset_table lookup (set lookup.geometry_column). Selected value is a plain string (the value_column) — behaves like select for required/valid_if/carry.",
         "show_if/required_if/readonly_if": "expressions over [other_column]",
         "valid_if": "must be truthy at submit, e.g. '[end_date] >= [start_date]'; valid_if_error = message",
-        "max_file_kb": "widget=file/image only; hard BE ceiling 1024 KB (base64 into JSONB)",
+        "max_file_kb": "widget=file/image/images/signature/audio: max KB per item; hard BE ceiling 1024 KB (base64 into JSONB)",
+        "capture_only/max_items": "widget=image/images: force live camera (anti-fraud) / max photo count (images)",
+        "unit/formula": "widget=number/computed: unit suffix / computed = JS arithmetic over [col] evaluated live + stored on submit",
+        "status_config": "widget=status ONLY — see status_config sub-schema (lifecycle states + approval gating + transitions)",
+        "rich_inputs": "widget rating(max_stars,allow_half) | slider(min_value,max_value,step) | currency(currency_code) | enum_list(max_select, lookup source) | percent",
+        "qr_display": "widget=qr (DISPLAY only, never writes): qr_source_column | qr_value_template ('[col]'/deep-link, wins over source) | qr_size (48-1024) | qr_caption — for printing a label",
+        "scan_to_form": "widget=barcode: scan_go_to_screen (navigate to this screen on a hit) + scan_carry_as (column the scanned value is carried under; default = this field's column)",
+    },
+    "status_config": {
+        "states": "[{value, label?, color? slate|green|amber|red|blue|violet}] the lifecycle badges",
+        "editable_by_roles": "[] = anyone who can write the row; else only these roles may change status (approval gate on top of RLS writable_columns)",
+        "allowed_transitions": "{from_value: [allowed_to_values]} — SERVER blocks illegal (prev->new); [] = terminal; absent value = unconstrained. Per-screen, so a driver screen can omit '-> Huỷ' while a manager screen allows it",
     },
     "lookup_config": {
         "kind": "static | dataset_table",
@@ -714,27 +843,72 @@ _SCREEN_SCHEMA_REFERENCE = {
         "filters": "[{column, kind: text|select|date_range|number_range, label?}]",
         "page_size/default_sort_column/default_sort_direction": "paging + sort",
         "computed_columns": "[{name, label?, formula (JS body), format?}] — JS sandbox; test with test_screen_js",
-        "lookup_columns": "[{name, from_table_id, match_column_local, match_column_remote, return_column, format?}] relational VLOOKUP",
+        "lookup_columns": "[{name, from_table_id, match_column_local, match_column_remote, return_column, format?}] relational VLOOKUP (1 value from a related table)",
+        "rollup_columns": "[RollupColumn] reverse-reference AGGREGATE of child rows (order total = SUM of its lines). Name goes in `columns`, never in editable_columns",
         "totals": "{column: sum|avg|min|max|count} footer aggregates",
+        "stat_tiles": "[{label, column, agg sum|avg|min|max|count, format?, unit?}] KPI cards above the grid (aggregate the loaded rows) — the lightweight per-role dashboard",
+        "format_rules": "[{when (expr over [col]), color slate|green|amber|red|blue|violet, columns? ([] = whole row), icon?, label?}] conditional formatting (đỏ quá hạn, amber một phần…)",
         "group_by": "[col] merge repeated cells (must NOT be in editable_columns)",
         "column_groups": "multi-level header spanning contiguous columns",
-        "row_actions": "[ScreenAction] per-row navigate+carry",
-        "detail_panel": "{enabled, columns[], editable_columns[], sections{label:[col]}} side panel on row click",
-        "display_mode": "table (default) | gallery — gallery renders rows as image cards instead of a grid (same query/RLS/filters/detail_panel)",
+        "row_actions": "[ScreenAction] per-row navigate+carry (e.g. In phiếu → doc screen)",
+        "bulk_actions": "[BulkAction] tick-select many rows → combine into ONE new parent (gom đơn→hóa đơn, gom hóa đơn→chuyến). Renders a checkbox column + action bar. See bulk_action sub-schema",
+        "detail_panel": "{enabled, columns[], editable_columns[], sections{label:[col]}} side panel on row click (labels come from column_metadata/column_labels)",
+        "display_mode": "table (default) | gallery (image cards) | calendar (month grid) — same query/RLS/filters/detail_panel",
         "gallery_config": "required when display_mode=gallery: {image_column (data:image column, REQUIRED + must be in columns), title_column?, subtitle_column?, group_by_column? (section per value, e.g. a date), columns_per_row? 1-6}. All named columns must be listed in `columns`.",
-        "required_columns/default_values/column_metadata/empty_state_message": "extras",
+        "calendar_config": "required when display_mode=calendar: {date_column (REQUIRED + in columns), title_column?, color_column?}",
+        "column_metadata": "{col: {label?, width_px?, format? text|number|integer|currency|percent|date|datetime|qr, align?, merge?, input_type? text|number|currency|percent|date|datetime|time|checkbox|select|enum_list|rating|color|slider, options?[{label,value}], currency_code?, max_stars?, min_value?, max_value?, step?}} — per-column label/format + inline editor for editable cells",
+        "pos_cart": "PosCartConfig — turns the screen into a supermarket scan-cart (scan/pick → line list → ONE submit bulk-inserts all lines). See pos_cart sub-schema. NOTE: the line screen still needs allow_add_row=true + >=1 editable_column or the bulk-insert is refused",
+        "required_columns/default_values/empty_state_message": "extras (default_values supports {{today}}/{{app_user.x}})",
+    },
+    "rollup_column": {
+        "name/label/format?": "output column (name must appear in table.columns, never editable)",
+        "from_table_id": "child dataset table id (attached)",
+        "match_column_local/match_column_remote": "parent key = child key",
+        "agg": "sum|count|avg|min|max",
+        "value_column": "child column to aggregate (ignored for count)",
+    },
+    "pos_cart": {
+        "barcode_column/quantity_column": "line columns for the scanned code + quantity",
+        "catalog_table_id/catalog_match_column": "product master table id + column matched against the scanned code",
+        "catalog_label_column/catalog_price_column": "product name / unit-price columns",
+        "catalog_copy": "{line_column: catalog_column} copied onto every appended line",
+        "amount_column": "optional line column = qty x price (OMIT if the line total is a DB generated column)",
+        "header_inputs": "[{column, label, kind text|select|date, options?, default?, required?, write_to_line? (false = header/receipt only, not written on each line)}]",
+        "order_id_column/order_id_prefix": "line+header column for the generated phiếu id + its prefix",
+        "date_column": "optional line column auto-set to today (omit if the line table has no date column)",
+        "header_screen_id": "screen (bound to the phiếu HEADER table, usually hidden) that receives ONE header row per submit",
+        "submit_label/after_submit_screen/after_submit_carry": "button text + doc screen opened after save (receipt) + columns carried to it",
+        "allow_manual_search/catalog_group_column/empty_hint": "searchable picker beside the scanner + group the picker + empty hint",
+    },
+    "bulk_action": {
+        "id/label/icon?/style?": "button on the selection action bar",
+        "set_column": "child column set to the new parent's code on every selected row (the FK link)",
+        "also_set": "{child_column: value} extra columns set on every selected row (e.g. {'trang_thai': 'Đã gom vào hóa đơn'})",
+        "parent_screen_id": "screen (bound to the parent table, e.g. hóa đơn/chuyến) used to create the ONE parent row — must exist + allow create for the role",
+        "parent_code_column": "parent column that receives the generated code (e.g. ma_hoa_don / ma_chuyen)",
+        "code_prefix": "prefix of the generated code (HD / CH); runtime appends date+time",
+        "parent_defaults": "{parent_column: value} other values for the new parent (screen default_values fill the rest, incl {{today}}/{{app_user}})",
+        "confirm_message/success_message": "'{n}' is replaced with the selection count",
+        "min_selection/visible_for_roles": "gate the action",
+        "require_same": "[col] precondition — every selected row must share the same value in these columns or the action is blocked (e.g. ['ma_kh'] chỉ gộp cùng khách / ['nha_cung_cap'] cùng NCC). FE-enforced in Phase-1",
+        "preview_aggregates": "[{column, agg sum|avg|min|max|count, label, format?}] running totals of the SELECTED rows shown on the action bar before commit (tự tính tổng)",
     },
     "doc_spec": {
         "page": "{size: A4|A3|Letter, orientation, margin_mm}",
-        "blocks": "ordered: header | kv_grid | data_table | text | spacer | signature | footer",
+        "blocks": "ordered: header | kv_grid | data_table | text | spacer | signature | footer | qr_code",
+        "placeholders": "ALL block strings substitute {{today}}, {{app_user.username}}, {{shared.<col>}} (values carried in via row_action.carry / pos after_submit_carry). Unresolved {{shared.x}} shows literal — only reference keys you actually carry",
         "data_table_block": {
             "type": "data_table",
-            "source": "'primary' or 'lookup:<table_id>'",
+            "source": "'primary' (screen table) or 'lookup:<table_id>'",
             "columns": "[col]",
-            "allow_export_excel": "Excel export button",
-            "pivot/unpivot/column_groups/totals": "report-table shaping",
+            "context_filters": "[{column, from_shared (shared-context key), required? (true = no rows when the value is absent → per-record printable phiếu)}] — filters the block to ONE record",
+            "column_metadata": "{col: {label?, format?, align?, total? sum|avg|count|min|max}} (doc totals agg is here OR totals:['col:sum']) ",
+            "allow_export_excel": "Excel export button (letterhead auto-prepended from layout.print_template)",
+            "totals": "['col'] or ['col:sum'] footer aggregates (default agg sum)",
+            "pivot/unpivot/column_groups": "report-table shaping",
             "sync_triggers": "[{id, label, webhook_ids:[bundle webhook id], run_mode, visible_for_roles}]",
         },
+        "qr_code_block": "{type:'qr_code', value (static or {{shared.x}}), size 48-1024, caption?, align?} — QR on a printable label/phiếu",
     },
     "dashboard_spec": {
         "managed": "dashboard_id (+ role_filter_mapping[{datasetId, semanticField, operator}] + static_filters) -> per-role public links auto-provisioned",
@@ -753,8 +927,9 @@ _SCREEN_SCHEMA_REFERENCE = {
         "mini_app_nav": "{desktop_kind: sidebar|top_tabs, mobile_kind: bottom_nav|drawer, items: [screen_id]}",
         "branding": "{app_name, theme, ...}",
         "audit": "AuditConfig (created/updated tracking columns)",
-        "auto_number_columns": "[{column, pattern 'PO-{YYYY}{MM}{DD}-{N:4}', reset, padding, start_at}]",
-        "screen_groups": "[{id, label, icon?, screen_ids:[id], visible_for_roles}] nav grouping (UI: Workspace)",
+        "auto_number_columns": "[{column, pattern 'PO-{YYYY}{MM}{DD}-{N:4}', reset, padding, start_at}] (column-name is workboard-wide; avoid a name shared by another table)",
+        "screen_groups": "[{id, label, icon?, screen_ids:[id], visible_for_roles}] nav grouping (UI: Workspace) — one group per bộ phận keeps the nav tidy for admins",
+        "print_template": "{enabled, company_name, address, tax_code, hotline, email, website, logo_data (data: URI), footer_note, accent_color} reusable letterhead auto-rendered atop EVERY doc screen (print + Excel export)",
     },
     "screen_action": {
         "id/label": "required",
@@ -808,6 +983,13 @@ async def get_workboard_design_guide(ctx: Context | None = None) -> dict[str, An
             "Doc data_table sync_triggers[].webhook_ids must match bundle.webhooks ids; webhooks bind to a doc screen_id.",
             "RLS/visible_for_roles roles must match app_user roles; owner bypasses RLS but keep user/admin explicit.",
             "Validate computed-column JS with test_screen_js before apply.",
+            "Gom (select-many → 1 parent): table.bulk_actions renders a checkbox column + action bar. Each action creates ONE parent row via parent_screen_id (that screen must allow_create for the role) then sets set_column = a generated code on every selected row. set_column + also_set keys must be in THIS screen's RLS writable_columns; the parent screen's default_values fill date/creator. Use for 'gom nhiều đơn → 1 hóa đơn', 'gom nhiều hóa đơn → 1 chuyến'.",
+            "POS scan-cart (lập phiếu/đơn kiểu siêu thị): table.pos_cart. The LINE screen MUST also set allow_add_row=true + >=1 editable_column or the bulk-insert is refused ('Adding rows is disabled'). header_screen_id writes ONE phiếu-header row per submit; after_submit_screen opens the printable receipt (carry the id). OMIT amount_column when the line total is a DB generated column.",
+            "Dashboards: prefer table stat_tiles (KPI cards) + format_rules (đỏ/amber/green row-cell tint) as the mini-app-native per-role dashboard. Use a dashboard screen (embed an AppBI dashboard) only when you need real charts.",
+            "rollup_columns aggregate child rows (đơn total = SUM of its lines); like lookup_columns the name goes in `columns`, never editable_columns.",
+            "Printable per-record phiếu: a doc screen bound to the record's table + a data_table with context_filters [{column, from_shared}] (required=true → shows only that record). Open it from a row_action whose carry includes from_shared (or pos_cart after_submit_carry). layout.print_template is the shared letterhead auto-applied to every doc + Excel; doc block strings resolve {{shared.x}}/{{today}}/{{app_user.x}} — only reference shared keys you actually carry.",
+            "widget=status: status_config.allowed_transitions is server-enforced (illegal prev→new blocked); narrow the map on a role's own screen for per-role transitions.",
+            "Nav: group screens with layout.screen_groups (one group per bộ phận) so admins don't get a flat wall of tabs; each role only sees groups with a visible member.",
         ],
         "screen_schema_reference": _SCREEN_SCHEMA_REFERENCE,
         "starter_bundle": {
