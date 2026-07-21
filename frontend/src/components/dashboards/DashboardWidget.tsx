@@ -3,6 +3,7 @@
 import React, { useEffect, useState } from 'react';
 import type { DashboardChart, DashboardWidgetType } from '@/types/api';
 import { renderTemplate } from '@/lib/dashboard-expression';
+import { renderMarkdown } from '@/lib/dashboard-markdown';
 import { useI18n } from '@/providers/LanguageProvider';
 
 type Props = {
@@ -59,45 +60,12 @@ function TextWidget({ config, params }: { config: any; params: Record<string, an
   // Only the inner padding + typography lives here.
   return (
     <div
-      className="h-full w-full overflow-hidden p-4"
+      className="h-full w-full overflow-auto p-4"
       style={{ textAlign: align, color, fontSize, fontWeight }}
     >
-      <MarkdownText text={rendered} />
+      {renderMarkdown(rendered)}
     </div>
   );
-}
-
-function MarkdownText({ text }: { text: string }) {
-  const lines = text.split('\n');
-  return (
-    <div className="space-y-1 break-words">
-      {lines.map((line, index) => {
-        const trimmed = line.trim();
-        if (!trimmed) return <div key={index} className="h-2" />;
-        const heading = /^(#{1,3})\s+(.*)$/.exec(trimmed);
-        if (heading) {
-          const level = heading[1].length;
-          const cls = level === 1
-            ? 'text-xl font-semibold leading-tight'
-            : level === 2
-              ? 'text-lg font-semibold leading-tight'
-              : 'text-sm font-semibold leading-snug';
-          return <div key={index} className={cls}>{renderInlineMarkdown(heading[2])}</div>;
-        }
-        return <div key={index} className="whitespace-pre-wrap leading-snug">{renderInlineMarkdown(line)}</div>;
-      })}
-    </div>
-  );
-}
-
-function renderInlineMarkdown(text: string) {
-  const parts = text.split(/(\*\*[^*]+\*\*)/g);
-  return parts.map((part, index) => {
-    if (part.startsWith('**') && part.endsWith('**')) {
-      return <strong key={index}>{part.slice(2, -2)}</strong>;
-    }
-    return <React.Fragment key={index}>{part}</React.Fragment>;
-  });
 }
 
 function CountdownWidget({ config }: { config: any }) {

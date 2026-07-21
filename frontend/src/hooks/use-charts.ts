@@ -40,10 +40,15 @@ export const useChartData = (
   context: ChartDataContext = 'default',
   options?: { enabled?: boolean; keepPrevious?: boolean },
   granularity?: string,
+  roleOverrides?: Record<string, string> | null,
 ) => {
   // Serialize filters to a stable string so identical filter payloads share
   // the same cache entry regardless of object-reference identity.
   const filterKey = filters && filters.length > 0 ? JSON.stringify(filters) : null;
+  // What-if / field parameter — a dimension/measure swap changes the result, so
+  // it's part of the cache key (same reasoning as `granularity`).
+  const overridesKey =
+    roleOverrides && Object.keys(roleOverrides).length > 0 ? JSON.stringify(roleOverrides) : null;
 
   const enabled = options?.enabled ?? true;
 
@@ -51,8 +56,8 @@ export const useChartData = (
     // #2 — granularity is part of the key so a viewer date-hierarchy drill
     // (re-bucket at a new grain) fetches fresh data instead of re-serving the
     // prior grain's cached result.
-    queryKey: ['charts', id, 'data', context, filterKey, granularity ?? null],
-    queryFn: () => chartApi.getData(id, filters, context, granularity),
+    queryKey: ['charts', id, 'data', context, filterKey, granularity ?? null, overridesKey],
+    queryFn: () => chartApi.getData(id, filters, context, granularity, roleOverrides),
     enabled: !!id && enabled,
     // keepPrevious — on a filter/grain change the queryKey changes; instead of
     // dropping to a blank skeleton (which made a filtered dashboard "flash

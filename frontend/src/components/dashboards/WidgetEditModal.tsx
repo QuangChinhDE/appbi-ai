@@ -254,6 +254,7 @@ function ShapeWidgetForm({ config, set }: { config: any; set: (k: string, v: any
       <Field label={t('dashboards.widgetEdit.kind')}>
         <select value={config.kind ?? 'rect'} onChange={(e) => set('kind', e.target.value)} className={inputClass}>
           <option value="rect">{t('dashboards.widgetEdit.kindRectangle')}</option>
+          <option value="circle">{t('dashboards.widgetEdit.kindCircle')}</option>
           <option value="line">{t('dashboards.widgetEdit.kindLine')}</option>
           <option value="divider">{t('dashboards.widgetEdit.kindDivider')}</option>
         </select>
@@ -341,16 +342,30 @@ function ParameterSwitcherForm({
           />
         </Field>
       </div>
-      <Field label={t('dashboards.widgetEdit.layout')}>
-        <select
-          value={config.layout ?? 'tabs'}
-          onChange={(e) => setConfig((p) => ({ ...p, layout: e.target.value }))}
-          className={inputClass}
+      <div className="grid grid-cols-2 gap-3">
+        <Field label={t('dashboards.widgetEdit.layout')}>
+          <select
+            value={config.layout ?? 'tabs'}
+            onChange={(e) => setConfig((p) => ({ ...p, layout: e.target.value }))}
+            className={inputClass}
+          >
+            <option value="tabs">{t('dashboards.widgetEdit.layoutTabs')}</option>
+            <option value="dropdown">{t('dashboards.widgetEdit.layoutDropdown')}</option>
+          </select>
+        </Field>
+        <Field
+          label={t('dashboards.widgetEdit.paramFilterColumn')}
+          hint={t('dashboards.widgetEdit.paramFilterColumnHint')}
         >
-          <option value="tabs">{t('dashboards.widgetEdit.layoutTabs')}</option>
-          <option value="dropdown">{t('dashboards.widgetEdit.layoutDropdown')}</option>
-        </select>
-      </Field>
+          <input
+            type="text"
+            value={config.field ?? ''}
+            onChange={(e) => setConfig((p) => ({ ...p, field: e.target.value }))}
+            className={inputClass}
+            placeholder="order_status"
+          />
+        </Field>
+      </div>
       <div>
         <div className="mb-1 flex items-center justify-between">
           <label className="text-[12px] font-[510] text-text-secondary">{t('dashboards.widgetEdit.options')}</label>

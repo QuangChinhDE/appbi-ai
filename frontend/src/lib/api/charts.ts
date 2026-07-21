@@ -54,6 +54,7 @@ export const chartApi = {
     filters?: Record<string, unknown>[],
     context: ChartDataContext = 'default',
     granularity?: string,
+    roleOverrides?: Record<string, string> | null,
   ): Promise<ChartDataResponse> => {
     const params: Record<string, string> = {};
     if (filters && filters.length > 0) {
@@ -66,6 +67,11 @@ export const chartApi = {
     // end-user picked in the Dashboard viewer (BE re-queries at this grain).
     if (granularity) {
       params.granularity = granularity;
+    }
+    // What-if / field parameter — swap the chart's active dimension/measure at
+    // query time from a dashboard parameter_switcher selection.
+    if (roleOverrides && Object.keys(roleOverrides).length > 0) {
+      params.overrides = JSON.stringify(roleOverrides);
     }
     const response = await apiClient.get(`/charts/${id}/data`, { params });
     return response.data;

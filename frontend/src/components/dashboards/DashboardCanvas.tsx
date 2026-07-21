@@ -74,6 +74,10 @@ interface DashboardCanvasProps {
    *  clicked. */
   focusedDashboardChartId?: number | null;
   onFocusChart?: (dashboardChartId: number) => void;
+  /** Dashboard-level parameter values (what-if / field parameters). */
+  params?: Record<string, any>;
+  onParamChange?: (paramName: string, value: any) => void;
+  onBindParameter?: (dashboardChartId: number) => void;
 }
 
 export function DashboardCanvas({
@@ -100,6 +104,9 @@ export function DashboardCanvas({
   allowAppearanceEdit = false,
   focusedDashboardChartId = null,
   onFocusChart,
+  params = {},
+  onParamChange,
+  onBindParameter,
 }: DashboardCanvasProps) {
   const { t } = useI18n();
   const containerRef = useRef<HTMLDivElement>(null);
@@ -483,7 +490,7 @@ export function DashboardCanvas({
                       : 'dashboard-tile bi-card-hover rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 overflow-hidden'
                   }`}
                 >
-                  <DashboardWidget widget={dc} />
+                  <DashboardWidget widget={dc} params={params} onParamChange={onParamChange} />
                   {canEdit && (
                     <div className="absolute right-2 top-2 z-30 flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100">
                       {onEditWidget && (
@@ -547,6 +554,8 @@ export function DashboardCanvas({
                   }
                   isCrossFilterSource={crossFilterSourceChartId === dc.chart_id}
                   instanceParameters={dc.parameters ?? {}}
+                  dashboardParams={params}
+                  onBindParameter={onBindParameter ? () => onBindParameter(dc.id) : undefined}
                   availablePages={availablePages}
                   currentPageId={
                     typeof dc.layout?.pageId === 'string' ? dc.layout.pageId : (availablePages[0]?.id ?? null)
