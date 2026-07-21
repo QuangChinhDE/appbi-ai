@@ -155,13 +155,32 @@ class SemanticQueryEngine:
         # Dashboard perf #5 — snapshot redirect map (see generate_sql). Default
         # empty = live behaviour; set per-request by the caller.
         self._snapshot_overrides: Dict[int, str] = {}
+        # Phase 3 — per-request compile-time relation cache + drop diagnostics.
+        self._relation_sql_cache: Dict[int, Optional[str]] = {}
+        self._propagation_drops: list = []
+        # Calendar materialization — per-request memo of "the generated-calendar
+        # table's snapshot ref among _snapshot_overrides" so role-played date-dim
+        # views (dataset_table_id is None) can read the flat snapshot too. False =
+        # not yet computed; None = no materialized calendar; str = the physical ref.
+        self._calendar_ref_cache: Any = False
+        # Audit #3 — per-request memo of the inline calendar SQL re-rendered for
+        # THIS engine's dialect (role-dim fallback when no snapshot override).
+        self._cal_live_sql_cache: Any = False
 
     def run(self, spec) -> Tuple[str, List[str], List[PivotedColumn]]:
         """Single engine entry: execute a ``SemanticQuerySpec`` (the one input
         every path compiles to via ``semantic_query_compiler``). Unpacks to
         ``generate_sql`` (which stays the internal implementation). ``spec``'s
         ``response_aliases`` / ``diagnostics`` are caller-side extras the engine
-        ignores."""
+        ignores.
+
+        Refactor Phase 3 — per-entry state hygiene: ``run`` is the ONE public
+        entry, so per-request diagnostics reset HERE (not in generate_sql, which
+        recurses internally for re-anchor/multi-fact and must ACCUMULATE across
+        those recursions). ``snapshot_overrides`` is likewise always passed as a
+        concrete dict so a reused engine instance can never leak a previous
+        request's snapshot redirects into this one."""
+        self._propagation_drops = []
         return self.generate_sql(
             explore_name=spec.explore_name,
             dimensions=list(spec.dimensions or []),
@@ -177,7 +196,7 @@ class SemanticQueryEngine:
             measure_agg_overrides=(dict(spec.measure_agg_overrides) or None) if spec.measure_agg_overrides else None,
             model_id=spec.model_id,
             explore_id=spec.explore_id,
-            snapshot_overrides=getattr(spec, "snapshot_overrides", None),
+            snapshot_overrides=dict(getattr(spec, "snapshot_overrides", None) or {}),
         )
 
     def generate_sql(
@@ -216,14 +235,18 @@ class SemanticQueryEngine:
         self._model_dataset_table_ids = set()
         self._symmetric_aggregate_views = set()
         self._phys_coltype_cache = {}
+        # Refactor Phase 3 — compile-time relation cache: physical relation SQL is
+        # rendered per-request from the CURRENT DatasetTable definition in THIS
+        # engine's dialect (see _relation_sql_for_view), memoised per table id.
+        self._relation_sql_cache = {}
         # Dashboard perf #5 — snapshot redirect. {dataset_table_id -> physical_ref}.
         # When a view's table has a fresh materialized snapshot, the FROM clause
         # reads the flat snapshot instead of re-running its heavy source SQL.
-        # Empty map → no change (byte-identical SQL). Read-only; never mutates the
-        # ORM SemanticView (no accidental DB flush). Set ONLY when the caller
-        # passes a value so it PERSISTS across the internal recursive
-        # generate_sql calls (measure-isolation re-anchor + per-fact multifact),
-        # which pass no override arg.
+        # Empty map → no change. Read-only; never mutates the ORM SemanticView.
+        # Top-level entry (run()) ALWAYS passes a concrete dict; the internal
+        # recursive generate_sql calls (measure-isolation re-anchor + per-fact
+        # multifact) pass the current map explicitly so it survives recursion
+        # without relying on instance-state persistence (Phase 3 hygiene).
         if snapshot_overrides is not None:
             self._snapshot_overrides = dict(snapshot_overrides)
         pivots = pivots or []
@@ -446,6 +469,7 @@ class SemanticQueryEngine:
                             measure_agg_overrides=measure_agg_overrides,
                             model_id=getattr(self._model, "id", None),
                             _reanchored=True,
+                            snapshot_overrides=self._snapshot_overrides,
                         )
                 elif (
                     _is_cross_table
@@ -687,12 +711,27 @@ class SemanticQueryEngine:
             where_filters, having_filters = self._split_filters_by_role(
                 filters, measures,
             )
+            # Concept-1 (model-structure) filter anchor: the set of views that are
+            # forward-M:1 reachable from each MEASURE'S FACT (+ the facts). A filter
+            # on any of these is a standard dim→fact filter that must apply
+            # irrespective of the chart's base view or cross-filter direction —
+            # see the drop gate in _build_where_clause. Empty for pure-dim charts
+            # with no fact measure (keeps the direction gate authoritative there).
+            _measure_fact_views: set[str] = set()
+            for _m in (measures or []):
+                try:
+                    _mf = self._measure_fact_view(_m)
+                except Exception:  # noqa: BLE001 — never block on measure parse
+                    _mf = None
+                if _mf:
+                    _measure_fact_views |= self._m1_reachable_views(_mf) | {_mf}
             where_clause = self._build_where_clause(
                 where_filters, time_grains,
                 exists_views=exists_views,
                 explore=explore,
                 select_side_views=select_side_views,
                 joined_nodes=joined_nodes,
+                measure_fact_views=_measure_fact_views,
             )
             having_clause = self._build_having_clause(
                 having_filters, time_grains,
@@ -1889,7 +1928,7 @@ class SemanticQueryEngine:
         # measure `_measure_fact_view` returns the declared view (unchanged).
         view_name = self._measure_fact_view(field_ref)
         view = self.views_cache.get(view_name) or self._get_view_for_node(view_name)
-        m_table = self._snapshot_ref_for_view(view) or view.sql_table_name or view_name
+        m_table = self._snapshot_ref_for_view(view) or self._relation_sql_for_view(view) or view_name
 
         plain_agg = self._render_measure(
             field_ref, agg_override=agg_override, _isolate=False,
@@ -2142,6 +2181,7 @@ class SemanticQueryEngine:
                     measure_agg_overrides=measure_agg_overrides,
                     model_id=model_id,
                     _reanchored=True,
+                    snapshot_overrides=self._snapshot_overrides,
                 )
             except ValueError:
                 return None
@@ -2846,9 +2886,141 @@ class SemanticQueryEngine:
             return None
         tid = getattr(view, "dataset_table_id", None)
         ref = self._snapshot_overrides.get(tid) if tid is not None else None
+        if not ref and tid is None:
+            # Role-played date-dim views (``dataset_table_587__sale_date__date_dim``)
+            # carry NO dataset_table_id — they render the calendar inline via
+            # ``sql_table_name``. When the dataset's generated-calendar table IS
+            # materialized in the snapshot, point these role views at that same
+            # physical table. It is column- AND row-identical to the inline calendar
+            # (both are produced by ``build_calendar_live_sql`` on the same calendar
+            # settings), so the M:1 date join, grain, and every measure are unchanged
+            # — only the FROM operand swaps recursive-CTE generation for a flat read.
+            # This is what makes date-intelligence charts "query entirely on the BQ
+            # snapshot" rather than regenerating the calendar per request.
+            name = str(getattr(view, "name", "") or "")
+            if name.endswith("_date_dim"):
+                ref = self._calendar_snapshot_ref()
         if not ref:
             return None
-        return f"(SELECT * FROM `{ref}`)"
+        # Refactor Phase 3 — quote the physical ref for THIS engine's dialect
+        # instead of hardcoding BigQuery backticks. Snapshots are hosted in
+        # BigQuery today (the planner forces dialect="bigquery" in snapshot
+        # mode, so this stays backticks in practice) — but the renderer itself
+        # no longer bakes in that assumption.
+        d = (self.database_type or "").lower()
+        if d in ("bigquery", "mysql"):
+            return f"(SELECT * FROM `{ref}`)"
+        quoted = ".".join('"' + p.replace('"', "") + '"' for p in str(ref).split("."))
+        return f"(SELECT * FROM {quoted})"
+
+    def _calendar_live_sql_for_dialect(self) -> Optional[str]:
+        """Inline calendar SQL for THIS engine's dialect, parenthesized as a
+        FROM operand — the dialect-correct fallback for role-played date-dims
+        when no materialized calendar snapshot exists (audit #3). Memoised per
+        request; None on any failure (→ caller keeps the stored SQL)."""
+        if self._cal_live_sql_cache is not False:
+            return self._cal_live_sql_cache
+        out: Optional[str] = None
+        try:
+            ds_id = getattr(getattr(self, "_model", None), "dataset_id", None)
+            if ds_id:
+                from app.models.dataset import Dataset
+                from app.services.dataset_calendar_service import (
+                    build_calendar_live_sql, get_calendar_settings,
+                )
+
+                d = self.db.query(Dataset).filter(Dataset.id == ds_id).first()
+                if d is not None:
+                    settings = get_calendar_settings(d, enabled_default=False)
+                    dialect = (self.database_type or "postgresql").lower()
+                    out = f"({build_calendar_live_sql(settings, dialect)})"
+        except Exception:  # noqa: BLE001 — fallback must never break rendering
+            out = None
+        self._cal_live_sql_cache = out
+        return out
+
+    def _calendar_snapshot_ref(self) -> Optional[str]:
+        """The physical snapshot ref of the dataset's generated-calendar table,
+        if it is present among ``_snapshot_overrides``. Role-played date-dim views
+        reuse it (see ``_snapshot_ref_for_view``). Memoised per request; there is
+        at most one generated-calendar table per dataset."""
+        if self._calendar_ref_cache is not False:
+            return self._calendar_ref_cache
+        out: Optional[str] = None
+        try:
+            from app.models.dataset import DatasetTable
+            from app.services.dataset_calendar_service import is_generated_calendar_table
+
+            for tid, ref in (self._snapshot_overrides or {}).items():
+                if not ref:
+                    continue
+                t = self.db.query(DatasetTable).filter(DatasetTable.id == tid).first()
+                if t is not None and is_generated_calendar_table(t):
+                    out = ref
+                    break
+        except Exception:  # noqa: BLE001 — no calendar redirect on any lookup error
+            out = None
+        self._calendar_ref_cache = out
+        return out
+
+    def _relation_sql_for_view(self, view) -> Optional[str]:
+        """Refactor Phase 3 — the PHYSICAL relation a view reads from, rendered
+        at COMPILE TIME from the current DatasetTable definition in THIS
+        engine's dialect. This replaces trusting the sync-time
+        ``view.sql_table_name`` for FROM operands, which had two failure modes:
+          * staleness — the stored SQL drifts from the table definition until
+            someone re-opens/syncs the Dataset ("phải vào Dataset trước");
+          * wrong dialect — the stored SQL was rendered with the DATASET's
+            sync dialect (first datasource wins), which can differ from the
+            dialect this request actually executes on (mixed-source datasets,
+            snapshot mode forcing BigQuery).
+        Falls back to the stored ``sql_table_name`` for role views
+        (dataset_table_id is None) and on any load/render failure — i.e. the
+        pre-Phase-3 behaviour. Memoised per table id for the request."""
+        tid = getattr(view, "dataset_table_id", None)
+        if tid is None:
+            # Semantic-audit 2026-07 (#3) — role-played date-dims
+            # (``…__date_dim``) store the inline calendar SQL rendered at SYNC
+            # time in the dataset's sync dialect (duckdb for Sheets, postgres
+            # for PG). Executed on a DIFFERENT engine (snapshot mode forces
+            # BigQuery) that SQL 400s. Re-render the calendar for THIS engine's
+            # dialect — mirroring what `_sql_table_for_table` already does for
+            # the standalone Date view at compile time. Any gap → the stored
+            # SQL, exactly the pre-fix behaviour. (When the calendar IS
+            # materialized, `_snapshot_ref_for_view` wins before this runs.)
+            name = str(getattr(view, "name", "") or "")
+            if name.endswith("_date_dim"):
+                rendered_cal = self._calendar_live_sql_for_dialect()
+                if rendered_cal:
+                    return rendered_cal
+            return getattr(view, "sql_table_name", None)
+        if tid in self._relation_sql_cache:
+            return self._relation_sql_cache[tid]
+        rendered = None
+        try:
+            from app.models.dataset import Dataset, DatasetTable
+            from app.models.models import DataSource
+            from app.services.dataset_model_service import _sql_table_for_table
+
+            t = self.db.query(DatasetTable).filter(DatasetTable.id == tid).first()
+            if t is not None:
+                ds_obj = self.db.query(Dataset).filter(Dataset.id == t.dataset_id).first()
+                src = (
+                    self.db.query(DataSource).filter(DataSource.id == t.datasource_id).first()
+                    if t.datasource_id else None
+                )
+                if ds_obj is not None:
+                    rendered = _sql_table_for_table(
+                        ds_obj, t,
+                        calendar_dialect=(self.database_type or "postgresql").lower(),
+                        datasource=src, db=self.db,
+                    )
+        except Exception:  # noqa: BLE001 — fall back to the stored relation
+            logger.debug("[relation] compile-time render failed for view %s",
+                         getattr(view, "name", "?"), exc_info=True)
+        out = rendered or getattr(view, "sql_table_name", None)
+        self._relation_sql_cache[tid] = out
+        return out
 
     def _build_from_clause(
         self,
@@ -2882,7 +3054,7 @@ class SemanticQueryEngine:
             raise ValueError(f"Base view '{explore.base_view_name}' not found")
 
         # Determine base table name (snapshot redirect wins when present — #5)
-        base_table = self._snapshot_ref_for_view(base_view) or base_view.sql_table_name or explore.base_view_name
+        base_table = self._snapshot_ref_for_view(base_view) or self._relation_sql_for_view(base_view) or explore.base_view_name
         from_clause = f"FROM {base_table} AS {explore.base_view_name}"
 
         joined_nodes: set[str] = {explore.base_view_name}
@@ -2920,7 +3092,7 @@ class SemanticQueryEngine:
                 if edge.to_node in joined_nodes:
                     continue
                 join_view = self._get_view_for_node(edge.to_node)
-                join_table = self._snapshot_ref_for_view(join_view) or join_view.sql_table_name or edge.to_view
+                join_table = self._snapshot_ref_for_view(join_view) or self._relation_sql_for_view(join_view) or edge.to_view
                 join_condition_rendered = self._render_edge_join_condition(edge)
                 if not join_condition_rendered:
                     raise ValueError(
@@ -2935,6 +3107,95 @@ class SemanticQueryEngine:
 
         return from_clause, joined_nodes
 
+    # Semantic-audit 2026-07 (#1) — canonical equality template our join
+    # builders emit (`${TABLE}.a = ${target}.b`, AND-joined for composite
+    # keys). ONLY conditions that fullmatch this shape are eligible for
+    # type-aware key coercion; anything else (calendar CAST joins, custom
+    # user SQL) renders through the legacy path byte-identical.
+    _CANON_JOIN_EQ_RE = re.compile(
+        r"^\s*\$\{TABLE\}\.([A-Za-z_][A-Za-z0-9_]*)\s*=\s*"
+        r"\$\{([^}]+)\}\.([A-Za-z_][A-Za-z0-9_]*)\s*$"
+    )
+    _JOINKEY_NUMBER_PHYSICAL = {
+        "int", "integer", "bigint", "smallint", "tinyint", "int64", "int32",
+        "number", "numeric", "decimal", "float", "float64", "double",
+        "double precision", "real",
+    }
+    _JOINKEY_STRING_PHYSICAL = {
+        "string", "text", "varchar", "char", "nvarchar", "nchar",
+        "character varying", "character", "bpchar", "clob", "str", "utf8",
+    }
+
+    def _joinkey_family(self, view, col: str) -> Optional[str]:
+        """'number' | 'string' | None for a join-key column's PHYSICAL type."""
+        t = (self._physical_source_type(view, col) or "").strip().lower()
+        if not t:
+            return None
+        base = t.split("(", 1)[0].strip()
+        if base in self._JOINKEY_NUMBER_PHYSICAL:
+            return "number"
+        if base in self._JOINKEY_STRING_PHYSICAL:
+            return "string"
+        return None
+
+    def _typed_join_condition(self, edge, condition: str) -> Optional[str]:
+        """Type-aware rebuild of a CANONICAL key-equality join condition.
+
+        Sheets/Airbyte/CSV sources store numeric keys as physical STRING while
+        the other side is INT64/NUMERIC — a raw `a = b` ON clause then 400s on
+        BigQuery/Postgres ("No matching signature for operator = STRING,
+        INT64") or silently no-matches on MySQL ('007' vs 7). The WHERE and
+        measure paths already SAFE_CAST for exactly this; joins were the gap.
+
+        Returns the rebuilt condition ONLY when (a) the sql_on is exactly the
+        canonical builder template and (b) at least one key pair mixes a
+        physical string with a physical number — the string side is coerced
+        via build_safe_cast_sql(..., "float") (the filter-path convention; a
+        no-op on genuine numerics, NULL → no-match on real text, never a type
+        error). Every other case returns None → legacy render, byte-identical.
+        """
+        try:
+            parts = [p.strip() for p in condition.split(" AND ")]
+            pairs: list[tuple[str, str]] = []
+            for p in parts:
+                m = self._CANON_JOIN_EQ_RE.fullmatch(p)
+                if not m:
+                    return None
+                target_ph = m.group(2).strip()
+                if target_ph not in {edge.to_view, edge.to_node}:
+                    return None
+                pairs.append((m.group(1), m.group(3)))
+            if not pairs:
+                return None
+            from_view = self._get_view_for_node(edge.from_node)
+            # to_node (not to_view) — resolves role-play aliases through the
+            # cache first, exactly like every other field lookup.
+            to_view_obj = self._get_view_for_node(edge.to_node)
+            if from_view is None or to_view_obj is None:
+                return None
+
+            from app.services.type_override_service import build_safe_cast_sql
+
+            rebuilt: list[str] = []
+            any_cast = False
+            for fc, tc in pairs:
+                ff = self._joinkey_family(from_view, fc)
+                tf = self._joinkey_family(to_view_obj, tc)
+                lhs = f"{edge.from_node}.{fc}"
+                rhs = f"{edge.to_node}.{tc}"
+                if {ff, tf} == {"number", "string"}:
+                    if ff == "string":
+                        lhs = build_safe_cast_sql(lhs, "float", self.database_type)
+                    else:
+                        rhs = build_safe_cast_sql(rhs, "float", self.database_type)
+                    any_cast = True
+                rebuilt.append(f"{lhs} = {rhs}")
+            if not any_cast:
+                return None  # same-family keys → legacy path, byte-identical
+            return " AND ".join(rebuilt)
+        except Exception:  # noqa: BLE001 — never let coercion break rendering
+            return None
+
     def _render_edge_join_condition(self, edge) -> str:
         """Render a JOIN ON condition for a resolved join edge."""
         condition = str(edge.sql_on or "").strip()
@@ -2942,6 +3203,12 @@ class SemanticQueryEngine:
             if edge.from_column and edge.to_column:
                 return f"{edge.from_node}.{edge.from_column} = {edge.to_node}.{edge.to_column}"
             return ""
+
+        # Audit #1 — type-aware key coercion for canonical equality joins
+        # (physical STRING key vs numeric key). None → legacy render below.
+        typed = self._typed_join_condition(edge, condition)
+        if typed is not None:
+            return typed
 
         rendered = condition.replace("${TABLE}", edge.from_node)
         if edge.to_node and edge.to_node != edge.to_view:
@@ -2964,6 +3231,13 @@ class SemanticQueryEngine:
         bare_pattern = r'\$\{([a-zA-Z_][a-zA-Z0-9_]*)\}'
         rendered = re.sub(bare_pattern, lambda m: m.group(1), rendered)
 
+        # Audit #4 — expand the dialect-portable local-date macro (calendar
+        # timezone joins) for THIS engine's dialect. No-op when absent.
+        if "APPBI_LOCAL_DATE" in rendered:
+            from app.services.dataset_calendar_service import expand_local_date_macros
+
+            rendered = expand_local_date_macros(rendered, self.database_type)
+
         return rendered
     
     def _build_where_clause(
@@ -2974,6 +3248,7 @@ class SemanticQueryEngine:
         explore: SemanticExplore | None = None,
         select_side_views: set[str] | None = None,
         joined_nodes: set[str] | None = None,
+        measure_fact_views: set[str] | None = None,
     ) -> str:
         """Build WHERE clause from filters.
 
@@ -3234,6 +3509,25 @@ class SemanticQueryEngine:
                             _strict_unreachable = not _drop_gate_resolver.resolve_paths(view_name)
                         except Exception:  # noqa: BLE001 — fall back to legacy on resolver error
                             _strict_unreachable = False
+                    # ── Separate the TWO filter concepts (root-cause of the ds84
+                    # "slicer wrong" report) ─────────────────────────────────
+                    # 1) HOW data is filtered = the MODEL structure. A filter on a
+                    #    dimension that is forward-M:1 reachable from a MEASURE'S
+                    #    FACT is the standard star-schema dim→fact filter and MUST
+                    #    apply — regardless of the chart's arbitrary base view and
+                    #    regardless of cross-filter direction.
+                    # 2) Cross-filter DIRECTION (single/both) is an add-on that
+                    #    only governs the genuinely direction-dependent cases
+                    #    (fact→dim reverse, dim→dim / fact→fact bridging).
+                    # The base-anchored strict resolver above conflates the two:
+                    # it drops a dim that IS related to the measure's fact merely
+                    # because the chart base is a *different* table needing a
+                    # reverse hop. Un-drop when the view is structurally related
+                    # to a measure's fact; the cross-fact/bridge protection (the
+                    # real Concept-2 case, unreachable from every measure fact)
+                    # is untouched.
+                    if _strict_unreachable and measure_fact_views and view_name in measure_fact_views:
+                        _strict_unreachable = False
                     if _strict_unreachable:
                         propagation_drops.append({
                             "field": field_ref,
@@ -3667,7 +3961,7 @@ class SemanticQueryEngine:
                     join_view = self._get_view_for_node(edge.to_node)
                 except ValueError:
                     return None
-                relation = self._snapshot_ref_for_view(join_view) or join_view.sql_table_name or edge.to_view
+                relation = self._snapshot_ref_for_view(join_view) or self._relation_sql_for_view(join_view) or edge.to_view
                 # Phase-B' — bail ONLY when a hop's relation embeds a *nested* CTE
                 # (the user's production case: `WITH a AS (WITH b AS (...))`
                 # wrapped as `(SELECT * FROM (WITH a AS (WITH b AS (...))) AS _src)`.
@@ -4053,6 +4347,11 @@ class SemanticQueryEngine:
         for j in (getattr(exp, "joins", None) or []):
             if not isinstance(j, dict):
                 continue
+            # Inactive joins are invisible to the resolver — treat as absent here
+            # too (see _m1_reachable_views) so relatedness checks stay consistent
+            # with the path the query builder actually renders.
+            if j.get("is_active") is False:
+                continue
             tgt = j.get("view") or j.get("to_view") or j.get("target") or j.get("name")
             if tgt:
                 out.add(str(tgt))
@@ -4122,8 +4421,23 @@ class SemanticQueryEngine:
             for j in (getattr(exp, "joins", None) or []):
                 if not isinstance(j, dict):
                     continue
+                # INACTIVE joins are invisible to the SemanticJoinResolver
+                # (skipped at graph construction), so the grain guard + measure
+                # isolation MUST ignore them too — otherwise a dim reachable ONLY
+                # via an inactive edge is wrongly classified "M:1-safe", and the
+                # isolation logic picks a path the query builder can't/ won't
+                # render (loud error at best, wrong-number isolation decision at
+                # worst). Default is active when the key is absent (legacy joins).
+                if j.get("is_active") is False:
+                    continue
+                # Semantic-audit 2026-07 (#9): CARDINALITY first — it is the
+                # canonical Phase-1 field and what SemanticJoinResolver reads;
+                # legacy `relationship` is only a fallback. Reading relationship
+                # first classified a join stored with divergent fields
+                # (cardinality=1:N, relationship left at its m2o default) as
+                # safe M:1 → silent fan-out double-count.
                 card = str(
-                    j.get("relationship") or j.get("cardinality") or j.get("type") or ""
+                    j.get("cardinality") or j.get("relationship") or j.get("type") or ""
                 ).strip().lower().replace("-", "_").replace(" ", "_")
                 # STRICT (PowerBI parity): traverse ONLY an EXPLICITLY
                 # many_to_one / one_to_one hop. An empty / unknown / garbage

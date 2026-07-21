@@ -521,7 +521,13 @@ def preview_chart_data(
         )
         return ChartPreviewDataResponse(**result)
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+        # Humanise internal dataset_table_<id> tokens → friendly table names so
+        # the DA sees "dim_customer" not "dataset_table_585" in the error.
+        from app.services.dataset_model_service import humanize_view_tokens
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=humanize_view_tokens(str(exc), db, getattr(dataset_obj, "id", 0)),
+        )
     except Exception as exc:
         logger.exception("Failed to preview chart data")
         raise HTTPException(
@@ -1027,6 +1033,16 @@ def get_chart_data(
     if perm == "none":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
 
+    # Composition principle #3: if this chart's dataset references parent datasets,
+    # the viewer must also have View on every parent. No-op for non-composition
+    # datasets (the vast majority) — zero impact on existing charts.
+    if chart.dataset_table_id is not None:
+        from app.services.dataset_crud import DatasetCRUDService
+        from app.services import dataset_grants_service
+        _dt = DatasetCRUDService.get_table_by_id(db, chart.dataset_table_id)
+        if _dt is not None and getattr(_dt, "dataset_id", None) is not None:
+            dataset_grants_service.require_view_lineage(db, current_user, _dt.dataset_id)
+
     extra_filters = None
     if filters:
         try:
@@ -1053,9 +1069,16 @@ def get_chart_data(
         # correct semantic; the previous 404 made DAs think the chart had
         # been deleted. Phase-11 ensures the message is Vietnamese-
         # friendly when the cause is engine-side (unreachable view).
+        # Humanise dataset_table_<id> tokens → friendly names for the DA.
+        from app.services.dataset_model_service import humanize_view_tokens
+        _dsid = 0
+        if chart.dataset_table_id is not None:
+            from app.services.dataset_crud import DatasetCRUDService
+            _dt2 = DatasetCRUDService.get_table_by_id(db, chart.dataset_table_id)
+            _dsid = getattr(_dt2, "dataset_id", 0) or 0
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e),
+            detail=humanize_view_tokens(str(e), db, _dsid),
         )
     except Exception as e:
         logger.exception(

@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useEffect, useMemo, useState } from 'react';
-import { AlertCircle, Code, Database, Loader2, Sigma } from 'lucide-react';
+import { AlertCircle, Boxes, Code, Database, Loader2, Sigma } from 'lucide-react';
 import { HelpTooltip } from '@/components/ui/HelpTooltip';
 
 import { AppModalShell } from '@/components/common/AppModalShell';
@@ -11,6 +11,7 @@ import type { AddTableInput, DatasetTable } from '@/hooks/use-datasets';
 import { CalculatedTableTab } from './CalculatedTableTab';
 import { PhysicalTableTab } from './PhysicalTableTab';
 import { QueryTableTab } from './QueryTableTab';
+import { DatasetRefTab } from './DatasetRefTab';
 
 interface AddTableModalProps {
   datasetId: number;
@@ -22,7 +23,7 @@ interface AddTableModalProps {
   availableTables?: DatasetTable[];
 }
 
-type SourceTab = 'physical' | 'query';
+type SourceTab = 'physical' | 'query' | 'dataset';
 
 function EditPhysicalForm({
   existingTable,
@@ -272,6 +273,19 @@ export function AddTableModal({
                 <Code className="h-4 w-4" />
                 From SQL Query
               </button>
+              <button
+                type="button"
+                onClick={() => setActiveSourceTab('dataset')}
+                className={`flex items-center gap-2 border-b-2 px-4 py-3 text-sm font-medium transition-colors ${
+                  activeSourceTab === 'dataset'
+                    ? 'border-brand text-brand'
+                    : 'border-transparent text-text-tertiary hover:text-text-secondary'
+                }`}
+                disabled={isPending}
+              >
+                <Boxes className="h-4 w-4" />
+                From Dataset
+              </button>
             </>
           ) : (
             <div className="flex items-center gap-2 border-b-2 border-brand px-4 py-3 text-brand">
@@ -322,6 +336,8 @@ export function AddTableModal({
             />
           ) : activeSourceTab === 'physical' ? (
             <PhysicalTableTab onAddTable={handleAddTable} isLoading={isPending} />
+          ) : activeSourceTab === 'dataset' ? (
+            <DatasetRefTab datasetId={datasetId} onAddTable={handleAddTable} isLoading={isPending} saveError={saveError} />
           ) : (
             <QueryTableTab onAddTable={handleAddTable} isLoading={isPending} saveError={saveError} />
           )}

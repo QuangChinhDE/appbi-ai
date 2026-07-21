@@ -1129,6 +1129,233 @@ class PosCartConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class BulkPreviewAggregate(BaseModel):
+    """A running total of the SELECTED rows, shown on the bulk-action bar before
+    commit (Phase-1 "tự tính tổng"). Computed client-side over the loaded
+    selection — no query — so a user sees e.g. "Tổng tiền: 57.800.000đ · 3 đơn"
+    before pressing the gộp button.
+    """
+
+    column: str = Field(..., min_length=1, max_length=120)
+    agg: Literal["sum", "avg", "min", "max", "count"] = "sum"
+    label: str = Field(..., min_length=1, max_length=80)
+    format: Optional[str] = Field(
+        default=None, description="Cell format key: number|integer|currency|percent|…"
+    )
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class BulkResourceInput(BaseModel):
+    """A related-table record the operator PICKS before running a bulk action.
+
+    Its columns can be written onto the new parent (``feeds``) and one numeric
+    column can act as a capacity limit for a constraint (``capacity_column``).
+    Example: pick a Vehicle → write its plate onto the trip + use its max-load
+    as the "tổng khối lượng ≤ tải trọng" limit.
+    """
+
+    id: str = Field(..., min_length=1, max_length=64)
+    label: str = Field(..., min_length=1, max_length=80)
+    source_screen_id: str = Field(
+        ..., min_length=1, max_length=64,
+        description="A table screen (usually hidden from nav) whose rows populate the picker — RLS-scoped read.",
+    )
+    value_column: str = Field(..., min_length=1, max_length=120, description="Column used as the option value.")
+    label_column: Optional[str] = Field(default=None, description="Column shown in the picker (defaults to value_column).")
+    required: bool = True
+    capacity_column: Optional[str] = Field(
+        default=None, description="Numeric column exposing a limit a constraint can reference."
+    )
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class BulkConstraint(BaseModel):
+    """A numeric guard over the SELECTION before commit: ``agg(column) op limit``.
+
+    ``limit`` is a fixed number, OR ``limit_from_resource`` names a
+    ``resource_inputs`` id whose ``capacity_column`` supplies the limit at
+    runtime (e.g. tổng khối lượng ≤ tải trọng của xe đã chọn). Evaluated on the
+    FE (badge + block) and re-checked by the server executor.
+    """
+
+    agg_column: str = Field(..., min_length=1, max_length=120)
+    agg: Literal["sum", "count", "avg", "min", "max"] = "sum"
+    op: Literal["<=", "<", ">=", ">"] = "<="
+    limit: Optional[float] = None
+    limit_from_resource: Optional[str] = Field(default=None, max_length=64)
+    label: Optional[str] = Field(default=None, max_length=80)
+    error_message: Optional[str] = Field(default=None, max_length=200)
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class BulkStep(BaseModel):
+    """One step of a SERVER-executed bulk recipe. Steps run in order; on a
+    failure the executor compensates (deletes the rows created by earlier
+    steps) so a partial "gộp" never lingers.
+
+    Kinds:
+      * ``create_record`` — insert ONE row into ``screen_id`` (the parent/header,
+        or a chained downstream record). May generate a code (``code_column`` +
+        ``code_prefix``), aggregate the selection (``aggregate_from_selected``),
+        pull a picked resource (``from_resource``) and link a prior step's code
+        (``link_columns``).
+      * ``create_lines_from_selected`` — insert ONE row per selected row into
+        ``screen_id`` (the detail lines). ``copy`` maps line→selected columns,
+        ``link_columns`` writes a parent step's code, ``assign_sequence`` sorts
+        the selection and numbers it into a column (thứ tự giao).
+      * ``update_selected`` — update EVERY selected row on THIS screen's table
+        (e.g. mark the source đề xuất as "Đã gộp"); ``link_columns`` can write a
+        created parent's code back onto the sources.
+    """
+
+    id: str = Field(..., min_length=1, max_length=64, description="Step id (referenced by link_columns).")
+    kind: Literal["create_record", "create_lines_from_selected", "update_selected"]
+    screen_id: Optional[str] = Field(
+        default=None, description="Screen the step writes to. Omit for update_selected (uses the action's screen)."
+    )
+    code_column: Optional[str] = Field(default=None, max_length=120, description="create_record: column to receive the generated code.")
+    code_prefix: Optional[str] = Field(default=None, max_length=12)
+    defaults: Dict[str, Any] = Field(default_factory=dict, description="Static values (support {{today}}/{{app_user.x}}).")
+    aggregate_from_selected: Dict[str, Dict[str, str]] = Field(
+        default_factory=dict,
+        description="create_record: {target_col: {column, agg}} — aggregate the selection into the new row.",
+    )
+    from_resource: Dict[str, str] = Field(
+        default_factory=dict,
+        description="{target_col: 'resource_id.resource_col'} — write a picked resource's field.",
+    )
+    copy: Dict[str, str] = Field(
+        default_factory=dict,
+        description="create_lines_from_selected: {line_col: selected_source_col} copied from each selected row.",
+    )
+    set: Dict[str, Any] = Field(default_factory=dict, description="Static values set on the written row(s).")
+    link_columns: Dict[str, str] = Field(
+        default_factory=dict,
+        description="{col: '<step_id>'} — write the code produced by an earlier create_record step.",
+    )
+    assign_sequence: Optional[Dict[str, str]] = Field(
+        default=None,
+        description="create_lines_from_selected: {order_by, into_col} — sort the selection then number 1..N.",
+    )
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class BulkAction(BaseModel):
+    """A "select many rows → combine into one parent" action on a table screen.
+
+    When a table screen declares ``bulk_actions`` the runtime renders a
+    checkbox column + a sticky action bar ("Đã chọn N — [actions]"). Clicking an
+    action GROUPS the selected child rows under one newly-created parent:
+
+    1. The runtime creates ONE parent row via ``parent_screen_id`` — a
+       client-generated code (``code_prefix`` + date/time) is written to the
+       parent's ``parent_code_column`` along with ``parent_defaults``.
+    2. Every selected child row is then updated: ``set_column`` = that code
+       (plus any ``also_set`` columns), through the normal per-row update path
+       so RLS/writable-column rules still apply.
+
+    This is exactly "gom nhiều đơn thành 1 hóa đơn" / "gom nhiều hóa đơn vào 1
+    chuyến giao" — no bespoke bulk-write endpoint, just orchestration over the
+    existing insert + update paths.
+    """
+
+    id: str = Field(..., min_length=1, max_length=64)
+    label: str = Field(..., min_length=1, max_length=120)
+    icon: Optional[str] = None
+    style: Literal["primary", "secondary", "ghost", "danger"] = "primary"
+    set_column: str = Field(
+        default="", max_length=120,
+        description="SIMPLE mode (no steps): child column set to the new parent's code on every selected row (the FK link).",
+    )
+    also_set: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="SIMPLE mode: extra child columns set on every selected row (e.g. {'trang_thai': 'Đã gom vào hóa đơn'}).",
+    )
+    parent_screen_id: str = Field(
+        default="", max_length=64,
+        description="SIMPLE mode: screen id (bound to the parent table) used to create the ONE parent row.",
+    )
+    parent_code_column: str = Field(
+        default="", max_length=120,
+        description="SIMPLE mode: parent column that receives the generated code (e.g. ma_hoa_don / ma_chuyen).",
+    )
+    code_prefix: str = Field(default="HD", max_length=12, description="Prefix of the generated code (e.g. HD / CH).")
+    parent_defaults: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Other values for the new parent row (e.g. {'trang_thai': 'Nháp'}). Supports {{today}}/{{app_user.x}}.",
+    )
+    confirm_message: Optional[str] = Field(default=None, max_length=200)
+    min_selection: int = Field(default=1, ge=1, le=200)
+    success_message: Optional[str] = Field(default=None, max_length=200)
+    visible_for_roles: List[str] = Field(default_factory=list)
+    # ── Phase-1 precondition guard + running totals (FE-evaluated) ──────────
+    require_same: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Precondition: every selected row must share the SAME value in each of "
+            "these columns or the action is blocked with a reason (e.g. ['ma_kh'] = "
+            "chỉ gộp các đơn CÙNG khách hàng / ['nha_cung_cap'] = cùng nhà cung cấp)."
+        ),
+    )
+    preview_aggregates: List[BulkPreviewAggregate] = Field(
+        default_factory=list,
+        description="Running totals of the selected rows shown on the action bar before commit (tự tính tổng).",
+    )
+    # ── Phase-2 advanced: server-executed multi-step recipe + guards + pickers ──
+    resource_inputs: List[BulkResourceInput] = Field(
+        default_factory=list,
+        description="Related records the operator picks before running (e.g. Xe/Kho); feed the parent + supply constraint limits.",
+    )
+    constraints: List[BulkConstraint] = Field(
+        default_factory=list,
+        description="Numeric guards over the selection (e.g. tổng khối lượng ≤ tải trọng xe). Shown as a live badge + block.",
+    )
+    steps: List[BulkStep] = Field(
+        default_factory=list,
+        description=(
+            "SERVER-executed recipe. When non-empty the runtime opens a modal (pick "
+            "resources → live totals/badge → confirm) and the server runs the steps in "
+            "order with compensation-rollback — instead of the simple client path. Empty "
+            "= simple mode (uses set_column/parent_screen_id/parent_code_column)."
+        ),
+    )
+
+    model_config = ConfigDict(extra="forbid")
+
+    @model_validator(mode="after")
+    def _check_bulk_mode(self) -> "BulkAction":
+        if not self.steps:
+            missing = [
+                name for name, val in (
+                    ("set_column", self.set_column),
+                    ("parent_screen_id", self.parent_screen_id),
+                    ("parent_code_column", self.parent_code_column),
+                )
+                if not str(val or "").strip()
+            ]
+            if missing:
+                raise ValueError(
+                    f"bulk_action '{self.id}': simple mode (no steps) requires {missing}."
+                )
+        # A constraint that references a resource must name an existing input.
+        res_ids = {r.id for r in self.resource_inputs}
+        for c in self.constraints:
+            if c.limit_from_resource and c.limit_from_resource not in res_ids:
+                raise ValueError(
+                    f"bulk_action '{self.id}': constraint.limit_from_resource "
+                    f"'{c.limit_from_resource}' has no matching resource_inputs id."
+                )
+            if c.limit is None and not c.limit_from_resource:
+                raise ValueError(
+                    f"bulk_action '{self.id}': constraint on '{c.agg_column}' needs limit or limit_from_resource."
+                )
+        return self
+
+
 class TableScreenSpec(BaseModel):
     """A spreadsheet-style screen bound to one dataset table.
 
@@ -1249,6 +1476,15 @@ class TableScreenSpec(BaseModel):
             "scan → on-screen line list → one Submit persists all lines via "
             "bulk-insert. The read side attaches the resolved product catalog as "
             "``pos_catalog``. None = ordinary editable/read-only grid."
+        ),
+    )
+    bulk_actions: List[BulkAction] = Field(
+        default_factory=list,
+        description=(
+            "Select-many → combine-into-one actions. When non-empty the runtime "
+            "renders a per-row checkbox + a sticky action bar; each action creates "
+            "one parent row and links the selected rows to it (gom đơn → hóa đơn, "
+            "gom hóa đơn → chuyến giao)."
         ),
     )
 

@@ -77,6 +77,7 @@ import {
 } from '@/lib/wb-theme';
 import { enqueueSubmit, newOpId } from '@/lib/offline/queue';
 import { isNetworkError } from '@/lib/offline/sync';
+import { toast } from '@/lib/toast';
 
 // Icon mapping is centralised in ScreenIconRegistry so the builder
 // picker and the runtime can't drift. Anything not in the registry
@@ -3037,6 +3038,192 @@ function QrField({
 // ── Barcode / QR scan widget (widget='barcode') ──────────────────────────
 // Uses the native BarcodeDetector when available (Chrome/Android), always with
 // a manual-entry fallback. Value is the decoded string (tank/lot/badge code).
+// Modal for an advanced "gộp & điều phối" action: pick resource(s), see live
+// totals + capacity/constraint badges, then run the server recipe. Lives on the
+// same table screen (an overlay — NOT a separate nav screen).
+function BulkRecipeModal({
+  action,
+  selectedRows,
+  token,
+  workboardId,
+  accent,
+  busy,
+  onClose,
+  onRun,
+}: {
+  action: NonNullable<NonNullable<TableScreenResponse['table_view']>['bulk_actions']>[number];
+  selectedRows: Array<Record<string, unknown>>;
+  token: string;
+  workboardId: number;
+  accent: string;
+  colLabels: Record<string, string>;
+  busy: boolean;
+  onClose: () => void;
+  onRun: (resources: Record<string, Record<string, unknown>>) => void;
+}) {
+  const resourceInputs = action.resource_inputs || [];
+  const constraints = action.constraints || [];
+  const previewAgg = action.preview_aggregates || [];
+  const [options, setOptions] = useState<Record<string, Array<Record<string, unknown>>>>({});
+  const [picked, setPicked] = useState<Record<string, string>>({});
+  const [loading, setLoading] = useState(resourceInputs.length > 0);
+
+  useEffect(() => {
+    if (!resourceInputs.length) {
+      setLoading(false);
+      return;
+    }
+    let alive = true;
+    Promise.all(
+      resourceInputs.map((ri) =>
+        workspaceApi
+          .tableScreenRows(token, workboardId, ri.source_screen_id, { page_size: 200 })
+          .then((r) => [ri.id, r.rows] as const)
+          .catch(() => [ri.id, [] as Array<Record<string, unknown>>] as const),
+      ),
+    ).then((pairs) => {
+      if (alive) {
+        setOptions(Object.fromEntries(pairs));
+        setLoading(false);
+      }
+    });
+    return () => {
+      alive = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token, workboardId]);
+
+  const aggregate = (col: string, kind: string) => {
+    if (kind === 'count') return selectedRows.filter((r) => r[col] !== null && r[col] !== undefined && r[col] !== '').length;
+    const nums = selectedRows.map((r) => Number(r[col])).filter((n) => !Number.isNaN(n));
+    if (!nums.length) return 0;
+    if (kind === 'avg') return nums.reduce((s, n) => s + n, 0) / nums.length;
+    if (kind === 'min') return Math.min(...nums);
+    if (kind === 'max') return Math.max(...nums);
+    return nums.reduce((s, n) => s + n, 0);
+  };
+  const fmt = (n: number) => new Intl.NumberFormat('vi-VN').format(Math.round(n));
+
+  const resources: Record<string, Record<string, unknown>> = {};
+  for (const ri of resourceInputs) {
+    const row = (options[ri.id] || []).find((o) => String(o[ri.value_column]) === picked[ri.id]);
+    if (row) resources[ri.id] = row;
+  }
+
+  const constraintState = constraints.map((c) => {
+    const actual = aggregate(c.agg_column, c.agg || 'sum');
+    let limit: number | null = c.limit ?? null;
+    if (c.limit_from_resource) {
+      const ri = resourceInputs.find((r) => r.id === c.limit_from_resource);
+      const row = ri ? resources[ri.id] : undefined;
+      limit = ri && ri.capacity_column && row != null ? Number(row[ri.capacity_column]) : null;
+    }
+    const op = c.op || '<=';
+    const ok =
+      limit == null
+        ? false
+        : { '<=': actual <= limit, '<': actual < limit, '>=': actual >= limit, '>': actual > limit }[op];
+    const pct = limit && limit > 0 ? (actual / limit) * 100 : 0;
+    return { c, actual, limit, ok, pct };
+  });
+
+  const missingResource = resourceInputs.some((ri) => (ri.required ?? true) && !picked[ri.id]);
+  const anyViolated = constraintState.some((s) => !s.ok);
+  const canRun = !busy && !missingResource && !anyViolated && selectedRows.length > 0;
+
+  return (
+    <div
+      className="fixed inset-0 z-40 flex items-center justify-center bg-slate-900/40 p-4"
+      onClick={onClose}
+    >
+      <div className="w-full max-w-lg rounded-2xl bg-white p-5 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between">
+          <h3 className="text-base font-bold text-slate-800">
+            {action.icon ? `${action.icon} ` : ''}
+            {action.label}
+          </h3>
+          <button onClick={onClose} className="rounded p-1 text-slate-400 hover:bg-slate-100">✕</button>
+        </div>
+        <p className="mt-1 text-sm text-slate-500">Đã chọn {selectedRows.length} dòng.</p>
+
+        {previewAgg.length ? (
+          <div className="mt-3 flex flex-wrap gap-1.5">
+            {previewAgg.map((pa) => (
+              <span key={pa.label} className="inline-flex items-baseline gap-1 rounded-full bg-slate-100 px-2.5 py-1 text-xs text-slate-600">
+                {pa.label}:
+                <span className="font-semibold text-slate-800">
+                  <FormattedCell value={aggregate(pa.column, pa.agg || 'sum')} format={pa.format ?? 'number'} />
+                </span>
+              </span>
+            ))}
+          </div>
+        ) : null}
+
+        {loading ? (
+          <p className="mt-4 text-sm text-slate-500">Đang tải lựa chọn…</p>
+        ) : (
+          resourceInputs.map((ri) => (
+            <div key={ri.id} className="mt-3">
+              <label className="text-xs font-medium text-slate-500">
+                {ri.label}
+                {(ri.required ?? true) ? ' *' : ''}
+              </label>
+              <select
+                value={picked[ri.id] || ''}
+                onChange={(e) => setPicked((p) => ({ ...p, [ri.id]: e.target.value }))}
+                className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+              >
+                <option value="">— Chọn —</option>
+                {(options[ri.id] || []).map((o, i) => (
+                  <option key={i} value={String(o[ri.value_column])}>
+                    {String(o[ri.label_column || ri.value_column] ?? o[ri.value_column] ?? '')}
+                  </option>
+                ))}
+              </select>
+            </div>
+          ))
+        )}
+
+        {constraintState.map((s, i) => (
+          <div
+            key={i}
+            className={`mt-3 rounded-lg px-3 py-2 text-sm ${s.ok ? 'bg-emerald-50 text-emerald-800' : 'bg-rose-50 text-rose-800'}`}
+          >
+            <div className="flex items-center justify-between font-medium">
+              <span>{s.c.label || s.c.agg_column}</span>
+              <span>
+                {fmt(s.actual)} {s.c.op || '<='} {s.limit == null ? '—' : fmt(s.limit)}
+                {s.limit != null ? ` (${s.pct.toFixed(0)}%)` : ''}
+              </span>
+            </div>
+            {!s.ok ? (
+              <div className="mt-0.5 text-xs">
+                {s.limit == null ? 'Hãy chọn tài nguyên để kiểm tra ràng buộc.' : (s.c.error_message || 'Vượt giới hạn — không thể xác nhận.')}
+              </div>
+            ) : null}
+          </div>
+        ))}
+
+        <div className="mt-5 flex justify-end gap-2">
+          <button onClick={onClose} className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm text-slate-700 hover:bg-slate-50">
+            Huỷ
+          </button>
+          <button
+            type="button"
+            disabled={!canRun}
+            onClick={() => onRun(resources)}
+            style={{ backgroundColor: accent }}
+            className="inline-flex items-center gap-1.5 rounded-lg px-4 py-2 text-sm font-semibold text-white shadow-sm disabled:opacity-40"
+          >
+            {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+            Xác nhận
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function BarcodeField({
   value,
   onChange,
@@ -4651,6 +4838,14 @@ function TableScreen({
   // 'edit' opens an existing row; 'create' opens a blank row (same side panel,
   // one consistent concept for add + edit) — used by the calendar day-click.
   const [panelMode, setPanelMode] = useState<'edit' | 'create'>('edit');
+  // Multi-select (bulk "gom" actions): set of selected row keys + busy flag.
+  const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set());
+  const [bulkBusy, setBulkBusy] = useState(false);
+  // Advanced "gộp & điều phối": the action whose modal (resource pickers +
+  // constraint badges) is open, or null. Simple/steps-only actions don't use it.
+  const [bulkModal, setBulkModal] = useState<
+    NonNullable<NonNullable<TableScreenResponse['table_view']>['bulk_actions']>[number] | null
+  >(null);
 
   useEffect(() => {
     setCurrent(spec);
@@ -4662,6 +4857,8 @@ function TableScreen({
     setPanelDetail(null);
     setPanelDraft({});
     setPanelError(null);
+    setSelectedKeys(new Set());
+    setBulkModal(null);
   }, [spec]);
 
   const tv = (current.table_view as TableScreenResponse['table_view']) || {};
@@ -4781,6 +4978,60 @@ function TableScreen({
   });
   const empty = tv.empty_state_message || 'No data yet.';
 
+  // Bulk "gom" actions (select many → combine into one parent). Role-filtered
+  // exactly like row_actions; presence toggles the checkbox column + action bar.
+  const bulkActionsRaw = (tv.bulk_actions || []) as NonNullable<
+    TableScreenResponse['table_view']
+  >['bulk_actions'];
+  const bulkActions = (bulkActionsRaw || []).filter((a) => {
+    const allow = a.visible_for_roles;
+    if (!allow || allow.length === 0) return true;
+    if (!viewerRole) return true;
+    const target = viewerRole.toLowerCase();
+    return allow.some((r) => r.toLowerCase() === target);
+  });
+  const selectionEnabled = bulkActions.length > 0 && pkCols.length > 0;
+
+  // Phase-1 helpers: totals of the selected rows (tự tính tổng) + the
+  // require_same precondition (all selected rows must share a value, e.g. same
+  // customer/supplier) — both evaluated client-side over the loaded selection.
+  const selectedRows = rows.filter((r) => selectedKeys.has(tableRowKey(r, pkCols)));
+  const bulkGuardBad = (action: { require_same?: string[] }): string[] => {
+    const same = action.require_same || [];
+    if (!same.length || selectedRows.length <= 1) return [];
+    return same.filter(
+      (c) => new Set(selectedRows.map((r) => JSON.stringify(r[c] ?? null))).size > 1,
+    );
+  };
+  const bulkAggValue = (a: { column: string; agg?: string }): number | null => {
+    const agg = a.agg || 'sum';
+    if (agg === 'count')
+      return selectedRows.filter((r) => r[a.column] !== null && r[a.column] !== undefined && r[a.column] !== '').length;
+    const nums = selectedRows
+      .map((r) => Number(r[a.column]))
+      .filter((n) => !Number.isNaN(n));
+    if (!nums.length) return null;
+    if (agg === 'sum') return nums.reduce((s, n) => s + n, 0);
+    if (agg === 'avg') return nums.reduce((s, n) => s + n, 0) / nums.length;
+    if (agg === 'min') return Math.min(...nums);
+    if (agg === 'max') return Math.max(...nums);
+    return null;
+  };
+  // Deduped preview chips across all actions (usually one primary action).
+  const previewChips = (() => {
+    const seen = new Set<string>();
+    const out: Array<{ label: string; column: string; agg?: string; format?: string | null }> = [];
+    for (const a of bulkActions) {
+      for (const agg of a.preview_aggregates || []) {
+        if (agg && agg.label && !seen.has(agg.label)) {
+          seen.add(agg.label);
+          out.push(agg);
+        }
+      }
+    }
+    return out;
+  })();
+
   // FE no longer evaluates computed columns locally — the server-side
   // QuickJS sandbox is the only place that runs ``formula`` bodies. When
   // an inline cell edit changes a non-derived column, we mark the row
@@ -4873,6 +5124,146 @@ function TableScreen({
   // Filter apply/clear always restarts at page 1.
   const reloadRows = async (values: Record<string, string>) => {
     await loadRows(values, 1);
+  };
+
+  // ── Multi-select "gom" ──────────────────────────────────────────────────
+  const toggleRowSelected = (rowKey: string) => {
+    setSelectedKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(rowKey)) next.delete(rowKey);
+      else next.add(rowKey);
+      return next;
+    });
+  };
+  const allRowKeys = () => rows.map((r) => tableRowKey(r, pkCols));
+  const toggleSelectAll = () => {
+    setSelectedKeys((prev) => {
+      const keys = allRowKeys();
+      const allSelected = keys.length > 0 && keys.every((k) => prev.has(k));
+      return allSelected ? new Set() : new Set(keys);
+    });
+  };
+
+  // Phase-2 advanced: run the server-executed recipe (steps/resources/constraints).
+  const runServerBulkAction = async (
+    action: NonNullable<NonNullable<TableScreenResponse['table_view']>['bulk_actions']>[number],
+    resources: Record<string, Record<string, unknown>>,
+  ) => {
+    if (bulkBusy) return;
+    setBulkBusy(true);
+    try {
+      const selected_pks = [...selectedKeys]
+        .map((key) => {
+          const row = rows.find((r) => tableRowKey(r, pkCols) === key);
+          const pk: Record<string, unknown> = {};
+          if (row) for (const c of pkCols) pk[c] = row[c];
+          return pk;
+        })
+        .filter((pk) => Object.keys(pk).length > 0);
+      const res = await workspaceApi.bulkAction(token, workboardId, current.screen_id, {
+        action_id: action.id,
+        selected_pks,
+        resources,
+      });
+      toast.success((res.success_message || 'Đã hoàn tất') + (res.primary_code ? ` → ${res.primary_code}` : ''));
+      setSelectedKeys(new Set());
+      setBulkModal(null);
+      await reloadRows(filterValues);
+    } catch (err: unknown) {
+      const detail = (err as { response?: { data?: { detail?: unknown } } })?.response?.data?.detail;
+      const msg =
+        detail && typeof detail === 'object' && 'message' in detail
+          ? String((detail as { message?: unknown }).message)
+          : typeof detail === 'string'
+            ? detail
+            : 'Thao tác thất bại.';
+      toast.error(msg);
+    } finally {
+      setBulkBusy(false);
+    }
+  };
+
+  const runBulkAction = async (
+    action: NonNullable<NonNullable<TableScreenResponse['table_view']>['bulk_actions']>[number],
+  ) => {
+    if (bulkBusy) return;
+    const keys = [...selectedKeys];
+    const min = action.min_selection || 1;
+    if (keys.length < min) {
+      toast.warning(`Chọn tối thiểu ${min} dòng.`);
+      return;
+    }
+    const badSame = bulkGuardBad(action);
+    if (badSame.length) {
+      toast.warning(
+        `Chỉ gộp được các dòng cùng: ${badSame.map((c) => colLabels[c] || c).join(', ')}.`,
+      );
+      return;
+    }
+    // Advanced recipe → server executor. Open the modal when the operator must
+    // pick a resource or a constraint needs showing; otherwise confirm + run.
+    const advanced =
+      (action.steps?.length || 0) > 0 ||
+      (action.resource_inputs?.length || 0) > 0 ||
+      (action.constraints?.length || 0) > 0;
+    if (advanced) {
+      if ((action.resource_inputs?.length || 0) > 0 || (action.constraints?.length || 0) > 0) {
+        setBulkModal(action);
+        return;
+      }
+      if (action.confirm_message && !window.confirm(action.confirm_message.replace('{n}', String(keys.length)))) return;
+      await runServerBulkAction(action, {});
+      return;
+    }
+    if (action.confirm_message) {
+      const msg = action.confirm_message.replace('{n}', String(keys.length));
+      if (!window.confirm(msg)) return;
+    }
+    setBulkBusy(true);
+    try {
+      // Generate a readable, unique code client-side (prefix + YYMMDD-HHMMSS).
+      const d = new Date();
+      const p = (n: number) => String(n).padStart(2, '0');
+      const code =
+        `${action.code_prefix || 'HD'}-${String(d.getFullYear()).slice(2)}${p(d.getMonth() + 1)}` +
+        `${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+      // 1) Create the ONE parent row (invoice / trip); screen default_values
+      //    fill date + creator server-side.
+      await workspaceApi.insertScreenRow(token, workboardId, action.parent_screen_id, {
+        [action.parent_code_column]: code,
+        ...((action.parent_defaults as Record<string, unknown>) || {}),
+      });
+      // 2) Link each selected child row to the new parent.
+      let ok = 0;
+      const failed: string[] = [];
+      for (const key of keys) {
+        const row = rows.find((r) => tableRowKey(r, pkCols) === key);
+        if (!row) continue;
+        const pk: Record<string, unknown> = {};
+        for (const c of pkCols) pk[c] = row[c];
+        try {
+          await workspaceApi.updateScreenRow(token, workboardId, current.screen_id, pk, {
+            [action.set_column]: code,
+            ...((action.also_set as Record<string, unknown>) || {}),
+          });
+          ok += 1;
+        } catch {
+          failed.push(key);
+        }
+      }
+      const base = (action.success_message || 'Đã gộp {n} dòng').replace('{n}', String(ok));
+      if (failed.length) toast.warning(`${base} → ${code} (${failed.length} lỗi)`);
+      else toast.success(`${base} → ${code}`);
+      setSelectedKeys(new Set());
+      await reloadRows(filterValues);
+    } catch (err: unknown) {
+      const msg =
+        (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ||
+        'Không tạo được bản ghi tổng hợp.';
+      toast.error(`Gộp thất bại: ${String(msg)}`);
+    } finally {
+      setBulkBusy(false);
+    }
   };
 
   // A full page implies there may be more rows — cheap "has next" without a
@@ -5297,6 +5688,87 @@ function TableScreen({
           onAddOnDate={(d) => openCreatePanel({ [tv.calendar_config!.date_column]: d })}
         />
       ) : (
+      <>
+      {selectionEnabled && selectedKeys.size > 0 ? (
+        <div className="sticky top-0 z-20 mb-2 flex flex-wrap items-center gap-3 rounded-xl border border-slate-200 bg-white/95 px-4 py-2.5 shadow-md backdrop-blur">
+          <span className="text-sm font-semibold text-slate-800">
+            Đã chọn {selectedKeys.size} dòng
+          </span>
+          <button
+            type="button"
+            onClick={() => setSelectedKeys(new Set())}
+            className="text-xs font-medium text-slate-500 hover:text-slate-700 hover:underline"
+          >
+            Bỏ chọn
+          </button>
+          {previewChips.length > 0 ? (
+            <div className="flex flex-wrap items-center gap-1.5">
+              {previewChips.map((c) => {
+                const v = bulkAggValue(c);
+                return (
+                  <span
+                    key={c.label}
+                    className="inline-flex items-baseline gap-1 rounded-full bg-slate-100 px-2.5 py-1 text-xs text-slate-600"
+                  >
+                    {c.label}:
+                    <span className="font-semibold text-slate-800">
+                      {v === null ? '—' : <FormattedCell value={v} format={c.format ?? 'number'} />}
+                    </span>
+                  </span>
+                );
+              })}
+            </div>
+          ) : null}
+          <div className="ml-auto flex flex-wrap items-center gap-2">
+            {bulkActions.map((a) => {
+              const bad = bulkGuardBad(a);
+              const blocked = bad.length > 0;
+              const style = a.style || 'primary';
+              const cls =
+                style === 'danger'
+                  ? 'bg-rose-600 text-white hover:bg-rose-700'
+                  : style === 'secondary'
+                    ? 'border border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
+                    : style === 'ghost'
+                      ? 'text-slate-700 hover:bg-slate-100'
+                      : 'text-white';
+              const inlineStyle = style === 'primary' && !blocked ? { backgroundColor: accent } : undefined;
+              return (
+                <button
+                  key={a.id}
+                  type="button"
+                  disabled={bulkBusy || blocked}
+                  onClick={() => void runBulkAction(a)}
+                  title={
+                    blocked
+                      ? `Chỉ gộp được các dòng cùng: ${bad.map((c) => colLabels[c] || c).join(', ')}`
+                      : a.label
+                  }
+                  className={`inline-flex items-center gap-1.5 rounded-lg px-3.5 py-1.5 text-sm font-semibold shadow-sm disabled:opacity-50 ${cls}`}
+                  style={inlineStyle}
+                >
+                  {bulkBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+                  {a.icon ? <span>{a.icon}</span> : null}
+                  {a.label}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      ) : null}
+      {bulkModal ? (
+        <BulkRecipeModal
+          action={bulkModal}
+          selectedRows={selectedRows}
+          token={token}
+          workboardId={workboardId}
+          accent={accent}
+          colLabels={colLabels}
+          busy={bulkBusy}
+          onClose={() => setBulkModal(null)}
+          onRun={(resources) => void runServerBulkAction(bulkModal, resources)}
+        />
+      ) : null}
       <div className="max-w-full overflow-x-auto overscroll-x-contain">
         <table className="min-w-max w-full text-sm">
           <thead>
@@ -5304,6 +5776,19 @@ function TableScreen({
               <tr className="border-b border-slate-200 bg-slate-100">
                 {(() => {
                   const cells: React.ReactNode[] = [];
+                  if (selectionEnabled) {
+                    cells.push(
+                      <th key="g:sel" rowSpan={2} className="w-10 px-2 text-center align-middle">
+                        <input
+                          type="checkbox"
+                          aria-label="Chọn tất cả"
+                          className="h-4 w-4 cursor-pointer accent-teal-600"
+                          checked={rows.length > 0 && rows.every((r) => selectedKeys.has(tableRowKey(r, pkCols)))}
+                          onChange={toggleSelectAll}
+                        />
+                      </th>,
+                    );
+                  }
                   let i = 0;
                   while (i < cols.length) {
                     const col = cols[i];
@@ -5340,6 +5825,17 @@ function TableScreen({
               </tr>
             ) : null}
             <tr className="border-b border-slate-200 bg-slate-50">
+              {selectionEnabled && columnGroups.length === 0 ? (
+                <th className="w-10 px-2 text-center align-middle">
+                  <input
+                    type="checkbox"
+                    aria-label="Chọn tất cả"
+                    className="h-4 w-4 cursor-pointer accent-teal-600"
+                    checked={rows.length > 0 && rows.every((r) => selectedKeys.has(tableRowKey(r, pkCols)))}
+                    onChange={toggleSelectAll}
+                  />
+                </th>
+              ) : null}
               {cols.map((c) => {
                 if (columnGroups.length > 0 && !groupedColumns.has(c)) return null;
                 const computedSpec = computedSpecs.find((cc) => cc.name === c);
@@ -5398,7 +5894,11 @@ function TableScreen({
             {rows.length === 0 && !allowAdd ? (
               <tr>
                 <td
-                  colSpan={cols.length + (rowActions.length > 0 || isEditable ? 1 : 0)}
+                  colSpan={
+                    cols.length +
+                    (rowActions.length > 0 || isEditable ? 1 : 0) +
+                    (selectionEnabled ? 1 : 0)
+                  }
                   className="p-10 text-center text-sm text-slate-500"
                 >
                   {empty}
@@ -5423,6 +5923,20 @@ function TableScreen({
                   } ${panelEnabled && pkCols.length > 0 ? 'cursor-pointer' : ''}`}
                   onClick={(event) => onRowClick(row, event)}
                 >
+                  {selectionEnabled ? (
+                    <td
+                      className="w-10 px-2 text-center align-middle"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <input
+                        type="checkbox"
+                        aria-label="Chọn dòng"
+                        className="h-4 w-4 cursor-pointer accent-teal-600"
+                        checked={selectedKeys.has(rowKey)}
+                        onChange={() => toggleRowSelected(rowKey)}
+                      />
+                    </td>
+                  ) : null}
                   {cols.map((c) => {
                     if (mergeHiddenCells.has(`${c}:${idx}`)) return null;
                     const rowspan = mergeByColRow.get(`${c}:${idx}`);
@@ -5518,6 +6032,7 @@ function TableScreen({
             })}
             {allowAdd ? (
               <tr className="border-b border-slate-100 bg-slate-50/40">
+                {selectionEnabled ? <td className="w-10" /> : null}
                 {cols.map((c) => {
                   const derived = derivedCols.has(c);
                   const editable = !derived && (editableCols.has(c) || requiredCols.has(c));
@@ -5575,6 +6090,7 @@ function TableScreen({
             ) : null}
             {totalsRow && Object.keys(totalsRow).length > 0 ? (
               <tr className="border-t-2 border-slate-300 bg-slate-100/80 font-medium">
+                {selectionEnabled ? <td className="w-10" /> : null}
                 {cols.map((c) => {
                   const total = totalsRow[c];
                   const kind = totalsSpec[c];
@@ -5602,6 +6118,7 @@ function TableScreen({
           </tbody>
         </table>
       </div>
+      </>
       )}
 
       {(tablePage > 1 || hasNextPage) && (

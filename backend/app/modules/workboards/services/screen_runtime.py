@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import itertools
 import json
+import numbers
 import re
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set
@@ -182,6 +183,14 @@ def _coerce_number(value: Any) -> Optional[float]:
         return None
     if isinstance(value, (int, float)):
         return float(value)
+    # PostgreSQL numeric/decimal columns come back as Decimal (and other
+    # backends may return Fraction). numbers.Number covers both without a
+    # hard import of decimal here; str stays on the locale-aware parser.
+    if isinstance(value, numbers.Number):
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
     if isinstance(value, str):
         return _parse_locale_number(value)
     return None

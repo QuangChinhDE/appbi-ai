@@ -333,11 +333,20 @@ class SemanticJoinResolver:
         # 'many_to_one' matches the dominant star-schema FK→PK pattern.
         raw_card = join.get("cardinality") or join.get("relationship")
         cardinality = normalize_cardinality(raw_card)
+        # ── ONE canonical rule (refactor 2026-07) ────────────────────────────
+        # The SQL join type is DERIVED, never authored. Runtime is ALWAYS
+        # FACT LEFT JOIN DIM: the base/fact side keeps all its rows, unmatched
+        # dim → NULL. Cardinality is the single source of truth for direction;
+        # join-type is not part of the semantic identity and must not be mixed
+        # in. We therefore IGNORE any stored ``type`` (legacy data may carry
+        # ``right``/``full`` from the old LEFT<->RIGHT swap) and force ``left``.
+        # Reverse edges (cross_filter=both) are likewise constructed as ``left``.
+        _derived_type = "left"
         return JoinEdge(
             from_node=from_node,
             to_node=alias,
             to_view=to_view,
-            type=str(join.get("type") or "left"),
+            type=_derived_type,
             sql_on=str(join.get("sql_on") or ""),
             from_column=(str(join.get("from_column") or "").strip() or None),
             to_column=(str(join.get("to_column") or "").strip() or None),

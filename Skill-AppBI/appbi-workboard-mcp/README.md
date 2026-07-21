@@ -142,6 +142,17 @@ only the fields listed in the design guide are accepted.
    backend does not auto-generate one, and workspace menus key by slug.
 4. **Public links require the owner PIN rotated off the default** before
    `create_workboard_public_link` succeeds.
+5. **POS scan-cart (`table.pos_cart`) line screen still needs `allow_add_row: true`
+   + ≥1 `editable_column`** — the runtime bulk-insert of the cart lines is refused
+   otherwise (`"Adding rows is disabled"`). Omit `amount_column` if the line total
+   is a DB generated column.
+6. **"Gom nhiều → 1" is `table.bulk_actions`** (checkbox multi-select → create one
+   parent + link selected rows): e.g. gom nhiều đơn → 1 hóa đơn, gom nhiều hóa đơn
+   → 1 chuyến giao. `set_column` (+`also_set` keys) must be in the screen's RLS
+   `writable_columns`; `parent_screen_id` must be a screen that allows create.
+7. **Rollup vs lookup**: `lookup_columns` pull ONE value from a related table;
+   `rollup_columns` AGGREGATE child rows (đơn total = SUM of its lines). Both are
+   read-only — their `name` goes in `columns`, never `editable_columns`.
 
 ## Hit an error while building? Want to extend the MCP?
 

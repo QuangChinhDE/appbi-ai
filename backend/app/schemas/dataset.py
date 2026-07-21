@@ -134,10 +134,13 @@ class DatasetTableBase(BaseModel):
 class TableCreate(DatasetTableBase):
     """Schema for adding a table to dataset"""
     datasource_id: Optional[int] = None
-    source_kind: str = Field(default="physical_table", description="'physical_table', 'sql_query', or 'derived_table'")
+    source_kind: str = Field(default="physical_table", description="'physical_table', 'sql_query', 'derived_table', or 'dataset'")
     source_table_name: Optional[str] = Field(None, description="Full table name for physical_table")
     source_query: Optional[str] = Field(None, description="SQL query for sql_query or derived_table")
-    
+    # Dataset-on-Dataset composition (source_kind == 'dataset'):
+    parent_dataset_id: Optional[int] = Field(None, description="Parent dataset id (source_kind='dataset')")
+    parent_dataset_table_id: Optional[int] = Field(None, description="Parent dataset table id (source_kind='dataset')")
+
     @model_validator(mode='after')
     def validate_source(self):
         """Validate that source fields match source_kind"""
@@ -156,9 +159,16 @@ class TableCreate(DatasetTableBase):
                 raise ValueError("datasource_id must be omitted when source_kind is 'derived_table'")
             if not self.source_query:
                 raise ValueError("source_query is required when source_kind is 'derived_table'")
+        elif self.source_kind == "dataset":
+            if self.parent_dataset_id is None or self.parent_dataset_table_id is None:
+                raise ValueError(
+                    "parent_dataset_id and parent_dataset_table_id are required when source_kind is 'dataset'"
+                )
+            if self.datasource_id is not None or self.source_query:
+                raise ValueError("datasource_id/source_query must be omitted when source_kind is 'dataset'")
         else:
             raise ValueError(
-                f"Invalid source_kind: {self.source_kind}. Must be 'physical_table', 'sql_query', or 'derived_table'"
+                f"Invalid source_kind: {self.source_kind}. Must be 'physical_table', 'sql_query', 'derived_table', or 'dataset'"
             )
         return self
 

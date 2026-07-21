@@ -365,6 +365,35 @@ def _normalize_relationship_type(relationship: str | None) -> str:
     return normalized
 
 
+def _canonicalize_join_orientation(
+    cardinality_canonical: str,
+    *,
+    has_alias: bool,
+    both_real_tables: bool,
+) -> tuple[bool, str]:
+    """ONE canonical semantic rule (refactor 2026-07): a Fact–Dimension
+    relationship is always stored on the MANY side as ``many_to_one``
+    (FACT(N) → DIM(1)) — the user may draw it either way, but the canonical
+    model is identical. This function decides DIRECTION only.
+
+    Returns ``(swap, new_cardinality)``:
+      • swap=True → caller swaps from<->to (views, ids, columns) so a
+        ``one_to_many`` drawn dim→fact becomes ``many_to_one`` on the fact side.
+        Only a plain real-table<->real-table join without an alias is
+        re-oriented; aliased/role-played joins keep their authored direction.
+
+    NOTE — SQL join type is NOT part of the semantic identity and is NOT
+    swapped here. The runtime join is ALWAYS ``FACT LEFT JOIN DIM`` (derived
+    from cardinality by the caller / query engine). Cardinality is the single
+    source of truth; cross-filter and join-type are separate concerns and must
+    not be mixed into direction. Pure + deterministic (unit-testable + reused by
+    the migration).
+    """
+    if cardinality_canonical == "one_to_many" and not has_alias and both_real_tables:
+        return True, "many_to_one"
+    return False, cardinality_canonical
+
+
 def _infer_relationship_from_uniqueness(
     from_unique: bool,
     to_unique: bool,
@@ -392,6 +421,30 @@ def _heuristic_relationship_for_columns(from_column: str, to_column: str) -> str
     if any(lower_from.endswith(suffix) for suffix in _FK_SUFFIXES):
         return "many_to_one"
     return "many_to_one"
+
+
+_VIEW_TOKEN_RE = re.compile(r"dataset_table_(\d+)")
+
+
+def humanize_view_tokens(text: str, db: Session, dataset_id: int) -> str:
+    """Replace internal ``dataset_table_<id>`` tokens in a user-facing message
+    with the table's friendly display name (e.g. ``dim_customer``,
+    ``fact_sales``) so DAs read the names they know from the canvas rather than
+    internal view identifiers. No-op when the text has no such token. Best
+    effort: on any error the original text is returned unchanged (a message must
+    never fail to render)."""
+    if not text or "dataset_table_" not in text:
+        return text
+    try:
+        labels = {
+            t.id: (t.display_name or t.source_table_name or f"dataset_table_{t.id}")
+            for t in db.query(DatasetTable).filter(DatasetTable.dataset_id == dataset_id).all()
+        }
+        return _VIEW_TOKEN_RE.sub(
+            lambda m: labels.get(int(m.group(1)), m.group(0)), text
+        )
+    except Exception:  # noqa: BLE001 — never let humanisation break the response
+        return text
 
 
 def _ensure_no_chart_depends_on_join(
@@ -685,6 +738,29 @@ def _sql_table_for_table(
     if table.source_kind == "sql_query" and table.source_query:
         base_query = f"SELECT * FROM ({table.source_query}) AS _dataset_model_src"
         return _apply_semantic_transformations(base_query, table, dialect=calendar_dialect)
+    if getattr(table, "source_kind", None) == "dataset" and getattr(table, "parent_dataset_table_id", None):
+        # Dataset-on-Dataset composition. At PUBLISHED read time the planner
+        # overrides this view's FROM with the child's PINNED parent generation
+        # (execution_plan._plan_published), so this fragment is used only at
+        # DESIGN time (preview / model-gen). Point it at the parent's CURRENT
+        # published snapshot so preview shows real parent data; the semantic
+        # layer sees an ordinary `SELECT * FROM <snapshot>` leaf either way.
+        if db is not None:
+            try:
+                from app.services import snapshot_service as _ss
+                parent = db.query(Dataset).filter(Dataset.id == table.parent_dataset_id).first()
+                gen = getattr(parent, "published_generation", None) if parent else None
+                if gen is not None:
+                    refs, _fp, _as_of = _ss.resolve_specific_generation_refs(
+                        db, [table.parent_dataset_table_id], gen
+                    )
+                    ref = refs.get(table.parent_dataset_table_id)
+                    if ref:
+                        return f"(SELECT * FROM `{ref}`)"
+            except Exception as exc:  # noqa: BLE001 — never block model gen
+                logger.warning("[composition] parent-ref resolve failed for table %s: %s",
+                               getattr(table, "id", None), exc)
+        return _view_name_for_table(table)
     return _view_name_for_table(table)
 
 
@@ -1068,7 +1144,11 @@ def _apply_db_fk_constraints(
                 "view": to_view.name,
                 "type": "left",
                 "sql_on": f"${{TABLE}}.{fc} = ${{{to_view.name}}}.{tc}",
+                # DB-enforced FK → target is a real PK/unique key; M:1 is
+                # authoritative. Store BOTH fields (audit 2026-07: divergent
+                # relationship/cardinality pairs misclassify grain safety).
                 "relationship": "many_to_one",
+                "cardinality": "many_to_one",
                 "from_view": from_view.name,
                 "from_column": fc,
                 "to_column": tc,
@@ -1081,18 +1161,24 @@ def _apply_db_fk_constraints(
             })
 
 
-def _resolve_heuristic_target_column(ref_table: DatasetTable, fk_col_name: str) -> str:
+def _resolve_heuristic_target_column(ref_table: DatasetTable, fk_col_name: str) -> Optional[str]:
     """Pick the column on the FK *target* table that a name-heuristic join
-    should reference.
+    should reference — or ``None`` when no trustworthy candidate exists.
 
-    Phase-16.4 — replaces the legacy hard-coded `id` PK assumption that broke
+    Phase-16.4 replaced the legacy hard-coded `id` PK assumption that broke
     on warehouse tables (Airbyte / BigQuery / dbt) whose key is `<entity>_id`
-    with NO `id` column: `JOIN ... ON products.id = sales.product_id` then
-    failed with BigQuery "Name id not found inside <table>". Resolution order:
+    with NO `id` column. Semantic-audit 2026-07 then TIGHTENED it again: the
+    old fallbacks 3 ("the single `*_id` column, whatever it is") and 4
+    ("literal `id` even when we KNOW the columns and `id` isn't among them")
+    produced plausible-looking joins on a WRONG key (e.g. region_id →
+    region.manager_id) that silently corrupted every measure grouped through
+    the dim. Resolution order now:
       1. the target has the SAME column name as the FK (e.g. products.product_id)
       2. the target has a literal `id` column (classic convention)
-      3. the target has exactly one `*_id` column
-      4. `id` (legacy fallback — preserves old behaviour when nothing matches)
+      3. otherwise → None (no auto-join; the user declares the relationship
+         in the Data Model — fail-loud beats a silent wrong key)
+    The returned candidate is a NAME match only; `_detect_fk_joins` still
+    verifies the column is actually unique before emitting a join.
     """
     cc = getattr(ref_table, "columns_cache", None)
     cols = cc.get("columns", []) if isinstance(cc, dict) else (cc if isinstance(cc, list) else [])
@@ -1103,16 +1189,88 @@ def _resolve_heuristic_target_column(ref_table: DatasetTable, fk_col_name: str) 
             if nm:
                 lower_map.setdefault(nm.lower(), nm)
     if not lower_map:
-        return "id"
+        return None
     fk_lower = (fk_col_name or "").lower()
     if fk_lower in lower_map:
         return lower_map[fk_lower]
     if "id" in lower_map:
         return lower_map["id"]
-    id_cols = [orig for low, orig in lower_map.items() if low.endswith("_id")]
-    if len(id_cols) == 1:
-        return id_cols[0]
-    return "id"
+    return None
+
+
+def _profile_table_column_unique(
+    db: Session,
+    table: DatasetTable,
+    column_name: str,
+) -> Optional[bool]:
+    """COUNT-based uniqueness of ONE column on a dataset table (the same
+    probe `suggest_join_relationship` runs for manual joins, minus the view
+    indirection so it also works mid-model-gen before views are committed).
+
+    Returns True/False when profiled; None when profiling is impossible
+    (no datasource, source unreachable, zero non-null rows). Callers treat
+    None as "not verified" — only an explicit True may emit an auto M:1 join.
+    Cost: one aggregate query per (table, column); only invoked from the
+    EXPLICIT Generate-Model / join-suggestion paths, never background syncs.
+    """
+    try:
+        from app.services.dataset_relation_service import resolve_dataset_table_relation
+        from app.services.datasource_service import DataSourceConnectionService
+        from app.services.live_query_service import _dialect_for_ds_type, _quote_identifier
+
+        live_table = table
+        datasource = (
+            db.query(DataSource).filter(DataSource.id == table.datasource_id).first()
+            if getattr(table, "datasource_id", None) is not None
+            else None
+        )
+        if datasource is None or is_derived_table(table):
+            from app.services.dataset_table_sql_service import (
+                build_live_proxy_table_for_dataset_table,
+            )
+
+            dataset_obj = db.query(Dataset).filter(Dataset.id == table.dataset_id).first()
+            if dataset_obj is None:
+                return None
+            datasource, live_table = build_live_proxy_table_for_dataset_table(
+                db, dataset_obj, table
+            )
+        if datasource is None:
+            return None
+
+        relation = resolve_dataset_table_relation(datasource, live_table)
+        ds_type = datasource.type.value if hasattr(datasource.type, "value") else str(datasource.type)
+        dialect = _dialect_for_ds_type(ds_type)
+        col_sql = _quote_identifier(column_name, dialect)
+        sql = f"""
+WITH source AS (
+    {relation.sql}
+),
+non_null_rows AS (
+    SELECT {col_sql} FROM source WHERE {col_sql} IS NOT NULL
+)
+SELECT
+    (SELECT COUNT(*) FROM non_null_rows) AS non_null_rows,
+    (SELECT COUNT(DISTINCT {col_sql}) FROM non_null_rows) AS distinct_count
+"""
+        _, rows, _ = DataSourceConnectionService.execute_query(
+            ds_type,
+            datasource.config,
+            sql,
+            timeout_seconds=30,
+        )
+        first = rows[0] if rows else {}
+        non_null = int(first.get("non_null_rows") or 0)
+        distinct = int(first.get("distinct_count") or 0)
+        if non_null <= 0:
+            return None  # empty column proves nothing
+        return distinct == non_null
+    except Exception as exc:  # noqa: BLE001 — unverifiable ≠ crash model gen
+        logger.warning(
+            "[fk_heuristic] uniqueness probe failed table=%s col=%s: %s",
+            getattr(table, "id", None), column_name, exc,
+        )
+        return None
 
 
 def _detect_fk_joins(
@@ -1154,6 +1312,21 @@ def _detect_fk_joins(
         except Exception as exc:  # noqa: BLE001 — best effort; never block model gen
             logger.warning(f"[fk_extract] failed, falling back to name heuristic: {exc}")
 
+    # Semantic-audit 2026-07 — name-heuristic joins must VERIFY the target key
+    # is unique before claiming many_to_one. A non-unique target (e.g. a
+    # per-day snapshot dim) silently fans out every measure the grain guard
+    # trusted as safe. Memoised per run so a dim referenced by N facts is
+    # probed once.
+    _uniq_memo: Dict[tuple, Optional[bool]] = {}
+
+    def _verified_unique(ref_table: DatasetTable, col: str) -> Optional[bool]:
+        key = (ref_table.id, col.lower())
+        if key not in _uniq_memo:
+            _uniq_memo[key] = (
+                _profile_table_column_unique(db, ref_table, col) if db is not None else None
+            )
+        return _uniq_memo[key]
+
     for table in tables:
         if is_generated_calendar_table(table) or not table.columns_cache:
             continue
@@ -1188,8 +1361,33 @@ def _detect_fk_joins(
 
             # Phase-16.4 — resolve the REAL target join column (the FK target's
             # key) instead of the legacy hard-coded `id`. See
-            # `_resolve_heuristic_target_column`.
+            # `_resolve_heuristic_target_column`. None → no trustworthy
+            # candidate → no auto-join (user declares it in the Data Model).
             target_col = _resolve_heuristic_target_column(ref_table, raw_col_name)
+            if target_col is None:
+                continue
+
+            # Semantic-audit 2026-07 — skip an auto many_to_one ONLY when the
+            # target key is PROVEN non-unique (probe==False): the grain guard
+            # treats M:1 as safe, so a guessed M:1 on a genuinely non-unique
+            # key = silent double-count (#10). When uniqueness is UNVERIFIABLE
+            # (probe==None: source transiently unreachable, e.g. Sheets 503),
+            # fall back to the name-heuristic confidence and still emit — else a
+            # transient hiccup during Generate Model would silently DROP a valid
+            # FK join and make regeneration non-idempotent (a regression found
+            # via ds73). True/None → emit; only proven-False is dropped.
+            _uniq = _verified_unique(ref_table, target_col)
+            if _uniq is False:
+                logger.info(
+                    "[fk_heuristic] skip %s.%s -> %s.%s (target key PROVEN non-unique — would fan out)",
+                    current_view.name, raw_col_name, ref_view.name, target_col,
+                )
+                continue
+            if _uniq is None:
+                logger.info(
+                    "[fk_heuristic] emit %s.%s -> %s.%s on NAME confidence (uniqueness unverifiable)",
+                    current_view.name, raw_col_name, ref_view.name, target_col,
+                )
 
             joins_by_source.setdefault(current_view.name, [])
             existing = any(
@@ -1205,7 +1403,10 @@ def _detect_fk_joins(
                 "view": ref_view.name,
                 "type": "left",
                 "sql_on": f"${{TABLE}}.{raw_col_name} = ${{{ref_view.name}}}.{target_col}",
+                # Verified-unique target key (probe above) → M:1 is a FACT here,
+                # not a guess. Store BOTH fields so no consumer sees divergence.
                 "relationship": "many_to_one",
+                "cardinality": "many_to_one",
                 "from_view": current_view.name,
                 "from_column": raw_col_name,
                 "to_column": target_col,
@@ -1263,6 +1464,10 @@ def _build_calendar_role_views(
             ):
                 continue
             role_view_name = build_calendar_role_view_name(source_view.name, column_name)
+            # Audit #5 — two temporal columns slugifying identically must NOT
+            # collapse into one role-dim (stable-hash suffix on collision).
+            from app.services.dataset_calendar_service import disambiguate_role_view_name
+            role_view_name = disambiguate_role_view_name(role_view_name, role_view_names, column_name)
             role_view_names.add(role_view_name)
 
             role_view, was_created, was_updated = _upsert_semantic_view(
@@ -1286,7 +1491,11 @@ def _build_calendar_role_views(
                 "name": role_view.name,
                 "view": role_view.name,
                 "type": "left",
-                "sql_on": build_calendar_join_sql(column_name, column_type, role_view.name),
+                "sql_on": build_calendar_join_sql(
+                    column_name, column_type, role_view.name,
+                    timezone=calendar_settings.get("timezone"),  # audit #4
+                    physical_type=temporal_column.get("source_type"),  # instant check on PHYSICAL type
+                ),
                 "relationship": "many_to_one",
                 "from_view": source_view.name,
                 "from_column": column_name,
@@ -1336,71 +1545,11 @@ def _view_role_for_response(view: SemanticView, table: DatasetTable | None) -> t
     return "table", False, False
 
 
-def _detect_joins(tables: List[DatasetTable]) -> list:
-    """
-    Detect potential joins between tables using FK naming conventions.
-    Returns a list of JoinDefinition dicts.
-    """
-    joins = []
-    table_names = {}  # singular_name -> table
+# (Phase 6 cleanup) The legacy `_detect_joins` name-heuristic duplicate was
+# removed — join detection lives ONLY in `_detect_fk_joins` (+ the Phase-16
+# `_generate_join_suggestions` review flow). It had zero callers and still
+# hard-coded `to_column="id"`, a bug class already fixed in the real detector.
 
-    for table in tables:
-        display = table.display_name or table.source_table_name or ""
-        table_names[display.lower()] = table
-        table_names[_singularize(display).lower()] = table
-
-    for table in tables:
-        if not table.columns_cache:
-            continue
-        # Normalize columns_cache format
-        cc = table.columns_cache
-        if isinstance(cc, dict):
-            columns = cc.get("columns", [])
-        elif isinstance(cc, list):
-            columns = cc
-        else:
-            continue
-        for col in columns:
-            raw_col_name = col.get("name", "")
-            col_name = raw_col_name.lower()
-            if not raw_col_name or not any(col_name.endswith(suffix) for suffix in _FK_SUFFIXES):
-                continue
-
-            # Extract referenced table name from FK column
-            # e.g., "customer_id" → "customer", "product_fk" → "product"
-            ref_name = col_name
-            for suffix in _FK_SUFFIXES:
-                if ref_name.endswith(suffix):
-                    ref_name = ref_name[: -len(suffix)]
-                    break
-
-            # Find matching table
-            ref_table = table_names.get(ref_name)
-            if ref_table and ref_table.id != table.id:
-                ref_display = ref_table.display_name or ref_table.source_table_name or ""
-                current_display = table.display_name or table.source_table_name or ""
-
-                # Check if this join already exists (avoid duplicates)
-                existing = any(
-                    j["view"] == ref_display and j.get("_source_table") == current_display
-                    for j in joins
-                )
-                if not existing:
-                    joins.append({
-                        "name": ref_display,
-                        "view": ref_display,
-                        "type": "left",
-                        "sql_on": f"${{TABLE}}.{raw_col_name} = ${{{ref_display}}}.id",
-                        "relationship": "many_to_one",
-                        "from_view": current_display,
-                        "from_column": raw_col_name,
-                        "to_column": "id",
-                        "from_columns": [raw_col_name],
-                        "to_columns": ["id"],
-                        "_source_table": current_display,  # Internal, stripped before save
-                    })
-
-    return joins
 
 
 def generate_dataset_model(
@@ -1437,6 +1586,116 @@ def sync_dataset_model_structure(
     )
 
 
+# ── Refactor Phase 5: model self-heal (reconcile-on-read, issue #23) ──────────
+# The semantic model mirrors columns_cache; when the cache changes (schema
+# re-detect, type edits) but nobody re-opens the Dataset, views keep the OLD
+# dimensions — the classic "phải vào Dataset trước thì chart mới đúng". The
+# planner schedules this rate-limited BACKGROUND check on every chart read:
+# when any enabled table's classified dimension names no longer match its
+# SemanticView, the model resyncs itself (structure-only, non-destructive —
+# measures merged, manual joins untouched, auto joins NOT re-detected).
+import threading as _threading
+import time as _time
+
+_model_drift_check_at: Dict[int, float] = {}
+_MODEL_DRIFT_CHECK_INTERVAL = 300  # seconds between checks per dataset
+_model_drift_lock = _threading.Lock()
+
+
+def schedule_model_drift_check(dataset_id: int) -> None:
+    """Fire-and-forget: verify the semantic views still mirror columns_cache
+    and resync in the background when they drifted. Rate-limited per dataset;
+    NEVER raises; never blocks the calling request."""
+    if not dataset_id:
+        return
+    now = _time.monotonic()
+    with _model_drift_lock:
+        last = _model_drift_check_at.get(dataset_id)
+        if last is not None and (now - last) < _MODEL_DRIFT_CHECK_INTERVAL:
+            return
+        _model_drift_check_at[dataset_id] = now
+
+    def _run() -> None:
+        from app.core.database import SessionLocal
+        job_db = SessionLocal()
+        try:
+            if _model_views_drifted(job_db, dataset_id):
+                logger.info("[model-drift] dataset %s views drifted from columns_cache — resyncing", dataset_id)
+                sync_dataset_model_structure(job_db, dataset_id, create_model=False)
+                job_db.commit()
+                # A model change can invalidate snapshot logic too.
+                try:
+                    from app.services import snapshot_service
+                    snapshot_service.invalidate_stale_fingerprints(job_db, dataset_id)
+                except Exception:  # noqa: BLE001
+                    pass
+        except Exception:  # noqa: BLE001 — background self-heal must never crash
+            job_db.rollback()
+            logger.warning("[model-drift] resync failed dataset=%s", dataset_id, exc_info=True)
+        finally:
+            job_db.close()
+
+    _threading.Thread(target=_run, name=f"model-drift-{dataset_id}", daemon=True).start()
+
+
+def _dim_signature(dims) -> set:
+    """(name, type) signature of a dimension list — so a TYPE change on an
+    existing column counts as drift, not just add/remove (issue #11)."""
+    out = set()
+    for d in dims or []:
+        if isinstance(d, dict) and d.get("name"):
+            out.add((d.get("name"), str(d.get("type") or "")))
+    return out
+
+
+def _model_views_drifted(db: Session, dataset_id: int) -> bool:
+    """True when any enabled non-calendar table's SemanticView no longer matches
+    what the current columns_cache would classify. Detects (issue #11/#12):
+      • a NEW / REMOVED dimension (name set differs);
+      • a TYPE change on an existing dimension (signature differs);
+      • a MISSING view for a table that should have one (→ needs create);
+      • a MEASURE whose referenced column no longer exists in columns_cache
+        (stale measure). Measure SQL bodies are user-authored + merge-preserved,
+        so we don't diff them beyond the dangling-column check.
+    Transformation-only changes on the same column set are NOT detected here
+    (deeper; handled by explicit Refresh / Generate Model)."""
+    dataset_obj = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if dataset_obj is None:
+        return False
+    auto_measures = _auto_measures_enabled(dataset_obj)
+    tables = (
+        db.query(DatasetTable)
+        .filter(DatasetTable.dataset_id == dataset_id)
+        .filter((DatasetTable.enabled.is_(None)) | (DatasetTable.enabled == True))  # noqa: E712 (issue #14)
+        .all()
+    )
+    for t in tables:
+        if is_generated_calendar_table(t) or not t.columns_cache:
+            continue
+        view = db.query(SemanticView).filter(SemanticView.dataset_table_id == t.id).first()
+        if view is None:
+            return True  # issue #12: a table with data but no view IS drift
+        expected_dims, _ = _classify_columns(t.columns_cache, auto_generate_measures=auto_measures)
+        if _dim_signature(expected_dims) != _dim_signature(view.dimensions):
+            return True  # issue #11: name-or-type change
+        # Stale measure: a user/auto measure referencing a column no longer in
+        # columns_cache. Column-name presence check (cheap, no SQL parse).
+        col_names = {
+            str(c.get("name")) for c in (t.columns_cache.get("columns") or [])
+            if isinstance(c, dict) and c.get("name")
+        }
+        for m in (view.measures or []):
+            if not isinstance(m, dict):
+                continue
+            msql = str(m.get("sql") or "")
+            if msql in ("", "*"):
+                continue  # COUNT(*) etc. — no column dependency
+            # a plain column measure (sql == a bare column name) whose column is gone
+            if msql.isidentifier() and msql not in col_names:
+                return True
+    return False
+
+
 def _sync_dataset_model_structure(
     db: Session,
     dataset_id: int,
@@ -1452,7 +1711,10 @@ def _sync_dataset_model_structure(
     tables: List[DatasetTable] = (
         db.query(DatasetTable)
         .filter(DatasetTable.dataset_id == dataset_id)
-        .filter(DatasetTable.enabled == True)
+        # Issue #14: NULL enabled = enabled (column default True on legacy rows).
+        # The planner treats NULL as enabled, so model sync must match — else a
+        # NULL-enabled table is snapshot/planned but has no SemanticView.
+        .filter((DatasetTable.enabled.is_(None)) | (DatasetTable.enabled == True))  # noqa: E712
         .all()
     )
     if not tables:
@@ -1955,13 +2217,12 @@ def add_join(
     if not join_validation.get("can_create"):
         raise ValueError(str(join_validation.get("message") or "Relationship cannot be created"))
 
-    normalized_join_type = _normalize_join_type(join_type)
-    normalized_relationship = _normalize_relationship_type(relationship)
-    # Phase-1 (PBI-parity) — explicit cardinality drives the Phase-2 propagation
-    # engine and Phase-4 symmetric aggregates. Caller can pass `cardinality=...`
-    # directly; otherwise we map the legacy `relationship` string through the
-    # canonical alias table (resolver module). Default 'many_to_one' matches
-    # the FK→PK star-schema majority.
+    # ── CARDINALITY = single source of truth (refactor 2026-07) ──────────────
+    # Everything downstream (direction, runtime join, filter propagation) is
+    # derived from cardinality. The caller may pass `cardinality=...` directly;
+    # else map the legacy `relationship` string through the canonical alias
+    # table. `relationship` is only ever a MIRROR of cardinality (kept for legacy
+    # readers) — never an independent value that can diverge.
     from app.services.semantic_join_resolver import (
         ALLOWED_CARDINALITY, normalize_cardinality,
     )
@@ -1980,6 +2241,79 @@ def add_join(
     # aggregates). We accept the relationship and surface a warning to the
     # caller via the response; the UI shows a red banner in RelationshipDialog
     # so the user is reminded to use a bridge table when possible.
+
+    # ── Directionality canonicalization (semantic-audit 2026-07, DA feedback) ──
+    # Power-BI parity: a relationship is direction-agnostic — the modeller
+    # declares two tables + cardinality, and the system ORIENTS the join to the
+    # MANY (fact) side, where measure charts anchor. Previously a relationship
+    # drawn dim(1)->fact(N) was stored on the DIM explore, so a chart on the
+    # FACT could not traverse it (reverse edge only exists for cross_filter=both)
+    # → grain guard blocked, and flipping LEFT/RIGHT did nothing because the join
+    # never rendered. We now canonicalize a `one_to_many` edge to `many_to_one`
+    # stored on the many side: swap from<->to (views, ids, columns), invert the
+    # cardinality, and swap LEFT<->RIGHT so WHICH rows are kept is preserved
+    # (INNER/FULL are symmetric). Only plain real-table<->real-table joins are
+    # canonicalized — aliased/role-played joins and generated views (date-dims)
+    # keep their authored orientation. cross_filter is preserved verbatim
+    # (filter-propagation semantics vs canonical direction is a separate concern;
+    # the Phase-2 propagation engine is default-OFF so this cannot skew numbers).
+    # Semantic-audit 2026-07 (E2E) — enforce that a declared to-one cardinality
+    # actually has a UNIQUE key on the "one" side. Power-BI parity: PBI refuses a
+    # many_to_one whose one-side column is not unique. A manual m2o on a
+    # non-unique key silently FANS OUT every measure the grain guard trusts as
+    # safe (found in E2E: seller_snap non-unique key → SUM ×snapshots). Checked
+    # on the DRAWN direction (matches join_validation's from/to profile). Only
+    # PROVEN non-unique (profiled False) blocks; unverifiable (None) is allowed
+    # (mirrors the auto-FK None-fallback). `force=True` bypasses for advanced
+    # users who accept the fan-out (e.g. genuine bridge scenarios).
+    if not force:
+        _from_u = join_validation.get("from_unique")
+        _to_u = join_validation.get("to_unique")
+        _bad = None
+        if cardinality_canonical == "many_to_one" and _to_u is False:
+            _bad = (to_view.name, primary_to_column)
+        elif cardinality_canonical == "one_to_many" and _from_u is False:
+            _bad = (from_view.name, primary_from_column)
+        elif cardinality_canonical == "one_to_one" and (_from_u is False or _to_u is False):
+            _bad = ((to_view.name, primary_to_column) if _to_u is False
+                    else (from_view.name, primary_from_column))
+        if _bad:
+            raise ValueError(
+                f"Không thể tạo quan hệ {cardinality_canonical}: cột khóa phía 'một' "
+                f"'{_bad[0]}.{_bad[1]}' KHÔNG duy nhất (có giá trị lặp) — JOIN sẽ nhân bản "
+                f"số liệu (fan-out). Dùng Many-to-Many (qua bridge table) hoặc chọn khóa duy nhất."
+            )
+
+    _both_real_tables = (
+        getattr(from_view, "dataset_table_id", None) is not None
+        and getattr(to_view, "dataset_table_id", None) is not None
+    )
+    _swap, cardinality_canonical = _canonicalize_join_orientation(
+        cardinality_canonical,
+        has_alias=bool((alias or "").strip()),
+        both_real_tables=_both_real_tables,
+    )
+    # ONE rule: the SQL join type is DERIVED, never authored. Runtime is always
+    # FACT LEFT JOIN DIM (the many side keeps all its rows; unmatched dim → NULL).
+    # Join type is no longer part of the semantic identity, so it is not swapped
+    # with direction and callers cannot set INNER/RIGHT/FULL here. `join_type`
+    # (param) is accepted for API back-compat but ignored.
+    normalized_join_type = "left"
+    canonicalized = False
+    if _swap:
+        drawn_dim, drawn_fact = from_view.name, to_view.name
+        from_view, to_view = to_view, from_view
+        from_view_id, to_view_id = to_view_id, from_view_id
+        normalized_from_columns, normalized_to_columns = (
+            normalized_to_columns, normalized_from_columns,
+        )
+        primary_from_column, primary_to_column = primary_to_column, primary_from_column
+        canonicalized = True
+        logger.info(
+            "[join-canon] 1:N drawn %s->%s canonicalized to N:1 on many side %s "
+            "(runtime=FACT LEFT JOIN DIM)",
+            drawn_dim, drawn_fact, from_view.name,
+        )
 
     explore = db.query(SemanticExplore).filter(
         SemanticExplore.model_id == model.id,
@@ -2012,7 +2346,8 @@ def add_join(
             from_columns=normalized_from_columns,
             to_columns=normalized_to_columns,
         ),
-        "relationship": normalized_relationship,
+        # Mirrors cardinality_canonical (single source of truth — see above).
+        "relationship": cardinality_canonical,
         "from_view": from_view.name,
         "from_column": primary_from_column,
         "to_column": primary_to_column,
@@ -2082,6 +2417,18 @@ def add_join(
         "base_view_name": explore.base_view_name,
         "joins": explore.joins,
     }
+    if canonicalized:
+        # Tell the dialog the relationship was auto-oriented to the many side
+        # so it can re-render FROM/TO + join type + refresh the correct explore.
+        response["canonicalized"] = True
+        response["canonical_from_view"] = from_view.name
+        response["canonical_to_view"] = to_view.name
+        response["canonical_join_type"] = normalized_join_type
+        response["canonical_cardinality"] = cardinality_canonical
+        warnings.append(
+            "Quan hệ được tự động xoay về hướng N:1 (lưu trên bảng 'many') để "
+            "biểu đồ trên bảng fact dùng được ngay."
+        )
     if warnings:
         response["warnings"] = warnings
     if pk_result is not None:
@@ -2325,6 +2672,28 @@ def suggest_join_relationship(
             "Nên dùng bridge table + 2 quan hệ N:1 khi có thể."
         )
 
+    # Semantic-audit 2026-07 (DA feedback, F4) — the dialog previously suggested
+    # only cardinality and always defaulted the join type to LEFT relative to the
+    # arbitrary FROM the user drew. Now also suggest the JOIN TYPE and the
+    # CANONICAL orientation so the modeller sees the correct fact-anchored shape:
+    #   • many_to_one / one_to_one → keep the many (fact) side → LEFT, from as-is.
+    #   • one_to_many → auto-orient to N:1 on the many side: the suggested FROM is
+    #     the CURRENT `to` view (the many side) and the type stays LEFT (keep the
+    #     many side). This is exactly what add_join will persist, so the dialog
+    #     can render the corrected direction up-front.
+    suggested_join_type = "left"
+    canonical_from_view = from_view.name
+    canonical_to_view = to_view.name
+    canonical_from_columns = list(normalized_from_columns)
+    canonical_to_columns = list(normalized_to_columns)
+    if suggested_relationship == "one_to_many":
+        canonical_from_view, canonical_to_view = to_view.name, from_view.name
+        canonical_from_columns, canonical_to_columns = (
+            list(normalized_to_columns), list(normalized_from_columns),
+        )
+        # after orientation it is N:1 keeping the many side → LEFT
+        suggested_join_type = "left"
+
     return {
         "relationship": suggested_relationship,
         "from_unique": from_unique,
@@ -2339,7 +2708,158 @@ def suggest_join_relationship(
         "message": blocking_message,
         "warning_code": warning_code,
         "warning_message": warning_message,
+        # F4 — suggested join type + canonical (auto-oriented) shape.
+        "suggested_join_type": suggested_join_type,
+        "suggested_cardinality": suggested_relationship,
+        "canonical_from_view": canonical_from_view,
+        "canonical_to_view": canonical_to_view,
+        "canonical_from_columns": canonical_from_columns,
+        "canonical_to_columns": canonical_to_columns,
+        "will_auto_orient": suggested_relationship == "one_to_many",
     }
+
+
+def canonicalize_dataset_relationships(db: Session, dataset_id: int) -> dict:
+    """One-time, IDEMPOTENT migration to the ONE canonical semantic rule
+    (refactor 2026-07). Two things happen:
+
+    1. **Orient** — a stored ``one_to_many`` join (drawn dim(1)->fact(N), living
+       on the DIM explore where a measure chart on the FACT could never traverse
+       it) is re-oriented to ``many_to_one`` on the FACT (many) explore.
+    2. **Normalize join type** — the SQL join type is DERIVED, never authored.
+       Every to-one relationship (``many_to_one`` / ``one_to_one``) is forced to
+       ``left`` so the runtime is ALWAYS FACT LEFT JOIN DIM. This removes the
+       legacy LEFT<->RIGHT swap that the old orient step baked in (a moved 1:N
+       used to become N:1 with type flipped to ``right``), which mixed join-type
+       into direction and confused the model. Cardinality is the single source of
+       truth; join-type and cross-filter are separate, derived/independent.
+
+    Only plain real-table<->real-table joins without an alias are re-oriented;
+    aliased / role-played / generated-view joins keep their authored orientation
+    (their type is still normalized to ``left`` when to-one). Safe to re-run: an
+    equivalent canonical join already present is not duplicated, and type
+    normalization is idempotent. Returns ``{"moved": [...], "normalized": [...],
+    "skipped": [...]}``. Caller commits.
+    """
+    model = db.query(SemanticModel).filter(SemanticModel.dataset_id == dataset_id).first()
+    if model is None:
+        return {"moved": [], "normalized": [], "skipped": []}
+    explores = {
+        e.base_view_name: e
+        for e in db.query(SemanticExplore).filter(SemanticExplore.model_id == model.id).all()
+    }
+    # Scope views to THIS dataset's own tables. View names (dataset_table_<id>)
+    # are NOT globally unique — IMPORT datasets reuse them — so a global
+    # ``{name: view}`` map collapses colliding names to some other dataset's
+    # view (often a role view with dataset_table_id=None), which made the
+    # both-real-tables gate wrongly fail and silently skip the join (ds95/104).
+    _tbl_ids = [
+        row.id for row in db.query(DatasetTable.id).filter(DatasetTable.dataset_id == dataset_id).all()
+    ]
+    views_by_name = {
+        v.name: v
+        for v in db.query(SemanticView).filter(SemanticView.dataset_table_id.in_(_tbl_ids)).all()
+        if str(v.name or "").strip()
+    }
+    moved: list[dict] = []
+    normalized: list[dict] = []
+    skipped: list[dict] = []
+
+    def _force_left_if_to_one(join: dict, explore_name: str) -> dict:
+        """Derived-type rule: a to-one relationship always runs FACT LEFT JOIN
+        DIM. Normalize a stored ``right``/``inner``/``full`` type to ``left``
+        (idempotent). one_to_many/many_to_many are left untouched (advanced /
+        can't-be-oriented cases)."""
+        c = str(join.get("cardinality") or join.get("relationship") or "").strip().lower()
+        cur = str(join.get("type") or "left").strip().lower()
+        if c in ("many_to_one", "one_to_one") and cur != "left":
+            fixed = dict(join)
+            fixed["type"] = "left"
+            normalized.append({
+                "explore": explore_name, "view": join.get("view"),
+                "from_type": cur, "to_type": "left",
+            })
+            return fixed
+        return join
+
+    for base_name, explore in list(explores.items()):
+        remaining: list[dict] = []
+        changed_types = False
+        for j in (explore.joins or []):
+            card = str(j.get("cardinality") or j.get("relationship") or "").strip().lower()
+            alias = str(j.get("alias") or "").strip()
+            tview_name = str(j.get("view") or "").strip()
+            fv = views_by_name.get(base_name)
+            tv = views_by_name.get(tview_name)
+            both_real = (
+                fv is not None and tv is not None
+                and getattr(fv, "dataset_table_id", None) is not None
+                and getattr(tv, "dataset_table_id", None) is not None
+            )
+            if card != "one_to_many" or alias or not both_real:
+                j2 = _force_left_if_to_one(j, base_name)
+                if j2 is not j:
+                    changed_types = True
+                remaining.append(j2)
+                continue
+            # Build the canonical N:1 join to place on the MANY (target) explore.
+            fcols = j.get("from_columns") or ([j.get("from_column")] if j.get("from_column") else [])
+            tcols = j.get("to_columns") or ([j.get("to_column")] if j.get("to_column") else [])
+            fcols = [c for c in fcols if c]
+            tcols = [c for c in tcols if c]
+            if not fcols or not tcols:
+                remaining.append(j)  # malformed — leave untouched
+                continue
+            # Derived type: runtime is ALWAYS FACT LEFT JOIN DIM. The moved join
+            # now lives on the FACT (many) explore joining OUT to the DIM, so the
+            # canonical type is plain ``left`` — no LEFT<->RIGHT swap.
+            new_type = "left"
+            canon = {
+                "name": base_name,
+                "view": base_name,
+                "alias": None,
+                "type": new_type,
+                "sql_on": _build_join_sql_on(
+                    target_placeholder=base_name, from_columns=tcols, to_columns=fcols,
+                ),
+                "relationship": "many_to_one",
+                "cardinality": "many_to_one",
+                "from_view": tview_name,
+                "from_column": tcols[0],
+                "to_column": fcols[0],
+                "from_columns": tcols,
+                "to_columns": fcols,
+                "is_active": bool(j.get("is_active", True)),
+                "cross_filter": str(j.get("cross_filter") or "single").lower(),
+                "origin": j.get("origin") or "manual",
+                "managed": bool(j.get("managed", False)),
+            }
+            target_explore = explores.get(tview_name)
+            if target_explore is None:
+                target_explore = SemanticExplore(
+                    name=tview_name, model_id=model.id,
+                    base_view_id=tv.id, base_view_name=tview_name, joins=[],
+                )
+                db.add(target_explore)
+                db.flush()
+                explores[tview_name] = target_explore
+            tjoins = list(target_explore.joins or [])
+            already = any(
+                str(x.get("view")) == base_name
+                and (x.get("from_columns") or [x.get("from_column")]) == tcols
+                for x in tjoins
+            )
+            if not already:
+                tjoins.append(canon)
+                target_explore.joins = tjoins
+            moved.append({
+                "from_explore": base_name, "to_explore": tview_name,
+                "type": new_type, "dup_skipped": already,
+            })
+        if changed_types or len(remaining) != len(explore.joins or []):
+            explore.joins = remaining
+    db.flush()
+    return {"moved": moved, "normalized": normalized, "skipped": skipped}
 
 
 def remove_join(
@@ -2486,60 +3006,87 @@ def _distinct_filter_targets_self(
 
 
 def _distinct_snapshot_context(db: Session, dataset_id: int, ttl_minutes: int | None = None):
-    """Dashboard perf #5 for the SLICER cascade (not just charts).
+    """Snapshot context for the SLICER distinct cascade.
 
-    Slicer dropdowns call the distinct cascade, which re-scans the heavy
-    ``sql_query`` pipeline LIVE on every open (e.g. 15-21s each on report-demo)
-    even though the charts are already sub-second on snapshots. Mirror the chart
-    resolver's ALL-OR-NOTHING rule: only when the dataset is snapshot-eligible
-    (every table is sql_query or generated_calendar) AND every sql_query table
-    has a fresh current snapshot do we return
-    ``({dataset_table_id: physical_ref}, exec_ds_on_SA_cred)`` so the cascade
-    redirects EVERY relation to its snapshot and runs on the service-account
-    credential. Any gap → ``({}, None)`` and the cascade runs live, unchanged.
-    Because eligibility guarantees no physical/derived table remains, the
-    SA-executed SQL references only snapshot tables (+ inline calendar) — never
-    a source table the write SA cannot read. NEVER raises."""
+    Phase 6 (issues #39/#40/#43): this no longer implements its OWN eligibility
+    rules — it delegates to the SAME execution planner charts use
+    (``plan_chart_execution``), so slicers and charts always agree on
+    engine / credential / snapshot GENERATION / fingerprint-compatibility.
+    Before this, the two resolvers had drifted (slicer required a single
+    BigQuery datasource + sql_query-only), so a dashboard could show slicer
+    values from LIVE source data while its charts read a snapshot — the
+    "filter lúc được lúc không" class.
+
+    Returns ``({dataset_table_id: physical_ref}, exec_ds)`` in snapshot mode —
+    exec_ds carries the HOST BigQuery identity (id/type) + the snapshot
+    service-account credential, so the cascade executes exactly where the
+    charts do and its query-cache entries are namespaced under the host.
+    Live / blocked / not-built → ``({}, None)`` and the cascade runs live,
+    unchanged (a blocked mixed dataset keeps serving single-table slicer
+    values rather than hard-failing a dropdown). NEVER raises."""
     try:
         from types import SimpleNamespace
         from app.services import snapshot_service
-        from app.services.datasource_service import DataSourceConnectionService
-        tables = db.query(DatasetTable).filter(DatasetTable.dataset_id == dataset_id).all()
-        ds_ids = {t.datasource_id for t in tables if t.datasource_id}
-        if len(ds_ids) != 1:
+        from app.services.execution_plan import plan_chart_execution
+
+        base_t = (
+            db.query(DatasetTable)
+            .filter(DatasetTable.dataset_id == dataset_id,
+                    DatasetTable.datasource_id.isnot(None))
+            .order_by(DatasetTable.id)
+            .first()
+        )
+        if base_t is None:
             return {}, None
-        datasource = db.query(DataSource).filter(DataSource.id == next(iter(ds_ids))).first()
-        if datasource is None or not snapshot_service.is_enabled(datasource):
+        base_ds = db.query(DataSource).filter(DataSource.id == base_t.datasource_id).first()
+        if base_ds is None:
             return {}, None
-        if ttl_minutes == 0:  # Realtime → live
+        plan = plan_chart_execution(
+            db, base_ds, {"datasetId": dataset_id}, "", ttl_minutes=ttl_minutes,
+        )
+        if plan.trigger_dataset_id:
+            snapshot_service.trigger_async_refresh(plan.trigger_dataset_id)
+        if plan.mode != "snapshot" or not plan.overrides or plan.exec_config is None:
             return {}, None
-        snap_map: Dict[int, str] = {}
-        for t in tables:
-            if is_generated_calendar_table(t):
-                continue
-            if not snapshot_service.should_materialize(t):
-                return {}, None  # physical/derived → SA can't read source → live
-            ref = snapshot_service.resolve_current_ref(db, t.id, ttl_minutes=None)  # any age (serve-stale)
-            if not ref:
-                # Eligible but unbuilt → live now; warm for next time if public TTL.
-                if ttl_minutes:
-                    snapshot_service.trigger_async_refresh(dataset_id)
-                return {}, None
-            snap_map[t.id] = ref
-        if not snap_map:
-            return {}, None
-        # Public per-link TTL: serve the stale snapshot but kick off a background
-        # rebuild so the slicer cascade stays consistent with the charts.
-        if snapshot_service.is_stale(snapshot_service.as_of(db, list(snap_map.keys())), ttl_minutes):
-            snapshot_service.trigger_async_refresh(dataset_id)
-        # Change-driven refresh: rebuild if the source DATA changed since build.
-        snapshot_service.schedule_source_change_check(dataset_id)
-        sa_config = DataSourceConnectionService.snapshot_query_config(datasource.config)
-        exec_ds = SimpleNamespace(id=datasource.id, type=datasource.type, config=sa_config)
-        return snap_map, exec_ds
+        host = (
+            db.query(DataSource).filter(DataSource.id == plan.host_id).first()
+            if plan.host_id else None
+        )
+        exec_ds = SimpleNamespace(
+            id=(host.id if host is not None else base_ds.id),
+            type=(host.type if host is not None else base_ds.type),
+            config=plan.exec_config,
+            # Issue #7: carry the snapshot GENERATION so the slicer's distinct
+            # cache key rotates with it — otherwise a slicer keeps serving the
+            # previous generation's values (for the cache TTL) after a refresh,
+            # while charts already show the new generation.
+            generation=plan.generation,
+        )
+        return dict(plan.overrides), exec_ds
     except Exception:  # noqa: BLE001 — snapshot must NEVER break a slicer
         logger.warning("[snapshot] distinct-cascade context failed; using live", exc_info=True)
         return {}, None
+
+
+def _calendar_snapshot_ref_from_map(db: Session, snap_map: dict | None) -> str | None:
+    """The generated-calendar table's snapshot ref among a ``{table_id: ref}`` map,
+    or None. Lets the slicer distinct path point role-played date-dim views (which
+    carry no ``dataset_table_id``) at the SAME materialized calendar the chart
+    engine reads (see ``_snapshot_ref_for_view``) — one source of truth, no
+    chart/slicer dual-path drift. There is at most one generated-calendar per
+    dataset. Never raises."""
+    try:
+        from app.services.dataset_calendar_service import is_generated_calendar_table
+
+        for tid, ref in (snap_map or {}).items():
+            if not ref:
+                continue
+            t = db.query(DatasetTable).filter(DatasetTable.id == tid).first()
+            if t is not None and is_generated_calendar_table(t):
+                return ref
+    except Exception:  # noqa: BLE001 — no redirect on any lookup error
+        return None
+    return None
 
 
 def get_distinct_field_values(
@@ -3370,6 +3917,33 @@ def get_distinct_field_values(
             return []
 
     if view.dataset_table_id is None:
+        # Role-played date-dim (``…__<col>__date_dim``): if the dataset's calendar
+        # is materialized in the snapshot, read that flat table on the snapshot HOST
+        # — mirrors the chart engine's ``_snapshot_ref_for_view`` role-dim redirect,
+        # so the slicer cascade stays on the SAME snapshot the charts read (no
+        # chart/slicer dual-path drift). Column-identical to the inline calendar, so
+        # the option list is unchanged. Any gap → inline path below, unchanged.
+        _role_cal_ref = (
+            _calendar_snapshot_ref_from_map(db, _snap_map)
+            if (_snap_exec_ds is not None and str(view_name).endswith("_date_dim"))
+            else None
+        )
+        if _role_cal_ref:
+            _exec_type = (_snap_exec_ds.type if isinstance(_snap_exec_ds.type, str)
+                          else _snap_exec_ds.type.value)
+            dialect = _dialect_for_ds_type(_exec_type)
+            base_sql = f"SELECT * FROM `{_role_cal_ref}`"
+            sql = _build_distinct_sql(base_sql, _snap_exec_ds, dialect, dropped, use_snapshots=True)
+            table_identifier = (
+                f"calendar_role:{view_name}:snap:gen%s" % getattr(_snap_exec_ds, "generation", None)
+            )
+            values = _safe_execute(
+                "calendar_role",
+                lambda: execute_distinct_sql(_snap_exec_ds, table_identifier, sql),
+            )
+            return {"values": values, "dropped_filters": dropped,
+                    **({"debug_sql": captured_sqls} if explain else {})}
+
         sql_source = str(view.sql_table_name or "").strip()
         if not sql_source:
             raise ValueError(f"View '{view_name}' not found")
@@ -3421,14 +3995,31 @@ def get_distinct_field_values(
 
         ds_type = cal_datasource.type if isinstance(cal_datasource.type, str) else cal_datasource.type.value
         dialect = _dialect_for_ds_type(ds_type)
-        calendar_settings = get_calendar_settings(dataset_obj, enabled_default=False)
-        cal_sql = build_calendar_live_sql(calendar_settings, dialect)
         # Perf #5 — calendar base is inline (SA-safe); if the cascade is on
         # snapshots, run on the SA cred so any snapshot relation resolves.
         _cal_snap = _snap_exec_ds is not None
+        if _cal_snap:
+            # Phase 6 (#40/#42): render for the EXECUTION engine (the snapshot
+            # host), not the table's own source dialect — on a mixed dataset
+            # they differ, and e.g. PG-style quoting inside a BigQuery run
+            # turns identifiers into string literals.
+            _exec_type = (_snap_exec_ds.type if isinstance(_snap_exec_ds.type, str)
+                          else _snap_exec_ds.type.value)
+            dialect = _dialect_for_ds_type(_exec_type)
+        calendar_settings = get_calendar_settings(dataset_obj, enabled_default=False)
         cal_exec_ds = _snap_exec_ds if _cal_snap else cal_datasource
-        sql = _build_distinct_sql(cal_sql, cal_datasource, dialect, dropped, use_snapshots=_cal_snap)
-        table_identifier = f"calendar_view:{dataset_id}:{view_name}" + (":snap" if _cal_snap else "")
+        # Read the materialized calendar table when present (same physical table the
+        # chart engine reads) instead of regenerating it inline — keeps slicer and
+        # charts on ONE source of truth. Column-identical, so values are unchanged.
+        _cal_snap_ref = _snap_map.get(db_table.id) if _cal_snap else None
+        if _cal_snap_ref:
+            base_sql = f"SELECT * FROM `{_cal_snap_ref}`"
+            sql = _build_distinct_sql(base_sql, cal_datasource, dialect, dropped, use_snapshots=True)
+        else:
+            cal_sql = build_calendar_live_sql(calendar_settings, dialect)
+            sql = _build_distinct_sql(cal_sql, cal_datasource, dialect, dropped, use_snapshots=_cal_snap)
+        _gen_suffix = (":snap:gen%s" % getattr(_snap_exec_ds, "generation", None)) if _cal_snap else ""
+        table_identifier = f"calendar_view:{dataset_id}:{view_name}" + _gen_suffix
         values = _safe_execute("calendar_view", lambda: execute_distinct_sql(cal_exec_ds, table_identifier, sql))
         return {"values": values, "dropped_filters": dropped, **({"debug_sql": captured_sqls} if explain else {})}
 
@@ -3458,9 +4049,16 @@ def get_distinct_field_values(
         # (also redirected to snapshots) resolves. Any gap → live, unchanged.
         _base_ref = _snap_map.get(getattr(live_table, "id", None))
         if _base_ref and _snap_exec_ds is not None:
+            # Phase 6 (#40): the SQL executes on the snapshot HOST — quote
+            # identifiers for THAT engine, not the field's own source dialect
+            # (a PG dim in a mixed dataset would otherwise emit "col" which
+            # BigQuery parses as a string literal).
+            _exec_type = (_snap_exec_ds.type if isinstance(_snap_exec_ds.type, str)
+                          else _snap_exec_ds.type.value)
+            dialect = _dialect_for_ds_type(_exec_type)
             base_sql = f"SELECT * FROM `{_base_ref}`"
             sql = _build_distinct_sql(base_sql, datasource, dialect, dropped, use_snapshots=True)
-            table_identifier = build_dataset_table_cache_identifier(live_table) + ":snap"
+            table_identifier = build_dataset_table_cache_identifier(live_table) + ":snap:gen%s" % getattr(_snap_exec_ds, "generation", None)
             return execute_distinct_sql(_snap_exec_ds, table_identifier, sql)
         plan = resolve_dataset_table_relation(datasource, live_table)
         sql = _build_distinct_sql(plan.sql, datasource, dialect, dropped)
@@ -3535,6 +4133,48 @@ _RESERVED_NON_JOIN_COLUMNS = {"miniapp_user"}
 # direction is already covered by pass 2 (name heuristic).
 _SAME_NAME_SKIP = {"id", "pk", "key", "_id", "uuid"}
 
+# Additive / measure-value columns are NEVER join keys. The overlap probe
+# treats any numeric column as key-like, so a column holding a quantity /
+# amount / price trips false-positive joins (e.g. product_id ↔ quantity)
+# purely because small integers overlap. Exclude by name — but a key-suffixed
+# name (`*_id`/`*_key`/…) always wins, so `amount_id` stays joinable.
+_VALUE_COLUMN_NAMES = {
+    "quantity", "qty", "amount", "amt", "revenue", "sales", "price", "cost",
+    "total", "subtotal", "value", "balance", "tax", "discount", "profit",
+    "margin", "score", "rating", "age", "salary", "weight", "height", "width",
+    "length", "duration", "count", "sum", "avg", "average", "min", "max",
+    # Vietnamese business columns
+    "so_luong", "soluong", "gia", "don_gia", "dongia", "gia_tri", "giatri",
+    "thanh_tien", "thanhtien", "doanh_thu", "doanhthu", "so_tien", "sotien",
+    "tong", "tong_tien", "tongtien", "chiet_khau", "chietkhau", "thue",
+    "khoi_luong", "khoiluong", "trong_luong", "trongluong", "dien_tich", "dientich",
+}
+_VALUE_COLUMN_SUFFIXES = (
+    "_amount", "_amt", "_revenue", "_qty", "_quantity", "_price", "_cost",
+    "_total", "_value", "_sum", "_balance", "_tax", "_discount", "_gia",
+    "_tien", "_doanh_thu", "_so_luong",
+)
+
+
+def _is_value_like_column_name(col_name: str) -> bool:
+    """True when a column name denotes an aggregatable value (not an id)."""
+    name = str(col_name or "").strip().lower()
+    if not name or any(name.endswith(suffix) for suffix in _FK_SUFFIXES):
+        return False  # key-suffixed names are always keys
+    return name in _VALUE_COLUMN_NAMES or any(
+        name.endswith(suffix) for suffix in _VALUE_COLUMN_SUFFIXES
+    )
+
+
+def _key_stem(col_name: str) -> str:
+    """Strip a trailing key suffix so `product_id` → `product`, `sale_id` →
+    `sale`. Used to detect coincidental cross-entity id↔id overlaps."""
+    name = str(col_name or "").strip().lower()
+    for suffix in _FK_SUFFIXES:
+        if name.endswith(suffix) and len(name) > len(suffix):
+            return name[: -len(suffix)]
+    return name
+
 
 def _is_key_like_column(column: dict) -> bool:
     """A column is "key-like" if its values look like identifiers we could
@@ -3546,6 +4186,11 @@ def _is_key_like_column(column: dict) -> bool:
     """
     col_name = str(column.get("name") or "").strip().lower()
     if col_name in _RESERVED_NON_JOIN_COLUMNS:
+        return False
+    # Additive / measure-value columns (quantity, revenue, price, …) are never
+    # join keys — exclude them so deep-scan doesn't propose joins on values that
+    # merely overlap numerically. `*_id`-style names are exempt (handled inside).
+    if _is_value_like_column_name(col_name):
         return False
     raw_type = str(column.get("type") or column.get("data_type") or "").strip().lower()
     if not raw_type:
@@ -4216,7 +4861,8 @@ def _generate_join_suggestions(
 
     tables: list[DatasetTable] = (
         db.query(DatasetTable)
-        .filter(DatasetTable.dataset_id == dataset_id, DatasetTable.enabled == True)
+        .filter(DatasetTable.dataset_id == dataset_id)
+        .filter((DatasetTable.enabled.is_(None)) | (DatasetTable.enabled == True))  # noqa: E712 (issue #14)
         .all()
     )
     table_by_id = {t.id: t for t in tables}
@@ -4382,7 +5028,10 @@ def _generate_join_suggestions(
     def _normalise_col_name(name: str) -> str:
         return str(name or "").strip().lower()
 
-    sorted_tables = sorted(tables, key=lambda t: t.id)
+    sorted_tables = sorted(
+        (t for t in tables if not is_generated_calendar_table(t)),
+        key=lambda t: t.id,
+    )
     for i, from_table in enumerate(sorted_tables):
         from_view = table_views.get(from_table.id)
         if from_view is None or from_table.id in distinct_cache._failed_views:
@@ -4479,7 +5128,10 @@ def _generate_join_suggestions(
         # used to be Sheets quota which is now decoupled from probe count.
         MAX_PROBES = 200
         probes_run = 0
-        sorted_tables = sorted(tables, key=lambda t: t.id)
+        sorted_tables = sorted(
+            (t for t in tables if not is_generated_calendar_table(t)),
+            key=lambda t: t.id,
+        )
         for i, from_table in enumerate(sorted_tables):
             if probes_run >= MAX_PROBES:
                 warnings.append({
@@ -4535,6 +5187,22 @@ def _generate_join_suggestions(
                         if (
                             fc_lower in _SAME_NAME_SKIP
                             and tc_lower in _SAME_NAME_SKIP
+                        ):
+                            continue
+                        # Coincidental cross-entity id↔id overlap: two columns
+                        # that BOTH end in a key suffix but name DIFFERENT
+                        # entities (product_id ↔ sale_id) almost never join. A
+                        # real cross-name FK targets a plain `id` / same-stem PK,
+                        # and same-entity keys share a name (handled by pass 2.5
+                        # + the same-name branch here). These overlap only because
+                        # both are 1..N integer sequences — skip to cut noise.
+                        fc_keyish = any(fc_lower.endswith(s) for s in _FK_SUFFIXES)
+                        tc_keyish = any(tc_lower.endswith(s) for s in _FK_SUFFIXES)
+                        if (
+                            fc_lower != tc_lower
+                            and fc_keyish
+                            and tc_keyish
+                            and _key_stem(fc_lower) != _key_stem(tc_lower)
                         ):
                             continue
                         score = _score_candidate_pair(

@@ -122,6 +122,11 @@ def create_view(
                 dataset_obj,
                 dataset_table,
                 calendar_dialect=calendar_dialect,
+                datasource=datasource,
+                # Phase 6 (#41): pass db so derived tables resolve through the ONE
+                # preview-parity renderer (dependency CTEs + aliases) instead of
+                # the legacy raw-wrap fallback that diverges from chart runtime.
+                db=db,
             )
 
     # Validate that sql_table_name is provided directly or can be resolved from dataset_table_id

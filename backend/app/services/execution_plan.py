@@ -1,0 +1,548 @@
+"""
+Execution planning for the semantic chart runtime (pipeline refactor Phase 1+2).
+
+Phase 1 — CONTRACTS: ``ExecutionPlan`` / ``SnapshotState`` give the physical
+execution decision a single, typed, observable shape (mode, dialect, credential,
+snapshot refs, freshness, why) instead of five loose ``_snap_*`` locals.
+
+Phase 2 — PLANNER: ``plan_chart_execution()`` is the ONE place that decides how
+a semantic chart request executes physically. It replaces the decision logic
+previously scattered through ``chart_service`` (`_resolve_chart_snapshot_overrides`
++ `_assert_dataset_single_engine` + the dialect/credential forcing block), with
+two deliberate fixes:
+
+  * ORDERING (issue #5): the mixed-engine check now runs AFTER snapshot
+    resolution. A dataset that mixes sources (e.g. BigQuery facts + a Postgres
+    dim) is fine when every table is materialized into the host BigQuery — it
+    is only blocked when it would have to run LIVE (one SQL cannot join across
+    engines). The old guard ran first and (had it not been dead code due to a
+    bad import) would have blocked exactly the federation case it was meant to
+    allow.
+  * SCOPE (issue #6, first slice): only ``enabled`` tables are considered by
+    both the engine-span check and snapshot eligibility, so a disabled/legacy
+    table can no longer knock a whole dataset off the snapshot path. (Scoping
+    down to "only the views this chart's query actually touches" needs the
+    recursion-reachable view set and is deferred to a later phase — see the
+    measure-isolation re-anchor notes in semantic_query_engine.)
+
+The planner NEVER raises: a planning failure degrades to a live plan (same
+contract as the old resolver — "snapshot must never break a chart"). A request
+that CANNOT run at all (mixed engines without a complete snapshot) is expressed
+as ``plan.blocked`` — a clear, actionable message the runtime raises as a
+ValueError → 400, instead of the engine leaking one dialect's SQL into another
+and failing with a cryptic parser error.
+"""
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass, field
+from datetime import datetime
+from enum import Enum
+from typing import Any, Dict, Optional
+
+from sqlalchemy.orm import Session
+
+logger = logging.getLogger(__name__)
+
+
+class SnapshotState(str, Enum):
+    """Why the plan is (or is not) snapshot-backed. LIVE/FRESH/STALE/NOT_BUILT
+    are produced today; INCOMPATIBLE/MISSING are reserved for the
+    reconcile-on-read phase (fingerprint drift / physical table gone)."""
+
+    LIVE = "live"
+    FRESH = "fresh"
+    STALE = "stale"
+    NOT_BUILT = "not_built"
+    INCOMPATIBLE = "incompatible"  # reserved (Phase 5)
+    MISSING = "missing"            # reserved (Phase 5)
+
+
+@dataclass(frozen=True)
+class ExecutionPlan:
+    """Complete physical execution decision for ONE semantic chart request.
+
+    ``mode``            "live" | "snapshot".
+    ``dialect``/``ds_type``  the engine the SQL must be rendered for / executed
+                        on. For mode="snapshot" these are ALWAYS "bigquery"
+                        (snapshot refs render as BigQuery tables in the host).
+                        For mode="live" they are informational — the runtime
+                        keeps its own locals so the live path stays
+                        byte-identical to the pre-planner behaviour.
+    ``exec_config``     credential/config for execute_query. None → the
+                        datasource's own config (live). Non-None → the host's
+                        snapshot (service-account) config.
+    ``cred``            "source_datasource" | "host_service_account" (log/debug).
+    ``overrides``       {dataset_table_id -> snapshot physical_ref} for the
+                        engine's FROM-clause redirect. Empty → live SQL.
+    ``federated``       dataset ENGINE-SPAN flag: True when the dataset's
+                        enabled non-calendar tables live on >1 SQL dialect.
+                        (Not "base datasource isn't BigQuery" — a BigQuery-based
+                        chart in a mixed dataset is just as federated: it has NO
+                        live fallback because live SQL would join across
+                        engines.)
+    ``blocked``         None, or a user-facing message meaning "this request
+                        cannot run in this state" — the runtime raises it.
+    ``trigger_dataset_id``  dataset to warm/rebuild in the background.
+    ``reason``          one human-readable line for the [exec-decision] log.
+    """
+
+    mode: str
+    dialect: str
+    ds_type: str
+    exec_config: Any
+    cred: str
+    snapshot_state: SnapshotState
+    overrides: Dict[int, str] = field(default_factory=dict)
+    as_of: Optional[datetime] = None
+    stale: bool = False
+    federated: bool = False
+    host_id: Optional[int] = None
+    dataset_id: Optional[int] = None
+    trigger_dataset_id: Optional[int] = None
+    # Phase 4 — the snapshot GENERATION this plan reads (one refresh batch =
+    # one id). Cache identity should key on this, not on a timestamp: two
+    # different physical snapshot sets can share the same oldest-built_at.
+    generation: Optional[int] = None
+    # Phase 1 — published-only: this plan is PINNED to a published generation;
+    # on a missing/broken snapshot it must BLOCK (re-sync), NEVER fall back to
+    # live or a previous generation (the execute path checks this flag).
+    published: bool = False
+    # Phase 1 — security scope baked into the cache key so a future per-tenant/
+    # per-user snapshot can never be served across principals.
+    security_scope: Optional[str] = None
+    reason: str = ""
+    blocked: Optional[str] = None
+
+    @classmethod
+    def live_stub(cls) -> "ExecutionPlan":
+        """Test/QA helper: force the pure-live path (no snapshot layer). Used by
+        the golden harness to lock the semantic RENDERER free of snapshot state."""
+        return cls(
+            mode="live", dialect="", ds_type="", exec_config=None,
+            cred="source_datasource", snapshot_state=SnapshotState.LIVE,
+            reason="forced live (test stub)",
+        )
+
+
+def _resolve_dataset_id(db: Session, binding: dict, base_view_name: str) -> Optional[int]:
+    """The chart's dataset id — from binding.datasetId, else via the base view.
+    Shared by span + snapshot resolution so BOTH see the same dataset even on
+    the preview path (whose binding may lack datasetId — the gap that made the
+    old cross-source guard silently skip). Int-coerced: the binding value comes
+    from author-controlled chart config JSON."""
+    from app.models.dataset import DatasetTable
+    from app.models.semantic import SemanticView
+
+    raw = binding.get("datasetId")
+    if raw is not None:
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            pass
+    if base_view_name:
+        bv = db.query(SemanticView).filter(SemanticView.name == base_view_name).first()
+        if bv is not None and getattr(bv, "dataset_table_id", None):
+            bt = db.query(DatasetTable).filter(DatasetTable.id == bv.dataset_table_id).first()
+            if bt is not None:
+                return bt.dataset_id
+    return None
+
+
+def plan_chart_execution(
+    db: Session,
+    datasource,
+    binding: dict,
+    base_view_name: str,
+    *,
+    ttl_minutes: Optional[int] = None,
+    is_preview: bool = False,
+) -> ExecutionPlan:
+    """Decide how this semantic chart request executes physically.
+
+    Decision order (the issue-#5 fix lives in this ordering):
+      1. Resolve the dataset + its ENGINE SPAN (enabled, non-calendar tables).
+      2. Try the snapshot path (host + all-or-nothing current refs) — a fully
+         materialized dataset runs in the host BigQuery on the SA credential,
+         mixed-source or not.
+      3. Only if the request must run LIVE: a single-engine dataset runs live
+         unchanged; a mixed-engine dataset is BLOCKED with a clear message
+         (live SQL cannot join across engines) + a background warm-up when a
+         host exists.
+
+    ``ttl_minutes`` semantics unchanged from the old resolver: None → builder /
+    authed (serve current snapshot at any age, no auto-rebuild); 0 → realtime
+    (bypass snapshots); >0 → public per-link TTL (serve-stale-then-async).
+    NEVER raises — planning failure degrades to a live plan."""
+    base_ds_type = str(getattr(datasource.type, "value", datasource.type)).lower()
+    from app.services.live_query_service import _dialect_for_ds_type
+    base_dialect = _dialect_for_ds_type(base_ds_type)
+
+    def live(
+        reason: str,
+        *,
+        state: SnapshotState = SnapshotState.LIVE,
+        trigger: Optional[int] = None,
+        blocked: Optional[str] = None,
+        federated: bool = False,
+        dataset_id: Optional[int] = None,
+    ) -> ExecutionPlan:
+        return ExecutionPlan(
+            mode="live", dialect=base_dialect, ds_type=base_ds_type,
+            exec_config=None, cred="source_datasource", snapshot_state=state,
+            federated=federated, dataset_id=dataset_id,
+            trigger_dataset_id=trigger, reason=reason, blocked=blocked,
+        )
+
+    try:
+        from app.models.dataset import DatasetTable
+        from app.models.models import DataSource
+        from app.services import snapshot_service
+        from app.services.dataset_calendar_service import is_generated_calendar_table
+
+        dataset_id = _resolve_dataset_id(db, binding, base_view_name)
+        if not dataset_id:
+            return live("no dataset resolved from binding/base view")
+
+        # ── Phase 1 — PUBLISHED-ONLY gate ─────────────────────────────────────
+        # A dataset under the publish lifecycle (publish_state != NULL) is served
+        # ONLY from its pinned published generation — never live, never "newest",
+        # never a fallback. A LEGACY dataset (publish_state NULL) falls straight
+        # through to the existing behaviour below (no change → no broken
+        # dashboards). Preview/Explore (is_preview) on an un-published design is
+        # allowed to run live — that's design-time, not a Dashboard.
+        from app.models.dataset import Dataset as _Dataset
+        dataset_obj = db.query(_Dataset).filter(_Dataset.id == dataset_id).first()
+        if dataset_obj is not None and getattr(dataset_obj, "publish_state", None) is not None:
+            return _plan_published(db, dataset_obj, base_view_name, is_preview=is_preview)
+
+        # Phase 5 — model self-heal: background, rate-limited check that the
+        # semantic views still mirror columns_cache; resyncs when drifted so a
+        # schema change no longer requires a manual Dataset visit (issue #23).
+        try:
+            from app.services.dataset_model_service import schedule_model_drift_check
+            schedule_model_drift_check(dataset_id)
+        except Exception:  # noqa: BLE001 — self-heal must never break planning
+            pass
+
+        # Enabled tables only (issue #6 first slice): a disabled table must not
+        # block snapshots or flag a phantom engine mix. `enabled` is nullable —
+        # NULL means enabled (column default True on old rows).
+        tables = (
+            db.query(DatasetTable)
+            .filter(DatasetTable.dataset_id == dataset_id)
+            .filter((DatasetTable.enabled.is_(None)) | (DatasetTable.enabled == True))  # noqa: E712
+            .all()
+        )
+        noncal = [t for t in tables if not is_generated_calendar_table(t)]
+
+        # Engine span: which SQL dialects do this dataset's sources need?
+        ds_ids = sorted({t.datasource_id for t in noncal if t.datasource_id})
+        ds_rows = (
+            db.query(DataSource).filter(DataSource.id.in_(ds_ids)).all() if ds_ids else []
+        )
+        by_dialect: Dict[str, list] = {}
+        for d in ds_rows:
+            dia = _dialect_for_ds_type(str(getattr(d.type, "value", d.type)).lower())
+            by_dialect.setdefault(dia, []).append(getattr(d, "name", None) or f"#{d.id}")
+        federated = len(by_dialect) > 1
+        engines_txt = "; ".join(f"{k} ({', '.join(v)})" for k, v in sorted(by_dialect.items()))
+        mixed_pre = (
+            f"Dataset này trộn nhiều nguồn khác engine ({engines_txt}) nên một "
+            "biểu đồ không thể chạy trực tiếp (live) — một truy vấn SQL chỉ chạy "
+            "được trên MỘT engine. "
+        )
+
+        # ── Realtime (ttl=0): bypass snapshots ────────────────────────────────
+        if ttl_minutes == 0:
+            if federated:
+                return live(
+                    "realtime requested but dataset is mixed-engine",
+                    federated=True, dataset_id=dataset_id,
+                    blocked=mixed_pre + "Chế độ Realtime (TTL=0) bỏ qua snapshot "
+                    "hợp nhất nên không dùng được với dataset trộn nguồn — chọn "
+                    "chế độ làm mới khác cho public link, hoặc tách dataset theo nguồn.",
+                )
+            return live("realtime (ttl=0) → bypass snapshots", dataset_id=dataset_id)
+
+        # ── Snapshot path (all-or-nothing over the dataset's enabled tables) ──
+        host = snapshot_service.resolve_host(db, dataset_id)
+        if host is None:
+            if federated:
+                return live(
+                    "mixed-engine dataset without a materialization host",
+                    federated=True, dataset_id=dataset_id,
+                    blocked=mixed_pre + "Cần một kết nối BigQuery đã bật "
+                    "materialization làm host để hệ thống tự đồng bộ mọi nguồn về "
+                    "snapshot BigQuery, hoặc tách dataset theo nguồn.",
+                )
+            return live("no materialization host (not BigQuery or not opted-in)",
+                        dataset_id=dataset_id)
+
+        mat_tables = []
+        for t in noncal:
+            if not snapshot_service.is_federated_materializable(t):
+                if federated:
+                    return live(
+                        "mixed-engine dataset with a non-materializable (derived) table",
+                        federated=True, dataset_id=dataset_id,
+                        blocked=mixed_pre + "Dataset có bảng dẫn xuất (derived) chưa "
+                        "hỗ trợ đồng bộ snapshot nên không thể hợp nhất về một engine. "
+                        "Chuyển bảng dẫn xuất thành bảng SQL trên nguồn, hoặc tách "
+                        "dataset theo nguồn.",
+                    )
+                return live("non-materializable table (derived) → live",
+                            dataset_id=dataset_id)
+            mat_tables.append(t)
+        if not mat_tables:
+            return live("no materializable tables", dataset_id=dataset_id)
+
+        # Phase 4 — resolve ONE consistent generation for ALL tables (never a
+        # torn half-old/half-new mix while a rebuild is mid-flight).
+        overrides, stored_fps, generation, as_of = snapshot_service.resolve_generation_refs(
+            db, [t.id for t in mat_tables]
+        )
+        if not overrides:
+            # Not built yet → warm in the background. Single-engine dataset
+            # serves live meanwhile; mixed-engine CANNOT run live → blocked
+            # with a "building" message (same trigger keeps warming it).
+            if federated:
+                return live(
+                    "mixed-engine dataset, snapshot not built yet (warming)",
+                    state=SnapshotState.NOT_BUILT, trigger=dataset_id,
+                    federated=True, dataset_id=dataset_id,
+                    blocked=mixed_pre + "Snapshot hợp nhất trên BigQuery đang "
+                    "được dựng ở nền — thử lại sau giây lát, hoặc bấm Refresh "
+                    "trên Dataset.",
+                )
+            return live("snapshot not built yet → live + background warm",
+                        state=SnapshotState.NOT_BUILT, trigger=dataset_id,
+                        dataset_id=dataset_id)
+
+        # Phase 5 — fingerprint reconcile-on-read (issue #12): a snapshot whose
+        # stored fingerprint no longer matches the CURRENT table definition
+        # (source SQL / schema / columns_cache drift) is INCOMPATIBLE — old
+        # logic must not keep serving silently just because it is young.
+        from app.models.dataset import Dataset as _Dataset
+        dataset_obj = db.query(_Dataset).filter(_Dataset.id == dataset_id).first()
+        ds_by_id = {d.id: d for d in ds_rows}
+        incompatible = None
+        for t in mat_tables:
+            src_ds = ds_by_id.get(t.datasource_id)
+            if src_ds is None or dataset_obj is None:
+                continue  # cannot verify → serve as-is (unknown ≠ incompatible)
+            expected = snapshot_service.current_fingerprint_for_table(db, dataset_obj, t, src_ds)
+            if expected is not None and stored_fps.get(t.id) not in (None, expected):
+                incompatible = t.id
+                break
+        if incompatible is not None:
+            if federated:
+                return live(
+                    f"snapshot INCOMPATIBLE (definition changed, table {incompatible}) — rebuilding",
+                    state=SnapshotState.INCOMPATIBLE, trigger=dataset_id,
+                    federated=True, dataset_id=dataset_id,
+                    blocked=mixed_pre + "Định nghĩa dataset vừa thay đổi nên snapshot "
+                    "hợp nhất đang được dựng lại ở nền — thử lại sau giây lát, hoặc "
+                    "bấm Refresh trên Dataset.",
+                )
+            return live(
+                f"snapshot INCOMPATIBLE (definition changed, table {incompatible}) → live + rebuild",
+                state=SnapshotState.INCOMPATIBLE, trigger=dataset_id,
+                dataset_id=dataset_id,
+            )
+
+        # Calendar (best-effort) — semantic-audit 2026-07 (#3): mirror
+        # _plan_published. The legacy path excluded the generated calendar from
+        # `overrides`, so role-played date-dim views fell back to their
+        # SYNC-dialect inline calendar SQL — executed on the BigQuery snapshot
+        # host that SQL 400s for Sheets/PG-sourced datasets. Point the Date view
+        # (and through the engine's role-dim redirect, every date-dim) at the
+        # materialized calendar when THIS generation has one; older generations
+        # without it keep the inline fallback (now dialect-corrected engine-side).
+        cal_ids = [t.id for t in tables if is_generated_calendar_table(t)]
+        if cal_ids and generation is not None:
+            cal_refs, _cf, _ca = snapshot_service.resolve_specific_generation_refs(
+                db, cal_ids, generation
+            )
+            if cal_refs:
+                overrides = {**overrides, **cal_refs}
+
+        stale = snapshot_service.is_stale(as_of, ttl_minutes)
+        # Change-driven refresh: rate-limited background check — rebuild if the
+        # SOURCE DATA changed since build (works for builder too; no TTL needed).
+        snapshot_service.schedule_source_change_check(dataset_id)
+
+        from app.services.datasource_service import DataSourceConnectionService
+
+        # Issue #1: the execution HOST must be the one that BUILT the generation
+        # we're serving — not an independently resolved host that may point at a
+        # different project/credential. Fall back to `host` only for legacy
+        # (generation NULL) rows.
+        gen_host = snapshot_service.host_for_generation(db, dataset_id, generation) or host
+
+        return ExecutionPlan(
+            mode="snapshot",
+            # Snapshot refs render as BigQuery tables in the host → the WHOLE
+            # statement (calendar, time-grain, quoting, functions) must be
+            # BigQuery, whatever the base datasource is.
+            dialect="bigquery", ds_type="bigquery",
+            exec_config=DataSourceConnectionService.snapshot_query_config(gen_host.config),
+            cred="host_service_account",
+            snapshot_state=SnapshotState.STALE if stale else SnapshotState.FRESH,
+            overrides=overrides, as_of=as_of, stale=stale,
+            federated=federated, host_id=gen_host.id, dataset_id=dataset_id,
+            trigger_dataset_id=(dataset_id if stale else None),
+            generation=generation,
+            reason=("all tables snapshot-backed in host BigQuery"
+                    + (f" (generation {generation})" if generation else " (legacy per-table refs)")
+                    + (" (mixed-engine dataset federated into host)" if federated else "")),
+        )
+    except Exception:  # noqa: BLE001 — planning must NEVER break a chart
+        logger.warning("[exec-plan] planning failed; falling back to live", exc_info=True)
+        # Issue #5: fail-CLOSED for mixed-engine datasets. A silent live fallback
+        # on a dataset that spans >1 engine would generate cross-engine SQL and
+        # leak one dialect into another. Cheap re-probe of the engine span; if
+        # mixed → BLOCK with a clear message instead of leaking.
+        try:
+            ds_id = _resolve_dataset_id(db, binding, base_view_name)
+            if ds_id and _dataset_is_mixed_engine(db, ds_id):
+                return live(
+                    "planner error on a mixed-engine dataset → blocked (no cross-engine live)",
+                    federated=True, dataset_id=ds_id,
+                    blocked="Dataset này trộn nhiều nguồn khác engine và hệ thống gặp lỗi "
+                    "khi lập kế hoạch thực thi — không thể chạy trực tiếp (một truy vấn "
+                    "chỉ chạy trên MỘT engine). Thử lại, hoặc bấm Refresh trên Dataset; "
+                    "nếu lặp lại, báo dev kiểm tra cấu hình dataset.",
+                )
+        except Exception:  # noqa: BLE001
+            pass
+        return live("planner error → live fallback")
+
+
+def _plan_published(db: Session, dataset_obj, base_view_name: str, *, is_preview: bool) -> ExecutionPlan:
+    """Serve a lifecycle-managed dataset ONLY from its pinned published
+    generation. No live, no 'newest', no fallback (Phase 1). Blocks with a clear
+    message when there is nothing safe to serve — the Dashboard shows the reason,
+    never wrong data."""
+    from app.models.dataset import DatasetTable
+    from app.services import snapshot_service
+    from app.services.dataset_calendar_service import is_generated_calendar_table
+    from app.services.datasource_service import DataSourceConnectionService
+
+    dataset_id = dataset_obj.id
+    state = getattr(dataset_obj, "publish_state", None)
+    pg = getattr(dataset_obj, "published_generation", None)
+    scope = getattr(dataset_obj, "security_scope", None) or "shared"
+
+    def blocked_plan(msg: str, *, trigger: Optional[int] = None) -> ExecutionPlan:
+        return ExecutionPlan(
+            mode="live", dialect="", ds_type="", exec_config=None,
+            cred="source_datasource", snapshot_state=SnapshotState.NOT_BUILT,
+            dataset_id=dataset_id, security_scope=scope, published=True,
+            trigger_dataset_id=trigger, reason="published-gate: " + msg, blocked=msg,
+        )
+
+    if state == "disabled":
+        return blocked_plan("Dataset đang bị vô hiệu hoá (Disabled) — bật lại để dùng trên Dashboard.")
+
+    # No published data yet: preview/design-time may run live; a Dashboard blocks.
+    if pg is None:
+        if is_preview:
+            # Design-time preview: run live. dialect/ds_type left empty so the
+            # chart runtime keeps its own base-datasource locals (exec_config
+            # None ⇒ runtime does not override them).
+            return ExecutionPlan(
+                mode="live", dialect="", ds_type="", exec_config=None,
+                cred="source_datasource", snapshot_state=SnapshotState.LIVE,
+                dataset_id=dataset_id, security_scope=scope,
+                reason="preview on un-published dataset (design-time live)",
+            )
+        return blocked_plan(
+            "Dataset chưa được Publish — bấm “Sync & Publish” trên Dataset trước khi dùng trên Dashboard.")
+
+    # Serve the PINNED published generation.
+    tables = (
+        db.query(DatasetTable)
+        .filter(DatasetTable.dataset_id == dataset_id)
+        .filter((DatasetTable.enabled.is_(None)) | (DatasetTable.enabled == True))  # noqa: E712
+        .all()
+    )
+    want = [
+        t.id for t in tables
+        if not is_generated_calendar_table(t) and snapshot_service.is_federated_materializable(t)
+    ]
+    if want:
+        refs, _fps, as_of = snapshot_service.resolve_specific_generation_refs(db, want, pg)
+        if not refs:
+            return blocked_plan(
+                "Snapshot đã publish không còn đầy đủ (có thể đã hết hạn/bị xoá) — bấm “Sync & Publish” "
+                "để dựng lại. (Dashboard KHÔNG tự chạy live để tránh lệch dữ liệu.)",
+                trigger=None,
+            )
+    else:
+        # A dataset whose data comes entirely from parent datasets has no own
+        # materializable tables — refs start empty and are filled by composition.
+        refs, as_of = {}, None
+
+    # Dataset-on-Dataset composition: point each parent-ref table at the parent's
+    # PINNED published snapshot. This reuses the SAME `overrides` map the engine
+    # already uses for federation (semantic_query_engine._snapshot_ref_for_view),
+    # so the calculation layer treats the parent snapshot as an ordinary leaf view
+    # — no new calculation path is introduced.
+    from app.services import dataset_composition_service as _comp
+    parent_ovr, block_msg = _comp.parent_snapshot_overrides(db, dataset_id)
+    if block_msg:
+        return blocked_plan(block_msg)
+    if parent_ovr:
+        refs = {**refs, **parent_ovr}
+
+    # Calendar (best-effort): point the Date view at its snapshot table when THIS
+    # generation materialized it; older generations built before calendar
+    # materialization have none → engine falls back to inline calendar SQL. Never
+    # blocks — the calendar is generated, not source data.
+    cal_ids = [t.id for t in tables if is_generated_calendar_table(t)]
+    if cal_ids:
+        cal_refs, _cf, _ca = snapshot_service.resolve_specific_generation_refs(db, cal_ids, pg)
+        if cal_refs:
+            refs = {**refs, **cal_refs}
+
+    if not refs:
+        return blocked_plan(
+            "Snapshot đã publish không còn đầy đủ (có thể đã hết hạn/bị xoá) — bấm “Sync & Publish” "
+            "để dựng lại. (Dashboard KHÔNG tự chạy live để tránh lệch dữ liệu.)",
+            trigger=None,
+        )
+    host = snapshot_service.host_for_generation(db, dataset_id, pg) or snapshot_service.resolve_host(db, dataset_id)
+    if host is None:
+        return blocked_plan("Không xác định được host BigQuery của generation đã publish — cần Sync lại.")
+    return ExecutionPlan(
+        mode="snapshot", dialect="bigquery", ds_type="bigquery",
+        exec_config=DataSourceConnectionService.snapshot_query_config(host.config),
+        cred="host_service_account",
+        snapshot_state=(SnapshotState.STALE if state == "changes_pending" else SnapshotState.FRESH),
+        overrides=refs, as_of=as_of, stale=(state == "changes_pending"),
+        host_id=host.id, dataset_id=dataset_id, generation=pg, published=True,
+        security_scope=scope,
+        reason=("published generation %s%s" % (pg, " (design has unsynced changes)" if state == "changes_pending" else "")),
+    )
+
+
+def _dataset_is_mixed_engine(db: Session, dataset_id: int) -> bool:
+    """Cheap probe: do this dataset's ENABLED non-calendar tables span >1 SQL
+    dialect? Used by the planner's fail-closed path (issue #5)."""
+    from app.models.dataset import DatasetTable
+    from app.models.models import DataSource
+    from app.services.dataset_calendar_service import is_generated_calendar_table
+    from app.services.live_query_service import _dialect_for_ds_type
+    tables = (
+        db.query(DatasetTable)
+        .filter(DatasetTable.dataset_id == dataset_id)
+        .filter((DatasetTable.enabled.is_(None)) | (DatasetTable.enabled == True))  # noqa: E712
+        .all()
+    )
+    ds_ids = {t.datasource_id for t in tables if t.datasource_id and not is_generated_calendar_table(t)}
+    if len(ds_ids) <= 1:
+        return False
+    rows = db.query(DataSource).filter(DataSource.id.in_(list(ds_ids))).all()
+    dialects = {_dialect_for_ds_type(str(getattr(d.type, "value", d.type)).lower()) for d in rows}
+    return len(dialects) > 1

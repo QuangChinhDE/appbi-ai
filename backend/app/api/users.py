@@ -3,7 +3,7 @@ User management endpoints.
 """
 
 import uuid
-from typing import List
+from typing import Dict, List
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, ConfigDict
@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session, selectinload
 from app.core.database import get_db
 from app.core.share_access import require_share_access
 from app.core.dependencies import get_current_user, require_permission
+from app.core.user_deletion import reassign_user_resources, summarize_owned_resources
 from app.models.resource_share import ResourceType
 from app.models.team import Team, TeamMembership
 from app.models.user import AuthProvider, User, UserStatus
@@ -29,6 +30,14 @@ class ShareableUser(BaseModel):
     id: uuid.UUID
     email: str
     full_name: str
+
+
+class UserDeletionImpact(BaseModel):
+    """What a permanent delete will touch, so the admin can confirm knowingly."""
+    status: str
+    counts: Dict[str, int]
+    total_owned: int
+    reassign_to_email: str
 
 
 def _base_user_query(db: Session):
@@ -181,6 +190,56 @@ def deactivate_user(
             detail="You cannot deactivate your own account",
         )
 
-    from app.models.user import UserStatus
     user.status = UserStatus.DEACTIVATED
+    db.commit()
+
+
+# Resource keys counted as "owned" (reassigned on delete). shares_given / api_tokens
+# are cascade-deleted, reported separately.
+_OWNED_RESOURCE_KEYS = ("data_sources", "datasets", "explore_charts", "dashboards", "workboards")
+
+
+@router.get("/{user_id}/deletion-impact", response_model=UserDeletionImpact)
+def get_user_deletion_impact(
+    user_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_permission("settings", "full")),
+):
+    """Preview what a permanent delete does: owned resources are reassigned to the
+    acting admin; shares and API tokens are removed."""
+    user = _load_user_or_404(db, user_id)
+    counts = summarize_owned_resources(db, user.id)
+    total_owned = sum(counts.get(key, 0) for key in _OWNED_RESOURCE_KEYS)
+    return UserDeletionImpact(
+        status=user.status.value,
+        counts=counts,
+        total_owned=total_owned,
+        reassign_to_email=admin.email,
+    )
+
+
+@router.delete("/{user_id}/permanent", status_code=status.HTTP_204_NO_CONTENT)
+def delete_user_permanently(
+    user_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_permission("settings", "full")),
+):
+    """Permanently delete a user. Requires the account to be deactivated first;
+    reassigns their owned resources to the acting admin so nothing goes dark,
+    then removes the row (cascading tokens, permissions, memberships, shares)."""
+    user = _load_user_or_404(db, user_id)
+
+    if user.id == admin.id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="You cannot delete your own account",
+        )
+    if user.status != UserStatus.DEACTIVATED:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Deactivate the account before deleting it permanently",
+        )
+
+    reassign_user_resources(db, user.id, admin.id)
+    db.delete(user)
     db.commit()

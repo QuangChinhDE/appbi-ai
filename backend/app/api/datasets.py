@@ -2417,6 +2417,218 @@ def refresh_dataset_snapshots(
     }
 
 
+# ── Phase 1: Dataset publish lifecycle + grants ─────────────────────────────
+@router.post("/{dataset_id}/publish")
+def sync_and_publish_dataset(
+    dataset_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Sync & Publish: lock the design, ETL one complete snapshot generation,
+    validate, and pin it as the published generation Dashboards read. Async —
+    returns immediately; poll GET /publish-status. Requires MANAGE on the dataset."""
+    from app.models.dataset import Dataset
+    from app.services import dataset_grants_service, dataset_publish_service
+
+    ds = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if not ds:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    dataset_grants_service.require_capability(db, current_user, ds, "manage")
+    # A dataset entering the lifecycle for the first time starts as draft.
+    if ds.publish_state is None:
+        ds.publish_state = "draft"
+        db.commit()
+    res = dataset_publish_service.start_sync_and_publish(dataset_id)
+    return {"ok": True, **res, "publish_state": "syncing" if res.get("started") else ds.publish_state}
+
+
+@router.get("/{dataset_id}/publish-status")
+def dataset_publish_status(
+    dataset_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Current lifecycle state (+ live changes-pending recompute), pinned
+    generation, timestamps, and whether a sync is in flight."""
+    from app.models.dataset import Dataset
+    from app.services import dataset_publish_service
+
+    ds = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if not ds:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    require_view_access(db, current_user, ds, "datasets")
+    return dataset_publish_service.get_publish_info(db, ds)
+
+
+@router.get("/{dataset_id}/grants")
+def list_dataset_grants(
+    dataset_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    from app.models.dataset import Dataset, DatasetGrant
+    from app.services import dataset_grants_service
+
+    ds = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if not ds:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    require_view_access(db, current_user, ds, "datasets")
+    rows = db.query(DatasetGrant).filter(DatasetGrant.dataset_id == dataset_id).all()
+    return {
+        "my_capabilities": sorted(dataset_grants_service.dataset_capabilities(db, current_user, ds)),
+        "grants": [
+            {"id": g.id, "user_id": str(g.user_id) if g.user_id else None,
+             "team_id": str(g.team_id) if g.team_id else None, "verb": g.verb}
+            for g in rows
+        ],
+    }
+
+
+@router.post("/{dataset_id}/grants")
+def set_dataset_grant(
+    dataset_id: int,
+    body: dict,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Grant a verb (view/explore/build/reshare/edit/manage) to a user or team.
+    Requires RESHARE on the dataset (or manage/owner)."""
+    from app.models.dataset import Dataset
+    from app.services import dataset_grants_service
+
+    ds = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if not ds:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    dataset_grants_service.require_capability(db, current_user, ds, "reshare")
+    try:
+        g = dataset_grants_service.set_grant(
+            db, dataset_id, verb=body.get("verb"),
+            user_id=body.get("user_id"), team_id=body.get("team_id"),
+            granted_by=current_user.id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True, "id": g.id, "verb": g.verb}
+
+
+@router.delete("/{dataset_id}/grants")
+def revoke_dataset_grant(
+    dataset_id: int,
+    user_id: str | None = None,
+    team_id: str | None = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    from app.models.dataset import Dataset
+    from app.services import dataset_grants_service
+
+    ds = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if not ds:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    dataset_grants_service.require_capability(db, current_user, ds, "reshare")
+    n = dataset_grants_service.revoke_grant(db, dataset_id, user_id=user_id, team_id=team_id)
+    return {"ok": True, "revoked": n}
+
+
+@router.get("/composable-parents")
+def list_composable_parents(
+    exclude_dataset_id: int | None = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Published datasets the current user can BUILD on (candidate composition
+    parents), each with its referenceable tables. Powers the 'reference a Dataset'
+    picker. Declared BEFORE /{dataset_id} so the static path is not shadowed."""
+    from app.models.dataset import Dataset as _DS
+    from app.services import dataset_grants_service
+    from app.services.dataset_calendar_service import is_generated_calendar_table
+    out = []
+    rows = db.query(_DS).filter(_DS.publish_state == "published").all()
+    for d in rows:
+        if exclude_dataset_id and d.id == exclude_dataset_id:
+            continue
+        if not dataset_grants_service.can(db, current_user, d, "build"):
+            continue
+        tables = [
+            {"id": t.id, "display_name": t.display_name, "source_kind": t.source_kind}
+            for t in db.query(DatasetTable).filter(DatasetTable.dataset_id == d.id).all()
+            if not is_generated_calendar_table(t) and t.source_kind != "dataset"
+        ]
+        if tables:
+            out.append({"id": d.id, "name": d.name, "published_generation": d.published_generation, "tables": tables})
+    return out
+
+
+def _is_date_like_col(c: dict) -> bool:
+    """A column whose snapshot type is DATE/TIMESTAMP/DATETIME (partition-eligible)."""
+    t = str(c.get("source_type") or c.get("type") or "").lower()
+    return any(k in t for k in ("date", "timestamp", "datetime"))
+
+
+@router.get("/{dataset_id}/snapshot-config")
+def get_dataset_snapshot_config(
+    dataset_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Snapshot storage (partition/cluster) + refresh schedule config for the
+    Sync & Publish modal, plus each materializable table's candidate columns
+    (date-typed for partitioning; all for clustering)."""
+    ds = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if not ds:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    require_view_access(db, current_user, ds, "datasets")
+    from app.services import dataset_snapshot_config as sc
+    cfg = sc.get_snapshot_config(ds)
+    per_table = cfg.get("tables") if isinstance(cfg.get("tables"), dict) else {}
+    tables = []
+    for t in db.query(DatasetTable).filter(DatasetTable.dataset_id == dataset_id).all():
+        if is_generated_calendar_table(t) or t.source_kind == "dataset":
+            continue
+        cols = (t.columns_cache or {}).get("columns", []) if isinstance(t.columns_cache, dict) else []
+        names = [c.get("name") for c in cols if c.get("name")]
+        date_cols = [c.get("name") for c in cols if c.get("name") and _is_date_like_col(c)]
+        tables.append({
+            "id": t.id, "display_name": t.display_name, "source_kind": t.source_kind,
+            "date_columns": date_cols, "columns": names,
+            "config": per_table.get(str(t.id)) or {},
+        })
+    return {"schedule": cfg.get("schedule") or {"mode": "manual"}, "tables": tables}
+
+
+@router.put("/{dataset_id}/snapshot-config")
+def put_dataset_snapshot_config(
+    dataset_id: int,
+    body: dict,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Save the snapshot storage + schedule config (design change). Applied on the
+    next Sync & Publish / scheduled refresh. Re-registers the refresh schedule."""
+    ds = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if not ds:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    require_edit_access(db, current_user, ds, "datasets")
+    from app.services import dataset_snapshot_config as sc
+    try:
+        norm = sc.validate_config(body or {})
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    from sqlalchemy.orm.attributes import flag_modified
+    settings = dict(ds.settings or {})
+    merged = {**(settings.get("snapshot_config") or {}), **norm}
+    settings["snapshot_config"] = merged
+    ds.settings = settings
+    flag_modified(ds, "settings")
+    db.commit()
+    try:
+        from app.services import snapshot_scheduler
+        snapshot_scheduler.sync_dataset_job(dataset_id)
+    except Exception:  # noqa: BLE001 — scheduler is best-effort
+        logger.warning("[snapshot-config] scheduler sync failed for %s", dataset_id, exc_info=True)
+    return {"ok": True, "snapshot_config": merged}
+
+
 @router.get("/{dataset_id}", response_model=DatasetWithTables)
 def get_dataset(
     dataset_id: int,
@@ -2511,6 +2723,31 @@ def delete_dataset(
                 "constraints": [
                     {"type": "workboard", "id": wb.id, "name": wb.name}
                     for wb in blocking_workboards
+                ],
+            },
+        )
+
+    # Block deletion of a PARENT that a composed child dataset pins (Dataset-on-
+    # Dataset composition). The FK is ON DELETE RESTRICT so the DB would refuse
+    # anyway; this returns a clear 409 with the dependent children instead.
+    from app.models.dataset import DatasetDependency
+    dependent = (
+        db.query(DatasetDependency, Dataset)
+        .join(Dataset, Dataset.id == DatasetDependency.child_dataset_id)
+        .filter(DatasetDependency.parent_dataset_id == dataset_id)
+        .all()
+    )
+    if dependent:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": (
+                    f"Dataset \"{dataset_obj.name}\" đang được tham chiếu bởi "
+                    f"{len(dependent)} Dataset con (composition) và không thể xóa."
+                ),
+                "constraints": [
+                    {"type": "dataset", "id": child.id, "name": child.name}
+                    for _dep, child in dependent
                 ],
             },
         )
@@ -2702,6 +2939,36 @@ def add_table_to_dataset(
         if not ds:
             raise HTTPException(status_code=404, detail="Dataset not found")
         require_edit_access(db, current_user, ds, "datasets")
+
+        # ── Dataset-on-Dataset composition: reference a parent dataset's table ──
+        if table.source_kind == "dataset":
+            from app.services import dataset_grants_service, dataset_composition_service
+            parent = db.query(Dataset).filter(Dataset.id == table.parent_dataset_id).first()
+            if parent is None:
+                raise HTTPException(status_code=404, detail="Parent dataset not found")
+            # Principle #3: the creator needs BUILD on the parent dataset.
+            dataset_grants_service.require_capability(db, current_user, parent, "build")
+            try:
+                new_ref = dataset_composition_service.add_parent_ref_table(
+                    db, dataset_id, table.parent_dataset_id, table.parent_dataset_table_id,
+                    table.display_name or "Parent reference",
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            _sync_dataset_model_safely(db, dataset_id)
+            db.refresh(new_ref)
+            return {
+                "id": new_ref.id, "dataset_id": new_ref.dataset_id, "datasource_id": None,
+                "source_kind": new_ref.source_kind, "source_table_name": None, "source_query": None,
+                "display_name": new_ref.display_name, "enabled": new_ref.enabled,
+                "transformations": new_ref.transformations, "columns_cache": new_ref.columns_cache,
+                "sample_cache": None, "type_overrides": new_ref.type_overrides, "column_formats": None,
+                "query_mode": "synced",
+                "parent_dataset_id": new_ref.parent_dataset_id,
+                "parent_dataset_table_id": new_ref.parent_dataset_table_id,
+                "created_at": new_ref.created_at.isoformat() if new_ref.created_at else None,
+                "updated_at": new_ref.updated_at.isoformat() if new_ref.updated_at else None,
+            }
 
         datasource: Optional[DataSource] = None
         inferred_metadata: List[DatasetColumnMetadata] = []
@@ -3706,6 +3973,32 @@ def preview_dataset_table(
             if getattr(exc, "code", "") == "NOT_SYNCED":
                 raise HTTPException(status_code=422, detail={"code": exc.code, "message": str(exc)})
             raise HTTPException(status_code=400, detail=str(exc))
+    elif db_table.source_kind == "dataset":
+        # Composition parent-ref: preview the parent's CURRENT published snapshot
+        # (the design-time source). Reuse the standard preview path via a proxy
+        # sql_query table pointed at the parent snapshot ref on the host BQ.
+        from app.services import snapshot_service as _ss
+        parent = db.query(Dataset).filter(Dataset.id == db_table.parent_dataset_id).first()
+        gen = getattr(parent, "published_generation", None) if parent else None
+        refs, _f, _a = (
+            _ss.resolve_specific_generation_refs(db, [db_table.parent_dataset_table_id], gen)
+            if gen else ({}, {}, None)
+        )
+        ref = refs.get(db_table.parent_dataset_table_id)
+        host = _ss.host_for_generation(db, parent.id, gen) if (parent and gen) else None
+        if not ref or host is None:
+            raise HTTPException(
+                status_code=422,
+                detail="Dataset cha chưa được publish hoặc snapshot không còn khả dụng — publish lại Dataset cha để xem trước.",
+            )
+        datasource = host
+        target_table = SimpleNamespace(
+            id=db_table.id, dataset_id=dataset_id, datasource_id=host.id,
+            source_kind="sql_query", source_table_name=None,
+            source_query=f"SELECT * FROM `{ref}`", display_name=db_table.display_name,
+            enabled=True, transformations=db_table.transformations or [],
+            type_overrides=db_table.type_overrides, columns_cache=db_table.columns_cache,
+        )
     else:
         datasource = db.query(DataSource).filter(DataSource.id == db_table.datasource_id).first()
         if not datasource:
@@ -5562,11 +5855,22 @@ def add_model_join(
         return result
     except ValueError as e:
         # Phase-3 cascade: surface structured payload as 409 when present so
-        # the FE can show a confirm dialog rather than a generic error.
+        # the FE can show a confirm dialog rather than a generic error. Humanise
+        # internal dataset_table_<id> tokens → friendly table names for the DA.
+        from app.services.dataset_model_service import humanize_view_tokens
         payload_attr = getattr(e, "cascade_payload", None)
         if payload_attr:
+            if isinstance(payload_attr, dict) and payload_attr.get("message"):
+                payload_attr = {
+                    **payload_attr,
+                    "message": humanize_view_tokens(str(payload_attr["message"]), db, dataset_id),
+                    **(
+                        {"join_view": humanize_view_tokens(str(payload_attr["join_view"]), db, dataset_id)}
+                        if payload_attr.get("join_view") else {}
+                    ),
+                }
             raise HTTPException(status_code=409, detail=payload_attr)
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=humanize_view_tokens(str(e), db, dataset_id))
     except Exception as e:
         logger.error(f"Failed to add join for dataset {dataset_id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))

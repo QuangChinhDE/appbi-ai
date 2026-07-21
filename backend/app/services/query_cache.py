@@ -50,10 +50,24 @@ _inflight_locks: Dict[str, threading.Lock] = {}
 _inflight_meta_lock = threading.Lock()
 
 
+_INFLIGHT_LOCKS_MAX = 4096  # Phase 7 (#33): bound the lock registry
+
+
 def _single_flight_lock(flight_key: str) -> threading.Lock:
     with _inflight_meta_lock:
         lk = _inflight_locks.get(flight_key)
         if lk is None:
+            # Phase 7 (#33): the registry grew forever (one Lock per distinct
+            # chart×filter combination over the process lifetime). Evict idle
+            # (unlocked) entries when the map is full — a re-created Lock for a
+            # key nobody holds is semantically identical.
+            if len(_inflight_locks) >= _INFLIGHT_LOCKS_MAX:
+                for k in list(_inflight_locks.keys()):
+                    if len(_inflight_locks) < _INFLIGHT_LOCKS_MAX // 2:
+                        break
+                    held = _inflight_locks[k]
+                    if not held.locked():
+                        _inflight_locks.pop(k, None)
             lk = threading.Lock()
             _inflight_locks[flight_key] = lk
         return lk
@@ -575,6 +589,55 @@ def end_coalesced_compute(
         store.release_inflight(datasource_id, key)
     except Exception as exc:  # noqa: BLE001
         _log_shared_cache_failure("inflight-release", exc)
+
+
+# ── Phase 7 (#35/#36/#38): CROSS-WORKER global claims ────────────────────────
+# Thin wrappers over the shared-sqlite in-flight table under a reserved
+# namespace, so background jobs (snapshot rebuilds) can be deduped and observed
+# ACROSS uvicorn workers — the in-process registries in snapshot_service are
+# per-worker, so "cap = 1 rebuild" and the "đang làm mới…" poll were only true
+# per process. No shared store configured → (True/False/None) fallbacks keep
+# today's per-process behaviour.
+_GLOBAL_CLAIM_NS = -2  # reserved datasource_id namespace
+
+
+def try_claim_global(key: str, ttl_seconds: float) -> bool:
+    """Claim a cross-worker lease for ``key``. True = you own it. Lease
+    self-expires (a dead worker never wedges the system)."""
+    store = _get_shared_store()
+    if store is None:
+        return True  # no shared store → in-process registries are authoritative
+    try:
+        return store.try_claim_inflight(_GLOBAL_CLAIM_NS, key, ttl_seconds)
+    except Exception as exc:  # noqa: BLE001
+        _log_shared_cache_failure("global-claim", exc)
+        return True
+
+
+def release_global(key: str) -> None:
+    store = _get_shared_store()
+    if store is None:
+        return
+    try:
+        store.release_inflight(_GLOBAL_CLAIM_NS, key)
+    except Exception as exc:  # noqa: BLE001
+        _log_shared_cache_failure("global-release", exc)
+
+
+def is_claimed_global(key: str) -> bool:
+    """True when ANOTHER worker (or this one) currently holds the lease —
+    a claim-probe that immediately releases if it accidentally acquires."""
+    store = _get_shared_store()
+    if store is None:
+        return False
+    try:
+        if store.try_claim_inflight(_GLOBAL_CLAIM_NS, key, 1.0):
+            store.release_inflight(_GLOBAL_CLAIM_NS, key)
+            return False
+        return True
+    except Exception as exc:  # noqa: BLE001
+        _log_shared_cache_failure("global-probe", exc)
+        return False
 
 
 # ── Public dashboard METADATA cache + coalescing ─────────────────────────────

@@ -200,6 +200,17 @@ export interface JoinSuggestionResponse {
   can_create: boolean;
   blocking_code: 'cycle_detected' | 'many_to_many' | null;
   message: string | null;
+  // Semantic-audit 2026-07 (DA feedback, F4) — the backend now also suggests the
+  // JOIN TYPE and the CANONICAL (auto-oriented to the many/fact side) shape, so
+  // the dialog can pre-fill the correct fact-anchored relationship. Optional so
+  // an older backend response still type-checks.
+  suggested_join_type?: 'left' | 'inner' | 'right' | 'full';
+  suggested_cardinality?: 'one_to_one' | 'one_to_many' | 'many_to_one' | 'many_to_many';
+  canonical_from_view?: string;
+  canonical_to_view?: string;
+  canonical_from_columns?: string[];
+  canonical_to_columns?: string[];
+  will_auto_orient?: boolean;
 }
 
 function normalizeJoinColumnList(values?: string[] | null, fallback?: string | null): string[] {
@@ -540,6 +551,13 @@ export interface AddJoinParams {
    * the view's PK declaration unchanged.
    */
   primaryKeyOnToView?: string[] | null;
+  /**
+   * Confirm-and-override the cascade guard. When the edit would deactivate a
+   * relationship that charts still reference, the BE returns 409
+   * JOIN_INACTIVE_CASCADE; the dialog asks the user to confirm and re-submits
+   * with force=true to proceed (charts then need re-binding).
+   */
+  force?: boolean;
 }
 
 export function useAddJoin() {
@@ -564,6 +582,9 @@ export function useAddJoin() {
           ...(params.primaryKeyOnToView && params.primaryKeyOnToView.length > 0
             ? { primary_key_on_to_view: params.primaryKeyOnToView }
             : {}),
+          // Cascade override: re-submit with force after the user confirms the
+          // JOIN_INACTIVE_CASCADE warning (charts referencing the disabled join).
+          ...(params.force ? { force: true } : {}),
         }
       );
       return response.data;

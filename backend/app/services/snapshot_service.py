@@ -81,17 +81,87 @@ def settings_for(datasource: DataSource) -> dict:
     }
 
 
-def is_enabled(datasource: Optional[DataSource]) -> bool:
-    """True only for a BigQuery datasource that has opted in."""
-    if datasource is None or _ds_type(datasource) != "bigquery":
-        return False
-    return settings_for(datasource)["enabled"]
-
-
 def should_materialize(table: DatasetTable) -> bool:
-    """MVP scope: only heavy custom-SQL tables. Physical tables are already flat;
-    calendar is generated live; derived tables reference other tables by alias."""
+    """MVP scope (all-BQ perf path): only heavy custom-SQL tables. Physical tables
+    are already flat; calendar is generated live; derived tables reference other
+    tables by alias. UNCHANGED — the all-BigQuery materialization path keys off
+    this exactly as before; federation uses `is_federated_materializable` below."""
     return getattr(table, "source_kind", None) == "sql_query" and bool(table.source_query)
+
+
+def is_federated_materializable(table: DatasetTable) -> bool:
+    """Federation scope: a table whose rows we can copy into the host BigQuery
+    snapshot dataset so the WHOLE dataset runs as one BigQuery query. Covers heavy
+    custom-SQL (sql_query) AND physical tables (e.g. Google Sheets / manual /
+    other-warehouse dims). Excludes generated calendar (rendered inline in BQ) and
+    derived tables (aliased over other tables — not independently extractable)."""
+    kind = getattr(table, "source_kind", None)
+    if kind == "sql_query":
+        return bool(table.source_query)
+    return kind == "physical_table"
+
+
+def resolve_host(db: Session, dataset_id: int) -> Optional[DataSource]:
+    """The BigQuery datasource that HOSTS this dataset's snapshots. For a
+    single-source BQ dataset this is just that datasource; for a MIXED dataset
+    (BQ facts + a Google Sheets dim, etc.) it is the BQ datasource all other
+    tables materialize INTO, so the chart runs entirely in BigQuery.
+
+    Phase 4 (issue #18/#19): the host RECORDED on the newest snapshot rows wins
+    — existing snapshots keep being read with the host that actually built them,
+    so adding/toggling another BigQuery datasource can no longer silently flip
+    which project/credential a dataset's reads go through. Fallback (no recorded
+    host / recorded host gone or disabled): the materialization-enabled BQ
+    datasource among the dataset's tables (lowest id if several), or None."""
+    recorded = (
+        db.query(DatasetTableSnapshot.host_datasource_id)
+        .filter(
+            DatasetTableSnapshot.dataset_id == dataset_id,
+            DatasetTableSnapshot.host_datasource_id.isnot(None),
+            DatasetTableSnapshot.retired_at.is_(None),
+            DatasetTableSnapshot.status.in_(("ready", "superseded")),
+        )
+        .order_by(DatasetTableSnapshot.id.desc())
+        .first()
+    )
+    if recorded and recorded[0]:
+        d = db.query(DataSource).filter(DataSource.id == int(recorded[0])).first()
+        if d is not None and _ds_type(d) == "bigquery" and settings_for(d)["enabled"]:
+            return d
+    tables = db.query(DatasetTable).filter(DatasetTable.dataset_id == dataset_id).all()
+    ds_ids = sorted({t.datasource_id for t in tables if t.datasource_id})
+    if not ds_ids:
+        return None
+    rows = db.query(DataSource).filter(DataSource.id.in_(ds_ids)).all()
+    hosts = sorted(
+        (d for d in rows if _ds_type(d) == "bigquery" and settings_for(d)["enabled"]),
+        key=lambda d: d.id,
+    )
+    if hosts:
+        return hosts[0]
+    # No BigQuery source of its own (Sheets-only / Postgres-only dataset). The
+    # serving invariant is "snapshot store = BigQuery", so fall back to the
+    # platform default BQ snapshot host — every non-BQ table federates INTO it.
+    return _default_snapshot_host(db)
+
+
+def _default_snapshot_host(db: Session) -> Optional[DataSource]:
+    """Platform default BigQuery host for datasets with no BQ source of their own.
+    Explicit `MATERIALIZATION_HOST_DATASOURCE_ID` wins; otherwise the lowest-id
+    materialization-enabled BigQuery datasource in the system. None if there is
+    no materialization-enabled BQ datasource anywhere (nothing can host)."""
+    from app.core.config import settings
+    explicit = getattr(settings, "MATERIALIZATION_HOST_DATASOURCE_ID", None)
+    if explicit:
+        d = db.query(DataSource).filter(DataSource.id == int(explicit)).first()
+        if d is not None and _ds_type(d) == "bigquery" and settings_for(d)["enabled"]:
+            return d
+    candidates = sorted(
+        (d for d in db.query(DataSource).all()
+         if _ds_type(d) == "bigquery" and settings_for(d)["enabled"]),
+        key=lambda d: d.id,
+    )
+    return candidates[0] if candidates else None
 
 
 # ── fingerprint + naming ────────────────────────────────────────────────────
@@ -120,6 +190,30 @@ def _fingerprint(resolved_sql: str, table: DatasetTable) -> str:
 
 
 # ── build (single-flight) ───────────────────────────────────────────────────
+def _source_select_sql(source_ds: DataSource, table: DatasetTable) -> str:
+    """A plain SELECT returning the table's rows on its OWN (non-BigQuery) engine,
+    for the federated extract step. sql_query → wrap the source query; physical →
+    SELECT * from the source table (dialect-quoted)."""
+    from app.services.live_query_service import _dialect_for_ds_type
+    kind = getattr(table, "source_kind", None)
+    if kind == "sql_query" and table.source_query:
+        return f"SELECT * FROM (\n{table.source_query}\n) AS _appbi_src"
+    name = str(getattr(table, "source_table_name", "") or "").strip()
+    dia = _dialect_for_ds_type(_ds_type(source_ds))
+    q = ("`" + name.replace("`", "") + "`") if dia == "mysql" else ('"' + name.replace('"', "") + '"')
+    return f"SELECT * FROM {q}"
+
+
+def _sanitize_name_part(name: Optional[str]) -> str:
+    """BigQuery-safe fragment from a user display name for the snapshot table name:
+    lowercase, non-alphanumerics → '_', collapsed, trimmed, length-bounded.
+    Empty/none → 't'."""
+    import re
+    s = re.sub(r"[^a-z0-9]+", "_", str(name or "").strip().lower())
+    s = re.sub(r"_+", "_", s).strip("_")
+    return s[:40] or "t"
+
+
 def build_table_snapshot(
     db: Session,
     dataset_obj: Dataset,
@@ -127,21 +221,42 @@ def build_table_snapshot(
     datasource: DataSource,
     *,
     force: bool = False,
+    host_datasource: Optional[DataSource] = None,
+    generation: Optional[int] = None,
 ) -> Optional[DatasetTableSnapshot]:
     """Ensure a fresh snapshot for one table. Idempotent + single-flight: the
     first caller builds; concurrent callers block then reuse the ready row.
-    Returns the current-ready row, or None on failure (caller falls back to live)."""
-    if not should_materialize(table):
+    Returns the current-ready row, or None on failure (caller falls back to live).
+
+    ``datasource`` is the table's SOURCE (used to EXTRACT). ``host_datasource`` is
+    the BigQuery datasource whose snapshot dataset the rows LOAD into; it defaults
+    to ``datasource`` (the all-BigQuery path — byte-identical to before). When they
+    differ (a Google Sheets / other-warehouse table in a BQ-hosted federated
+    dataset), rows are extracted on the source's own engine and loaded into the
+    host BQ so the whole dataset can be queried in one BigQuery statement."""
+    is_federated = getattr(table, "source_kind", None) != "sql_query" or _ds_type(datasource) != "bigquery"
+    if is_federated:
+        if not is_federated_materializable(table):
+            return None
+    elif not should_materialize(table):
         return None
+
+    host = host_datasource or datasource
+    # Fingerprint + (for a BigQuery source) the resolved BQ SQL to extract.
     try:
-        resolved_sql = _resolved_sql(dataset_obj, table, datasource, db)
+        if _ds_type(datasource) == "bigquery":
+            resolved_sql = _resolved_sql(dataset_obj, table, datasource, db)
+            source_sig = resolved_sql
+        else:
+            resolved_sql = None
+            source_sig = _source_select_sql(datasource, table)
     except Exception as exc:  # noqa: BLE001
         logger.warning("[snapshot] resolve SQL failed for table %s: %s", table.id, exc)
         return None
-    fp = _fingerprint(resolved_sql, table)
-    cfg = settings_for(datasource)
+    fp = _fingerprint(source_sig, table)
+    cfg = settings_for(host)
     snap_dataset = cfg["dataset"]
-    project = str((datasource.config or {}).get("project_id") or "").strip()
+    project = str((host.config or {}).get("project_id") or "").strip()
 
     def _do() -> Optional[DatasetTableSnapshot]:
         # Re-check inside the lock: a concurrent build may have just finished.
@@ -157,8 +272,68 @@ def build_table_snapshot(
         if current and current.fingerprint == fp and not force:
             return current
 
+        # Nấc A — watermark-gated REUSE on the forced (Sync&Publish / scheduled)
+        # path. A forced refresh normally re-scans the whole source and rewrites
+        # the table (WRITE_TRUNCATE) even when nothing changed. Instead: if the
+        # design is unchanged (same fingerprint) AND the BigQuery source has not
+        # been modified since this snapshot was built (same watermark), CLONE the
+        # metadata into the NEW generation reusing the SAME physical table — no
+        # re-scan, no re-load, no BQ cost. Only for BigQuery sources (non-BQ has
+        # no cheap watermark → always rebuilt). The generation stays COMPLETE, so
+        # publish's coverage check + pinned reads still pass.
+        if (
+            force
+            and current is not None
+            and current.fingerprint == fp
+            and generation is not None
+            and current.generation != generation
+            and _ds_type(datasource) == "bigquery"
+            and resolved_sql is not None
+            and current.source_watermark is not None
+        ):
+            try:
+                cur_wm = DataSourceConnectionService.bigquery_source_watermark(
+                    datasource.config, resolved_sql
+                )
+            except Exception:  # noqa: BLE001
+                cur_wm = None
+            if cur_wm is not None and cur_wm == current.source_watermark:
+                reuse = DatasetTableSnapshot(
+                    dataset_id=dataset_obj.id,
+                    dataset_table_id=table.id,
+                    version=int(time.time() * 1000),
+                    physical_ref=current.physical_ref,  # SHARE the existing table
+                    fingerprint=fp,
+                    status="ready",
+                    is_current=False,
+                    generation=generation,
+                    host_datasource_id=current.host_datasource_id,
+                    host_project=current.host_project,
+                    host_location=current.host_location,
+                    row_count=current.row_count,
+                    source_watermark=current.source_watermark,
+                    built_at=current.built_at,
+                    build_ms=0,
+                )
+                current.is_current = False
+                current.status = "superseded"
+                reuse.is_current = True
+                db.add(reuse)
+                db.commit()
+                logger.info(
+                    "[snapshot] REUSED table=%s ref=%s gen=%s (source unchanged — no re-scan)",
+                    table.id, current.physical_ref, generation,
+                )
+                return reuse
+
         version = int(time.time() * 1000)
-        table_name = f"snap_t{table.id}_v{version}"
+        # Human-readable snapshot name: snap_t<id>_<display-name>_v<version>. Keeps
+        # the table-id KEY (stable, unambiguous) AND the user's name (easy to find
+        # in BigQuery). Zero-cost on rename: each refresh builds a fresh table with
+        # the CURRENT name, so a rename flows through on the next publish — no BQ
+        # ALTER, no scan. (A pure rename with no data change reuses the old-named
+        # table until the next real rebuild.)
+        table_name = f"snap_t{table.id}_{_sanitize_name_part(getattr(table, 'display_name', None))}_v{version}"
         ref = f"{project}.{snap_dataset}.{table_name}"
         row = DatasetTableSnapshot(
             dataset_id=dataset_obj.id,
@@ -168,24 +343,70 @@ def build_table_snapshot(
             fingerprint=fp,
             status="building",
             is_current=False,
+            # Phase 4 — dataset-level consistency + host identity, recorded at
+            # build time so reads resolve from the registry (what actually
+            # happened), not from mutable config.
+            generation=generation,
+            host_datasource_id=host.id,
+            host_project=project,
         )
         db.add(row)
         db.commit()
 
         t0 = time.time()
         try:
-            # EXTRACT with the datasource's own read credential, LOAD with the
-            # write service account — the write SA never reads the source, and
-            # the snapshot dataset is SA-only (per the chosen access model).
-            location = _source_location(datasource)
-            DataSourceConnectionService.ensure_bigquery_dataset(datasource.config, snap_dataset, location=location)
-            bq_schema, rows = DataSourceConnectionService.extract_bigquery_for_snapshot(
-                datasource.config, resolved_sql, timeout_seconds=_DDL_TIMEOUT_SEC
-            )
-            row.row_count = DataSourceConnectionService.load_bigquery_snapshot(
-                datasource.config, snap_dataset, table_name, bq_schema, rows,
-                timeout_seconds=_DDL_TIMEOUT_SEC,
-            )
+            # EXTRACT with the SOURCE's own read credential, LOAD with the host's
+            # write service account — the write SA never reads the source, and the
+            # host snapshot dataset is SA-only (per the chosen access model). The
+            # snapshot dataset lives in (and is colocated with) the HOST.
+            location = _source_location(host)
+            row.host_location = location
+            DataSourceConnectionService.ensure_bigquery_dataset(host.config, snap_dataset, location=location)
+            # Batched EXTRACT+LOAD (bounds VM memory to one chunk) into a
+            # PARTITIONED/CLUSTERED table per the dataset's storage config.
+            from app.services import dataset_snapshot_config as _snapcfg
+            from app.services import sync_progress as _sp
+            _storage = _snapcfg.table_storage_config(dataset_obj, table.id)
+            _cols_meta = (getattr(table, "columns_cache", None) or {}).get("columns")
+
+            def _row_progress(n: int, _dsid=dataset_obj.id, _tid=table.id) -> None:
+                _sp.note_rows(_dsid, _tid, n)
+
+            # Task 1 — for a DIRECT physical BigQuery table with a partition
+            # configured, try PARTITION-SCOPED incremental (clone prev snapshot +
+            # reload only changed source partitions) before falling back to a full
+            # rebuild. Only reloads partitions modified since the last snapshot.
+            inc = None
+            if (getattr(table, "source_kind", None) == "physical_table"
+                    and _ds_type(datasource) == "bigquery"
+                    and _storage.get("partition_field")
+                    and current is not None
+                    and getattr(current, "source_watermark", None) is not None):
+                inc = DataSourceConnectionService.try_partition_incremental_snapshot(
+                    source_config=datasource.config,
+                    source_table_name=table.source_table_name,
+                    partition_field=_storage["partition_field"],
+                    host_config=host.config, dataset_name=snap_dataset,
+                    new_table_name=table_name, clone_from_ref=current.physical_ref,
+                    since=current.source_watermark, timeout_seconds=_DDL_TIMEOUT_SEC,
+                    progress_cb=_row_progress,
+                )
+            if inc is not None:
+                row.row_count = inc["row_count"]
+                logger.info(
+                    "[snapshot] PARTITION-INCREMENTAL table=%s ref=%s reloaded %d partition(s): %s",
+                    table.id, ref, len(inc["changed"]), inc["changed"][:8],
+                )
+            else:
+                row.row_count, _warn = DataSourceConnectionService.stream_extract_load_snapshot(
+                    source_ds_type=_ds_type(datasource), source_config=datasource.config,
+                    resolved_sql=resolved_sql, source_select_sql=source_sig,
+                    columns_meta=_cols_meta, host_config=host.config,
+                    dataset_name=snap_dataset, table_name=table_name,
+                    storage=_storage, timeout_seconds=_DDL_TIMEOUT_SEC, progress_cb=_row_progress,
+                )
+                if _warn:
+                    logger.warning("[snapshot] storage-config table=%s: %s", table.id, _warn)
         except Exception as exc:  # noqa: BLE001
             db.rollback()
             row = db.query(DatasetTableSnapshot).get(row.id)
@@ -215,24 +436,114 @@ def build_table_snapshot(
         # perf #5 — capture the source watermark (MAX last_modified of the tables
         # this snapshot read) so a later render can detect SOURCE-DATA changes and
         # rebuild only when the data actually changed (change-driven, no spam).
+        # Only meaningful for a BigQuery source; non-BQ → None (TTL fallback).
         try:
-            row.source_watermark = DataSourceConnectionService.bigquery_source_watermark(
-                datasource.config, resolved_sql
+            row.source_watermark = (
+                DataSourceConnectionService.bigquery_source_watermark(datasource.config, resolved_sql)
+                if resolved_sql is not None else None
             )
         except Exception:  # noqa: BLE001 — best-effort; None → TTL fallback
             row.source_watermark = None
         db.commit()
 
-        # Best-effort GC of the just-superseded physical tables.
-        for p in prior:
-            try:
-                DataSourceConnectionService.drop_bigquery_table(datasource.config, p.physical_ref)
-            except Exception:  # noqa: BLE001
-                pass
+        # Phase 4 — NO immediate GC of just-superseded physical tables. A query
+        # that resolved the old refs may still be executing (issue #10); the
+        # delayed GC pass at the end of refresh_all_for_dataset retires old
+        # generations only once a newer COMPLETE generation exists + a grace
+        # window has passed.
         logger.info(
-            "[snapshot] built table=%s ref=%s rows=%s in %sms",
-            table.id, ref, row.row_count, row.build_ms,
+            "[snapshot] built table=%s ref=%s rows=%s in %sms (federated=%s gen=%s)",
+            table.id, ref, row.row_count, row.build_ms, is_federated, generation,
         )
+        return row
+
+    return _qc.single_flight(f"snapbuild::{table.id}::{fp}", _do)
+
+
+def build_calendar_snapshot(
+    db: Session, dataset_obj: Dataset, table: DatasetTable, host: DataSource,
+    *, generation: Optional[int] = None, force: bool = True,
+) -> Optional[DatasetTableSnapshot]:
+    """Materialize the generated_calendar (Date) as a REAL snapshot table via CTAS
+    on the host BigQuery (self-contained calendar SQL — no source read, so the
+    write SA can run it). Makes the Date table uniform with every other snapshot
+    table ("query only the BQ snapshot") AND pins it to the generation — the
+    previous inline calendar regenerated from LIVE settings on every query, which
+    could drift a published dashboard's date range without a re-publish. Fingerprint
+    = the calendar SQL, so it rebuilds only when calendar settings change; otherwise
+    it clones the metadata into the new generation (tiny table, reused)."""
+    from app.services.dataset_calendar_service import get_calendar_settings, build_calendar_live_sql
+    from app.services.datasource_service import _build_bigquery_client, _materialization_bq_config
+
+    settings = get_calendar_settings(dataset_obj, enabled_default=False)
+    cal_sql = build_calendar_live_sql(settings, "bigquery")
+    fp = hashlib.sha256(("calendar:" + cal_sql).encode("utf-8")).hexdigest()  # 64-char (col limit)
+    cfg = settings_for(host)
+    snap_dataset = cfg["dataset"]
+    project = str((host.config or {}).get("project_id") or "").strip()
+
+    def _do() -> Optional[DatasetTableSnapshot]:
+        current = (
+            db.query(DatasetTableSnapshot)
+            .filter(DatasetTableSnapshot.dataset_table_id == table.id,
+                    DatasetTableSnapshot.is_current.is_(True),
+                    DatasetTableSnapshot.status == "ready")
+            .first()
+        )
+        # Unchanged calendar → clone metadata into the new generation (reuse table).
+        if (current and current.fingerprint == fp and generation is not None
+                and current.generation != generation):
+            reuse = DatasetTableSnapshot(
+                dataset_id=dataset_obj.id, dataset_table_id=table.id,
+                version=int(time.time() * 1000), physical_ref=current.physical_ref,
+                fingerprint=fp, status="ready", is_current=False, generation=generation,
+                host_datasource_id=current.host_datasource_id, host_project=current.host_project,
+                host_location=current.host_location, row_count=current.row_count,
+                built_at=current.built_at, build_ms=0,
+            )
+            current.is_current = False; current.status = "superseded"; reuse.is_current = True
+            db.add(reuse); db.commit()
+            return reuse
+        if current and current.fingerprint == fp and not force:
+            return current
+
+        version = int(time.time() * 1000)
+        table_name = f"snap_t{table.id}_date_v{version}"
+        ref = f"{project}.{snap_dataset}.{table_name}"
+        row = DatasetTableSnapshot(
+            dataset_id=dataset_obj.id, dataset_table_id=table.id, version=version,
+            physical_ref=ref, fingerprint=fp, status="building", is_current=False,
+            generation=generation, host_datasource_id=host.id, host_project=project,
+        )
+        db.add(row); db.commit()
+        t0 = time.time()
+        try:
+            location = _source_location(host)
+            row.host_location = location
+            DataSourceConnectionService.ensure_bigquery_dataset(host.config, snap_dataset, location=location)
+            DataSourceConnectionService.execute_bigquery_ddl(
+                host.config, f"CREATE OR REPLACE TABLE `{ref}` AS {cal_sql}",
+                timeout_seconds=_DDL_TIMEOUT_SEC, location=location,
+            )
+            client = _build_bigquery_client(_materialization_bq_config(host.config))
+            row.row_count = int(getattr(client.get_table(ref), "num_rows", 0) or 0)
+        except Exception as exc:  # noqa: BLE001
+            db.rollback()
+            row = db.query(DatasetTableSnapshot).get(row.id)
+            if row is not None:
+                row.status = "failed"; row.error = str(exc)[:2000]; db.commit()
+            logger.warning("[snapshot] calendar build failed table=%s ref=%s: %s", table.id, ref, exc)
+            return None
+        for p in db.query(DatasetTableSnapshot).filter(
+                DatasetTableSnapshot.dataset_table_id == table.id,
+                DatasetTableSnapshot.is_current.is_(True)).all():
+            p.is_current = False; p.status = "superseded"
+        row.status = "ready"; row.is_current = True
+        row.built_at = datetime.utcnow(); row.build_ms = int((time.time() - t0) * 1000)
+        row.source_watermark = None  # generated → no source watermark
+        db.commit()
+        logger.info("[snapshot] built CALENDAR table=%s ref=%s rows=%s gen=%s",
+                    table.id, ref, row.row_count, generation)
         return row
 
     return _qc.single_flight(f"snapbuild::{table.id}::{fp}", _do)
@@ -258,6 +569,265 @@ def resolve_current_ref(db: Session, table_id: int, *, ttl_minutes: Optional[int
     return row.physical_ref
 
 
+# ── Phase 4: generation-consistent reads + delayed GC ────────────────────────
+_GC_GRACE_SECONDS = 600          # never drop a physical younger than this
+_RETAIN_COMPLETE_GENERATIONS = 2  # latest + previous (in-flight query fallback)
+
+
+def resolve_generation_refs(
+    db: Session, table_ids: List[int], *, before_generation: Optional[int] = None
+) -> Tuple[Dict[int, str], Dict[int, str], Optional[int], Optional[datetime]]:
+    """Resolve physical refs for ALL ``table_ids`` from ONE consistent snapshot
+    generation (the newest generation that covers every table — issue #8/#9).
+    Returns ``(refs, fingerprints, generation, as_of)``; empty refs ⇒ not built.
+
+    Mid-rebuild reads stay consistent: while a refresh batch is flipping tables
+    one by one, the newest COMPLETE generation is still the previous one, whose
+    physical tables are retained by the delayed GC — so a dashboard never reads
+    a torn half-old/half-new mix. Legacy rows (generation NULL, pre-Phase-4)
+    fall back to the per-table ``is_current`` pointers exactly as before."""
+    if not table_ids:
+        return {}, {}, None, None
+    want = set(int(t) for t in table_ids)
+    rows = (
+        db.query(DatasetTableSnapshot)
+        .filter(
+            DatasetTableSnapshot.dataset_table_id.in_(list(want)),
+            DatasetTableSnapshot.status.in_(("ready", "superseded")),
+            DatasetTableSnapshot.retired_at.is_(None),
+        )
+        .all()
+    )
+    by_gen: Dict[int, Dict[int, DatasetTableSnapshot]] = {}
+    for r in rows:
+        if r.generation is None:
+            continue
+        by_gen.setdefault(int(r.generation), {})[r.dataset_table_id] = r
+    complete = [g for g, m in by_gen.items() if want <= set(m.keys())]
+    if before_generation is not None:
+        # Phase 7 (#16): fallback resolve — the newest complete generation
+        # STRICTLY OLDER than the one that just failed (its physical tables are
+        # retained by the delayed GC), so a federated dataset can keep serving
+        # instead of erroring while the failed generation rebuilds.
+        complete = [g for g in complete if g < int(before_generation)]
+        if not complete:
+            return {}, {}, None, None  # no older complete generation retained
+    if complete:
+        g = max(complete)
+        m = by_gen[g]
+        refs = {tid: m[tid].physical_ref for tid in want}
+        fps = {tid: m[tid].fingerprint for tid in want}
+        builts = [m[tid].built_at for tid in want if m[tid].built_at is not None]
+        return refs, fps, g, (min(builts) if builts else None)
+
+    # Legacy fallback — per-table current pointers (pre-Phase-4 rows).
+    refs, fps, builts = {}, {}, []
+    for tid in want:
+        row = (
+            db.query(DatasetTableSnapshot)
+            .filter(
+                DatasetTableSnapshot.dataset_table_id == tid,
+                DatasetTableSnapshot.is_current.is_(True),
+                DatasetTableSnapshot.status == "ready",
+                DatasetTableSnapshot.retired_at.is_(None),
+            )
+            .first()
+        )
+        if row is None:
+            return {}, {}, None, None
+        refs[tid] = row.physical_ref
+        fps[tid] = row.fingerprint
+        if row.built_at is not None:
+            builts.append(row.built_at)
+    return refs, fps, None, (min(builts) if builts else None)
+
+
+def resolve_specific_generation_refs(
+    db: Session, table_ids: List[int], generation: int
+) -> Tuple[Dict[int, str], Dict[int, str], Optional[datetime]]:
+    """Resolve refs for a PINNED generation (Phase 1 published-only reads). A
+    Dashboard on a published Dataset must read EXACTLY the published generation
+    — never 'newest'. Returns ``(refs, fingerprints, as_of)``; empty refs ⇒ that
+    generation no longer fully covers the tables (→ caller BLOCKS + asks to
+    re-sync; it must NOT fall back to live)."""
+    if not table_ids or generation is None:
+        return {}, {}, None
+    want = set(int(t) for t in table_ids)
+    rows = (
+        db.query(DatasetTableSnapshot)
+        .filter(
+            DatasetTableSnapshot.dataset_table_id.in_(list(want)),
+            DatasetTableSnapshot.generation == int(generation),
+            DatasetTableSnapshot.status.in_(("ready", "superseded")),
+            DatasetTableSnapshot.retired_at.is_(None),
+        )
+        .all()
+    )
+    m = {r.dataset_table_id: r for r in rows}
+    if not (want <= set(m.keys())):
+        return {}, {}, None
+    refs = {tid: m[tid].physical_ref for tid in want}
+    fps = {tid: m[tid].fingerprint for tid in want}
+    builts = [m[tid].built_at for tid in want if m[tid].built_at is not None]
+    return refs, fps, (min(builts) if builts else None)
+
+
+def host_for_generation(
+    db: Session, dataset_id: int, generation: Optional[int]
+) -> Optional[DataSource]:
+    """The HOST DataSource recorded on a specific snapshot generation's rows
+    (issue #1/#2). Read-time credential/project MUST come from the generation
+    actually being served — NOT from an independent resolve_host(), which can
+    return a different (newer/changed) host while an older generation's physical
+    tables live in another project. Returns None for legacy rows (generation
+    NULL) or when the recorded host is gone/disabled → caller falls back to
+    resolve_host()."""
+    if generation is None:
+        return None
+    row = (
+        db.query(DatasetTableSnapshot.host_datasource_id)
+        .filter(
+            DatasetTableSnapshot.dataset_id == dataset_id,
+            DatasetTableSnapshot.generation == int(generation),
+            DatasetTableSnapshot.host_datasource_id.isnot(None),
+        )
+        .first()
+    )
+    if not row or not row[0]:
+        return None
+    d = db.query(DataSource).filter(DataSource.id == int(row[0])).first()
+    if d is not None and _ds_type(d) == "bigquery" and settings_for(d)["enabled"]:
+        return d
+    return None
+
+
+def current_fingerprint_for_table(
+    db: Session, dataset_obj: Dataset, table: DatasetTable, datasource: DataSource
+) -> Optional[str]:
+    """Fingerprint of the table's CURRENT definition — the exact recipe
+    ``build_table_snapshot`` stamps at build time, so a mismatch against a
+    snapshot row's stored fingerprint means the snapshot no longer matches the
+    live definition (SQL/schema/columns_cache drift → INCOMPATIBLE, issue #12).
+    None ⇒ cannot fingerprint (treat as unknown, do NOT flag)."""
+    try:
+        if _ds_type(datasource) == "bigquery":
+            sig = _resolved_sql(dataset_obj, table, datasource, db)
+        else:
+            sig = _source_select_sql(datasource, table)
+        return _fingerprint(sig, table)
+    except Exception:  # noqa: BLE001 — unknown, never break a read
+        return None
+
+
+def gc_dataset_snapshots(db: Session, dataset_id: int, host: DataSource) -> int:
+    """Delayed GC (issue #10): retire snapshot rows + drop their physical tables
+    ONLY when they are no longer needed for consistent reads:
+      keep — rows of the latest ``_RETAIN_COMPLETE_GENERATIONS`` complete
+             generations (current + in-flight-query fallback);
+      keep — anything built within the grace window;
+      keep — legacy current pointers (generation NULL, is_current, ready).
+    Everything else: best-effort DROP of the physical table + ``retired_at``.
+    Returns the number of rows retired. Best-effort — never raises."""
+    from app.services.dataset_calendar_service import is_generated_calendar_table
+
+    try:
+        tables = (
+            db.query(DatasetTable)
+            .filter(DatasetTable.dataset_id == dataset_id)
+            .all()
+        )
+        want = {
+            t.id for t in tables
+            if not is_generated_calendar_table(t)
+            and is_federated_materializable(t)
+            and getattr(t, "enabled", True) is not False
+        }
+        rows = (
+            db.query(DatasetTableSnapshot)
+            .filter(
+                DatasetTableSnapshot.dataset_id == dataset_id,
+                DatasetTableSnapshot.retired_at.is_(None),
+            )
+            .all()
+        )
+        by_gen: Dict[int, set] = {}
+        for r in rows:
+            if r.generation is not None and r.status in ("ready", "superseded"):
+                by_gen.setdefault(int(r.generation), set()).add(r.dataset_table_id)
+        complete = sorted(
+            (g for g, tids in by_gen.items() if want and want <= tids), reverse=True
+        )
+        keep_gens = set(complete[:_RETAIN_COMPLETE_GENERATIONS])
+        # Phase 1: NEVER GC the PUBLISHED generation — Dashboards are pinned to
+        # it and scheduled refreshes build newer generations WITHOUT publishing,
+        # so the published one can be older than the retained window. It must
+        # survive until a NEW publish moves the pin.
+        try:
+            pub = (
+                db.query(Dataset.published_generation)
+                .filter(Dataset.id == dataset_id)
+                .scalar()
+            )
+            if pub is not None:
+                keep_gens.add(int(pub))
+        except Exception:  # noqa: BLE001
+            pass
+
+        # Composition: NEVER GC a generation of THIS dataset that a downstream
+        # child has PINNED (dataset_dependencies.parent_generation). The child
+        # reads the parent snapshot by a plain FROM at that exact generation, so
+        # retiring it would break the child (principle #2).
+        try:
+            from app.services import dataset_composition_service as _comp
+            for g in _comp.pinned_parent_generations(db, dataset_id):
+                keep_gens.add(int(g))
+        except Exception:  # noqa: BLE001
+            pass
+
+        now = datetime.utcnow()
+
+        def _is_kept(r) -> bool:
+            if r.status == "building":
+                return True
+            if r.generation is not None and int(r.generation) in keep_gens:
+                return True
+            born = r.built_at or r.created_at
+            if born is not None and (now - born).total_seconds() < _GC_GRACE_SECONDS:
+                return True
+            if r.generation is None and r.is_current and r.status == "ready":
+                return True
+            return False
+
+        # Nấc A ref-count safety: watermark-reuse SHARES one physical table across
+        # generations. Never DROP a physical_ref that a kept row still references —
+        # only retire the metadata row. The physical is dropped only once NO kept
+        # row references it (i.e. the table was actually rebuilt into a new file).
+        kept_refs = {r.physical_ref for r in rows if _is_kept(r)}
+        retired = 0
+        for r in rows:
+            if _is_kept(r):
+                continue
+            if r.physical_ref not in kept_refs:
+                try:
+                    DataSourceConnectionService.drop_bigquery_table(host.config, r.physical_ref)
+                except Exception:  # noqa: BLE001 — already gone / permission: retire anyway
+                    pass
+            r.retired_at = now
+            if r.status == "ready":
+                r.is_current = False
+                r.status = "superseded"
+            retired += 1
+        if retired:
+            db.commit()
+            logger.info("[snapshot] delayed GC retired %d rows dataset=%s (kept gens=%s)",
+                        retired, dataset_id, sorted(keep_gens, reverse=True))
+        return retired
+    except Exception:  # noqa: BLE001
+        db.rollback()
+        logger.warning("[snapshot] delayed GC error dataset=%s", dataset_id, exc_info=True)
+        return 0
+
+
 def refresh_all_for_dataset(db: Session, dataset_id: int, *, force: bool = True) -> dict:
     """Rebuild the materializable snapshots for one dataset (the Refresh action).
     Returns {built:[{table_id,row_count,build_ms}], skipped:[table_id], as_of}."""
@@ -269,20 +839,65 @@ def refresh_all_for_dataset(db: Session, dataset_id: int, *, force: bool = True)
     datasource_by_id = {
         d.id: d for d in db.query(DataSource).filter(DataSource.id.in_(list(ds_ids))).all()
     }
+    # Host = the BQ datasource that snapshots load into. Present → the whole
+    # dataset (incl. Google Sheets / other-source tables) materializes into BQ
+    # and can be queried as one BigQuery statement. Absent → nothing to build.
+    from app.services.dataset_calendar_service import is_generated_calendar_table
+    host = resolve_host(db, dataset_id)
+    # Phase 4 — ONE generation id for the whole refresh batch. Every row built
+    # in this pass carries it, so readers can resolve a CONSISTENT set (the
+    # newest generation that covers every table) instead of a torn mix while
+    # this loop is mid-flight.
+    generation = int(time.time() * 1000)
     built, skipped = [], []
+    from app.services import sync_progress as _sp
+
+    def _eligible(t) -> bool:
+        if host is None or getattr(t, "enabled", True) is False:
+            return False
+        # The generated calendar materializes via a host-side CTAS (no source
+        # datasource) — it must be a snapshot table too, so the whole dataset is
+        # queried from BigQuery snapshots and the Date range is pinned to the
+        # generation (not regenerated from live settings each query).
+        if is_generated_calendar_table(t):
+            return True
+        return datasource_by_id.get(t.datasource_id) is not None and is_federated_materializable(t)
+
+    _to_build = [t for t in tables if _eligible(t)]
+    _total = len(_to_build)
     for t in tables:
-        ds = datasource_by_id.get(t.datasource_id)
-        if not (should_materialize(t) and is_enabled(ds)):
+        if not _eligible(t):
             skipped.append(t.id)
             continue
-        row = build_table_snapshot(db, dataset_obj, t, ds, force=force)
+        _sp.note_table(dataset_id, getattr(t, "display_name", None) or f"table {t.id}", len(built), _total)
+        try:
+            if is_generated_calendar_table(t):
+                row = build_calendar_snapshot(db, dataset_obj, t, host, generation=generation, force=force)
+            else:
+                row = build_table_snapshot(
+                    db, dataset_obj, t, datasource_by_id.get(t.datasource_id),
+                    force=force, host_datasource=host, generation=generation,
+                )
+        except Exception as exc:  # noqa: BLE001 — one table's failure must not crash the refresh
+            db.rollback()
+            logger.warning("[snapshot] build raised for table=%s: %s", t.id, exc)
+            row = None
         if row is not None:
             built.append({"table_id": t.id, "row_count": row.row_count, "build_ms": row.build_ms})
         else:
             skipped.append(t.id)
+    _sp.note_table(dataset_id, None, len(built), _total)  # final tick → N/N done
     built_ids = [b["table_id"] for b in built]
     ts = as_of(db, built_ids) if built_ids else None
-    return {"built": built, "skipped": skipped, "as_of": ts.isoformat() if ts else None}
+    # Phase 4 — delayed GC: retire generations older than the retained window
+    # (latest 2 complete generations + grace period). Best-effort.
+    try:
+        if host is not None and built:
+            gc_dataset_snapshots(db, dataset_id, host)
+    except Exception:  # noqa: BLE001 — GC must never fail a refresh
+        logger.warning("[snapshot] delayed GC failed dataset=%s", dataset_id, exc_info=True)
+    return {"built": built, "skipped": skipped, "as_of": ts.isoformat() if ts else None,
+            "generation": generation}
 
 
 def as_of(db: Session, table_ids: List[int]) -> Optional[datetime]:
@@ -400,11 +1015,19 @@ _async_refresh_lock = threading.Lock()
 _MAX_CONCURRENT_REBUILDS = 1
 
 
+_REBUILD_LEASE_SECONDS = 1800  # cross-worker lease; self-expires if a worker dies
+
+
 def _reserve_rebuild_slot(dataset_id: int) -> bool:
-    """Reserve a global rebuild slot for `dataset_id` under `_async_refresh_lock`.
+    """Reserve a rebuild slot for `dataset_id` under `_async_refresh_lock`.
     Returns False (caller must NOT rebuild) when this dataset is already building
-    OR the global concurrency cap is reached. Caller frees the slot in `finally`
-    via `_async_refresh_inflight.pop`. MUST be called while holding the lock."""
+    OR the concurrency cap is reached. Caller frees the slot in `finally` via
+    `_release_rebuild_slot`. MUST be called while holding the lock.
+
+    Phase 7 (#36): dedup is now also CROSS-WORKER — a shared lease (backed by the
+    shared sqlite in-flight table) is claimed per dataset, so two uvicorn workers
+    can no longer both rebuild the same dataset. The in-process cap stays as the
+    per-worker concurrency bound."""
     if dataset_id in _async_refresh_inflight:
         return False
     if len(_async_refresh_inflight) >= _MAX_CONCURRENT_REBUILDS:
@@ -413,8 +1036,18 @@ def _reserve_rebuild_slot(dataset_id: int) -> bool:
             _MAX_CONCURRENT_REBUILDS, dataset_id,
         )
         return False
+    if not _qc.try_claim_global(f"snaprebuild::{dataset_id}", _REBUILD_LEASE_SECONDS):
+        logger.info("[snapshot] dataset=%s already rebuilding in another worker; skipping", dataset_id)
+        return False
     _async_refresh_inflight[dataset_id] = time.time()
     return True
+
+
+def _release_rebuild_slot(dataset_id: int) -> None:
+    """Free both the in-process slot and the cross-worker lease."""
+    with _async_refresh_lock:
+        _async_refresh_inflight.pop(dataset_id, None)
+    _qc.release_global(f"snaprebuild::{dataset_id}")
 
 
 def trigger_async_refresh(dataset_id: int) -> None:
@@ -436,8 +1069,7 @@ def trigger_async_refresh(dataset_id: int) -> None:
             logger.warning("[snapshot] async TTL rebuild failed dataset=%s", dataset_id, exc_info=True)
         finally:
             db.close()
-            with _async_refresh_lock:
-                _async_refresh_inflight.pop(dataset_id, None)
+            _release_rebuild_slot(dataset_id)
 
     threading.Thread(target=_run, name=f"snap-refresh-{dataset_id}", daemon=True).start()
 
@@ -528,8 +1160,7 @@ def schedule_source_change_check(dataset_id: int) -> None:
                 refresh_all_for_dataset(db, dataset_id, force=True)
                 logger.info("[snapshot] source-change rebuild done dataset=%s", dataset_id)
             finally:
-                with _async_refresh_lock:
-                    _async_refresh_inflight.pop(dataset_id, None)
+                _release_rebuild_slot(dataset_id)
         except Exception:  # noqa: BLE001 — background best-effort
             logger.warning("[snapshot] source-change check failed dataset=%s", dataset_id, exc_info=True)
         finally:
@@ -564,7 +1195,13 @@ def start_manual_refresh(dataset_ids: List[int]) -> List[int]:
     if not ids:
         return []
     with _async_refresh_lock:
-        claimed = [d for d in ids if d not in _async_refresh_inflight]
+        # Phase 7 (#36): claim each dataset's CROSS-WORKER lease too, so a manual
+        # refresh and another worker's TTL/watermark rebuild can't double-build.
+        claimed = [
+            d for d in ids
+            if d not in _async_refresh_inflight
+            and _qc.try_claim_global(f"snaprebuild::{d}", _REBUILD_LEASE_SECONDS)
+        ]
         for d in claimed:
             _async_refresh_inflight[d] = time.time()
     if not claimed:
@@ -583,8 +1220,7 @@ def start_manual_refresh(dataset_ids: List[int]) -> List[int]:
                 finally:
                     # Release each dataset as it finishes so freshness polling
                     # reflects real progress instead of flipping only at the end.
-                    with _async_refresh_lock:
-                        _async_refresh_inflight.pop(d, None)
+                    _release_rebuild_slot(d)
         finally:
             db.close()
 
@@ -595,12 +1231,22 @@ def start_manual_refresh(dataset_ids: List[int]) -> List[int]:
 def datasets_rebuilding(dataset_ids: List[int]) -> bool:
     """True if ANY of the given datasets currently has a snapshot rebuild in
     flight (manual or auto). Drives the client's "đang làm mới…" poll after an
-    async refresh so the UI knows when the rebuild has actually finished."""
+    async refresh so the UI knows when the rebuild has actually finished.
+
+    Phase 7 (#38): also consults the CROSS-WORKER lease, so the poll is accurate
+    even when the request lands on a different uvicorn worker than the one
+    running the rebuild (previously it answered from per-process state only)."""
+    ids = []
     with _async_refresh_lock:
         for d in dataset_ids or []:
             try:
-                if int(d) in _async_refresh_inflight:
-                    return True
+                di = int(d)
             except (TypeError, ValueError):
                 continue
+            if di in _async_refresh_inflight:
+                return True
+            ids.append(di)
+    for di in ids:
+        if _qc.is_claimed_global(f"snaprebuild::{di}"):
+            return True
     return False

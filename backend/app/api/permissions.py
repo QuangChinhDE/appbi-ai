@@ -353,11 +353,13 @@ def get_permission_matrix(
     db: Session = Depends(get_db),
     _: User = Depends(require_permission("settings", "full")),
 ):
-    """Full permission matrix — all active users × all modules."""
+    """Full permission matrix — all users × all modules (active listed first).
+
+    Includes deactivated users so the People console can show and manage their
+    access (reactivate / delete) instead of a blank panel."""
     users = (
         db.query(User)
-        .filter(User.status == UserStatus.ACTIVE)
-        .order_by(User.full_name)
+        .order_by(User.status.asc(), User.full_name.asc())
         .all()
     )
 
