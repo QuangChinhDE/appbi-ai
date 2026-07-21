@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
 import threading
 import time
 from datetime import datetime, timezone
@@ -48,6 +49,12 @@ _DDL_TIMEOUT_SEC = 280  # build budget per table (< the 300s BQ result cap)
 # then publishing. Bounded by age so a long-abandoned generation isn't resumed with
 # stale data (a fresh full rebuild is safer past this window).
 _RESUME_MAX_AGE_MS = 24 * 3600 * 1000  # 24h
+
+# How many tables to build CONCURRENTLY per refresh. Since CTAS moved the heavy
+# work into BigQuery (the VM just awaits the job), building 2-3 tables at once
+# gives wall-clock ≈ max(table) instead of Σ(tables). Bounded so the streaming
+# staging path (2-account) holds at most K chunks in VM RAM. Lower on a tiny VM.
+_SYNC_BUILD_CONCURRENCY = max(1, int(os.environ.get("SYNC_BUILD_CONCURRENCY", "3") or "3"))
 
 # After a BigQuery quota 403 (partition-modifications), suppress BACKGROUND
 # auto-retries for a cooldown so we don't keep burning the (per-day) quota — a
@@ -1059,17 +1066,15 @@ def refresh_all_for_dataset(db: Session, dataset_id: int, *, force: bool = True)
         for t in _to_build
     ])
 
+    # RESUME reuse (main thread, cheap): a table already built in THIS generation
+    # (design unchanged) is kept as-is, never rebuilt. Everything else goes to the
+    # concurrent build below. (Resume saves a heavy watermark-less table.)
+    _host_id = host.id if host is not None else None
+    _to_run: list = []  # (table_id, is_calendar)
     for t in _to_build:
-        # Cooperative Stop — checked BETWEEN tables (primary stop point; the load
-        # callback aborts mid-table too). A stopped batch leaves the previous
-        # COMPLETE generation intact, so readers keep serving last-complete.
         if _sc.is_stop_requested(dataset_id):
             stopped = True
             break
-        # RESUME: a table already built in THIS generation (design unchanged) is
-        # reused as-is — never rebuilt. This is what saves a heavy table whose
-        # source watermark can't be computed (which would otherwise rebuild every
-        # run). For a FRESH generation nothing matches → builds normally.
         _reused = _ready_snapshot_in_generation(
             db, t, generation, dataset_obj, datasource_by_id.get(t.datasource_id)
         )
@@ -1077,30 +1082,65 @@ def refresh_all_for_dataset(db: Session, dataset_id: int, *, force: bool = True)
             _sp.begin_table(dataset_id, t.id)
             built.append({"table_id": t.id, "row_count": _reused.row_count, "build_ms": 0})
             _sp.finish_table(dataset_id, t.id, _reused.row_count or 0)
-            continue
-        _sp.begin_table(dataset_id, t.id)
-        try:
-            if is_generated_calendar_table(t):
-                row = build_calendar_snapshot(db, dataset_obj, t, host, generation=generation, force=force)
-            else:
-                row = build_table_snapshot(
-                    db, dataset_obj, t, datasource_by_id.get(t.datasource_id),
-                    force=force, host_datasource=host, generation=generation,
-                )
-        except Exception as exc:  # noqa: BLE001 — one table's failure must not crash the refresh
-            db.rollback()
-            logger.warning("[snapshot] build raised for table=%s: %s", t.id, exc)
-            row = None
-        # A None row while a stop is pending = a mid-load cancel, not a real failure.
-        if row is None and _sc.is_stop_requested(dataset_id):
-            stopped = True
-            break
-        if row is not None:
-            built.append({"table_id": t.id, "row_count": row.row_count, "build_ms": row.build_ms})
-            _sp.finish_table(dataset_id, t.id, row.row_count)
         else:
-            skipped.append(t.id)
-            _sp.finish_table(dataset_id, t.id, 0, skipped=True)
+            _to_run.append((t.id, is_generated_calendar_table(t)))
+
+    def _build_one(table_id: int, is_cal: bool):
+        """Build ONE table in its OWN DB session (safe in parallel: the per-table
+        single_flight + atomic swap keep different tables independent; ORM objects
+        are re-queried in this session so nothing crosses threads)."""
+        from app.core.database import SessionLocal
+        wdb = SessionLocal()
+        try:
+            if _sc.is_stop_requested(dataset_id):
+                return (table_id, "cancelled")
+            w_ds = wdb.query(Dataset).get(dataset_id)
+            w_t = wdb.query(DatasetTable).get(table_id)
+            w_host = wdb.query(DataSource).get(_host_id) if _host_id else None
+            w_src = wdb.query(DataSource).get(w_t.datasource_id) if (w_t and w_t.datasource_id) else None
+            _sp.begin_table(dataset_id, table_id)
+            try:
+                if is_cal:
+                    row = build_calendar_snapshot(wdb, w_ds, w_t, w_host, generation=generation, force=force)
+                else:
+                    row = build_table_snapshot(
+                        wdb, w_ds, w_t, w_src,
+                        force=force, host_datasource=w_host, generation=generation,
+                    )
+            except _sc.SyncCancelled:
+                wdb.rollback()
+                return (table_id, "cancelled")
+            except Exception as exc:  # noqa: BLE001 — one table's failure must not crash the refresh
+                wdb.rollback()
+                logger.warning("[snapshot] build raised for table=%s: %s", table_id, exc)
+                row = None
+            if row is None and _sc.is_stop_requested(dataset_id):
+                return (table_id, "cancelled")
+            if row is not None:
+                _sp.finish_table(dataset_id, table_id, row.row_count)
+                return (table_id, {"table_id": table_id, "row_count": row.row_count, "build_ms": row.build_ms})
+            _sp.finish_table(dataset_id, table_id, 0, skipped=True)
+            return (table_id, None)
+        finally:
+            wdb.close()
+
+    # Build the remaining tables CONCURRENTLY (bounded). Since CTAS runs the heavy
+    # work inside BigQuery, K tables build at once ≈ max(time) instead of Σ. A
+    # stop is honoured per worker (not-yet-started → skip; in-flight → the load
+    # callback aborts). Results are collected on the main thread.
+    if _to_run and not stopped:
+        from concurrent.futures import ThreadPoolExecutor
+        _workers = min(_SYNC_BUILD_CONCURRENCY, len(_to_run))
+        with ThreadPoolExecutor(max_workers=_workers, thread_name_prefix=f"snapbuild-{dataset_id}") as _ex:
+            for _tid, _res in _ex.map(lambda a: _build_one(a[0], a[1]), _to_run):
+                if _res == "cancelled":
+                    stopped = True
+                elif isinstance(_res, dict):
+                    built.append(_res)
+                else:
+                    skipped.append(_tid)
+        if _sc.is_stop_requested(dataset_id):
+            stopped = True
 
     built_ids = [b["table_id"] for b in built]
     ts = as_of(db, built_ids) if built_ids else None
