@@ -1,6 +1,6 @@
 """Embed-link integration service.
 
-Turns an HMAC-authenticated request ("give me an embed link for dashboard X
+Turns an authenticated request ("give me an embed link for dashboard X
 scoped to these filters") into:
 
   1. a STABLE managed DashboardPublicLink (deduped: 1 filter set = 1 link,
@@ -224,7 +224,7 @@ def _hash_token(raw: str) -> str:
 def mint_embed_grant(
     db: Session,
     link: DashboardPublicLink,
-    client_id,
+    created_by,
     ttl_seconds: int,
 ) -> tuple[str, EmbedGrant]:
     raw = f"{EMBED_GRANT_PREFIX}{secrets.token_hex(EMBED_GRANT_HEX_CHARS // 2)}"
@@ -232,7 +232,7 @@ def mint_embed_grant(
         id=uuid.uuid4(),
         link_id=link.id,
         token_hash=_hash_token(raw),
-        client_id=client_id,
+        created_by=created_by,
         expires_at=datetime.now(timezone.utc) + timedelta(seconds=ttl_seconds),
     )
     db.add(grant)
