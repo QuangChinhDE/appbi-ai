@@ -2,7 +2,7 @@
 API package initialization.
 """
 from fastapi import APIRouter
-from app.api import auth, datasources, charts, dashboards, datasets, users, shares, permissions, observability, public, personal_access_tokens, teams
+from app.api import auth, datasources, charts, dashboards, datasets, users, shares, permissions, observability, public, personal_access_tokens, teams, integrations
 from app.core.config import settings
 from app.routers import semantic
 
@@ -49,6 +49,7 @@ if settings.METADATA_CATALOG_ENABLED:
 api_router.include_router(observability.router)
 
 # Public unauthenticated endpoints (shared dashboard links)
+api_router.include_router(integrations.router)
 api_router.include_router(public.router)
 
 __all__ = ["api_router"]

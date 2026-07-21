@@ -2,7 +2,8 @@
 SQLAlchemy models for the BI application.
 """
 from sqlalchemy import (
-    Column, Integer, String, Text, DateTime, ForeignKey, JSON, Boolean, Enum, Float
+    Column, Integer, String, Text, DateTime, ForeignKey, JSON, Boolean, Enum, Float,
+    UniqueConstraint,
 )
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
@@ -239,6 +240,10 @@ class DashboardPublicLink(Base):
     dashboard_id = Column(Integer, ForeignKey("dashboards.id", ondelete="CASCADE"), nullable=False)
     name = Column(String(255), nullable=False)
     token = Column(String(64), nullable=False, unique=True, index=True)
+    # Canonical hash of (dashboard_id + locked filters) for embed-API managed
+    # links. Lets the M2M endpoint dedupe "1 filter set = 1 link" via a partial
+    # unique index (source='embed_api'). Null for user/workboard links.
+    filter_hash = Column(String(64), nullable=True, index=True)
     filters_config = Column(JSON, nullable=True, default=list)
     appearance_config = Column(JSON, nullable=True, default=dict)
     is_active = Column(Boolean, nullable=False, default=True)
@@ -417,3 +422,51 @@ class SyncJob(Base):
 
     # Relationships
     data_source = relationship("DataSource", back_populates="sync_jobs")
+
+
+# ---------------------------------------------------------------------------
+# Embedding integration (machine-to-machine) — see embed_link_service.py
+# ---------------------------------------------------------------------------
+
+class IntegrationClient(Base):
+    """A trusted external system allowed to mint embed links by calling
+    POST /api/v1/integrations/embed/resolve with a Bearer token.
+
+    Auth = a single opaque Bearer token (`appbi_embed_<secret>`). Only its
+    SHA-256 hash is stored (`token_hash`) — the raw token is shown to the
+    operator exactly once at creation and never persisted.
+    """
+    __tablename__ = "integration_clients"
+
+    id = Column(UUID(as_uuid=True), primary_key=True)
+    token_hash = Column(String(64), nullable=False, unique=True, index=True)
+    name = Column(String(255), nullable=False)
+
+    allowed_dashboards = Column(JSON, nullable=True, default=list)  # [] / null = any dashboard
+    allowed_ips = Column(JSON, nullable=True, default=list)         # [] / null = any IP
+    allowed_origins = Column(JSON, nullable=True, default=list)     # for embed CSP frame-ancestors
+
+    is_active = Column(Boolean, nullable=False, default=True)
+    max_ttl_seconds = Column(Integer, nullable=False, default=3600, server_default="3600")
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    last_used_at = Column(DateTime(timezone=True), nullable=True)
+
+
+class EmbedGrant(Base):
+    """A short-lived, rotating opaque token exposed in an iframe URL. Resolves
+    to a managed DashboardPublicLink without exposing that link's own token.
+    Only the SHA-256 hash of the 256-char token is stored."""
+    __tablename__ = "embed_grants"
+
+    id = Column(UUID(as_uuid=True), primary_key=True)
+    link_id = Column(Integer, ForeignKey("dashboard_public_links.id", ondelete="CASCADE"), nullable=False, index=True)
+    token_hash = Column(String(64), nullable=False, unique=True, index=True)
+    client_id = Column(UUID(as_uuid=True), ForeignKey("integration_clients.id", ondelete="SET NULL"), nullable=True)
+
+    expires_at = Column(DateTime(timezone=True), nullable=False, index=True)
+    revoked_at = Column(DateTime(timezone=True), nullable=True)
+    use_count = Column(Integer, nullable=False, default=0)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    last_used_at = Column(DateTime(timezone=True), nullable=True)

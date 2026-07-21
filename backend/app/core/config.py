@@ -88,6 +88,13 @@ class Settings(BaseSettings):
     DATASOURCE_ENCRYPTION_KEY: str = ""
     COOKIE_SECURE: bool = True
     ENVIRONMENT: str = "production"
+
+    # Public base URL of THIS AppBI deployment (scheme + host, no trailing slash),
+    # e.g. "https://report.base-datateam.com". Used to build absolute embed URLs
+    # returned by the integration API so they are correct regardless of how the
+    # API was reached (direct vs reverse-proxy). Empty = derive from the request.
+    PUBLIC_BASE_URL: str = ""
+
     AUTH_PASSWORD_LOGIN_ENABLED: bool = True
     AUTH_GOOGLE_ENABLED: bool = False
 

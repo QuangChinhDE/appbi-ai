@@ -40,7 +40,17 @@ export async function middleware(request: NextRequest) {
 
   // Allow public paths through
   if (PUBLIC_PATHS.some((p) => pathname.startsWith(p))) {
-    return NextResponse.next();
+    const res = NextResponse.next();
+    // Embed framing hardening (opt-in). When EMBED_FRAME_ANCESTORS is set
+    // (space-separated origins), only those parents may iframe /embed and /d
+    // pages — blocks re-hosting of an embed capability URL. Unset = no header
+    // = backward compatible. Runtime-read here (not next.config headers(),
+    // which is build-time only).
+    const fa = (process.env.EMBED_FRAME_ANCESTORS || '').trim();
+    if (fa && (pathname.startsWith('/embed/') || pathname.startsWith('/d/'))) {
+      res.headers.set('Content-Security-Policy', `frame-ancestors 'self' ${fa};`);
+    }
+    return res;
   }
 
   // PWA mini-app surfaces (public): launcher `/m`, manifest, service worker,
