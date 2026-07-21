@@ -163,6 +163,34 @@ def _fetch_selected_rows(
     return selected
 
 
+def _enrich_selected_with_lookups(
+    db: Session, screen: Screen, rows: List[Dict[str, Any]]
+) -> List[Dict[str, Any]]:
+    """Add the source screen's resolved lookup-column values onto each selected
+    row so a recipe's ``copy_from_selected`` / ``aggregate_from_selected`` /
+    ``copy`` can reference them. Lookup columns are computed at render time and
+    are absent from the physical row, so without this a recipe copying e.g. a
+    supplier NAME (lookup) — not just its id — would write blanks.
+
+    Only fills a key that isn't already a physical column (never clobbers real
+    data), and degrades to the un-enriched rows if lookup resolution fails.
+    """
+    tspec = getattr(screen, "table", None)
+    lookups = list(getattr(tspec, "lookup_columns", None) or []) if tspec else []
+    if not tspec or not lookups or not rows:
+        return rows
+    try:
+        lookup_maps = screen_runtime._resolve_table_lookups(db, tspec, rows)
+    except Exception:  # pragma: no cover - enrichment must never break a write
+        return rows
+    for lk in lookups:
+        mapping = lookup_maps.get(lk.name) or {}
+        for row in rows:
+            if lk.name not in row:
+                row[lk.name] = mapping.get(row.get(lk.match_column_local))
+    return rows
+
+
 def run_bulk_action(
     db: Session,
     workboard: Workboard,
@@ -179,8 +207,11 @@ def run_bulk_action(
     layout = screen_runtime.parse_layout(workboard)
 
     # 1. Re-fetch the selected rows authoritatively (RLS-scoped) — never trust
-    #    client-supplied row values for the data we are about to mutate.
+    #    client-supplied row values for the data we are about to mutate. Enrich
+    #    with the screen's lookup columns so copy/aggregate steps can reference
+    #    a looked-up value (e.g. a supplier name), not just its id.
     selected = _fetch_selected_rows(db, workboard, screen, selected_pks or [])
+    selected = _enrich_selected_with_lookups(db, screen, selected)
     if len(selected) < max(int(action.min_selection or 1), 1):
         raise HTTPException(status_code=400, detail=f"Chọn tối thiểu {action.min_selection or 1} dòng hợp lệ.")
 
@@ -299,8 +330,20 @@ def run_bulk_action(
                     pk = res.get("pk") if isinstance(res, dict) else None
                     if isinstance(pk, dict):
                         created.append((tgt, pk))
-                n = len(inserted or lines)
-                per_step.append({"step": step.id, "kind": step.kind, "ok": True, "count": n})
+                # Report the ACTUAL number of rows the write layer persisted —
+                # never fall back to len(lines), which would report "success"
+                # even when 0 rows were written. Surface ``expected`` so a
+                # short write (e.g. a datasource that silently drops rows) is
+                # visible instead of masked.
+                affected = result.get("affected_rows") if isinstance(result, dict) else None
+                written = affected if isinstance(affected, int) else len(inserted or [])
+                per_step.append({
+                    "step": step.id,
+                    "kind": step.kind,
+                    "ok": written >= len(lines),
+                    "count": written,
+                    "expected": len(lines),
+                })
 
             elif step.kind == "update_selected":
                 tgt = _target_screen(step.screen_id)
