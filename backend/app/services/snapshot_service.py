@@ -41,6 +41,13 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_SNAPSHOT_DATASET = "appbi_snapshots"
 _DDL_TIMEOUT_SEC = 280  # build budget per table (< the 300s BQ result cap)
+# Resume window: a Sync interrupted (Stop / crash) leaves an UNpublished generation
+# with some tables already built. The next Sync RESUMES that generation — reusing
+# every already-built table (even one whose source watermark can't be computed, so
+# it would otherwise rebuild every time) and building only what's missing/changed,
+# then publishing. Bounded by age so a long-abandoned generation isn't resumed with
+# stale data (a fresh full rebuild is safer past this window).
+_RESUME_MAX_AGE_MS = 24 * 3600 * 1000  # 24h
 # BQ location per datasource (snapshots must be COLOCATED with the source —
 # BQ cannot CTAS across locations). Resolved once per datasource.
 _location_cache: Dict[int, Optional[str]] = {}
@@ -735,6 +742,89 @@ def current_fingerprint_for_table(
         return None
 
 
+def _ready_snapshot_in_generation(
+    db: Session, table: DatasetTable, generation: int,
+    dataset_obj: Dataset, datasource: Optional[DataSource],
+) -> Optional[DatasetTableSnapshot]:
+    """The current-ready snapshot of `table` that ALREADY belongs to `generation`
+    and still matches the live design — i.e. a table finished in a previous
+    (interrupted) run of THIS generation that a resume must NOT rebuild. None when
+    absent or drifted. Calendar tables can't be SQL-fingerprinted → accepted as-is
+    when a ready snapshot exists (calendar drift is caught by fingerprint
+    invalidation elsewhere)."""
+    from app.services.dataset_calendar_service import is_generated_calendar_table
+
+    row = (
+        db.query(DatasetTableSnapshot)
+        .filter(
+            DatasetTableSnapshot.dataset_table_id == table.id,
+            DatasetTableSnapshot.generation == int(generation),
+            DatasetTableSnapshot.is_current.is_(True),
+            DatasetTableSnapshot.status == "ready",
+            DatasetTableSnapshot.retired_at.is_(None),
+        )
+        .first()
+    )
+    if row is None:
+        return None
+    if is_generated_calendar_table(table):
+        return row
+    exp = current_fingerprint_for_table(db, dataset_obj, table, datasource)
+    if exp is not None and row.fingerprint != exp:
+        return None  # design drifted since it was built → must rebuild
+    return row
+
+
+def _resumable_generation(
+    db: Session, dataset_id: int, dataset_obj: Dataset,
+    tables: List[DatasetTable], datasource_by_id: Dict[int, DataSource],
+    host: Optional[DataSource],
+) -> Optional[int]:
+    """Newest UNpublished generation worth RESUMING (interrupted Sync) instead of
+    starting a fresh one. Requirements: not the published generation; younger than
+    `_RESUME_MAX_AGE_MS`; has ≥1 current-ready snapshot; and EVERY current-ready
+    snapshot in it still matches the live design (else the model changed → full
+    rebuild). None ⇒ start a fresh generation (unchanged behaviour)."""
+    if host is None:
+        return None
+    published = getattr(dataset_obj, "published_generation", None)
+    rows = (
+        db.query(DatasetTableSnapshot)
+        .filter(
+            DatasetTableSnapshot.dataset_id == dataset_id,
+            DatasetTableSnapshot.is_current.is_(True),
+            DatasetTableSnapshot.status == "ready",
+            DatasetTableSnapshot.generation.isnot(None),
+            DatasetTableSnapshot.retired_at.is_(None),
+        )
+        .all()
+    )
+    if not rows:
+        return None
+    by_gen: Dict[int, List[DatasetTableSnapshot]] = {}
+    for r in rows:
+        by_gen.setdefault(int(r.generation), []).append(r)
+    now_ms = int(time.time() * 1000)
+    table_by_id = {t.id: t for t in tables}
+    for gen in sorted(by_gen.keys(), reverse=True):
+        if published is not None and gen == int(published):
+            continue  # the published generation is complete, not a resume target
+        if now_ms - gen > _RESUME_MAX_AGE_MS:
+            continue  # abandoned too long → fresh rebuild is safer than stale reuse
+        ok = True
+        for s in by_gen[gen]:
+            t = table_by_id.get(s.dataset_table_id)
+            if t is None:
+                ok = False
+                break
+            if _ready_snapshot_in_generation(db, t, gen, dataset_obj, datasource_by_id.get(t.datasource_id)) is None:
+                ok = False
+                break
+        if ok:
+            return gen
+    return None
+
+
 def gc_dataset_snapshots(db: Session, dataset_id: int, host: DataSource) -> int:
     """Delayed GC (issue #10): retire snapshot rows + drop their physical tables
     ONLY when they are no longer needed for consistent reads:
@@ -864,7 +954,14 @@ def refresh_all_for_dataset(db: Session, dataset_id: int, *, force: bool = True)
     # in this pass carries it, so readers can resolve a CONSISTENT set (the
     # newest generation that covers every table) instead of a torn mix while
     # this loop is mid-flight.
-    generation = int(time.time() * 1000)
+    # RESUME (interrupted Sync): if an unpublished generation with already-built,
+    # design-matching tables exists, continue IT instead of starting fresh — so a
+    # Stop/crash becomes a pause and the heavy tables are not rebuilt.
+    _resume_gen = _resumable_generation(db, dataset_id, dataset_obj, tables, datasource_by_id, host)
+    generation = _resume_gen if _resume_gen is not None else int(time.time() * 1000)
+    if _resume_gen is not None:
+        logger.info("[snapshot] RESUMING generation=%s dataset=%s (reuse already-built tables)",
+                    generation, dataset_id)
     built: list = []
     stopped = False
     from app.services import sync_progress as _sp
@@ -912,6 +1009,18 @@ def refresh_all_for_dataset(db: Session, dataset_id: int, *, force: bool = True)
         if _sc.is_stop_requested(dataset_id):
             stopped = True
             break
+        # RESUME: a table already built in THIS generation (design unchanged) is
+        # reused as-is — never rebuilt. This is what saves a heavy table whose
+        # source watermark can't be computed (which would otherwise rebuild every
+        # run). For a FRESH generation nothing matches → builds normally.
+        _reused = _ready_snapshot_in_generation(
+            db, t, generation, dataset_obj, datasource_by_id.get(t.datasource_id)
+        )
+        if _reused is not None:
+            _sp.begin_table(dataset_id, t.id)
+            built.append({"table_id": t.id, "row_count": _reused.row_count, "build_ms": 0})
+            _sp.finish_table(dataset_id, t.id, _reused.row_count or 0)
+            continue
         _sp.begin_table(dataset_id, t.id)
         try:
             if is_generated_calendar_table(t):

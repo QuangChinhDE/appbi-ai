@@ -419,6 +419,38 @@ def plan_chart_execution(
         return live("planner error → live fallback")
 
 
+def _unpublished_dashboard_message(db: Session, dataset_obj, state) -> str:
+    """Message for a Dashboard chart on an un-published dataset. Distinguishes
+    'sync in progress / interrupted (resumable)' — where the DA just needs to
+    finish the sync — from 'never synced'. Best-effort; falls back to the generic
+    prompt. NEVER raises (a bad count must not change the block behaviour)."""
+    generic = ("Dataset chưa được Publish — bấm “Sync & Publish” trên Dataset "
+               "trước khi dùng trên Dashboard.")
+    try:
+        from app.models.dataset import DatasetTable
+        from app.services import snapshot_service
+        from app.services.dataset_calendar_service import is_generated_calendar_table
+
+        mat = [
+            t for t in db.query(DatasetTable)
+            .filter(DatasetTable.dataset_id == dataset_obj.id)
+            .filter((DatasetTable.enabled.is_(None)) | (DatasetTable.enabled == True))  # noqa: E712
+            .all()
+            if not is_generated_calendar_table(t) and snapshot_service.is_federated_materializable(t)
+        ]
+        built = sum(1 for t in mat if snapshot_service.resolve_current_ref(db, t.id) is not None)
+        remaining = max(0, len(mat) - built)
+        if state == "syncing":
+            return (f"Đang đồng bộ lần đầu (còn {remaining}/{len(mat)} bảng) — Dashboard sẽ hiển thị "
+                    f"sau khi Sync & Publish hoàn tất.")
+        if built > 0 and remaining > 0:
+            return (f"Đồng bộ lần đầu chưa xong (còn {remaining}/{len(mat)} bảng) — bấm “Sync & Publish” "
+                    f"trên Dataset để tiếp tục; Dashboard hiển thị sau khi publish xong.")
+    except Exception:  # noqa: BLE001 — never break the block on a counting error
+        pass
+    return generic
+
+
 def _plan_published(db: Session, dataset_obj, base_view_name: str, *, is_preview: bool) -> ExecutionPlan:
     """Serve a lifecycle-managed dataset ONLY from its pinned published
     generation. No live, no 'newest', no fallback (Phase 1). Blocks with a clear
@@ -457,8 +489,11 @@ def _plan_published(db: Session, dataset_obj, base_view_name: str, *, is_preview
                 dataset_id=dataset_id, security_scope=scope,
                 reason="preview on un-published dataset (design-time live)",
             )
-        return blocked_plan(
-            "Dataset chưa được Publish — bấm “Sync & Publish” trên Dataset trước khi dùng trên Dashboard.")
+        # Context-aware guidance: a first sync in progress / interrupted (some
+        # tables already built) reads very differently to "never synced". The
+        # Dashboard still blocks (never serves incomplete/un-pinned data), but the
+        # message tells the DA it just needs to finish/resume the sync.
+        return blocked_plan(_unpublished_dashboard_message(db, dataset_obj, state))
 
     # Serve the PINNED published generation.
     tables = (
