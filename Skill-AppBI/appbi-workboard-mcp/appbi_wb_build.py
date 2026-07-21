@@ -342,6 +342,36 @@ def _validate_screen_columns(
                         f"screen '{screen_id}' table.calendar_config.{key} '{col}' "
                         f"must be listed in table.columns."
                     )
+    if spec.get("display_mode") == "route_map":
+        rmc = spec.get("route_map_config")
+        if not isinstance(rmc, dict):
+            errors.append(
+                f"screen '{screen_id}' table: display_mode='route_map' requires route_map_config."
+            )
+        else:
+            for req in ("lat_column", "lng_column"):
+                if not (isinstance(rmc.get(req), str) and rmc.get(req).strip()):
+                    errors.append(
+                        f"screen '{screen_id}' table.route_map_config.{req} is required."
+                    )
+            declared = set(str(c) for c in (spec.get("columns") or []))
+            for key in (
+                "lat_column", "lng_column", "title_column", "route_id_column",
+                "order_column", "weight_column", "value_column", "deadline_column",
+                "vehicle_column", "status_column",
+            ):
+                col = rmc.get(key)
+                if isinstance(col, str) and col and col not in declared:
+                    errors.append(
+                        f"screen '{screen_id}' table.route_map_config.{key} '{col}' "
+                        f"must be listed in table.columns."
+                    )
+            for i, col in enumerate(rmc.get("subtitle_columns") or []):
+                if isinstance(col, str) and col and col not in declared:
+                    errors.append(
+                        f"screen '{screen_id}' table.route_map_config.subtitle_columns[{i}] "
+                        f"'{col}' must be listed in table.columns."
+                    )
     for index, lookup in enumerate(spec.get("lookup_columns") or []):
         if not isinstance(lookup, dict):
             errors.append(f"screen '{screen_id}' table.lookup_columns[{index}] must be an object.")
@@ -839,9 +869,11 @@ _SCREEN_SCHEMA_REFERENCE = {
         "column_groups": "multi-level header spanning contiguous columns",
         "row_actions": "[ScreenAction] per-row navigate+carry",
         "detail_panel": "{enabled, columns[], editable_columns[], sections{label:[col]}} side panel on row click",
-        "display_mode": "table (default) | gallery | calendar — same query/RLS/filters/detail_panel, different render",
+        "display_mode": "table (default) | gallery | calendar | route_map — same query/RLS/filters/detail_panel, different render",
         "gallery_config": "required when display_mode=gallery: {image_column (data:image column, REQUIRED + must be in columns), title_column?, subtitle_column?, group_by_column? (section per value, e.g. a date), columns_per_row? 1-6}. All named columns must be listed in `columns`.",
         "calendar_config": "required when display_mode=calendar: {date_column (REQUIRED, places rows on a month grid), title_column? (chip label), color_column? (tints chips)}. All named columns must be listed in `columns`.",
+        "route_map_config": "required when display_mode=route_map: {lat_column (REQUIRED), lng_column (REQUIRED), title_column?, subtitle_columns?[], route_id_column? (groups rows into routes/trips), route_filter_default?, order_column? (delivery sequence), weight_column?, value_column?, deadline_column?, vehicle_column?, status_column?, basemap? satellite|streets|light, line_mode? road|straight, show_side_panel? (default true), side_panel_title?}. Ordered stops on a Leaflet map + OSRM road route line (straight-line fallback). Generic for delivery routes / technician visits / field-sales / asset inspections. All named columns must be listed in `columns`. Coordinates are business data — populate lat/lng directly or via `geocode`.",
+        "geocode": "OPTIONAL {enabled?, provider? nominatim|none, address_column? OR address_template? ('[Col], Country'), lat_column (REQUIRED target), lng_column (REQUIRED target), status_column?, provider_label_column?, overwrite_existing? (default false), country_codes? (e.g. 'vn'), language? (e.g. 'vi'), timeout_seconds?}. On single-row insert/update the write path auto-fills lat/lng from the address (once, persisted). Available on both table and form screens; pair with route_map so address-only rows land on the map.",
         "stat_tiles": "[{label, column, agg: sum|avg|min|max|count, unit?, format?}] KPI cards above the grid, computed across the loaded (RLS-filtered) rows.",
         "column_metadata": "{col: {label?, width_px?, format?, align?, merge?, input_type?, options?, currency_code?, max_stars?, min_value?, max_value?, step?}} — format: text|number|integer|currency|percent|date|datetime|qr (qr renders the cell value as a small QR image, e.g. a product/order code). input_type gives an EDITABLE column a typed inline cell: text|number|currency|percent|date|datetime|time|checkbox|select|enum_list|rating|color|slider (select/enum_list use static `options:[{label,value}]`). Applies in grid + detail-panel edit.",
         "required_columns/default_values/empty_state_message": "extras",
