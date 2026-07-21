@@ -291,7 +291,7 @@ export interface TableScreenResponse {
       sections?: Record<string, string[]>;
     };
     empty_state_message?: string | null;
-    display_mode?: 'table' | 'gallery' | 'calendar';
+    display_mode?: 'table' | 'gallery' | 'calendar' | 'route_map';
     gallery_config?: {
       image_column: string;
       title_column?: string | null;
@@ -303,6 +303,41 @@ export interface TableScreenResponse {
       date_column: string;
       title_column?: string | null;
       color_column?: string | null;
+    } | null;
+    route_map_config?: {
+      lat_column: string;
+      lng_column: string;
+      title_column?: string | null;
+      subtitle_columns?: string[];
+      route_id_column?: string | null;
+      route_filter_default?: string | null;
+      order_column?: string | null;
+      weight_column?: string | null;
+      value_column?: string | null;
+      deadline_column?: string | null;
+      vehicle_column?: string | null;
+      status_column?: string | null;
+      basemap?: 'satellite' | 'streets' | 'light';
+      line_mode?: 'straight' | 'road';
+      route_provider?: 'osrm';
+      route_profile?: 'driving';
+      fallback_line_mode?: 'straight';
+      show_side_panel?: boolean;
+      side_panel_title?: string | null;
+    } | null;
+    geocode?: {
+      enabled?: boolean;
+      provider?: 'nominatim' | 'none';
+      address_column?: string | null;
+      address_template?: string | null;
+      lat_column: string;
+      lng_column: string;
+      status_column?: string | null;
+      provider_label_column?: string | null;
+      overwrite_existing?: boolean;
+      country_codes?: string | null;
+      language?: string | null;
+      timeout_seconds?: number;
     } | null;
     stat_tiles?: Array<{ label: string; column: string; agg?: string; format?: string | null; unit?: string | null }>;
     pos_cart?: PosCartConfig | null;

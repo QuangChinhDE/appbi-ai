@@ -748,6 +748,50 @@ class OcrConfig(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
 
+class GeocodeConfig(BaseModel):
+    """Auto-fill latitude/longitude from an address during Workboard writes.
+
+    This belongs to the write workflow, not the map renderer. Any form/table
+    screen can opt in by mapping its address and coordinate columns; the
+    coordinates are then persisted business data (deterministic + reusable),
+    not recomputed on every map paint.
+    """
+
+    enabled: bool = True
+    provider: Literal["nominatim", "none"] = Field(
+        default="nominatim",
+        description="'nominatim' uses OpenStreetMap Nominatim; 'none' disables external calls.",
+    )
+    address_column: Optional[str] = Field(
+        default=None,
+        description="Column containing the address to geocode.",
+    )
+    address_template: Optional[str] = Field(
+        default=None,
+        max_length=1000,
+        description="Optional '[Column]' template used instead of address_column, e.g. '[DiaChiGiao], Việt Nam'.",
+    )
+    lat_column: str = Field(..., min_length=1, description="Latitude target column.")
+    lng_column: str = Field(..., min_length=1, description="Longitude target column.")
+    status_column: Optional[str] = Field(
+        default=None,
+        description="Optional column stamped with geocoding status.",
+    )
+    provider_label_column: Optional[str] = Field(
+        default=None,
+        description="Optional column storing the provider's resolved display label.",
+    )
+    overwrite_existing: bool = Field(
+        default=False,
+        description="When false, existing lat/lng values are preserved.",
+    )
+    country_codes: Optional[str] = Field(default=None, description="Provider country filter, e.g. 'vn'.")
+    language: Optional[str] = Field(default=None, description="Provider response language, e.g. 'vi'.")
+    timeout_seconds: float = Field(default=5, ge=1, le=20)
+
+    model_config = ConfigDict(extra="forbid")
+
+
 class FormScreenSpec(BaseModel):
     """A data-entry screen bound to one dataset table.
 
@@ -773,6 +817,10 @@ class FormScreenSpec(BaseModel):
             "When set, the FE captures the device GPS at submit and writes 'lat,lng' "
             "into this column (readonly, anti-fraud geo-audit of who was where)."
         ),
+    )
+    geocode: Optional[GeocodeConfig] = Field(
+        default=None,
+        description="Auto-fill latitude/longitude from an address column/template on submit.",
     )
 
     model_config = ConfigDict(extra="forbid")
@@ -1029,6 +1077,70 @@ class CalendarConfig(BaseModel):
         default=None,
         description="Optional column whose value tints the chip (e.g. a status column).",
     )
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class RouteMapConfig(BaseModel):
+    """Route/map layout for a Table screen when ``display_mode='route_map'``.
+
+    Intentionally a table display mode, not a separate screen kind: the same
+    rows, RLS, filters, row actions and detail panel are reused, while the
+    renderer projects rows onto a map with an optional ordered route line. It
+    covers delivery routes, technician visits, field-sales plans, asset
+    inspections — any "ordered stops on a map" use case. The renderer stays
+    generic and reads ONLY these column mappings.
+    """
+
+    lat_column: str = Field(..., min_length=1, description="Latitude column for each stop.")
+    lng_column: str = Field(..., min_length=1, description="Longitude column for each stop.")
+    title_column: Optional[str] = Field(
+        default=None,
+        description="Primary marker/list label. Defaults to the first primary key or first visible column.",
+    )
+    subtitle_columns: List[str] = Field(
+        default_factory=list,
+        description="Secondary values shown under each stop in the side panel.",
+    )
+    route_id_column: Optional[str] = Field(
+        default=None,
+        description="Groups rows into routes/trips. When omitted all visible rows are one route.",
+    )
+    route_filter_default: Optional[str] = Field(
+        default=None,
+        description="Optional route id selected by default when rows contain multiple routes.",
+    )
+    order_column: Optional[str] = Field(
+        default=None,
+        description="Column used to sort stops inside each route (delivery sequence).",
+    )
+    weight_column: Optional[str] = Field(default=None, description="Optional weight column for route totals.")
+    value_column: Optional[str] = Field(default=None, description="Optional value/amount column for route totals.")
+    deadline_column: Optional[str] = Field(default=None, description="Optional due/deadline column shown per stop.")
+    vehicle_column: Optional[str] = Field(default=None, description="Optional vehicle/trip resource column.")
+    status_column: Optional[str] = Field(default=None, description="Optional status column shown per stop.")
+    basemap: Literal["satellite", "streets", "light"] = Field(
+        default="streets",
+        description="Basemap tile style for the route map.",
+    )
+    line_mode: Literal["straight", "road"] = Field(
+        default="road",
+        description="'straight' draws ordered coordinates; 'road' asks a route provider for road geometry.",
+    )
+    route_provider: Literal["osrm"] = Field(
+        default="osrm",
+        description="Provider used when line_mode='road'.",
+    )
+    route_profile: Literal["driving"] = Field(
+        default="driving",
+        description="Routing profile used by the provider.",
+    )
+    fallback_line_mode: Literal["straight"] = Field(
+        default="straight",
+        description="Fallback when road routing fails.",
+    )
+    show_side_panel: bool = Field(default=True, description="Show ordered stop list next to the map.")
+    side_panel_title: Optional[str] = Field(default=None, max_length=80)
 
     model_config = ConfigDict(extra="forbid")
 
@@ -1464,9 +1576,12 @@ class TableScreenSpec(BaseModel):
 
     empty_state_message: Optional[str] = None
 
-    display_mode: Literal["table", "gallery", "calendar"] = Field(
+    display_mode: Literal["table", "gallery", "calendar", "route_map"] = Field(
         default="table",
-        description="'table' = grid (default). 'gallery' = image cards (gallery_config). 'calendar' = month view (calendar_config).",
+        description=(
+            "'table' = grid (default). 'gallery' = image cards (gallery_config). "
+            "'calendar' = month view (calendar_config). 'route_map' = ordered stops on a map (route_map_config)."
+        ),
     )
     gallery_config: Optional[GalleryConfig] = Field(
         default=None,
@@ -1475,6 +1590,10 @@ class TableScreenSpec(BaseModel):
     calendar_config: Optional[CalendarConfig] = Field(
         default=None,
         description="Month-view config; required (and its date_column must be in `columns`) when display_mode='calendar'.",
+    )
+    route_map_config: Optional[RouteMapConfig] = Field(
+        default=None,
+        description="Route-map config; required when display_mode='route_map'.",
     )
     stat_tiles: List[StatTile] = Field(
         default_factory=list,
@@ -1492,6 +1611,10 @@ class TableScreenSpec(BaseModel):
             "bulk-insert. The read side attaches the resolved product catalog as "
             "``pos_catalog``. None = ordinary editable/read-only grid."
         ),
+    )
+    geocode: Optional[GeocodeConfig] = Field(
+        default=None,
+        description="Auto-fill latitude/longitude from an address column/template on insert/update.",
     )
     bulk_actions: List[BulkAction] = Field(
         default_factory=list,
@@ -1635,6 +1758,39 @@ class TableScreenSpec(BaseModel):
                 if col and col not in visible:
                     raise ValueError(
                         f"calendar_config.{label} '{col}' must be listed in "
+                        f"'columns' so the runtime returns its value."
+                    )
+
+        # Route-map display mode: coordinate columns are required and every
+        # configured display/group/order column must be surfaced in the row
+        # payload. The renderer stays generic and reads only these mappings.
+        if self.display_mode == "route_map":
+            if self.route_map_config is None:
+                raise ValueError(
+                    "display_mode='route_map' requires route_map_config."
+                )
+            mc = self.route_map_config
+            visible = set(self.columns or [])
+            route_cols = [
+                ("lat_column", mc.lat_column),
+                ("lng_column", mc.lng_column),
+                ("title_column", mc.title_column),
+                ("route_id_column", mc.route_id_column),
+                ("order_column", mc.order_column),
+                ("weight_column", mc.weight_column),
+                ("value_column", mc.value_column),
+                ("deadline_column", mc.deadline_column),
+                ("vehicle_column", mc.vehicle_column),
+                ("status_column", mc.status_column),
+            ]
+            route_cols.extend(
+                (f"subtitle_columns[{i}]", col)
+                for i, col in enumerate(mc.subtitle_columns or [])
+            )
+            for label, col in route_cols:
+                if col and col not in visible:
+                    raise ValueError(
+                        f"route_map_config.{label} '{col}' must be listed in "
                         f"'columns' so the runtime returns its value."
                     )
 

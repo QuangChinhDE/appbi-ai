@@ -301,7 +301,7 @@ export interface TableScreenSpecBuilt {
   column_metadata?: Record<string, TableColumnMetaSpec>;
   detail_panel?: TableDetailPanelSpec;
   empty_state_message?: string | null;
-  display_mode?: 'table' | 'gallery' | 'calendar';
+  display_mode?: 'table' | 'gallery' | 'calendar' | 'route_map';
   gallery_config?: {
     image_column: string;
     title_column?: string | null;
@@ -313,6 +313,27 @@ export interface TableScreenSpecBuilt {
     date_column: string;
     title_column?: string | null;
     color_column?: string | null;
+  } | null;
+  route_map_config?: {
+    lat_column: string;
+    lng_column: string;
+    title_column?: string | null;
+    subtitle_columns?: string[];
+    route_id_column?: string | null;
+    route_filter_default?: string | null;
+    order_column?: string | null;
+    weight_column?: string | null;
+    value_column?: string | null;
+    deadline_column?: string | null;
+    vehicle_column?: string | null;
+    status_column?: string | null;
+    basemap?: 'satellite' | 'streets' | 'light';
+    line_mode?: 'straight' | 'road';
+    route_provider?: 'osrm';
+    route_profile?: 'driving';
+    fallback_line_mode?: 'straight';
+    show_side_panel?: boolean;
+    side_panel_title?: string | null;
   } | null;
   stat_tiles?: Array<{
     label: string;

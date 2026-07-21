@@ -39,6 +39,10 @@ from app.models.dataset import DatasetTable
 from app.models.models import DataSource
 from app.modules.workboards.models import Workboard, WorkboardOpLog
 from app.modules.workboards.roles import is_owner_role
+from app.modules.workboards.services.geocode_service import (
+    build_address,
+    geocode_address,
+)
 from app.modules.workboards.schemas import (
     DataTableBlock,
     DataTablePivot,
@@ -927,6 +931,73 @@ def _status_fields(screen: Screen) -> List[Any]:
     ]
 
 
+def _geocode_config_for_screen(screen: Screen) -> Any:
+    if screen.kind == "form" and screen.form is not None:
+        return getattr(screen.form, "geocode", None)
+    if screen.kind == "table" and screen.table is not None:
+        return getattr(screen.table, "geocode", None)
+    return None
+
+
+def _apply_geocode(
+    screen: Screen,
+    values: Dict[str, Any],
+    *,
+    previous_row: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Auto-fill lat/lng from an address when a screen opts in (form/table
+    ``geocode`` config). Best-effort by design: a provider miss must not block
+    the write — expose ``status_column`` when operators need to review
+    unresolved rows. Only runs on single-row writes (form submit / edit); bulk
+    writes are intentionally not geocoded to avoid N sequential provider calls.
+    """
+    cfg = _geocode_config_for_screen(screen)
+    if cfg is None or not bool(getattr(cfg, "enabled", True)):
+        return values
+    lat_col = getattr(cfg, "lat_column", None)
+    lng_col = getattr(cfg, "lng_column", None)
+    if not lat_col or not lng_col:
+        return values
+
+    def _blank(v: Any) -> bool:
+        return v is None or (isinstance(v, str) and not v.strip())
+
+    out = dict(values or {})
+    combined = dict(previous_row or {})
+    combined.update(out)
+    address_col = getattr(cfg, "address_column", None)
+    template = getattr(cfg, "address_template", None)
+    # On insert (no previous row) with a plain address column: only geocode
+    # when that address is actually part of this write.
+    if previous_row is None and address_col and address_col not in out and not template:
+        return out
+    overwrite = bool(getattr(cfg, "overwrite_existing", False))
+    if not overwrite and not (_blank(combined.get(lat_col)) or _blank(combined.get(lng_col))):
+        return out
+
+    status_col = getattr(cfg, "status_column", None)
+    label_col = getattr(cfg, "provider_label_column", None)
+    address = build_address(cfg, combined)
+    if not address:
+        if status_col:
+            out[status_col] = "Thiếu địa chỉ"
+        return out
+
+    result = geocode_address(cfg, address)
+    if result is None:
+        if status_col:
+            out[status_col] = "Không tìm thấy tọa độ"
+        return out
+
+    out[lat_col] = result.lat
+    out[lng_col] = result.lng
+    if status_col:
+        out[status_col] = "Đã tự sinh tọa độ"
+    if label_col and result.label:
+        out[label_col] = result.label
+    return out
+
+
 def _fetch_current_row(
     db: Session, workboard: Workboard, screen: Screen, pk: Dict[str, Any]
 ) -> Optional[Dict[str, Any]]:
@@ -1174,6 +1245,9 @@ def insert_screen_row(
     cleaned = enforce_write_access(
         screen.rls, screen.rls_default, identity, op="insert", row_values=cleaned_pre
     )
+    # Server-side enrichment: fill lat/lng from the address if the screen opts
+    # in via geocode config (no-op otherwise).
+    cleaned = _apply_geocode(screen, cleaned)
     if screen.kind == "form":
         # Value-level status guard on top of RLS column masking (insert = no prev).
         _enforce_status_rules(_status_fields(screen), cleaned, identity, previous_row=None)
@@ -1433,6 +1507,12 @@ def update_screen_row(
     cleaned = enforce_write_access(
         screen.rls, screen.rls_default, identity, op="update", row_values=cleaned_pre
     )
+    # Server-side geocode enrichment. Only fetch the previous row when the
+    # screen opts into geocoding, and pass it so existing coordinates are not
+    # re-resolved (overwrite_existing=False).
+    if _geocode_config_for_screen(screen) is not None:
+        _geo_prev = _fetch_current_row(db, workboard, screen, pk)
+        cleaned = _apply_geocode(screen, cleaned, previous_row=_geo_prev)
     if screen.kind == "form":
         # Value-level status guard: compare the previous row's status to the new
         # value so allowed_transitions + editable_by_roles are enforced server-side.
