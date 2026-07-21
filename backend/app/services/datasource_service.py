@@ -763,7 +763,7 @@ class DataSourceConnectionService:
         config: Dict[str, Any],
         op: str,                      # "insert" | "update" | "delete"
         table_name: str,
-        values: Dict[str, Any] | None = None,
+        values: Dict[str, Any] | List[Dict[str, Any]] | None = None,
         pk: Dict[str, Any] | None = None,
         lock_column: Optional[str] = None,
         lock_token: Any = None,
@@ -775,8 +775,9 @@ class DataSourceConnectionService:
         where the workboard layer prefers a high-level operation over
         building SQL. Returns ``(row_values, rowcount, ms)``:
 
-          * ``row_values`` echoes the inserted/updated row as a dict;
-          * ``rowcount`` is 1 when the op succeeds, else 0.
+          * ``row_values`` echoes the inserted/updated row as a dict, or
+            ``{"rows": [...]}`` for ``insert_many``;
+          * ``rowcount`` is the number of affected rows.
 
         SQL-speaking datasources can still go through this helper —
         internally it builds the equivalent INSERT/UPDATE/DELETE and routes
@@ -806,11 +807,21 @@ class DataSourceConnectionService:
             sheet_name = table_name
             if op == "insert":
                 row = connector.append_row(
-                    spreadsheet_id, sheet_name, values or {},
+                    spreadsheet_id,
+                    sheet_name,
+                    values if isinstance(values, dict) else {},
                     auto_pk_columns=auto_pk_columns,
                 )
                 ms = (time.time() - start) * 1000
                 return row, 1, ms
+            if op == "insert_many":
+                rows = values if isinstance(values, list) else []
+                result = connector.append_rows(
+                    spreadsheet_id, sheet_name, rows,
+                    auto_pk_columns=auto_pk_columns,
+                )
+                ms = (time.time() - start) * 1000
+                return {"rows": result.get("rows") or []}, int(result.get("appended") or 0), ms
             if op == "update":
                 if not pk:
                     raise ValueError("update requires a primary-key dict.")
@@ -820,6 +831,16 @@ class DataSourceConnectionService:
                 )
                 ms = (time.time() - start) * 1000
                 return row, 1, ms
+            if op == "update_many":
+                rows = values if isinstance(values, list) else []
+                result = connector.update_rows_by_pk(
+                    spreadsheet_id,
+                    sheet_name,
+                    rows,
+                    lock_column=lock_column,
+                )
+                ms = (time.time() - start) * 1000
+                return {"rows": result.get("rows") or []}, int(result.get("updated") or 0), ms
             if op == "delete":
                 if not pk:
                     raise ValueError("delete requires a primary-key dict.")

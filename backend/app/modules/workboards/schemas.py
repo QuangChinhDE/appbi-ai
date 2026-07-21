@@ -1223,6 +1223,14 @@ class BulkStep(BaseModel):
         default_factory=dict,
         description="create_record: {target_col: {column, agg}} — aggregate the selection into the new row.",
     )
+    copy_from_selected: Dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "create_record: {target_col: selected_source_col} — copy a shared "
+            "value from the selected rows into the new parent. Pair with "
+            "BulkAction.require_same for keys such as supplier/customer."
+        ),
+    )
     from_resource: Dict[str, str] = Field(
         default_factory=dict,
         description="{target_col: 'resource_id.resource_col'} — write a picked resource's field.",
@@ -1400,6 +1408,13 @@ class TableScreenSpec(BaseModel):
     inline (row click still opens the detail panel)."""
 
     filters: List[ListFilter] = Field(default_factory=list)
+    context_filters: List[DataTableContextFilter] = Field(
+        default_factory=list,
+        description=(
+            "Filter table rows by runtime shared-context values carried from "
+            "row actions/forms. Example: detail table MaDonGop = {{shared.MaDonGop}}."
+        ),
+    )
 
     page_size: int = Field(default=50, ge=10, le=500)
     default_sort_column: Optional[str] = None

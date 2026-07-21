@@ -49,4 +49,7 @@ jobs:
         env:
           DATABASE_URL: "sqlite:///./_preflight.db"
           PYTHONPATH: ${{ github.workspace }}/backend
+          ENVIRONMENT: "test"
+          SECRET_KEY: "ci-preflight-secret-key-not-used-in-production-please-do-not-copy"
+          DATASOURCE_ENCRYPTION_KEY: "0j7eUt3wx+0UtT7hH5LnuMpLiDmTN7f1WaRtPyEcjPw="
         run: python -c "import app.main"

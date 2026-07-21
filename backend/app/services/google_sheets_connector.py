@@ -1,7 +1,10 @@
 """Google Sheets data source connector."""
 from typing import List, Dict, Any, Optional, Tuple
 import json
+import os
+import random
 import threading
+import time
 import uuid as _uuid
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
@@ -22,6 +25,9 @@ from googleapiclient.errors import HttpError
 
 _WRITE_LOCK_REGISTRY: Dict[str, threading.Lock] = {}
 _WRITE_LOCK_REGISTRY_LOCK = threading.Lock()
+_HEADER_CACHE: Dict[Tuple[str, str], Tuple[float, List[str]]] = {}
+_HEADER_CACHE_LOCK = threading.Lock()
+_HEADER_CACHE_TTL_SECONDS = 300.0
 
 
 def _get_write_lock(spreadsheet_id: str) -> threading.Lock:
@@ -41,6 +47,39 @@ def _invalidate_workbook_cache(spreadsheet_id: str) -> None:
         google_sheets_cache.invalidate(spreadsheet_id)
     except Exception:  # pragma: no cover - cache is best-effort
         pass
+
+
+def _invalidate_header_cache(spreadsheet_id: str, sheet_name: Optional[str] = None) -> None:
+    with _HEADER_CACHE_LOCK:
+        if sheet_name is None:
+            for key in list(_HEADER_CACHE.keys()):
+                if key[0] == spreadsheet_id:
+                    _HEADER_CACHE.pop(key, None)
+        else:
+            _HEADER_CACHE.pop((spreadsheet_id, sheet_name), None)
+
+
+def _is_retryable_sheets_error(exc: HttpError) -> bool:
+    status = getattr(getattr(exc, "resp", None), "status", None)
+    if status in (429, 500, 502, 503, 504):
+        return True
+    if status == 403:
+        content = getattr(exc, "content", b"")
+        if isinstance(content, bytes):
+            text = content.decode("utf-8", errors="ignore").lower()
+        else:
+            text = str(content).lower()
+        return "ratelimit" in text or "quota" in text or "user_rate_limit" in text
+    return False
+
+
+def _retry_after_seconds(exc: HttpError) -> Optional[float]:
+    resp = getattr(exc, "resp", None)
+    try:
+        raw = resp.get("retry-after") if resp is not None else None
+        return float(raw) if raw is not None else None
+    except Exception:
+        return None
 
 
 class GoogleSheetsConnector:
@@ -84,14 +123,40 @@ class GoogleSheetsConnector:
             self.service = build('sheets', 'v4', credentials=self.credentials)
         except Exception as e:
             raise ValueError(f"Failed to initialize Google Sheets connector: {str(e)}")
+
+    def _execute(self, request: Any, operation: str) -> Any:
+        """Execute a Google Sheets request with bounded retry/backoff.
+
+        Sheets quotas are per-user/per-project and can spike during bulk
+        workboard operations. Retrying only retryable responses keeps normal
+        validation errors fast while making transient quota bursts survivable.
+        """
+        attempts = max(1, int(os.getenv("GOOGLE_SHEETS_RETRY_ATTEMPTS", "5")))
+        base_delay = max(0.1, float(os.getenv("GOOGLE_SHEETS_RETRY_BASE_SECONDS", "0.75")))
+        max_delay = max(base_delay, float(os.getenv("GOOGLE_SHEETS_RETRY_MAX_SECONDS", "8")))
+        for attempt in range(attempts):
+            try:
+                return request.execute()
+            except HttpError as exc:
+                if attempt >= attempts - 1 or not _is_retryable_sheets_error(exc):
+                    raise
+                delay = _retry_after_seconds(exc)
+                if delay is None:
+                    delay = min(max_delay, base_delay * (2 ** attempt))
+                    delay += random.uniform(0, min(0.5, delay / 2))
+                time.sleep(delay)
+        raise RuntimeError(f"Google Sheets request failed after retry: {operation}")
     
     def test_connection(self, spreadsheet_id: str) -> bool:
         """Test if connection to Google Sheets API is working by fetching spreadsheet metadata."""
         try:
-            self.service.spreadsheets().get(
-                spreadsheetId=spreadsheet_id,
-                fields='properties.title',
-            ).execute()
+            self._execute(
+                self.service.spreadsheets().get(
+                    spreadsheetId=spreadsheet_id,
+                    fields='properties.title',
+                ),
+                "test_connection",
+            )
             return True
         except Exception:
             return False
@@ -121,10 +186,13 @@ class GoogleSheetsConnector:
                 full_range = range_name
             
             # Get values from sheet
-            result = self.service.spreadsheets().values().get(
-                spreadsheetId=spreadsheet_id,
-                range=full_range
-            ).execute()
+            result = self._execute(
+                self.service.spreadsheets().values().get(
+                    spreadsheetId=spreadsheet_id,
+                    range=full_range
+                ),
+                "get_sheet_data",
+            )
             
             values = result.get('values', [])
             
@@ -178,20 +246,45 @@ class GoogleSheetsConnector:
         spreadsheet_id: str,
         sheet_name: str,
     ) -> tuple[list[str], list[list[Any]]]:
-        result = (
+        result = self._execute(
             self.service.spreadsheets()
             .values()
-            .get(spreadsheetId=spreadsheet_id, range=f"{sheet_name}!A:ZZ")
-            .execute()
+            .get(spreadsheetId=spreadsheet_id, range=f"{sheet_name}!A:ZZ"),
+            f"read {sheet_name}",
         )
         values = result.get("values", []) or []
         if not values:
             return [], []
         headers = list(values[0])
+        with _HEADER_CACHE_LOCK:
+            _HEADER_CACHE[(spreadsheet_id, sheet_name)] = (time.time(), headers)
         rows = values[1:] if len(values) > 1 else []
         # Pad short rows so caller can index by header position safely.
         rows = [row + [""] * (len(headers) - len(row)) for row in rows]
         return headers, rows
+
+    def _read_headers(
+        self,
+        spreadsheet_id: str,
+        sheet_name: str,
+    ) -> list[str]:
+        key = (spreadsheet_id, sheet_name)
+        now = time.time()
+        with _HEADER_CACHE_LOCK:
+            cached = _HEADER_CACHE.get(key)
+            if cached and now - cached[0] < _HEADER_CACHE_TTL_SECONDS:
+                return list(cached[1])
+        result = self._execute(
+            self.service.spreadsheets()
+            .values()
+            .get(spreadsheetId=spreadsheet_id, range=f"{sheet_name}!1:1"),
+            f"read headers {sheet_name}",
+        )
+        values = result.get("values", []) or []
+        headers = list(values[0]) if values else []
+        with _HEADER_CACHE_LOCK:
+            _HEADER_CACHE[key] = (time.time(), headers)
+        return headers
 
     def append_row(
         self,
@@ -212,7 +305,7 @@ class GoogleSheetsConnector:
         Returns the appended row as a dict (columns → values).
         """
         with _get_write_lock(spreadsheet_id):
-            headers, _ = self._read_headers_and_rows(spreadsheet_id, sheet_name)
+            headers = self._read_headers(spreadsheet_id, sheet_name)
             if not headers:
                 raise ValueError(
                     f"Sheet '{sheet_name}' has no header row — cannot append."
@@ -231,13 +324,16 @@ class GoogleSheetsConnector:
 
             body = {"values": [row_values]}
             try:
-                self.service.spreadsheets().values().append(
-                    spreadsheetId=spreadsheet_id,
-                    range=f"{sheet_name}!A:ZZ",
-                    valueInputOption="USER_ENTERED",
-                    insertDataOption="INSERT_ROWS",
-                    body=body,
-                ).execute()
+                self._execute(
+                    self.service.spreadsheets().values().append(
+                        spreadsheetId=spreadsheet_id,
+                        range=f"{sheet_name}!A:ZZ",
+                        valueInputOption="USER_ENTERED",
+                        insertDataOption="INSERT_ROWS",
+                        body=body,
+                    ),
+                    f"append {sheet_name}",
+                )
             except HttpError as e:
                 raise ValueError(f"Google Sheets append error: {str(e)}")
             _invalidate_workbook_cache(spreadsheet_id)
@@ -259,7 +355,7 @@ class GoogleSheetsConnector:
         if not rows_values:
             return {"appended": 0, "rows": []}
         with _get_write_lock(spreadsheet_id):
-            headers, _ = self._read_headers_and_rows(spreadsheet_id, sheet_name)
+            headers = self._read_headers(spreadsheet_id, sheet_name)
             if not headers:
                 raise ValueError(
                     f"Sheet '{sheet_name}' has no header row — cannot append."
@@ -278,13 +374,16 @@ class GoogleSheetsConnector:
 
             body = {"values": all_row_arrays}
             try:
-                self.service.spreadsheets().values().append(
-                    spreadsheetId=spreadsheet_id,
-                    range=f"{sheet_name}!A:ZZ",
-                    valueInputOption="USER_ENTERED",
-                    insertDataOption="INSERT_ROWS",
-                    body=body,
-                ).execute()
+                self._execute(
+                    self.service.spreadsheets().values().append(
+                        spreadsheetId=spreadsheet_id,
+                        range=f"{sheet_name}!A:ZZ",
+                        valueInputOption="USER_ENTERED",
+                        insertDataOption="INSERT_ROWS",
+                        body=body,
+                    ),
+                    f"batch append {sheet_name}",
+                )
             except HttpError as e:
                 raise ValueError(f"Google Sheets batch append error: {str(e)}")
             _invalidate_workbook_cache(spreadsheet_id)
@@ -309,15 +408,19 @@ class GoogleSheetsConnector:
             raise ValueError("CSV data is empty.")
         body = {"values": all_rows}
         try:
-            self.service.spreadsheets().values().update(
-                spreadsheetId=spreadsheet_id,
-                range=f"{sheet_name}!A1",
-                valueInputOption="USER_ENTERED",
-                body=body,
-            ).execute()
+            self._execute(
+                self.service.spreadsheets().values().update(
+                    spreadsheetId=spreadsheet_id,
+                    range=f"{sheet_name}!A1",
+                    valueInputOption="USER_ENTERED",
+                    body=body,
+                ),
+                f"import csv {sheet_name}",
+            )
         except HttpError as e:
             raise ValueError(f"Google Sheets CSV import error: {str(e)}")
         _invalidate_workbook_cache(spreadsheet_id)
+        _invalidate_header_cache(spreadsheet_id, sheet_name)
         return {
             "sheet_name": sheet_name,
             "header_row": all_rows[0] if all_rows else [],
@@ -429,16 +532,96 @@ class GoogleSheetsConnector:
         # Sheet rows are 1-based; header is row 1.
         spreadsheet_row = r_idx + 2
         try:
-            self.service.spreadsheets().values().update(
-                spreadsheetId=spreadsheet_id,
-                range=f"{sheet_name}!A{spreadsheet_row}:ZZ{spreadsheet_row}",
-                valueInputOption="USER_ENTERED",
-                body={"values": [new_row]},
-            ).execute()
+            self._execute(
+                self.service.spreadsheets().values().update(
+                    spreadsheetId=spreadsheet_id,
+                    range=f"{sheet_name}!A{spreadsheet_row}:ZZ{spreadsheet_row}",
+                    valueInputOption="USER_ENTERED",
+                    body={"values": [new_row]},
+                ),
+                f"update {sheet_name}",
+            )
         except HttpError as e:
             raise ValueError(f"Google Sheets update error: {str(e)}")
         _invalidate_workbook_cache(spreadsheet_id)
         return {h: new_row[i] for i, h in enumerate(headers)}
+
+    def update_rows_by_pk(
+        self,
+        spreadsheet_id: str,
+        sheet_name: str,
+        updates: List[Dict[str, Any]],
+        lock_column: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Update multiple rows by PK after one sheet scan and one batchUpdate."""
+        if not updates:
+            return {"updated": 0, "rows": []}
+        with _get_write_lock(spreadsheet_id):
+            headers, rows = self._read_headers_and_rows(spreadsheet_id, sheet_name)
+            if not headers:
+                raise ValueError(f"Sheet '{sheet_name}' has no header row.")
+            idx_by_col = {h: i for i, h in enumerate(headers)}
+            data: List[Dict[str, Any]] = []
+            returned_rows: List[Dict[str, Any]] = []
+            used_row_indexes: set[int] = set()
+
+            for item in updates:
+                pk = item.get("pk") if isinstance(item, dict) else None
+                values_by_col = item.get("values") if isinstance(item, dict) else None
+                lock_token = item.get("lock_token") if isinstance(item, dict) else None
+                if not isinstance(pk, dict) or not isinstance(values_by_col, dict):
+                    raise ValueError("Each update must include pk and values dictionaries.")
+                for col in pk.keys():
+                    if col not in idx_by_col:
+                        raise ValueError(
+                            f"PK column '{col}' is not present in sheet '{sheet_name}'."
+                        )
+                matches = [
+                    (r_idx, row)
+                    for r_idx, row in enumerate(rows)
+                    if r_idx not in used_row_indexes
+                    and all(str(row[idx_by_col[col]]) == str(val) for col, val in pk.items())
+                ]
+                if not matches:
+                    raise ValueError(f"No row in '{sheet_name}' matches primary key {pk}.")
+                if len(matches) > 1:
+                    raise ValueError(
+                        f"Primary key {pk} matches {len(matches)} rows in '{sheet_name}'. "
+                        "Refusing to update an ambiguous row."
+                    )
+                r_idx, current = matches[0]
+                used_row_indexes.add(r_idx)
+                if lock_column and lock_token is not None and lock_column in idx_by_col:
+                    stored = str(current[idx_by_col[lock_column]])
+                    if stored != str(lock_token):
+                        raise ValueError(
+                            f"OPTIMISTIC_LOCK: row was modified since you last read it "
+                            f"(expected {lock_token!r}, found {stored!r}). "
+                            "Reload the form and try again."
+                        )
+                new_row = list(current)
+                for col, value in values_by_col.items():
+                    if col in idx_by_col:
+                        new_row[idx_by_col[col]] = "" if value is None else value
+                spreadsheet_row = r_idx + 2
+                data.append({
+                    "range": f"{sheet_name}!A{spreadsheet_row}:ZZ{spreadsheet_row}",
+                    "values": [new_row],
+                })
+                returned_rows.append({h: new_row[i] for i, h in enumerate(headers)})
+
+            try:
+                self._execute(
+                    self.service.spreadsheets().values().batchUpdate(
+                        spreadsheetId=spreadsheet_id,
+                        body={"valueInputOption": "USER_ENTERED", "data": data},
+                    ),
+                    f"batch update {sheet_name}",
+                )
+            except HttpError as e:
+                raise ValueError(f"Google Sheets batch update error: {str(e)}")
+            _invalidate_workbook_cache(spreadsheet_id)
+            return {"updated": len(returned_rows), "rows": returned_rows}
 
     def delete_row_by_pk(
         self,
@@ -470,10 +653,10 @@ class GoogleSheetsConnector:
     ) -> int:
         # Look up the sheet ID (numeric, separate from sheet_name) — the
         # batchUpdate API uses sheetId for row deletion.
-        spreadsheet = (
+        spreadsheet = self._execute(
             self.service.spreadsheets()
-            .get(spreadsheetId=spreadsheet_id)
-            .execute()
+            .get(spreadsheetId=spreadsheet_id),
+            f"metadata {sheet_name}",
         )
         sheet_id = None
         for s in spreadsheet.get("sheets", []):
@@ -499,24 +682,27 @@ class GoogleSheetsConnector:
 
         spreadsheet_row = r_idx + 2  # 1-based, +1 for header
         try:
-            self.service.spreadsheets().batchUpdate(
-                spreadsheetId=spreadsheet_id,
-                body={
-                    "requests": [
-                        {
-                            "deleteDimension": {
-                                "range": {
-                                    "sheetId": sheet_id,
-                                    "dimension": "ROWS",
-                                    # 0-based, end exclusive.
-                                    "startIndex": spreadsheet_row - 1,
-                                    "endIndex": spreadsheet_row,
+            self._execute(
+                self.service.spreadsheets().batchUpdate(
+                    spreadsheetId=spreadsheet_id,
+                    body={
+                        "requests": [
+                            {
+                                "deleteDimension": {
+                                    "range": {
+                                        "sheetId": sheet_id,
+                                        "dimension": "ROWS",
+                                        # 0-based, end exclusive.
+                                        "startIndex": spreadsheet_row - 1,
+                                        "endIndex": spreadsheet_row,
+                                    }
                                 }
                             }
-                        }
-                    ]
-                },
-            ).execute()
+                        ]
+                    },
+                ),
+                f"delete {sheet_name}",
+            )
         except HttpError as e:
             raise ValueError(f"Google Sheets delete error: {str(e)}")
         _invalidate_workbook_cache(spreadsheet_id)
@@ -533,9 +719,12 @@ class GoogleSheetsConnector:
             List of sheet names
         """
         try:
-            spreadsheet = self.service.spreadsheets().get(
-                spreadsheetId=spreadsheet_id
-            ).execute()
+            spreadsheet = self._execute(
+                self.service.spreadsheets().get(
+                    spreadsheetId=spreadsheet_id
+                ),
+                "list sheets",
+            )
             
             sheets = spreadsheet.get('sheets', [])
             return [sheet['properties']['title'] for sheet in sheets]
@@ -572,18 +761,21 @@ class GoogleSheetsConnector:
             )
 
         try:
-            result = self.service.spreadsheets().batchUpdate(
-                spreadsheetId=spreadsheet_id,
-                body={
-                    "requests": [
-                        {
-                            "addSheet": {
-                                "properties": {"title": sheet_name}
+            result = self._execute(
+                self.service.spreadsheets().batchUpdate(
+                    spreadsheetId=spreadsheet_id,
+                    body={
+                        "requests": [
+                            {
+                                "addSheet": {
+                                    "properties": {"title": sheet_name}
+                                }
                             }
-                        }
-                    ]
-                },
-            ).execute()
+                        ]
+                    },
+                ),
+                f"create sheet {sheet_name}",
+            )
         except HttpError as e:
             raise ValueError(f"Google Sheets create sheet error: {str(e)}")
 
@@ -597,16 +789,21 @@ class GoogleSheetsConnector:
         # Write header row if provided
         if headers:
             try:
-                self.service.spreadsheets().values().update(
-                    spreadsheetId=spreadsheet_id,
-                    range=f"{sheet_name}!A1",
-                    valueInputOption="RAW",
-                    body={"values": [headers]},
-                ).execute()
+                self._execute(
+                    self.service.spreadsheets().values().update(
+                        spreadsheetId=spreadsheet_id,
+                        range=f"{sheet_name}!A1",
+                        valueInputOption="RAW",
+                        body={"values": [headers]},
+                    ),
+                    f"write headers {sheet_name}",
+                )
             except HttpError as e:
                 raise ValueError(
                     f"Sheet created but failed to write headers: {str(e)}"
                 )
+            with _HEADER_CACHE_LOCK:
+                _HEADER_CACHE[(spreadsheet_id, sheet_name)] = (time.time(), list(headers))
 
         return {
             "sheet_name": sheet_name,
@@ -639,14 +836,18 @@ class GoogleSheetsConnector:
             col_letter = _col_index_to_letter(col_index)
             cell_range = f"{sheet_name}!{col_letter}1"
             try:
-                self.service.spreadsheets().values().update(
-                    spreadsheetId=spreadsheet_id,
-                    range=cell_range,
-                    valueInputOption="RAW",
-                    body={"values": [[new_name]]},
-                ).execute()
+                self._execute(
+                    self.service.spreadsheets().values().update(
+                        spreadsheetId=spreadsheet_id,
+                        range=cell_range,
+                        valueInputOption="RAW",
+                        body={"values": [[new_name]]},
+                    ),
+                    f"rename column {sheet_name}",
+                )
             except HttpError as e:
                 raise ValueError(f"Google Sheets rename column error: {str(e)}")
+            _invalidate_header_cache(spreadsheet_id, sheet_name)
             return {
                 "old_name": old_name,
                 "new_name": new_name,
@@ -662,9 +863,12 @@ class GoogleSheetsConnector:
     ) -> Dict[str, Any]:
         """Rename a sheet tab using batchUpdate → updateSheetProperties."""
         try:
-            spreadsheet = self.service.spreadsheets().get(
-                spreadsheetId=spreadsheet_id
-            ).execute()
+            spreadsheet = self._execute(
+                self.service.spreadsheets().get(
+                    spreadsheetId=spreadsheet_id
+                ),
+                f"metadata {sheet_name}",
+            )
             sheet_id: Optional[int] = None
             for sheet in spreadsheet.get("sheets", []):
                 if sheet["properties"]["title"] == sheet_name:
@@ -677,24 +881,28 @@ class GoogleSheetsConnector:
                 raise ValueError(
                     f"A sheet named '{new_sheet_name}' already exists in the spreadsheet."
                 )
-            self.service.spreadsheets().batchUpdate(
-                spreadsheetId=spreadsheet_id,
-                body={
-                    "requests": [
-                        {
-                            "updateSheetProperties": {
-                                "properties": {
-                                    "sheetId": sheet_id,
-                                    "title": new_sheet_name,
-                                },
-                                "fields": "title",
+            self._execute(
+                self.service.spreadsheets().batchUpdate(
+                    spreadsheetId=spreadsheet_id,
+                    body={
+                        "requests": [
+                            {
+                                "updateSheetProperties": {
+                                    "properties": {
+                                        "sheetId": sheet_id,
+                                        "title": new_sheet_name,
+                                    },
+                                    "fields": "title",
+                                }
                             }
-                        }
-                    ]
-                },
-            ).execute()
+                        ]
+                    },
+                ),
+                f"rename tab {sheet_name}",
+            )
         except HttpError as e:
             raise ValueError(f"Google Sheets rename tab error: {str(e)}")
+        _invalidate_header_cache(spreadsheet_id, sheet_name)
         return {"old_name": sheet_name, "new_name": new_sheet_name}
 
     def clear_data_rows(
@@ -705,11 +913,14 @@ class GoogleSheetsConnector:
         """Clear all data rows (row 2+), keeping the header row in row 1."""
         with _get_write_lock(spreadsheet_id):
             try:
-                self.service.spreadsheets().values().clear(
-                    spreadsheetId=spreadsheet_id,
-                    range=f"{sheet_name}!A2:ZZ",
-                    body={},
-                ).execute()
+                self._execute(
+                    self.service.spreadsheets().values().clear(
+                        spreadsheetId=spreadsheet_id,
+                        range=f"{sheet_name}!A2:ZZ",
+                        body={},
+                    ),
+                    f"clear rows {sheet_name}",
+                )
             except HttpError as e:
                 raise ValueError(f"Google Sheets clear rows error: {str(e)}")
             return {"sheet_name": sheet_name, "cleared": True}

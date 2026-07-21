@@ -517,6 +517,7 @@ export const workspaceApi = {
       page?: number;
       page_size?: number;
       filters?: Array<Record<string, unknown>>;
+      shared?: Record<string, unknown>;
     } = {},
   ): Promise<TableScreenResponse> {
     const r = await client.post(

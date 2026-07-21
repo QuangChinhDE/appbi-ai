@@ -1205,6 +1205,185 @@ def insert_screen_row(
     return result
 
 
+def insert_screen_rows(
+    db: Session,
+    workboard: Workboard,
+    screen: Screen,
+    rows: List[Dict[str, Any]],
+    *,
+    identity: CallerIdentity,
+) -> Dict[str, Any]:
+    """Insert many rows while preserving the single-row write contract.
+
+    Table screens can be prepared once and handed to the write service's
+    datasource-aware batch path. Non-table screens deliberately fall back to
+    the normal one-by-one path because form validation can depend on each
+    field's dynamic conditions.
+    """
+    if not rows:
+        return {"action": "insert_many", "affected_rows": 0, "results": []}
+    if screen.kind != "table":
+        results = [
+            insert_screen_row(db, workboard, screen, row, identity=identity)
+            for row in rows
+        ]
+        return {
+            "action": "insert_many",
+            "affected_rows": len(results),
+            "results": results,
+        }
+    if screen.table_id is None or screen.table is None:
+        raise HTTPException(status_code=400, detail="Table screen has no backing table.")
+    if not screen.table.allow_add_row:
+        raise HTTPException(status_code=403, detail="Adding rows is disabled on this table.")
+    if not (screen.table.editable_columns or []):
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "This table has no editable columns — add at least one "
+                "to editable_columns before turning on allow_add_row."
+            ),
+        )
+
+    derived = {c.name for c in (screen.table.computed_columns or [])} | {
+        l.name for l in (screen.table.lookup_columns or [])
+    }
+    prepared: List[Dict[str, Any]] = []
+    for values in rows:
+        merged = _resolve_table_defaults(screen, identity)
+        merged.update({
+            k: v for k, v in (values or {}).items() if k not in derived
+        })
+        missing = [
+            col
+            for col in (screen.table.required_columns if screen.table else [])
+            if merged.get(col) in (None, "") and col not in derived
+        ]
+        if missing:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "message": f"Required columns missing: {', '.join(missing)}",
+                    "violations": [{"column": c, "rule": "required"} for c in missing],
+                },
+            )
+        prepared.append(
+            enforce_write_access(
+                screen.rls,
+                screen.rls_default,
+                identity,
+                op="insert",
+                row_values=merged,
+            )
+        )
+
+    original_table = workboard.primary_table_id
+    original_pk = list(workboard.primary_key_columns or [])
+    workboard.primary_table_id = screen.table_id
+    if screen.primary_key_columns:
+        workboard.primary_key_columns = list(screen.primary_key_columns)
+    try:
+        result = WorkboardWriteService.insert_rows(db, workboard, prepared, None)
+    finally:
+        workboard.primary_table_id = original_table
+        workboard.primary_key_columns = original_pk
+    return result
+
+
+def update_screen_rows(
+    db: Session,
+    workboard: Workboard,
+    screen: Screen,
+    updates: List[Dict[str, Any]],
+    *,
+    identity: CallerIdentity,
+) -> Dict[str, Any]:
+    """Update many table rows with a datasource-aware batch path when safe."""
+    if not updates:
+        return {"action": "update_many", "affected_rows": 0, "results": []}
+    if screen.kind != "table":
+        results = [
+            update_screen_row(
+                db,
+                workboard,
+                screen,
+                item.get("pk") if isinstance(item, dict) else {},
+                item.get("values") if isinstance(item, dict) else {},
+                identity=identity,
+            )
+            for item in updates
+        ]
+        return {"action": "update_many", "affected_rows": len(results), "results": results}
+    if screen.table_id is None or screen.table is None:
+        raise HTTPException(status_code=400, detail="Table screen has no spec.")
+
+    rls_filters, allowed = build_rls_filter(screen.rls, screen.rls_default, identity)
+    if not allowed:
+        raise HTTPException(status_code=403, detail="You don't have access to those rows.")
+    if rls_filters:
+        results = [
+            update_screen_row(
+                db,
+                workboard,
+                screen,
+                item.get("pk") if isinstance(item, dict) else {},
+                item.get("values") if isinstance(item, dict) else {},
+                identity=identity,
+            )
+            for item in updates
+        ]
+        return {"action": "update_many", "affected_rows": len(results), "results": results}
+
+    inline_editable = set((screen.table.editable_columns or []))
+    panel = screen.table.detail_panel
+    panel_editable: set[str] = set()
+    if panel and panel.enabled:
+        panel_editable = set((panel.editable_columns or []))
+    editable = inline_editable | panel_editable
+    derived = {c.name for c in (screen.table.computed_columns or [])} | {
+        l.name for l in (screen.table.lookup_columns or [])
+    }
+    editable -= derived
+
+    prepared: List[Dict[str, Any]] = []
+    for item in updates:
+        pk = item.get("pk") if isinstance(item, dict) else None
+        values = item.get("values") if isinstance(item, dict) else None
+        if not isinstance(pk, dict) or not isinstance(values, dict):
+            raise HTTPException(status_code=400, detail="Each update needs pk and values.")
+        cleaned_pre = {
+            k: v
+            for k, v in values.items()
+            if k not in derived and (not editable or k in editable)
+        }
+        if not cleaned_pre:
+            raise HTTPException(status_code=400, detail="No editable columns in payload.")
+        cleaned = enforce_write_access(
+            screen.rls,
+            screen.rls_default,
+            identity,
+            op="update",
+            row_values=cleaned_pre,
+        )
+        prepared.append({
+            "pk": pk,
+            "values": cleaned,
+            "lock_token": item.get("lock_token") if isinstance(item, dict) else None,
+        })
+
+    original_table = workboard.primary_table_id
+    original_pk = list(workboard.primary_key_columns or [])
+    workboard.primary_table_id = screen.table_id
+    if screen.primary_key_columns:
+        workboard.primary_key_columns = list(screen.primary_key_columns)
+    try:
+        result = WorkboardWriteService.update_rows(db, workboard, prepared, None)
+    finally:
+        workboard.primary_table_id = original_table
+        workboard.primary_key_columns = original_pk
+    return result
+
+
 def update_screen_row(
     db: Session,
     workboard: Workboard,
@@ -1796,6 +1975,7 @@ def render_table_screen(
     page: int = 1,
     page_size: Optional[int] = None,
     extra_filters: Optional[List[Dict[str, Any]]] = None,
+    shared_context: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Render a table screen — paginated rows + computed/lookup cells +
     totals + multi-header + row-merge.
@@ -1834,7 +2014,25 @@ def render_table_screen(
     configured_page_size = getattr(table_spec, "page_size", None) or 50
     page_size = min(max(int(page_size or configured_page_size or 50), 1), 500)
     offset = (page - 1) * page_size
-    merged = _filter_dicts(extra_filters) + rls_filters
+    context_filters: List[Dict[str, Any]] = []
+    shared = shared_context or {}
+    for cf in getattr(table_spec, "context_filters", None) or []:
+        raw = shared.get(cf.from_shared)
+        present = raw is not None and not (isinstance(raw, str) and not raw.strip())
+        if not present:
+            if cf.required:
+                return {
+                    "columns": list(table_spec.columns or []),
+                    "rows": [],
+                    "page": page,
+                    "page_size": page_size,
+                    "total_rows": 0,
+                    "context_applied": True,
+                }
+            continue
+        context_filters.append({"field": cf.column, "operator": "eq", "value": raw})
+
+    merged = context_filters + _filter_dicts(extra_filters) + rls_filters
     sort_column = getattr(table_spec, "default_sort_column", None)
     sort_direction = getattr(table_spec, "default_sort_direction", None) or "desc"
 

@@ -46,6 +46,11 @@ from app.services.filter_layered_merge import (
     split_link_filters_locked_vs_hidden,
 )
 
+# Keep this at module scope as well as inside the workspace router factory.
+# Some deployed builds expose the cookie helper as a module-level function;
+# without the module constant those builds raise NameError during login.
+_WORKSPACE_COOKIE_PREFIX = "wbws_"
+
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 
@@ -1546,7 +1551,7 @@ if settings.WORKBOARDS_ENABLED:
         if screen.kind == "table":
             return {
                 **screen_runtime.render_table_screen(
-                    db, wb, screen, identity=identity
+                    db, wb, screen, identity=identity, shared_context=shared_context
                 ),
                 "screen_id": screen.id,
                 "kind": "table",
@@ -1916,6 +1921,7 @@ if settings.WORKBOARDS_ENABLED:
         if not screen_runtime.is_screen_visible_for(screen, identity) or screen.id in _public_hidden_screen_ids(ws, wb):
             raise HTTPException(status_code=403, detail="You don't have access to that screen.")
         body = body or {}
+        shared_context = body.get("shared") if isinstance(body.get("shared"), dict) else None
         return {
             **screen_runtime.render_table_screen(
                 db,
@@ -1925,6 +1931,7 @@ if settings.WORKBOARDS_ENABLED:
                 page=int(body.get("page") or 1),
                 page_size=int(body["page_size"]) if body.get("page_size") else None,
                 extra_filters=body.get("filters") or [],
+                shared_context=shared_context,
             ),
             "screen_id": screen.id,
             "kind": "table",

@@ -1204,6 +1204,7 @@ function ScreenContainer({
         workboardId={workboardId}
         accent={accent}
         viewerRole={viewerRole}
+        shared={shared}
         onAction={(action, row) => {
           if (action.go_to_screen) {
             const carry: Record<string, unknown> = {};
@@ -3247,6 +3248,7 @@ function BarcodeField({
   const streamRef = useRef<MediaStream | null>(null);
   const rafRef = useRef<number | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const photoInputRef = useRef<HTMLInputElement | null>(null);
   const stringValue = typeof value === 'string' ? value : '';
   const supported = cameraScanAvailable();
   // Scan-to-form: when the field declares scan_go_to_screen, a decoded code
@@ -3331,6 +3333,35 @@ function BarcodeField({
     }
   };
 
+  const decodePhoto = async (file: File) => {
+    setError(null);
+    try {
+      const url = URL.createObjectURL(file);
+      const image = new Image();
+      image.src = url;
+      await new Promise<void>((resolve, reject) => {
+        image.onload = () => resolve();
+        image.onerror = () => reject(new Error('image-load'));
+      });
+      const canvas = canvasRef.current || document.createElement('canvas');
+      canvasRef.current = canvas;
+      canvas.width = image.naturalWidth;
+      canvas.height = image.naturalHeight;
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
+      if (!ctx) throw new Error('canvas');
+      ctx.drawImage(image, 0, 0);
+      URL.revokeObjectURL(url);
+      const data = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      const result = jsQR(data.data, data.width, data.height, { inversionAttempts: 'attemptBoth' });
+      if (!result?.data) throw new Error('not-found');
+      emit(result.data);
+    } catch {
+      setError('Không đọc được mã trong ảnh. Hãy chụp gần hơn, đủ sáng và thử lại.');
+    } finally {
+      if (photoInputRef.current) photoInputRef.current.value = '';
+    }
+  };
+
   return (
     <div className="space-y-1.5">
       {scanning && (
@@ -3365,6 +3396,27 @@ function BarcodeField({
           >
             <ScanLine className="h-4 w-4" /> Quét
           </button>
+        )}
+        {!readonly && (
+          <>
+            <input
+              ref={photoInputRef}
+              type="file"
+              accept="image/*"
+              className="hidden"
+              onChange={(event) => {
+                const file = event.target.files?.[0];
+                if (file) void decodePhoto(file);
+              }}
+            />
+            <button
+              type="button"
+              onClick={() => photoInputRef.current?.click()}
+              className="inline-flex shrink-0 items-center gap-1 rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 hover:bg-slate-50"
+            >
+              <ScanLine className="h-4 w-4" /> Ảnh
+            </button>
+          </>
         )}
       </div>
       {error && <p className="text-xs text-rose-600">{error}</p>}
@@ -4355,6 +4407,7 @@ function PosCartScreen({
   const rafRef = useRef<number | null>(null);
   const lastScanRef = useRef<{ code: string; at: number }>({ code: '', at: 0 });
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const photoInputRef = useRef<HTMLInputElement | null>(null);
   const scanSupported = cameraScanAvailable();
 
   const matchCol = catalog?.match_column || cfg?.catalog_match_column || '';
@@ -4444,6 +4497,35 @@ function PosCartScreen({
       stopScan();
     }
   }, [addByCode, stopScan]);
+
+  const decodePhoto = useCallback(async (file: File) => {
+    setScanError(null);
+    try {
+      const url = URL.createObjectURL(file);
+      const image = new Image();
+      image.src = url;
+      await new Promise<void>((resolve, reject) => {
+        image.onload = () => resolve();
+        image.onerror = () => reject(new Error('image-load'));
+      });
+      const canvas = canvasRef.current || document.createElement('canvas');
+      canvasRef.current = canvas;
+      canvas.width = image.naturalWidth;
+      canvas.height = image.naturalHeight;
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
+      if (!ctx) throw new Error('canvas');
+      ctx.drawImage(image, 0, 0);
+      URL.revokeObjectURL(url);
+      const data = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      const result = jsQR(data.data, data.width, data.height, { inversionAttempts: 'attemptBoth' });
+      if (!result?.data) throw new Error('not-found');
+      addByCode(result.data);
+    } catch {
+      setScanError('Không đọc được mã trong ảnh. Hãy chụp gần hơn, đủ sáng và thử lại.');
+    } finally {
+      if (photoInputRef.current) photoInputRef.current.value = '';
+    }
+  }, [addByCode]);
 
   const setQty = (code: string, qty: number) =>
     setLines((prev) =>
@@ -4627,6 +4709,23 @@ function PosCartScreen({
               <ScanLine className="h-4 w-4" /> Quét
             </button>
           )}
+          <input
+            ref={photoInputRef}
+            type="file"
+            accept="image/*"
+            className="hidden"
+            onChange={(event) => {
+              const file = event.target.files?.[0];
+              if (file) void decodePhoto(file);
+            }}
+          />
+          <button
+            type="button"
+            onClick={() => photoInputRef.current?.click()}
+            className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
+          >
+            <ScanLine className="h-4 w-4" /> Ảnh
+          </button>
         </div>
         {scanError && <p className="text-xs text-rose-600">{scanError}</p>}
 
@@ -4808,6 +4907,7 @@ function TableScreen({
   workboardId,
   accent,
   viewerRole,
+  shared,
   onAction,
 }: {
   spec: TableScreenResponse;
@@ -4815,6 +4915,7 @@ function TableScreen({
   workboardId: number;
   accent: string;
   viewerRole?: string | null;
+  shared: Record<string, unknown>;
   onAction: (action: RowActionDescriptor, row: Record<string, unknown>) => void;
 }) {
   type Row = Record<string, unknown>;
@@ -5111,6 +5212,7 @@ function TableScreen({
         page,
         page_size: pageSize,
         filters: buildApiFilters(values),
+        shared,
       });
       setCurrent((prev) => ({ ...prev, ...next }));
       setFilterValues(values);

@@ -602,6 +602,93 @@ class WorkboardWriteService:
         }
 
     @staticmethod
+    def insert_rows(
+        db: Session,
+        workboard: Workboard,
+        rows: List[Dict[str, Any]],
+        user: Optional[User],
+    ) -> Dict[str, Any]:
+        """Insert multiple rows through the same validation/audit contract.
+
+        SQL datasources keep the existing row-by-row path. Google Sheets uses a
+        real batch append so high-level workboard operations do not burn one
+        Sheets read/write pair per detail line.
+        """
+        if not rows:
+            return {"action": "insert_many", "affected_rows": 0, "results": []}
+
+        ctx = _build_context(db, workboard)
+        ds_type = (
+            ctx.datasource.type.value
+            if hasattr(ctx.datasource.type, "value")
+            else str(ctx.datasource.type)
+        )
+        if ds_type != "google_sheets":
+            results = [
+                WorkboardWriteService.insert_row(db, workboard, row, user)
+                for row in rows
+            ]
+            return {
+                "action": "insert_many",
+                "affected_rows": len(results),
+                "results": results,
+            }
+
+        now = datetime.now(timezone.utc)
+        prepared: List[Dict[str, Any]] = []
+        warnings_by_row: List[List[Dict[str, Any]]] = []
+        for row in rows:
+            clean = _filter_to_allowed_columns(row, ctx.allowed_columns)
+            clean = _apply_auto_number_on_insert(db, workboard, clean, ctx.layout, now)
+            clean = _apply_audit_on_insert(clean, ctx.layout, user, now)
+            warnings_by_row.append(_enforce_validation(ctx.rules, clean))
+            prepared.append(clean)
+
+        try:
+            payload, rowcount, _ = DataSourceConnectionService.execute_write_op(
+                ds_type,
+                ctx.datasource.config or {},
+                "insert_many",
+                table_name=ctx.dataset_table.source_table_name or "",
+                values=_jsonable(prepared),
+                auto_pk_columns=ctx.primary_key_columns,
+            )
+        except Exception as exc:
+            logger.exception("Workboard batch insert failed (workboard=%s)", workboard.id)
+            raise WorkboardWriteError(f"Batch insert failed: {exc}") from exc
+
+        invalidate_datasource(ctx.datasource.id)
+
+        returned_rows = (payload or {}).get("rows") if isinstance(payload, dict) else []
+        results: List[Dict[str, Any]] = []
+        for idx, clean in enumerate(prepared):
+            new_row = returned_rows[idx] if idx < len(returned_rows) else dict(clean)
+            pk_values = {c: new_row.get(c) for c in ctx.primary_key_columns}
+            submission = WorkboardService.record_submission(
+                db,
+                workboard=workboard,
+                action="insert",
+                table_name=ctx.dataset_table.source_table_name or "",
+                row_pk=_jsonable(pk_values),
+                payload=_jsonable(clean),
+                validation_warnings=warnings_by_row[idx],
+                user_id=user.id if user is not None else None,
+            )
+            results.append({
+                "row": _jsonable(new_row),
+                "pk": _jsonable(pk_values),
+                "affected_rows": 1,
+                "warnings": warnings_by_row[idx],
+                "submission_id": submission.id,
+            })
+
+        return {
+            "action": "insert_many",
+            "affected_rows": rowcount,
+            "results": results,
+        }
+
+    @staticmethod
     def update_row(
         db: Session,
         workboard: Workboard,
@@ -673,6 +760,107 @@ class WorkboardWriteService:
             "affected_rows": rowcount,
             "warnings": warnings,
             "submission_id": submission.id,
+        }
+
+    @staticmethod
+    def update_rows(
+        db: Session,
+        workboard: Workboard,
+        updates: List[Dict[str, Any]],
+        user: Optional[User],
+    ) -> Dict[str, Any]:
+        """Update multiple rows, using a batch path where the datasource supports it."""
+        if not updates:
+            return {"action": "update_many", "affected_rows": 0, "results": []}
+
+        ctx = _build_context(db, workboard)
+        ds_type = (
+            ctx.datasource.type.value
+            if hasattr(ctx.datasource.type, "value")
+            else str(ctx.datasource.type)
+        )
+        if ds_type != "google_sheets":
+            results = [
+                WorkboardWriteService.update_row(
+                    db,
+                    workboard,
+                    item.get("pk") if isinstance(item, dict) else {},
+                    item.get("values") if isinstance(item, dict) else {},
+                    user,
+                    lock_token=item.get("lock_token") if isinstance(item, dict) else None,
+                )
+                for item in updates
+            ]
+            return {
+                "action": "update_many",
+                "affected_rows": len(results),
+                "results": results,
+            }
+
+        now = datetime.now(timezone.utc)
+        prepared: List[Dict[str, Any]] = []
+        warnings_by_row: List[List[Dict[str, Any]]] = []
+        for item in updates:
+            pk = item.get("pk") if isinstance(item, dict) else None
+            values = item.get("values") if isinstance(item, dict) else None
+            if not isinstance(pk, dict) or not isinstance(values, dict):
+                raise WorkboardWriteError("Each batch update needs pk and values.")
+            clean = _filter_to_allowed_columns(values, ctx.allowed_columns)
+            for pk_col in ctx.primary_key_columns:
+                clean.pop(pk_col, None)
+            clean = _apply_audit_on_update(clean, ctx.layout, user, now)
+            warnings_by_row.append(_enforce_validation(ctx.rules, clean))
+            prepared.append({
+                "pk": _jsonable(pk),
+                "values": _jsonable(clean),
+                "lock_token": _jsonable(item.get("lock_token")) if isinstance(item, dict) else None,
+            })
+
+        try:
+            payload, rowcount, _ = DataSourceConnectionService.execute_write_op(
+                ds_type,
+                ctx.datasource.config or {},
+                "update_many",
+                table_name=ctx.dataset_table.source_table_name or "",
+                values=prepared,
+                lock_column=ctx.workboard.optimistic_lock_column or None,
+            )
+        except Exception as exc:
+            if "OPTIMISTIC_LOCK" in str(exc):
+                raise OptimisticLockError() from exc
+            logger.exception("Workboard batch update failed (workboard=%s)", workboard.id)
+            raise WorkboardWriteError(f"Batch update failed: {exc}") from exc
+
+        if rowcount != len(prepared):
+            raise OptimisticLockError()
+
+        invalidate_datasource(ctx.datasource.id)
+        returned_rows = (payload or {}).get("rows") if isinstance(payload, dict) else []
+        results: List[Dict[str, Any]] = []
+        for idx, item in enumerate(prepared):
+            pk_values = item["pk"]
+            new_row = returned_rows[idx] if idx < len(returned_rows) else dict(item["values"])
+            submission = WorkboardService.record_submission(
+                db,
+                workboard=workboard,
+                action="update",
+                table_name=ctx.dataset_table.source_table_name or "",
+                row_pk=_jsonable(pk_values),
+                payload=_jsonable(item["values"]),
+                validation_warnings=warnings_by_row[idx],
+                user_id=user.id if user is not None else None,
+            )
+            results.append({
+                "row": _jsonable(new_row),
+                "pk": _jsonable(pk_values),
+                "affected_rows": 1,
+                "warnings": warnings_by_row[idx],
+                "submission_id": submission.id,
+            })
+        return {
+            "action": "update_many",
+            "affected_rows": rowcount,
+            "results": results,
         }
 
     @staticmethod
