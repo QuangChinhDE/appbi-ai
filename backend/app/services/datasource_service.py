@@ -1837,6 +1837,27 @@ class DataSourceConnectionService:
                 client.close()
 
     @staticmethod
+    def bigquery_count(config: Dict[str, Any], sql: str, timeout_seconds: int = 120) -> Optional[int]:
+        """Row count of a BigQuery source query — the sync %-of-total denominator
+        on a FIRST sync (no prior snapshot row_count to estimate from). One COUNT
+        scan, on the source's READ credential (so no write-SA permission issue).
+        Best-effort → None on any error (caller falls back to a table-count %)."""
+        from app.core.crypto import decrypt_config
+        dc = decrypt_config(config)
+        client = None
+        try:
+            client = _build_bigquery_client(dc)
+            job = client.query(f"SELECT COUNT(*) AS c FROM (\n{sql}\n) AS _src")
+            rows = list(job.result(timeout=timeout_seconds))
+            return int(rows[0]["c"]) if rows else None
+        except Exception:  # noqa: BLE001 — estimate is best-effort
+            logger.debug("[snapshot] source count unavailable", exc_info=True)
+            return None
+        finally:
+            if client and not _bq_client_is_cached(dc, client):
+                client.close()
+
+    @staticmethod
     def get_bigquery_location(config: Dict[str, Any]) -> str | None:
         """Location of the source's default dataset, so a snapshot dataset can be
         COLOCATED (BQ cannot CTAS across locations). None → BQ default (US).

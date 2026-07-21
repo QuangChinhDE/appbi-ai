@@ -27,8 +27,38 @@ import threading
 import time
 from typing import Any, Dict, List, Optional
 
+from app.services import query_cache as _qc
+
 _lock = threading.Lock()
 _progress: Dict[int, Dict[str, Any]] = {}
+
+# CROSS-WORKER: the in-process dict is a fast writer buffer (thread-safe for the
+# parallel build), but on a multi-worker deploy (`uvicorn --workers > 1`) each
+# worker has its own dict while the `syncing` flag is cross-worker — so a poll
+# hitting another worker would see no progress (0%·0/0) and the UI flips. Fix:
+# MIRROR each update to the shared sqlite KV (the same cross-worker store the
+# publish lease uses); `get()` falls back to it so every worker returns the same
+# progress. No shared store (dev/1-worker) → mirror is a no-op → in-process only.
+_MIRROR_TTL = 3600  # 1h — comfortably longer than any single sync
+
+
+def _key(dataset_id: int) -> str:
+    return f"syncprogress::{int(dataset_id)}"
+
+
+def _copy(p: Dict[str, Any]) -> Dict[str, Any]:
+    out = dict(p)
+    out["tables"] = [dict(t) for t in (p.get("tables") or [])]
+    return out
+
+
+def _mirror(dataset_id: int) -> None:
+    """Push the current snapshot to the shared KV (outside the lock — sqlite I/O)."""
+    with _lock:
+        p = _progress.get(dataset_id)
+        snap = _copy(p) if p else None
+    if snap is not None:
+        _qc.set_shared(_key(dataset_id), snap, _MIRROR_TTL)
 
 
 def _recompute(p: Dict[str, Any]) -> None:
@@ -55,6 +85,7 @@ def start(dataset_id: int, total: int = 0, trigger: str = "manual") -> None:
             "rows": 0, "rows_done_total": 0, "tables": [],
             "trigger": trigger, "started_at": time.time(), "updated_at": time.time(),
         }
+    _mirror(dataset_id)
 
 
 def begin(dataset_id: int, tables: List[Dict[str, Any]], trigger: Optional[str] = None) -> None:
@@ -79,6 +110,7 @@ def begin(dataset_id: int, tables: List[Dict[str, Any]], trigger: Optional[str] 
             "trigger": trigger or prev.get("trigger", "manual"),
             "started_at": prev.get("started_at", time.time()), "updated_at": time.time(),
         }
+    _mirror(dataset_id)
 
 
 def begin_table(dataset_id: int, table_id: int) -> None:
@@ -96,6 +128,7 @@ def begin_table(dataset_id: int, table_id: int) -> None:
         p["rows"] = 0
         p["updated_at"] = time.time()
         _recompute(p)
+    _mirror(dataset_id)
 
 
 def note_rows(dataset_id: int, table_id: int, n: int) -> None:
@@ -111,6 +144,7 @@ def note_rows(dataset_id: int, table_id: int, n: int) -> None:
                 break
         p["updated_at"] = time.time()
         _recompute(p)
+    _mirror(dataset_id)
 
 
 def finish_table(dataset_id: int, table_id: int, rows: int = 0, *, skipped: bool = False) -> None:
@@ -131,6 +165,7 @@ def finish_table(dataset_id: int, table_id: int, rows: int = 0, *, skipped: bool
             p["current"] = None
         p["updated_at"] = time.time()
         _recompute(p)
+    _mirror(dataset_id)
 
 
 def note_table(dataset_id: int, current: Optional[str], built: int, total: int) -> None:
@@ -140,6 +175,7 @@ def note_table(dataset_id: int, current: Optional[str], built: int, total: int) 
         p.update({"phase": "syncing", "current": current, "built": int(built),
                   "total": int(total), "updated_at": time.time()})
         _progress[dataset_id] = p
+    _mirror(dataset_id)
 
 
 def set_phase(dataset_id: int, phase: str) -> None:
@@ -148,19 +184,22 @@ def set_phase(dataset_id: int, phase: str) -> None:
         if p is not None:
             p["phase"] = phase
             p["updated_at"] = time.time()
+    _mirror(dataset_id)
 
 
 def get(dataset_id: int) -> Optional[Dict[str, Any]]:
     with _lock:
         p = _progress.get(dataset_id)
-        if not p:
-            return None
-        # Deep-ish copy so callers can't mutate the live per-table dicts.
-        out = dict(p)
-        out["tables"] = [dict(t) for t in (p.get("tables") or [])]
-        return out
+        if p:
+            # Deep-ish copy so callers can't mutate the live per-table dicts.
+            out = dict(p)
+            out["tables"] = [dict(t) for t in (p.get("tables") or [])]
+            return out
+    # Not the worker that ran the sync → read the cross-worker mirror.
+    return _qc.get_shared(_key(dataset_id))
 
 
 def clear(dataset_id: int) -> None:
     with _lock:
         _progress.pop(dataset_id, None)
+    _qc.del_shared(_key(dataset_id))

@@ -58,19 +58,27 @@ _SYNC_BUILD_CONCURRENCY = max(1, int(os.environ.get("SYNC_BUILD_CONCURRENCY", "3
 
 # After a BigQuery quota 403 (partition-modifications), suppress BACKGROUND
 # auto-retries for a cooldown so we don't keep burning the (per-day) quota — a
-# manual Sync click is still allowed (the user's explicit choice). In-process,
-# single-worker (mirrors sync_progress / sync_control).
+# manual Sync click is still allowed (the user's explicit choice). Kept BOTH
+# in-process (fast) AND in the shared KV so the cooldown is cross-worker (else
+# another worker would still background-retry on a multi-worker deploy).
 _QUOTA_COOLDOWN_SECONDS = 1800  # 30 min
 _quota_cooldown: Dict[int, float] = {}
 _quota_cooldown_lock = threading.Lock()
 
 
+def _quota_cooldown_key(dataset_id: int) -> str:
+    return f"quotacooldown::{int(dataset_id)}"
+
+
 def _note_quota_cooldown(dataset_id: int) -> None:
     with _quota_cooldown_lock:
         _quota_cooldown[int(dataset_id)] = time.time()
+    _qc.set_shared(_quota_cooldown_key(dataset_id), {"at": time.time()}, _QUOTA_COOLDOWN_SECONDS)
 
 
 def _in_quota_cooldown(dataset_id: int) -> bool:
+    if _qc.get_shared(_quota_cooldown_key(dataset_id)) is not None:  # TTL auto-expires
+        return True
     with _quota_cooldown_lock:
         ts = _quota_cooldown.get(int(dataset_id))
     return ts is not None and (time.time() - ts) < _QUOTA_COOLDOWN_SECONDS
@@ -1059,6 +1067,31 @@ def refresh_all_for_dataset(db: Session, dataset_id: int, *, force: bool = True)
         ):
             if _r[1] is not None:
                 _prev_counts[int(_r[0])] = int(_r[1])
+    # FIRST sync of a table (no prior row_count) → COUNT it so the %-of-total is
+    # accurate from the start (else a small done table reads ~99% while a huge one
+    # barely started). BQ sources only; resolved SQL built on the main thread
+    # (session-safe), the COUNTs then run concurrently (BQ-only, no DB session).
+    _need_count = []  # (table_id, source_config, resolved_sql)
+    for t in _to_build:
+        if t.id in _prev_counts or is_generated_calendar_table(t):
+            continue
+        _ds = datasource_by_id.get(t.datasource_id)
+        if _ds is None or _ds_type(_ds) != "bigquery":
+            continue
+        try:
+            _rsql = _resolved_sql(dataset_obj, t, _ds, db)
+        except Exception:  # noqa: BLE001
+            _rsql = None
+        if _rsql:
+            _need_count.append((t.id, _ds.config, _rsql))
+    if _need_count:
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=min(_SYNC_BUILD_CONCURRENCY, len(_need_count))) as _cx:
+            for _tid, _cnt in _cx.map(
+                lambda a: (a[0], DataSourceConnectionService.bigquery_count(a[1], a[2])), _need_count
+            ):
+                if _cnt is not None:
+                    _prev_counts[_tid] = _cnt
     _sp.begin(dataset_id, [
         {"table_id": t.id,
          "name": getattr(t, "display_name", None) or f"table {t.id}",

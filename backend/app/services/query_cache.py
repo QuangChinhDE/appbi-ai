@@ -342,6 +342,14 @@ class _SharedSqliteCache:
             )
             return max(int(cursor.rowcount or 0), 0)
 
+    def delete_key(self, datasource_id: int, cache_key: str) -> None:
+        self._ensure_initialized()
+        with self._connect() as conn:
+            conn.execute(
+                "DELETE FROM live_query_cache WHERE datasource_id = ? AND cache_key = ?",
+                (int(datasource_id), cache_key),
+            )
+
     def clear_all(self) -> int:
         self._ensure_initialized()
         with self._connect() as conn:
@@ -638,6 +646,44 @@ def is_claimed_global(key: str) -> bool:
     except Exception as exc:  # noqa: BLE001
         _log_shared_cache_failure("global-probe", exc)
         return False
+
+
+# ── Generic cross-worker KV (sync coordination: progress / stop / cooldown) ──
+# A dedicated namespace so `invalidate_datasource` / real datasource caches never
+# touch these. Best-effort: no shared store (dev, single-worker, or disabled) →
+# no-op / None → callers fall back to their in-process state (unchanged behaviour).
+_SYNC_STATE_NS = -424242
+
+
+def set_shared(key: str, data: Dict[str, Any], ttl_seconds: float) -> None:
+    store = _get_shared_store()
+    if store is None:
+        return
+    try:
+        store.set(_SYNC_STATE_NS, key, data, ttl_seconds=ttl_seconds)
+    except Exception as exc:  # noqa: BLE001
+        _log_shared_cache_failure("shared-set", exc)
+
+
+def get_shared(key: str) -> Optional[Dict[str, Any]]:
+    store = _get_shared_store()
+    if store is None:
+        return None
+    try:
+        return store.get(_SYNC_STATE_NS, key)
+    except Exception as exc:  # noqa: BLE001
+        _log_shared_cache_failure("shared-get", exc)
+        return None
+
+
+def del_shared(key: str) -> None:
+    store = _get_shared_store()
+    if store is None:
+        return
+    try:
+        store.delete_key(_SYNC_STATE_NS, key)
+    except Exception as exc:  # noqa: BLE001
+        _log_shared_cache_failure("shared-del", exc)
 
 
 # ── Public dashboard METADATA cache + coalescing ─────────────────────────────
