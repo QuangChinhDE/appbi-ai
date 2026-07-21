@@ -22,11 +22,9 @@ import {
   useDatasetSnapshotConfig,
   useSaveSnapshotConfig,
   useSyncAndPublishDataset,
-  useDatasetPublishStatus,
   type SnapshotSchedule,
   type SnapshotTableConfig,
 } from '@/hooks/use-datasets';
-import { CheckCircle2, AlertTriangle } from 'lucide-react';
 
 const MAX_CLUSTER = 4;
 
@@ -47,10 +45,6 @@ export function SyncPublishModal({ datasetId, onClose }: { datasetId: number; on
   const { data, isLoading } = useDatasetSnapshotConfig(datasetId);
   const save = useSaveSnapshotConfig();
   const publish = useSyncAndPublishDataset();
-  // Once the user starts a MANUAL sync we switch to a waiting view that polls
-  // publish-status (which polls every 2s while syncing) until it settles.
-  const [started, setStarted] = useState(false);
-  const { data: status } = useDatasetPublishStatus(started ? datasetId : null);
 
   const [schedule, setSchedule] = useState<SnapshotSchedule>({ mode: 'manual', timezone: 'UTC' });
   const [tablesCfg, setTablesCfg] = useState<Record<string, SnapshotTableConfig>>({});
@@ -90,15 +84,14 @@ export function SyncPublishModal({ datasetId, onClose }: { datasetId: number; on
       await save.mutateAsync(payload);
       const res = await publish.mutateAsync(datasetId);
       if (res.started === false) toast.info(t('datasets.publish.toastAlreadySyncing'));
-      setStarted(true);  // switch to the waiting view (polls to completion)
+      else toast.success(t('datasets.publish.toastStarted'));
+      // Close — the persistent SyncProgressPopup (server-driven) shows progress
+      // and survives a tab reload, so no in-modal waiting view is needed.
+      onClose();
     } catch (e: any) {
       toast.error(t('datasets.publish.toastFailed'), { description: e?.response?.data?.detail ?? e?.message });
     }
   };
-
-  const prog = status?.progress;
-  const terminalPublished = started && status?.publish_state === 'published' && !status?.syncing;
-  const terminalFailed = started && status?.publish_state === 'sync_failed';
 
   return (
     <AppModalShell
@@ -108,61 +101,17 @@ export function SyncPublishModal({ datasetId, onClose }: { datasetId: number; on
       icon={<UploadCloud className="h-4 w-4" />}
       maxWidthClass="max-w-3xl"
       footer={
-        started ? (
-          <div className="flex items-center justify-end">
-            <Button variant={terminalPublished ? 'primary' : 'secondary'} size="sm" onClick={onClose}>
-              {terminalPublished ? t('datasets.sync.done') : t('datasets.sync.close')}
-            </Button>
-          </div>
-        ) : (
-          <div className="flex items-center justify-end gap-2">
-            <Button variant="secondary" size="sm" disabled={busy} onClick={doSave}>{t('datasets.sync.saveOnly')}</Button>
-            <Button variant="primary" size="sm" disabled={busy}
-              leadingIcon={busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <UploadCloud className="h-4 w-4" />}
-              onClick={doSyncNow}>
-              {t('datasets.publish.syncAndPublish')}
-            </Button>
-          </div>
-        )
+        <div className="flex items-center justify-end gap-2">
+          <Button variant="secondary" size="sm" disabled={busy} onClick={doSave}>{t('datasets.sync.saveOnly')}</Button>
+          <Button variant="primary" size="sm" disabled={busy}
+            leadingIcon={busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <UploadCloud className="h-4 w-4" />}
+            onClick={doSyncNow}>
+            {t('datasets.publish.syncAndPublish')}
+          </Button>
+        </div>
       }
     >
-      {started ? (
-        <div className="space-y-4 py-6 text-center">
-          {terminalPublished ? (
-            <>
-              <CheckCircle2 className="mx-auto h-10 w-10 text-success" />
-              <div className="text-small font-emphasis text-text-primary">{t('datasets.sync.doneTitle')}</div>
-              {status?.published_generation != null && (
-                <div className="text-caption text-text-tertiary">{t('datasets.publish.generation', { gen: status.published_generation })}</div>
-              )}
-            </>
-          ) : terminalFailed ? (
-            <>
-              <AlertTriangle className="mx-auto h-10 w-10 text-danger" />
-              <div className="text-small font-emphasis text-danger">{t('datasets.sync.failedTitle')}</div>
-              <div className="text-caption text-text-tertiary">{status?.last_sync_error}</div>
-            </>
-          ) : (
-            <>
-              <Loader2 className="mx-auto h-10 w-10 animate-spin text-brand" />
-              <div className="text-small font-emphasis text-text-primary">
-                {prog?.phase === 'validating' ? t('datasets.sync.phaseValidating') : t('datasets.sync.phaseSyncing')}
-              </div>
-              {prog && prog.total > 0 && (
-                <div className="text-caption text-text-tertiary">
-                  {t('datasets.sync.buildingTable', { current: prog.current ?? '—', built: String(prog.built), total: String(prog.total) })}
-                  {prog.rows > 0 && <span> · {prog.rows.toLocaleString()} rows</span>}
-                </div>
-              )}
-              <div className="mx-auto h-1.5 w-full max-w-sm overflow-hidden rounded-full bg-surface-3">
-                <div className="h-full rounded-full bg-brand transition-all duration-500"
-                  style={{ width: prog && prog.total > 0 ? `${Math.round((prog.built / prog.total) * 100)}%` : '18%' }} />
-              </div>
-              <div className="text-tiny text-text-quaternary">{t('datasets.sync.backgroundNote')}</div>
-            </>
-          )}
-        </div>
-      ) : isLoading ? (
+      {isLoading ? (
         <div className="flex items-center gap-2 p-6 text-text-tertiary"><Loader2 className="h-4 w-4 animate-spin" />…</div>
       ) : (
         <div className="space-y-6">

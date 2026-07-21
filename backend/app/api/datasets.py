@@ -2417,6 +2417,36 @@ def refresh_dataset_snapshots(
     }
 
 
+@router.post("/{dataset_id}/snapshots/stop")
+def stop_dataset_snapshot_sync(
+    dataset_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Cooperatively STOP an in-flight Sync & Publish / Refresh for this dataset.
+    The running build loop notices the flag between tables (and aborts the active
+    table's load mid-stream), leaves the previous COMPLETE snapshot generation
+    untouched (readers keep serving correct last-complete numbers), and settles to
+    'stopped'. Idempotent + best-effort. Requires edit/manage on the dataset."""
+    from app.models.dataset import Dataset
+    from app.services import sync_control, sync_progress
+
+    dataset_obj = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if not dataset_obj:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    perm = get_effective_permission(db, current_user, dataset_obj, "datasets")
+    if perm in ("none", "view"):
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    sync_control.request_stop(dataset_id)
+    # Reflect intent immediately so the UI can show "Đang dừng…" before the loop
+    # reaches its next between-table checkpoint.
+    prog = sync_progress.get(dataset_id)
+    if prog and prog.get("phase") in ("syncing", "validating"):
+        sync_progress.set_phase(dataset_id, "stopping")
+    return {"ok": True, "stopping": True}
+
+
 # ── Phase 1: Dataset publish lifecycle + grants ─────────────────────────────
 @router.post("/{dataset_id}/publish")
 def sync_and_publish_dataset(

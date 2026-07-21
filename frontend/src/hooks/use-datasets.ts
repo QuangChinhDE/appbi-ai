@@ -517,13 +517,35 @@ export type DatasetPublishState =
   | 'sync_failed'
   | 'disabled';
 
+export type DatasetSyncPhase =
+  | 'syncing'
+  | 'validating'
+  | 'publishing'
+  | 'done'
+  | 'failed'
+  | 'stopping'
+  | 'stopped';
+
+export interface DatasetSyncTableProgress {
+  table_id: number | null;
+  name: string;
+  rows_done: number;
+  /** row_count of the PREVIOUS complete snapshot — the "≈ rows remaining"
+   * denominator; null on the first-ever sync (no prior data to estimate from). */
+  rows_total_est: number | null;
+  state: 'pending' | 'active' | 'done' | 'skipped';
+}
+
 export interface DatasetSyncProgress {
-  phase: 'syncing' | 'validating' | 'publishing' | 'done' | 'failed';
+  phase: DatasetSyncPhase;
   current: string | null;   // table being built now
-  built: number;            // tables completed
+  built: number;            // tables completed (done + skipped)
   total: number;            // tables to build
-  rows: number;             // rows loaded for the current table
+  rows: number;             // rows loaded for the current table (scalar)
+  rows_done_total?: number; // rows across done tables + active table's live count
+  tables?: DatasetSyncTableProgress[];
   trigger?: string;         // 'manual' | 'scheduled'
+  started_at?: number;      // epoch seconds — stable per run, keys the Hide state
 }
 
 export interface DatasetPublishStatus {
@@ -533,7 +555,11 @@ export interface DatasetPublishStatus {
   published_at: string | null;
   last_sync_error: string | null;
   syncing: boolean;
+  /** true while a sync is live → a Stop can be requested. */
+  stoppable?: boolean;
   has_published_data: boolean;
+  /** at least one COMPLETE generation exists → serve-stale; false = first sync. */
+  has_prior_complete?: boolean;
   progress?: DatasetSyncProgress | null;
 }
 
@@ -565,8 +591,15 @@ export function useDatasetPublishStatus(datasetId: number | null) {
       return response.data;
     },
     enabled: datasetId !== null,
-    refetchInterval: (query) =>
-      (query.state.data as DatasetPublishStatus | undefined)?.syncing ? 2000 : false,
+    refetchInterval: (query) => {
+      const d = query.state.data as DatasetPublishStatus | undefined;
+      const ph = d?.progress?.phase;
+      // Poll while a sync is live OR the progress is in an active phase (covers
+      // the Refresh flow, which drives `progress` without holding the publish lease,
+      // and 'stopping' between the Stop click and the loop's next checkpoint).
+      const active = !!d?.syncing || ph === 'syncing' || ph === 'validating' || ph === 'stopping';
+      return active ? 2000 : false;
+    },
   });
 }
 
@@ -587,6 +620,27 @@ export function useSyncAndPublishDataset() {
     onSuccess: (_data, datasetId) => {
       queryClient.invalidateQueries({ queryKey: datasetKeys.publishStatus(datasetId) });
       queryClient.invalidateQueries({ queryKey: datasetKeys.detail(datasetId) });
+    },
+  });
+}
+
+/**
+ * Stop an in-flight Sync & Publish / Refresh. The server flags the running build
+ * loop, which settles to 'stopped' between tables and keeps the previous COMPLETE
+ * snapshot generation (readers keep serving correct last-complete numbers).
+ */
+export function useStopSync() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (datasetId: number) => {
+      const response = await api.post<{ ok: boolean; stopping: boolean }>(
+        `/datasets/${datasetId}/snapshots/stop`,
+        {}
+      );
+      return response.data;
+    },
+    onSuccess: (_data, datasetId) => {
+      queryClient.invalidateQueries({ queryKey: datasetKeys.publishStatus(datasetId) });
     },
   });
 }

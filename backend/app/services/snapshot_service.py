@@ -34,6 +34,7 @@ from sqlalchemy.orm import Session
 from app.models.dataset import Dataset, DatasetTable, DatasetTableSnapshot
 from app.models.models import DataSource
 from app.services import query_cache as _qc
+from app.services import sync_control as _sc
 from app.services.datasource_service import DataSourceConnectionService
 
 logger = logging.getLogger(__name__)
@@ -370,6 +371,11 @@ def build_table_snapshot(
             _cols_meta = (getattr(table, "columns_cache", None) or {}).get("columns")
 
             def _row_progress(n: int, _dsid=dataset_obj.id, _tid=table.id) -> None:
+                # Cooperative Stop: abort the in-flight load between chunks. The
+                # SyncCancelled propagates out of stream_extract_load_snapshot and
+                # is caught below WITHOUT swapping is_current → prior snapshot stays.
+                if _sc.is_stop_requested(_dsid):
+                    raise _sc.SyncCancelled()
                 _sp.note_rows(_dsid, _tid, n)
 
             # Task 1 — for a DIRECT physical BigQuery table with a partition
@@ -407,6 +413,16 @@ def build_table_snapshot(
                 )
                 if _warn:
                     logger.warning("[snapshot] storage-config table=%s: %s", table.id, _warn)
+        except _sc.SyncCancelled:
+            # Stop requested mid-load: abandon the partial physical table WITHOUT
+            # swapping is_current, so the prior COMPLETE snapshot keeps serving.
+            db.rollback()
+            _cancel_row = db.query(DatasetTableSnapshot).get(row.id)
+            if _cancel_row is not None:
+                _cancel_row.status = "cancelled"
+                db.commit()
+            logger.info("[snapshot] build CANCELLED table=%s (stop requested)", table.id)
+            return None
         except Exception as exc:  # noqa: BLE001
             db.rollback()
             row = db.query(DatasetTableSnapshot).get(row.id)
@@ -849,7 +865,8 @@ def refresh_all_for_dataset(db: Session, dataset_id: int, *, force: bool = True)
     # newest generation that covers every table) instead of a torn mix while
     # this loop is mid-flight.
     generation = int(time.time() * 1000)
-    built, skipped = [], []
+    built: list = []
+    stopped = False
     from app.services import sync_progress as _sp
 
     def _eligible(t) -> bool:
@@ -864,12 +881,38 @@ def refresh_all_for_dataset(db: Session, dataset_id: int, *, force: bool = True)
         return datasource_by_id.get(t.datasource_id) is not None and is_federated_materializable(t)
 
     _to_build = [t for t in tables if _eligible(t)]
-    _total = len(_to_build)
-    for t in tables:
-        if not _eligible(t):
-            skipped.append(t.id)
-            continue
-        _sp.note_table(dataset_id, getattr(t, "display_name", None) or f"table {t.id}", len(built), _total)
+    skipped = [t.id for t in tables if not _eligible(t)]
+    # rows_total_est per table = row_count of the CURRENT (previous complete)
+    # snapshot — a free "≈ rows remaining" denominator (None on the first sync).
+    _build_ids = [t.id for t in _to_build]
+    _prev_counts: Dict[int, int] = {}
+    if _build_ids:
+        for _r in (
+            db.query(DatasetTableSnapshot.dataset_table_id, DatasetTableSnapshot.row_count)
+            .filter(
+                DatasetTableSnapshot.dataset_table_id.in_(_build_ids),
+                DatasetTableSnapshot.is_current.is_(True),
+                DatasetTableSnapshot.status == "ready",
+            )
+            .all()
+        ):
+            if _r[1] is not None:
+                _prev_counts[int(_r[0])] = int(_r[1])
+    _sp.begin(dataset_id, [
+        {"table_id": t.id,
+         "name": getattr(t, "display_name", None) or f"table {t.id}",
+         "rows_total_est": _prev_counts.get(t.id)}
+        for t in _to_build
+    ])
+
+    for t in _to_build:
+        # Cooperative Stop — checked BETWEEN tables (primary stop point; the load
+        # callback aborts mid-table too). A stopped batch leaves the previous
+        # COMPLETE generation intact, so readers keep serving last-complete.
+        if _sc.is_stop_requested(dataset_id):
+            stopped = True
+            break
+        _sp.begin_table(dataset_id, t.id)
         try:
             if is_generated_calendar_table(t):
                 row = build_calendar_snapshot(db, dataset_obj, t, host, generation=generation, force=force)
@@ -882,22 +925,29 @@ def refresh_all_for_dataset(db: Session, dataset_id: int, *, force: bool = True)
             db.rollback()
             logger.warning("[snapshot] build raised for table=%s: %s", t.id, exc)
             row = None
+        # A None row while a stop is pending = a mid-load cancel, not a real failure.
+        if row is None and _sc.is_stop_requested(dataset_id):
+            stopped = True
+            break
         if row is not None:
             built.append({"table_id": t.id, "row_count": row.row_count, "build_ms": row.build_ms})
+            _sp.finish_table(dataset_id, t.id, row.row_count)
         else:
             skipped.append(t.id)
-    _sp.note_table(dataset_id, None, len(built), _total)  # final tick → N/N done
+            _sp.finish_table(dataset_id, t.id, 0, skipped=True)
+
     built_ids = [b["table_id"] for b in built]
     ts = as_of(db, built_ids) if built_ids else None
     # Phase 4 — delayed GC: retire generations older than the retained window
-    # (latest 2 complete generations + grace period). Best-effort.
+    # (latest 2 complete generations + grace period). Best-effort. SKIP on stop —
+    # the interrupted generation is incomplete, so nothing new is safe to retire.
     try:
-        if host is not None and built:
+        if host is not None and built and not stopped:
             gc_dataset_snapshots(db, dataset_id, host)
     except Exception:  # noqa: BLE001 — GC must never fail a refresh
         logger.warning("[snapshot] delayed GC failed dataset=%s", dataset_id, exc_info=True)
     return {"built": built, "skipped": skipped, "as_of": ts.isoformat() if ts else None,
-            "generation": generation}
+            "generation": generation, "stopped": stopped}
 
 
 def as_of(db: Session, table_ids: List[int]) -> Optional[datetime]:
@@ -1209,17 +1259,26 @@ def start_manual_refresh(dataset_ids: List[int]) -> List[int]:
 
     def _run() -> None:
         from app.core.database import SessionLocal
+        from app.services import sync_progress as _sp
         db = SessionLocal()
         try:
             for d in claimed:
+                _sc.clear_stop(d)  # fresh run — ignore any stale Stop flag
                 try:
-                    refresh_all_for_dataset(db, d, force=True)
-                    logger.info("[snapshot] manual refresh done dataset=%s", d)
+                    res = refresh_all_for_dataset(db, d, force=True)
+                    if res.get("stopped"):
+                        _sp.set_phase(d, "stopped")
+                        logger.info("[snapshot] manual refresh STOPPED dataset=%s", d)
+                    else:
+                        _sp.set_phase(d, "done")
+                        logger.info("[snapshot] manual refresh done dataset=%s", d)
                 except Exception:  # noqa: BLE001 — one dataset's failure must not block the rest
+                    _sp.set_phase(d, "failed")
                     logger.warning("[snapshot] manual refresh failed dataset=%s", d, exc_info=True)
                 finally:
                     # Release each dataset as it finishes so freshness polling
                     # reflects real progress instead of flipping only at the end.
+                    _sc.clear_stop(d)
                     _release_rebuild_slot(d)
         finally:
             db.close()
