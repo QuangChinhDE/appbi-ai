@@ -388,32 +388,64 @@ def _validate_screen_columns(
             errors=errors, warnings=warnings,
         )
 
-    # bulk_actions — select-many → create one parent + link selected rows.
+    # bulk_actions — select-many → create one parent + link selected rows
+    # (SIMPLE), or a server-executed recipe (ADVANCED: steps/resources/constraints).
     for index, action in enumerate(spec.get("bulk_actions") or []):
         if not isinstance(action, dict):
             errors.append(f"screen '{screen_id}' table.bulk_actions[{index}] must be an object.")
             continue
         loc = f"screen '{screen_id}' bulk_actions[{index}]"
-        set_col = action.get("set_column")
-        _add_column_issues(
-            refs=[set_col] + list((action.get("also_set") or {}).keys()),
-            columns=columns, allowed=set(), location=f"{loc} set_column/also_set",
-            errors=errors, warnings=warnings,
-        )
-        parent_screen = str(action.get("parent_screen_id") or "").strip()
-        if not parent_screen:
-            errors.append(f"{loc}.parent_screen_id is required (screen that creates the parent).")
-        elif parent_screen not in screen_ids:
-            errors.append(f"{loc}.parent_screen_id '{parent_screen}' is not a screen in this layout.")
-        if not str(action.get("parent_code_column") or "").strip():
-            errors.append(f"{loc}.parent_code_column is required.")
-        # Phase-1: require_same + preview_aggregates reference the screen's columns.
+        steps = action.get("steps") or []
+        if not steps:
+            # SIMPLE mode: the flat fields are required + reference real columns.
+            _add_column_issues(
+                refs=[action.get("set_column")] + list((action.get("also_set") or {}).keys()),
+                columns=columns, allowed=set(), location=f"{loc} set_column/also_set",
+                errors=errors, warnings=warnings,
+            )
+            parent_screen = str(action.get("parent_screen_id") or "").strip()
+            if not parent_screen:
+                errors.append(f"{loc}: simple mode needs parent_screen_id (or use steps).")
+            elif parent_screen not in screen_ids:
+                errors.append(f"{loc}.parent_screen_id '{parent_screen}' is not a screen in this layout.")
+            if not str(action.get("parent_code_column") or "").strip():
+                errors.append(f"{loc}: simple mode needs parent_code_column (or use steps).")
+        else:
+            # ADVANCED: every step that writes must target a screen in the layout.
+            for si, step in enumerate(steps):
+                if not isinstance(step, dict):
+                    errors.append(f"{loc}.steps[{si}] must be an object.")
+                    continue
+                sid = str(step.get("screen_id") or "").strip()
+                if step.get("kind") in ("create_record", "create_lines_from_selected") and not sid:
+                    errors.append(f"{loc}.steps[{si}] ({step.get('kind')}) needs screen_id.")
+                if sid and sid not in screen_ids:
+                    errors.append(f"{loc}.steps[{si}].screen_id '{sid}' is not a screen in this layout.")
+        # require_same + preview_aggregates + constraint agg columns reference THIS screen.
         _add_column_issues(
             refs=list(action.get("require_same") or [])
-            + [a.get("column") for a in action.get("preview_aggregates") or [] if isinstance(a, dict)],
-            columns=columns, allowed=derived, location=f"{loc} require_same/preview_aggregates",
+            + [a.get("column") for a in action.get("preview_aggregates") or [] if isinstance(a, dict)]
+            + [c.get("agg_column") for c in action.get("constraints") or [] if isinstance(c, dict)],
+            columns=columns, allowed=derived, location=f"{loc} require_same/preview/constraints",
             errors=errors, warnings=warnings,
         )
+        # resource_inputs read from a screen; constraints may reference them.
+        res_ids = set()
+        for ri in action.get("resource_inputs") or []:
+            if not isinstance(ri, dict):
+                continue
+            res_ids.add(str(ri.get("id") or ""))
+            rsid = str(ri.get("source_screen_id") or "").strip()
+            if not rsid or rsid not in screen_ids:
+                errors.append(f"{loc}.resource_inputs '{ri.get('id')}' source_screen_id '{rsid}' is not a screen in this layout.")
+        for c in action.get("constraints") or []:
+            if not isinstance(c, dict):
+                continue
+            lfr = c.get("limit_from_resource")
+            if lfr and lfr not in res_ids:
+                errors.append(f"{loc}.constraints limit_from_resource '{lfr}' has no matching resource_inputs id.")
+            if c.get("limit") is None and not lfr:
+                errors.append(f"{loc}.constraints on '{c.get('agg_column')}' needs limit or limit_from_resource.")
 
     # pos_cart — supermarket scan-cart (line columns + catalog + header screen).
     pos = spec.get("pos_cart")
@@ -882,16 +914,25 @@ _SCREEN_SCHEMA_REFERENCE = {
     },
     "bulk_action": {
         "id/label/icon?/style?": "button on the selection action bar",
-        "set_column": "child column set to the new parent's code on every selected row (the FK link)",
-        "also_set": "{child_column: value} extra columns set on every selected row (e.g. {'trang_thai': 'Đã gom vào hóa đơn'})",
-        "parent_screen_id": "screen (bound to the parent table, e.g. hóa đơn/chuyến) used to create the ONE parent row — must exist + allow create for the role",
-        "parent_code_column": "parent column that receives the generated code (e.g. ma_hoa_don / ma_chuyen)",
-        "code_prefix": "prefix of the generated code (HD / CH); runtime appends date+time",
-        "parent_defaults": "{parent_column: value} other values for the new parent (screen default_values fill the rest, incl {{today}}/{{app_user}})",
+        "SIMPLE mode (no steps)": "set_column + parent_screen_id + parent_code_column (+ also_set/code_prefix/parent_defaults) — create ONE parent + set the code on every selected row",
+        "set_column": "SIMPLE: child column set to the new parent's code on every selected row (the FK link)",
+        "also_set": "SIMPLE: {child_column: value} extra columns set on every selected row",
+        "parent_screen_id/parent_code_column/code_prefix/parent_defaults": "SIMPLE: the parent screen + code column + prefix + other parent values",
         "confirm_message/success_message": "'{n}' is replaced with the selection count",
         "min_selection/visible_for_roles": "gate the action",
-        "require_same": "[col] precondition — every selected row must share the same value in these columns or the action is blocked (e.g. ['ma_kh'] chỉ gộp cùng khách / ['nha_cung_cap'] cùng NCC). FE-enforced in Phase-1",
-        "preview_aggregates": "[{column, agg sum|avg|min|max|count, label, format?}] running totals of the SELECTED rows shown on the action bar before commit (tự tính tổng)",
+        "require_same": "[col] precondition — every selected row must share the same value (e.g. ['ma_kh'] cùng khách / ['nha_cung_cap'] cùng NCC). Server-enforced when a recipe runs; FE blocks the button otherwise",
+        "preview_aggregates": "[{column, agg sum|avg|min|max|count, label, format?}] running totals of the SELECTED rows shown before commit (tự tính tổng)",
+        "── ADVANCED (server-executed recipe) ──": "when steps/resource_inputs/constraints present the runtime opens a modal and the SERVER runs the recipe with compensation-rollback",
+        "resource_inputs": "[{id, label, source_screen_id (a table screen the picker reads — usually hidden from nav), value_column, label_column?, capacity_column?, required?}] — records the operator picks (e.g. Xe/Kho); feed the parent + supply constraint limits",
+        "constraints": "[{agg_column, agg, op <=|<|>=|>, limit? | limit_from_resource (a resource_inputs id whose capacity_column is the limit), label?, error_message?}] — numeric guard over the selection (e.g. tổng khối lượng ≤ tải trọng xe) shown as a live badge + block",
+        "steps": "[BulkStep] ordered recipe — see bulk_step. Empty = SIMPLE mode.",
+    },
+    "bulk_step": {
+        "id/kind": "kind = create_record | create_lines_from_selected | update_selected",
+        "screen_id": "screen the step writes to (omit for update_selected → the action's own screen)",
+        "create_record": "code_column+code_prefix (generate a code), defaults, aggregate_from_selected {col:{column,agg}} (sum the selection into the parent), from_resource {col:'<resource_id>.<col>'}, link_columns {col:'<prior_step_id>'}",
+        "create_lines_from_selected": "one row per selected row: copy {line_col: selected_col}, set {...}, link_columns {col:'<step_id>'}, assign_sequence {order_by, into_col} (sort + number thứ tự)",
+        "update_selected": "update every selected row: set {...}, link_columns {col:'<step_id>'}",
     },
     "doc_spec": {
         "page": "{size: A4|A3|Letter, orientation, margin_mm}",
