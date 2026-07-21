@@ -47,6 +47,19 @@ function formatWhen(iso: string | null): string {
   }
 }
 
+/** The generation id is epoch-millis of the build (`int(time.time()*1000)` on the
+ * server), so show it as a readable local datetime instead of the raw number. */
+function formatGenerationTime(gen: number | null): string {
+  if (gen == null) return '';
+  try {
+    return new Date(gen).toLocaleString([], {
+      day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit',
+    });
+  } catch {
+    return String(gen);
+  }
+}
+
 const STATE_META: Record<
   Exclude<DatasetPublishState, never>,
   { variant: BadgeProps['variant']; icon: React.ReactNode; labelKey: string; dot?: boolean }
@@ -103,7 +116,7 @@ export function DatasetPublishControls({ datasetId, canEditFallback }: ControlsP
         {STATE_META[state].icon}
         {t(STATE_META[state].labelKey)}
         {state === 'published' && status?.published_generation != null && (
-          <span className="ml-1 opacity-60">{t('datasets.publish.generation', { gen: status.published_generation })}</span>
+          <span className="ml-1 opacity-60">{t('datasets.publish.generation', { when: formatGenerationTime(status.published_generation) })}</span>
         )}
       </Badge>
     </span>
