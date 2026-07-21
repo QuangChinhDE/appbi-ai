@@ -1425,6 +1425,15 @@ class BulkAction(BaseModel):
         default_factory=list,
         description="Running totals of the selected rows shown on the action bar before commit (tự tính tổng).",
     )
+    route_preview: Optional[RouteMapConfig] = Field(
+        default=None,
+        description=(
+            "Optional map preview of the SELECTED rows inside the action modal "
+            "(same config shape as a route_map screen: lat/lng/order/title…). "
+            "Lets the operator see the delivery route + ordered stops right where "
+            "they pick the rows, alongside the capacity/weight badge."
+        ),
+    )
     # ── Phase-2 advanced: server-executed multi-step recipe + guards + pickers ──
     resource_inputs: List[BulkResourceInput] = Field(
         default_factory=list,

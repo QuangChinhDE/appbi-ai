@@ -3048,6 +3048,8 @@ function BulkRecipeModal({
   token,
   workboardId,
   accent,
+  colLabels,
+  pkCols,
   busy,
   onClose,
   onRun,
@@ -3058,6 +3060,7 @@ function BulkRecipeModal({
   workboardId: number;
   accent: string;
   colLabels: Record<string, string>;
+  pkCols: string[];
   busy: boolean;
   onClose: () => void;
   onRun: (resources: Record<string, Record<string, unknown>>) => void;
@@ -3204,6 +3207,23 @@ function BulkRecipeModal({
             ) : null}
           </div>
         ))}
+
+        {action.route_preview && selectedRows.length > 0 ? (
+          <div className="mt-3 overflow-hidden rounded-xl border border-slate-200">
+            <div className="border-b border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-medium text-slate-600">
+              Tuyến giao của các đơn đã chọn
+            </div>
+            <RouteMapView
+              rows={selectedRows}
+              config={action.route_preview}
+              colLabels={colLabels}
+              pkCols={pkCols}
+              onOpen={() => {}}
+              panelEnabled={false}
+              emptyMessage="Các đơn đã chọn chưa có toạ độ (Lat/Long) để vẽ tuyến."
+            />
+          </div>
+        ) : null}
 
         <div className="mt-5 flex justify-end gap-2">
           <button onClick={onClose} className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm text-slate-700 hover:bg-slate-50">
@@ -6275,6 +6295,7 @@ function TableScreen({
           workboardId={workboardId}
           accent={accent}
           colLabels={colLabels}
+          pkCols={pkCols}
           busy={bulkBusy}
           onClose={() => setBulkModal(null)}
           onRun={(resources) => void runServerBulkAction(bulkModal, resources)}

@@ -358,6 +358,27 @@ export interface TableScreenResponse {
       visible_for_roles?: string[];
       require_same?: string[];
       preview_aggregates?: Array<{ column: string; agg?: 'sum' | 'avg' | 'min' | 'max' | 'count'; label: string; format?: string | null }>;
+      route_preview?: {
+        lat_column: string;
+        lng_column: string;
+        title_column?: string | null;
+        subtitle_columns?: string[];
+        route_id_column?: string | null;
+        route_filter_default?: string | null;
+        order_column?: string | null;
+        weight_column?: string | null;
+        value_column?: string | null;
+        deadline_column?: string | null;
+        vehicle_column?: string | null;
+        status_column?: string | null;
+        basemap?: 'satellite' | 'streets' | 'light';
+        line_mode?: 'straight' | 'road';
+        route_provider?: 'osrm';
+        route_profile?: 'driving';
+        fallback_line_mode?: 'straight';
+        show_side_panel?: boolean;
+        side_panel_title?: string | null;
+      } | null;
       // Phase-2 advanced (server-executed recipe + pickers + guards)
       resource_inputs?: Array<{
         id: string;
