@@ -35,7 +35,7 @@ from app.models.dataset import Dataset, DatasetTable, DatasetTableSnapshot
 from app.models.models import DataSource
 from app.services import query_cache as _qc
 from app.services import sync_control as _sc
-from app.services.datasource_service import DataSourceConnectionService
+from app.services.datasource_service import DataSourceConnectionService, _is_quota_exceeded
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +48,25 @@ _DDL_TIMEOUT_SEC = 280  # build budget per table (< the 300s BQ result cap)
 # then publishing. Bounded by age so a long-abandoned generation isn't resumed with
 # stale data (a fresh full rebuild is safer past this window).
 _RESUME_MAX_AGE_MS = 24 * 3600 * 1000  # 24h
+
+# After a BigQuery quota 403 (partition-modifications), suppress BACKGROUND
+# auto-retries for a cooldown so we don't keep burning the (per-day) quota — a
+# manual Sync click is still allowed (the user's explicit choice). In-process,
+# single-worker (mirrors sync_progress / sync_control).
+_QUOTA_COOLDOWN_SECONDS = 1800  # 30 min
+_quota_cooldown: Dict[int, float] = {}
+_quota_cooldown_lock = threading.Lock()
+
+
+def _note_quota_cooldown(dataset_id: int) -> None:
+    with _quota_cooldown_lock:
+        _quota_cooldown[int(dataset_id)] = time.time()
+
+
+def _in_quota_cooldown(dataset_id: int) -> bool:
+    with _quota_cooldown_lock:
+        ts = _quota_cooldown.get(int(dataset_id))
+    return ts is not None and (time.time() - ts) < _QUOTA_COOLDOWN_SECONDS
 # BQ location per datasource (snapshots must be COLOCATED with the source —
 # BQ cannot CTAS across locations). Resolved once per datasource.
 _location_cache: Dict[int, Optional[str]] = {}
@@ -411,15 +430,42 @@ def build_table_snapshot(
                     table.id, ref, len(inc["changed"]), inc["changed"][:8],
                 )
             else:
-                row.row_count, _warn = DataSourceConnectionService.stream_extract_load_snapshot(
-                    source_ds_type=_ds_type(datasource), source_config=datasource.config,
-                    resolved_sql=resolved_sql, source_select_sql=source_sig,
-                    columns_meta=_cols_meta, host_config=host.config,
-                    dataset_name=snap_dataset, table_name=table_name,
-                    storage=_storage, timeout_seconds=_DDL_TIMEOUT_SEC, progress_cb=_row_progress,
-                )
-                if _warn:
-                    logger.warning("[snapshot] storage-config table=%s: %s", table.id, _warn)
+                _did_ctas = False
+                # BQ→BQ: prefer a SINGLE CREATE OR REPLACE TABLE … PARTITION BY …
+                # CLUSTER BY … AS <sql>. One job writes every partition ONCE — no
+                # partition_modifications quota blowup (the chunked WRITE_APPEND
+                # path re-touches the same day-partitions across every 50k chunk)
+                # and no VM round-trip. Falls back to streaming on any NON-quota
+                # error (2-account write-SA can't read source / cross-project /
+                # location mismatch). A quota 403 is re-raised (streaming would use
+                # even MORE quota) → the outer handler surfaces it + cooldowns.
+                if _ds_type(datasource) == "bigquery" and resolved_sql:
+                    try:
+                        row.row_count, _warn = DataSourceConnectionService.bigquery_ctas_snapshot(
+                            host_config=host.config, target_ref=ref, resolved_sql=resolved_sql,
+                            storage=_storage, timeout_seconds=_DDL_TIMEOUT_SEC, location=location,
+                        )
+                        _did_ctas = True
+                        _sp.note_rows(dataset_obj.id, table.id, row.row_count)
+                        if _warn:
+                            logger.warning("[snapshot] storage-config table=%s: %s", table.id, _warn)
+                        logger.info("[snapshot] CTAS build table=%s ref=%s rows=%s (BQ→BQ, one job)",
+                                    table.id, ref, row.row_count)
+                    except Exception as _ctas_exc:  # noqa: BLE001
+                        if _is_quota_exceeded(_ctas_exc):
+                            raise  # not a fallback case — streaming would burn more quota
+                        logger.info("[snapshot] CTAS unavailable table=%s (%s) → streaming fallback",
+                                    table.id, str(_ctas_exc)[:160])
+                if not _did_ctas:
+                    row.row_count, _warn = DataSourceConnectionService.stream_extract_load_snapshot(
+                        source_ds_type=_ds_type(datasource), source_config=datasource.config,
+                        resolved_sql=resolved_sql, source_select_sql=source_sig,
+                        columns_meta=_cols_meta, host_config=host.config,
+                        dataset_name=snap_dataset, table_name=table_name,
+                        storage=_storage, timeout_seconds=_DDL_TIMEOUT_SEC, progress_cb=_row_progress,
+                    )
+                    if _warn:
+                        logger.warning("[snapshot] storage-config table=%s: %s", table.id, _warn)
         except _sc.SyncCancelled:
             # Stop requested mid-load: abandon the partial physical table WITHOUT
             # swapping is_current, so the prior COMPLETE snapshot keeps serving.
@@ -432,12 +478,23 @@ def build_table_snapshot(
             return None
         except Exception as exc:  # noqa: BLE001
             db.rollback()
+            _quota = _is_quota_exceeded(exc)
             row = db.query(DatasetTableSnapshot).get(row.id)
             if row is not None:
                 row.status = "failed"
-                row.error = str(exc)[:2000]
+                row.error = (
+                    "Hết quota BigQuery (partition-modifications) cho hôm nay — chờ ~24h để quota "
+                    "reset hoặc nâng quota trong GCP; đừng bấm Sync lại liên tục."
+                ) if _quota else str(exc)[:2000]
                 db.commit()
-            logger.warning("[snapshot] build failed table=%s ref=%s: %s", table.id, ref, exc)
+            if _quota:
+                # Suppress background auto-retries so we don't keep burning the
+                # per-day quota; a manual Sync is still allowed.
+                _note_quota_cooldown(dataset_obj.id)
+                logger.warning("[snapshot] QUOTA exceeded table=%s ref=%s → cooldown dataset=%s: %s",
+                               table.id, ref, dataset_obj.id, exc)
+            else:
+                logger.warning("[snapshot] build failed table=%s ref=%s: %s", table.id, ref, exc)
             return None
 
         # Atomic pointer swap: supersede the old current, promote the new one.
@@ -1214,6 +1271,9 @@ def trigger_async_refresh(dataset_id: int) -> None:
     already rebuilding is skipped. NEVER raises (background best-effort)."""
     if not dataset_id:
         return
+    if _in_quota_cooldown(dataset_id):
+        logger.info("[snapshot] dataset=%s in quota cooldown → skip background refresh", dataset_id)
+        return
     with _async_refresh_lock:
         if not _reserve_rebuild_slot(dataset_id):
             return
@@ -1298,6 +1358,8 @@ def schedule_source_change_check(dataset_id: int) -> None:
     only on a real change. NEVER blocks / raises."""
     if not dataset_id:
         return
+    if _in_quota_cooldown(dataset_id):
+        return  # a recent quota 403 — don't burn more quota with background rebuilds
     now = time.time()
     with _async_refresh_lock:
         if dataset_id in _async_refresh_inflight:

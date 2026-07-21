@@ -307,6 +307,47 @@ def _materialization_bq_config(config: Dict[str, Any]) -> Dict[str, Any]:
     return dc
 
 
+def _partition_by_expr(pf: str, ftype: str, gran: str) -> Optional[str]:
+    """BigQuery DDL ``PARTITION BY`` expression for a CTAS, from the partition
+    column's type + granularity. None ⇒ cannot partition (caller builds a plain/
+    clustered table). Mirrors what ``bigquery.TimePartitioning(type_, field)`` does
+    on the streaming path, expressed as SQL for the one-shot CREATE TABLE AS."""
+    ftype = (ftype or "").upper()
+    gran = (gran or "DAY").upper()
+    q = f"`{pf}`"
+    if ftype == "DATE":
+        if gran in ("MONTH", "YEAR"):
+            return f"DATE_TRUNC({q}, {gran})"
+        return q  # DAY (and HOUR, invalid on DATE, degrades to daily) → the column
+    if ftype == "TIMESTAMP":
+        if gran == "DAY":
+            return f"DATE({q})"
+        return f"TIMESTAMP_TRUNC({q}, {gran})"  # HOUR / MONTH / YEAR
+    if ftype == "DATETIME":
+        return f"DATETIME_TRUNC({q}, {gran})"  # DAY / HOUR / MONTH / YEAR all valid
+    return None
+
+
+def _is_quota_exceeded(exc: Exception) -> bool:
+    """True when a BigQuery error is a 403 quota exhaustion (notably
+    ``partition_modifications_per_column_partitioned_table``) — so the caller can
+    surface a clear message and NOT hammer the quota with auto-retries."""
+    try:
+        for e in (getattr(exc, "errors", None) or []):
+            if str(e.get("reason", "")).lower() == "quotaexceeded":
+                return True
+        msg = str(exc).lower()
+        if "partition_modifications" in msg:
+            return True
+        if "quotaexceeded" in msg.replace(" ", ""):
+            return True
+        if getattr(exc, "code", None) == 403 and "quota" in msg:
+            return True
+    except Exception:  # noqa: BLE001
+        pass
+    return False
+
+
 def _partition_bounds(partition_id: str, gran: str) -> Tuple[str, str]:
     """[lo, hi) date/datetime bounds for a BigQuery partition_id at a given
     granularity, used to prune the source extract to one partition."""
@@ -1473,6 +1514,59 @@ class DataSourceConnectionService:
                 client.close()
 
     @staticmethod
+    def bigquery_ctas_snapshot(
+        *, host_config: Dict[str, Any], target_ref: str, resolved_sql: str,
+        storage: Dict[str, Any], timeout_seconds: int = 280, location: str | None = None,
+    ) -> Tuple[int, Optional[str]]:
+        """BQ→BQ snapshot via a SINGLE ``CREATE OR REPLACE TABLE … PARTITION BY …
+        CLUSTER BY … AS <resolved_sql>``. One query job writes every partition
+        ONCE — so it never hits ``partition_modifications_per_column_partitioned_
+        table`` the way N chunked WRITE_APPEND loads do (each re-touching the same
+        day-partitions) — and the data never round-trips through the VM.
+
+        Runs on the HOST materialization identity (same as the calendar CTAS +
+        `execute_bigquery_ddl`). A free dry-run first gives the output schema (to
+        build the PARTITION BY expression) AND doubles as a permission probe: if
+        that identity can't read the source (2-account model) / cross-project /
+        wrong location, this RAISES and the caller falls back to streaming.
+        Returns (row_count, storage_warning). NEVER silently succeeds on error."""
+        from app.services import dataset_snapshot_config as _sc
+
+        mat_cfg = _materialization_bq_config(host_config)
+        client = _build_bigquery_client(mat_cfg)
+        try:
+            dry = client.query(
+                resolved_sql,
+                job_config=bigquery.QueryJobConfig(dry_run=True, use_query_cache=False),
+                **({"location": location} if location else {}),
+            )
+            schema = list(getattr(dry, "schema", []) or [])
+            pf, gran, cf, warn = _sc.resolved_partition_cluster(storage, schema)
+            types = {
+                getattr(f, "name", None): str(getattr(f, "field_type", "") or getattr(f, "type_", "") or "").upper()
+                for f in schema
+            }
+            clauses = []
+            if pf:
+                expr = _partition_by_expr(pf, types.get(pf, ""), gran)
+                if expr:
+                    clauses.append(f"PARTITION BY {expr}")
+            if cf:
+                clauses.append("CLUSTER BY " + ", ".join(f"`{c}`" for c in cf))
+            ddl = (
+                f"CREATE OR REPLACE TABLE `{target_ref}`\n"
+                + ("\n".join(clauses) + "\n" if clauses else "")
+                + "AS\n" + resolved_sql
+            )
+            job = client.query(ddl, **({"location": location} if location else {}))
+            job.result(timeout=timeout_seconds)
+            n = int(getattr(client.get_table(target_ref), "num_rows", 0) or 0)
+            return n, warn
+        finally:
+            if client is not None and not _bq_client_is_cached(mat_cfg, client):
+                client.close()
+
+    @staticmethod
     def stream_extract_load_snapshot(
         *, source_ds_type: str, source_config: Dict[str, Any],
         resolved_sql: Optional[str], source_select_sql: Optional[str],
@@ -1537,6 +1631,14 @@ class DataSourceConnectionService:
                     yield r
 
         pf, pt, cf, warn = _sc.resolved_partition_cluster(storage, bq_schema)
+        # When the target is PARTITIONED, load chunks into a NON-partitioned STAGING
+        # table (no partition-modification quota) then do ONE CTAS into the
+        # partitioned+clustered target — a single, bounded partition write. This
+        # avoids `partition_modifications_per_column_partitioned_table` blowing up
+        # from N chunked WRITE_APPENDs each re-touching the same day-partitions, and
+        # works in the 2-account model (the write SA reads its OWN staging table).
+        use_staging = bool(pf)
+        load_ref = f"{table_ref}__stg" if use_staging else table_ref
 
         def _flush(buf: list, first: bool) -> None:
             if first:
@@ -1548,14 +1650,9 @@ class DataSourceConnectionService:
                     jc.schema = bq_schema
                 else:
                     jc.autodetect = True
-                if pf:
-                    _pt = {"HOUR": bigquery.TimePartitioningType.HOUR,
-                           "DAY": bigquery.TimePartitioningType.DAY,
-                           "MONTH": bigquery.TimePartitioningType.MONTH,
-                           "YEAR": bigquery.TimePartitioningType.YEAR}.get(
-                               str(pt).upper(), bigquery.TimePartitioningType.DAY)
-                    jc.time_partitioning = bigquery.TimePartitioning(type_=_pt, field=pf)
-                if cf:
+                # Staging is a PLAIN table (the CTAS re-partitions). A non-partitioned
+                # but clustered target still clusters directly (no partition quota).
+                if not use_staging and cf:
                     jc.clustering_fields = list(cf)[:4]
             else:
                 jc = bigquery.LoadJobConfig(
@@ -1564,7 +1661,7 @@ class DataSourceConnectionService:
                 )
                 if bq_schema:
                     jc.schema = bq_schema
-            job2 = write_client.load_table_from_json(buf, table_ref, job_config=jc)
+            job2 = write_client.load_table_from_json(buf, load_ref, job_config=jc)
             job2.result(timeout=timeout_seconds)
 
         total, first, buf = 0, True, []
@@ -1581,7 +1678,30 @@ class DataSourceConnectionService:
                 _flush(buf, first); total += len(buf)
                 if progress_cb:
                     progress_cb(total)
+            # ONE partition write: CTAS staging → partitioned+clustered target.
+            if use_staging:
+                types = {
+                    getattr(f, "name", None): str(getattr(f, "field_type", "") or getattr(f, "type_", "") or "").upper()
+                    for f in (bq_schema or [])
+                }
+                clauses = []
+                expr = _partition_by_expr(pf, types.get(pf, ""), pt)
+                if expr:
+                    clauses.append(f"PARTITION BY {expr}")
+                if cf:
+                    clauses.append("CLUSTER BY " + ", ".join(f"`{c}`" for c in cf))
+                ddl = (
+                    f"CREATE OR REPLACE TABLE `{table_ref}`\n"
+                    + ("\n".join(clauses) + "\n" if clauses else "")
+                    + f"AS SELECT * FROM `{load_ref}`"
+                )
+                write_client.query(ddl).result(timeout=timeout_seconds)
         finally:
+            if use_staging:
+                try:
+                    write_client.query(f"DROP TABLE IF EXISTS `{load_ref}`").result(timeout=60)
+                except Exception:  # noqa: BLE001 — staging cleanup best-effort
+                    logger.warning("[snapshot] staging drop failed %s", load_ref, exc_info=True)
             if read_client is not None and not _bq_client_is_cached(source_config, read_client):
                 read_client.close()
             if write_client is not None and not _bq_client_is_cached(mat_cfg, write_client):
