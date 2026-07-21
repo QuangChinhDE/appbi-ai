@@ -24,6 +24,7 @@ import { DashboardCanvas } from '@/components/dashboards/DashboardCanvas';
 import { Palette, Move } from 'lucide-react';
 import { ChartTile } from '@/components/dashboards/ChartTile';
 import { WidgetEditModal } from '@/components/dashboards/WidgetEditModal';
+import { ParameterBindModal } from '@/components/dashboards/ParameterBindModal';
 import { AddChartModal } from '@/components/dashboards/AddChartModal';
 import { DashboardChartManagerModal } from '@/components/dashboards/DashboardChartManagerModal';
 import { DashboardHtmlImportModal } from '@/components/dashboards/DashboardHtmlImportModal';
@@ -55,6 +56,7 @@ import {
   resolveEffectiveFilterSet,
   toBaseFilter,
 } from '@/lib/filters';
+import { extractParamDefs, seedParamValues, paramsToFilters } from '@/lib/dashboard-params';
 import { fetchDatasetModel, fetchDatasetModelDistinctValues, modelKeys, type DatasetModelResponse } from '@/hooks/use-dataset-model';
 import { getResourcePermissions } from '@/hooks/use-resource-permission';
 import {
@@ -253,6 +255,8 @@ export default function DashboardDetailPage() {
   const [, setIsFilterPopoverOpen] = useState(false);
   const [isWidgetSubmenuOpen, setIsWidgetSubmenuOpen] = useState(false);
   const [editingWidgetId, setEditingWidgetId] = useState<number | null>(null);
+  // What-if parameter — which chart tile's bind modal is open (null = closed).
+  const [bindingChartId, setBindingChartId] = useState<number | null>(null);
   const queryClient = useQueryClient();
   const [currentPageId, setCurrentPageId] = useState<string | null>(null);
   const [localPagesConfig, setLocalPagesConfig] = useState<DashboardPageConfig[] | null>(null);
@@ -737,6 +741,28 @@ export default function DashboardDetailPage() {
       }),
     [appliedGlobalFiltersLegacy, activePageFilters, appliedGlobalSlicers, activePageSlicers, activePageId, slicerFiltersPage],
   );
+  // What-if / field parameters (parameter_switcher widgets on the active page).
+  // Definitions come from each switcher's widget_config; values live in page
+  // state (not persisted). A filter-bound param becomes a page-scoped filter
+  // that flows through the normal chart-filter path; text widgets read the raw
+  // value via {{param('name')}}.
+  const paramDefs = React.useMemo(
+    () => extractParamDefs(visibleDashboardCharts),
+    [visibleDashboardCharts],
+  );
+  const [paramValues, setParamValues] = useState<Record<string, string>>({});
+  React.useEffect(() => {
+    setParamValues((prev) => seedParamValues(paramDefs, prev));
+  }, [paramDefs]);
+  const handleParamChange = React.useCallback(
+    (name: string, value: any) =>
+      setParamValues((prev) => ({ ...prev, [name]: value == null ? '' : String(value) })),
+    [],
+  );
+  // `paramFilters` / `effectiveFiltersWithParams` are computed lower down, once
+  // `resolvedAvailableColumns` exists — a filter-bound param needs the column's
+  // semantic identity to resolve on a semantic dataset.
+
   // Phase-15.81 — tile focus state (Canvas/Grid highlight only).
   // Per-visual filters were removed from FilterPane: each chart edits
   // its own filters inside the chart editor, so a focused-tile filter
@@ -2155,6 +2181,23 @@ export default function DashboardDetailPage() {
   const resolvedColumnChartCount = hasSemanticFilterColumns
     ? semanticFilterChartCount
     : columnChartCount;
+
+  // What-if parameters (part 2) — turn filter-bound params into BaseFilter
+  // entries, resolving each param's column against the dashboard's available
+  // columns so it carries the semantic identity the engine needs, then append
+  // to the page's effective filter set fed into every tile.
+  const paramFilters = React.useMemo(
+    () => paramsToFilters(paramDefs, paramValues, resolvedAvailableColumns),
+    [paramDefs, paramValues, resolvedAvailableColumns],
+  );
+  const effectiveFiltersWithParams = React.useMemo<BaseFilter[]>(
+    () =>
+      paramFilters.length
+        ? [...effectivePageScopeFilters, ...paramFilters]
+        : effectivePageScopeFilters,
+    [effectivePageScopeFilters, paramFilters],
+  );
+
   // Phase-12 — parity with the public link (`usePublicFilterDistinctValues`)
   // which MERGES the BE /distinct-values response with chart-row-derived
   // values (so a column shows options even when the cascade-narrowed BE
@@ -2908,7 +2951,7 @@ export default function DashboardDetailPage() {
             onEditWidget={canEditResource ? setEditingWidgetId : undefined}
             removingChartId={removingChartId}
             filtersReady={filtersReady}
-            globalFilters={effectivePageScopeFilters}
+            globalFilters={effectiveFiltersWithParams}
             crossFilters={activeCrossFilter ? [activeCrossFilter] : []}
             crossFilterSourceChartId={crossFilterState?.sourceChartId ?? null}
             highlightFilter={activeHighlight}
@@ -2920,6 +2963,9 @@ export default function DashboardDetailPage() {
             emptyMessage={emptyPageMessage}
             focusedDashboardChartId={focusedTileId}
             onFocusChart={setFocusedTileId}
+            params={paramValues}
+            onParamChange={handleParamChange}
+            onBindParameter={canEditResource ? setBindingChartId : undefined}
           />
         ) : (
           <DashboardGrid
@@ -2934,7 +2980,7 @@ export default function DashboardDetailPage() {
             onEditWidget={canEditResource ? setEditingWidgetId : undefined}
             removingChartId={removingChartId}
             filtersReady={filtersReady}
-            globalFilters={effectivePageScopeFilters}
+            globalFilters={effectiveFiltersWithParams}
             crossFilters={activeCrossFilter ? [activeCrossFilter] : []}
             crossFilterSourceChartId={crossFilterState?.sourceChartId ?? null}
             highlightFilter={activeHighlight}
@@ -2946,6 +2992,9 @@ export default function DashboardDetailPage() {
             emptyMessage={emptyPageMessage}
             focusedDashboardChartId={focusedTileId}
             onFocusChart={setFocusedTileId}
+            params={paramValues}
+            onParamChange={handleParamChange}
+            onBindParameter={canEditResource ? setBindingChartId : undefined}
           />
         )}
         </ExportModeContext.Provider>
@@ -3175,6 +3224,18 @@ export default function DashboardDetailPage() {
               ? (dashboard.dashboard_charts ?? []).find((dc) => dc.id === editingWidgetId) ?? null
               : null
           }
+        />
+
+        <ParameterBindModal
+          isOpen={bindingChartId !== null}
+          onClose={() => setBindingChartId(null)}
+          dashboardId={dashboardId}
+          chart={
+            bindingChartId !== null
+              ? (dashboard.dashboard_charts ?? []).find((dc) => dc.id === bindingChartId) ?? null
+              : null
+          }
+          paramDefs={paramDefs}
         />
 
         {isThemeOpen && dashboard && (

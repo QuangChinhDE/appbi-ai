@@ -120,6 +120,21 @@ export const dashboardApi = {
     return response.data;
   },
 
+  // What-if / field parameter — persist a chart instance's `parameters`
+  // (bindings live under `__whatifBindings`) so a switcher can swap the chart's
+  // dimension/measure at query time.
+  updateChartParameters: async (
+    dashboardId: number,
+    dashboardChartId: number,
+    parameters: Record<string, any>,
+  ): Promise<Dashboard> => {
+    const response = await apiClient.patch(
+      `/dashboards/${dashboardId}/charts/${dashboardChartId}/parameters`,
+      { parameters },
+    );
+    return response.data;
+  },
+
   updateLayout: async (
     dashboardId: number,
     chartLayouts: Array<{ id: number; layout: Record<string, any> }>

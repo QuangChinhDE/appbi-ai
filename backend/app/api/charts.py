@@ -1015,17 +1015,40 @@ def _normalize_viewer_granularity(grain: Optional[str]) -> Optional[str]:
     return g if g in _VALID_VIEWER_GRAINS else None
 
 
+def _parse_role_overrides(overrides: Optional[str]) -> Optional[dict]:
+    """What-if/field parameter: parse the JSON ``overrides`` query param into a
+    ``{dimension?, metric?}`` dict. Only string dimension/metric keys are kept;
+    anything malformed is ignored (None) rather than 400 — a bad param must not
+    break the tile, it just falls back to the saved chart."""
+    if not overrides:
+        return None
+    try:
+        parsed = json.loads(overrides)
+    except (json.JSONDecodeError, ValueError):
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    out: dict = {}
+    for key in ("dimension", "metric"):
+        val = parsed.get(key)
+        if isinstance(val, str) and val.strip():
+            out[key] = val.strip()
+    return out or None
+
+
 @router.get("/{chart_id}/data", response_model=ChartDataResponse)
 def get_chart_data(
     chart_id: int,
     filters: Optional[str] = Query(None, description="JSON-encoded list of {field, operator, value} filter objects"),
     context: Optional[str] = Query(None, description="Runtime filter context, e.g. dashboard"),
     granularity: Optional[str] = Query(None, description="#2 viewer date-hierarchy: re-bucket the time axis at this grain (raw|day|week|month|quarter|year)"),
+    overrides: Optional[str] = Query(None, description="What-if/field parameter: JSON {dimension?, metric?} to swap the chart's active dimension/measure at query time"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """Get chart configuration with data. Accepts optional dashboard filters."""
     granularity_override = _normalize_viewer_granularity(granularity)
+    role_overrides = _parse_role_overrides(overrides)
     chart = ChartService.get_by_id(db, chart_id)
     if not chart:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Chart not found")
@@ -1059,6 +1082,7 @@ def get_chart_data(
             extra_filters=extra_filters,
             filter_context=context,
             granularity_override=granularity_override,
+            role_overrides=role_overrides,
         )
         return ChartDataResponse(**result)
     except ValueError as e:

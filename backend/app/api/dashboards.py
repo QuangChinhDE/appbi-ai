@@ -6,7 +6,7 @@ import secrets
 from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Response, UploadFile, status
 from passlib.context import CryptContext
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy.orm.attributes import flag_modified
 from typing import Any, Dict, List, Optional
@@ -1787,6 +1787,45 @@ def update_widget_config(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Target is not a widget")
 
     item.widget_config = normalize_dashboard_widget_config(item.widget_type, request.widget_config)
+    db.commit()
+    refreshed = DashboardService.get_by_id(db, dashboard_id)
+    if refreshed is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dashboard not found")
+    return _serialize_dashboard_with_draft(db, refreshed, current_user)
+
+
+class DashboardUpdateChartParamsRequest(BaseModel):
+    """Body for updating a chart instance's runtime `parameters` (what-if /
+    field-parameter bindings live under the reserved `__whatifBindings` key)."""
+    parameters: Dict[str, Any] = Field(default_factory=dict)
+
+
+@router.patch("/{dashboard_id}/charts/{dashboard_chart_id}/parameters", response_model=DashboardResponse)
+def update_chart_parameters(
+    dashboard_id: int,
+    dashboard_chart_id: int,
+    request: DashboardUpdateChartParamsRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Update the `parameters` dict on a chart instance — used to bind a chart's
+    dimension/measure to a dashboard what-if parameter (stored under
+    `__whatifBindings`). Only valid for chart tiles (not widgets)."""
+    dash = db.query(Dashboard).filter(Dashboard.id == dashboard_id).first()
+    if not dash:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Dashboard with ID {dashboard_id} not found")
+    require_edit_access(db, current_user, dash, "dashboards")
+
+    item = db.query(DashboardChart).filter(
+        DashboardChart.id == dashboard_chart_id,
+        DashboardChart.dashboard_id == dashboard_id,
+    ).first()
+    if not item:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Chart not found")
+    if item.widget_type and item.widget_type != "chart":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Target is a widget, not a chart")
+
+    item.parameters = request.parameters or {}
     db.commit()
     refreshed = DashboardService.get_by_id(db, dashboard_id)
     if refreshed is None:

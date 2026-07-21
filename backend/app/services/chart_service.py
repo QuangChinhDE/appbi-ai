@@ -3049,6 +3049,37 @@ def _apply_viewer_granularity(config: dict, grain: str | None) -> None:
     role_config["timeGrains"] = grains
 
 
+def _apply_role_overrides(config: dict, role_overrides: dict | None) -> None:
+    """What-if / field parameter — swap the chart's ACTIVE dimension and/or
+    measure at query time from a dashboard ``parameter_switcher`` selection.
+
+    ``role_overrides`` shape (all keys optional)::
+
+        {"dimension": "<field>",   # replace the X-axis / breakdown dimension
+         "metric": "<field>"}      # replace the first measure's field (agg kept)
+
+    Mutates ``config`` in place — callers MUST pass a deep copy so the saved
+    chart contract is never touched (mirrors ``_apply_viewer_granularity``).
+    Only affects query execution; the value the engine reads comes from the
+    already-deep-copied effective config, so the result/semantic cache keys —
+    which derive from that config — differentiate per selection automatically."""
+    if not isinstance(config, dict) or not isinstance(role_overrides, dict) or not role_overrides:
+        return
+    role_config = get_chart_active_role_config(config)
+    if not isinstance(role_config, dict):
+        return
+    dimension = role_overrides.get("dimension")
+    if isinstance(dimension, str) and dimension.strip():
+        role_config["dimension"] = dimension.strip()
+    metric = role_overrides.get("metric")
+    if isinstance(metric, str) and metric.strip():
+        metrics = role_config.get("metrics")
+        if isinstance(metrics, list) and metrics and isinstance(metrics[0], dict):
+            metrics[0] = {**metrics[0], "field": metric.strip()}
+        else:
+            role_config["metrics"] = [{"field": metric.strip(), "agg": "sum"}]
+
+
 def _execute_chart_runtime_for_table(
     db: Session,
     datasource,
@@ -3596,6 +3627,7 @@ class ChartService:
         filter_context: str | None = None,
         granularity_override: str | None = None,
         snapshot_ttl_minutes: int | None = None,
+        role_overrides: dict | None = None,
     ):
         """Get chart configuration with data.
 
@@ -3643,7 +3675,11 @@ class ChartService:
                          # Phase 7 (#30): freshness mode is part of the request
                          # identity — ttl=0 (realtime) vs ttl>0 (snapshot ok) must
                          # never collapse into one flight.
-                         str(snapshot_ttl_minutes if snapshot_ttl_minutes is not None else "")],
+                         str(snapshot_ttl_minutes if snapshot_ttl_minutes is not None else ""),
+                         # What-if/field parameters: a dimension/measure swap changes
+                         # the result, so it MUST be part of the request identity —
+                         # else two selections collapse into one flight / cache entry.
+                         role_overrides or {}],
                         sort_keys=True, separators=(",", ":"), default=str,
                     ).encode("utf-8")
                 ).hexdigest()
@@ -3654,6 +3690,7 @@ class ChartService:
                 lambda: ChartService._get_chart_data_inner(
                     db, chart_id, extra_filters=extra_filters, filter_context=filter_context,
                     granularity_override=granularity_override,
+                    role_overrides=role_overrides,
                 ),
             )
         finally:
@@ -3711,6 +3748,7 @@ class ChartService:
                     filter_context=item.get("filter_context"),
                     granularity_override=item.get("granularity_override"),
                     snapshot_ttl_minutes=item.get("snapshot_ttl_minutes"),
+                    role_overrides=item.get("role_overrides"),
                 )
                 if serialize is not None:
                     data = serialize(data)
@@ -3741,6 +3779,7 @@ class ChartService:
         extra_filters: list | None = None,
         filter_context: str | None = None,
         granularity_override: str | None = None,
+        role_overrides: dict | None = None,
     ):
         db_chart = ChartService.get_by_id(db, chart_id)
         if not db_chart:
@@ -3750,10 +3789,16 @@ class ChartService:
         # picked in the Dashboard/Public viewer. Apply onto a COPY so the saved
         # chart contract is untouched; the pipeline then re-queries at that
         # grain. None ⇒ exact previous behaviour (no copy, no change).
+        # What-if/field parameters (role_overrides) swap dimension/measure the
+        # same way — both mutate the ACTIVE role config on a deep copy so the
+        # saved contract is untouched and the downstream cache keys differ.
         effective_config = db_chart.config or {}
-        if granularity_override:
+        if granularity_override or role_overrides:
             effective_config = deepcopy(effective_config)
-            _apply_viewer_granularity(effective_config, granularity_override)
+            if granularity_override:
+                _apply_viewer_granularity(effective_config, granularity_override)
+            if role_overrides:
+                _apply_role_overrides(effective_config, role_overrides)
 
         # Prefer direct dataset_table_id FK over config-embedded source
         if db_chart.dataset_table_id is not None:

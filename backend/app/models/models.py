@@ -428,42 +428,22 @@ class SyncJob(Base):
 # Embedding integration (machine-to-machine) — see embed_link_service.py
 # ---------------------------------------------------------------------------
 
-class IntegrationClient(Base):
-    """A trusted external system allowed to mint embed links via HMAC-signed
-    requests to POST /api/v1/integrations/embed/resolve.
-
-    `secret_enc` is the shared secret stored ENCRYPTED (Fernet, reversible) —
-    NOT hashed — because the server must recompute the request signature. The
-    raw secret is shown to the operator exactly once at creation.
-    """
-    __tablename__ = "integration_clients"
-
-    id = Column(UUID(as_uuid=True), primary_key=True)
-    key_id = Column(String(64), nullable=False, unique=True, index=True)
-    secret_enc = Column(String(512), nullable=False)
-    name = Column(String(255), nullable=False)
-
-    allowed_dashboards = Column(JSON, nullable=True, default=list)  # [] / null = any dashboard
-    allowed_ips = Column(JSON, nullable=True, default=list)         # [] / null = any IP
-    allowed_origins = Column(JSON, nullable=True, default=list)     # for embed CSP frame-ancestors
-
-    is_active = Column(Boolean, nullable=False, default=True)
-    max_ttl_seconds = Column(Integer, nullable=False, default=3600, server_default="3600")
-
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    last_used_at = Column(DateTime(timezone=True), nullable=True)
-
-
 class EmbedGrant(Base):
     """A short-lived, rotating opaque token exposed in an iframe URL. Resolves
     to a managed DashboardPublicLink without exposing that link's own token.
-    Only the SHA-256 hash of the 256-char token is stored."""
+    Only the SHA-256 hash of the 256-char token is stored.
+
+    Minted by POST /api/v1/integrations/embed/resolve, authenticated with the
+    caller's Personal Access Token (PAT) — the same token the MCP uses. The
+    grant is scoped to whatever the PAT's user can access; `created_by` records
+    that user for audit.
+    """
     __tablename__ = "embed_grants"
 
     id = Column(UUID(as_uuid=True), primary_key=True)
     link_id = Column(Integer, ForeignKey("dashboard_public_links.id", ondelete="CASCADE"), nullable=False, index=True)
     token_hash = Column(String(64), nullable=False, unique=True, index=True)
-    client_id = Column(UUID(as_uuid=True), ForeignKey("integration_clients.id", ondelete="SET NULL"), nullable=True)
+    created_by = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
 
     expires_at = Column(DateTime(timezone=True), nullable=False, index=True)
     revoked_at = Column(DateTime(timezone=True), nullable=True)
@@ -471,19 +451,3 @@ class EmbedGrant(Base):
 
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     last_used_at = Column(DateTime(timezone=True), nullable=True)
-
-
-class IntegrationNonce(Base):
-    """Replay-protection store for HMAC request nonces. A (client_id, nonce)
-    pair may be used once inside the timestamp window; the unique constraint
-    makes a replayed request fail on insert. Rows are pruned after expiry."""
-    __tablename__ = "integration_nonces"
-    __table_args__ = (
-        UniqueConstraint("client_id", "nonce", name="uq_integration_nonce_client_nonce"),
-    )
-
-    id = Column(Integer, primary_key=True)
-    client_id = Column(UUID(as_uuid=True), nullable=False, index=True)
-    nonce = Column(String(128), nullable=False)
-    expires_at = Column(DateTime(timezone=True), nullable=False, index=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)

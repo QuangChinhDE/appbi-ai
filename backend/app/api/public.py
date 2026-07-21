@@ -810,7 +810,7 @@ def _get_dashboard_by_token(
     # additive: normal public/share tokens never start with the grant prefix, so
     # the entire block below is unchanged for them. Grants carry their own
     # expiry/revocation (checked in resolve_embed_grant_link); they are gated by
-    # the HMAC endpoint, not by a viewer password.
+    # the token-authenticated integration endpoint, not by a viewer password.
     grant_link = resolve_embed_grant_link(token, db)
     if grant_link is not None:
         dash = (

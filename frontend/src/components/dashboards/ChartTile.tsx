@@ -68,6 +68,12 @@ interface ChartTileProps {
   highlightFilter?: BaseFilter | null;
   isHighlightSource?: boolean;
   instanceParameters?: Record<string, any>;
+  /** Live dashboard what-if parameter values (paramName → selected value). A
+   *  chart bound via `instanceParameters.__whatifBindings` swaps its active
+   *  dimension/measure to the bound param's current value at query time. */
+  dashboardParams?: Record<string, any>;
+  /** Open the "bind this chart to a what-if parameter" modal (editor only). */
+  onBindParameter?: () => void;
   availablePages?: DashboardPageConfig[];
   currentPageId?: string | null;
   onMoveToPage?: (pageId: string) => void;
@@ -233,6 +239,8 @@ function ChartTileBase({
   isFocused = false,
   onFocus,
   editingBy = null,
+  dashboardParams,
+  onBindParameter,
 }: ChartTileProps) {
   const { t } = useI18n();
   const queryClient = useQueryClient();
@@ -460,6 +468,21 @@ function ChartTileBase({
     return skipped;
   }, [globalFilters, chartSemanticBinding]);
 
+  // What-if / field parameter — resolve this tile's binding
+  // (instanceParameters.__whatifBindings) against the live dashboard param
+  // values into a {dimension?, metric?} override sent to the chart-data query.
+  const roleOverrides = useMemo(() => {
+    const bindings = (instanceParameters as any)?.__whatifBindings;
+    if (!Array.isArray(bindings) || !dashboardParams) return null;
+    const out: Record<string, string> = {};
+    for (const b of bindings) {
+      if (!b || (b.role !== 'dimension' && b.role !== 'metric')) continue;
+      const val = dashboardParams[b.param];
+      if (typeof val === 'string' && val.trim()) out[b.role] = val.trim();
+    }
+    return Object.keys(out).length > 0 ? out : null;
+  }, [instanceParameters, dashboardParams]);
+
   // Debounce server filters to avoid cascading API calls on rapid cross-filter / dashboard filter changes
   const serverFilterKey = useMemo(
     () => (serverFilters ? JSON.stringify(serverFilters) : null),
@@ -494,6 +517,7 @@ function ChartTileBase({
     // one filtered fetch. (Genuine later user changes still debounce normally.)
     { enabled: isActiveViewport && !isLoadingChart && Boolean(chart) && filtersReady && serverFilterKey === debouncedFilterKey, keepPrevious: true },
     viewerGrain,
+    roleOverrides,
   );
 
   // Cross-highlight overlay query (target tiles only): the SAME chart, the
@@ -688,14 +712,33 @@ function ChartTileBase({
     const activeRoleConfig = getActiveChartRoleConfig(config);
     if (!activeRoleConfig) return null;
     const chartType = (config.chartType as string) || String(chart?.chart_type ?? '');
-    const rc = normalizeRoleConfig(chartType, activeRoleConfig);
+    // What-if / field parameter — mirror the SERVER-side role override on the
+    // FE render config so the chart reads the swapped dimension/measure column
+    // key from the response (otherwise it keys on the saved field and every row
+    // collapses to "(blank)"). Same shape as the backend `_apply_role_overrides`.
+    let effectiveRoleConfig = activeRoleConfig;
+    if (roleOverrides && (roleOverrides.dimension || roleOverrides.metric)) {
+      effectiveRoleConfig = { ...activeRoleConfig };
+      if (roleOverrides.dimension) {
+        effectiveRoleConfig.dimension = roleOverrides.dimension;
+      }
+      if (roleOverrides.metric) {
+        const metrics = Array.isArray(effectiveRoleConfig.metrics)
+          ? effectiveRoleConfig.metrics.map((m: any) => ({ ...m }))
+          : [];
+        if (metrics[0]) metrics[0] = { ...metrics[0], field: roleOverrides.metric };
+        else metrics.push({ field: roleOverrides.metric, agg: 'sum' });
+        effectiveRoleConfig.metrics = metrics;
+      }
+    }
+    const rc = normalizeRoleConfig(chartType, effectiveRoleConfig);
     return {
       chartType,
       roleConfig: rc,
       filters: config.baseFilters ?? config.filters ?? [],
       styleConfig: chartRenderStyleConfig,
     };
-  }, [chart?.config, chart?.chart_type, chartRenderStyleConfig]);
+  }, [chart?.config, chart?.chart_type, chartRenderStyleConfig, roleOverrides]);
 
   // KPI-header — KPI cards usually carry no separate tile title; the metric
   // label IS the title. Surface it in the header row (level with the toolbar)
@@ -1211,6 +1254,15 @@ function ChartTileBase({
                         {t('dashboards.tile.renameTitle')}
                       </button>
                     )}
+                    {canEdit && onBindParameter && (
+                      <button
+                        onClick={() => { onBindParameter(); setIsTileMenuOpen(false); }}
+                        className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(0,0,0,0.04)] hover:text-text-primary"
+                      >
+                        <ArrowRightLeft className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
+                        {t('dashboards.tile.bindParameter')}
+                      </button>
+                    )}
                     {canEdit && (
                       <button
                         type="button"
@@ -1278,10 +1330,13 @@ function ChartTileBase({
           </>
         )}
         </div>
-        {/* Parameter chips */}
-        {instanceParameters && Object.keys(instanceParameters).length > 0 && (
+        {/* Parameter chips — skip reserved internal keys (e.g. what-if
+            `__whatifBindings`, which is a binding object, not a display value). */}
+        {instanceParameters && Object.keys(instanceParameters).some((k) => !k.startsWith('__')) && (
           <div className="flex flex-wrap gap-1">
-            {Object.entries(instanceParameters).map(([key, val]) => (
+            {Object.entries(instanceParameters)
+              .filter(([key]) => !key.startsWith('__'))
+              .map(([key, val]) => (
               <span
                 key={key}
                 title={key}
@@ -1585,6 +1640,7 @@ function chartTilePropsEqual(prev: ChartTileProps, next: ChartTileProps): boolea
   if (prev.crossFilters !== next.crossFilters) return false;
   if (prev.availablePages !== next.availablePages) return false;
   if (prev.instanceParameters !== next.instanceParameters) return false;
+  if (prev.dashboardParams !== next.dashboardParams) return false;
   return true;
 }
 

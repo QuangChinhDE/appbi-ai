@@ -99,6 +99,12 @@ interface DashboardGridProps {
   onFocusChart?: (dashboardChartId: number) => void;
   /** Phase-B17 — collaborators currently editing each tile (GG-Sheets cursors). */
   presenceByChart?: Record<number, { name: string; color: string }>;
+  /** Dashboard-level parameter values (what-if / field parameters). Consumed by
+   *  parameter_switcher + text widgets. */
+  params?: Record<string, any>;
+  onParamChange?: (paramName: string, value: any) => void;
+  /** Open the what-if parameter bind modal for a chart tile (editor only). */
+  onBindParameter?: (dashboardChartId: number) => void;
 }
 
 export function DashboardGrid({
@@ -127,6 +133,9 @@ export function DashboardGrid({
   focusedDashboardChartId = null,
   onFocusChart,
   presenceByChart,
+  params = {},
+  onParamChange,
+  onBindParameter,
 }: DashboardGridProps) {
   const { t } = useI18n();
   // Convert backend layout to react-grid-layout format.
@@ -241,7 +250,7 @@ export function DashboardGrid({
                 title={t('dashboards.grid.dragToMove')}
               />
             )}
-            <DashboardWidget widget={dc} />
+            <DashboardWidget widget={dc} params={params} onParamChange={onParamChange} />
             {canEdit && (
               <div className="absolute right-2 top-2 z-20 flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100">
                 {onEditWidget && (
@@ -301,6 +310,8 @@ export function DashboardGrid({
             onSelectCrossFilter={onSelectCrossFilter && dc.layout?.highlightEnabled !== false ? (filter) => onSelectCrossFilter(dc.chart_id, filter) : undefined}
             isCrossFilterSource={crossFilterSourceChartId === dc.chart_id}
             instanceParameters={dc.parameters ?? {}}
+            dashboardParams={params}
+            onBindParameter={onBindParameter ? () => onBindParameter(dc.id) : undefined}
             availablePages={availablePages}
             currentPageId={typeof dc.layout?.pageId === 'string' ? dc.layout.pageId : (availablePages[0]?.id ?? null)}
             onMoveToPage={onMoveChartToPage ? (pageId) => onMoveChartToPage(dc.id, pageId) : undefined}
