@@ -130,6 +130,24 @@ export interface WorkboardUpdateInput {
   expected_version?: number;
 }
 
+export interface RebindImpactEntry {
+  screen_id?: string | null;
+  screen_title?: string | null;
+  reason: string; // 'remapped' | 'table_missing' | 'doc_lookup_table_missing' | 'grid_lookup_table_missing'
+  table_name?: string | null;
+  old_table_id?: number | null;
+  new_table_id?: number | null;
+}
+
+export interface RebindPreview {
+  workboard_id: number;
+  target_dataset_id: number;
+  remap_count: number;
+  clear_count: number;
+  remapped: RebindImpactEntry[];
+  cleared: RebindImpactEntry[];
+}
+
 export interface WorkboardImportReport {
   matched_tables: Array<{
     old_table_id: number;
@@ -304,6 +322,15 @@ export const workboardApi = {
 
   unpublish: async (id: number): Promise<Workboard> => {
     const { data } = await apiClient.post(`/workboards/${id}/unpublish`);
+    return data;
+  },
+
+  /** Two-phase rebind, phase 1: analyze impact of switching to `datasetId`
+   * WITHOUT applying (auto-remap same-named tables vs clear). */
+  previewRebind: async (id: number, datasetId: number): Promise<RebindPreview> => {
+    const { data } = await apiClient.post(`/workboards/${id}/rebind/preview`, {
+      dataset_id: datasetId,
+    });
     return data;
   },
 

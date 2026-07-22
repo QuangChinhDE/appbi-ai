@@ -425,12 +425,36 @@ def publish_workboard(
             },
         )
 
-    # Atomic draft → published promotion. The public/live runtime serves ONLY
-    # published_layout_json, so end users keep seeing the PREVIOUS live snapshot
-    # until this promotion runs — draft autosaves never touch production.
+    # Atomic draft → published promotion of the WHOLE deployment boundary in a
+    # single commit — layout snapshot + non-layout runtime-config snapshot +
+    # version/at. The public/live runtime serves ONLY these, so end users keep
+    # seeing the PREVIOUS live deployment until this runs; a failure before the
+    # commit rolls back and leaves the previous Live fully intact.
+    import copy as _copy
     from datetime import datetime, timezone
 
-    wb.published_layout_json = wb.layout_json
+    from app.modules.workboards.services.runtime_config import (
+        build_published_runtime_config,
+    )
+    from app.modules.workboards.services.dashboard_link_service import (
+        sync_workboard_dashboard_links,
+        promote_dashboard_links_to_published,
+        rewrite_managed_links_to_published,
+    )
+
+    # Refresh the DRAFT managed dashboard links (no commit — part of this atomic
+    # publish), then PROMOTE them to published-stage rows the Live runtime uses.
+    sync_workboard_dashboard_links(db, wb, creator=current_user, commit=False)
+    published_tokens = promote_dashboard_links_to_published(db, wb)
+
+    # Snapshot the layout, then rewrite its managed_links to the PUBLISHED tokens
+    # so Live (which reads published_layout_json) resolves the published-stage
+    # links, never the draft ones.
+    published_layout = _copy.deepcopy(wb.layout_json or {})
+    rewrite_managed_links_to_published(published_layout, wb.id, published_tokens)
+
+    wb.published_layout_json = published_layout
+    wb.published_runtime_config = build_published_runtime_config(wb)
     wb.published_version = wb.version
     wb.published_at = datetime.now(timezone.utc)
     wb.is_published = True
@@ -474,6 +498,41 @@ def unpublish_workboard(
     )
     wb.user_permission = "full"
     return wb
+
+
+class _RebindPreviewBody(__import__("pydantic").BaseModel):
+    dataset_id: int
+
+
+@router.post("/{workboard_id}/rebind/preview")
+def preview_workboard_rebind(
+    workboard_id: int,
+    body: _RebindPreviewBody,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Two-phase dataset rebind — phase 1 (ANALYZE, dry-run). Reports which screen
+    table refs would AUTO-REMAP to a same-named table in the target dataset vs be
+    CLEARED, WITHOUT mutating anything, so the builder can show the impact before
+    the user confirms. The apply (PATCH dataset_id) mutates only the DRAFT; Live
+    keeps its published binding until the next Publish."""
+    wb = _get_or_404(db, workboard_id)
+    require_edit_access(db, current_user, wb, "workboards")
+    require_dataset_binding_access(db, current_user, body.dataset_id)
+    assert_workboard_dataset_supported(db, body.dataset_id)
+    from app.modules.workboards.services.crud_service import build_rebind_plan
+
+    _, manifest = build_rebind_plan(db, wb.layout_json or {}, body.dataset_id)
+    remapped = [m for m in manifest if m.get("reason") == "remapped"]
+    cleared = [m for m in manifest if m.get("reason") != "remapped"]
+    return {
+        "workboard_id": wb.id,
+        "target_dataset_id": body.dataset_id,
+        "remap_count": len(remapped),
+        "clear_count": len(cleared),
+        "remapped": remapped,
+        "cleared": cleared,
+    }
 
 
 @router.get("/{workboard_id}/audit")

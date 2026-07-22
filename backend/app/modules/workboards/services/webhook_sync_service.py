@@ -77,7 +77,13 @@ def _new_id(prefix: str) -> str:
 # ── Config resolution ─────────────────────────────────────────────────────
 
 def list_webhook_configs(workboard: Workboard) -> List[WorkboardWebhookConfig]:
-    raw = (workboard.settings or {}).get("webhooks") or []
+    # Stage-aware: a LIVE sync trigger reads the PUBLISHED integrations snapshot
+    # (published_runtime_config), while the Builder/admin (no _wb_use_published
+    # flag) reads the draft settings — so a draft webhook edit doesn't change
+    # what Live fires until Publish. resolve_runtime_config honors the flag.
+    from app.modules.workboards.services.runtime_config import resolve_runtime_config
+
+    raw = resolve_runtime_config(workboard).integrations.get("webhooks") or []
     out: List[WorkboardWebhookConfig] = []
     for item in raw:
         if not isinstance(item, dict):
@@ -354,6 +360,14 @@ async def _execute_run(
             run.finished_at = datetime.now(timezone.utc)
             db.commit()
             return "failed"
+
+        # This background worker executes a LIVE sync — resolve its webhook
+        # config + layout from the PUBLISHED snapshot, not the mutable draft, so
+        # a draft webhook edit never changes what Live fires until Publish. (The
+        # wb was reloaded in a fresh session here, losing the request's stage
+        # flag; a preview-triggered test sync will also read published, which is
+        # an acceptable edge — Live isolation is the priority.)
+        wb._wb_use_published = True
 
         # Build identity from the snapshot passed in at trigger time so
         # the RLS view matches what the user saw on screen.

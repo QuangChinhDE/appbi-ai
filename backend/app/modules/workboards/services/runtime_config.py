@@ -79,20 +79,63 @@ class WorkboardRuntimeConfig:
             return pt
         return None
 
-    # ── SLICE 2 seam (non-layout deployment boundary) ────────────────────────
-    # For Live these will read workboard.published_runtime_config; for Draft the
-    # mutable columns. Until the migration lands they fall through to the live
-    # columns so Slice-1 behavior is unchanged. Do NOT rely on these for Live
-    # isolation yet — binding/write/webhooks isolation is Slice 2.
+    # ── Non-layout deployment boundary (Slice 2) ─────────────────────────────
+    @property
+    def runtime_config(self) -> Dict[str, Any]:
+        """The typed non-layout config for THIS stage. Live reads the frozen
+        ``published_runtime_config`` snapshot (so a draft edit to binding / write
+        mode / lock column / webhooks can't change Live until Publish); Draft /
+        Preview — and any legacy published board that predates the snapshot —
+        build live from the mutable columns."""
+        if self.published:
+            snap = getattr(self.workboard, "published_runtime_config", None)
+            if isinstance(snap, dict) and snap:
+                return snap
+        return build_published_runtime_config(self.workboard)
+
     @property
     def binding(self) -> Dict[str, Any]:
-        wb = self.workboard
-        return {
-            "dataset_id": wb.dataset_id,
-            "primary_table_id": wb.primary_table_id,
-            "primary_key_columns": list(wb.primary_key_columns or []),
-            "lookup_tables": list(wb.lookup_tables or []),
-        }
+        return dict((self.runtime_config or {}).get("binding") or {})
+
+    @property
+    def write(self) -> Dict[str, Any]:
+        return dict((self.runtime_config or {}).get("write") or {})
+
+    @property
+    def integrations(self) -> Dict[str, Any]:
+        return dict((self.runtime_config or {}).get("integrations") or {})
+
+
+# Bump when the published_runtime_config shape changes so a reader can migrate
+# an older snapshot on the fly if ever needed.
+RUNTIME_CONFIG_SCHEMA_VERSION = 1
+
+
+def build_published_runtime_config(workboard) -> Dict[str, Any]:
+    """Snapshot the NON-layout Live configuration from the mutable workboard row
+    into the typed, versioned shape frozen at Publish. Every author-editable value
+    that changes Live runtime behavior (data binding, write behavior, integration
+    firing) lives here; cosmetic/routing fields (name/icon/description/slug) and
+    the latent ``settings.public_links`` are intentionally excluded (they do not
+    change Live behavior, and public_links mixes in mutable access counters)."""
+    settings = workboard.settings if isinstance(workboard.settings, dict) else {}
+    webhooks = settings.get("webhooks")
+    return {
+        "schema_version": RUNTIME_CONFIG_SCHEMA_VERSION,
+        "binding": {
+            "dataset_id": workboard.dataset_id,
+            "primary_table_id": workboard.primary_table_id,
+            "primary_key_columns": list(workboard.primary_key_columns or []),
+            "lookup_tables": list(workboard.lookup_tables or []),
+        },
+        "write": {
+            "write_mode": workboard.write_mode,
+            "optimistic_lock_column": workboard.optimistic_lock_column,
+        },
+        "integrations": {
+            "webhooks": list(webhooks) if isinstance(webhooks, list) else [],
+        },
+    }
 
 
 def resolve_runtime_config(workboard, *, published: Optional[bool] = None) -> WorkboardRuntimeConfig:

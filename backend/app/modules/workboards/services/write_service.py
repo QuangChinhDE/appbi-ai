@@ -135,6 +135,7 @@ class _WriteContext:
         "allowed_columns",
         "primary_key_columns",
         "rules",
+        "optimistic_lock_column",
     )
 
     def __init__(
@@ -148,6 +149,7 @@ class _WriteContext:
         allowed_columns: List[str],
         primary_key_columns: List[str],
         rules: List[DatasetQualityRule],
+        optimistic_lock_column: Optional[str] = None,
     ):
         self.workboard = workboard
         self.dataset_table = dataset_table
@@ -158,6 +160,9 @@ class _WriteContext:
         self.allowed_columns = allowed_columns
         self.primary_key_columns = primary_key_columns
         self.rules = rules
+        # Stage-resolved from published_runtime_config for Live (a draft change to
+        # the lock column must not affect Live UPDATE/DELETE until Publish).
+        self.optimistic_lock_column = optimistic_lock_column
 
 
 def _resolve_dialect(ds_type: str) -> str:
@@ -190,9 +195,26 @@ def _table_columns(table: DatasetTable) -> List[str]:
 def _build_context(
     db: Session, workboard: Workboard
 ) -> _WriteContext:
-    if workboard.write_mode != "direct":
+    # Resolve NON-layout write config stage-correctly: a public LIVE write reads
+    # write_mode / optimistic-lock column / dataset binding from the PUBLISHED
+    # snapshot (published_runtime_config); a Builder Preview reads the live
+    # columns. Driven by the _wb_use_published flag. (The write TARGET table + PK
+    # come from the per-screen swap on the workboard object, already
+    # published-correct via the layout read-split, so those keep reading
+    # workboard.primary_table_id / primary_key_columns below.)
+    from app.modules.workboards.services.runtime_config import (
+        effective_layout_raw,
+        resolve_runtime_config,
+    )
+
+    _rc = resolve_runtime_config(workboard)
+    _write_cfg = _rc.write
+    bound_dataset_id = _rc.binding.get("dataset_id")
+    optimistic_lock_column = _write_cfg.get("optimistic_lock_column")
+
+    if (_write_cfg.get("write_mode") or "direct") != "direct":
         raise WorkboardWriteError(
-            f"Unsupported write_mode '{workboard.write_mode}'."
+            f"Unsupported write_mode '{_write_cfg.get('write_mode')}'."
         )
 
     table = (
@@ -202,7 +224,7 @@ def _build_context(
     )
     if not table:
         raise WorkboardWriteError("Primary table not found", status_code=404)
-    if table.dataset_id != workboard.dataset_id:
+    if table.dataset_id != bound_dataset_id:
         raise WorkboardWriteError(
             "Primary table does not belong to the workboard's dataset",
             status_code=400,
@@ -234,15 +256,8 @@ def _build_context(
             table.source_table_name or "", datasource, dialect
         )
 
-    # Resolve the layout stage-correctly: a public LIVE write must read
-    # auto-number + audit-column config from the PUBLISHED snapshot (not the
-    # mutable draft), while a Builder Preview write reads the draft. The
-    # _wb_use_published flag (set per-request by the runtime resolver) drives it.
-    # (write_mode / optimistic_lock_column / primary_key_columns are still read
-    # from the mutable columns below — those move into the published_runtime_config
-    # snapshot in Slice 2.)
-    from app.modules.workboards.services.runtime_config import effective_layout_raw
-
+    # Layout (auto-number + audit-column config) also comes from the PUBLISHED
+    # snapshot for Live via the same stage resolver.
     try:
         layout = LayoutJson.model_validate(effective_layout_raw(workboard) or {})
     except Exception as exc:
@@ -258,7 +273,7 @@ def _build_context(
     rules = (
         db.query(DatasetQualityRule)
         .filter(
-            DatasetQualityRule.dataset_id == workboard.dataset_id,
+            DatasetQualityRule.dataset_id == bound_dataset_id,
             DatasetQualityRule.table_id == workboard.primary_table_id,
             DatasetQualityRule.enabled.is_(True),
         )
@@ -275,6 +290,7 @@ def _build_context(
         allowed_columns=allowed,
         primary_key_columns=pk_cols,
         rules=rules,
+        optimistic_lock_column=optimistic_lock_column,
     )
 
 
@@ -501,9 +517,9 @@ def _build_where_pk(
     for col in ctx.primary_key_columns:
         where_parts.append(f"{_quote(col, ctx.dialect)} = %s")
         params.append(pk[col])
-    if ctx.workboard.optimistic_lock_column:
+    if ctx.optimistic_lock_column:
         where_parts.append(
-            f"{_quote(ctx.workboard.optimistic_lock_column, ctx.dialect)} = %s"
+            f"{_quote(ctx.optimistic_lock_column, ctx.dialect)} = %s"
         )
         params.append(lock_token)
     return " WHERE " + " AND ".join(where_parts), params
@@ -730,7 +746,7 @@ class WorkboardWriteService:
                     table_name=ctx.dataset_table.source_table_name or "",
                     values=_jsonable(clean),
                     pk=_jsonable(pk),
-                    lock_column=ctx.workboard.optimistic_lock_column or None,
+                    lock_column=ctx.optimistic_lock_column or None,
                     lock_token=_jsonable(lock_token),
                 )
                 returned_rows = [row] if row else []
@@ -832,7 +848,7 @@ class WorkboardWriteService:
                 "update_many",
                 table_name=ctx.dataset_table.source_table_name or "",
                 values=prepared,
-                lock_column=ctx.workboard.optimistic_lock_column or None,
+                lock_column=ctx.optimistic_lock_column or None,
             )
         except Exception as exc:
             if "OPTIMISTIC_LOCK" in str(exc):
@@ -895,7 +911,7 @@ class WorkboardWriteService:
                     "delete",
                     table_name=ctx.dataset_table.source_table_name or "",
                     pk=_jsonable(pk),
-                    lock_column=ctx.workboard.optimistic_lock_column or None,
+                    lock_column=ctx.optimistic_lock_column or None,
                     lock_token=_jsonable(lock_token),
                 )
             else:

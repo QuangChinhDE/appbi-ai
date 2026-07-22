@@ -89,6 +89,12 @@ class Workboard(Base):
     published_layout_json = Column(JSONB, nullable=True, default=None)
     published_version = Column(Integer, nullable=True, default=None)
     published_at = Column(DateTime(timezone=True), nullable=True, default=None)
+    # Typed, versioned snapshot of the NON-layout Live config frozen at Publish
+    # (binding / write / integrations). The public/live runtime resolves these
+    # from here, NOT the mutable columns above — see runtime_config.py. NULL =
+    # never published (or a legacy board pending backfill → resolver falls back
+    # to the live columns).
+    published_runtime_config = Column(JSONB, nullable=True, default=None)
 
     # Free-form per-workboard settings (theme, default filters, …).
     settings = Column(JSONB, nullable=True, default=None)

@@ -26,12 +26,14 @@ import {
   Save,
 } from 'lucide-react';
 
-import type { Workboard } from '@/lib/api/workboards';
+import { workboardApi, type Workboard, type RebindPreview } from '@/lib/api/workboards';
 import { apiClient } from '@/lib/api-client';
 import { useDatasets } from '@/hooks/use-datasets';
 import { useUpdateWorkboard } from '@/hooks/use-workboards';
 import { getResourcePermissions } from '@/hooks/use-resource-permission';
 import { toast } from '@/lib/toast';
+import { Modal } from '@/components/common/Modal';
+import { Button } from '@/components/ui/Button';
 import {
   ensureLayout,
   MiniAppLayoutSpec,
@@ -206,14 +208,29 @@ export default function WorkboardBuilder({ workboard }: Props) {
     return () => registerAutosaveFlush(null);
   }, [autosave.flush]);
 
+  // Two-phase dataset rebind: analyze impact first (which screens auto-remap to
+  // same-named tables vs get cleared), show it, and only apply on confirm. The
+  // apply mutates the DRAFT only — Live keeps its published binding until Publish.
+  const [rebindPlan, setRebindPlan] = useState<(RebindPreview & { targetDatasetId: number }) | null>(null);
+
   const handleDatasetChange = async (nextDatasetId: number) => {
     if (!canEdit) return;
     if (!nextDatasetId || nextDatasetId === boundDatasetId) return;
     try {
       await autosave.flush();
+      const plan = await workboardApi.previewRebind(workboard.id, nextDatasetId);
+      setRebindPlan({ ...plan, targetDatasetId: nextDatasetId });
+    } catch (err: unknown) {
+      toast.error(getApiErrorMessage(err, 'Không phân tích được tác động khi đổi dataset.'));
+    }
+  };
+
+  const applyRebind = async () => {
+    if (!rebindPlan) return;
+    try {
       const updated = await updateWorkboard.mutateAsync({
         id: workboard.id,
-        data: { dataset_id: nextDatasetId },
+        data: { dataset_id: rebindPlan.targetDatasetId },
       });
       const nextLayout = ensureLayout(updated.layout_json);
       setBoundDatasetId(updated.dataset_id);
@@ -223,7 +240,13 @@ export default function WorkboardBuilder({ workboard }: Props) {
           ? current
           : nextLayout.screens[0]?.id || null,
       );
-      toast.success('Mini-app dataset changed');
+      const { remap_count, clear_count } = rebindPlan;
+      toast.success(
+        `Đã đổi dataset (bản nháp): ${remap_count} bảng tự khớp lại` +
+          (clear_count ? `, ${clear_count} liên kết bị xoá` : '') +
+          '. Xuất bản để áp dụng lên bản Live.',
+      );
+      setRebindPlan(null);
     } catch (err: unknown) {
       toast.error(getApiErrorMessage(err, 'Could not change dataset.'));
     }
@@ -493,6 +516,56 @@ export default function WorkboardBuilder({ workboard }: Props) {
           <Eye className="h-3.5 w-3.5" />
           Chế độ chỉ xem — bạn không có quyền chỉnh sửa mini-app này. Mọi thay đổi sẽ không được lưu.
         </div>
+      )}
+      {rebindPlan && (
+        <Modal
+          isOpen
+          onClose={() => setRebindPlan(null)}
+          title="Đổi dataset — xem tác động"
+          size="md"
+          footer={
+            <>
+              <Button variant="ghost" size="sm" onClick={() => setRebindPlan(null)}>
+                Huỷ
+              </Button>
+              <Button variant="primary" size="sm" onClick={applyRebind} loading={updateWorkboard.isPending}>
+                Áp dụng vào bản nháp
+              </Button>
+            </>
+          }
+        >
+          <div className="space-y-3 text-caption">
+            <p className="text-text-secondary">
+              <strong>{rebindPlan.remap_count}</strong> bảng sẽ tự khớp lại theo tên;{' '}
+              <strong>{rebindPlan.clear_count}</strong> liên kết không tìm thấy bảng tương ứng sẽ bị xoá.
+              Chỉ áp dụng lên <strong>bản nháp</strong> — bản Live giữ nguyên cho tới khi bạn Xuất bản.
+            </p>
+            {rebindPlan.remapped.length > 0 && (
+              <div>
+                <div className="font-emphasis text-success">Tự khớp lại ({rebindPlan.remap_count})</div>
+                <ul className="mt-1 max-h-40 space-y-1 overflow-auto">
+                  {rebindPlan.remapped.slice(0, 30).map((m, i) => (
+                    <li key={i} className="text-text-tertiary">
+                      • {m.screen_title || m.screen_id} — <code>{m.table_name}</code>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {rebindPlan.cleared.length > 0 && (
+              <div>
+                <div className="font-emphasis text-warning">Bị xoá liên kết ({rebindPlan.clear_count})</div>
+                <ul className="mt-1 max-h-40 space-y-1 overflow-auto">
+                  {rebindPlan.cleared.slice(0, 30).map((m, i) => (
+                    <li key={i} className="text-text-tertiary">
+                      • {m.screen_title || m.screen_id} — <code>{m.table_name || m.old_table_id}</code>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+        </Modal>
       )}
       {/* ── Builder sub-topbar: breadcrumb + save pill + preview ──
           Editor mode breadcrumb: ``[All screens] / [current screen ▾]``.

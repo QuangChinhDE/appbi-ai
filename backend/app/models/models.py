@@ -264,6 +264,14 @@ class DashboardPublicLink(Base):
     # garbage-collected when the owning screen/role disappears.
     source = Column(String(20), nullable=False, default="user", server_default="user", index=True)
 
+    # Draft/Published staging for source='workboard' managed links. Draft-autosave
+    # sync only ever touches stage='draft' rows; Publish promotes them into
+    # stage='published' rows that the LIVE runtime resolves — so a draft edit can
+    # never mutate/delete the link a Live user is embedding. 'user'/'embed_api'
+    # links are always 'published' (no draft concept). A partial unique index on
+    # (name, stage) WHERE source='workboard' lets the two managed sets coexist.
+    stage = Column(String(16), nullable=False, default="published", server_default="published", index=True)
+
     # Timestamps
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
