@@ -293,6 +293,24 @@ export interface WorkboardPublicPayload {
 // API client
 // ---------------------------------------------------------------------------
 
+// Co-edit presence + soft screen-lock contracts.
+export interface WorkboardEditor {
+  user_key: string;
+  name: string;
+  email: string;
+  seconds_ago: number;
+  editing_screen_id: string | null;
+}
+
+export interface WorkboardScreenLock {
+  screen_id: string;
+  holder_key: string | null;
+  holder_name: string | null;
+  holder_email: string | null;
+  held_by_me: boolean;
+  since: number | null;
+}
+
 export const workboardApi = {
   list: async (): Promise<Workboard[]> => {
     const { data } = await apiClient.get('/workboards/');
@@ -343,6 +361,38 @@ export const workboardApi = {
 
   unpublish: async (id: number): Promise<Workboard> => {
     const { data } = await apiClient.post(`/workboards/${id}/unpublish`);
+    return data;
+  },
+
+  // ── Editor presence + soft screen-lock (co-edit safety) ──
+  // Heartbeat reports which SCREEN the user currently has open and returns the
+  // OTHER active editors, this user's lock state for that screen, and the
+  // holder map for every locked screen. Best-effort; backend TTL clears stale.
+  editingHeartbeat: async (
+    id: number,
+    editingScreenId?: string | null,
+  ): Promise<{
+    editors: WorkboardEditor[];
+    lock: WorkboardScreenLock | null;
+    screen_holders: Record<string, { holder_key: string; holder_name: string | null }>;
+  }> => {
+    const { data } = await apiClient.post(`/workboards/${id}/editing/heartbeat`, {
+      editing_screen_id: editingScreenId ?? null,
+    });
+    return data;
+  },
+  editingLeave: async (id: number): Promise<void> => {
+    await apiClient.post(`/workboards/${id}/editing/leave`);
+  },
+  // Force-claim the soft-lock on a screen ("Chiếm quyền"). The previous holder
+  // drops to view-only on its next heartbeat.
+  editingTakeover: async (
+    id: number,
+    screenId: string,
+  ): Promise<{ lock: WorkboardScreenLock }> => {
+    const { data } = await apiClient.post(`/workboards/${id}/editing/takeover`, {
+      screen_id: screenId,
+    });
     return data;
   },
 

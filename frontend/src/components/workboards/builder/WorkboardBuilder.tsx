@@ -24,6 +24,7 @@ import {
   EyeOff,
   LayoutGrid,
   Loader2,
+  Lock,
   Save,
 } from 'lucide-react';
 
@@ -31,6 +32,7 @@ import { workboardApi, type Workboard, type RebindPreview } from '@/lib/api/work
 import { apiClient } from '@/lib/api-client';
 import { useDatasets } from '@/hooks/use-datasets';
 import { useUpdateWorkboard } from '@/hooks/use-workboards';
+import { useWorkboardPresence } from '@/hooks/use-workboard-presence';
 import { getResourcePermissions } from '@/hooks/use-resource-permission';
 import { toast } from '@/lib/toast';
 import { Modal } from '@/components/common/Modal';
@@ -118,6 +120,20 @@ function screenStatus(s: ScreenSpec): ScreenStatus {
   return 'ok';
 }
 
+// Stable per-user colour + initials for the co-edit presence avatars.
+const PRESENCE_COLORS = ['#2563eb', '#16a34a', '#db2777', '#d97706', '#7c3aed', '#0891b2'];
+function presenceColor(key: string): string {
+  let h = 0;
+  for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) >>> 0;
+  return PRESENCE_COLORS[h % PRESENCE_COLORS.length];
+}
+function presenceInitials(name: string): string {
+  const parts = (name || '').trim().split(/\s+/).filter(Boolean);
+  if (!parts.length) return '?';
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+}
+
 export default function WorkboardBuilder({ workboard }: Props) {
   const { data: datasets = [] } = useDatasets();
   const updateWorkboard = useUpdateWorkboard();
@@ -151,7 +167,29 @@ export default function WorkboardBuilder({ workboard }: Props) {
   // is a single choke-point; the only non-setLayout write (dataset change) and
   // the add/delete navigation side-effects are guarded explicitly below.
   const canEdit = getResourcePermissions(workboard.user_permission ?? undefined).canEdit;
-  const setLayout: typeof setLayoutRaw = canEdit ? setLayoutRaw : (() => {});
+
+  // ── Co-edit soft-lock ──
+  // The screen the user currently has open in the editor (their "cursor").
+  // null on the canvas / app-settings — those aren't screen-scoped so no lock
+  // applies there.
+  const editingScreenId = mode === 'editor' ? activeScreenId : null;
+  const presence = useWorkboardPresence(workboard.id, canEdit, editingScreenId);
+  // Someone ELSE holds the lock on the screen I'm viewing → I'm view-only for
+  // it until I take over (or they leave). The backend version-409 guard is the
+  // hard net beneath this; the lock just prevents the accident up front.
+  const activeScreenLocked = !!(
+    editingScreenId &&
+    presence.lock &&
+    presence.lock.holder_key &&
+    !presence.lock.held_by_me
+  );
+  // View-only users OR a screen locked by a collaborator → every layout
+  // mutation is a no-op (single choke-point, mirroring the !canEdit shadow).
+  // Autosave itself stays enabled on `canEdit` so edits made on OTHER
+  // (unlocked) screens still flush — the lock only blocks NEW mutations of the
+  // locked screen, which never reach `layout` anyway.
+  const setLayout: typeof setLayoutRaw =
+    canEdit && !activeScreenLocked ? setLayoutRaw : (() => {});
 
   useEffect(() => {
     setBoundDatasetId(workboard.dataset_id);
@@ -533,6 +571,22 @@ export default function WorkboardBuilder({ workboard }: Props) {
           Chế độ chỉ xem — bạn không có quyền chỉnh sửa mini-app này. Mọi thay đổi sẽ không được lưu.
         </div>
       )}
+      {canEdit && activeScreenLocked && (
+        <div className="flex shrink-0 items-center gap-2 border-b border-amber-200 bg-amber-50 px-4 py-2 text-xs font-medium text-amber-900">
+          <Lock className="h-3.5 w-3.5 shrink-0" />
+          <span className="flex-1">
+            <strong>{presence.lock?.holder_name || 'Người khác'}</strong> đang chỉnh sửa màn hình này — bạn đang ở chế độ xem.
+          </span>
+          <button
+            type="button"
+            onClick={() => activeScreenId && presence.takeover(activeScreenId)}
+            className="inline-flex items-center gap-1 rounded-md bg-amber-600 px-2 py-1 font-semibold text-white transition-colors hover:bg-amber-700"
+          >
+            <Lock className="h-3 w-3" />
+            Chiếm quyền chỉnh sửa
+          </button>
+        </div>
+      )}
       {rebindPlan && (
         <Modal
           isOpen
@@ -628,6 +682,33 @@ export default function WorkboardBuilder({ workboard }: Props) {
 
         <div className="flex-1" />
 
+        {presence.editors.length > 0 && (
+          <div className="flex items-center -space-x-1.5 pr-1">
+            {presence.editors.slice(0, 4).map((ed) => {
+              const onSameScreen =
+                !!editingScreenId && ed.editing_screen_id === editingScreenId;
+              const where = ed.editing_screen_id
+                ? layout.screens.find((s) => s.id === ed.editing_screen_id)?.title
+                : null;
+              return (
+                <span
+                  key={ed.user_key}
+                  className="inline-flex h-6 w-6 items-center justify-center rounded-full text-[10px] font-semibold text-white ring-2 ring-surface-1"
+                  style={{ backgroundColor: presenceColor(ed.user_key) }}
+                  title={`${ed.name}${where ? ` · đang ở "${where}"` : ''}${onSameScreen ? ' · cùng màn hình' : ''}`}
+                >
+                  {presenceInitials(ed.name)}
+                </span>
+              );
+            })}
+            {presence.editors.length > 4 && (
+              <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-surface-3 text-[10px] font-semibold text-text-secondary ring-2 ring-surface-1">
+                +{presence.editors.length - 4}
+              </span>
+            )}
+          </div>
+        )}
+
         <SavePill
           status={autosave.status}
           savedAt={autosave.savedAt}
@@ -665,7 +746,12 @@ export default function WorkboardBuilder({ workboard }: Props) {
         <Panel id="editor" order={1} minSize={30} defaultSize={55}>
           <main className="wb-editor-pane relative h-full min-w-0 overflow-y-auto bg-surface-0">
             {isEditor && activeScreen ? (
-              <div className="w-full px-4 py-5 sm:px-6 lg:px-8">
+              <div
+                className={`w-full px-4 py-5 sm:px-6 lg:px-8 ${
+                  activeScreenLocked ? 'pointer-events-none select-none opacity-60' : ''
+                }`}
+                aria-disabled={activeScreenLocked}
+              >
                 <ScreenEditor
                   screen={activeScreen}
                   allScreens={layout.screens}
@@ -676,7 +762,7 @@ export default function WorkboardBuilder({ workboard }: Props) {
                   focusFieldColumn={focusFieldColumn}
                   onFocusFieldHandled={() => setFocusFieldColumn(null)}
                   onDeleteScreen={
-                    canEdit
+                    canEdit && !activeScreenLocked
                       ? () => {
                           deleteScreen(activeScreen.id);
                           backToCanvas();

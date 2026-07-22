@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
-from pydantic import ValidationError
+from pydantic import BaseModel as PydanticBaseModel, ValidationError
 from sqlalchemy.orm import Session
 
 from app.core import get_db
@@ -55,6 +55,7 @@ from app.modules.workboards.schemas import (
 from app.modules.workboards.services.app_user_service import is_default_pin_hash
 from app.services.audit_service import audit
 from app.modules.workboards.services.crud_service import WorkboardService
+from app.modules.workboards.services import workboard_presence
 from app.modules.workboards.services.dashboard_link_service import (
     sync_workboard_dashboard_links as sync_managed_dashboard_links,
     delete_all_for_workboard as delete_managed_dashboard_links,
@@ -363,6 +364,78 @@ def delete_workboard(
         resource_type="workboard",
         resource_id=str(workboard_id),
     )
+
+
+# ============ Editor presence + soft screen-lock (co-edit safety) ============
+# Adapted from the dashboard co-edit model, but the concurrency UNIT is a
+# SCREEN (not a tile) and it adds a soft edit-lock so two people can't sit on
+# the same screen at once. See services/workboard_presence for the rationale.
+
+class _WorkboardHeartbeatRequest(PydanticBaseModel):
+    """``editing_screen_id`` = the screen the caller currently has open in the
+    builder (their cursor). None while on the canvas / app-settings."""
+    editing_screen_id: Optional[str] = None
+
+
+class _WorkboardTakeoverRequest(PydanticBaseModel):
+    screen_id: str
+
+
+@router.post("/{workboard_id}/editing/heartbeat", status_code=status.HTTP_200_OK)
+def workboard_editing_heartbeat(
+    workboard_id: int,
+    request: Request,
+    payload: Optional[_WorkboardHeartbeatRequest] = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Register the caller as editing this workboard (on ``editing_screen_id``)
+    and return the OTHER active editors, the caller's soft-lock state for the
+    screen they're on, and the holder map for all locked screens. Best-effort,
+    in-memory, TTL-expired (see services/workboard_presence)."""
+    wb = _get_or_404(db, workboard_id)
+    require_edit_access(db, current_user, wb, "workboards")
+    return workboard_presence.heartbeat(
+        workboard_id,
+        str(current_user.id),
+        getattr(current_user, "full_name", None) or current_user.email,
+        current_user.email,
+        editing_screen_id=payload.editing_screen_id if payload else None,
+    )
+
+
+@router.post("/{workboard_id}/editing/leave", status_code=status.HTTP_200_OK)
+def workboard_editing_leave(
+    workboard_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Best-effort removal when an editor closes the builder + releases any
+    locks they held so a collaborator can claim immediately. TTL would expire
+    them anyway; this just makes the handoff instant."""
+    workboard_presence.leave(workboard_id, str(current_user.id))
+    return {"ok": True}
+
+
+@router.post("/{workboard_id}/editing/takeover", status_code=status.HTTP_200_OK)
+def workboard_editing_takeover(
+    workboard_id: int,
+    payload: _WorkboardTakeoverRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Force-claim the soft-lock on a screen ("Chiếm quyền chỉnh sửa"). Requires
+    edit access. The previous holder drops to view-only on its next heartbeat."""
+    wb = _get_or_404(db, workboard_id)
+    require_edit_access(db, current_user, wb, "workboards")
+    lock = workboard_presence.takeover(
+        workboard_id,
+        str(current_user.id),
+        getattr(current_user, "full_name", None) or current_user.email,
+        current_user.email,
+        payload.screen_id,
+    )
+    return {"lock": lock}
 
 
 def _assert_owner_pin_rotated(db: Session, workboard_id: int) -> None:
