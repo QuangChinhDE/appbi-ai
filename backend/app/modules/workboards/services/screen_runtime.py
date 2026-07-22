@@ -57,6 +57,7 @@ from app.modules.workboards.services.rls_service import (
     CallerIdentity,
     build_rls_filter,
     enforce_write_access,
+    role_has_screen_grant as _role_has_screen_grant,
 )
 from app.modules.workboards.services.js_evaluator import (
     CompiledJs,
@@ -623,6 +624,15 @@ def is_screen_visible_for(screen: Screen, identity: CallerIdentity) -> bool:
         return True
     role = (identity.role or "").strip().lower()
     return any(r.strip().lower() == role for r in screen.visible_for_roles)
+
+
+def role_has_screen_grant(screen: Screen, identity: CallerIdentity) -> bool:
+    """Access-gate counterpart to :func:`is_screen_visible_for` (which is
+    NAV-DISPLAY only). True when the caller's role has an RLS grant to the
+    screen — so a screen hidden from the nav can still be opened when reached
+    via an explicit row-action / after_submit navigation. Fail-closed for app
+    users with no matching rule. See rls_service.role_has_screen_grant."""
+    return _role_has_screen_grant(screen.rls, screen.rls_default, identity)
 
 
 def is_group_visible_for(group: ScreenGroup, identity: CallerIdentity) -> bool:
@@ -2267,6 +2277,31 @@ def render_table_screen(
     totals_row = _compute_table_totals(table_spec, base_rows) or None
     stat_tiles = _compute_stat_tiles(table_spec, base_rows)
 
+    # Distinct option lists for "single select" filters, derived from the whole
+    # filtered set already in memory (no extra query). Lets the runtime render a
+    # real dropdown instead of a free-text box for select-kind slicers.
+    filter_options: Dict[str, List[str]] = {}
+    for _f in (table_spec.filters or []):
+        if getattr(_f, "kind", None) != "select":
+            continue
+        col = getattr(_f, "column", None)
+        if not col or col in filter_options:
+            continue
+        seen: set[str] = set()
+        values: List[str] = []
+        for r in base_rows:
+            raw = r.get(col)
+            if raw is None:
+                continue
+            s = str(raw).strip()
+            if not s or s in seen:
+                continue
+            seen.add(s)
+            values.append(s)
+            if len(values) >= 500:
+                break
+        filter_options[col] = sorted(values)
+
     # ── Slice the requested page out of the full set ─────────────────
     page_rows = base_rows[offset:offset + page_size]
 
@@ -2285,6 +2320,7 @@ def render_table_screen(
         "table_view": table_spec.model_dump(),
         "totals_row": totals_row,
         "stat_tiles": stat_tiles,
+        "filter_options": filter_options,
         "column_groups": column_groups,
         "merges": merges,
         "column_labels": screen.column_labels or {},

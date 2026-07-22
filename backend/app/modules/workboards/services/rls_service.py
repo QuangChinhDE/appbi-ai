@@ -198,6 +198,33 @@ def build_rls_filter(
     )
 
 
+def role_has_screen_grant(
+    rules: List[ScreenRlsRule],
+    default: Optional[ScreenRlsRule],
+    identity: CallerIdentity,
+) -> bool:
+    """Whether ``identity`` is GRANTED access to a screen at all.
+
+    This is the access gate — distinct from :func:`build_rls_filter`'s
+    read-scope ``allowed`` (which is False for a granted role whose row-scope
+    placeholder resolves to an empty value). A role is granted when it is
+    internal/owner, or an RLS rule (or the default) matches it. Fail-closed:
+    an app user with no rules and no default is NOT granted.
+
+    Used so a screen hidden from the nav (``visible_for_roles``) can still be
+    opened when reached via an explicit row-action / after_submit navigation,
+    as long as the caller's role has an RLS grant to it. Nav visibility is a
+    display concern; per-screen RLS is the real access boundary.
+    """
+    if not identity.is_app_user:
+        return True
+    if is_owner_role(identity.role):
+        return True
+    if not rules and default is None:
+        return False
+    return _pick_rule(rules, default, identity) is not None
+
+
 def enforce_write_access(
     rules: List[ScreenRlsRule],
     default: Optional[ScreenRlsRule],

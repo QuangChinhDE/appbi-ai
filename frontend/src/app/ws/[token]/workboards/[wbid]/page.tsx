@@ -5725,6 +5725,8 @@ function TableScreen({
   const configuredFilters = ((tv.filters as RuntimeTableFilter[] | undefined) || []).filter(
     (item) => item?.column,
   );
+  // Distinct values per select-kind filter column (from the BE) → dropdown.
+  const filterOptions = (current.filter_options || {}) as Record<string, string[]>;
   const rowActionsRaw = (tv.row_actions || []) as RowActionDescriptor[];
   const rowActions = rowActionsRaw.filter((a) => {
     const allow = a.visible_for_roles;
@@ -6375,6 +6377,28 @@ function TableScreen({
                       />
                     </label>
                   </div>
+                );
+              }
+              const selectOpts = filter.kind === 'select' ? filterOptions[filter.column] : undefined;
+              if (filter.kind === 'select' && selectOpts && selectOpts.length > 0) {
+                return (
+                  <label key={key} className="block">
+                    <span className="mb-1 block text-xs font-medium text-slate-600">{label}</span>
+                    <select
+                      value={filterValues[key] || ''}
+                      onChange={(event) =>
+                        setFilterValues((prev) => ({ ...prev, [key]: event.target.value }))
+                      }
+                      className="h-9 w-full rounded-md border border-slate-200 bg-white px-2 text-sm outline-none focus:border-slate-400"
+                    >
+                      <option value="">— Tất cả —</option>
+                      {selectOpts.map((opt) => (
+                        <option key={opt} value={opt}>
+                          {opt}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
                 );
               }
               return (

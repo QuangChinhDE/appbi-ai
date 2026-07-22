@@ -1504,6 +1504,24 @@ if settings.WORKBOARDS_ENABLED:
                 return {str(i) for i in (item.get("hidden_screen_ids") or []) if i}
         return set()
 
+    def _screen_blocked(screen, identity, workspace, workboard) -> bool:
+        """Whether a public app-user is denied access to ``screen``.
+
+        The Cổng's explicit ``hidden_screen_ids`` is a hard block. Otherwise a
+        screen is reachable when it is EITHER nav-visible to the role
+        (``visible_for_roles``) OR the role has an RLS grant to it — the latter
+        lets a screen hidden from the nav still open when reached via an
+        explicit row-action / after_submit navigation. ``visible_for_roles`` is
+        a nav-DISPLAY concern; per-screen RLS (fail-closed) is the real access
+        boundary, so this never widens data access beyond what RLS already
+        allows.
+        """
+        if screen.id in _public_hidden_screen_ids(workspace, workboard):
+            return True
+        if screen_runtime.is_screen_visible_for(screen, identity):
+            return False
+        return not screen_runtime.role_has_screen_grant(screen, identity)
+
 
     # â”€â”€ Mini-app screen-based endpoints â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     #
@@ -1549,7 +1567,7 @@ if settings.WORKBOARDS_ENABLED:
         identity = identity_from_app_user(app_user)
         layout = screen_runtime.parse_layout(wb)
         screen = screen_runtime.get_screen(layout, screen_id)
-        if not screen_runtime.is_screen_visible_for(screen, identity) or screen.id in _public_hidden_screen_ids(ws, wb):
+        if _screen_blocked(screen, identity, ws, wb):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="You don't have access to that screen.",
@@ -1659,7 +1677,7 @@ if settings.WORKBOARDS_ENABLED:
         identity = identity_from_app_user(app_user)
         layout = screen_runtime.parse_layout(wb)
         screen = screen_runtime.get_screen(layout, screen_id)
-        if not screen_runtime.is_screen_visible_for(screen, identity) or screen.id in _public_hidden_screen_ids(ws, wb):
+        if _screen_blocked(screen, identity, ws, wb):
             raise HTTPException(status_code=403, detail="You don't have access to that screen.")
         shared_context: dict | None = None
         if shared:
@@ -1717,7 +1735,7 @@ if settings.WORKBOARDS_ENABLED:
         identity = identity_from_app_user(app_user)
         layout = screen_runtime.parse_layout(wb)
         screen = screen_runtime.get_screen(layout, screen_id)
-        if not screen_runtime.is_screen_visible_for(screen, identity) or screen.id in _public_hidden_screen_ids(ws, wb):
+        if _screen_blocked(screen, identity, ws, wb):
             raise HTTPException(
                 status_code=403, detail="You don't have access to that screen."
             )
@@ -1942,7 +1960,7 @@ if settings.WORKBOARDS_ENABLED:
         identity = identity_from_app_user(app_user)
         layout = screen_runtime.parse_layout(wb)
         screen = screen_runtime.get_screen(layout, screen_id)
-        if not screen_runtime.is_screen_visible_for(screen, identity) or screen.id in _public_hidden_screen_ids(ws, wb):
+        if _screen_blocked(screen, identity, ws, wb):
             raise HTTPException(status_code=403, detail="You don't have access to that screen.")
         body = body or {}
         shared_context = body.get("shared") if isinstance(body.get("shared"), dict) else None
@@ -1982,7 +2000,7 @@ if settings.WORKBOARDS_ENABLED:
         identity = identity_from_app_user(app_user)
         layout = screen_runtime.parse_layout(wb)
         screen = screen_runtime.get_screen(layout, screen_id)
-        if not screen_runtime.is_screen_visible_for(screen, identity) or screen.id in _public_hidden_screen_ids(ws, wb):
+        if _screen_blocked(screen, identity, ws, wb):
             raise HTTPException(status_code=403, detail="You don't have access to that screen.")
         values = body.get("values") if isinstance(body, dict) else None
         if not isinstance(values, dict):
@@ -2024,7 +2042,7 @@ if settings.WORKBOARDS_ENABLED:
         identity = identity_from_app_user(app_user)
         layout = screen_runtime.parse_layout(wb)
         screen = screen_runtime.get_screen(layout, screen_id)
-        if not screen_runtime.is_screen_visible_for(screen, identity) or screen.id in _public_hidden_screen_ids(ws, wb):
+        if _screen_blocked(screen, identity, ws, wb):
             raise HTTPException(status_code=403, detail="You don't have access to that screen.")
         if screen.kind != "form" or screen.form is None:
             raise HTTPException(status_code=400, detail="Screen is not a form.")
@@ -2100,7 +2118,7 @@ if settings.WORKBOARDS_ENABLED:
         identity = identity_from_app_user(app_user)
         layout = screen_runtime.parse_layout(wb)
         screen = screen_runtime.get_screen(layout, screen_id)
-        if not screen_runtime.is_screen_visible_for(screen, identity) or screen.id in _public_hidden_screen_ids(ws, wb):
+        if _screen_blocked(screen, identity, ws, wb):
             raise HTTPException(status_code=403, detail="You don't have access to that screen.")
         if screen.kind != "table":
             raise HTTPException(status_code=400, detail="Bulk insert is only for table screens.")
@@ -2202,7 +2220,7 @@ if settings.WORKBOARDS_ENABLED:
         identity = identity_from_app_user(app_user)
         layout = screen_runtime.parse_layout(wb)
         screen = screen_runtime.get_screen(layout, screen_id)
-        if not screen_runtime.is_screen_visible_for(screen, identity) or screen.id in _public_hidden_screen_ids(ws, wb):
+        if _screen_blocked(screen, identity, ws, wb):
             raise HTTPException(status_code=403, detail="You don't have access to that screen.")
         action_id = str(body.get("action_id") or "").strip() if isinstance(body, dict) else ""
         if not action_id:
@@ -2243,7 +2261,7 @@ if settings.WORKBOARDS_ENABLED:
         identity = identity_from_app_user(app_user)
         layout = screen_runtime.parse_layout(wb)
         screen = screen_runtime.get_screen(layout, screen_id)
-        if not screen_runtime.is_screen_visible_for(screen, identity) or screen.id in _public_hidden_screen_ids(ws, wb):
+        if _screen_blocked(screen, identity, ws, wb):
             raise HTTPException(status_code=403, detail="You don't have access to that screen.")
         pk = body.get("pk") if isinstance(body, dict) else None
         values = body.get("values") if isinstance(body, dict) else None
@@ -2361,7 +2379,7 @@ if settings.WORKBOARDS_ENABLED:
         identity = identity_from_app_user(app_user)
         layout = screen_runtime.parse_layout(wb)
         screen = screen_runtime.get_screen(layout, screen_id)
-        if not screen_runtime.is_screen_visible_for(screen, identity) or screen.id in _public_hidden_screen_ids(ws, wb):
+        if _screen_blocked(screen, identity, ws, wb):
             raise HTTPException(status_code=403, detail="You don't have access to that screen.")
         if screen.kind != "table" or screen.table is None:
             raise HTTPException(status_code=400, detail="Screen is not a table.")
@@ -2396,7 +2414,7 @@ if settings.WORKBOARDS_ENABLED:
         identity = identity_from_app_user(app_user)
         layout = screen_runtime.parse_layout(wb)
         screen = screen_runtime.get_screen(layout, screen_id)
-        if not screen_runtime.is_screen_visible_for(screen, identity) or screen.id in _public_hidden_screen_ids(ws, wb):
+        if _screen_blocked(screen, identity, ws, wb):
             raise HTTPException(status_code=403, detail="You don't have access to that screen.")
         pk = body.get("pk") if isinstance(body, dict) else None
         if not isinstance(pk, dict) or not pk:

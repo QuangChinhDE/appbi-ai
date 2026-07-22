@@ -410,6 +410,8 @@ export interface TableScreenResponse {
   } | null;
   totals_row?: Record<string, unknown> | null;
   stat_tiles?: Array<{ label: string; value: unknown; format?: string | null; unit?: string | null }>;
+  /** Distinct values per "single select" filter column, for dropdown slicers. */
+  filter_options?: Record<string, string[]>;
   column_groups?: Array<{ label: string; columns: string[] }>;
   merges?: Array<{ column: string; row_start: number; row_span: number }>;
   column_labels?: Record<string, string>;
