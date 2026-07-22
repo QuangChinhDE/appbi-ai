@@ -1,11 +1,19 @@
 /**
- * AppSettingsEditor — modal for app-level settings (branding + nav).
+ * App-settings SECTION components — the building blocks of the Workboard
+ * Settings tab (app/(main)/workboards/[id]/settings/page.tsx).
+ *
+ * Every section is pure: it takes the mini-app layout (or the dataset list)
+ * plus an onChange / onDatasetChange callback and renders controls. The
+ * Settings page owns the state + autosave; these just render and emit.
+ *
+ * (This file previously also exported an "App settings" MODAL opened from the
+ * Build canvas. That modal was removed — Build is only for building; app
+ * settings live in the Settings tab.)
  */
 'use client';
 
 import React, { useEffect, useState } from 'react';
-import { Database, FileText, Hash, Monitor, Palette, Settings2, Smartphone } from 'lucide-react';
-import { AppModalShell } from '@/components/common/AppModalShell';
+import { Monitor, Smartphone } from 'lucide-react';
 
 import type {
   MiniAppLayoutSpec,
@@ -19,146 +27,101 @@ import { INPUT, Lbl } from './ScreenEditor';
 import { GRADIENT_PRESETS } from '@/lib/wb-theme';
 import type { Dataset } from '@/hooks/use-datasets';
 
-export default function AppSettingsEditor({
-  layout,
-  currentDatasetId,
+// ── Dataset picker (Settings › Data) ───────────────────────────────────────
+export function DatasetSection({
   datasets,
+  currentDatasetId,
   datasetChangePending,
-  onChange,
   onDatasetChange,
-  onClose,
 }: {
-  layout: MiniAppLayoutSpec;
-  currentDatasetId: number;
   datasets: Dataset[];
+  currentDatasetId: number;
   datasetChangePending?: boolean;
-  onChange: (next: MiniAppLayoutSpec) => void;
   onDatasetChange: (datasetId: number) => Promise<void> | void;
-  onClose: () => void;
 }) {
-  const nav = layout.mini_app_nav;
   const [selectedDatasetId, setSelectedDatasetId] = useState(currentDatasetId);
-
   useEffect(() => {
     setSelectedDatasetId(currentDatasetId);
   }, [currentDatasetId]);
-
   const datasetChanged = selectedDatasetId !== currentDatasetId;
-
   return (
-    <AppModalShell
-      onClose={onClose}
-      title="App settings"
-      description="Giao diện · Dữ liệu nguồn · Auto-number · Điều hướng"
-      icon={<Settings2 className="h-4 w-4" />}
-      maxWidthClass="max-w-5xl"
-      bodyClassName="space-y-5 px-5 py-5"
-    >
-          <MiniAppSettingsPreview layout={layout} />
-
-          <SettingsPanel
-            title="Dataset"
-            icon={<Database className="h-4 w-4" />}
+    <div>
+      <div className="grid grid-cols-[minmax(0,1fr)_auto] items-end gap-3">
+        <Lbl label="Dataset đang dùng">
+          <select
+            value={selectedDatasetId}
+            onChange={(e) => setSelectedDatasetId(Number(e.target.value))}
+            className={INPUT}
           >
-            <div className="grid grid-cols-[minmax(0,1fr)_auto] items-end gap-3">
-              <Lbl label="Active dataset">
-                <select
-                  value={selectedDatasetId}
-                  onChange={(e) => setSelectedDatasetId(Number(e.target.value))}
-                  className={INPUT}
-                >
-                  {datasets.map((dataset) => (
-                    <option key={dataset.id} value={dataset.id}>
-                      {dataset.name}
-                    </option>
-                  ))}
-                </select>
-              </Lbl>
-              <button
-                type="button"
-                disabled={!datasetChanged || datasetChangePending}
-                onClick={() => onDatasetChange(selectedDatasetId)}
-                className="rounded-md border border-[rgb(var(--border-line))] bg-surface-0 px-3 py-1.5 text-caption font-emphasis text-text-secondary hover:border-brand hover:text-brand disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                {datasetChangePending ? 'Changing...' : 'Change dataset'}
-              </button>
-            </div>
-            {datasetChanged && (
-              <p className="mt-2 text-caption text-warning">
-                Screens currently pointing to tables outside the new dataset will be cleared so you can map them again.
-              </p>
-            )}
-          </SettingsPanel>
-
-          <SettingsPanel
-            title="Brand & theme"
-            icon={<Palette className="h-4 w-4" />}
-          >
-            <ThemeSection layout={layout} onChange={onChange} />
-          </SettingsPanel>
-
-          <SettingsPanel
-            title="Documents"
-            icon={<FileText className="h-4 w-4" />}
-          >
-            <PrintTemplateSection layout={layout} onChange={onChange} />
-          </SettingsPanel>
-
-          <SettingsPanel
-            title="Automation"
-            icon={<Hash className="h-4 w-4" />}
-          >
-            <AutoNumberSection layout={layout} onChange={onChange} />
-          </SettingsPanel>
-
-          <SettingsPanel
-            title="Navigation"
-            icon={<Smartphone className="h-4 w-4" />}
-          >
-            <div className="grid gap-4 lg:grid-cols-2">
-              <div>
-                <div className="mb-2 flex items-center gap-2 text-caption font-medium text-text-secondary">
-                  <Smartphone className="h-4 w-4" />
-                  Mobile
-                </div>
-                <SegmentedControl
-                  value={nav.mobile_kind}
-                  onChange={(mobile_kind) =>
-                    onChange({
-                      ...layout,
-                      mini_app_nav: { ...nav, mobile_kind },
-                    })
-                  }
-                  options={[
-                    { value: 'bottom_nav', label: 'Bottom nav' },
-                    { value: 'drawer', label: 'Drawer' },
-                  ]}
-                />
-              </div>
-              <div>
-                <div className="mb-2 flex items-center gap-2 text-caption font-medium text-text-secondary">
-                  <Monitor className="h-4 w-4" />
-                  Desktop
-                </div>
-                <SegmentedControl
-                  value={nav.desktop_kind}
-                  onChange={(desktop_kind) =>
-                    onChange({
-                      ...layout,
-                      mini_app_nav: { ...nav, desktop_kind },
-                    })
-                  }
-                  options={[
-                    { value: 'sidebar', label: 'Sidebar' },
-                    { value: 'top_tabs', label: 'Top tabs' },
-                  ]}
-                />
-              </div>
-            </div>
-          </SettingsPanel>
-    </AppModalShell>
+            {datasets.map((dataset) => (
+              <option key={dataset.id} value={dataset.id}>
+                {dataset.name}
+              </option>
+            ))}
+          </select>
+        </Lbl>
+        <button
+          type="button"
+          disabled={!datasetChanged || datasetChangePending}
+          onClick={() => onDatasetChange(selectedDatasetId)}
+          className="rounded-md border border-[rgb(var(--border-line))] bg-surface-0 px-3 py-1.5 text-caption font-emphasis text-text-secondary hover:border-brand hover:text-brand disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {datasetChangePending ? 'Đang đổi...' : 'Đổi dataset'}
+        </button>
+      </div>
+      {datasetChanged && (
+        <p className="mt-2 text-caption text-warning">
+          Các screen đang trỏ tới bảng ngoài dataset mới sẽ được gỡ để bạn map lại. Bấm “Đổi
+          dataset” để xem trước tác động.
+        </p>
+      )}
+    </div>
   );
 }
+
+// ── Navigation (Settings › Navigation) ──────────────────────────────────────
+export function NavigationSection({
+  layout,
+  onChange,
+}: {
+  layout: MiniAppLayoutSpec;
+  onChange: (next: MiniAppLayoutSpec) => void;
+}) {
+  const nav = layout.mini_app_nav;
+  return (
+    <div className="grid gap-4 lg:grid-cols-2">
+      <div>
+        <div className="mb-2 flex items-center gap-2 text-caption font-medium text-text-secondary">
+          <Smartphone className="h-4 w-4" />
+          Mobile
+        </div>
+        <SegmentedControl
+          value={nav.mobile_kind}
+          onChange={(mobile_kind) => onChange({ ...layout, mini_app_nav: { ...nav, mobile_kind } })}
+          options={[
+            { value: 'bottom_nav', label: 'Bottom nav' },
+            { value: 'drawer', label: 'Drawer' },
+          ]}
+        />
+      </div>
+      <div>
+        <div className="mb-2 flex items-center gap-2 text-caption font-medium text-text-secondary">
+          <Monitor className="h-4 w-4" />
+          Desktop
+        </div>
+        <SegmentedControl
+          value={nav.desktop_kind}
+          onChange={(desktop_kind) => onChange({ ...layout, mini_app_nav: { ...nav, desktop_kind } })}
+          options={[
+            { value: 'sidebar', label: 'Sidebar' },
+            { value: 'top_tabs', label: 'Top tabs' },
+          ]}
+        />
+      </div>
+    </div>
+  );
+}
+
 
 
 // ── Theme / design-system editor ────────────────────────────────────────
@@ -170,7 +133,7 @@ function cx(...parts: Array<string | false | null | undefined>): string {
   return parts.filter(Boolean).join(' ');
 }
 
-function SettingsPanel({
+export function SettingsPanel({
   icon,
   title,
   children,
@@ -236,79 +199,6 @@ function SegmentedControl<T extends string>({
         );
       })}
     </div>
-  );
-}
-
-function MiniAppSettingsPreview({ layout }: { layout: MiniAppLayoutSpec }) {
-  const branding = layout.branding || {};
-  const primary = branding.primary_color || '#2563eb';
-  const accent = branding.accent_color || primary;
-  const appName = branding.app_name || 'Mini app';
-  const logoSrc = branding.logo_data || branding.logo_url;
-  const wideLogo = branding.logo_layout === 'wide';
-  const visibleScreens = (layout.screens || []).filter((screen) => screen.show_in_nav !== false);
-
-  return (
-    <section className="overflow-hidden rounded-lg border border-[rgb(var(--border-line))] bg-surface-1">
-      <div
-        className="flex min-h-24 items-end justify-between gap-4 px-4 py-4"
-        style={{
-          background:
-            branding.background?.kind === 'gradient'
-              ? GRADIENT_PRESETS[branding.background.gradient_preset || 'ocean']
-              : branding.background?.kind === 'color'
-                ? branding.background.color || '#f8fafc'
-                : `linear-gradient(135deg, ${primary}, ${accent})`,
-        }}
-      >
-        <div className="min-w-0">
-          <div className="inline-flex rounded-md bg-white/90 px-2 py-1 text-tiny font-emphasis uppercase tracking-wider text-slate-600">
-            Preview
-          </div>
-          <h3 className="mt-2 truncate text-body font-strong text-white drop-shadow-sm">
-            {appName}
-          </h3>
-        </div>
-        <div
-          className={`flex h-10 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-white/90 p-1 text-sm font-strong text-slate-700 shadow-sm ${
-            wideLogo ? 'w-24' : 'w-10'
-          }`}
-        >
-          {logoSrc ? (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img src={logoSrc} alt="" className="h-full w-full object-contain" />
-          ) : (
-            appName.slice(0, 1).toUpperCase()
-          )}
-        </div>
-      </div>
-      <div className="grid gap-3 p-4 sm:grid-cols-3">
-        <div className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-0 p-3">
-          <div className="text-tiny font-emphasis uppercase tracking-wider text-text-quaternary">
-            Screens
-          </div>
-          <div className="mt-1 text-body font-strong text-text-primary">
-            {visibleScreens.length}
-          </div>
-        </div>
-        <div className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-0 p-3">
-          <div className="text-tiny font-emphasis uppercase tracking-wider text-text-quaternary">
-            Mobile
-          </div>
-          <div className="mt-1 truncate text-caption font-medium text-text-primary">
-            {layout.mini_app_nav.mobile_kind === 'drawer' ? 'Drawer' : 'Bottom nav'}
-          </div>
-        </div>
-        <div className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-0 p-3">
-          <div className="text-tiny font-emphasis uppercase tracking-wider text-text-quaternary">
-            Desktop
-          </div>
-          <div className="mt-1 truncate text-caption font-medium text-text-primary">
-            {layout.mini_app_nav.desktop_kind === 'top_tabs' ? 'Top tabs' : 'Sidebar'}
-          </div>
-        </div>
-      </div>
-    </section>
   );
 }
 
@@ -474,7 +364,7 @@ function BackgroundEditor({
   );
 }
 
-function PrintTemplateSection({
+export function PrintTemplateSection({
   layout,
   onChange,
 }: {
@@ -556,7 +446,7 @@ function PrintTemplateSection({
   );
 }
 
-function ThemeSection({
+export function ThemeSection({
   layout,
   onChange,
 }: {
@@ -773,7 +663,7 @@ function ThemeSection({
 }
 
 
-function AutoNumberSection({
+export function AutoNumberSection({
   layout,
   onChange,
 }: {

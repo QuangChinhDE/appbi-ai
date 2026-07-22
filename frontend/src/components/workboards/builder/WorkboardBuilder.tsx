@@ -28,14 +28,12 @@ import {
   Save,
 } from 'lucide-react';
 
-import { workboardApi, type Workboard, type RebindPreview } from '@/lib/api/workboards';
+import { type Workboard } from '@/lib/api/workboards';
 import { apiClient } from '@/lib/api-client';
 import { useDatasets } from '@/hooks/use-datasets';
-import { useUpdateWorkboard } from '@/hooks/use-workboards';
 import { useWorkboardPresence } from '@/hooks/use-workboard-presence';
 import { getResourcePermissions } from '@/hooks/use-resource-permission';
 import { toast } from '@/lib/toast';
-import { Modal } from '@/components/common/Modal';
 import { Button } from '@/components/ui/Button';
 import {
   ensureLayout,
@@ -44,7 +42,6 @@ import {
   ScreenSpec,
 } from './types';
 import ScreenEditor from './ScreenEditor';
-import AppSettingsEditor from './AppSettingsEditor';
 import BuilderLivePreview from './BuilderLivePreview';
 import { registerAutosaveFlush } from './autosaveFlushRegistry';
 import CanvasOverview from './CanvasOverview';
@@ -65,14 +62,6 @@ interface DatasetTableApi {
   columns_cache?: unknown;
 }
 
-interface ApiErrorShape {
-  response?: {
-    data?: {
-      detail?: string;
-    };
-  };
-}
-
 function columnsFromCache(cache: unknown): { name: string; type?: string }[] {
   const arr: unknown[] = Array.isArray(cache)
     ? cache
@@ -84,10 +73,6 @@ function columnsFromCache(cache: unknown): { name: string; type?: string }[] {
       Boolean(c && typeof c === 'object' && 'name' in c),
     )
     .map((c) => ({ name: String(c.name), type: c.type ? String(c.type) : undefined }));
-}
-
-function getApiErrorMessage(err: unknown, fallback: string): string {
-  return (err as ApiErrorShape)?.response?.data?.detail || fallback;
 }
 
 interface Props {
@@ -136,7 +121,6 @@ function presenceInitials(name: string): string {
 
 export default function WorkboardBuilder({ workboard }: Props) {
   const { data: datasets = [] } = useDatasets();
-  const updateWorkboard = useUpdateWorkboard();
   const [boundDatasetId, setBoundDatasetId] = useState(workboard.dataset_id);
   const [layout, setLayoutRaw] = useState<MiniAppLayoutSpec>(() =>
     ensureLayout(workboard.layout_json),
@@ -146,7 +130,6 @@ export default function WorkboardBuilder({ workboard }: Props) {
   );
   const [tables, setTables] = useState<DatasetTableInfo[]>([]);
   const [tablesLoading, setTablesLoading] = useState(true);
-  const [showAppSettings, setShowAppSettings] = useState(false);
   // The redesign separates the builder into two modes:
   //   - canvas  : list of screen cards (Mức 1)
   //   - editor  : full-page editor of a single screen (Mức 2)
@@ -311,49 +294,8 @@ export default function WorkboardBuilder({ workboard }: Props) {
     return () => registerAutosaveFlush(null);
   }, [autosave.flush]);
 
-  // Two-phase dataset rebind: analyze impact first (which screens auto-remap to
-  // same-named tables vs get cleared), show it, and only apply on confirm. The
-  // apply mutates the DRAFT only — Live keeps its published binding until Publish.
-  const [rebindPlan, setRebindPlan] = useState<(RebindPreview & { targetDatasetId: number }) | null>(null);
-
-  const handleDatasetChange = async (nextDatasetId: number) => {
-    if (!canEdit) return;
-    if (!nextDatasetId || nextDatasetId === boundDatasetId) return;
-    try {
-      await autosave.flush();
-      const plan = await workboardApi.previewRebind(workboard.id, nextDatasetId);
-      setRebindPlan({ ...plan, targetDatasetId: nextDatasetId });
-    } catch (err: unknown) {
-      toast.error(getApiErrorMessage(err, 'Không phân tích được tác động khi đổi dataset.'));
-    }
-  };
-
-  const applyRebind = async () => {
-    if (!rebindPlan) return;
-    try {
-      const updated = await updateWorkboard.mutateAsync({
-        id: workboard.id,
-        data: { dataset_id: rebindPlan.targetDatasetId },
-      });
-      const nextLayout = ensureLayout(updated.layout_json);
-      setBoundDatasetId(updated.dataset_id);
-      setLayout(nextLayout);
-      setActiveScreenId((current) =>
-        current && nextLayout.screens.some((screen) => screen.id === current)
-          ? current
-          : nextLayout.screens[0]?.id || null,
-      );
-      const { remap_count, clear_count } = rebindPlan;
-      toast.success(
-        `Đã đổi dataset (bản nháp): ${remap_count} bảng tự khớp lại` +
-          (clear_count ? `, ${clear_count} liên kết bị xoá` : '') +
-          '. Xuất bản để áp dụng lên bản Live.',
-      );
-      setRebindPlan(null);
-    } catch (err: unknown) {
-      toast.error(getApiErrorMessage(err, 'Could not change dataset.'));
-    }
-  };
+  // Dataset rebind (change dataset + remap/clear screens) now lives in the
+  // Settings tab (Settings › Data), not the Build canvas.
 
   // Load dataset tables once so editors can show column dropdowns.
   useEffect(() => {
@@ -644,56 +586,6 @@ export default function WorkboardBuilder({ workboard }: Props) {
           </button>
         </div>
       )}
-      {rebindPlan && (
-        <Modal
-          isOpen
-          onClose={() => setRebindPlan(null)}
-          title="Đổi dataset — xem tác động"
-          size="md"
-          footer={
-            <>
-              <Button variant="ghost" size="sm" onClick={() => setRebindPlan(null)}>
-                Huỷ
-              </Button>
-              <Button variant="primary" size="sm" onClick={applyRebind} loading={updateWorkboard.isPending}>
-                Áp dụng vào bản nháp
-              </Button>
-            </>
-          }
-        >
-          <div className="space-y-3 text-caption">
-            <p className="text-text-secondary">
-              <strong>{rebindPlan.remap_count}</strong> bảng sẽ tự khớp lại theo tên;{' '}
-              <strong>{rebindPlan.clear_count}</strong> liên kết không tìm thấy bảng tương ứng sẽ bị xoá.
-              Chỉ áp dụng lên <strong>bản nháp</strong> — bản Live giữ nguyên cho tới khi bạn Xuất bản.
-            </p>
-            {rebindPlan.remapped.length > 0 && (
-              <div>
-                <div className="font-emphasis text-success">Tự khớp lại ({rebindPlan.remap_count})</div>
-                <ul className="mt-1 max-h-40 space-y-1 overflow-auto">
-                  {rebindPlan.remapped.slice(0, 30).map((m, i) => (
-                    <li key={i} className="text-text-tertiary">
-                      • {m.screen_title || m.screen_id} — <code>{m.table_name}</code>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
-            {rebindPlan.cleared.length > 0 && (
-              <div>
-                <div className="font-emphasis text-warning">Bị xoá liên kết ({rebindPlan.clear_count})</div>
-                <ul className="mt-1 max-h-40 space-y-1 overflow-auto">
-                  {rebindPlan.cleared.slice(0, 30).map((m, i) => (
-                    <li key={i} className="text-text-tertiary">
-                      • {m.screen_title || m.screen_id} — <code>{m.table_name || m.old_table_id}</code>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
-          </div>
-        </Modal>
-      )}
       {/* ── Builder sub-topbar: breadcrumb + save pill + preview ──
           Editor mode breadcrumb: ``[All screens] / [current screen ▾]``.
           The screen-name button opens ScreenSwitcherModal so users can
@@ -836,7 +728,6 @@ export default function WorkboardBuilder({ workboard }: Props) {
                 groups={layout.screen_groups || []}
                 onPickScreen={openScreen}
                 onAddScreen={addScreen}
-                onOpenAppSettings={() => setShowAppSettings(true)}
                 onReorderScreens={reorderScreens}
                 onDeleteScreen={deleteScreen}
                 onCreateGroup={createGroup}
@@ -904,17 +795,6 @@ export default function WorkboardBuilder({ workboard }: Props) {
         />
       )}
 
-      {showAppSettings && (
-        <AppSettingsEditor
-          layout={layout}
-          currentDatasetId={boundDatasetId}
-          datasets={datasets}
-          datasetChangePending={updateWorkboard.isPending}
-          onChange={setLayout}
-          onDatasetChange={handleDatasetChange}
-          onClose={() => setShowAppSettings(false)}
-        />
-      )}
     </div>
   );
 }
