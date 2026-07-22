@@ -389,28 +389,35 @@ def _assert_owner_pin_rotated(db: Session, workboard_id: int) -> None:
         )
 
 
-@router.post("/{workboard_id}/publish", response_model=WorkboardResponse)
-def publish_workboard(
-    workboard_id: int,
-    request: Request,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    wb = _get_or_404(db, workboard_id)
-    require_edit_access(db, current_user, wb, "workboards")
-    require_dataset_binding_access(db, current_user, wb.dataset_id)
-    _assert_owner_pin_rotated(db, wb.id)
-    # Safety net: a workboard needs a slug to be shareable (the public Cổng menu
-    # is keyed by workboard_slug). New boards get one at create; backfill any
-    # legacy blank-slug board here so going Live never produces an unshareable app.
+def _promote_workboard_to_published(
+    db: Session, wb: Workboard, *, creator: Optional[User] = None
+) -> Workboard:
+    """The ONE routine every "make this board Live" path funnels through.
+
+    Applies the complete draft → published promotion atomically: slug backfill
+    (the public Cổng menu is keyed by ``workboard_slug``) + schema-default
+    refresh + MANDATORY readiness gate + managed-dashboard-link sync/promote +
+    a snapshot of the WHOLE deployment boundary (layout + non-layout
+    runtime-config + version/at) + ``is_published``. Every publish trigger — the
+    Publish button, public-link creation, an MCP/script call — MUST go through
+    here so none of them can leave a board half-published (``is_published=True``
+    with no snapshot/slug → an empty or Cổng-unreachable Live app).
+
+    Raises 422 if the readiness audit has blocking errors; on any failure the
+    caller's transaction rolls back and the previous Live deployment stays fully
+    intact. Does NOT write the WORKBOARD_PUBLISHED audit-log row — that is the
+    endpoint's job (it owns the ``Request``)."""
+    # A workboard needs a slug to be shareable (the public Cổng menu is keyed by
+    # workboard_slug). New boards get one at create; backfill any legacy/blank
+    # board here so going Live never produces an unshareable app.
     if not (wb.slug or "").strip():
         wb.slug = WorkboardService.build_unique_slug(db, wb.name, exclude_id=wb.id)
     wb = WorkboardService.refresh_schema_defaults(db, wb)
 
     # Readiness gate — MANDATORY, server-side. A workboard with blocking errors
     # (missing table/column/dashboard, broken references) must never go live.
-    # Enforced here (not just in the builder UI) so MCP / script / API publishes
-    # are gated identically. Warnings do not block.
+    # Enforced here (not just in the builder UI) so every publish path — button,
+    # public-link, MCP/script — is gated identically. Warnings do not block.
     audit_result = compute_workboard_audit(db, wb)
     if not audit_result["ok"]:
         raise HTTPException(
@@ -444,7 +451,7 @@ def publish_workboard(
 
     # Refresh the DRAFT managed dashboard links (no commit — part of this atomic
     # publish), then PROMOTE them to published-stage rows the Live runtime uses.
-    sync_workboard_dashboard_links(db, wb, creator=current_user, commit=False)
+    sync_workboard_dashboard_links(db, wb, creator=creator, commit=False)
     published_tokens = promote_dashboard_links_to_published(db, wb)
 
     # Snapshot the layout, then rewrite its managed_links to the PUBLISHED tokens
@@ -460,6 +467,21 @@ def publish_workboard(
     wb.is_published = True
     db.commit()
     db.refresh(wb)
+    return wb
+
+
+@router.post("/{workboard_id}/publish", response_model=WorkboardResponse)
+def publish_workboard(
+    workboard_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    wb = _get_or_404(db, workboard_id)
+    require_edit_access(db, current_user, wb, "workboards")
+    require_dataset_binding_access(db, current_user, wb.dataset_id)
+    _assert_owner_pin_rotated(db, wb.id)
+    wb = _promote_workboard_to_published(db, wb, creator=current_user)
     audit(
         db,
         AuditAction.WORKBOARD_PUBLISHED,
@@ -1131,6 +1153,7 @@ def list_public_links(
 def create_public_link(
     workboard_id: int,
     payload: WorkboardPublicLinkCreate,
+    request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -1139,10 +1162,20 @@ def create_public_link(
     require_dataset_binding_access(db, current_user, wb.dataset_id)
     _assert_owner_pin_rotated(db, wb.id)
     if not wb.is_published:
-        wb = WorkboardService.refresh_schema_defaults(db, wb)
-        wb.is_published = True
-        db.commit()
-        db.refresh(wb)
+        # Creating a public link makes the board Live — funnel through the SAME
+        # atomic publish routine as the Publish button so it gets a slug, passes
+        # the readiness gate, and snapshots the deployment boundary. Previously
+        # this only flipped is_published=True, leaving the board with no
+        # snapshot/slug → an empty or Cổng-unreachable Live app.
+        wb = _promote_workboard_to_published(db, wb, creator=current_user)
+        audit(
+            db,
+            AuditAction.WORKBOARD_PUBLISHED,
+            request=request,
+            user_id=current_user.id,
+            resource_type="workboard",
+            resource_id=str(wb.id),
+        )
     return WorkboardPublicLinkService.create_link(
         db,
         wb,

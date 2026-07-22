@@ -57,7 +57,7 @@ interface Props {
     Workboard,
     'id' | 'name' | 'is_published' | 'publish_status' | 'version' | 'published_version'
   >;
-  variant: 'pill' | 'icon';
+  variant: 'pill' | 'icon' | 'topbar';
   /** Hide when the viewer can't edit (list passes canEdit). */
   canEdit?: boolean;
 }
@@ -182,6 +182,43 @@ export function WorkboardPublishToggle({ workboard, variant, canEdit = true }: P
       </ul>
     </Modal>
   ) : null;
+
+  if (variant === 'topbar') {
+    // P1 IA: status is separated from action. The pill only REPORTS state; a
+    // distinct primary button performs the actionable transition. Unpublish is
+    // demoted to the topbar overflow (···) so the destructive action isn't one
+    // stray click away. Clean "live" shows just the pill (nothing to do here).
+    const action =
+      status === 'draft'
+        ? { label: t('workboards.publish.goLive'), title: t('workboards.publish.goLiveTitle') }
+        : status === 'live_unpublished_changes'
+          ? {
+              label: t('workboards.publish.publishChanges'),
+              title: t('workboards.publish.publishChangesTitle'),
+            }
+          : null;
+    return (
+      <>
+        <div className="inline-flex items-center gap-2">
+          <StatePill status={status} />
+          {action ? (
+            <Button
+              variant="primary"
+              size="sm"
+              onClick={() => void doPublish()}
+              loading={publish.isPending}
+              disabled={busy}
+              leadingIcon={<UploadCloud className="h-3.5 w-3.5" />}
+              title={action.title}
+            >
+              {action.label}
+            </Button>
+          ) : null}
+        </div>
+        {auditModal}
+      </>
+    );
+  }
 
   if (variant === 'icon') {
     const liveish = status !== 'draft';

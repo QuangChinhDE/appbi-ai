@@ -102,7 +102,7 @@ export default function ScreenEditor({
 
   const items: TabItem<TabId>[] = [
     { key: 'content', label: 'Content', badge: badge(contentCount) },
-    { key: 'permission', label: 'Permissions', badge: badge(ruleCount) },
+    { key: 'permission', label: 'Access', badge: badge(ruleCount) },
     { key: 'settings', label: 'Settings' },
   ];
 

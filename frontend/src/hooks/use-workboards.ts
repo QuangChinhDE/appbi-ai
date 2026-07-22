@@ -36,6 +36,17 @@ export function useWorkboard(id: number | null | undefined) {
   });
 }
 
+/** Readiness audit for the App-health panel — the same gate Publish runs.
+ * Kept fresh (no long stale window) so a fix in the builder reflects quickly. */
+export function useWorkboardReadinessAudit(id: number | null | undefined) {
+  return useQuery({
+    queryKey: [...KEYS.detail(id ?? 0), 'audit'] as const,
+    queryFn: () => workboardApi.getReadinessAudit(id as number),
+    enabled: !!id,
+    staleTime: 0,
+  });
+}
+
 export function useCreateWorkboard() {
   const qc = useQueryClient();
   return useMutation({

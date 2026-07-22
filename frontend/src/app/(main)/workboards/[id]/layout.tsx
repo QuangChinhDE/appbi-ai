@@ -1,10 +1,15 @@
 /**
- * Layout for ``/workboards/[id]/*`` — shared header (breadcrumb + tabs +
- * Export) above three sibling routes: Builder, Users, Preview.
+ * Layout for ``/workboards/[id]/*`` — shared header (breadcrumb + top-level IA
+ * tabs + publish/preview/share/overflow) above the sibling routes.
  *
- * Splitting tabs into routes lets users deep-link directly into a tab,
- * keeps browser back/forward semantics sane, and lets each tab keep its
- * own loading state without one giant ``useState<Tab>``.
+ * P1 IA: four top-level sections — Build | Access | Automations | Settings —
+ * with Preview / publish / Share / ··· as TOPBAR ACTIONS (not tabs). Splitting
+ * sections into routes lets users deep-link into one, keeps browser
+ * back/forward sane, and lets each keep its own loading state.
+ *
+ * Publish status is now separated from the publish action (see
+ * WorkboardPublishToggle variant="topbar"); the destructive Unpublish is
+ * demoted into the ··· overflow with a confirm.
  */
 'use client';
 
@@ -17,15 +22,20 @@ import {
   Download,
   Eye,
   Loader2,
+  MoreHorizontal,
+  Settings2,
   Share2,
-  UserCircle2,
-  Webhook,
+  ShieldCheck,
+  Undo2,
   Wrench,
+  Zap,
 } from 'lucide-react';
 
-import { useWorkboard } from '@/hooks/use-workboards';
+import { useWorkboard, useUnpublishWorkboard } from '@/hooks/use-workboards';
 import { getResourcePermissions } from '@/hooks/use-resource-permission';
 import { Button } from '@/components/ui/Button';
+import { Modal } from '@/components/common/Modal';
+import { toast } from '@/lib/toast';
 import WorkboardImportExportModal from '@/components/workboards/builder/WorkboardImportExportModal';
 import { WorkboardPublishToggle } from '@/components/workboards/WorkboardPublishToggle';
 import WorkboardShareModal, {
@@ -45,9 +55,12 @@ export default function WorkboardLayout({ children }: { children: React.ReactNod
   const id = Number(params.id);
   const [importExportMode, setImportExportMode] = useState<'export' | null>(null);
   const [showShare, setShowShare] = useState(false);
+  const [showOverflow, setShowOverflow] = useState(false);
+  const [confirmUnpublish, setConfirmUnpublish] = useState(false);
   const [defaultOwnerNotice, setDefaultOwnerNotice] = useState<WorkboardDefaultOwnerNotice | null>(null);
 
   const { data: workboard, isLoading, error } = useWorkboard(id);
+  const unpublish = useUnpublishWorkboard();
 
   // The Live Preview's "chưa gắn Cổng" hint opens this same Share modal via an
   // event (it lives in the page, this modal in the layout).
@@ -85,13 +98,27 @@ export default function WorkboardLayout({ children }: { children: React.ReactNod
     );
   }
 
-  // Active tab inferred from URL — single source of truth, survives
-  // refresh and bookmarking.
+  // Active section inferred from URL — single source of truth, survives
+  // refresh and bookmarking. Preview is an ACTION (its own view), not a tab.
   const baseHref = `/workboards/${id}`;
   const isPreview = pathname.startsWith(`${baseHref}/preview`);
-  const isUsers = pathname.startsWith(`${baseHref}/users`);
-  const isWebhooks = pathname.startsWith(`${baseHref}/webhooks`);
-  const isBuilder = !isUsers && !isPreview && !isWebhooks;
+  const isAccess = pathname.startsWith(`${baseHref}/users`);
+  const isAutomations = pathname.startsWith(`${baseHref}/webhooks`);
+  const isSettings = pathname.startsWith(`${baseHref}/settings`);
+  const isBuild = !isAccess && !isAutomations && !isSettings && !isPreview;
+
+  const canEdit = getResourcePermissions(workboard.user_permission ?? undefined).canEdit;
+  const liveish = workboard.publish_status !== 'draft';
+
+  const doUnpublish = async () => {
+    setConfirmUnpublish(false);
+    try {
+      await unpublish.mutateAsync(workboard.id);
+      toast.success(t('workboards.publish.draftToast'));
+    } catch {
+      toast.error(t('workboards.publish.draftFailed'));
+    }
+  };
 
   return (
     <div className="flex h-full flex-col">
@@ -104,39 +131,50 @@ export default function WorkboardLayout({ children }: { children: React.ReactNod
           {t('workboards.layout.workboards')}
         </button>
         <span className="text-text-quaternary">/</span>
-        <span className="max-w-[260px] truncate text-sm font-medium text-text-primary">
+        <span className="max-w-[220px] truncate text-sm font-medium text-text-primary">
           {workboard.name}
         </span>
 
         <div className="mx-1 h-5 w-px bg-surface-3" />
 
         <div className="inline-flex rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 p-0.5">
-          <SegmentLink active={isBuilder} href={baseHref}>
+          <SegmentLink active={isBuild} href={baseHref}>
             <Wrench className="h-3.5 w-3.5" />
             {t('workboards.layout.builder')}
           </SegmentLink>
-          <SegmentLink active={isUsers} href={`${baseHref}/users`}>
-            <UserCircle2 className="h-3.5 w-3.5" />
-            {t('workboards.layout.users')}
+          <SegmentLink active={isAccess} href={`${baseHref}/users`}>
+            <ShieldCheck className="h-3.5 w-3.5" />
+            {t('workboards.layout.access')}
           </SegmentLink>
-          <SegmentLink active={isPreview} href={`${baseHref}/preview`}>
-            <Eye className="h-3.5 w-3.5" />
-            {t('workboards.layout.preview')}
+          <SegmentLink active={isAutomations} href={`${baseHref}/webhooks`}>
+            <Zap className="h-3.5 w-3.5" />
+            {t('workboards.layout.automations')}
           </SegmentLink>
-          <SegmentLink active={isWebhooks} href={`${baseHref}/webhooks`}>
-            <Webhook className="h-3.5 w-3.5" />
-            {t('workboards.layout.webhook')}
+          <SegmentLink active={isSettings} href={`${baseHref}/settings`}>
+            <Settings2 className="h-3.5 w-3.5" />
+            {t('workboards.layout.settings')}
           </SegmentLink>
         </div>
 
         <div className="flex-1" />
 
-        <WorkboardPublishToggle
-          workboard={workboard}
-          variant="pill"
-          canEdit={getResourcePermissions(workboard.user_permission ?? undefined).canEdit}
-        />
+        {/* Preview — an action, decoupled from any Cổng: preview the Draft. */}
+        <button
+          onClick={() => router.push(`${baseHref}/preview`)}
+          className={`inline-flex items-center gap-1.5 rounded px-2.5 py-1 text-xs transition-colors ${
+            isPreview
+              ? 'bg-brand/10 text-brand'
+              : 'text-text-secondary hover:bg-surface-2 hover:text-text-primary'
+          }`}
+          title={t('workboards.layout.preview')}
+        >
+          <Eye className="h-3.5 w-3.5" />
+          {t('workboards.layout.preview')}
+        </button>
+
         <div className="mx-0.5 h-5 w-px bg-surface-3" />
+
+        <WorkboardPublishToggle workboard={workboard} variant="topbar" canEdit={canEdit} />
 
         <button
           onClick={() => setShowShare(true)}
@@ -146,14 +184,53 @@ export default function WorkboardLayout({ children }: { children: React.ReactNod
           <Share2 className="h-3.5 w-3.5" />
           {t('common.share')}
         </button>
-        <button
-          onClick={() => setImportExportMode('export')}
-          className="inline-flex items-center gap-1.5 rounded px-2.5 py-1 text-xs text-text-secondary transition-colors hover:bg-surface-2 hover:text-text-primary"
-          title={t('workboards.layout.exportTitle')}
-        >
-          <Download className="h-3.5 w-3.5" />
-          {t('workboards.layout.export')}
-        </button>
+
+        {/* Overflow (···) — low-frequency / destructive actions. */}
+        <div className="relative">
+          <button
+            onClick={() => setShowOverflow((v) => !v)}
+            className="inline-flex items-center rounded p-1.5 text-text-secondary transition-colors hover:bg-surface-2 hover:text-text-primary"
+            title={t('workboards.layout.more')}
+            aria-haspopup="menu"
+            aria-expanded={showOverflow}
+          >
+            <MoreHorizontal className="h-4 w-4" />
+          </button>
+          {showOverflow && (
+            <>
+              <div className="fixed inset-0 z-40" onClick={() => setShowOverflow(false)} />
+              <div
+                role="menu"
+                className="absolute right-0 top-9 z-50 min-w-[220px] overflow-hidden rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 py-1 shadow-linear-md"
+              >
+                <button
+                  role="menuitem"
+                  onClick={() => {
+                    setShowOverflow(false);
+                    setImportExportMode('export');
+                  }}
+                  className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-text-secondary transition-colors hover:bg-surface-2 hover:text-text-primary"
+                >
+                  <Download className="h-3.5 w-3.5" />
+                  {t('workboards.layout.export')}
+                </button>
+                {canEdit && liveish && (
+                  <button
+                    role="menuitem"
+                    onClick={() => {
+                      setShowOverflow(false);
+                      setConfirmUnpublish(true);
+                    }}
+                    className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-danger transition-colors hover:bg-danger/10"
+                  >
+                    <Undo2 className="h-3.5 w-3.5" />
+                    {t('workboards.layout.unpublish')}
+                  </button>
+                )}
+              </div>
+            </>
+          )}
+        </div>
       </div>
 
       {defaultOwnerNotice && (
@@ -189,6 +266,32 @@ export default function WorkboardLayout({ children }: { children: React.ReactNod
 
       {showShare && (
         <WorkboardShareModal workboard={workboard} onClose={() => setShowShare(false)} />
+      )}
+
+      {confirmUnpublish && (
+        <Modal
+          isOpen
+          onClose={() => setConfirmUnpublish(false)}
+          title={t('workboards.publish.confirmTitle')}
+          size="sm"
+          footer={
+            <>
+              <Button variant="ghost" size="sm" onClick={() => setConfirmUnpublish(false)}>
+                {t('workboards.publish.cancel')}
+              </Button>
+              <Button variant="danger" size="sm" onClick={doUnpublish} loading={unpublish.isPending}>
+                {t('workboards.publish.confirmDraft')}
+              </Button>
+            </>
+          }
+        >
+          <p className="text-caption text-text-secondary">
+            {t('workboards.publish.confirmDescriptionPrefix')} <strong>{workboard.name}</strong>{' '}
+            {t('workboards.publish.confirmDescriptionMiddle')}{' '}
+            <strong>{t('workboards.publish.hiddenFromPublicLinks')}</strong>{' '}
+            {t('workboards.publish.confirmDescriptionSuffix')}
+          </p>
+        </Modal>
       )}
     </div>
   );

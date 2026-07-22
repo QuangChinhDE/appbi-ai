@@ -50,7 +50,18 @@ def effective_layout_raw(workboard, *, published: Optional[bool] = None) -> Dict
     ``layout_json``. Never let runtime/write/export code pick this itself."""
     if published is None:
         published = use_published_for(workboard)
-    raw = workboard.published_layout_json if published else workboard.layout_json
+    if published:
+        # Live serves the immutable snapshot. Fall back to the live layout ONLY
+        # when the snapshot is missing/empty — a legacy board published before
+        # published_layout_json existed, or one left half-published by a buggy
+        # path — so Live renders the app instead of an empty shell rather than a
+        # hard-fail. A properly published board always has a snapshot, so this
+        # fallback never triggers for it and never weakens Draft/Published
+        # isolation in the normal case. Mirrors the same legacy fallback in
+        # WorkboardRuntimeConfig.runtime_config.
+        raw = workboard.published_layout_json or workboard.layout_json
+    else:
+        raw = workboard.layout_json
     return raw or {}
 
 

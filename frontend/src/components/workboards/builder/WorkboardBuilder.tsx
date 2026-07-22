@@ -9,6 +9,7 @@
 'use client';
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { useSearchParams } from 'next/navigation';
 import {
   Panel,
   PanelGroup,
@@ -195,6 +196,21 @@ export default function WorkboardBuilder({ workboard }: Props) {
     setMode('canvas');
     setFocusFieldColumn(null);
   };
+
+  // Deep-link: /workboards/[id]?screen=<id> opens that screen straight in the
+  // editor. Used by Settings → App health "Sửa" links so a blocking issue jumps
+  // the author to the exact screen. Runs once on mount; ignores unknown ids.
+  const searchParams = useSearchParams();
+  useEffect(() => {
+    const target = searchParams?.get('screen');
+    if (!target) return;
+    const exists = ensureLayout(workboard.layout_json).screens.some((s) => s.id === target);
+    if (exists) {
+      setActiveScreenId(target);
+      setMode('editor');
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Auto-save with a 1.2s debounce. The mini-preview iframe re-keys on
   // each successful save so the user sees their edits the moment the

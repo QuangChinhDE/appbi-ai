@@ -148,6 +148,27 @@ export interface RebindPreview {
   cleared: RebindImpactEntry[];
 }
 
+/** Readiness audit — the SAME server-side check that gates Publish. `ok=false`
+ * means one or more `severity: 'error'` issues block going Live; warnings are
+ * advisory. Surfaced in the Settings → App health panel with Fix deep-links. */
+export interface WorkboardAuditIssue {
+  severity: 'error' | 'warning';
+  screen_id?: string | null;
+  screen_kind?: string | null;
+  screen_title?: string | null;
+  code: string;
+  detail: string;
+  context?: Record<string, unknown> | null;
+}
+
+export interface WorkboardReadinessAudit {
+  workboard_id: number;
+  screen_count: number;
+  issue_count: number;
+  ok: boolean;
+  issues: WorkboardAuditIssue[];
+}
+
 export interface WorkboardImportReport {
   matched_tables: Array<{
     old_table_id: number;
@@ -322,6 +343,14 @@ export const workboardApi = {
 
   unpublish: async (id: number): Promise<Workboard> => {
     const { data } = await apiClient.post(`/workboards/${id}/unpublish`);
+    return data;
+  },
+
+  /** Readiness audit — the same server-side gate Publish runs. Used by the
+   * Settings → App health panel so the author can see & fix blocking errors
+   * before going Live. */
+  getReadinessAudit: async (id: number): Promise<WorkboardReadinessAudit> => {
+    const { data } = await apiClient.get(`/workboards/${id}/audit`);
     return data;
   },
 
