@@ -2911,6 +2911,20 @@ export default function DashboardDetailPage() {
             columnChartCount={resolvedColumnChartCount}
             distinctValues={resolvedDistinctValues}
             distinctStatus={semanticDistinctStatus}
+            // Type-to-search over the FULL cached distinct set (high-cardinality
+            // slicers). Hits the BE result cache (no per-keystroke BigQuery); the
+            // non-search list still cascades via the prefetch above.
+            fetchServerDistinct={async (column, search) => {
+              if (!column.datasetId || !column.semanticField) return [];
+              try {
+                const res = await fetchDatasetModelDistinctValues(
+                  column.datasetId, column.semanticField, 500, [], search,
+                );
+                return res.values ?? [];
+              } catch {
+                return [];
+              }
+            }}
             // Per-slicer scope config (⚙): Chỉ trang này / Tất cả trang /
             // Tùy chọn theo trang (ma trận Lọc/Hiện). Build only.
             showScopeToggle={canEditResource}

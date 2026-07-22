@@ -26,7 +26,7 @@ from app.models.models import Dashboard, DashboardChart, DashboardPublicLink
 from app.schemas import ChartDataResponse, DashboardResponse
 from app.schemas.schemas import AiChatSessionSave
 from app.services import ChartService
-from app.services.dataset_model_service import get_dataset_model, get_distinct_field_values
+from app.services.dataset_model_service import get_dataset_model, get_distinct_field_values, _DISTINCT_FETCH_CEILING
 from app.services.dashboard_ai_bot.public_link_config import (
     resolve_public_ai_credentials,
     resolve_public_ai_critique_enabled,
@@ -2454,7 +2454,12 @@ def get_public_filter_distinct_values(
     request: Request,
     dataset_id: int = Query(..., ge=1),
     field: str = Query(..., description="Qualified field name, e.g. orders.country"),
-    limit: int = Query(200, ge=1, le=500),
+    limit: int = Query(200, ge=1, le=1000, description="Page size (values returned)."),
+    offset: int = Query(0, ge=0, description="Page offset into the (searched) distinct set."),
+    search: str | None = Query(
+        default=None,
+        description="Case-insensitive substring; server-side search over the cached full distinct set (no per-keystroke warehouse query).",
+    ),
     filters: str | None = Query(
         default=None,
         description="JSON-encoded list of additional viewer filter objects.",
@@ -2519,11 +2524,17 @@ def get_public_filter_distinct_values(
     )
 
     try:
+        # Fetch the FULL searched set (server-side search over the cached full
+        # distinct list — no per-keystroke warehouse query), then apply the
+        # per-link scope allow-list, THEN paginate. Order matters: scope_allow
+        # must bound BEFORE pagination so total/has_more reflect the allowed set.
         result = get_distinct_field_values(
             db,
             dataset_id,
             field,
-            limit=limit,
+            limit=_DISTINCT_FETCH_CEILING,
+            offset=0,
+            search=search,
             filters=combined_filters,
             snapshot_ttl_minutes=_resolve_public_snapshot_ttl(_distinct_appearance),
         )
@@ -2545,9 +2556,13 @@ def get_public_filter_distinct_values(
         if scope_allow is not None:
             allow_set = {str(v) for v in scope_allow}
             values = [v for v in values if str(v) in allow_set]
+        total = len(values)
+        page = values[offset:offset + limit]
         return {
             "field": field,
-            "values": values,
+            "values": page,
+            "total": total,
+            "has_more": (offset + limit) < total,
             "dropped_filters": result.get("dropped_filters", []),
         }
     except ValueError as exc:

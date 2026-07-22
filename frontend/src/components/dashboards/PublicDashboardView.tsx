@@ -1234,6 +1234,20 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
         columnChartCount={availableFilterChartCount}
         distinctValues={resolvedDistinctValues}
         distinctStatus={resolvedDistinctStatus}
+        // Type-to-search over the FULL cached distinct set for high-cardinality
+        // slicers on a public/embed link. Hits the BE result cache via the
+        // public endpoint (no per-keystroke BigQuery, no authed call).
+        fetchServerDistinct={async (column, search) => {
+          if (!column.datasetId || !column.semanticField) return [];
+          try {
+            const res = await publicDashboardApi.getFilterDistinctValues(
+              token, column.datasetId, column.semanticField, activeSessionToken, 500, undefined, search,
+            );
+            return res.values ?? [];
+          } catch {
+            return [];
+          }
+        }}
         hasPendingChanges={hasPendingFilterChanges}
         onApply={handleApplyFilters}
         onReset={handleResetFilters}

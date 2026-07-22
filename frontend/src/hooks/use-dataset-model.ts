@@ -185,6 +185,10 @@ export interface DroppedFilterInfo {
 export interface DistinctFieldValuesResponse {
   field: string;
   values: string[];
+  /** Total distinct values matching the (searched) set — for pagination. */
+  total?: number;
+  /** True when more values exist beyond the returned page. */
+  has_more?: boolean;
   dropped_filters?: DroppedFilterInfo[];
 }
 
@@ -268,6 +272,8 @@ export async function fetchDatasetModelDistinctValues(
   field: string,
   limit = 200,
   filters?: BaseFilter[],
+  search?: string,
+  offset?: number,
 ) {
   const response = await api.get<DistinctFieldValuesResponse>(
     `/datasets/${datasetId}/model/distinct-values`,
@@ -275,6 +281,8 @@ export async function fetchDatasetModelDistinctValues(
       params: {
         field,
         limit,
+        ...(offset ? { offset } : {}),
+        ...(search && search.trim() ? { search: search.trim() } : {}),
         ...(filters?.length ? { filters: JSON.stringify(filters) } : {}),
       },
     },

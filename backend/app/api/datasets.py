@@ -4640,7 +4640,12 @@ def get_dataset_model_endpoint(
 def get_dataset_model_distinct_values(
     dataset_id: int,
     field: str = Query(..., description="Qualified field name, e.g. orders.country"),
-    limit: int = Query(200, ge=1, le=500),
+    limit: int = Query(200, ge=1, le=1000, description="Page size (values returned)."),
+    offset: int = Query(0, ge=0, description="Page offset into the (searched) distinct set."),
+    search: str | None = Query(
+        default=None,
+        description="Case-insensitive substring; server-side search over the cached full distinct set (no per-keystroke warehouse query).",
+    ),
     filters: str | None = Query(
         default=None,
         description="JSON-encoded list of dashboard filter objects used to cascade distinct values.",
@@ -4673,11 +4678,14 @@ def get_dataset_model_distinct_values(
 
     try:
         result = get_distinct_field_values(
-            db, dataset_id, field, limit=limit, filters=filter_context, explain=explain
+            db, dataset_id, field, limit=limit, offset=offset, search=search,
+            filters=filter_context, explain=explain,
         )
         payload = {
             "field": field,
             "values": result.get("values", []),
+            "total": result.get("total", len(result.get("values", []) or [])),
+            "has_more": result.get("has_more", False),
             "dropped_filters": result.get("dropped_filters", []),
         }
         if explain and "debug_sql" in result:
