@@ -139,13 +139,33 @@ def get_publish_info(db: Session, dataset: Dataset) -> Dict[str, Any]:
     generation, timestamps, and whether a sync is in flight."""
     state = refresh_publish_state(db, dataset)
     from app.services import sync_progress
+    from app.models.dataset import DatasetTableSnapshot
+
+    syncing = _qc.is_claimed_global(_lease_key(dataset.id))
+    # has_prior_complete = at least one COMPLETE generation already exists (pinned
+    # published gen, or a current-ready builder snapshot). Drives the FE decision:
+    # serve-stale (correct last-complete) vs FIRST-sync (show partial + warn).
+    has_prior_complete = dataset.published_generation is not None
+    if not has_prior_complete:
+        has_prior_complete = (
+            db.query(DatasetTableSnapshot.id)
+            .filter(
+                DatasetTableSnapshot.dataset_id == dataset.id,
+                DatasetTableSnapshot.is_current.is_(True),
+                DatasetTableSnapshot.status == "ready",
+            )
+            .first()
+            is not None
+        )
     return {
         "publish_state": state,  # None = legacy
         "published_generation": dataset.published_generation,
         "published_at": dataset.published_at.isoformat() if dataset.published_at else None,
         "last_sync_error": dataset.last_sync_error,
-        "syncing": _qc.is_claimed_global(_lease_key(dataset.id)),
+        "syncing": syncing,
+        "stoppable": syncing,  # a stop can be requested only while a sync is live
         "has_published_data": dataset.published_generation is not None,
+        "has_prior_complete": has_prior_complete,
         # Live progress for the manual Sync & Publish waiting UI (None when idle).
         "progress": sync_progress.get(dataset.id),
     }
@@ -186,6 +206,8 @@ def start_sync_and_publish(dataset_id: int, trigger: str = "manual") -> Dict[str
         finally:
             db.close()
             _qc.release_global(_lease_key(dataset_id))
+            from app.services import sync_control
+            sync_control.clear_stop(dataset_id)
 
     threading.Thread(target=_run, name=f"ds-publish-{dataset_id}", daemon=True).start()
     return {"started": True}
@@ -232,6 +254,10 @@ def _sync_and_publish_blocking(db: Session, dataset_id: int) -> Dict[str, Any]:
     if ds is None:
         return {"ok": False, "error": "dataset not found"}
 
+    # Fresh run — drop any stale Stop flag so a prior cancel can't kill this sync.
+    from app.services import sync_control
+    sync_control.clear_stop(dataset_id)
+
     ds.publish_state = "syncing"
     ds.last_sync_error = None
     if ds.security_scope is None:
@@ -264,6 +290,22 @@ def _sync_and_publish_blocking(db: Session, dataset_id: int) -> Dict[str, Any]:
     generation = result.get("generation")
     built = result.get("built") or []
     skipped = result.get("skipped") or []
+
+    # Stop requested mid-sync → do NOT validate/publish. The interrupted
+    # generation is incomplete; keep the prior published generation pinned
+    # (readers serve-stale, correct numbers) and revert the transient state.
+    if result.get("stopped"):
+        ds = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+        if ds is not None:
+            ds.publish_state = "published" if ds.published_generation is not None else "draft"
+            ds.last_sync_error = None
+            db.commit()
+        from app.services import sync_progress as _spstop
+        _spstop.set_phase(dataset_id, "stopped")
+        logger.info("[publish] sync STOPPED by user dataset=%s (kept generation=%s)",
+                    dataset_id, ds.published_generation if ds is not None else None)
+        return {"ok": False, "stopped": True, "generation": generation,
+                "built": built, "skipped": skipped}
 
     # 3) VALIDATE gate — the generation must fully cover every materializable
     #    (enabled, non-calendar, non-derived) table.

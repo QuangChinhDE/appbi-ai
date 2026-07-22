@@ -3,6 +3,7 @@
 import { useMemo } from 'react';
 import { useQueries } from '@tanstack/react-query';
 import { publicDashboardApi } from '@/lib/api/public';
+import { SLICER_DISTINCT_PREFETCH_LIMIT } from '@/hooks/use-dataset-model';
 import {
   getColumnKey,
   getDistinctValueFilterContext,
@@ -72,7 +73,7 @@ export function usePublicFilterDistinctValues(
         column.datasetId!,
         column.semanticField!,
         sessionToken,
-        200,
+        SLICER_DISTINCT_PREFETCH_LIMIT,
         filterContext,
       ),
       enabled: Boolean(token && column.datasetId && column.semanticField),
@@ -90,7 +91,7 @@ export function usePublicFilterDistinctValues(
     // was still in flight, then values appeared ("vàng xong lại ra data").
     // isLoading deliberately includes isFetching so a REFETCH (after Apply or a
     // cascade-filter change) also suppresses the banner, not just the first load.
-    const status: Record<string, { isLoading: boolean; isError: boolean; hasFilterContext: boolean }> = {};
+    const status: Record<string, { isLoading: boolean; isError: boolean; hasFilterContext: boolean; total?: number; hasMore?: boolean }> = {};
 
     activeSemanticDistinctTargets.forEach(({ column, filterContext }, index) => {
       const q = semanticDistinctQueries[index];
@@ -102,6 +103,8 @@ export function usePublicFilterDistinctValues(
         isLoading: Boolean(q?.isLoading || q?.isFetching),
         isError: Boolean(q?.isError),
         hasFilterContext: Array.isArray(filterContext) && filterContext.length > 0,
+        total: q?.data?.total,
+        hasMore: q?.data?.has_more,
       };
     });
 

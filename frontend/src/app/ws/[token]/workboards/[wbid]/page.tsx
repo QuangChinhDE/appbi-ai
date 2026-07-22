@@ -268,12 +268,27 @@ export default function WorkspaceWorkboardPage() {
         // Deep-link may target an off-nav screen (e.g. a scan-only status form);
         // the backend still enforces per-screen visibility/hidden/RLS, so accept
         // any existing screen id here and fall back to the nav default otherwise.
-        if (knownScreen) {
-          setActiveScreenId(deepScreen as string);
-        } else if (s.nav.items.length > 0) {
-          setActiveScreenId(s.nav.items[0]);
-        } else if (s.screens.length > 0) {
-          setActiveScreenId(s.screens[0].id);
+        const chosenId = knownScreen
+          ? (deepScreen as string)
+          : s.nav.items.length > 0
+            ? s.nav.items[0]
+            : s.screens.length > 0
+              ? s.screens[0].id
+              : null;
+        if (chosenId) {
+          setActiveScreenId(chosenId);
+          // Canonicalise the URL so it always names the current screen
+          // (?screen=<id>): refreshing (F5) restores THIS screen instead of the
+          // nav default, and the address bar tells you which tab you're on.
+          // replaceState (no new history entry) + keep any deep-link prefill
+          // params so a scanned QR's pre-fill survives the canonicalisation.
+          if (typeof window !== 'undefined') {
+            const url = new URL(window.location.href);
+            if (url.searchParams.get('screen') !== chosenId) {
+              url.searchParams.set('screen', chosenId);
+              window.history.replaceState(window.history.state, '', url);
+            }
+          }
         }
       } catch (err: unknown) {
         if (!alive) return;
@@ -342,9 +357,48 @@ export default function WorkspaceWorkboardPage() {
         setShared((curr) => ({ ...curr, ...carry }));
       }
       setActiveScreenId(screenId);
+      // Give every screen its own URL: switching tabs is reflected in the
+      // address bar, refresh (F5) stays on the same screen, and browser
+      // back/forward move between screens. pushState (not replace) creates the
+      // history entry; a fresh nav starts a clean ?screen=<id> URL (any stale
+      // deep-link prefill is dropped — it already lives in `shared` state).
+      if (typeof window !== 'undefined') {
+        const url = new URL(window.location.href);
+        if (url.searchParams.get('screen') !== screenId) {
+          url.search = `?screen=${encodeURIComponent(screenId)}`;
+          url.hash = '';
+          window.history.pushState({ wbScreen: screenId }, '', url);
+        }
+      }
     },
     [],
   );
+
+  // Browser back/forward → sync the active screen from the URL (no pushState
+  // here, or we'd fight the history stack). Guarded to a known screen; a bare
+  // URL falls back to the nav default.
+  useEffect(() => {
+    if (!shell) return;
+    const onPop = () => {
+      const sid = new URLSearchParams(window.location.search).get('screen');
+      if (sid && shell.screens.some((s) => s.id === sid)) {
+        setActiveScreenId(sid);
+      } else if (shell.nav.items.length > 0) {
+        setActiveScreenId(shell.nav.items[0]);
+      }
+    };
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, [shell]);
+
+  // Reflect the current screen in the browser tab title (and thus in the
+  // labelled back/forward history entries).
+  useEffect(() => {
+    if (typeof document === 'undefined' || !shell || !activeScreenId) return;
+    const sc = shell.screens.find((s) => s.id === activeScreenId);
+    const appNm = shell.branding.app_name || shell.workboard.name;
+    document.title = sc ? `${sc.title || sc.id} · ${appNm}` : appNm;
+  }, [activeScreenId, shell]);
 
   if (error) {
     return (
@@ -1204,6 +1258,7 @@ function ScreenContainer({
         workboardId={workboardId}
         accent={accent}
         viewerRole={viewerRole}
+        shared={shared}
         onAction={(action, row) => {
           if (action.go_to_screen) {
             const carry: Record<string, unknown> = {};
@@ -3047,9 +3102,12 @@ function BulkRecipeModal({
   token,
   workboardId,
   accent,
+  colLabels,
+  pkCols,
   busy,
   onClose,
   onRun,
+  variant = 'modal',
 }: {
   action: NonNullable<NonNullable<TableScreenResponse['table_view']>['bulk_actions']>[number];
   selectedRows: Array<Record<string, unknown>>;
@@ -3057,9 +3115,14 @@ function BulkRecipeModal({
   workboardId: number;
   accent: string;
   colLabels: Record<string, string>;
+  pkCols: string[];
   busy: boolean;
   onClose: () => void;
   onRun: (resources: Record<string, Record<string, unknown>>) => void;
+  // 'modal' = overlay popup (default). 'panel' = docked inline card (no overlay,
+  // no close/cancel) — used to embed the plan (pickers + weight + route map)
+  // beside a table screen so the operator selects rows and sees the plan live.
+  variant?: 'modal' | 'panel';
 }) {
   const resourceInputs = action.resource_inputs || [];
   const constraints = action.constraints || [];
@@ -3131,20 +3194,31 @@ function BulkRecipeModal({
   const anyViolated = constraintState.some((s) => !s.ok);
   const canRun = !busy && !missingResource && !anyViolated && selectedRows.length > 0;
 
-  return (
-    <div
-      className="fixed inset-0 z-40 flex items-center justify-center bg-slate-900/40 p-4"
-      onClick={onClose}
-    >
-      <div className="w-full max-w-lg rounded-2xl bg-white p-5 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+  const inner = (
+      <div
+        className={
+          variant === 'panel'
+            ? 'rounded-2xl border border-slate-200 bg-white p-4 shadow-sm'
+            : 'w-full max-w-lg rounded-2xl bg-white p-5 shadow-2xl'
+        }
+        onClick={variant === 'panel' ? undefined : (e) => e.stopPropagation()}
+      >
         <div className="flex items-center justify-between">
           <h3 className="text-base font-bold text-slate-800">
             {action.icon ? `${action.icon} ` : ''}
             {action.label}
           </h3>
-          <button onClick={onClose} className="rounded p-1 text-slate-400 hover:bg-slate-100">✕</button>
+          {variant === 'modal' ? (
+            <button onClick={onClose} className="rounded p-1 text-slate-400 hover:bg-slate-100">✕</button>
+          ) : null}
         </div>
-        <p className="mt-1 text-sm text-slate-500">Đã chọn {selectedRows.length} dòng.</p>
+        <p className="mt-1 text-sm text-slate-500">
+          {selectedRows.length > 0
+            ? `Đã chọn ${selectedRows.length} dòng.`
+            : variant === 'panel'
+              ? 'Chọn các dòng ở bảng bên cạnh để lập kế hoạch.'
+              : 'Đã chọn 0 dòng.'}
+        </p>
 
         {previewAgg.length ? (
           <div className="mt-3 flex flex-wrap gap-1.5">
@@ -3184,42 +3258,78 @@ function BulkRecipeModal({
           ))
         )}
 
-        {constraintState.map((s, i) => (
-          <div
-            key={i}
-            className={`mt-3 rounded-lg px-3 py-2 text-sm ${s.ok ? 'bg-emerald-50 text-emerald-800' : 'bg-rose-50 text-rose-800'}`}
-          >
-            <div className="flex items-center justify-between font-medium">
-              <span>{s.c.label || s.c.agg_column}</span>
-              <span>
-                {fmt(s.actual)} {s.c.op || '<='} {s.limit == null ? '—' : fmt(s.limit)}
-                {s.limit != null ? ` (${s.pct.toFixed(0)}%)` : ''}
-              </span>
-            </div>
-            {!s.ok ? (
-              <div className="mt-0.5 text-xs">
-                {s.limit == null ? 'Hãy chọn tài nguyên để kiểm tra ràng buộc.' : (s.c.error_message || 'Vượt giới hạn — không thể xác nhận.')}
+        {constraintState.map((s, i) => {
+          // Neutral (not red) until the limit is known — e.g. before a vehicle is
+          // picked the capacity is unknown, so it's "pending", not a violation.
+          const pending = s.limit == null;
+          const tone = pending
+            ? 'bg-slate-50 text-slate-600'
+            : s.ok
+              ? 'bg-emerald-50 text-emerald-800'
+              : 'bg-rose-50 text-rose-800';
+          return (
+            <div key={i} className={`mt-3 rounded-lg px-3 py-2 text-sm ${tone}`}>
+              <div className="flex items-center justify-between font-medium">
+                <span>{s.c.label || s.c.agg_column}</span>
+                <span>
+                  {fmt(s.actual)} {s.c.op || '<='} {pending ? '—' : fmt(s.limit as number)}
+                  {!pending ? ` (${s.pct.toFixed(0)}%)` : ''}
+                </span>
               </div>
-            ) : null}
+              {pending ? (
+                <div className="mt-0.5 text-xs">Hãy chọn tài nguyên để kiểm tra ràng buộc.</div>
+              ) : !s.ok ? (
+                <div className="mt-0.5 text-xs">{s.c.error_message || 'Vượt giới hạn — không thể xác nhận.'}</div>
+              ) : null}
+            </div>
+          );
+        })}
+
+        {action.route_preview && selectedRows.length > 0 ? (
+          <div className="mt-3 overflow-hidden rounded-xl border border-slate-200">
+            <div className="border-b border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-medium text-slate-600">
+              Tuyến giao của các đơn đã chọn
+            </div>
+            <RouteMapView
+              rows={selectedRows}
+              config={action.route_preview}
+              colLabels={colLabels}
+              pkCols={pkCols}
+              onOpen={() => {}}
+              panelEnabled={false}
+              compact
+              emptyMessage="Các đơn đã chọn chưa có toạ độ (Lat/Long) để vẽ tuyến."
+            />
           </div>
-        ))}
+        ) : null}
 
         <div className="mt-5 flex justify-end gap-2">
-          <button onClick={onClose} className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm text-slate-700 hover:bg-slate-50">
-            Huỷ
-          </button>
+          {variant === 'modal' ? (
+            <button onClick={onClose} className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm text-slate-700 hover:bg-slate-50">
+              Huỷ
+            </button>
+          ) : null}
           <button
             type="button"
             disabled={!canRun}
             onClick={() => onRun(resources)}
             style={{ backgroundColor: accent }}
-            className="inline-flex items-center gap-1.5 rounded-lg px-4 py-2 text-sm font-semibold text-white shadow-sm disabled:opacity-40"
+            className="inline-flex w-full items-center justify-center gap-1.5 rounded-lg px-4 py-2 text-sm font-semibold text-white shadow-sm disabled:opacity-40"
           >
             {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-            Xác nhận
+            {variant === 'panel' ? action.label : 'Xác nhận'}
           </button>
         </div>
       </div>
+  );
+  return variant === 'panel' ? (
+    inner
+  ) : (
+    <div
+      className="fixed inset-0 z-40 flex items-center justify-center bg-slate-900/40 p-4"
+      onClick={onClose}
+    >
+      {inner}
     </div>
   );
 }
@@ -3247,6 +3357,7 @@ function BarcodeField({
   const streamRef = useRef<MediaStream | null>(null);
   const rafRef = useRef<number | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const photoInputRef = useRef<HTMLInputElement | null>(null);
   const stringValue = typeof value === 'string' ? value : '';
   const supported = cameraScanAvailable();
   // Scan-to-form: when the field declares scan_go_to_screen, a decoded code
@@ -3331,6 +3442,35 @@ function BarcodeField({
     }
   };
 
+  const decodePhoto = async (file: File) => {
+    setError(null);
+    try {
+      const url = URL.createObjectURL(file);
+      const image = new Image();
+      image.src = url;
+      await new Promise<void>((resolve, reject) => {
+        image.onload = () => resolve();
+        image.onerror = () => reject(new Error('image-load'));
+      });
+      const canvas = canvasRef.current || document.createElement('canvas');
+      canvasRef.current = canvas;
+      canvas.width = image.naturalWidth;
+      canvas.height = image.naturalHeight;
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
+      if (!ctx) throw new Error('canvas');
+      ctx.drawImage(image, 0, 0);
+      URL.revokeObjectURL(url);
+      const data = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      const result = jsQR(data.data, data.width, data.height, { inversionAttempts: 'attemptBoth' });
+      if (!result?.data) throw new Error('not-found');
+      emit(result.data);
+    } catch {
+      setError('Không đọc được mã trong ảnh. Hãy chụp gần hơn, đủ sáng và thử lại.');
+    } finally {
+      if (photoInputRef.current) photoInputRef.current.value = '';
+    }
+  };
+
   return (
     <div className="space-y-1.5">
       {scanning && (
@@ -3365,6 +3505,27 @@ function BarcodeField({
           >
             <ScanLine className="h-4 w-4" /> Quét
           </button>
+        )}
+        {!readonly && (
+          <>
+            <input
+              ref={photoInputRef}
+              type="file"
+              accept="image/*"
+              className="hidden"
+              onChange={(event) => {
+                const file = event.target.files?.[0];
+                if (file) void decodePhoto(file);
+              }}
+            />
+            <button
+              type="button"
+              onClick={() => photoInputRef.current?.click()}
+              className="inline-flex shrink-0 items-center gap-1 rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 hover:bg-slate-50"
+            >
+              <ScanLine className="h-4 w-4" /> Ảnh
+            </button>
+          </>
         )}
       </div>
       {error && <p className="text-xs text-rose-600">{error}</p>}
@@ -3567,6 +3728,426 @@ const ESRI_BASEMAPS: Record<string, string> = {
 
 const MAP_STYLE_SELECTED = { color: '#f59e0b', weight: 3, fillColor: '#f59e0b', fillOpacity: 0.45 };
 const MAP_STYLE_DEFAULT = { color: '#38bdf8', weight: 2, fillColor: '#38bdf8', fillOpacity: 0.15 };
+
+// ── Route-map display mode (display_mode='route_map') ──────────────────
+// Generic, config-driven: projects table rows onto a Leaflet map with an
+// optional ordered route line (OSRM road geometry via /api/workboards/route-line,
+// straight-line fallback). Reuses the screen's rows/RLS/filters/detail panel.
+type RouteMapConfigView = NonNullable<
+  NonNullable<TableScreenResponse['table_view']>['route_map_config']
+>;
+
+type RouteMapStop = {
+  row: Record<string, unknown>;
+  lat: number;
+  lng: number;
+  label: string;
+  routeId: string;
+  order: number | null;
+  sourceIndex: number;
+};
+
+function parseRouteNumber(value: unknown): number | null {
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+  const raw = String(value ?? '').trim();
+  if (!raw) return null;
+  const normalized = raw.includes(',') && raw.includes('.')
+    ? raw.replace(/\./g, '').replace(',', '.')
+    : raw.includes(',')
+      ? raw.replace(',', '.')
+      : raw;
+  const n = Number(normalized.replace(/[^0-9.\-]/g, ''));
+  return Number.isFinite(n) ? n : null;
+}
+
+function parseCoordinateNumber(value: unknown): number | null {
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+  const raw = String(value ?? '').trim();
+  if (!raw) return null;
+  // Coordinates often arrive from Sheets as "21.046" or "21,046".
+  // Keep decimal dots; only normalize a decimal comma.
+  const normalized = raw.replace(',', '.').replace(/[^0-9.\-]/g, '');
+  const n = Number(normalized.replace(/[^0-9.\-]/g, ''));
+  return Number.isFinite(n) ? n : null;
+}
+
+function escapeMapHtml(value: unknown): string {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
+function buildRouteStops(
+  rows: Array<Record<string, unknown>>,
+  config: RouteMapConfigView,
+  pkCols: string[],
+): { stops: RouteMapStop[]; skipped: number } {
+  const stops: RouteMapStop[] = [];
+  let skipped = 0;
+  const fallbackTitle = pkCols[0] || config.title_column || config.route_id_column || config.lat_column;
+  rows.forEach((row, sourceIndex) => {
+    const lat = parseCoordinateNumber(row[config.lat_column]);
+    const lng = parseCoordinateNumber(row[config.lng_column]);
+    if (lat == null || lng == null || Math.abs(lat) > 90 || Math.abs(lng) > 180) {
+      skipped += 1;
+      return;
+    }
+    const routeRaw = config.route_id_column ? row[config.route_id_column] : null;
+    const routeId = routeRaw == null || routeRaw === '' ? 'Tất cả điểm' : String(routeRaw);
+    const titleRaw = config.title_column ? row[config.title_column] : row[fallbackTitle];
+    const order = config.order_column ? parseRouteNumber(row[config.order_column]) : null;
+    stops.push({
+      row,
+      lat,
+      lng,
+      label: titleRaw == null || titleRaw === '' ? `Điểm ${sourceIndex + 1}` : String(titleRaw),
+      routeId,
+      order,
+      sourceIndex,
+    });
+  });
+  stops.sort((a, b) => {
+    if (a.routeId !== b.routeId) return a.routeId.localeCompare(b.routeId, 'vi');
+    if (a.order != null && b.order != null && a.order !== b.order) return a.order - b.order;
+    if (a.order != null && b.order == null) return -1;
+    if (a.order == null && b.order != null) return 1;
+    return a.sourceIndex - b.sourceIndex;
+  });
+  return { stops, skipped };
+}
+
+async function fetchOsrmRouteLine(stops: RouteMapStop[]): Promise<Array<[number, number]> | null> {
+  if (stops.length < 2) return null;
+  // Keep this as a lightweight overview feature and fall back to straight lines
+  // for very large routes. The actual OSRM call is proxied through a local
+  // Next route so browser CORS/CSP/cache differences do not affect mini-apps.
+  if (stops.length > 50) return null;
+  const response = await fetch('/api/workboards/route-line', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    cache: 'no-store',
+    body: JSON.stringify({
+      profile: 'driving',
+      coordinates: stops.map((stop) => ({ lat: stop.lat, lng: stop.lng })),
+    }),
+  });
+  if (!response.ok) return null;
+  const payload = await response.json();
+  const coords = payload?.line;
+  if (!Array.isArray(coords)) return null;
+  const line: Array<[number, number]> = [];
+  for (const item of coords) {
+    if (!Array.isArray(item) || item.length < 2) continue;
+    const lat = Number(item[0]);
+    const lng = Number(item[1]);
+    if (Number.isFinite(lat) && Number.isFinite(lng)) line.push([lat, lng]);
+  }
+  return line.length >= 2 ? line : null;
+}
+
+function RouteMapView({
+  rows,
+  config,
+  colLabels,
+  pkCols,
+  onOpen,
+  panelEnabled,
+  emptyMessage,
+  compact = false,
+}: {
+  rows: Array<Record<string, unknown>>;
+  config: RouteMapConfigView;
+  colLabels: Record<string, string>;
+  pkCols: string[];
+  onOpen: (row: Record<string, unknown>) => void;
+  panelEnabled: boolean;
+  emptyMessage?: string | null;
+  // compact = embedded in a narrow container (recipe panel/modal): stack the map
+  // ABOVE the stop-list instead of the wide side-by-side split, and use a shorter
+  // map. The full-width route-map screen leaves this false.
+  compact?: boolean;
+}) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const [selectedRouteId, setSelectedRouteId] = useState<string>('');
+  const [routeLine, setRouteLine] = useState<Array<[number, number]> | null>(null);
+  const [routeLineStatus, setRouteLineStatus] = useState<'idle' | 'loading' | 'road' | 'fallback'>('idle');
+  const { stops, skipped } = useMemo(() => buildRouteStops(rows, config, pkCols), [rows, config, pkCols]);
+  const routeIds = useMemo(() => Array.from(new Set(stops.map((s) => s.routeId))), [stops]);
+
+  useEffect(() => {
+    if (routeIds.length === 0) {
+      setSelectedRouteId('');
+      return;
+    }
+    const preferred = config.route_filter_default && routeIds.includes(config.route_filter_default)
+      ? config.route_filter_default
+      : routeIds[0];
+    setSelectedRouteId((current) => (current && routeIds.includes(current) ? current : preferred));
+  }, [routeIds, config.route_filter_default]);
+
+  const visibleStops = useMemo(
+    () => stops.filter((s) => !selectedRouteId || s.routeId === selectedRouteId),
+    [stops, selectedRouteId],
+  );
+  const totalWeight = useMemo(
+    () => config.weight_column
+      ? visibleStops.reduce((sum, stop) => sum + (parseRouteNumber(stop.row[config.weight_column!]) || 0), 0)
+      : null,
+    [visibleStops, config.weight_column],
+  );
+  const totalValue = useMemo(
+    () => config.value_column
+      ? visibleStops.reduce((sum, stop) => sum + (parseRouteNumber(stop.row[config.value_column!]) || 0), 0)
+      : null,
+    [visibleStops, config.value_column],
+  );
+
+  const mapBuildKey = useMemo(
+    () => JSON.stringify({
+      basemap: config.basemap || 'streets',
+      stops: visibleStops.map((s) => [s.lat, s.lng, s.label, s.order]),
+      lineMode: config.line_mode || 'road',
+      routeLine,
+    }),
+    [visibleStops, config.basemap, config.line_mode, routeLine],
+  );
+
+  const osrmKey = useMemo(
+    () => visibleStops.map((s) => `${s.lat.toFixed(6)},${s.lng.toFixed(6)}`).join('|'),
+    [visibleStops],
+  );
+
+  useEffect(() => {
+    let disposed = false;
+    if ((config.line_mode || 'road') !== 'road' || visibleStops.length < 2) {
+      setRouteLine(null);
+      setRouteLineStatus('idle');
+      return;
+    }
+    setRouteLineStatus('loading');
+    fetchOsrmRouteLine(visibleStops)
+      .then((line) => {
+        if (disposed) return;
+        setRouteLine(line);
+        setRouteLineStatus(line ? 'road' : 'fallback');
+      })
+      .catch(() => {
+        if (disposed) return;
+        setRouteLine(null);
+        setRouteLineStatus('fallback');
+      });
+    return () => {
+      disposed = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [osrmKey, config.line_mode, config.route_provider, config.route_profile]);
+
+  useEffect(() => {
+    let disposed = false;
+    /* eslint-disable @typescript-eslint/no-explicit-any */
+    let map: any = null;
+    (async () => {
+      const el = containerRef.current;
+      if (!el || visibleStops.length === 0) return;
+      const L: any = (await import('leaflet')).default;
+      if (disposed || !containerRef.current) return;
+
+      map = L.map(el, { attributionControl: true, scrollWheelZoom: true });
+      L.tileLayer(ESRI_BASEMAPS[config.basemap || 'streets'] || ESRI_BASEMAPS.streets, {
+        maxZoom: 19,
+        attribution: 'Tiles &copy; Esri',
+      }).addTo(map);
+
+      const bounds = L.latLngBounds([]);
+      const latLngs: Array<[number, number]> = [];
+      visibleStops.forEach((stop, index) => {
+        const sequence = stop.order ?? index + 1;
+        const markerHtml = `<div class="flex h-7 w-7 items-center justify-center rounded-full border-2 border-white bg-orange-500 text-xs font-bold text-white shadow">${escapeMapHtml(sequence)}</div>`;
+        const icon = L.divIcon({
+          html: markerHtml,
+          className: 'appbi-route-marker',
+          iconSize: [28, 28],
+          iconAnchor: [14, 14],
+        });
+        const marker = L.marker([stop.lat, stop.lng], { icon }).addTo(map);
+        marker.bindTooltip(
+          `<strong>${escapeMapHtml(stop.label)}</strong><br/>${escapeMapHtml(stop.routeId)}`,
+          { direction: 'top', offset: [0, -12] },
+        );
+        latLngs.push([stop.lat, stop.lng]);
+        bounds.extend([stop.lat, stop.lng]);
+      });
+      if (routeLine && routeLine.length >= 2) {
+        L.polyline(routeLine, {
+          color: '#2563eb',
+          weight: 4,
+          opacity: 0.85,
+        }).addTo(map);
+      } else if ((config.line_mode || 'road') === 'straight' || routeLineStatus === 'fallback') {
+        L.polyline(latLngs, {
+          color: routeLineStatus === 'fallback' ? '#94a3b8' : '#2563eb',
+          weight: routeLineStatus === 'fallback' ? 3 : 4,
+          opacity: routeLineStatus === 'fallback' ? 0.7 : 0.75,
+          dashArray: routeLineStatus === 'fallback' ? '8 8' : undefined,
+        }).addTo(map);
+      }
+      if (bounds.isValid()) {
+        map.fitBounds(bounds, { padding: [28, 28], maxZoom: 13 });
+      } else {
+        map.setView([16.0, 107.5], 6);
+      }
+      // The panel/modal container can finish laying out (sticky/flex/grid) a
+      // frame after the map mounts, leaving Leaflet with a stale 0-width canvas.
+      // Recompute size + re-fit once the layout settles so tiles fill the box.
+      window.setTimeout(() => {
+        if (disposed || !map) return;
+        try {
+          map.invalidateSize();
+          if (bounds.isValid()) map.fitBounds(bounds, { padding: [28, 28], maxZoom: 13 });
+        } catch {
+          /* map gone */
+        }
+      }, 80);
+    })();
+
+    return () => {
+      disposed = true;
+      if (map) {
+        try {
+          map.remove();
+        } catch {
+          /* already gone */
+        }
+      }
+    };
+    /* eslint-enable @typescript-eslint/no-explicit-any */
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mapBuildKey]);
+
+  if (rows.length === 0) {
+    return (
+      <div className="px-4 py-10 text-center text-sm text-slate-500">
+        {emptyMessage || 'Chưa có dữ liệu để hiển thị tuyến.'}
+      </div>
+    );
+  }
+
+  if (stops.length === 0) {
+    return (
+      <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-4 text-sm text-amber-800">
+        Không có dòng nào có tọa độ hợp lệ. Kiểm tra cấu hình cột vĩ độ/kinh độ của route map.
+      </div>
+    );
+  }
+
+  const routeLabel = selectedRouteId || 'Tất cả điểm';
+  const sideEnabled = config.show_side_panel !== false;
+
+  return (
+    <div className="space-y-3 px-1 py-2">
+      <div className="flex flex-wrap items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2">
+        <MapPin className="h-4 w-4 text-teal-700" />
+        <div className="mr-auto min-w-[180px]">
+          <div className="text-sm font-semibold text-slate-800">{routeLabel}</div>
+          <div className="text-xs text-slate-500">
+            {visibleStops.length} điểm
+            {totalWeight != null ? ` · ${totalWeight.toLocaleString('vi-VN')} kg` : ''}
+            {totalValue != null ? ` · ${totalValue.toLocaleString('vi-VN')} đ` : ''}
+            {(config.line_mode || 'road') === 'road'
+              ? routeLineStatus === 'loading'
+                ? ' · đang lấy tuyến đường'
+                : routeLineStatus === 'road'
+                  ? ' · tuyến theo đường thật'
+                  : ' · tuyến tạm theo đường thẳng'
+              : ''}
+            {skipped > 0 ? ` · bỏ qua ${skipped} dòng thiếu tọa độ` : ''}
+          </div>
+        </div>
+        {routeIds.length > 1 ? (
+          <select
+            value={selectedRouteId}
+            onChange={(e) => setSelectedRouteId(e.target.value)}
+            className="min-w-[220px] rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700"
+          >
+            {routeIds.map((routeId) => (
+              <option key={routeId} value={routeId}>
+                {routeId}
+              </option>
+            ))}
+          </select>
+        ) : null}
+      </div>
+
+      <div className={`grid gap-4 ${sideEnabled && !compact ? 'lg:grid-cols-[minmax(0,1fr)_340px]' : ''}`}>
+        <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white p-3 shadow-sm">
+          <div
+            ref={containerRef}
+            className={`w-full overflow-hidden rounded-xl ${compact ? 'h-[300px] min-h-[240px]' : 'h-[420px] min-h-[320px]'}`}
+            style={{ zIndex: 0 }}
+          />
+        </div>
+        {sideEnabled ? (
+          <div className="max-h-[446px] overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+            <div className="border-b border-slate-100 px-4 py-3">
+              <div className="text-base font-semibold text-slate-900">{config.side_panel_title || 'Thứ tự giao'}</div>
+              <div className="text-xs text-slate-500">{visibleStops.length} điểm trên tuyến</div>
+            </div>
+            <div className="max-h-[374px] space-y-2 overflow-auto p-3">
+              {visibleStops.map((stop, index) => {
+                const sequence = stop.order ?? index + 1;
+                return (
+                  <button
+                    key={`${stop.routeId}:${stop.sourceIndex}`}
+                    type="button"
+                    onClick={() => panelEnabled && onOpen(stop.row)}
+                    className={`w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-left transition ${
+                      panelEnabled ? 'hover:border-teal-300 hover:bg-teal-50/40' : 'cursor-default'
+                    }`}
+                  >
+                    <div className="flex items-start gap-2">
+                      <span className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-orange-500 text-xs font-bold text-white">
+                        {sequence}
+                      </span>
+                      <div className="min-w-0">
+                        <div className="truncate text-sm font-semibold text-slate-900">{stop.label}</div>
+                        {config.subtitle_columns?.slice(0, 3).map((column) => {
+                          const value = stop.row[column];
+                          if (value == null || value === '') return null;
+                          return (
+                            <div key={column} className="truncate text-xs text-slate-600">
+                              {formatCellValue(value)}
+                            </div>
+                          );
+                        })}
+                        <div className="mt-1 flex flex-wrap gap-x-2 gap-y-0.5 text-[11px] text-slate-500">
+                          {config.weight_column && stop.row[config.weight_column] != null ? (
+                            <span>{formatCellValue(stop.row[config.weight_column])} kg</span>
+                          ) : null}
+                          {config.deadline_column && stop.row[config.deadline_column] != null ? (
+                            <span>Hạn: {formatCellValue(stop.row[config.deadline_column])}</span>
+                          ) : null}
+                          {config.vehicle_column && stop.row[config.vehicle_column] != null ? (
+                            <span>Xe: {formatCellValue(stop.row[config.vehicle_column])}</span>
+                          ) : null}
+                          {config.status_column && stop.row[config.status_column] != null ? (
+                            <span>{colLabels[config.status_column] || config.status_column}: {formatCellValue(stop.row[config.status_column])}</span>
+                          ) : null}
+                        </div>
+                      </div>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
 
 function parseGeometry(geo: unknown): Record<string, unknown> | null {
   if (!geo) return null;
@@ -4355,6 +4936,7 @@ function PosCartScreen({
   const rafRef = useRef<number | null>(null);
   const lastScanRef = useRef<{ code: string; at: number }>({ code: '', at: 0 });
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const photoInputRef = useRef<HTMLInputElement | null>(null);
   const scanSupported = cameraScanAvailable();
 
   const matchCol = catalog?.match_column || cfg?.catalog_match_column || '';
@@ -4444,6 +5026,35 @@ function PosCartScreen({
       stopScan();
     }
   }, [addByCode, stopScan]);
+
+  const decodePhoto = useCallback(async (file: File) => {
+    setScanError(null);
+    try {
+      const url = URL.createObjectURL(file);
+      const image = new Image();
+      image.src = url;
+      await new Promise<void>((resolve, reject) => {
+        image.onload = () => resolve();
+        image.onerror = () => reject(new Error('image-load'));
+      });
+      const canvas = canvasRef.current || document.createElement('canvas');
+      canvasRef.current = canvas;
+      canvas.width = image.naturalWidth;
+      canvas.height = image.naturalHeight;
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
+      if (!ctx) throw new Error('canvas');
+      ctx.drawImage(image, 0, 0);
+      URL.revokeObjectURL(url);
+      const data = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      const result = jsQR(data.data, data.width, data.height, { inversionAttempts: 'attemptBoth' });
+      if (!result?.data) throw new Error('not-found');
+      addByCode(result.data);
+    } catch {
+      setScanError('Không đọc được mã trong ảnh. Hãy chụp gần hơn, đủ sáng và thử lại.');
+    } finally {
+      if (photoInputRef.current) photoInputRef.current.value = '';
+    }
+  }, [addByCode]);
 
   const setQty = (code: string, qty: number) =>
     setLines((prev) =>
@@ -4627,6 +5238,23 @@ function PosCartScreen({
               <ScanLine className="h-4 w-4" /> Quét
             </button>
           )}
+          <input
+            ref={photoInputRef}
+            type="file"
+            accept="image/*"
+            className="hidden"
+            onChange={(event) => {
+              const file = event.target.files?.[0];
+              if (file) void decodePhoto(file);
+            }}
+          />
+          <button
+            type="button"
+            onClick={() => photoInputRef.current?.click()}
+            className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
+          >
+            <ScanLine className="h-4 w-4" /> Ảnh
+          </button>
         </div>
         {scanError && <p className="text-xs text-rose-600">{scanError}</p>}
 
@@ -4808,6 +5436,7 @@ function TableScreen({
   workboardId,
   accent,
   viewerRole,
+  shared,
   onAction,
 }: {
   spec: TableScreenResponse;
@@ -4815,6 +5444,7 @@ function TableScreen({
   workboardId: number;
   accent: string;
   viewerRole?: string | null;
+  shared: Record<string, unknown>;
   onAction: (action: RowActionDescriptor, row: Record<string, unknown>) => void;
 }) {
   type Row = Record<string, unknown>;
@@ -4991,6 +5621,9 @@ function TableScreen({
     return allow.some((r) => r.toLowerCase() === target);
   });
   const selectionEnabled = bulkActions.length > 0 && pkCols.length > 0;
+  // A bulk action with route_preview is rendered as a docked side panel beside
+  // the table (select rows → see plan/map/weight live), not as a popup modal.
+  const panelAction = selectionEnabled ? bulkActions.find((a) => a.route_preview) || null : null;
 
   // Phase-1 helpers: totals of the selected rows (tự tính tổng) + the
   // require_same precondition (all selected rows must share a value, e.g. same
@@ -5111,6 +5744,7 @@ function TableScreen({
         page,
         page_size: pageSize,
         filters: buildApiFilters(values),
+        shared,
       });
       setCurrent((prev) => ({ ...prev, ...next }));
       setFilterValues(values);
@@ -5687,6 +6321,16 @@ function TableScreen({
           onEditRow={openDetailPanel}
           onAddOnDate={(d) => openCreatePanel({ [tv.calendar_config!.date_column]: d })}
         />
+      ) : tv.display_mode === 'route_map' && tv.route_map_config ? (
+        <RouteMapView
+          rows={rows}
+          config={tv.route_map_config}
+          colLabels={colLabels}
+          pkCols={pkCols}
+          onOpen={openDetailPanel}
+          panelEnabled={panelEnabled}
+          emptyMessage={tv.empty_state_message}
+        />
       ) : (
       <>
       {selectionEnabled && selectedKeys.size > 0 ? (
@@ -5720,7 +6364,7 @@ function TableScreen({
             </div>
           ) : null}
           <div className="ml-auto flex flex-wrap items-center gap-2">
-            {bulkActions.map((a) => {
+            {bulkActions.filter((a) => a.id !== panelAction?.id).map((a) => {
               const bad = bulkGuardBad(a);
               const blocked = bad.length > 0;
               const style = a.style || 'primary';
@@ -5764,12 +6408,14 @@ function TableScreen({
           workboardId={workboardId}
           accent={accent}
           colLabels={colLabels}
+          pkCols={pkCols}
           busy={bulkBusy}
           onClose={() => setBulkModal(null)}
           onRun={(resources) => void runServerBulkAction(bulkModal, resources)}
         />
       ) : null}
-      <div className="max-w-full overflow-x-auto overscroll-x-contain">
+      <div className={panelAction ? 'lg:flex lg:items-start lg:gap-3' : undefined}>
+      <div className="max-w-full min-w-0 overflow-x-auto overscroll-x-contain lg:flex-1">
         <table className="min-w-max w-full text-sm">
           <thead>
             {columnGroups.length > 0 ? (
@@ -6117,6 +6763,24 @@ function TableScreen({
             ) : null}
           </tbody>
         </table>
+      </div>
+      {panelAction ? (
+        <div className="mt-3 lg:mt-0 lg:w-[400px] lg:shrink-0 lg:sticky lg:top-2">
+          <BulkRecipeModal
+            variant="panel"
+            action={panelAction}
+            selectedRows={selectedRows}
+            token={token}
+            workboardId={workboardId}
+            accent={accent}
+            colLabels={colLabels}
+            pkCols={pkCols}
+            busy={bulkBusy}
+            onClose={() => {}}
+            onRun={(resources) => void runServerBulkAction(panelAction, resources)}
+          />
+        </div>
+      ) : null}
       </div>
       </>
       )}

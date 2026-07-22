@@ -30,6 +30,20 @@ def require_dataset_binding_access(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Dataset not found",
         )
+    # Honor the dataset-grants model (the canonical dataset sharing/security
+    # model) in addition to the classic resource-share/module check: a user the
+    # dataset was shared with (grant verb view+) can bind/import a workboard onto
+    # it. Without this, sharing a dataset via grants and having a teammate import
+    # a workboard onto it would 403 even though they can read the data.
+    try:
+        from app.services import dataset_grants_service
+
+        if dataset_grants_service.dataset_capabilities(db, current_user, dataset):
+            return dataset
+    except Exception:
+        # Grants are a best-effort widening; never let their lookup block the
+        # classic path below.
+        pass
     require_view_access(db, current_user, dataset, "datasets")
     return dataset
 

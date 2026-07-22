@@ -361,6 +361,14 @@ class ImportReport:
         # v2: dataset auto-rebuild outcome (set by ``import_from_source``); None
         # for the legacy "reuse existing dataset" path.
         self.dataset_rebuild: Optional[Dict[str, Any]] = None
+        # Layout feature-configs the current schema can't accept (e.g. a map /
+        # geocode feature built by a newer build) that were dropped so the
+        # import degrades gracefully instead of hard-failing.
+        self.stripped_features: List[Dict[str, Any]] = []
+        # Layout ``*table_id`` refs that couldn't be mapped to a target table
+        # (dangling / cross-dataset). Nulled on import so they never resolve to
+        # an unrelated dataset's table (cross-dataset leak).
+        self.unmapped_table_refs: List[Dict[str, Any]] = []
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -370,6 +378,8 @@ class ImportReport:
             "app_users_imported": self.app_users_imported,
             "app_users_needing_pin": self.app_users_needing_pin,
             "dataset_rebuild": self.dataset_rebuild,
+            "stripped_features": self.stripped_features,
+            "unmapped_table_refs": self.unmapped_table_refs,
         }
 
 
@@ -517,26 +527,112 @@ def _coerce_column_mapping(
     return out
 
 
+# ``*table_id`` keys whose empty sentinel is 0 (schema ``int``, ge=0) rather
+# than None (the Optional keys). Used when nulling an unmappable ref so the
+# rewritten layout still validates.
+_ZERO_SENTINEL_TABLE_KEYS = {"from_table_id", "catalog_table_id"}
+
+
+def _delete_at_loc(root: Any, loc: Tuple[Any, ...]) -> bool:
+    """Delete the dict key at the end of a pydantic error ``loc`` path.
+
+    Only deletes when the terminal element addresses a dict key (that is what
+    ``extra_forbidden`` / ``literal_error`` point at). Returns True on success.
+    List indices along the path are followed but never deleted (deleting a key
+    can't shift a sibling list index, so a batch of deletes in one pass is safe).
+    """
+    if not loc:
+        return False
+    node = root
+    for part in loc[:-1]:
+        if isinstance(node, dict) and part in node:
+            node = node[part]
+        elif isinstance(node, list) and isinstance(part, int) and 0 <= part < len(node):
+            node = node[part]
+        else:
+            return False
+    last = loc[-1]
+    if isinstance(node, dict) and last in node:
+        del node[last]
+        return True
+    return False
+
+
+def _sanitize_layout_for_import(raw_layout: Any) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
+    """Drop layout keys the current ``LayoutJson`` schema can't accept so an
+    import degrades gracefully instead of a hard 400.
+
+    A bundle built by a newer/other build can carry feature configs this
+    engine doesn't implement yet (e.g. a map display-mode or a geocode block).
+    Rather than reject the whole workboard, iteratively validate and strip the
+    exact offending keys — ``extra_forbidden`` (unknown feature key) and
+    ``literal_error`` / ``enum`` (unknown enum value, dropped so it defaults) —
+    recording each in ``stripped``. Genuine structural errors we cannot heal
+    are re-raised. Deleting a key only ever removes an unsupported feature; the
+    rest of the screen imports intact.
+    """
+    import copy
+    from pydantic import ValidationError
+    from app.modules.workboards.schemas import LayoutJson
+
+    layout = copy.deepcopy(raw_layout) if raw_layout else {}
+    stripped: List[Dict[str, Any]] = []
+    if not isinstance(layout, dict):
+        return {}, stripped
+    _HEALABLE = {"extra_forbidden", "literal_error", "enum"}
+    for _ in range(500):  # bounded; each pass removes ≥1 offending key
+        try:
+            LayoutJson.model_validate(layout)
+            return layout, stripped
+        except ValidationError as exc:
+            progressed = False
+            # Deepest locs first: doesn't matter for dict-key deletes but keeps
+            # behaviour stable if a parent and child both error in one pass.
+            for err in sorted(exc.errors(), key=lambda e: len(e.get("loc") or ()), reverse=True):
+                if (err.get("type") or "") not in _HEALABLE:
+                    continue
+                loc = tuple(err.get("loc") or ())
+                if _delete_at_loc(layout, loc):
+                    stripped.append({"path": ".".join(str(p) for p in loc), "type": err.get("type")})
+                    progressed = True
+            if not progressed:
+                raise
+    return layout, stripped
+
+
 def _rewrite_table_ids(
     layout: Dict[str, Any],
     id_map: Dict[int, Optional[int]],
+    unmapped_out: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
-    """Return a deep-copy of ``layout`` with every ``table_id`` rewritten."""
+    """Return a deep-copy of ``layout`` with every ``table_id`` rewritten.
+
+    Any ``*table_id`` int that isn't in ``id_map`` (a dangling or cross-dataset
+    ref) is nulled to its schema-valid empty sentinel and recorded in
+    ``unmapped_out`` — NEVER left as the raw id, which in the target DB would
+    resolve to whatever unrelated dataset owns that id (cross-dataset leak).
+    """
     import copy
 
     out = copy.deepcopy(layout) if layout else {}
+
+    def _empty_for(key: str) -> Optional[int]:
+        return 0 if key in _ZERO_SENTINEL_TABLE_KEYS else None
 
     def _rewrite(node: Any) -> None:
         if isinstance(node, dict):
             for k in list(node.keys()):
                 v = node[k]
-                if k.endswith("table_id") and isinstance(v, int) and v in id_map:
+                if k.endswith("table_id") and isinstance(v, int):
                     # Covers table_id AND from_table_id (table.lookup_columns),
                     # primary_table_id, dataset_table_id — every int key that
-                    # names a source table must be remapped OLD→NEW, else the
-                    # imported layout points a lookup/column at the SOURCE
-                    # dataset's table (cross-dataset leak).
-                    node[k] = id_map[v]
+                    # names a source table must be remapped OLD→NEW.
+                    if v in id_map:
+                        node[k] = id_map[v]
+                    else:
+                        if unmapped_out is not None:
+                            unmapped_out.append({"key": k, "old_id": v})
+                        node[k] = _empty_for(k)
                 elif k == "source" and isinstance(v, str) and v.startswith("lookup:"):
                     try:
                         old_id = int(v.split(":", 1)[1])
@@ -1023,6 +1119,10 @@ def import_workboard(
 
     # Rewrite layout.
     raw_layout = bundle.get("layout_json") or {}
+    # Drop feature-configs this engine's schema can't accept (e.g. a map
+    # display-mode / geocode block built by a newer or divergent build) so the
+    # import degrades gracefully with a warning instead of a hard 400.
+    raw_layout, report.stripped_features = _sanitize_layout_for_import(raw_layout)
     old_pk_table = bundle.get("primary_table_id")
     old_pk_table_id = old_pk_table if isinstance(old_pk_table, int) else None
     layout_with_columns = _rewrite_column_references(
@@ -1030,7 +1130,9 @@ def import_workboard(
         primary_old_table_id=old_pk_table_id,
         column_map=explicit_column_map,
     )
-    layout = _rewrite_table_ids(layout_with_columns, id_map)
+    layout = _rewrite_table_ids(
+        layout_with_columns, id_map, unmapped_out=report.unmapped_table_refs
+    )
     # Heal the layout through the SAME normalizer the create/update path uses,
     # so an imported workboard is canonical at rest — in particular a bundle
     # exported from a pre-Phase-13 workboard (legacy ``kind='grid'/'list'`` +
@@ -1593,15 +1695,33 @@ def import_from_source(
         )
         target_dataset_id = dataset.id
 
-    workboard, report = import_workboard(
-        db,
-        bundle,
-        target_dataset_id=target_dataset_id,
-        target_name=target_name,
-        table_mapping=table_mapping,
-        column_mapping=column_mapping,
-        owner_id=owner_id,
-    )
+    try:
+        workboard, report = import_workboard(
+            db,
+            bundle,
+            target_dataset_id=target_dataset_id,
+            target_name=target_name,
+            table_mapping=table_mapping,
+            column_mapping=column_mapping,
+            owner_id=owner_id,
+        )
+    except Exception:
+        # Atomic import: if we auto-created the dataset for this run and the
+        # workboard build then failed, roll the dataset back so a failed import
+        # never leaves an orphan dataset behind. A reused dataset is left as-is.
+        if not reuse_dataset_id and rebuild_report:
+            orphan_id = rebuild_report.get("dataset_id")
+            if orphan_id:
+                try:
+                    db.rollback()
+                    from app.services.dataset_crud import DatasetCRUDService
+                    DatasetCRUDService.delete_dataset(db, int(orphan_id))
+                except Exception:
+                    logger.exception(
+                        "import rollback: could not delete auto-created dataset %s",
+                        orphan_id,
+                    )
+        raise
     # Surface the dataset-rebuild outcome on the report for the FE.
     setattr(report, "dataset_rebuild", rebuild_report)
     return workboard, report

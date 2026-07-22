@@ -7,10 +7,11 @@ consistent (list/owned-or-shared, batch effective permissions on listing,
 """
 from __future__ import annotations
 
+from copy import deepcopy
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
-from pydantic import ValidationError
+from pydantic import BaseModel as PydanticBaseModel, ValidationError
 from sqlalchemy.orm import Session
 
 from app.core import get_db
@@ -45,6 +46,7 @@ from app.modules.workboards.schemas import (
     AppUserResponse,
     AppUserUpdate,
     LayoutJson,
+    Screen,
     WorkboardCreate,
     WorkboardPublicLinkCreate,
     WorkboardPublicLinkResponse,
@@ -55,6 +57,7 @@ from app.modules.workboards.schemas import (
 from app.modules.workboards.services.app_user_service import is_default_pin_hash
 from app.services.audit_service import audit
 from app.modules.workboards.services.crud_service import WorkboardService
+from app.modules.workboards.services import workboard_presence
 from app.modules.workboards.services.dashboard_link_service import (
     sync_workboard_dashboard_links as sync_managed_dashboard_links,
     delete_all_for_workboard as delete_managed_dashboard_links,
@@ -274,6 +277,19 @@ def update_workboard(
 ):
     wb = _get_or_404(db, workboard_id)
     require_edit_access(db, current_user, wb, "workboards")
+    # Optimistic concurrency: reject a stale DRAFT save so an older autosave (or a
+    # concurrent tab/session) can't clobber a newer edit. Only enforced when the
+    # client sends the token it last saw.
+    if payload.expected_version is not None and int(payload.expected_version) != int(wb.version or 1):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "stale_version",
+                "message": "Bản nháp đã bị thay đổi ở nơi khác — tải lại để tiếp tục chỉnh sửa.",
+                "expected_version": payload.expected_version,
+                "current_version": wb.version,
+            },
+        )
     patch = payload.model_dump(exclude_unset=True)
     if any(field in patch for field in ("dataset_id", "primary_table_id", "layout_json")):
         require_dataset_binding_access(
@@ -327,6 +343,76 @@ def update_workboard(
     return updated
 
 
+@router.patch("/{workboard_id}/screens/{screen_id}", response_model=WorkboardResponse)
+def update_workboard_screen(
+    workboard_id: int,
+    screen_id: str,
+    payload: Screen,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Screen-scoped autosave — merge ONE screen into the CURRENT stored layout
+    and leave every other screen + all app-level config untouched.
+
+    This is what makes many people editing DIFFERENT screens safe. The
+    whole-board ``PATCH /{id}`` replaces the entire ``layout_json`` from the
+    client's (possibly stale) copy, so two editors on different screens either
+    409 or clobber each other. Here the server merges only the one screen from
+    the payload into ITS OWN latest layout, so a save can neither overwrite a
+    sibling screen a collaborator just edited nor conflict with it — there is
+    deliberately NO board-version guard on this path. Same-screen concurrency is
+    handled up front by the soft screen-lock (see workboard_presence). Structural
+    edits (add/delete/reorder screens, nav, groups, dataset, branding) still go
+    through ``PATCH /{id}`` with the board-version guard."""
+    wb = _get_or_404(db, workboard_id)
+    require_edit_access(db, current_user, wb, "workboards")
+    if payload.id != screen_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Screen id in body must match the URL.",
+        )
+    current = deepcopy(wb.layout_json or {})
+    screens = current.get("screens") or []
+    idx = next((i for i, s in enumerate(screens) if s.get("id") == screen_id), None)
+    if idx is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=(
+                f"Screen '{screen_id}' not found — use PATCH /{workboard_id} "
+                "for new or structural changes."
+            ),
+        )
+    # Sheets-only gate on the (possibly changed) table binding for this screen.
+    if payload.table_id is not None:
+        require_dataset_binding_access(db, current_user, wb.dataset_id)
+        assert_workboard_tables_supported(db, [payload.table_id])
+    screens[idx] = payload.model_dump()
+    current["screens"] = screens
+    try:
+        updated = WorkboardService.update(
+            db, workboard_id, WorkboardUpdate(layout_json=current)
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    # Keep managed dashboard links reconciled (idempotent; cheap when no
+    # dashboard screen exists).
+    if updated is not None:
+        updated = sync_managed_dashboard_links(db, updated, creator=current_user)
+    audit(
+        db,
+        AuditAction.WORKBOARD_UPDATED,
+        request=request,
+        user_id=current_user.id,
+        resource_type="workboard",
+        resource_id=str(workboard_id),
+        details={"screen_scoped": True, "screen_id": screen_id},
+    )
+    if updated:
+        updated.user_permission = "full"
+    return updated
+
+
 @router.delete("/{workboard_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_workboard(
     workboard_id: int,
@@ -350,6 +436,78 @@ def delete_workboard(
         resource_type="workboard",
         resource_id=str(workboard_id),
     )
+
+
+# ============ Editor presence + soft screen-lock (co-edit safety) ============
+# Adapted from the dashboard co-edit model, but the concurrency UNIT is a
+# SCREEN (not a tile) and it adds a soft edit-lock so two people can't sit on
+# the same screen at once. See services/workboard_presence for the rationale.
+
+class _WorkboardHeartbeatRequest(PydanticBaseModel):
+    """``editing_screen_id`` = the screen the caller currently has open in the
+    builder (their cursor). None while on the canvas / app-settings."""
+    editing_screen_id: Optional[str] = None
+
+
+class _WorkboardTakeoverRequest(PydanticBaseModel):
+    screen_id: str
+
+
+@router.post("/{workboard_id}/editing/heartbeat", status_code=status.HTTP_200_OK)
+def workboard_editing_heartbeat(
+    workboard_id: int,
+    request: Request,
+    payload: Optional[_WorkboardHeartbeatRequest] = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Register the caller as editing this workboard (on ``editing_screen_id``)
+    and return the OTHER active editors, the caller's soft-lock state for the
+    screen they're on, and the holder map for all locked screens. Best-effort,
+    in-memory, TTL-expired (see services/workboard_presence)."""
+    wb = _get_or_404(db, workboard_id)
+    require_edit_access(db, current_user, wb, "workboards")
+    return workboard_presence.heartbeat(
+        workboard_id,
+        str(current_user.id),
+        getattr(current_user, "full_name", None) or current_user.email,
+        current_user.email,
+        editing_screen_id=payload.editing_screen_id if payload else None,
+    )
+
+
+@router.post("/{workboard_id}/editing/leave", status_code=status.HTTP_200_OK)
+def workboard_editing_leave(
+    workboard_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Best-effort removal when an editor closes the builder + releases any
+    locks they held so a collaborator can claim immediately. TTL would expire
+    them anyway; this just makes the handoff instant."""
+    workboard_presence.leave(workboard_id, str(current_user.id))
+    return {"ok": True}
+
+
+@router.post("/{workboard_id}/editing/takeover", status_code=status.HTTP_200_OK)
+def workboard_editing_takeover(
+    workboard_id: int,
+    payload: _WorkboardTakeoverRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Force-claim the soft-lock on a screen ("Chiếm quyền chỉnh sửa"). Requires
+    edit access. The previous holder drops to view-only on its next heartbeat."""
+    wb = _get_or_404(db, workboard_id)
+    require_edit_access(db, current_user, wb, "workboards")
+    lock = workboard_presence.takeover(
+        workboard_id,
+        str(current_user.id),
+        getattr(current_user, "full_name", None) or current_user.email,
+        current_user.email,
+        payload.screen_id,
+    )
+    return {"lock": lock}
 
 
 def _assert_owner_pin_rotated(db: Session, workboard_id: int) -> None:
@@ -376,6 +534,87 @@ def _assert_owner_pin_rotated(db: Session, workboard_id: int) -> None:
         )
 
 
+def _promote_workboard_to_published(
+    db: Session, wb: Workboard, *, creator: Optional[User] = None
+) -> Workboard:
+    """The ONE routine every "make this board Live" path funnels through.
+
+    Applies the complete draft → published promotion atomically: slug backfill
+    (the public Cổng menu is keyed by ``workboard_slug``) + schema-default
+    refresh + MANDATORY readiness gate + managed-dashboard-link sync/promote +
+    a snapshot of the WHOLE deployment boundary (layout + non-layout
+    runtime-config + version/at) + ``is_published``. Every publish trigger — the
+    Publish button, public-link creation, an MCP/script call — MUST go through
+    here so none of them can leave a board half-published (``is_published=True``
+    with no snapshot/slug → an empty or Cổng-unreachable Live app).
+
+    Raises 422 if the readiness audit has blocking errors; on any failure the
+    caller's transaction rolls back and the previous Live deployment stays fully
+    intact. Does NOT write the WORKBOARD_PUBLISHED audit-log row — that is the
+    endpoint's job (it owns the ``Request``)."""
+    # A workboard needs a slug to be shareable (the public Cổng menu is keyed by
+    # workboard_slug). New boards get one at create; backfill any legacy/blank
+    # board here so going Live never produces an unshareable app.
+    if not (wb.slug or "").strip():
+        wb.slug = WorkboardService.build_unique_slug(db, wb.name, exclude_id=wb.id)
+    wb = WorkboardService.refresh_schema_defaults(db, wb)
+
+    # Readiness gate — MANDATORY, server-side. A workboard with blocking errors
+    # (missing table/column/dashboard, broken references) must never go live.
+    # Enforced here (not just in the builder UI) so every publish path — button,
+    # public-link, MCP/script — is gated identically. Warnings do not block.
+    audit_result = compute_workboard_audit(db, wb)
+    if not audit_result["ok"]:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "message": (
+                    "Không thể xuất bản: ứng dụng còn lỗi chặn "
+                    "(thiếu bảng/cột/dashboard hoặc tham chiếu hỏng). "
+                    "Sửa hết lỗi rồi xuất bản lại."
+                ),
+                "audit": audit_result,
+            },
+        )
+
+    # Atomic draft → published promotion of the WHOLE deployment boundary in a
+    # single commit — layout snapshot + non-layout runtime-config snapshot +
+    # version/at. The public/live runtime serves ONLY these, so end users keep
+    # seeing the PREVIOUS live deployment until this runs; a failure before the
+    # commit rolls back and leaves the previous Live fully intact.
+    import copy as _copy
+    from datetime import datetime, timezone
+
+    from app.modules.workboards.services.runtime_config import (
+        build_published_runtime_config,
+    )
+    from app.modules.workboards.services.dashboard_link_service import (
+        sync_workboard_dashboard_links,
+        promote_dashboard_links_to_published,
+        rewrite_managed_links_to_published,
+    )
+
+    # Refresh the DRAFT managed dashboard links (no commit — part of this atomic
+    # publish), then PROMOTE them to published-stage rows the Live runtime uses.
+    sync_workboard_dashboard_links(db, wb, creator=creator, commit=False)
+    published_tokens = promote_dashboard_links_to_published(db, wb)
+
+    # Snapshot the layout, then rewrite its managed_links to the PUBLISHED tokens
+    # so Live (which reads published_layout_json) resolves the published-stage
+    # links, never the draft ones.
+    published_layout = _copy.deepcopy(wb.layout_json or {})
+    rewrite_managed_links_to_published(published_layout, wb.id, published_tokens)
+
+    wb.published_layout_json = published_layout
+    wb.published_runtime_config = build_published_runtime_config(wb)
+    wb.published_version = wb.version
+    wb.published_at = datetime.now(timezone.utc)
+    wb.is_published = True
+    db.commit()
+    db.refresh(wb)
+    return wb
+
+
 @router.post("/{workboard_id}/publish", response_model=WorkboardResponse)
 def publish_workboard(
     workboard_id: int,
@@ -387,10 +626,7 @@ def publish_workboard(
     require_edit_access(db, current_user, wb, "workboards")
     require_dataset_binding_access(db, current_user, wb.dataset_id)
     _assert_owner_pin_rotated(db, wb.id)
-    wb = WorkboardService.refresh_schema_defaults(db, wb)
-    wb.is_published = True
-    db.commit()
-    db.refresh(wb)
+    wb = _promote_workboard_to_published(db, wb, creator=current_user)
     audit(
         db,
         AuditAction.WORKBOARD_PUBLISHED,
@@ -401,6 +637,69 @@ def publish_workboard(
     )
     wb.user_permission = "full"
     return wb
+
+
+@router.post("/{workboard_id}/unpublish", response_model=WorkboardResponse)
+def unpublish_workboard(
+    workboard_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Take a Workboard down from Live. Dedicated endpoint (not a generic PATCH)
+    so lifecycle transitions stay exclusive. Flips ``is_published`` off — the
+    public runtime resolver then 404s the app — but keeps the published snapshot
+    intact so a later Publish can promote the (possibly edited) draft again."""
+    wb = _get_or_404(db, workboard_id)
+    require_edit_access(db, current_user, wb, "workboards")
+    wb.is_published = False
+    db.commit()
+    db.refresh(wb)
+    audit(
+        db,
+        AuditAction.WORKBOARD_UNPUBLISHED,
+        request=request,
+        user_id=current_user.id,
+        resource_type="workboard",
+        resource_id=str(workboard_id),
+    )
+    wb.user_permission = "full"
+    return wb
+
+
+class _RebindPreviewBody(__import__("pydantic").BaseModel):
+    dataset_id: int
+
+
+@router.post("/{workboard_id}/rebind/preview")
+def preview_workboard_rebind(
+    workboard_id: int,
+    body: _RebindPreviewBody,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Two-phase dataset rebind — phase 1 (ANALYZE, dry-run). Reports which screen
+    table refs would AUTO-REMAP to a same-named table in the target dataset vs be
+    CLEARED, WITHOUT mutating anything, so the builder can show the impact before
+    the user confirms. The apply (PATCH dataset_id) mutates only the DRAFT; Live
+    keeps its published binding until the next Publish."""
+    wb = _get_or_404(db, workboard_id)
+    require_edit_access(db, current_user, wb, "workboards")
+    require_dataset_binding_access(db, current_user, body.dataset_id)
+    assert_workboard_dataset_supported(db, body.dataset_id)
+    from app.modules.workboards.services.crud_service import build_rebind_plan
+
+    _, manifest = build_rebind_plan(db, wb.layout_json or {}, body.dataset_id)
+    remapped = [m for m in manifest if m.get("reason") == "remapped"]
+    cleared = [m for m in manifest if m.get("reason") != "remapped"]
+    return {
+        "workboard_id": wb.id,
+        "target_dataset_id": body.dataset_id,
+        "remap_count": len(remapped),
+        "clear_count": len(cleared),
+        "remapped": remapped,
+        "cleared": cleared,
+    }
 
 
 @router.get("/{workboard_id}/audit")
@@ -439,15 +738,25 @@ def audit_workboard(
           ]
         }
     """
+    wb = _get_or_404(db, workboard_id)
+    require_view_access(db, current_user, wb, "workboards")
+    require_dataset_binding_access(db, current_user, wb.dataset_id)
+    return compute_workboard_audit(db, wb)
+
+
+def compute_workboard_audit(db: Session, wb: Workboard) -> dict[str, Any]:
+    """Inventory broken references inside a workboard's DRAFT layout.
+
+    Extracted from the GET /audit endpoint so the publish readiness-gate shares
+    one code path (single source of truth). Read-only — never mutates layout.
+    Audits the DRAFT (``layout_json``) because that is what a subsequent Publish
+    would promote to live.
+    """
     from app.models.dataset import DatasetTable
     from app.models.models import Dashboard
     from app.modules.workboards.services.crud_service import (
         _collect_table_column_names,
     )
-
-    wb = _get_or_404(db, workboard_id)
-    require_view_access(db, current_user, wb, "workboards")
-    require_dataset_binding_access(db, current_user, wb.dataset_id)
 
     issues: list[dict[str, Any]] = []
 
@@ -750,8 +1059,80 @@ def audit_workboard(
                     context={"dashboard_id": dash_id},
                 )
 
+    # ── Cross-screen reference integrity ─────────────────────────────────────
+    # Every screen-id reference (navigation, row/scan actions, bulk recipes,
+    # workspace membership) must resolve to a screen that still exists. This is
+    # what makes /audit the single source of truth for App Health + the Publish
+    # gate. Severity by runtime blast radius: refs that HARD-404 at runtime
+    # (bulk source/parent/step screens) are errors (block publish); refs that
+    # silently drop (dead button / lost nav entry) are warnings.
+    live_screen_ids = {str(s.get("id")) for s in screens_iter if s.get("id")}
+
+    def _check_ref(target, *, code, label, severity="error", screen=None, context=None):
+        if target is None:
+            return
+        tid = str(target).strip()
+        if not tid or tid in live_screen_ids:
+            return
+        _add(
+            severity=severity,
+            code=code,
+            detail=f"{label} points at screen '{tid}', which no longer exists.",
+            screen=screen,
+            context={**(context or {}), "target_screen_id": tid},
+        )
+
+    for screen in screens_iter:
+        table = screen.get("table") if isinstance(screen.get("table"), dict) else {}
+        form = screen.get("form") if isinstance(screen.get("form"), dict) else {}
+
+        after = form.get("after_submit") if isinstance(form.get("after_submit"), dict) else {}
+        _check_ref(after.get("go_to_screen"), code="dangling_after_submit_screen",
+                   label="Form after-submit navigation", severity="warning", screen=screen)
+        for fld in (form.get("fields") or []):
+            if isinstance(fld, dict):
+                _check_ref(fld.get("scan_go_to_screen"), code="dangling_scan_go_to_screen",
+                           label=f"Barcode scan target on field '{fld.get('column')}'",
+                           severity="warning", screen=screen)
+
+        for ra in (table.get("row_actions") or []):
+            if isinstance(ra, dict):
+                _check_ref(ra.get("go_to_screen"), code="dangling_go_to_screen",
+                           label=f"Row action '{ra.get('label') or ra.get('id')}'",
+                           severity="warning", screen=screen)
+        pos = table.get("pos_cart") if isinstance(table.get("pos_cart"), dict) else {}
+        _check_ref(pos.get("header_screen_id"), code="dangling_pos_header_screen",
+                   label="POS cart header screen", severity="warning", screen=screen)
+        _check_ref(pos.get("after_submit_screen"), code="dangling_pos_after_submit_screen",
+                   label="POS cart after-submit screen", severity="warning", screen=screen)
+        for ba in (table.get("bulk_actions") or []):
+            if not isinstance(ba, dict):
+                continue
+            balabel = ba.get("label") or ba.get("id")
+            _check_ref(ba.get("parent_screen_id"), code="dangling_bulk_parent_screen",
+                       label=f"Bulk action '{balabel}' parent screen", screen=screen)
+            for ri in (ba.get("resource_inputs") or []):
+                if isinstance(ri, dict):
+                    _check_ref(ri.get("source_screen_id"), code="dangling_bulk_resource_screen",
+                               label=f"Bulk action '{balabel}' resource '{ri.get('id')}'", screen=screen)
+            for st in (ba.get("steps") or []):
+                if isinstance(st, dict):
+                    _check_ref(st.get("screen_id"), code="dangling_bulk_step_screen",
+                               label=f"Bulk action '{balabel}' step '{st.get('id')}'", screen=screen)
+
+    nav = layout.get("mini_app_nav") if isinstance(layout.get("mini_app_nav"), dict) else {}
+    for sid in (nav.get("items") or []):
+        _check_ref(sid, code="dangling_nav_item", label="Navigation item", severity="warning")
+    for grp in (layout.get("screen_groups") or []):
+        if isinstance(grp, dict):
+            glabel = grp.get("label") or grp.get("id")
+            for sid in (grp.get("screen_ids") or []):
+                _check_ref(sid, code="dangling_workspace_member",
+                           label=f"Workspace '{glabel}' member", severity="warning",
+                           context={"group_id": grp.get("id")})
+
     return {
-        "workboard_id": int(workboard_id),
+        "workboard_id": int(wb.id),
         "screen_count": len(screens_iter),
         "issue_count": len(issues),
         "ok": not any(issue["severity"] == "error" for issue in issues),
@@ -917,6 +1298,7 @@ def list_public_links(
 def create_public_link(
     workboard_id: int,
     payload: WorkboardPublicLinkCreate,
+    request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -925,10 +1307,20 @@ def create_public_link(
     require_dataset_binding_access(db, current_user, wb.dataset_id)
     _assert_owner_pin_rotated(db, wb.id)
     if not wb.is_published:
-        wb = WorkboardService.refresh_schema_defaults(db, wb)
-        wb.is_published = True
-        db.commit()
-        db.refresh(wb)
+        # Creating a public link makes the board Live — funnel through the SAME
+        # atomic publish routine as the Publish button so it gets a slug, passes
+        # the readiness gate, and snapshots the deployment boundary. Previously
+        # this only flipped is_published=True, leaving the board with no
+        # snapshot/slug → an empty or Cổng-unreachable Live app.
+        wb = _promote_workboard_to_published(db, wb, creator=current_user)
+        audit(
+            db,
+            AuditAction.WORKBOARD_PUBLISHED,
+            request=request,
+            user_id=current_user.id,
+            resource_type="workboard",
+            resource_id=str(wb.id),
+        )
     return WorkboardPublicLinkService.create_link(
         db,
         wb,
@@ -1080,10 +1472,14 @@ def _attach_workboard_to_workspace_menu(
 ) -> Dict[str, Any]:
     slug = (workboard.slug or "").strip()
     if not slug:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Imported workboard has no slug to attach to workspace menu_config.",
-        )
+        # Generate one on demand instead of failing the share: the Cổng menu is
+        # keyed by workboard_slug, and a blank slug (legacy board, or any path
+        # that skipped create-time generation) must never make an app
+        # unshareable. Persist it so the link stays stable.
+        slug = WorkboardService.build_unique_slug(db, workboard.name, exclude_id=workboard.id)
+        workboard.slug = slug
+        db.add(workboard)
+        db.flush()
 
     menu: List[Dict[str, Any]] = [
         dict(item)

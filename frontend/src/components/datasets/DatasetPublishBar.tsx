@@ -35,6 +35,7 @@ import {
 } from '@/hooks/use-datasets';
 import { DatasetGrantsModal } from './DatasetGrantsModal';
 import { SyncPublishModal } from './SyncPublishModal';
+import { SyncProgressPopup } from './SyncProgressPopup';
 
 function formatWhen(iso: string | null): string {
   if (!iso) return '';
@@ -43,6 +44,19 @@ function formatWhen(iso: string | null): string {
     return d.toLocaleString();
   } catch {
     return iso;
+  }
+}
+
+/** The generation id is epoch-millis of the build (`int(time.time()*1000)` on the
+ * server), so show it as a readable local datetime instead of the raw number. */
+function formatGenerationTime(gen: number | null): string {
+  if (gen == null) return '';
+  try {
+    return new Date(gen).toLocaleString([], {
+      day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit',
+    });
+  } catch {
+    return String(gen);
   }
 }
 
@@ -102,7 +116,7 @@ export function DatasetPublishControls({ datasetId, canEditFallback }: ControlsP
         {STATE_META[state].icon}
         {t(STATE_META[state].labelKey)}
         {state === 'published' && status?.published_generation != null && (
-          <span className="ml-1 opacity-60">{t('datasets.publish.generation', { gen: status.published_generation })}</span>
+          <span className="ml-1 opacity-60">{t('datasets.publish.generation', { when: formatGenerationTime(status.published_generation) })}</span>
         )}
       </Badge>
     </span>
@@ -140,6 +154,9 @@ export function DatasetPublishControls({ datasetId, canEditFallback }: ControlsP
       )}
       {grantsOpen && <DatasetGrantsModal datasetId={datasetId} onClose={() => setGrantsOpen(false)} />}
       {syncOpen && <SyncPublishModal datasetId={datasetId} onClose={() => setSyncOpen(false)} />}
+      {/* Persistent, server-driven sync progress — auto-reopens on tab reload
+          while a sync runs; offers Hide/Stop. Fixed-position (floats). */}
+      <SyncProgressPopup datasetId={datasetId} />
     </div>
   );
 }
@@ -155,9 +172,14 @@ export function DatasetPublishBanner({ datasetId, canEditFallback }: ControlsPro
   const canManage = caps.includes('manage') || (grants === undefined && !!canEditFallback);
   const syncing = status?.syncing || state === 'syncing' || publish.isPending;
 
+  // FIRST sync in progress (no complete generation yet): reports/preview may show
+  // partial/live data → warn. Takes precedence over the static-state banners.
+  const firstSync = (!!status?.syncing || state === 'syncing') && status?.has_prior_complete === false;
+
   // Only show a banner for the states that need viewer attention.
-  const kind: 'changes' | 'failed' | 'draft' | null =
-    state === 'changes_pending' ? 'changes'
+  const kind: 'firstsync' | 'changes' | 'failed' | 'draft' | null =
+    firstSync ? 'firstsync'
+    : state === 'changes_pending' ? 'changes'
     : state === 'sync_failed' ? 'failed'
     : state === 'draft' && !status?.has_published_data ? 'draft'
     : null;
@@ -176,27 +198,34 @@ export function DatasetPublishBanner({ datasetId, canEditFallback }: ControlsPro
   const palette =
     kind === 'failed'
       ? 'border-danger/30 bg-danger/8 text-danger'
-      : kind === 'changes'
+      : kind === 'changes' || kind === 'firstsync'
         ? 'border-warning/30 bg-warning/8 text-warning'
         : 'border-[rgb(var(--border-line))] bg-surface-2 text-text-secondary';
 
   const title =
-    kind === 'failed' ? t('datasets.publish.bannerFailedTitle')
+    kind === 'firstsync' ? t('datasets.sync.firstSyncWarnTitle')
+    : kind === 'failed' ? t('datasets.publish.bannerFailedTitle')
     : kind === 'changes' ? t('datasets.publish.bannerChangesTitle')
     : t('datasets.publish.bannerDraftTitle');
   const body =
-    kind === 'failed' ? status?.last_sync_error ?? ''
+    kind === 'firstsync' ? t('datasets.sync.firstSyncWarnBody')
+    : kind === 'failed' ? status?.last_sync_error ?? ''
     : kind === 'changes' ? t('datasets.publish.bannerChangesBody')
     : t('datasets.publish.bannerDraftBody');
 
+  const icon = kind === 'firstsync'
+    ? <Loader2 className="h-4 w-4 shrink-0 animate-spin" />
+    : <AlertTriangle className="h-4 w-4 shrink-0" />;
+
   return (
     <div className={`flex items-center gap-3 border-b px-4 py-2 text-xs ${palette}`}>
-      <AlertTriangle className="h-4 w-4 shrink-0" />
+      {icon}
       <div className="min-w-0 flex-1">
         <span className="font-emphasis">{title}</span>{' '}
         <span className="opacity-80">{body}</span>
       </div>
-      {canManage && (
+      {/* No re-publish CTA during the first sync — it is already running. */}
+      {canManage && kind !== 'firstsync' && (
         <Button
           size="xs"
           variant="primary"

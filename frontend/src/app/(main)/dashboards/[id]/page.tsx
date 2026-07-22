@@ -57,7 +57,7 @@ import {
   toBaseFilter,
 } from '@/lib/filters';
 import { extractParamDefs, seedParamValues, paramsToFilters } from '@/lib/dashboard-params';
-import { fetchDatasetModel, fetchDatasetModelDistinctValues, modelKeys, type DatasetModelResponse } from '@/hooks/use-dataset-model';
+import { fetchDatasetModel, fetchDatasetModelDistinctValues, SLICER_DISTINCT_PREFETCH_LIMIT, modelKeys, type DatasetModelResponse } from '@/hooks/use-dataset-model';
 import { getResourcePermissions } from '@/hooks/use-resource-permission';
 import {
   createDashboardPageId,
@@ -2093,7 +2093,7 @@ export default function DashboardDetailPage() {
   const semanticDistinctQueries = useQueries({
     queries: activeSemanticDistinctTargets.map(({ column, filterContext, filterContextKey }) => ({
       queryKey: [...modelKeys.distinct(column.datasetId!, column.semanticField!), 'filters', filterContextKey],
-      queryFn: () => fetchDatasetModelDistinctValues(column.datasetId!, column.semanticField!, 200, filterContext),
+      queryFn: () => fetchDatasetModelDistinctValues(column.datasetId!, column.semanticField!, SLICER_DISTINCT_PREFETCH_LIMIT, filterContext),
       enabled: Boolean(column.datasetId && column.semanticField),
       staleTime: 5 * 60 * 1000,
       // Phase-15.95 — cap retries so a recurring 500 (e.g. unsupported
@@ -2124,6 +2124,8 @@ export default function DashboardDetailPage() {
       isLoading: boolean;
       isError: boolean;
       hasFilterContext: boolean;
+      total?: number;
+      hasMore?: boolean;
     }> = {};
     activeSemanticDistinctTargets.forEach(({ column, filterContext }, index) => {
       const q = semanticDistinctQueries[index];
@@ -2131,6 +2133,8 @@ export default function DashboardDetailPage() {
         isLoading: Boolean(q?.isLoading || q?.isFetching),
         isError: Boolean(q?.isError),
         hasFilterContext: Array.isArray(filterContext) && filterContext.length > 0,
+        total: q?.data?.total,
+        hasMore: q?.data?.has_more,
       };
     });
     return status;
@@ -2911,6 +2915,34 @@ export default function DashboardDetailPage() {
             columnChartCount={resolvedColumnChartCount}
             distinctValues={resolvedDistinctValues}
             distinctStatus={semanticDistinctStatus}
+            // Type-to-search over the FULL cached distinct set (high-cardinality
+            // slicers). Hits the BE result cache (no per-keystroke BigQuery). The
+            // search results cascade by the OTHER active slicers/filters — same
+            // context the prefetch uses — so a searched value is still narrowed
+            // consistently (getDistinctValueFilterContext self-strips this field).
+            fetchServerDistinct={async (column, search) => {
+              if (!column.datasetId || !column.semanticField) return [];
+              try {
+                const legacyDraftAll = draftGlobalFilters
+                  .map((f) => toBaseFilter(f, { allowInactive: true }))
+                  .filter((b): b is BaseFilter => b !== null);
+                const ctx = resolveEffectiveFilterSet({
+                  globalFilters: legacyDraftAll,
+                  pageFilters: draftPageFilters,
+                  globalSlicers: draftGlobalSlicers as BaseFilter[],
+                  pageSlicers: draftPageSlicers as BaseFilter[],
+                  activePageId,
+                  slicerFiltersPage,
+                });
+                const filterContext = getDistinctValueFilterContext(ctx, column);
+                const res = await fetchDatasetModelDistinctValues(
+                  column.datasetId, column.semanticField, 500, filterContext, search,
+                );
+                return res.values ?? [];
+              } catch {
+                return [];
+              }
+            }}
             // Per-slicer scope config (⚙): Chỉ trang này / Tất cả trang /
             // Tùy chọn theo trang (ma trận Lọc/Hiện). Build only.
             showScopeToggle={canEditResource}

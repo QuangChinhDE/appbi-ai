@@ -3089,7 +3089,17 @@ def _calendar_snapshot_ref_from_map(db: Session, snap_map: dict | None) -> str |
     return None
 
 
-def get_distinct_field_values(
+# Safety ceiling for the ONE-TIME full distinct fetch that backs a slicer
+# dropdown. The worker fetches up to this many distinct values in a single
+# (cached + snapshot-served) warehouse query; search + pagination then run over
+# that cached list in Python, so typing never issues another warehouse query.
+# A SELECT DISTINCT scans the whole column regardless of LIMIT, so raising this
+# from the old 200/500 does not materially change bytes scanned — it just stops
+# truncating high-cardinality dimensions.
+_DISTINCT_FETCH_CEILING = 50000
+
+
+def _distinct_values_full(
     db: Session,
     dataset_id: int,
     field: str,
@@ -3098,7 +3108,10 @@ def get_distinct_field_values(
     explain: bool = False,
     snapshot_ttl_minutes: int | None = None,
 ) -> dict:
-    """Return distinct values + dropped-filter diagnostics.
+    """Return the full distinct-value set + dropped-filter diagnostics.
+
+    Worker behind get_distinct_field_values (which adds search + pagination over
+    the cached result). Kept as a single cached/snapshot-backed warehouse fetch.
 
     When ``explain`` is set (admin debug only), the response also carries a
     ``debug_sql`` list with every SQL string generated for this request —
@@ -3118,7 +3131,7 @@ def get_distinct_field_values(
         raise ValueError("Field must be qualified as view.field")
 
     view_name, field_name = field.split(".", 1)
-    limit = max(1, min(int(limit), 500))
+    limit = max(1, min(int(limit), _DISTINCT_FETCH_CEILING))
 
     # A slicer's option list must always show its FULL set of values,
     # cascaded only by filters on OTHER fields — never by a filter on
@@ -4069,6 +4082,65 @@ def get_distinct_field_values(
         raise ValueError("Data source not found")
     values = _safe_execute("live_table", fetch_live_values)
     return {"values": values, "dropped_filters": dropped, **({"debug_sql": captured_sqls} if explain else {})}
+
+
+def get_distinct_field_values(
+    db: Session,
+    dataset_id: int,
+    field: str,
+    limit: int = 200,
+    filters: list[dict] | None = None,
+    explain: bool = False,
+    snapshot_ttl_minutes: int | None = None,
+    search: str | None = None,
+    offset: int = 0,
+) -> dict:
+    """Slicer-dropdown distinct values with server-side search + pagination.
+
+    The FULL distinct set is fetched ONCE via the cached/snapshot-backed worker
+    (one warehouse query, reused across every page and search term for the same
+    field + cascade filters). ``search`` (case-insensitive substring) and
+    ``offset``/``limit`` are then applied in Python over that cached list, so a
+    type-to-search dropdown over a high-cardinality dimension never issues a
+    warehouse query per keystroke.
+
+    Returns ``{"values": [...page...], "total": <matched count>,
+    "has_more": bool, "dropped_filters": [...], ["debug_sql": ...]}``.
+    """
+    # Cap the returned page at the fetch ceiling (not 1000): callers that want
+    # the FULL set (e.g. the public endpoint passing limit=_DISTINCT_FETCH_CEILING
+    # to then scope + paginate itself) must get everything back. Normal builder
+    # callers are already bounded to <=1000 by the endpoint's Pydantic le.
+    page_size = max(1, min(int(limit or 200), _DISTINCT_FETCH_CEILING))
+    start = max(0, int(offset or 0))
+
+    full = _distinct_values_full(
+        db,
+        dataset_id,
+        field,
+        limit=_DISTINCT_FETCH_CEILING,
+        filters=filters,
+        explain=explain,
+        snapshot_ttl_minutes=snapshot_ttl_minutes,
+    )
+    values = full.get("values", []) or []
+
+    term = (search or "").strip().casefold()
+    if term:
+        values = [v for v in values if term in str(v).casefold()]
+
+    total = len(values)
+    page = values[start:start + page_size]
+
+    result = {
+        "values": page,
+        "total": total,
+        "has_more": (start + page_size) < total,
+        "dropped_filters": full.get("dropped_filters", []),
+    }
+    if explain and "debug_sql" in full:
+        result["debug_sql"] = full["debug_sql"]
+    return result
 
 
 # ===========================================================================

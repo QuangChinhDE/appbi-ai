@@ -31,7 +31,6 @@ import {
   LayoutDashboard,
   Pencil,
   Plus,
-  Settings,
   Table as TableIcon,
   Trash2,
   X,
@@ -82,7 +81,6 @@ interface Props {
   onPickScreen: (id: string) => void;
   /** Add a screen; when a real workspace tab is active, groupId targets it. */
   onAddScreen: (kind: ScreenKind, groupId?: string | null) => void;
-  onOpenAppSettings: () => void;
   /** Reorder by ABSOLUTE indices into the flat ``screens`` array. */
   onReorderScreens: (fromIdx: number, toIdx: number) => void;
   onDeleteScreen: (id: string) => void;
@@ -92,6 +90,9 @@ interface Props {
   /** Move a screen into a workspace (or unassign when groupId is null). */
   onAssignScreen: (screenId: string, groupId: string | null) => void;
   onSetGroupIcon: (id: string, icon: string | null) => void;
+  /** When false (view-only viewer), hide mutation affordances. Edits are
+   * already inert (parent handlers no-op), this just removes the dead buttons. */
+  canEdit?: boolean;
 }
 
 /**
@@ -185,7 +186,6 @@ export default function CanvasOverview({
   groups,
   onPickScreen,
   onAddScreen,
-  onOpenAppSettings,
   onReorderScreens,
   onDeleteScreen,
   onCreateGroup,
@@ -193,6 +193,7 @@ export default function CanvasOverview({
   onDeleteGroup,
   onAssignScreen,
   onSetGroupIcon,
+  canEdit = true,
 }: Props) {
   // ── Which "drawer" (workspace tab) is open. Real group id, or a sentinel.
   const [activeTab, setActiveTab] = useState<string>(TAB_ALL);
@@ -392,17 +393,10 @@ export default function CanvasOverview({
             {boundDataset?.name || '— no dataset —'}
           </div>
           <div className="text-micro text-text-tertiary">
-            Mỗi screen chọn 1 bảng từ dataset này. {tables.length} bảng khả dụng.
+            Mỗi screen chọn 1 bảng từ dataset này. {tables.length} bảng khả dụng. Đổi dataset &amp;
+            thiết lập app ở tab <strong>Cài đặt</strong>.
           </div>
         </div>
-        <button
-          type="button"
-          onClick={onOpenAppSettings}
-          className="inline-flex h-8 items-center gap-1.5 rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-3 text-caption font-emphasis text-text-primary hover:bg-surface-2"
-        >
-          <Settings className="h-3.5 w-3.5" />
-          App settings
-        </button>
       </div>
 
       {/* ── Workspace tab strip ─────────────────────────────────────────── */}
@@ -549,6 +543,7 @@ export default function CanvasOverview({
             </span>
           )}
         </div>
+        {canEdit && (
         <div className="flex flex-wrap items-center gap-1.5">
           <span className="mr-1 hidden text-micro text-text-tertiary sm:inline">{addHint}</span>
           {PALETTE.map((entry) => {
@@ -567,6 +562,7 @@ export default function CanvasOverview({
             );
           })}
         </div>
+        )}
       </div>
 
       {/* Inline icon picker for the active workspace (toggled by its icon). */}
@@ -812,6 +808,7 @@ export default function CanvasOverview({
                   >
                     <ArrowDown className="h-3.5 w-3.5" />
                   </button>
+                  {canEdit && (
                   <button
                     type="button"
                     onClick={(event) => {
@@ -823,6 +820,7 @@ export default function CanvasOverview({
                   >
                     <Trash2 className="h-3.5 w-3.5" />
                   </button>
+                  )}
                 </div>
               </div>
             );

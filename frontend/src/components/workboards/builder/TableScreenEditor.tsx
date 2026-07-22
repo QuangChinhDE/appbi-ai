@@ -108,8 +108,11 @@ const EMPTY_TABLE: TableSpec = {
   editable_columns: [],
   filters: [],
   page_size: 100,
-  allow_add_row: true,
-  allow_delete_row: true,
+  // Fail-safe: writes OFF by default (matches the new-table-screen defaults in
+  // WorkboardBuilder.addScreen). A table only accepts add/delete once the
+  // builder explicitly turns them on.
+  allow_add_row: false,
+  allow_delete_row: false,
   required_columns: [],
   default_values: {},
   computed_columns: [],
@@ -1039,6 +1042,18 @@ export default function TableScreenEditor({ screen, tables, onChange }: Props) {
       const cal = tableSpec.calendar_config || { date_column: '' };
       const updateCalendar = (patch: Partial<NonNullable<TableSpec['calendar_config']>>) =>
         updateTable({ calendar_config: { ...cal, ...patch } });
+      const routeMap = tableSpec.route_map_config || {
+        lat_column: '',
+        lng_column: '',
+        basemap: 'streets',
+        line_mode: 'road',
+        route_provider: 'osrm',
+        route_profile: 'driving',
+        fallback_line_mode: 'straight',
+        show_side_panel: true,
+      };
+      const updateRouteMap = (patch: Partial<NonNullable<TableSpec['route_map_config']>>) =>
+        updateTable({ route_map_config: { ...routeMap, ...patch } });
       const visibleCols = tableSpec.columns || [];
       return (
         <BuilderInspectorPanel
@@ -1050,13 +1065,14 @@ export default function TableScreenEditor({ screen, tables, onChange }: Props) {
             <select
               value={mode}
               onChange={(event) =>
-                updateTable({ display_mode: event.target.value as 'table' | 'gallery' | 'calendar' })
+                updateTable({ display_mode: event.target.value as 'table' | 'gallery' | 'calendar' | 'route_map' })
               }
               className={INPUT}
             >
               <option value="table">Bảng (mặc định)</option>
               <option value="gallery">Gallery ảnh</option>
               <option value="calendar">Lịch (Calendar)</option>
+              <option value="route_map">Route map (tuyến trên bản đồ)</option>
             </select>
           </Lbl>
 
@@ -1151,6 +1167,160 @@ export default function TableScreenEditor({ screen, tables, onChange }: Props) {
                       className={INPUT}
                     />
                   </Lbl>
+                </>
+              )}
+            </div>
+          )}
+
+          {mode === 'route_map' && (
+            <div className="mt-3 space-y-3">
+              {visibleCols.length === 0 ? (
+                <BuilderEmptyHint className="text-left">
+                  Hãy chọn cột hiển thị trước — Route map cần ít nhất cột vĩ độ và kinh độ.
+                </BuilderEmptyHint>
+              ) : (
+                <>
+                  <div className="rounded-lg border border-teal-100 bg-teal-50 px-3 py-2 text-xs text-teal-800">
+                    Mỗi dòng dữ liệu là một điểm dừng. Chọn cột tọa độ, cột nhóm tuyến/chuyến và cột thứ tự nếu có.
+                  </div>
+                  <div className={BUILDER_GRID_2}>
+                    <Lbl label="Cột vĩ độ / Latitude">
+                      <SingleColumnPicker
+                        sourceColumns={visibleCols}
+                        value={routeMap.lat_column || null}
+                        onChange={(next) => updateRouteMap({ lat_column: next || '' })}
+                        placeholder="-- chọn cột lat/vĩ độ --"
+                      />
+                    </Lbl>
+                    <Lbl label="Cột kinh độ / Longitude">
+                      <SingleColumnPicker
+                        sourceColumns={visibleCols}
+                        value={routeMap.lng_column || null}
+                        onChange={(next) => updateRouteMap({ lng_column: next || '' })}
+                        placeholder="-- chọn cột long/lng/kinh độ --"
+                      />
+                    </Lbl>
+                  </div>
+                  <div className={BUILDER_GRID_2}>
+                    <Lbl label="Cột nhãn marker">
+                      <SingleColumnPicker
+                        sourceColumns={visibleCols}
+                        value={routeMap.title_column || null}
+                        onChange={(next) => updateRouteMap({ title_column: next || null })}
+                        placeholder="-- ví dụ: Mã đơn giao --"
+                      />
+                    </Lbl>
+                    <Lbl label="Cột nhóm tuyến/chuyến">
+                      <SingleColumnPicker
+                        sourceColumns={visibleCols}
+                        value={routeMap.route_id_column || null}
+                        onChange={(next) => updateRouteMap({ route_id_column: next || null })}
+                        placeholder="-- ví dụ: Mã chuyến / mã tuyến --"
+                      />
+                    </Lbl>
+                  </div>
+                  <div className={BUILDER_GRID_2}>
+                    <Lbl label="Cột thứ tự điểm">
+                      <SingleColumnPicker
+                        sourceColumns={visibleCols}
+                        value={routeMap.order_column || null}
+                        onChange={(next) => updateRouteMap({ order_column: next || null })}
+                        placeholder="-- ví dụ: Thứ tự giao --"
+                      />
+                    </Lbl>
+                    <Lbl label="Cột xe/tài nguyên">
+                      <SingleColumnPicker
+                        sourceColumns={visibleCols}
+                        value={routeMap.vehicle_column || null}
+                        onChange={(next) => updateRouteMap({ vehicle_column: next || null })}
+                        placeholder="-- ví dụ: Mã xe --"
+                      />
+                    </Lbl>
+                  </div>
+                  <Lbl label="Cột phụ đề trong danh sách điểm">
+                    <MultiColumnPicker
+                      sourceColumns={visibleCols}
+                      value={routeMap.subtitle_columns || []}
+                      onChange={(next) => updateRouteMap({ subtitle_columns: next })}
+                    />
+                  </Lbl>
+                  <div className={BUILDER_GRID_2}>
+                    <Lbl label="Cột khối lượng">
+                      <SingleColumnPicker
+                        sourceColumns={visibleCols}
+                        value={routeMap.weight_column || null}
+                        onChange={(next) => updateRouteMap({ weight_column: next || null })}
+                        placeholder="-- không --"
+                      />
+                    </Lbl>
+                    <Lbl label="Cột giá trị">
+                      <SingleColumnPicker
+                        sourceColumns={visibleCols}
+                        value={routeMap.value_column || null}
+                        onChange={(next) => updateRouteMap({ value_column: next || null })}
+                        placeholder="-- không --"
+                      />
+                    </Lbl>
+                  </div>
+                  <div className={BUILDER_GRID_2}>
+                    <Lbl label="Cột hạn giao/deadline">
+                      <SingleColumnPicker
+                        sourceColumns={visibleCols}
+                        value={routeMap.deadline_column || null}
+                        onChange={(next) => updateRouteMap({ deadline_column: next || null })}
+                        placeholder="-- không --"
+                      />
+                    </Lbl>
+                    <Lbl label="Cột trạng thái">
+                      <SingleColumnPicker
+                        sourceColumns={visibleCols}
+                        value={routeMap.status_column || null}
+                        onChange={(next) => updateRouteMap({ status_column: next || null })}
+                        placeholder="-- không --"
+                      />
+                    </Lbl>
+                  </div>
+                  <div className={BUILDER_GRID_2}>
+                    <Lbl label="Kiểu đường tuyến">
+                      <select
+                        value={routeMap.line_mode || 'road'}
+                        onChange={(event) => updateRouteMap({ line_mode: event.target.value as 'straight' | 'road' })}
+                        className={INPUT}
+                      >
+                        <option value="road">Theo đường thật (OSRM)</option>
+                        <option value="straight">Đường thẳng</option>
+                      </select>
+                    </Lbl>
+                    <Lbl label="Nền bản đồ">
+                      <select
+                        value={routeMap.basemap || 'streets'}
+                        onChange={(event) => updateRouteMap({ basemap: event.target.value as 'satellite' | 'streets' | 'light' })}
+                        className={INPUT}
+                      >
+                        <option value="streets">Đường phố</option>
+                        <option value="light">Sáng / nhẹ</option>
+                        <option value="satellite">Vệ tinh</option>
+                      </select>
+                    </Lbl>
+                  </div>
+                  <div className={BUILDER_GRID_2}>
+                    <Lbl label="Tiêu đề panel bên phải">
+                      <input
+                        value={routeMap.side_panel_title || ''}
+                        onChange={(event) => updateRouteMap({ side_panel_title: event.target.value || null })}
+                        className={INPUT}
+                        placeholder="Thứ tự giao"
+                      />
+                    </Lbl>
+                  </div>
+                  <label className="flex items-center gap-2 text-caption text-text-secondary">
+                    <input
+                      type="checkbox"
+                      checked={routeMap.show_side_panel !== false}
+                      onChange={(event) => updateRouteMap({ show_side_panel: event.target.checked })}
+                    />
+                    Hiển thị danh sách thứ tự điểm bên phải bản đồ
+                  </label>
                 </>
               )}
             </div>

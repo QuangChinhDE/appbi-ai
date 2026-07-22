@@ -271,19 +271,11 @@ class DashboardService:
         if not chart:
             raise ValueError(f"Chart with ID {chart_id} not found")
         
-        target_page_id = _resolve_dashboard_chart_page_id(layout)
-
-        # Allow reusing a chart across different dashboard pages, but keep
-        # each page scoped to a single instance of that chart to avoid
-        # ambiguous remove / move behavior on the same page.
-        existing_instances = db.query(DashboardChart).filter(
-            DashboardChart.dashboard_id == dashboard_id,
-            DashboardChart.chart_id == chart_id
-        ).all()
-
-        if any(_resolve_dashboard_chart_page_id(item.layout) == target_page_id for item in existing_instances):
-            raise ValueError(f"Chart with ID {chart_id} is already on page {target_page_id}")
-        
+        # Reusable chart tiles: the SAME chart may be placed any number of times
+        # on the same page and across pages of a dashboard. Each DashboardChart
+        # row is an independent tile instance (identified by its own id), so we
+        # do NOT dedupe by (dashboard_id, chart_id, page) here — adding a chart
+        # that already appears on the page just creates another tile.
         db_dashboard_chart = DashboardChart(
             dashboard_id=dashboard_id,
             chart_id=chart_id,
@@ -368,18 +360,9 @@ class DashboardService:
             ).first()
             
             if db_dashboard_chart:
-                target_page_id = _resolve_dashboard_chart_page_id(layout)
-                existing_duplicate = db.query(DashboardChart).filter(
-                    DashboardChart.dashboard_id == dashboard_id,
-                    DashboardChart.chart_id == db_dashboard_chart.chart_id,
-                    DashboardChart.id != dashboard_chart_id,
-                ).all()
-                if any(_resolve_dashboard_chart_page_id(item.layout) == target_page_id for item in existing_duplicate):
-                    raise ValueError(
-                        f"Chart with ID {db_dashboard_chart.chart_id} is already on page {target_page_id}"
-                    )
-
-                # Convert Pydantic model to dict
+                # Reusable tiles: a chart can repeat on the same page, so moving
+                # or re-laying-out a tile never conflicts with another instance
+                # of the same chart. No same-page dedupe here.
                 db_dashboard_chart.layout = layout.model_dump()
         
         db.commit()

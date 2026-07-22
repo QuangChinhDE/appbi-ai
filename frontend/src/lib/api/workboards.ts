@@ -79,6 +79,13 @@ export interface Workboard {
   optimistic_lock_column?: string | null;
   is_published: boolean;
   version: number;
+  // Draft/Published lifecycle. `version` is the DRAFT counter (builder edits);
+  // `published_version` is the draft version captured at the last publish.
+  // `publish_status` is the BE-computed pill state: 'draft' | 'live' |
+  // 'live_unpublished_changes'.
+  published_version?: number | null;
+  published_at?: string | null;
+  publish_status?: 'draft' | 'live' | 'live_unpublished_changes';
   settings?: Record<string, unknown> | null;
   owner_id?: string | null;
   owner_email?: string | null;
@@ -116,8 +123,50 @@ export interface WorkboardUpdateInput {
   primary_table_id?: number;
   layout_json?: Partial<WorkboardLayoutJson>;
   optimistic_lock_column?: string;
-  is_published?: boolean;
   settings?: Record<string, unknown>;
+  // Optimistic-concurrency token for DRAFT saves; the server returns 409 if the
+  // stored version has advanced (a concurrent tab/session). NOTE: is_published
+  // is intentionally NOT here — go Live / take down via publish()/unpublish().
+  expected_version?: number;
+}
+
+export interface RebindImpactEntry {
+  screen_id?: string | null;
+  screen_title?: string | null;
+  reason: string; // 'remapped' | 'table_missing' | 'doc_lookup_table_missing' | 'grid_lookup_table_missing'
+  table_name?: string | null;
+  old_table_id?: number | null;
+  new_table_id?: number | null;
+}
+
+export interface RebindPreview {
+  workboard_id: number;
+  target_dataset_id: number;
+  remap_count: number;
+  clear_count: number;
+  remapped: RebindImpactEntry[];
+  cleared: RebindImpactEntry[];
+}
+
+/** Readiness audit — the SAME server-side check that gates Publish. `ok=false`
+ * means one or more `severity: 'error'` issues block going Live; warnings are
+ * advisory. Surfaced in the Settings → App health panel with Fix deep-links. */
+export interface WorkboardAuditIssue {
+  severity: 'error' | 'warning';
+  screen_id?: string | null;
+  screen_kind?: string | null;
+  screen_title?: string | null;
+  code: string;
+  detail: string;
+  context?: Record<string, unknown> | null;
+}
+
+export interface WorkboardReadinessAudit {
+  workboard_id: number;
+  screen_count: number;
+  issue_count: number;
+  ok: boolean;
+  issues: WorkboardAuditIssue[];
 }
 
 export interface WorkboardImportReport {
@@ -244,6 +293,24 @@ export interface WorkboardPublicPayload {
 // API client
 // ---------------------------------------------------------------------------
 
+// Co-edit presence + soft screen-lock contracts.
+export interface WorkboardEditor {
+  user_key: string;
+  name: string;
+  email: string;
+  seconds_ago: number;
+  editing_screen_id: string | null;
+}
+
+export interface WorkboardScreenLock {
+  screen_id: string;
+  holder_key: string | null;
+  holder_name: string | null;
+  holder_email: string | null;
+  held_by_me: boolean;
+  since: number | null;
+}
+
 export const workboardApi = {
   list: async (): Promise<Workboard[]> => {
     const { data } = await apiClient.get('/workboards/');
@@ -283,12 +350,83 @@ export const workboardApi = {
     return data;
   },
 
+  /** Screen-scoped save — merges ONE screen into the current stored layout
+   * server-side (no board-version guard), so many people editing DIFFERENT
+   * screens never clobber or 409 each other. Use for screen-CONTENT edits;
+   * structural/app edits (add/delete/reorder, nav, groups, dataset) use
+   * update(). */
+  updateScreen: async (
+    id: number,
+    screenId: string,
+    screen: Record<string, unknown>,
+  ): Promise<Workboard> => {
+    const { data } = await apiClient.patch(
+      `/workboards/${id}/screens/${encodeURIComponent(screenId)}`,
+      screen,
+    );
+    return data;
+  },
+
   remove: async (id: number): Promise<void> => {
     await apiClient.delete(`/workboards/${id}`);
   },
 
   publish: async (id: number): Promise<Workboard> => {
     const { data } = await apiClient.post(`/workboards/${id}/publish`);
+    return data;
+  },
+
+  unpublish: async (id: number): Promise<Workboard> => {
+    const { data } = await apiClient.post(`/workboards/${id}/unpublish`);
+    return data;
+  },
+
+  // ── Editor presence + soft screen-lock (co-edit safety) ──
+  // Heartbeat reports which SCREEN the user currently has open and returns the
+  // OTHER active editors, this user's lock state for that screen, and the
+  // holder map for every locked screen. Best-effort; backend TTL clears stale.
+  editingHeartbeat: async (
+    id: number,
+    editingScreenId?: string | null,
+  ): Promise<{
+    editors: WorkboardEditor[];
+    lock: WorkboardScreenLock | null;
+    screen_holders: Record<string, { holder_key: string; holder_name: string | null }>;
+  }> => {
+    const { data } = await apiClient.post(`/workboards/${id}/editing/heartbeat`, {
+      editing_screen_id: editingScreenId ?? null,
+    });
+    return data;
+  },
+  editingLeave: async (id: number): Promise<void> => {
+    await apiClient.post(`/workboards/${id}/editing/leave`);
+  },
+  // Force-claim the soft-lock on a screen ("Chiếm quyền"). The previous holder
+  // drops to view-only on its next heartbeat.
+  editingTakeover: async (
+    id: number,
+    screenId: string,
+  ): Promise<{ lock: WorkboardScreenLock }> => {
+    const { data } = await apiClient.post(`/workboards/${id}/editing/takeover`, {
+      screen_id: screenId,
+    });
+    return data;
+  },
+
+  /** Readiness audit — the same server-side gate Publish runs. Used by the
+   * Settings → App health panel so the author can see & fix blocking errors
+   * before going Live. */
+  getReadinessAudit: async (id: number): Promise<WorkboardReadinessAudit> => {
+    const { data } = await apiClient.get(`/workboards/${id}/audit`);
+    return data;
+  },
+
+  /** Two-phase rebind, phase 1: analyze impact of switching to `datasetId`
+   * WITHOUT applying (auto-remap same-named tables vs clear). */
+  previewRebind: async (id: number, datasetId: number): Promise<RebindPreview> => {
+    const { data } = await apiClient.post(`/workboards/${id}/rebind/preview`, {
+      dataset_id: datasetId,
+    });
     return data;
   },
 

@@ -99,7 +99,9 @@ export const publicDashboardApi = {
     sessionToken?: string,
     limit = 200,
     filters?: BaseFilter[],
-  ): Promise<{ field: string; values: string[] }> => {
+    search?: string,
+    offset?: number,
+  ): Promise<{ field: string; values: string[]; total?: number; has_more?: boolean }> => {
     const headers = sessionToken ? { 'X-Public-Session': sessionToken } : {};
     const res = await publicClient.get(
       `/public/dashboards/${token}/filters/distinct-values`,
@@ -109,6 +111,8 @@ export const publicDashboardApi = {
           dataset_id: datasetId,
           field,
           limit,
+          ...(offset ? { offset } : {}),
+          ...(search && search.trim() ? { search: search.trim() } : {}),
           ...(filters?.length ? { filters: JSON.stringify(filters) } : {}),
         },
       },

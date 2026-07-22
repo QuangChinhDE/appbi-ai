@@ -26,7 +26,7 @@ from app.models.models import Dashboard, DashboardChart, DashboardPublicLink
 from app.schemas import ChartDataResponse, DashboardResponse
 from app.schemas.schemas import AiChatSessionSave
 from app.services import ChartService
-from app.services.dataset_model_service import get_dataset_model, get_distinct_field_values
+from app.services.dataset_model_service import get_dataset_model, get_distinct_field_values, _DISTINCT_FETCH_CEILING
 from app.services.dashboard_ai_bot.public_link_config import (
     resolve_public_ai_credentials,
     resolve_public_ai_critique_enabled,
@@ -45,6 +45,11 @@ from app.services.filter_layered_merge import (
     split_dashboard_filters_by_public_mode,
     split_link_filters_locked_vs_hidden,
 )
+
+# Keep this at module scope as well as inside the workspace router factory.
+# Some deployed builds expose the cookie helper as a module-level function;
+# without the module constant those builds raise NameError during login.
+_WORKSPACE_COOKIE_PREFIX = "wbws_"
 
 from slowapi import Limiter
 from slowapi.util import get_remote_address
@@ -1464,6 +1469,24 @@ if settings.WORKBOARDS_ENABLED:
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="This account does not belong to this mini-app.",
             )
+
+        # Draft/Published read-split. A real end-user request serves the
+        # immutable PUBLISHED snapshot; an admin PREVIEW session (its
+        # preview_workboard_id targets this board) serves the live DRAFT so
+        # unpublished edits are testable. Stamp a transient flag that
+        # parse_layout()/render_app_shell() read downstream (same pattern as
+        # the _cleared_screens transient attr).
+        is_preview = preview_workboard_id == workboard_id
+        if not is_preview and (not wb.is_published or wb.published_layout_json is None):
+            # Not live: never published (no snapshot) OR un-published
+            # (is_published flipped off — the snapshot is kept so re-publish is
+            # instant, but the live runtime must stop serving). Preview sessions
+            # bypass this so admins can still test the draft.
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Ứng dụng chưa được xuất bản.",
+            )
+        wb._wb_use_published = not is_preview
         return wb
 
 
@@ -1546,7 +1569,7 @@ if settings.WORKBOARDS_ENABLED:
         if screen.kind == "table":
             return {
                 **screen_runtime.render_table_screen(
-                    db, wb, screen, identity=identity
+                    db, wb, screen, identity=identity, shared_context=shared_context
                 ),
                 "screen_id": screen.id,
                 "kind": "table",
@@ -1571,8 +1594,14 @@ if settings.WORKBOARDS_ENABLED:
             from app.modules.workboards.services.dashboard_link_service import (
                 resolve_managed_token,
             )
+            from app.modules.workboards.services.runtime_config import effective_layout_raw
+
+            # Resolve the per-role managed token from the PUBLISHED layout for Live
+            # (draft for Preview). NOTE: this fixes the token MAP source; the
+            # underlying DashboardPublicLink rows are still a single shared set —
+            # full draft/published row isolation (stage column) is Slice 2.
             resolved_token = resolve_managed_token(
-                layout_json=wb.layout_json,
+                layout_json=effective_layout_raw(wb),
                 screen_id=screen.id,
                 app_user_role=app_user.get("role") if isinstance(app_user, dict) else None,
             )
@@ -1916,6 +1945,7 @@ if settings.WORKBOARDS_ENABLED:
         if not screen_runtime.is_screen_visible_for(screen, identity) or screen.id in _public_hidden_screen_ids(ws, wb):
             raise HTTPException(status_code=403, detail="You don't have access to that screen.")
         body = body or {}
+        shared_context = body.get("shared") if isinstance(body.get("shared"), dict) else None
         return {
             **screen_runtime.render_table_screen(
                 db,
@@ -1925,6 +1955,7 @@ if settings.WORKBOARDS_ENABLED:
                 page=int(body.get("page") or 1),
                 page_size=int(body["page_size"]) if body.get("page_size") else None,
                 extra_filters=body.get("filters") or [],
+                shared_context=shared_context,
             ),
             "screen_id": screen.id,
             "kind": "table",
@@ -2004,7 +2035,11 @@ if settings.WORKBOARDS_ENABLED:
         if len(image) > 12_000_000:  # ~9 MB raw
             raise HTTPException(status_code=413, detail="Ảnh quá lớn (tối đa ~9 MB).")
 
-        cfg = get_screen_ocr_config(wb.layout_json or {}, screen_id)
+        # Live OCR config must come from the PUBLISHED snapshot, not the mutable
+        # draft (a draft edit to the vision model/token must not change Live).
+        from app.modules.workboards.services.runtime_config import effective_layout_raw
+
+        cfg = get_screen_ocr_config(effective_layout_raw(wb), screen_id)
         if not cfg:
             raise HTTPException(status_code=400, detail="Tính năng chụp ảnh tự điền chưa được bật cho biểu mẫu này.")
 
@@ -2429,7 +2464,12 @@ def get_public_filter_distinct_values(
     request: Request,
     dataset_id: int = Query(..., ge=1),
     field: str = Query(..., description="Qualified field name, e.g. orders.country"),
-    limit: int = Query(200, ge=1, le=500),
+    limit: int = Query(200, ge=1, le=1000, description="Page size (values returned)."),
+    offset: int = Query(0, ge=0, description="Page offset into the (searched) distinct set."),
+    search: str | None = Query(
+        default=None,
+        description="Case-insensitive substring; server-side search over the cached full distinct set (no per-keystroke warehouse query).",
+    ),
     filters: str | None = Query(
         default=None,
         description="JSON-encoded list of additional viewer filter objects.",
@@ -2494,11 +2534,17 @@ def get_public_filter_distinct_values(
     )
 
     try:
+        # Fetch the FULL searched set (server-side search over the cached full
+        # distinct list — no per-keystroke warehouse query), then apply the
+        # per-link scope allow-list, THEN paginate. Order matters: scope_allow
+        # must bound BEFORE pagination so total/has_more reflect the allowed set.
         result = get_distinct_field_values(
             db,
             dataset_id,
             field,
-            limit=limit,
+            limit=_DISTINCT_FETCH_CEILING,
+            offset=0,
+            search=search,
             filters=combined_filters,
             snapshot_ttl_minutes=_resolve_public_snapshot_ttl(_distinct_appearance),
         )
@@ -2520,9 +2566,13 @@ def get_public_filter_distinct_values(
         if scope_allow is not None:
             allow_set = {str(v) for v in scope_allow}
             values = [v for v in values if str(v) in allow_set]
+        total = len(values)
+        page = values[offset:offset + limit]
         return {
             "field": field,
-            "values": values,
+            "values": page,
+            "total": total,
+            "has_more": (offset + limit) < total,
             "dropped_filters": result.get("dropped_filters", []),
         }
     except ValueError as exc:

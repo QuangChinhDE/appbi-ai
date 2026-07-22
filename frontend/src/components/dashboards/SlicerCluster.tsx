@@ -51,7 +51,12 @@ interface SlicerClusterProps {
     isLoading: boolean;
     isError: boolean;
     hasFilterContext: boolean;
+    total?: number;
+    hasMore?: boolean;
   }>;
+  /** Server-side value search over the cached full distinct set (type-to-search
+   * for high-cardinality slicers). Forwarded to DashboardFilterBar. */
+  fetchServerDistinct?: (column: ColumnInfo, search: string) => Promise<string[]>;
   hasPendingChanges?: boolean;
   onApply?: () => void;
   onReset?: () => void;
@@ -105,6 +110,7 @@ export function SlicerCluster({
   columnChartCount,
   distinctValues,
   distinctStatus,
+  fetchServerDistinct,
   hasPendingChanges,
   onApply,
   onReset,
@@ -540,6 +546,7 @@ export function SlicerCluster({
             columnChartCount={columnChartCount}
             distinctValues={distinctValues}
             distinctStatus={distinctStatus}
+            fetchServerDistinct={fetchServerDistinct}
             distributeChildren={effectiveLayout.distribute === 'auto'}
             filters={slicerEntries}
             onFiltersChange={handleSlicersChange}

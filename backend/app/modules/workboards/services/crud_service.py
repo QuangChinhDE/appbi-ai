@@ -487,6 +487,128 @@ def _clear_layout_table_refs_not_in_dataset(
     return layout, manifest
 
 
+def build_rebind_plan(
+    db: Session, raw_layout: Any, target_dataset_id: int
+) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
+    """Plan a dataset rebind: AUTO-REMAP each stale table ref to the same-named
+    table in the new dataset when one exists, and only CLEAR the truly
+    unresolvable ones. Returns ``(new_layout, manifest)`` where each manifest
+    entry's ``reason`` is ``remapped`` (carrying ``new_table_id``) or one of the
+    clear reasons. Used for BOTH the /rebind/preview (dry-run — discard the
+    layout, show the manifest) and the actual apply (draft-only)."""
+    if isinstance(raw_layout, LayoutJson):
+        layout = raw_layout.model_dump(mode="json")
+    elif isinstance(raw_layout, dict):
+        layout = copy.deepcopy(raw_layout)
+    else:
+        layout = LayoutJson.model_validate(raw_layout or {}).model_dump(mode="json")
+
+    new_tables = (
+        db.query(DatasetTable.id, DatasetTable.source_table_name)
+        .filter(DatasetTable.dataset_id == target_dataset_id)
+        .all()
+    )
+    new_ids = {int(i) for i, _ in new_tables}
+    new_by_name: Dict[str, int] = {}
+    for i, nm in new_tables:
+        if nm:
+            new_by_name.setdefault(str(nm), int(i))
+
+    ref_ids: set[int] = set()
+    screens = layout.get("screens") if isinstance(layout, dict) else None
+    screens = screens if isinstance(screens, list) else []
+    for s in screens:
+        if not isinstance(s, dict):
+            continue
+        if isinstance(s.get("table_id"), int):
+            ref_ids.add(s["table_id"])
+        doc = s.get("doc")
+        if isinstance(doc, dict):
+            for b in doc.get("blocks") or []:
+                src = b.get("source") if isinstance(b, dict) else None
+                if isinstance(src, str) and src.startswith("lookup:"):
+                    try:
+                        ref_ids.add(int(src.split(":", 1)[1]))
+                    except ValueError:
+                        pass
+        grid = s.get("grid")
+        if isinstance(grid, dict):
+            for lk in grid.get("lookup_columns") or []:
+                if isinstance(lk, dict) and isinstance(lk.get("from_table_id"), int):
+                    ref_ids.add(lk["from_table_id"])
+
+    name_by_id: Dict[int, Optional[str]] = {}
+    if ref_ids:
+        for i, nm in (
+            db.query(DatasetTable.id, DatasetTable.source_table_name)
+            .filter(DatasetTable.id.in_(ref_ids))
+            .all()
+        ):
+            name_by_id[int(i)] = str(nm) if nm else None
+
+    def _resolve(old_id: int) -> Tuple[str, Optional[int]]:
+        if old_id in new_ids:
+            return "keep", old_id
+        nm = name_by_id.get(old_id)
+        if nm and nm in new_by_name:
+            return "remap", new_by_name[nm]
+        return "clear", None
+
+    manifest: List[Dict[str, Any]] = []
+
+    def _entry(s: Dict[str, Any], reason: str, **x: Any) -> None:
+        manifest.append({
+            "screen_id": s.get("id"), "screen_kind": s.get("kind"),
+            "screen_title": s.get("title"), "reason": reason, **x,
+        })
+
+    for s in screens:
+        if not isinstance(s, dict):
+            continue
+        tid = s.get("table_id")
+        if isinstance(tid, int):
+            action, new = _resolve(tid)
+            if action == "remap":
+                s["table_id"] = new
+                _entry(s, "remapped", old_table_id=tid, new_table_id=new, table_name=name_by_id.get(tid))
+            elif action == "clear":
+                s["table_id"] = None
+                _entry(s, "table_missing", old_table_id=tid, table_name=name_by_id.get(tid))
+        doc = s.get("doc")
+        if isinstance(doc, dict):
+            for b in doc.get("blocks") or []:
+                if not isinstance(b, dict):
+                    continue
+                src = b.get("source")
+                if isinstance(src, str) and src.startswith("lookup:"):
+                    try:
+                        oid = int(src.split(":", 1)[1])
+                    except ValueError:
+                        continue
+                    action, new = _resolve(oid)
+                    if action == "remap":
+                        b["source"] = f"lookup:{new}"
+                        _entry(s, "remapped", old_table_id=oid, new_table_id=new, table_name=name_by_id.get(oid))
+                    elif action == "clear":
+                        b["source"] = "primary"
+                        _entry(s, "doc_lookup_table_missing", old_table_id=oid, table_name=name_by_id.get(oid))
+        grid = s.get("grid")
+        if isinstance(grid, dict):
+            for lk in grid.get("lookup_columns") or []:
+                if not isinstance(lk, dict):
+                    continue
+                fid = lk.get("from_table_id")
+                if isinstance(fid, int) and fid:
+                    action, new = _resolve(fid)
+                    if action == "remap":
+                        lk["from_table_id"] = new
+                        _entry(s, "remapped", old_table_id=fid, new_table_id=new, table_name=name_by_id.get(fid), lookup_name=lk.get("name"))
+                    elif action == "clear":
+                        lk["from_table_id"] = 0
+                        _entry(s, "grid_lookup_table_missing", old_table_id=fid, table_name=name_by_id.get(fid), lookup_name=lk.get("name"))
+    return layout, manifest
+
+
 class WorkboardService:
     """Service layer for Workboard CRUD. All methods are static."""
 
@@ -526,13 +648,53 @@ class WorkboardService:
         return db.query(query.exists()).scalar() is True
 
     @staticmethod
+    def build_unique_slug(
+        db: Session, name: Optional[str], *, exclude_id: Optional[int] = None
+    ) -> str:
+        """Derive a valid, unique slug from a workboard name.
+
+        A slug is REQUIRED to share/publish a workboard — the public Cổng menu is
+        keyed by ``workboard_slug`` — so every workboard must have one even though
+        the create form never asks for it. Produces the ``^[a-z0-9][a-z0-9-_]*$``
+        shape and de-dupes with a numeric suffix.
+
+        Vietnamese (and other Latin) diacritics are TRANSLITERATED, not stripped,
+        so "Đơn hàng của tôi" → "don-hang-cua-toi" (readable), never
+        "n-h-ng-c-a-t-i".
+        """
+        import unicodedata
+
+        text = str(name or "").strip()
+        # đ/Đ have no NFKD decomposition to d/D — map them explicitly first.
+        text = text.replace("đ", "d").replace("Đ", "D")
+        text = unicodedata.normalize("NFKD", text)
+        text = "".join(ch for ch in text if not unicodedata.combining(ch))
+        base = re.sub(r"[^a-zA-Z0-9]+", "-", text).strip("-").lower()
+        base = base or "app"
+        # Ensure it starts with an alphanumeric (pattern requires it).
+        if not base[0].isalnum():
+            base = f"app-{base}".strip("-")
+        candidate = base
+        n = 2
+        while WorkboardService.slug_exists(db, candidate, exclude_id=exclude_id):
+            candidate = f"{base}-{n}"
+            n += 1
+        return candidate
+
+    @staticmethod
     def create(
         db: Session,
         payload: WorkboardCreate,
         owner_id=None,
     ) -> Workboard:
-        if payload.slug and WorkboardService.slug_exists(db, payload.slug):
-            raise ValueError(f"Workboard slug '{payload.slug}' already exists")
+        slug = (payload.slug or "").strip()
+        if slug and WorkboardService.slug_exists(db, slug):
+            raise ValueError(f"Workboard slug '{slug}' already exists")
+        # Auto-generate a slug when the create form didn't supply one (it never
+        # does — we keep create simple). Without this the workboard has a blank
+        # slug and Share/attach-to-Cổng fails with a 400 later.
+        if not slug:
+            slug = WorkboardService.build_unique_slug(db, payload.name)
 
         # Auto-resolve primary_table_id when the caller didn't specify one.
         # The mini-app contract assigns table_id per screen, so the workboard
@@ -557,7 +719,7 @@ class WorkboardService:
 
         db_obj = Workboard(
             name=payload.name,
-            slug=payload.slug,
+            slug=slug,
             description=payload.description,
             icon=payload.icon,
             dataset_id=payload.dataset_id,
@@ -618,6 +780,10 @@ class WorkboardService:
             return None
 
         update_data = payload.model_dump(exclude_unset=True)
+        # expected_version is an API-layer optimistic-concurrency token, not a
+        # column — the endpoint checks it before calling update; drop it so the
+        # setattr loop never tries to write it onto the ORM row.
+        update_data.pop("expected_version", None)
 
         if "slug" in update_data:
             new_slug = update_data["slug"]
@@ -647,9 +813,12 @@ class WorkboardService:
             if raw_layout is None:
                 raw_layout = db_obj.layout_json or {}
             if schema_binding_changed:
-                raw_layout, cleared_screens = _clear_layout_table_refs_not_in_dataset(
-                    raw_layout,
-                    _dataset_table_ids(db, target_dataset_id),
+                # Smart rebind: auto-remap stale table refs to same-named tables
+                # in the new dataset, clear only the truly-unresolvable ones. This
+                # only touches the DRAFT layout_json; Live keeps its published
+                # binding (published_runtime_config) until the next Publish.
+                raw_layout, cleared_screens = build_rebind_plan(
+                    db, raw_layout, target_dataset_id
                 )
             (
                 refreshed_pk,

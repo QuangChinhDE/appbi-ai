@@ -4,6 +4,7 @@ import { useMemo } from 'react';
 import { useQueries } from '@tanstack/react-query';
 import {
   fetchDatasetModelDistinctValues,
+  SLICER_DISTINCT_PREFETCH_LIMIT,
   modelKeys,
   type DroppedFilterInfo,
 } from '@/hooks/use-dataset-model';
@@ -60,7 +61,7 @@ export function useFilterDistinctValues(
   const semanticDistinctQueries = useQueries({
     queries: activeSemanticDistinctTargets.map(({ column, filterContext, filterContextKey }) => ({
       queryKey: [...modelKeys.distinct(column.datasetId!, column.semanticField!), 'filters', filterContextKey],
-      queryFn: () => fetchDatasetModelDistinctValues(column.datasetId!, column.semanticField!, 200, filterContext),
+      queryFn: () => fetchDatasetModelDistinctValues(column.datasetId!, column.semanticField!, SLICER_DISTINCT_PREFETCH_LIMIT, filterContext),
       enabled: Boolean(column.datasetId && column.semanticField),
       staleTime: 5 * 60 * 1000,
       retry: 1,

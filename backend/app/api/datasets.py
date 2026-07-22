@@ -2417,6 +2417,36 @@ def refresh_dataset_snapshots(
     }
 
 
+@router.post("/{dataset_id}/snapshots/stop")
+def stop_dataset_snapshot_sync(
+    dataset_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Cooperatively STOP an in-flight Sync & Publish / Refresh for this dataset.
+    The running build loop notices the flag between tables (and aborts the active
+    table's load mid-stream), leaves the previous COMPLETE snapshot generation
+    untouched (readers keep serving correct last-complete numbers), and settles to
+    'stopped'. Idempotent + best-effort. Requires edit/manage on the dataset."""
+    from app.models.dataset import Dataset
+    from app.services import sync_control, sync_progress
+
+    dataset_obj = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if not dataset_obj:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    perm = get_effective_permission(db, current_user, dataset_obj, "datasets")
+    if perm in ("none", "view"):
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    sync_control.request_stop(dataset_id)
+    # Reflect intent immediately so the UI can show "Đang dừng…" before the loop
+    # reaches its next between-table checkpoint.
+    prog = sync_progress.get(dataset_id)
+    if prog and prog.get("phase") in ("syncing", "validating"):
+        sync_progress.set_phase(dataset_id, "stopping")
+    return {"ok": True, "stopping": True}
+
+
 # ── Phase 1: Dataset publish lifecycle + grants ─────────────────────────────
 @router.post("/{dataset_id}/publish")
 def sync_and_publish_dataset(
@@ -4610,7 +4640,12 @@ def get_dataset_model_endpoint(
 def get_dataset_model_distinct_values(
     dataset_id: int,
     field: str = Query(..., description="Qualified field name, e.g. orders.country"),
-    limit: int = Query(200, ge=1, le=500),
+    limit: int = Query(200, ge=1, le=1000, description="Page size (values returned)."),
+    offset: int = Query(0, ge=0, description="Page offset into the (searched) distinct set."),
+    search: str | None = Query(
+        default=None,
+        description="Case-insensitive substring; server-side search over the cached full distinct set (no per-keystroke warehouse query).",
+    ),
     filters: str | None = Query(
         default=None,
         description="JSON-encoded list of dashboard filter objects used to cascade distinct values.",
@@ -4643,11 +4678,14 @@ def get_dataset_model_distinct_values(
 
     try:
         result = get_distinct_field_values(
-            db, dataset_id, field, limit=limit, filters=filter_context, explain=explain
+            db, dataset_id, field, limit=limit, offset=offset, search=search,
+            filters=filter_context, explain=explain,
         )
         payload = {
             "field": field,
             "values": result.get("values", []),
+            "total": result.get("total", len(result.get("values", []) or [])),
+            "has_more": result.get("has_more", False),
             "dropped_filters": result.get("dropped_filters", []),
         }
         if explain and "debug_sql" in result:

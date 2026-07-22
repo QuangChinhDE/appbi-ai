@@ -154,7 +154,14 @@ interface DashboardFilterBarProps {
     isLoading: boolean;
     isError: boolean;
     hasFilterContext: boolean;
+    total?: number;
+    hasMore?: boolean;
   }>;
+  /** Server-side value search over the FULL cached distinct set for a slicer's
+   * value dropdown (type-to-search on high-cardinality dimensions). When
+   * provided, typing queries the backend cache (no per-keystroke warehouse
+   * query). Omitted → dropdowns filter the prefetched page client-side only. */
+  fetchServerDistinct?: (column: ColumnInfo, search: string) => Promise<string[]>;
   filters: BaseFilter[];
   onFiltersChange: (filters: BaseFilter[]) => void;
   hasPendingChanges?: boolean;
@@ -217,6 +224,7 @@ export function DashboardFilterBar({
   columnChartCount,
   distinctValues,
   distinctStatus,
+  fetchServerDistinct,
   filters,
   onFiltersChange,
   hasPendingChanges = false,
@@ -1011,6 +1019,7 @@ export function DashboardFilterBar({
                 filterChartCount={getFilterChartCount(f)}
                 search={searchTerms[f.id] ?? ''}
                 onSearchChange={s => setSearchTerms(prev => ({ ...prev, [f.id]: s }))}
+                fetchServerDistinct={fetchServerDistinct}
                 onToggleValue={val => toggleValue(f.id, val)}
                 onSelectAll={vals => selectAll(f.id, vals)}
                 onDeselectAll={() => deselectAll(f.id)}
@@ -1078,6 +1087,8 @@ interface FilterCardProps {
     isLoading: boolean;
     isError: boolean;
     hasFilterContext: boolean;
+    total?: number;
+    hasMore?: boolean;
   };
   /** Phase-10 — when true, this card stretches via `flex-1` instead of its
    * manual `widthPx`. Set by SlicerCluster's "Tự động giãn cách" toggle. */
@@ -1087,6 +1098,12 @@ interface FilterCardProps {
   filterChartCount: number;
   search: string;
   onSearchChange: (s: string) => void;
+  /** Server-side value search over the FULL cached distinct set (type-to-search
+   * for high-cardinality dimensions). When provided, typing in this slicer's
+   * value search box fetches matching values from the backend cache (no
+   * per-keystroke warehouse query) instead of only filtering the prefetched
+   * page. Returns null/throws → fall back to client-side filtering. */
+  fetchServerDistinct?: (column: ColumnInfo, search: string) => Promise<string[]>;
   onToggleValue: (val: string) => void;
   onSelectAll: (vals: string[]) => void;
   onDeselectAll: () => void;
@@ -1155,6 +1172,7 @@ function FilterCard({
   filterChartCount,
   search,
   onSearchChange,
+  fetchServerDistinct,
   onToggleValue,
   onSelectAll,
   onDeselectAll,
@@ -1304,11 +1322,25 @@ function FilterCard({
     return Array.from(set).sort();
   }, [f, allDistinctValues]);
 
+  // Server-side type-to-search results for high-cardinality dimensions. null =
+  // no active server search (fall back to client-side filtering of mergedValues).
+  const [serverValues, setServerValues] = useState<string[] | null>(null);
+
   const filteredValues = useMemo(() => {
     if (!search) return mergedValues;
+    // A server search resolved for this term → show the cache-matched values
+    // (covers the full dimension, not just the prefetched page). Keep any
+    // already-selected values visible even if outside the matched set.
+    if (serverValues) {
+      const q = search.toLowerCase();
+      const selectedMatches = (f.value as string[] | undefined)?.filter?.(
+        (v) => String(v).toLowerCase().includes(q),
+      ) ?? [];
+      return Array.from(new Set([...serverValues, ...selectedMatches]));
+    }
     const q = search.toLowerCase();
     return mergedValues.filter(v => v.toLowerCase().includes(q));
-  }, [mergedValues, search]);
+  }, [mergedValues, search, serverValues, f.value]);
 
   const linkedCount = f.linkedFields?.length ?? 0;
   const hasLinkableColumns = linkableColumns.length > 0;
@@ -1316,6 +1348,25 @@ function FilterCard({
     () => allColumns.find((column) => getColumnKey(column) === getFilterKey(f)),
     [allColumns, f],
   );
+
+  // Debounced server-side value search: when the user types in the value search
+  // box (and the parent injected a fetcher), query the backend's cached full
+  // distinct set for matches instead of only filtering the prefetched page.
+  // 300ms debounce + cancel-on-change; hits the BE result cache, not BigQuery.
+  useEffect(() => {
+    const term = search.trim();
+    if (!term || !fetchServerDistinct || !primaryColumn?.datasetId || !primaryColumn?.semanticField) {
+      setServerValues(null);
+      return;
+    }
+    let cancelled = false;
+    const handle = setTimeout(() => {
+      fetchServerDistinct(primaryColumn, term)
+        .then((vals) => { if (!cancelled) setServerValues(Array.isArray(vals) ? vals : null); })
+        .catch(() => { if (!cancelled) setServerValues(null); });
+    }, 300);
+    return () => { cancelled = true; clearTimeout(handle); };
+  }, [search, fetchServerDistinct, primaryColumn]);
   const filterCoverageLabel = primaryColumn?.datasetChartCount
     ? t('dashboards.filterBar.coverageCharts', { covered: filterChartCount, total: primaryColumn.datasetChartCount })
     : filterChartCount === 1
@@ -1863,6 +1914,8 @@ function SingleSelectBody({
     isLoading: boolean;
     isError: boolean;
     hasFilterContext: boolean;
+    total?: number;
+    hasMore?: boolean;
   };
 }) {
   const { t } = useI18n();
@@ -1906,6 +1959,14 @@ function SingleSelectBody({
             className="w-full rounded border border-[rgb(var(--border-line))] bg-surface-1 py-1 pl-7 pr-2 text-xs outline-none focus:border-brand/50 focus:ring-1 focus:ring-brand"
           />
         </div>
+      )}
+      {!search && distinctStatus?.hasMore && (
+        <p className="mb-1.5 text-[11px] text-text-tertiary">
+          {t('dashboards.selectBody.showingTruncated', {
+            shown: values.length,
+            total: distinctStatus.total ?? values.length,
+          })}
+        </p>
       )}
       {selectedValue && (
         <div className="flex items-center gap-2 mb-1.5 pb-1.5 border-b border-[rgb(var(--border-line))]">
@@ -1986,6 +2047,8 @@ function MultiSelectBody({
     isLoading: boolean;
     isError: boolean;
     hasFilterContext: boolean;
+    total?: number;
+    hasMore?: boolean;
   };
 }) {
   const { t } = useI18n();
@@ -2035,6 +2098,14 @@ function MultiSelectBody({
             className="w-full rounded border border-[rgb(var(--border-line))] bg-surface-1 py-1 pl-7 pr-2 text-xs outline-none focus:border-brand/50 focus:ring-1 focus:ring-brand"
           />
         </div>
+      )}
+      {!search && distinctStatus?.hasMore && (
+        <p className="mb-1.5 text-[11px] text-text-tertiary">
+          {t('dashboards.selectBody.showingTruncated', {
+            shown: values.length,
+            total: distinctStatus.total ?? values.length,
+          })}
+        </p>
       )}
 
       {/* Select / Deselect all */}

@@ -9,6 +9,7 @@
 'use client';
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { useSearchParams } from 'next/navigation';
 import {
   Panel,
   PanelGroup,
@@ -23,14 +24,17 @@ import {
   EyeOff,
   LayoutGrid,
   Loader2,
+  Lock,
   Save,
 } from 'lucide-react';
 
-import type { Workboard } from '@/lib/api/workboards';
+import { type Workboard } from '@/lib/api/workboards';
 import { apiClient } from '@/lib/api-client';
 import { useDatasets } from '@/hooks/use-datasets';
-import { useUpdateWorkboard } from '@/hooks/use-workboards';
+import { useWorkboardPresence } from '@/hooks/use-workboard-presence';
+import { getResourcePermissions } from '@/hooks/use-resource-permission';
 import { toast } from '@/lib/toast';
+import { Button } from '@/components/ui/Button';
 import {
   ensureLayout,
   MiniAppLayoutSpec,
@@ -38,8 +42,8 @@ import {
   ScreenSpec,
 } from './types';
 import ScreenEditor from './ScreenEditor';
-import AppSettingsEditor from './AppSettingsEditor';
 import BuilderLivePreview from './BuilderLivePreview';
+import { registerAutosaveFlush } from './autosaveFlushRegistry';
 import CanvasOverview from './CanvasOverview';
 import ScreenSwitcherModal from './ScreenSwitcherModal';
 import { useDebouncedAutosave } from './useDebouncedAutosave';
@@ -58,14 +62,6 @@ interface DatasetTableApi {
   columns_cache?: unknown;
 }
 
-interface ApiErrorShape {
-  response?: {
-    data?: {
-      detail?: string;
-    };
-  };
-}
-
 function columnsFromCache(cache: unknown): { name: string; type?: string }[] {
   const arr: unknown[] = Array.isArray(cache)
     ? cache
@@ -77,10 +73,6 @@ function columnsFromCache(cache: unknown): { name: string; type?: string }[] {
       Boolean(c && typeof c === 'object' && 'name' in c),
     )
     .map((c) => ({ name: String(c.name), type: c.type ? String(c.type) : undefined }));
-}
-
-function getApiErrorMessage(err: unknown, fallback: string): string {
-  return (err as ApiErrorShape)?.response?.data?.detail || fallback;
 }
 
 interface Props {
@@ -113,11 +105,24 @@ function screenStatus(s: ScreenSpec): ScreenStatus {
   return 'ok';
 }
 
+// Stable per-user colour + initials for the co-edit presence avatars.
+const PRESENCE_COLORS = ['#2563eb', '#16a34a', '#db2777', '#d97706', '#7c3aed', '#0891b2'];
+function presenceColor(key: string): string {
+  let h = 0;
+  for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) >>> 0;
+  return PRESENCE_COLORS[h % PRESENCE_COLORS.length];
+}
+function presenceInitials(name: string): string {
+  const parts = (name || '').trim().split(/\s+/).filter(Boolean);
+  if (!parts.length) return '?';
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+}
+
 export default function WorkboardBuilder({ workboard }: Props) {
   const { data: datasets = [] } = useDatasets();
-  const updateWorkboard = useUpdateWorkboard();
   const [boundDatasetId, setBoundDatasetId] = useState(workboard.dataset_id);
-  const [layout, setLayout] = useState<MiniAppLayoutSpec>(() =>
+  const [layout, setLayoutRaw] = useState<MiniAppLayoutSpec>(() =>
     ensureLayout(workboard.layout_json),
   );
   const [activeScreenId, setActiveScreenId] = useState<string | null>(
@@ -125,7 +130,6 @@ export default function WorkboardBuilder({ workboard }: Props) {
   );
   const [tables, setTables] = useState<DatasetTableInfo[]>([]);
   const [tablesLoading, setTablesLoading] = useState(true);
-  const [showAppSettings, setShowAppSettings] = useState(false);
   // The redesign separates the builder into two modes:
   //   - canvas  : list of screen cards (Mức 1)
   //   - editor  : full-page editor of a single screen (Mức 2)
@@ -138,6 +142,51 @@ export default function WorkboardBuilder({ workboard }: Props) {
   const [focusFieldColumn, setFocusFieldColumn] = useState<string | null>(null);
   const [switcherOpen, setSwitcherOpen] = useState(false);
   const previewPanelRef = useRef<ImperativePanelHandle>(null);
+
+  // View-only users get a fully read-only builder: autosave is disabled and
+  // every layout mutation is a no-op, so no edit can reach the backend (which
+  // would 403 anyway) and the surface can't masquerade as editable. All
+  // structural/field/settings edits funnel through ``setLayout`` — shadowing it
+  // is a single choke-point; the only non-setLayout write (dataset change) and
+  // the add/delete navigation side-effects are guarded explicitly below.
+  const canEdit = getResourcePermissions(workboard.user_permission ?? undefined).canEdit;
+
+  // ── Co-edit soft-lock ──
+  // The screen the user currently has open in the editor (their "cursor").
+  // null on the canvas / app-settings — those aren't screen-scoped so no lock
+  // applies there.
+  const editingScreenId = mode === 'editor' ? activeScreenId : null;
+  const presence = useWorkboardPresence(workboard.id, canEdit, editingScreenId);
+  // Someone ELSE holds the lock on the screen I'm viewing → I'm view-only for
+  // it until I take over (or they leave). The backend version-409 guard is the
+  // hard net beneath this; the lock just prevents the accident up front.
+  const activeScreenLocked = !!(
+    editingScreenId &&
+    presence.lock &&
+    presence.lock.holder_key &&
+    !presence.lock.held_by_me
+  );
+  const canWrite = canEdit && !activeScreenLocked;
+
+  // ── Autosave save-path classification (Slice 2) ──
+  // Screen-CONTENT edits (updateScreen) persist screen-scoped so people on
+  // different screens never 409/clobber; structural/app edits persist
+  // whole-board. `setLayout` (the structural choke-point) marks structural;
+  // `updateScreen` marks the one screen. Refs (not state) so the autosave
+  // drain reads the freshest classification without re-render churn.
+  const dirtyStructuralRef = useRef(false);
+  const dirtyScreenIdsRef = useRef<Set<string>>(new Set());
+
+  // View-only users OR a screen locked by a collaborator → every layout
+  // mutation is a no-op (single choke-point, mirroring the !canEdit shadow).
+  // Autosave stays enabled on `canEdit` so edits made on OTHER (unlocked)
+  // screens still flush — the lock only blocks NEW mutations of the locked
+  // screen, which never reach `layout` anyway.
+  const setLayout: typeof setLayoutRaw = (value) => {
+    if (!canWrite) return;
+    dirtyStructuralRef.current = true;
+    setLayoutRaw(value);
+  };
 
   useEffect(() => {
     setBoundDatasetId(workboard.dataset_id);
@@ -173,42 +222,80 @@ export default function WorkboardBuilder({ workboard }: Props) {
     else panel.collapse();
   };
 
+  // Reflect the screen being edited in the URL (?screen=<id>) so the builder is
+  // deep-linkable and survives F5 — refresh stays on the SCREEN instead of
+  // dropping back to the canvas — and browser back/forward walk
+  // screen→screen→canvas. Raw History API (not the Next router) so switching
+  // screens never remounts the builder mid-edit. `null` → canvas (bare URL).
+  const writeBuilderUrl = (screenId: string | null) => {
+    if (typeof window === 'undefined') return;
+    const url = new URL(window.location.href);
+    if ((url.searchParams.get('screen') || null) === (screenId || null)) return;
+    url.search = screenId ? `?screen=${encodeURIComponent(screenId)}` : '';
+    window.history.pushState({ wbScreen: screenId }, '', url);
+  };
+
   const openScreen = (id: string) => {
     setActiveScreenId(id);
     setMode('editor');
+    writeBuilderUrl(id);
   };
 
   const backToCanvas = () => {
     setMode('canvas');
     setFocusFieldColumn(null);
+    writeBuilderUrl(null);
   };
+
+  // Deep-link: /workboards/[id]?screen=<id> opens that screen straight in the
+  // editor. Used by Settings → App health "Sửa" links so a blocking issue jumps
+  // the author to the exact screen. Runs once on mount; ignores unknown ids.
+  const searchParams = useSearchParams();
+  useEffect(() => {
+    const target = searchParams?.get('screen');
+    if (!target) return;
+    const exists = ensureLayout(workboard.layout_json).screens.some((s) => s.id === target);
+    if (exists) {
+      setActiveScreenId(target);
+      setMode('editor');
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Browser back/forward → move between screens (and back to canvas). Reads the
+  // screen from the URL; an unknown/blank id just falls to canvas via the
+  // isEditor guard (activeScreen === null), so no existence check is needed.
+  useEffect(() => {
+    const onPop = () => {
+      const sid = new URLSearchParams(window.location.search).get('screen');
+      if (sid) {
+        setActiveScreenId(sid);
+        setMode('editor');
+      } else {
+        setMode('canvas');
+      }
+    };
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, []);
 
   // Auto-save with a 1.2s debounce. The mini-preview iframe re-keys on
   // each successful save so the user sees their edits the moment the
   // save lands (no Save button click needed).
-  const autosave = useDebouncedAutosave(workboard.id, layout, true);
+  const autosave = useDebouncedAutosave(workboard.id, layout, canEdit, {
+    structuralRef: dirtyStructuralRef,
+    screenIdsRef: dirtyScreenIdsRef,
+  });
 
-  const handleDatasetChange = async (nextDatasetId: number) => {
-    if (!nextDatasetId || nextDatasetId === boundDatasetId) return;
-    try {
-      await autosave.flush();
-      const updated = await updateWorkboard.mutateAsync({
-        id: workboard.id,
-        data: { dataset_id: nextDatasetId },
-      });
-      const nextLayout = ensureLayout(updated.layout_json);
-      setBoundDatasetId(updated.dataset_id);
-      setLayout(nextLayout);
-      setActiveScreenId((current) =>
-        current && nextLayout.screens.some((screen) => screen.id === current)
-          ? current
-          : nextLayout.screens[0]?.id || null,
-      );
-      toast.success('Mini-app dataset changed');
-    } catch (err: unknown) {
-      toast.error(getApiErrorMessage(err, 'Could not change dataset.'));
-    }
-  };
+  // Expose the flush so the topbar Publish control can drain the latest draft
+  // before the server promotes Draft → Published (see autosaveFlushRegistry).
+  useEffect(() => {
+    registerAutosaveFlush(autosave.flush);
+    return () => registerAutosaveFlush(null);
+  }, [autosave.flush]);
+
+  // Dataset rebind (change dataset + remap/clear screens) now lives in the
+  // Settings tab (Settings › Data), not the Build canvas.
 
   // Load dataset tables once so editors can show column dropdowns.
   useEffect(() => {
@@ -248,6 +335,10 @@ export default function WorkboardBuilder({ workboard }: Props) {
   // jump to the matching screen + auto-select the field in the inspector.
   useEffect(() => {
     function onMessage(event: MessageEvent) {
+      // Only trust messages from OUR OWN origin (the preview iframe is
+      // same-origin at /ws/...). Without this, any window that embeds/opens the
+      // builder could drive its active screen/field selection.
+      if (event.origin !== window.location.origin) return;
       const data = event.data;
       if (!data || typeof data !== 'object') return;
       if ((data as { type?: unknown }).type !== 'wb-builder/field-click') return;
@@ -261,13 +352,20 @@ export default function WorkboardBuilder({ workboard }: Props) {
       // the editor — never the canvas.
       setMode('editor');
       setFocusFieldColumn(column);
+      if (screenId) writeBuilderUrl(screenId);
     }
     window.addEventListener('message', onMessage);
     return () => window.removeEventListener('message', onMessage);
   }, [activeScreenId]);
 
+  // Screen-CONTENT edit. Marks ONLY this screen dirty (screen-scoped save) and
+  // writes via the raw setter so it does NOT trip the structural marker in
+  // `setLayout` — that's what keeps different-screen edits off the whole-board
+  // (409-guarded) path. Same lock/permission guard as `setLayout`.
   const updateScreen = (next: ScreenSpec) => {
-    setLayout((curr) => ({
+    if (!canWrite) return;
+    dirtyScreenIdsRef.current.add(next.id);
+    setLayoutRaw((curr) => ({
       ...curr,
       screens: curr.screens.map((s) => (s.id === next.id ? next : s)),
     }));
@@ -288,6 +386,7 @@ export default function WorkboardBuilder({ workboard }: Props) {
   };
 
   const addScreen = (kind: ScreenKind, targetGroupId?: string | null) => {
+    if (!canEdit) return;
     const id = `screen-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
     const titleByKind: Record<ScreenKind, string> = {
       form: 'New form',
@@ -357,9 +456,11 @@ export default function WorkboardBuilder({ workboard }: Props) {
     // "I want a new X", and the next thing they want is to configure it.
     setActiveScreenId(id);
     setMode('editor');
+    writeBuilderUrl(id);
   };
 
   const deleteScreen = (id: string) => {
+    if (!canEdit) return;
     if (!confirm('Delete this screen?')) return;
     setLayout((curr) => {
       const next = curr.screens.filter((s) => s.id !== id);
@@ -463,6 +564,28 @@ export default function WorkboardBuilder({ workboard }: Props) {
 
   return (
     <div className="relative flex h-full flex-col bg-surface-0">
+      {!canEdit && (
+        <div className="flex shrink-0 items-center gap-2 border-b border-amber-200 bg-amber-50 px-4 py-2 text-xs font-medium text-amber-800">
+          <Eye className="h-3.5 w-3.5" />
+          Chế độ chỉ xem — bạn không có quyền chỉnh sửa mini-app này. Mọi thay đổi sẽ không được lưu.
+        </div>
+      )}
+      {canEdit && activeScreenLocked && (
+        <div className="flex shrink-0 items-center gap-2 border-b border-amber-200 bg-amber-50 px-4 py-2 text-xs font-medium text-amber-900">
+          <Lock className="h-3.5 w-3.5 shrink-0" />
+          <span className="flex-1">
+            <strong>{presence.lock?.holder_name || 'Người khác'}</strong> đang chỉnh sửa màn hình này — bạn đang ở chế độ xem.
+          </span>
+          <button
+            type="button"
+            onClick={() => activeScreenId && presence.takeover(activeScreenId)}
+            className="inline-flex items-center gap-1 rounded-md bg-amber-600 px-2 py-1 font-semibold text-white transition-colors hover:bg-amber-700"
+          >
+            <Lock className="h-3 w-3" />
+            Chiếm quyền chỉnh sửa
+          </button>
+        </div>
+      )}
       {/* ── Builder sub-topbar: breadcrumb + save pill + preview ──
           Editor mode breadcrumb: ``[All screens] / [current screen ▾]``.
           The screen-name button opens ScreenSwitcherModal so users can
@@ -508,6 +631,33 @@ export default function WorkboardBuilder({ workboard }: Props) {
 
         <div className="flex-1" />
 
+        {presence.editors.length > 0 && (
+          <div className="flex items-center -space-x-1.5 pr-1">
+            {presence.editors.slice(0, 4).map((ed) => {
+              const onSameScreen =
+                !!editingScreenId && ed.editing_screen_id === editingScreenId;
+              const where = ed.editing_screen_id
+                ? layout.screens.find((s) => s.id === ed.editing_screen_id)?.title
+                : null;
+              return (
+                <span
+                  key={ed.user_key}
+                  className="inline-flex h-6 w-6 items-center justify-center rounded-full text-[10px] font-semibold text-white ring-2 ring-surface-1"
+                  style={{ backgroundColor: presenceColor(ed.user_key) }}
+                  title={`${ed.name}${where ? ` · đang ở "${where}"` : ''}${onSameScreen ? ' · cùng màn hình' : ''}`}
+                >
+                  {presenceInitials(ed.name)}
+                </span>
+              );
+            })}
+            {presence.editors.length > 4 && (
+              <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-surface-3 text-[10px] font-semibold text-text-secondary ring-2 ring-surface-1">
+                +{presence.editors.length - 4}
+              </span>
+            )}
+          </div>
+        )}
+
         <SavePill
           status={autosave.status}
           savedAt={autosave.savedAt}
@@ -545,7 +695,12 @@ export default function WorkboardBuilder({ workboard }: Props) {
         <Panel id="editor" order={1} minSize={30} defaultSize={55}>
           <main className="wb-editor-pane relative h-full min-w-0 overflow-y-auto bg-surface-0">
             {isEditor && activeScreen ? (
-              <div className="w-full px-4 py-5 sm:px-6 lg:px-8">
+              <div
+                className={`w-full px-4 py-5 sm:px-6 lg:px-8 ${
+                  activeScreenLocked ? 'pointer-events-none select-none opacity-60' : ''
+                }`}
+                aria-disabled={activeScreenLocked}
+              >
                 <ScreenEditor
                   screen={activeScreen}
                   allScreens={layout.screens}
@@ -555,10 +710,14 @@ export default function WorkboardBuilder({ workboard }: Props) {
                   onChange={updateScreen}
                   focusFieldColumn={focusFieldColumn}
                   onFocusFieldHandled={() => setFocusFieldColumn(null)}
-                  onDeleteScreen={() => {
-                    deleteScreen(activeScreen.id);
-                    backToCanvas();
-                  }}
+                  onDeleteScreen={
+                    canEdit && !activeScreenLocked
+                      ? () => {
+                          deleteScreen(activeScreen.id);
+                          backToCanvas();
+                        }
+                      : undefined
+                  }
                 />
               </div>
             ) : (
@@ -569,7 +728,6 @@ export default function WorkboardBuilder({ workboard }: Props) {
                 groups={layout.screen_groups || []}
                 onPickScreen={openScreen}
                 onAddScreen={addScreen}
-                onOpenAppSettings={() => setShowAppSettings(true)}
                 onReorderScreens={reorderScreens}
                 onDeleteScreen={deleteScreen}
                 onCreateGroup={createGroup}
@@ -577,6 +735,7 @@ export default function WorkboardBuilder({ workboard }: Props) {
                 onDeleteGroup={deleteGroup}
                 onAssignScreen={assignScreenToGroup}
                 onSetGroupIcon={setGroupIcon}
+                canEdit={canEdit}
               />
             )}
           </main>
@@ -629,23 +788,13 @@ export default function WorkboardBuilder({ workboard }: Props) {
             setActiveScreenId(id);
             setMode('editor');
             setFocusFieldColumn(null);
+            writeBuilderUrl(id);
           }}
           onAllScreens={backToCanvas}
           onClose={() => setSwitcherOpen(false)}
         />
       )}
 
-      {showAppSettings && (
-        <AppSettingsEditor
-          layout={layout}
-          currentDatasetId={boundDatasetId}
-          datasets={datasets}
-          datasetChangePending={updateWorkboard.isPending}
-          onChange={setLayout}
-          onDatasetChange={handleDatasetChange}
-          onClose={() => setShowAppSettings(false)}
-        />
-      )}
     </div>
   );
 }

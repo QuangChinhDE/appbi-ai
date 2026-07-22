@@ -35,7 +35,14 @@ export async function middleware(request: NextRequest) {
   if (pathname.startsWith('/api/v1/') || pathname === '/api/v1') {
     const backendBase = (process.env.BACKEND_URL || 'http://backend:8000/api/v1')
       .replace(/\/api\/v1\/?$/, '');
-    return NextResponse.rewrite(new URL(pathname + search, backendBase));
+    const requestHeaders = new Headers(request.headers);
+    const token = request.cookies.get('access_token')?.value;
+    if (token && !requestHeaders.has('authorization')) {
+      requestHeaders.set('authorization', `Bearer ${token}`);
+    }
+    return NextResponse.rewrite(new URL(pathname + search, backendBase), {
+      request: { headers: requestHeaders },
+    });
   }
 
   // Allow public paths through

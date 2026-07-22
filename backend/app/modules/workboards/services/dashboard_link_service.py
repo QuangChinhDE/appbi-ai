@@ -207,13 +207,19 @@ def sync_workboard_dashboard_links(
     workboard: Workboard,
     *,
     creator: Optional[User] = None,
+    commit: bool = True,
 ) -> Workboard:
-    """Reconcile managed DashboardPublicLink rows for *workboard*.
+    """Reconcile the DRAFT managed DashboardPublicLink rows for *workboard*.
 
     Fan-out = (managed dashboard screens) × (distinct app_user roles).
-    Idempotent. Mutates ``workboard.layout_json`` in place to write back
-    ``managed_links: {role: token}`` per screen so the public runtime can
-    look up the token by role without an extra join.
+    Idempotent. Operates ONLY on ``stage='draft'`` rows — the LIVE
+    (``stage='published'``) rows are provisioned by Publish
+    (:func:`promote_dashboard_links_to_published`), so a draft autosave never
+    mutates/deletes the link a Live user is embedding. Mutates
+    ``workboard.layout_json`` in place to write ``managed_links: {role: token}``
+    (DRAFT tokens) per screen for Preview resolution.
+
+    ``commit=False`` lets Publish run this inside its atomic transaction.
     """
     layout = copy.deepcopy(workboard.layout_json or {})
     screens = _dashboard_screens(layout)
@@ -226,6 +232,7 @@ def sync_workboard_dashboard_links(
         .filter(
             DashboardPublicLink.source == "workboard",
             DashboardPublicLink.name.like(f"{name_prefix}%"),
+            DashboardPublicLink.stage == "draft",
         )
         .all()
     )
@@ -313,6 +320,7 @@ def sync_workboard_dashboard_links(
                     appearance_config={},
                     is_active=True,
                     source="workboard",
+                    stage="draft",
                     created_by=getattr(workboard, "owner_id", None),
                     password_hash=password_hash,
                 )
@@ -340,9 +348,103 @@ def sync_workboard_dashboard_links(
             )
 
     workboard.layout_json = layout
-    db.commit()
-    db.refresh(workboard)
+    if commit:
+        db.commit()
+        db.refresh(workboard)
     return workboard
+
+
+def promote_dashboard_links_to_published(
+    db: Session, workboard: Workboard
+) -> Dict[str, str]:
+    """Promote the DRAFT managed links → PUBLISHED at Publish time.
+
+    Mirrors each ``stage='draft'`` row into a ``stage='published'`` row (matched
+    by name), copying its live config and REUSING the existing published token so
+    Live embeds stay stable across re-publishes; GCs published rows the draft set
+    no longer has. Does NOT commit — the caller (publish) owns the atomic
+    transaction. Returns ``{link_name: published_token}`` so the caller can
+    rewrite the published layout's ``managed_links`` to the published tokens.
+    """
+    prefix = f"wb:{workboard.id}:"
+    draft_rows = (
+        db.query(DashboardPublicLink)
+        .filter(
+            DashboardPublicLink.source == "workboard",
+            DashboardPublicLink.name.like(f"{prefix}%"),
+            DashboardPublicLink.stage == "draft",
+        )
+        .all()
+    )
+    published_rows = {
+        row.name: row
+        for row in db.query(DashboardPublicLink)
+        .filter(
+            DashboardPublicLink.source == "workboard",
+            DashboardPublicLink.name.like(f"{prefix}%"),
+            DashboardPublicLink.stage == "published",
+        )
+        .all()
+    }
+
+    token_by_name: Dict[str, str] = {}
+    keep: set[str] = set()
+    for d in draft_rows:
+        keep.add(d.name)
+        pub = published_rows.get(d.name)
+        if pub is None:
+            pub = DashboardPublicLink(
+                dashboard_id=d.dashboard_id,
+                name=d.name,
+                token=secrets.token_urlsafe(32),
+                filters_config=list(d.filters_config or []),
+                appearance_config=dict(d.appearance_config or {}),
+                is_active=d.is_active,
+                source="workboard",
+                stage="published",
+                created_by=d.created_by,
+                password_hash=d.password_hash,
+            )
+            db.add(pub)
+            db.flush()
+        else:
+            pub.dashboard_id = d.dashboard_id
+            pub.filters_config = list(d.filters_config or [])
+            pub.appearance_config = dict(d.appearance_config or {})
+            pub.is_active = d.is_active
+            pub.password_hash = d.password_hash
+        token_by_name[d.name] = pub.token
+
+    # GC published rows the draft set no longer has (deleted screen/role/manual).
+    for name, pub in published_rows.items():
+        if name not in keep:
+            db.delete(pub)
+
+    return token_by_name
+
+
+def rewrite_managed_links_to_published(
+    layout: Dict[str, Any], workboard_id: int, token_by_name: Dict[str, str]
+) -> Dict[str, Any]:
+    """Rewrite a (published-snapshot) layout's per-screen ``managed_links`` map so
+    every role points at the PUBLISHED-stage token, using the {name: token} map
+    from :func:`promote_dashboard_links_to_published`. Mutates + returns layout."""
+    for screen in _dashboard_screens(layout):
+        dash_spec = screen.get("dashboard")
+        if not isinstance(dash_spec, dict):
+            continue
+        managed = dash_spec.get("managed_links")
+        if not isinstance(managed, dict) or not managed:
+            continue
+        screen_id = str(screen.get("id") or "")
+        rewritten: Dict[str, str] = {}
+        for role_key in managed:
+            name = _managed_name(workboard_id, screen_id, role_key)
+            tok = token_by_name.get(name)
+            if tok:
+                rewritten[role_key] = tok
+        dash_spec["managed_links"] = rewritten
+    return layout
 
 
 def delete_all_for_workboard(db: Session, workboard_id: int) -> int:

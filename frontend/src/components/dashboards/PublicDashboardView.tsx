@@ -1,0 +1,2132 @@
+﻿'use client';
+
+import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useParams } from 'next/navigation';
+import { Responsive, WidthProvider, type Layout } from 'react-grid-layout';
+import 'react-grid-layout/css/styles.css';
+import 'react-resizable/css/styles.css';
+import {
+  AlertTriangle,
+  BarChart3,
+  Download,
+  Loader2,
+  Lock,
+  RefreshCw,
+  Eye,
+  EyeOff,
+} from 'lucide-react';
+import { ChartErrorBoundary } from '@/components/dashboards/ChartErrorBoundary';
+import { DashboardWidget } from '@/components/dashboards/DashboardWidget';
+import { DashboardThemeProvider, getDashboardGridMargin } from '@/components/dashboards/DashboardThemeProvider';
+import { ReadonlyChartTile } from '@/components/dashboards/ReadonlyChartTile';
+import { ExportPdfDialog, type ExportPdfChoices } from '@/components/dashboards/ExportPdfDialog';
+import type { PdfProgress } from '@/lib/export-pdf';
+import { ExportModeContext, openPdfPreviewTab } from '@/lib/export-mode';
+import { toast } from '@/lib/toast';
+import { DashboardFilterBar } from '@/components/dashboards/DashboardFilterBar';
+import { SlicerCluster } from '@/components/dashboards/SlicerCluster';
+import { DashboardAiBot } from '@/components/dashboards/DashboardAiBot';
+import { Button } from '@/components/ui/Button';
+import { Input } from '@/components/ui/Input';
+import {
+  clearPublicSession,
+  getPublicSession,
+  publicDashboardApi,
+  publicSessionRemainingSeconds,
+  savePublicSession,
+} from '@/lib/api/public';
+import {
+  ensureDashboardPageId,
+  getDashboardChartsForPage,
+  normalizeDashboardPages,
+  liftLayoutToTop,
+  deriveStackedLayout,
+} from '@/lib/dashboard-pages';
+import { applyScopeBound, getColumnKey, getDistinctValueFilterContext, getFilterDisplayLabel, getFilterKey, type BaseFilter, type ColumnInfo } from '@/lib/filters';
+import { usePublicFilterDistinctValues } from '@/hooks/use-public-filter-distinct-values';
+import { buildPublicLinkTheme } from '@/lib/public-link-appearance';
+import { buildPublicDashboardFilterRuntime } from '@/lib/public-dashboard-runtime';
+import type { ChartDataResponse, Dashboard, DashboardChart } from '@/types/api';
+
+// Phase-B5 — COARSE-breakpoint responsive grid for the public report.
+// Two breakpoints ONLY:
+//   • lg  (≥768px): 12 columns, renders the EXACT authored layout — so any
+//     desktop resize (1920→800, DevTools, window drag) stays in lg and never
+//     reflows/jumps. This is byte-identical to the old fixed-grid behavior.
+//   • xs  (<768px): 1 column, renders a pre-derived vertical stack — proper
+//     mobile/tablet view instead of micro-tiles.
+// Explicit layouts for BOTH breakpoints means react-grid-layout never
+// auto-generates (and never reflows) a layout. compactType=null +
+// preventCollision preserve coordinates exactly as provided.
+const ResponsiveReportGrid = WidthProvider(Responsive);
+const REPORT_BREAKPOINTS = { lg: 768, xs: 0 };
+const REPORT_COLS = { lg: 12, xs: 1 };
+
+type PageState = 'unknown' | 'loading' | 'password_gate' | 'reauth' | 'loaded' | 'error';
+
+function areFiltersEquivalent(left: BaseFilter | null, right: BaseFilter | null): boolean {
+  if (!left || !right) return false;
+  return getFilterKey(left) === getFilterKey(right)
+    && left.operator === right.operator
+    && JSON.stringify(left.value) === JSON.stringify(right.value);
+}
+
+function formatFilterValue(value: unknown): string {
+  if (Array.isArray(value)) {
+    return value.map((item) => String(item)).join(', ');
+  }
+  return String(value ?? '');
+}
+
+// Parse a #rgb/#rrggbb hex into an rgba() string. Used so the header brand
+// mark + active page-tab chip can tint themselves from the REPORT's own
+// accent colour (dashboard.theme_config.accent) instead of a fixed blue —
+// the public surface then "ăn theo" whatever palette the author published.
+function hexToRgbaString(hex: string | null | undefined, alpha: number): string | null {
+  if (typeof hex !== 'string') return null;
+  let h = hex.trim().replace(/^#/, '');
+  if (h.length === 3) h = h.split('').map((c) => c + c).join('');
+  if (!/^[0-9a-fA-F]{6}$/.test(h)) return null;
+  const r = parseInt(h.slice(0, 2), 16);
+  const g = parseInt(h.slice(2, 4), 16);
+  const b = parseInt(h.slice(4, 6), 16);
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
+// Embed-only: report our content height to the parent frame so the host page
+// can auto-size the <iframe> to fit its content (no inner scrollbar; the parent
+// page scrolls). No-op when not embedded. Mirrors the old embed page's
+// useEmbedHeight so host integrations keep receiving `appbi:resize`.
+function useParentResize(enabled: boolean) {
+  useEffect(() => {
+    if (!enabled) return;
+    const report = () => {
+      const height = document.documentElement.scrollHeight;
+      try {
+        window.parent.postMessage({ type: 'appbi:resize', height }, '*');
+      } catch {
+        // Cross-origin access can be blocked by the browser.
+      }
+    };
+    report();
+    const observer = new ResizeObserver(report);
+    observer.observe(document.body);
+    return () => observer.disconnect();
+  }, [enabled]);
+}
+
+function PasswordGate({
+  onSubmit,
+  error,
+  submitting,
+  isReauth = false,
+}: {
+  onSubmit: (password: string) => void;
+  error: string | null;
+  submitting: boolean;
+  isReauth?: boolean;
+}) {
+  const [value, setValue] = useState('');
+  const [show, setShow] = useState(false);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-surface-0 px-4 py-8">
+      <div className="w-full max-w-md overflow-hidden rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 shadow-linear-lg">
+        <div className="border-b border-[rgb(var(--border-line))] px-6 py-6 text-center">
+          <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-lg bg-brand/10 text-brand">
+            <Lock className="h-5 w-5" />
+          </div>
+          <p className="text-tiny font-emphasis uppercase tracking-[0.18em] text-text-quaternary">
+            Protected shared report
+          </p>
+          <h1 className="mt-2 text-h3 font-emphasis text-text-primary">
+            {isReauth ? 'Session expired' : 'Password protected'}
+          </h1>
+          <p className="mt-2 text-caption text-text-tertiary">
+            {isReauth
+              ? 'Your 2-hour session ended. Enter the password again to continue.'
+              : 'This shared dashboard requires a password to view.'}
+          </p>
+        </div>
+
+        <div className="px-6 py-6">
+          <label className="mb-1.5 block text-caption font-emphasis text-text-secondary">Password</label>
+          <Input
+            type={show ? 'text' : 'password'}
+            value={value}
+            onChange={(event) => setValue(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' && value) {
+                onSubmit(value);
+              }
+            }}
+            placeholder="Enter password"
+            autoFocus
+            trailingIcon={
+              <button
+                type="button"
+                onClick={() => setShow((current) => !current)}
+                className="pointer-events-auto text-text-tertiary hover:text-text-primary"
+              >
+                {show ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+              </button>
+            }
+          />
+
+          {error && (
+            <p className="mt-3 flex items-center gap-1 text-tiny text-danger">
+              <AlertTriangle className="h-3.5 w-3.5 flex-shrink-0" />
+              {error}
+            </p>
+          )}
+
+          <Button
+            variant="primary"
+            fullWidth
+            className="mt-5"
+            onClick={() => value && onSubmit(value)}
+            disabled={submitting || !value}
+            leadingIcon={submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Lock className="h-4 w-4" />}
+          >
+            {submitting ? 'Verifying...' : isReauth ? 'Continue viewing' : 'Unlock dashboard'}
+          </Button>
+
+          <p className="mt-4 text-center text-tiny text-text-quaternary">
+            Sessions last 2 hours and keep the report read-only.
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SessionExpiredOverlay({ onReauth }: { onReauth: () => void }) {
+  return (
+    <div className="fixed inset-0 z-40 flex items-end justify-center bg-text-primary/20 px-4 pb-8 sm:items-center sm:pb-0">
+      <div className="w-full max-w-md rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 px-6 py-6 text-center shadow-linear-lg">
+        <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-lg bg-warning/10 text-warning">
+          <RefreshCw className="h-5 w-5" />
+        </div>
+        <p className="text-tiny font-emphasis uppercase tracking-[0.18em] text-text-quaternary">
+          Authentication needed
+        </p>
+        <h2 className="mt-2 text-h3 font-emphasis text-text-primary">Session expired</h2>
+        <p className="mt-2 text-caption text-text-tertiary">
+          Your 2-hour viewing session ended. Re-enter the password to continue.
+        </p>
+        <Button variant="primary" fullWidth className="mt-5" onClick={onReauth}>
+          Re-enter password
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function getErrorMessage(error: any): string {
+  return error?.response?.data?.detail ?? error?.message ?? 'Failed to load chart data.';
+}
+
+/**
+ * Cap parallel chart requests so that 20+ tiles don't all queue against the
+ * browser's HTTP/1.1 6-socket-per-host ceiling at once.
+ *
+ * Perf (2026-06-10): raised 4 → 8 after the BE per-tile cost dropped sharply
+ * (cache-before-SQL-gen, no duplicate BQ dry-run, Sheets result cache). With
+ * cheaper tiles, 4-in-flight under-utilised the server; 8 fills the pipeline
+ * without starving later tiles. Modern browsers multiplex over HTTP/2, and the
+ * public chart-data endpoint allows 300 req/min, so 8 concurrent stays well
+ * within budget even on a 20-tile dashboard with filter re-fetches.
+ */
+const CHART_FETCH_CONCURRENCY = 8;
+
+async function runWithConcurrency<T, R>(
+  items: T[],
+  worker: (item: T, index: number) => Promise<R>,
+  concurrency: number,
+): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let cursor = 0;
+  const runners = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
+    while (true) {
+      const index = cursor++;
+      if (index >= items.length) return;
+      results[index] = await worker(items[index], index);
+    }
+  });
+  await Promise.all(runners);
+  return results;
+}
+
+export function PublicDashboardView({ variant = 'public' }: { variant?: 'public' | 'embed' }) {
+  const params = useParams();
+  const token = params.token as string;
+  // Embed renders inside a host <iframe>: it grows to its content height and
+  // reports that height to the parent (which then scrolls), instead of the
+  // full-viewport app-shell the standalone /d page uses.
+  const isEmbed = variant === 'embed';
+  useParentResize(isEmbed);
+
+  const [mounted, setMounted] = useState(false);
+  const [dashboard, setDashboard] = useState<Dashboard | null>(null);
+  // Perf #5 — report-level "data as of" so the viewer sees when the snapshot
+  // numbers were last refreshed. `snapshotStale` → a background rebuild was
+  // triggered (link past its TTL); show a subtle "đang làm mới…" hint.
+  const [snapshotAsOf, setSnapshotAsOf] = useState<string | null>(null);
+  const [snapshotStale, setSnapshotStale] = useState(false);
+  const [chartData, setChartData] = useState<Record<number, ChartDataResponse>>({});
+  const [chartErrors, setChartErrors] = useState<Record<number, string>>({});
+  // #2 — per-chart viewer date-hierarchy grain (BE re-query). State drives the
+  // tile's active highlight; the ref is read inside the fetch callback so a
+  // grain change doesn't have to be a useCallback dependency.
+  const [chartGrains, setChartGrains] = useState<Record<number, string>>({});
+  const chartGrainsRef = useRef<Record<number, string>>({});
+  const [loading, setLoading] = useState(true);
+  const [chartsLoading, setChartsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [chartLoadError, setChartLoadError] = useState<string | null>(null);
+  const [currentPageId, setCurrentPageId] = useState<string | null>(null);
+  const [pendingPageId, setPendingPageId] = useState<string | null>(null);
+  const [draftViewerFilters, setDraftViewerFilters] = useState<BaseFilter[]>([]);
+  const [appliedViewerFilters, setAppliedViewerFilters] = useState<BaseFilter[]>([]);
+  // PBI parity (2026-06) — "Filters on this page" (pages_config[i].filters) are
+  // AUTHOR-side Filter-Pane entries: on a public link they are NOT rendered as
+  // viewer controls (the Filter Pane is hidden to viewers; only slicers are
+  // interactive). They STILL constrain the active page's chart data, so we keep
+  // them here and append to the chart-data request — never to the rendered
+  // control bar. Reset per page so page A's filter never leaks onto page B.
+  const [pageHiddenFilters, setPageHiddenFilters] = useState<BaseFilter[]>([]);
+  const pageHiddenFiltersRef = useRef<BaseFilter[]>([]);
+  useEffect(() => { pageHiddenFiltersRef.current = pageHiddenFilters; }, [pageHiddenFilters]);
+  // Perf (Fix #10, 2026-06-10) — gate the FIRST chart fetch until the default
+  // slicer/filter seed has run. Without this, a tile that became visible before
+  // the seed effect fired a chart-data query with filters=[] (no default
+  // filter), then the seed landed, cleared chartData, and re-fetched with the
+  // real filters — i.e. EVERY tile ran a throwaway 8-17s BigQuery query on a
+  // dashboard that has a default filter (prod log: chart 824 filters=0 then
+  // filters=1 then filters=2). Starts false; the seed effect flips it true in
+  // the same render that sets appliedViewerFilters, so the fetch effect then
+  // runs ONCE with the correct filters. An unfiltered dashboard seeds to [] and
+  // still flips the flag, so it fetches normally — just never with stale [].
+  const [filtersSeeded, setFiltersSeeded] = useState(false);
+  const [isApplyingFilters, setIsApplyingFilters] = useState(false);
+  const [crossFilterState, setCrossFilterState] = useState<{
+    sourceChartId: number;
+    filter: BaseFilter;
+  } | null>(null);
+  // C4 anti-spam — see authed page. Drops accidental rapid re-clicks on a
+  // selection so they don't thrash the per-page chart fetch or toggle-clear it.
+  const lastCrossFilterAtRef = useRef(0);
+  // Cross-highlight (PBI-parity) — opt-in per dashboard via theme_config. When
+  // mode='highlight', a data-point click sets THIS (not crossFilterState), so
+  // the baseline (viewer + link + page-scope filters) stays applied and the
+  // selection is a visual overlay only. `highlightChartData` holds the parallel
+  // P-filtered fetch per target chart.
+  const [highlightState, setHighlightState] = useState<{
+    sourceChartId: number;
+    filter: BaseFilter;
+  } | null>(null);
+  const [highlightChartData, setHighlightChartData] = useState<Record<number, ChartDataResponse>>({});
+  const [pageState, setPageState] = useState<PageState>('unknown');
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [authSubmitting, setAuthSubmitting] = useState(false);
+  const [isExportingPdf, setIsExportingPdf] = useState(false);
+  const [isExportDialogOpen, setIsExportDialogOpen] = useState(false);
+  const [exportProgress, setExportProgress] = useState<PdfProgress | null>(null);
+  // Chart ids that have entered the viewport at least once. Tiles report visibility
+  // via onVisible; the fetch effect uses this set to gate which charts to request.
+  const [visibleChartIds, setVisibleChartIds] = useState<Set<number>>(() => new Set());
+  const [forceVisibleAll, setForceVisibleAll] = useState(false);
+  const publicContentRef = useRef<HTMLElement>(null);
+  const gridSectionRef = useRef<HTMLElement>(null);
+
+  const sessionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const chartRequestIdRef = useRef(0);
+  const skipNextPageLoadRef = useRef<string | null>(null);
+  const skipCrossFilterRefreshRef = useRef<string | null>(null);
+  const appliedFilterSignatureRef = useRef(JSON.stringify([] as BaseFilter[]));
+  const seededFiltersForTokenRef = useRef<string | null>(null);
+  // Phase-15.81 v6 — keep a ref of the current applied filters so the
+  // seed effect (which intentionally excludes appliedViewerFilters from
+  // deps to avoid a loop) reads a fresh value on page switch instead of
+  // a stale closure snapshot.
+  const appliedViewerFiltersRef = useRef<BaseFilter[]>([]);
+  useEffect(() => {
+    appliedViewerFiltersRef.current = appliedViewerFilters;
+  }, [appliedViewerFilters]);
+
+  const clearSessionTimer = useCallback(() => {
+    if (sessionTimerRef.current) {
+      clearTimeout(sessionTimerRef.current);
+      sessionTimerRef.current = null;
+    }
+  }, []);
+
+  const scheduleSessionExpiry = useCallback((linkToken: string) => {
+    clearSessionTimer();
+    const remaining = publicSessionRemainingSeconds(linkToken);
+    if (remaining <= 0) return;
+    sessionTimerRef.current = setTimeout(() => {
+      clearPublicSession(linkToken);
+      setPageState('reauth');
+    }, remaining * 1000);
+  }, [clearSessionTimer]);
+
+  useEffect(() => () => clearSessionTimer(), [clearSessionTimer]);
+
+  const loadDashboard = useCallback(async (sessionToken?: string) => {
+    setPageState('loading');
+    setLoading(true);
+    setError(null);
+    // Fix #10: re-gate the fetch for the (re)loaded dashboard — the seed effect
+    // flips this back to true once it computes this dashboard's default filters.
+    setFiltersSeeded(false);
+
+    try {
+      const nextDashboard = await publicDashboardApi.get(token, sessionToken);
+      setDashboard(nextDashboard);
+      setPageState('loaded');
+      // Fire-and-forget: fetch the report-level snapshot freshness for the
+      // "data as of" label (never blocks the dashboard render).
+      publicDashboardApi
+        .getSnapshotInfo(token, sessionToken)
+        .then((info) => { setSnapshotAsOf(info?.as_of ?? null); setSnapshotStale(!!info?.stale); })
+        .catch(() => { /* live / not materialized → no label */ });
+      if (sessionToken) {
+        scheduleSessionExpiry(token);
+      }
+    } catch (err: any) {
+      if (err?.response?.status === 401) {
+        setPageState('password_gate');
+      } else {
+        setError(getErrorMessage(err));
+        setPageState('error');
+      }
+    } finally {
+      setLoading(false);
+    }
+  }, [scheduleSessionExpiry, token]);
+
+  useEffect(() => {
+    if (!token) return;
+    setMounted(true);
+    const storedSession = getPublicSession(token);
+    loadDashboard(storedSession ?? undefined);
+  }, [loadDashboard, token]);
+
+  const dashboardPages = useMemo(
+    () => normalizeDashboardPages(dashboard?.pages_config),
+    [dashboard?.pages_config],
+  );
+  const activePageId = useMemo(
+    () => ensureDashboardPageId(dashboardPages, currentPageId),
+    [currentPageId, dashboardPages],
+  );
+  const visibleDashboardCharts = useMemo(
+    () => getDashboardChartsForPage(dashboard?.dashboard_charts, activePageId),
+    [activePageId, dashboard?.dashboard_charts],
+  );
+
+  // Phase-F (PBI-parity rework) — collect filter entries with
+  // `publicMode === 'locked'` for the banner row. Locked entries are
+  // applied at the chart-data layer (BE enforces) but the viewer is
+  // shown a read-only "ⓘ Đang lọc theo …" line so they understand
+  // the data scope. `hidden` entries do not appear here by design —
+  // see docs/filter-semantics.md §2.2/§9.
+  const lockedBannerEntries = useMemo(() => {
+    const result: { field: string; label?: string; value: any }[] = [];
+    const collect = (entries: any[]) => {
+      for (const e of entries || []) {
+        if (!e || typeof e !== 'object') continue;
+        const mode = e.publicMode ?? 'visible';
+        if (mode !== 'locked') continue;
+        if (e.showBanner === false) continue;
+        result.push({ field: e.field, label: e.label, value: e.value });
+      }
+    };
+    if (dashboard) {
+      collect((dashboard as any).filters_config || []);
+      const page = dashboardPages.find((p) => p.id === activePageId);
+      if (page) {
+        collect((page as any).filters || []);
+      }
+    }
+    return result;
+  }, [dashboard, dashboardPages, activePageId]);
+
+  // Phase-F THẬT (PBI-parity rework) — override-allowed filters list
+  // for the "Xem chi tiết" mini-pane. Entries with publicMode='visible'
+  // and allowOverride=true are editable by the viewer (the BE merger
+  // routes their values as `viewer_filter` layer, which overrides
+  // dashboard defaults but loses to `link_locked`).
+  const overridableFilterEntries = useMemo(() => {
+    const result: { field: string; label?: string; value: any; semanticField?: string; type?: string }[] = [];
+    const collect = (entries: any[]) => {
+      for (const e of entries || []) {
+        if (!e || typeof e !== 'object') continue;
+        const mode = e.publicMode ?? 'visible';
+        if (mode !== 'visible') continue;
+        if (!e.allowOverride) continue;
+        result.push({ field: e.field, label: e.label, value: e.value, semanticField: e.semanticField, type: e.type });
+      }
+    };
+    if (dashboard) {
+      collect((dashboard as any).filters_config || []);
+      const page = dashboardPages.find((p) => p.id === activePageId);
+      if (page) {
+        collect((page as any).filters || []);
+      }
+    }
+    return result;
+  }, [dashboard, dashboardPages, activePageId]);
+
+  // Mini-pane open/close state. Only relevant when there's at least
+  // one locked entry OR one override-allowed entry — otherwise the
+  // [Xem chi tiết] button never renders.
+  const [isMiniPaneOpen, setIsMiniPaneOpen] = useState(false);
+
+  useEffect(() => {
+    if (currentPageId !== activePageId) {
+      setCurrentPageId(activePageId);
+    }
+  }, [activePageId, currentPageId]);
+
+  useEffect(() => {
+    const nextSignature = JSON.stringify(appliedViewerFilters);
+    if (appliedFilterSignatureRef.current === nextSignature) {
+      return;
+    }
+    appliedFilterSignatureRef.current = nextSignature;
+    setChartData({});
+    setChartErrors({});
+  }, [appliedViewerFilters]);
+
+  // Phase-15.81 — Slicer seed.
+  //
+  // Two filter mechanisms (see backend public.py docstring on
+  // _get_share_dashboard for the full taxonomy):
+  //
+  //   A. DA-authored slicers (top-bar, viewer-editable):
+  //        dashboard.public_filters_config (now mirrors dash.filters_config
+  //        = all-pages set from the editor FilterPane), PLUS the active
+  //        page's pages_config[i].filters when switching pages.
+  //
+  //   B. Per-link hidden constraints (silent WHERE, viewer never sees):
+  //        dashboard.public_link_hidden_filters — these are merged in the
+  //        chart-data fetcher, not surfaced to the slicer bar.
+  //
+  // Seed runs once per token then re-runs when the active page changes
+  // (so switching to "page-b" surfaces its per-page slicers without
+  // wiping the all-pages chips). Custom values the viewer typed since
+  // the last seed are merged on top via fieldKey, so changing pages
+  // doesn't drop their in-session selections.
+  useEffect(() => {
+    if (!dashboard || !token) return;
+    // Phase-C (PBI-parity rework) — the top-bar slicer surface now
+    // reads `dashboard.slicers_config` (Phase-A new column) when
+    // present. Filter-pane entries from `filters_config` ALSO surface
+    // here when their `publicMode` is 'visible' (default) so authors
+    // who haven't yet promoted to slicers still get the same viewer
+    // experience. Entries with publicMode='locked' or 'hidden' fall
+    // through to chart-data without rendering as slicers — locked
+    // ones will surface in the banner row (Phase F), hidden ones
+    // never surface at all.
+    //
+    // Legacy fallback: pre-Phase-A dashboards still send
+    // `public_filters_config` only. Treat that as the slicer source
+    // so old shared links keep working.
+    const allConfigSlicers = Array.isArray((dashboard as any).slicers_config)
+      ? ((dashboard as any).slicers_config as BaseFilter[])
+      : [];
+    // PBI "Sync slicers" scope on public: a 'custom'-scoped slicer only shows
+    // a control on pages where pageScope[page].visible, and only filters where
+    // pageScope[page].filter. 'all' (or unset) → everywhere. ('page'-scoped
+    // slicers live in pages_config[page].slicers, surfaced via rawPageSlicers.)
+    const _slicerVisibleHere = (s: any): boolean => {
+      const sc = (s as any)?.scope || 'all';
+      if (sc === 'custom') return Boolean((s as any).pageScope?.[activePageId ?? '']?.visible);
+      return true;
+    };
+    const _slicerFiltersHere = (s: any): boolean => {
+      const sc = (s as any)?.scope || 'all';
+      if (sc === 'custom') return Boolean((s as any).pageScope?.[activePageId ?? '']?.filter);
+      return true;
+    };
+    const slicersFromConfig = allConfigSlicers.filter(_slicerVisibleHere);
+    // Custom slicers that FILTER this page but aren't VISIBLE here → apply
+    // their value silently (no control), like a hidden page filter.
+    const silentScopedSlicers = allConfigSlicers.filter((s) => !_slicerVisibleHere(s) && _slicerFiltersHere(s));
+    const filtersAsSlicers = Array.isArray((dashboard as any).filters_config)
+      ? ((dashboard as any).filters_config as BaseFilter[]).filter((f) => {
+          const mode = (f as any).publicMode ?? 'visible';
+          return mode === 'visible';
+        })
+      : [];
+    const legacyPublicConfig = (slicersFromConfig.length === 0 && filtersAsSlicers.length === 0)
+      ? (Array.isArray(dashboard.public_filters_config)
+          ? (dashboard.public_filters_config as BaseFilter[])
+          : [])
+      : [];
+    const activePageObj = dashboardPages.find((p) => p.id === activePageId);
+    const rawPageSlicers = Array.isArray((activePageObj as any)?.slicers)
+      ? ((activePageObj as any).slicers as BaseFilter[])
+      : [];
+    const rawPageFilters = Array.isArray((activePageObj as any)?.filters)
+      ? ((activePageObj as any).filters as BaseFilter[]).filter((f) => {
+          const mode = (f as any).publicMode ?? 'visible';
+          return mode === 'visible';
+        })
+      : [];
+    // Viewer-facing CONTROL set rendered on the public bar = report-level
+    // slicers + visible report filters (filters_config publicMode=visible) +
+    // legacy public_filters_config + THIS page's slicers. Page-level
+    // filter-pane entries (rawPageFilters) are intentionally NOT controls —
+    // see pageHiddenFilters below (PBI parity: the Filter Pane is author-side
+    // and hidden from public viewers; only slicers are interactive).
+    const controlSeed: BaseFilter[] = [
+      ...slicersFromConfig,
+      ...filtersAsSlicers,
+      ...legacyPublicConfig,
+      ...rawPageSlicers,
+    ];
+    // "Filters on this page" + filter-only scoped slicers → constrain the
+    // ACTIVE page's chart data but stay hidden from the control bar. Reset per
+    // page (active page only), so a page A filter never leaks onto page B.
+    setPageHiddenFilters([...rawPageFilters, ...silentScopedSlicers]);
+    // De-dupe by fieldKey. On token change we reset; on page switch we preserve
+    // the viewer's edits for fields still present in the new control seed.
+    const isFirstSeed = seededFiltersForTokenRef.current !== token;
+    seededFiltersForTokenRef.current = token;
+    const seedByKey = new Map<string, BaseFilter>();
+    for (const f of controlSeed) seedByKey.set(f.fieldKey ?? f.field, f);
+    const merged: BaseFilter[] = [];
+    if (!isFirstSeed) {
+      // Preserve viewer's edits for any field that still exists in the
+      // seed; otherwise fall back to the (possibly newly added) seed.
+      // Read from ref (not closure) so a fast page switch right after an
+      // edit doesn't drop the just-typed selection.
+      const existingByKey = new Map<string, BaseFilter>();
+      for (const f of appliedViewerFiltersRef.current) existingByKey.set(f.fieldKey ?? f.field, f);
+      for (const [key, seedFilter] of seedByKey.entries()) {
+        const existing = existingByKey.get(key);
+        merged.push(existing ?? seedFilter);
+      }
+    } else {
+      for (const f of seedByKey.values()) merged.push(f);
+    }
+    setDraftViewerFilters(merged);
+    setAppliedViewerFilters(merged);
+    appliedFilterSignatureRef.current = JSON.stringify(merged);
+    // Fix #10: default filters are now resolved → release the fetch gate. The
+    // fetch effect re-runs after this render with the seeded appliedViewerFilters.
+    setFiltersSeeded(true);
+  }, [dashboard, token, activePageId, dashboardPages]);
+
+  useEffect(() => {
+    if (!crossFilterState) return;
+    const sourceExists = visibleDashboardCharts.some(
+      (dashboardChart) => dashboardChart.chart_id === crossFilterState.sourceChartId,
+    );
+    if (!sourceExists) {
+      setCrossFilterState(null);
+    }
+  }, [crossFilterState, visibleDashboardCharts]);
+
+  // Highlight is the DEFAULT click interaction (matches the authed builder);
+  // per-chart opt-out via layout.highlightEnabled. Only explicit 'off' falls
+  // back to legacy cross-filter.
+  const interactionsMode: 'off' | 'highlight' =
+    ((dashboard as any)?.theme_config?.interactions?.mode === 'off') ? 'off' : 'highlight';
+
+  const handleCrossFilterChange = useCallback((sourceChartId: number, filter: BaseFilter | null) => {
+    // One selection (PBI parity): SOURCE chart dims its non-selected marks,
+    // every OTHER chart FILTERS to the clicked value (fetchChartsForPage adds it
+    // to the target queries). A null emit (click on empty chart space) clears
+    // unconditionally → reverts to the viewer's baseline; the page/locked/slicer
+    // filters (appliedViewerFilters) are separate and untouched.
+    // C4 anti-spam (see authed page for the full why) — an accidental
+    // double-click fires twice ~130ms apart; the 2nd lands after the source
+    // re-rendered and the empty-space handler emits a `null` CLEAR that would
+    // wipe the selection. Debounce BOTH a rapid re-select and a rapid clear
+    // within 300ms of the last selection. Explicit Clear + deliberate
+    // (>300ms) clears/re-targets are unaffected.
+    {
+      const now = Date.now();
+      if (now - lastCrossFilterAtRef.current < 300) return;
+      if (filter) lastCrossFilterAtRef.current = now;
+    }
+    setCrossFilterState((current) => {
+      if (!filter) {
+        return null;
+      }
+      if (
+        current?.sourceChartId === sourceChartId
+        && areFiltersEquivalent(current.filter, filter)
+      ) {
+        return null;
+      }
+      return { sourceChartId, filter };
+    });
+  }, []);
+
+  const fetchChartsForPage = useCallback(async (
+    pageId: string,
+    sessionToken?: string,
+    pageCrossFilterState: typeof crossFilterState = crossFilterState,
+    options?: { chartIds?: number[]; force?: boolean },
+  ) => {
+    if (!dashboard) return false;
+
+    const requestId = ++chartRequestIdRef.current;
+    const allCharts = getDashboardChartsForPage(dashboard.dashboard_charts, pageId)
+      // Non-chart widgets (text/image/countdown/shape/parameter_switcher) carry no
+      // chart_id and never need a /charts/{id}/data round-trip.
+      .filter((dc) => (!dc.widget_type || dc.widget_type === 'chart') && dc.chart_id);
+    // When chartIds is supplied (lazy viewport mode), only fetch those tiles.
+    const targetCharts = options?.chartIds
+      ? allCharts.filter((dc) => options.chartIds!.includes(dc.chart_id))
+      : allCharts;
+
+    setChartsLoading(true);
+    setChartLoadError(null);
+
+    if (!targetCharts.length) {
+      setChartsLoading(false);
+      setIsApplyingFilters(false);
+      return true;
+    }
+
+    try {
+      // Phase-H — the chart-data request now sends ONLY the viewer's
+      // interactive choices (top-bar slicers/filters + an optional
+      // cross-filter). The link's own filters (locked + hidden) are
+      // applied SERVER-SIDE by _build_public_chart_filters from
+      // DashboardPublicLink.filters_config — the FE no longer re-sends
+      // `public_link_hidden_filters`. Re-sending them used to double-feed
+      // the merge (link entries landed in the viewer_slicer layer AND the
+      // link_locked/link_hidden layers), which was fragile and could let
+      // the viewer-layer copy fight the authoritative link layer.
+      // "1 request = 1 page": compute each tile's viewer filters (same rules as
+      // before — cross-filter source/target + page-scope HARD BOUND via
+      // `applyScopeBound`, so a same-field slicer can only NARROW within the
+      // page scope, never escape it), then fetch ALL of them in ONE batch call.
+      // The server resolves dashboard+link+filters once and fans out the queries
+      // concurrently, so this is byte-identical to the old per-chart loop but
+      // without N round-trips / the browser's per-host socket queue.
+      const batchItems = targetCharts.map((dashboardChart) => {
+        const baseViewerFilters = pageCrossFilterState?.sourceChartId === dashboardChart.chart_id
+          ? appliedViewerFilters
+          : pageCrossFilterState
+            ? [...appliedViewerFilters, pageCrossFilterState.filter]
+            : appliedViewerFilters;
+        return {
+          chart_id: dashboardChart.chart_id,
+          filters: applyScopeBound(baseViewerFilters, pageHiddenFiltersRef.current),
+          granularity: chartGrainsRef.current[dashboardChart.chart_id],
+        };
+      });
+
+      type BatchEntry = { chartId: number; data: any; error: string | null; status?: number };
+      let entries: BatchEntry[];
+      try {
+        const resp = await publicDashboardApi.getChartsDataBatch(token, sessionToken, batchItems);
+        const byId = new Map<number, { data?: any; error?: string; status?: number }>();
+        for (const r of resp.results || []) byId.set(r.chart_id, r);
+        entries = targetCharts.map((dc) => {
+          const r = byId.get(dc.chart_id);
+          if (r && r.data) return { chartId: dc.chart_id, data: r.data, error: null };
+          return {
+            chartId: dc.chart_id,
+            data: null,
+            error: r?.error || 'Could not load this chart.',
+            status: r?.status,
+          };
+        });
+      } catch (err: any) {
+        // A 401 means the whole (password-gated) link session expired — reauth,
+        // exactly like the old per-chart path did on a 401 entry.
+        if (err?.response?.status === 401) {
+          if (requestId === chartRequestIdRef.current) {
+            clearPublicSession(token);
+            setPageState('reauth');
+          }
+          return false;
+        }
+        // Whole-batch transport failure → mark every target tile errored so the
+        // page shows the error state instead of an infinite spinner.
+        const msg = getErrorMessage(err);
+        entries = targetCharts.map((dc) => ({ chartId: dc.chart_id, data: null, error: msg }));
+      }
+
+      if (requestId !== chartRequestIdRef.current) {
+        return false;
+      }
+
+      const unauthorized = entries.find((entry) => (entry as any).status === 401);
+      if (unauthorized) {
+        clearPublicSession(token);
+        setPageState('reauth');
+        return false;
+      }
+
+      setChartData((current) => {
+        const next = { ...current };
+        for (const entry of entries) {
+          if (entry.data) {
+            next[entry.chartId] = entry.data;
+          } else {
+            delete next[entry.chartId];
+          }
+        }
+        return next;
+      });
+      setChartErrors((current) => {
+        const next = { ...current };
+        for (const entry of entries) {
+          if (entry.error) {
+            next[entry.chartId] = entry.error;
+          } else {
+            delete next[entry.chartId];
+          }
+        }
+        return next;
+      });
+
+      if (entries.some((entry) => entry.error)) {
+        setChartLoadError('Some charts could not be loaded in this shared view.');
+      }
+      if (sessionToken) {
+        scheduleSessionExpiry(token);
+      }
+      return true;
+    } finally {
+      if (requestId === chartRequestIdRef.current) {
+        setChartsLoading(false);
+        setIsApplyingFilters(false);
+      }
+    }
+  }, [appliedViewerFilters, crossFilterState, dashboard, dashboardPages, activePageId, scheduleSessionExpiry, token]);
+
+  // Cross-highlight (public): when a selection is active, fetch a PARALLEL
+  // P-filtered dataset per TARGET chart (baseline viewer/page filters + the
+  // selection), stored separately so the baseline tiles keep their full data
+  // and the renderer overlays the highlighted portion. Source tile dims locally
+  // (no fetch). Gated on interactionsMode='highlight' (opt-in) so existing
+  // public links are byte-for-byte unchanged.
+  useEffect(() => {
+    if (interactionsMode !== 'highlight' || !highlightState || !dashboard) {
+      setHighlightChartData((cur) => (Object.keys(cur).length ? {} : cur));
+      return;
+    }
+    const session = getPublicSession(token);
+    const targets = getDashboardChartsForPage(dashboard.dashboard_charts, activePageId)
+      .filter((dc) => (!dc.widget_type || dc.widget_type === 'chart') && dc.chart_id && dc.chart_id !== highlightState.sourceChartId)
+      // Per-chart opt-out: don't fetch a highlight overlay for tiles the author
+      // turned off (they render their baseline unchanged).
+      .filter((dc) => (dc.layout as any)?.highlightEnabled !== false);
+    let cancelled = false;
+    (async () => {
+      const entries = await runWithConcurrency(
+        targets,
+        async (dc) => {
+          const requestFilters = applyScopeBound(
+            [...appliedViewerFilters, highlightState.filter],
+            pageHiddenFiltersRef.current,
+          );
+          try {
+            const data = await publicDashboardApi.getChartData(
+              token, dc.chart_id, session ?? undefined, requestFilters, chartGrainsRef.current[dc.chart_id],
+            );
+            return { chartId: dc.chart_id, data };
+          } catch {
+            return { chartId: dc.chart_id, data: null };
+          }
+        },
+        CHART_FETCH_CONCURRENCY,
+      );
+      if (cancelled) return;
+      const map: Record<number, ChartDataResponse> = {};
+      for (const e of entries) if (e.data) map[e.chartId] = e.data as ChartDataResponse;
+      setHighlightChartData(map);
+    })();
+    return () => { cancelled = true; };
+  }, [highlightState, interactionsMode, activePageId, appliedViewerFilters, dashboard, token]);
+
+  // Drop the highlight when its source tile leaves the page; clear the unused
+  // interaction state when the mode flips, so they never overlap.
+  useEffect(() => {
+    if (!highlightState || !dashboard) return;
+    const exists = getDashboardChartsForPage(dashboard.dashboard_charts, activePageId)
+      .some((dc) => dc.chart_id === highlightState.sourceChartId);
+    if (!exists) setHighlightState(null);
+  }, [activePageId, dashboard, highlightState]);
+  useEffect(() => {
+    if (interactionsMode === 'highlight') setCrossFilterState(null);
+    else setHighlightState(null);
+  }, [interactionsMode]);
+
+  // #2 — public viewer date-hierarchy: change a chart's grain and re-fetch it
+  // from the BE at that bucket (works on pre-aggregated charts). The grain ref
+  // is read inside fetchChartsForPage's getChartData call.
+  const handleChartDrill = useCallback((chartId: number, grain: string | undefined) => {
+    const next = { ...chartGrainsRef.current };
+    if (grain) next[chartId] = grain; else delete next[chartId];
+    chartGrainsRef.current = next;
+    setChartGrains(next);
+    fetchChartsForPage(activePageId, getPublicSession(token) ?? undefined, undefined, { chartIds: [chartId] });
+  }, [activePageId, token, fetchChartsForPage]);
+
+  useEffect(() => {
+    if (!dashboard || pageState !== 'loaded') return;
+    // Fix #10: hold the first fetch until default filters are seeded, so a tile
+    // doesn't fire a throwaway query with empty filters that the seed then
+    // invalidates. Once seeded, this effect re-runs (filtersSeeded is a dep) and
+    // fetches once with the correct filters.
+    if (!filtersSeeded) return;
+    if (skipNextPageLoadRef.current === activePageId) {
+      skipNextPageLoadRef.current = null;
+      return;
+    }
+    if (!crossFilterState && skipCrossFilterRefreshRef.current === activePageId) {
+      skipCrossFilterRefreshRef.current = null;
+      return;
+    }
+    // Lazy mode: only fetch tiles that have already entered the viewport.
+    // The visibility effect below picks up the rest as the user scrolls.
+    const targetCharts = getDashboardChartsForPage(dashboard.dashboard_charts, activePageId)
+      .filter((dc) => (!dc.widget_type || dc.widget_type === 'chart') && dc.chart_id);
+    const lazyIds = targetCharts
+      .map((dc) => dc.chart_id)
+      .filter((id) => visibleChartIds.has(id));
+    if (lazyIds.length === 0) {
+      // Nothing visible yet (initial mount before IntersectionObserver fires).
+      // Skip — the visibility effect will trigger fetch as tiles report in.
+      return;
+    }
+    const storedSession = getPublicSession(token);
+    fetchChartsForPage(activePageId, storedSession ?? undefined, crossFilterState, {
+      chartIds: lazyIds,
+    });
+  }, [activePageId, crossFilterState, dashboard, fetchChartsForPage, filtersSeeded, pageState, token, visibleChartIds]);
+
+  const handlePasswordSubmit = useCallback(async (password: string) => {
+    setAuthSubmitting(true);
+    setAuthError(null);
+    try {
+      const { session_token, expires_in } = await publicDashboardApi.auth(token, password);
+      savePublicSession(token, session_token, expires_in);
+      await loadDashboard(session_token);
+    } catch (err: any) {
+      const status = err?.response?.status;
+      if (status === 403) {
+        setAuthError('Incorrect password. Please try again.');
+      } else if (status === 410) {
+        setAuthError('This shared link has expired.');
+      } else {
+        setAuthError(getErrorMessage(err));
+      }
+      setPageState('password_gate');
+    } finally {
+      setAuthSubmitting(false);
+    }
+  }, [loadDashboard, token]);
+
+  const handleReauth = useCallback(() => {
+    setPageState('password_gate');
+    setAuthError(null);
+  }, []);
+
+  // Phase-B22 — human-readable summary of the slicers/filters the viewer has
+  // applied, baked into each PDF page header so an exported report says which
+  // slice of data it represents.
+  const summarizeViewerFilters = useCallback((): string => {
+    if (!appliedViewerFilters.length) return '';
+    return appliedViewerFilters
+      .map((f) => {
+        const label = getFilterDisplayLabel(f);
+        const val = formatFilterValue((f as { value?: unknown }).value);
+        return val ? `${label}: ${val}` : label;
+      })
+      .filter(Boolean)
+      .join(' · ');
+  }, [appliedViewerFilters]);
+
+  // Phase-B22 — hybrid export (tables = real text + links, charts = sharp
+  // image), driven by the pre-export dialog. Replaces the old raster path.
+  const doExportPdf = useCallback(async (choices: ExportPdfChoices) => {
+    if (!dashboard) return;
+    // Open the preview tab NOW, synchronously inside the export click, so the
+    // popup blocker (which fires once the seconds-long capture has spent the
+    // user activation) doesn't eat it. We fill it with the PDF when ready.
+    const previewWindow = openPdfPreviewTab();
+    setIsExportingPdf(true);
+    setExportProgress({ phase: 'prepare', ratio: 0, message: 'Đang chuẩn bị…' });
+    // Disable lazy gating during export so every tile renders, including
+    // off-screen ones. Fetch any not-yet-loaded chart data per page below.
+    setForceVisibleAll(true);
+    const originalPageId = activePageId;
+    try {
+      const safeName = (dashboard.name || 'shared-dashboard').replace(/[^a-zA-Z0-9_\-\s]/g, '').trim() || 'dashboard';
+      const storedSession = getPublicSession(token) ?? undefined;
+      const filtersSummary = summarizeViewerFilters();
+
+      // Ensure every chart on a given page has data fetched (concurrency-limited).
+      const ensurePageDataLoaded = async (pageId: string) => {
+        const targetCharts = getDashboardChartsForPage(dashboard.dashboard_charts, pageId)
+          .filter((dc) => (!dc.widget_type || dc.widget_type === 'chart') && dc.chart_id);
+        const missingIds = targetCharts
+          .map((dc) => dc.chart_id)
+          .filter((id) => !chartData[id] && !chartErrors[id]);
+        if (missingIds.length === 0) return;
+        await fetchChartsForPage(pageId, storedSession, null, { chartIds: missingIds });
+      };
+
+      const reportTitle = dashboard.public_link_name || dashboard.name || 'Dashboard';
+      const chosen = dashboardPages.filter((p) => choices.pageIds.includes(p.id));
+      const pageSources = (chosen.length ? chosen : [{ id: activePageId, name: '' }]).map((p) => ({
+        name: p.name,
+        filtersSummary,
+        getRoot: async () => {
+          setCurrentPageId(p.id);
+          await ensurePageDataLoaded(p.id);
+          // Wait for React to re-render with the new page's charts + layout.
+          await new Promise<void>((resolve) => {
+            requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(resolve, 700)));
+          });
+          return gridSectionRef.current;
+        },
+      }));
+
+      const { exportDashboardPdf } = await import('@/lib/export-pdf');
+      const result = await exportDashboardPdf({
+        filename: `${safeName}.pdf`,
+        title: reportTitle,
+        orientation: choices.orientation,
+        format: choices.format,
+        onProgress: setExportProgress,
+        pages: pageSources,
+        previewWindow,
+      });
+      if (result === 'saved') {
+        // The preview tab was blocked → at least tell them the file downloaded.
+        try { previewWindow?.close(); } catch { /* noop */ }
+        toast.info('Đã tải PDF về máy', {
+          description: 'Trình duyệt chặn mở tab mới. Cho phép pop-up cho trang này để xem PDF ngay tại tab bên cạnh.',
+        });
+      }
+    } catch (err) {
+      console.error('PDF export failed', err);
+      try { previewWindow?.close(); } catch { /* noop */ }
+      toast.error('Xuất PDF thất bại', {
+        description: 'Không tạo được file PDF. Vui lòng thử lại; nếu vẫn lỗi, thử bớt số trang export.',
+      });
+    } finally {
+      setCurrentPageId(originalPageId);
+      setIsExportingPdf(false);
+      setForceVisibleAll(false);
+      setIsExportDialogOpen(false);
+      setExportProgress(null);
+    }
+  }, [activePageId, chartData, chartErrors, dashboard, dashboardPages, fetchChartsForPage, summarizeViewerFilters, token]);
+
+  const filterRuntime = useMemo(
+    () => buildPublicDashboardFilterRuntime(visibleDashboardCharts, chartData),
+    [chartData, visibleDashboardCharts],
+  );
+  const activeSessionToken = mounted ? (getPublicSession(token) ?? undefined) : undefined;
+  const availableFilterColumns = useMemo<ColumnInfo[]>(
+    () => (dashboard?.available_filter_fields?.length
+      ? dashboard.available_filter_fields
+      : filterRuntime.columns),
+    [dashboard?.available_filter_fields, filterRuntime.columns],
+  );
+  const availableFilterChartCount = useMemo(
+    () => (
+      dashboard?.available_filter_fields?.length
+        ? new Map(
+            availableFilterColumns.map((column) => [
+              getColumnKey(column),
+              column.chartCoverage ?? 0,
+            ]),
+          )
+        : filterRuntime.columnChartCount
+    ),
+    [availableFilterColumns, dashboard?.available_filter_fields, filterRuntime.columnChartCount],
+  );
+  const { values: resolvedDistinctValues, status: resolvedDistinctStatus } = usePublicFilterDistinctValues(
+    token,
+    activeSessionToken,
+    availableFilterColumns,
+    draftViewerFilters,
+    filterRuntime.distinctValues,
+    // PBI parity: the active page's hidden "Filters on this page" must cascade
+    // into the slicer values too (not only into chart data). Without this a
+    // public slicer offered values outside the page-filter scope.
+    pageHiddenFilters,
+  );
+  const hasPendingFilterChanges = useMemo(
+    () => JSON.stringify(draftViewerFilters) !== JSON.stringify(appliedViewerFilters),
+    [appliedViewerFilters, draftViewerFilters],
+  );
+  const publicTheme = useMemo(
+    () => buildPublicLinkTheme(dashboard?.public_link_appearance),
+    [dashboard?.public_link_appearance],
+  );
+  const appearance = publicTheme.appearance;
+  // Header/tab accent follows the REPORT's published theme first
+  // (theme_config.accent), then the public-link appearance accent, then a
+  // safe default — so the masthead "ăn theo" the dashboard's own palette
+  // instead of a hard-coded blue.
+  const reportAccentHex: string =
+    ((dashboard as any)?.theme_config?.accent as string | undefined)
+    ?? publicTheme.accentHex
+    ?? '#475569';
+  const activeTabStyle = {
+    backgroundColor: hexToRgbaString(reportAccentHex, 0.12) ?? undefined,
+    borderColor: hexToRgbaString(reportAccentHex, 0.38) ?? undefined,
+    color: reportAccentHex,
+  };
+  const presentationTitle = appearance.headline
+    ?? dashboard?.public_link_name
+    ?? dashboard?.name
+    ?? 'Shared dashboard';
+  const viewerFiltersEnabled = appearance.allow_viewer_filters;
+  const showPageTabs = appearance.show_page_tabs && dashboardPages.length > 1;
+  const showFilterControls = viewerFiltersEnabled && availableFilterColumns.length > 0;
+  const showLiveState = Boolean(pendingPageId || crossFilterState || chartLoadError || (chartsLoading && !isApplyingFilters));
+  // Phase-G — honor the slicer cluster's saved position on the public
+  // link. 'left' lays the cluster as a column beside the charts; 'top'
+  // (default) stacks it above. ('free' was removed → treated as top.)
+  const slicerClusterPositionLeft =
+    ((dashboard as any)?.slicer_cluster_layout?.position) === 'left';
+
+  const handleApplyFilters = useCallback(() => {
+    setIsApplyingFilters(true);
+    setAppliedViewerFilters(draftViewerFilters);
+  }, [draftViewerFilters]);
+
+  const handleResetFilters = useCallback(() => {
+    setDraftViewerFilters(appliedViewerFilters);
+  }, [appliedViewerFilters]);
+
+  const hasSettledPageCache = useCallback((pageId: string) => {
+    if (!dashboard) return false;
+    const targetCharts = getDashboardChartsForPage(dashboard.dashboard_charts, pageId)
+      .filter((dc) => (!dc.widget_type || dc.widget_type === 'chart') && dc.chart_id);
+    if (targetCharts.length === 0) return true;
+    return targetCharts.every((dashboardChart) => (
+      Boolean(chartData[dashboardChart.chart_id]) || Boolean(chartErrors[dashboardChart.chart_id])
+    ));
+  }, [chartData, chartErrors, dashboard]);
+
+  // PDF export now fetches each page's data on-demand inside doExportPdf, so the
+  // dashboard load path no longer prefetches all pages. This was the single
+  // biggest source of public-link slowness — a 3-page × 15-chart dashboard
+  // fired 30 unused requests in the background on every open.
+
+  const handlePageSelect = useCallback((pageId: string) => {
+    if (pageId === activePageId || pendingPageId === pageId) {
+      return;
+    }
+
+    if (crossFilterState) {
+      skipCrossFilterRefreshRef.current = pageId;
+    }
+
+    if (hasSettledPageCache(pageId)) {
+      // Fully-cached page → switch instantly and suppress the visibility
+      // effect's refetch (its tiles already hold data for the current filters).
+      skipNextPageLoadRef.current = pageId;
+      startTransition(() => setCurrentPageId(pageId));
+      return;
+    }
+
+    // Not-yet-loaded page: switch IMMEDIATELY and let the lazy visibility effect
+    // fetch only this page's VISIBLE tiles — the exact path a first open uses.
+    // Previously we AWAITED a fetch of EVERY chart on the target page before
+    // switching, so a not-yet-visited page blocked on its slowest tile; and when
+    // a background snapshot rebuild was competing for the warehouse those tile
+    // queries stacked up, which read as "chuyển page rất lâu" the longer a
+    // session ran. Non-blocking switch keeps it snappy; do NOT set
+    // skipNextPageLoadRef here — we WANT the effect to run and load the tiles.
+    startTransition(() => setCurrentPageId(pageId));
+  }, [activePageId, crossFilterState, hasSettledPageCache, pendingPageId]);
+
+  if (!mounted || pageState === 'unknown' || loading) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-surface-0 px-4">
+        <div className="w-full max-w-md rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 px-6 py-10 text-center shadow-linear">
+          <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-lg bg-brand/10 text-brand">
+            <Loader2 className="h-5 w-5 animate-spin" />
+          </div>
+          <h1 className="mt-4 text-small font-strong text-text-primary">Preparing shared dashboard</h1>
+          <p className="mt-2 text-caption text-text-tertiary">
+            Loading charts, pages, and viewer filters for the published report.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  if (pageState === 'password_gate') {
+    return (
+      <PasswordGate
+        onSubmit={handlePasswordSubmit}
+        error={authError}
+        submitting={authSubmitting}
+        isReauth={false}
+      />
+    );
+  }
+
+  if (pageState === 'error' || !dashboard) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-surface-0 px-4">
+        <div className="max-w-md rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 px-8 py-10 text-center shadow-linear">
+          <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-lg bg-warning/10 text-warning">
+            <AlertTriangle className="h-5 w-5" />
+          </div>
+          <p className="text-tiny font-emphasis uppercase tracking-[0.18em] text-text-quaternary">
+            Shared link unavailable
+          </p>
+          <h1 className="mt-2 text-h3 font-emphasis text-text-primary">Dashboard not available</h1>
+          <p className="mt-3 text-caption text-text-tertiary">
+            {error ?? 'This shared link may have expired or been revoked.'}
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  const layouts: Layout[] = liftLayoutToTop(
+    visibleDashboardCharts.map((dashboardChart) => {
+      const layout = dashboardChart.layout;
+      return {
+        i: dashboardChart.id.toString(),
+        x: layout.x || 0,
+        y: layout.y || 0,
+        w: layout.w || 4,
+        h: layout.h || 4,
+      };
+    }),
+  );
+
+  // Phase-G — single SlicerCluster node reused in both placements:
+  // stacked above the grid (top) or as a left column (left). Defined
+  // here so it can sit beside the grid section in left mode.
+  const slicerClusterNode = showFilterControls ? (
+    <div className="[&>div]:mb-0">
+      <SlicerCluster
+        children={[
+          ...draftViewerFilters,
+          ...(((dashboard as any)?.slicers_config || []).filter(
+            (c: any) => c && typeof c === 'object' && c.type === 'image',
+          )),
+        ]}
+        onChildrenChange={(next) => {
+          setDraftViewerFilters(
+            (next as any[]).filter(
+              (c) => !(c && typeof c === 'object' && (c as any).type === 'image'),
+            ),
+          );
+        }}
+        layout={(dashboard as any)?.slicer_cluster_layout || null}
+        columns={availableFilterColumns}
+        columnChartCount={availableFilterChartCount}
+        distinctValues={resolvedDistinctValues}
+        distinctStatus={resolvedDistinctStatus}
+        // Type-to-search over the FULL cached distinct set for high-cardinality
+        // slicers on a public/embed link. Hits the BE result cache via the
+        // public endpoint (no per-keystroke BigQuery, no authed call).
+        fetchServerDistinct={async (column, search) => {
+          if (!column.datasetId || !column.semanticField) return [];
+          try {
+            // Cascade the search results by the viewer's other active filters
+            // + page-scope (same context the prefetch uses); self-strips this
+            // field so the dropdown never pins its own value.
+            const filterContext = getDistinctValueFilterContext(
+              [...appliedViewerFilters, ...pageHiddenFilters], column,
+            );
+            const res = await publicDashboardApi.getFilterDistinctValues(
+              token, column.datasetId, column.semanticField, activeSessionToken, 500, filterContext, search,
+            );
+            return res.values ?? [];
+          } catch {
+            return [];
+          }
+        }}
+        hasPendingChanges={hasPendingFilterChanges}
+        onApply={handleApplyFilters}
+        onReset={handleResetFilters}
+        isApplying={isApplyingFilters}
+        lockSlots
+      />
+    </div>
+  ) : null;
+
+  // ── Shared masthead pieces (used by BOTH the TOP and LEFT layouts) ──
+  // Extracted so the LEFT app-shell can reuse them without divergence.
+  const exportButtonEl = (
+    <Button
+      variant="secondary"
+      size="sm"
+      onClick={() => setIsExportDialogOpen(true)}
+      disabled={isExportingPdf || chartsLoading}
+      leadingIcon={
+        isExportingPdf
+          ? <Loader2 className="h-4 w-4 animate-spin" />
+          : <Download className="h-4 w-4" />
+      }
+      className="print:hidden"
+      title="Export this dashboard as PDF"
+      data-html2canvas-ignore
+    >
+      <span className="hidden sm:inline">
+        {isExportingPdf ? 'Exporting…' : 'Export PDF'}
+      </span>
+    </Button>
+  );
+
+  // Custom header logo: a published report can replace the default generated
+  // brand mark with its own image. Source order: public-link appearance
+  // `logo_url` → dashboard `theme_config.logo` (both accept a URL or data: URI)
+  // → fall back to the auto-generated accent-tinted chart glyph.
+  const headerLogoSrc: string | null =
+    appearance.logo_url
+    ?? ((dashboard as any)?.theme_config?.logo as string | undefined)
+    ?? null;
+  const brandMarkEl = headerLogoSrc ? (
+    <img
+      src={headerLogoSrc}
+      alt={presentationTitle}
+      className="h-8 w-8 flex-shrink-0 rounded-lg object-contain"
+    />
+  ) : (
+    <span
+      className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg text-white"
+      style={{ backgroundColor: reportAccentHex }}
+      aria-hidden
+    >
+      <BarChart3 className="h-[18px] w-[18px]" />
+    </span>
+  );
+
+  // Title for the LEFT shell — wraps to multiple lines instead of truncating
+  // (the left column is narrow; user asked to let a long title wrap).
+  const titleEl = (
+    <div className="min-w-0 flex-1">
+      <h1
+        className="break-words text-lg font-emphasis leading-tight tracking-[-0.02em] text-text-primary sm:text-xl"
+        title={presentationTitle}
+      >
+        {presentationTitle}
+      </h1>
+      {snapshotAsOf && (
+        <p
+          className="mt-0.5 text-[11px] text-text-tertiary"
+          title={`Số liệu tính đến ${new Date(snapshotAsOf).toLocaleString()}`}
+        >
+          Số liệu tính đến {new Date(snapshotAsOf).toLocaleString()}
+          {snapshotStale && (
+            <span className="ml-1 text-text-quaternary">· đang làm mới…</span>
+          )}
+        </p>
+      )}
+    </div>
+  );
+
+  const pageTabsEl = showPageTabs ? (
+    <nav className="flex min-w-0 items-center gap-1.5 overflow-x-auto">
+      {dashboardPages.map((page) => {
+        const isActive = page.id === activePageId;
+        const isPending = page.id === pendingPageId;
+        return (
+          <button
+            key={page.id}
+            type="button"
+            onClick={() => {
+              void handlePageSelect(page.id);
+            }}
+            className={`inline-flex cursor-pointer items-center gap-1.5 whitespace-nowrap rounded-md border px-3 py-1 text-small font-emphasis transition-all ${
+              isActive
+                ? 'shadow-sm'
+                : 'border-[rgb(var(--border-line))] bg-surface-1 text-text-secondary hover:-translate-y-px hover:border-text-tertiary/40 hover:bg-surface-2 hover:text-text-primary hover:shadow-sm'
+            }`}
+            style={isActive ? activeTabStyle : undefined}
+            disabled={isPending}
+          >
+            {isPending && <Loader2 className="h-3 w-3 animate-spin" />}
+            {page.name}
+          </button>
+        );
+      })}
+    </nav>
+  ) : null;
+
+  const filterBannerEl = (lockedBannerEntries.length > 0 || overridableFilterEntries.length > 0) ? (
+    <div
+      className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 px-3 py-2 text-caption text-text-secondary"
+      style={publicTheme.neutralPillStyle}
+      data-public-locked-banner
+    >
+      <div className="flex flex-wrap items-center gap-2">
+        {lockedBannerEntries.length > 0 ? (
+          <>
+            <span className="font-medium text-text-tertiary">ⓘ Đang lọc theo:</span>
+            {lockedBannerEntries.map((entry, i) => (
+              <span key={`${entry.field}-${i}`} className="inline-flex items-center gap-1">
+                <span className="opacity-70">🔒</span>
+                <span className="font-medium">{entry.label ?? entry.field}</span>
+                <span className="text-text-quaternary">=</span>
+                <span className="font-mono">
+                  {Array.isArray(entry.value)
+                    ? entry.value.slice(0, 3).join(', ') + (entry.value.length > 3 ? `, +${entry.value.length - 3}` : '')
+                    : String(entry.value ?? '')}
+                </span>
+              </span>
+            ))}
+          </>
+        ) : (
+          <span className="text-text-tertiary">Bộ lọc nâng cao có sẵn.</span>
+        )}
+        <button
+          type="button"
+          onClick={() => setIsMiniPaneOpen((v) => !v)}
+          className="ml-auto inline-flex items-center gap-1 rounded border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-0.5 text-tiny font-emphasis text-text-secondary transition-colors hover:bg-surface-2"
+        >
+          {isMiniPaneOpen ? 'Đóng' : 'Xem chi tiết'}
+        </button>
+      </div>
+      {isMiniPaneOpen && (
+        <div className="mt-3 rounded border border-[rgb(var(--border-line))] bg-surface-1 p-3">
+          {lockedBannerEntries.length > 0 && (
+            <div className="space-y-1.5">
+              <div className="text-tiny font-emphasis uppercase tracking-wide text-text-tertiary">
+                Bộ lọc cố định (do người chia sẻ link cấu hình)
+              </div>
+              {lockedBannerEntries.map((entry, i) => (
+                <div key={`lock-${entry.field}-${i}`} className="flex items-center gap-2 text-caption">
+                  <span>🔒</span>
+                  <span className="font-medium">{entry.label ?? entry.field}</span>
+                  <span className="text-text-quaternary">=</span>
+                  <span className="font-mono text-text-secondary">
+                    {Array.isArray(entry.value) ? entry.value.join(', ') : String(entry.value ?? '')}
+                  </span>
+                  <span className="ml-auto text-tiny text-text-quaternary">Read-only</span>
+                </div>
+              ))}
+            </div>
+          )}
+          {overridableFilterEntries.length > 0 && (
+            <div className={`${lockedBannerEntries.length > 0 ? 'mt-3 border-t border-[rgb(var(--border-line))] pt-3' : ''} space-y-1.5`}>
+              <div className="text-tiny font-emphasis uppercase tracking-wide text-text-tertiary">
+                Bộ lọc có thể chỉnh
+              </div>
+              {overridableFilterEntries.map((entry, i) => {
+                const currentDraft = draftViewerFilters.find(
+                  (f) => f.field === entry.field || f.semanticField === entry.semanticField,
+                );
+                const displayValue = currentDraft?.value ?? entry.value;
+                return (
+                  <div key={`ov-${entry.field}-${i}`} className="flex items-center gap-2 text-caption">
+                    <span>👁</span>
+                    <span className="font-medium">{entry.label ?? entry.field}</span>
+                    <span className="text-text-quaternary">=</span>
+                    <input
+                      type="text"
+                      value={Array.isArray(displayValue) ? displayValue.join(', ') : String(displayValue ?? '')}
+                      onChange={(e) => {
+                        const raw = e.target.value;
+                        const nextValue = raw.includes(',')
+                          ? raw.split(',').map((s) => s.trim()).filter(Boolean)
+                          : raw;
+                        setDraftViewerFilters((prev) => {
+                          const others = prev.filter(
+                            (f) => f.field !== entry.field && f.semanticField !== entry.semanticField,
+                          );
+                          return [
+                            ...others,
+                            {
+                              ...(currentDraft ?? {}),
+                              id: currentDraft?.id ?? `override-${entry.field}`,
+                              field: entry.field,
+                              semanticField: entry.semanticField,
+                              type: (currentDraft?.type ?? entry.type ?? 'dropdown') as any,
+                              operator: (currentDraft?.operator ?? 'in') as any,
+                              value: nextValue,
+                            } as any,
+                          ];
+                        });
+                      }}
+                      placeholder={Array.isArray(entry.value) ? entry.value.join(', ') : String(entry.value ?? '')}
+                      className="ml-auto w-48 rounded border border-[rgb(var(--border-line))] bg-surface-2 px-2 py-0.5 text-tiny outline-none focus:ring-1 focus:ring-brand"
+                    />
+                  </div>
+                );
+              })}
+              <div className="mt-2 flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => handleApplyFilters()}
+                  disabled={!hasPendingFilterChanges}
+                  className="rounded border border-brand bg-brand px-3 py-1 text-tiny font-emphasis text-text-inverse transition-opacity disabled:opacity-50"
+                >
+                  Apply
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  ) : null;
+
+  const filterLiveEl = showLiveState ? (
+    <div className="flex flex-col gap-3">
+      {pendingPageId && (
+        <div
+          className="inline-flex items-center gap-2 rounded-md border border-[rgb(var(--border-line))] bg-surface-2 px-3 py-1.5 text-tiny text-text-tertiary"
+          style={publicTheme.neutralPillStyle}
+        >
+          <Loader2 className="h-3 w-3 animate-spin" /> Đang mở trang…
+        </div>
+      )}
+
+      {crossFilterState && (
+        <div
+          className="rounded-lg border border-brand/20 bg-brand/10 px-4 py-3 text-caption text-brand"
+          style={publicTheme.accentPillStyle}
+        >
+          <p className="font-emphasis">
+            Cross-filter from {visibleDashboardCharts.find((dc) => dc.chart_id === crossFilterState.sourceChartId)?.layout?.custom_title
+              ?? visibleDashboardCharts.find((dc) => dc.chart_id === crossFilterState.sourceChartId)?.chart?.name
+              ?? `Chart ${crossFilterState.sourceChartId}`}
+          </p>
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <span className="break-words text-text-secondary">
+              {getFilterDisplayLabel(crossFilterState.filter)} = {formatFilterValue(crossFilterState.filter.value)}
+            </span>
+            <Button
+              variant="secondary"
+              size="xs"
+              onClick={() => setCrossFilterState(null)}
+              style={publicTheme.neutralPillStyle}
+            >
+              Clear selection
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {highlightState && (
+        <div
+          className="rounded-lg border border-brand/20 bg-brand/10 px-4 py-3 text-caption text-brand"
+          style={publicTheme.accentPillStyle}
+        >
+          <p className="font-emphasis">
+            Đang làm nổi bật từ {visibleDashboardCharts.find((dc) => dc.chart_id === highlightState.sourceChartId)?.layout?.custom_title
+              ?? visibleDashboardCharts.find((dc) => dc.chart_id === highlightState.sourceChartId)?.chart?.name
+              ?? `Chart ${highlightState.sourceChartId}`}
+          </p>
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <span className="break-words text-text-secondary">
+              {getFilterDisplayLabel(highlightState.filter)} = {formatFilterValue(highlightState.filter.value)}
+            </span>
+            <Button
+              variant="secondary"
+              size="xs"
+              onClick={() => setHighlightState(null)}
+              style={publicTheme.neutralPillStyle}
+            >
+              Bỏ chọn
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {chartLoadError && (
+        <div className="rounded-lg border border-warning/30 bg-warning/10 px-4 py-3 text-caption text-warning">
+          {chartLoadError}
+        </div>
+      )}
+
+      {chartsLoading && !isApplyingFilters && (
+        <div
+          className="inline-flex items-center gap-2 rounded-md border border-[rgb(var(--border-line))] bg-surface-2 px-3 py-1.5 text-tiny text-text-tertiary"
+          style={publicTheme.neutralPillStyle}
+        >
+          <Loader2 className="h-3 w-3 animate-spin" /> Đang tải biểu đồ…
+        </div>
+      )}
+    </div>
+  ) : null;
+
+  const gridSectionEl = (
+    <ExportModeContext.Provider value={isExportingPdf}>
+      <section
+        ref={gridSectionRef}
+        className={`px-1 pb-1 pt-0 transition-opacity duration-200 sm:px-1.5 ${pendingPageId ? 'opacity-70' : 'opacity-100'} ${slicerClusterPositionLeft ? 'min-w-0 flex-1' : 'w-full'}`}
+      >
+        {visibleDashboardCharts.length === 0 ? (
+          <div className="flex h-64 items-center justify-center rounded-lg border-2 border-dashed border-[rgb(var(--border-line))] bg-surface-2">
+            <p className="text-caption text-text-tertiary">No charts on this page yet.</p>
+          </div>
+        ) : (
+          <div className={`${publicTheme.density.compact ? 'px-2 pb-2 pt-0' : 'px-3 pb-3 pt-0.5'}`}>
+            <ResponsiveReportGrid
+              className="layout"
+              layouts={{ lg: layouts, xs: deriveStackedLayout(layouts) }}
+              breakpoints={REPORT_BREAKPOINTS}
+              cols={REPORT_COLS}
+              rowHeight={80}
+              margin={getDashboardGridMargin(dashboard?.theme_config)}
+              isDraggable={false}
+              isResizable={false}
+              compactType={null}
+              preventCollision={true}
+            >
+              {visibleDashboardCharts.map((dashboardChart: DashboardChart) => {
+                const isWidget = Boolean(
+                  dashboardChart.widget_type && dashboardChart.widget_type !== 'chart'
+                );
+                if (isWidget) {
+                  return (
+                    <div key={dashboardChart.id.toString()} className="h-full">
+                      <DashboardWidget widget={dashboardChart} />
+                    </div>
+                  );
+                }
+
+                const chart = dashboardChart.chart;
+                const payload = chartData[dashboardChart.chart_id];
+                const chartError = chartErrors[dashboardChart.chart_id];
+                const title = dashboardChart.layout.custom_title ?? '';
+
+                return (
+                  <div key={dashboardChart.id.toString()} data-chart-id={dashboardChart.chart_id} className="h-full rounded-xl transition-all duration-300">
+                    <ChartErrorBoundary chartId={dashboardChart.chart_id}>
+                      <ReadonlyChartTile
+                        chart={chart}
+                        chartData={payload}
+                        error={chartError}
+                        title={title}
+                        layout={dashboardChart.layout}
+                        compact={publicTheme.density.compact}
+                        showChartTypeLabel={false}
+                        onSelectCrossFilter={(dashboardChart.layout as any)?.highlightEnabled !== false ? (filter) => handleCrossFilterChange(dashboardChart.chart_id, filter) : undefined}
+                        isCrossFilterSource={crossFilterState?.sourceChartId === dashboardChart.chart_id}
+                        highlightFilter={crossFilterState?.sourceChartId === dashboardChart.chart_id && (dashboardChart.layout as any)?.highlightEnabled !== false ? (crossFilterState?.filter ?? null) : null}
+                        isHighlightSource={crossFilterState?.sourceChartId === dashboardChart.chart_id}
+                        highlightData={null}
+                        forceVisible={forceVisibleAll}
+                        publicDatasetModels={(dashboard as any)?.public_dataset_models ?? null}
+                        viewerGrain={chartGrains[dashboardChart.chart_id]}
+                        onViewerDrill={(g) => handleChartDrill(dashboardChart.chart_id, g)}
+                        onVisible={() => {
+                          setVisibleChartIds((current) => {
+                            if (current.has(dashboardChart.chart_id)) return current;
+                            const next = new Set(current);
+                            next.add(dashboardChart.chart_id);
+                            return next;
+                          });
+                        }}
+                      />
+                    </ChartErrorBoundary>
+                  </div>
+                );
+              })}
+            </ResponsiveReportGrid>
+          </div>
+        )}
+      </section>
+    </ExportModeContext.Provider>
+  );
+
+  return (
+    <DashboardThemeProvider
+      theme={dashboard?.theme_config}
+      className={isEmbed
+        ? 'min-h-[220px] bg-surface-0 text-text-primary'
+        : 'flex h-screen overflow-hidden bg-surface-0 text-text-primary'}
+      style={publicTheme.pageStyle}
+    >
+      {pageState === 'reauth' && (
+        <SessionExpiredOverlay onReauth={handleReauth} />
+      )}
+
+      {/* The masthead (header/tabs/filter) is PINNED: `main` itself no longer
+          scrolls (overflow-hidden) — only the chart region inside each layout
+          branch scrolls. So scrolling a long report never pushes the
+          header/tabs/filter out of view (user ask). */}
+      <main ref={publicContentRef} className={isEmbed
+        ? 'w-full min-w-0 flex flex-col gap-1 px-3 pt-3 pb-0 sm:px-4'
+        : 'flex-1 min-w-0 overflow-hidden flex flex-col gap-1 px-3 pt-4 pb-0 sm:px-4 lg:px-6 lg:pt-5'}>
+        {slicerClusterPositionLeft ? (
+          /* ── LEFT app-shell ──────────────────────────────────────────────
+             When the author placed the slicer cluster on the LEFT, the report
+             becomes a 2-column shell: the brand mark + title sit ABOVE the
+             filter rail in the left column, while the page tabs, Export, and
+             the chart grid pull to the TOP of the right column. This removes
+             the full-width header band so nothing floats with dead space above
+             the rail (user ask). The rail is sticky so filters stay in view. */
+          <div className="mx-auto flex min-h-0 w-full flex-1 flex-col gap-3 lg:flex-row lg:items-stretch">
+            {/* Left column = brand+title (top, level with the page tabs) then
+                the filter rail. gap-4 = 2× the previous title↔filter spacing.
+                This column is a fixed flex sibling so it never scrolls away. */}
+            <aside className="flex w-full flex-shrink-0 flex-col gap-4 lg:w-[280px]">
+              <div className="flex items-start gap-2.5 px-1">
+                {brandMarkEl}
+                {titleEl}
+              </div>
+              {showFilterControls && (
+                <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-2 shadow-linear-sm">
+                  {slicerClusterNode}
+                </div>
+              )}
+            </aside>
+            <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-2">
+              <div className="flex shrink-0 flex-wrap items-center gap-2">
+                {pageTabsEl}
+                <div className="ml-auto shrink-0">{exportButtonEl}</div>
+              </div>
+              {(filterBannerEl || filterLiveEl) && (
+                <div className="shrink-0 space-y-2">
+                  {filterBannerEl}
+                  {filterLiveEl}
+                </div>
+              )}
+              {/* Only the charts scroll. */}
+              <div className={isEmbed ? 'pb-4' : 'min-h-0 flex-1 overflow-y-auto pb-4'}>
+                {gridSectionEl}
+              </div>
+            </div>
+          </div>
+        ) : (
+          <>
+        {/* Phase-B7 — FLUSH report header (was a bordered/elevated card on a
+            gray page = "web widget" look). A report masthead is flat with just
+            a hairline divider; tiles are the only cards. Removes one nesting
+            level toward the PBI "flat canvas" feel. */}
+        <section
+          className="mx-auto w-full shrink-0 overflow-visible px-4 pt-2.5 pb-0.5 sm:px-5 sm:pt-3"
+        >
+          {/* Report masthead — row 1: brand mark + title + Export. Title is no
+              longer clamped to 36%/cramped beside the tabs; tabs drop to their
+              own underline row below (row 2), matching a real BI report header
+              (PowerBI/Looker) instead of the old one-line pill toolbar. */}
+          <div className="flex items-center gap-2.5">
+            {brandMarkEl}
+            <div className="min-w-0 flex-1">
+              <h1
+                className="truncate text-lg font-emphasis tracking-[-0.02em] text-text-primary sm:text-xl"
+                title={presentationTitle}
+              >
+                {presentationTitle}
+              </h1>
+              {snapshotAsOf && (
+                <p
+                  className="mt-0.5 truncate text-[11px] text-text-tertiary"
+                  title={`Số liệu tính đến ${new Date(snapshotAsOf).toLocaleString()}`}
+                >
+                  Số liệu tính đến {new Date(snapshotAsOf).toLocaleString()}
+                  {snapshotStale && (
+                    <span className="ml-1 text-text-quaternary">· đang làm mới…</span>
+                  )}
+                </p>
+              )}
+            </div>
+            <div className="ml-auto shrink-0">
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => setIsExportDialogOpen(true)}
+                disabled={isExportingPdf || chartsLoading}
+                leadingIcon={
+                  isExportingPdf
+                    ? <Loader2 className="h-4 w-4 animate-spin" />
+                    : <Download className="h-4 w-4" />
+                }
+                className="print:hidden"
+                title="Export this dashboard as PDF"
+                data-html2canvas-ignore
+              >
+                <span className="hidden sm:inline">
+                  {isExportingPdf ? 'Exporting…' : 'Export PDF'}
+                </span>
+              </Button>
+            </div>
+          </div>
+
+          {/* Row 2 — page tabs (own row), rendered as a segmented set of
+              clickable chips so a viewer immediately reads them as pressable
+              tabs (user ask). The active page is a filled accent chip tinted
+              from the REPORT theme; inactive pages are outlined surface chips
+              with a clear hover lift + pointer cursor. */}
+          {showPageTabs && (
+            <nav className="mt-2 flex min-w-0 items-center gap-1.5 overflow-x-auto">
+              {dashboardPages.map((page) => {
+                const isActive = page.id === activePageId;
+                const isPending = page.id === pendingPageId;
+                return (
+                  <button
+                    key={page.id}
+                    type="button"
+                    onClick={() => {
+                      void handlePageSelect(page.id);
+                    }}
+                    className={`inline-flex cursor-pointer items-center gap-1.5 whitespace-nowrap rounded-md border px-3 py-1 text-small font-emphasis transition-all ${
+                      isActive
+                        ? 'shadow-sm'
+                        : 'border-[rgb(var(--border-line))] bg-surface-1 text-text-secondary hover:-translate-y-px hover:border-text-tertiary/40 hover:bg-surface-2 hover:text-text-primary hover:shadow-sm'
+                    }`}
+                    style={isActive ? activeTabStyle : undefined}
+                    disabled={isPending}
+                  >
+                    {isPending && <Loader2 className="h-3 w-3 animate-spin" />}
+                    {page.name}
+                  </button>
+                );
+              })}
+            </nav>
+          )}
+
+          {/* In LEFT mode the slicer cluster moves out to the side rail, so the
+              header filter block must NOT render just because showFilterControls
+              is true — otherwise it draws an empty divider + padding. Only render
+              it for the top-mode slicers, live state, or the locked/override
+              banners. */}
+          {((showFilterControls && !slicerClusterPositionLeft) || showLiveState || lockedBannerEntries.length > 0 || overridableFilterEntries.length > 0) && (
+            <div className="mt-2 space-y-2 border-t border-[rgb(var(--border-line))] pt-2">
+
+              {/* Phase-F THẬT (PBI-parity rework) — banner for locked
+                  filters + [Xem chi tiết] toggle. Click opens mini-pane
+                  with locked entries (read-only, 🔒) plus override-allowed
+                  entries (editable). See docs/filter-semantics.md §9 +
+                  user-approved wireframe. */}
+              {(lockedBannerEntries.length > 0 || overridableFilterEntries.length > 0) && (
+                <div
+                  className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 px-3 py-2 text-caption text-text-secondary"
+                  style={publicTheme.neutralPillStyle}
+                  data-public-locked-banner
+                >
+                  <div className="flex flex-wrap items-center gap-2">
+                    {lockedBannerEntries.length > 0 ? (
+                      <>
+                        <span className="font-medium text-text-tertiary">ⓘ Đang lọc theo:</span>
+                        {lockedBannerEntries.map((entry, i) => (
+                          <span key={`${entry.field}-${i}`} className="inline-flex items-center gap-1">
+                            <span className="opacity-70">🔒</span>
+                            <span className="font-medium">{entry.label ?? entry.field}</span>
+                            <span className="text-text-quaternary">=</span>
+                            <span className="font-mono">
+                              {Array.isArray(entry.value)
+                                ? entry.value.slice(0, 3).join(', ') + (entry.value.length > 3 ? `, +${entry.value.length - 3}` : '')
+                                : String(entry.value ?? '')}
+                            </span>
+                          </span>
+                        ))}
+                      </>
+                    ) : (
+                      <span className="text-text-tertiary">Bộ lọc nâng cao có sẵn.</span>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => setIsMiniPaneOpen((v) => !v)}
+                      className="ml-auto inline-flex items-center gap-1 rounded border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-0.5 text-tiny font-emphasis text-text-secondary transition-colors hover:bg-surface-2"
+                    >
+                      {isMiniPaneOpen ? 'Đóng' : 'Xem chi tiết'}
+                    </button>
+                  </div>
+                  {isMiniPaneOpen && (
+                    <div className="mt-3 rounded border border-[rgb(var(--border-line))] bg-surface-1 p-3">
+                      {lockedBannerEntries.length > 0 && (
+                        <div className="space-y-1.5">
+                          <div className="text-tiny font-emphasis uppercase tracking-wide text-text-tertiary">
+                            Bộ lọc cố định (do người chia sẻ link cấu hình)
+                          </div>
+                          {lockedBannerEntries.map((entry, i) => (
+                            <div key={`lock-${entry.field}-${i}`} className="flex items-center gap-2 text-caption">
+                              <span>🔒</span>
+                              <span className="font-medium">{entry.label ?? entry.field}</span>
+                              <span className="text-text-quaternary">=</span>
+                              <span className="font-mono text-text-secondary">
+                                {Array.isArray(entry.value) ? entry.value.join(', ') : String(entry.value ?? '')}
+                              </span>
+                              <span className="ml-auto text-tiny text-text-quaternary">Read-only</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      {overridableFilterEntries.length > 0 && (
+                        <div className={`${lockedBannerEntries.length > 0 ? 'mt-3 border-t border-[rgb(var(--border-line))] pt-3' : ''} space-y-1.5`}>
+                          <div className="text-tiny font-emphasis uppercase tracking-wide text-text-tertiary">
+                            Bộ lọc có thể chỉnh
+                          </div>
+                          {overridableFilterEntries.map((entry, i) => {
+                            const currentDraft = draftViewerFilters.find(
+                              (f) => f.field === entry.field || f.semanticField === entry.semanticField,
+                            );
+                            const displayValue = currentDraft?.value ?? entry.value;
+                            return (
+                              <div key={`ov-${entry.field}-${i}`} className="flex items-center gap-2 text-caption">
+                                <span>👁</span>
+                                <span className="font-medium">{entry.label ?? entry.field}</span>
+                                <span className="text-text-quaternary">=</span>
+                                <input
+                                  type="text"
+                                  value={Array.isArray(displayValue) ? displayValue.join(', ') : String(displayValue ?? '')}
+                                  onChange={(e) => {
+                                    const raw = e.target.value;
+                                    const nextValue = raw.includes(',')
+                                      ? raw.split(',').map((s) => s.trim()).filter(Boolean)
+                                      : raw;
+                                    setDraftViewerFilters((prev) => {
+                                      const others = prev.filter(
+                                        (f) => f.field !== entry.field && f.semanticField !== entry.semanticField,
+                                      );
+                                      return [
+                                        ...others,
+                                        {
+                                          ...(currentDraft ?? {}),
+                                          id: currentDraft?.id ?? `override-${entry.field}`,
+                                          field: entry.field,
+                                          semanticField: entry.semanticField,
+                                          type: (currentDraft?.type ?? entry.type ?? 'dropdown') as any,
+                                          operator: (currentDraft?.operator ?? 'in') as any,
+                                          value: nextValue,
+                                        } as any,
+                                      ];
+                                    });
+                                  }}
+                                  placeholder={Array.isArray(entry.value) ? entry.value.join(', ') : String(entry.value ?? '')}
+                                  className="ml-auto w-48 rounded border border-[rgb(var(--border-line))] bg-surface-2 px-2 py-0.5 text-tiny outline-none focus:ring-1 focus:ring-brand"
+                                />
+                              </div>
+                            );
+                          })}
+                          <div className="mt-2 flex justify-end gap-2">
+                            <button
+                              type="button"
+                              onClick={() => handleApplyFilters()}
+                              disabled={!hasPendingFilterChanges}
+                              className="rounded border border-brand bg-brand px-3 py-1 text-tiny font-emphasis text-text-inverse transition-opacity disabled:opacity-50"
+                            >
+                              Apply
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Top mode renders the slicer cluster here (stacked
+                  above charts). Left mode renders it BESIDE the grid in
+                  the flex-row wrapper below instead. */}
+              {showFilterControls && !slicerClusterPositionLeft && slicerClusterNode}
+
+              {showLiveState && (
+                <div className="flex flex-col gap-3">
+                  {pendingPageId && (
+                    <div
+                      className="inline-flex items-center gap-2 rounded-md border border-[rgb(var(--border-line))] bg-surface-2 px-3 py-1.5 text-tiny text-text-tertiary"
+                      style={publicTheme.neutralPillStyle}
+                    >
+                      <Loader2 className="h-3 w-3 animate-spin" /> Đang mở trang…
+                    </div>
+                  )}
+
+                  {crossFilterState && (
+                    <div
+                      className="rounded-lg border border-brand/20 bg-brand/10 px-4 py-3 text-caption text-brand"
+                      style={publicTheme.accentPillStyle}
+                    >
+                      <p className="font-emphasis">
+                        Cross-filter from {visibleDashboardCharts.find((dc) => dc.chart_id === crossFilterState.sourceChartId)?.layout?.custom_title
+                          ?? visibleDashboardCharts.find((dc) => dc.chart_id === crossFilterState.sourceChartId)?.chart?.name
+                          ?? `Chart ${crossFilterState.sourceChartId}`}
+                      </p>
+                      <div className="mt-2 flex flex-wrap items-center gap-2">
+                        <span className="break-words text-text-secondary">
+                          {getFilterDisplayLabel(crossFilterState.filter)} = {formatFilterValue(crossFilterState.filter.value)}
+                        </span>
+                        <Button
+                          variant="secondary"
+                          size="xs"
+                          onClick={() => setCrossFilterState(null)}
+                          style={publicTheme.neutralPillStyle}
+                        >
+                          Clear selection
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+
+                  {highlightState && (
+                    <div
+                      className="rounded-lg border border-brand/20 bg-brand/10 px-4 py-3 text-caption text-brand"
+                      style={publicTheme.accentPillStyle}
+                    >
+                      <p className="font-emphasis">
+                        Đang làm nổi bật từ {visibleDashboardCharts.find((dc) => dc.chart_id === highlightState.sourceChartId)?.layout?.custom_title
+                          ?? visibleDashboardCharts.find((dc) => dc.chart_id === highlightState.sourceChartId)?.chart?.name
+                          ?? `Chart ${highlightState.sourceChartId}`}
+                      </p>
+                      <div className="mt-2 flex flex-wrap items-center gap-2">
+                        <span className="break-words text-text-secondary">
+                          {getFilterDisplayLabel(highlightState.filter)} = {formatFilterValue(highlightState.filter.value)}
+                        </span>
+                        <Button
+                          variant="secondary"
+                          size="xs"
+                          onClick={() => setHighlightState(null)}
+                          style={publicTheme.neutralPillStyle}
+                        >
+                          Bỏ chọn
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+
+                  {chartLoadError && (
+                    <div className="rounded-lg border border-warning/30 bg-warning/10 px-4 py-3 text-caption text-warning">
+                      {chartLoadError}
+                    </div>
+                  )}
+
+                  {chartsLoading && !isApplyingFilters && (
+                    <div
+                      className="inline-flex items-center gap-2 rounded-md border border-[rgb(var(--border-line))] bg-surface-2 px-3 py-1.5 text-tiny text-text-tertiary"
+                      style={publicTheme.neutralPillStyle}
+                    >
+                      <Loader2 className="h-3 w-3 animate-spin" /> Đang tải biểu đồ…
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+        </section>
+
+        {/* Only the chart region scrolls; the header above stays pinned. */}
+        <div className={isEmbed ? 'pb-4' : 'min-h-0 flex-1 overflow-y-auto pb-4'}>
+        <div className={`mx-auto w-full ${slicerClusterPositionLeft ? 'flex flex-col gap-3 lg:flex-row lg:items-start' : ''}`}>
+        {slicerClusterPositionLeft && showFilterControls && (
+          <div className="w-full flex-shrink-0 rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-2 shadow-linear-sm lg:sticky lg:top-3 lg:w-[280px]">
+            {slicerClusterNode}
+          </div>
+        )}
+        {/* Phase-B7 — FLUSH canvas (no card frame): tiles sit directly on the
+            page background like a PBI report canvas, not inside a second
+            bordered panel. */}
+        <ExportModeContext.Provider value={isExportingPdf}>
+        <section
+          ref={gridSectionRef}
+          className={`px-1 pb-1 pt-0 transition-opacity duration-200 sm:px-1.5 ${pendingPageId ? 'opacity-70' : 'opacity-100'} ${slicerClusterPositionLeft ? 'min-w-0 flex-1' : 'w-full'}`}
+        >
+          {visibleDashboardCharts.length === 0 ? (
+            <div className="flex h-64 items-center justify-center rounded-lg border-2 border-dashed border-[rgb(var(--border-line))] bg-surface-2">
+              <p className="text-caption text-text-tertiary">No charts on this page yet.</p>
+            </div>
+          ) : (
+            <div className={`${publicTheme.density.compact ? 'px-2 pb-2 pt-0' : 'px-3 pb-3 pt-0.5'}`}>
+              <ResponsiveReportGrid
+                className="layout"
+                layouts={{ lg: layouts, xs: deriveStackedLayout(layouts) }}
+                breakpoints={REPORT_BREAKPOINTS}
+                cols={REPORT_COLS}
+                rowHeight={80}
+                margin={getDashboardGridMargin(dashboard?.theme_config)}
+                isDraggable={false}
+                isResizable={false}
+                compactType={null}
+                preventCollision={true}
+              >
+                {visibleDashboardCharts.map((dashboardChart: DashboardChart) => {
+                  // Non-chart widgets (text/image/countdown/shape/parameter_switcher)
+                  // skip the chart-fetch path and render via the shared DashboardWidget.
+                  const isWidget = Boolean(
+                    dashboardChart.widget_type && dashboardChart.widget_type !== 'chart'
+                  );
+                  if (isWidget) {
+                    return (
+                      <div key={dashboardChart.id.toString()} className="h-full">
+                        <DashboardWidget widget={dashboardChart} />
+                      </div>
+                    );
+                  }
+
+                  const chart = dashboardChart.chart;
+                  const payload = chartData[dashboardChart.chart_id];
+                  const chartError = chartErrors[dashboardChart.chart_id];
+                  // Phase-B11 — no auto chart-name title; only an explicit one.
+                  const title = dashboardChart.layout.custom_title ?? '';
+
+                  return (
+                    <div key={dashboardChart.id.toString()} data-chart-id={dashboardChart.chart_id} className="h-full rounded-xl transition-all duration-300">
+                      <ChartErrorBoundary chartId={dashboardChart.chart_id}>
+                        <ReadonlyChartTile
+                          chart={chart}
+                          chartData={payload}
+                          error={chartError}
+                          title={title}
+                          layout={dashboardChart.layout}
+                          compact={publicTheme.density.compact}
+                          showChartTypeLabel={false}
+                          onSelectCrossFilter={(dashboardChart.layout as any)?.highlightEnabled !== false ? (filter) => handleCrossFilterChange(dashboardChart.chart_id, filter) : undefined}
+                          isCrossFilterSource={crossFilterState?.sourceChartId === dashboardChart.chart_id}
+                          /* Source-only dim: the clicked chart dims its non-selected marks
+                             (local, no fetch); every other chart instead FILTERS (handled by
+                             fetchChartsForPage). Per-chart opt-out via layout.highlightEnabled. */
+                          highlightFilter={crossFilterState?.sourceChartId === dashboardChart.chart_id && (dashboardChart.layout as any)?.highlightEnabled !== false ? (crossFilterState?.filter ?? null) : null}
+                          isHighlightSource={crossFilterState?.sourceChartId === dashboardChart.chart_id}
+                          highlightData={null}
+                          forceVisible={forceVisibleAll}
+                          publicDatasetModels={(dashboard as any)?.public_dataset_models ?? null}
+                          viewerGrain={chartGrains[dashboardChart.chart_id]}
+                          onViewerDrill={(g) => handleChartDrill(dashboardChart.chart_id, g)}
+                          onVisible={() => {
+                            setVisibleChartIds((current) => {
+                              if (current.has(dashboardChart.chart_id)) return current;
+                              const next = new Set(current);
+                              next.add(dashboardChart.chart_id);
+                              return next;
+                            });
+                          }}
+                        />
+                      </ChartErrorBoundary>
+                    </div>
+                  );
+                })}
+              </ResponsiveReportGrid>
+            </div>
+          )}
+        </section>
+        </ExportModeContext.Provider>
+        </div>{/* /Phase-G left-vs-top slicer arrangement wrapper */}
+        </div>{/* /scroll region */}
+          </>
+        )}
+      </main>
+
+      <ExportPdfDialog
+        isOpen={isExportDialogOpen}
+        onClose={() => { if (!isExportingPdf) setIsExportDialogOpen(false); }}
+        pages={dashboardPages.map((p) => ({ id: p.id, name: p.name }))}
+        isExporting={isExportingPdf}
+        progress={exportProgress}
+        onExport={doExportPdf}
+      />
+
+      {!isEmbed && dashboard?.public_link_appearance?.ai_bot_enabled === true && (
+        <DashboardAiBot
+          token={token}
+          sessionToken={getPublicSession(token)}
+          dashboardName={presentationTitle}
+          keyConfigured={dashboard.public_link_appearance?.ai_bot_key_configured === true}
+          viewerFilters={appliedViewerFilters}
+        />
+      )}
+    </DashboardThemeProvider>
+  );
+}

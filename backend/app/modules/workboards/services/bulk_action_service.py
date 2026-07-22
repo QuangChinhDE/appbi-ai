@@ -30,6 +30,7 @@ from app.modules.workboards.models import Workboard
 from app.modules.workboards.schemas import BulkAction, Screen
 from app.modules.workboards.services import screen_runtime
 from app.modules.workboards.services.rls_service import CallerIdentity
+from app.services.live_query_service import LiveQueryService
 
 logger = get_logger(__name__)
 
@@ -52,9 +53,28 @@ def _num(value: Any) -> Optional[float]:
         return None
 
 
-def _agg(rows: List[Dict[str, Any]], column: str, agg: str) -> float:
+def _agg(rows: List[Dict[str, Any]], column: str, agg: str) -> Any:
     if agg == "count":
         return float(sum(1 for r in rows if r.get(column) not in (None, "")))
+    if agg in {"first", "any"}:
+        for row in rows:
+            value = row.get(column)
+            if value not in (None, ""):
+                return value
+        return None
+    if agg in {"join_distinct", "concat_distinct", "list_distinct"}:
+        seen: set[str] = set()
+        values: List[str] = []
+        for row in rows:
+            value = row.get(column)
+            if value in (None, ""):
+                continue
+            text = str(value)
+            if text in seen:
+                continue
+            seen.add(text)
+            values.append(text)
+        return " - ".join(values)
     nums = [n for n in (_num(r.get(column)) for r in rows) if n is not None]
     if not nums:
         return 0.0
@@ -91,6 +111,86 @@ def _make_code(prefix: str, seq: int, now: datetime) -> str:
     return f"{prefix or 'GOP'}-{now.strftime('%y%m%d-%H%M%S')}{seq:02d}"
 
 
+def _fetch_selected_rows(
+    db: Session,
+    workboard: Workboard,
+    screen: Screen,
+    selected_pks: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Authoritatively load selected rows with a batch fast-path.
+
+    Most workboard tables use a single primary-key column. In that common case
+    one ``IN`` query replaces N point-lookups, which is especially important
+    for Google Sheets-backed miniapps where every lookup can consume a Sheets
+    read quota unit. Composite keys keep the conservative legacy path.
+    """
+    pk_cols = list(screen.primary_key_columns or [])
+    if len(pk_cols) == 1 and selected_pks:
+        pk_col = pk_cols[0]
+        pk_values = [
+            pk.get(pk_col)
+            for pk in selected_pks
+            if isinstance(pk, dict) and pk.get(pk_col) not in (None, "")
+        ]
+        if pk_values:
+            table = screen_runtime._load_table(db, screen.table_id) if screen.table_id else None
+            datasource = screen_runtime._load_datasource(db, table) if table else None
+            if table and datasource:
+                result = LiveQueryService.execute_preview_query(
+                    datasource,
+                    table,
+                    limit=max(len(pk_values), 1),
+                    offset=0,
+                    filters=[{"field": pk_col, "operator": "in", "value": pk_values}],
+                )
+                by_pk = {
+                    str(row.get(pk_col)): row
+                    for row in (result.get("rows") or [])
+                }
+                selected = [
+                    by_pk[str(value)]
+                    for value in pk_values
+                    if str(value) in by_pk
+                ]
+                if selected:
+                    return selected
+
+    selected: List[Dict[str, Any]] = []
+    for pk in selected_pks or []:
+        row = screen_runtime._fetch_current_row(db, workboard, screen, pk)
+        if row is not None:
+            selected.append(row)
+    return selected
+
+
+def _enrich_selected_with_lookups(
+    db: Session, screen: Screen, rows: List[Dict[str, Any]]
+) -> List[Dict[str, Any]]:
+    """Add the source screen's resolved lookup-column values onto each selected
+    row so a recipe's ``copy_from_selected`` / ``aggregate_from_selected`` /
+    ``copy`` can reference them. Lookup columns are computed at render time and
+    are absent from the physical row, so without this a recipe copying e.g. a
+    supplier NAME (lookup) — not just its id — would write blanks.
+
+    Only fills a key that isn't already a physical column (never clobbers real
+    data), and degrades to the un-enriched rows if lookup resolution fails.
+    """
+    tspec = getattr(screen, "table", None)
+    lookups = list(getattr(tspec, "lookup_columns", None) or []) if tspec else []
+    if not tspec or not lookups or not rows:
+        return rows
+    try:
+        lookup_maps = screen_runtime._resolve_table_lookups(db, tspec, rows)
+    except Exception:  # pragma: no cover - enrichment must never break a write
+        return rows
+    for lk in lookups:
+        mapping = lookup_maps.get(lk.name) or {}
+        for row in rows:
+            if lk.name not in row:
+                row[lk.name] = mapping.get(row.get(lk.match_column_local))
+    return rows
+
+
 def run_bulk_action(
     db: Session,
     workboard: Workboard,
@@ -107,12 +207,11 @@ def run_bulk_action(
     layout = screen_runtime.parse_layout(workboard)
 
     # 1. Re-fetch the selected rows authoritatively (RLS-scoped) — never trust
-    #    client-supplied row values for the data we are about to mutate.
-    selected: List[Dict[str, Any]] = []
-    for pk in selected_pks or []:
-        row = screen_runtime._fetch_current_row(db, workboard, screen, pk)
-        if row is not None:
-            selected.append(row)
+    #    client-supplied row values for the data we are about to mutate. Enrich
+    #    with the screen's lookup columns so copy/aggregate steps can reference
+    #    a looked-up value (e.g. a supplier name), not just its id.
+    selected = _fetch_selected_rows(db, workboard, screen, selected_pks or [])
+    selected = _enrich_selected_with_lookups(db, screen, selected)
     if len(selected) < max(int(action.min_selection or 1), 1):
         raise HTTPException(status_code=400, detail=f"Chọn tối thiểu {action.min_selection or 1} dòng hợp lệ.")
 
@@ -170,6 +269,22 @@ def run_bulk_action(
                 # aggregate selection into the parent
                 for col, spec in (step.aggregate_from_selected or {}).items():
                     values[col] = _agg(selected, spec.get("column", ""), spec.get("agg", "sum"))
+                # copy shared selection values into the parent. This is meant
+                # for keys like supplier/customer where the action's
+                # require_same guard guarantees a single business value.
+                for col, src_col in (getattr(step, "copy_from_selected", None) or {}).items():
+                    vals = [
+                        srow.get(src_col)
+                        for srow in selected
+                        if srow.get(src_col) not in (None, "")
+                    ]
+                    unique_vals = {str(v) for v in vals}
+                    if len(unique_vals) > 1:
+                        raise HTTPException(
+                            status_code=422,
+                            detail=f"Không thể copy '{src_col}' vì các dòng đã chọn có nhiều giá trị khác nhau.",
+                        )
+                    values[col] = vals[0] if vals else None
                 # picked-resource fields
                 for col, ref in (step.from_resource or {}).items():
                     rid, _, rcol = ref.partition(".")
@@ -197,7 +312,7 @@ def run_bulk_action(
                 if step.assign_sequence and step.assign_sequence.get("order_by"):
                     ob = step.assign_sequence["order_by"]
                     ordered = sorted(selected, key=lambda r: (str(r.get(ob) or "")))
-                n = 0
+                lines: List[Dict[str, Any]] = []
                 for idx, srow in enumerate(ordered, start=1):
                     line: Dict[str, Any] = {k: _resolve_ph(v, identity, today) for k, v in (step.set or {}).items()}
                     for line_col, src_col in (step.copy or {}).items():
@@ -206,12 +321,29 @@ def run_bulk_action(
                         line[col] = step_codes.get(ref_step)
                     if step.assign_sequence and step.assign_sequence.get("into_col"):
                         line[step.assign_sequence["into_col"]] = idx
-                    res = screen_runtime.insert_screen_row(db, workboard, tgt, line, identity=identity)
+                    lines.append(line)
+                result = screen_runtime.insert_screen_rows(
+                    db, workboard, tgt, lines, identity=identity
+                )
+                inserted = result.get("results") if isinstance(result, dict) else []
+                for res in inserted or []:
                     pk = res.get("pk") if isinstance(res, dict) else None
                     if isinstance(pk, dict):
                         created.append((tgt, pk))
-                    n += 1
-                per_step.append({"step": step.id, "kind": step.kind, "ok": True, "count": n})
+                # Report the ACTUAL number of rows the write layer persisted —
+                # never fall back to len(lines), which would report "success"
+                # even when 0 rows were written. Surface ``expected`` so a
+                # short write (e.g. a datasource that silently drops rows) is
+                # visible instead of masked.
+                affected = result.get("affected_rows") if isinstance(result, dict) else None
+                written = affected if isinstance(affected, int) else len(inserted or [])
+                per_step.append({
+                    "step": step.id,
+                    "kind": step.kind,
+                    "ok": written >= len(lines),
+                    "count": written,
+                    "expected": len(lines),
+                })
 
             elif step.kind == "update_selected":
                 tgt = _target_screen(step.screen_id)
@@ -219,13 +351,23 @@ def run_bulk_action(
                 for col, ref_step in (step.link_columns or {}).items():
                     patch[col] = step_codes.get(ref_step)
                 pk_cols = tgt.primary_key_columns or screen.primary_key_columns or []
-                n = 0
+                batch_updates: List[Dict[str, Any]] = []
                 for srow in selected:
                     pk = {c: srow.get(c) for c in pk_cols}
                     old = {c: srow.get(c) for c in patch.keys()}
-                    screen_runtime.update_screen_row(db, workboard, tgt, pk, dict(patch), identity=identity)
+                    batch_updates.append({"pk": pk, "values": dict(patch)})
                     updated.append((tgt, pk, old))
-                    n += 1
+                # Server-driven write: the patch columns are author-declared in the
+                # recipe (``set`` + ``link_columns``), not user input, so bypass the
+                # UI inline-editable gate — a link column (e.g. the parent's code)
+                # is normally UI-readonly yet must be written here. RLS + derived
+                # protection still apply inside update_screen_rows.
+                result = screen_runtime.update_screen_rows(
+                    db, workboard, tgt, batch_updates, identity=identity,
+                    enforce_editable=False,
+                )
+                changed = result.get("results") if isinstance(result, dict) else []
+                n = len(changed or batch_updates)
                 per_step.append({"step": step.id, "kind": step.kind, "ok": True, "count": n})
             else:  # pragma: no cover - schema Literal guards this
                 raise BulkActionError(f"Unknown bulk step kind '{step.kind}'.")

@@ -39,6 +39,10 @@ from app.models.dataset import DatasetTable
 from app.models.models import DataSource
 from app.modules.workboards.models import Workboard, WorkboardOpLog
 from app.modules.workboards.roles import is_owner_role
+from app.modules.workboards.services.geocode_service import (
+    build_address,
+    geocode_address,
+)
 from app.modules.workboards.schemas import (
     DataTableBlock,
     DataTablePivot,
@@ -574,9 +578,27 @@ def _resolve_lookup_options(
 
 # ── Layout + screen lookup ────────────────────────────────────────────────
 
-def parse_layout(workboard: Workboard) -> LayoutJson:
+def parse_layout(workboard: Workboard, *, use_published: Optional[bool] = None) -> LayoutJson:
+    """Parse a workboard's layout into the typed ``LayoutJson``.
+
+    Reads the mutable DRAFT (``layout_json``) by default — what the builder,
+    internal Preview, audit and webhooks want. The PUBLIC/LIVE runtime instead
+    serves the immutable PUBLISHED snapshot (``published_layout_json``); it opts
+    in via the transient ``_wb_use_published`` attribute that
+    ``_resolve_workboard_for_workspace`` stamps on the workboard (mirrors the
+    existing ``_cleared_screens`` transient-attr pattern), or via an explicit
+    ``use_published`` argument. A never-published board has
+    ``published_layout_json is None`` → the runtime resolver refuses to serve it
+    before we ever reach here, so live callers never see an empty layout.
+    """
+    # The published-vs-draft decision lives in ONE place (runtime_config), so
+    # every runtime/write/export path resolves the same stage. parse_layout is
+    # the typed-layout convenience over it.
+    from app.modules.workboards.services.runtime_config import effective_layout_raw
+
+    raw = effective_layout_raw(workboard, published=use_published)
     try:
-        return LayoutJson.model_validate(workboard.layout_json or {})
+        return LayoutJson.model_validate(raw or {})
     except Exception:
         logger.exception("workboard %s has invalid layout", workboard.id)
         return LayoutJson()
@@ -927,6 +949,73 @@ def _status_fields(screen: Screen) -> List[Any]:
     ]
 
 
+def _geocode_config_for_screen(screen: Screen) -> Any:
+    if screen.kind == "form" and screen.form is not None:
+        return getattr(screen.form, "geocode", None)
+    if screen.kind == "table" and screen.table is not None:
+        return getattr(screen.table, "geocode", None)
+    return None
+
+
+def _apply_geocode(
+    screen: Screen,
+    values: Dict[str, Any],
+    *,
+    previous_row: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Auto-fill lat/lng from an address when a screen opts in (form/table
+    ``geocode`` config). Best-effort by design: a provider miss must not block
+    the write — expose ``status_column`` when operators need to review
+    unresolved rows. Only runs on single-row writes (form submit / edit); bulk
+    writes are intentionally not geocoded to avoid N sequential provider calls.
+    """
+    cfg = _geocode_config_for_screen(screen)
+    if cfg is None or not bool(getattr(cfg, "enabled", True)):
+        return values
+    lat_col = getattr(cfg, "lat_column", None)
+    lng_col = getattr(cfg, "lng_column", None)
+    if not lat_col or not lng_col:
+        return values
+
+    def _blank(v: Any) -> bool:
+        return v is None or (isinstance(v, str) and not v.strip())
+
+    out = dict(values or {})
+    combined = dict(previous_row or {})
+    combined.update(out)
+    address_col = getattr(cfg, "address_column", None)
+    template = getattr(cfg, "address_template", None)
+    # On insert (no previous row) with a plain address column: only geocode
+    # when that address is actually part of this write.
+    if previous_row is None and address_col and address_col not in out and not template:
+        return out
+    overwrite = bool(getattr(cfg, "overwrite_existing", False))
+    if not overwrite and not (_blank(combined.get(lat_col)) or _blank(combined.get(lng_col))):
+        return out
+
+    status_col = getattr(cfg, "status_column", None)
+    label_col = getattr(cfg, "provider_label_column", None)
+    address = build_address(cfg, combined)
+    if not address:
+        if status_col:
+            out[status_col] = "Thiếu địa chỉ"
+        return out
+
+    result = geocode_address(cfg, address)
+    if result is None:
+        if status_col:
+            out[status_col] = "Không tìm thấy tọa độ"
+        return out
+
+    out[lat_col] = result.lat
+    out[lng_col] = result.lng
+    if status_col:
+        out[status_col] = "Đã tự sinh tọa độ"
+    if label_col and result.label:
+        out[label_col] = result.label
+    return out
+
+
 def _fetch_current_row(
     db: Session, workboard: Workboard, screen: Screen, pk: Dict[str, Any]
 ) -> Optional[Dict[str, Any]]:
@@ -1174,6 +1263,9 @@ def insert_screen_row(
     cleaned = enforce_write_access(
         screen.rls, screen.rls_default, identity, op="insert", row_values=cleaned_pre
     )
+    # Server-side enrichment: fill lat/lng from the address if the screen opts
+    # in via geocode config (no-op otherwise).
+    cleaned = _apply_geocode(screen, cleaned)
     if screen.kind == "form":
         # Value-level status guard on top of RLS column masking (insert = no prev).
         _enforce_status_rules(_status_fields(screen), cleaned, identity, previous_row=None)
@@ -1205,6 +1297,198 @@ def insert_screen_row(
     return result
 
 
+def insert_screen_rows(
+    db: Session,
+    workboard: Workboard,
+    screen: Screen,
+    rows: List[Dict[str, Any]],
+    *,
+    identity: CallerIdentity,
+) -> Dict[str, Any]:
+    """Insert many rows while preserving the single-row write contract.
+
+    Table screens can be prepared once and handed to the write service's
+    datasource-aware batch path. Non-table screens deliberately fall back to
+    the normal one-by-one path because form validation can depend on each
+    field's dynamic conditions.
+    """
+    if not rows:
+        return {"action": "insert_many", "affected_rows": 0, "results": []}
+    if screen.kind != "table":
+        results = [
+            insert_screen_row(db, workboard, screen, row, identity=identity)
+            for row in rows
+        ]
+        return {
+            "action": "insert_many",
+            "affected_rows": len(results),
+            "results": results,
+        }
+    if screen.table_id is None or screen.table is None:
+        raise HTTPException(status_code=400, detail="Table screen has no backing table.")
+    if not screen.table.allow_add_row:
+        raise HTTPException(status_code=403, detail="Adding rows is disabled on this table.")
+    if not (screen.table.editable_columns or []):
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "This table has no editable columns — add at least one "
+                "to editable_columns before turning on allow_add_row."
+            ),
+        )
+
+    derived = {c.name for c in (screen.table.computed_columns or [])} | {
+        l.name for l in (screen.table.lookup_columns or [])
+    }
+    prepared: List[Dict[str, Any]] = []
+    for values in rows:
+        merged = _resolve_table_defaults(screen, identity)
+        merged.update({
+            k: v for k, v in (values or {}).items() if k not in derived
+        })
+        missing = [
+            col
+            for col in (screen.table.required_columns if screen.table else [])
+            if merged.get(col) in (None, "") and col not in derived
+        ]
+        if missing:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "message": f"Required columns missing: {', '.join(missing)}",
+                    "violations": [{"column": c, "rule": "required"} for c in missing],
+                },
+            )
+        prepared.append(
+            enforce_write_access(
+                screen.rls,
+                screen.rls_default,
+                identity,
+                op="insert",
+                row_values=merged,
+            )
+        )
+
+    original_table = workboard.primary_table_id
+    original_pk = list(workboard.primary_key_columns or [])
+    workboard.primary_table_id = screen.table_id
+    if screen.primary_key_columns:
+        workboard.primary_key_columns = list(screen.primary_key_columns)
+    try:
+        result = WorkboardWriteService.insert_rows(db, workboard, prepared, None)
+    finally:
+        workboard.primary_table_id = original_table
+        workboard.primary_key_columns = original_pk
+    return result
+
+
+def update_screen_rows(
+    db: Session,
+    workboard: Workboard,
+    screen: Screen,
+    updates: List[Dict[str, Any]],
+    *,
+    identity: CallerIdentity,
+    enforce_editable: bool = True,
+) -> Dict[str, Any]:
+    """Update many table rows with a datasource-aware batch path when safe.
+
+    ``enforce_editable`` gates the *inline-editable* column filter. It is True for
+    user-driven edits (a column absent from ``editable_columns`` is dropped, so a
+    UI-readonly cell can't be hand-edited). Server-driven callers — e.g. a
+    bulk-action ``update_selected`` step linking a freshly-created parent code onto
+    the selected rows — pass False: the columns are author-declared in the recipe,
+    not user input, so a UI-readonly link column (the common case) must still be
+    writable. Computed/lookup (``derived``) columns and per-role RLS
+    (``writable_columns``/``can_update``) are STILL enforced either way.
+    """
+    if not updates:
+        return {"action": "update_many", "affected_rows": 0, "results": []}
+    if screen.kind != "table":
+        results = [
+            update_screen_row(
+                db,
+                workboard,
+                screen,
+                item.get("pk") if isinstance(item, dict) else {},
+                item.get("values") if isinstance(item, dict) else {},
+                identity=identity,
+                enforce_editable=enforce_editable,
+            )
+            for item in updates
+        ]
+        return {"action": "update_many", "affected_rows": len(results), "results": results}
+    if screen.table_id is None or screen.table is None:
+        raise HTTPException(status_code=400, detail="Table screen has no spec.")
+
+    rls_filters, allowed = build_rls_filter(screen.rls, screen.rls_default, identity)
+    if not allowed:
+        raise HTTPException(status_code=403, detail="You don't have access to those rows.")
+    if rls_filters:
+        results = [
+            update_screen_row(
+                db,
+                workboard,
+                screen,
+                item.get("pk") if isinstance(item, dict) else {},
+                item.get("values") if isinstance(item, dict) else {},
+                identity=identity,
+                enforce_editable=enforce_editable,
+            )
+            for item in updates
+        ]
+        return {"action": "update_many", "affected_rows": len(results), "results": results}
+
+    inline_editable = set((screen.table.editable_columns or []))
+    panel = screen.table.detail_panel
+    panel_editable: set[str] = set()
+    if panel and panel.enabled:
+        panel_editable = set((panel.editable_columns or []))
+    editable = inline_editable | panel_editable
+    derived = {c.name for c in (screen.table.computed_columns or [])} | {
+        l.name for l in (screen.table.lookup_columns or [])
+    }
+    editable -= derived
+
+    prepared: List[Dict[str, Any]] = []
+    for item in updates:
+        pk = item.get("pk") if isinstance(item, dict) else None
+        values = item.get("values") if isinstance(item, dict) else None
+        if not isinstance(pk, dict) or not isinstance(values, dict):
+            raise HTTPException(status_code=400, detail="Each update needs pk and values.")
+        cleaned_pre = {
+            k: v
+            for k, v in values.items()
+            if k not in derived and (not enforce_editable or not editable or k in editable)
+        }
+        if not cleaned_pre:
+            raise HTTPException(status_code=400, detail="No editable columns in payload.")
+        cleaned = enforce_write_access(
+            screen.rls,
+            screen.rls_default,
+            identity,
+            op="update",
+            row_values=cleaned_pre,
+        )
+        prepared.append({
+            "pk": pk,
+            "values": cleaned,
+            "lock_token": item.get("lock_token") if isinstance(item, dict) else None,
+        })
+
+    original_table = workboard.primary_table_id
+    original_pk = list(workboard.primary_key_columns or [])
+    workboard.primary_table_id = screen.table_id
+    if screen.primary_key_columns:
+        workboard.primary_key_columns = list(screen.primary_key_columns)
+    try:
+        result = WorkboardWriteService.update_rows(db, workboard, prepared, None)
+    finally:
+        workboard.primary_table_id = original_table
+        workboard.primary_key_columns = original_pk
+    return result
+
+
 def update_screen_row(
     db: Session,
     workboard: Workboard,
@@ -1213,7 +1497,11 @@ def update_screen_row(
     values: Dict[str, Any],
     *,
     identity: CallerIdentity,
+    enforce_editable: bool = True,
 ) -> Dict[str, Any]:
+    # ``enforce_editable`` — see update_screen_rows. False lets a server-driven
+    # bulk step write author-declared columns that are UI-readonly (e.g. a link
+    # column); derived-column + RLS enforcement below still apply.
     if screen.table_id is None or screen.kind not in ("form", "table"):
         raise HTTPException(status_code=400, detail="Screen is not writable.")
     if screen.kind == "form" and screen.form is None:
@@ -1244,7 +1532,7 @@ def update_screen_row(
         cleaned_pre = {
             k: v
             for k, v in (values or {}).items()
-            if k not in derived and (not editable or k in editable)
+            if k not in derived and (not enforce_editable or not editable or k in editable)
         }
         if not cleaned_pre:
             raise HTTPException(
@@ -1254,6 +1542,12 @@ def update_screen_row(
     cleaned = enforce_write_access(
         screen.rls, screen.rls_default, identity, op="update", row_values=cleaned_pre
     )
+    # Server-side geocode enrichment. Only fetch the previous row when the
+    # screen opts into geocoding, and pass it so existing coordinates are not
+    # re-resolved (overwrite_existing=False).
+    if _geocode_config_for_screen(screen) is not None:
+        _geo_prev = _fetch_current_row(db, workboard, screen, pk)
+        cleaned = _apply_geocode(screen, cleaned, previous_row=_geo_prev)
     if screen.kind == "form":
         # Value-level status guard: compare the previous row's status to the new
         # value so allowed_transitions + editable_by_roles are enforced server-side.
@@ -1796,6 +2090,7 @@ def render_table_screen(
     page: int = 1,
     page_size: Optional[int] = None,
     extra_filters: Optional[List[Dict[str, Any]]] = None,
+    shared_context: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Render a table screen — paginated rows + computed/lookup cells +
     totals + multi-header + row-merge.
@@ -1834,7 +2129,25 @@ def render_table_screen(
     configured_page_size = getattr(table_spec, "page_size", None) or 50
     page_size = min(max(int(page_size or configured_page_size or 50), 1), 500)
     offset = (page - 1) * page_size
-    merged = _filter_dicts(extra_filters) + rls_filters
+    context_filters: List[Dict[str, Any]] = []
+    shared = shared_context or {}
+    for cf in getattr(table_spec, "context_filters", None) or []:
+        raw = shared.get(cf.from_shared)
+        present = raw is not None and not (isinstance(raw, str) and not raw.strip())
+        if not present:
+            if cf.required:
+                return {
+                    "columns": list(table_spec.columns or []),
+                    "rows": [],
+                    "page": page,
+                    "page_size": page_size,
+                    "total_rows": 0,
+                    "context_applied": True,
+                }
+            continue
+        context_filters.append({"field": cf.column, "operator": "eq", "value": raw})
+
+    merged = context_filters + _filter_dicts(extra_filters) + rls_filters
     sort_column = getattr(table_spec, "default_sort_column", None)
     sort_direction = getattr(table_spec, "default_sort_direction", None) or "desc"
 
@@ -2255,8 +2568,13 @@ def _doc_print_template(workboard: Workboard) -> Optional[Dict[str, Any]]:
     extra key, so it round-trips as a plain dict). Returns None when unset or
     disabled so the FE simply omits the letterhead band.
     """
+    # Live doc render/print/export must use the PUBLISHED letterhead, not the
+    # mutable draft. Route through the stage resolver (published for Live via the
+    # _wb_use_published flag, draft for Preview) instead of reading layout_json.
     try:
-        raw = getattr(workboard, "layout_json", None) or {}
+        from app.modules.workboards.services.runtime_config import effective_layout_raw
+
+        raw = effective_layout_raw(workboard)
         pt = raw.get("print_template") if isinstance(raw, dict) else None
         if isinstance(pt, dict) and pt.get("enabled", True):
             return pt

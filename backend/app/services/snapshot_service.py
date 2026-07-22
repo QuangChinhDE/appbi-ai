@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
 import threading
 import time
 from datetime import datetime, timezone
@@ -34,12 +35,53 @@ from sqlalchemy.orm import Session
 from app.models.dataset import Dataset, DatasetTable, DatasetTableSnapshot
 from app.models.models import DataSource
 from app.services import query_cache as _qc
-from app.services.datasource_service import DataSourceConnectionService
+from app.services import sync_control as _sc
+from app.services.datasource_service import DataSourceConnectionService, _is_quota_exceeded
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_SNAPSHOT_DATASET = "appbi_snapshots"
 _DDL_TIMEOUT_SEC = 280  # build budget per table (< the 300s BQ result cap)
+# Resume window: a Sync interrupted (Stop / crash) leaves an UNpublished generation
+# with some tables already built. The next Sync RESUMES that generation — reusing
+# every already-built table (even one whose source watermark can't be computed, so
+# it would otherwise rebuild every time) and building only what's missing/changed,
+# then publishing. Bounded by age so a long-abandoned generation isn't resumed with
+# stale data (a fresh full rebuild is safer past this window).
+_RESUME_MAX_AGE_MS = 24 * 3600 * 1000  # 24h
+
+# How many tables to build CONCURRENTLY per refresh. Since CTAS moved the heavy
+# work into BigQuery (the VM just awaits the job), building 2-3 tables at once
+# gives wall-clock ≈ max(table) instead of Σ(tables). Bounded so the streaming
+# staging path (2-account) holds at most K chunks in VM RAM. Lower on a tiny VM.
+_SYNC_BUILD_CONCURRENCY = max(1, int(os.environ.get("SYNC_BUILD_CONCURRENCY", "3") or "3"))
+
+# After a BigQuery quota 403 (partition-modifications), suppress BACKGROUND
+# auto-retries for a cooldown so we don't keep burning the (per-day) quota — a
+# manual Sync click is still allowed (the user's explicit choice). Kept BOTH
+# in-process (fast) AND in the shared KV so the cooldown is cross-worker (else
+# another worker would still background-retry on a multi-worker deploy).
+_QUOTA_COOLDOWN_SECONDS = 1800  # 30 min
+_quota_cooldown: Dict[int, float] = {}
+_quota_cooldown_lock = threading.Lock()
+
+
+def _quota_cooldown_key(dataset_id: int) -> str:
+    return f"quotacooldown::{int(dataset_id)}"
+
+
+def _note_quota_cooldown(dataset_id: int) -> None:
+    with _quota_cooldown_lock:
+        _quota_cooldown[int(dataset_id)] = time.time()
+    _qc.set_shared(_quota_cooldown_key(dataset_id), {"at": time.time()}, _QUOTA_COOLDOWN_SECONDS)
+
+
+def _in_quota_cooldown(dataset_id: int) -> bool:
+    if _qc.get_shared(_quota_cooldown_key(dataset_id)) is not None:  # TTL auto-expires
+        return True
+    with _quota_cooldown_lock:
+        ts = _quota_cooldown.get(int(dataset_id))
+    return ts is not None and (time.time() - ts) < _QUOTA_COOLDOWN_SECONDS
 # BQ location per datasource (snapshots must be COLOCATED with the source —
 # BQ cannot CTAS across locations). Resolved once per datasource.
 _location_cache: Dict[int, Optional[str]] = {}
@@ -370,6 +412,11 @@ def build_table_snapshot(
             _cols_meta = (getattr(table, "columns_cache", None) or {}).get("columns")
 
             def _row_progress(n: int, _dsid=dataset_obj.id, _tid=table.id) -> None:
+                # Cooperative Stop: abort the in-flight load between chunks. The
+                # SyncCancelled propagates out of stream_extract_load_snapshot and
+                # is caught below WITHOUT swapping is_current → prior snapshot stays.
+                if _sc.is_stop_requested(_dsid):
+                    raise _sc.SyncCancelled()
                 _sp.note_rows(_dsid, _tid, n)
 
             # Task 1 — for a DIRECT physical BigQuery table with a partition
@@ -398,23 +445,71 @@ def build_table_snapshot(
                     table.id, ref, len(inc["changed"]), inc["changed"][:8],
                 )
             else:
-                row.row_count, _warn = DataSourceConnectionService.stream_extract_load_snapshot(
-                    source_ds_type=_ds_type(datasource), source_config=datasource.config,
-                    resolved_sql=resolved_sql, source_select_sql=source_sig,
-                    columns_meta=_cols_meta, host_config=host.config,
-                    dataset_name=snap_dataset, table_name=table_name,
-                    storage=_storage, timeout_seconds=_DDL_TIMEOUT_SEC, progress_cb=_row_progress,
-                )
-                if _warn:
-                    logger.warning("[snapshot] storage-config table=%s: %s", table.id, _warn)
+                _did_ctas = False
+                # BQ→BQ: prefer a SINGLE CREATE OR REPLACE TABLE … PARTITION BY …
+                # CLUSTER BY … AS <sql>. One job writes every partition ONCE — no
+                # partition_modifications quota blowup (the chunked WRITE_APPEND
+                # path re-touches the same day-partitions across every 50k chunk)
+                # and no VM round-trip. Falls back to streaming on any NON-quota
+                # error (2-account write-SA can't read source / cross-project /
+                # location mismatch). A quota 403 is re-raised (streaming would use
+                # even MORE quota) → the outer handler surfaces it + cooldowns.
+                if _ds_type(datasource) == "bigquery" and resolved_sql:
+                    try:
+                        row.row_count, _warn = DataSourceConnectionService.bigquery_ctas_snapshot(
+                            host_config=host.config, target_ref=ref, resolved_sql=resolved_sql,
+                            storage=_storage, timeout_seconds=_DDL_TIMEOUT_SEC, location=location,
+                        )
+                        _did_ctas = True
+                        _sp.note_rows(dataset_obj.id, table.id, row.row_count)
+                        if _warn:
+                            logger.warning("[snapshot] storage-config table=%s: %s", table.id, _warn)
+                        logger.info("[snapshot] CTAS build table=%s ref=%s rows=%s (BQ→BQ, one job)",
+                                    table.id, ref, row.row_count)
+                    except Exception as _ctas_exc:  # noqa: BLE001
+                        if _is_quota_exceeded(_ctas_exc):
+                            raise  # not a fallback case — streaming would burn more quota
+                        logger.info("[snapshot] CTAS unavailable table=%s (%s) → streaming fallback",
+                                    table.id, str(_ctas_exc)[:160])
+                if not _did_ctas:
+                    row.row_count, _warn = DataSourceConnectionService.stream_extract_load_snapshot(
+                        source_ds_type=_ds_type(datasource), source_config=datasource.config,
+                        resolved_sql=resolved_sql, source_select_sql=source_sig,
+                        columns_meta=_cols_meta, host_config=host.config,
+                        dataset_name=snap_dataset, table_name=table_name,
+                        storage=_storage, timeout_seconds=_DDL_TIMEOUT_SEC, progress_cb=_row_progress,
+                    )
+                    if _warn:
+                        logger.warning("[snapshot] storage-config table=%s: %s", table.id, _warn)
+        except _sc.SyncCancelled:
+            # Stop requested mid-load: abandon the partial physical table WITHOUT
+            # swapping is_current, so the prior COMPLETE snapshot keeps serving.
+            db.rollback()
+            _cancel_row = db.query(DatasetTableSnapshot).get(row.id)
+            if _cancel_row is not None:
+                _cancel_row.status = "cancelled"
+                db.commit()
+            logger.info("[snapshot] build CANCELLED table=%s (stop requested)", table.id)
+            return None
         except Exception as exc:  # noqa: BLE001
             db.rollback()
+            _quota = _is_quota_exceeded(exc)
             row = db.query(DatasetTableSnapshot).get(row.id)
             if row is not None:
                 row.status = "failed"
-                row.error = str(exc)[:2000]
+                row.error = (
+                    "Hết quota BigQuery (partition-modifications) cho hôm nay — chờ ~24h để quota "
+                    "reset hoặc nâng quota trong GCP; đừng bấm Sync lại liên tục."
+                ) if _quota else str(exc)[:2000]
                 db.commit()
-            logger.warning("[snapshot] build failed table=%s ref=%s: %s", table.id, ref, exc)
+            if _quota:
+                # Suppress background auto-retries so we don't keep burning the
+                # per-day quota; a manual Sync is still allowed.
+                _note_quota_cooldown(dataset_obj.id)
+                logger.warning("[snapshot] QUOTA exceeded table=%s ref=%s → cooldown dataset=%s: %s",
+                               table.id, ref, dataset_obj.id, exc)
+            else:
+                logger.warning("[snapshot] build failed table=%s ref=%s: %s", table.id, ref, exc)
             return None
 
         # Atomic pointer swap: supersede the old current, promote the new one.
@@ -719,6 +814,89 @@ def current_fingerprint_for_table(
         return None
 
 
+def _ready_snapshot_in_generation(
+    db: Session, table: DatasetTable, generation: int,
+    dataset_obj: Dataset, datasource: Optional[DataSource],
+) -> Optional[DatasetTableSnapshot]:
+    """The current-ready snapshot of `table` that ALREADY belongs to `generation`
+    and still matches the live design — i.e. a table finished in a previous
+    (interrupted) run of THIS generation that a resume must NOT rebuild. None when
+    absent or drifted. Calendar tables can't be SQL-fingerprinted → accepted as-is
+    when a ready snapshot exists (calendar drift is caught by fingerprint
+    invalidation elsewhere)."""
+    from app.services.dataset_calendar_service import is_generated_calendar_table
+
+    row = (
+        db.query(DatasetTableSnapshot)
+        .filter(
+            DatasetTableSnapshot.dataset_table_id == table.id,
+            DatasetTableSnapshot.generation == int(generation),
+            DatasetTableSnapshot.is_current.is_(True),
+            DatasetTableSnapshot.status == "ready",
+            DatasetTableSnapshot.retired_at.is_(None),
+        )
+        .first()
+    )
+    if row is None:
+        return None
+    if is_generated_calendar_table(table):
+        return row
+    exp = current_fingerprint_for_table(db, dataset_obj, table, datasource)
+    if exp is not None and row.fingerprint != exp:
+        return None  # design drifted since it was built → must rebuild
+    return row
+
+
+def _resumable_generation(
+    db: Session, dataset_id: int, dataset_obj: Dataset,
+    tables: List[DatasetTable], datasource_by_id: Dict[int, DataSource],
+    host: Optional[DataSource],
+) -> Optional[int]:
+    """Newest UNpublished generation worth RESUMING (interrupted Sync) instead of
+    starting a fresh one. Requirements: not the published generation; younger than
+    `_RESUME_MAX_AGE_MS`; has ≥1 current-ready snapshot; and EVERY current-ready
+    snapshot in it still matches the live design (else the model changed → full
+    rebuild). None ⇒ start a fresh generation (unchanged behaviour)."""
+    if host is None:
+        return None
+    published = getattr(dataset_obj, "published_generation", None)
+    rows = (
+        db.query(DatasetTableSnapshot)
+        .filter(
+            DatasetTableSnapshot.dataset_id == dataset_id,
+            DatasetTableSnapshot.is_current.is_(True),
+            DatasetTableSnapshot.status == "ready",
+            DatasetTableSnapshot.generation.isnot(None),
+            DatasetTableSnapshot.retired_at.is_(None),
+        )
+        .all()
+    )
+    if not rows:
+        return None
+    by_gen: Dict[int, List[DatasetTableSnapshot]] = {}
+    for r in rows:
+        by_gen.setdefault(int(r.generation), []).append(r)
+    now_ms = int(time.time() * 1000)
+    table_by_id = {t.id: t for t in tables}
+    for gen in sorted(by_gen.keys(), reverse=True):
+        if published is not None and gen == int(published):
+            continue  # the published generation is complete, not a resume target
+        if now_ms - gen > _RESUME_MAX_AGE_MS:
+            continue  # abandoned too long → fresh rebuild is safer than stale reuse
+        ok = True
+        for s in by_gen[gen]:
+            t = table_by_id.get(s.dataset_table_id)
+            if t is None:
+                ok = False
+                break
+            if _ready_snapshot_in_generation(db, t, gen, dataset_obj, datasource_by_id.get(t.datasource_id)) is None:
+                ok = False
+                break
+        if ok:
+            return gen
+    return None
+
+
 def gc_dataset_snapshots(db: Session, dataset_id: int, host: DataSource) -> int:
     """Delayed GC (issue #10): retire snapshot rows + drop their physical tables
     ONLY when they are no longer needed for consistent reads:
@@ -848,8 +1026,16 @@ def refresh_all_for_dataset(db: Session, dataset_id: int, *, force: bool = True)
     # in this pass carries it, so readers can resolve a CONSISTENT set (the
     # newest generation that covers every table) instead of a torn mix while
     # this loop is mid-flight.
-    generation = int(time.time() * 1000)
-    built, skipped = [], []
+    # RESUME (interrupted Sync): if an unpublished generation with already-built,
+    # design-matching tables exists, continue IT instead of starting fresh — so a
+    # Stop/crash becomes a pause and the heavy tables are not rebuilt.
+    _resume_gen = _resumable_generation(db, dataset_id, dataset_obj, tables, datasource_by_id, host)
+    generation = _resume_gen if _resume_gen is not None else int(time.time() * 1000)
+    if _resume_gen is not None:
+        logger.info("[snapshot] RESUMING generation=%s dataset=%s (reuse already-built tables)",
+                    generation, dataset_id)
+    built: list = []
+    stopped = False
     from app.services import sync_progress as _sp
 
     def _eligible(t) -> bool:
@@ -864,40 +1050,143 @@ def refresh_all_for_dataset(db: Session, dataset_id: int, *, force: bool = True)
         return datasource_by_id.get(t.datasource_id) is not None and is_federated_materializable(t)
 
     _to_build = [t for t in tables if _eligible(t)]
-    _total = len(_to_build)
-    for t in tables:
-        if not _eligible(t):
-            skipped.append(t.id)
+    skipped = [t.id for t in tables if not _eligible(t)]
+    # rows_total_est per table = row_count of the CURRENT (previous complete)
+    # snapshot — a free "≈ rows remaining" denominator (None on the first sync).
+    _build_ids = [t.id for t in _to_build]
+    _prev_counts: Dict[int, int] = {}
+    if _build_ids:
+        for _r in (
+            db.query(DatasetTableSnapshot.dataset_table_id, DatasetTableSnapshot.row_count)
+            .filter(
+                DatasetTableSnapshot.dataset_table_id.in_(_build_ids),
+                DatasetTableSnapshot.is_current.is_(True),
+                DatasetTableSnapshot.status == "ready",
+            )
+            .all()
+        ):
+            if _r[1] is not None:
+                _prev_counts[int(_r[0])] = int(_r[1])
+    # FIRST sync of a table (no prior row_count) → COUNT it so the %-of-total is
+    # accurate from the start (else a small done table reads ~99% while a huge one
+    # barely started). BQ sources only; resolved SQL built on the main thread
+    # (session-safe), the COUNTs then run concurrently (BQ-only, no DB session).
+    _need_count = []  # (table_id, source_config, resolved_sql)
+    for t in _to_build:
+        if t.id in _prev_counts or is_generated_calendar_table(t):
             continue
-        _sp.note_table(dataset_id, getattr(t, "display_name", None) or f"table {t.id}", len(built), _total)
+        _ds = datasource_by_id.get(t.datasource_id)
+        if _ds is None or _ds_type(_ds) != "bigquery":
+            continue
         try:
-            if is_generated_calendar_table(t):
-                row = build_calendar_snapshot(db, dataset_obj, t, host, generation=generation, force=force)
-            else:
-                row = build_table_snapshot(
-                    db, dataset_obj, t, datasource_by_id.get(t.datasource_id),
-                    force=force, host_datasource=host, generation=generation,
-                )
-        except Exception as exc:  # noqa: BLE001 — one table's failure must not crash the refresh
-            db.rollback()
-            logger.warning("[snapshot] build raised for table=%s: %s", t.id, exc)
-            row = None
-        if row is not None:
-            built.append({"table_id": t.id, "row_count": row.row_count, "build_ms": row.build_ms})
+            _rsql = _resolved_sql(dataset_obj, t, _ds, db)
+        except Exception:  # noqa: BLE001
+            _rsql = None
+        if _rsql:
+            _need_count.append((t.id, _ds.config, _rsql))
+    if _need_count:
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=min(_SYNC_BUILD_CONCURRENCY, len(_need_count))) as _cx:
+            for _tid, _cnt in _cx.map(
+                lambda a: (a[0], DataSourceConnectionService.bigquery_count(a[1], a[2])), _need_count
+            ):
+                if _cnt is not None:
+                    _prev_counts[_tid] = _cnt
+    _sp.begin(dataset_id, [
+        {"table_id": t.id,
+         "name": getattr(t, "display_name", None) or f"table {t.id}",
+         "rows_total_est": _prev_counts.get(t.id)}
+        for t in _to_build
+    ])
+
+    # RESUME reuse (main thread, cheap): a table already built in THIS generation
+    # (design unchanged) is kept as-is, never rebuilt. Everything else goes to the
+    # concurrent build below. (Resume saves a heavy watermark-less table.)
+    _host_id = host.id if host is not None else None
+    _to_run: list = []  # (table_id, is_calendar)
+    for t in _to_build:
+        if _sc.is_stop_requested(dataset_id):
+            stopped = True
+            break
+        _reused = _ready_snapshot_in_generation(
+            db, t, generation, dataset_obj, datasource_by_id.get(t.datasource_id)
+        )
+        if _reused is not None:
+            _sp.begin_table(dataset_id, t.id)
+            built.append({"table_id": t.id, "row_count": _reused.row_count, "build_ms": 0})
+            _sp.finish_table(dataset_id, t.id, _reused.row_count or 0)
         else:
-            skipped.append(t.id)
-    _sp.note_table(dataset_id, None, len(built), _total)  # final tick → N/N done
+            _to_run.append((t.id, is_generated_calendar_table(t)))
+
+    def _build_one(table_id: int, is_cal: bool):
+        """Build ONE table in its OWN DB session (safe in parallel: the per-table
+        single_flight + atomic swap keep different tables independent; ORM objects
+        are re-queried in this session so nothing crosses threads)."""
+        from app.core.database import SessionLocal
+        wdb = SessionLocal()
+        try:
+            if _sc.is_stop_requested(dataset_id):
+                return (table_id, "cancelled")
+            w_ds = wdb.query(Dataset).get(dataset_id)
+            w_t = wdb.query(DatasetTable).get(table_id)
+            w_host = wdb.query(DataSource).get(_host_id) if _host_id else None
+            w_src = wdb.query(DataSource).get(w_t.datasource_id) if (w_t and w_t.datasource_id) else None
+            _sp.begin_table(dataset_id, table_id)
+            try:
+                if is_cal:
+                    row = build_calendar_snapshot(wdb, w_ds, w_t, w_host, generation=generation, force=force)
+                else:
+                    row = build_table_snapshot(
+                        wdb, w_ds, w_t, w_src,
+                        force=force, host_datasource=w_host, generation=generation,
+                    )
+            except _sc.SyncCancelled:
+                wdb.rollback()
+                return (table_id, "cancelled")
+            except Exception as exc:  # noqa: BLE001 — one table's failure must not crash the refresh
+                wdb.rollback()
+                logger.warning("[snapshot] build raised for table=%s: %s", table_id, exc)
+                row = None
+            if row is None and _sc.is_stop_requested(dataset_id):
+                return (table_id, "cancelled")
+            if row is not None:
+                _sp.finish_table(dataset_id, table_id, row.row_count)
+                return (table_id, {"table_id": table_id, "row_count": row.row_count, "build_ms": row.build_ms})
+            _sp.finish_table(dataset_id, table_id, 0, skipped=True)
+            return (table_id, None)
+        finally:
+            wdb.close()
+
+    # Build the remaining tables CONCURRENTLY (bounded). Since CTAS runs the heavy
+    # work inside BigQuery, K tables build at once ≈ max(time) instead of Σ. A
+    # stop is honoured per worker (not-yet-started → skip; in-flight → the load
+    # callback aborts). Results are collected on the main thread.
+    if _to_run and not stopped:
+        from concurrent.futures import ThreadPoolExecutor
+        _workers = min(_SYNC_BUILD_CONCURRENCY, len(_to_run))
+        with ThreadPoolExecutor(max_workers=_workers, thread_name_prefix=f"snapbuild-{dataset_id}") as _ex:
+            for _tid, _res in _ex.map(lambda a: _build_one(a[0], a[1]), _to_run):
+                if _res == "cancelled":
+                    stopped = True
+                elif isinstance(_res, dict):
+                    built.append(_res)
+                else:
+                    skipped.append(_tid)
+        if _sc.is_stop_requested(dataset_id):
+            stopped = True
+
     built_ids = [b["table_id"] for b in built]
     ts = as_of(db, built_ids) if built_ids else None
     # Phase 4 — delayed GC: retire generations older than the retained window
-    # (latest 2 complete generations + grace period). Best-effort.
+    # (latest 2 complete generations + grace period). Best-effort. SKIP on stop —
+    # the interrupted generation is incomplete, so nothing new is safe to retire.
     try:
-        if host is not None and built:
+        if host is not None and built and not stopped:
             gc_dataset_snapshots(db, dataset_id, host)
     except Exception:  # noqa: BLE001 — GC must never fail a refresh
         logger.warning("[snapshot] delayed GC failed dataset=%s", dataset_id, exc_info=True)
     return {"built": built, "skipped": skipped, "as_of": ts.isoformat() if ts else None,
-            "generation": generation}
+            "generation": generation, "stopped": stopped}
 
 
 def as_of(db: Session, table_ids: List[int]) -> Optional[datetime]:
@@ -1055,6 +1344,9 @@ def trigger_async_refresh(dataset_id: int) -> None:
     already rebuilding is skipped. NEVER raises (background best-effort)."""
     if not dataset_id:
         return
+    if _in_quota_cooldown(dataset_id):
+        logger.info("[snapshot] dataset=%s in quota cooldown → skip background refresh", dataset_id)
+        return
     with _async_refresh_lock:
         if not _reserve_rebuild_slot(dataset_id):
             return
@@ -1139,6 +1431,8 @@ def schedule_source_change_check(dataset_id: int) -> None:
     only on a real change. NEVER blocks / raises."""
     if not dataset_id:
         return
+    if _in_quota_cooldown(dataset_id):
+        return  # a recent quota 403 — don't burn more quota with background rebuilds
     now = time.time()
     with _async_refresh_lock:
         if dataset_id in _async_refresh_inflight:
@@ -1209,17 +1503,26 @@ def start_manual_refresh(dataset_ids: List[int]) -> List[int]:
 
     def _run() -> None:
         from app.core.database import SessionLocal
+        from app.services import sync_progress as _sp
         db = SessionLocal()
         try:
             for d in claimed:
+                _sc.clear_stop(d)  # fresh run — ignore any stale Stop flag
                 try:
-                    refresh_all_for_dataset(db, d, force=True)
-                    logger.info("[snapshot] manual refresh done dataset=%s", d)
+                    res = refresh_all_for_dataset(db, d, force=True)
+                    if res.get("stopped"):
+                        _sp.set_phase(d, "stopped")
+                        logger.info("[snapshot] manual refresh STOPPED dataset=%s", d)
+                    else:
+                        _sp.set_phase(d, "done")
+                        logger.info("[snapshot] manual refresh done dataset=%s", d)
                 except Exception:  # noqa: BLE001 — one dataset's failure must not block the rest
+                    _sp.set_phase(d, "failed")
                     logger.warning("[snapshot] manual refresh failed dataset=%s", d, exc_info=True)
                 finally:
                     # Release each dataset as it finishes so freshness polling
                     # reflects real progress instead of flipping only at the end.
+                    _sc.clear_stop(d)
                     _release_rebuild_slot(d)
         finally:
             db.close()
