@@ -274,6 +274,19 @@ def update_workboard(
 ):
     wb = _get_or_404(db, workboard_id)
     require_edit_access(db, current_user, wb, "workboards")
+    # Optimistic concurrency: reject a stale DRAFT save so an older autosave (or a
+    # concurrent tab/session) can't clobber a newer edit. Only enforced when the
+    # client sends the token it last saw.
+    if payload.expected_version is not None and int(payload.expected_version) != int(wb.version or 1):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "stale_version",
+                "message": "Bản nháp đã bị thay đổi ở nơi khác — tải lại để tiếp tục chỉnh sửa.",
+                "expected_version": payload.expected_version,
+                "current_version": wb.version,
+            },
+        )
     patch = payload.model_dump(exclude_unset=True)
     if any(field in patch for field in ("dataset_id", "primary_table_id", "layout_json")):
         require_dataset_binding_access(
@@ -387,6 +400,11 @@ def publish_workboard(
     require_edit_access(db, current_user, wb, "workboards")
     require_dataset_binding_access(db, current_user, wb.dataset_id)
     _assert_owner_pin_rotated(db, wb.id)
+    # Safety net: a workboard needs a slug to be shareable (the public Cổng menu
+    # is keyed by workboard_slug). New boards get one at create; backfill any
+    # legacy blank-slug board here so going Live never produces an unshareable app.
+    if not (wb.slug or "").strip():
+        wb.slug = WorkboardService.build_unique_slug(db, wb.name, exclude_id=wb.id)
     wb = WorkboardService.refresh_schema_defaults(db, wb)
 
     # Readiness gate — MANDATORY, server-side. A workboard with blocking errors
@@ -421,6 +439,34 @@ def publish_workboard(
     audit(
         db,
         AuditAction.WORKBOARD_PUBLISHED,
+        request=request,
+        user_id=current_user.id,
+        resource_type="workboard",
+        resource_id=str(workboard_id),
+    )
+    wb.user_permission = "full"
+    return wb
+
+
+@router.post("/{workboard_id}/unpublish", response_model=WorkboardResponse)
+def unpublish_workboard(
+    workboard_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Take a Workboard down from Live. Dedicated endpoint (not a generic PATCH)
+    so lifecycle transitions stay exclusive. Flips ``is_published`` off — the
+    public runtime resolver then 404s the app — but keeps the published snapshot
+    intact so a later Publish can promote the (possibly edited) draft again."""
+    wb = _get_or_404(db, workboard_id)
+    require_edit_access(db, current_user, wb, "workboards")
+    wb.is_published = False
+    db.commit()
+    db.refresh(wb)
+    audit(
+        db,
+        AuditAction.WORKBOARD_UNPUBLISHED,
         request=request,
         user_id=current_user.id,
         resource_type="workboard",
@@ -787,6 +833,78 @@ def compute_workboard_audit(db: Session, wb: Workboard) -> dict[str, Any]:
                     context={"dashboard_id": dash_id},
                 )
 
+    # ── Cross-screen reference integrity ─────────────────────────────────────
+    # Every screen-id reference (navigation, row/scan actions, bulk recipes,
+    # workspace membership) must resolve to a screen that still exists. This is
+    # what makes /audit the single source of truth for App Health + the Publish
+    # gate. Severity by runtime blast radius: refs that HARD-404 at runtime
+    # (bulk source/parent/step screens) are errors (block publish); refs that
+    # silently drop (dead button / lost nav entry) are warnings.
+    live_screen_ids = {str(s.get("id")) for s in screens_iter if s.get("id")}
+
+    def _check_ref(target, *, code, label, severity="error", screen=None, context=None):
+        if target is None:
+            return
+        tid = str(target).strip()
+        if not tid or tid in live_screen_ids:
+            return
+        _add(
+            severity=severity,
+            code=code,
+            detail=f"{label} points at screen '{tid}', which no longer exists.",
+            screen=screen,
+            context={**(context or {}), "target_screen_id": tid},
+        )
+
+    for screen in screens_iter:
+        table = screen.get("table") if isinstance(screen.get("table"), dict) else {}
+        form = screen.get("form") if isinstance(screen.get("form"), dict) else {}
+
+        after = form.get("after_submit") if isinstance(form.get("after_submit"), dict) else {}
+        _check_ref(after.get("go_to_screen"), code="dangling_after_submit_screen",
+                   label="Form after-submit navigation", severity="warning", screen=screen)
+        for fld in (form.get("fields") or []):
+            if isinstance(fld, dict):
+                _check_ref(fld.get("scan_go_to_screen"), code="dangling_scan_go_to_screen",
+                           label=f"Barcode scan target on field '{fld.get('column')}'",
+                           severity="warning", screen=screen)
+
+        for ra in (table.get("row_actions") or []):
+            if isinstance(ra, dict):
+                _check_ref(ra.get("go_to_screen"), code="dangling_go_to_screen",
+                           label=f"Row action '{ra.get('label') or ra.get('id')}'",
+                           severity="warning", screen=screen)
+        pos = table.get("pos_cart") if isinstance(table.get("pos_cart"), dict) else {}
+        _check_ref(pos.get("header_screen_id"), code="dangling_pos_header_screen",
+                   label="POS cart header screen", severity="warning", screen=screen)
+        _check_ref(pos.get("after_submit_screen"), code="dangling_pos_after_submit_screen",
+                   label="POS cart after-submit screen", severity="warning", screen=screen)
+        for ba in (table.get("bulk_actions") or []):
+            if not isinstance(ba, dict):
+                continue
+            balabel = ba.get("label") or ba.get("id")
+            _check_ref(ba.get("parent_screen_id"), code="dangling_bulk_parent_screen",
+                       label=f"Bulk action '{balabel}' parent screen", screen=screen)
+            for ri in (ba.get("resource_inputs") or []):
+                if isinstance(ri, dict):
+                    _check_ref(ri.get("source_screen_id"), code="dangling_bulk_resource_screen",
+                               label=f"Bulk action '{balabel}' resource '{ri.get('id')}'", screen=screen)
+            for st in (ba.get("steps") or []):
+                if isinstance(st, dict):
+                    _check_ref(st.get("screen_id"), code="dangling_bulk_step_screen",
+                               label=f"Bulk action '{balabel}' step '{st.get('id')}'", screen=screen)
+
+    nav = layout.get("mini_app_nav") if isinstance(layout.get("mini_app_nav"), dict) else {}
+    for sid in (nav.get("items") or []):
+        _check_ref(sid, code="dangling_nav_item", label="Navigation item", severity="warning")
+    for grp in (layout.get("screen_groups") or []):
+        if isinstance(grp, dict):
+            glabel = grp.get("label") or grp.get("id")
+            for sid in (grp.get("screen_ids") or []):
+                _check_ref(sid, code="dangling_workspace_member",
+                           label=f"Workspace '{glabel}' member", severity="warning",
+                           context={"group_id": grp.get("id")})
+
     return {
         "workboard_id": int(wb.id),
         "screen_count": len(screens_iter),
@@ -1117,10 +1235,14 @@ def _attach_workboard_to_workspace_menu(
 ) -> Dict[str, Any]:
     slug = (workboard.slug or "").strip()
     if not slug:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Imported workboard has no slug to attach to workspace menu_config.",
-        )
+        # Generate one on demand instead of failing the share: the Cổng menu is
+        # keyed by workboard_slug, and a blank slug (legacy board, or any path
+        # that skipped create-time generation) must never make an app
+        # unshareable. Persist it so the link stays stable.
+        slug = WorkboardService.build_unique_slug(db, workboard.name, exclude_id=workboard.id)
+        workboard.slug = slug
+        db.add(workboard)
+        db.flush()
 
     menu: List[Dict[str, Any]] = [
         dict(item)

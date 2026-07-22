@@ -267,6 +267,10 @@ export default function WorkboardBuilder({ workboard }: Props) {
   // jump to the matching screen + auto-select the field in the inspector.
   useEffect(() => {
     function onMessage(event: MessageEvent) {
+      // Only trust messages from OUR OWN origin (the preview iframe is
+      // same-origin at /ws/...). Without this, any window that embeds/opens the
+      // builder could drive its active screen/field selection.
+      if (event.origin !== window.location.origin) return;
       const data = event.data;
       if (!data || typeof data !== 'object') return;
       if ((data as { type?: unknown }).type !== 'wb-builder/field-click') return;
@@ -582,10 +586,14 @@ export default function WorkboardBuilder({ workboard }: Props) {
                   onChange={updateScreen}
                   focusFieldColumn={focusFieldColumn}
                   onFocusFieldHandled={() => setFocusFieldColumn(null)}
-                  onDeleteScreen={() => {
-                    deleteScreen(activeScreen.id);
-                    backToCanvas();
-                  }}
+                  onDeleteScreen={
+                    canEdit
+                      ? () => {
+                          deleteScreen(activeScreen.id);
+                          backToCanvas();
+                        }
+                      : undefined
+                  }
                 />
               </div>
             ) : (
@@ -604,6 +612,7 @@ export default function WorkboardBuilder({ workboard }: Props) {
                 onDeleteGroup={deleteGroup}
                 onAssignScreen={assignScreenToGroup}
                 onSetGroupIcon={setGroupIcon}
+                canEdit={canEdit}
               />
             )}
           </main>

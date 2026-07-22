@@ -108,8 +108,11 @@ const EMPTY_TABLE: TableSpec = {
   editable_columns: [],
   filters: [],
   page_size: 100,
-  allow_add_row: true,
-  allow_delete_row: true,
+  // Fail-safe: writes OFF by default (matches the new-table-screen defaults in
+  // WorkboardBuilder.addScreen). A table only accepts add/delete once the
+  // builder explicitly turns them on.
+  allow_add_row: false,
+  allow_delete_row: false,
   required_columns: [],
   default_values: {},
   computed_columns: [],

@@ -92,6 +92,9 @@ interface Props {
   /** Move a screen into a workspace (or unassign when groupId is null). */
   onAssignScreen: (screenId: string, groupId: string | null) => void;
   onSetGroupIcon: (id: string, icon: string | null) => void;
+  /** When false (view-only viewer), hide mutation affordances. Edits are
+   * already inert (parent handlers no-op), this just removes the dead buttons. */
+  canEdit?: boolean;
 }
 
 /**
@@ -193,6 +196,7 @@ export default function CanvasOverview({
   onDeleteGroup,
   onAssignScreen,
   onSetGroupIcon,
+  canEdit = true,
 }: Props) {
   // ── Which "drawer" (workspace tab) is open. Real group id, or a sentinel.
   const [activeTab, setActiveTab] = useState<string>(TAB_ALL);
@@ -549,6 +553,7 @@ export default function CanvasOverview({
             </span>
           )}
         </div>
+        {canEdit && (
         <div className="flex flex-wrap items-center gap-1.5">
           <span className="mr-1 hidden text-micro text-text-tertiary sm:inline">{addHint}</span>
           {PALETTE.map((entry) => {
@@ -567,6 +572,7 @@ export default function CanvasOverview({
             );
           })}
         </div>
+        )}
       </div>
 
       {/* Inline icon picker for the active workspace (toggled by its icon). */}
@@ -812,6 +818,7 @@ export default function CanvasOverview({
                   >
                     <ArrowDown className="h-3.5 w-3.5" />
                   </button>
+                  {canEdit && (
                   <button
                     type="button"
                     onClick={(event) => {
@@ -823,6 +830,7 @@ export default function CanvasOverview({
                   >
                     <Trash2 className="h-3.5 w-3.5" />
                   </button>
+                  )}
                 </div>
               </div>
             );

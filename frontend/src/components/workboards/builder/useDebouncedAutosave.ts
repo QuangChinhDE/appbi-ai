@@ -102,8 +102,12 @@ export function useDebouncedAutosave(
         setStatus('saving');
         setErrorMessage(null);
         try {
+          // Send the version we last saw so the server can 409 a stale save
+          // (a concurrent tab/session advanced it) instead of silently clobbering.
+          const known = qc.getQueryData<Workboard>(['workboards', workboardId])?.version;
           const updated = await workboardApi.update(workboardId, {
             layout_json: snapshot as unknown as Partial<WorkboardLayoutJson>,
+            ...(typeof known === 'number' ? { expected_version: known } : {}),
           });
           erroredRef.current = false;
           setSavedAt(new Date());
@@ -125,7 +129,18 @@ export function useDebouncedAutosave(
           );
         } catch (err: unknown) {
           erroredRef.current = true;
-          setErrorMessage(getErrorMessage(err, 'Could not save.'));
+          const httpStatus = (err as { response?: { status?: number } })?.response?.status;
+          if (httpStatus === 409) {
+            // Stale save: a concurrent tab/session advanced the draft. Do NOT
+            // clobber it — surface a conflict and refetch so the user can reload
+            // the newer draft. (Backend rejected the write, nothing was lost.)
+            setErrorMessage(
+              'Bản nháp đã bị thay đổi ở nơi khác (tab/người khác). Tải lại trang để lấy bản mới nhất trước khi sửa tiếp.',
+            );
+            void qc.invalidateQueries({ queryKey: ['workboards', workboardId] });
+          } else {
+            setErrorMessage(getErrorMessage(err, 'Could not save.'));
+          }
           setStatus('error');
           // Stop looping on error — the un-persisted change is still in
           // layoutRef and will re-dirty on the next edit/flush; we don't hammer

@@ -95,3 +95,14 @@ export function usePublishWorkboard() {
     },
   });
 }
+
+export function useUnpublishWorkboard() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: number) => workboardApi.unpublish(id),
+    onSuccess: (_, id) => {
+      qc.invalidateQueries({ queryKey: KEYS.detail(id) });
+      qc.invalidateQueries({ queryKey: KEYS.all });
+    },
+  });
+}

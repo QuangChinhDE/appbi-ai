@@ -234,8 +234,17 @@ def _build_context(
             table.source_table_name or "", datasource, dialect
         )
 
+    # Resolve the layout stage-correctly: a public LIVE write must read
+    # auto-number + audit-column config from the PUBLISHED snapshot (not the
+    # mutable draft), while a Builder Preview write reads the draft. The
+    # _wb_use_published flag (set per-request by the runtime resolver) drives it.
+    # (write_mode / optimistic_lock_column / primary_key_columns are still read
+    # from the mutable columns below — those move into the published_runtime_config
+    # snapshot in Slice 2.)
+    from app.modules.workboards.services.runtime_config import effective_layout_raw
+
     try:
-        layout = LayoutJson.model_validate(workboard.layout_json or {})
+        layout = LayoutJson.model_validate(effective_layout_raw(workboard) or {})
     except Exception as exc:
         raise WorkboardWriteError(f"Workboard layout is invalid: {exc}") from exc
 

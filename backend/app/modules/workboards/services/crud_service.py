@@ -526,13 +526,53 @@ class WorkboardService:
         return db.query(query.exists()).scalar() is True
 
     @staticmethod
+    def build_unique_slug(
+        db: Session, name: Optional[str], *, exclude_id: Optional[int] = None
+    ) -> str:
+        """Derive a valid, unique slug from a workboard name.
+
+        A slug is REQUIRED to share/publish a workboard — the public Cổng menu is
+        keyed by ``workboard_slug`` — so every workboard must have one even though
+        the create form never asks for it. Produces the ``^[a-z0-9][a-z0-9-_]*$``
+        shape and de-dupes with a numeric suffix.
+
+        Vietnamese (and other Latin) diacritics are TRANSLITERATED, not stripped,
+        so "Đơn hàng của tôi" → "don-hang-cua-toi" (readable), never
+        "n-h-ng-c-a-t-i".
+        """
+        import unicodedata
+
+        text = str(name or "").strip()
+        # đ/Đ have no NFKD decomposition to d/D — map them explicitly first.
+        text = text.replace("đ", "d").replace("Đ", "D")
+        text = unicodedata.normalize("NFKD", text)
+        text = "".join(ch for ch in text if not unicodedata.combining(ch))
+        base = re.sub(r"[^a-zA-Z0-9]+", "-", text).strip("-").lower()
+        base = base or "app"
+        # Ensure it starts with an alphanumeric (pattern requires it).
+        if not base[0].isalnum():
+            base = f"app-{base}".strip("-")
+        candidate = base
+        n = 2
+        while WorkboardService.slug_exists(db, candidate, exclude_id=exclude_id):
+            candidate = f"{base}-{n}"
+            n += 1
+        return candidate
+
+    @staticmethod
     def create(
         db: Session,
         payload: WorkboardCreate,
         owner_id=None,
     ) -> Workboard:
-        if payload.slug and WorkboardService.slug_exists(db, payload.slug):
-            raise ValueError(f"Workboard slug '{payload.slug}' already exists")
+        slug = (payload.slug or "").strip()
+        if slug and WorkboardService.slug_exists(db, slug):
+            raise ValueError(f"Workboard slug '{slug}' already exists")
+        # Auto-generate a slug when the create form didn't supply one (it never
+        # does — we keep create simple). Without this the workboard has a blank
+        # slug and Share/attach-to-Cổng fails with a 400 later.
+        if not slug:
+            slug = WorkboardService.build_unique_slug(db, payload.name)
 
         # Auto-resolve primary_table_id when the caller didn't specify one.
         # The mini-app contract assigns table_id per screen, so the workboard
@@ -557,7 +597,7 @@ class WorkboardService:
 
         db_obj = Workboard(
             name=payload.name,
-            slug=payload.slug,
+            slug=slug,
             description=payload.description,
             icon=payload.icon,
             dataset_id=payload.dataset_id,
@@ -618,6 +658,10 @@ class WorkboardService:
             return None
 
         update_data = payload.model_dump(exclude_unset=True)
+        # expected_version is an API-layer optimistic-concurrency token, not a
+        # column — the endpoint checks it before calling update; drop it so the
+        # setattr loop never tries to write it onto the ORM row.
+        update_data.pop("expected_version", None)
 
         if "slug" in update_data:
             new_slug = update_data["slug"]

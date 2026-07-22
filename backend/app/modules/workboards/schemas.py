@@ -2168,8 +2168,15 @@ class WorkboardUpdate(BaseModel):
     primary_table_id: Optional[int] = Field(default=None, gt=0)
     layout_json: Optional[LayoutJson] = None
     optimistic_lock_column: Optional[str] = Field(default=None, max_length=120)
-    is_published: Optional[bool] = None
     settings: Optional[Dict[str, Any]] = None
+    # Optimistic concurrency for DRAFT saves: when provided, the update is
+    # rejected 409 if the stored version differs (a concurrent tab/session
+    # already advanced it) so a stale autosave can't clobber a newer edit.
+    expected_version: Optional[int] = Field(default=None, ge=1)
+    # NOTE: ``is_published`` is intentionally NOT accepted here. Going Live and
+    # taking down MUST go through the dedicated POST /{id}/publish and
+    # /{id}/unpublish endpoints so the readiness audit + atomic promotion can
+    # never be bypassed by a generic PATCH.
 
 
 class WorkboardResponse(WorkboardBase):

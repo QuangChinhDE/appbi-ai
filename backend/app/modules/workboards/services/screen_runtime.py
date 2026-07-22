@@ -591,13 +591,16 @@ def parse_layout(workboard: Workboard, *, use_published: Optional[bool] = None) 
     ``published_layout_json is None`` → the runtime resolver refuses to serve it
     before we ever reach here, so live callers never see an empty layout.
     """
-    if use_published is None:
-        use_published = bool(getattr(workboard, "_wb_use_published", False))
-    raw = workboard.published_layout_json if use_published else workboard.layout_json
+    # The published-vs-draft decision lives in ONE place (runtime_config), so
+    # every runtime/write/export path resolves the same stage. parse_layout is
+    # the typed-layout convenience over it.
+    from app.modules.workboards.services.runtime_config import effective_layout_raw
+
+    raw = effective_layout_raw(workboard, published=use_published)
     try:
         return LayoutJson.model_validate(raw or {})
     except Exception:
-        logger.exception("workboard %s has invalid layout (published=%s)", workboard.id, use_published)
+        logger.exception("workboard %s has invalid layout", workboard.id)
         return LayoutJson()
 
 
@@ -2565,8 +2568,13 @@ def _doc_print_template(workboard: Workboard) -> Optional[Dict[str, Any]]:
     extra key, so it round-trips as a plain dict). Returns None when unset or
     disabled so the FE simply omits the letterhead band.
     """
+    # Live doc render/print/export must use the PUBLISHED letterhead, not the
+    # mutable draft. Route through the stage resolver (published for Live via the
+    # _wb_use_published flag, draft for Preview) instead of reading layout_json.
     try:
-        raw = getattr(workboard, "layout_json", None) or {}
+        from app.modules.workboards.services.runtime_config import effective_layout_raw
+
+        raw = effective_layout_raw(workboard)
         pt = raw.get("print_template") if isinstance(raw, dict) else None
         if isinstance(pt, dict) and pt.get("enabled", True):
             return pt

@@ -123,8 +123,11 @@ export interface WorkboardUpdateInput {
   primary_table_id?: number;
   layout_json?: Partial<WorkboardLayoutJson>;
   optimistic_lock_column?: string;
-  is_published?: boolean;
   settings?: Record<string, unknown>;
+  // Optimistic-concurrency token for DRAFT saves; the server returns 409 if the
+  // stored version has advanced (a concurrent tab/session). NOTE: is_published
+  // is intentionally NOT here — go Live / take down via publish()/unpublish().
+  expected_version?: number;
 }
 
 export interface WorkboardImportReport {
@@ -296,6 +299,11 @@ export const workboardApi = {
 
   publish: async (id: number): Promise<Workboard> => {
     const { data } = await apiClient.post(`/workboards/${id}/publish`);
+    return data;
+  },
+
+  unpublish: async (id: number): Promise<Workboard> => {
+    const { data } = await apiClient.post(`/workboards/${id}/unpublish`);
     return data;
   },
 

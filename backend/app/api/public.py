@@ -1594,8 +1594,14 @@ if settings.WORKBOARDS_ENABLED:
             from app.modules.workboards.services.dashboard_link_service import (
                 resolve_managed_token,
             )
+            from app.modules.workboards.services.runtime_config import effective_layout_raw
+
+            # Resolve the per-role managed token from the PUBLISHED layout for Live
+            # (draft for Preview). NOTE: this fixes the token MAP source; the
+            # underlying DashboardPublicLink rows are still a single shared set —
+            # full draft/published row isolation (stage column) is Slice 2.
             resolved_token = resolve_managed_token(
-                layout_json=wb.layout_json,
+                layout_json=effective_layout_raw(wb),
                 screen_id=screen.id,
                 app_user_role=app_user.get("role") if isinstance(app_user, dict) else None,
             )
@@ -2029,7 +2035,11 @@ if settings.WORKBOARDS_ENABLED:
         if len(image) > 12_000_000:  # ~9 MB raw
             raise HTTPException(status_code=413, detail="Ảnh quá lớn (tối đa ~9 MB).")
 
-        cfg = get_screen_ocr_config(wb.layout_json or {}, screen_id)
+        # Live OCR config must come from the PUBLISHED snapshot, not the mutable
+        # draft (a draft edit to the vision model/token must not change Live).
+        from app.modules.workboards.services.runtime_config import effective_layout_raw
+
+        cfg = get_screen_ocr_config(effective_layout_raw(wb), screen_id)
         if not cfg:
             raise HTTPException(status_code=400, detail="Tính năng chụp ảnh tự điền chưa được bật cho biểu mẫu này.")
 

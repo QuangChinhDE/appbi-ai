@@ -22,7 +22,7 @@ import { Button, IconButton } from '@/components/ui/Button';
 import { FilterTag } from '@/components/ui/FilterTag';
 import { Modal } from '@/components/common/Modal';
 import { toast } from '@/lib/toast';
-import { usePublishWorkboard, useUpdateWorkboard } from '@/hooks/use-workboards';
+import { usePublishWorkboard, useUnpublishWorkboard } from '@/hooks/use-workboards';
 import { useI18n } from '@/providers/LanguageProvider';
 import type { Workboard } from '@/lib/api/workboards';
 import { flushPendingAutosave } from './builder/autosaveFlushRegistry';
@@ -79,12 +79,12 @@ function statusOf(wb: Props['workboard']): PublishStatus {
 export function WorkboardPublishToggle({ workboard, variant, canEdit = true }: Props) {
   const { t } = useI18n();
   const publish = usePublishWorkboard();
-  const update = useUpdateWorkboard();
+  const unpublish = useUnpublishWorkboard();
   const [confirmingDraft, setConfirmingDraft] = useState(false);
   const [auditBlock, setAuditBlock] = useState<AuditResult | null>(null);
 
   const status = statusOf(workboard);
-  const busy = publish.isPending || update.isPending;
+  const busy = publish.isPending || unpublish.isPending;
 
   if (!canEdit) {
     // Read-only viewers still see the state, just can't change it.
@@ -111,7 +111,7 @@ export function WorkboardPublishToggle({ workboard, variant, canEdit = true }: P
   const doDraft = async () => {
     setConfirmingDraft(false);
     try {
-      await update.mutateAsync({ id: workboard.id, data: { is_published: false } });
+      await unpublish.mutateAsync(workboard.id);
       toast.success(t('workboards.publish.draftToast'));
     } catch (err) {
       toast.error(apiErrorMessage(err, t('workboards.publish.draftFailed')));
@@ -136,7 +136,7 @@ export function WorkboardPublishToggle({ workboard, variant, canEdit = true }: P
           <Button variant="ghost" size="sm" onClick={() => setConfirmingDraft(false)}>
             {t('workboards.publish.cancel')}
           </Button>
-          <Button variant="danger" size="sm" onClick={doDraft} loading={update.isPending}>
+          <Button variant="danger" size="sm" onClick={doDraft} loading={unpublish.isPending}>
             {t('workboards.publish.confirmDraft')}
           </Button>
         </>
