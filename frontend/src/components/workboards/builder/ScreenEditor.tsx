@@ -153,7 +153,12 @@ export default function ScreenEditor({
             />
           )}
           {screen.kind === 'table' && (
-            <TableScreenEditor screen={screen} tables={tables} onChange={onChange} />
+            <TableScreenEditor
+              screen={screen}
+              allScreens={allScreens}
+              tables={tables}
+              onChange={onChange}
+            />
           )}
           {screen.kind === 'doc' && (
             <DocScreenEditor

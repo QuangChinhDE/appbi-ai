@@ -71,6 +71,7 @@ import type {
   PosCartConfigSpec,
   PosCartHeaderInputSpec,
   ScreenSpec,
+  ScreenAction,
 } from './types';
 import { INPUT, Lbl } from './ScreenEditor';
 
@@ -83,6 +84,7 @@ interface DatasetTableInfo {
 
 interface Props {
   screen: ScreenSpec;
+  allScreens: ScreenSpec[];
   tables: DatasetTableInfo[];
   onChange: (next: ScreenSpec) => void;
 }
@@ -104,6 +106,7 @@ type ActiveItem =
   | 'pos_cart'
   | 'format_rules'
   | 'kpi'
+  | 'row_actions'
   | `filter:${number}`
   | `computed:${number}`
   | `lookup:${number}`
@@ -124,15 +127,23 @@ const DISPLAY_MODE_OPTIONS: Array<{
 ];
 
 // Quick-link cards under "Các cấu hình chính" — jump to the main config objects.
-const CONFIG_SHORTCUTS: Array<{ key: ActiveItem; label: string; desc: string; icon: React.ElementType }> = [
+// `tableOnly` shortcuts only make sense for the classic Table grid; they are
+// hidden when Gallery / Calendar / Route map is the active display mode.
+const CONFIG_SHORTCUTS: Array<{
+  key: ActiveItem;
+  label: string;
+  desc: string;
+  icon: React.ElementType;
+  tableOnly?: boolean;
+}> = [
   { key: 'columns', label: 'Fields', desc: 'Chọn và sắp xếp các cột hiển thị trong bảng.', icon: Columns3 },
   { key: 'editable', label: 'Editable fields', desc: 'Chọn cột có thể chỉnh sửa và cấu hình quy tắc.', icon: PencilLine },
   { key: 'settings', label: 'Filters & sorting', desc: 'Cấu hình bộ lọc, sắp xếp và thứ tự mặc định.', icon: Filter },
-  { key: 'column_meta', label: 'Column presentation', desc: 'Căn chỉnh, độ rộng cột, định dạng hiển thị.', icon: Settings2 },
-  { key: 'column_groups', label: 'Header groups', desc: 'Nhóm các cột theo cách hiển thị logic.', icon: Columns3 },
-  { key: 'row_merge', label: 'Row merge', desc: 'Gộp ô theo giá trị để giảm lặp dữ liệu.', icon: Rows3 },
-  { key: 'format_rules', label: 'Conditional formatting', desc: 'Tô màu, biểu tượng theo điều kiện dữ liệu.', icon: Palette },
-  { key: 'totals', label: 'Footer totals', desc: 'Tổng hợp cuối bảng cho các cột số liệu.', icon: Sigma },
+  { key: 'column_meta', label: 'Column presentation', desc: 'Căn chỉnh, độ rộng cột, định dạng hiển thị.', icon: Settings2, tableOnly: true },
+  { key: 'column_groups', label: 'Header groups', desc: 'Nhóm các cột theo cách hiển thị logic.', icon: Columns3, tableOnly: true },
+  { key: 'row_merge', label: 'Row merge', desc: 'Gộp ô theo giá trị để giảm lặp dữ liệu.', icon: Rows3, tableOnly: true },
+  { key: 'format_rules', label: 'Conditional formatting', desc: 'Tô màu, biểu tượng theo điều kiện dữ liệu.', icon: Palette, tableOnly: true },
+  { key: 'totals', label: 'Footer totals', desc: 'Tổng hợp cuối bảng cho các cột số liệu.', icon: Sigma, tableOnly: true },
   { key: 'kpi', label: 'KPI tiles', desc: 'Hiển thị các chỉ số tổng quan dạng thẻ.', icon: LayoutGrid },
 ];
 
@@ -208,6 +219,45 @@ function ConfigShortcutCard({
   );
 }
 
+// A typed sub-section under the single "Derived data" navigator group —
+// keeps Computed / Lookup / Roll-up visually under one hierarchy while each
+// keeps its own count + add button.
+function DerivedSubGroup({
+  label,
+  count,
+  onAdd,
+  addTitle,
+  addDisabled = false,
+  children,
+}: {
+  label: string;
+  count: number;
+  onAdd: () => void;
+  addTitle: string;
+  addDisabled?: boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <div>
+      <div className="mb-1 flex items-center justify-between gap-2 pl-2">
+        <h4 className="text-tiny font-medium text-text-tertiary">
+          {label} ({count})
+        </h4>
+        <button
+          type="button"
+          onClick={onAdd}
+          disabled={addDisabled}
+          className="rounded p-1 text-text-tertiary hover:bg-surface-2 hover:text-brand disabled:cursor-not-allowed disabled:opacity-40"
+          title={addTitle}
+        >
+          <Plus className="h-3.5 w-3.5" />
+        </button>
+      </div>
+      <div className="space-y-1">{children}</div>
+    </div>
+  );
+}
+
 const EMPTY_TABLE: TableSpec = {
   columns: [],
   editable_columns: [],
@@ -242,13 +292,6 @@ const TOTALS_KINDS: Array<{ value: TableTotalsKind; label: string }> = [
   { value: 'max', label: 'Max' },
   { value: 'count', label: 'Count (non-empty)' },
 ];
-
-const FILTER_KIND_LABEL: Record<TableFilterSpec['kind'], string> = {
-  text: 'Text search',
-  select: 'Single select',
-  date_range: 'Date range',
-  number_range: 'Number range',
-};
 
 /** Model-driven VLOOKUP suggestions. Reads the dataset semantic model's
  * relationships (same endpoint the form-field lookup editor uses) so the
@@ -350,7 +393,7 @@ function LookupModelSuggestions({
   );
 }
 
-export default function TableScreenEditor({ screen, tables, onChange }: Props) {
+export default function TableScreenEditor({ screen, allScreens, tables, onChange }: Props) {
   const tableSpec = screen.table || EMPTY_TABLE;
   const filters = useMemo(() => tableSpec.filters || [], [tableSpec.filters]);
   const computed = useMemo(
@@ -369,12 +412,16 @@ export default function TableScreenEditor({ screen, tables, onChange }: Props) {
     () => tableSpec.format_rules || [],
     [tableSpec.format_rules],
   );
+  const rowActions = useMemo(
+    () => tableSpec.row_actions || [],
+    [tableSpec.row_actions],
+  );
   const totals = tableSpec.totals || {};
   const boundTable = tables.find((table) => table.id === screen.table_id);
   const tableCols = boundTable?.columns ?? [];
   const columnNames = tableCols.map((column) => column.name);
   const tableMissing = !!screen.table_id && !boundTable;
-  const [activeItem, setActiveItem] = useState<ActiveItem>('columns');
+  const [activeItem, setActiveItem] = useState<ActiveItem>('display');
 
   // All column identifiers visible to formula scope: regular + lookup +
   // computed (so a downstream formula can reference an upstream one).
@@ -388,9 +435,6 @@ export default function TableScreenEditor({ screen, tables, onChange }: Props) {
     [columnNames, lookups, rollups, computed],
   );
 
-  const activeFilterIndex = activeItem.startsWith('filter:')
-    ? Number(activeItem.slice('filter:'.length))
-    : -1;
   const activeComputedIndex = activeItem.startsWith('computed:')
     ? Number(activeItem.slice('computed:'.length))
     : -1;
@@ -402,9 +446,6 @@ export default function TableScreenEditor({ screen, tables, onChange }: Props) {
     : -1;
 
   useEffect(() => {
-    if (activeItem.startsWith('filter:') && activeFilterIndex >= filters.length) {
-      setActiveItem(filters.length > 0 ? `filter:${filters.length - 1}` : 'columns');
-    }
     if (activeItem.startsWith('computed:') && activeComputedIndex >= computed.length) {
       setActiveItem(computed.length > 0 ? `computed:${computed.length - 1}` : 'columns');
     }
@@ -416,18 +457,22 @@ export default function TableScreenEditor({ screen, tables, onChange }: Props) {
     }
   }, [
     activeComputedIndex,
-    activeFilterIndex,
     activeItem,
     activeLookupIndex,
     activeRollupIndex,
     computed.length,
-    filters.length,
     lookups.length,
     rollups.length,
   ]);
 
   const updateTable = (patch: Partial<TableSpec>) =>
     onChange({ ...screen, table: { ...tableSpec, ...patch } });
+
+  // Grid-layout settings (column presentation, header groups, row merge,
+  // conditional formatting, footer totals, POS) only make sense for the
+  // classic Table grid — Gallery / Calendar / Route map render differently,
+  // so we don't promote those objects when another display mode is active.
+  const isTableMode = (tableSpec.display_mode || 'table') === 'table';
 
   const addFilter = () => {
     if (columnNames.length === 0) return;
@@ -436,7 +481,8 @@ export default function TableScreenEditor({ screen, tables, onChange }: Props) {
       { column: columnNames[0], kind: 'text', label: '' },
     ];
     updateTable({ filters: next });
-    setActiveItem(`filter:${next.length - 1}`);
+    // Filters live inline in the unified "Filters & sorting" inspector now.
+    setActiveItem('settings');
   };
 
   const updateFilter = (idx: number, patch: Partial<TableFilterSpec>) => {
@@ -448,15 +494,6 @@ export default function TableScreenEditor({ screen, tables, onChange }: Props) {
   const removeFilter = (idx: number) => {
     const next = filters.filter((_, index) => index !== idx);
     updateTable({ filters: next });
-    if (activeFilterIndex === idx) {
-      setActiveItem(
-        next.length > 0
-          ? `filter:${Math.max(0, Math.min(idx, next.length - 1))}`
-          : 'columns',
-      );
-    } else if (activeFilterIndex > idx) {
-      setActiveItem(`filter:${activeFilterIndex - 1}`);
-    }
   };
 
   // ── Computed columns ─────────────────────────────────────────────────
@@ -690,6 +727,32 @@ export default function TableScreenEditor({ screen, tables, onChange }: Props) {
     updateTable({ format_rules: formatRules.filter((_, i) => i !== idx) });
   };
 
+  // ── Row actions (per-row buttons that navigate carrying row values) ──
+  const addRowAction = () => {
+    const existing = new Set(rowActions.map((a) => a.id));
+    let n = rowActions.length + 1;
+    let id = `action_${n}`;
+    while (existing.has(id)) {
+      n += 1;
+      id = `action_${n}`;
+    }
+    const next: ScreenAction[] = [
+      ...rowActions,
+      { id, label: 'Mở', style: 'secondary', go_to_screen: null, carry: [], visible_for_roles: [] },
+    ];
+    updateTable({ row_actions: next });
+    setActiveItem('row_actions');
+  };
+
+  const updateRowAction = (idx: number, patch: Partial<ScreenAction>) => {
+    const next = rowActions.map((a, i) => (i === idx ? { ...a, ...patch } : a));
+    updateTable({ row_actions: next });
+  };
+
+  const removeRowAction = (idx: number) => {
+    updateTable({ row_actions: rowActions.filter((_, i) => i !== idx) });
+  };
+
   const toggleColumnVisible = (column: string) => {
     if (tableSpec.columns.includes(column)) {
       updateTable({ columns: tableSpec.columns.filter((c) => c !== column) });
@@ -700,13 +763,14 @@ export default function TableScreenEditor({ screen, tables, onChange }: Props) {
 
   const renderInspector = () => {
     if (activeItem === 'columns') {
-      // Pickable column set = regular DB columns + every computed/lookup
-      // column the builder has declared, so the user can drag a derived
-      // column into the visible list without leaving this inspector.
+      // Pickable column set = regular DB columns + every derived column the
+      // builder has declared (computed / lookup / roll-up), so the user can
+      // drag any of them into the visible list without leaving this inspector.
       const pickable = [
         ...columnNames,
         ...computed.map((c) => c.name),
         ...lookups.map((l) => l.name),
+        ...rollups.map((r) => r.name),
       ];
       return (
         <BuilderInspectorPanel
@@ -741,10 +805,11 @@ export default function TableScreenEditor({ screen, tables, onChange }: Props) {
                 }}
                 placeholder="Click to pick columns to display..."
               />
-              {(computed.length > 0 || lookups.length > 0) && (
+              {(computed.length > 0 || lookups.length > 0 || rollups.length > 0) && (
                 <p className="mt-2 text-caption text-text-tertiary">
-                  Computed and lookup columns appear in this picker too — they
-                  render read-only at runtime regardless of the editable list.
+                  Computed, lookup and roll-up columns appear in this picker too
+                  — they render read-only at runtime regardless of the editable
+                  list.
                 </p>
               )}
             </>
@@ -838,51 +903,140 @@ export default function TableScreenEditor({ screen, tables, onChange }: Props) {
     if (activeItem === 'settings') {
       return (
         <BuilderInspectorPanel
-          icon={<Rows3 className="h-4 w-4" />}
-          title="Paging and sorting"
-          subtitle="Default row count and row ordering for this table."
+          icon={<Filter className="h-4 w-4" />}
+          title="Filters & sorting"
+          subtitle="Pre-set filters shown above the table, plus default ordering and page size."
         >
-          <div className={BUILDER_GRID_2}>
-            <Lbl label="Rows per page">
-              <input
-                type="number"
-                min={10}
-                max={500}
-                value={tableSpec.page_size ?? 100}
-                onChange={(event) =>
-                  updateTable({
-                    page_size: Math.min(
-                      500,
-                      Math.max(10, Number(event.target.value) || 100),
-                    ),
-                  })
-                }
-                className={INPUT}
-              />
-            </Lbl>
-            <Lbl label="Default sort column">
-              <SingleColumnPicker
-                sourceColumns={columnNames}
-                value={tableSpec.default_sort_column || null}
-                onChange={(next) => updateTable({ default_sort_column: next || null })}
-                placeholder="No default sort"
-              />
-            </Lbl>
-            <Lbl label="Default sort direction">
-              <select
-                value={tableSpec.default_sort_direction || 'desc'}
-                onChange={(event) =>
-                  updateTable({
-                    default_sort_direction:
-                      (event.target.value as 'asc' | 'desc') || 'desc',
-                  })
-                }
-                className={INPUT}
-              >
-                <option value="desc">Descending</option>
-                <option value="asc">Ascending</option>
-              </select>
-            </Lbl>
+          <div className="space-y-5">
+            {/* Pre-set filters — the slicers rendered above the table. */}
+            <div>
+              <div className="mb-2 flex items-center justify-between">
+                <div className="text-caption font-emphasis text-text-secondary">
+                  Filters ({filters.length})
+                </div>
+                <button
+                  type="button"
+                  onClick={addFilter}
+                  disabled={columnNames.length === 0}
+                  className="inline-flex items-center gap-1 rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1 text-tiny text-text-secondary hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  <Plus className="h-3.5 w-3.5" /> Add filter
+                </button>
+              </div>
+              {filters.length === 0 ? (
+                <BuilderEmptyHint className="text-left">
+                  No pre-set filters. Add one to let viewers narrow the table.
+                </BuilderEmptyHint>
+              ) : (
+                <div className="space-y-2">
+                  {filters.map((filter, index) => (
+                    <div
+                      key={index}
+                      className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 p-3"
+                    >
+                      <div className="mb-2 flex items-center justify-between gap-2">
+                        <span className="min-w-0 truncate text-caption font-medium text-text-primary">
+                          {filter.label?.trim() || filter.column || 'Filter'}
+                        </span>
+                        <BuilderIconButton
+                          onClick={() => removeFilter(index)}
+                          title="Delete filter"
+                          variant="danger"
+                        >
+                          <Trash2 className="h-3.5 w-3.5 text-danger" />
+                        </BuilderIconButton>
+                      </div>
+                      <div className={BUILDER_GRID_2}>
+                        <Lbl label="Column">
+                          <SingleColumnPicker
+                            sourceColumns={columnNames}
+                            value={filter.column}
+                            onChange={(next) =>
+                              updateFilter(index, { column: next || '' })
+                            }
+                          />
+                        </Lbl>
+                        <Lbl label="Filter kind">
+                          <select
+                            value={filter.kind}
+                            onChange={(event) =>
+                              updateFilter(index, {
+                                kind: event.target.value as TableFilterSpec['kind'],
+                              })
+                            }
+                            className={INPUT}
+                          >
+                            <option value="text">Text search</option>
+                            <option value="select">Single select</option>
+                            <option value="date_range">Date range</option>
+                            <option value="number_range">Number range</option>
+                          </select>
+                        </Lbl>
+                        <Lbl label="Display label">
+                          <input
+                            value={filter.label || ''}
+                            onChange={(event) =>
+                              updateFilter(index, { label: event.target.value })
+                            }
+                            className={INPUT}
+                            placeholder={filter.column}
+                          />
+                        </Lbl>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Sorting & paging. */}
+            <div className="border-t border-[rgb(var(--border-line))] pt-4">
+              <div className="mb-2 text-caption font-emphasis text-text-secondary">
+                Sorting &amp; paging
+              </div>
+              <div className={BUILDER_GRID_2}>
+                <Lbl label="Rows per page">
+                  <input
+                    type="number"
+                    min={10}
+                    max={500}
+                    value={tableSpec.page_size ?? 100}
+                    onChange={(event) =>
+                      updateTable({
+                        page_size: Math.min(
+                          500,
+                          Math.max(10, Number(event.target.value) || 100),
+                        ),
+                      })
+                    }
+                    className={INPUT}
+                  />
+                </Lbl>
+                <Lbl label="Default sort column">
+                  <SingleColumnPicker
+                    sourceColumns={columnNames}
+                    value={tableSpec.default_sort_column || null}
+                    onChange={(next) => updateTable({ default_sort_column: next || null })}
+                    placeholder="No default sort"
+                  />
+                </Lbl>
+                <Lbl label="Default sort direction">
+                  <select
+                    value={tableSpec.default_sort_direction || 'desc'}
+                    onChange={(event) =>
+                      updateTable({
+                        default_sort_direction:
+                          (event.target.value as 'asc' | 'desc') || 'desc',
+                      })
+                    }
+                    className={INPUT}
+                  >
+                    <option value="desc">Descending</option>
+                    <option value="asc">Ascending</option>
+                  </select>
+                </Lbl>
+              </div>
+            </div>
           </div>
         </BuilderInspectorPanel>
       );
@@ -937,6 +1091,158 @@ export default function TableScreenEditor({ screen, tables, onChange }: Props) {
               placeholder="e.g. No matching rows. Tap + to add one."
             />
           </Lbl>
+        </BuilderInspectorPanel>
+      );
+    }
+
+    if (activeItem === 'row_actions') {
+      const navScreens = allScreens.filter((s) => s.id !== screen.id);
+      return (
+        <BuilderInspectorPanel
+          icon={<ChevronRight className="h-4 w-4" />}
+          title="Row actions"
+          subtitle="Buttons at the end of each row — navigate to another screen carrying that row's values (e.g. open a detail form)."
+        >
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="text-caption font-emphasis text-text-secondary">
+                Actions ({rowActions.length})
+              </div>
+              <button
+                type="button"
+                onClick={addRowAction}
+                className="inline-flex items-center gap-1 rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1 text-tiny text-text-secondary hover:bg-surface-2"
+              >
+                <Plus className="h-3.5 w-3.5" /> Add action
+              </button>
+            </div>
+
+            {rowActions.length === 0 ? (
+              <BuilderEmptyHint className="text-left">
+                No row actions. Add one to let viewers jump to a linked screen
+                (e.g. open a detail form) carrying the row&apos;s values.
+              </BuilderEmptyHint>
+            ) : (
+              <div className="space-y-3">
+                {rowActions.map((action, index) => (
+                  <div
+                    key={index}
+                    className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 p-3"
+                  >
+                    <div className="mb-2 flex items-center justify-between gap-2">
+                      <span className="min-w-0 truncate text-caption font-medium text-text-primary">
+                        {action.label?.trim() || 'Action'}
+                      </span>
+                      <BuilderIconButton
+                        onClick={() => removeRowAction(index)}
+                        title="Delete action"
+                        variant="danger"
+                      >
+                        <Trash2 className="h-3.5 w-3.5 text-danger" />
+                      </BuilderIconButton>
+                    </div>
+                    <div className="space-y-3">
+                      <div className={BUILDER_GRID_2}>
+                        <Lbl label="Button label">
+                          <input
+                            value={action.label || ''}
+                            onChange={(e) => updateRowAction(index, { label: e.target.value })}
+                            className={INPUT}
+                            placeholder="Mở chi tiết"
+                          />
+                        </Lbl>
+                        <Lbl label="Style">
+                          <select
+                            value={action.style || 'secondary'}
+                            onChange={(e) =>
+                              updateRowAction(index, {
+                                style: e.target.value as NonNullable<ScreenAction['style']>,
+                              })
+                            }
+                            className={INPUT}
+                          >
+                            <option value="primary">Primary</option>
+                            <option value="secondary">Secondary</option>
+                            <option value="ghost">Ghost</option>
+                            <option value="danger">Danger</option>
+                          </select>
+                        </Lbl>
+                        <Lbl label="Go to screen">
+                          <select
+                            value={action.go_to_screen || ''}
+                            onChange={(e) =>
+                              updateRowAction(index, { go_to_screen: e.target.value || null })
+                            }
+                            className={INPUT}
+                          >
+                            <option value="">— none —</option>
+                            {navScreens.map((s) => (
+                              <option key={s.id} value={s.id}>
+                                {s.title}
+                              </option>
+                            ))}
+                          </select>
+                        </Lbl>
+                        <Lbl label="Confirm message (tùy chọn)">
+                          <input
+                            value={action.confirm_message || ''}
+                            onChange={(e) =>
+                              updateRowAction(index, {
+                                confirm_message: e.target.value || null,
+                              })
+                            }
+                            className={INPUT}
+                            placeholder="Bạn chắc chắn?"
+                          />
+                        </Lbl>
+                      </div>
+                      {action.go_to_screen && (
+                        <Lbl label="Carry columns to next screen">
+                          {columnNames.length > 0 ? (
+                            <MultiColumnPicker
+                              sourceColumns={columnNames}
+                              value={action.carry || []}
+                              onChange={(carry) => updateRowAction(index, { carry })}
+                              placeholder="Pick columns to carry over..."
+                            />
+                          ) : (
+                            <input
+                              value={(action.carry || []).join(', ')}
+                              onChange={(e) =>
+                                updateRowAction(index, {
+                                  carry: e.target.value
+                                    .split(',')
+                                    .map((s) => s.trim())
+                                    .filter(Boolean),
+                                })
+                              }
+                              className={INPUT}
+                              placeholder="e.g. id, ma_don"
+                            />
+                          )}
+                        </Lbl>
+                      )}
+                      <Lbl label="Chỉ hiện cho vai trò (tùy chọn, cách nhau dấu phẩy)">
+                        <input
+                          value={(action.visible_for_roles || []).join(', ')}
+                          onChange={(e) =>
+                            updateRowAction(index, {
+                              visible_for_roles: e.target.value
+                                .split(',')
+                                .map((s) => s.trim())
+                                .filter(Boolean),
+                            })
+                          }
+                          className={INPUT}
+                          placeholder="để trống = mọi vai trò"
+                        />
+                      </Lbl>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
         </BuilderInspectorPanel>
       );
     }
@@ -1449,7 +1755,7 @@ export default function TableScreenEditor({ screen, tables, onChange }: Props) {
               Mở nhanh các mục cấu hình thường dùng (cũng có ở thanh bên trái).
             </p>
             <div className="grid gap-2 sm:grid-cols-2">
-              {CONFIG_SHORTCUTS.map((c) => (
+              {CONFIG_SHORTCUTS.filter((c) => isTableMode || !c.tableOnly).map((c) => (
                 <ConfigShortcutCard
                   key={c.key}
                   label={c.label}
@@ -2586,65 +2892,6 @@ export default function TableScreenEditor({ screen, tables, onChange }: Props) {
       );
     }
 
-    if (activeItem.startsWith('filter:')) {
-      const filter = filters[activeFilterIndex];
-      if (!filter) return null;
-      return (
-        <BuilderInspectorPanel
-          icon={<Filter className="h-4 w-4" />}
-          title={filter.label?.trim() || filter.column || 'Filter'}
-          subtitle={`${FILTER_KIND_LABEL[filter.kind]} - ${filter.column}`}
-          action={
-            <BuilderIconButton
-              onClick={() => removeFilter(activeFilterIndex)}
-              title="Delete filter"
-              variant="danger"
-            >
-              <Trash2 className="h-3.5 w-3.5 text-danger" />
-            </BuilderIconButton>
-          }
-        >
-          <div className={BUILDER_GRID_2}>
-            <Lbl label="Column">
-              <SingleColumnPicker
-                sourceColumns={columnNames}
-                value={filter.column}
-                onChange={(next) =>
-                  updateFilter(activeFilterIndex, { column: next || '' })
-                }
-              />
-            </Lbl>
-            <Lbl label="Filter kind">
-              <select
-                value={filter.kind}
-                onChange={(event) =>
-                  updateFilter(activeFilterIndex, {
-                    kind: event.target.value as TableFilterSpec['kind'],
-                  })
-                }
-                className={INPUT}
-              >
-                <option value="text">Text search</option>
-                <option value="select">Single select</option>
-                <option value="date_range">Date range</option>
-                <option value="number_range">Number range</option>
-              </select>
-            </Lbl>
-            <Lbl label="Display label">
-              <input
-                value={filter.label || ''}
-                onChange={(event) =>
-                  updateFilter(activeFilterIndex, { label: event.target.value })
-                }
-                className={INPUT}
-                placeholder={filter.column}
-              />
-            </Lbl>
-          </div>
-        </BuilderInspectorPanel>
-      );
-    }
-
     return null;
   };
 
@@ -2690,9 +2937,9 @@ export default function TableScreenEditor({ screen, tables, onChange }: Props) {
             <BuilderNavigatorItem
               icon={<Filter className="h-3.5 w-3.5" />}
               label="Filters & sorting"
-              subtitle={`${tableSpec.page_size ?? 100} rows/page${
-                tableSpec.default_sort_column ? ` - ${tableSpec.default_sort_column}` : ''
-              }`}
+              subtitle={`${filters.length} filter${filters.length === 1 ? '' : 's'} · ${
+                tableSpec.page_size ?? 100
+              }/page`}
               active={activeItem === 'settings'}
               onClick={() => setActiveItem('settings')}
             />
@@ -2737,9 +2984,22 @@ export default function TableScreenEditor({ screen, tables, onChange }: Props) {
               active={activeItem === 'detail_panel'}
               onClick={() => setActiveItem('detail_panel')}
             />
+            <BuilderNavigatorItem
+              icon={<ChevronRight className="h-3.5 w-3.5" />}
+              label="Row actions"
+              subtitle={
+                rowActions.length === 0
+                  ? 'No actions'
+                  : `${rowActions.length} action${rowActions.length === 1 ? '' : 's'}`
+              }
+              active={activeItem === 'row_actions'}
+              onClick={() => setActiveItem('row_actions')}
+            />
           </BuilderNavigatorGroup>
 
           <BuilderNavigatorGroup title="Presentation">
+            {isTableMode && (
+              <>
             <BuilderNavigatorItem
               icon={<Settings2 className="h-3.5 w-3.5" />}
               label="Column presentation"
@@ -2786,6 +3046,8 @@ export default function TableScreenEditor({ screen, tables, onChange }: Props) {
               active={activeItem === 'format_rules'}
               onClick={() => setActiveItem('format_rules')}
             />
+              </>
+            )}
             <BuilderNavigatorItem
               icon={<ListFilter className="h-3.5 w-3.5" />}
               label="Empty state"
@@ -2796,6 +3058,7 @@ export default function TableScreenEditor({ screen, tables, onChange }: Props) {
           </BuilderNavigatorGroup>
 
           <BuilderNavigatorGroup title="Summary">
+            {isTableMode && (
             <BuilderNavigatorItem
               icon={<Sigma className="h-3.5 w-3.5" />}
               label="Footer totals"
@@ -2809,6 +3072,7 @@ export default function TableScreenEditor({ screen, tables, onChange }: Props) {
               active={activeItem === 'totals'}
               onClick={() => setActiveItem('totals')}
             />
+            )}
             <BuilderNavigatorItem
               icon={<LayoutGrid className="h-3.5 w-3.5" />}
               label="KPI tiles"
@@ -2824,191 +3088,140 @@ export default function TableScreenEditor({ screen, tables, onChange }: Props) {
             />
           </BuilderNavigatorGroup>
 
-          <BuilderNavigatorGroup title="Specialized">
-            <BuilderNavigatorItem
-              icon={<ScanLine className="h-3.5 w-3.5" />}
-              label="POS / Scan → Cart"
-              subtitle={tableSpec.pos_cart ? 'Đang bật' : 'Tắt'}
-              active={activeItem === 'pos_cart'}
-              onClick={() => setActiveItem('pos_cart')}
-            />
-          </BuilderNavigatorGroup>
+          {isTableMode && (
+            <BuilderNavigatorGroup title="Specialized">
+              <BuilderNavigatorItem
+                icon={<ScanLine className="h-3.5 w-3.5" />}
+                label="POS / Scan → Cart"
+                subtitle={tableSpec.pos_cart ? 'Đang bật' : 'Tắt'}
+                active={activeItem === 'pos_cart'}
+                onClick={() => setActiveItem('pos_cart')}
+              />
+            </BuilderNavigatorGroup>
+          )}
 
-          <BuilderNavigatorGroup
-            title={`Computed columns (${computed.length})`}
-            action={
-              <button
-                type="button"
-                onClick={addComputed}
-                disabled={columnNames.length === 0}
-                className="rounded p-1 text-text-tertiary hover:bg-surface-2 hover:text-brand disabled:cursor-not-allowed disabled:opacity-40"
-                title="Add computed column"
+          <section>
+            <h3 className="mb-1.5 text-tiny font-emphasis uppercase tracking-wider text-text-quaternary">
+              Derived data
+            </h3>
+            <div className="space-y-3">
+              <DerivedSubGroup
+                label="Computed"
+                count={computed.length}
+                onAdd={addComputed}
+                addTitle="Add computed column"
+                addDisabled={columnNames.length === 0}
               >
-                <Plus className="h-3.5 w-3.5" />
-              </button>
-            }
-          >
-            {computed.length === 0 ? (
-              <BuilderEmptyHint className="px-3 py-4">
-                No formula columns yet.
-              </BuilderEmptyHint>
-            ) : (
-              computed.map((col, index) => (
-                <BuilderNavigatorItem
-                  key={`${col.name}:${index}`}
-                  icon={<Calculator className="h-3.5 w-3.5" />}
-                  label={col.label?.trim() || col.name}
-                  subtitle={col.formula.trim() ? col.formula.slice(0, 40) : 'No formula yet'}
-                  active={activeItem === `computed:${index}`}
-                  onClick={() => setActiveItem(`computed:${index}`)}
-                  action={
-                    <BuilderIconButton
-                      onClick={() => removeComputed(index)}
-                      title="Delete column"
-                      variant="danger"
-                    >
-                      <Trash2 className="h-3 w-3 text-danger" />
-                    </BuilderIconButton>
-                  }
-                />
-              ))
-            )}
-          </BuilderNavigatorGroup>
+                {computed.length === 0 ? (
+                  <BuilderEmptyHint className="px-3 py-3">
+                    No formula columns yet.
+                  </BuilderEmptyHint>
+                ) : (
+                  computed.map((col, index) => (
+                    <BuilderNavigatorItem
+                      key={`${col.name}:${index}`}
+                      icon={<Calculator className="h-3.5 w-3.5" />}
+                      label={col.label?.trim() || col.name}
+                      subtitle={col.formula.trim() ? col.formula.slice(0, 40) : 'No formula yet'}
+                      active={activeItem === `computed:${index}`}
+                      onClick={() => setActiveItem(`computed:${index}`)}
+                      action={
+                        <BuilderIconButton
+                          onClick={() => removeComputed(index)}
+                          title="Delete column"
+                          variant="danger"
+                        >
+                          <Trash2 className="h-3 w-3 text-danger" />
+                        </BuilderIconButton>
+                      }
+                    />
+                  ))
+                )}
+              </DerivedSubGroup>
 
-          <BuilderNavigatorGroup
-            title={`Lookup columns (${lookups.length})`}
-            action={
-              <button
-                type="button"
-                onClick={addLookup}
-                disabled={tables.length === 0}
-                className="rounded p-1 text-text-tertiary hover:bg-surface-2 hover:text-brand disabled:cursor-not-allowed disabled:opacity-40"
-                title="Add lookup column"
+              <DerivedSubGroup
+                label="Lookup"
+                count={lookups.length}
+                onAdd={addLookup}
+                addTitle="Add lookup column"
+                addDisabled={tables.length === 0}
               >
-                <Plus className="h-3.5 w-3.5" />
-              </button>
-            }
-          >
-            {lookups.length === 0 ? (
-              <BuilderEmptyHint className="px-3 py-4">
-                No lookup columns yet.
-              </BuilderEmptyHint>
-            ) : (
-              lookups.map((col, index) => {
-                const remoteTable = tables.find((t) => t.id === col.from_table_id);
-                return (
-                  <BuilderNavigatorItem
-                    key={`${col.name}:${index}`}
-                    icon={<Link2 className="h-3.5 w-3.5" />}
-                    label={col.label?.trim() || col.name}
-                    subtitle={
-                      remoteTable
-                        ? `${remoteTable.display_name}.${col.return_column || '?'}`
-                        : 'No table selected'
-                    }
-                    active={activeItem === `lookup:${index}`}
-                    onClick={() => setActiveItem(`lookup:${index}`)}
-                    action={
-                      <BuilderIconButton
-                        onClick={() => removeLookup(index)}
-                        title="Delete column"
-                        variant="danger"
-                      >
-                        <Trash2 className="h-3 w-3 text-danger" />
-                      </BuilderIconButton>
-                    }
-                  />
-                );
-              })
-            )}
-          </BuilderNavigatorGroup>
+                {lookups.length === 0 ? (
+                  <BuilderEmptyHint className="px-3 py-3">
+                    No lookup columns yet.
+                  </BuilderEmptyHint>
+                ) : (
+                  lookups.map((col, index) => {
+                    const remoteTable = tables.find((t) => t.id === col.from_table_id);
+                    return (
+                      <BuilderNavigatorItem
+                        key={`${col.name}:${index}`}
+                        icon={<Link2 className="h-3.5 w-3.5" />}
+                        label={col.label?.trim() || col.name}
+                        subtitle={
+                          remoteTable
+                            ? `${remoteTable.display_name}.${col.return_column || '?'}`
+                            : 'No table selected'
+                        }
+                        active={activeItem === `lookup:${index}`}
+                        onClick={() => setActiveItem(`lookup:${index}`)}
+                        action={
+                          <BuilderIconButton
+                            onClick={() => removeLookup(index)}
+                            title="Delete column"
+                            variant="danger"
+                          >
+                            <Trash2 className="h-3 w-3 text-danger" />
+                          </BuilderIconButton>
+                        }
+                      />
+                    );
+                  })
+                )}
+              </DerivedSubGroup>
 
-          <BuilderNavigatorGroup
-            title={`Roll-up columns (${rollups.length})`}
-            action={
-              <button
-                type="button"
-                onClick={addRollup}
-                disabled={tables.length === 0}
-                className="rounded p-1 text-text-tertiary hover:bg-surface-2 hover:text-brand disabled:cursor-not-allowed disabled:opacity-40"
-                title="Add roll-up column"
+              <DerivedSubGroup
+                label="Roll-up"
+                count={rollups.length}
+                onAdd={addRollup}
+                addTitle="Add roll-up column"
+                addDisabled={tables.length === 0}
               >
-                <Plus className="h-3.5 w-3.5" />
-              </button>
-            }
-          >
-            {rollups.length === 0 ? (
-              <BuilderEmptyHint className="px-3 py-4">
-                Chưa có cột roll-up (gộp bảng con).
-              </BuilderEmptyHint>
-            ) : (
-              rollups.map((col, index) => {
-                const remoteTable = tables.find((t) => t.id === col.from_table_id);
-                return (
-                  <BuilderNavigatorItem
-                    key={`${col.name}:${index}`}
-                    icon={<Sigma className="h-3.5 w-3.5" />}
-                    label={col.label?.trim() || col.name}
-                    subtitle={
-                      remoteTable
-                        ? `${col.agg || 'count'}(${remoteTable.display_name})`
-                        : 'No table selected'
-                    }
-                    active={activeItem === `rollup:${index}`}
-                    onClick={() => setActiveItem(`rollup:${index}`)}
-                    action={
-                      <BuilderIconButton
-                        onClick={() => removeRollup(index)}
-                        title="Delete column"
-                        variant="danger"
-                      >
-                        <Trash2 className="h-3 w-3 text-danger" />
-                      </BuilderIconButton>
-                    }
-                  />
-                );
-              })
-            )}
-          </BuilderNavigatorGroup>
-
-          <BuilderNavigatorGroup
-            title={`Filters (${filters.length})`}
-            action={
-              <button
-                type="button"
-                onClick={addFilter}
-                disabled={columnNames.length === 0}
-                className="rounded p-1 text-text-tertiary hover:bg-surface-2 hover:text-brand disabled:cursor-not-allowed disabled:opacity-40"
-                title="Add filter"
-              >
-                <Plus className="h-3.5 w-3.5" />
-              </button>
-            }
-          >
-            {filters.length === 0 ? (
-              <BuilderEmptyHint className="px-3 py-4">No filters yet.</BuilderEmptyHint>
-            ) : (
-              filters.map((filter, index) => (
-                <BuilderNavigatorItem
-                  key={`${filter.column}:${index}`}
-                  icon={<Filter className="h-3.5 w-3.5" />}
-                  label={filter.label?.trim() || filter.column || 'Filter'}
-                  subtitle={`${FILTER_KIND_LABEL[filter.kind]} - ${filter.column}`}
-                  active={activeItem === `filter:${index}`}
-                  onClick={() => setActiveItem(`filter:${index}`)}
-                  action={
-                    <BuilderIconButton
-                      onClick={() => removeFilter(index)}
-                      title="Delete filter"
-                      variant="danger"
-                    >
-                      <Trash2 className="h-3 w-3 text-danger" />
-                    </BuilderIconButton>
-                  }
-                />
-              ))
-            )}
-          </BuilderNavigatorGroup>
+                {rollups.length === 0 ? (
+                  <BuilderEmptyHint className="px-3 py-3">
+                    Chưa có cột roll-up (gộp bảng con).
+                  </BuilderEmptyHint>
+                ) : (
+                  rollups.map((col, index) => {
+                    const remoteTable = tables.find((t) => t.id === col.from_table_id);
+                    return (
+                      <BuilderNavigatorItem
+                        key={`${col.name}:${index}`}
+                        icon={<Sigma className="h-3.5 w-3.5" />}
+                        label={col.label?.trim() || col.name}
+                        subtitle={
+                          remoteTable
+                            ? `${col.agg || 'count'}(${remoteTable.display_name})`
+                            : 'No table selected'
+                        }
+                        active={activeItem === `rollup:${index}`}
+                        onClick={() => setActiveItem(`rollup:${index}`)}
+                        action={
+                          <BuilderIconButton
+                            onClick={() => removeRollup(index)}
+                            title="Delete column"
+                            variant="danger"
+                          >
+                            <Trash2 className="h-3 w-3 text-danger" />
+                          </BuilderIconButton>
+                        }
+                      />
+                    );
+                  })
+                )}
+              </DerivedSubGroup>
+            </div>
+          </section>
         </BuilderNavigator>
 
         {renderInspector()}
