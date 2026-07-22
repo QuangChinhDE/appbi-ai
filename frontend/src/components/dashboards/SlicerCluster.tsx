@@ -51,6 +51,8 @@ interface SlicerClusterProps {
     isLoading: boolean;
     isError: boolean;
     hasFilterContext: boolean;
+    total?: number;
+    hasMore?: boolean;
   }>;
   /** Server-side value search over the cached full distinct set (type-to-search
    * for high-cardinality slicers). Forwarded to DashboardFilterBar. */

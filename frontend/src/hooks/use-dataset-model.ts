@@ -267,6 +267,14 @@ export async function fetchDatasetModel(datasetId: number) {
   return response.data;
 }
 
+// Prefetch page size for a slicer's value dropdown. ≤ this cardinality → the
+// whole list loads and the viewer can pick freely; beyond it the dropdown shows
+// this many + a "type to find more" hint, and the server-side search
+// (get_distinct_field_values with `search=`) covers the rest of the dimension
+// from the cache. Must stay ≤ the BE page cap (datasets.py distinct le=1000);
+// raising it above 1000 requires bumping that `le` in lock-step.
+export const SLICER_DISTINCT_PREFETCH_LIMIT = 1000;
+
 export async function fetchDatasetModelDistinctValues(
   datasetId: number,
   field: string,

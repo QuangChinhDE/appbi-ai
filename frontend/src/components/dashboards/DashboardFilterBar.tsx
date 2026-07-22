@@ -154,6 +154,8 @@ interface DashboardFilterBarProps {
     isLoading: boolean;
     isError: boolean;
     hasFilterContext: boolean;
+    total?: number;
+    hasMore?: boolean;
   }>;
   /** Server-side value search over the FULL cached distinct set for a slicer's
    * value dropdown (type-to-search on high-cardinality dimensions). When
@@ -1085,6 +1087,8 @@ interface FilterCardProps {
     isLoading: boolean;
     isError: boolean;
     hasFilterContext: boolean;
+    total?: number;
+    hasMore?: boolean;
   };
   /** Phase-10 — when true, this card stretches via `flex-1` instead of its
    * manual `widthPx`. Set by SlicerCluster's "Tự động giãn cách" toggle. */
@@ -1910,6 +1914,8 @@ function SingleSelectBody({
     isLoading: boolean;
     isError: boolean;
     hasFilterContext: boolean;
+    total?: number;
+    hasMore?: boolean;
   };
 }) {
   const { t } = useI18n();
@@ -1953,6 +1959,14 @@ function SingleSelectBody({
             className="w-full rounded border border-[rgb(var(--border-line))] bg-surface-1 py-1 pl-7 pr-2 text-xs outline-none focus:border-brand/50 focus:ring-1 focus:ring-brand"
           />
         </div>
+      )}
+      {!search && distinctStatus?.hasMore && (
+        <p className="mb-1.5 text-[11px] text-text-tertiary">
+          {t('dashboards.selectBody.showingTruncated', {
+            shown: values.length,
+            total: distinctStatus.total ?? values.length,
+          })}
+        </p>
       )}
       {selectedValue && (
         <div className="flex items-center gap-2 mb-1.5 pb-1.5 border-b border-[rgb(var(--border-line))]">
@@ -2033,6 +2047,8 @@ function MultiSelectBody({
     isLoading: boolean;
     isError: boolean;
     hasFilterContext: boolean;
+    total?: number;
+    hasMore?: boolean;
   };
 }) {
   const { t } = useI18n();
@@ -2082,6 +2098,14 @@ function MultiSelectBody({
             className="w-full rounded border border-[rgb(var(--border-line))] bg-surface-1 py-1 pl-7 pr-2 text-xs outline-none focus:border-brand/50 focus:ring-1 focus:ring-brand"
           />
         </div>
+      )}
+      {!search && distinctStatus?.hasMore && (
+        <p className="mb-1.5 text-[11px] text-text-tertiary">
+          {t('dashboards.selectBody.showingTruncated', {
+            shown: values.length,
+            total: distinctStatus.total ?? values.length,
+          })}
+        </p>
       )}
 
       {/* Select / Deselect all */}

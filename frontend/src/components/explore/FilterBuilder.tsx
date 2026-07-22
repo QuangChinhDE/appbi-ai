@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Plus, Trash2, ChevronDown, Info, Loader2, Search } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { getFilterTypeForColumn, getDistinctValues, type FilterType } from '@/lib/filters';
-import { fetchDatasetModelDistinctValues, modelKeys } from '@/hooks/use-dataset-model';
+import { fetchDatasetModelDistinctValues, SLICER_DISTINCT_PREFETCH_LIMIT, modelKeys } from '@/hooks/use-dataset-model';
 import { DateInput } from '@/components/ui/DateInput';
 import { useI18n } from '@/providers/LanguageProvider';
 
@@ -501,7 +501,7 @@ function FilterRow({
     queryKey: datasetId
       ? [...modelKeys.distinct(datasetId, filter.field)]
       : ['filter-builder-disabled-distinct-query'],
-    queryFn: () => fetchDatasetModelDistinctValues(datasetId!, filter.field, 200),
+    queryFn: () => fetchDatasetModelDistinctValues(datasetId!, filter.field, SLICER_DISTINCT_PREFETCH_LIMIT),
     enabled: shouldFetchRemote,
     staleTime: 5 * 60 * 1000,
   });

@@ -42,7 +42,7 @@ import {
   liftLayoutToTop,
   deriveStackedLayout,
 } from '@/lib/dashboard-pages';
-import { applyScopeBound, getColumnKey, getFilterDisplayLabel, getFilterKey, type BaseFilter, type ColumnInfo } from '@/lib/filters';
+import { applyScopeBound, getColumnKey, getDistinctValueFilterContext, getFilterDisplayLabel, getFilterKey, type BaseFilter, type ColumnInfo } from '@/lib/filters';
 import { usePublicFilterDistinctValues } from '@/hooks/use-public-filter-distinct-values';
 import { buildPublicLinkTheme } from '@/lib/public-link-appearance';
 import { buildPublicDashboardFilterRuntime } from '@/lib/public-dashboard-runtime';
@@ -1240,8 +1240,14 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
         fetchServerDistinct={async (column, search) => {
           if (!column.datasetId || !column.semanticField) return [];
           try {
+            // Cascade the search results by the viewer's other active filters
+            // + page-scope (same context the prefetch uses); self-strips this
+            // field so the dropdown never pins its own value.
+            const filterContext = getDistinctValueFilterContext(
+              [...appliedViewerFilters, ...pageHiddenFilters], column,
+            );
             const res = await publicDashboardApi.getFilterDistinctValues(
-              token, column.datasetId, column.semanticField, activeSessionToken, 500, undefined, search,
+              token, column.datasetId, column.semanticField, activeSessionToken, 500, filterContext, search,
             );
             return res.values ?? [];
           } catch {

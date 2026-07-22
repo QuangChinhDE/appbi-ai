@@ -4107,7 +4107,11 @@ def get_distinct_field_values(
     Returns ``{"values": [...page...], "total": <matched count>,
     "has_more": bool, "dropped_filters": [...], ["debug_sql": ...]}``.
     """
-    page_size = max(1, min(int(limit or 200), 1000))
+    # Cap the returned page at the fetch ceiling (not 1000): callers that want
+    # the FULL set (e.g. the public endpoint passing limit=_DISTINCT_FETCH_CEILING
+    # to then scope + paginate itself) must get everything back. Normal builder
+    # callers are already bounded to <=1000 by the endpoint's Pydantic le.
+    page_size = max(1, min(int(limit or 200), _DISTINCT_FETCH_CEILING))
     start = max(0, int(offset or 0))
 
     full = _distinct_values_full(
