@@ -2839,7 +2839,12 @@ class DataSourceConnectionService:
         """
         try:
             # ── Collect all sheet data from the live workbook ─────────────────
-            spreadsheet_id, connector = DataSourceConnectionService._get_google_sheets_connector(config)
+            # spreadsheet_id is cheap (config); the connector (OAuth/SA + client
+            # build) is only needed on a cache MISS, so build it lazily inside the
+            # loader — a workbook/result cache HIT then pays nothing to build it.
+            spreadsheet_id = str(config.get("spreadsheet_id") or "").strip()
+            if not spreadsheet_id:
+                raise ValueError("spreadsheet_id is required")
 
             # Whole-workbook read is cached per spreadsheet for a short TTL so a
             # burst of screen/lookup reads collapses into ONE Sheets fetch
@@ -2849,11 +2854,11 @@ class DataSourceConnectionService:
             from app.services import google_sheets_cache
 
             def _load_workbook():
+                _sid, connector = DataSourceConnectionService._get_google_sheets_connector(config)
                 names = connector.list_sheets(spreadsheet_id)
-                loaded = {}
-                for sn in names:
-                    loaded[sn] = connector.get_sheet_data(spreadsheet_id, sheet_name=sn)
-                return loaded
+                # ONE batchGet for the whole workbook (was N sequential get_sheet_data
+                # → the Sheets quota + latency root cause). Parsing is byte-identical.
+                return connector.get_sheets_data_batch(spreadsheet_id, names)
 
             all_sheets = google_sheets_cache.get_or_load(spreadsheet_id, _load_workbook)
             logger.info(f"Google Sheets data (cached workbook): {len(all_sheets)} sheets")

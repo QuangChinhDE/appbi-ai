@@ -120,7 +120,10 @@ class GoogleSheetsConnector:
                 )
             else:
                 self.credentials = credentials_source
-            self.service = build('sheets', 'v4', credentials=self.credentials)
+            # cache_discovery=False skips the on-disk discovery-doc cache (a
+            # file-lock + warning under concurrency) — the doc is tiny and the
+            # client is reused, so it's pure overhead here.
+            self.service = build('sheets', 'v4', credentials=self.credentials, cache_discovery=False)
         except Exception as e:
             raise ValueError(f"Failed to initialize Google Sheets connector: {str(e)}")
 
@@ -194,43 +197,67 @@ class GoogleSheetsConnector:
                 "get_sheet_data",
             )
             
-            values = result.get('values', [])
-            
-            if not values:
-                return {
-                    'columns': [],
-                    'rows': [],
-                    'row_count': 0
-                }
-            
-            # First row as headers
-            headers = values[0] if values else []
-            data_rows = values[1:] if len(values) > 1 else []
-            
-            # Convert to list of dicts
-            rows = []
-            for row in data_rows:
-                # Pad row if it's shorter than headers
-                padded_row = row + [''] * (len(headers) - len(row))
-                row_dict = {headers[i]: padded_row[i] for i in range(len(headers))}
-                rows.append(row_dict)
-            
-            # Infer column types (simplified - all as string for now)
-            columns = [
-                {'name': header, 'type': 'string'}
-                for header in headers
-            ]
-            
-            return {
-                'columns': columns,
-                'rows': rows,
-                'row_count': len(rows)
-            }
-            
+            return self._parse_values(result.get('values', []))
+
         except HttpError as e:
             raise ValueError(f"Google Sheets API error: {str(e)}")
         except Exception as e:
             raise ValueError(f"Failed to get sheet data: {str(e)}")
+
+    @staticmethod
+    def _parse_values(values: list) -> Dict[str, Any]:
+        """Turn a raw Sheets ``values`` matrix into {columns, rows, row_count}.
+        Shared by get_sheet_data AND the batchGet path so both produce
+        BYTE-IDENTICAL output (headers = row 0, short rows padded, every column
+        typed 'string')."""
+        if not values:
+            return {'columns': [], 'rows': [], 'row_count': 0}
+        headers = values[0] if values else []
+        data_rows = values[1:] if len(values) > 1 else []
+        rows = []
+        for row in data_rows:
+            padded_row = row + [''] * (len(headers) - len(row))
+            rows.append({headers[i]: padded_row[i] for i in range(len(headers))})
+        columns = [{'name': header, 'type': 'string'} for header in headers]
+        return {'columns': columns, 'rows': rows, 'row_count': len(rows)}
+
+    def get_sheets_data_batch(
+        self,
+        spreadsheet_id: str,
+        sheet_names: List[str],
+        range_name: str = 'A:Z',
+    ) -> Dict[str, Dict[str, Any]]:
+        """Fetch MANY tabs in ONE ``values.batchGet`` call → {sheet_name: {columns,
+        rows, row_count}}. Replaces N sequential ``get_sheet_data`` calls: cuts a
+        cold whole-workbook read from (list_sheets + N gets) to (list_sheets +
+        1 batchGet) — the fix for the 60-reads/min Sheets quota AND the per-tab
+        latency. Uses the SAME ``A:Z`` range + ``_parse_values`` as get_sheet_data
+        so the cached workbook is byte-identical. Falls back to per-tab on any
+        shape mismatch so a tab is never silently dropped."""
+        if not sheet_names:
+            return {}
+        ranges = [f"{sn}!{range_name}" for sn in sheet_names]
+        result = self._execute(
+            self.service.spreadsheets().values().batchGet(
+                spreadsheetId=spreadsheet_id, ranges=ranges,
+            ),
+            "get_sheets_data_batch",
+        )
+        value_ranges = result.get('valueRanges', []) or []
+        out: Dict[str, Dict[str, Any]] = {}
+        if len(value_ranges) == len(sheet_names):
+            # batchGet preserves request order → zip is safe.
+            for sn, vr in zip(sheet_names, value_ranges):
+                out[sn] = self._parse_values(vr.get('values', []))
+        else:
+            # Unexpected shape → per-tab fallback (correctness over the batch win).
+            logger.warning(
+                "batchGet returned %d ranges for %d sheets (ss=%s) — per-tab fallback",
+                len(value_ranges), len(sheet_names), spreadsheet_id,
+            )
+            for sn in sheet_names:
+                out[sn] = self.get_sheet_data(spreadsheet_id, sheet_name=sn)
+        return out
     
     # ── Write operations ──────────────────────────────────────────────
     #
