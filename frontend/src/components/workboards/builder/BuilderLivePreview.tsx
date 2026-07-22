@@ -23,7 +23,7 @@ import {
   Laptop,
   AlertCircle,
   RotateCw,
-  Share2,
+  Eye,
 } from 'lucide-react';
 
 import {
@@ -40,15 +40,11 @@ import {
 } from './appUserRoles';
 import {
   getAccessMode,
-  isWorkboardLinked,
   sortPreviewWorkspaces,
   type WorkspaceLite,
 } from './workspace-preview-utils';
 import { Button } from '@/components/ui/Button';
-import {
-  WORKBOARD_CONG_CHANGED,
-  WORKBOARD_SHARE_OPEN,
-} from '@/components/workboards/WorkboardShareModal';
+import { WORKBOARD_CONG_CHANGED } from '@/components/workboards/WorkboardShareModal';
 import { useI18n } from '@/providers/LanguageProvider';
 
 function getApiErrorMessage(error: unknown, fallback: string) {
@@ -100,6 +96,7 @@ export default function BuilderLivePreview({
   const [sessionError, setSessionError] = useState<string | null>(null);
   const [iframeKey, setIframeKey] = useState(0);
   const [loadingWs, setLoadingWs] = useState(true);
+  const [provisioning, setProvisioning] = useState(false);
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const workboardSlug = workboard.slug ?? '';
 
@@ -136,6 +133,29 @@ export default function BuilderLivePreview({
     void loadWorkspaces();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workboard.id, workboardSlug]);
+
+  // Preview needs a workspace only as a transparent HOST (session cookie +
+  // /ws/{token} route); the board does NOT need to be publicly shared — the
+  // preview-session carries a preview_workboard_id bypass that serves the DRAFT
+  // even for a board that's in no menu. So the ONLY blocker is having zero
+  // workspaces at all; in that case spin up a private INTERNAL one (staff-only,
+  // never public) so authors can preview before ever sharing anything.
+  const provisionPreviewHost = async () => {
+    setProvisioning(true);
+    setSessionError(null);
+    try {
+      const r = await apiClient.post<WorkspaceLite>('/workspaces', {
+        name: 'Xem thử (nội bộ)',
+        access_mode: 'internal',
+        menu_config: [],
+      });
+      await loadWorkspaces(r.data?.id);
+    } catch (err: unknown) {
+      setSessionError(getApiErrorMessage(err, 'Không tạo được nơi xem thử.'));
+    } finally {
+      setProvisioning(false);
+    }
+  };
 
   const isInternal = activeWs ? getAccessMode(activeWs) === 'internal' : false;
 
@@ -424,19 +444,19 @@ export default function BuilderLivePreview({
           <Centered>
             <Loader2 className="h-5 w-5 animate-spin text-text-tertiary" />
           </Centered>
-        ) : !activeWs || !isWorkboardLinked(activeWs, workboardSlug) ? (
+        ) : !activeWs ? (
           <Centered>
-            <div className="max-w-xs rounded-md border border-warning/30 bg-warning/10 p-3 text-center text-caption text-warning">
-              {t('workboards.livePreview.noPortalPrefix')} <strong>{t('common.share')}</strong>{' '}
-              {t('workboards.livePreview.noPortalSuffix')}
+            <div className="max-w-xs rounded-md border border-[rgb(var(--border-line))] bg-surface-1 p-3 text-center text-caption text-text-secondary">
+              {t('workboards.livePreview.noHostBody')}
               <div className="mt-2">
                 <Button
                   variant="primary"
                   size="xs"
-                  leadingIcon={<Share2 className="h-3 w-3" />}
-                  onClick={() => window.dispatchEvent(new CustomEvent(WORKBOARD_SHARE_OPEN))}
+                  leadingIcon={<Eye className="h-3 w-3" />}
+                  onClick={provisionPreviewHost}
+                  loading={provisioning}
                 >
-                  {t('workboards.livePreview.openShare')}
+                  {t('workboards.livePreview.enablePreview')}
                 </Button>
               </div>
             </div>
