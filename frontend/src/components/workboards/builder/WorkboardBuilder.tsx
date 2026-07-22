@@ -239,14 +239,29 @@ export default function WorkboardBuilder({ workboard }: Props) {
     else panel.collapse();
   };
 
+  // Reflect the screen being edited in the URL (?screen=<id>) so the builder is
+  // deep-linkable and survives F5 — refresh stays on the SCREEN instead of
+  // dropping back to the canvas — and browser back/forward walk
+  // screen→screen→canvas. Raw History API (not the Next router) so switching
+  // screens never remounts the builder mid-edit. `null` → canvas (bare URL).
+  const writeBuilderUrl = (screenId: string | null) => {
+    if (typeof window === 'undefined') return;
+    const url = new URL(window.location.href);
+    if ((url.searchParams.get('screen') || null) === (screenId || null)) return;
+    url.search = screenId ? `?screen=${encodeURIComponent(screenId)}` : '';
+    window.history.pushState({ wbScreen: screenId }, '', url);
+  };
+
   const openScreen = (id: string) => {
     setActiveScreenId(id);
     setMode('editor');
+    writeBuilderUrl(id);
   };
 
   const backToCanvas = () => {
     setMode('canvas');
     setFocusFieldColumn(null);
+    writeBuilderUrl(null);
   };
 
   // Deep-link: /workboards/[id]?screen=<id> opens that screen straight in the
@@ -262,6 +277,23 @@ export default function WorkboardBuilder({ workboard }: Props) {
       setMode('editor');
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Browser back/forward → move between screens (and back to canvas). Reads the
+  // screen from the URL; an unknown/blank id just falls to canvas via the
+  // isEditor guard (activeScreen === null), so no existence check is needed.
+  useEffect(() => {
+    const onPop = () => {
+      const sid = new URLSearchParams(window.location.search).get('screen');
+      if (sid) {
+        setActiveScreenId(sid);
+        setMode('editor');
+      } else {
+        setMode('canvas');
+      }
+    };
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
   }, []);
 
   // Auto-save with a 1.2s debounce. The mini-preview iframe re-keys on
@@ -378,6 +410,7 @@ export default function WorkboardBuilder({ workboard }: Props) {
       // the editor — never the canvas.
       setMode('editor');
       setFocusFieldColumn(column);
+      if (screenId) writeBuilderUrl(screenId);
     }
     window.addEventListener('message', onMessage);
     return () => window.removeEventListener('message', onMessage);
@@ -481,6 +514,7 @@ export default function WorkboardBuilder({ workboard }: Props) {
     // "I want a new X", and the next thing they want is to configure it.
     setActiveScreenId(id);
     setMode('editor');
+    writeBuilderUrl(id);
   };
 
   const deleteScreen = (id: string) => {
@@ -863,6 +897,7 @@ export default function WorkboardBuilder({ workboard }: Props) {
             setActiveScreenId(id);
             setMode('editor');
             setFocusFieldColumn(null);
+            writeBuilderUrl(id);
           }}
           onAllScreens={backToCanvas}
           onClose={() => setSwitcherOpen(false)}
