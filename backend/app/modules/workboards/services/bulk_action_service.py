@@ -357,8 +357,14 @@ def run_bulk_action(
                     old = {c: srow.get(c) for c in patch.keys()}
                     batch_updates.append({"pk": pk, "values": dict(patch)})
                     updated.append((tgt, pk, old))
+                # Server-driven write: the patch columns are author-declared in the
+                # recipe (``set`` + ``link_columns``), not user input, so bypass the
+                # UI inline-editable gate — a link column (e.g. the parent's code)
+                # is normally UI-readonly yet must be written here. RLS + derived
+                # protection still apply inside update_screen_rows.
                 result = screen_runtime.update_screen_rows(
-                    db, workboard, tgt, batch_updates, identity=identity
+                    db, workboard, tgt, batch_updates, identity=identity,
+                    enforce_editable=False,
                 )
                 changed = result.get("results") if isinstance(result, dict) else []
                 n = len(changed or batch_updates)

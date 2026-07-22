@@ -3053,6 +3053,7 @@ function BulkRecipeModal({
   busy,
   onClose,
   onRun,
+  variant = 'modal',
 }: {
   action: NonNullable<NonNullable<TableScreenResponse['table_view']>['bulk_actions']>[number];
   selectedRows: Array<Record<string, unknown>>;
@@ -3064,6 +3065,10 @@ function BulkRecipeModal({
   busy: boolean;
   onClose: () => void;
   onRun: (resources: Record<string, Record<string, unknown>>) => void;
+  // 'modal' = overlay popup (default). 'panel' = docked inline card (no overlay,
+  // no close/cancel) — used to embed the plan (pickers + weight + route map)
+  // beside a table screen so the operator selects rows and sees the plan live.
+  variant?: 'modal' | 'panel';
 }) {
   const resourceInputs = action.resource_inputs || [];
   const constraints = action.constraints || [];
@@ -3135,20 +3140,31 @@ function BulkRecipeModal({
   const anyViolated = constraintState.some((s) => !s.ok);
   const canRun = !busy && !missingResource && !anyViolated && selectedRows.length > 0;
 
-  return (
-    <div
-      className="fixed inset-0 z-40 flex items-center justify-center bg-slate-900/40 p-4"
-      onClick={onClose}
-    >
-      <div className="w-full max-w-lg rounded-2xl bg-white p-5 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+  const inner = (
+      <div
+        className={
+          variant === 'panel'
+            ? 'rounded-2xl border border-slate-200 bg-white p-4 shadow-sm'
+            : 'w-full max-w-lg rounded-2xl bg-white p-5 shadow-2xl'
+        }
+        onClick={variant === 'panel' ? undefined : (e) => e.stopPropagation()}
+      >
         <div className="flex items-center justify-between">
           <h3 className="text-base font-bold text-slate-800">
             {action.icon ? `${action.icon} ` : ''}
             {action.label}
           </h3>
-          <button onClick={onClose} className="rounded p-1 text-slate-400 hover:bg-slate-100">✕</button>
+          {variant === 'modal' ? (
+            <button onClick={onClose} className="rounded p-1 text-slate-400 hover:bg-slate-100">✕</button>
+          ) : null}
         </div>
-        <p className="mt-1 text-sm text-slate-500">Đã chọn {selectedRows.length} dòng.</p>
+        <p className="mt-1 text-sm text-slate-500">
+          {selectedRows.length > 0
+            ? `Đã chọn ${selectedRows.length} dòng.`
+            : variant === 'panel'
+              ? 'Chọn các dòng ở bảng bên cạnh để lập kế hoạch.'
+              : 'Đã chọn 0 dòng.'}
+        </p>
 
         {previewAgg.length ? (
           <div className="mt-3 flex flex-wrap gap-1.5">
@@ -3188,25 +3204,32 @@ function BulkRecipeModal({
           ))
         )}
 
-        {constraintState.map((s, i) => (
-          <div
-            key={i}
-            className={`mt-3 rounded-lg px-3 py-2 text-sm ${s.ok ? 'bg-emerald-50 text-emerald-800' : 'bg-rose-50 text-rose-800'}`}
-          >
-            <div className="flex items-center justify-between font-medium">
-              <span>{s.c.label || s.c.agg_column}</span>
-              <span>
-                {fmt(s.actual)} {s.c.op || '<='} {s.limit == null ? '—' : fmt(s.limit)}
-                {s.limit != null ? ` (${s.pct.toFixed(0)}%)` : ''}
-              </span>
-            </div>
-            {!s.ok ? (
-              <div className="mt-0.5 text-xs">
-                {s.limit == null ? 'Hãy chọn tài nguyên để kiểm tra ràng buộc.' : (s.c.error_message || 'Vượt giới hạn — không thể xác nhận.')}
+        {constraintState.map((s, i) => {
+          // Neutral (not red) until the limit is known — e.g. before a vehicle is
+          // picked the capacity is unknown, so it's "pending", not a violation.
+          const pending = s.limit == null;
+          const tone = pending
+            ? 'bg-slate-50 text-slate-600'
+            : s.ok
+              ? 'bg-emerald-50 text-emerald-800'
+              : 'bg-rose-50 text-rose-800';
+          return (
+            <div key={i} className={`mt-3 rounded-lg px-3 py-2 text-sm ${tone}`}>
+              <div className="flex items-center justify-between font-medium">
+                <span>{s.c.label || s.c.agg_column}</span>
+                <span>
+                  {fmt(s.actual)} {s.c.op || '<='} {pending ? '—' : fmt(s.limit as number)}
+                  {!pending ? ` (${s.pct.toFixed(0)}%)` : ''}
+                </span>
               </div>
-            ) : null}
-          </div>
-        ))}
+              {pending ? (
+                <div className="mt-0.5 text-xs">Hãy chọn tài nguyên để kiểm tra ràng buộc.</div>
+              ) : !s.ok ? (
+                <div className="mt-0.5 text-xs">{s.c.error_message || 'Vượt giới hạn — không thể xác nhận.'}</div>
+              ) : null}
+            </div>
+          );
+        })}
 
         {action.route_preview && selectedRows.length > 0 ? (
           <div className="mt-3 overflow-hidden rounded-xl border border-slate-200">
@@ -3220,27 +3243,39 @@ function BulkRecipeModal({
               pkCols={pkCols}
               onOpen={() => {}}
               panelEnabled={false}
+              compact
               emptyMessage="Các đơn đã chọn chưa có toạ độ (Lat/Long) để vẽ tuyến."
             />
           </div>
         ) : null}
 
         <div className="mt-5 flex justify-end gap-2">
-          <button onClick={onClose} className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm text-slate-700 hover:bg-slate-50">
-            Huỷ
-          </button>
+          {variant === 'modal' ? (
+            <button onClick={onClose} className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm text-slate-700 hover:bg-slate-50">
+              Huỷ
+            </button>
+          ) : null}
           <button
             type="button"
             disabled={!canRun}
             onClick={() => onRun(resources)}
             style={{ backgroundColor: accent }}
-            className="inline-flex items-center gap-1.5 rounded-lg px-4 py-2 text-sm font-semibold text-white shadow-sm disabled:opacity-40"
+            className="inline-flex w-full items-center justify-center gap-1.5 rounded-lg px-4 py-2 text-sm font-semibold text-white shadow-sm disabled:opacity-40"
           >
             {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-            Xác nhận
+            {variant === 'panel' ? action.label : 'Xác nhận'}
           </button>
         </div>
       </div>
+  );
+  return variant === 'panel' ? (
+    inner
+  ) : (
+    <div
+      className="fixed inset-0 z-40 flex items-center justify-center bg-slate-900/40 p-4"
+      onClick={onClose}
+    >
+      {inner}
     </div>
   );
 }
@@ -3767,6 +3802,7 @@ function RouteMapView({
   onOpen,
   panelEnabled,
   emptyMessage,
+  compact = false,
 }: {
   rows: Array<Record<string, unknown>>;
   config: RouteMapConfigView;
@@ -3775,6 +3811,10 @@ function RouteMapView({
   onOpen: (row: Record<string, unknown>) => void;
   panelEnabled: boolean;
   emptyMessage?: string | null;
+  // compact = embedded in a narrow container (recipe panel/modal): stack the map
+  // ABOVE the stop-list instead of the wide side-by-side split, and use a shorter
+  // map. The full-width route-map screen leaves this false.
+  compact?: boolean;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [selectedRouteId, setSelectedRouteId] = useState<string>('');
@@ -3905,6 +3945,18 @@ function RouteMapView({
       } else {
         map.setView([16.0, 107.5], 6);
       }
+      // The panel/modal container can finish laying out (sticky/flex/grid) a
+      // frame after the map mounts, leaving Leaflet with a stale 0-width canvas.
+      // Recompute size + re-fit once the layout settles so tiles fill the box.
+      window.setTimeout(() => {
+        if (disposed || !map) return;
+        try {
+          map.invalidateSize();
+          if (bounds.isValid()) map.fitBounds(bounds, { padding: [28, 28], maxZoom: 13 });
+        } catch {
+          /* map gone */
+        }
+      }, 80);
     })();
 
     return () => {
@@ -3975,9 +4027,13 @@ function RouteMapView({
         ) : null}
       </div>
 
-      <div className={`grid gap-4 ${sideEnabled ? 'lg:grid-cols-[minmax(0,1fr)_340px]' : ''}`}>
+      <div className={`grid gap-4 ${sideEnabled && !compact ? 'lg:grid-cols-[minmax(0,1fr)_340px]' : ''}`}>
         <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white p-3 shadow-sm">
-          <div ref={containerRef} className="h-[420px] min-h-[320px] w-full overflow-hidden rounded-xl" style={{ zIndex: 0 }} />
+          <div
+            ref={containerRef}
+            className={`w-full overflow-hidden rounded-xl ${compact ? 'h-[300px] min-h-[240px]' : 'h-[420px] min-h-[320px]'}`}
+            style={{ zIndex: 0 }}
+          />
         </div>
         {sideEnabled ? (
           <div className="max-h-[446px] overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
@@ -5511,6 +5567,9 @@ function TableScreen({
     return allow.some((r) => r.toLowerCase() === target);
   });
   const selectionEnabled = bulkActions.length > 0 && pkCols.length > 0;
+  // A bulk action with route_preview is rendered as a docked side panel beside
+  // the table (select rows → see plan/map/weight live), not as a popup modal.
+  const panelAction = selectionEnabled ? bulkActions.find((a) => a.route_preview) || null : null;
 
   // Phase-1 helpers: totals of the selected rows (tự tính tổng) + the
   // require_same precondition (all selected rows must share a value, e.g. same
@@ -6251,7 +6310,7 @@ function TableScreen({
             </div>
           ) : null}
           <div className="ml-auto flex flex-wrap items-center gap-2">
-            {bulkActions.map((a) => {
+            {bulkActions.filter((a) => a.id !== panelAction?.id).map((a) => {
               const bad = bulkGuardBad(a);
               const blocked = bad.length > 0;
               const style = a.style || 'primary';
@@ -6301,7 +6360,8 @@ function TableScreen({
           onRun={(resources) => void runServerBulkAction(bulkModal, resources)}
         />
       ) : null}
-      <div className="max-w-full overflow-x-auto overscroll-x-contain">
+      <div className={panelAction ? 'lg:flex lg:items-start lg:gap-3' : undefined}>
+      <div className="max-w-full min-w-0 overflow-x-auto overscroll-x-contain lg:flex-1">
         <table className="min-w-max w-full text-sm">
           <thead>
             {columnGroups.length > 0 ? (
@@ -6649,6 +6709,24 @@ function TableScreen({
             ) : null}
           </tbody>
         </table>
+      </div>
+      {panelAction ? (
+        <div className="mt-3 lg:mt-0 lg:w-[400px] lg:shrink-0 lg:sticky lg:top-2">
+          <BulkRecipeModal
+            variant="panel"
+            action={panelAction}
+            selectedRows={selectedRows}
+            token={token}
+            workboardId={workboardId}
+            accent={accent}
+            colLabels={colLabels}
+            pkCols={pkCols}
+            busy={bulkBusy}
+            onClose={() => {}}
+            onRun={(resources) => void runServerBulkAction(panelAction, resources)}
+          />
+        </div>
+      ) : null}
       </div>
       </>
       )}
