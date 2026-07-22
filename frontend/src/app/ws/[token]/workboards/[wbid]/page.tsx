@@ -268,12 +268,27 @@ export default function WorkspaceWorkboardPage() {
         // Deep-link may target an off-nav screen (e.g. a scan-only status form);
         // the backend still enforces per-screen visibility/hidden/RLS, so accept
         // any existing screen id here and fall back to the nav default otherwise.
-        if (knownScreen) {
-          setActiveScreenId(deepScreen as string);
-        } else if (s.nav.items.length > 0) {
-          setActiveScreenId(s.nav.items[0]);
-        } else if (s.screens.length > 0) {
-          setActiveScreenId(s.screens[0].id);
+        const chosenId = knownScreen
+          ? (deepScreen as string)
+          : s.nav.items.length > 0
+            ? s.nav.items[0]
+            : s.screens.length > 0
+              ? s.screens[0].id
+              : null;
+        if (chosenId) {
+          setActiveScreenId(chosenId);
+          // Canonicalise the URL so it always names the current screen
+          // (?screen=<id>): refreshing (F5) restores THIS screen instead of the
+          // nav default, and the address bar tells you which tab you're on.
+          // replaceState (no new history entry) + keep any deep-link prefill
+          // params so a scanned QR's pre-fill survives the canonicalisation.
+          if (typeof window !== 'undefined') {
+            const url = new URL(window.location.href);
+            if (url.searchParams.get('screen') !== chosenId) {
+              url.searchParams.set('screen', chosenId);
+              window.history.replaceState(window.history.state, '', url);
+            }
+          }
         }
       } catch (err: unknown) {
         if (!alive) return;
@@ -342,9 +357,48 @@ export default function WorkspaceWorkboardPage() {
         setShared((curr) => ({ ...curr, ...carry }));
       }
       setActiveScreenId(screenId);
+      // Give every screen its own URL: switching tabs is reflected in the
+      // address bar, refresh (F5) stays on the same screen, and browser
+      // back/forward move between screens. pushState (not replace) creates the
+      // history entry; a fresh nav starts a clean ?screen=<id> URL (any stale
+      // deep-link prefill is dropped — it already lives in `shared` state).
+      if (typeof window !== 'undefined') {
+        const url = new URL(window.location.href);
+        if (url.searchParams.get('screen') !== screenId) {
+          url.search = `?screen=${encodeURIComponent(screenId)}`;
+          url.hash = '';
+          window.history.pushState({ wbScreen: screenId }, '', url);
+        }
+      }
     },
     [],
   );
+
+  // Browser back/forward → sync the active screen from the URL (no pushState
+  // here, or we'd fight the history stack). Guarded to a known screen; a bare
+  // URL falls back to the nav default.
+  useEffect(() => {
+    if (!shell) return;
+    const onPop = () => {
+      const sid = new URLSearchParams(window.location.search).get('screen');
+      if (sid && shell.screens.some((s) => s.id === sid)) {
+        setActiveScreenId(sid);
+      } else if (shell.nav.items.length > 0) {
+        setActiveScreenId(shell.nav.items[0]);
+      }
+    };
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, [shell]);
+
+  // Reflect the current screen in the browser tab title (and thus in the
+  // labelled back/forward history entries).
+  useEffect(() => {
+    if (typeof document === 'undefined' || !shell || !activeScreenId) return;
+    const sc = shell.screens.find((s) => s.id === activeScreenId);
+    const appNm = shell.branding.app_name || shell.workboard.name;
+    document.title = sc ? `${sc.title || sc.id} · ${appNm}` : appNm;
+  }, [activeScreenId, shell]);
 
   if (error) {
     return (
