@@ -110,6 +110,7 @@ export interface FormFieldSpec {
   currency_code?: string | null;
   max_select?: number | null;
   enum_list_style?: 'chips' | 'dropdown' | 'checkboxes' | null;
+  searchable?: 'auto' | 'always' | 'never' | null;
   // QR display (widget='qr').
   qr_source_column?: string | null;
   qr_value_template?: string | null;

@@ -2057,24 +2057,39 @@ function Field({
           {help || 'Đồng ý'}
         </label>
       ) : widget === 'select' || widget === 'lookup' ? (
-        <select
-          value={stringValue}
-          onChange={(e) => onChange(e.target.value)}
-          disabled={readonly}
-          required={required}
-          className={baseInput}
-        >
-          <option value="">
-            {filterByField && (parentVal == null || parentVal === '')
-              ? '— chọn mục ở trên trước —'
-              : '— chọn —'}
-          </option>
-          {effectiveOpts.map((opt) => (
-            <option key={String(opt.value)} value={String(opt.value)}>
-              {opt.label}
+        shouldShowSearch(field.searchable, effectiveOpts.length) ? (
+          <SearchableSelect
+            value={stringValue}
+            onChange={(v) => onChange(v)}
+            options={effectiveOpts as LookupOption[]}
+            disabled={readonly}
+            placeholder={
+              filterByField && (parentVal == null || parentVal === '')
+                ? '— chọn mục ở trên trước —'
+                : '— chọn —'
+            }
+            allowSearch
+          />
+        ) : (
+          <select
+            value={stringValue}
+            onChange={(e) => onChange(e.target.value)}
+            disabled={readonly}
+            required={required}
+            className={baseInput}
+          >
+            <option value="">
+              {filterByField && (parentVal == null || parentVal === '')
+                ? '— chọn mục ở trên trước —'
+                : '— chọn —'}
             </option>
-          ))}
-        </select>
+            {effectiveOpts.map((opt) => (
+              <option key={String(opt.value)} value={String(opt.value)}>
+                {opt.label}
+              </option>
+            ))}
+          </select>
+        )
       ) : widget === 'date' ? (
         <input
           type="date"
@@ -2387,6 +2402,124 @@ function DurationField({
   );
 }
 
+// Show an in-dropdown search box when the field opts in ('always'), never when
+// it opts out ('never'), and automatically for long option lists otherwise.
+const SEARCH_AUTO_MIN = 8;
+function shouldShowSearch(searchable: unknown, optionCount: number): boolean {
+  if (searchable === 'always') return true;
+  if (searchable === 'never') return false;
+  return optionCount > SEARCH_AUTO_MIN; // 'auto' / undefined
+}
+
+// ── Single-select combobox with optional in-dropdown search ───────────────
+// Used for select / lookup fields (and table select-filters) when search is
+// active. Keeps the native <select> for short, non-searchable lists elsewhere.
+function SearchableSelect({
+  value,
+  onChange,
+  options,
+  disabled,
+  placeholder,
+  allowSearch,
+  clearLabel = '— chọn —',
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  options: LookupOption[];
+  disabled?: boolean;
+  placeholder?: string;
+  allowSearch: boolean;
+  clearLabel?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const [q, setQ] = useState('');
+  const wrapRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (event: MouseEvent) => {
+      if (wrapRef.current && !wrapRef.current.contains(event.target as Node)) {
+        setOpen(false);
+        setQ('');
+      }
+    };
+    document.addEventListener('mousedown', onDoc);
+    return () => document.removeEventListener('mousedown', onDoc);
+  }, [open]);
+  const selected = options.find((o) => String(o.value) === value);
+  const ql = q.trim().toLowerCase();
+  const filtered =
+    allowSearch && ql
+      ? options.filter(
+          (o) =>
+            String(o.label).toLowerCase().includes(ql) ||
+            String(o.value).toLowerCase().includes(ql),
+        )
+      : options;
+  const pick = (v: string) => {
+    onChange(v);
+    setOpen(false);
+    setQ('');
+  };
+  return (
+    <div className="relative" ref={wrapRef}>
+      <button
+        type="button"
+        disabled={disabled}
+        onClick={() => setOpen((v) => !v)}
+        className="flex h-9 w-full items-center justify-between rounded-md border border-slate-300 bg-white px-3 text-left text-sm text-slate-700 disabled:bg-slate-50 disabled:text-slate-400"
+      >
+        <span className={selected ? 'truncate' : 'truncate text-slate-400'}>
+          {selected ? selected.label : placeholder || '— chọn —'}
+        </span>
+        <ChevronDown className="h-4 w-4 shrink-0 text-slate-400" />
+      </button>
+      {open && (
+        <div className="absolute z-30 mt-1 w-full rounded-md border border-slate-200 bg-white shadow-lg">
+          {allowSearch && (
+            <div className="border-b border-slate-100 p-2">
+              <input
+                autoFocus
+                value={q}
+                onChange={(event) => setQ(event.target.value)}
+                placeholder="Tìm..."
+                className="h-8 w-full rounded border border-slate-200 px-2 text-sm outline-none focus:border-slate-400"
+              />
+            </div>
+          )}
+          <div className="max-h-60 overflow-auto p-1">
+            <button
+              type="button"
+              onClick={() => pick('')}
+              className="block w-full truncate rounded px-2 py-1.5 text-left text-sm text-slate-400 hover:bg-slate-50"
+            >
+              {clearLabel}
+            </button>
+            {filtered.length === 0 ? (
+              <span className="block px-2 py-2 text-sm text-slate-400">Không có kết quả.</span>
+            ) : (
+              filtered.map((o) => {
+                const v = String(o.value);
+                return (
+                  <button
+                    key={v}
+                    type="button"
+                    onClick={() => pick(v)}
+                    className={`block w-full truncate rounded px-2 py-1.5 text-left text-sm hover:bg-slate-50 ${
+                      v === value ? 'bg-slate-50 font-medium text-slate-900' : 'text-slate-700'
+                    }`}
+                  >
+                    {o.label}
+                  </button>
+                );
+              })
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Enum-list widget (multi-select chips / dropdown / checkboxes) ─────────
 function EnumListField({
   field,
@@ -2402,6 +2535,7 @@ function EnumListField({
   readonly: boolean;
 }) {
   const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState('');
   const selected: string[] = Array.isArray(value)
     ? value.map((v) => String(v))
     : typeof value === 'string' && value.startsWith('[')
@@ -2422,6 +2556,16 @@ function EnumListField({
       : 'chips';
   const optionValues = options.map((opt) => String(opt.value));
   const selectableValues = maxSel > 0 ? optionValues.slice(0, maxSel) : optionValues;
+  const showSearch = shouldShowSearch(field.searchable, options.length);
+  const ql = query.trim().toLowerCase();
+  const shownOptions =
+    showSearch && ql
+      ? options.filter(
+          (opt) =>
+            String(opt.label).toLowerCase().includes(ql) ||
+            String(opt.value).toLowerCase().includes(ql),
+        )
+      : options;
   const allSelectableSelected =
     selectableValues.length > 0 && selectableValues.every((val) => selected.includes(val));
   const selectedLabels = selected
@@ -2461,42 +2605,59 @@ function EnumListField({
           <ChevronDown className="h-4 w-4 text-slate-400" />
         </button>
         {open && (
-          <div className="absolute z-20 mt-1 max-h-64 w-full overflow-auto rounded-md border border-slate-200 bg-white p-2 shadow-lg">
+          <div className="absolute z-20 mt-1 w-full rounded-md border border-slate-200 bg-white shadow-lg">
             {options.length === 0 ? (
-              <span className="block px-2 py-1 text-sm text-slate-400">Chưa có lựa chọn.</span>
+              <span className="block px-3 py-2 text-sm text-slate-400">Chưa có lựa chọn.</span>
             ) : (
               <>
-                <label className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-sm text-slate-700 hover:bg-slate-50">
-                  <input
-                    type="checkbox"
-                    checked={allSelectableSelected}
-                    onChange={toggleAll}
-                    disabled={readonly}
-                    className="h-4 w-4 rounded border-slate-300"
-                  />
-                  Select all
-                </label>
-                <div className="my-1 border-t border-slate-100" />
-                {options.map((opt) => {
-                  const val = String(opt.value);
-                  const on = selected.includes(val);
-                  const disabledByMax = !on && maxSel > 0 && selected.length >= maxSel;
-                  return (
-                    <label
-                      key={val}
-                      className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-sm text-slate-700 hover:bg-slate-50"
-                    >
-                      <input
-                        type="checkbox"
-                        checked={on}
-                        onChange={() => toggle(val)}
-                        disabled={readonly || disabledByMax}
-                        className="h-4 w-4 rounded border-slate-300"
-                      />
-                      {opt.label}
-                    </label>
-                  );
-                })}
+                {showSearch && (
+                  <div className="border-b border-slate-100 p-2">
+                    <input
+                      autoFocus
+                      value={query}
+                      onChange={(event) => setQuery(event.target.value)}
+                      placeholder="Tìm..."
+                      className="h-8 w-full rounded border border-slate-200 px-2 text-sm outline-none focus:border-slate-400"
+                    />
+                  </div>
+                )}
+                <div className="max-h-60 overflow-auto p-2">
+                  <label className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-sm text-slate-700 hover:bg-slate-50">
+                    <input
+                      type="checkbox"
+                      checked={allSelectableSelected}
+                      onChange={toggleAll}
+                      disabled={readonly}
+                      className="h-4 w-4 rounded border-slate-300"
+                    />
+                    Select all
+                  </label>
+                  <div className="my-1 border-t border-slate-100" />
+                  {shownOptions.length === 0 ? (
+                    <span className="block px-2 py-2 text-sm text-slate-400">Không có kết quả.</span>
+                  ) : (
+                    shownOptions.map((opt) => {
+                      const val = String(opt.value);
+                      const on = selected.includes(val);
+                      const disabledByMax = !on && maxSel > 0 && selected.length >= maxSel;
+                      return (
+                        <label
+                          key={val}
+                          className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-sm text-slate-700 hover:bg-slate-50"
+                        >
+                          <input
+                            type="checkbox"
+                            checked={on}
+                            onChange={() => toggle(val)}
+                            disabled={readonly || disabledByMax}
+                            className="h-4 w-4 rounded border-slate-300"
+                          />
+                          {opt.label}
+                        </label>
+                      );
+                    })
+                  )}
+                </div>
               </>
             )}
           </div>
@@ -2516,6 +2677,14 @@ function EnumListField({
         {options.length === 0 && (
           <span className="text-sm text-slate-400">Chưa có lựa chọn.</span>
         )}
+        {showSearch && options.length > 0 && (
+          <input
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="Tìm..."
+            className="h-8 w-full rounded border border-slate-200 px-2 text-sm outline-none focus:border-slate-400"
+          />
+        )}
         {options.length > 0 && (
           <label className="flex items-center gap-2 text-sm text-slate-700">
             <input
@@ -2528,7 +2697,10 @@ function EnumListField({
             Select all
           </label>
         )}
-        {options.map((opt) => {
+        {shownOptions.length === 0 && options.length > 0 && (
+          <span className="text-sm text-slate-400">Không có kết quả.</span>
+        )}
+        {shownOptions.map((opt) => {
           const val = String(opt.value);
           const on = selected.includes(val);
           const disabledByMax = !on && maxSel > 0 && selected.length >= maxSel;
@@ -6381,6 +6553,23 @@ function TableScreen({
               }
               const selectOpts = filter.kind === 'select' ? filterOptions[filter.column] : undefined;
               if (filter.kind === 'select' && selectOpts && selectOpts.length > 0) {
+                // Long option lists get a searchable combobox; short ones stay a
+                // native <select> (best mobile UX, nothing to search).
+                if (selectOpts.length > SEARCH_AUTO_MIN) {
+                  return (
+                    <label key={key} className="block">
+                      <span className="mb-1 block text-xs font-medium text-slate-600">{label}</span>
+                      <SearchableSelect
+                        value={filterValues[key] || ''}
+                        onChange={(v) => setFilterValues((prev) => ({ ...prev, [key]: v }))}
+                        options={selectOpts.map((opt) => ({ label: opt, value: opt }))}
+                        placeholder="— Tất cả —"
+                        clearLabel="— Tất cả —"
+                        allowSearch
+                      />
+                    </label>
+                  );
+                }
                 return (
                   <label key={key} className="block">
                     <span className="mb-1 block text-xs font-medium text-slate-600">{label}</span>

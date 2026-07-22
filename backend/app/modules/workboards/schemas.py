@@ -270,6 +270,13 @@ class FormField(BaseModel):
         default="chips",
         description="widget=enum_list: render as chips, dropdown, or checkbox list.",
     )
+    searchable: Optional[Literal["auto", "always", "never"]] = Field(
+        default="auto",
+        description=(
+            "widget=select/lookup/enum_list: show an in-dropdown search box. "
+            "'auto' = only when the option list is long; 'always'/'never' force it."
+        ),
+    )
     # ── QR display (widget='qr') — renders a QR image, never writes the column ──
     qr_source_column: Optional[str] = Field(
         default=None,

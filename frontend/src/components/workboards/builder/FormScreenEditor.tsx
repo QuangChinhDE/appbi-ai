@@ -1227,6 +1227,25 @@ function FieldInspector({
               </select>
             </Lbl>
           )}
+          {(field.widget === 'select' ||
+            field.widget === 'lookup' ||
+            field.widget === 'enum_list') && (
+            <Lbl label="Ô tìm kiếm khi chọn">
+              <select
+                value={field.searchable || 'auto'}
+                onChange={(event) =>
+                  onChange({
+                    searchable: event.target.value as NonNullable<FormFieldSpec['searchable']>,
+                  })
+                }
+                className={INPUT}
+              >
+                <option value="auto">Tự động (khi danh sách dài)</option>
+                <option value="always">Luôn hiện</option>
+                <option value="never">Tắt</option>
+              </select>
+            </Lbl>
+          )}
         </div>
       </CollapsibleGroup>
 
