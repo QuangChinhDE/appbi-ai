@@ -86,8 +86,7 @@ const WIDGETS: { value: FormFieldSpec['widget']; label: string }[] = [
   { value: 'text', label: 'Text' },
   { value: 'textarea', label: 'Long text' },
   { value: 'number', label: 'Number' },
-  { value: 'select', label: 'Select (static)' },
-  { value: 'lookup', label: 'Select (from table)' },
+  { value: 'select', label: 'Select' },
   { value: 'date', label: 'Date' },
   { value: 'datetime', label: 'Date + time' },
   { value: 'checkbox', label: 'On / off' },
@@ -102,7 +101,7 @@ const WIDGETS: { value: FormFieldSpec['widget']; label: string }[] = [
   { value: 'computed', label: 'Tính tự động (công thức)' },
   { value: 'status', label: 'Trạng thái / duyệt' },
   // ── Rich input types ──────────────────────────────────────────────
-  { value: 'enum_list', label: 'Chọn nhiều (chips)' },
+  { value: 'enum_list', label: 'Chọn nhiều' },
   { value: 'rating', label: 'Đánh giá (sao)' },
   { value: 'slider', label: 'Thanh trượt (slider)' },
   { value: 'email', label: 'Email' },
@@ -1122,6 +1121,9 @@ function FieldInspector({
   const sectionValue = field.section || '';
   const pageValue = field.page ?? null;
   const computedValue = field.computed_from_dataset || '';
+  const selectSource =
+    field.widget === 'lookup' || field.lookup?.kind === 'dataset_table' ? 'dataset_table' : 'static';
+  const enumListStyle = field.enum_list_style || 'chips';
 
   return (
     <div className="space-y-3">
@@ -1158,10 +1160,26 @@ function FieldInspector({
           </Lbl>
           <Lbl label="Input type">
             <select
-              value={field.widget}
-              onChange={(event) =>
-                onChange({ widget: event.target.value as FormFieldSpec['widget'] })
-              }
+              value={field.widget === 'lookup' ? 'select' : field.widget}
+              onChange={(event) => {
+                const widget = event.target.value as FormFieldSpec['widget'];
+                if (widget === 'select') {
+                  onChange({
+                    widget: selectSource === 'dataset_table' ? 'lookup' : 'select',
+                    lookup: field.lookup || { kind: selectSource, values: [] },
+                  });
+                  return;
+                }
+                if (widget === 'enum_list') {
+                  onChange({
+                    widget,
+                    enum_list_style: field.enum_list_style || 'chips',
+                    lookup: field.lookup || { kind: 'static', values: [] },
+                  });
+                  return;
+                }
+                onChange({ widget });
+              }}
               className={INPUT}
             >
               {WIDGETS.map((widget) => (
@@ -1171,6 +1189,44 @@ function FieldInspector({
               ))}
             </select>
           </Lbl>
+          {(field.widget === 'select' || field.widget === 'lookup') && (
+            <Lbl label="Nguồn lựa chọn">
+              <select
+                value={selectSource}
+                onChange={(event) => {
+                  const kind = event.target.value as LookupRuntime['kind'];
+                  onChange({
+                    widget: kind === 'dataset_table' ? 'lookup' : 'select',
+                    lookup: {
+                      ...(field.lookup || { values: [] }),
+                      kind,
+                    },
+                  });
+                }}
+                className={INPUT}
+              >
+                <option value="static">Static</option>
+                <option value="dataset_table">From table</option>
+              </select>
+            </Lbl>
+          )}
+          {field.widget === 'enum_list' && (
+            <Lbl label="Kiểu chọn">
+              <select
+                value={enumListStyle}
+                onChange={(event) =>
+                  onChange({
+                    enum_list_style: event.target.value as NonNullable<FormFieldSpec['enum_list_style']>,
+                  })
+                }
+                className={INPUT}
+              >
+                <option value="chips">Chips</option>
+                <option value="dropdown">Dropdown</option>
+                <option value="checkboxes">Checkbox</option>
+              </select>
+            </Lbl>
+          )}
         </div>
       </CollapsibleGroup>
 

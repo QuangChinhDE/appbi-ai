@@ -27,6 +27,7 @@ import {
   ArrowLeft,
   Bell,
   Camera,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
   CheckCircle2,
@@ -2386,7 +2387,7 @@ function DurationField({
   );
 }
 
-// ── Enum-list widget (multi-select chips) ────────────────────────────────
+// ── Enum-list widget (multi-select chips / dropdown / checkboxes) ─────────
 function EnumListField({
   field,
   options,
@@ -2400,6 +2401,7 @@ function EnumListField({
   onChange: (v: unknown) => void;
   readonly: boolean;
 }) {
+  const [open, setOpen] = useState(false);
   const selected: string[] = Array.isArray(value)
     ? value.map((v) => String(v))
     : typeof value === 'string' && value.startsWith('[')
@@ -2414,6 +2416,20 @@ function EnumListField({
         ? [String(value)]
         : [];
   const maxSel = Number(field.max_select) || 0;
+  const style =
+    field.enum_list_style === 'checkboxes' || field.enum_list_style === 'dropdown'
+      ? field.enum_list_style
+      : 'chips';
+  const optionValues = options.map((opt) => String(opt.value));
+  const selectableValues = maxSel > 0 ? optionValues.slice(0, maxSel) : optionValues;
+  const allSelectableSelected =
+    selectableValues.length > 0 && selectableValues.every((val) => selected.includes(val));
+  const selectedLabels = selected
+    .map((val) => options.find((opt) => String(opt.value) === val)?.label || val)
+    .join(', ');
+  const commit = (next: string[]) => {
+    onChange(JSON.stringify(next));
+  };
   const toggle = (val: string) => {
     if (readonly) return;
     let next: string[];
@@ -2423,10 +2439,121 @@ function EnumListField({
       if (maxSel > 0 && selected.length >= maxSel) return;
       next = [...selected, val];
     }
-    // Store as a JSON STRING so it writes to a text/jsonb cell without the
-    // connector adapting a Python list to a PG array (type mismatch).
-    onChange(JSON.stringify(next));
+    commit(next);
   };
+  const toggleAll = () => {
+    if (readonly || selectableValues.length === 0) return;
+    commit(allSelectableSelected ? [] : selectableValues);
+  };
+
+  if (style === 'dropdown') {
+    return (
+      <div className="relative">
+        <button
+          type="button"
+          disabled={readonly}
+          onClick={() => setOpen((prev) => !prev)}
+          className="flex min-h-10 w-full items-center justify-between rounded-md border border-slate-300 bg-white px-3 py-2 text-left text-sm text-slate-700 disabled:bg-slate-50 disabled:text-slate-400"
+        >
+          <span className={selected.length ? '' : 'text-slate-400'}>
+            {selected.length ? selectedLabels : '— chọn —'}
+          </span>
+          <ChevronDown className="h-4 w-4 text-slate-400" />
+        </button>
+        {open && (
+          <div className="absolute z-20 mt-1 max-h-64 w-full overflow-auto rounded-md border border-slate-200 bg-white p-2 shadow-lg">
+            {options.length === 0 ? (
+              <span className="block px-2 py-1 text-sm text-slate-400">Chưa có lựa chọn.</span>
+            ) : (
+              <>
+                <label className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-sm text-slate-700 hover:bg-slate-50">
+                  <input
+                    type="checkbox"
+                    checked={allSelectableSelected}
+                    onChange={toggleAll}
+                    disabled={readonly}
+                    className="h-4 w-4 rounded border-slate-300"
+                  />
+                  Select all
+                </label>
+                <div className="my-1 border-t border-slate-100" />
+                {options.map((opt) => {
+                  const val = String(opt.value);
+                  const on = selected.includes(val);
+                  const disabledByMax = !on && maxSel > 0 && selected.length >= maxSel;
+                  return (
+                    <label
+                      key={val}
+                      className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-sm text-slate-700 hover:bg-slate-50"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={on}
+                        onChange={() => toggle(val)}
+                        disabled={readonly || disabledByMax}
+                        className="h-4 w-4 rounded border-slate-300"
+                      />
+                      {opt.label}
+                    </label>
+                  );
+                })}
+              </>
+            )}
+          </div>
+        )}
+        {maxSel > 0 && (
+          <span className="mt-1 block text-xs text-slate-400">
+            {selected.length}/{maxSel}
+          </span>
+        )}
+      </div>
+    );
+  }
+
+  if (style === 'checkboxes') {
+    return (
+      <div className="space-y-2">
+        {options.length === 0 && (
+          <span className="text-sm text-slate-400">Chưa có lựa chọn.</span>
+        )}
+        {options.length > 0 && (
+          <label className="flex items-center gap-2 text-sm text-slate-700">
+            <input
+              type="checkbox"
+              checked={allSelectableSelected}
+              onChange={toggleAll}
+              disabled={readonly}
+              className="h-4 w-4 rounded border-slate-300"
+            />
+            Select all
+          </label>
+        )}
+        {options.map((opt) => {
+          const val = String(opt.value);
+          const on = selected.includes(val);
+          const disabledByMax = !on && maxSel > 0 && selected.length >= maxSel;
+          return (
+            <label key={val} className="flex items-center gap-2 text-sm text-slate-700">
+              <input
+                type="checkbox"
+                checked={on}
+                onChange={() => toggle(val)}
+                disabled={readonly || disabledByMax}
+                className="h-4 w-4 rounded border-slate-300"
+              />
+              {opt.label}
+            </label>
+          );
+        })}
+        {maxSel > 0 && (
+          <span className="text-xs text-slate-400">
+            {selected.length}/{maxSel}
+          </span>
+        )}
+      </div>
+    );
+  }
+
   return (
     <div className="flex flex-wrap gap-2">
       {options.length === 0 && (

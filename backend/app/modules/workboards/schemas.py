@@ -266,6 +266,10 @@ class FormField(BaseModel):
         default=None, ge=1, le=50,
         description="widget=enum_list: max number of selected chips.",
     )
+    enum_list_style: Optional[Literal["chips", "dropdown", "checkboxes"]] = Field(
+        default="chips",
+        description="widget=enum_list: render as chips, dropdown, or checkbox list.",
+    )
     # ── QR display (widget='qr') — renders a QR image, never writes the column ──
     qr_source_column: Optional[str] = Field(
         default=None,
