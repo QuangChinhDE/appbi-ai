@@ -3,7 +3,7 @@
  */
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   ArrowDown,
   ArrowUp,
@@ -116,6 +116,203 @@ const WIDGETS: { value: FormFieldSpec['widget']; label: string }[] = [
   { value: 'video', label: 'Video (clip ngắn)' },
   { value: 'qr', label: 'Mã QR (hiển thị / in tem)' },
 ];
+
+// ── Field-type picker taxonomy ────────────────────────────────────────────
+// A user-facing categorisation LAYERED OVER the runtime widget enum (the enum
+// is unchanged; this only groups + renames for the builder picker). `lookup`
+// is not its own entry — it is `select` with source = "from table" (the
+// "Nguồn lựa chọn" axis flips the widget), so CHOICE reads as one concept.
+const FIELD_TYPE_GROUPS: {
+  category: string;
+  items: Array<{ widget: FormFieldSpec['widget']; label: string; hint?: string }>;
+}[] = [
+  {
+    category: 'Văn bản',
+    items: [
+      { widget: 'text', label: 'Text' },
+      { widget: 'textarea', label: 'Văn bản dài' },
+      { widget: 'email', label: 'Email' },
+      { widget: 'phone', label: 'Số điện thoại' },
+      { widget: 'url', label: 'Đường dẫn (URL)' },
+      { widget: 'rich_text', label: 'Văn bản định dạng (Markdown)' },
+    ],
+  },
+  {
+    category: 'Số',
+    items: [
+      { widget: 'number', label: 'Số' },
+      { widget: 'currency', label: 'Tiền tệ' },
+      { widget: 'percent', label: 'Phần trăm (%)' },
+      { widget: 'slider', label: 'Thanh trượt' },
+    ],
+  },
+  {
+    category: 'Lựa chọn',
+    items: [
+      { widget: 'select', label: 'Chọn một', hint: 'tĩnh hoặc từ bảng' },
+      { widget: 'enum_list', label: 'Chọn nhiều' },
+    ],
+  },
+  {
+    category: 'Ngày & giờ',
+    items: [
+      { widget: 'date', label: 'Ngày' },
+      { widget: 'datetime', label: 'Ngày + giờ' },
+      { widget: 'time', label: 'Giờ' },
+      { widget: 'duration', label: 'Khoảng thời gian' },
+    ],
+  },
+  {
+    category: 'Hình ảnh & Tệp',
+    items: [
+      { widget: 'image', label: 'Ảnh (1 ảnh)' },
+      { widget: 'images', label: 'Nhiều ảnh' },
+      { widget: 'file', label: 'Tệp đính kèm' },
+      { widget: 'signature', label: 'Chữ ký tay' },
+      { widget: 'audio', label: 'Ghi âm' },
+      { widget: 'video', label: 'Video (clip ngắn)' },
+    ],
+  },
+  {
+    category: 'Vị trí',
+    items: [
+      { widget: 'geopoint', label: 'Vị trí GPS' },
+      { widget: 'map', label: 'Chọn vùng trên bản đồ' },
+    ],
+  },
+  {
+    category: 'Giá trị tính toán',
+    items: [{ widget: 'computed', label: 'Tính tự động (công thức)' }],
+  },
+  {
+    category: 'Quy trình',
+    items: [{ widget: 'status', label: 'Trạng thái / duyệt', hint: 'phân quyền + luồng chuyển' }],
+  },
+  {
+    category: 'Nhập chuyên biệt',
+    items: [{ widget: 'barcode', label: 'Quét mã (Barcode/QR)', hint: 'quét để NHẬP giá trị' }],
+  },
+  {
+    category: 'Hiển thị / Output',
+    items: [{ widget: 'qr', label: 'Mã QR (in tem)', hint: 'SINH mã để hiển thị/in' }],
+  },
+  {
+    category: 'Khác',
+    items: [
+      { widget: 'checkbox', label: 'Bật / tắt' },
+      { widget: 'rating', label: 'Đánh giá (sao)' },
+      { widget: 'color', label: 'Màu sắc' },
+    ],
+  },
+];
+
+const WIDGET_LABEL: Record<string, string> = Object.fromEntries(
+  FIELD_TYPE_GROUPS.flatMap((g) => g.items.map((it) => [it.widget as string, it.label])),
+);
+
+// Searchable, categorised replacement for the flat 31-item "Field type" select.
+// Emits a widget; the caller maps select↔lookup / enum_list defaults exactly as
+// the old <select> did, so nothing downstream changes.
+function FieldTypePicker({
+  widget,
+  onSelect,
+}: {
+  widget: FormFieldSpec['widget'];
+  onSelect: (w: FormFieldSpec['widget']) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [q, setQ] = useState('');
+  const ref = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (event: MouseEvent) => {
+      if (ref.current && !ref.current.contains(event.target as Node)) {
+        setOpen(false);
+        setQ('');
+      }
+    };
+    document.addEventListener('mousedown', onDoc);
+    return () => document.removeEventListener('mousedown', onDoc);
+  }, [open]);
+  // lookup collapses to the 'select' entry for display (source axis differentiates).
+  const shown = widget === 'lookup' ? 'select' : widget;
+  const currentLabel = WIDGET_LABEL[shown as string] || String(shown);
+  const ql = q.trim().toLowerCase();
+  const groups = FIELD_TYPE_GROUPS.map((g) => ({
+    category: g.category,
+    items: ql
+      ? g.items.filter(
+          (it) =>
+            it.label.toLowerCase().includes(ql) ||
+            g.category.toLowerCase().includes(ql) ||
+            (it.hint || '').toLowerCase().includes(ql),
+        )
+      : g.items,
+  })).filter((g) => g.items.length > 0);
+  const pick = (w: FormFieldSpec['widget']) => {
+    onSelect(w);
+    setOpen(false);
+    setQ('');
+  };
+  return (
+    <div className="relative" ref={ref}>
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className={`${INPUT} flex items-center justify-between text-left`}
+      >
+        <span className="truncate">{currentLabel}</span>
+        <ChevronDown className="h-4 w-4 shrink-0 text-text-tertiary" />
+      </button>
+      {open && (
+        <div className="absolute z-30 mt-1 w-full rounded-md border border-[rgb(var(--border-line))] bg-surface-1 shadow-lg">
+          <div className="border-b border-[rgb(var(--border-line))] p-2">
+            <input
+              autoFocus
+              value={q}
+              onChange={(event) => setQ(event.target.value)}
+              placeholder="Tìm loại trường..."
+              className={INPUT}
+            />
+          </div>
+          <div className="max-h-72 overflow-auto p-1">
+            {groups.length === 0 ? (
+              <span className="block px-2 py-2 text-caption text-text-tertiary">
+                Không có kết quả.
+              </span>
+            ) : (
+              groups.map((g) => (
+                <div key={g.category} className="mb-1">
+                  <div className="px-2 py-1 text-tiny font-emphasis uppercase tracking-wider text-text-quaternary">
+                    {g.category}
+                  </div>
+                  {g.items.map((it) => {
+                    const active = it.widget === shown;
+                    return (
+                      <button
+                        key={it.widget}
+                        type="button"
+                        onClick={() => pick(it.widget)}
+                        className={`block w-full truncate rounded px-2 py-1.5 text-left text-caption hover:bg-surface-2 ${
+                          active ? 'bg-brand/10 text-brand' : 'text-text-primary'
+                        }`}
+                      >
+                        <span className="font-medium">{it.label}</span>
+                        {it.hint && (
+                          <span className="ml-1 text-tiny text-text-tertiary">· {it.hint}</span>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
 
 const COMMON_EXPRESSION_OPTIONS: SelectOption[] = [
   { value: '{{app_user.username}}', label: 'Signed-in user - username' },
@@ -1158,11 +1355,10 @@ function FieldInspector({
               className={INPUT}
             />
           </Lbl>
-          <Lbl label="Input type">
-            <select
-              value={field.widget === 'lookup' ? 'select' : field.widget}
-              onChange={(event) => {
-                const widget = event.target.value as FormFieldSpec['widget'];
+          <Lbl label="Field type">
+            <FieldTypePicker
+              widget={field.widget}
+              onSelect={(widget) => {
                 if (widget === 'select') {
                   onChange({
                     widget: selectSource === 'dataset_table' ? 'lookup' : 'select',
@@ -1180,14 +1376,7 @@ function FieldInspector({
                 }
                 onChange({ widget });
               }}
-              className={INPUT}
-            >
-              {WIDGETS.map((widget) => (
-                <option key={widget.value} value={widget.value}>
-                  {widget.label}
-                </option>
-              ))}
-            </select>
+            />
           </Lbl>
           {(field.widget === 'select' || field.widget === 'lookup') && (
             <Lbl label="Nguồn lựa chọn">
