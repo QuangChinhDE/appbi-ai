@@ -21,11 +21,16 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   Calculator,
+  CalendarDays,
+  Check,
+  ChevronRight,
   Columns3,
   Filter,
+  Image as ImageIcon,
   LayoutGrid,
   Link2,
   ListFilter,
+  MapPinned,
   PencilLine,
   Plus,
   Rows3,
@@ -98,10 +103,110 @@ type ActiveItem =
   | 'display'
   | 'pos_cart'
   | 'format_rules'
+  | 'kpi'
   | `filter:${number}`
   | `computed:${number}`
   | `lookup:${number}`
   | `rollup:${number}`;
+
+// Display-mode cards shown at the top of the Structure › Display-mode overview.
+// Same data, different render — the card grid replaces the old <select>.
+const DISPLAY_MODE_OPTIONS: Array<{
+  value: 'table' | 'gallery' | 'calendar' | 'route_map';
+  label: string;
+  desc: string;
+  icon: React.ElementType;
+}> = [
+  { value: 'table', label: 'Table', desc: 'Hiển thị dữ liệu dạng bảng có nhiều cột và nhiều dòng.', icon: LayoutGrid },
+  { value: 'gallery', label: 'Gallery', desc: 'Hiển thị dạng thẻ, phù hợp với nội dung trực quan.', icon: ImageIcon },
+  { value: 'calendar', label: 'Calendar', desc: 'Hiển thị theo lịch để quản lý các sự kiện theo thời gian.', icon: CalendarDays },
+  { value: 'route_map', label: 'Route map', desc: 'Hiển thị trên bản đồ và quản lý tuyến đường, điểm đến.', icon: MapPinned },
+];
+
+// Quick-link cards under "Các cấu hình chính" — jump to the main config objects.
+const CONFIG_SHORTCUTS: Array<{ key: ActiveItem; label: string; desc: string; icon: React.ElementType }> = [
+  { key: 'columns', label: 'Fields', desc: 'Chọn và sắp xếp các cột hiển thị trong bảng.', icon: Columns3 },
+  { key: 'editable', label: 'Editable fields', desc: 'Chọn cột có thể chỉnh sửa và cấu hình quy tắc.', icon: PencilLine },
+  { key: 'settings', label: 'Filters & sorting', desc: 'Cấu hình bộ lọc, sắp xếp và thứ tự mặc định.', icon: Filter },
+  { key: 'column_meta', label: 'Column presentation', desc: 'Căn chỉnh, độ rộng cột, định dạng hiển thị.', icon: Settings2 },
+  { key: 'column_groups', label: 'Header groups', desc: 'Nhóm các cột theo cách hiển thị logic.', icon: Columns3 },
+  { key: 'row_merge', label: 'Row merge', desc: 'Gộp ô theo giá trị để giảm lặp dữ liệu.', icon: Rows3 },
+  { key: 'format_rules', label: 'Conditional formatting', desc: 'Tô màu, biểu tượng theo điều kiện dữ liệu.', icon: Palette },
+  { key: 'totals', label: 'Footer totals', desc: 'Tổng hợp cuối bảng cho các cột số liệu.', icon: Sigma },
+  { key: 'kpi', label: 'KPI tiles', desc: 'Hiển thị các chỉ số tổng quan dạng thẻ.', icon: LayoutGrid },
+];
+
+function DisplayModeCard({
+  active,
+  label,
+  desc,
+  icon: Icon,
+  onClick,
+}: {
+  active: boolean;
+  label: string;
+  desc: string;
+  icon: React.ElementType;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`relative flex flex-col gap-2 rounded-xl border p-4 text-left transition-colors ${
+        active
+          ? 'border-brand bg-brand/5 ring-1 ring-brand/40'
+          : 'border-[rgb(var(--border-line))] bg-surface-1 hover:border-brand/40 hover:bg-surface-2'
+      }`}
+    >
+      <span
+        className={`absolute right-3 top-3 flex h-4 w-4 items-center justify-center rounded-full border ${
+          active ? 'border-brand bg-brand text-white' : 'border-[rgb(var(--border-strong))]'
+        }`}
+      >
+        {active && <Check className="h-2.5 w-2.5" />}
+      </span>
+      <span
+        className={`inline-flex h-9 w-9 items-center justify-center rounded-lg ${
+          active ? 'bg-brand/15 text-brand' : 'bg-surface-2 text-text-tertiary'
+        }`}
+      >
+        <Icon className="h-5 w-5" />
+      </span>
+      <span className="text-caption font-semibold text-text-primary">{label}</span>
+      <span className="text-tiny leading-relaxed text-text-tertiary">{desc}</span>
+    </button>
+  );
+}
+
+function ConfigShortcutCard({
+  label,
+  desc,
+  icon: Icon,
+  onClick,
+}: {
+  label: string;
+  desc: string;
+  icon: React.ElementType;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="flex items-start gap-3 rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 p-3 text-left transition-colors hover:border-brand/40 hover:bg-surface-2"
+    >
+      <span className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-brand/10 text-brand">
+        <Icon className="h-4 w-4" />
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="block text-caption font-medium text-text-primary">{label}</span>
+        <span className="block text-tiny leading-relaxed text-text-tertiary">{desc}</span>
+      </span>
+      <ChevronRight className="mt-0.5 h-4 w-4 shrink-0 text-text-quaternary" />
+    </button>
+  );
+}
 
 const EMPTY_TABLE: TableSpec = {
   columns: [],
@@ -1058,23 +1163,32 @@ export default function TableScreenEditor({ screen, tables, onChange }: Props) {
       return (
         <BuilderInspectorPanel
           icon={<LayoutGrid className="h-4 w-4" />}
-          title="Chế độ hiển thị"
-          subtitle="Bảng / lưới thẻ ảnh (Gallery) / lịch (Calendar) — cùng dữ liệu, chỉ khác cách hiển thị."
+          title="Display mode"
+          subtitle="Hãy chọn dạng hiển thị tổng thể cho màn hình. Cùng một nguồn dữ liệu — chỉ khác cách hiển thị."
         >
-          <Lbl label="Kiểu hiển thị">
-            <select
-              value={mode}
-              onChange={(event) =>
-                updateTable({ display_mode: event.target.value as 'table' | 'gallery' | 'calendar' | 'route_map' })
-              }
-              className={INPUT}
-            >
-              <option value="table">Bảng (mặc định)</option>
-              <option value="gallery">Gallery ảnh</option>
-              <option value="calendar">Lịch (Calendar)</option>
-              <option value="route_map">Route map (tuyến trên bản đồ)</option>
-            </select>
-          </Lbl>
+          <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+            {DISPLAY_MODE_OPTIONS.map((opt) => (
+              <DisplayModeCard
+                key={opt.value}
+                active={mode === opt.value}
+                label={opt.label}
+                desc={opt.desc}
+                icon={opt.icon}
+                onClick={() => updateTable({ display_mode: opt.value })}
+              />
+            ))}
+          </div>
+          <div className="mt-3 flex items-start gap-2 rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 px-3 py-2.5 text-caption text-text-secondary">
+            <LayoutGrid className="mt-0.5 h-4 w-4 shrink-0 text-brand" />
+            <span>
+              Cấu trúc hiện tại:{' '}
+              <strong className="text-text-primary">
+                {DISPLAY_MODE_OPTIONS.find((o) => o.value === mode)?.label || 'Table'}
+              </strong>
+              . Các đối tượng ở thanh bên vẫn dùng để cấu hình chi tiết dữ liệu, hành vi và cách
+              trình bày.
+            </span>
+          </div>
 
           {mode === 'calendar' && (
             <div className="mt-3 space-y-3">
@@ -1326,9 +1440,40 @@ export default function TableScreenEditor({ screen, tables, onChange }: Props) {
             </div>
           )}
 
-          <div className="mt-4 space-y-2 border-t border-slate-100 pt-3">
+          <div className="mt-5 border-t border-[rgb(var(--border-line))] pt-4">
+            <h3 className="mb-1 text-caption font-emphasis text-text-primary">
+              Các cấu hình chính cho{' '}
+              {DISPLAY_MODE_OPTIONS.find((o) => o.value === mode)?.label || 'Table'}
+            </h3>
+            <p className="mb-3 text-tiny text-text-tertiary">
+              Mở nhanh các mục cấu hình thường dùng (cũng có ở thanh bên trái).
+            </p>
+            <div className="grid gap-2 sm:grid-cols-2">
+              {CONFIG_SHORTCUTS.map((c) => (
+                <ConfigShortcutCard
+                  key={c.key}
+                  label={c.label}
+                  desc={c.desc}
+                  icon={c.icon}
+                  onClick={() => setActiveItem(c.key)}
+                />
+              ))}
+            </div>
+          </div>
+        </BuilderInspectorPanel>
+      );
+    }
+
+    if (activeItem === 'kpi') {
+      return (
+        <BuilderInspectorPanel
+          icon={<LayoutGrid className="h-4 w-4" />}
+          title="KPI tiles"
+          subtitle="Thẻ chỉ số tổng quan (tổng/đếm/trung bình) hiện trên đầu bảng — vd Σ Sản lượng."
+        >
+          <div className="space-y-2">
             <div className="flex items-center justify-between">
-              <div className="text-sm font-medium text-slate-700">Thẻ KPI (trên đầu bảng)</div>
+              <div className="text-caption font-medium text-text-secondary">Danh sách thẻ KPI</div>
               <button
                 type="button"
                 onClick={() =>
@@ -1339,7 +1484,7 @@ export default function TableScreenEditor({ screen, tables, onChange }: Props) {
                     ],
                   })
                 }
-                className="inline-flex items-center gap-1 rounded-md border border-slate-300 bg-white px-2 py-1 text-xs text-slate-700 hover:bg-slate-50"
+                className="inline-flex items-center gap-1 rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1 text-xs text-text-secondary hover:bg-surface-2"
               >
                 <Plus className="h-3.5 w-3.5" /> Thêm thẻ
               </button>
@@ -2524,17 +2669,39 @@ export default function TableScreenEditor({ screen, tables, onChange }: Props) {
           title="Table objects"
           description="Configure the visible columns, which ones are editable, layout, and pre-set filters."
         >
-          <BuilderNavigatorGroup title="Table">
+          <BuilderNavigatorGroup title="Structure">
+            <BuilderNavigatorItem
+              icon={<LayoutGrid className="h-3.5 w-3.5" />}
+              label="Display mode"
+              subtitle={DISPLAY_MODE_OPTIONS.find((o) => o.value === (tableSpec.display_mode || 'table'))?.label || 'Table'}
+              active={activeItem === 'display'}
+              onClick={() => setActiveItem('display')}
+            />
+          </BuilderNavigatorGroup>
+
+          <BuilderNavigatorGroup title="Content">
             <BuilderNavigatorItem
               icon={<Columns3 className="h-3.5 w-3.5" />}
-              label="Visible columns"
+              label="Fields"
               subtitle={`${tableSpec.columns.length} selected`}
               active={activeItem === 'columns'}
               onClick={() => setActiveItem('columns')}
             />
             <BuilderNavigatorItem
+              icon={<Filter className="h-3.5 w-3.5" />}
+              label="Filters & sorting"
+              subtitle={`${tableSpec.page_size ?? 100} rows/page${
+                tableSpec.default_sort_column ? ` - ${tableSpec.default_sort_column}` : ''
+              }`}
+              active={activeItem === 'settings'}
+              onClick={() => setActiveItem('settings')}
+            />
+          </BuilderNavigatorGroup>
+
+          <BuilderNavigatorGroup title="Interaction">
+            <BuilderNavigatorItem
               icon={<PencilLine className="h-3.5 w-3.5" />}
-              label="Editable columns"
+              label="Editable fields"
               subtitle={`${(tableSpec.editable_columns || []).length} of ${tableSpec.columns.length}`}
               active={activeItem === 'editable'}
               onClick={() => setActiveItem('editable')}
@@ -2549,22 +2716,6 @@ export default function TableScreenEditor({ screen, tables, onChange }: Props) {
               onClick={() => setActiveItem('behaviour')}
             />
             <BuilderNavigatorItem
-              icon={<ScanLine className="h-3.5 w-3.5" />}
-              label="Chế độ POS (quét → giỏ)"
-              subtitle={tableSpec.pos_cart ? 'Đang bật' : 'Tắt'}
-              active={activeItem === 'pos_cart'}
-              onClick={() => setActiveItem('pos_cart')}
-            />
-            <BuilderNavigatorItem
-              icon={<Rows3 className="h-3.5 w-3.5" />}
-              label="Paging and sorting"
-              subtitle={`${tableSpec.page_size ?? 100} rows/page${
-                tableSpec.default_sort_column ? ` - ${tableSpec.default_sort_column}` : ''
-              }`}
-              active={activeItem === 'settings'}
-              onClick={() => setActiveItem('settings')}
-            />
-            <BuilderNavigatorItem
               icon={<Plus className="h-3.5 w-3.5" />}
               label="New row defaults"
               subtitle={`${(tableSpec.required_columns || []).length} required - ${
@@ -2574,35 +2725,32 @@ export default function TableScreenEditor({ screen, tables, onChange }: Props) {
               onClick={() => setActiveItem('defaults')}
             />
             <BuilderNavigatorItem
-              icon={<Sigma className="h-3.5 w-3.5" />}
-              label="Footer totals"
+              icon={<PencilLine className="h-3.5 w-3.5" />}
+              label="Detail panel"
               subtitle={
-                Object.keys(totals).length === 0
-                  ? 'No totals'
-                  : `${Object.keys(totals).length} column${
-                      Object.keys(totals).length === 1 ? '' : 's'
-                    }`
+                tableSpec.detail_panel?.enabled === false
+                  ? 'Disabled'
+                  : (tableSpec.detail_panel?.editable_columns || []).length > 0
+                    ? `${(tableSpec.detail_panel?.editable_columns || []).length} editable`
+                    : 'Read-only'
               }
-              active={activeItem === 'totals'}
-              onClick={() => setActiveItem('totals')}
-            />
-            <BuilderNavigatorItem
-              icon={<ListFilter className="h-3.5 w-3.5" />}
-              label="Empty state"
-              subtitle={tableSpec.empty_state_message ? 'Custom message' : 'Default message'}
-              active={activeItem === 'empty'}
-              onClick={() => setActiveItem('empty')}
-            />
-            <BuilderNavigatorItem
-              icon={<LayoutGrid className="h-3.5 w-3.5" />}
-              label="Chế độ hiển thị"
-              subtitle={tableSpec.display_mode === 'gallery' ? 'Gallery ảnh' : 'Bảng'}
-              active={activeItem === 'display'}
-              onClick={() => setActiveItem('display')}
+              active={activeItem === 'detail_panel'}
+              onClick={() => setActiveItem('detail_panel')}
             />
           </BuilderNavigatorGroup>
 
-          <BuilderNavigatorGroup title="Layout">
+          <BuilderNavigatorGroup title="Presentation">
+            <BuilderNavigatorItem
+              icon={<Settings2 className="h-3.5 w-3.5" />}
+              label="Column presentation"
+              subtitle={
+                Object.keys(tableSpec.column_metadata || {}).length === 0
+                  ? 'Default labels'
+                  : `${Object.keys(tableSpec.column_metadata || {}).length} custom`
+              }
+              active={activeItem === 'column_meta'}
+              onClick={() => setActiveItem('column_meta')}
+            />
             <BuilderNavigatorItem
               icon={<Columns3 className="h-3.5 w-3.5" />}
               label="Header groups"
@@ -2628,32 +2776,8 @@ export default function TableScreenEditor({ screen, tables, onChange }: Props) {
               onClick={() => setActiveItem('row_merge')}
             />
             <BuilderNavigatorItem
-              icon={<Settings2 className="h-3.5 w-3.5" />}
-              label="Column presentation"
-              subtitle={
-                Object.keys(tableSpec.column_metadata || {}).length === 0
-                  ? 'Default labels'
-                  : `${Object.keys(tableSpec.column_metadata || {}).length} custom`
-              }
-              active={activeItem === 'column_meta'}
-              onClick={() => setActiveItem('column_meta')}
-            />
-            <BuilderNavigatorItem
-              icon={<PencilLine className="h-3.5 w-3.5" />}
-              label="Detail panel"
-              subtitle={
-                tableSpec.detail_panel?.enabled === false
-                  ? 'Disabled'
-                  : (tableSpec.detail_panel?.editable_columns || []).length > 0
-                    ? `${(tableSpec.detail_panel?.editable_columns || []).length} editable`
-                    : 'Read-only'
-              }
-              active={activeItem === 'detail_panel'}
-              onClick={() => setActiveItem('detail_panel')}
-            />
-            <BuilderNavigatorItem
               icon={<Palette className="h-3.5 w-3.5" />}
-              label="Định dạng có điều kiện"
+              label="Conditional formatting"
               subtitle={
                 formatRules.length === 0
                   ? 'No rules'
@@ -2661,6 +2785,52 @@ export default function TableScreenEditor({ screen, tables, onChange }: Props) {
               }
               active={activeItem === 'format_rules'}
               onClick={() => setActiveItem('format_rules')}
+            />
+            <BuilderNavigatorItem
+              icon={<ListFilter className="h-3.5 w-3.5" />}
+              label="Empty state"
+              subtitle={tableSpec.empty_state_message ? 'Custom message' : 'Default message'}
+              active={activeItem === 'empty'}
+              onClick={() => setActiveItem('empty')}
+            />
+          </BuilderNavigatorGroup>
+
+          <BuilderNavigatorGroup title="Summary">
+            <BuilderNavigatorItem
+              icon={<Sigma className="h-3.5 w-3.5" />}
+              label="Footer totals"
+              subtitle={
+                Object.keys(totals).length === 0
+                  ? 'No totals'
+                  : `${Object.keys(totals).length} column${
+                      Object.keys(totals).length === 1 ? '' : 's'
+                    }`
+              }
+              active={activeItem === 'totals'}
+              onClick={() => setActiveItem('totals')}
+            />
+            <BuilderNavigatorItem
+              icon={<LayoutGrid className="h-3.5 w-3.5" />}
+              label="KPI tiles"
+              subtitle={
+                (tableSpec.stat_tiles || []).length === 0
+                  ? 'No tiles'
+                  : `${(tableSpec.stat_tiles || []).length} tile${
+                      (tableSpec.stat_tiles || []).length === 1 ? '' : 's'
+                    }`
+              }
+              active={activeItem === 'kpi'}
+              onClick={() => setActiveItem('kpi')}
+            />
+          </BuilderNavigatorGroup>
+
+          <BuilderNavigatorGroup title="Specialized">
+            <BuilderNavigatorItem
+              icon={<ScanLine className="h-3.5 w-3.5" />}
+              label="POS / Scan → Cart"
+              subtitle={tableSpec.pos_cart ? 'Đang bật' : 'Tắt'}
+              active={activeItem === 'pos_cart'}
+              onClick={() => setActiveItem('pos_cart')}
             />
           </BuilderNavigatorGroup>
 
