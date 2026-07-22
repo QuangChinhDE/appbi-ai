@@ -79,6 +79,13 @@ export interface Workboard {
   optimistic_lock_column?: string | null;
   is_published: boolean;
   version: number;
+  // Draft/Published lifecycle. `version` is the DRAFT counter (builder edits);
+  // `published_version` is the draft version captured at the last publish.
+  // `publish_status` is the BE-computed pill state: 'draft' | 'live' |
+  // 'live_unpublished_changes'.
+  published_version?: number | null;
+  published_at?: string | null;
+  publish_status?: 'draft' | 'live' | 'live_unpublished_changes';
   settings?: Record<string, unknown> | null;
   owner_id?: string | null;
   owner_email?: string | null;

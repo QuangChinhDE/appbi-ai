@@ -1469,6 +1469,24 @@ if settings.WORKBOARDS_ENABLED:
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="This account does not belong to this mini-app.",
             )
+
+        # Draft/Published read-split. A real end-user request serves the
+        # immutable PUBLISHED snapshot; an admin PREVIEW session (its
+        # preview_workboard_id targets this board) serves the live DRAFT so
+        # unpublished edits are testable. Stamp a transient flag that
+        # parse_layout()/render_app_shell() read downstream (same pattern as
+        # the _cleared_screens transient attr).
+        is_preview = preview_workboard_id == workboard_id
+        if not is_preview and (not wb.is_published or wb.published_layout_json is None):
+            # Not live: never published (no snapshot) OR un-published
+            # (is_published flipped off — the snapshot is kept so re-publish is
+            # instant, but the live runtime must stop serving). Preview sessions
+            # bypass this so admins can still test the draft.
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Ứng dụng chưa được xuất bản.",
+            )
+        wb._wb_use_published = not is_preview
         return wb
 
 

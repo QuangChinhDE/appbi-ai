@@ -30,6 +30,7 @@ import type { Workboard } from '@/lib/api/workboards';
 import { apiClient } from '@/lib/api-client';
 import { useDatasets } from '@/hooks/use-datasets';
 import { useUpdateWorkboard } from '@/hooks/use-workboards';
+import { getResourcePermissions } from '@/hooks/use-resource-permission';
 import { toast } from '@/lib/toast';
 import {
   ensureLayout,
@@ -40,6 +41,7 @@ import {
 import ScreenEditor from './ScreenEditor';
 import AppSettingsEditor from './AppSettingsEditor';
 import BuilderLivePreview from './BuilderLivePreview';
+import { registerAutosaveFlush } from './autosaveFlushRegistry';
 import CanvasOverview from './CanvasOverview';
 import ScreenSwitcherModal from './ScreenSwitcherModal';
 import { useDebouncedAutosave } from './useDebouncedAutosave';
@@ -117,7 +119,7 @@ export default function WorkboardBuilder({ workboard }: Props) {
   const { data: datasets = [] } = useDatasets();
   const updateWorkboard = useUpdateWorkboard();
   const [boundDatasetId, setBoundDatasetId] = useState(workboard.dataset_id);
-  const [layout, setLayout] = useState<MiniAppLayoutSpec>(() =>
+  const [layout, setLayoutRaw] = useState<MiniAppLayoutSpec>(() =>
     ensureLayout(workboard.layout_json),
   );
   const [activeScreenId, setActiveScreenId] = useState<string | null>(
@@ -138,6 +140,15 @@ export default function WorkboardBuilder({ workboard }: Props) {
   const [focusFieldColumn, setFocusFieldColumn] = useState<string | null>(null);
   const [switcherOpen, setSwitcherOpen] = useState(false);
   const previewPanelRef = useRef<ImperativePanelHandle>(null);
+
+  // View-only users get a fully read-only builder: autosave is disabled and
+  // every layout mutation is a no-op, so no edit can reach the backend (which
+  // would 403 anyway) and the surface can't masquerade as editable. All
+  // structural/field/settings edits funnel through ``setLayout`` — shadowing it
+  // is a single choke-point; the only non-setLayout write (dataset change) and
+  // the add/delete navigation side-effects are guarded explicitly below.
+  const canEdit = getResourcePermissions(workboard.user_permission ?? undefined).canEdit;
+  const setLayout: typeof setLayoutRaw = canEdit ? setLayoutRaw : (() => {});
 
   useEffect(() => {
     setBoundDatasetId(workboard.dataset_id);
@@ -186,9 +197,17 @@ export default function WorkboardBuilder({ workboard }: Props) {
   // Auto-save with a 1.2s debounce. The mini-preview iframe re-keys on
   // each successful save so the user sees their edits the moment the
   // save lands (no Save button click needed).
-  const autosave = useDebouncedAutosave(workboard.id, layout, true);
+  const autosave = useDebouncedAutosave(workboard.id, layout, canEdit);
+
+  // Expose the flush so the topbar Publish control can drain the latest draft
+  // before the server promotes Draft → Published (see autosaveFlushRegistry).
+  useEffect(() => {
+    registerAutosaveFlush(autosave.flush);
+    return () => registerAutosaveFlush(null);
+  }, [autosave.flush]);
 
   const handleDatasetChange = async (nextDatasetId: number) => {
+    if (!canEdit) return;
     if (!nextDatasetId || nextDatasetId === boundDatasetId) return;
     try {
       await autosave.flush();
@@ -288,6 +307,7 @@ export default function WorkboardBuilder({ workboard }: Props) {
   };
 
   const addScreen = (kind: ScreenKind, targetGroupId?: string | null) => {
+    if (!canEdit) return;
     const id = `screen-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
     const titleByKind: Record<ScreenKind, string> = {
       form: 'New form',
@@ -360,6 +380,7 @@ export default function WorkboardBuilder({ workboard }: Props) {
   };
 
   const deleteScreen = (id: string) => {
+    if (!canEdit) return;
     if (!confirm('Delete this screen?')) return;
     setLayout((curr) => {
       const next = curr.screens.filter((s) => s.id !== id);
@@ -463,6 +484,12 @@ export default function WorkboardBuilder({ workboard }: Props) {
 
   return (
     <div className="relative flex h-full flex-col bg-surface-0">
+      {!canEdit && (
+        <div className="flex shrink-0 items-center gap-2 border-b border-amber-200 bg-amber-50 px-4 py-2 text-xs font-medium text-amber-800">
+          <Eye className="h-3.5 w-3.5" />
+          Chế độ chỉ xem — bạn không có quyền chỉnh sửa mini-app này. Mọi thay đổi sẽ không được lưu.
+        </div>
+      )}
       {/* ── Builder sub-topbar: breadcrumb + save pill + preview ──
           Editor mode breadcrumb: ``[All screens] / [current screen ▾]``.
           The screen-name button opens ScreenSwitcherModal so users can

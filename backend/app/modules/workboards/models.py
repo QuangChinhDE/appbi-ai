@@ -78,6 +78,18 @@ class Workboard(Base):
     )
     version = Column(Integer, nullable=False, default=1, server_default="1")
 
+    # ── Draft / Published separation ──────────────────────────────────────
+    # ``layout_json`` above is the mutable DRAFT the builder/autosave writes.
+    # ``published_layout_json`` is the immutable LIVE snapshot the public
+    # runtime serves — set only when Publish runs (atomic draft→published
+    # copy). NULL means "never published" → the live runtime must refuse to
+    # serve the app. The builder and internal Preview always read the draft.
+    # ``published_version`` records the draft ``version`` captured at publish
+    # time; draft ``version`` > ``published_version`` ⇒ "unpublished changes".
+    published_layout_json = Column(JSONB, nullable=True, default=None)
+    published_version = Column(Integer, nullable=True, default=None)
+    published_at = Column(DateTime(timezone=True), nullable=True, default=None)
+
     # Free-form per-workboard settings (theme, default filters, …).
     settings = Column(JSONB, nullable=True, default=None)
 

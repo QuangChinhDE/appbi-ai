@@ -332,16 +332,20 @@ function SettingsTab({
 
       <BuilderSection
         title="Identifier & icon"
-        description="Technical attributes. Only touch these if you know what you're doing."
+        description="The screen ID is a fixed technical identifier — it's referenced by navigation, screen groups, and actions, so it can't be renamed here."
       >
         <div className={BUILDER_GRID_2}>
           <Field label="ID (internal slug)">
+            {/* Read-only: screen.id is the join key for mini_app_nav.items,
+                screen_groups[].screen_ids, and go_to_screen/after_submit_screen/
+                header_screen_id/scan_go_to_screen. Renaming it in place would
+                orphan every one of those references (the backend only scrubs
+                dangling group ids — it does not repoint actions/nav). */}
             <input
               value={screen.id}
-              onChange={(event) =>
-                onChange({ ...screen, id: event.target.value.replace(/\s+/g, '-') })
-              }
-              className={INPUT}
+              readOnly
+              title="Mã định danh kỹ thuật cố định — được tham chiếu bởi điều hướng, nhóm màn hình và hành động; không thể đổi tên."
+              className={`${INPUT} cursor-not-allowed bg-slate-50 text-slate-400`}
             />
           </Field>
           <Field label="Icon">

@@ -17,7 +17,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Literal, Optional, Union
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
 
 
 # ---------------------------------------------------------------------------
@@ -2183,12 +2183,29 @@ class WorkboardResponse(WorkboardBase):
     optimistic_lock_column: Optional[str] = None
     is_published: bool = False
     version: int = 1
+    # Draft/Published lifecycle. ``version`` is the DRAFT counter; the builder
+    # edits ``layout_json``. ``published_version`` is the draft version captured
+    # at the last publish; ``published_at`` when it happened. The live runtime
+    # serves the published snapshot only (not exposed here — builder reads draft).
+    published_version: Optional[int] = None
+    published_at: Optional[datetime] = None
     settings: Optional[Dict[str, Any]] = None
     owner_id: Optional[UUID] = None
     owner_email: Optional[str] = None
     user_permission: Optional[str] = None
     created_at: datetime
     updated_at: datetime
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def publish_status(self) -> str:
+        """One of ``draft`` | ``live`` | ``live_unpublished_changes`` — the
+        single source of truth the builder chrome renders for its status pill."""
+        if not self.is_published or self.published_version is None:
+            return "draft"
+        if (self.version or 1) > (self.published_version or 0):
+            return "live_unpublished_changes"
+        return "live"
 
     model_config = ConfigDict(from_attributes=True)
 

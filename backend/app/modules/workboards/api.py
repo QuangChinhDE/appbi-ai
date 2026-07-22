@@ -388,6 +388,33 @@ def publish_workboard(
     require_dataset_binding_access(db, current_user, wb.dataset_id)
     _assert_owner_pin_rotated(db, wb.id)
     wb = WorkboardService.refresh_schema_defaults(db, wb)
+
+    # Readiness gate — MANDATORY, server-side. A workboard with blocking errors
+    # (missing table/column/dashboard, broken references) must never go live.
+    # Enforced here (not just in the builder UI) so MCP / script / API publishes
+    # are gated identically. Warnings do not block.
+    audit_result = compute_workboard_audit(db, wb)
+    if not audit_result["ok"]:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "message": (
+                    "Không thể xuất bản: ứng dụng còn lỗi chặn "
+                    "(thiếu bảng/cột/dashboard hoặc tham chiếu hỏng). "
+                    "Sửa hết lỗi rồi xuất bản lại."
+                ),
+                "audit": audit_result,
+            },
+        )
+
+    # Atomic draft → published promotion. The public/live runtime serves ONLY
+    # published_layout_json, so end users keep seeing the PREVIOUS live snapshot
+    # until this promotion runs — draft autosaves never touch production.
+    from datetime import datetime, timezone
+
+    wb.published_layout_json = wb.layout_json
+    wb.published_version = wb.version
+    wb.published_at = datetime.now(timezone.utc)
     wb.is_published = True
     db.commit()
     db.refresh(wb)
@@ -439,15 +466,25 @@ def audit_workboard(
           ]
         }
     """
+    wb = _get_or_404(db, workboard_id)
+    require_view_access(db, current_user, wb, "workboards")
+    require_dataset_binding_access(db, current_user, wb.dataset_id)
+    return compute_workboard_audit(db, wb)
+
+
+def compute_workboard_audit(db: Session, wb: Workboard) -> dict[str, Any]:
+    """Inventory broken references inside a workboard's DRAFT layout.
+
+    Extracted from the GET /audit endpoint so the publish readiness-gate shares
+    one code path (single source of truth). Read-only — never mutates layout.
+    Audits the DRAFT (``layout_json``) because that is what a subsequent Publish
+    would promote to live.
+    """
     from app.models.dataset import DatasetTable
     from app.models.models import Dashboard
     from app.modules.workboards.services.crud_service import (
         _collect_table_column_names,
     )
-
-    wb = _get_or_404(db, workboard_id)
-    require_view_access(db, current_user, wb, "workboards")
-    require_dataset_binding_access(db, current_user, wb.dataset_id)
 
     issues: list[dict[str, Any]] = []
 
@@ -751,7 +788,7 @@ def audit_workboard(
                 )
 
     return {
-        "workboard_id": int(workboard_id),
+        "workboard_id": int(wb.id),
         "screen_count": len(screens_iter),
         "issue_count": len(issues),
         "ok": not any(issue["severity"] == "error" for issue in issues),

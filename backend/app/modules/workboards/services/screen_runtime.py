@@ -578,11 +578,26 @@ def _resolve_lookup_options(
 
 # ── Layout + screen lookup ────────────────────────────────────────────────
 
-def parse_layout(workboard: Workboard) -> LayoutJson:
+def parse_layout(workboard: Workboard, *, use_published: Optional[bool] = None) -> LayoutJson:
+    """Parse a workboard's layout into the typed ``LayoutJson``.
+
+    Reads the mutable DRAFT (``layout_json``) by default — what the builder,
+    internal Preview, audit and webhooks want. The PUBLIC/LIVE runtime instead
+    serves the immutable PUBLISHED snapshot (``published_layout_json``); it opts
+    in via the transient ``_wb_use_published`` attribute that
+    ``_resolve_workboard_for_workspace`` stamps on the workboard (mirrors the
+    existing ``_cleared_screens`` transient-attr pattern), or via an explicit
+    ``use_published`` argument. A never-published board has
+    ``published_layout_json is None`` → the runtime resolver refuses to serve it
+    before we ever reach here, so live callers never see an empty layout.
+    """
+    if use_published is None:
+        use_published = bool(getattr(workboard, "_wb_use_published", False))
+    raw = workboard.published_layout_json if use_published else workboard.layout_json
     try:
-        return LayoutJson.model_validate(workboard.layout_json or {})
+        return LayoutJson.model_validate(raw or {})
     except Exception:
-        logger.exception("workboard %s has invalid layout", workboard.id)
+        logger.exception("workboard %s has invalid layout (published=%s)", workboard.id, use_published)
         return LayoutJson()
 
 
@@ -1371,8 +1386,19 @@ def update_screen_rows(
     updates: List[Dict[str, Any]],
     *,
     identity: CallerIdentity,
+    enforce_editable: bool = True,
 ) -> Dict[str, Any]:
-    """Update many table rows with a datasource-aware batch path when safe."""
+    """Update many table rows with a datasource-aware batch path when safe.
+
+    ``enforce_editable`` gates the *inline-editable* column filter. It is True for
+    user-driven edits (a column absent from ``editable_columns`` is dropped, so a
+    UI-readonly cell can't be hand-edited). Server-driven callers — e.g. a
+    bulk-action ``update_selected`` step linking a freshly-created parent code onto
+    the selected rows — pass False: the columns are author-declared in the recipe,
+    not user input, so a UI-readonly link column (the common case) must still be
+    writable. Computed/lookup (``derived``) columns and per-role RLS
+    (``writable_columns``/``can_update``) are STILL enforced either way.
+    """
     if not updates:
         return {"action": "update_many", "affected_rows": 0, "results": []}
     if screen.kind != "table":
@@ -1384,6 +1410,7 @@ def update_screen_rows(
                 item.get("pk") if isinstance(item, dict) else {},
                 item.get("values") if isinstance(item, dict) else {},
                 identity=identity,
+                enforce_editable=enforce_editable,
             )
             for item in updates
         ]
@@ -1403,6 +1430,7 @@ def update_screen_rows(
                 item.get("pk") if isinstance(item, dict) else {},
                 item.get("values") if isinstance(item, dict) else {},
                 identity=identity,
+                enforce_editable=enforce_editable,
             )
             for item in updates
         ]
@@ -1428,7 +1456,7 @@ def update_screen_rows(
         cleaned_pre = {
             k: v
             for k, v in values.items()
-            if k not in derived and (not editable or k in editable)
+            if k not in derived and (not enforce_editable or not editable or k in editable)
         }
         if not cleaned_pre:
             raise HTTPException(status_code=400, detail="No editable columns in payload.")
@@ -1466,7 +1494,11 @@ def update_screen_row(
     values: Dict[str, Any],
     *,
     identity: CallerIdentity,
+    enforce_editable: bool = True,
 ) -> Dict[str, Any]:
+    # ``enforce_editable`` — see update_screen_rows. False lets a server-driven
+    # bulk step write author-declared columns that are UI-readonly (e.g. a link
+    # column); derived-column + RLS enforcement below still apply.
     if screen.table_id is None or screen.kind not in ("form", "table"):
         raise HTTPException(status_code=400, detail="Screen is not writable.")
     if screen.kind == "form" and screen.form is None:
@@ -1497,7 +1529,7 @@ def update_screen_row(
         cleaned_pre = {
             k: v
             for k, v in (values or {}).items()
-            if k not in derived and (not editable or k in editable)
+            if k not in derived and (not enforce_editable or not editable or k in editable)
         }
         if not cleaned_pre:
             raise HTTPException(
