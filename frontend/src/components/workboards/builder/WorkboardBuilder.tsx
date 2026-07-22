@@ -183,13 +183,27 @@ export default function WorkboardBuilder({ workboard }: Props) {
     presence.lock.holder_key &&
     !presence.lock.held_by_me
   );
+  const canWrite = canEdit && !activeScreenLocked;
+
+  // ── Autosave save-path classification (Slice 2) ──
+  // Screen-CONTENT edits (updateScreen) persist screen-scoped so people on
+  // different screens never 409/clobber; structural/app edits persist
+  // whole-board. `setLayout` (the structural choke-point) marks structural;
+  // `updateScreen` marks the one screen. Refs (not state) so the autosave
+  // drain reads the freshest classification without re-render churn.
+  const dirtyStructuralRef = useRef(false);
+  const dirtyScreenIdsRef = useRef<Set<string>>(new Set());
+
   // View-only users OR a screen locked by a collaborator → every layout
   // mutation is a no-op (single choke-point, mirroring the !canEdit shadow).
-  // Autosave itself stays enabled on `canEdit` so edits made on OTHER
-  // (unlocked) screens still flush — the lock only blocks NEW mutations of the
-  // locked screen, which never reach `layout` anyway.
-  const setLayout: typeof setLayoutRaw =
-    canEdit && !activeScreenLocked ? setLayoutRaw : (() => {});
+  // Autosave stays enabled on `canEdit` so edits made on OTHER (unlocked)
+  // screens still flush — the lock only blocks NEW mutations of the locked
+  // screen, which never reach `layout` anyway.
+  const setLayout: typeof setLayoutRaw = (value) => {
+    if (!canWrite) return;
+    dirtyStructuralRef.current = true;
+    setLayoutRaw(value);
+  };
 
   useEffect(() => {
     setBoundDatasetId(workboard.dataset_id);
@@ -253,7 +267,10 @@ export default function WorkboardBuilder({ workboard }: Props) {
   // Auto-save with a 1.2s debounce. The mini-preview iframe re-keys on
   // each successful save so the user sees their edits the moment the
   // save lands (no Save button click needed).
-  const autosave = useDebouncedAutosave(workboard.id, layout, canEdit);
+  const autosave = useDebouncedAutosave(workboard.id, layout, canEdit, {
+    structuralRef: dirtyStructuralRef,
+    screenIdsRef: dirtyScreenIdsRef,
+  });
 
   // Expose the flush so the topbar Publish control can drain the latest draft
   // before the server promotes Draft → Published (see autosaveFlushRegistry).
@@ -366,8 +383,14 @@ export default function WorkboardBuilder({ workboard }: Props) {
     return () => window.removeEventListener('message', onMessage);
   }, [activeScreenId]);
 
+  // Screen-CONTENT edit. Marks ONLY this screen dirty (screen-scoped save) and
+  // writes via the raw setter so it does NOT trip the structural marker in
+  // `setLayout` — that's what keeps different-screen edits off the whole-board
+  // (409-guarded) path. Same lock/permission guard as `setLayout`.
   const updateScreen = (next: ScreenSpec) => {
-    setLayout((curr) => ({
+    if (!canWrite) return;
+    dirtyScreenIdsRef.current.add(next.id);
+    setLayoutRaw((curr) => ({
       ...curr,
       screens: curr.screens.map((s) => (s.id === next.id ? next : s)),
     }));

@@ -350,6 +350,23 @@ export const workboardApi = {
     return data;
   },
 
+  /** Screen-scoped save — merges ONE screen into the current stored layout
+   * server-side (no board-version guard), so many people editing DIFFERENT
+   * screens never clobber or 409 each other. Use for screen-CONTENT edits;
+   * structural/app edits (add/delete/reorder, nav, groups, dataset) use
+   * update(). */
+  updateScreen: async (
+    id: number,
+    screenId: string,
+    screen: Record<string, unknown>,
+  ): Promise<Workboard> => {
+    const { data } = await apiClient.patch(
+      `/workboards/${id}/screens/${encodeURIComponent(screenId)}`,
+      screen,
+    );
+    return data;
+  },
+
   remove: async (id: number): Promise<void> => {
     await apiClient.delete(`/workboards/${id}`);
   },

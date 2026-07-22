@@ -7,6 +7,7 @@ consistent (list/owned-or-shared, batch effective permissions on listing,
 """
 from __future__ import annotations
 
+from copy import deepcopy
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
@@ -45,6 +46,7 @@ from app.modules.workboards.schemas import (
     AppUserResponse,
     AppUserUpdate,
     LayoutJson,
+    Screen,
     WorkboardCreate,
     WorkboardPublicLinkCreate,
     WorkboardPublicLinkResponse,
@@ -335,6 +337,76 @@ def update_workboard(
             "fields": list(payload.model_dump(exclude_unset=True).keys()),
             "cleared_screen_count": len(cleared) if isinstance(cleared, list) else 0,
         },
+    )
+    if updated:
+        updated.user_permission = "full"
+    return updated
+
+
+@router.patch("/{workboard_id}/screens/{screen_id}", response_model=WorkboardResponse)
+def update_workboard_screen(
+    workboard_id: int,
+    screen_id: str,
+    payload: Screen,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Screen-scoped autosave — merge ONE screen into the CURRENT stored layout
+    and leave every other screen + all app-level config untouched.
+
+    This is what makes many people editing DIFFERENT screens safe. The
+    whole-board ``PATCH /{id}`` replaces the entire ``layout_json`` from the
+    client's (possibly stale) copy, so two editors on different screens either
+    409 or clobber each other. Here the server merges only the one screen from
+    the payload into ITS OWN latest layout, so a save can neither overwrite a
+    sibling screen a collaborator just edited nor conflict with it — there is
+    deliberately NO board-version guard on this path. Same-screen concurrency is
+    handled up front by the soft screen-lock (see workboard_presence). Structural
+    edits (add/delete/reorder screens, nav, groups, dataset, branding) still go
+    through ``PATCH /{id}`` with the board-version guard."""
+    wb = _get_or_404(db, workboard_id)
+    require_edit_access(db, current_user, wb, "workboards")
+    if payload.id != screen_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Screen id in body must match the URL.",
+        )
+    current = deepcopy(wb.layout_json or {})
+    screens = current.get("screens") or []
+    idx = next((i for i, s in enumerate(screens) if s.get("id") == screen_id), None)
+    if idx is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=(
+                f"Screen '{screen_id}' not found — use PATCH /{workboard_id} "
+                "for new or structural changes."
+            ),
+        )
+    # Sheets-only gate on the (possibly changed) table binding for this screen.
+    if payload.table_id is not None:
+        require_dataset_binding_access(db, current_user, wb.dataset_id)
+        assert_workboard_tables_supported(db, [payload.table_id])
+    screens[idx] = payload.model_dump()
+    current["screens"] = screens
+    try:
+        updated = WorkboardService.update(
+            db, workboard_id, WorkboardUpdate(layout_json=current)
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    # Keep managed dashboard links reconciled (idempotent; cheap when no
+    # dashboard screen exists).
+    if updated is not None:
+        updated = sync_managed_dashboard_links(db, updated, creator=current_user)
+    audit(
+        db,
+        AuditAction.WORKBOARD_UPDATED,
+        request=request,
+        user_id=current_user.id,
+        resource_type="workboard",
+        resource_id=str(workboard_id),
+        details={"screen_scoped": True, "screen_id": screen_id},
     )
     if updated:
         updated.user_permission = "full"
