@@ -107,6 +107,7 @@ type ActiveItem =
   | 'format_rules'
   | 'kpi'
   | 'row_actions'
+  | 'bulk_actions'
   | `filter:${number}`
   | `computed:${number}`
   | `lookup:${number}`
@@ -753,6 +754,49 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
     updateTable({ row_actions: rowActions.filter((_, i) => i !== idx) });
   };
 
+  // ── Bulk actions (select many rows → gộp nhóm / điều phối) ──
+  // The advanced server recipe (`steps`) + simple write targets are round-tripped;
+  // the builder edits the surface knobs (totals, capacity check, pickers, route).
+  const bulkActions = tableSpec.bulk_actions || [];
+  const updateBulk = (idx: number, patch: Partial<NonNullable<TableSpec['bulk_actions']>[number]>) => {
+    updateTable({ bulk_actions: bulkActions.map((a, i) => (i === idx ? { ...a, ...patch } : a)) });
+  };
+  const removeBulk = (idx: number) => {
+    updateTable({ bulk_actions: bulkActions.filter((_, i) => i !== idx) });
+  };
+  const addBulk = () => {
+    const existing = new Set(bulkActions.map((a) => a.id));
+    let n = bulkActions.length + 1;
+    let id = `bulk_${n}`;
+    while (existing.has(id)) {
+      n += 1;
+      id = `bulk_${n}`;
+    }
+    const other = allScreens.find((s) => s.id !== screen.id);
+    updateTable({
+      bulk_actions: [
+        ...bulkActions,
+        {
+          id,
+          label: 'Gộp các dòng đã chọn',
+          style: 'primary',
+          // Simple-mode write targets — BE requires these (non-empty) when `steps`
+          // is empty; defaulted so it saves, the author points them at the real
+          // parent screen/columns.
+          parent_screen_id: other?.id || '',
+          parent_code_column: columnNames[0] || '',
+          set_column: columnNames[0] || '',
+          code_prefix: 'GRP',
+          min_selection: 1,
+          preview_aggregates: [],
+          constraints: [],
+          resource_inputs: [],
+        },
+      ],
+    });
+    setActiveItem('bulk_actions');
+  };
+
   const toggleColumnVisible = (column: string) => {
     if (tableSpec.columns.includes(column)) {
       updateTable({ columns: tableSpec.columns.filter((c) => c !== column) });
@@ -1240,6 +1284,219 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
                     </div>
                   </div>
                 ))}
+              </div>
+            )}
+          </div>
+        </BuilderInspectorPanel>
+      );
+    }
+
+    if (activeItem === 'bulk_actions') {
+      const otherScreens = allScreens.filter((s) => s.id !== screen.id);
+      const AGG_OPTS = ['sum', 'count', 'avg', 'min', 'max'] as const;
+      return (
+        <BuilderInspectorPanel
+          icon={<ChevronRight className="h-4 w-4" />}
+          title="Chọn nhiều dòng → hành động"
+          subtitle="Bật ô tích chọn + 1 thanh lệnh gọn (đếm/kiểm tra → duyệt) cho gộp đơn, điều xe… Đổi cột kiểm tra ở 'Ràng buộc'; tắt = xoá hành động."
+        >
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="text-caption font-emphasis text-text-secondary">Hành động ({bulkActions.length})</div>
+              <button
+                type="button"
+                onClick={addBulk}
+                className="inline-flex items-center gap-1 rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1 text-tiny text-text-secondary hover:bg-surface-2"
+              >
+                <Plus className="h-3.5 w-3.5" /> Thêm
+              </button>
+            </div>
+
+            {bulkActions.length === 0 ? (
+              <BuilderEmptyHint className="text-left">
+                Chưa có. Thêm 1 hành động để tích nhiều dòng rồi gộp/điều phối (vd: gộp đơn thành 1 chuyến, kiểm tra tổng khối lượng ≤ tải trọng xe).
+              </BuilderEmptyHint>
+            ) : (
+              <div className="space-y-4">
+                {bulkActions.map((action, index) => {
+                  const aggs = action.preview_aggregates || [];
+                  const cons = action.constraints || [];
+                  const ress = action.resource_inputs || [];
+                  const advanced = Array.isArray(action.steps) && action.steps.length > 0;
+                  return (
+                    <div key={index} className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 p-3">
+                      <div className="mb-2 flex items-center justify-between gap-2">
+                        <span className="min-w-0 truncate text-caption font-medium text-text-primary">
+                          {action.label?.trim() || 'Hành động'}
+                          {advanced ? <span className="ml-1 text-tiny text-text-tertiary">· nâng cao</span> : null}
+                        </span>
+                        <BuilderIconButton onClick={() => removeBulk(index)} title="Xoá (tắt) hành động" variant="danger">
+                          <Trash2 className="h-3.5 w-3.5 text-danger" />
+                        </BuilderIconButton>
+                      </div>
+
+                      <div className="space-y-3">
+                        <div className={BUILDER_GRID_2}>
+                          <Lbl label="Nhãn nút">
+                            <input value={action.label || ''} onChange={(e) => updateBulk(index, { label: e.target.value })} className={INPUT} placeholder="Xếp nhiều đơn lên xe" />
+                          </Lbl>
+                          <Lbl label="Kiểu nút">
+                            <select value={action.style || 'primary'} onChange={(e) => updateBulk(index, { style: e.target.value as NonNullable<TableSpec['bulk_actions']>[number]['style'] })} className={INPUT}>
+                              <option value="primary">Primary</option>
+                              <option value="secondary">Secondary</option>
+                              <option value="ghost">Ghost</option>
+                              <option value="danger">Danger</option>
+                            </select>
+                          </Lbl>
+                          <Lbl label="Icon (tùy chọn)">
+                            <input value={action.icon || ''} onChange={(e) => updateBulk(index, { icon: e.target.value || null })} className={INPUT} placeholder="🚚" />
+                          </Lbl>
+                          <Lbl label="Số dòng tối thiểu">
+                            <input type="number" min={1} value={action.min_selection ?? 1} onChange={(e) => updateBulk(index, { min_selection: Math.max(1, Number(e.target.value) || 1) })} className={INPUT} />
+                          </Lbl>
+                        </div>
+
+                        <div className="rounded-md border border-[rgb(var(--border-line))] bg-surface-2/40 p-2.5">
+                          <div className="mb-1.5 flex items-center justify-between">
+                            <div className="text-tiny font-emphasis text-text-secondary">Ràng buộc kiểm tra khi chọn (vd tổng KL ≤ tải trọng)</div>
+                            <button type="button" onClick={() => updateBulk(index, { constraints: [...cons, { agg_column: columnNames[0] || '', agg: 'sum', op: '<=', limit: null, limit_from_resource: ress[0]?.id || null }] })} className="text-tiny text-brand hover:underline">+ Thêm</button>
+                          </div>
+                          {cons.length === 0 ? (
+                            <p className="text-tiny text-text-tertiary">Không có = chỉ hiển thị số liệu, không chặn.</p>
+                          ) : (
+                            <div className="space-y-2">
+                              {cons.map((c, ci) => {
+                                const setC = (patch: Partial<typeof c>) => updateBulk(index, { constraints: cons.map((x, xi) => (xi === ci ? { ...x, ...patch } : x)) });
+                                return (
+                                  <div key={ci} className="rounded border border-[rgb(var(--border-line))] bg-surface-1 p-2">
+                                    <div className="mb-1 flex items-center justify-between">
+                                      <span className="text-tiny text-text-tertiary">#{ci + 1}</span>
+                                      <button type="button" onClick={() => updateBulk(index, { constraints: cons.filter((_, xi) => xi !== ci) })} className="text-tiny text-danger hover:underline">Xoá</button>
+                                    </div>
+                                    <div className={BUILDER_GRID_2}>
+                                      <Lbl label="Cột kiểm tra (cộng dồn)">
+                                        <SingleColumnPicker sourceColumns={columnNames} value={c.agg_column || null} onChange={(next) => setC({ agg_column: next || '' })} />
+                                      </Lbl>
+                                      <Lbl label="Phép gộp">
+                                        <select value={c.agg || 'sum'} onChange={(e) => setC({ agg: e.target.value as typeof c.agg })} className={INPUT}>{AGG_OPTS.map((a) => <option key={a} value={a}>{a}</option>)}</select>
+                                      </Lbl>
+                                      <Lbl label="So sánh">
+                                        <select value={c.op || '<='} onChange={(e) => setC({ op: e.target.value as typeof c.op })} className={INPUT}>{(['<=', '<', '>=', '>'] as const).map((o) => <option key={o} value={o}>{o}</option>)}</select>
+                                      </Lbl>
+                                      <Lbl label="Nhãn (tùy chọn)">
+                                        <input value={c.label || ''} onChange={(e) => setC({ label: e.target.value || null })} className={INPUT} placeholder="Tổng khối lượng ≤ tải trọng xe" />
+                                      </Lbl>
+                                      <Lbl label="Ngưỡng cố định">
+                                        <input type="number" value={c.limit ?? ''} onChange={(e) => setC({ limit: e.target.value === '' ? null : Number(e.target.value) })} className={INPUT} placeholder="vd 2500" disabled={!!c.limit_from_resource} />
+                                      </Lbl>
+                                      <Lbl label="… hoặc lấy từ tài nguyên">
+                                        <select value={c.limit_from_resource || ''} onChange={(e) => setC({ limit_from_resource: e.target.value || null })} className={INPUT}>
+                                          <option value="">— dùng ngưỡng cố định —</option>
+                                          {ress.map((r) => <option key={r.id} value={r.id}>{r.label || r.id}</option>)}
+                                        </select>
+                                      </Lbl>
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
+
+                        <div className="rounded-md border border-[rgb(var(--border-line))] bg-surface-2/40 p-2.5">
+                          <div className="mb-1.5 flex items-center justify-between">
+                            <div className="text-tiny font-emphasis text-text-secondary">Tổng hiển thị trên thanh lệnh (chip)</div>
+                            <button type="button" onClick={() => updateBulk(index, { preview_aggregates: [...aggs, { label: '', column: columnNames[0] || '', agg: 'sum', format: 'number' }] })} className="text-tiny text-brand hover:underline">+ Thêm</button>
+                          </div>
+                          {aggs.length === 0 ? (
+                            <p className="text-tiny text-text-tertiary">Vd: “Tổng kg”, “Doanh thu”.</p>
+                          ) : (
+                            <div className="space-y-2">
+                              {aggs.map((pa, pi) => {
+                                const setA = (patch: Partial<typeof pa>) => updateBulk(index, { preview_aggregates: aggs.map((x, xi) => (xi === pi ? { ...x, ...patch } : x)) });
+                                return (
+                                  <div key={pi} className="grid grid-cols-[1fr_1fr_auto_auto] items-end gap-2">
+                                    <Lbl label="Nhãn"><input value={pa.label || ''} onChange={(e) => setA({ label: e.target.value })} className={INPUT} placeholder="Tổng kg" /></Lbl>
+                                    <Lbl label="Cột"><SingleColumnPicker sourceColumns={columnNames} value={pa.column || null} onChange={(next) => setA({ column: next || '' })} /></Lbl>
+                                    <Lbl label="Gộp"><select value={pa.agg || 'sum'} onChange={(e) => setA({ agg: e.target.value as typeof pa.agg })} className={INPUT}>{AGG_OPTS.map((a) => <option key={a} value={a}>{a}</option>)}</select></Lbl>
+                                    <button type="button" onClick={() => updateBulk(index, { preview_aggregates: aggs.filter((_, xi) => xi !== pi) })} className="mb-1 text-tiny text-danger hover:underline">Xoá</button>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
+
+                        <div className="rounded-md border border-[rgb(var(--border-line))] bg-surface-2/40 p-2.5">
+                          <div className="mb-1.5 flex items-center justify-between">
+                            <div className="text-tiny font-emphasis text-text-secondary">Tài nguyên phải chọn trước (Xe/Kho…)</div>
+                            <button type="button" onClick={() => updateBulk(index, { resource_inputs: [...ress, { id: `res_${ress.length + 1}`, label: '', source_screen_id: otherScreens[0]?.id || '', value_column: '', label_column: null, capacity_column: null, required: true }] })} className="text-tiny text-brand hover:underline">+ Thêm</button>
+                          </div>
+                          {ress.length === 0 ? (
+                            <p className="text-tiny text-text-tertiary">Vd: chọn Xe (tải trọng cấp ngưỡng cho ràng buộc), chọn Kho.</p>
+                          ) : (
+                            <div className="space-y-2">
+                              {ress.map((r, ri) => {
+                                const setR = (patch: Partial<typeof r>) => updateBulk(index, { resource_inputs: ress.map((x, xi) => (xi === ri ? { ...x, ...patch } : x)) });
+                                return (
+                                  <div key={ri} className="rounded border border-[rgb(var(--border-line))] bg-surface-1 p-2">
+                                    <div className="mb-1 flex items-center justify-between">
+                                      <span className="text-tiny text-text-tertiary">{r.id}</span>
+                                      <button type="button" onClick={() => updateBulk(index, { resource_inputs: ress.filter((_, xi) => xi !== ri) })} className="text-tiny text-danger hover:underline">Xoá</button>
+                                    </div>
+                                    <div className={BUILDER_GRID_2}>
+                                      <Lbl label="Nhãn picker"><input value={r.label || ''} onChange={(e) => setR({ label: e.target.value })} className={INPUT} placeholder="Chọn xe" /></Lbl>
+                                      <Lbl label="Màn nguồn (bảng)"><select value={r.source_screen_id || ''} onChange={(e) => setR({ source_screen_id: e.target.value })} className={INPUT}><option value="">— chọn màn —</option>{otherScreens.map((s) => <option key={s.id} value={s.id}>{s.title}</option>)}</select></Lbl>
+                                      <Lbl label="Cột giá trị"><input value={r.value_column || ''} onChange={(e) => setR({ value_column: e.target.value })} className={INPUT} placeholder="MaXe" /></Lbl>
+                                      <Lbl label="Cột hiển thị (tùy chọn)"><input value={r.label_column || ''} onChange={(e) => setR({ label_column: e.target.value || null })} className={INPUT} placeholder="BienSo" /></Lbl>
+                                      <Lbl label="Cột sức chứa (ngưỡng)"><input value={r.capacity_column || ''} onChange={(e) => setR({ capacity_column: e.target.value || null })} className={INPUT} placeholder="TaiTrongToiDaKg" /></Lbl>
+                                      <label className="flex items-center gap-2 self-end pb-1 text-caption text-text-secondary"><input type="checkbox" checked={r.required !== false} onChange={(e) => setR({ required: e.target.checked })} /> Bắt buộc</label>
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
+
+                        <div className="rounded-md border border-[rgb(var(--border-line))] bg-surface-2/40 p-2.5">
+                          <div className="flex items-center justify-between">
+                            <div className="text-tiny font-emphasis text-text-secondary">Xem tuyến trên bản đồ (tùy chọn)</div>
+                            {action.route_preview ? (
+                              <button type="button" onClick={() => updateBulk(index, { route_preview: null })} className="text-tiny text-danger hover:underline">Tắt</button>
+                            ) : (
+                              <button type="button" onClick={() => updateBulk(index, { route_preview: { lat_column: columnNames[0] || '', lng_column: columnNames[0] || '', line_mode: 'road' } })} className="text-tiny text-brand hover:underline">+ Bật</button>
+                            )}
+                          </div>
+                          {action.route_preview ? (
+                            <div className={`mt-2 ${BUILDER_GRID_2}`}>
+                              <Lbl label="Cột Lat"><SingleColumnPicker sourceColumns={columnNames} value={action.route_preview.lat_column || null} onChange={(next) => updateBulk(index, { route_preview: { ...action.route_preview!, lat_column: next || '' } })} /></Lbl>
+                              <Lbl label="Cột Lng"><SingleColumnPicker sourceColumns={columnNames} value={action.route_preview.lng_column || null} onChange={(next) => updateBulk(index, { route_preview: { ...action.route_preview!, lng_column: next || '' } })} /></Lbl>
+                              <Lbl label="Cột thứ tự (tùy chọn)"><SingleColumnPicker sourceColumns={columnNames} value={action.route_preview.order_column || null} onChange={(next) => updateBulk(index, { route_preview: { ...action.route_preview!, order_column: next || null } })} /></Lbl>
+                            </div>
+                          ) : null}
+                        </div>
+
+                        {advanced ? (
+                          <p className="rounded-md bg-surface-2/60 px-2.5 py-2 text-tiny text-text-tertiary">
+                            Luồng ghi nâng cao: {action.steps!.length} bước (tạo bản ghi cha + gán dòng…). Quản lý qua MCP; tại đây chỉnh phần hiển thị/kiểm tra ở trên.
+                          </p>
+                        ) : (
+                          <div className={BUILDER_GRID_2}>
+                            <Lbl label="Màn tạo bản ghi cha"><select value={action.parent_screen_id || ''} onChange={(e) => updateBulk(index, { parent_screen_id: e.target.value })} className={INPUT}><option value="">— chọn màn —</option>{otherScreens.map((s) => <option key={s.id} value={s.id}>{s.title}</option>)}</select></Lbl>
+                            <Lbl label="Cột mã bản ghi cha"><input value={action.parent_code_column || ''} onChange={(e) => updateBulk(index, { parent_code_column: e.target.value })} className={INPUT} placeholder="ma_chuyen" /></Lbl>
+                            <Lbl label="Cột FK trên dòng đã chọn"><SingleColumnPicker sourceColumns={columnNames} value={action.set_column || null} onChange={(next) => updateBulk(index, { set_column: next || '' })} /></Lbl>
+                            <Lbl label="Tiền tố mã"><input value={action.code_prefix || ''} onChange={(e) => updateBulk(index, { code_prefix: e.target.value })} className={INPUT} placeholder="CX" /></Lbl>
+                          </div>
+                        )}
+
+                        <Lbl label="Chỉ hiện cho vai trò (tùy chọn, cách nhau dấu phẩy)">
+                          <input value={(action.visible_for_roles || []).join(', ')} onChange={(e) => updateBulk(index, { visible_for_roles: e.target.value.split(',').map((s) => s.trim()).filter(Boolean) })} className={INPUT} placeholder="để trống = mọi vai trò" />
+                        </Lbl>
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
             )}
           </div>
@@ -3129,6 +3386,13 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
               }
               active={activeItem === 'row_actions'}
               onClick={() => setActiveItem('row_actions')}
+            />
+            <BuilderNavigatorItem
+              icon={<ChevronRight className="h-3.5 w-3.5" />}
+              label="Chọn nhiều dòng"
+              subtitle={bulkActions.length === 0 ? 'Chưa có' : `${bulkActions.length} hành động`}
+              active={activeItem === 'bulk_actions'}
+              onClick={() => setActiveItem('bulk_actions')}
             />
           </BuilderNavigatorGroup>
 

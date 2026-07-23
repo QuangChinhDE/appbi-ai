@@ -356,6 +356,62 @@ export interface TableScreenSpecBuilt {
   /** Supermarket-style batch scan cart. When set, the runtime renders a POS
    * interface instead of the grid. None/undefined = ordinary table. */
   pos_cart?: PosCartConfigSpec | null;
+  /** "Select many rows → one action" recipes (gộp nhóm / điều phối). Rendered as
+   * a checkbox column + a compact command bar. The advanced server-executed
+   * `steps` recipe is authored via MCP; the builder edits the surface knobs
+   * (label, totals, capacity check, pickers, route preview) and round-trips
+   * `steps`/simple write fields untouched. */
+  bulk_actions?: BulkActionSpec[];
+}
+
+export interface BulkActionSpec {
+  id: string;
+  label: string;
+  icon?: string | null;
+  style?: 'primary' | 'secondary' | 'ghost' | 'danger';
+  /** SIMPLE mode write targets (round-tripped; required by BE when `steps` empty). */
+  set_column?: string;
+  also_set?: Record<string, unknown>;
+  parent_screen_id?: string;
+  parent_code_column?: string;
+  code_prefix?: string;
+  parent_defaults?: Record<string, unknown>;
+  confirm_message?: string | null;
+  min_selection?: number;
+  success_message?: string | null;
+  visible_for_roles?: string[];
+  require_same?: string[];
+  /** Running totals shown on the command bar (tự tính tổng). */
+  preview_aggregates?: Array<{
+    column: string;
+    agg?: 'sum' | 'avg' | 'min' | 'max' | 'count';
+    label: string;
+    format?: string | null;
+  }>;
+  /** Numeric guards over the selection (e.g. tổng khối lượng ≤ tải trọng xe). */
+  constraints?: Array<{
+    agg_column: string;
+    agg?: 'sum' | 'count' | 'avg' | 'min' | 'max';
+    op?: '<=' | '<' | '>=' | '>';
+    limit?: number | null;
+    limit_from_resource?: string | null;
+    label?: string | null;
+    error_message?: string | null;
+  }>;
+  /** Records the operator picks before running (Xe/Kho…); feed the parent + supply constraint limits. */
+  resource_inputs?: Array<{
+    id: string;
+    label: string;
+    source_screen_id: string;
+    value_column: string;
+    label_column?: string | null;
+    required?: boolean;
+    capacity_column?: string | null;
+  }>;
+  /** Optional route map of the selected rows (same shape as route_map_config). */
+  route_preview?: TableScreenSpecBuilt['route_map_config'];
+  /** Advanced server-executed recipe — authored via MCP, round-tripped untouched here. */
+  steps?: unknown[];
 }
 
 export interface DocBlockSpec {

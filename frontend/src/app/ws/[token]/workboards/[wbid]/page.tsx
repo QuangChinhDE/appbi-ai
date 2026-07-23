@@ -3407,6 +3407,8 @@ function BulkRecipeModal({
   onClose,
   onRun,
   variant = 'modal',
+  showMap = false,
+  onToggleMap,
 }: {
   action: NonNullable<NonNullable<TableScreenResponse['table_view']>['bulk_actions']>[number];
   selectedRows: Array<Record<string, unknown>>;
@@ -3418,10 +3420,13 @@ function BulkRecipeModal({
   busy: boolean;
   onClose: () => void;
   onRun: (resources: Record<string, Record<string, unknown>>) => void;
-  // 'modal' = overlay popup (default). 'panel' = docked inline card (no overlay,
-  // no close/cancel) — used to embed the plan (pickers + weight + route map)
-  // beside a table screen so the operator selects rows and sees the plan live.
-  variant?: 'modal' | 'panel';
+  // 'modal' = overlay popup (default). 'panel' = docked inline card. 'bar' =
+  // compact one-row controls (pickers + constraint + confirm) that flow INSIDE
+  // the table's sticky selection bar; the route map is toggled separately by
+  // the parent (showMap/onToggleMap) so the sticky bar stays a single row.
+  variant?: 'modal' | 'panel' | 'bar';
+  showMap?: boolean;
+  onToggleMap?: () => void;
 }) {
   const resourceInputs = action.resource_inputs || [];
   const constraints = action.constraints || [];
@@ -3656,6 +3661,75 @@ function BulkRecipeModal({
         )}
       </div>
   );
+
+  // 'bar' — compact controls that flow inside the table's sticky selection bar
+  // (one row). Pickers + live constraint chip + optional map toggle + confirm.
+  if (variant === 'bar') {
+    return (
+      <>
+        {loading ? (
+          <span className="text-xs text-slate-500">Đang tải lựa chọn…</span>
+        ) : (
+          resourceInputs.map((ri) => (
+            <label key={ri.id} className="inline-flex items-center gap-1.5 text-xs font-medium text-slate-600">
+              <span className="whitespace-nowrap">{ri.label}{(ri.required ?? true) ? ' *' : ''}</span>
+              <select
+                value={picked[ri.id] || ''}
+                onChange={(e) => setPicked((p) => ({ ...p, [ri.id]: e.target.value }))}
+                className="max-w-[12rem] rounded-lg border border-slate-300 bg-white px-2 py-1 text-sm"
+              >
+                <option value="">— Chọn —</option>
+                {(options[ri.id] || []).map((o, i) => (
+                  <option key={i} value={String(o[ri.value_column])}>
+                    {String(o[ri.label_column || ri.value_column] ?? o[ri.value_column] ?? '')}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ))
+        )}
+        {constraintState.map((s, i) => {
+          const pending = s.limit == null;
+          const tone = pending
+            ? 'bg-slate-100 text-slate-600'
+            : s.ok
+              ? 'bg-emerald-50 text-emerald-700'
+              : 'bg-rose-50 text-rose-700';
+          return (
+            <span
+              key={i}
+              title={!pending && !s.ok ? (s.c.error_message || 'Vượt giới hạn') : undefined}
+              className={`inline-flex items-center gap-1 whitespace-nowrap rounded-full px-2.5 py-1 text-xs font-medium ${tone}`}
+            >
+              {s.c.label || s.c.agg_column}: {fmt(s.actual)} {s.c.op || '<='} {pending ? '—' : fmt(s.limit as number)}
+              {!pending ? ` · ${s.pct.toFixed(0)}%` : ''}
+            </span>
+          );
+        })}
+        {action.route_preview && onToggleMap ? (
+          <button
+            type="button"
+            onClick={onToggleMap}
+            className="inline-flex items-center gap-1 rounded-lg border border-slate-300 bg-white px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50"
+          >
+            {showMap ? 'Ẩn tuyến' : 'Xem tuyến'}
+          </button>
+        ) : null}
+        <button
+          type="button"
+          disabled={!canRun}
+          onClick={() => onRun(resources)}
+          style={{ backgroundColor: accent }}
+          className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-lg px-3 py-1.5 text-sm font-semibold text-white shadow-sm disabled:opacity-40"
+          title={missingResource ? 'Chọn đủ tài nguyên để tiếp tục' : anyViolated ? 'Vượt giới hạn — bỏ bớt dòng' : undefined}
+        >
+          {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+          {action.icon ? `${action.icon} ` : ''}{action.label}
+        </button>
+      </>
+    );
+  }
+
   return variant === 'panel' ? (
     inner
   ) : (
@@ -6141,9 +6215,11 @@ function TableScreen({
     return allow.some((r) => r.toLowerCase() === target);
   });
   const selectionEnabled = bulkActions.length > 0 && pkCols.length > 0;
-  // A bulk action with route_preview is rendered as a docked side panel beside
-  // the table (select rows → see plan/map/weight live), not as a popup modal.
+  // A bulk action with route_preview is rendered inline in the sticky selection
+  // bar (compact one-row planner: pickers + capacity check + confirm), with its
+  // route map shown on demand below the bar via the "Xem tuyến" toggle.
   const panelAction = selectionEnabled ? bulkActions.find((a) => a.route_preview) || null : null;
+  const [showRoute, setShowRoute] = useState(false);
 
   // Phase-1 helpers: totals of the selected rows (tự tính tổng) + the
   // require_same precondition (all selected rows must share a value, e.g. same
@@ -6930,6 +7006,23 @@ function TableScreen({
             </div>
           ) : null}
           <div className="ml-auto flex flex-wrap items-center gap-2">
+            {panelAction ? (
+              <BulkRecipeModal
+                variant="bar"
+                action={panelAction}
+                selectedRows={selectedRows}
+                token={token}
+                workboardId={workboardId}
+                accent={accent}
+                colLabels={colLabels}
+                pkCols={pkCols}
+                busy={bulkBusy}
+                showMap={showRoute}
+                onToggleMap={() => setShowRoute((v) => !v)}
+                onClose={() => {}}
+                onRun={(resources) => void runServerBulkAction(panelAction, resources)}
+              />
+            ) : null}
             {bulkActions.filter((a) => a.id !== panelAction?.id).map((a) => {
               const bad = bulkGuardBad(a);
               const blocked = bad.length > 0;
@@ -6964,6 +7057,29 @@ function TableScreen({
               );
             })}
           </div>
+        </div>
+      ) : null}
+      {showRoute && panelAction?.route_preview && selectedKeys.size > 0 ? (
+        <div className="mb-2 overflow-hidden rounded-xl border border-slate-200">
+          <div className="flex items-center justify-between border-b border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-medium text-slate-600">
+            <span>Tuyến giao của các đơn đã chọn</span>
+            <button
+              type="button"
+              onClick={() => setShowRoute(false)}
+              className="rounded px-1.5 text-slate-400 hover:bg-slate-200 hover:text-slate-600"
+            >
+              Ẩn ✕
+            </button>
+          </div>
+          <RouteMapView
+            rows={selectedRows}
+            config={panelAction.route_preview}
+            colLabels={colLabels}
+            pkCols={pkCols}
+            onOpen={() => {}}
+            panelEnabled={false}
+            emptyMessage="Các đơn đã chọn chưa có toạ độ (Lat/Long) để vẽ tuyến."
+          />
         </div>
       ) : null}
       {bulkModal ? (
@@ -7342,23 +7458,6 @@ function TableScreen({
           </tbody>
         </table>
       </div>
-      {panelAction ? (
-        <div className="mt-4">
-          <BulkRecipeModal
-            variant="panel"
-            action={panelAction}
-            selectedRows={selectedRows}
-            token={token}
-            workboardId={workboardId}
-            accent={accent}
-            colLabels={colLabels}
-            pkCols={pkCols}
-            busy={bulkBusy}
-            onClose={() => {}}
-            onRun={(resources) => void runServerBulkAction(panelAction, resources)}
-          />
-        </div>
-      ) : null}
       </div>
       </>
       )}
