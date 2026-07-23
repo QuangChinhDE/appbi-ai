@@ -314,6 +314,125 @@ function FieldTypePicker({
   );
 }
 
+// Infer a sensible default field type from a source column's data type, so
+// +Add Field doesn't silently make everything Text.
+function inferWidgetFromColumnType(type?: string): FormFieldSpec['widget'] {
+  const t = (type || '').toLowerCase();
+  if (/bool/.test(t)) return 'checkbox';
+  if (/timestamp|datetime/.test(t)) return 'datetime';
+  if (/date/.test(t)) return 'date';
+  if (/(^|[^a-z])time([^a-z]|$)/.test(t)) return 'time';
+  if (/int|numeric|decimal|float|double|real|money|number|serial/.test(t)) return 'number';
+  return 'text';
+}
+
+// +Add Field: open a source-column picker first (P0 #6). Picking a column
+// infers its field type; a manual "custom field" escape hatch remains for
+// forms that need a field not bound 1:1 to a source column.
+function AddFieldMenu({
+  columns,
+  usedColumns,
+  onAddColumn,
+  onAddCustom,
+}: {
+  columns: { name: string; type?: string }[];
+  usedColumns: Set<string>;
+  onAddColumn: (col: { name: string; type?: string }) => void;
+  onAddCustom: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [q, setQ] = useState('');
+  const ref = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (event: MouseEvent) => {
+      if (ref.current && !ref.current.contains(event.target as Node)) {
+        setOpen(false);
+        setQ('');
+      }
+    };
+    document.addEventListener('mousedown', onDoc);
+    return () => document.removeEventListener('mousedown', onDoc);
+  }, [open]);
+  const available = columns.filter((c) => !usedColumns.has(c.name));
+  const ql = q.trim().toLowerCase();
+  const filtered = ql ? available.filter((c) => c.name.toLowerCase().includes(ql)) : available;
+  return (
+    <div className="relative" ref={ref}>
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="rounded p-1 text-text-tertiary hover:bg-surface-2 hover:text-brand"
+        title="Add field"
+      >
+        <Plus className="h-3.5 w-3.5" />
+      </button>
+      {open && (
+        <div className="absolute right-0 z-30 mt-1 w-72 rounded-md border border-[rgb(var(--border-line))] bg-surface-1 shadow-lg">
+          {columns.length > 0 && (
+            <div className="border-b border-[rgb(var(--border-line))] p-2">
+              <input
+                autoFocus
+                value={q}
+                onChange={(event) => setQ(event.target.value)}
+                placeholder="Tìm cột nguồn..."
+                className={INPUT}
+              />
+            </div>
+          )}
+          <div className="max-h-64 overflow-auto p-1">
+            {columns.length === 0 ? (
+              <span className="block px-2 py-2 text-caption text-text-tertiary">
+                Nguồn chưa có cột — dùng trường tùy chỉnh bên dưới.
+              </span>
+            ) : available.length === 0 ? (
+              <span className="block px-2 py-2 text-caption text-text-tertiary">
+                Đã thêm hết cột nguồn.
+              </span>
+            ) : filtered.length === 0 ? (
+              <span className="block px-2 py-2 text-caption text-text-tertiary">
+                Không có cột khớp.
+              </span>
+            ) : (
+              filtered.map((c) => (
+                <button
+                  key={c.name}
+                  type="button"
+                  onClick={() => {
+                    onAddColumn(c);
+                    setOpen(false);
+                    setQ('');
+                  }}
+                  className="flex w-full items-center justify-between gap-2 rounded px-2 py-1.5 text-left text-caption text-text-primary hover:bg-surface-2"
+                >
+                  <span className="truncate font-medium">{c.name}</span>
+                  <span className="shrink-0 text-tiny text-text-tertiary">
+                    {c.type ? `${c.type} → ` : ''}
+                    {inferWidgetFromColumnType(c.type)}
+                  </span>
+                </button>
+              ))
+            )}
+          </div>
+          <div className="border-t border-[rgb(var(--border-line))] p-1">
+            <button
+              type="button"
+              onClick={() => {
+                onAddCustom();
+                setOpen(false);
+                setQ('');
+              }}
+              className="block w-full rounded px-2 py-1.5 text-left text-caption text-text-secondary hover:bg-surface-2"
+            >
+              + Trường tùy chỉnh (không gắn cột)
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 const COMMON_EXPRESSION_OPTIONS: SelectOption[] = [
   { value: '{{app_user.username}}', label: 'Signed-in user - username' },
   { value: '{{app_user.full_name}}', label: 'Signed-in user - full name' },
@@ -429,15 +548,27 @@ export default function FormScreenEditor({
     updateForm({ fields: next });
   };
 
-  const addField = () => {
-    const usedColumns = new Set(fields.map((field) => field.column));
-    const unusedCol = tableCols.find((column) => !usedColumns.has(column.name));
-    const column = unusedCol?.name || `field_${fields.length + 1}`;
+  // Add a field bound to a chosen source column, inferring its type.
+  const addFieldForColumn = (col: { name: string; type?: string }) => {
     updateForm({
       fields: [
         ...fields,
-        { column, widget: 'text', label: column, required: false },
+        {
+          column: col.name,
+          widget: inferWidgetFromColumnType(col.type),
+          label: col.name,
+          required: false,
+        },
       ],
+    });
+    setActiveItem(`field:${fields.length}`);
+  };
+
+  // Escape hatch: a field not bound to a source column.
+  const addCustomField = () => {
+    const column = `field_${fields.length + 1}`;
+    updateForm({
+      fields: [...fields, { column, widget: 'text', label: column, required: false }],
     });
     setActiveItem(`field:${fields.length}`);
   };
@@ -530,8 +661,8 @@ export default function FormScreenEditor({
       return (
         <BuilderInspectorPanel
           icon={<FileInput className="h-4 w-4" />}
-          title="Initial values"
-          subtitle="Pre-fill form fields when the screen opens."
+          title="Initial values (mồi cả form)"
+          subtitle="Mồi giá trị chung khi mở form mới. Ghi đè 'Default value' của từng trường; nhưng bị ghi đè bởi giá trị mang sang từ màn trước (row-action / after-submit)."
         >
           <InitialValuesInspector
             entries={initialEntries}
@@ -665,14 +796,12 @@ export default function FormScreenEditor({
           <BuilderNavigatorGroup
             title={`Fields (${fields.length})`}
             action={
-              <button
-                type="button"
-                onClick={addField}
-                className="rounded p-1 text-text-tertiary hover:bg-surface-2 hover:text-brand"
-                title="Add field"
-              >
-                <Plus className="h-3.5 w-3.5" />
-              </button>
+              <AddFieldMenu
+                columns={tableCols}
+                usedColumns={new Set(fields.map((f) => f.column))}
+                onAddColumn={addFieldForColumn}
+                onAddCustom={addCustomField}
+              />
             }
           >
             {tablesLoading ? (
@@ -1504,7 +1633,7 @@ function FieldInspector({
             onChange={(checked) => onChange({ readonly: checked })}
           />
         </div>
-        <Lbl label="Default value">
+        <Lbl label="Default value (mặc định của trường)">
           <FixedExpressionInput
             value={field.default}
             onChange={(next) => onChange({ default: next })}
@@ -1512,6 +1641,10 @@ function FieldInspector({
             expressionPlaceholder="e.g. {{app_user.username}}"
             expressionOptions={COMMON_EXPRESSION_OPTIONS}
           />
+          <p className="mt-1 text-tiny text-text-tertiary">
+            Áp dụng khi mở form mới. Thứ tự ưu tiên: giá trị mang sang từ màn
+            trước › Initial values (cả form) › Default value này.
+          </p>
         </Lbl>
       </CollapsibleGroup>
 
