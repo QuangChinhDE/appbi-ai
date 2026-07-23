@@ -1741,6 +1741,141 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
                     />
                     Hiển thị danh sách thứ tự điểm bên phải bản đồ
                   </label>
+
+                  <div className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 p-3">
+                    <div className="mb-1 flex items-center justify-between">
+                      <div className="text-caption font-emphasis text-text-secondary">
+                        Ngân sách khi chọn điểm (tùy chọn)
+                      </div>
+                      {routeMap.selection_budget ? (
+                        <button
+                          type="button"
+                          onClick={() => updateRouteMap({ selection_budget: null })}
+                          className="text-tiny text-danger hover:underline"
+                        >
+                          Xoá
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            updateRouteMap({
+                              selection_budget: { value_column: columnNames[0] || '', block_when_over: true },
+                            })
+                          }
+                          className="text-tiny text-brand hover:underline"
+                        >
+                          + Bật
+                        </button>
+                      )}
+                    </div>
+                    {routeMap.selection_budget ? (
+                      <div className="space-y-3">
+                        <p className="text-tiny text-text-tertiary">
+                          Tick/point chọn điểm → cộng dồn 1 cột giá trị, so với ngưỡng; vượt thì
+                          báo đỏ{routeMap.selection_budget.block_when_over !== false ? ' + chặn nút xác nhận' : ''}.
+                        </p>
+                        <div className={BUILDER_GRID_2}>
+                          <Lbl label="Cột giá trị cộng dồn">
+                            <SingleColumnPicker
+                              sourceColumns={columnNames}
+                              value={routeMap.selection_budget.value_column || null}
+                              onChange={(next) =>
+                                updateRouteMap({
+                                  selection_budget: { ...routeMap.selection_budget!, value_column: next || '' },
+                                })
+                              }
+                            />
+                          </Lbl>
+                          <Lbl label="Ngưỡng (số hoặc {{shared.x}})">
+                            <input
+                              value={routeMap.selection_budget.limit || ''}
+                              onChange={(e) =>
+                                updateRouteMap({
+                                  selection_budget: { ...routeMap.selection_budget!, limit: e.target.value || null },
+                                })
+                              }
+                              className={INPUT}
+                              placeholder="vd 2000 hoặc {{shared.capacity}}"
+                            />
+                          </Lbl>
+                          <Lbl label="Đơn vị">
+                            <input
+                              value={routeMap.selection_budget.unit || ''}
+                              onChange={(e) =>
+                                updateRouteMap({
+                                  selection_budget: { ...routeMap.selection_budget!, unit: e.target.value || null },
+                                })
+                              }
+                              className={INPUT}
+                              placeholder="kg"
+                            />
+                          </Lbl>
+                          <Lbl label="Nhãn">
+                            <input
+                              value={routeMap.selection_budget.label || ''}
+                              onChange={(e) =>
+                                updateRouteMap({
+                                  selection_budget: { ...routeMap.selection_budget!, label: e.target.value || null },
+                                })
+                              }
+                              className={INPUT}
+                              placeholder="Đã chọn"
+                            />
+                          </Lbl>
+                        </div>
+                        <label className="flex items-center gap-2 text-caption text-text-secondary">
+                          <input
+                            type="checkbox"
+                            checked={routeMap.selection_budget.block_when_over !== false}
+                            onChange={(e) =>
+                              updateRouteMap({
+                                selection_budget: { ...routeMap.selection_budget!, block_when_over: e.target.checked },
+                              })
+                            }
+                          />
+                          Chặn nút xác nhận khi vượt ngưỡng
+                        </label>
+                        <div className={BUILDER_GRID_2}>
+                          <Lbl label="Mở màn khi xác nhận (tùy chọn)">
+                            <select
+                              value={routeMap.selection_budget.action_go_to_screen || ''}
+                              onChange={(e) =>
+                                updateRouteMap({
+                                  selection_budget: {
+                                    ...routeMap.selection_budget!,
+                                    action_go_to_screen: e.target.value || null,
+                                  },
+                                })
+                              }
+                              className={INPUT}
+                            >
+                              <option value="">— không —</option>
+                              {allScreens
+                                .filter((s) => s.id !== screen.id)
+                                .map((s) => (
+                                  <option key={s.id} value={s.id}>
+                                    {s.title}
+                                  </option>
+                                ))}
+                            </select>
+                          </Lbl>
+                          <Lbl label="Nhãn nút xác nhận">
+                            <input
+                              value={routeMap.selection_budget.action_label || ''}
+                              onChange={(e) =>
+                                updateRouteMap({
+                                  selection_budget: { ...routeMap.selection_budget!, action_label: e.target.value || null },
+                                })
+                              }
+                              className={INPUT}
+                              placeholder="Xác nhận"
+                            />
+                          </Lbl>
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
                 </>
               )}
             </div>

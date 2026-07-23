@@ -336,6 +336,15 @@ export interface TableScreenSpecBuilt {
     fallback_line_mode?: 'straight';
     show_side_panel?: boolean;
     side_panel_title?: string | null;
+    selection_budget?: {
+      value_column: string;
+      limit?: string | null;
+      unit?: string | null;
+      label?: string | null;
+      block_when_over?: boolean;
+      action_label?: string | null;
+      action_go_to_screen?: string | null;
+    } | null;
   } | null;
   stat_tiles?: Array<{
     label: string;

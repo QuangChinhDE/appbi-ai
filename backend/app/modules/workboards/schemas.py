@@ -1092,6 +1092,51 @@ class CalendarConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class RouteSelectionBudget(BaseModel):
+    """Constrained multi-select overlay for a route_map screen (generic).
+
+    As stops are selected (list checkbox or map marker), the runtime sums
+    ``value_column`` over the selection and compares it to ``limit``. Over the
+    limit → the budget bar turns red and (when ``block_when_over``) the confirm
+    button is disabled. Reusable for any "pick items under a cap" case: truck
+    load (kg), order value (₫), pallet/headcount — not tied to any one app.
+    """
+
+    value_column: str = Field(
+        ..., min_length=1, description="Numeric column summed over the selected stops."
+    )
+    limit: Optional[str] = Field(
+        default=None,
+        description=(
+            "Cap: a static number (e.g. '2000') OR a {{shared.x}} placeholder resolved "
+            "from the carried context (e.g. the chosen vehicle's capacity). "
+            "Empty = show the running total only, no red/block."
+        ),
+    )
+    unit: Optional[str] = Field(
+        default=None, max_length=16, description="Unit shown next to totals (kg, ₫, ...)."
+    )
+    label: Optional[str] = Field(
+        default=None, max_length=60, description="Budget bar label. Defaults to 'Đã chọn'."
+    )
+    block_when_over: bool = Field(
+        default=True,
+        description="Disable the confirm button while the selected sum exceeds the limit.",
+    )
+    action_label: Optional[str] = Field(
+        default=None, max_length=60, description="Confirm button label. Defaults to 'Xác nhận'."
+    )
+    action_go_to_screen: Optional[str] = Field(
+        default=None,
+        description=(
+            "Screen opened on confirm, carrying selected_count + <value_column>_total in "
+            "shared context. Empty = no button (budget shown as a red warning only)."
+        ),
+    )
+
+    model_config = ConfigDict(extra="forbid")
+
+
 class RouteMapConfig(BaseModel):
     """Route/map layout for a Table screen when ``display_mode='route_map'``.
 
@@ -1152,6 +1197,10 @@ class RouteMapConfig(BaseModel):
     )
     show_side_panel: bool = Field(default=True, description="Show ordered stop list next to the map.")
     side_panel_title: Optional[str] = Field(default=None, max_length=80)
+    selection_budget: Optional[RouteSelectionBudget] = Field(
+        default=None,
+        description="Optional constrained multi-select overlay: pick stops under a value cap.",
+    )
 
     model_config = ConfigDict(extra="forbid")
 

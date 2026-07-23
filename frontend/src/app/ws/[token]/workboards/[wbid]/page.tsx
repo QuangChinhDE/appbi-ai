@@ -4147,6 +4147,14 @@ async function fetchOsrmRouteLine(stops: RouteMapStop[]): Promise<Array<[number,
   return line.length >= 2 ? line : null;
 }
 
+// Marker glyph for the route map. Selected stops (selection_budget mode) get a
+// blue ringed marker; the rest stay orange. Kept module-level so both the map
+// build and the selection-recolour effect render an identical glyph.
+function routeMarkerHtml(seq: number | string, selected: boolean): string {
+  const bg = selected ? 'bg-blue-600 ring-2 ring-blue-300' : 'bg-orange-500';
+  return `<div class="flex h-7 w-7 items-center justify-center rounded-full border-2 border-white ${bg} text-xs font-bold text-white shadow">${escapeMapHtml(seq)}</div>`;
+}
+
 function RouteMapView({
   rows,
   config,
@@ -4156,6 +4164,8 @@ function RouteMapView({
   panelEnabled,
   emptyMessage,
   compact = false,
+  shared,
+  onAction,
 }: {
   rows: Array<Record<string, unknown>>;
   config: RouteMapConfigView;
@@ -4168,11 +4178,36 @@ function RouteMapView({
   // ABOVE the stop-list instead of the wide side-by-side split, and use a shorter
   // map. The full-width route-map screen leaves this false.
   compact?: boolean;
+  // selection_budget support: `shared` resolves a {{shared.x}} limit; `onAction`
+  // fires the confirm navigation carrying the selected count + value total.
+  shared?: Record<string, unknown>;
+  onAction?: (action: RowActionDescriptor, row: Record<string, unknown>) => void;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [selectedRouteId, setSelectedRouteId] = useState<string>('');
   const [routeLine, setRouteLine] = useState<Array<[number, number]> | null>(null);
   const [routeLineStatus, setRouteLineStatus] = useState<'idle' | 'loading' | 'road' | 'fallback'>('idle');
+  // selection_budget: constrained multi-select overlay (list checkbox ↔ map marker).
+  const budget = config.selection_budget || null;
+  const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set());
+  const selectionKeyOf = useCallback(
+    (row: Record<string, unknown>) => tableRowKey(row, pkCols),
+    [pkCols],
+  );
+  const toggleSel = useCallback((key: string) => {
+    setSelectedKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, []);
+  const toggleSelRef = useRef(toggleSel);
+  toggleSelRef.current = toggleSel;
+  /* eslint-disable @typescript-eslint/no-explicit-any */
+  const markerMapRef = useRef<Map<string, { marker: any; seq: number | string }>>(new Map());
+  const leafletRef = useRef<any>(null);
+  /* eslint-enable @typescript-eslint/no-explicit-any */
   const { stops, skipped } = useMemo(() => buildRouteStops(rows, config, pkCols), [rows, config, pkCols]);
   const routeIds = useMemo(() => Array.from(new Set(stops.map((s) => s.routeId))), [stops]);
 
@@ -4203,6 +4238,31 @@ function RouteMapView({
       : null,
     [visibleStops, config.value_column],
   );
+  // ── selection_budget: sum the value column over selected stops vs a limit
+  // that is either a static number or a {{shared.x}} carried value. ──────────
+  const selectedStops = useMemo(
+    () => visibleStops.filter((s) => selectedKeys.has(selectionKeyOf(s.row))),
+    [visibleStops, selectedKeys, selectionKeyOf],
+  );
+  const budgetSum = useMemo(
+    () => (budget?.value_column
+      ? selectedStops.reduce((sum, s) => sum + (parseRouteNumber(s.row[budget.value_column]) || 0), 0)
+      : 0),
+    [selectedStops, budget],
+  );
+  const budgetLimit = useMemo(() => {
+    const raw = budget?.limit ? String(budget.limit).trim() : '';
+    if (!raw) return null;
+    const m = raw.match(/^\{\{\s*shared\.([\w.]+)\s*\}\}$/);
+    if (m) {
+      const n = Number((shared || {})[m[1]]);
+      return Number.isFinite(n) ? n : null;
+    }
+    const n = Number(raw);
+    return Number.isFinite(n) ? n : null;
+  }, [budget, shared]);
+  const overBudget = budgetLimit != null && budgetSum > budgetLimit;
+  const blocked = overBudget && budget?.block_when_over !== false;
 
   const mapBuildKey = useMemo(
     () => JSON.stringify({
@@ -4262,11 +4322,13 @@ function RouteMapView({
 
       const bounds = L.latLngBounds([]);
       const latLngs: Array<[number, number]> = [];
+      leafletRef.current = L;
+      markerMapRef.current = new Map();
       visibleStops.forEach((stop, index) => {
         const sequence = stop.order ?? index + 1;
-        const markerHtml = `<div class="flex h-7 w-7 items-center justify-center rounded-full border-2 border-white bg-orange-500 text-xs font-bold text-white shadow">${escapeMapHtml(sequence)}</div>`;
+        const key = selectionKeyOf(stop.row);
         const icon = L.divIcon({
-          html: markerHtml,
+          html: routeMarkerHtml(sequence, !!budget && selectedKeys.has(key)),
           className: 'appbi-route-marker',
           iconSize: [28, 28],
           iconAnchor: [14, 14],
@@ -4276,6 +4338,10 @@ function RouteMapView({
           `<strong>${escapeMapHtml(stop.label)}</strong><br/>${escapeMapHtml(stop.routeId)}`,
           { direction: 'top', offset: [0, -12] },
         );
+        if (budget) {
+          marker.on('click', () => toggleSelRef.current(key));
+          markerMapRef.current.set(key, { marker, seq: sequence });
+        }
         latLngs.push([stop.lat, stop.lng]);
         bounds.extend([stop.lat, stop.lng]);
       });
@@ -4325,6 +4391,23 @@ function RouteMapView({
     /* eslint-enable @typescript-eslint/no-explicit-any */
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mapBuildKey]);
+
+  // Recolour markers on selection change WITHOUT rebuilding the whole map
+  // (build already colours markers correctly; this handles subsequent toggles).
+  useEffect(() => {
+    const L = leafletRef.current;
+    if (!L || !budget) return;
+    markerMapRef.current.forEach((entry, key) => {
+      entry.marker.setIcon(
+        L.divIcon({
+          html: routeMarkerHtml(entry.seq, selectedKeys.has(key)),
+          className: 'appbi-route-marker',
+          iconSize: [28, 28],
+          iconAnchor: [14, 14],
+        }),
+      );
+    });
+  }, [selectedKeys, budget]);
 
   if (rows.length === 0) {
     return (
@@ -4380,6 +4463,70 @@ function RouteMapView({
         ) : null}
       </div>
 
+      {budget ? (
+        <div
+          className={`flex flex-wrap items-center gap-3 rounded-xl border px-3 py-2 ${
+            overBudget ? 'border-rose-300 bg-rose-50' : 'border-emerald-200 bg-emerald-50'
+          }`}
+        >
+          <div className="min-w-[200px]">
+            <div className={`text-sm font-semibold ${overBudget ? 'text-rose-700' : 'text-emerald-800'}`}>
+              {budget.label || 'Đã chọn'}: {budgetSum.toLocaleString('vi-VN')}
+              {budgetLimit != null ? ` / ${budgetLimit.toLocaleString('vi-VN')}` : ''}
+              {budget.unit ? ` ${budget.unit}` : ''}
+            </div>
+            <div className="text-xs text-slate-500">
+              {selectedStops.length} điểm đã chọn
+              {overBudget ? ' · Vượt ngưỡng!' : ''}
+            </div>
+          </div>
+          {budgetLimit != null ? (
+            <div className="h-2 w-40 overflow-hidden rounded-full bg-slate-200">
+              <div
+                className={`h-full ${overBudget ? 'bg-rose-500' : 'bg-emerald-500'}`}
+                style={{ width: `${Math.min(100, budgetLimit > 0 ? (budgetSum / budgetLimit) * 100 : 0)}%` }}
+              />
+            </div>
+          ) : null}
+          {selectedKeys.size > 0 ? (
+            <button
+              type="button"
+              onClick={() => setSelectedKeys(new Set())}
+              className="rounded-md border border-slate-300 bg-white px-2 py-1 text-xs text-slate-600 hover:bg-slate-50"
+            >
+              Bỏ chọn
+            </button>
+          ) : null}
+          {budget.action_go_to_screen && onAction ? (
+            <button
+              type="button"
+              disabled={blocked || selectedStops.length === 0}
+              title={blocked ? 'Vượt ngưỡng — bỏ bớt điểm để tiếp tục' : undefined}
+              onClick={() => {
+                if (blocked || selectedStops.length === 0) return;
+                const totalKey = `${budget.value_column}_total`;
+                onAction(
+                  {
+                    id: 'route-budget-confirm',
+                    label: budget.action_label || 'Xác nhận',
+                    go_to_screen: budget.action_go_to_screen || null,
+                    carry: ['selected_count', totalKey],
+                  },
+                  { selected_count: selectedStops.length, [totalKey]: budgetSum },
+                );
+              }}
+              className={`rounded-md px-3 py-1.5 text-sm font-medium text-white ${
+                blocked || selectedStops.length === 0
+                  ? 'cursor-not-allowed bg-slate-300'
+                  : 'bg-teal-600 hover:bg-teal-700'
+              }`}
+            >
+              {budget.action_label || 'Xác nhận'}
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+
       <div className={`grid gap-4 ${sideEnabled && !compact ? 'lg:grid-cols-[minmax(0,1fr)_340px]' : ''}`}>
         <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white p-3 shadow-sm">
           <div
@@ -4397,15 +4544,30 @@ function RouteMapView({
             <div className="max-h-[374px] space-y-2 overflow-auto p-3">
               {visibleStops.map((stop, index) => {
                 const sequence = stop.order ?? index + 1;
+                const stopKey = selectionKeyOf(stop.row);
+                const stopSel = !!budget && selectedKeys.has(stopKey);
                 return (
-                  <button
+                  <div
                     key={`${stop.routeId}:${stop.sourceIndex}`}
-                    type="button"
-                    onClick={() => panelEnabled && onOpen(stop.row)}
-                    className={`w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-left transition ${
-                      panelEnabled ? 'hover:border-teal-300 hover:bg-teal-50/40' : 'cursor-default'
+                    className={`flex items-start gap-2 rounded-xl border px-3 py-2 transition ${
+                      stopSel ? 'border-blue-300 bg-blue-50/60' : 'border-slate-200 bg-white'
                     }`}
                   >
+                    {budget ? (
+                      <input
+                        type="checkbox"
+                        checked={stopSel}
+                        onChange={() => toggleSel(stopKey)}
+                        className="mt-1.5 h-4 w-4 shrink-0 rounded border-slate-300"
+                      />
+                    ) : null}
+                    <button
+                      type="button"
+                      onClick={() => panelEnabled && onOpen(stop.row)}
+                      className={`min-w-0 flex-1 text-left ${
+                        panelEnabled ? 'hover:opacity-80' : 'cursor-default'
+                      }`}
+                    >
                     <div className="flex items-start gap-2">
                       <span className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-orange-500 text-xs font-bold text-white">
                         {sequence}
@@ -4437,7 +4599,8 @@ function RouteMapView({
                         </div>
                       </div>
                     </div>
-                  </button>
+                    </button>
+                  </div>
                 );
               })}
             </div>
@@ -6696,6 +6859,8 @@ function TableScreen({
           onOpen={openDetailPanel}
           panelEnabled={panelEnabled}
           emptyMessage={tv.empty_state_message}
+          shared={shared}
+          onAction={onAction}
         />
       ) : (
       <>
