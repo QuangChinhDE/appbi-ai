@@ -812,6 +812,9 @@ def compute_workboard_audit(db: Session, wb: Workboard) -> dict[str, Any]:
     screens_iter: list[dict[str, Any]] = (
         [s for s in screens if isinstance(s, dict)] if isinstance(screens, list) else []
     )
+    screens_by_id = {
+        str(s.get("id")): s for s in screens_iter if s.get("id") is not None
+    }
 
     # Distinct dashboard ids referenced — fetched once.
     referenced_dashboard_ids: set[int] = set()
@@ -911,6 +914,65 @@ def compute_workboard_audit(db: Session, wb: Workboard) -> dict[str, Any]:
                         detail=f"Form field '{field.get('label') or col}' references missing column '{col}'.",
                         screen=screen,
                         context={"column": col, "field_index": index},
+                    )
+            for index, relation in enumerate(form_spec.get("related_records") or []):
+                if not isinstance(relation, dict):
+                    continue
+                rel_label = relation.get("label") or relation.get("id") or f"#{index + 1}"
+                parent_key = str(relation.get("parent_key_column") or "").strip()
+                child_fk = str(relation.get("child_foreign_key_column") or "").strip()
+                child_screen_id = str(relation.get("child_screen_id") or "").strip()
+                child_screen = screens_by_id.get(child_screen_id)
+                if not child_screen:
+                    _add(
+                        severity="error",
+                        code="missing_child_screen",
+                        detail=f"Related Records '{rel_label}' points to a missing child screen.",
+                        screen=screen,
+                        context={"relation_index": index, "child_screen_id": child_screen_id},
+                    )
+                    continue
+                if child_screen.get("kind") not in ("form", "table"):
+                    _add(
+                        severity="error",
+                        code="invalid_child_screen",
+                        detail=f"Related Records '{rel_label}' must target a writable form/table screen.",
+                        screen=screen,
+                        context={"relation_index": index, "child_screen_id": child_screen_id},
+                    )
+                if parent_key and parent_key not in cols:
+                    _add(
+                        severity="error",
+                        code="missing_parent_key_column",
+                        detail=f"Related Records '{rel_label}' parent key '{parent_key}' is missing.",
+                        screen=screen,
+                        context={"relation_index": index, "column": parent_key},
+                    )
+                child_table_id = child_screen.get("table_id") if child_screen else None
+                child_cols = _column_set(child_table_id)
+                if child_fk and child_fk not in child_cols:
+                    _add(
+                        severity="error",
+                        code="missing_child_fk_column",
+                        detail=f"Related Records '{rel_label}' child FK '{child_fk}' is missing.",
+                        screen=screen,
+                        context={
+                            "relation_index": index,
+                            "child_screen_id": child_screen_id,
+                            "column": child_fk,
+                        },
+                    )
+                finish_screen_id = str(relation.get("finish_screen_id") or "").strip()
+                if finish_screen_id and finish_screen_id not in screens_by_id:
+                    _add(
+                        severity="warning",
+                        code="dangling_related_finish_screen",
+                        detail=f"Related Records '{rel_label}' finish target is missing.",
+                        screen=screen,
+                        context={
+                            "relation_index": index,
+                            "finish_screen_id": finish_screen_id,
+                        },
                     )
         elif kind == "table":
             table_spec = screen.get("table") or {}

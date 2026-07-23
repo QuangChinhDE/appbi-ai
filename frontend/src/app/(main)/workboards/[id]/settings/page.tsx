@@ -47,6 +47,7 @@ import { Button } from '@/components/ui/Button';
 import { Input, Textarea } from '@/components/ui/Input';
 import { Modal } from '@/components/common/Modal';
 import { toast } from '@/lib/toast';
+import { apiClient } from '@/lib/api-client';
 import {
   workboardApi,
   type Workboard,
@@ -67,6 +68,33 @@ import WorkboardImportExportModal from '@/components/workboards/builder/Workboar
 import { registerAutosaveFlush } from '@/components/workboards/builder/autosaveFlushRegistry';
 
 type SectionKey = 'general' | 'data' | 'appearance' | 'navigation' | 'documents' | 'advanced';
+
+interface DatasetTableInfo {
+  id: number;
+  display_name: string;
+  source_table_name?: string;
+  columns: { name: string; type?: string }[];
+}
+
+interface DatasetTableApi {
+  id: number;
+  display_name: string;
+  source_table_name?: string;
+  columns_cache?: unknown;
+}
+
+function columnsFromCache(cache: unknown): { name: string; type?: string }[] {
+  const arr: unknown[] = Array.isArray(cache)
+    ? cache
+    : cache && typeof cache === 'object' && Array.isArray((cache as { columns?: unknown }).columns)
+      ? (cache as { columns: unknown[] }).columns
+      : [];
+  return arr
+    .filter((c): c is { name: unknown; type?: unknown } =>
+      Boolean(c && typeof c === 'object' && 'name' in c),
+    )
+    .map((c) => ({ name: String(c.name), type: c.type ? String(c.type) : undefined }));
+}
 
 const SECTIONS: Array<{ key: SectionKey; label: string; icon: React.ReactNode; hint: string }> = [
   { key: 'general', label: 'Chung', icon: <Info className="h-4 w-4" />, hint: 'Tên · Mô tả · Định danh' },
@@ -124,6 +152,7 @@ function SettingsInner({ workboard }: { workboard: Workboard }) {
   // ── Dataset rebind (two-phase) + import/export.
   const [rebindPlan, setRebindPlan] = useState<(RebindPreview & { targetDatasetId: number }) | null>(null);
   const [showExport, setShowExport] = useState(false);
+  const [tables, setTables] = useState<DatasetTableInfo[]>([]);
 
   const identityDirty =
     name.trim() !== (workboard.name || '') ||
@@ -171,6 +200,31 @@ function SettingsInner({ workboard }: { workboard: Workboard }) {
       toast.error('Không đổi được dataset.');
     }
   };
+
+  useEffect(() => {
+    let alive = true;
+    setTables([]);
+    (async () => {
+      try {
+        const r = await apiClient.get(`/datasets/${workboard.dataset_id}/tables`);
+        const arr = Array.isArray(r.data) ? (r.data as DatasetTableApi[]) : [];
+        if (!alive) return;
+        setTables(
+          arr.map((table) => ({
+            id: table.id,
+            display_name: table.display_name,
+            source_table_name: table.source_table_name,
+            columns: columnsFromCache(table.columns_cache),
+          })),
+        );
+      } catch {
+        if (alive) setTables([]);
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [workboard.dataset_id]);
 
   return (
     <div className="flex h-full min-h-0">
@@ -290,7 +344,7 @@ function SettingsInner({ workboard }: { workboard: Workboard }) {
           {section === 'advanced' && (
             <>
               <SettingsPanel title="Auto-number" icon={<SlidersHorizontal className="h-4 w-4" />}>
-                <AutoNumberSection layout={layout} onChange={setLayout} />
+                <AutoNumberSection layout={layout} tables={tables} onChange={setLayout} />
               </SettingsPanel>
 
               <SettingsPanel title="Import / Export" icon={<Download className="h-4 w-4" />}>

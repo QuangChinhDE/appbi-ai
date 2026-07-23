@@ -136,6 +136,27 @@ export interface ScreenAction {
   visible_for_roles?: string[];
 }
 
+export interface RelatedRecordConfig {
+  id: string;
+  label?: string | null;
+  child_screen_id: string;
+  parent_key_column: string;
+  child_foreign_key_column: string;
+  allow_multiple?: boolean;
+  show_existing?: boolean;
+  allow_add_after_save?: boolean;
+  keep_parent_context?: boolean;
+  display_columns?: string[];
+  finish_screen_id?: string | null;
+}
+
+export interface RelatedRecordsResponse {
+  columns: string[];
+  primary_key_columns?: string[];
+  rows: Array<Record<string, unknown>>;
+  total_count?: number;
+}
+
 export interface FormScreenResponse {
   screen_id: string;
   kind: 'form';
@@ -149,6 +170,7 @@ export interface FormScreenResponse {
   lookups: Record<string, Array<{ label: string; value: unknown; geometry?: unknown; lat?: unknown; lng?: unknown; filter?: unknown }>>;
   initial_values: Record<string, unknown>;
   after_submit?: ScreenAction | null;
+  related_records?: RelatedRecordConfig[];
   /** Columns the workboard auto-fills on insert when left blank.
    *  Treat as readonly with a hint so the user knows typing is ignored. */
   auto_number_columns?: string[];
@@ -324,6 +346,15 @@ export interface TableScreenResponse {
       fallback_line_mode?: 'straight';
       show_side_panel?: boolean;
       side_panel_title?: string | null;
+      selection_budget?: {
+        value_column: string;
+        limit?: string | null;
+        unit?: string | null;
+        label?: string | null;
+        block_when_over?: boolean;
+        action_label?: string | null;
+        action_go_to_screen?: string | null;
+      } | null;
     } | null;
     geocode?: {
       enabled?: boolean;
@@ -410,6 +441,8 @@ export interface TableScreenResponse {
   } | null;
   totals_row?: Record<string, unknown> | null;
   stat_tiles?: Array<{ label: string; value: unknown; format?: string | null; unit?: string | null }>;
+  /** Distinct values per "single select" filter column, for dropdown slicers. */
+  filter_options?: Record<string, string[]>;
   column_groups?: Array<{ label: string; columns: string[] }>;
   merges?: Array<{ column: string; row_start: number; row_span: number }>;
   column_labels?: Record<string, string>;
@@ -600,12 +633,38 @@ export const workspaceApi = {
     screenId: string,
     values: Record<string, unknown>,
     opId?: string,
+    relationContext?: Record<string, unknown> | null,
   ): Promise<Record<string, unknown>> {
     const r = await client.post(
       `/public/workspaces/${token}/workboards/${workboardId}/screens/${screenId}/rows`,
       // client_op_id = idempotency key so an offline submit replayed after
       // reconnect can never be inserted twice (BE dedups on it).
-      opId ? { values, client_op_id: opId } : { values },
+      {
+        values,
+        ...(opId ? { client_op_id: opId } : {}),
+        ...(relationContext ? { relation_context: relationContext } : {}),
+      },
+    );
+    return r.data;
+  },
+  async getRelatedRecords(
+    token: string,
+    workboardId: number,
+    params: {
+      parent_screen_id: string;
+      relation_id: string;
+      parent_key_value: unknown;
+    },
+  ): Promise<RelatedRecordsResponse> {
+    const r = await client.get(
+      `/public/workspaces/${token}/workboards/${workboardId}/related-records`,
+      {
+        params: {
+          parent_screen_id: params.parent_screen_id,
+          relation_id: params.relation_id,
+          parent_key_value: JSON.stringify(params.parent_key_value ?? null),
+        },
+      },
     );
     return r.data;
   },

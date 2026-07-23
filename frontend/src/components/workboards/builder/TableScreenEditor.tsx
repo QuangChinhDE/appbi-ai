@@ -21,11 +21,16 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   Calculator,
+  CalendarDays,
+  Check,
+  ChevronRight,
   Columns3,
   Filter,
+  Image as ImageIcon,
   LayoutGrid,
   Link2,
   ListFilter,
+  MapPinned,
   PencilLine,
   Plus,
   Rows3,
@@ -66,6 +71,7 @@ import type {
   PosCartConfigSpec,
   PosCartHeaderInputSpec,
   ScreenSpec,
+  ScreenAction,
 } from './types';
 import { INPUT, Lbl } from './ScreenEditor';
 
@@ -78,6 +84,7 @@ interface DatasetTableInfo {
 
 interface Props {
   screen: ScreenSpec;
+  allScreens: ScreenSpec[];
   tables: DatasetTableInfo[];
   onChange: (next: ScreenSpec) => void;
 }
@@ -98,10 +105,159 @@ type ActiveItem =
   | 'display'
   | 'pos_cart'
   | 'format_rules'
+  | 'kpi'
+  | 'row_actions'
+  | 'bulk_actions'
   | `filter:${number}`
   | `computed:${number}`
   | `lookup:${number}`
   | `rollup:${number}`;
+
+// Display-mode cards shown at the top of the Structure › Display-mode overview.
+// Same data, different render — the card grid replaces the old <select>.
+const DISPLAY_MODE_OPTIONS: Array<{
+  value: 'table' | 'gallery' | 'calendar' | 'route_map';
+  label: string;
+  desc: string;
+  icon: React.ElementType;
+}> = [
+  { value: 'table', label: 'Table', desc: 'Hiển thị dữ liệu dạng bảng có nhiều cột và nhiều dòng.', icon: LayoutGrid },
+  { value: 'gallery', label: 'Gallery', desc: 'Hiển thị dạng thẻ, phù hợp với nội dung trực quan.', icon: ImageIcon },
+  { value: 'calendar', label: 'Calendar', desc: 'Hiển thị theo lịch để quản lý các sự kiện theo thời gian.', icon: CalendarDays },
+  { value: 'route_map', label: 'Route map', desc: 'Hiển thị trên bản đồ và quản lý tuyến đường, điểm đến.', icon: MapPinned },
+];
+
+// Quick-link cards under "Các cấu hình chính" — jump to the main config objects.
+// `tableOnly` shortcuts only make sense for the classic Table grid; they are
+// hidden when Gallery / Calendar / Route map is the active display mode.
+const CONFIG_SHORTCUTS: Array<{
+  key: ActiveItem;
+  label: string;
+  desc: string;
+  icon: React.ElementType;
+  tableOnly?: boolean;
+}> = [
+  { key: 'columns', label: 'Fields', desc: 'Chọn và sắp xếp các cột hiển thị trong bảng.', icon: Columns3 },
+  { key: 'editable', label: 'Editable fields', desc: 'Chọn cột có thể chỉnh sửa và cấu hình quy tắc.', icon: PencilLine },
+  { key: 'settings', label: 'Filters & sorting', desc: 'Cấu hình bộ lọc, sắp xếp và thứ tự mặc định.', icon: Filter },
+  { key: 'column_meta', label: 'Column presentation', desc: 'Căn chỉnh, độ rộng cột, định dạng hiển thị.', icon: Settings2, tableOnly: true },
+  { key: 'column_groups', label: 'Header groups', desc: 'Nhóm các cột theo cách hiển thị logic.', icon: Columns3, tableOnly: true },
+  { key: 'row_merge', label: 'Row merge', desc: 'Gộp ô theo giá trị để giảm lặp dữ liệu.', icon: Rows3, tableOnly: true },
+  { key: 'format_rules', label: 'Conditional formatting', desc: 'Tô màu, biểu tượng theo điều kiện dữ liệu.', icon: Palette, tableOnly: true },
+  { key: 'totals', label: 'Footer totals', desc: 'Tổng hợp cuối bảng cho các cột số liệu.', icon: Sigma, tableOnly: true },
+  { key: 'kpi', label: 'KPI tiles', desc: 'Hiển thị các chỉ số tổng quan dạng thẻ.', icon: LayoutGrid },
+];
+
+function DisplayModeCard({
+  active,
+  label,
+  desc,
+  icon: Icon,
+  onClick,
+}: {
+  active: boolean;
+  label: string;
+  desc: string;
+  icon: React.ElementType;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`relative flex flex-col gap-2 rounded-xl border p-4 text-left transition-colors ${
+        active
+          ? 'border-brand bg-brand/5 ring-1 ring-brand/40'
+          : 'border-[rgb(var(--border-line))] bg-surface-1 hover:border-brand/40 hover:bg-surface-2'
+      }`}
+    >
+      <span
+        className={`absolute right-3 top-3 flex h-4 w-4 items-center justify-center rounded-full border ${
+          active ? 'border-brand bg-brand text-white' : 'border-[rgb(var(--border-strong))]'
+        }`}
+      >
+        {active && <Check className="h-2.5 w-2.5" />}
+      </span>
+      <span
+        className={`inline-flex h-9 w-9 items-center justify-center rounded-lg ${
+          active ? 'bg-brand/15 text-brand' : 'bg-surface-2 text-text-tertiary'
+        }`}
+      >
+        <Icon className="h-5 w-5" />
+      </span>
+      <span className="text-caption font-semibold text-text-primary">{label}</span>
+      <span className="text-tiny leading-relaxed text-text-tertiary">{desc}</span>
+    </button>
+  );
+}
+
+function ConfigShortcutCard({
+  label,
+  desc,
+  icon: Icon,
+  onClick,
+}: {
+  label: string;
+  desc: string;
+  icon: React.ElementType;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="flex items-start gap-3 rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 p-3 text-left transition-colors hover:border-brand/40 hover:bg-surface-2"
+    >
+      <span className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-brand/10 text-brand">
+        <Icon className="h-4 w-4" />
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="block text-caption font-medium text-text-primary">{label}</span>
+        <span className="block text-tiny leading-relaxed text-text-tertiary">{desc}</span>
+      </span>
+      <ChevronRight className="mt-0.5 h-4 w-4 shrink-0 text-text-quaternary" />
+    </button>
+  );
+}
+
+// A typed sub-section under the single "Derived data" navigator group —
+// keeps Computed / Lookup / Roll-up visually under one hierarchy while each
+// keeps its own count + add button.
+function DerivedSubGroup({
+  label,
+  count,
+  onAdd,
+  addTitle,
+  addDisabled = false,
+  children,
+}: {
+  label: string;
+  count: number;
+  onAdd: () => void;
+  addTitle: string;
+  addDisabled?: boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <div>
+      <div className="mb-1 flex items-center justify-between gap-2 pl-2">
+        <h4 className="text-tiny font-medium text-text-tertiary">
+          {label} ({count})
+        </h4>
+        <button
+          type="button"
+          onClick={onAdd}
+          disabled={addDisabled}
+          className="rounded p-1 text-text-tertiary hover:bg-surface-2 hover:text-brand disabled:cursor-not-allowed disabled:opacity-40"
+          title={addTitle}
+        >
+          <Plus className="h-3.5 w-3.5" />
+        </button>
+      </div>
+      <div className="space-y-1">{children}</div>
+    </div>
+  );
+}
 
 const EMPTY_TABLE: TableSpec = {
   columns: [],
@@ -137,13 +293,6 @@ const TOTALS_KINDS: Array<{ value: TableTotalsKind; label: string }> = [
   { value: 'max', label: 'Max' },
   { value: 'count', label: 'Count (non-empty)' },
 ];
-
-const FILTER_KIND_LABEL: Record<TableFilterSpec['kind'], string> = {
-  text: 'Text search',
-  select: 'Single select',
-  date_range: 'Date range',
-  number_range: 'Number range',
-};
 
 /** Model-driven VLOOKUP suggestions. Reads the dataset semantic model's
  * relationships (same endpoint the form-field lookup editor uses) so the
@@ -245,7 +394,7 @@ function LookupModelSuggestions({
   );
 }
 
-export default function TableScreenEditor({ screen, tables, onChange }: Props) {
+export default function TableScreenEditor({ screen, allScreens, tables, onChange }: Props) {
   const tableSpec = screen.table || EMPTY_TABLE;
   const filters = useMemo(() => tableSpec.filters || [], [tableSpec.filters]);
   const computed = useMemo(
@@ -264,12 +413,16 @@ export default function TableScreenEditor({ screen, tables, onChange }: Props) {
     () => tableSpec.format_rules || [],
     [tableSpec.format_rules],
   );
+  const rowActions = useMemo(
+    () => tableSpec.row_actions || [],
+    [tableSpec.row_actions],
+  );
   const totals = tableSpec.totals || {};
   const boundTable = tables.find((table) => table.id === screen.table_id);
   const tableCols = boundTable?.columns ?? [];
   const columnNames = tableCols.map((column) => column.name);
   const tableMissing = !!screen.table_id && !boundTable;
-  const [activeItem, setActiveItem] = useState<ActiveItem>('columns');
+  const [activeItem, setActiveItem] = useState<ActiveItem>('display');
 
   // All column identifiers visible to formula scope: regular + lookup +
   // computed (so a downstream formula can reference an upstream one).
@@ -283,9 +436,6 @@ export default function TableScreenEditor({ screen, tables, onChange }: Props) {
     [columnNames, lookups, rollups, computed],
   );
 
-  const activeFilterIndex = activeItem.startsWith('filter:')
-    ? Number(activeItem.slice('filter:'.length))
-    : -1;
   const activeComputedIndex = activeItem.startsWith('computed:')
     ? Number(activeItem.slice('computed:'.length))
     : -1;
@@ -297,9 +447,6 @@ export default function TableScreenEditor({ screen, tables, onChange }: Props) {
     : -1;
 
   useEffect(() => {
-    if (activeItem.startsWith('filter:') && activeFilterIndex >= filters.length) {
-      setActiveItem(filters.length > 0 ? `filter:${filters.length - 1}` : 'columns');
-    }
     if (activeItem.startsWith('computed:') && activeComputedIndex >= computed.length) {
       setActiveItem(computed.length > 0 ? `computed:${computed.length - 1}` : 'columns');
     }
@@ -311,18 +458,22 @@ export default function TableScreenEditor({ screen, tables, onChange }: Props) {
     }
   }, [
     activeComputedIndex,
-    activeFilterIndex,
     activeItem,
     activeLookupIndex,
     activeRollupIndex,
     computed.length,
-    filters.length,
     lookups.length,
     rollups.length,
   ]);
 
   const updateTable = (patch: Partial<TableSpec>) =>
     onChange({ ...screen, table: { ...tableSpec, ...patch } });
+
+  // Grid-layout settings (column presentation, header groups, row merge,
+  // conditional formatting, footer totals, POS) only make sense for the
+  // classic Table grid — Gallery / Calendar / Route map render differently,
+  // so we don't promote those objects when another display mode is active.
+  const isTableMode = (tableSpec.display_mode || 'table') === 'table';
 
   const addFilter = () => {
     if (columnNames.length === 0) return;
@@ -331,7 +482,8 @@ export default function TableScreenEditor({ screen, tables, onChange }: Props) {
       { column: columnNames[0], kind: 'text', label: '' },
     ];
     updateTable({ filters: next });
-    setActiveItem(`filter:${next.length - 1}`);
+    // Filters live inline in the unified "Filters & sorting" inspector now.
+    setActiveItem('settings');
   };
 
   const updateFilter = (idx: number, patch: Partial<TableFilterSpec>) => {
@@ -343,15 +495,6 @@ export default function TableScreenEditor({ screen, tables, onChange }: Props) {
   const removeFilter = (idx: number) => {
     const next = filters.filter((_, index) => index !== idx);
     updateTable({ filters: next });
-    if (activeFilterIndex === idx) {
-      setActiveItem(
-        next.length > 0
-          ? `filter:${Math.max(0, Math.min(idx, next.length - 1))}`
-          : 'columns',
-      );
-    } else if (activeFilterIndex > idx) {
-      setActiveItem(`filter:${activeFilterIndex - 1}`);
-    }
   };
 
   // ── Computed columns ─────────────────────────────────────────────────
@@ -585,6 +728,75 @@ export default function TableScreenEditor({ screen, tables, onChange }: Props) {
     updateTable({ format_rules: formatRules.filter((_, i) => i !== idx) });
   };
 
+  // ── Row actions (per-row buttons that navigate carrying row values) ──
+  const addRowAction = () => {
+    const existing = new Set(rowActions.map((a) => a.id));
+    let n = rowActions.length + 1;
+    let id = `action_${n}`;
+    while (existing.has(id)) {
+      n += 1;
+      id = `action_${n}`;
+    }
+    const next: ScreenAction[] = [
+      ...rowActions,
+      { id, label: 'Mở', style: 'secondary', go_to_screen: null, carry: [], visible_for_roles: [] },
+    ];
+    updateTable({ row_actions: next });
+    setActiveItem('row_actions');
+  };
+
+  const updateRowAction = (idx: number, patch: Partial<ScreenAction>) => {
+    const next = rowActions.map((a, i) => (i === idx ? { ...a, ...patch } : a));
+    updateTable({ row_actions: next });
+  };
+
+  const removeRowAction = (idx: number) => {
+    updateTable({ row_actions: rowActions.filter((_, i) => i !== idx) });
+  };
+
+  // ── Bulk actions (select many rows → gộp nhóm / điều phối) ──
+  // The advanced server recipe (`steps`) + simple write targets are round-tripped;
+  // the builder edits the surface knobs (totals, capacity check, pickers, route).
+  const bulkActions = tableSpec.bulk_actions || [];
+  const updateBulk = (idx: number, patch: Partial<NonNullable<TableSpec['bulk_actions']>[number]>) => {
+    updateTable({ bulk_actions: bulkActions.map((a, i) => (i === idx ? { ...a, ...patch } : a)) });
+  };
+  const removeBulk = (idx: number) => {
+    updateTable({ bulk_actions: bulkActions.filter((_, i) => i !== idx) });
+  };
+  const addBulk = () => {
+    const existing = new Set(bulkActions.map((a) => a.id));
+    let n = bulkActions.length + 1;
+    let id = `bulk_${n}`;
+    while (existing.has(id)) {
+      n += 1;
+      id = `bulk_${n}`;
+    }
+    const other = allScreens.find((s) => s.id !== screen.id);
+    updateTable({
+      bulk_actions: [
+        ...bulkActions,
+        {
+          id,
+          label: 'Gộp các dòng đã chọn',
+          style: 'primary',
+          // Simple-mode write targets — BE requires these (non-empty) when `steps`
+          // is empty; defaulted so it saves, the author points them at the real
+          // parent screen/columns.
+          parent_screen_id: other?.id || '',
+          parent_code_column: columnNames[0] || '',
+          set_column: columnNames[0] || '',
+          code_prefix: 'GRP',
+          min_selection: 1,
+          preview_aggregates: [],
+          constraints: [],
+          resource_inputs: [],
+        },
+      ],
+    });
+    setActiveItem('bulk_actions');
+  };
+
   const toggleColumnVisible = (column: string) => {
     if (tableSpec.columns.includes(column)) {
       updateTable({ columns: tableSpec.columns.filter((c) => c !== column) });
@@ -595,13 +807,14 @@ export default function TableScreenEditor({ screen, tables, onChange }: Props) {
 
   const renderInspector = () => {
     if (activeItem === 'columns') {
-      // Pickable column set = regular DB columns + every computed/lookup
-      // column the builder has declared, so the user can drag a derived
-      // column into the visible list without leaving this inspector.
+      // Pickable column set = regular DB columns + every derived column the
+      // builder has declared (computed / lookup / roll-up), so the user can
+      // drag any of them into the visible list without leaving this inspector.
       const pickable = [
         ...columnNames,
         ...computed.map((c) => c.name),
         ...lookups.map((l) => l.name),
+        ...rollups.map((r) => r.name),
       ];
       return (
         <BuilderInspectorPanel
@@ -636,10 +849,11 @@ export default function TableScreenEditor({ screen, tables, onChange }: Props) {
                 }}
                 placeholder="Click to pick columns to display..."
               />
-              {(computed.length > 0 || lookups.length > 0) && (
+              {(computed.length > 0 || lookups.length > 0 || rollups.length > 0) && (
                 <p className="mt-2 text-caption text-text-tertiary">
-                  Computed and lookup columns appear in this picker too — they
-                  render read-only at runtime regardless of the editable list.
+                  Computed, lookup and roll-up columns appear in this picker too
+                  — they render read-only at runtime regardless of the editable
+                  list.
                 </p>
               )}
             </>
@@ -733,51 +947,140 @@ export default function TableScreenEditor({ screen, tables, onChange }: Props) {
     if (activeItem === 'settings') {
       return (
         <BuilderInspectorPanel
-          icon={<Rows3 className="h-4 w-4" />}
-          title="Paging and sorting"
-          subtitle="Default row count and row ordering for this table."
+          icon={<Filter className="h-4 w-4" />}
+          title="Filters & sorting"
+          subtitle="Pre-set filters shown above the table, plus default ordering and page size."
         >
-          <div className={BUILDER_GRID_2}>
-            <Lbl label="Rows per page">
-              <input
-                type="number"
-                min={10}
-                max={500}
-                value={tableSpec.page_size ?? 100}
-                onChange={(event) =>
-                  updateTable({
-                    page_size: Math.min(
-                      500,
-                      Math.max(10, Number(event.target.value) || 100),
-                    ),
-                  })
-                }
-                className={INPUT}
-              />
-            </Lbl>
-            <Lbl label="Default sort column">
-              <SingleColumnPicker
-                sourceColumns={columnNames}
-                value={tableSpec.default_sort_column || null}
-                onChange={(next) => updateTable({ default_sort_column: next || null })}
-                placeholder="No default sort"
-              />
-            </Lbl>
-            <Lbl label="Default sort direction">
-              <select
-                value={tableSpec.default_sort_direction || 'desc'}
-                onChange={(event) =>
-                  updateTable({
-                    default_sort_direction:
-                      (event.target.value as 'asc' | 'desc') || 'desc',
-                  })
-                }
-                className={INPUT}
-              >
-                <option value="desc">Descending</option>
-                <option value="asc">Ascending</option>
-              </select>
-            </Lbl>
+          <div className="space-y-5">
+            {/* Pre-set filters — the slicers rendered above the table. */}
+            <div>
+              <div className="mb-2 flex items-center justify-between">
+                <div className="text-caption font-emphasis text-text-secondary">
+                  Filters ({filters.length})
+                </div>
+                <button
+                  type="button"
+                  onClick={addFilter}
+                  disabled={columnNames.length === 0}
+                  className="inline-flex items-center gap-1 rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1 text-tiny text-text-secondary hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  <Plus className="h-3.5 w-3.5" /> Add filter
+                </button>
+              </div>
+              {filters.length === 0 ? (
+                <BuilderEmptyHint className="text-left">
+                  No pre-set filters. Add one to let viewers narrow the table.
+                </BuilderEmptyHint>
+              ) : (
+                <div className="space-y-2">
+                  {filters.map((filter, index) => (
+                    <div
+                      key={index}
+                      className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 p-3"
+                    >
+                      <div className="mb-2 flex items-center justify-between gap-2">
+                        <span className="min-w-0 truncate text-caption font-medium text-text-primary">
+                          {filter.label?.trim() || filter.column || 'Filter'}
+                        </span>
+                        <BuilderIconButton
+                          onClick={() => removeFilter(index)}
+                          title="Delete filter"
+                          variant="danger"
+                        >
+                          <Trash2 className="h-3.5 w-3.5 text-danger" />
+                        </BuilderIconButton>
+                      </div>
+                      <div className={BUILDER_GRID_2}>
+                        <Lbl label="Column">
+                          <SingleColumnPicker
+                            sourceColumns={columnNames}
+                            value={filter.column}
+                            onChange={(next) =>
+                              updateFilter(index, { column: next || '' })
+                            }
+                          />
+                        </Lbl>
+                        <Lbl label="Filter kind">
+                          <select
+                            value={filter.kind}
+                            onChange={(event) =>
+                              updateFilter(index, {
+                                kind: event.target.value as TableFilterSpec['kind'],
+                              })
+                            }
+                            className={INPUT}
+                          >
+                            <option value="text">Text search</option>
+                            <option value="select">Single select</option>
+                            <option value="date_range">Date range</option>
+                            <option value="number_range">Number range</option>
+                          </select>
+                        </Lbl>
+                        <Lbl label="Display label">
+                          <input
+                            value={filter.label || ''}
+                            onChange={(event) =>
+                              updateFilter(index, { label: event.target.value })
+                            }
+                            className={INPUT}
+                            placeholder={filter.column}
+                          />
+                        </Lbl>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Sorting & paging. */}
+            <div className="border-t border-[rgb(var(--border-line))] pt-4">
+              <div className="mb-2 text-caption font-emphasis text-text-secondary">
+                Sorting &amp; paging
+              </div>
+              <div className={BUILDER_GRID_2}>
+                <Lbl label="Rows per page">
+                  <input
+                    type="number"
+                    min={10}
+                    max={500}
+                    value={tableSpec.page_size ?? 100}
+                    onChange={(event) =>
+                      updateTable({
+                        page_size: Math.min(
+                          500,
+                          Math.max(10, Number(event.target.value) || 100),
+                        ),
+                      })
+                    }
+                    className={INPUT}
+                  />
+                </Lbl>
+                <Lbl label="Default sort column">
+                  <SingleColumnPicker
+                    sourceColumns={columnNames}
+                    value={tableSpec.default_sort_column || null}
+                    onChange={(next) => updateTable({ default_sort_column: next || null })}
+                    placeholder="No default sort"
+                  />
+                </Lbl>
+                <Lbl label="Default sort direction">
+                  <select
+                    value={tableSpec.default_sort_direction || 'desc'}
+                    onChange={(event) =>
+                      updateTable({
+                        default_sort_direction:
+                          (event.target.value as 'asc' | 'desc') || 'desc',
+                      })
+                    }
+                    className={INPUT}
+                  >
+                    <option value="desc">Descending</option>
+                    <option value="asc">Ascending</option>
+                  </select>
+                </Lbl>
+              </div>
+            </div>
           </div>
         </BuilderInspectorPanel>
       );
@@ -832,6 +1135,371 @@ export default function TableScreenEditor({ screen, tables, onChange }: Props) {
               placeholder="e.g. No matching rows. Tap + to add one."
             />
           </Lbl>
+        </BuilderInspectorPanel>
+      );
+    }
+
+    if (activeItem === 'row_actions') {
+      const navScreens = allScreens.filter((s) => s.id !== screen.id);
+      return (
+        <BuilderInspectorPanel
+          icon={<ChevronRight className="h-4 w-4" />}
+          title="Row actions"
+          subtitle="Buttons at the end of each row — navigate to another screen carrying that row's values (e.g. open a detail form)."
+        >
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="text-caption font-emphasis text-text-secondary">
+                Actions ({rowActions.length})
+              </div>
+              <button
+                type="button"
+                onClick={addRowAction}
+                className="inline-flex items-center gap-1 rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1 text-tiny text-text-secondary hover:bg-surface-2"
+              >
+                <Plus className="h-3.5 w-3.5" /> Add action
+              </button>
+            </div>
+
+            {rowActions.length === 0 ? (
+              <BuilderEmptyHint className="text-left">
+                No row actions. Add one to let viewers jump to a linked screen
+                (e.g. open a detail form) carrying the row&apos;s values.
+              </BuilderEmptyHint>
+            ) : (
+              <div className="space-y-3">
+                {rowActions.map((action, index) => (
+                  <div
+                    key={index}
+                    className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 p-3"
+                  >
+                    <div className="mb-2 flex items-center justify-between gap-2">
+                      <span className="min-w-0 truncate text-caption font-medium text-text-primary">
+                        {action.label?.trim() || 'Action'}
+                      </span>
+                      <BuilderIconButton
+                        onClick={() => removeRowAction(index)}
+                        title="Delete action"
+                        variant="danger"
+                      >
+                        <Trash2 className="h-3.5 w-3.5 text-danger" />
+                      </BuilderIconButton>
+                    </div>
+                    <div className="space-y-3">
+                      <div className={BUILDER_GRID_2}>
+                        <Lbl label="Button label">
+                          <input
+                            value={action.label || ''}
+                            onChange={(e) => updateRowAction(index, { label: e.target.value })}
+                            className={INPUT}
+                            placeholder="Mở chi tiết"
+                          />
+                        </Lbl>
+                        <Lbl label="Style">
+                          <select
+                            value={action.style || 'secondary'}
+                            onChange={(e) =>
+                              updateRowAction(index, {
+                                style: e.target.value as NonNullable<ScreenAction['style']>,
+                              })
+                            }
+                            className={INPUT}
+                          >
+                            <option value="primary">Primary</option>
+                            <option value="secondary">Secondary</option>
+                            <option value="ghost">Ghost</option>
+                            <option value="danger">Danger</option>
+                          </select>
+                        </Lbl>
+                        <Lbl label="Go to screen">
+                          <select
+                            value={action.go_to_screen || ''}
+                            onChange={(e) =>
+                              updateRowAction(index, { go_to_screen: e.target.value || null })
+                            }
+                            className={INPUT}
+                          >
+                            <option value="">— none —</option>
+                            {navScreens.map((s) => (
+                              <option key={s.id} value={s.id}>
+                                {s.title}
+                              </option>
+                            ))}
+                          </select>
+                        </Lbl>
+                        <Lbl label="Confirm message (tùy chọn)">
+                          <input
+                            value={action.confirm_message || ''}
+                            onChange={(e) =>
+                              updateRowAction(index, {
+                                confirm_message: e.target.value || null,
+                              })
+                            }
+                            className={INPUT}
+                            placeholder="Bạn chắc chắn?"
+                          />
+                        </Lbl>
+                      </div>
+                      {action.go_to_screen && (
+                        <Lbl label="Carry columns to next screen">
+                          {columnNames.length > 0 ? (
+                            <MultiColumnPicker
+                              sourceColumns={columnNames}
+                              value={action.carry || []}
+                              onChange={(carry) => updateRowAction(index, { carry })}
+                              placeholder="Pick columns to carry over..."
+                            />
+                          ) : (
+                            <input
+                              value={(action.carry || []).join(', ')}
+                              onChange={(e) =>
+                                updateRowAction(index, {
+                                  carry: e.target.value
+                                    .split(',')
+                                    .map((s) => s.trim())
+                                    .filter(Boolean),
+                                })
+                              }
+                              className={INPUT}
+                              placeholder="e.g. id, ma_don"
+                            />
+                          )}
+                        </Lbl>
+                      )}
+                      <Lbl label="Chỉ hiện cho vai trò (tùy chọn, cách nhau dấu phẩy)">
+                        <input
+                          value={(action.visible_for_roles || []).join(', ')}
+                          onChange={(e) =>
+                            updateRowAction(index, {
+                              visible_for_roles: e.target.value
+                                .split(',')
+                                .map((s) => s.trim())
+                                .filter(Boolean),
+                            })
+                          }
+                          className={INPUT}
+                          placeholder="để trống = mọi vai trò"
+                        />
+                      </Lbl>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </BuilderInspectorPanel>
+      );
+    }
+
+    if (activeItem === 'bulk_actions') {
+      const otherScreens = allScreens.filter((s) => s.id !== screen.id);
+      const AGG_OPTS = ['sum', 'count', 'avg', 'min', 'max'] as const;
+      return (
+        <BuilderInspectorPanel
+          icon={<ChevronRight className="h-4 w-4" />}
+          title="Chọn nhiều dòng → hành động"
+          subtitle="Bật ô tích chọn + 1 thanh lệnh gọn (đếm/kiểm tra → duyệt) cho gộp đơn, điều xe… Đổi cột kiểm tra ở 'Ràng buộc'; tắt = xoá hành động."
+        >
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="text-caption font-emphasis text-text-secondary">Hành động ({bulkActions.length})</div>
+              <button
+                type="button"
+                onClick={addBulk}
+                className="inline-flex items-center gap-1 rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1 text-tiny text-text-secondary hover:bg-surface-2"
+              >
+                <Plus className="h-3.5 w-3.5" /> Thêm
+              </button>
+            </div>
+
+            {bulkActions.length === 0 ? (
+              <BuilderEmptyHint className="text-left">
+                Chưa có. Thêm 1 hành động để tích nhiều dòng rồi gộp/điều phối (vd: gộp đơn thành 1 chuyến, kiểm tra tổng khối lượng ≤ tải trọng xe).
+              </BuilderEmptyHint>
+            ) : (
+              <div className="space-y-4">
+                {bulkActions.map((action, index) => {
+                  const aggs = action.preview_aggregates || [];
+                  const cons = action.constraints || [];
+                  const ress = action.resource_inputs || [];
+                  const advanced = Array.isArray(action.steps) && action.steps.length > 0;
+                  return (
+                    <div key={index} className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 p-3">
+                      <div className="mb-2 flex items-center justify-between gap-2">
+                        <span className="min-w-0 truncate text-caption font-medium text-text-primary">
+                          {action.label?.trim() || 'Hành động'}
+                          {advanced ? <span className="ml-1 text-tiny text-text-tertiary">· nâng cao</span> : null}
+                        </span>
+                        <BuilderIconButton onClick={() => removeBulk(index)} title="Xoá (tắt) hành động" variant="danger">
+                          <Trash2 className="h-3.5 w-3.5 text-danger" />
+                        </BuilderIconButton>
+                      </div>
+
+                      <div className="space-y-3">
+                        <div className={BUILDER_GRID_2}>
+                          <Lbl label="Nhãn nút">
+                            <input value={action.label || ''} onChange={(e) => updateBulk(index, { label: e.target.value })} className={INPUT} placeholder="Xếp nhiều đơn lên xe" />
+                          </Lbl>
+                          <Lbl label="Kiểu nút">
+                            <select value={action.style || 'primary'} onChange={(e) => updateBulk(index, { style: e.target.value as NonNullable<TableSpec['bulk_actions']>[number]['style'] })} className={INPUT}>
+                              <option value="primary">Primary</option>
+                              <option value="secondary">Secondary</option>
+                              <option value="ghost">Ghost</option>
+                              <option value="danger">Danger</option>
+                            </select>
+                          </Lbl>
+                          <Lbl label="Icon (tùy chọn)">
+                            <input value={action.icon || ''} onChange={(e) => updateBulk(index, { icon: e.target.value || null })} className={INPUT} placeholder="🚚" />
+                          </Lbl>
+                          <Lbl label="Số dòng tối thiểu">
+                            <input type="number" min={1} value={action.min_selection ?? 1} onChange={(e) => updateBulk(index, { min_selection: Math.max(1, Number(e.target.value) || 1) })} className={INPUT} />
+                          </Lbl>
+                        </div>
+
+                        <div className="rounded-md border border-[rgb(var(--border-line))] bg-surface-2/40 p-2.5">
+                          <div className="mb-1.5 flex items-center justify-between">
+                            <div className="text-tiny font-emphasis text-text-secondary">Ràng buộc kiểm tra khi chọn (vd tổng KL ≤ tải trọng)</div>
+                            <button type="button" onClick={() => updateBulk(index, { constraints: [...cons, { agg_column: columnNames[0] || '', agg: 'sum', op: '<=', limit: null, limit_from_resource: ress[0]?.id || null }] })} className="text-tiny text-brand hover:underline">+ Thêm</button>
+                          </div>
+                          {cons.length === 0 ? (
+                            <p className="text-tiny text-text-tertiary">Không có = chỉ hiển thị số liệu, không chặn.</p>
+                          ) : (
+                            <div className="space-y-2">
+                              {cons.map((c, ci) => {
+                                const setC = (patch: Partial<typeof c>) => updateBulk(index, { constraints: cons.map((x, xi) => (xi === ci ? { ...x, ...patch } : x)) });
+                                return (
+                                  <div key={ci} className="rounded border border-[rgb(var(--border-line))] bg-surface-1 p-2">
+                                    <div className="mb-1 flex items-center justify-between">
+                                      <span className="text-tiny text-text-tertiary">#{ci + 1}</span>
+                                      <button type="button" onClick={() => updateBulk(index, { constraints: cons.filter((_, xi) => xi !== ci) })} className="text-tiny text-danger hover:underline">Xoá</button>
+                                    </div>
+                                    <div className={BUILDER_GRID_2}>
+                                      <Lbl label="Cột kiểm tra (cộng dồn)">
+                                        <SingleColumnPicker sourceColumns={columnNames} value={c.agg_column || null} onChange={(next) => setC({ agg_column: next || '' })} />
+                                      </Lbl>
+                                      <Lbl label="Phép gộp">
+                                        <select value={c.agg || 'sum'} onChange={(e) => setC({ agg: e.target.value as typeof c.agg })} className={INPUT}>{AGG_OPTS.map((a) => <option key={a} value={a}>{a}</option>)}</select>
+                                      </Lbl>
+                                      <Lbl label="So sánh">
+                                        <select value={c.op || '<='} onChange={(e) => setC({ op: e.target.value as typeof c.op })} className={INPUT}>{(['<=', '<', '>=', '>'] as const).map((o) => <option key={o} value={o}>{o}</option>)}</select>
+                                      </Lbl>
+                                      <Lbl label="Nhãn (tùy chọn)">
+                                        <input value={c.label || ''} onChange={(e) => setC({ label: e.target.value || null })} className={INPUT} placeholder="Tổng khối lượng ≤ tải trọng xe" />
+                                      </Lbl>
+                                      <Lbl label="Ngưỡng cố định">
+                                        <input type="number" value={c.limit ?? ''} onChange={(e) => setC({ limit: e.target.value === '' ? null : Number(e.target.value) })} className={INPUT} placeholder="vd 2500" disabled={!!c.limit_from_resource} />
+                                      </Lbl>
+                                      <Lbl label="… hoặc lấy từ tài nguyên">
+                                        <select value={c.limit_from_resource || ''} onChange={(e) => setC({ limit_from_resource: e.target.value || null })} className={INPUT}>
+                                          <option value="">— dùng ngưỡng cố định —</option>
+                                          {ress.map((r) => <option key={r.id} value={r.id}>{r.label || r.id}</option>)}
+                                        </select>
+                                      </Lbl>
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
+
+                        <div className="rounded-md border border-[rgb(var(--border-line))] bg-surface-2/40 p-2.5">
+                          <div className="mb-1.5 flex items-center justify-between">
+                            <div className="text-tiny font-emphasis text-text-secondary">Tổng hiển thị trên thanh lệnh (chip)</div>
+                            <button type="button" onClick={() => updateBulk(index, { preview_aggregates: [...aggs, { label: '', column: columnNames[0] || '', agg: 'sum', format: 'number' }] })} className="text-tiny text-brand hover:underline">+ Thêm</button>
+                          </div>
+                          {aggs.length === 0 ? (
+                            <p className="text-tiny text-text-tertiary">Vd: “Tổng kg”, “Doanh thu”.</p>
+                          ) : (
+                            <div className="space-y-2">
+                              {aggs.map((pa, pi) => {
+                                const setA = (patch: Partial<typeof pa>) => updateBulk(index, { preview_aggregates: aggs.map((x, xi) => (xi === pi ? { ...x, ...patch } : x)) });
+                                return (
+                                  <div key={pi} className="grid grid-cols-[1fr_1fr_auto_auto] items-end gap-2">
+                                    <Lbl label="Nhãn"><input value={pa.label || ''} onChange={(e) => setA({ label: e.target.value })} className={INPUT} placeholder="Tổng kg" /></Lbl>
+                                    <Lbl label="Cột"><SingleColumnPicker sourceColumns={columnNames} value={pa.column || null} onChange={(next) => setA({ column: next || '' })} /></Lbl>
+                                    <Lbl label="Gộp"><select value={pa.agg || 'sum'} onChange={(e) => setA({ agg: e.target.value as typeof pa.agg })} className={INPUT}>{AGG_OPTS.map((a) => <option key={a} value={a}>{a}</option>)}</select></Lbl>
+                                    <button type="button" onClick={() => updateBulk(index, { preview_aggregates: aggs.filter((_, xi) => xi !== pi) })} className="mb-1 text-tiny text-danger hover:underline">Xoá</button>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
+
+                        <div className="rounded-md border border-[rgb(var(--border-line))] bg-surface-2/40 p-2.5">
+                          <div className="mb-1.5 flex items-center justify-between">
+                            <div className="text-tiny font-emphasis text-text-secondary">Tài nguyên phải chọn trước (Xe/Kho…)</div>
+                            <button type="button" onClick={() => updateBulk(index, { resource_inputs: [...ress, { id: `res_${ress.length + 1}`, label: '', source_screen_id: otherScreens[0]?.id || '', value_column: '', label_column: null, capacity_column: null, required: true }] })} className="text-tiny text-brand hover:underline">+ Thêm</button>
+                          </div>
+                          {ress.length === 0 ? (
+                            <p className="text-tiny text-text-tertiary">Vd: chọn Xe (tải trọng cấp ngưỡng cho ràng buộc), chọn Kho.</p>
+                          ) : (
+                            <div className="space-y-2">
+                              {ress.map((r, ri) => {
+                                const setR = (patch: Partial<typeof r>) => updateBulk(index, { resource_inputs: ress.map((x, xi) => (xi === ri ? { ...x, ...patch } : x)) });
+                                return (
+                                  <div key={ri} className="rounded border border-[rgb(var(--border-line))] bg-surface-1 p-2">
+                                    <div className="mb-1 flex items-center justify-between">
+                                      <span className="text-tiny text-text-tertiary">{r.id}</span>
+                                      <button type="button" onClick={() => updateBulk(index, { resource_inputs: ress.filter((_, xi) => xi !== ri) })} className="text-tiny text-danger hover:underline">Xoá</button>
+                                    </div>
+                                    <div className={BUILDER_GRID_2}>
+                                      <Lbl label="Nhãn picker"><input value={r.label || ''} onChange={(e) => setR({ label: e.target.value })} className={INPUT} placeholder="Chọn xe" /></Lbl>
+                                      <Lbl label="Màn nguồn (bảng)"><select value={r.source_screen_id || ''} onChange={(e) => setR({ source_screen_id: e.target.value })} className={INPUT}><option value="">— chọn màn —</option>{otherScreens.map((s) => <option key={s.id} value={s.id}>{s.title}</option>)}</select></Lbl>
+                                      <Lbl label="Cột giá trị"><input value={r.value_column || ''} onChange={(e) => setR({ value_column: e.target.value })} className={INPUT} placeholder="MaXe" /></Lbl>
+                                      <Lbl label="Cột hiển thị (tùy chọn)"><input value={r.label_column || ''} onChange={(e) => setR({ label_column: e.target.value || null })} className={INPUT} placeholder="BienSo" /></Lbl>
+                                      <Lbl label="Cột sức chứa (ngưỡng)"><input value={r.capacity_column || ''} onChange={(e) => setR({ capacity_column: e.target.value || null })} className={INPUT} placeholder="TaiTrongToiDaKg" /></Lbl>
+                                      <label className="flex items-center gap-2 self-end pb-1 text-caption text-text-secondary"><input type="checkbox" checked={r.required !== false} onChange={(e) => setR({ required: e.target.checked })} /> Bắt buộc</label>
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
+
+                        <div className="rounded-md border border-[rgb(var(--border-line))] bg-surface-2/40 p-2.5">
+                          <div className="flex items-center justify-between">
+                            <div className="text-tiny font-emphasis text-text-secondary">Xem tuyến trên bản đồ (tùy chọn)</div>
+                            {action.route_preview ? (
+                              <button type="button" onClick={() => updateBulk(index, { route_preview: null })} className="text-tiny text-danger hover:underline">Tắt</button>
+                            ) : (
+                              <button type="button" onClick={() => updateBulk(index, { route_preview: { lat_column: columnNames[0] || '', lng_column: columnNames[0] || '', line_mode: 'road' } })} className="text-tiny text-brand hover:underline">+ Bật</button>
+                            )}
+                          </div>
+                          {action.route_preview ? (
+                            <div className={`mt-2 ${BUILDER_GRID_2}`}>
+                              <Lbl label="Cột Lat"><SingleColumnPicker sourceColumns={columnNames} value={action.route_preview.lat_column || null} onChange={(next) => updateBulk(index, { route_preview: { ...action.route_preview!, lat_column: next || '' } })} /></Lbl>
+                              <Lbl label="Cột Lng"><SingleColumnPicker sourceColumns={columnNames} value={action.route_preview.lng_column || null} onChange={(next) => updateBulk(index, { route_preview: { ...action.route_preview!, lng_column: next || '' } })} /></Lbl>
+                              <Lbl label="Cột thứ tự (tùy chọn)"><SingleColumnPicker sourceColumns={columnNames} value={action.route_preview.order_column || null} onChange={(next) => updateBulk(index, { route_preview: { ...action.route_preview!, order_column: next || null } })} /></Lbl>
+                            </div>
+                          ) : null}
+                        </div>
+
+                        {advanced ? (
+                          <p className="rounded-md bg-surface-2/60 px-2.5 py-2 text-tiny text-text-tertiary">
+                            Luồng ghi nâng cao: {action.steps!.length} bước (tạo bản ghi cha + gán dòng…). Quản lý qua MCP; tại đây chỉnh phần hiển thị/kiểm tra ở trên.
+                          </p>
+                        ) : (
+                          <div className={BUILDER_GRID_2}>
+                            <Lbl label="Màn tạo bản ghi cha"><select value={action.parent_screen_id || ''} onChange={(e) => updateBulk(index, { parent_screen_id: e.target.value })} className={INPUT}><option value="">— chọn màn —</option>{otherScreens.map((s) => <option key={s.id} value={s.id}>{s.title}</option>)}</select></Lbl>
+                            <Lbl label="Cột mã bản ghi cha"><input value={action.parent_code_column || ''} onChange={(e) => updateBulk(index, { parent_code_column: e.target.value })} className={INPUT} placeholder="ma_chuyen" /></Lbl>
+                            <Lbl label="Cột FK trên dòng đã chọn"><SingleColumnPicker sourceColumns={columnNames} value={action.set_column || null} onChange={(next) => updateBulk(index, { set_column: next || '' })} /></Lbl>
+                            <Lbl label="Tiền tố mã"><input value={action.code_prefix || ''} onChange={(e) => updateBulk(index, { code_prefix: e.target.value })} className={INPUT} placeholder="CX" /></Lbl>
+                          </div>
+                        )}
+
+                        <Lbl label="Chỉ hiện cho vai trò (tùy chọn, cách nhau dấu phẩy)">
+                          <input value={(action.visible_for_roles || []).join(', ')} onChange={(e) => updateBulk(index, { visible_for_roles: e.target.value.split(',').map((s) => s.trim()).filter(Boolean) })} className={INPUT} placeholder="để trống = mọi vai trò" />
+                        </Lbl>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
         </BuilderInspectorPanel>
       );
     }
@@ -1058,23 +1726,32 @@ export default function TableScreenEditor({ screen, tables, onChange }: Props) {
       return (
         <BuilderInspectorPanel
           icon={<LayoutGrid className="h-4 w-4" />}
-          title="Chế độ hiển thị"
-          subtitle="Bảng / lưới thẻ ảnh (Gallery) / lịch (Calendar) — cùng dữ liệu, chỉ khác cách hiển thị."
+          title="Display mode"
+          subtitle="Hãy chọn dạng hiển thị tổng thể cho màn hình. Cùng một nguồn dữ liệu — chỉ khác cách hiển thị."
         >
-          <Lbl label="Kiểu hiển thị">
-            <select
-              value={mode}
-              onChange={(event) =>
-                updateTable({ display_mode: event.target.value as 'table' | 'gallery' | 'calendar' | 'route_map' })
-              }
-              className={INPUT}
-            >
-              <option value="table">Bảng (mặc định)</option>
-              <option value="gallery">Gallery ảnh</option>
-              <option value="calendar">Lịch (Calendar)</option>
-              <option value="route_map">Route map (tuyến trên bản đồ)</option>
-            </select>
-          </Lbl>
+          <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+            {DISPLAY_MODE_OPTIONS.map((opt) => (
+              <DisplayModeCard
+                key={opt.value}
+                active={mode === opt.value}
+                label={opt.label}
+                desc={opt.desc}
+                icon={opt.icon}
+                onClick={() => updateTable({ display_mode: opt.value })}
+              />
+            ))}
+          </div>
+          <div className="mt-3 flex items-start gap-2 rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 px-3 py-2.5 text-caption text-text-secondary">
+            <LayoutGrid className="mt-0.5 h-4 w-4 shrink-0 text-brand" />
+            <span>
+              Cấu trúc hiện tại:{' '}
+              <strong className="text-text-primary">
+                {DISPLAY_MODE_OPTIONS.find((o) => o.value === mode)?.label || 'Table'}
+              </strong>
+              . Các đối tượng ở thanh bên vẫn dùng để cấu hình chi tiết dữ liệu, hành vi và cách
+              trình bày.
+            </span>
+          </div>
 
           {mode === 'calendar' && (
             <div className="mt-3 space-y-3">
@@ -1321,14 +1998,180 @@ export default function TableScreenEditor({ screen, tables, onChange }: Props) {
                     />
                     Hiển thị danh sách thứ tự điểm bên phải bản đồ
                   </label>
+
+                  <div className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 p-3">
+                    <div className="mb-1 flex items-center justify-between">
+                      <div className="text-caption font-emphasis text-text-secondary">
+                        Ngân sách khi chọn điểm (tùy chọn)
+                      </div>
+                      {routeMap.selection_budget ? (
+                        <button
+                          type="button"
+                          onClick={() => updateRouteMap({ selection_budget: null })}
+                          className="text-tiny text-danger hover:underline"
+                        >
+                          Xoá
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            updateRouteMap({
+                              selection_budget: { value_column: columnNames[0] || '', block_when_over: true },
+                            })
+                          }
+                          className="text-tiny text-brand hover:underline"
+                        >
+                          + Bật
+                        </button>
+                      )}
+                    </div>
+                    {routeMap.selection_budget ? (
+                      <div className="space-y-3">
+                        <p className="text-tiny text-text-tertiary">
+                          Tick/point chọn điểm → cộng dồn 1 cột giá trị, so với ngưỡng; vượt thì
+                          báo đỏ{routeMap.selection_budget.block_when_over !== false ? ' + chặn nút xác nhận' : ''}.
+                        </p>
+                        <div className={BUILDER_GRID_2}>
+                          <Lbl label="Cột giá trị cộng dồn">
+                            <SingleColumnPicker
+                              sourceColumns={columnNames}
+                              value={routeMap.selection_budget.value_column || null}
+                              onChange={(next) =>
+                                updateRouteMap({
+                                  selection_budget: { ...routeMap.selection_budget!, value_column: next || '' },
+                                })
+                              }
+                            />
+                          </Lbl>
+                          <Lbl label="Ngưỡng (số hoặc {{shared.x}})">
+                            <input
+                              value={routeMap.selection_budget.limit || ''}
+                              onChange={(e) =>
+                                updateRouteMap({
+                                  selection_budget: { ...routeMap.selection_budget!, limit: e.target.value || null },
+                                })
+                              }
+                              className={INPUT}
+                              placeholder="vd 2000 hoặc {{shared.capacity}}"
+                            />
+                          </Lbl>
+                          <Lbl label="Đơn vị">
+                            <input
+                              value={routeMap.selection_budget.unit || ''}
+                              onChange={(e) =>
+                                updateRouteMap({
+                                  selection_budget: { ...routeMap.selection_budget!, unit: e.target.value || null },
+                                })
+                              }
+                              className={INPUT}
+                              placeholder="kg"
+                            />
+                          </Lbl>
+                          <Lbl label="Nhãn">
+                            <input
+                              value={routeMap.selection_budget.label || ''}
+                              onChange={(e) =>
+                                updateRouteMap({
+                                  selection_budget: { ...routeMap.selection_budget!, label: e.target.value || null },
+                                })
+                              }
+                              className={INPUT}
+                              placeholder="Đã chọn"
+                            />
+                          </Lbl>
+                        </div>
+                        <label className="flex items-center gap-2 text-caption text-text-secondary">
+                          <input
+                            type="checkbox"
+                            checked={routeMap.selection_budget.block_when_over !== false}
+                            onChange={(e) =>
+                              updateRouteMap({
+                                selection_budget: { ...routeMap.selection_budget!, block_when_over: e.target.checked },
+                              })
+                            }
+                          />
+                          Chặn nút xác nhận khi vượt ngưỡng
+                        </label>
+                        <div className={BUILDER_GRID_2}>
+                          <Lbl label="Mở màn khi xác nhận (tùy chọn)">
+                            <select
+                              value={routeMap.selection_budget.action_go_to_screen || ''}
+                              onChange={(e) =>
+                                updateRouteMap({
+                                  selection_budget: {
+                                    ...routeMap.selection_budget!,
+                                    action_go_to_screen: e.target.value || null,
+                                  },
+                                })
+                              }
+                              className={INPUT}
+                            >
+                              <option value="">— không —</option>
+                              {allScreens
+                                .filter((s) => s.id !== screen.id)
+                                .map((s) => (
+                                  <option key={s.id} value={s.id}>
+                                    {s.title}
+                                  </option>
+                                ))}
+                            </select>
+                          </Lbl>
+                          <Lbl label="Nhãn nút xác nhận">
+                            <input
+                              value={routeMap.selection_budget.action_label || ''}
+                              onChange={(e) =>
+                                updateRouteMap({
+                                  selection_budget: { ...routeMap.selection_budget!, action_label: e.target.value || null },
+                                })
+                              }
+                              className={INPUT}
+                              placeholder="Xác nhận"
+                            />
+                          </Lbl>
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
                 </>
               )}
             </div>
           )}
 
-          <div className="mt-4 space-y-2 border-t border-slate-100 pt-3">
+          <div className="mt-5 border-t border-[rgb(var(--border-line))] pt-4">
+            <h3 className="mb-1 text-caption font-emphasis text-text-primary">
+              Các cấu hình chính cho{' '}
+              {DISPLAY_MODE_OPTIONS.find((o) => o.value === mode)?.label || 'Table'}
+            </h3>
+            <p className="mb-3 text-tiny text-text-tertiary">
+              Mở nhanh các mục cấu hình thường dùng (cũng có ở thanh bên trái).
+            </p>
+            <div className="grid gap-2 sm:grid-cols-2">
+              {CONFIG_SHORTCUTS.filter((c) => isTableMode || !c.tableOnly).map((c) => (
+                <ConfigShortcutCard
+                  key={c.key}
+                  label={c.label}
+                  desc={c.desc}
+                  icon={c.icon}
+                  onClick={() => setActiveItem(c.key)}
+                />
+              ))}
+            </div>
+          </div>
+        </BuilderInspectorPanel>
+      );
+    }
+
+    if (activeItem === 'kpi') {
+      return (
+        <BuilderInspectorPanel
+          icon={<LayoutGrid className="h-4 w-4" />}
+          title="KPI tiles"
+          subtitle="Thẻ chỉ số tổng quan (tổng/đếm/trung bình) hiện trên đầu bảng — vd Σ Sản lượng."
+        >
+          <div className="space-y-2">
             <div className="flex items-center justify-between">
-              <div className="text-sm font-medium text-slate-700">Thẻ KPI (trên đầu bảng)</div>
+              <div className="text-caption font-medium text-text-secondary">Danh sách thẻ KPI</div>
               <button
                 type="button"
                 onClick={() =>
@@ -1339,7 +2182,7 @@ export default function TableScreenEditor({ screen, tables, onChange }: Props) {
                     ],
                   })
                 }
-                className="inline-flex items-center gap-1 rounded-md border border-slate-300 bg-white px-2 py-1 text-xs text-slate-700 hover:bg-slate-50"
+                className="inline-flex items-center gap-1 rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1 text-xs text-text-secondary hover:bg-surface-2"
               >
                 <Plus className="h-3.5 w-3.5" /> Thêm thẻ
               </button>
@@ -2441,65 +3284,6 @@ export default function TableScreenEditor({ screen, tables, onChange }: Props) {
       );
     }
 
-    if (activeItem.startsWith('filter:')) {
-      const filter = filters[activeFilterIndex];
-      if (!filter) return null;
-      return (
-        <BuilderInspectorPanel
-          icon={<Filter className="h-4 w-4" />}
-          title={filter.label?.trim() || filter.column || 'Filter'}
-          subtitle={`${FILTER_KIND_LABEL[filter.kind]} - ${filter.column}`}
-          action={
-            <BuilderIconButton
-              onClick={() => removeFilter(activeFilterIndex)}
-              title="Delete filter"
-              variant="danger"
-            >
-              <Trash2 className="h-3.5 w-3.5 text-danger" />
-            </BuilderIconButton>
-          }
-        >
-          <div className={BUILDER_GRID_2}>
-            <Lbl label="Column">
-              <SingleColumnPicker
-                sourceColumns={columnNames}
-                value={filter.column}
-                onChange={(next) =>
-                  updateFilter(activeFilterIndex, { column: next || '' })
-                }
-              />
-            </Lbl>
-            <Lbl label="Filter kind">
-              <select
-                value={filter.kind}
-                onChange={(event) =>
-                  updateFilter(activeFilterIndex, {
-                    kind: event.target.value as TableFilterSpec['kind'],
-                  })
-                }
-                className={INPUT}
-              >
-                <option value="text">Text search</option>
-                <option value="select">Single select</option>
-                <option value="date_range">Date range</option>
-                <option value="number_range">Number range</option>
-              </select>
-            </Lbl>
-            <Lbl label="Display label">
-              <input
-                value={filter.label || ''}
-                onChange={(event) =>
-                  updateFilter(activeFilterIndex, { label: event.target.value })
-                }
-                className={INPUT}
-                placeholder={filter.column}
-              />
-            </Lbl>
-          </div>
-        </BuilderInspectorPanel>
-      );
-    }
-
     return null;
   };
 
@@ -2524,17 +3308,39 @@ export default function TableScreenEditor({ screen, tables, onChange }: Props) {
           title="Table objects"
           description="Configure the visible columns, which ones are editable, layout, and pre-set filters."
         >
-          <BuilderNavigatorGroup title="Table">
+          <BuilderNavigatorGroup title="Structure">
+            <BuilderNavigatorItem
+              icon={<LayoutGrid className="h-3.5 w-3.5" />}
+              label="Display mode"
+              subtitle={DISPLAY_MODE_OPTIONS.find((o) => o.value === (tableSpec.display_mode || 'table'))?.label || 'Table'}
+              active={activeItem === 'display'}
+              onClick={() => setActiveItem('display')}
+            />
+          </BuilderNavigatorGroup>
+
+          <BuilderNavigatorGroup title="Content">
             <BuilderNavigatorItem
               icon={<Columns3 className="h-3.5 w-3.5" />}
-              label="Visible columns"
+              label="Fields"
               subtitle={`${tableSpec.columns.length} selected`}
               active={activeItem === 'columns'}
               onClick={() => setActiveItem('columns')}
             />
             <BuilderNavigatorItem
+              icon={<Filter className="h-3.5 w-3.5" />}
+              label="Filters & sorting"
+              subtitle={`${filters.length} filter${filters.length === 1 ? '' : 's'} · ${
+                tableSpec.page_size ?? 100
+              }/page`}
+              active={activeItem === 'settings'}
+              onClick={() => setActiveItem('settings')}
+            />
+          </BuilderNavigatorGroup>
+
+          <BuilderNavigatorGroup title="Interaction">
+            <BuilderNavigatorItem
               icon={<PencilLine className="h-3.5 w-3.5" />}
-              label="Editable columns"
+              label="Editable fields"
               subtitle={`${(tableSpec.editable_columns || []).length} of ${tableSpec.columns.length}`}
               active={activeItem === 'editable'}
               onClick={() => setActiveItem('editable')}
@@ -2549,22 +3355,6 @@ export default function TableScreenEditor({ screen, tables, onChange }: Props) {
               onClick={() => setActiveItem('behaviour')}
             />
             <BuilderNavigatorItem
-              icon={<ScanLine className="h-3.5 w-3.5" />}
-              label="Chế độ POS (quét → giỏ)"
-              subtitle={tableSpec.pos_cart ? 'Đang bật' : 'Tắt'}
-              active={activeItem === 'pos_cart'}
-              onClick={() => setActiveItem('pos_cart')}
-            />
-            <BuilderNavigatorItem
-              icon={<Rows3 className="h-3.5 w-3.5" />}
-              label="Paging and sorting"
-              subtitle={`${tableSpec.page_size ?? 100} rows/page${
-                tableSpec.default_sort_column ? ` - ${tableSpec.default_sort_column}` : ''
-              }`}
-              active={activeItem === 'settings'}
-              onClick={() => setActiveItem('settings')}
-            />
-            <BuilderNavigatorItem
               icon={<Plus className="h-3.5 w-3.5" />}
               label="New row defaults"
               subtitle={`${(tableSpec.required_columns || []).length} required - ${
@@ -2574,35 +3364,52 @@ export default function TableScreenEditor({ screen, tables, onChange }: Props) {
               onClick={() => setActiveItem('defaults')}
             />
             <BuilderNavigatorItem
-              icon={<Sigma className="h-3.5 w-3.5" />}
-              label="Footer totals"
+              icon={<PencilLine className="h-3.5 w-3.5" />}
+              label="Detail panel"
               subtitle={
-                Object.keys(totals).length === 0
-                  ? 'No totals'
-                  : `${Object.keys(totals).length} column${
-                      Object.keys(totals).length === 1 ? '' : 's'
-                    }`
+                tableSpec.detail_panel?.enabled === false
+                  ? 'Disabled'
+                  : (tableSpec.detail_panel?.editable_columns || []).length > 0
+                    ? `${(tableSpec.detail_panel?.editable_columns || []).length} editable`
+                    : 'Read-only'
               }
-              active={activeItem === 'totals'}
-              onClick={() => setActiveItem('totals')}
+              active={activeItem === 'detail_panel'}
+              onClick={() => setActiveItem('detail_panel')}
             />
             <BuilderNavigatorItem
-              icon={<ListFilter className="h-3.5 w-3.5" />}
-              label="Empty state"
-              subtitle={tableSpec.empty_state_message ? 'Custom message' : 'Default message'}
-              active={activeItem === 'empty'}
-              onClick={() => setActiveItem('empty')}
+              icon={<ChevronRight className="h-3.5 w-3.5" />}
+              label="Row actions"
+              subtitle={
+                rowActions.length === 0
+                  ? 'No actions'
+                  : `${rowActions.length} action${rowActions.length === 1 ? '' : 's'}`
+              }
+              active={activeItem === 'row_actions'}
+              onClick={() => setActiveItem('row_actions')}
             />
             <BuilderNavigatorItem
-              icon={<LayoutGrid className="h-3.5 w-3.5" />}
-              label="Chế độ hiển thị"
-              subtitle={tableSpec.display_mode === 'gallery' ? 'Gallery ảnh' : 'Bảng'}
-              active={activeItem === 'display'}
-              onClick={() => setActiveItem('display')}
+              icon={<ChevronRight className="h-3.5 w-3.5" />}
+              label="Chọn nhiều dòng"
+              subtitle={bulkActions.length === 0 ? 'Chưa có' : `${bulkActions.length} hành động`}
+              active={activeItem === 'bulk_actions'}
+              onClick={() => setActiveItem('bulk_actions')}
             />
           </BuilderNavigatorGroup>
 
-          <BuilderNavigatorGroup title="Layout">
+          <BuilderNavigatorGroup title="Presentation">
+            {isTableMode && (
+              <>
+            <BuilderNavigatorItem
+              icon={<Settings2 className="h-3.5 w-3.5" />}
+              label="Column presentation"
+              subtitle={
+                Object.keys(tableSpec.column_metadata || {}).length === 0
+                  ? 'Default labels'
+                  : `${Object.keys(tableSpec.column_metadata || {}).length} custom`
+              }
+              active={activeItem === 'column_meta'}
+              onClick={() => setActiveItem('column_meta')}
+            />
             <BuilderNavigatorItem
               icon={<Columns3 className="h-3.5 w-3.5" />}
               label="Header groups"
@@ -2628,32 +3435,8 @@ export default function TableScreenEditor({ screen, tables, onChange }: Props) {
               onClick={() => setActiveItem('row_merge')}
             />
             <BuilderNavigatorItem
-              icon={<Settings2 className="h-3.5 w-3.5" />}
-              label="Column presentation"
-              subtitle={
-                Object.keys(tableSpec.column_metadata || {}).length === 0
-                  ? 'Default labels'
-                  : `${Object.keys(tableSpec.column_metadata || {}).length} custom`
-              }
-              active={activeItem === 'column_meta'}
-              onClick={() => setActiveItem('column_meta')}
-            />
-            <BuilderNavigatorItem
-              icon={<PencilLine className="h-3.5 w-3.5" />}
-              label="Detail panel"
-              subtitle={
-                tableSpec.detail_panel?.enabled === false
-                  ? 'Disabled'
-                  : (tableSpec.detail_panel?.editable_columns || []).length > 0
-                    ? `${(tableSpec.detail_panel?.editable_columns || []).length} editable`
-                    : 'Read-only'
-              }
-              active={activeItem === 'detail_panel'}
-              onClick={() => setActiveItem('detail_panel')}
-            />
-            <BuilderNavigatorItem
               icon={<Palette className="h-3.5 w-3.5" />}
-              label="Định dạng có điều kiện"
+              label="Conditional formatting"
               subtitle={
                 formatRules.length === 0
                   ? 'No rules'
@@ -2662,183 +3445,182 @@ export default function TableScreenEditor({ screen, tables, onChange }: Props) {
               active={activeItem === 'format_rules'}
               onClick={() => setActiveItem('format_rules')}
             />
+              </>
+            )}
+            <BuilderNavigatorItem
+              icon={<ListFilter className="h-3.5 w-3.5" />}
+              label="Empty state"
+              subtitle={tableSpec.empty_state_message ? 'Custom message' : 'Default message'}
+              active={activeItem === 'empty'}
+              onClick={() => setActiveItem('empty')}
+            />
           </BuilderNavigatorGroup>
 
-          <BuilderNavigatorGroup
-            title={`Computed columns (${computed.length})`}
-            action={
-              <button
-                type="button"
-                onClick={addComputed}
-                disabled={columnNames.length === 0}
-                className="rounded p-1 text-text-tertiary hover:bg-surface-2 hover:text-brand disabled:cursor-not-allowed disabled:opacity-40"
-                title="Add computed column"
-              >
-                <Plus className="h-3.5 w-3.5" />
-              </button>
-            }
-          >
-            {computed.length === 0 ? (
-              <BuilderEmptyHint className="px-3 py-4">
-                No formula columns yet.
-              </BuilderEmptyHint>
-            ) : (
-              computed.map((col, index) => (
-                <BuilderNavigatorItem
-                  key={`${col.name}:${index}`}
-                  icon={<Calculator className="h-3.5 w-3.5" />}
-                  label={col.label?.trim() || col.name}
-                  subtitle={col.formula.trim() ? col.formula.slice(0, 40) : 'No formula yet'}
-                  active={activeItem === `computed:${index}`}
-                  onClick={() => setActiveItem(`computed:${index}`)}
-                  action={
-                    <BuilderIconButton
-                      onClick={() => removeComputed(index)}
-                      title="Delete column"
-                      variant="danger"
-                    >
-                      <Trash2 className="h-3 w-3 text-danger" />
-                    </BuilderIconButton>
-                  }
-                />
-              ))
+          <BuilderNavigatorGroup title="Summary">
+            {isTableMode && (
+            <BuilderNavigatorItem
+              icon={<Sigma className="h-3.5 w-3.5" />}
+              label="Footer totals"
+              subtitle={
+                Object.keys(totals).length === 0
+                  ? 'No totals'
+                  : `${Object.keys(totals).length} column${
+                      Object.keys(totals).length === 1 ? '' : 's'
+                    }`
+              }
+              active={activeItem === 'totals'}
+              onClick={() => setActiveItem('totals')}
+            />
             )}
+            <BuilderNavigatorItem
+              icon={<LayoutGrid className="h-3.5 w-3.5" />}
+              label="KPI tiles"
+              subtitle={
+                (tableSpec.stat_tiles || []).length === 0
+                  ? 'No tiles'
+                  : `${(tableSpec.stat_tiles || []).length} tile${
+                      (tableSpec.stat_tiles || []).length === 1 ? '' : 's'
+                    }`
+              }
+              active={activeItem === 'kpi'}
+              onClick={() => setActiveItem('kpi')}
+            />
           </BuilderNavigatorGroup>
 
-          <BuilderNavigatorGroup
-            title={`Lookup columns (${lookups.length})`}
-            action={
-              <button
-                type="button"
-                onClick={addLookup}
-                disabled={tables.length === 0}
-                className="rounded p-1 text-text-tertiary hover:bg-surface-2 hover:text-brand disabled:cursor-not-allowed disabled:opacity-40"
-                title="Add lookup column"
-              >
-                <Plus className="h-3.5 w-3.5" />
-              </button>
-            }
-          >
-            {lookups.length === 0 ? (
-              <BuilderEmptyHint className="px-3 py-4">
-                No lookup columns yet.
-              </BuilderEmptyHint>
-            ) : (
-              lookups.map((col, index) => {
-                const remoteTable = tables.find((t) => t.id === col.from_table_id);
-                return (
-                  <BuilderNavigatorItem
-                    key={`${col.name}:${index}`}
-                    icon={<Link2 className="h-3.5 w-3.5" />}
-                    label={col.label?.trim() || col.name}
-                    subtitle={
-                      remoteTable
-                        ? `${remoteTable.display_name}.${col.return_column || '?'}`
-                        : 'No table selected'
-                    }
-                    active={activeItem === `lookup:${index}`}
-                    onClick={() => setActiveItem(`lookup:${index}`)}
-                    action={
-                      <BuilderIconButton
-                        onClick={() => removeLookup(index)}
-                        title="Delete column"
-                        variant="danger"
-                      >
-                        <Trash2 className="h-3 w-3 text-danger" />
-                      </BuilderIconButton>
-                    }
-                  />
-                );
-              })
-            )}
-          </BuilderNavigatorGroup>
+          {isTableMode && (
+            <BuilderNavigatorGroup title="Specialized">
+              <BuilderNavigatorItem
+                icon={<ScanLine className="h-3.5 w-3.5" />}
+                label="POS / Scan → Cart"
+                subtitle={tableSpec.pos_cart ? 'Đang bật' : 'Tắt'}
+                active={activeItem === 'pos_cart'}
+                onClick={() => setActiveItem('pos_cart')}
+              />
+            </BuilderNavigatorGroup>
+          )}
 
-          <BuilderNavigatorGroup
-            title={`Roll-up columns (${rollups.length})`}
-            action={
-              <button
-                type="button"
-                onClick={addRollup}
-                disabled={tables.length === 0}
-                className="rounded p-1 text-text-tertiary hover:bg-surface-2 hover:text-brand disabled:cursor-not-allowed disabled:opacity-40"
-                title="Add roll-up column"
+          <section>
+            <h3 className="mb-1.5 text-tiny font-emphasis uppercase tracking-wider text-text-quaternary">
+              Derived data
+            </h3>
+            <div className="space-y-3">
+              <DerivedSubGroup
+                label="Computed"
+                count={computed.length}
+                onAdd={addComputed}
+                addTitle="Add computed column"
+                addDisabled={columnNames.length === 0}
               >
-                <Plus className="h-3.5 w-3.5" />
-              </button>
-            }
-          >
-            {rollups.length === 0 ? (
-              <BuilderEmptyHint className="px-3 py-4">
-                Chưa có cột roll-up (gộp bảng con).
-              </BuilderEmptyHint>
-            ) : (
-              rollups.map((col, index) => {
-                const remoteTable = tables.find((t) => t.id === col.from_table_id);
-                return (
-                  <BuilderNavigatorItem
-                    key={`${col.name}:${index}`}
-                    icon={<Sigma className="h-3.5 w-3.5" />}
-                    label={col.label?.trim() || col.name}
-                    subtitle={
-                      remoteTable
-                        ? `${col.agg || 'count'}(${remoteTable.display_name})`
-                        : 'No table selected'
-                    }
-                    active={activeItem === `rollup:${index}`}
-                    onClick={() => setActiveItem(`rollup:${index}`)}
-                    action={
-                      <BuilderIconButton
-                        onClick={() => removeRollup(index)}
-                        title="Delete column"
-                        variant="danger"
-                      >
-                        <Trash2 className="h-3 w-3 text-danger" />
-                      </BuilderIconButton>
-                    }
-                  />
-                );
-              })
-            )}
-          </BuilderNavigatorGroup>
+                {computed.length === 0 ? (
+                  <BuilderEmptyHint className="px-3 py-3">
+                    No formula columns yet.
+                  </BuilderEmptyHint>
+                ) : (
+                  computed.map((col, index) => (
+                    <BuilderNavigatorItem
+                      key={`${col.name}:${index}`}
+                      icon={<Calculator className="h-3.5 w-3.5" />}
+                      label={col.label?.trim() || col.name}
+                      subtitle={col.formula.trim() ? col.formula.slice(0, 40) : 'No formula yet'}
+                      active={activeItem === `computed:${index}`}
+                      onClick={() => setActiveItem(`computed:${index}`)}
+                      action={
+                        <BuilderIconButton
+                          onClick={() => removeComputed(index)}
+                          title="Delete column"
+                          variant="danger"
+                        >
+                          <Trash2 className="h-3 w-3 text-danger" />
+                        </BuilderIconButton>
+                      }
+                    />
+                  ))
+                )}
+              </DerivedSubGroup>
 
-          <BuilderNavigatorGroup
-            title={`Filters (${filters.length})`}
-            action={
-              <button
-                type="button"
-                onClick={addFilter}
-                disabled={columnNames.length === 0}
-                className="rounded p-1 text-text-tertiary hover:bg-surface-2 hover:text-brand disabled:cursor-not-allowed disabled:opacity-40"
-                title="Add filter"
+              <DerivedSubGroup
+                label="Lookup"
+                count={lookups.length}
+                onAdd={addLookup}
+                addTitle="Add lookup column"
+                addDisabled={tables.length === 0}
               >
-                <Plus className="h-3.5 w-3.5" />
-              </button>
-            }
-          >
-            {filters.length === 0 ? (
-              <BuilderEmptyHint className="px-3 py-4">No filters yet.</BuilderEmptyHint>
-            ) : (
-              filters.map((filter, index) => (
-                <BuilderNavigatorItem
-                  key={`${filter.column}:${index}`}
-                  icon={<Filter className="h-3.5 w-3.5" />}
-                  label={filter.label?.trim() || filter.column || 'Filter'}
-                  subtitle={`${FILTER_KIND_LABEL[filter.kind]} - ${filter.column}`}
-                  active={activeItem === `filter:${index}`}
-                  onClick={() => setActiveItem(`filter:${index}`)}
-                  action={
-                    <BuilderIconButton
-                      onClick={() => removeFilter(index)}
-                      title="Delete filter"
-                      variant="danger"
-                    >
-                      <Trash2 className="h-3 w-3 text-danger" />
-                    </BuilderIconButton>
-                  }
-                />
-              ))
-            )}
-          </BuilderNavigatorGroup>
+                {lookups.length === 0 ? (
+                  <BuilderEmptyHint className="px-3 py-3">
+                    No lookup columns yet.
+                  </BuilderEmptyHint>
+                ) : (
+                  lookups.map((col, index) => {
+                    const remoteTable = tables.find((t) => t.id === col.from_table_id);
+                    return (
+                      <BuilderNavigatorItem
+                        key={`${col.name}:${index}`}
+                        icon={<Link2 className="h-3.5 w-3.5" />}
+                        label={col.label?.trim() || col.name}
+                        subtitle={
+                          remoteTable
+                            ? `${remoteTable.display_name}.${col.return_column || '?'}`
+                            : 'No table selected'
+                        }
+                        active={activeItem === `lookup:${index}`}
+                        onClick={() => setActiveItem(`lookup:${index}`)}
+                        action={
+                          <BuilderIconButton
+                            onClick={() => removeLookup(index)}
+                            title="Delete column"
+                            variant="danger"
+                          >
+                            <Trash2 className="h-3 w-3 text-danger" />
+                          </BuilderIconButton>
+                        }
+                      />
+                    );
+                  })
+                )}
+              </DerivedSubGroup>
+
+              <DerivedSubGroup
+                label="Roll-up"
+                count={rollups.length}
+                onAdd={addRollup}
+                addTitle="Add roll-up column"
+                addDisabled={tables.length === 0}
+              >
+                {rollups.length === 0 ? (
+                  <BuilderEmptyHint className="px-3 py-3">
+                    Chưa có cột roll-up (gộp bảng con).
+                  </BuilderEmptyHint>
+                ) : (
+                  rollups.map((col, index) => {
+                    const remoteTable = tables.find((t) => t.id === col.from_table_id);
+                    return (
+                      <BuilderNavigatorItem
+                        key={`${col.name}:${index}`}
+                        icon={<Sigma className="h-3.5 w-3.5" />}
+                        label={col.label?.trim() || col.name}
+                        subtitle={
+                          remoteTable
+                            ? `${col.agg || 'count'}(${remoteTable.display_name})`
+                            : 'No table selected'
+                        }
+                        active={activeItem === `rollup:${index}`}
+                        onClick={() => setActiveItem(`rollup:${index}`)}
+                        action={
+                          <BuilderIconButton
+                            onClick={() => removeRollup(index)}
+                            title="Delete column"
+                            variant="danger"
+                          >
+                            <Trash2 className="h-3 w-3 text-danger" />
+                          </BuilderIconButton>
+                        }
+                      />
+                    );
+                  })
+                )}
+              </DerivedSubGroup>
+            </div>
+          </section>
         </BuilderNavigator>
 
         {renderInspector()}

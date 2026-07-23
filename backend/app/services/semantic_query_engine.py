@@ -235,6 +235,10 @@ class SemanticQueryEngine:
         self._model_dataset_table_ids = set()
         self._symmetric_aggregate_views = set()
         self._phys_coltype_cache = {}
+        # Canonical non-fanning reachability graph, memoised per model for THIS
+        # request (rebuilt fresh each top-level call; a re-anchored re-entry on
+        # the same model reuses it). See _non_fanning_adjacency.
+        self._nf_adj_cache = {}
         # Refactor Phase 3 — compile-time relation cache: physical relation SQL is
         # rendered per-request from the CURRENT DatasetTable definition in THIS
         # engine's dialect (see _relation_sql_for_view), memoised per table id.
@@ -545,6 +549,21 @@ class SemanticQueryEngine:
         # (no group dims) + filters (EXISTS, not a grouping JOIN) are unaffected.
         if not self._isolation_active:
             self._validate_group_grain(dimensions, pivots, measures)
+            # ── DIMS-ONLY multi-fact fan-out guard (PowerBI parity) ──────────
+            # Every measure guard above gates on `measures`, so a chart with NO
+            # measure (a Table / list that just SELECTs columns) slips through:
+            # the normal build below flat-LEFT-JOINs every dim view, and if two
+            # of them are DIFFERENT facts joined only through a shared dim
+            # (chasm), the join fans the base rows into their cartesian product
+            # (n×m rows) — the "n-n" a DA sees when pulling raw columns from two
+            # fact tables into one table. With no measure the BASE view IS the
+            # grain, so every dim/pivot view must be M:1-reachable from it
+            # (itself, or a star/snowflake spoke); a view reachable only via a
+            # 1:N hop is another fact → fail loud (same policy as the measure
+            # paths) rather than render duplicated rows. Single-fact tables and
+            # single-table selects stay safe (all views M:1-reachable).
+            if not measures and (dimensions or pivots):
+                self._validate_dims_only_grain(explore.base_view_name, dimensions, pivots)
 
         # Fetch pivot values if pivoting
         pivot_values = []
@@ -4391,71 +4410,134 @@ class SemanticQueryEngine:
                     f"Data Model, hoặc bỏ measure khỏi chart."
                 )
 
+    def _validate_dims_only_grain(self, base_view_name, dimensions, pivots) -> None:
+        """STRICT grain guard for a MEASURE-LESS chart (Table / list). With no
+        measure the base view defines the row grain; every dim/pivot view must
+        be M:1-reachable from it. A dim on ANOTHER fact (reachable only via a
+        1:N hop through a shared dim) would force a fan-out JOIN that multiplies
+        the rows into a cartesian product. Fail loud rather than render the
+        duplicated ("n-n") rows. Single-fact / single-table selects → every view
+        is M:1-reachable → no-op. See the call site in ``generate_sql``."""
+        if not base_view_name:
+            return
+        group_views: set[str] = set()
+        for ref in list(dimensions or []) + list(pivots or []):
+            try:
+                v = self._parse_field_ref(ref)[0]
+            except Exception:
+                continue
+            if v:
+                group_views.add(v)
+        if not group_views:
+            return
+        safe = self._m1_reachable_views(base_view_name) | {base_view_name}
+        unsafe = sorted(v for v in group_views if v not in safe)
+        if unsafe:
+            raise ValueError(
+                f"Các cột {unsafe} thuộc bảng fact khác — không có đường M:1 từ "
+                f"bảng gốc '{base_view_name}'. Ghép cột từ nhiều bảng fact vào MỘT "
+                f"bảng/list (không có measure) sẽ JOIN chéo qua shared dim (chasm) "
+                f"→ nhân dòng (fan-out), ra số/hàng sai. Hãy: thêm measure để engine "
+                f"tách theo từng fact, tách thành nhiều chart, hoặc chỉ chọn cột từ "
+                f"MỘT bảng fact + các bảng dim của nó."
+            )
+
+    def _non_fanning_adjacency(self) -> dict[str, set[str]]:
+        """The model's CANONICAL non-fanning reachability graph, built ONCE.
+
+        A directed edge ``X -> Y`` means: joining from ``X`` to ``Y`` maps each
+        ``X`` row to AT MOST ONE ``Y`` row (no fan-out). So a measure at ``X``'s
+        grain may be grouped / sliced by a dimension on ``Y``, a filter on ``Y``
+        structurally reaches ``X``'s grain, and a multi-fact stitch may relate
+        the two — all consumed via :meth:`_m1_reachable_views`.
+
+        Direction is decided by CARDINALITY ALONE — the single source of truth —
+        and is INDEPENDENT of which side the modeller drew the relationship /
+        which explore physically stores the join:
+
+          * ``many_to_one`` (from=N -> to=1): ``from -> to``
+          * ``one_to_one``:                   ``from -> to`` AND ``to -> from``
+            — 1:1 is non-fanning in BOTH directions. (BUGFIX 2026-07-23: the old
+            forward-only walk read only the join's authored explore, so a 1:1
+            was reachable one way and "unrelated" the other → Measure/grain/
+            filter results depended on the draw direction. See regression
+            ``test_one_to_one_direction_agnostic``.)
+          * ``one_to_many`` (from=1 -> to=N): ``to -> from`` (the MANY side
+            reaches the ONE side; the authored from->to would fan out).
+          * ``many_to_many``: NO edge (not non-fanning-safe either way).
+          * empty / unknown cardinality: NO edge (STRICT PowerBI parity — never
+            guessed M:1; the caller fails loud so the modeller declares it).
+
+        Inactive joins are skipped (invisible to ``SemanticJoinResolver`` too).
+        This is a STRUCTURAL graph only — it is deliberately SEPARATE from
+        cross-filter propagation direction (``cross_filter`` single/both), which
+        must never change structural measure/grain safety.
+        """
+        model = self._model
+        model_id = getattr(model, "id", None)
+        cache = getattr(self, "_nf_adj_cache", None)
+        if cache is None:
+            cache = self._nf_adj_cache = {}
+        if model_id in cache:
+            return cache[model_id]
+
+        adj: dict[str, set[str]] = {}
+
+        def _link(a: str, b: str) -> None:
+            if a and b and a != b:
+                adj.setdefault(a, set()).add(b)
+
+        for explore in (getattr(model, "explores", None) or []):
+            base = str(getattr(explore, "base_view_name", "") or "").strip()
+            for j in (getattr(explore, "joins", None) or []):
+                if not isinstance(j, dict) or j.get("is_active") is False:
+                    continue
+                frm = str(j.get("from_view") or base or "").strip()
+                to = str(
+                    j.get("view") or j.get("to_view") or j.get("target") or j.get("name") or ""
+                ).strip()
+                if not frm or not to:
+                    continue
+                # CARDINALITY first (canonical Phase-1 field the resolver reads);
+                # legacy `relationship`/`type` only as fallback.
+                card = str(
+                    j.get("cardinality") or j.get("relationship") or j.get("type") or ""
+                ).strip().lower().replace("-", "_").replace(" ", "_")
+                if card == "many_to_one":
+                    _link(frm, to)
+                elif card == "one_to_one":
+                    _link(frm, to)
+                    _link(to, frm)
+                elif card == "one_to_many":
+                    _link(to, frm)
+                # many_to_many / unknown → no non-fanning edge (fail-loud upstream)
+
+        cache[model_id] = adj
+        return adj
+
     def _m1_reachable_views(self, fact: str) -> set[str]:
-        """Views reachable from ``fact`` by following the join graph FORWARD
-        (transitively) along non-fanning edges — every hop maps a ``fact`` row
-        to a SINGLE target row.
+        """Views NON-FANNING-reachable from ``fact`` (transitively) over the
+        canonical :meth:`_non_fanning_adjacency` graph — every hop maps a
+        ``fact`` row to a SINGLE target row.
 
         A group dimension on such a view is safe to aggregate ``fact``'s
         measures by, including SNOWFLAKE dims (sales → product → category, all
-        many-to-one). A dimension that lives on ANOTHER FACT is NOT reached:
-        the forward graph only contains ``fact → dim → parent-dim`` edges; an
-        other fact joins TO a shared dim (the reverse edge lives in that fact's
-        own explore), so reaching it would require a one-to-many hop (a chasm)
-        which we never traverse.
+        many-to-one) and a 1:1 partner in EITHER draw direction. A dimension on
+        ANOTHER FACT (reachable only via a 1:N / chasm hop) is NOT reached, so
+        the caller fails loud instead of fanning out.
 
-        Strictly better than ``_direct_join_views`` (one hop — too strict for
-        snowflakes) and bidirectional ``reachable_nodes`` (walks 1:N edges, so
-        it treats chasm-reachable facts as related → silent fan-out).
+        Name kept for back-compat (all consumers call it); the semantics are now
+        cardinality-symmetric for 1:1 rather than authored-direction-only.
         """
-        model_id = getattr(self._model, "id", None)
-        _M1 = {"many_to_one", "one_to_one"}
+        adj = self._non_fanning_adjacency()
         seen: set[str] = {fact}
         frontier: list[str] = [fact]
         while frontier:
             cur = frontier.pop()
-            exp = self.db.query(SemanticExplore).filter(
-                SemanticExplore.base_view_name == cur,
-                SemanticExplore.model_id == model_id,
-            ).first()
-            for j in (getattr(exp, "joins", None) or []):
-                if not isinstance(j, dict):
-                    continue
-                # INACTIVE joins are invisible to the SemanticJoinResolver
-                # (skipped at graph construction), so the grain guard + measure
-                # isolation MUST ignore them too — otherwise a dim reachable ONLY
-                # via an inactive edge is wrongly classified "M:1-safe", and the
-                # isolation logic picks a path the query builder can't/ won't
-                # render (loud error at best, wrong-number isolation decision at
-                # worst). Default is active when the key is absent (legacy joins).
-                if j.get("is_active") is False:
-                    continue
-                # Semantic-audit 2026-07 (#9): CARDINALITY first — it is the
-                # canonical Phase-1 field and what SemanticJoinResolver reads;
-                # legacy `relationship` is only a fallback. Reading relationship
-                # first classified a join stored with divergent fields
-                # (cardinality=1:N, relationship left at its m2o default) as
-                # safe M:1 → silent fan-out double-count.
-                card = str(
-                    j.get("cardinality") or j.get("relationship") or j.get("type") or ""
-                ).strip().lower().replace("-", "_").replace(" ", "_")
-                # STRICT (PowerBI parity): traverse ONLY an EXPLICITLY
-                # many_to_one / one_to_one hop. An empty / unknown / garbage
-                # cardinality is NOT assumed M:1-safe — on a galaxy schema a
-                # missing-cardinality edge can fan out (or reach another fact),
-                # so guessing M:1 risks a silently-wrong number. Unknown →
-                # NOT reachable → the caller (re-anchor / stitch) fails loud,
-                # prompting the modeller to DECLARE the relationship in the Data
-                # Model rather than the engine guessing it. (generate-model
-                # backfills cardinality, so real explores carry explicit values.)
-                if card not in _M1:
-                    continue
-                tgt = str(
-                    j.get("view") or j.get("to_view") or j.get("target") or j.get("name") or ""
-                ).strip()
-                if tgt and tgt not in seen:
-                    seen.add(tgt)
-                    frontier.append(tgt)
+            for nxt in adj.get(cur, ()):  # non-fanning neighbours only
+                if nxt not in seen:
+                    seen.add(nxt)
+                    frontier.append(nxt)
         return seen
     
     def _render_sql_template(self, template: str, view_alias: str) -> str:

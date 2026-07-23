@@ -105,6 +105,7 @@ export interface TableSummaryRowConfig {
 
 export type ChartBenchmarkLineStyle = 'solid' | 'dashed';
 export type KpiGoalDirection = 'up' | 'down';
+export type KpiBackgroundMode = 'auto' | 'none' | 'accent' | 'status';
 
 // Benchmark line aggregate (dynamic value computed over the plotted data — like
 // a Tableau/PBI reference line). `percentile` uses `percentile` (0–100).
@@ -144,6 +145,7 @@ export interface KpiValueColorRule {
   operator: '>' | '<' | '=' | '>=' | '<=' | '!=';
   value: number;
   color: string;
+  backgroundColor?: string;
   label?: string;
   /**
    * Dynamic threshold source:

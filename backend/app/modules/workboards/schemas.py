@@ -266,6 +266,17 @@ class FormField(BaseModel):
         default=None, ge=1, le=50,
         description="widget=enum_list: max number of selected chips.",
     )
+    enum_list_style: Optional[Literal["chips", "dropdown", "checkboxes"]] = Field(
+        default="chips",
+        description="widget=enum_list: render as chips, dropdown, or checkbox list.",
+    )
+    searchable: Optional[Literal["auto", "always", "never"]] = Field(
+        default="auto",
+        description=(
+            "widget=select/lookup/enum_list: show an in-dropdown search box. "
+            "'auto' = only when the option list is long; 'always'/'never' force it."
+        ),
+    )
     # ── QR display (widget='qr') — renders a QR image, never writes the column ──
     qr_source_column: Optional[str] = Field(
         default=None,
@@ -792,6 +803,28 @@ class GeocodeConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class RelatedRecordConfig(BaseModel):
+    """Logical 1:N relation flow owned by a parent form.
+
+    This stays screen/table based instead of requiring a physical datasource FK,
+    so it works for SQL sources and Google Sheets alike.
+    """
+
+    id: str = Field(..., min_length=1, max_length=64)
+    label: Optional[str] = Field(default=None, max_length=120)
+    child_screen_id: str = Field(..., min_length=1, max_length=64)
+    parent_key_column: str = Field(..., min_length=1, max_length=120)
+    child_foreign_key_column: str = Field(..., min_length=1, max_length=120)
+    allow_multiple: bool = True
+    show_existing: bool = True
+    allow_add_after_save: bool = True
+    keep_parent_context: bool = True
+    display_columns: List[str] = Field(default_factory=list)
+    finish_screen_id: Optional[str] = Field(default=None, max_length=64)
+
+    model_config = ConfigDict(extra="forbid")
+
+
 class FormScreenSpec(BaseModel):
     """A data-entry screen bound to one dataset table.
 
@@ -804,6 +837,14 @@ class FormScreenSpec(BaseModel):
     fields: List[FormField] = Field(default_factory=list)
     submit_label: Optional[str] = None
     after_submit: Optional[ScreenAction] = None
+    related_records: List[RelatedRecordConfig] = Field(
+        default_factory=list,
+        description=(
+            "Parent-child entry flows. After saving this form, the runtime can "
+            "open a child screen while the backend injects the child FK from a "
+            "trusted parent context."
+        ),
+    )
     initial_values: Dict[str, Any] = Field(
         default_factory=dict,
         description="Per-column defaults; supports {{app_user.x}} / {{today}} placeholders.",
@@ -1081,6 +1122,51 @@ class CalendarConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class RouteSelectionBudget(BaseModel):
+    """Constrained multi-select overlay for a route_map screen (generic).
+
+    As stops are selected (list checkbox or map marker), the runtime sums
+    ``value_column`` over the selection and compares it to ``limit``. Over the
+    limit → the budget bar turns red and (when ``block_when_over``) the confirm
+    button is disabled. Reusable for any "pick items under a cap" case: truck
+    load (kg), order value (₫), pallet/headcount — not tied to any one app.
+    """
+
+    value_column: str = Field(
+        ..., min_length=1, description="Numeric column summed over the selected stops."
+    )
+    limit: Optional[str] = Field(
+        default=None,
+        description=(
+            "Cap: a static number (e.g. '2000') OR a {{shared.x}} placeholder resolved "
+            "from the carried context (e.g. the chosen vehicle's capacity). "
+            "Empty = show the running total only, no red/block."
+        ),
+    )
+    unit: Optional[str] = Field(
+        default=None, max_length=16, description="Unit shown next to totals (kg, ₫, ...)."
+    )
+    label: Optional[str] = Field(
+        default=None, max_length=60, description="Budget bar label. Defaults to 'Đã chọn'."
+    )
+    block_when_over: bool = Field(
+        default=True,
+        description="Disable the confirm button while the selected sum exceeds the limit.",
+    )
+    action_label: Optional[str] = Field(
+        default=None, max_length=60, description="Confirm button label. Defaults to 'Xác nhận'."
+    )
+    action_go_to_screen: Optional[str] = Field(
+        default=None,
+        description=(
+            "Screen opened on confirm, carrying selected_count + <value_column>_total in "
+            "shared context. Empty = no button (budget shown as a red warning only)."
+        ),
+    )
+
+    model_config = ConfigDict(extra="forbid")
+
+
 class RouteMapConfig(BaseModel):
     """Route/map layout for a Table screen when ``display_mode='route_map'``.
 
@@ -1141,6 +1227,10 @@ class RouteMapConfig(BaseModel):
     )
     show_side_panel: bool = Field(default=True, description="Show ordered stop list next to the map.")
     side_panel_title: Optional[str] = Field(default=None, max_length=80)
+    selection_budget: Optional[RouteSelectionBudget] = Field(
+        default=None,
+        description="Optional constrained multi-select overlay: pick stops under a value cap.",
+    )
 
     model_config = ConfigDict(extra="forbid")
 
@@ -2027,6 +2117,14 @@ class AutoNumberConfig(BaseModel):
     is the safest default — the sequence keeps growing forever.
     """
 
+    table_id: Optional[int] = Field(
+        default=None,
+        gt=0,
+        description=(
+            "Optional dataset table scope. When omitted, the rule is legacy "
+            "workboard-wide and matches any insert carrying this column name."
+        ),
+    )
     column: str = Field(..., min_length=1, max_length=120)
     pattern: str = Field(
         ...,

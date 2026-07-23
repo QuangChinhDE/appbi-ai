@@ -64,7 +64,8 @@ jobs:
             tests/test_filter_entry_schemas.py \
             tests/test_phase1_relationship_metadata.py \
             tests/test_distinct_self_target.py \
-            tests/test_filter_layered_merge.py
+            tests/test_filter_layered_merge.py \
+            tests/test_non_fanning_reachability.py
 
   # ── Tier 2: integration (golden replay on a real Postgres) ─────────────────
   integration-golden:

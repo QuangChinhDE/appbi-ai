@@ -19,6 +19,7 @@ const MAX_NOTIFICATIONS = 100;
 let isLoaded = false;
 let notifications: AppNotification[] = [];
 const listeners = new Set<() => void>();
+const EMPTY_NOTIFICATIONS: AppNotification[] = [];
 
 function canUseStorage(): boolean {
   return typeof window !== 'undefined' && typeof window.localStorage !== 'undefined';
@@ -179,7 +180,7 @@ function getSnapshot() {
 }
 
 function getServerSnapshot() {
-  return [] as AppNotification[];
+  return EMPTY_NOTIFICATIONS;
 }
 
 export function useNotifications() {

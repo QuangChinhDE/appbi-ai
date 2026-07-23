@@ -1,89 +1,80 @@
 'use client';
 
-/**
- * Floating offline/sync status bar for the mini-app runtime.
- *
- * Shows the number of submits queued offline + a manual "Đồng bộ" action, and
- * auto-syncs when the browser fires `online`, on a periodic retry, and when a
- * form is saved offline (`appbi-queue-changed`).
- *
- * The setup effect runs ONCE on mount. The auto-sync trigger functions are held
- * in refs (not effect deps) so toggling `syncing`/`pending` state never tears
- * down + re-arms the listeners — an earlier version put `doSync` in the deps and
- * span into a ~2/sec retry loop while offline (battery/network killer on mobile).
- */
+/** Floating queue status and retry control for the mini-app runtime. */
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { CheckCircle2, Loader2, RefreshCw, WifiOff } from 'lucide-react';
-import { pendingCount } from '@/lib/offline/queue';
+import { AlertTriangle, CheckCircle2, Loader2, RefreshCw, WifiOff } from 'lucide-react';
+import { queueStats } from '@/lib/offline/queue';
 import { syncSubmits } from '@/lib/offline/sync';
 
 export default function OfflineBar() {
   const [pending, setPending] = useState(0);
+  const [failed, setFailed] = useState(0);
   const [syncing, setSyncing] = useState(false);
   const [flash, setFlash] = useState<string | null>(null);
   const [offline, setOffline] = useState(false);
-
-  // Guard against overlapping syncs without making `doSync` depend on render
-  // state (which would change its identity and retrigger the setup effect).
   const syncingRef = useRef(false);
 
-  const doSync = useCallback(async () => {
+  const refreshStats = useCallback(async () => {
+    const stats = await queueStats();
+    setPending(stats.total);
+    setFailed(stats.failed);
+    return stats;
+  }, []);
+
+  const doSync = useCallback(async (retryErrors = false) => {
     if (syncingRef.current) return;
-    const before = await pendingCount();
-    setPending(before);
-    if (before === 0) return;
+    const before = await refreshStats();
+    if (before.total === 0) return;
     syncingRef.current = true;
     setSyncing(true);
     try {
-      const r = await syncSubmits();
-      setPending(r.remaining);
-      setOffline(r.stoppedOffline);
-      if (r.synced > 0) {
-        setFlash(`Đã đồng bộ ${r.synced} bản ghi`);
+      const result = await syncSubmits({ retryErrors });
+      await refreshStats();
+      setOffline(result.stoppedOffline);
+      if (result.synced > 0) {
+        setFlash(`Đã đồng bộ ${result.synced} bản ghi`);
         setTimeout(() => setFlash(null), 3000);
       }
+    } catch {
+      await refreshStats();
+      setOffline(true);
     } finally {
       syncingRef.current = false;
       setSyncing(false);
     }
-  }, []);
+  }, [refreshStats]);
 
-  // Keep a stable ref to the latest doSync so the mount-once effect can call it
-  // without listing it as a dependency.
   const doSyncRef = useRef(doSync);
   doSyncRef.current = doSync;
 
   useEffect(() => {
     let cancelled = false;
-    const sync = () => doSyncRef.current();
+    const sync = () => void doSyncRef.current(false);
     const refresh = async () => {
-      const n = await pendingCount();
-      if (!cancelled) setPending(n);
+      const stats = await queueStats();
+      if (!cancelled) {
+        setPending(stats.total);
+        setFailed(stats.failed);
+      }
+      return stats;
     };
-
-    refresh();
-    const onChanged = () => {
-      refresh();
-      sync();
-    };
+    const onChanged = () => void refresh();
     const onOnline = () => sync();
+
+    void refresh();
     window.addEventListener('appbi-queue-changed', onChanged);
     window.addEventListener('online', onOnline);
-    // Periodic retry while items are queued (covers flaky / partial connectivity).
-    const iv = setInterval(async () => {
-      const n = await pendingCount();
-      if (cancelled) return;
-      setPending(n);
-      if (n > 0) sync();
+    const interval = setInterval(async () => {
+      const stats = await refresh();
+      if (!cancelled && stats.pending > 0) sync();
     }, 30000);
-    // Attempt once on mount in case we reopened with a backlog + connectivity.
     sync();
 
     return () => {
       cancelled = true;
       window.removeEventListener('appbi-queue-changed', onChanged);
       window.removeEventListener('online', onOnline);
-      clearInterval(iv);
+      clearInterval(interval);
     };
   }, []);
 
@@ -98,17 +89,24 @@ export default function OfflineBar() {
         </div>
       ) : (
         <div className="pointer-events-auto flex items-center gap-3 rounded-full border border-amber-200 bg-white px-4 py-2 text-sm shadow-lg">
-          <span className="flex items-center gap-1.5 font-semibold text-amber-700">
-            {offline ? <WifiOff className="h-4 w-4" /> : <CheckCircle2 className="h-4 w-4 text-amber-500" />}
-            {pending} bản ghi chờ gửi
+          <span className={`flex items-center gap-1.5 font-semibold ${failed > 0 ? 'text-rose-700' : 'text-amber-700'}`}>
+            {failed > 0 ? (
+              <AlertTriangle className="h-4 w-4" />
+            ) : offline ? (
+              <WifiOff className="h-4 w-4" />
+            ) : (
+              <CheckCircle2 className="h-4 w-4 text-amber-500" />
+            )}
+            {failed > 0 ? `${failed} lỗi, ${pending - failed} chờ gửi` : `${pending} bản ghi chờ gửi`}
           </span>
           <button
-            onClick={() => doSyncRef.current()}
+            type="button"
+            onClick={() => void doSyncRef.current(true)}
             disabled={syncing}
             className="flex items-center gap-1.5 rounded-full bg-[#0D3B7A] px-3 py-1 text-xs font-semibold text-white disabled:opacity-60"
           >
             {syncing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
-            {syncing ? 'Đang đồng bộ…' : 'Đồng bộ'}
+            {syncing ? 'Đang đồng bộ...' : failed > 0 ? 'Thử lại' : 'Đồng bộ'}
           </button>
         </div>
       )}

@@ -506,16 +506,19 @@ class WorkboardOpLog(Base):
     """Idempotency log for client-submitted write operations.
 
     Each offline form submit carries a client-generated ``op_id``. We INSERT
-    the op_id here BEFORE writing the data row; a replayed submit (e.g. the
-    response was lost after a successful insert) hits the primary-key conflict
-    and is treated as already-done — so a queued submit can never be inserted
-    twice on reconnect.
+    the op_id here BEFORE writing the data row and cache the successful result.
+    A replay returns the original row/PK, allowing dependent offline writes to
+    resolve generated keys without inserting the parent twice.
     """
 
     __tablename__ = "workboard_op_log"
 
     op_id = Column(String(64), primary_key=True)
     workboard_id = Column(Integer, nullable=True, index=True)
+    screen_id = Column(String(255), nullable=True)
+    actor_key = Column(String(255), nullable=True)
+    request_fingerprint = Column(String(64), nullable=True)
+    result_payload = Column(JSONB, nullable=True)
     created_at = Column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

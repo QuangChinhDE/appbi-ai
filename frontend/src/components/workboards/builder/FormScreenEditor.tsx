@@ -3,7 +3,7 @@
  */
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   ArrowDown,
   ArrowUp,
@@ -17,6 +17,7 @@ import {
   FileInput,
   GripVertical,
   LayoutList,
+  Link2,
   Loader2,
   Plus,
   Route,
@@ -45,7 +46,7 @@ import {
   BuilderTableMissingBanner,
   DataSourcePicker,
 } from './BuilderChrome';
-import type { FormFieldSpec, ScreenSpec } from './types';
+import type { FormFieldSpec, RelatedRecordConfigSpec, ScreenSpec } from './types';
 import { INPUT, Lbl } from './ScreenEditor';
 import { workboardApi } from '@/lib/api/workboards';
 
@@ -70,7 +71,7 @@ interface Props {
 type FormSpec = NonNullable<ScreenSpec['form']>;
 type FormPage = NonNullable<FormSpec['pages']>[number];
 type LookupRuntime = NonNullable<FormFieldSpec['lookup']>;
-type FormActiveItem = 'layout' | 'submit' | 'initial' | 'ocr' | `field:${number}`;
+type FormActiveItem = 'layout' | 'submit' | 'related' | 'initial' | 'ocr' | `field:${number}`;
 
 type OcrSpec = NonNullable<FormSpec['ocr']>;
 
@@ -86,8 +87,7 @@ const WIDGETS: { value: FormFieldSpec['widget']; label: string }[] = [
   { value: 'text', label: 'Text' },
   { value: 'textarea', label: 'Long text' },
   { value: 'number', label: 'Number' },
-  { value: 'select', label: 'Select (static)' },
-  { value: 'lookup', label: 'Select (from table)' },
+  { value: 'select', label: 'Select' },
   { value: 'date', label: 'Date' },
   { value: 'datetime', label: 'Date + time' },
   { value: 'checkbox', label: 'On / off' },
@@ -102,7 +102,7 @@ const WIDGETS: { value: FormFieldSpec['widget']; label: string }[] = [
   { value: 'computed', label: 'Tính tự động (công thức)' },
   { value: 'status', label: 'Trạng thái / duyệt' },
   // ── Rich input types ──────────────────────────────────────────────
-  { value: 'enum_list', label: 'Chọn nhiều (chips)' },
+  { value: 'enum_list', label: 'Chọn nhiều' },
   { value: 'rating', label: 'Đánh giá (sao)' },
   { value: 'slider', label: 'Thanh trượt (slider)' },
   { value: 'email', label: 'Email' },
@@ -117,6 +117,323 @@ const WIDGETS: { value: FormFieldSpec['widget']; label: string }[] = [
   { value: 'video', label: 'Video (clip ngắn)' },
   { value: 'qr', label: 'Mã QR (hiển thị / in tem)' },
 ];
+
+// ── Field-type picker taxonomy ────────────────────────────────────────────
+// A user-facing categorisation LAYERED OVER the runtime widget enum (the enum
+// is unchanged; this only groups + renames for the builder picker). `lookup`
+// is not its own entry — it is `select` with source = "from table" (the
+// "Nguồn lựa chọn" axis flips the widget), so CHOICE reads as one concept.
+const FIELD_TYPE_GROUPS: {
+  category: string;
+  items: Array<{ widget: FormFieldSpec['widget']; label: string; hint?: string }>;
+}[] = [
+  {
+    category: 'Văn bản',
+    items: [
+      { widget: 'text', label: 'Text' },
+      { widget: 'textarea', label: 'Văn bản dài' },
+      { widget: 'email', label: 'Email' },
+      { widget: 'phone', label: 'Số điện thoại' },
+      { widget: 'url', label: 'Đường dẫn (URL)' },
+      { widget: 'rich_text', label: 'Văn bản định dạng (Markdown)' },
+    ],
+  },
+  {
+    category: 'Số',
+    items: [
+      { widget: 'number', label: 'Số' },
+      { widget: 'currency', label: 'Tiền tệ' },
+      { widget: 'percent', label: 'Phần trăm (%)' },
+      { widget: 'slider', label: 'Thanh trượt' },
+    ],
+  },
+  {
+    category: 'Lựa chọn',
+    items: [
+      { widget: 'select', label: 'Chọn một', hint: 'tĩnh hoặc từ bảng' },
+      { widget: 'enum_list', label: 'Chọn nhiều' },
+    ],
+  },
+  {
+    category: 'Ngày & giờ',
+    items: [
+      { widget: 'date', label: 'Ngày' },
+      { widget: 'datetime', label: 'Ngày + giờ' },
+      { widget: 'time', label: 'Giờ' },
+      { widget: 'duration', label: 'Khoảng thời gian' },
+    ],
+  },
+  {
+    category: 'Hình ảnh & Tệp',
+    items: [
+      { widget: 'image', label: 'Ảnh (1 ảnh)' },
+      { widget: 'images', label: 'Nhiều ảnh' },
+      { widget: 'file', label: 'Tệp đính kèm' },
+      { widget: 'signature', label: 'Chữ ký tay' },
+      { widget: 'audio', label: 'Ghi âm' },
+      { widget: 'video', label: 'Video (clip ngắn)' },
+    ],
+  },
+  {
+    category: 'Vị trí',
+    items: [
+      { widget: 'geopoint', label: 'Vị trí GPS' },
+      { widget: 'map', label: 'Chọn vùng trên bản đồ' },
+    ],
+  },
+  {
+    category: 'Giá trị tính toán',
+    items: [{ widget: 'computed', label: 'Tính tự động (công thức)' }],
+  },
+  {
+    category: 'Quy trình',
+    items: [{ widget: 'status', label: 'Trạng thái / duyệt', hint: 'phân quyền + luồng chuyển' }],
+  },
+  {
+    category: 'Nhập chuyên biệt',
+    items: [{ widget: 'barcode', label: 'Quét mã (Barcode/QR)', hint: 'quét để NHẬP giá trị' }],
+  },
+  {
+    category: 'Hiển thị / Output',
+    items: [{ widget: 'qr', label: 'Mã QR (in tem)', hint: 'SINH mã để hiển thị/in' }],
+  },
+  {
+    category: 'Khác',
+    items: [
+      { widget: 'checkbox', label: 'Bật / tắt' },
+      { widget: 'rating', label: 'Đánh giá (sao)' },
+      { widget: 'color', label: 'Màu sắc' },
+    ],
+  },
+];
+
+const WIDGET_LABEL: Record<string, string> = Object.fromEntries(
+  FIELD_TYPE_GROUPS.flatMap((g) => g.items.map((it) => [it.widget as string, it.label])),
+);
+
+// Searchable, categorised replacement for the flat 31-item "Field type" select.
+// Emits a widget; the caller maps select↔lookup / enum_list defaults exactly as
+// the old <select> did, so nothing downstream changes.
+function FieldTypePicker({
+  widget,
+  onSelect,
+}: {
+  widget: FormFieldSpec['widget'];
+  onSelect: (w: FormFieldSpec['widget']) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [q, setQ] = useState('');
+  const ref = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (event: MouseEvent) => {
+      if (ref.current && !ref.current.contains(event.target as Node)) {
+        setOpen(false);
+        setQ('');
+      }
+    };
+    document.addEventListener('mousedown', onDoc);
+    return () => document.removeEventListener('mousedown', onDoc);
+  }, [open]);
+  // lookup collapses to the 'select' entry for display (source axis differentiates).
+  const shown = widget === 'lookup' ? 'select' : widget;
+  const currentLabel = WIDGET_LABEL[shown as string] || String(shown);
+  const ql = q.trim().toLowerCase();
+  const groups = FIELD_TYPE_GROUPS.map((g) => ({
+    category: g.category,
+    items: ql
+      ? g.items.filter(
+          (it) =>
+            it.label.toLowerCase().includes(ql) ||
+            g.category.toLowerCase().includes(ql) ||
+            (it.hint || '').toLowerCase().includes(ql),
+        )
+      : g.items,
+  })).filter((g) => g.items.length > 0);
+  const pick = (w: FormFieldSpec['widget']) => {
+    onSelect(w);
+    setOpen(false);
+    setQ('');
+  };
+  return (
+    <div className="relative" ref={ref}>
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className={`${INPUT} flex items-center justify-between text-left`}
+      >
+        <span className="truncate">{currentLabel}</span>
+        <ChevronDown className="h-4 w-4 shrink-0 text-text-tertiary" />
+      </button>
+      {open && (
+        <div className="absolute z-30 mt-1 w-full rounded-md border border-[rgb(var(--border-line))] bg-surface-1 shadow-lg">
+          <div className="border-b border-[rgb(var(--border-line))] p-2">
+            <input
+              autoFocus
+              value={q}
+              onChange={(event) => setQ(event.target.value)}
+              placeholder="Tìm loại trường..."
+              className={INPUT}
+            />
+          </div>
+          <div className="max-h-72 overflow-auto p-1">
+            {groups.length === 0 ? (
+              <span className="block px-2 py-2 text-caption text-text-tertiary">
+                Không có kết quả.
+              </span>
+            ) : (
+              groups.map((g) => (
+                <div key={g.category} className="mb-1">
+                  <div className="px-2 py-1 text-tiny font-emphasis uppercase tracking-wider text-text-quaternary">
+                    {g.category}
+                  </div>
+                  {g.items.map((it) => {
+                    const active = it.widget === shown;
+                    return (
+                      <button
+                        key={it.widget}
+                        type="button"
+                        onClick={() => pick(it.widget)}
+                        className={`block w-full truncate rounded px-2 py-1.5 text-left text-caption hover:bg-surface-2 ${
+                          active ? 'bg-brand/10 text-brand' : 'text-text-primary'
+                        }`}
+                      >
+                        <span className="font-medium">{it.label}</span>
+                        {it.hint && (
+                          <span className="ml-1 text-tiny text-text-tertiary">· {it.hint}</span>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Infer a sensible default field type from a source column's data type, so
+// +Add Field doesn't silently make everything Text.
+function inferWidgetFromColumnType(type?: string): FormFieldSpec['widget'] {
+  const t = (type || '').toLowerCase();
+  if (/bool/.test(t)) return 'checkbox';
+  if (/timestamp|datetime/.test(t)) return 'datetime';
+  if (/date/.test(t)) return 'date';
+  if (/(^|[^a-z])time([^a-z]|$)/.test(t)) return 'time';
+  if (/int|numeric|decimal|float|double|real|money|number|serial/.test(t)) return 'number';
+  return 'text';
+}
+
+// +Add Field: open a source-column picker first (P0 #6). Picking a column
+// infers its field type; a manual "custom field" escape hatch remains for
+// forms that need a field not bound 1:1 to a source column.
+function AddFieldMenu({
+  columns,
+  usedColumns,
+  onAddColumn,
+  onAddCustom,
+}: {
+  columns: { name: string; type?: string }[];
+  usedColumns: Set<string>;
+  onAddColumn: (col: { name: string; type?: string }) => void;
+  onAddCustom: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [q, setQ] = useState('');
+  const ref = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (event: MouseEvent) => {
+      if (ref.current && !ref.current.contains(event.target as Node)) {
+        setOpen(false);
+        setQ('');
+      }
+    };
+    document.addEventListener('mousedown', onDoc);
+    return () => document.removeEventListener('mousedown', onDoc);
+  }, [open]);
+  const available = columns.filter((c) => !usedColumns.has(c.name));
+  const ql = q.trim().toLowerCase();
+  const filtered = ql ? available.filter((c) => c.name.toLowerCase().includes(ql)) : available;
+  return (
+    <div className="relative" ref={ref}>
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="rounded p-1 text-text-tertiary hover:bg-surface-2 hover:text-brand"
+        title="Add field"
+      >
+        <Plus className="h-3.5 w-3.5" />
+      </button>
+      {open && (
+        <div className="absolute right-0 top-full z-50 mt-1 w-80 max-w-[calc(100vw-2rem)] overflow-hidden rounded-md border border-[rgb(var(--border-line))] bg-surface-1 shadow-popover lg:left-0 lg:right-auto">
+          {columns.length > 0 && (
+            <div className="border-b border-[rgb(var(--border-line))] p-2">
+              <input
+                autoFocus
+                value={q}
+                onChange={(event) => setQ(event.target.value)}
+                placeholder="Tìm cột nguồn..."
+                className={INPUT}
+              />
+            </div>
+          )}
+          <div className="max-h-64 overflow-auto p-1">
+            {columns.length === 0 ? (
+              <span className="block px-2 py-2 text-caption text-text-tertiary">
+                Nguồn chưa có cột — dùng trường tùy chỉnh bên dưới.
+              </span>
+            ) : available.length === 0 ? (
+              <span className="block px-2 py-2 text-caption text-text-tertiary">
+                Đã thêm hết cột nguồn.
+              </span>
+            ) : filtered.length === 0 ? (
+              <span className="block px-2 py-2 text-caption text-text-tertiary">
+                Không có cột khớp.
+              </span>
+            ) : (
+              filtered.map((c) => (
+                <button
+                  key={c.name}
+                  type="button"
+                  onClick={() => {
+                    onAddColumn(c);
+                    setOpen(false);
+                    setQ('');
+                  }}
+                  className="grid w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-3 rounded px-2 py-1.5 text-left text-caption text-text-primary hover:bg-surface-2"
+                  title={`${c.name}${c.type ? ` (${c.type})` : ''}`}
+                >
+                  <span className="min-w-0 truncate font-medium">{c.name}</span>
+                  <span className="max-w-[11rem] shrink-0 truncate text-tiny text-text-tertiary">
+                    {c.type ? `${c.type} → ` : ''}
+                    {inferWidgetFromColumnType(c.type)}
+                  </span>
+                </button>
+              ))
+            )}
+          </div>
+          <div className="border-t border-[rgb(var(--border-line))] p-1">
+            <button
+              type="button"
+              onClick={() => {
+                onAddCustom();
+                setOpen(false);
+                setQ('');
+              }}
+              className="block w-full rounded px-2 py-1.5 text-left text-caption text-text-secondary hover:bg-surface-2"
+            >
+              + Trường tùy chỉnh (không gắn cột)
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
 
 const COMMON_EXPRESSION_OPTIONS: SelectOption[] = [
   { value: '{{app_user.username}}', label: 'Signed-in user - username' },
@@ -197,6 +514,7 @@ export default function FormScreenEditor({
   );
   const pages = form.pages || [];
   const sections = form.sections || [];
+  const relatedRecords = form.related_records || [];
   const initialValues = form.initial_values || {};
   const initialEntries = Object.entries(initialValues);
   const isMultiStep = pages.length > 0;
@@ -233,15 +551,27 @@ export default function FormScreenEditor({
     updateForm({ fields: next });
   };
 
-  const addField = () => {
-    const usedColumns = new Set(fields.map((field) => field.column));
-    const unusedCol = tableCols.find((column) => !usedColumns.has(column.name));
-    const column = unusedCol?.name || `field_${fields.length + 1}`;
+  // Add a field bound to a chosen source column, inferring its type.
+  const addFieldForColumn = (col: { name: string; type?: string }) => {
     updateForm({
       fields: [
         ...fields,
-        { column, widget: 'text', label: column, required: false },
+        {
+          column: col.name,
+          widget: inferWidgetFromColumnType(col.type),
+          label: col.name,
+          required: false,
+        },
       ],
+    });
+    setActiveItem(`field:${fields.length}`);
+  };
+
+  // Escape hatch: a field not bound to a source column.
+  const addCustomField = () => {
+    const column = `field_${fields.length + 1}`;
+    updateForm({
+      fields: [...fields, { column, widget: 'text', label: column, required: false }],
     });
     setActiveItem(`field:${fields.length}`);
   };
@@ -293,6 +623,44 @@ export default function FormScreenEditor({
   const allFieldsUsed =
     fieldColumnOptions.length > 0 && fieldColumnOptions.every((column) => column in initialValues);
 
+  const addRelatedRecord = () => {
+    const child = allScreens.find(
+      (item) => item.id !== screen.id && (item.kind === 'form' || item.kind === 'table'),
+    );
+    const parentKey =
+      (screen.primary_key_columns || []).find(Boolean) || tableCols[0]?.name || '';
+    const childTable = tables.find((table) => table.id === child?.table_id);
+    const childFk =
+      childTable?.columns.find((column) => column.name === parentKey)?.name ||
+      childTable?.columns[0]?.name ||
+      parentKey;
+    const next: RelatedRecordConfigSpec = {
+      id: `related_${relatedRecords.length + 1}`,
+      label: child ? child.title : 'Related records',
+      child_screen_id: child?.id || '',
+      parent_key_column: parentKey,
+      child_foreign_key_column: childFk,
+      allow_multiple: true,
+      show_existing: true,
+      allow_add_after_save: true,
+      keep_parent_context: true,
+      display_columns: [],
+      finish_screen_id: null,
+    };
+    updateForm({ related_records: [...relatedRecords, next] });
+    setActiveItem('related');
+  };
+
+  const updateRelatedRecord = (index: number, patch: Partial<RelatedRecordConfigSpec>) => {
+    const next = [...relatedRecords];
+    next[index] = { ...next[index], ...patch };
+    updateForm({ related_records: next });
+  };
+
+  const removeRelatedRecord = (index: number) => {
+    updateForm({ related_records: relatedRecords.filter((_, itemIndex) => itemIndex !== index) });
+  };
+
   const renderInspector = () => {
     if (activeItem === 'layout') {
       return (
@@ -330,12 +698,33 @@ export default function FormScreenEditor({
       );
     }
 
+    if (activeItem === 'related') {
+      return (
+        <BuilderInspectorPanel
+          icon={<Link2 className="h-4 w-4" />}
+          title="Related records"
+          subtitle="Bind child records to the saved parent row without exposing the FK to the user."
+        >
+          <RelatedRecordsInspector
+            screen={screen}
+            allScreens={allScreens}
+            tables={tables}
+            parentColumns={tableCols.map((column) => column.name)}
+            relations={relatedRecords}
+            onAdd={addRelatedRecord}
+            onChange={updateRelatedRecord}
+            onRemove={removeRelatedRecord}
+          />
+        </BuilderInspectorPanel>
+      );
+    }
+
     if (activeItem === 'initial') {
       return (
         <BuilderInspectorPanel
           icon={<FileInput className="h-4 w-4" />}
-          title="Initial values"
-          subtitle="Pre-fill form fields when the screen opens."
+          title="Initial values (mồi cả form)"
+          subtitle="Mồi giá trị chung khi mở form mới. Ghi đè 'Default value' của từng trường; nhưng bị ghi đè bởi giá trị mang sang từ màn trước (row-action / after-submit)."
         >
           <InitialValuesInspector
             entries={initialEntries}
@@ -451,6 +840,17 @@ export default function FormScreenEditor({
               onClick={() => setActiveItem('submit')}
             />
             <BuilderNavigatorItem
+              icon={<Link2 className="h-3.5 w-3.5" />}
+              label="Related records"
+              subtitle={
+                relatedRecords.length > 0
+                  ? `${relatedRecords.length} relation${relatedRecords.length === 1 ? '' : 's'}`
+                  : 'No child flow'
+              }
+              active={activeItem === 'related'}
+              onClick={() => setActiveItem('related')}
+            />
+            <BuilderNavigatorItem
               icon={<FileInput className="h-3.5 w-3.5" />}
               label="Initial values"
               subtitle={`${initialEntries.length} preset${initialEntries.length === 1 ? '' : 's'}`}
@@ -469,14 +869,12 @@ export default function FormScreenEditor({
           <BuilderNavigatorGroup
             title={`Fields (${fields.length})`}
             action={
-              <button
-                type="button"
-                onClick={addField}
-                className="rounded p-1 text-text-tertiary hover:bg-surface-2 hover:text-brand"
-                title="Add field"
-              >
-                <Plus className="h-3.5 w-3.5" />
-              </button>
+              <AddFieldMenu
+                columns={tableCols}
+                usedColumns={new Set(fields.map((f) => f.column))}
+                onAddColumn={addFieldForColumn}
+                onAddCustom={addCustomField}
+              />
             }
           >
             {tablesLoading ? (
@@ -784,6 +1182,204 @@ function SubmitFlowInspector({
           placeholder="vd: vi_tri_gps (để trống = tắt)"
         />
       </Lbl>
+    </div>
+  );
+}
+
+function RelatedRecordsInspector({
+  screen,
+  allScreens,
+  tables,
+  parentColumns,
+  relations,
+  onAdd,
+  onChange,
+  onRemove,
+}: {
+  screen: ScreenSpec;
+  allScreens: ScreenSpec[];
+  tables: DatasetTableInfo[];
+  parentColumns: string[];
+  relations: RelatedRecordConfigSpec[];
+  onAdd: () => void;
+  onChange: (index: number, patch: Partial<RelatedRecordConfigSpec>) => void;
+  onRemove: (index: number) => void;
+}) {
+  const childScreens = allScreens.filter(
+    (item) => item.id !== screen.id && (item.kind === 'form' || item.kind === 'table'),
+  );
+  const screenById = new Map(allScreens.map((item) => [item.id, item]));
+  const tableById = new Map(tables.map((table) => [table.id, table]));
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between gap-3">
+        <div className="text-caption text-text-tertiary">
+          Use this when one parent row owns many child rows.
+        </div>
+        <BuilderActionButton onClick={onAdd}>
+          <Plus className="h-3.5 w-3.5" /> Add relation
+        </BuilderActionButton>
+      </div>
+
+      {relations.length === 0 ? (
+        <BuilderEmptyHint className="text-left">
+          No child flow yet. Add a relation to keep a parent key and bind child records automatically.
+        </BuilderEmptyHint>
+      ) : (
+        relations.map((relation, index) => {
+          const child = screenById.get(relation.child_screen_id);
+          const childTable = child ? tableById.get(child.table_id || 0) : undefined;
+          const childColumns = childTable?.columns.map((column) => column.name) || [];
+          const finishScreens = allScreens.filter((item) => item.id !== child?.id);
+          return (
+            <div
+              key={`${relation.id}:${index}`}
+              className="rounded-md border border-[rgb(var(--border-line))] bg-surface-1 p-3"
+            >
+              <div className="mb-3 flex items-center justify-between gap-2">
+                <div className="min-w-0">
+                  <div className="truncate text-caption font-medium text-text-primary">
+                    {relation.label || relation.id || 'Related records'}
+                  </div>
+                  <div className="truncate text-tiny text-text-tertiary">
+                    {relation.parent_key_column || 'parent key'} {'->'} {relation.child_foreign_key_column || 'child FK'}
+                  </div>
+                </div>
+                <BuilderIconButton
+                  onClick={() => onRemove(index)}
+                  title="Delete relation"
+                  variant="danger"
+                >
+                  <Trash2 className="h-3.5 w-3.5 text-danger" />
+                </BuilderIconButton>
+              </div>
+
+              <div className="space-y-3">
+                <div className={BUILDER_GRID_2}>
+                  <Lbl label="Relation ID">
+                    <input
+                      value={relation.id || ''}
+                      onChange={(event) =>
+                        onChange(index, {
+                          id: event.target.value.replace(/[^A-Za-z0-9_-]/g, '_'),
+                        })
+                      }
+                      className={`${INPUT} font-mono`}
+                      placeholder="production_details"
+                    />
+                  </Lbl>
+                  <Lbl label="Display label">
+                    <input
+                      value={relation.label || ''}
+                      onChange={(event) => onChange(index, { label: event.target.value || null })}
+                      className={INPUT}
+                      placeholder="Chi tiết sản lượng"
+                    />
+                  </Lbl>
+                  <Lbl label="Child screen">
+                    <select
+                      value={relation.child_screen_id || ''}
+                      onChange={(event) => {
+                        const childScreenId = event.target.value;
+                        const nextChild = screenById.get(childScreenId);
+                        const nextChildTable = nextChild ? tableById.get(nextChild.table_id || 0) : undefined;
+                        const parentKey = relation.parent_key_column || parentColumns[0] || '';
+                        const fk =
+                          nextChildTable?.columns.find((column) => column.name === parentKey)?.name ||
+                          nextChildTable?.columns[0]?.name ||
+                          relation.child_foreign_key_column ||
+                          '';
+                        onChange(index, {
+                          child_screen_id: childScreenId,
+                          child_foreign_key_column: fk,
+                        });
+                      }}
+                      className={INPUT}
+                    >
+                      <option value="">- pick a child screen -</option>
+                      {childScreens.map((item) => (
+                        <option key={item.id} value={item.id}>
+                          {item.title}
+                        </option>
+                      ))}
+                    </select>
+                  </Lbl>
+                  <Lbl label="Finish screen">
+                    <select
+                      value={relation.finish_screen_id || ''}
+                      onChange={(event) =>
+                        onChange(index, { finish_screen_id: event.target.value || null })
+                      }
+                      className={INPUT}
+                    >
+                      <option value="">Stay on child screen</option>
+                      {finishScreens.map((item) => (
+                        <option key={item.id} value={item.id}>
+                          {item.title}
+                        </option>
+                      ))}
+                    </select>
+                  </Lbl>
+                  <Lbl label="Parent key">
+                    <SingleColumnPicker
+                      sourceColumns={parentColumns}
+                      value={relation.parent_key_column || null}
+                      onChange={(next) => onChange(index, { parent_key_column: next || '' })}
+                      placeholder="Pick parent key..."
+                    />
+                  </Lbl>
+                  <Lbl label="Child foreign key">
+                    <SingleColumnPicker
+                      sourceColumns={childColumns}
+                      value={relation.child_foreign_key_column || null}
+                      onChange={(next) => onChange(index, { child_foreign_key_column: next || '' })}
+                      placeholder="Pick child FK..."
+                    />
+                  </Lbl>
+                </div>
+
+                <Lbl label="Child list display columns">
+                  <MultiColumnPicker
+                    sourceColumns={childColumns}
+                    value={relation.display_columns || []}
+                    onChange={(display_columns) => onChange(index, { display_columns })}
+                    placeholder="Pick columns to show in the child list..."
+                    emptyHint="Pick a child screen first."
+                  />
+                </Lbl>
+
+                <div className="flex flex-wrap gap-2">
+                  <ToggleChip
+                    label="Allow multiple"
+                    checked={relation.allow_multiple !== false}
+                    onChange={(allow_multiple) => onChange(index, { allow_multiple })}
+                  />
+                  <ToggleChip
+                    label="Show existing"
+                    checked={relation.show_existing !== false}
+                    onChange={(show_existing) => onChange(index, { show_existing })}
+                  />
+                  <ToggleChip
+                    label="Add after save"
+                    checked={relation.allow_add_after_save !== false}
+                    onChange={(allow_add_after_save) =>
+                      onChange(index, { allow_add_after_save })
+                    }
+                  />
+                  <ToggleChip
+                    label="Keep context"
+                    checked={relation.keep_parent_context !== false}
+                    onChange={(keep_parent_context) =>
+                      onChange(index, { keep_parent_context })
+                    }
+                  />
+                </div>
+              </div>
+            </div>
+          );
+        })
+      )}
     </div>
   );
 }
@@ -1122,6 +1718,9 @@ function FieldInspector({
   const sectionValue = field.section || '';
   const pageValue = field.page ?? null;
   const computedValue = field.computed_from_dataset || '';
+  const selectSource =
+    field.widget === 'lookup' || field.lookup?.kind === 'dataset_table' ? 'dataset_table' : 'static';
+  const enumListStyle = field.enum_list_style || 'chips';
 
   return (
     <div className="space-y-3">
@@ -1156,21 +1755,86 @@ function FieldInspector({
               className={INPUT}
             />
           </Lbl>
-          <Lbl label="Input type">
-            <select
-              value={field.widget}
-              onChange={(event) =>
-                onChange({ widget: event.target.value as FormFieldSpec['widget'] })
-              }
-              className={INPUT}
-            >
-              {WIDGETS.map((widget) => (
-                <option key={widget.value} value={widget.value}>
-                  {widget.label}
-                </option>
-              ))}
-            </select>
+          <Lbl label="Field type">
+            <FieldTypePicker
+              widget={field.widget}
+              onSelect={(widget) => {
+                if (widget === 'select') {
+                  onChange({
+                    widget: selectSource === 'dataset_table' ? 'lookup' : 'select',
+                    lookup: field.lookup || { kind: selectSource, values: [] },
+                  });
+                  return;
+                }
+                if (widget === 'enum_list') {
+                  onChange({
+                    widget,
+                    enum_list_style: field.enum_list_style || 'chips',
+                    lookup: field.lookup || { kind: 'static', values: [] },
+                  });
+                  return;
+                }
+                onChange({ widget });
+              }}
+            />
           </Lbl>
+          {(field.widget === 'select' || field.widget === 'lookup') && (
+            <Lbl label="Nguồn lựa chọn">
+              <select
+                value={selectSource}
+                onChange={(event) => {
+                  const kind = event.target.value as LookupRuntime['kind'];
+                  onChange({
+                    widget: kind === 'dataset_table' ? 'lookup' : 'select',
+                    lookup: {
+                      ...(field.lookup || { values: [] }),
+                      kind,
+                    },
+                  });
+                }}
+                className={INPUT}
+              >
+                <option value="static">Static</option>
+                <option value="dataset_table">From table</option>
+              </select>
+            </Lbl>
+          )}
+          {field.widget === 'enum_list' && (
+            <Lbl label="Kiểu chọn">
+              <select
+                value={enumListStyle}
+                onChange={(event) =>
+                  onChange({
+                    enum_list_style: event.target.value as NonNullable<FormFieldSpec['enum_list_style']>,
+                  })
+                }
+                className={INPUT}
+              >
+                <option value="chips">Chips</option>
+                <option value="dropdown">Dropdown</option>
+                <option value="checkboxes">Checkbox</option>
+              </select>
+            </Lbl>
+          )}
+          {(field.widget === 'select' ||
+            field.widget === 'lookup' ||
+            field.widget === 'enum_list') && (
+            <Lbl label="Ô tìm kiếm khi chọn">
+              <select
+                value={field.searchable || 'auto'}
+                onChange={(event) =>
+                  onChange({
+                    searchable: event.target.value as NonNullable<FormFieldSpec['searchable']>,
+                  })
+                }
+                className={INPUT}
+              >
+                <option value="auto">Tự động (khi danh sách dài)</option>
+                <option value="always">Luôn hiện</option>
+                <option value="never">Tắt</option>
+              </select>
+            </Lbl>
+          )}
         </div>
       </CollapsibleGroup>
 
@@ -1240,7 +1904,7 @@ function FieldInspector({
             onChange={(checked) => onChange({ readonly: checked })}
           />
         </div>
-        <Lbl label="Default value">
+        <Lbl label="Default value (mặc định của trường)">
           <FixedExpressionInput
             value={field.default}
             onChange={(next) => onChange({ default: next })}
@@ -1248,6 +1912,10 @@ function FieldInspector({
             expressionPlaceholder="e.g. {{app_user.username}}"
             expressionOptions={COMMON_EXPRESSION_OPTIONS}
           />
+          <p className="mt-1 text-tiny text-text-tertiary">
+            Áp dụng khi mở form mới. Thứ tự ưu tiên: giá trị mang sang từ màn
+            trước › Initial values (cả form) › Default value này.
+          </p>
         </Lbl>
       </CollapsibleGroup>
 

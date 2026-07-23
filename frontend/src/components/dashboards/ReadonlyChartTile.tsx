@@ -560,6 +560,8 @@ export function ReadonlyChartTile({
               data={chartData.data}
               config={legacyRenderChartConfig}
               styleConfig={chartRenderStyleConfig}
+              embedded
+              kpiLabelInHeader={isKpiCard}
               onSelectDataPoint={onSelectCrossFilter && chartSemanticBinding?.datasetId != null
                 ? handleCrossFilterSelection
                 : undefined}

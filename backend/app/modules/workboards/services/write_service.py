@@ -365,7 +365,12 @@ def _claim_auto_number_value(
     from app.modules.workboards.models import WorkboardAutoNumberSequence
 
     bucket = _auto_number_bucket(config.reset, now)
-    column_name = config.column
+    scoped_table_id = getattr(config, "table_id", None)
+    column_name = (
+        f"table:{int(scoped_table_id)}:{config.column}"
+        if scoped_table_id
+        else config.column
+    )
     seed = max(int(config.start_at or 1), 1)
 
     # Honour the reset contract: when reset != "never", a new period must start
@@ -422,7 +427,11 @@ def _apply_auto_number_on_insert(
     if not configs:
         return values
     out = dict(values)
+    active_table_id = getattr(workboard, "primary_table_id", None)
     for cfg in configs:
+        scoped_table_id = getattr(cfg, "table_id", None)
+        if scoped_table_id and int(scoped_table_id) != int(active_table_id or 0):
+            continue
         col = cfg.column
         existing = out.get(col)
         if existing not in (None, "", []):

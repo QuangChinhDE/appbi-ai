@@ -39,7 +39,7 @@ import {
   Info,
 } from 'lucide-react';
 import { CHART_PALETTES, type ChartPaletteName } from '@/lib/chartColors';
-import { DATE_FORMAT_OPTIONS, type DateFormatKind } from '@/lib/exploreAggregations';
+import type { DateFormatKind } from '@/lib/exploreAggregations';
 import { useI18n } from '@/providers/LanguageProvider';
 import type {
   ChartBenchmarkLineStyle,
@@ -47,6 +47,7 @@ import type {
   BenchmarkAggregate,
   ChartSortRule,
   ConditionalFormatRule,
+  KpiBackgroundMode,
   KpiGoalDirection,
   KpiValueColorRule,
   TableColumnAlignment,
@@ -300,6 +301,7 @@ export interface ChartStyleConfig {
   kpiShowBenchmarkValue?: boolean;
   kpiShowDelta?: boolean;
   kpiGoalDirection?: KpiGoalDirection;
+  kpiBackgroundMode?: KpiBackgroundMode;
   kpiAccentColor?: string;
   kpiEnableColorRules?: boolean;
   kpiColorRules?: KpiValueColorRule[];
@@ -382,9 +384,10 @@ export interface ChartStyleConfig {
   // Phase-15.82 — inline calculated fields (DAX-lite). Each evaluates
   // against aggregated row to produce a derived numeric series.
   calculatedFields?: CalculatedFieldDef[];
-  // BAR_LINE: show a second Y axis on the right for the line metric
+  // LINE/TIME_SERIES/BAR_LINE: show a second Y axis on the right.
   dualYAxis?: boolean;
   yAxisRightLabel?: string;
+  yAxisRightSeriesKey?: string;
   // AREA: fill opacity (0–1)
   areaOpacity?: number;
   // LINE/AREA/TIME_SERIES: stroke width in px
@@ -430,6 +433,7 @@ export const DEFAULT_STYLE_CONFIG: ChartStyleConfig = {
   kpiShowBenchmarkValue: true,
   kpiShowDelta: true,
   kpiGoalDirection: 'up',
+  kpiBackgroundMode: 'auto',
   kpiAccentColor: '#2563eb',
   kpiEnableColorRules: false,
   kpiColorRules: [],
@@ -451,6 +455,7 @@ export const DEFAULT_STYLE_CONFIG: ChartStyleConfig = {
   dataLimitDirection: 'top',
   dualYAxis: false,
   yAxisRightLabel: '',
+  yAxisRightSeriesKey: '',
   areaOpacity: 0.6,
   lineWidth: 2,
   barSize: '',
@@ -578,12 +583,18 @@ export function normalizeChartStyleConfig(
   normalized.fontSize = normalizePixelSize(normalized.fontSize, DEFAULT_STYLE_CONFIG.fontSize, 8, 48);
   normalized.chartTitleFontSize = normalizePixelSize(normalized.chartTitleFontSize, undefined, 10, 48);
   normalized.kpiValueFontSize = normalizePixelSize(normalized.kpiValueFontSize, undefined, 16, 80);
+  if (!['auto', 'none', 'accent', 'status'].includes(String(normalized.kpiBackgroundMode ?? ''))) {
+    normalized.kpiBackgroundMode = 'auto';
+  }
 
   if (normalized.kpiColorRules?.length) {
     normalized.kpiColorRules = normalized.kpiColorRules.map((rule) => ({
       operator: rule.operator ?? '>=',
       value: Number.isFinite(Number(rule.value)) ? Number(rule.value) : 0,
       color: normalizeColorInput(rule.color || '#16a34a', '#16a34a'),
+      backgroundColor: rule.backgroundColor
+        ? normalizeColorInput(rule.backgroundColor, rule.color || '#16a34a')
+        : undefined,
       label: rule.label?.trim() || undefined,
       // Preserve dynamic-threshold fields (source/multiplier/offset).
       source: rule.source === 'benchmark' ? 'benchmark' : 'value',
@@ -1295,6 +1306,25 @@ const TABLE_COLUMN_ALIGNMENT_OPTIONS: Array<{ value: TableColumnAlignment; label
   { value: 'center', label: 'Center' },
   { value: 'right', label: 'Right' },
 ];
+const TABLE_NUMBER_FORMAT_CHIPS: Array<{ value: TableCellFormat | ''; label: string; title: string }> = [
+  { value: '', label: 'Default', title: 'Inherit the table or measure format' },
+  { value: 'auto', label: 'Auto', title: 'Readable automatic number format' },
+  { value: 'compact', label: 'Compact', title: 'Compact numbers like 1.2K / 3.4M' },
+  { value: 'number', label: '1,234', title: 'Full number with separators' },
+  { value: 'percent', label: '%', title: 'Percent format' },
+  { value: 'currency', label: 'Money', title: 'Currency format' },
+];
+const TABLE_DATE_FORMAT_CHIPS: Array<{ value: TableCellFormat | ''; label: string; title: string }> = [
+  { value: '', label: 'Default', title: 'Inherit the default date display' },
+  { value: 'date_iso', label: 'ISO', title: '2024-03-24' },
+  { value: 'date_dmy', label: 'DD/MM', title: '24/03/2024' },
+  { value: 'date_mdy', label: 'MM/DD', title: '03/24/2024' },
+  { value: 'date_med', label: '24 Mar', title: '24 Mar 2024' },
+  { value: 'date_long', label: 'Long', title: '24 March 2024' },
+  { value: 'month_year', label: 'Month', title: 'Mar 2024' },
+  { value: 'year', label: 'Year', title: '2024' },
+  { value: 'datetime', label: 'DateTime', title: '2024-03-24 14:30' },
+];
 const COLOR_PRESET_SWATCHES = [
   '#eff6ff', '#dbeafe', '#bfdbfe', '#60a5fa', '#1d4ed8', '#172554',
   '#ecfeff', '#a7f3d0', '#34d399', '#15803d', '#14532d', '#064e3b',
@@ -1416,14 +1446,15 @@ function createDefaultTableHyperlinkRule(displayedColumns: Col[], availableColum
 
 function createDefaultKpiColorRule(index = 0): KpiValueColorRule {
   const presets = [
-    { value: 0, color: '#16a34a', label: 'Positive' },
-    { value: 0, color: '#dc2626', label: 'Negative' },
+    { value: 0, color: '#16a34a', backgroundColor: '#16a34a', label: 'Positive' },
+    { value: 0, color: '#dc2626', backgroundColor: '#dc2626', label: 'Negative' },
   ];
   const preset = presets[index] ?? presets[0];
   return {
     operator: index === 1 ? '<' : '>=',
     value: preset.value,
     color: preset.color,
+    backgroundColor: preset.backgroundColor,
     label: preset.label,
   };
 }
@@ -1566,6 +1597,19 @@ function isMeasureField(c: Col): boolean {
 
 function isDimensionField(c: Col): boolean {
   return c.fieldKind === 'dimension' || (!isMeasureField(c) && !isNumeric(c) && !isTimelike(c));
+}
+
+function tableColumnTypeChip(column: Col): { label: string; className: string } {
+  if (isMeasureField(column)) {
+    return { label: 'Measure', className: 'border-warning/30 bg-warning/10 text-warning' };
+  }
+  if (isNumeric(column)) {
+    return { label: 'Number', className: 'border-emerald-500/25 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300' };
+  }
+  if (isDateType(column) || isTimelike(column)) {
+    return { label: 'Date', className: 'border-sky-500/25 bg-sky-500/10 text-sky-700 dark:text-sky-300' };
+  }
+  return { label: 'Text', className: 'border-violet-500/25 bg-violet-500/10 text-violet-700 dark:text-violet-300' };
 }
 
 function fieldBadges(c: Col): Array<{ label: string; className: string }> {
@@ -3615,6 +3659,8 @@ export function ExploreChartConfig({
   // controls aren't shown-but-dead.
   const isRechartsBarShape = isBarType && chartType !== 'WATERFALL';
   const isLineType = ['LINE', 'TIME_SERIES', 'AREA', 'BAR_LINE', 'RIBBON'].includes(chartType);
+  const supportsDualYAxis = ['LINE', 'TIME_SERIES', 'BAR_LINE'].includes(chartType);
+  const isDualAxisLineChart = chartType === 'LINE' || chartType === 'TIME_SERIES';
   // hasAxis = chart is rendered with REAL Recharts cartesian axes (so the
   // "Axes & Scale" controls — gridlines, X/Y axis label, Y min/max, axis font —
   // actually take effect). ALLOWLIST, not a blocklist: the previous blocklist
@@ -3634,6 +3680,26 @@ export function ExploreChartConfig({
     ...(normalizedRoleConfig.lineMetric ? [normalizedRoleConfig.lineMetric] : []),
   ].map((m) => ({ value: metricKey(m), label: `${m.agg}(${m.field})` }));
   const benchmarkLines = normalizedStyleConfig.benchmarkLines ?? [];
+  const dualAxisSeriesOptions = useMemo(() => {
+    const byKey = new Map<string, string>();
+    const push = (key: string | undefined, label: string | undefined) => {
+      const cleanKey = key?.trim();
+      if (!cleanKey || byKey.has(cleanKey)) return;
+      byKey.set(cleanKey, label?.trim() || cleanKey);
+    };
+    availableSeriesKeys.forEach((series) => push(series.key, series.label));
+    (normalizedRoleConfig.metrics ?? []).forEach((metric) => push(metricKey(metric), metricLabel(metric)));
+    if (normalizedRoleConfig.lineMetric) {
+      push(metricKey(normalizedRoleConfig.lineMetric), metricLabel(normalizedRoleConfig.lineMetric));
+    }
+    (normalizedStyleConfig.calculatedFields ?? []).forEach((field) => push(field.id, field.label || field.id));
+    return Array.from(byKey.entries()).map(([key, label]) => ({ key, label }));
+  }, [
+    availableSeriesKeys,
+    normalizedRoleConfig.metrics,
+    normalizedRoleConfig.lineMetric,
+    normalizedStyleConfig.calculatedFields,
+  ]);
   const setBenchmarkLines = (next: BenchmarkLineDef[]) => updStyle({ benchmarkLines: next });
   const addBenchmarkLine = () => setBenchmarkLines([
     ...benchmarkLines,
@@ -4377,31 +4443,39 @@ export function ExploreChartConfig({
             </button>
           </div>
 
-          <div className="grid grid-cols-[minmax(0,1fr)_84px_112px_24px] items-center gap-3 px-0.5 pb-1 text-[10px] font-medium uppercase tracking-wide text-text-quaternary">
+          <div className="grid grid-cols-[minmax(0,1fr)_84px_minmax(132px,168px)_24px] items-center gap-3 px-0.5 pb-1 text-[10px] font-medium uppercase tracking-wide text-text-quaternary">
             <span className="min-w-0 flex-1">{t('explore.config.column')}</span>
             <span className="w-[84px] text-center">{t('explore.config.align')}</span>
-            <span className="w-[112px]">{t('explore.config.formatColumn')}</span>
+            <span>{t('explore.config.formatColumn')}</span>
             <span className="w-6" />
           </div>
           <div className="space-y-1">
             {tableFormattingColumns.map((column) => {
               const currentWidth = tableColumnWidths[column.name];
               const currentAlignment = tableColumnAlignments[column.name] ?? 'left';
+              const currentFormat = tableColumnFormats[column.name] ?? '';
+              const typeChip = tableColumnTypeChip(column);
+              const formatChips = isDateType(column) ? TABLE_DATE_FORMAT_CHIPS : TABLE_NUMBER_FORMAT_CHIPS;
 
               return (
                 // Phase-16.x — compact single-row layout (was a 3-tier card per
                 // column, which made a many-column table's config scroll forever).
                 <div
                   key={`table-column-layout-${column.name}`}
-                  className="grid grid-cols-[minmax(0,1fr)_84px_112px_24px] items-center gap-3 rounded-md border border-[rgb(var(--border-line))] bg-surface-2 px-2.5 py-1.5"
+                  className="grid grid-cols-[minmax(0,1fr)_84px_minmax(132px,168px)_24px] items-center gap-3 rounded-md border border-[rgb(var(--border-line))] bg-surface-2 px-2.5 py-1.5"
                 >
                   <div
                     className="min-w-0 space-y-1"
                     title={`${column.name} · ${column.type || 'column'}${currentWidth ? ` · ${Math.round(currentWidth)}px` : ' · auto width'}`}
                   >
-                    <span className="block truncate text-xs font-medium text-text-secondary">
-                      {colLabel(column)}
-                    </span>
+                    <div className="flex min-w-0 items-center gap-1.5">
+                      <span className="block truncate text-xs font-medium text-text-secondary">
+                        {colLabel(column)}
+                      </span>
+                      <span className={`shrink-0 rounded-full border px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide ${typeChip.className}`}>
+                        {typeChip.label}
+                      </span>
+                    </div>
                     <input
                       type="text"
                       value={tableColumnLabels[column.name] ?? ''}
@@ -4429,30 +4503,32 @@ export function ExploreChartConfig({
                       );
                     })}
                   </div>
-                  <select
-                    value={tableColumnFormats[column.name] ?? ''}
-                    onChange={(e) => updateTableColumnFormat(column.name, e.target.value as TableCellFormat | '')}
+                  <div
+                    className="flex min-w-0 flex-wrap gap-1"
                     title={t('explore.config.columnNumberFormatTitle')}
-                    className="w-[112px] shrink-0 rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 px-1.5 py-1 text-[11px]"
                   >
-                    <option value="">{t('explore.config.default')}</option>
-                    {isDateType(column) ? (
-                      // Date columns get DATE display formats (not number formats,
-                      // which no-op on an ISO string) — fixes "can't format a date
-                      // column".
-                      DATE_FORMAT_OPTIONS.map((opt) => (
-                        <option key={opt.value} value={opt.value}>{opt.label}</option>
-                      ))
-                    ) : (
-                      <>
-                        <option value="auto">{t('explore.config.number')}</option>
-                        <option value="compact">{t('explore.config.compact')}</option>
-                        <option value="number">1,234</option>
-                        <option value="percent">{t('explore.config.percent')}</option>
-                        <option value="currency">{t('explore.config.currency')} {normalizedStyleConfig.currencySymbol || '$'}</option>
-                      </>
-                    )}
-                  </select>
+                    {formatChips.map((option) => {
+                      const active = currentFormat === option.value;
+                      const label = option.value === 'currency'
+                        ? `${normalizedStyleConfig.currencySymbol || '$'}`
+                        : option.label;
+                      return (
+                        <button
+                          key={`${column.name}-${option.value || 'default'}`}
+                          type="button"
+                          onClick={() => updateTableColumnFormat(column.name, option.value)}
+                          title={option.title}
+                          className={`rounded-full border px-2 py-0.5 text-[10px] font-medium transition-colors ${
+                            active
+                              ? 'border-brand bg-brand/10 text-brand shadow-linear-sm'
+                              : 'border-[rgb(var(--border-line))] bg-surface-1 text-text-tertiary hover:border-[rgb(var(--border-strong))] hover:bg-surface-2'
+                          }`}
+                        >
+                          {label}
+                        </button>
+                      );
+                    })}
+                  </div>
                   <button
                     type="button"
                     onClick={() => resetTableColumnWidth(column.name)}
@@ -5033,6 +5109,20 @@ export function ExploreChartConfig({
             />
           </div>
 
+          <div>
+            <label className="text-xs font-semibold text-text-secondary mb-1 block">Background</label>
+            <select
+              value={normalizedStyleConfig.kpiBackgroundMode || 'auto'}
+              onChange={e => updStyle({ kpiBackgroundMode: e.target.value as KpiBackgroundMode })}
+              className="w-full px-2 py-1.5 text-xs border border-[rgb(var(--border-strong))] rounded-md bg-surface-1"
+            >
+              <option value="auto">Auto - status when benchmark/rule exists</option>
+              <option value="status">Status tint</option>
+              <option value="accent">Accent tint</option>
+              <option value="none">Plain</option>
+            </select>
+          </div>
+
           <Toggle
             label="Value color rules"
             checked={normalizedStyleConfig.kpiEnableColorRules ?? false}
@@ -5188,6 +5278,17 @@ export function ExploreChartConfig({
                       kpiColorRules: (normalizedStyleConfig.kpiColorRules ?? []).map((currentRule, ruleIndex) => (
                         ruleIndex === index
                           ? { ...currentRule, color: value }
+                          : currentRule
+                      )),
+                    })}
+                  />
+                  <ColorField
+                    label="Background Color"
+                    value={rule.backgroundColor || rule.color}
+                    onChange={value => updStyle({
+                      kpiColorRules: (normalizedStyleConfig.kpiColorRules ?? []).map((currentRule, ruleIndex) => (
+                        ruleIndex === index
+                          ? { ...currentRule, backgroundColor: value }
                           : currentRule
                       )),
                     })}
@@ -6531,17 +6632,64 @@ export function ExploreChartConfig({
         </Disclosure>
       )}
 
-      {/* BAR_LINE: dual Y-axis */}
-      {chartType === 'BAR_LINE' && (
-        <Disclosure title="Dual Y-Axis" hint="Show a second Y axis on the right side for the line metric — useful when bar and line values have very different scales.">
-          <Toggle label="Enable right Y axis" checked={styleConfig.dualYAxis ?? false}
-            onChange={v => updStyle({ dualYAxis: v })} />
+      {supportsDualYAxis && (
+        <Disclosure
+          title="Dual Y-Axis"
+          hint={isDualAxisLineChart
+            ? 'Place one line on a secondary right axis so two different value scales stay readable.'
+            : 'Show a second Y axis on the right side for the line metric when bar and line values use different scales.'}
+        >
+          <Toggle
+            label="Enable right Y axis"
+            checked={styleConfig.dualYAxis ?? false}
+            onChange={v => updStyle({ dualYAxis: v })}
+          />
           {styleConfig.dualYAxis && (
-            <div>
-              <label className="text-xs font-semibold text-text-secondary mb-1 block">Right Axis Label</label>
-              <input type="text" value={styleConfig.yAxisRightLabel || ''} placeholder="auto"
-                onChange={e => updStyle({ yAxisRightLabel: e.target.value })}
-                className="w-full px-2 py-1.5 text-xs border border-[rgb(var(--border-strong))] rounded-md" />
+            <div className="space-y-3">
+              {isDualAxisLineChart && (
+                <div>
+                  <label className="text-xs font-semibold text-text-secondary mb-1 block">Right-axis line</label>
+                  <div className="flex flex-wrap gap-1.5">
+                    {[
+                      { key: '', label: 'Auto (second line)' },
+                      ...dualAxisSeriesOptions,
+                    ].map((option) => {
+                      const active = (styleConfig.yAxisRightSeriesKey || '') === option.key;
+                      return (
+                        <button
+                          key={option.key || '__auto_right_axis'}
+                          type="button"
+                          onClick={() => updStyle({ yAxisRightSeriesKey: option.key })}
+                          title={option.key ? `Use ${option.label} on the right axis` : 'Use the second visible line on the right axis'}
+                          className={`rounded-full border px-2.5 py-1 text-[11px] font-medium transition-colors ${
+                            active
+                              ? 'border-brand bg-brand/10 text-brand shadow-linear-sm'
+                              : 'border-[rgb(var(--border-line))] bg-surface-1 text-text-tertiary hover:border-[rgb(var(--border-strong))] hover:bg-surface-2'
+                          }`}
+                        >
+                          {option.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  {dualAxisSeriesOptions.length < 2 && (
+                    <p className="mt-1 text-[10px] text-text-tertiary">
+                      Add at least two value series to split scales.
+                    </p>
+                  )}
+                </div>
+              )}
+
+              <div>
+                <label className="text-xs font-semibold text-text-secondary mb-1 block">Right Axis Label</label>
+                <input
+                  type="text"
+                  value={styleConfig.yAxisRightLabel || ''}
+                  placeholder="auto"
+                  onChange={e => updStyle({ yAxisRightLabel: e.target.value })}
+                  className="w-full px-2 py-1.5 text-xs border border-[rgb(var(--border-strong))] rounded-md bg-surface-1"
+                />
+              </div>
             </div>
           )}
         </Disclosure>

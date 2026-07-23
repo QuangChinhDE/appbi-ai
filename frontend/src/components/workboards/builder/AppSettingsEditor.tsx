@@ -27,6 +27,13 @@ import { INPUT, Lbl } from './ScreenEditor';
 import { GRADIENT_PRESETS } from '@/lib/wb-theme';
 import type { Dataset } from '@/hooks/use-datasets';
 
+interface DatasetTableInfo {
+  id: number;
+  display_name: string;
+  source_table_name?: string;
+  columns: { name: string; type?: string }[];
+}
+
 // ── Dataset picker (Settings › Data) ───────────────────────────────────────
 export function DatasetSection({
   datasets,
@@ -665,9 +672,11 @@ export function ThemeSection({
 
 export function AutoNumberSection({
   layout,
+  tables = [],
   onChange,
 }: {
   layout: MiniAppLayoutSpec;
+  tables?: DatasetTableInfo[];
   onChange: (next: MiniAppLayoutSpec) => void;
 }) {
   const configs = layout.auto_number_columns || [];
@@ -689,6 +698,24 @@ export function AutoNumberSection({
             key={idx}
             className="grid grid-cols-12 gap-2 rounded-md border border-[rgb(var(--border-line))] bg-surface-0 p-2"
           >
+            <select
+              value={cfg.table_id || ''}
+              onChange={(e) => {
+                const next = [...configs];
+                const tableId = Number(e.target.value) || null;
+                next[idx] = { ...cfg, table_id: tableId };
+                update(next);
+              }}
+              className={`${INPUT} col-span-3`}
+              title="Scope this sequence to one table, or keep legacy all-table behaviour."
+            >
+              <option value="">All tables (legacy)</option>
+              {tables.map((table) => (
+                <option key={table.id} value={table.id}>
+                  {table.display_name}
+                </option>
+              ))}
+            </select>
             <input
               value={cfg.column}
               onChange={(e) => {
@@ -698,7 +725,15 @@ export function AutoNumberSection({
               }}
               placeholder="column"
               className={`${INPUT} col-span-3`}
+              list={`auto-number-columns-${idx}`}
             />
+            {cfg.table_id ? (
+              <datalist id={`auto-number-columns-${idx}`}>
+                {(tables.find((table) => table.id === cfg.table_id)?.columns || []).map((column) => (
+                  <option key={column.name} value={column.name} />
+                ))}
+              </datalist>
+            ) : null}
             <input
               value={cfg.pattern}
               onChange={(e) => {
@@ -707,7 +742,7 @@ export function AutoNumberSection({
                 update(next);
               }}
               placeholder="PO-{YYYY}{MM}{DD}-{N:4}"
-              className={`${INPUT} col-span-5`}
+              className={`${INPUT} col-span-3`}
             />
             <select
               value={cfg.reset || 'never'}
@@ -719,7 +754,7 @@ export function AutoNumberSection({
                 };
                 update(next);
               }}
-              className={`${INPUT} col-span-3`}
+              className={`${INPUT} col-span-2`}
             >
               <option value="never">No reset</option>
               <option value="daily">Reset daily</option>
@@ -741,7 +776,7 @@ export function AutoNumberSection({
           onClick={() =>
             update([
               ...configs,
-              { column: '', pattern: 'PO-{YYYY}{MM}{DD}-{N:4}', reset: 'never' },
+              { table_id: null, column: '', pattern: 'PO-{YYYY}{MM}{DD}-{N:4}', reset: 'never' },
             ])
           }
           className="rounded-md border border-dashed border-[rgb(var(--border-line))] px-3 py-1.5 text-caption text-text-secondary hover:bg-surface-2"

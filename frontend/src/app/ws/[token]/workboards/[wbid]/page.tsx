@@ -27,6 +27,7 @@ import {
   ArrowLeft,
   Bell,
   Camera,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
   CheckCircle2,
@@ -57,6 +58,7 @@ import {
   DocScreenResponse,
   FormScreenResponse,
   PrintTemplate,
+  RelatedRecordsResponse,
   ScreenResponse,
   TableRowDetailResponse,
   TableScreenResponse,
@@ -75,8 +77,22 @@ import {
   resolveMode,
   type WbTheme,
 } from '@/lib/wb-theme';
-import { enqueueSubmit, newOpId } from '@/lib/offline/queue';
-import { isNetworkError } from '@/lib/offline/sync';
+import {
+  enqueueRelationParent,
+  enqueueSubmit,
+  finishRelationFlow,
+  getRelationFlow,
+  latestRelationFlow,
+  newOpId,
+  newRelationFlowId,
+  notifyOfflineQueueChanged,
+  relationSubmits,
+  saveRelationFlow,
+  type OfflineRelationFlow,
+  type OfflineRelationRef,
+  type QueuedSubmit,
+} from '@/lib/offline/queue';
+import { isNetworkError, syncSubmits } from '@/lib/offline/sync';
 import { toast } from '@/lib/toast';
 
 // Icon mapping is centralised in ScreenIconRegistry so the builder
@@ -90,6 +106,7 @@ function pickIcon(name?: string | null): React.ElementType {
 }
 
 type DeviceMode = 'mobile' | 'tablet' | 'desktop';
+type FormSubmitMode = 'default' | 'add_next' | 'finish';
 
 interface ApiErrorLike {
   response?: {
@@ -105,6 +122,89 @@ interface RuntimeFormPage {
   title: string;
   description?: string;
   show_if?: unknown;
+}
+
+interface RuntimeRelationContext {
+  relation_id: string;
+  relation_label?: string | null;
+  parent_screen_id: string;
+  child_screen_id: string;
+  parent_key_column: string;
+  parent_key_value: unknown;
+  child_foreign_key_column: string;
+  finish_screen_id?: string | null;
+  show_existing?: boolean;
+  keep_parent_context?: boolean;
+  flow_id?: string | null;
+  parent_op_id?: string | null;
+  sync_status?: 'pending_parent' | 'active' | 'error' | 'finished';
+  sync_error?: string | null;
+}
+
+function asRelationContext(value: unknown, currentScreenId: string): RuntimeRelationContext | null {
+  if (!value || typeof value !== 'object') return null;
+  const raw = value as Record<string, unknown>;
+  const relationId = String(raw.relation_id || '').trim();
+  const parentScreenId = String(raw.parent_screen_id || '').trim();
+  const childScreenId = String(raw.child_screen_id || '').trim();
+  const parentKeyColumn = String(raw.parent_key_column || '').trim();
+  const childFk = String(raw.child_foreign_key_column || '').trim();
+  if (!relationId || !parentScreenId || childScreenId !== currentScreenId || !parentKeyColumn || !childFk) {
+    return null;
+  }
+  return {
+    relation_id: relationId,
+    relation_label: typeof raw.relation_label === 'string' ? raw.relation_label : null,
+    parent_screen_id: parentScreenId,
+    child_screen_id: childScreenId,
+    parent_key_column: parentKeyColumn,
+    parent_key_value: raw.parent_key_value,
+    child_foreign_key_column: childFk,
+    finish_screen_id: typeof raw.finish_screen_id === 'string' ? raw.finish_screen_id : null,
+    show_existing: raw.show_existing !== false,
+    keep_parent_context: raw.keep_parent_context !== false,
+    flow_id: typeof raw.flow_id === 'string' ? raw.flow_id : null,
+    parent_op_id: typeof raw.parent_op_id === 'string' ? raw.parent_op_id : null,
+    sync_status:
+      raw.sync_status === 'pending_parent' ||
+      raw.sync_status === 'active' ||
+      raw.sync_status === 'error' ||
+      raw.sync_status === 'finished'
+        ? raw.sync_status
+        : undefined,
+    sync_error: typeof raw.sync_error === 'string' ? raw.sync_error : null,
+  };
+}
+
+function relationContextFromFlow(flow: OfflineRelationFlow): RuntimeRelationContext {
+  return {
+    relation_id: flow.relationId,
+    relation_label: flow.relationLabel || null,
+    parent_screen_id: flow.parentScreenId,
+    child_screen_id: flow.childScreenId,
+    parent_key_column: flow.parentKeyColumn,
+    parent_key_value: flow.parentKeyValue,
+    child_foreign_key_column: flow.childForeignKeyColumn,
+    finish_screen_id: flow.finishScreenId || null,
+    show_existing: flow.showExisting !== false,
+    keep_parent_context: flow.keepParentContext !== false,
+    flow_id: flow.flowId,
+    parent_op_id: flow.parentOpId,
+    sync_status: flow.status,
+    sync_error: flow.error || null,
+  };
+}
+
+function relationRefFromContext(context: RuntimeRelationContext): OfflineRelationRef | null {
+  if (!context.flow_id) return null;
+  return {
+    flowId: context.flow_id,
+    relationId: context.relation_id,
+    parentScreenId: context.parent_screen_id,
+    childScreenId: context.child_screen_id,
+    parentKeyColumn: context.parent_key_column,
+    childForeignKeyColumn: context.child_foreign_key_column,
+  };
 }
 
 interface RuntimeEvalCtx {
@@ -263,12 +363,31 @@ export default function WorkspaceWorkboardPage() {
           delete out.screen;
           return { deepScreen: screen, seed: out };
         })();
-        if (Object.keys(seed).length > 0) setShared((curr) => ({ ...curr, ...seed }));
+        const resumableFlow = await latestRelationFlow(
+          token,
+          workboardId,
+          deepScreen || undefined,
+        );
+        if (!alive) return;
+        const shouldResumeFlow = Boolean(
+          resumableFlow && (!deepScreen || deepScreen === resumableFlow.childScreenId),
+        );
+        if (Object.keys(seed).length > 0 || shouldResumeFlow) {
+          setShared((curr) => ({
+            ...curr,
+            ...seed,
+            ...(shouldResumeFlow && resumableFlow
+              ? { __wb_relation_context: relationContextFromFlow(resumableFlow) }
+              : {}),
+          }));
+        }
         const knownScreen = deepScreen && s.screens.some((sc) => sc.id === deepScreen);
         // Deep-link may target an off-nav screen (e.g. a scan-only status form);
         // the backend still enforces per-screen visibility/hidden/RLS, so accept
         // any existing screen id here and fall back to the nav default otherwise.
-        const chosenId = knownScreen
+        const chosenId = shouldResumeFlow && resumableFlow
+          ? resumableFlow.childScreenId
+          : knownScreen
           ? (deepScreen as string)
           : s.nav.items.length > 0
             ? s.nav.items[0]
@@ -1403,6 +1522,7 @@ function FormScreen({
   onSaved: (carry: Record<string, unknown>, nextScreen?: string) => void;
   onNavigate?: (screenId: string, carry?: Record<string, unknown>) => void;
 }) {
+  const [ignoreSharedSeed, setIgnoreSharedSeed] = useState(false);
   const buildInitial = useCallback(() => {
     const merged: Record<string, unknown> = {};
     const allowedKeys = new Set<string>();
@@ -1413,11 +1533,25 @@ function FormScreen({
     }
     for (const col of spec.primary_key_columns || []) allowedKeys.add(String(col));
     Object.assign(merged, spec.initial_values || {});
-    for (const [key, value] of Object.entries(shared || {})) {
-      if (allowedKeys.has(key)) merged[key] = value;
+    if (!ignoreSharedSeed) {
+      for (const [key, value] of Object.entries(shared || {})) {
+        if (allowedKeys.has(key)) merged[key] = value;
+      }
     }
     return merged;
-  }, [spec, shared]);
+  }, [ignoreSharedSeed, spec, shared]);
+
+  const buildFreshInitial = useCallback(() => {
+    const merged: Record<string, unknown> = {};
+    for (const field of (spec.fields as Array<Record<string, unknown>>) || []) {
+      const column = String(field.column);
+      if (field.default !== undefined && field.default !== null) {
+        merged[column] = field.default;
+      }
+    }
+    Object.assign(merged, spec.initial_values || {});
+    return merged;
+  }, [spec]);
 
   const [values, setValues] = useState<Record<string, unknown>>(buildInitial());
   const [submitting, setSubmitting] = useState(false);
@@ -1432,6 +1566,85 @@ function FormScreen({
   const [ocrDragging, setOcrDragging] = useState(false);
   const [ocrFilled, setOcrFilled] = useState<Set<string>>(new Set());
   const ocrInputRef = useRef<HTMLInputElement>(null);
+  const baseRelationContext = useMemo(
+    () => asRelationContext(shared.__wb_relation_context, spec.screen_id),
+    [shared, spec.screen_id],
+  );
+  const [relationFlow, setRelationFlow] = useState<OfflineRelationFlow | null>(null);
+  const [queuedRelatedRows, setQueuedRelatedRows] = useState<QueuedSubmit[]>([]);
+  const relationContext = useMemo(() => {
+    if (!baseRelationContext) return null;
+    return relationFlow ? relationContextFromFlow(relationFlow) : baseRelationContext;
+  }, [baseRelationContext, relationFlow]);
+  const [relatedRows, setRelatedRows] = useState<RelatedRecordsResponse | null>(null);
+  const [relatedLoading, setRelatedLoading] = useState(false);
+  const [relatedError, setRelatedError] = useState<string | null>(null);
+
+  const reloadRelatedRows = useCallback(async () => {
+    if (!baseRelationContext) {
+      setRelationFlow(null);
+      setQueuedRelatedRows([]);
+      setRelatedRows(null);
+      return;
+    }
+    let storedFlow: OfflineRelationFlow | null = null;
+    let queued: QueuedSubmit[] = [];
+    if (baseRelationContext.flow_id) {
+      storedFlow = await getRelationFlow(baseRelationContext.flow_id);
+      setRelationFlow((current) =>
+        current?.updatedAt === storedFlow?.updatedAt ? current : storedFlow,
+      );
+      queued = (await relationSubmits(baseRelationContext.flow_id)).filter((item) =>
+        Boolean(item.relation),
+      );
+      setQueuedRelatedRows(queued);
+    } else {
+      setRelationFlow(null);
+      setQueuedRelatedRows([]);
+    }
+    const effectiveContext = storedFlow
+      ? relationContextFromFlow(storedFlow)
+      : baseRelationContext;
+    const parentKeyValue = effectiveContext.parent_key_value;
+    const hasParentKey =
+      parentKeyValue !== undefined && parentKeyValue !== null && parentKeyValue !== '';
+    if (effectiveContext.show_existing === false || !hasParentKey) {
+      setRelatedRows(null);
+      setRelatedLoading(false);
+      setRelatedError(
+        storedFlow?.status === 'error'
+          ? storedFlow.error || 'Đồng bộ Parent thất bại.'
+          : null,
+      );
+      return;
+    }
+    setRelatedLoading(true);
+    setRelatedError(null);
+    try {
+      const rows = await workspaceApi.getRelatedRecords(token, workboardId, {
+        parent_screen_id: effectiveContext.parent_screen_id,
+        relation_id: effectiveContext.relation_id,
+        parent_key_value: parentKeyValue,
+      });
+      setRelatedRows(rows);
+    } catch (err) {
+      if (!isNetworkError(err) || queued.length === 0) {
+        setRelatedError('Không tải được danh sách chi tiết đã đồng bộ.');
+      }
+    } finally {
+      setRelatedLoading(false);
+    }
+  }, [baseRelationContext, token, workboardId]);
+
+  useEffect(() => {
+    void reloadRelatedRows();
+  }, [reloadRelatedRows]);
+
+  useEffect(() => {
+    const refresh = () => void reloadRelatedRows();
+    window.addEventListener('appbi-relation-flow-changed', refresh);
+    return () => window.removeEventListener('appbi-relation-flow-changed', refresh);
+  }, [reloadRelatedRows]);
 
   const handleOcrFile = (file: File | null) => {
     setOcrError(null);
@@ -1494,6 +1707,7 @@ function FormScreen({
   useEffect(() => {
     if (lastScreenId.current !== spec.screen_id) {
       lastScreenId.current = spec.screen_id;
+      setIgnoreSharedSeed(false);
       setValues(buildInitial());
       setSubmitError(null);
       setSuccess(null);
@@ -1546,8 +1760,88 @@ function FormScreen({
       return Math.max(n, 1);
     });
 
-  const handleSubmit = async (e?: React.FormEvent | React.MouseEvent) => {
+  const finishCurrentRelation = async () => {
+    if (relationContext?.flow_id) {
+      await finishRelationFlow(relationContext.flow_id);
+      notifyOfflineQueueChanged();
+    }
+    const finish = relationContext?.finish_screen_id || undefined;
+    setTimeout(() => {
+      if (finish) onSaved({ __wb_relation_context: null }, finish);
+      else onSaved({ __wb_relation_context: null }, spec.screen_id);
+    }, 400);
+  };
+
+  const queueRelationChild = async (
+    opId: string,
+    payload: Record<string, unknown>,
+    mode: FormSubmitMode,
+  ): Promise<boolean> => {
+    if (!relationContext) return false;
+    const relation = relationRefFromContext(relationContext);
+    if (!relation) return false;
+    await enqueueSubmit({
+      opId,
+      token,
+      workboardId,
+      screenId: spec.screen_id,
+      screenTitle: spec.title,
+      values: payload,
+      createdAt: Date.now(),
+      status: 'pending',
+      dependsOnOpId: relationContext.parent_op_id || null,
+      relation,
+    });
+    notifyOfflineQueueChanged();
+    setSuccess('Đã lưu tạm, đang chờ đồng bộ.');
+    await reloadRelatedRows();
+    if (typeof navigator !== 'undefined' && navigator.onLine) {
+      void syncSubmits().catch(() => undefined);
+    }
+    if (mode === 'finish') {
+      await finishCurrentRelation();
+      return true;
+    }
+    setValues(buildInitial());
+    setCurrentPage(1);
+    setOcrFilled(new Set());
+    setTimeout(() => setSuccess(null), 3000);
+    return true;
+  };
+
+  const handleSubmit = async (
+    e?: React.FormEvent | React.MouseEvent,
+    mode: FormSubmitMode = 'default',
+  ) => {
     e?.preventDefault();
+    if (mode === 'finish' && relationContext) {
+      const pkColumns = (spec.primary_key_columns || []).map(String);
+      const editingExisting =
+        !ignoreSharedSeed &&
+        pkColumns.length > 0 &&
+        pkColumns.every((column) => {
+          const value = shared[column];
+          return value !== undefined && value !== null && value !== '';
+        });
+      const baseline = buildFreshInitial();
+      const hasDraft = allFields.some((field) => {
+        const column = String(field.column || '');
+        if (
+          !column ||
+          column === relationContext.child_foreign_key_column ||
+          field.readonly ||
+          autoNumberSet.has(column)
+        ) return false;
+        const value = values[column];
+        if (value === undefined || value === null || value === '') return false;
+        return JSON.stringify(value) !== JSON.stringify(baseline[column]);
+      });
+      if (!editingExisting && !hasDraft) {
+        setSuccess('Đã hoàn tất.');
+        await finishCurrentRelation();
+        return;
+      }
+    }
     // Never persist while the wizard is on a non-final page (e.g. Enter pressed
     // in a page-1 field): advance instead of saving a partial row.
     if (isMultiPage && currentPage < lastVisiblePageId) {
@@ -1563,6 +1857,15 @@ function FormScreen({
     // Hoisted so the catch block can tell a new-row insert (queueable offline)
     // from an edit (needs the live row, not queueable).
     let isEditing = false;
+    let offlinePayload: Record<string, unknown> = {};
+    const followRelationForSubmit = !relationContext
+      ? (spec.related_records || []).find(
+          (relation) =>
+            relation.allow_add_after_save !== false &&
+            Boolean(relation.child_screen_id) &&
+            Boolean(relation.parent_key_column),
+        ) || null
+      : null;
     try {
       // Strip placeholder strings (still wrapped in {{…}}); the backend RLS
       // engine forces these columns to the caller's identity anyway.
@@ -1621,26 +1924,134 @@ function FormScreen({
           return;
         }
       }
+      const submittedPayload = { ...payload };
+      offlinePayload = { ...payload };
       const pk: Record<string, unknown> = {};
       isEditing =
+        !ignoreSharedSeed &&
         pkColumns.length > 0 &&
         pkColumns.every((col) => {
           const v = payload[col];
-          if (v === undefined || v === null || v === '') return false;
+          const initialValue = shared[col];
+          if (
+            v === undefined ||
+            v === null ||
+            v === '' ||
+            initialValue === undefined ||
+            initialValue === null ||
+            initialValue === ''
+          ) return false;
           pk[col] = v;
           return true;
         });
-      for (const col of pkColumns) delete payload[col];
       if (isEditing) {
-        await workspaceApi.updateScreenRow(token, workboardId, spec.screen_id, pk, payload);
+        for (const col of pkColumns) delete payload[col];
+      }
+      const relationKeyReady =
+        relationContext?.parent_key_value !== undefined &&
+        relationContext?.parent_key_value !== null &&
+        relationContext?.parent_key_value !== '';
+      if (
+        !isEditing &&
+        relationContext?.flow_id &&
+        (relationContext.sync_status !== 'active' || !relationKeyReady)
+      ) {
+        await queueRelationChild(opId, offlinePayload, mode);
+        return;
+      }
+      let result: Record<string, unknown> | null = null;
+      if (isEditing) {
+        result = await workspaceApi.updateScreenRow(token, workboardId, spec.screen_id, pk, payload);
       } else {
-        await workspaceApi.insertScreenRow(token, workboardId, spec.screen_id, payload, opId);
+        const relationPayload = relationContext
+          ? {
+              relation_id: relationContext.relation_id,
+              parent_screen_id: relationContext.parent_screen_id,
+              parent_key_value: relationContext.parent_key_value,
+            }
+          : null;
+        result = await workspaceApi.insertScreenRow(
+          token,
+          workboardId,
+          spec.screen_id,
+          payload,
+          opId,
+          relationPayload,
+        );
       }
       setSuccess(isEditing ? 'Đã cập nhật.' : 'Đã lưu.');
-      const next = spec.after_submit?.go_to_screen || undefined;
+      const savedContext: Record<string, unknown> = { ...submittedPayload, ...pk };
+      const row =
+        result && typeof result.row === 'object' && result.row !== null
+          ? (result.row as Record<string, unknown>)
+          : null;
+      const resultPk =
+        result && typeof result.pk === 'object' && result.pk !== null
+          ? (result.pk as Record<string, unknown>)
+          : null;
+      if (row) Object.assign(savedContext, row);
+      if (resultPk) Object.assign(savedContext, resultPk);
+      let next = spec.after_submit?.go_to_screen || undefined;
       const carry: Record<string, unknown> = {};
       for (const col of spec.after_submit?.carry || []) {
-        if (col in payload) carry[col] = payload[col];
+        if (col in savedContext) carry[col] = savedContext[col];
+      }
+      const followRelation = !isEditing ? followRelationForSubmit : null;
+      if (followRelation) {
+        const parentKeyValue = savedContext[followRelation.parent_key_column];
+        if (parentKeyValue !== undefined && parentKeyValue !== null && parentKeyValue !== '') {
+          const now = Date.now();
+          const flow: OfflineRelationFlow = {
+            flowId: newRelationFlowId(),
+            token,
+            workboardId,
+            parentOpId: opId,
+            relationId: followRelation.id,
+            relationLabel: followRelation.label || null,
+            parentScreenId: spec.screen_id,
+            childScreenId: followRelation.child_screen_id,
+            parentKeyColumn: followRelation.parent_key_column,
+            parentKeyValue,
+            childForeignKeyColumn: followRelation.child_foreign_key_column,
+            parentValues: savedContext,
+            finishScreenId: followRelation.finish_screen_id || null,
+            showExisting: followRelation.show_existing !== false,
+            keepParentContext: followRelation.keep_parent_context !== false,
+            status: 'active',
+            error: null,
+            createdAt: now,
+            updatedAt: now,
+          };
+          let flowPersisted = true;
+          try {
+            await saveRelationFlow(flow);
+          } catch {
+            // The online relation remains usable for this session even when a
+            // browser blocks IndexedDB; only restart restoration is unavailable.
+            flowPersisted = false;
+          }
+          carry[followRelation.parent_key_column] = parentKeyValue;
+          const runtimeContext = relationContextFromFlow(flow);
+          if (!flowPersisted) {
+            runtimeContext.flow_id = null;
+            runtimeContext.parent_op_id = null;
+          }
+          carry.__wb_relation_context = runtimeContext;
+          next = followRelation.child_screen_id;
+        }
+      }
+      if (relationContext && mode === 'add_next') {
+        await reloadRelatedRows();
+        if (isEditing) setIgnoreSharedSeed(true);
+        setValues(isEditing ? buildFreshInitial() : buildInitial());
+        setCurrentPage(1);
+        setOcrFilled(new Set());
+        setTimeout(() => setSuccess(null), 2500);
+        return;
+      }
+      if (relationContext && mode === 'finish') {
+        await finishCurrentRelation();
+        return;
       }
       // Brief delay so user sees the success badge before navigating.
       setTimeout(() => onSaved(carry, next), 600);
@@ -1648,14 +2059,64 @@ function FormScreen({
       // Offline (no server reachable) + a NEW row → queue it locally and let the
       // user keep working; it syncs automatically on reconnect. Editing offline
       // is not queued (needs the live row), so it falls through to the error path.
-      if (!isEditing && isNetworkError(err)) {
+      if (!isEditing && isNetworkError(err) && !relationContext) {
         try {
-          const payloadForQueue: Record<string, unknown> = {};
-          const fieldCols = new Set(allFields.map((f) => String(f.column || '')));
-          for (const k of fieldCols) {
-            const v = values[k];
-            if (typeof v === 'string' && v.startsWith('{{') && v.endsWith('}}')) continue;
-            payloadForQueue[k] = v;
+          if (followRelationForSubmit) {
+            const now = Date.now();
+            const relation: OfflineRelationRef = {
+              flowId: newRelationFlowId(),
+              relationId: followRelationForSubmit.id,
+              parentScreenId: spec.screen_id,
+              childScreenId: followRelationForSubmit.child_screen_id,
+              parentKeyColumn: followRelationForSubmit.parent_key_column,
+              childForeignKeyColumn: followRelationForSubmit.child_foreign_key_column,
+            };
+            const proposedKey = offlinePayload[followRelationForSubmit.parent_key_column];
+            const flow: OfflineRelationFlow = {
+              ...relation,
+              token,
+              workboardId,
+              parentOpId: opId,
+              relationLabel: followRelationForSubmit.label || null,
+              ...(proposedKey !== undefined && proposedKey !== null && proposedKey !== ''
+                ? { parentKeyValue: proposedKey }
+                : {}),
+              parentValues: offlinePayload,
+              finishScreenId: followRelationForSubmit.finish_screen_id || null,
+              showExisting: followRelationForSubmit.show_existing !== false,
+              keepParentContext: followRelationForSubmit.keep_parent_context !== false,
+              status: 'pending_parent',
+              error: null,
+              createdAt: now,
+              updatedAt: now,
+            };
+            await enqueueRelationParent(
+              {
+                opId,
+                token,
+                workboardId,
+                screenId: spec.screen_id,
+                screenTitle: spec.title,
+                values: offlinePayload,
+                createdAt: now,
+                status: 'pending',
+                producesRelation: relation,
+              },
+              flow,
+            );
+            notifyOfflineQueueChanged();
+            if (typeof navigator !== 'undefined' && navigator.onLine) {
+              void syncSubmits().catch(() => undefined);
+            }
+            const carry: Record<string, unknown> = {
+              __wb_relation_context: relationContextFromFlow(flow),
+            };
+            if (proposedKey !== undefined && proposedKey !== null && proposedKey !== '') {
+              carry[followRelationForSubmit.parent_key_column] = proposedKey;
+            }
+            setSuccess('Đã lưu Parent tạm và mở phần nhập chi tiết.');
+            onSaved(carry, followRelationForSubmit.child_screen_id);
+            return;
           }
           await enqueueSubmit({
             opId,
@@ -1663,11 +2124,14 @@ function FormScreen({
             workboardId,
             screenId: spec.screen_id,
             screenTitle: spec.title,
-            values: payloadForQueue,
+            values: offlinePayload,
             createdAt: Date.now(),
             status: 'pending',
           });
-          window.dispatchEvent(new Event('appbi-queue-changed'));
+          notifyOfflineQueueChanged();
+          if (typeof navigator !== 'undefined' && navigator.onLine) {
+            void syncSubmits().catch(() => undefined);
+          }
           setSuccess('Đã lưu tạm khi ngoại tuyến — sẽ tự gửi khi có mạng.');
           // Stay on the form: calling onSaved would navigate / re-fetch the
           // screen over the (still-offline) network → "Không tải được màn hình".
@@ -1680,6 +2144,14 @@ function FormScreen({
           return;
         } catch {
           setSubmitError('Không lưu tạm được khi ngoại tuyến. Vui lòng thử lại khi có mạng.');
+          return;
+        }
+      }
+      if (!isEditing && isNetworkError(err) && relationContext) {
+        try {
+          if (await queueRelationChild(opId, offlinePayload, mode)) return;
+        } catch {
+          setSubmitError('Không lưu tạm được bản ghi Child trên thiết bị.');
           return;
         }
       }
@@ -1730,6 +2202,24 @@ function FormScreen({
     <div className="mx-auto w-full max-w-3xl rounded-xl bg-white p-5 shadow-sm sm:p-6 xl:max-w-5xl 2xl:max-w-6xl">
       {spec.description && (
         <p className="mb-4 text-sm text-slate-500">{spec.description}</p>
+      )}
+
+      {relationContext && (
+        <RelatedRecordsPanel
+          context={relationContext}
+          rows={relatedRows}
+          queuedRows={queuedRelatedRows}
+          loading={relatedLoading}
+          error={relatedError}
+          accent={accent}
+          onRefresh={reloadRelatedRows}
+          onEdit={(row) => {
+            onNavigate?.(spec.screen_id, {
+              ...row,
+              __wb_relation_context: relationContext,
+            });
+          }}
+        />
       )}
 
       {ocrEnabled && (
@@ -1819,7 +2309,10 @@ function FormScreen({
         />
       )}
 
-      <form onSubmit={handleSubmit} className="space-y-4">
+      <form
+        onSubmit={(event) => handleSubmit(event, relationContext ? 'add_next' : 'default')}
+        className="space-y-4"
+      >
         {sectionOrder.map((sec) => {
           const list = fieldsBySection[sec];
           return (
@@ -1909,6 +2402,29 @@ function FormScreen({
             >
               Bước kế →
             </button>
+          ) : relationContext ? (
+            <div className="flex flex-wrap justify-end gap-2">
+              <button
+                key="wb-form-relation-finish"
+                type="button"
+                onClick={(event) => handleSubmit(event, 'finish')}
+                disabled={submitting}
+                className="rounded-md border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60"
+              >
+                Hoàn tất
+              </button>
+              <button
+                key="wb-form-relation-add-next"
+                type="button"
+                onClick={(event) => handleSubmit(event, 'add_next')}
+                disabled={submitting}
+                className="flex items-center gap-2 rounded-md px-5 py-2 text-sm font-semibold text-white disabled:opacity-60"
+                style={{ backgroundColor: accent }}
+              >
+                {submitting && <Loader2 className="h-4 w-4 animate-spin" />}
+                Lưu & thêm tiếp
+              </button>
+            </div>
           ) : (
             <button
               key="wb-form-submit"
@@ -1925,6 +2441,171 @@ function FormScreen({
         </div>
       </form>
     </div>
+  );
+}
+
+function RelatedRecordsPanel({
+  context,
+  rows,
+  queuedRows,
+  loading,
+  error,
+  accent,
+  onRefresh,
+  onEdit,
+}: {
+  context: RuntimeRelationContext;
+  rows: RelatedRecordsResponse | null;
+  queuedRows: QueuedSubmit[];
+  loading: boolean;
+  error: string | null;
+  accent: string;
+  onRefresh: () => void;
+  onEdit?: (row: Record<string, unknown>) => void;
+}) {
+  const serverRows = rows?.rows || [];
+  const queuedColumns = Array.from(
+    new Set(queuedRows.flatMap((item) => Object.keys(item.values))),
+  );
+  const columns = rows?.columns?.length ? rows.columns : queuedColumns;
+  const count = (rows?.total_count ?? serverRows.length) + queuedRows.length;
+  const showList = context.show_existing !== false || queuedRows.length > 0;
+  const parentKeyReady =
+    context.parent_key_value !== undefined &&
+    context.parent_key_value !== null &&
+    context.parent_key_value !== '';
+  return (
+    <section className="mb-4 rounded-lg border border-slate-200 bg-slate-50 p-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="min-w-0">
+          <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+            {context.relation_label || 'Related records'}
+          </div>
+          <div className="truncate text-sm font-semibold text-slate-900">
+            {parentKeyReady
+              ? `${context.parent_key_column}: ${String(context.parent_key_value)}`
+              : 'Parent đang chờ cấp mã trên máy chủ'}
+          </div>
+          {context.sync_status && (
+            <div
+              className={`mt-1 inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-semibold ${
+                context.sync_status === 'error'
+                  ? 'bg-rose-100 text-rose-700'
+                  : context.sync_status === 'pending_parent'
+                    ? 'bg-amber-100 text-amber-700'
+                    : 'bg-emerald-100 text-emerald-700'
+              }`}
+            >
+              {context.sync_status === 'error' ? (
+                <XCircle className="h-3 w-3" />
+              ) : context.sync_status === 'pending_parent' ? (
+                <RefreshCw className="h-3 w-3" />
+              ) : (
+                <CheckCircle2 className="h-3 w-3" />
+              )}
+              {context.sync_status === 'error'
+                ? 'Đồng bộ Parent lỗi'
+                : context.sync_status === 'pending_parent'
+                  ? 'Parent chờ đồng bộ'
+                  : 'Parent đã đồng bộ'}
+            </div>
+          )}
+        </div>
+        {showList && (
+          <button
+            type="button"
+            onClick={onRefresh}
+            className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100"
+          >
+            <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />
+            {count} dòng
+          </button>
+        )}
+      </div>
+      {error && (
+        <p className="mt-2 rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">
+          {error}
+        </p>
+      )}
+      {showList && (
+        <div className="mt-3 max-h-72 overflow-auto rounded-md border border-slate-200 bg-white">
+          {loading && serverRows.length === 0 && queuedRows.length === 0 ? (
+            <div className="flex items-center gap-2 px-3 py-3 text-sm text-slate-500">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              Đang tải danh sách...
+            </div>
+          ) : (serverRows.length === 0 && queuedRows.length === 0) || columns.length === 0 ? (
+            <div className="px-3 py-3 text-sm text-slate-500">
+              Chưa có dòng chi tiết nào.
+            </div>
+          ) : (
+            <table className="min-w-full divide-y divide-slate-200 text-sm">
+              <thead className="sticky top-0 z-10 bg-slate-50">
+                <tr>
+                  <th className="w-28 px-3 py-2 text-left text-xs font-semibold text-slate-500">
+                    Trạng thái
+                  </th>
+                  {columns.map((column) => (
+                    <th key={column} className="px-3 py-2 text-left text-xs font-semibold text-slate-500">
+                      {column}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {serverRows.map((row, index) => (
+                  <tr
+                    key={`server-${index}`}
+                    onClick={() => onEdit?.(row)}
+                    className={onEdit ? 'cursor-pointer hover:bg-slate-50' : undefined}
+                    title={onEdit ? 'Mở dòng này để sửa' : undefined}
+                  >
+                    <td className="px-3 py-2">
+                      <span className="inline-flex items-center gap-1 text-xs font-semibold text-emerald-700">
+                        <CheckCircle2 className="h-3.5 w-3.5" />
+                        Đã đồng bộ
+                      </span>
+                    </td>
+                    {columns.map((column) => (
+                      <td key={column} className="max-w-[14rem] truncate px-3 py-2 text-slate-700">
+                        {row[column] === null || row[column] === undefined ? '' : String(row[column])}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+                {queuedRows.map((item) => (
+                  <tr key={item.opId} className={item.status === 'error' ? 'bg-rose-50' : 'bg-amber-50'}>
+                    <td className="px-3 py-2">
+                      <span
+                        className={`inline-flex items-center gap-1 text-xs font-semibold ${
+                          item.status === 'error' ? 'text-rose-700' : 'text-amber-700'
+                        }`}
+                        title={item.error || undefined}
+                      >
+                        {item.status === 'error' ? (
+                          <XCircle className="h-3.5 w-3.5" />
+                        ) : (
+                          <RefreshCw className="h-3.5 w-3.5" />
+                        )}
+                        {item.status === 'error' ? 'Sync lỗi' : 'Chờ đồng bộ'}
+                      </span>
+                    </td>
+                    {columns.map((column) => (
+                      <td key={column} className="max-w-[14rem] truncate px-3 py-2 text-slate-700">
+                        {item.values[column] === null || item.values[column] === undefined
+                          ? ''
+                          : String(item.values[column])}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      )}
+      <div className="mt-2 h-0.5 w-16 rounded-full" style={{ backgroundColor: accent }} />
+    </section>
   );
 }
 
@@ -2056,24 +2737,39 @@ function Field({
           {help || 'Đồng ý'}
         </label>
       ) : widget === 'select' || widget === 'lookup' ? (
-        <select
-          value={stringValue}
-          onChange={(e) => onChange(e.target.value)}
-          disabled={readonly}
-          required={required}
-          className={baseInput}
-        >
-          <option value="">
-            {filterByField && (parentVal == null || parentVal === '')
-              ? '— chọn mục ở trên trước —'
-              : '— chọn —'}
-          </option>
-          {effectiveOpts.map((opt) => (
-            <option key={String(opt.value)} value={String(opt.value)}>
-              {opt.label}
+        shouldShowSearch(field.searchable, effectiveOpts.length) ? (
+          <SearchableSelect
+            value={stringValue}
+            onChange={(v) => onChange(v)}
+            options={effectiveOpts as LookupOption[]}
+            disabled={readonly}
+            placeholder={
+              filterByField && (parentVal == null || parentVal === '')
+                ? '— chọn mục ở trên trước —'
+                : '— chọn —'
+            }
+            allowSearch
+          />
+        ) : (
+          <select
+            value={stringValue}
+            onChange={(e) => onChange(e.target.value)}
+            disabled={readonly}
+            required={required}
+            className={baseInput}
+          >
+            <option value="">
+              {filterByField && (parentVal == null || parentVal === '')
+                ? '— chọn mục ở trên trước —'
+                : '— chọn —'}
             </option>
-          ))}
-        </select>
+            {effectiveOpts.map((opt) => (
+              <option key={String(opt.value)} value={String(opt.value)}>
+                {opt.label}
+              </option>
+            ))}
+          </select>
+        )
       ) : widget === 'date' ? (
         <input
           type="date"
@@ -2386,7 +3082,125 @@ function DurationField({
   );
 }
 
-// ── Enum-list widget (multi-select chips) ────────────────────────────────
+// Show an in-dropdown search box when the field opts in ('always'), never when
+// it opts out ('never'), and automatically for long option lists otherwise.
+const SEARCH_AUTO_MIN = 8;
+function shouldShowSearch(searchable: unknown, optionCount: number): boolean {
+  if (searchable === 'always') return true;
+  if (searchable === 'never') return false;
+  return optionCount > SEARCH_AUTO_MIN; // 'auto' / undefined
+}
+
+// ── Single-select combobox with optional in-dropdown search ───────────────
+// Used for select / lookup fields (and table select-filters) when search is
+// active. Keeps the native <select> for short, non-searchable lists elsewhere.
+function SearchableSelect({
+  value,
+  onChange,
+  options,
+  disabled,
+  placeholder,
+  allowSearch,
+  clearLabel = '— chọn —',
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  options: LookupOption[];
+  disabled?: boolean;
+  placeholder?: string;
+  allowSearch: boolean;
+  clearLabel?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const [q, setQ] = useState('');
+  const wrapRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (event: MouseEvent) => {
+      if (wrapRef.current && !wrapRef.current.contains(event.target as Node)) {
+        setOpen(false);
+        setQ('');
+      }
+    };
+    document.addEventListener('mousedown', onDoc);
+    return () => document.removeEventListener('mousedown', onDoc);
+  }, [open]);
+  const selected = options.find((o) => String(o.value) === value);
+  const ql = q.trim().toLowerCase();
+  const filtered =
+    allowSearch && ql
+      ? options.filter(
+          (o) =>
+            String(o.label).toLowerCase().includes(ql) ||
+            String(o.value).toLowerCase().includes(ql),
+        )
+      : options;
+  const pick = (v: string) => {
+    onChange(v);
+    setOpen(false);
+    setQ('');
+  };
+  return (
+    <div className="relative" ref={wrapRef}>
+      <button
+        type="button"
+        disabled={disabled}
+        onClick={() => setOpen((v) => !v)}
+        className="flex h-9 w-full items-center justify-between rounded-md border border-slate-300 bg-white px-3 text-left text-sm text-slate-700 disabled:bg-slate-50 disabled:text-slate-400"
+      >
+        <span className={selected ? 'truncate' : 'truncate text-slate-400'}>
+          {selected ? selected.label : placeholder || '— chọn —'}
+        </span>
+        <ChevronDown className="h-4 w-4 shrink-0 text-slate-400" />
+      </button>
+      {open && (
+        <div className="absolute z-30 mt-1 w-full rounded-md border border-slate-200 bg-white shadow-lg">
+          {allowSearch && (
+            <div className="border-b border-slate-100 p-2">
+              <input
+                autoFocus
+                value={q}
+                onChange={(event) => setQ(event.target.value)}
+                placeholder="Tìm..."
+                className="h-8 w-full rounded border border-slate-200 px-2 text-sm outline-none focus:border-slate-400"
+              />
+            </div>
+          )}
+          <div className="max-h-60 overflow-auto p-1">
+            <button
+              type="button"
+              onClick={() => pick('')}
+              className="block w-full truncate rounded px-2 py-1.5 text-left text-sm text-slate-400 hover:bg-slate-50"
+            >
+              {clearLabel}
+            </button>
+            {filtered.length === 0 ? (
+              <span className="block px-2 py-2 text-sm text-slate-400">Không có kết quả.</span>
+            ) : (
+              filtered.map((o) => {
+                const v = String(o.value);
+                return (
+                  <button
+                    key={v}
+                    type="button"
+                    onClick={() => pick(v)}
+                    className={`block w-full truncate rounded px-2 py-1.5 text-left text-sm hover:bg-slate-50 ${
+                      v === value ? 'bg-slate-50 font-medium text-slate-900' : 'text-slate-700'
+                    }`}
+                  >
+                    {o.label}
+                  </button>
+                );
+              })
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Enum-list widget (multi-select chips / dropdown / checkboxes) ─────────
 function EnumListField({
   field,
   options,
@@ -2400,6 +3214,8 @@ function EnumListField({
   onChange: (v: unknown) => void;
   readonly: boolean;
 }) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState('');
   const selected: string[] = Array.isArray(value)
     ? value.map((v) => String(v))
     : typeof value === 'string' && value.startsWith('[')
@@ -2414,6 +3230,30 @@ function EnumListField({
         ? [String(value)]
         : [];
   const maxSel = Number(field.max_select) || 0;
+  const style =
+    field.enum_list_style === 'checkboxes' || field.enum_list_style === 'dropdown'
+      ? field.enum_list_style
+      : 'chips';
+  const optionValues = options.map((opt) => String(opt.value));
+  const selectableValues = maxSel > 0 ? optionValues.slice(0, maxSel) : optionValues;
+  const showSearch = shouldShowSearch(field.searchable, options.length);
+  const ql = query.trim().toLowerCase();
+  const shownOptions =
+    showSearch && ql
+      ? options.filter(
+          (opt) =>
+            String(opt.label).toLowerCase().includes(ql) ||
+            String(opt.value).toLowerCase().includes(ql),
+        )
+      : options;
+  const allSelectableSelected =
+    selectableValues.length > 0 && selectableValues.every((val) => selected.includes(val));
+  const selectedLabels = selected
+    .map((val) => options.find((opt) => String(opt.value) === val)?.label || val)
+    .join(', ');
+  const commit = (next: string[]) => {
+    onChange(JSON.stringify(next));
+  };
   const toggle = (val: string) => {
     if (readonly) return;
     let next: string[];
@@ -2423,10 +3263,149 @@ function EnumListField({
       if (maxSel > 0 && selected.length >= maxSel) return;
       next = [...selected, val];
     }
-    // Store as a JSON STRING so it writes to a text/jsonb cell without the
-    // connector adapting a Python list to a PG array (type mismatch).
-    onChange(JSON.stringify(next));
+    commit(next);
   };
+  const toggleAll = () => {
+    if (readonly || selectableValues.length === 0) return;
+    commit(allSelectableSelected ? [] : selectableValues);
+  };
+
+  if (style === 'dropdown') {
+    return (
+      <div className="relative">
+        <button
+          type="button"
+          disabled={readonly}
+          onClick={() => setOpen((prev) => !prev)}
+          className="flex min-h-10 w-full items-center justify-between rounded-md border border-slate-300 bg-white px-3 py-2 text-left text-sm text-slate-700 disabled:bg-slate-50 disabled:text-slate-400"
+        >
+          <span className={selected.length ? '' : 'text-slate-400'}>
+            {selected.length ? selectedLabels : '— chọn —'}
+          </span>
+          <ChevronDown className="h-4 w-4 text-slate-400" />
+        </button>
+        {open && (
+          <div className="absolute z-20 mt-1 w-full rounded-md border border-slate-200 bg-white shadow-lg">
+            {options.length === 0 ? (
+              <span className="block px-3 py-2 text-sm text-slate-400">Chưa có lựa chọn.</span>
+            ) : (
+              <>
+                {showSearch && (
+                  <div className="border-b border-slate-100 p-2">
+                    <input
+                      autoFocus
+                      value={query}
+                      onChange={(event) => setQuery(event.target.value)}
+                      placeholder="Tìm..."
+                      className="h-8 w-full rounded border border-slate-200 px-2 text-sm outline-none focus:border-slate-400"
+                    />
+                  </div>
+                )}
+                <div className="max-h-60 overflow-auto p-2">
+                  <label className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-sm text-slate-700 hover:bg-slate-50">
+                    <input
+                      type="checkbox"
+                      checked={allSelectableSelected}
+                      onChange={toggleAll}
+                      disabled={readonly}
+                      className="h-4 w-4 rounded border-slate-300"
+                    />
+                    Select all
+                  </label>
+                  <div className="my-1 border-t border-slate-100" />
+                  {shownOptions.length === 0 ? (
+                    <span className="block px-2 py-2 text-sm text-slate-400">Không có kết quả.</span>
+                  ) : (
+                    shownOptions.map((opt) => {
+                      const val = String(opt.value);
+                      const on = selected.includes(val);
+                      const disabledByMax = !on && maxSel > 0 && selected.length >= maxSel;
+                      return (
+                        <label
+                          key={val}
+                          className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-sm text-slate-700 hover:bg-slate-50"
+                        >
+                          <input
+                            type="checkbox"
+                            checked={on}
+                            onChange={() => toggle(val)}
+                            disabled={readonly || disabledByMax}
+                            className="h-4 w-4 rounded border-slate-300"
+                          />
+                          {opt.label}
+                        </label>
+                      );
+                    })
+                  )}
+                </div>
+              </>
+            )}
+          </div>
+        )}
+        {maxSel > 0 && (
+          <span className="mt-1 block text-xs text-slate-400">
+            {selected.length}/{maxSel}
+          </span>
+        )}
+      </div>
+    );
+  }
+
+  if (style === 'checkboxes') {
+    return (
+      <div className="space-y-2">
+        {options.length === 0 && (
+          <span className="text-sm text-slate-400">Chưa có lựa chọn.</span>
+        )}
+        {showSearch && options.length > 0 && (
+          <input
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="Tìm..."
+            className="h-8 w-full rounded border border-slate-200 px-2 text-sm outline-none focus:border-slate-400"
+          />
+        )}
+        {options.length > 0 && (
+          <label className="flex items-center gap-2 text-sm text-slate-700">
+            <input
+              type="checkbox"
+              checked={allSelectableSelected}
+              onChange={toggleAll}
+              disabled={readonly}
+              className="h-4 w-4 rounded border-slate-300"
+            />
+            Select all
+          </label>
+        )}
+        {shownOptions.length === 0 && options.length > 0 && (
+          <span className="text-sm text-slate-400">Không có kết quả.</span>
+        )}
+        {shownOptions.map((opt) => {
+          const val = String(opt.value);
+          const on = selected.includes(val);
+          const disabledByMax = !on && maxSel > 0 && selected.length >= maxSel;
+          return (
+            <label key={val} className="flex items-center gap-2 text-sm text-slate-700">
+              <input
+                type="checkbox"
+                checked={on}
+                onChange={() => toggle(val)}
+                disabled={readonly || disabledByMax}
+                className="h-4 w-4 rounded border-slate-300"
+              />
+              {opt.label}
+            </label>
+          );
+        })}
+        {maxSel > 0 && (
+          <span className="text-xs text-slate-400">
+            {selected.length}/{maxSel}
+          </span>
+        )}
+      </div>
+    );
+  }
+
   return (
     <div className="flex flex-wrap gap-2">
       {options.length === 0 && (
@@ -3108,6 +4087,8 @@ function BulkRecipeModal({
   onClose,
   onRun,
   variant = 'modal',
+  showMap = false,
+  onToggleMap,
 }: {
   action: NonNullable<NonNullable<TableScreenResponse['table_view']>['bulk_actions']>[number];
   selectedRows: Array<Record<string, unknown>>;
@@ -3119,10 +4100,13 @@ function BulkRecipeModal({
   busy: boolean;
   onClose: () => void;
   onRun: (resources: Record<string, Record<string, unknown>>) => void;
-  // 'modal' = overlay popup (default). 'panel' = docked inline card (no overlay,
-  // no close/cancel) — used to embed the plan (pickers + weight + route map)
-  // beside a table screen so the operator selects rows and sees the plan live.
-  variant?: 'modal' | 'panel';
+  // 'modal' = overlay popup (default). 'panel' = docked inline card. 'bar' =
+  // compact one-row controls (pickers + constraint + confirm) that flow INSIDE
+  // the table's sticky selection bar; the route map is toggled separately by
+  // the parent (showMap/onToggleMap) so the sticky bar stays a single row.
+  variant?: 'modal' | 'panel' | 'bar';
+  showMap?: boolean;
+  onToggleMap?: () => void;
 }) {
   const resourceInputs = action.resource_inputs || [];
   const constraints = action.constraints || [];
@@ -3194,6 +4178,134 @@ function BulkRecipeModal({
   const anyViolated = constraintState.some((s) => !s.ok);
   const canRun = !busy && !missingResource && !anyViolated && selectedRows.length > 0;
 
+  // Blocks composed differently per variant: the docked PANEL lays the plan out
+  // on ONE plane below the table — controls (pickers + constraint + confirm) in a
+  // left column, the route map wide on the right — while the MODAL keeps the
+  // original narrow vertical stack.
+  const pickersBlock = loading ? (
+    <p className="mt-4 text-sm text-slate-500">Đang tải lựa chọn…</p>
+  ) : (
+    resourceInputs.map((ri) => (
+      <div key={ri.id} className="mt-3">
+        <label className="text-xs font-medium text-slate-500">
+          {ri.label}
+          {(ri.required ?? true) ? ' *' : ''}
+        </label>
+        <select
+          value={picked[ri.id] || ''}
+          onChange={(e) => setPicked((p) => ({ ...p, [ri.id]: e.target.value }))}
+          className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+        >
+          <option value="">— Chọn —</option>
+          {(options[ri.id] || []).map((o, i) => (
+            <option key={i} value={String(o[ri.value_column])}>
+              {String(o[ri.label_column || ri.value_column] ?? o[ri.value_column] ?? '')}
+            </option>
+          ))}
+        </select>
+      </div>
+    ))
+  );
+
+  const constraintsBlock = constraintState.map((s, i) => {
+    // Neutral (not red) until the limit is known — e.g. before a vehicle is
+    // picked the capacity is unknown, so it's "pending", not a violation.
+    const pending = s.limit == null;
+    const tone = pending
+      ? 'bg-slate-50 text-slate-600'
+      : s.ok
+        ? 'bg-emerald-50 text-emerald-800'
+        : 'bg-rose-50 text-rose-800';
+    return (
+      <div key={i} className={`mt-3 rounded-lg px-3 py-2 text-sm ${tone}`}>
+        <div className="flex items-center justify-between font-medium">
+          <span>{s.c.label || s.c.agg_column}</span>
+          <span>
+            {fmt(s.actual)} {s.c.op || '<='} {pending ? '—' : fmt(s.limit as number)}
+            {!pending ? ` (${s.pct.toFixed(0)}%)` : ''}
+          </span>
+        </div>
+        {pending ? (
+          <div className="mt-0.5 text-xs">Hãy chọn tài nguyên để kiểm tra ràng buộc.</div>
+        ) : !s.ok ? (
+          <div className="mt-0.5 text-xs">{s.c.error_message || 'Vượt giới hạn — không thể xác nhận.'}</div>
+        ) : null}
+      </div>
+    );
+  });
+
+  const mapBlock =
+    action.route_preview && selectedRows.length > 0 ? (
+      <div className="overflow-hidden rounded-xl border border-slate-200">
+        <div className="border-b border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-medium text-slate-600">
+          Tuyến giao của các đơn đã chọn
+        </div>
+        <RouteMapView
+          rows={selectedRows}
+          config={action.route_preview}
+          colLabels={colLabels}
+          pkCols={pkCols}
+          onOpen={() => {}}
+          panelEnabled={false}
+          compact={variant !== 'panel'}
+          emptyMessage="Các đơn đã chọn chưa có toạ độ (Lat/Long) để vẽ tuyến."
+        />
+      </div>
+    ) : null;
+
+  const buttonBlock = (
+    <div className="mt-5 flex justify-end gap-2">
+      {variant === 'modal' ? (
+        <button onClick={onClose} className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm text-slate-700 hover:bg-slate-50">
+          Huỷ
+        </button>
+      ) : null}
+      <button
+        type="button"
+        disabled={!canRun}
+        onClick={() => onRun(resources)}
+        style={{ backgroundColor: accent }}
+        className="inline-flex w-full items-center justify-center gap-1.5 rounded-lg px-4 py-2 text-sm font-semibold text-white shadow-sm disabled:opacity-40"
+      >
+        {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+        {variant === 'panel' ? action.label : 'Xác nhận'}
+      </button>
+    </div>
+  );
+
+  const headerBlock = (
+    <>
+      <div className="flex items-center justify-between">
+        <h3 className="text-base font-bold text-slate-800">
+          {action.icon ? `${action.icon} ` : ''}
+          {action.label}
+        </h3>
+        {variant === 'modal' ? (
+          <button onClick={onClose} className="rounded p-1 text-slate-400 hover:bg-slate-100">✕</button>
+        ) : null}
+      </div>
+      <p className="mt-1 text-sm text-slate-500">
+        {selectedRows.length > 0
+          ? `Đã chọn ${selectedRows.length} dòng.`
+          : variant === 'panel'
+            ? 'Chọn các dòng ở bảng phía trên để lập kế hoạch.'
+            : 'Đã chọn 0 dòng.'}
+      </p>
+      {previewAgg.length ? (
+        <div className="mt-3 flex flex-wrap gap-1.5">
+          {previewAgg.map((pa) => (
+            <span key={pa.label} className="inline-flex items-baseline gap-1 rounded-full bg-slate-100 px-2.5 py-1 text-xs text-slate-600">
+              {pa.label}:
+              <span className="font-semibold text-slate-800">
+                <FormattedCell value={aggregate(pa.column, pa.agg || 'sum')} format={pa.format ?? 'number'} />
+              </span>
+            </span>
+          ))}
+        </div>
+      ) : null}
+    </>
+  );
+
   const inner = (
       <div
         className={
@@ -3203,49 +4315,48 @@ function BulkRecipeModal({
         }
         onClick={variant === 'panel' ? undefined : (e) => e.stopPropagation()}
       >
-        <div className="flex items-center justify-between">
-          <h3 className="text-base font-bold text-slate-800">
-            {action.icon ? `${action.icon} ` : ''}
-            {action.label}
-          </h3>
-          {variant === 'modal' ? (
-            <button onClick={onClose} className="rounded p-1 text-slate-400 hover:bg-slate-100">✕</button>
-          ) : null}
-        </div>
-        <p className="mt-1 text-sm text-slate-500">
-          {selectedRows.length > 0
-            ? `Đã chọn ${selectedRows.length} dòng.`
-            : variant === 'panel'
-              ? 'Chọn các dòng ở bảng bên cạnh để lập kế hoạch.'
-              : 'Đã chọn 0 dòng.'}
-        </p>
-
-        {previewAgg.length ? (
-          <div className="mt-3 flex flex-wrap gap-1.5">
-            {previewAgg.map((pa) => (
-              <span key={pa.label} className="inline-flex items-baseline gap-1 rounded-full bg-slate-100 px-2.5 py-1 text-xs text-slate-600">
-                {pa.label}:
-                <span className="font-semibold text-slate-800">
-                  <FormattedCell value={aggregate(pa.column, pa.agg || 'sum')} format={pa.format ?? 'number'} />
-                </span>
-              </span>
-            ))}
+        {headerBlock}
+        {variant === 'panel' ? (
+          <div className="mt-3 lg:flex lg:items-start lg:gap-4">
+            <div className="lg:w-[380px] lg:shrink-0">
+              {pickersBlock}
+              {constraintsBlock}
+              {buttonBlock}
+            </div>
+            <div className="mt-3 lg:mt-0 lg:min-w-0 lg:flex-1">
+              {mapBlock ?? (
+                <div className="flex min-h-[240px] items-center justify-center rounded-xl border border-dashed border-slate-200 bg-slate-50/60 p-6 text-center text-sm text-slate-400">
+                  Chọn đơn ở bảng phía trên để xem tuyến giao trên bản đồ.
+                </div>
+              )}
+            </div>
           </div>
-        ) : null}
+        ) : (
+          <>
+            {pickersBlock}
+            {constraintsBlock}
+            {mapBlock ? <div className="mt-3">{mapBlock}</div> : null}
+            {buttonBlock}
+          </>
+        )}
+      </div>
+  );
 
+  // 'bar' — compact controls that flow inside the table's sticky selection bar
+  // (one row). Pickers + live constraint chip + optional map toggle + confirm.
+  if (variant === 'bar') {
+    return (
+      <>
         {loading ? (
-          <p className="mt-4 text-sm text-slate-500">Đang tải lựa chọn…</p>
+          <span className="text-xs text-slate-500">Đang tải lựa chọn…</span>
         ) : (
           resourceInputs.map((ri) => (
-            <div key={ri.id} className="mt-3">
-              <label className="text-xs font-medium text-slate-500">
-                {ri.label}
-                {(ri.required ?? true) ? ' *' : ''}
-              </label>
+            <label key={ri.id} className="inline-flex items-center gap-1.5 text-xs font-medium text-slate-600">
+              <span className="whitespace-nowrap">{ri.label}{(ri.required ?? true) ? ' *' : ''}</span>
               <select
                 value={picked[ri.id] || ''}
                 onChange={(e) => setPicked((p) => ({ ...p, [ri.id]: e.target.value }))}
-                className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+                className="max-w-[12rem] rounded-lg border border-slate-300 bg-white px-2 py-1 text-sm"
               >
                 <option value="">— Chọn —</option>
                 {(options[ri.id] || []).map((o, i) => (
@@ -3254,74 +4365,51 @@ function BulkRecipeModal({
                   </option>
                 ))}
               </select>
-            </div>
+            </label>
           ))
         )}
-
         {constraintState.map((s, i) => {
-          // Neutral (not red) until the limit is known — e.g. before a vehicle is
-          // picked the capacity is unknown, so it's "pending", not a violation.
           const pending = s.limit == null;
           const tone = pending
-            ? 'bg-slate-50 text-slate-600'
+            ? 'bg-slate-100 text-slate-600'
             : s.ok
-              ? 'bg-emerald-50 text-emerald-800'
-              : 'bg-rose-50 text-rose-800';
+              ? 'bg-emerald-50 text-emerald-700'
+              : 'bg-rose-50 text-rose-700';
           return (
-            <div key={i} className={`mt-3 rounded-lg px-3 py-2 text-sm ${tone}`}>
-              <div className="flex items-center justify-between font-medium">
-                <span>{s.c.label || s.c.agg_column}</span>
-                <span>
-                  {fmt(s.actual)} {s.c.op || '<='} {pending ? '—' : fmt(s.limit as number)}
-                  {!pending ? ` (${s.pct.toFixed(0)}%)` : ''}
-                </span>
-              </div>
-              {pending ? (
-                <div className="mt-0.5 text-xs">Hãy chọn tài nguyên để kiểm tra ràng buộc.</div>
-              ) : !s.ok ? (
-                <div className="mt-0.5 text-xs">{s.c.error_message || 'Vượt giới hạn — không thể xác nhận.'}</div>
-              ) : null}
-            </div>
+            <span
+              key={i}
+              title={!pending && !s.ok ? (s.c.error_message || 'Vượt giới hạn') : undefined}
+              className={`inline-flex items-center gap-1 whitespace-nowrap rounded-full px-2.5 py-1 text-xs font-medium ${tone}`}
+            >
+              {s.c.label || s.c.agg_column}: {fmt(s.actual)} {s.c.op || '<='} {pending ? '—' : fmt(s.limit as number)}
+              {!pending ? ` · ${s.pct.toFixed(0)}%` : ''}
+            </span>
           );
         })}
-
-        {action.route_preview && selectedRows.length > 0 ? (
-          <div className="mt-3 overflow-hidden rounded-xl border border-slate-200">
-            <div className="border-b border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-medium text-slate-600">
-              Tuyến giao của các đơn đã chọn
-            </div>
-            <RouteMapView
-              rows={selectedRows}
-              config={action.route_preview}
-              colLabels={colLabels}
-              pkCols={pkCols}
-              onOpen={() => {}}
-              panelEnabled={false}
-              compact
-              emptyMessage="Các đơn đã chọn chưa có toạ độ (Lat/Long) để vẽ tuyến."
-            />
-          </div>
-        ) : null}
-
-        <div className="mt-5 flex justify-end gap-2">
-          {variant === 'modal' ? (
-            <button onClick={onClose} className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm text-slate-700 hover:bg-slate-50">
-              Huỷ
-            </button>
-          ) : null}
+        {action.route_preview && onToggleMap ? (
           <button
             type="button"
-            disabled={!canRun}
-            onClick={() => onRun(resources)}
-            style={{ backgroundColor: accent }}
-            className="inline-flex w-full items-center justify-center gap-1.5 rounded-lg px-4 py-2 text-sm font-semibold text-white shadow-sm disabled:opacity-40"
+            onClick={onToggleMap}
+            className="inline-flex items-center gap-1 rounded-lg border border-slate-300 bg-white px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50"
           >
-            {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-            {variant === 'panel' ? action.label : 'Xác nhận'}
+            {showMap ? 'Ẩn tuyến' : 'Xem tuyến'}
           </button>
-        </div>
-      </div>
-  );
+        ) : null}
+        <button
+          type="button"
+          disabled={!canRun}
+          onClick={() => onRun(resources)}
+          style={{ backgroundColor: accent }}
+          className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-lg px-3 py-1.5 text-sm font-semibold text-white shadow-sm disabled:opacity-40"
+          title={missingResource ? 'Chọn đủ tài nguyên để tiếp tục' : anyViolated ? 'Vượt giới hạn — bỏ bớt dòng' : undefined}
+        >
+          {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+          {action.icon ? `${action.icon} ` : ''}{action.label}
+        </button>
+      </>
+    );
+  }
+
   return variant === 'panel' ? (
     inner
   ) : (
@@ -3848,6 +4936,14 @@ async function fetchOsrmRouteLine(stops: RouteMapStop[]): Promise<Array<[number,
   return line.length >= 2 ? line : null;
 }
 
+// Marker glyph for the route map. Selected stops (selection_budget mode) get a
+// blue ringed marker; the rest stay orange. Kept module-level so both the map
+// build and the selection-recolour effect render an identical glyph.
+function routeMarkerHtml(seq: number | string, selected: boolean): string {
+  const bg = selected ? 'bg-blue-600 ring-2 ring-blue-300' : 'bg-orange-500';
+  return `<div class="flex h-7 w-7 items-center justify-center rounded-full border-2 border-white ${bg} text-xs font-bold text-white shadow">${escapeMapHtml(seq)}</div>`;
+}
+
 function RouteMapView({
   rows,
   config,
@@ -3857,6 +4953,8 @@ function RouteMapView({
   panelEnabled,
   emptyMessage,
   compact = false,
+  shared,
+  onAction,
 }: {
   rows: Array<Record<string, unknown>>;
   config: RouteMapConfigView;
@@ -3869,11 +4967,36 @@ function RouteMapView({
   // ABOVE the stop-list instead of the wide side-by-side split, and use a shorter
   // map. The full-width route-map screen leaves this false.
   compact?: boolean;
+  // selection_budget support: `shared` resolves a {{shared.x}} limit; `onAction`
+  // fires the confirm navigation carrying the selected count + value total.
+  shared?: Record<string, unknown>;
+  onAction?: (action: RowActionDescriptor, row: Record<string, unknown>) => void;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [selectedRouteId, setSelectedRouteId] = useState<string>('');
   const [routeLine, setRouteLine] = useState<Array<[number, number]> | null>(null);
   const [routeLineStatus, setRouteLineStatus] = useState<'idle' | 'loading' | 'road' | 'fallback'>('idle');
+  // selection_budget: constrained multi-select overlay (list checkbox ↔ map marker).
+  const budget = config.selection_budget || null;
+  const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set());
+  const selectionKeyOf = useCallback(
+    (row: Record<string, unknown>) => tableRowKey(row, pkCols),
+    [pkCols],
+  );
+  const toggleSel = useCallback((key: string) => {
+    setSelectedKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, []);
+  const toggleSelRef = useRef(toggleSel);
+  toggleSelRef.current = toggleSel;
+  /* eslint-disable @typescript-eslint/no-explicit-any */
+  const markerMapRef = useRef<Map<string, { marker: any; seq: number | string }>>(new Map());
+  const leafletRef = useRef<any>(null);
+  /* eslint-enable @typescript-eslint/no-explicit-any */
   const { stops, skipped } = useMemo(() => buildRouteStops(rows, config, pkCols), [rows, config, pkCols]);
   const routeIds = useMemo(() => Array.from(new Set(stops.map((s) => s.routeId))), [stops]);
 
@@ -3904,6 +5027,31 @@ function RouteMapView({
       : null,
     [visibleStops, config.value_column],
   );
+  // ── selection_budget: sum the value column over selected stops vs a limit
+  // that is either a static number or a {{shared.x}} carried value. ──────────
+  const selectedStops = useMemo(
+    () => visibleStops.filter((s) => selectedKeys.has(selectionKeyOf(s.row))),
+    [visibleStops, selectedKeys, selectionKeyOf],
+  );
+  const budgetSum = useMemo(
+    () => (budget?.value_column
+      ? selectedStops.reduce((sum, s) => sum + (parseRouteNumber(s.row[budget.value_column]) || 0), 0)
+      : 0),
+    [selectedStops, budget],
+  );
+  const budgetLimit = useMemo(() => {
+    const raw = budget?.limit ? String(budget.limit).trim() : '';
+    if (!raw) return null;
+    const m = raw.match(/^\{\{\s*shared\.([\w.]+)\s*\}\}$/);
+    if (m) {
+      const n = Number((shared || {})[m[1]]);
+      return Number.isFinite(n) ? n : null;
+    }
+    const n = Number(raw);
+    return Number.isFinite(n) ? n : null;
+  }, [budget, shared]);
+  const overBudget = budgetLimit != null && budgetSum > budgetLimit;
+  const blocked = overBudget && budget?.block_when_over !== false;
 
   const mapBuildKey = useMemo(
     () => JSON.stringify({
@@ -3963,11 +5111,13 @@ function RouteMapView({
 
       const bounds = L.latLngBounds([]);
       const latLngs: Array<[number, number]> = [];
+      leafletRef.current = L;
+      markerMapRef.current = new Map();
       visibleStops.forEach((stop, index) => {
         const sequence = stop.order ?? index + 1;
-        const markerHtml = `<div class="flex h-7 w-7 items-center justify-center rounded-full border-2 border-white bg-orange-500 text-xs font-bold text-white shadow">${escapeMapHtml(sequence)}</div>`;
+        const key = selectionKeyOf(stop.row);
         const icon = L.divIcon({
-          html: markerHtml,
+          html: routeMarkerHtml(sequence, !!budget && selectedKeys.has(key)),
           className: 'appbi-route-marker',
           iconSize: [28, 28],
           iconAnchor: [14, 14],
@@ -3977,6 +5127,10 @@ function RouteMapView({
           `<strong>${escapeMapHtml(stop.label)}</strong><br/>${escapeMapHtml(stop.routeId)}`,
           { direction: 'top', offset: [0, -12] },
         );
+        if (budget) {
+          marker.on('click', () => toggleSelRef.current(key));
+          markerMapRef.current.set(key, { marker, seq: sequence });
+        }
         latLngs.push([stop.lat, stop.lng]);
         bounds.extend([stop.lat, stop.lng]);
       });
@@ -4026,6 +5180,23 @@ function RouteMapView({
     /* eslint-enable @typescript-eslint/no-explicit-any */
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mapBuildKey]);
+
+  // Recolour markers on selection change WITHOUT rebuilding the whole map
+  // (build already colours markers correctly; this handles subsequent toggles).
+  useEffect(() => {
+    const L = leafletRef.current;
+    if (!L || !budget) return;
+    markerMapRef.current.forEach((entry, key) => {
+      entry.marker.setIcon(
+        L.divIcon({
+          html: routeMarkerHtml(entry.seq, selectedKeys.has(key)),
+          className: 'appbi-route-marker',
+          iconSize: [28, 28],
+          iconAnchor: [14, 14],
+        }),
+      );
+    });
+  }, [selectedKeys, budget]);
 
   if (rows.length === 0) {
     return (
@@ -4081,6 +5252,70 @@ function RouteMapView({
         ) : null}
       </div>
 
+      {budget ? (
+        <div
+          className={`flex flex-wrap items-center gap-3 rounded-xl border px-3 py-2 ${
+            overBudget ? 'border-rose-300 bg-rose-50' : 'border-emerald-200 bg-emerald-50'
+          }`}
+        >
+          <div className="min-w-[200px]">
+            <div className={`text-sm font-semibold ${overBudget ? 'text-rose-700' : 'text-emerald-800'}`}>
+              {budget.label || 'Đã chọn'}: {budgetSum.toLocaleString('vi-VN')}
+              {budgetLimit != null ? ` / ${budgetLimit.toLocaleString('vi-VN')}` : ''}
+              {budget.unit ? ` ${budget.unit}` : ''}
+            </div>
+            <div className="text-xs text-slate-500">
+              {selectedStops.length} điểm đã chọn
+              {overBudget ? ' · Vượt ngưỡng!' : ''}
+            </div>
+          </div>
+          {budgetLimit != null ? (
+            <div className="h-2 w-40 overflow-hidden rounded-full bg-slate-200">
+              <div
+                className={`h-full ${overBudget ? 'bg-rose-500' : 'bg-emerald-500'}`}
+                style={{ width: `${Math.min(100, budgetLimit > 0 ? (budgetSum / budgetLimit) * 100 : 0)}%` }}
+              />
+            </div>
+          ) : null}
+          {selectedKeys.size > 0 ? (
+            <button
+              type="button"
+              onClick={() => setSelectedKeys(new Set())}
+              className="rounded-md border border-slate-300 bg-white px-2 py-1 text-xs text-slate-600 hover:bg-slate-50"
+            >
+              Bỏ chọn
+            </button>
+          ) : null}
+          {budget.action_go_to_screen && onAction ? (
+            <button
+              type="button"
+              disabled={blocked || selectedStops.length === 0}
+              title={blocked ? 'Vượt ngưỡng — bỏ bớt điểm để tiếp tục' : undefined}
+              onClick={() => {
+                if (blocked || selectedStops.length === 0) return;
+                const totalKey = `${budget.value_column}_total`;
+                onAction(
+                  {
+                    id: 'route-budget-confirm',
+                    label: budget.action_label || 'Xác nhận',
+                    go_to_screen: budget.action_go_to_screen || null,
+                    carry: ['selected_count', totalKey],
+                  },
+                  { selected_count: selectedStops.length, [totalKey]: budgetSum },
+                );
+              }}
+              className={`rounded-md px-3 py-1.5 text-sm font-medium text-white ${
+                blocked || selectedStops.length === 0
+                  ? 'cursor-not-allowed bg-slate-300'
+                  : 'bg-teal-600 hover:bg-teal-700'
+              }`}
+            >
+              {budget.action_label || 'Xác nhận'}
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+
       <div className={`grid gap-4 ${sideEnabled && !compact ? 'lg:grid-cols-[minmax(0,1fr)_340px]' : ''}`}>
         <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white p-3 shadow-sm">
           <div
@@ -4098,15 +5333,30 @@ function RouteMapView({
             <div className="max-h-[374px] space-y-2 overflow-auto p-3">
               {visibleStops.map((stop, index) => {
                 const sequence = stop.order ?? index + 1;
+                const stopKey = selectionKeyOf(stop.row);
+                const stopSel = !!budget && selectedKeys.has(stopKey);
                 return (
-                  <button
+                  <div
                     key={`${stop.routeId}:${stop.sourceIndex}`}
-                    type="button"
-                    onClick={() => panelEnabled && onOpen(stop.row)}
-                    className={`w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-left transition ${
-                      panelEnabled ? 'hover:border-teal-300 hover:bg-teal-50/40' : 'cursor-default'
+                    className={`flex items-start gap-2 rounded-xl border px-3 py-2 transition ${
+                      stopSel ? 'border-blue-300 bg-blue-50/60' : 'border-slate-200 bg-white'
                     }`}
                   >
+                    {budget ? (
+                      <input
+                        type="checkbox"
+                        checked={stopSel}
+                        onChange={() => toggleSel(stopKey)}
+                        className="mt-1.5 h-4 w-4 shrink-0 rounded border-slate-300"
+                      />
+                    ) : null}
+                    <button
+                      type="button"
+                      onClick={() => panelEnabled && onOpen(stop.row)}
+                      className={`min-w-0 flex-1 text-left ${
+                        panelEnabled ? 'hover:opacity-80' : 'cursor-default'
+                      }`}
+                    >
                     <div className="flex items-start gap-2">
                       <span className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-orange-500 text-xs font-bold text-white">
                         {sequence}
@@ -4138,7 +5388,8 @@ function RouteMapView({
                         </div>
                       </div>
                     </div>
-                  </button>
+                    </button>
+                  </div>
                 );
               })}
             </div>
@@ -5521,6 +6772,27 @@ function TableScreen({
     }
     return out;
   }, [computedSpecs, lookupSpecs, rollupSpecs, tv.column_metadata]);
+  // Per-column horizontal align + pixel width from column_metadata. The builder
+  // exposes both but the grid previously ignored them (align hardcoded left,
+  // width auto). Static Tailwind classes so JIT keeps them.
+  const alignByCol = useMemo(() => {
+    const out: Record<string, string> = {};
+    for (const [name, meta] of Object.entries(tv.column_metadata || {})) {
+      const a = (meta as { align?: string } | null)?.align;
+      if (a) out[name] = a === 'right' ? 'text-right' : a === 'center' ? 'text-center' : 'text-left';
+    }
+    return out;
+  }, [tv.column_metadata]);
+  const widthByCol = useMemo(() => {
+    const out: Record<string, number> = {};
+    for (const [name, meta] of Object.entries(tv.column_metadata || {})) {
+      const w = Number((meta as { width_px?: number } | null)?.width_px || 0);
+      if (w > 0) out[name] = w;
+    }
+    return out;
+  }, [tv.column_metadata]);
+  const colWidthStyle = (c: string) =>
+    widthByCol[c] ? { width: widthByCol[c], minWidth: widthByCol[c], maxWidth: widthByCol[c] } : undefined;
   // Phase-19: conditional formatting. Evaluate each rule's ``when`` expr per
   // row via the shared row-local expr engine (same one as show_if/valid_if).
   // First matching rule wins. ``columns`` empty ⇒ tint whole row; otherwise
@@ -5598,6 +6870,8 @@ function TableScreen({
   const configuredFilters = ((tv.filters as RuntimeTableFilter[] | undefined) || []).filter(
     (item) => item?.column,
   );
+  // Distinct values per select-kind filter column (from the BE) → dropdown.
+  const filterOptions = (current.filter_options || {}) as Record<string, string[]>;
   const rowActionsRaw = (tv.row_actions || []) as RowActionDescriptor[];
   const rowActions = rowActionsRaw.filter((a) => {
     const allow = a.visible_for_roles;
@@ -5621,9 +6895,11 @@ function TableScreen({
     return allow.some((r) => r.toLowerCase() === target);
   });
   const selectionEnabled = bulkActions.length > 0 && pkCols.length > 0;
-  // A bulk action with route_preview is rendered as a docked side panel beside
-  // the table (select rows → see plan/map/weight live), not as a popup modal.
+  // A bulk action with route_preview is rendered inline in the sticky selection
+  // bar (compact one-row planner: pickers + capacity check + confirm), with its
+  // route map shown on demand below the bar via the "Xem tuyến" toggle.
   const panelAction = selectionEnabled ? bulkActions.find((a) => a.route_preview) || null : null;
+  const [showRoute, setShowRoute] = useState(false);
 
   // Phase-1 helpers: totals of the selected rows (tự tính tổng) + the
   // require_same precondition (all selected rows must share a value, e.g. same
@@ -6250,6 +7526,45 @@ function TableScreen({
                   </div>
                 );
               }
+              const selectOpts = filter.kind === 'select' ? filterOptions[filter.column] : undefined;
+              if (filter.kind === 'select' && selectOpts && selectOpts.length > 0) {
+                // Long option lists get a searchable combobox; short ones stay a
+                // native <select> (best mobile UX, nothing to search).
+                if (selectOpts.length > SEARCH_AUTO_MIN) {
+                  return (
+                    <label key={key} className="block">
+                      <span className="mb-1 block text-xs font-medium text-slate-600">{label}</span>
+                      <SearchableSelect
+                        value={filterValues[key] || ''}
+                        onChange={(v) => setFilterValues((prev) => ({ ...prev, [key]: v }))}
+                        options={selectOpts.map((opt) => ({ label: opt, value: opt }))}
+                        placeholder="— Tất cả —"
+                        clearLabel="— Tất cả —"
+                        allowSearch
+                      />
+                    </label>
+                  );
+                }
+                return (
+                  <label key={key} className="block">
+                    <span className="mb-1 block text-xs font-medium text-slate-600">{label}</span>
+                    <select
+                      value={filterValues[key] || ''}
+                      onChange={(event) =>
+                        setFilterValues((prev) => ({ ...prev, [key]: event.target.value }))
+                      }
+                      className="h-9 w-full rounded-md border border-slate-200 bg-white px-2 text-sm outline-none focus:border-slate-400"
+                    >
+                      <option value="">— Tất cả —</option>
+                      {selectOpts.map((opt) => (
+                        <option key={opt} value={opt}>
+                          {opt}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                );
+              }
               return (
                 <label key={key} className="block">
                   <span className="mb-1 block text-xs font-medium text-slate-600">{label}</span>
@@ -6292,9 +7607,14 @@ function TableScreen({
             <div key={i} className="rounded-lg border border-slate-200 bg-white px-3 py-2">
               <div className="truncate text-xs text-slate-500">{tile.label}</div>
               <div className="mt-0.5 text-lg font-semibold text-slate-800">
-                {tile.value == null || tile.value === ''
-                  ? '—'
-                  : `${formatCellValue(tile.value)}${tile.unit ? ' ' + tile.unit : ''}`}
+                {tile.value == null || tile.value === '' ? (
+                  '—'
+                ) : (
+                  <>
+                    <FormattedCell value={tile.value} format={tile.format ?? null} />
+                    {tile.unit ? ` ${tile.unit}` : ''}
+                  </>
+                )}
               </div>
             </div>
           ))}
@@ -6330,6 +7650,8 @@ function TableScreen({
           onOpen={openDetailPanel}
           panelEnabled={panelEnabled}
           emptyMessage={tv.empty_state_message}
+          shared={shared}
+          onAction={onAction}
         />
       ) : (
       <>
@@ -6364,6 +7686,23 @@ function TableScreen({
             </div>
           ) : null}
           <div className="ml-auto flex flex-wrap items-center gap-2">
+            {panelAction ? (
+              <BulkRecipeModal
+                variant="bar"
+                action={panelAction}
+                selectedRows={selectedRows}
+                token={token}
+                workboardId={workboardId}
+                accent={accent}
+                colLabels={colLabels}
+                pkCols={pkCols}
+                busy={bulkBusy}
+                showMap={showRoute}
+                onToggleMap={() => setShowRoute((v) => !v)}
+                onClose={() => {}}
+                onRun={(resources) => void runServerBulkAction(panelAction, resources)}
+              />
+            ) : null}
             {bulkActions.filter((a) => a.id !== panelAction?.id).map((a) => {
               const bad = bulkGuardBad(a);
               const blocked = bad.length > 0;
@@ -6400,6 +7739,29 @@ function TableScreen({
           </div>
         </div>
       ) : null}
+      {showRoute && panelAction?.route_preview && selectedKeys.size > 0 ? (
+        <div className="mb-2 overflow-hidden rounded-xl border border-slate-200">
+          <div className="flex items-center justify-between border-b border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-medium text-slate-600">
+            <span>Tuyến giao của các đơn đã chọn</span>
+            <button
+              type="button"
+              onClick={() => setShowRoute(false)}
+              className="rounded px-1.5 text-slate-400 hover:bg-slate-200 hover:text-slate-600"
+            >
+              Ẩn ✕
+            </button>
+          </div>
+          <RouteMapView
+            rows={selectedRows}
+            config={panelAction.route_preview}
+            colLabels={colLabels}
+            pkCols={pkCols}
+            onOpen={() => {}}
+            panelEnabled={false}
+            emptyMessage="Các đơn đã chọn chưa có toạ độ (Lat/Long) để vẽ tuyến."
+          />
+        </div>
+      ) : null}
       {bulkModal ? (
         <BulkRecipeModal
           action={bulkModal}
@@ -6414,8 +7776,8 @@ function TableScreen({
           onRun={(resources) => void runServerBulkAction(bulkModal, resources)}
         />
       ) : null}
-      <div className={panelAction ? 'lg:flex lg:items-start lg:gap-3' : undefined}>
-      <div className="max-w-full min-w-0 overflow-x-auto overscroll-x-contain lg:flex-1">
+      <div>
+      <div className="max-w-full min-w-0 overflow-x-auto overscroll-x-contain">
         <table className="min-w-max w-full text-sm">
           <thead>
             {columnGroups.length > 0 ? (
@@ -6464,7 +7826,7 @@ function TableScreen({
                     i += 1;
                   }
                   if (rowActions.length > 0 || isEditable) {
-                    cells.push(<th key="g:actions" rowSpan={2} className="w-24" />);
+                    cells.push(<th key="g:actions" rowSpan={2} className="min-w-[6rem]" />);
                   }
                   return cells;
                 })()}
@@ -6486,11 +7848,14 @@ function TableScreen({
                 if (columnGroups.length > 0 && !groupedColumns.has(c)) return null;
                 const computedSpec = computedSpecs.find((cc) => cc.name === c);
                 const lookupSpec = lookupSpecs.find((ll) => ll.name === c);
+                const rollupSpec = rollupSpecs.find((rr) => rr.name === c);
                 const isComputed = !!computedSpec;
                 const isLookup = !!lookupSpec;
+                const isRollup = !!rollupSpec;
                 const headerLabel =
                   computedSpec?.label ||
                   lookupSpec?.label ||
+                  rollupSpec?.label ||
                   colLabels[c] ||
                   c;
                 // Origin hint for ↗ lookup icon — shows "↗ tra từ <table>"
@@ -6507,7 +7872,8 @@ function TableScreen({
                 return (
                   <th
                     key={c}
-                    className="px-3 py-2 text-left text-xs font-semibold text-slate-600"
+                    style={colWidthStyle(c)}
+                    className={`px-3 py-2 text-xs font-semibold text-slate-600 ${alignByCol[c] || 'text-left'}`}
                   >
                     {headerLabel}
                     {requiredCols.has(c) ? <span className="ml-0.5 text-red-500">*</span> : null}
@@ -6518,6 +7884,13 @@ function TableScreen({
                     ) : isLookup ? (
                       <span className="ml-1 text-[10px] font-normal text-emerald-600" title={lookupTooltip}>
                         ↗
+                      </span>
+                    ) : isRollup ? (
+                      <span
+                        className="ml-1 text-[10px] font-normal text-amber-600"
+                        title={`Roll-up: ${rollupSpec?.agg || 'count'} từ bảng con`}
+                      >
+                        Σ
                       </span>
                     ) : editableCols.has(c) ? (
                       <span className="ml-1 text-[10px] font-normal text-slate-400" title="Editable">
@@ -6532,7 +7905,7 @@ function TableScreen({
                 );
               })}
               {(rowActions.length > 0 || isEditable) && columnGroups.length === 0 ? (
-                <th className="w-24 px-3 py-2 text-right text-xs font-semibold text-slate-600" />
+                <th className="min-w-[6rem] px-3 py-2 text-right text-xs font-semibold text-slate-600" />
               ) : null}
             </tr>
           </thead>
@@ -6596,7 +7969,8 @@ function TableScreen({
                       <td
                         key={c}
                         rowSpan={rowspan}
-                        className={`px-3 py-1.5 align-top ${
+                        style={colWidthStyle(c)}
+                        className={`whitespace-nowrap px-3 py-1.5 align-top ${alignByCol[c] || ''} ${
                           cellTint
                             ? `${cellTint} font-medium`
                             : editable
@@ -6652,7 +8026,7 @@ function TableScreen({
                                 if (a.confirm_message && !window.confirm(a.confirm_message)) return;
                                 onAction(a, row);
                               }}
-                              className={`rounded-md px-2 py-1 text-xs font-medium ${cls}`}
+                              className={`shrink-0 whitespace-nowrap rounded-md px-2 py-1 text-xs font-medium ${cls}`}
                               style={inlineStyle}
                               title={a.icon ? `${a.icon} ${a.label}` : a.label}
                             >
@@ -6764,23 +8138,6 @@ function TableScreen({
           </tbody>
         </table>
       </div>
-      {panelAction ? (
-        <div className="mt-3 lg:mt-0 lg:w-[400px] lg:shrink-0 lg:sticky lg:top-2">
-          <BulkRecipeModal
-            variant="panel"
-            action={panelAction}
-            selectedRows={selectedRows}
-            token={token}
-            workboardId={workboardId}
-            accent={accent}
-            colLabels={colLabels}
-            pkCols={pkCols}
-            busy={bulkBusy}
-            onClose={() => {}}
-            onRun={(resources) => void runServerBulkAction(panelAction, resources)}
-          />
-        </div>
-      ) : null}
       </div>
       </>
       )}
