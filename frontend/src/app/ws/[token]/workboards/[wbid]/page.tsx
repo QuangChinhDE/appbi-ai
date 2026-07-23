@@ -5820,6 +5820,27 @@ function TableScreen({
     }
     return out;
   }, [computedSpecs, lookupSpecs, rollupSpecs, tv.column_metadata]);
+  // Per-column horizontal align + pixel width from column_metadata. The builder
+  // exposes both but the grid previously ignored them (align hardcoded left,
+  // width auto). Static Tailwind classes so JIT keeps them.
+  const alignByCol = useMemo(() => {
+    const out: Record<string, string> = {};
+    for (const [name, meta] of Object.entries(tv.column_metadata || {})) {
+      const a = (meta as { align?: string } | null)?.align;
+      if (a) out[name] = a === 'right' ? 'text-right' : a === 'center' ? 'text-center' : 'text-left';
+    }
+    return out;
+  }, [tv.column_metadata]);
+  const widthByCol = useMemo(() => {
+    const out: Record<string, number> = {};
+    for (const [name, meta] of Object.entries(tv.column_metadata || {})) {
+      const w = Number((meta as { width_px?: number } | null)?.width_px || 0);
+      if (w > 0) out[name] = w;
+    }
+    return out;
+  }, [tv.column_metadata]);
+  const colWidthStyle = (c: string) =>
+    widthByCol[c] ? { width: widthByCol[c], minWidth: widthByCol[c], maxWidth: widthByCol[c] } : undefined;
   // Phase-19: conditional formatting. Evaluate each rule's ``when`` expr per
   // row via the shared row-local expr engine (same one as show_if/valid_if).
   // First matching rule wins. ``columns`` empty ⇒ tint whole row; otherwise
@@ -6632,9 +6653,14 @@ function TableScreen({
             <div key={i} className="rounded-lg border border-slate-200 bg-white px-3 py-2">
               <div className="truncate text-xs text-slate-500">{tile.label}</div>
               <div className="mt-0.5 text-lg font-semibold text-slate-800">
-                {tile.value == null || tile.value === ''
-                  ? '—'
-                  : `${formatCellValue(tile.value)}${tile.unit ? ' ' + tile.unit : ''}`}
+                {tile.value == null || tile.value === '' ? (
+                  '—'
+                ) : (
+                  <>
+                    <FormattedCell value={tile.value} format={tile.format ?? null} />
+                    {tile.unit ? ` ${tile.unit}` : ''}
+                  </>
+                )}
               </div>
             </div>
           ))}
@@ -6826,11 +6852,14 @@ function TableScreen({
                 if (columnGroups.length > 0 && !groupedColumns.has(c)) return null;
                 const computedSpec = computedSpecs.find((cc) => cc.name === c);
                 const lookupSpec = lookupSpecs.find((ll) => ll.name === c);
+                const rollupSpec = rollupSpecs.find((rr) => rr.name === c);
                 const isComputed = !!computedSpec;
                 const isLookup = !!lookupSpec;
+                const isRollup = !!rollupSpec;
                 const headerLabel =
                   computedSpec?.label ||
                   lookupSpec?.label ||
+                  rollupSpec?.label ||
                   colLabels[c] ||
                   c;
                 // Origin hint for ↗ lookup icon — shows "↗ tra từ <table>"
@@ -6847,7 +6876,8 @@ function TableScreen({
                 return (
                   <th
                     key={c}
-                    className="px-3 py-2 text-left text-xs font-semibold text-slate-600"
+                    style={colWidthStyle(c)}
+                    className={`px-3 py-2 text-xs font-semibold text-slate-600 ${alignByCol[c] || 'text-left'}`}
                   >
                     {headerLabel}
                     {requiredCols.has(c) ? <span className="ml-0.5 text-red-500">*</span> : null}
@@ -6858,6 +6888,13 @@ function TableScreen({
                     ) : isLookup ? (
                       <span className="ml-1 text-[10px] font-normal text-emerald-600" title={lookupTooltip}>
                         ↗
+                      </span>
+                    ) : isRollup ? (
+                      <span
+                        className="ml-1 text-[10px] font-normal text-amber-600"
+                        title={`Roll-up: ${rollupSpec?.agg || 'count'} từ bảng con`}
+                      >
+                        Σ
                       </span>
                     ) : editableCols.has(c) ? (
                       <span className="ml-1 text-[10px] font-normal text-slate-400" title="Editable">
@@ -6936,7 +6973,8 @@ function TableScreen({
                       <td
                         key={c}
                         rowSpan={rowspan}
-                        className={`px-3 py-1.5 align-top ${
+                        style={colWidthStyle(c)}
+                        className={`px-3 py-1.5 align-top ${alignByCol[c] || ''} ${
                           cellTint
                             ? `${cellTint} font-medium`
                             : editable
