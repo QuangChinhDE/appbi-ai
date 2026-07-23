@@ -2006,11 +2006,17 @@ if settings.WORKBOARDS_ENABLED:
         if not isinstance(values, dict):
             raise HTTPException(status_code=400, detail="values is required.")
         client_op_id = body.get("client_op_id") if isinstance(body, dict) else None
+        relation_context = body.get("relation_context") if isinstance(body, dict) else None
         try:
             result = screen_runtime.insert_screen_row(
                 db, wb, screen, values, identity=identity,
                 client_op_id=client_op_id if isinstance(client_op_id, str) else None,
+                relation_context=relation_context if isinstance(relation_context, dict) else None,
             )
+            # Persist the submission audit and cached idempotency result. The
+            # datasource connector owns its write transaction; this metadata
+            # transaction must also be committed before returning success.
+            db.commit()
         except WorkboardValidationError as exc:
             raise HTTPException(
                 status_code=422,
@@ -2019,6 +2025,36 @@ if settings.WORKBOARDS_ENABLED:
         except WorkboardWriteError as exc:
             raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
         return {"action": "insert", **result}
+
+
+    @router.get("/workspaces/{token}/workboards/{workboard_id}/related-records")
+    def workspace_related_records(
+        token: str,
+        workboard_id: int,
+        request: Request,
+        parent_screen_id: str = Query(...),
+        relation_id: str = Query(...),
+        parent_key_value: str = Query(...),
+        db: Session = Depends(get_db),
+    ):
+        ws = _load_workspace_or_404(db, token)
+        app_user = _require_workspace_app_user(request, ws, db=db)
+        wb = _resolve_workboard_for_workspace(
+            db, ws, workboard_id, request=request, app_user=app_user
+        )
+        identity = identity_from_app_user(app_user)
+        try:
+            parsed_parent_key_value = json.loads(parent_key_value)
+        except Exception:
+            parsed_parent_key_value = parent_key_value
+        return screen_runtime.render_related_records(
+            db,
+            wb,
+            parent_screen_id=parent_screen_id,
+            relation_id=relation_id,
+            parent_key_value=parsed_parent_key_value,
+            identity=identity,
+        )
 
 
     @router.post("/workspaces/{token}/workboards/{workboard_id}/screens/{screen_id}/ocr-extract")

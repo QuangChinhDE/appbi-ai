@@ -125,6 +125,7 @@ export interface FormScreenSpecBuilt {
   fields: FormFieldSpec[];
   submit_label?: string | null;
   after_submit?: ScreenAction | null;
+  related_records?: RelatedRecordConfigSpec[];
   initial_values?: Record<string, unknown>;
   pages?: Array<{
     id: number;
@@ -135,6 +136,20 @@ export interface FormScreenSpecBuilt {
   sections?: string[];
   ocr?: OcrConfigSpec | null;
   geo_stamp_column?: string | null;
+}
+
+export interface RelatedRecordConfigSpec {
+  id: string;
+  label?: string | null;
+  child_screen_id: string;
+  parent_key_column: string;
+  child_foreign_key_column: string;
+  allow_multiple?: boolean;
+  show_existing?: boolean;
+  allow_add_after_save?: boolean;
+  keep_parent_context?: boolean;
+  display_columns?: string[];
+  finish_screen_id?: string | null;
 }
 
 export interface OcrConfigSpec {
@@ -590,6 +605,7 @@ export interface BrandingSpec {
 }
 
 export interface AutoNumberConfigSpec {
+  table_id?: number | null;
   column: string;
   pattern: string;
   reset?: 'never' | 'daily' | 'monthly' | 'yearly';

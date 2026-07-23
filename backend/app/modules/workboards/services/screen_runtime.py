@@ -23,6 +23,7 @@ Each helper takes a ``CallerIdentity`` so RLS is consistently applied.
 """
 from __future__ import annotations
 
+import hashlib
 import itertools
 import json
 import numbers
@@ -73,6 +74,56 @@ from app.services.live_query_service import LiveQueryService
 from app.services.google_sheets_cache import SheetsQuotaError
 
 logger = get_logger(__name__)
+
+
+def _op_actor_key(identity: CallerIdentity) -> str:
+    if identity.appbi_user_id is not None:
+        return f"appbi:{identity.appbi_user_id}"
+    app_user = identity.app_user or {}
+    return f"app-user:{app_user.get('username') or 'unknown'}"
+
+
+def _op_request_fingerprint(
+    screen_id: str,
+    values: Dict[str, Any],
+    relation_context: Optional[Dict[str, Any]],
+) -> str:
+    canonical = json.dumps(
+        {
+            "screen_id": screen_id,
+            "values": values or {},
+            "relation_context": relation_context or None,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        default=str,
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _replay_op_result(
+    entry: WorkboardOpLog,
+    *,
+    workboard_id: int,
+    screen_id: str,
+    actor_key: str,
+    request_fingerprint: str,
+) -> Dict[str, Any]:
+    if entry.workboard_id not in (None, workboard_id):
+        raise HTTPException(status_code=409, detail="Operation ID belongs to another workboard.")
+    if entry.screen_id not in (None, screen_id):
+        raise HTTPException(status_code=409, detail="Operation ID belongs to another screen.")
+    if entry.actor_key not in (None, actor_key):
+        raise HTTPException(status_code=409, detail="Operation ID belongs to another user.")
+    if entry.request_fingerprint not in (None, request_fingerprint):
+        raise HTTPException(status_code=409, detail="Operation ID was reused with different values.")
+    if not isinstance(entry.result_payload, dict):
+        raise HTTPException(
+            status_code=409,
+            detail="Operation is already recorded but its result is not available yet.",
+        )
+    return {**entry.result_payload, "idempotent": True}
 
 
 def _quota_503() -> "HTTPException":
@@ -1045,6 +1096,182 @@ def _fetch_current_row(
     return rows[0] if rows else None
 
 
+def _resolve_relation_bound_values(
+    db: Session,
+    workboard: Workboard,
+    layout: LayoutJson,
+    child_screen: Screen,
+    relation_context: Optional[Dict[str, Any]],
+    identity: CallerIdentity,
+) -> Dict[str, Any]:
+    """Validate a parent-child relation context and return server-bound values.
+
+    The client may name the relation and parent key value, but it never decides
+    which child column is written. That comes from the parent form's
+    RelatedRecordConfig after parent-row access has been verified.
+    """
+
+    if not relation_context:
+        return {}
+    if not isinstance(relation_context, dict):
+        raise HTTPException(status_code=400, detail="Invalid relation context.")
+
+    relation_id = str(relation_context.get("relation_id") or "").strip()
+    parent_screen_id = str(relation_context.get("parent_screen_id") or "").strip()
+    parent_key_value = relation_context.get("parent_key_value")
+    if not relation_id or not parent_screen_id:
+        raise HTTPException(status_code=400, detail="Relation context is incomplete.")
+    if parent_key_value is None or (
+        isinstance(parent_key_value, str) and not parent_key_value.strip()
+    ):
+        raise HTTPException(status_code=400, detail="Parent key value is required.")
+
+    parent_screen = get_screen(layout, parent_screen_id)
+    if parent_screen.kind != "form" or parent_screen.form is None:
+        raise HTTPException(status_code=400, detail="Relation parent must be a form screen.")
+
+    relation = None
+    for cfg in parent_screen.form.related_records or []:
+        if cfg.id == relation_id:
+            relation = cfg
+            break
+    if relation is None:
+        raise HTTPException(status_code=400, detail="Related-record config was not found.")
+    if relation.child_screen_id != child_screen.id:
+        raise HTTPException(status_code=403, detail="Child screen is not part of this relation.")
+
+    if not parent_screen.table_id or not child_screen.table_id:
+        raise HTTPException(status_code=400, detail="Relation screens must be bound to tables.")
+
+    parent_table = _load_table(db, parent_screen.table_id)
+    child_table = _load_table(db, child_screen.table_id)
+    if not parent_table or not child_table:
+        raise HTTPException(status_code=400, detail="Relation table binding is missing.")
+
+    parent_columns = _table_column_names(parent_table)
+    child_columns = _table_column_names(child_table)
+    if relation.parent_key_column not in parent_columns:
+        raise HTTPException(status_code=400, detail="Relation parent key column is missing.")
+    if relation.child_foreign_key_column not in child_columns:
+        raise HTTPException(status_code=400, detail="Relation child FK column is missing.")
+
+    datasource = _load_datasource(db, parent_table)
+    if datasource is None:
+        raise HTTPException(status_code=400, detail="Relation parent datasource is missing.")
+
+    rls_filters, allowed = build_rls_filter(
+        parent_screen.rls, parent_screen.rls_default, identity
+    )
+    if not allowed:
+        raise HTTPException(status_code=403, detail="You don't have access to the parent row.")
+
+    filters = [
+        {
+            "field": relation.parent_key_column,
+            "operator": "eq",
+            "value": parent_key_value,
+        }
+    ] + rls_filters
+    result = LiveQueryService.execute_preview_query(
+        datasource, parent_table, limit=1, offset=0, filters=filters
+    )
+    if not (result.get("rows") or []):
+        raise HTTPException(status_code=403, detail="You don't have access to the parent row.")
+
+    return {relation.child_foreign_key_column: parent_key_value}
+
+
+def render_related_records(
+    db: Session,
+    workboard: Workboard,
+    *,
+    parent_screen_id: str,
+    relation_id: str,
+    parent_key_value: Any,
+    identity: CallerIdentity,
+) -> Dict[str, Any]:
+    """Return child rows for a validated parent-child relation context."""
+
+    layout = parse_layout(workboard)
+    parent_screen = get_screen(layout, parent_screen_id)
+    if parent_screen.kind != "form" or parent_screen.form is None:
+        raise HTTPException(status_code=400, detail="Relation parent must be a form screen.")
+
+    relation = None
+    for cfg in parent_screen.form.related_records or []:
+        if cfg.id == relation_id:
+            relation = cfg
+            break
+    if relation is None:
+        raise HTTPException(status_code=400, detail="Related-record config was not found.")
+
+    child_screen = get_screen(layout, relation.child_screen_id)
+    _resolve_relation_bound_values(
+        db,
+        workboard,
+        layout,
+        child_screen,
+        {
+            "relation_id": relation_id,
+            "parent_screen_id": parent_screen_id,
+            "parent_key_value": parent_key_value,
+        },
+        identity,
+    )
+
+    if child_screen.table_id is None:
+        raise HTTPException(status_code=400, detail="Relation child screen has no table.")
+    child_table = _load_table(db, child_screen.table_id)
+    datasource = _load_datasource(db, child_table) if child_table else None
+    if not child_table or not datasource:
+        raise HTTPException(status_code=400, detail="Relation child datasource is missing.")
+
+    rls_filters, allowed = build_rls_filter(
+        child_screen.rls, child_screen.rls_default, identity
+    )
+    if not allowed:
+        return {"columns": [], "rows": [], "total_count": 0}
+
+    filters = [
+        {
+            "field": relation.child_foreign_key_column,
+            "operator": "eq",
+            "value": parent_key_value,
+        }
+    ] + rls_filters
+    result = LiveQueryService.execute_preview_query(
+        datasource, child_table, limit=500, offset=0, filters=filters
+    )
+    rows = result.get("rows") or []
+    all_columns = result.get("columns") or list(rows[0].keys() if rows else [])
+    edit_columns: List[str] = []
+    if child_screen.kind == "form" and child_screen.form is not None:
+        edit_columns = [
+            f.column for f in child_screen.form.fields
+            if f.column in all_columns and f.column != relation.child_foreign_key_column
+        ]
+    if relation.display_columns:
+        columns = [c for c in relation.display_columns if c in all_columns]
+    elif edit_columns:
+        columns = edit_columns
+    elif child_screen.kind == "table" and child_screen.table is not None:
+        columns = [
+            c for c in child_screen.table.columns
+            if c in all_columns and c != relation.child_foreign_key_column
+        ]
+    else:
+        columns = [c for c in all_columns if c != relation.child_foreign_key_column]
+    pk_cols = list(child_screen.primary_key_columns or [])
+    row_keys = list(dict.fromkeys([*pk_cols, *columns, *edit_columns]))
+    shaped_rows = [{col: row.get(col) for col in row_keys} for row in rows]
+    return {
+        "columns": columns,
+        "primary_key_columns": pk_cols,
+        "rows": shaped_rows,
+        "total_count": len(rows),
+    }
+
+
 def _enforce_status_rules(
     status_fields: List[Any],
     values: Dict[str, Any],
@@ -1191,6 +1418,9 @@ def render_form_screen(
             if screen.form.after_submit is not None
             else None
         ),
+        "related_records": [
+            relation.model_dump() for relation in (screen.form.related_records or [])
+        ],
         "pages": [p.model_dump() for p in (screen.form.pages or [])],
         "sections": list(screen.form.sections or []),
         # Expose ONLY whether photo-capture/OCR is on — never the token/model.
@@ -1214,6 +1444,7 @@ def insert_screen_row(
     *,
     identity: CallerIdentity,
     client_op_id: Optional[str] = None,
+    relation_context: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     # Form and table screens are writable. Form runs field-level
     # conditional rules (show_if / required_if) first; table screens use
@@ -1237,6 +1468,47 @@ def insert_screen_row(
                     "This table has no editable columns — add at least one "
                     "to editable_columns before turning on allow_add_row."
                 ),
+            )
+
+    op_entry: Optional[WorkboardOpLog] = None
+    if client_op_id is not None:
+        normalized_op_id = client_op_id.strip()
+        if not normalized_op_id or len(normalized_op_id) > 64:
+            raise HTTPException(status_code=400, detail="client_op_id must be 1 to 64 characters.")
+        actor_key = _op_actor_key(identity)
+        request_fingerprint = _op_request_fingerprint(screen.id, values, relation_context)
+        existing = db.get(WorkboardOpLog, normalized_op_id)
+        if existing is not None:
+            return _replay_op_result(
+                existing,
+                workboard_id=workboard.id,
+                screen_id=screen.id,
+                actor_key=actor_key,
+                request_fingerprint=request_fingerprint,
+            )
+        op_entry = WorkboardOpLog(
+            op_id=normalized_op_id,
+            workboard_id=workboard.id,
+            screen_id=screen.id,
+            actor_key=actor_key,
+            request_fingerprint=request_fingerprint,
+        )
+        try:
+            db.add(op_entry)
+            db.flush()
+        except IntegrityError:
+            # A concurrent replay may have committed while this request was
+            # waiting on the PK. Resolve it before touching the datasource.
+            db.rollback()
+            existing = db.get(WorkboardOpLog, normalized_op_id)
+            if existing is None:
+                raise HTTPException(status_code=409, detail="Operation replay could not be resolved.")
+            return _replay_op_result(
+                existing,
+                workboard_id=workboard.id,
+                screen_id=screen.id,
+                actor_key=actor_key,
+                request_fingerprint=request_fingerprint,
             )
 
     if screen.kind == "form":
@@ -1273,23 +1545,22 @@ def insert_screen_row(
     cleaned = enforce_write_access(
         screen.rls, screen.rls_default, identity, op="insert", row_values=cleaned_pre
     )
+    relation_bound = _resolve_relation_bound_values(
+        db,
+        workboard,
+        parse_layout(workboard),
+        screen,
+        relation_context,
+        identity,
+    )
+    if relation_bound:
+        cleaned.update(relation_bound)
     # Server-side enrichment: fill lat/lng from the address if the screen opts
     # in via geocode config (no-op otherwise).
     cleaned = _apply_geocode(screen, cleaned)
     if screen.kind == "form":
         # Value-level status guard on top of RLS column masking (insert = no prev).
         _enforce_status_rules(_status_fields(screen), cleaned, identity, previous_row=None)
-    # Idempotency: claim the op_id BEFORE the data write (same transaction). A
-    # replayed offline submit — or one whose success response was lost — hits
-    # the PK conflict here and is treated as already-done, so it can never be
-    # inserted twice on reconnect.
-    if client_op_id:
-        try:
-            db.add(WorkboardOpLog(op_id=str(client_op_id)[:64], workboard_id=workboard.id))
-            db.flush()
-        except IntegrityError:
-            db.rollback()
-            return {"action": "insert", "idempotent": True, "affected_rows": 0}
     # Hand off to the existing write service, but point it at the screen's
     # table by temporarily swapping ``primary_table_id`` on the workboard
     # instance — the service reads it lazily, so this is safe within the
@@ -1304,6 +1575,9 @@ def insert_screen_row(
     finally:
         workboard.primary_table_id = original_table
         workboard.primary_key_columns = original_pk
+    if op_entry is not None:
+        op_entry.result_payload = result
+        db.flush()
     return result
 
 

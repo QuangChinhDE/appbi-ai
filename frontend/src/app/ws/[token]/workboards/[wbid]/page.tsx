@@ -58,6 +58,7 @@ import {
   DocScreenResponse,
   FormScreenResponse,
   PrintTemplate,
+  RelatedRecordsResponse,
   ScreenResponse,
   TableRowDetailResponse,
   TableScreenResponse,
@@ -76,8 +77,22 @@ import {
   resolveMode,
   type WbTheme,
 } from '@/lib/wb-theme';
-import { enqueueSubmit, newOpId } from '@/lib/offline/queue';
-import { isNetworkError } from '@/lib/offline/sync';
+import {
+  enqueueRelationParent,
+  enqueueSubmit,
+  finishRelationFlow,
+  getRelationFlow,
+  latestRelationFlow,
+  newOpId,
+  newRelationFlowId,
+  notifyOfflineQueueChanged,
+  relationSubmits,
+  saveRelationFlow,
+  type OfflineRelationFlow,
+  type OfflineRelationRef,
+  type QueuedSubmit,
+} from '@/lib/offline/queue';
+import { isNetworkError, syncSubmits } from '@/lib/offline/sync';
 import { toast } from '@/lib/toast';
 
 // Icon mapping is centralised in ScreenIconRegistry so the builder
@@ -91,6 +106,7 @@ function pickIcon(name?: string | null): React.ElementType {
 }
 
 type DeviceMode = 'mobile' | 'tablet' | 'desktop';
+type FormSubmitMode = 'default' | 'add_next' | 'finish';
 
 interface ApiErrorLike {
   response?: {
@@ -106,6 +122,89 @@ interface RuntimeFormPage {
   title: string;
   description?: string;
   show_if?: unknown;
+}
+
+interface RuntimeRelationContext {
+  relation_id: string;
+  relation_label?: string | null;
+  parent_screen_id: string;
+  child_screen_id: string;
+  parent_key_column: string;
+  parent_key_value: unknown;
+  child_foreign_key_column: string;
+  finish_screen_id?: string | null;
+  show_existing?: boolean;
+  keep_parent_context?: boolean;
+  flow_id?: string | null;
+  parent_op_id?: string | null;
+  sync_status?: 'pending_parent' | 'active' | 'error' | 'finished';
+  sync_error?: string | null;
+}
+
+function asRelationContext(value: unknown, currentScreenId: string): RuntimeRelationContext | null {
+  if (!value || typeof value !== 'object') return null;
+  const raw = value as Record<string, unknown>;
+  const relationId = String(raw.relation_id || '').trim();
+  const parentScreenId = String(raw.parent_screen_id || '').trim();
+  const childScreenId = String(raw.child_screen_id || '').trim();
+  const parentKeyColumn = String(raw.parent_key_column || '').trim();
+  const childFk = String(raw.child_foreign_key_column || '').trim();
+  if (!relationId || !parentScreenId || childScreenId !== currentScreenId || !parentKeyColumn || !childFk) {
+    return null;
+  }
+  return {
+    relation_id: relationId,
+    relation_label: typeof raw.relation_label === 'string' ? raw.relation_label : null,
+    parent_screen_id: parentScreenId,
+    child_screen_id: childScreenId,
+    parent_key_column: parentKeyColumn,
+    parent_key_value: raw.parent_key_value,
+    child_foreign_key_column: childFk,
+    finish_screen_id: typeof raw.finish_screen_id === 'string' ? raw.finish_screen_id : null,
+    show_existing: raw.show_existing !== false,
+    keep_parent_context: raw.keep_parent_context !== false,
+    flow_id: typeof raw.flow_id === 'string' ? raw.flow_id : null,
+    parent_op_id: typeof raw.parent_op_id === 'string' ? raw.parent_op_id : null,
+    sync_status:
+      raw.sync_status === 'pending_parent' ||
+      raw.sync_status === 'active' ||
+      raw.sync_status === 'error' ||
+      raw.sync_status === 'finished'
+        ? raw.sync_status
+        : undefined,
+    sync_error: typeof raw.sync_error === 'string' ? raw.sync_error : null,
+  };
+}
+
+function relationContextFromFlow(flow: OfflineRelationFlow): RuntimeRelationContext {
+  return {
+    relation_id: flow.relationId,
+    relation_label: flow.relationLabel || null,
+    parent_screen_id: flow.parentScreenId,
+    child_screen_id: flow.childScreenId,
+    parent_key_column: flow.parentKeyColumn,
+    parent_key_value: flow.parentKeyValue,
+    child_foreign_key_column: flow.childForeignKeyColumn,
+    finish_screen_id: flow.finishScreenId || null,
+    show_existing: flow.showExisting !== false,
+    keep_parent_context: flow.keepParentContext !== false,
+    flow_id: flow.flowId,
+    parent_op_id: flow.parentOpId,
+    sync_status: flow.status,
+    sync_error: flow.error || null,
+  };
+}
+
+function relationRefFromContext(context: RuntimeRelationContext): OfflineRelationRef | null {
+  if (!context.flow_id) return null;
+  return {
+    flowId: context.flow_id,
+    relationId: context.relation_id,
+    parentScreenId: context.parent_screen_id,
+    childScreenId: context.child_screen_id,
+    parentKeyColumn: context.parent_key_column,
+    childForeignKeyColumn: context.child_foreign_key_column,
+  };
 }
 
 interface RuntimeEvalCtx {
@@ -264,12 +363,31 @@ export default function WorkspaceWorkboardPage() {
           delete out.screen;
           return { deepScreen: screen, seed: out };
         })();
-        if (Object.keys(seed).length > 0) setShared((curr) => ({ ...curr, ...seed }));
+        const resumableFlow = await latestRelationFlow(
+          token,
+          workboardId,
+          deepScreen || undefined,
+        );
+        if (!alive) return;
+        const shouldResumeFlow = Boolean(
+          resumableFlow && (!deepScreen || deepScreen === resumableFlow.childScreenId),
+        );
+        if (Object.keys(seed).length > 0 || shouldResumeFlow) {
+          setShared((curr) => ({
+            ...curr,
+            ...seed,
+            ...(shouldResumeFlow && resumableFlow
+              ? { __wb_relation_context: relationContextFromFlow(resumableFlow) }
+              : {}),
+          }));
+        }
         const knownScreen = deepScreen && s.screens.some((sc) => sc.id === deepScreen);
         // Deep-link may target an off-nav screen (e.g. a scan-only status form);
         // the backend still enforces per-screen visibility/hidden/RLS, so accept
         // any existing screen id here and fall back to the nav default otherwise.
-        const chosenId = knownScreen
+        const chosenId = shouldResumeFlow && resumableFlow
+          ? resumableFlow.childScreenId
+          : knownScreen
           ? (deepScreen as string)
           : s.nav.items.length > 0
             ? s.nav.items[0]
@@ -1404,6 +1522,7 @@ function FormScreen({
   onSaved: (carry: Record<string, unknown>, nextScreen?: string) => void;
   onNavigate?: (screenId: string, carry?: Record<string, unknown>) => void;
 }) {
+  const [ignoreSharedSeed, setIgnoreSharedSeed] = useState(false);
   const buildInitial = useCallback(() => {
     const merged: Record<string, unknown> = {};
     const allowedKeys = new Set<string>();
@@ -1414,11 +1533,25 @@ function FormScreen({
     }
     for (const col of spec.primary_key_columns || []) allowedKeys.add(String(col));
     Object.assign(merged, spec.initial_values || {});
-    for (const [key, value] of Object.entries(shared || {})) {
-      if (allowedKeys.has(key)) merged[key] = value;
+    if (!ignoreSharedSeed) {
+      for (const [key, value] of Object.entries(shared || {})) {
+        if (allowedKeys.has(key)) merged[key] = value;
+      }
     }
     return merged;
-  }, [spec, shared]);
+  }, [ignoreSharedSeed, spec, shared]);
+
+  const buildFreshInitial = useCallback(() => {
+    const merged: Record<string, unknown> = {};
+    for (const field of (spec.fields as Array<Record<string, unknown>>) || []) {
+      const column = String(field.column);
+      if (field.default !== undefined && field.default !== null) {
+        merged[column] = field.default;
+      }
+    }
+    Object.assign(merged, spec.initial_values || {});
+    return merged;
+  }, [spec]);
 
   const [values, setValues] = useState<Record<string, unknown>>(buildInitial());
   const [submitting, setSubmitting] = useState(false);
@@ -1433,6 +1566,85 @@ function FormScreen({
   const [ocrDragging, setOcrDragging] = useState(false);
   const [ocrFilled, setOcrFilled] = useState<Set<string>>(new Set());
   const ocrInputRef = useRef<HTMLInputElement>(null);
+  const baseRelationContext = useMemo(
+    () => asRelationContext(shared.__wb_relation_context, spec.screen_id),
+    [shared, spec.screen_id],
+  );
+  const [relationFlow, setRelationFlow] = useState<OfflineRelationFlow | null>(null);
+  const [queuedRelatedRows, setQueuedRelatedRows] = useState<QueuedSubmit[]>([]);
+  const relationContext = useMemo(() => {
+    if (!baseRelationContext) return null;
+    return relationFlow ? relationContextFromFlow(relationFlow) : baseRelationContext;
+  }, [baseRelationContext, relationFlow]);
+  const [relatedRows, setRelatedRows] = useState<RelatedRecordsResponse | null>(null);
+  const [relatedLoading, setRelatedLoading] = useState(false);
+  const [relatedError, setRelatedError] = useState<string | null>(null);
+
+  const reloadRelatedRows = useCallback(async () => {
+    if (!baseRelationContext) {
+      setRelationFlow(null);
+      setQueuedRelatedRows([]);
+      setRelatedRows(null);
+      return;
+    }
+    let storedFlow: OfflineRelationFlow | null = null;
+    let queued: QueuedSubmit[] = [];
+    if (baseRelationContext.flow_id) {
+      storedFlow = await getRelationFlow(baseRelationContext.flow_id);
+      setRelationFlow((current) =>
+        current?.updatedAt === storedFlow?.updatedAt ? current : storedFlow,
+      );
+      queued = (await relationSubmits(baseRelationContext.flow_id)).filter((item) =>
+        Boolean(item.relation),
+      );
+      setQueuedRelatedRows(queued);
+    } else {
+      setRelationFlow(null);
+      setQueuedRelatedRows([]);
+    }
+    const effectiveContext = storedFlow
+      ? relationContextFromFlow(storedFlow)
+      : baseRelationContext;
+    const parentKeyValue = effectiveContext.parent_key_value;
+    const hasParentKey =
+      parentKeyValue !== undefined && parentKeyValue !== null && parentKeyValue !== '';
+    if (effectiveContext.show_existing === false || !hasParentKey) {
+      setRelatedRows(null);
+      setRelatedLoading(false);
+      setRelatedError(
+        storedFlow?.status === 'error'
+          ? storedFlow.error || 'Đồng bộ Parent thất bại.'
+          : null,
+      );
+      return;
+    }
+    setRelatedLoading(true);
+    setRelatedError(null);
+    try {
+      const rows = await workspaceApi.getRelatedRecords(token, workboardId, {
+        parent_screen_id: effectiveContext.parent_screen_id,
+        relation_id: effectiveContext.relation_id,
+        parent_key_value: parentKeyValue,
+      });
+      setRelatedRows(rows);
+    } catch (err) {
+      if (!isNetworkError(err) || queued.length === 0) {
+        setRelatedError('Không tải được danh sách chi tiết đã đồng bộ.');
+      }
+    } finally {
+      setRelatedLoading(false);
+    }
+  }, [baseRelationContext, token, workboardId]);
+
+  useEffect(() => {
+    void reloadRelatedRows();
+  }, [reloadRelatedRows]);
+
+  useEffect(() => {
+    const refresh = () => void reloadRelatedRows();
+    window.addEventListener('appbi-relation-flow-changed', refresh);
+    return () => window.removeEventListener('appbi-relation-flow-changed', refresh);
+  }, [reloadRelatedRows]);
 
   const handleOcrFile = (file: File | null) => {
     setOcrError(null);
@@ -1495,6 +1707,7 @@ function FormScreen({
   useEffect(() => {
     if (lastScreenId.current !== spec.screen_id) {
       lastScreenId.current = spec.screen_id;
+      setIgnoreSharedSeed(false);
       setValues(buildInitial());
       setSubmitError(null);
       setSuccess(null);
@@ -1547,8 +1760,88 @@ function FormScreen({
       return Math.max(n, 1);
     });
 
-  const handleSubmit = async (e?: React.FormEvent | React.MouseEvent) => {
+  const finishCurrentRelation = async () => {
+    if (relationContext?.flow_id) {
+      await finishRelationFlow(relationContext.flow_id);
+      notifyOfflineQueueChanged();
+    }
+    const finish = relationContext?.finish_screen_id || undefined;
+    setTimeout(() => {
+      if (finish) onSaved({ __wb_relation_context: null }, finish);
+      else onSaved({ __wb_relation_context: null }, spec.screen_id);
+    }, 400);
+  };
+
+  const queueRelationChild = async (
+    opId: string,
+    payload: Record<string, unknown>,
+    mode: FormSubmitMode,
+  ): Promise<boolean> => {
+    if (!relationContext) return false;
+    const relation = relationRefFromContext(relationContext);
+    if (!relation) return false;
+    await enqueueSubmit({
+      opId,
+      token,
+      workboardId,
+      screenId: spec.screen_id,
+      screenTitle: spec.title,
+      values: payload,
+      createdAt: Date.now(),
+      status: 'pending',
+      dependsOnOpId: relationContext.parent_op_id || null,
+      relation,
+    });
+    notifyOfflineQueueChanged();
+    setSuccess('Đã lưu tạm, đang chờ đồng bộ.');
+    await reloadRelatedRows();
+    if (typeof navigator !== 'undefined' && navigator.onLine) {
+      void syncSubmits().catch(() => undefined);
+    }
+    if (mode === 'finish') {
+      await finishCurrentRelation();
+      return true;
+    }
+    setValues(buildInitial());
+    setCurrentPage(1);
+    setOcrFilled(new Set());
+    setTimeout(() => setSuccess(null), 3000);
+    return true;
+  };
+
+  const handleSubmit = async (
+    e?: React.FormEvent | React.MouseEvent,
+    mode: FormSubmitMode = 'default',
+  ) => {
     e?.preventDefault();
+    if (mode === 'finish' && relationContext) {
+      const pkColumns = (spec.primary_key_columns || []).map(String);
+      const editingExisting =
+        !ignoreSharedSeed &&
+        pkColumns.length > 0 &&
+        pkColumns.every((column) => {
+          const value = shared[column];
+          return value !== undefined && value !== null && value !== '';
+        });
+      const baseline = buildFreshInitial();
+      const hasDraft = allFields.some((field) => {
+        const column = String(field.column || '');
+        if (
+          !column ||
+          column === relationContext.child_foreign_key_column ||
+          field.readonly ||
+          autoNumberSet.has(column)
+        ) return false;
+        const value = values[column];
+        if (value === undefined || value === null || value === '') return false;
+        return JSON.stringify(value) !== JSON.stringify(baseline[column]);
+      });
+      if (!editingExisting && !hasDraft) {
+        setSuccess('Đã hoàn tất.');
+        await finishCurrentRelation();
+        return;
+      }
+    }
     // Never persist while the wizard is on a non-final page (e.g. Enter pressed
     // in a page-1 field): advance instead of saving a partial row.
     if (isMultiPage && currentPage < lastVisiblePageId) {
@@ -1564,6 +1857,15 @@ function FormScreen({
     // Hoisted so the catch block can tell a new-row insert (queueable offline)
     // from an edit (needs the live row, not queueable).
     let isEditing = false;
+    let offlinePayload: Record<string, unknown> = {};
+    const followRelationForSubmit = !relationContext
+      ? (spec.related_records || []).find(
+          (relation) =>
+            relation.allow_add_after_save !== false &&
+            Boolean(relation.child_screen_id) &&
+            Boolean(relation.parent_key_column),
+        ) || null
+      : null;
     try {
       // Strip placeholder strings (still wrapped in {{…}}); the backend RLS
       // engine forces these columns to the caller's identity anyway.
@@ -1622,26 +1924,134 @@ function FormScreen({
           return;
         }
       }
+      const submittedPayload = { ...payload };
+      offlinePayload = { ...payload };
       const pk: Record<string, unknown> = {};
       isEditing =
+        !ignoreSharedSeed &&
         pkColumns.length > 0 &&
         pkColumns.every((col) => {
           const v = payload[col];
-          if (v === undefined || v === null || v === '') return false;
+          const initialValue = shared[col];
+          if (
+            v === undefined ||
+            v === null ||
+            v === '' ||
+            initialValue === undefined ||
+            initialValue === null ||
+            initialValue === ''
+          ) return false;
           pk[col] = v;
           return true;
         });
-      for (const col of pkColumns) delete payload[col];
       if (isEditing) {
-        await workspaceApi.updateScreenRow(token, workboardId, spec.screen_id, pk, payload);
+        for (const col of pkColumns) delete payload[col];
+      }
+      const relationKeyReady =
+        relationContext?.parent_key_value !== undefined &&
+        relationContext?.parent_key_value !== null &&
+        relationContext?.parent_key_value !== '';
+      if (
+        !isEditing &&
+        relationContext?.flow_id &&
+        (relationContext.sync_status !== 'active' || !relationKeyReady)
+      ) {
+        await queueRelationChild(opId, offlinePayload, mode);
+        return;
+      }
+      let result: Record<string, unknown> | null = null;
+      if (isEditing) {
+        result = await workspaceApi.updateScreenRow(token, workboardId, spec.screen_id, pk, payload);
       } else {
-        await workspaceApi.insertScreenRow(token, workboardId, spec.screen_id, payload, opId);
+        const relationPayload = relationContext
+          ? {
+              relation_id: relationContext.relation_id,
+              parent_screen_id: relationContext.parent_screen_id,
+              parent_key_value: relationContext.parent_key_value,
+            }
+          : null;
+        result = await workspaceApi.insertScreenRow(
+          token,
+          workboardId,
+          spec.screen_id,
+          payload,
+          opId,
+          relationPayload,
+        );
       }
       setSuccess(isEditing ? 'Đã cập nhật.' : 'Đã lưu.');
-      const next = spec.after_submit?.go_to_screen || undefined;
+      const savedContext: Record<string, unknown> = { ...submittedPayload, ...pk };
+      const row =
+        result && typeof result.row === 'object' && result.row !== null
+          ? (result.row as Record<string, unknown>)
+          : null;
+      const resultPk =
+        result && typeof result.pk === 'object' && result.pk !== null
+          ? (result.pk as Record<string, unknown>)
+          : null;
+      if (row) Object.assign(savedContext, row);
+      if (resultPk) Object.assign(savedContext, resultPk);
+      let next = spec.after_submit?.go_to_screen || undefined;
       const carry: Record<string, unknown> = {};
       for (const col of spec.after_submit?.carry || []) {
-        if (col in payload) carry[col] = payload[col];
+        if (col in savedContext) carry[col] = savedContext[col];
+      }
+      const followRelation = !isEditing ? followRelationForSubmit : null;
+      if (followRelation) {
+        const parentKeyValue = savedContext[followRelation.parent_key_column];
+        if (parentKeyValue !== undefined && parentKeyValue !== null && parentKeyValue !== '') {
+          const now = Date.now();
+          const flow: OfflineRelationFlow = {
+            flowId: newRelationFlowId(),
+            token,
+            workboardId,
+            parentOpId: opId,
+            relationId: followRelation.id,
+            relationLabel: followRelation.label || null,
+            parentScreenId: spec.screen_id,
+            childScreenId: followRelation.child_screen_id,
+            parentKeyColumn: followRelation.parent_key_column,
+            parentKeyValue,
+            childForeignKeyColumn: followRelation.child_foreign_key_column,
+            parentValues: savedContext,
+            finishScreenId: followRelation.finish_screen_id || null,
+            showExisting: followRelation.show_existing !== false,
+            keepParentContext: followRelation.keep_parent_context !== false,
+            status: 'active',
+            error: null,
+            createdAt: now,
+            updatedAt: now,
+          };
+          let flowPersisted = true;
+          try {
+            await saveRelationFlow(flow);
+          } catch {
+            // The online relation remains usable for this session even when a
+            // browser blocks IndexedDB; only restart restoration is unavailable.
+            flowPersisted = false;
+          }
+          carry[followRelation.parent_key_column] = parentKeyValue;
+          const runtimeContext = relationContextFromFlow(flow);
+          if (!flowPersisted) {
+            runtimeContext.flow_id = null;
+            runtimeContext.parent_op_id = null;
+          }
+          carry.__wb_relation_context = runtimeContext;
+          next = followRelation.child_screen_id;
+        }
+      }
+      if (relationContext && mode === 'add_next') {
+        await reloadRelatedRows();
+        if (isEditing) setIgnoreSharedSeed(true);
+        setValues(isEditing ? buildFreshInitial() : buildInitial());
+        setCurrentPage(1);
+        setOcrFilled(new Set());
+        setTimeout(() => setSuccess(null), 2500);
+        return;
+      }
+      if (relationContext && mode === 'finish') {
+        await finishCurrentRelation();
+        return;
       }
       // Brief delay so user sees the success badge before navigating.
       setTimeout(() => onSaved(carry, next), 600);
@@ -1649,14 +2059,64 @@ function FormScreen({
       // Offline (no server reachable) + a NEW row → queue it locally and let the
       // user keep working; it syncs automatically on reconnect. Editing offline
       // is not queued (needs the live row), so it falls through to the error path.
-      if (!isEditing && isNetworkError(err)) {
+      if (!isEditing && isNetworkError(err) && !relationContext) {
         try {
-          const payloadForQueue: Record<string, unknown> = {};
-          const fieldCols = new Set(allFields.map((f) => String(f.column || '')));
-          for (const k of fieldCols) {
-            const v = values[k];
-            if (typeof v === 'string' && v.startsWith('{{') && v.endsWith('}}')) continue;
-            payloadForQueue[k] = v;
+          if (followRelationForSubmit) {
+            const now = Date.now();
+            const relation: OfflineRelationRef = {
+              flowId: newRelationFlowId(),
+              relationId: followRelationForSubmit.id,
+              parentScreenId: spec.screen_id,
+              childScreenId: followRelationForSubmit.child_screen_id,
+              parentKeyColumn: followRelationForSubmit.parent_key_column,
+              childForeignKeyColumn: followRelationForSubmit.child_foreign_key_column,
+            };
+            const proposedKey = offlinePayload[followRelationForSubmit.parent_key_column];
+            const flow: OfflineRelationFlow = {
+              ...relation,
+              token,
+              workboardId,
+              parentOpId: opId,
+              relationLabel: followRelationForSubmit.label || null,
+              ...(proposedKey !== undefined && proposedKey !== null && proposedKey !== ''
+                ? { parentKeyValue: proposedKey }
+                : {}),
+              parentValues: offlinePayload,
+              finishScreenId: followRelationForSubmit.finish_screen_id || null,
+              showExisting: followRelationForSubmit.show_existing !== false,
+              keepParentContext: followRelationForSubmit.keep_parent_context !== false,
+              status: 'pending_parent',
+              error: null,
+              createdAt: now,
+              updatedAt: now,
+            };
+            await enqueueRelationParent(
+              {
+                opId,
+                token,
+                workboardId,
+                screenId: spec.screen_id,
+                screenTitle: spec.title,
+                values: offlinePayload,
+                createdAt: now,
+                status: 'pending',
+                producesRelation: relation,
+              },
+              flow,
+            );
+            notifyOfflineQueueChanged();
+            if (typeof navigator !== 'undefined' && navigator.onLine) {
+              void syncSubmits().catch(() => undefined);
+            }
+            const carry: Record<string, unknown> = {
+              __wb_relation_context: relationContextFromFlow(flow),
+            };
+            if (proposedKey !== undefined && proposedKey !== null && proposedKey !== '') {
+              carry[followRelationForSubmit.parent_key_column] = proposedKey;
+            }
+            setSuccess('Đã lưu Parent tạm và mở phần nhập chi tiết.');
+            onSaved(carry, followRelationForSubmit.child_screen_id);
+            return;
           }
           await enqueueSubmit({
             opId,
@@ -1664,11 +2124,14 @@ function FormScreen({
             workboardId,
             screenId: spec.screen_id,
             screenTitle: spec.title,
-            values: payloadForQueue,
+            values: offlinePayload,
             createdAt: Date.now(),
             status: 'pending',
           });
-          window.dispatchEvent(new Event('appbi-queue-changed'));
+          notifyOfflineQueueChanged();
+          if (typeof navigator !== 'undefined' && navigator.onLine) {
+            void syncSubmits().catch(() => undefined);
+          }
           setSuccess('Đã lưu tạm khi ngoại tuyến — sẽ tự gửi khi có mạng.');
           // Stay on the form: calling onSaved would navigate / re-fetch the
           // screen over the (still-offline) network → "Không tải được màn hình".
@@ -1681,6 +2144,14 @@ function FormScreen({
           return;
         } catch {
           setSubmitError('Không lưu tạm được khi ngoại tuyến. Vui lòng thử lại khi có mạng.');
+          return;
+        }
+      }
+      if (!isEditing && isNetworkError(err) && relationContext) {
+        try {
+          if (await queueRelationChild(opId, offlinePayload, mode)) return;
+        } catch {
+          setSubmitError('Không lưu tạm được bản ghi Child trên thiết bị.');
           return;
         }
       }
@@ -1731,6 +2202,24 @@ function FormScreen({
     <div className="mx-auto w-full max-w-3xl rounded-xl bg-white p-5 shadow-sm sm:p-6 xl:max-w-5xl 2xl:max-w-6xl">
       {spec.description && (
         <p className="mb-4 text-sm text-slate-500">{spec.description}</p>
+      )}
+
+      {relationContext && (
+        <RelatedRecordsPanel
+          context={relationContext}
+          rows={relatedRows}
+          queuedRows={queuedRelatedRows}
+          loading={relatedLoading}
+          error={relatedError}
+          accent={accent}
+          onRefresh={reloadRelatedRows}
+          onEdit={(row) => {
+            onNavigate?.(spec.screen_id, {
+              ...row,
+              __wb_relation_context: relationContext,
+            });
+          }}
+        />
       )}
 
       {ocrEnabled && (
@@ -1820,7 +2309,10 @@ function FormScreen({
         />
       )}
 
-      <form onSubmit={handleSubmit} className="space-y-4">
+      <form
+        onSubmit={(event) => handleSubmit(event, relationContext ? 'add_next' : 'default')}
+        className="space-y-4"
+      >
         {sectionOrder.map((sec) => {
           const list = fieldsBySection[sec];
           return (
@@ -1910,6 +2402,29 @@ function FormScreen({
             >
               Bước kế →
             </button>
+          ) : relationContext ? (
+            <div className="flex flex-wrap justify-end gap-2">
+              <button
+                key="wb-form-relation-finish"
+                type="button"
+                onClick={(event) => handleSubmit(event, 'finish')}
+                disabled={submitting}
+                className="rounded-md border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60"
+              >
+                Hoàn tất
+              </button>
+              <button
+                key="wb-form-relation-add-next"
+                type="button"
+                onClick={(event) => handleSubmit(event, 'add_next')}
+                disabled={submitting}
+                className="flex items-center gap-2 rounded-md px-5 py-2 text-sm font-semibold text-white disabled:opacity-60"
+                style={{ backgroundColor: accent }}
+              >
+                {submitting && <Loader2 className="h-4 w-4 animate-spin" />}
+                Lưu & thêm tiếp
+              </button>
+            </div>
           ) : (
             <button
               key="wb-form-submit"
@@ -1926,6 +2441,171 @@ function FormScreen({
         </div>
       </form>
     </div>
+  );
+}
+
+function RelatedRecordsPanel({
+  context,
+  rows,
+  queuedRows,
+  loading,
+  error,
+  accent,
+  onRefresh,
+  onEdit,
+}: {
+  context: RuntimeRelationContext;
+  rows: RelatedRecordsResponse | null;
+  queuedRows: QueuedSubmit[];
+  loading: boolean;
+  error: string | null;
+  accent: string;
+  onRefresh: () => void;
+  onEdit?: (row: Record<string, unknown>) => void;
+}) {
+  const serverRows = rows?.rows || [];
+  const queuedColumns = Array.from(
+    new Set(queuedRows.flatMap((item) => Object.keys(item.values))),
+  );
+  const columns = rows?.columns?.length ? rows.columns : queuedColumns;
+  const count = (rows?.total_count ?? serverRows.length) + queuedRows.length;
+  const showList = context.show_existing !== false || queuedRows.length > 0;
+  const parentKeyReady =
+    context.parent_key_value !== undefined &&
+    context.parent_key_value !== null &&
+    context.parent_key_value !== '';
+  return (
+    <section className="mb-4 rounded-lg border border-slate-200 bg-slate-50 p-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="min-w-0">
+          <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+            {context.relation_label || 'Related records'}
+          </div>
+          <div className="truncate text-sm font-semibold text-slate-900">
+            {parentKeyReady
+              ? `${context.parent_key_column}: ${String(context.parent_key_value)}`
+              : 'Parent đang chờ cấp mã trên máy chủ'}
+          </div>
+          {context.sync_status && (
+            <div
+              className={`mt-1 inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-semibold ${
+                context.sync_status === 'error'
+                  ? 'bg-rose-100 text-rose-700'
+                  : context.sync_status === 'pending_parent'
+                    ? 'bg-amber-100 text-amber-700'
+                    : 'bg-emerald-100 text-emerald-700'
+              }`}
+            >
+              {context.sync_status === 'error' ? (
+                <XCircle className="h-3 w-3" />
+              ) : context.sync_status === 'pending_parent' ? (
+                <RefreshCw className="h-3 w-3" />
+              ) : (
+                <CheckCircle2 className="h-3 w-3" />
+              )}
+              {context.sync_status === 'error'
+                ? 'Đồng bộ Parent lỗi'
+                : context.sync_status === 'pending_parent'
+                  ? 'Parent chờ đồng bộ'
+                  : 'Parent đã đồng bộ'}
+            </div>
+          )}
+        </div>
+        {showList && (
+          <button
+            type="button"
+            onClick={onRefresh}
+            className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100"
+          >
+            <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />
+            {count} dòng
+          </button>
+        )}
+      </div>
+      {error && (
+        <p className="mt-2 rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">
+          {error}
+        </p>
+      )}
+      {showList && (
+        <div className="mt-3 max-h-72 overflow-auto rounded-md border border-slate-200 bg-white">
+          {loading && serverRows.length === 0 && queuedRows.length === 0 ? (
+            <div className="flex items-center gap-2 px-3 py-3 text-sm text-slate-500">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              Đang tải danh sách...
+            </div>
+          ) : (serverRows.length === 0 && queuedRows.length === 0) || columns.length === 0 ? (
+            <div className="px-3 py-3 text-sm text-slate-500">
+              Chưa có dòng chi tiết nào.
+            </div>
+          ) : (
+            <table className="min-w-full divide-y divide-slate-200 text-sm">
+              <thead className="sticky top-0 z-10 bg-slate-50">
+                <tr>
+                  <th className="w-28 px-3 py-2 text-left text-xs font-semibold text-slate-500">
+                    Trạng thái
+                  </th>
+                  {columns.map((column) => (
+                    <th key={column} className="px-3 py-2 text-left text-xs font-semibold text-slate-500">
+                      {column}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {serverRows.map((row, index) => (
+                  <tr
+                    key={`server-${index}`}
+                    onClick={() => onEdit?.(row)}
+                    className={onEdit ? 'cursor-pointer hover:bg-slate-50' : undefined}
+                    title={onEdit ? 'Mở dòng này để sửa' : undefined}
+                  >
+                    <td className="px-3 py-2">
+                      <span className="inline-flex items-center gap-1 text-xs font-semibold text-emerald-700">
+                        <CheckCircle2 className="h-3.5 w-3.5" />
+                        Đã đồng bộ
+                      </span>
+                    </td>
+                    {columns.map((column) => (
+                      <td key={column} className="max-w-[14rem] truncate px-3 py-2 text-slate-700">
+                        {row[column] === null || row[column] === undefined ? '' : String(row[column])}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+                {queuedRows.map((item) => (
+                  <tr key={item.opId} className={item.status === 'error' ? 'bg-rose-50' : 'bg-amber-50'}>
+                    <td className="px-3 py-2">
+                      <span
+                        className={`inline-flex items-center gap-1 text-xs font-semibold ${
+                          item.status === 'error' ? 'text-rose-700' : 'text-amber-700'
+                        }`}
+                        title={item.error || undefined}
+                      >
+                        {item.status === 'error' ? (
+                          <XCircle className="h-3.5 w-3.5" />
+                        ) : (
+                          <RefreshCw className="h-3.5 w-3.5" />
+                        )}
+                        {item.status === 'error' ? 'Sync lỗi' : 'Chờ đồng bộ'}
+                      </span>
+                    </td>
+                    {columns.map((column) => (
+                      <td key={column} className="max-w-[14rem] truncate px-3 py-2 text-slate-700">
+                        {item.values[column] === null || item.values[column] === undefined
+                          ? ''
+                          : String(item.values[column])}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      )}
+      <div className="mt-2 h-0.5 w-16 rounded-full" style={{ backgroundColor: accent }} />
+    </section>
   );
 }
 

@@ -17,6 +17,7 @@ import {
   FileInput,
   GripVertical,
   LayoutList,
+  Link2,
   Loader2,
   Plus,
   Route,
@@ -45,7 +46,7 @@ import {
   BuilderTableMissingBanner,
   DataSourcePicker,
 } from './BuilderChrome';
-import type { FormFieldSpec, ScreenSpec } from './types';
+import type { FormFieldSpec, RelatedRecordConfigSpec, ScreenSpec } from './types';
 import { INPUT, Lbl } from './ScreenEditor';
 import { workboardApi } from '@/lib/api/workboards';
 
@@ -70,7 +71,7 @@ interface Props {
 type FormSpec = NonNullable<ScreenSpec['form']>;
 type FormPage = NonNullable<FormSpec['pages']>[number];
 type LookupRuntime = NonNullable<FormFieldSpec['lookup']>;
-type FormActiveItem = 'layout' | 'submit' | 'initial' | 'ocr' | `field:${number}`;
+type FormActiveItem = 'layout' | 'submit' | 'related' | 'initial' | 'ocr' | `field:${number}`;
 
 type OcrSpec = NonNullable<FormSpec['ocr']>;
 
@@ -368,7 +369,7 @@ function AddFieldMenu({
         <Plus className="h-3.5 w-3.5" />
       </button>
       {open && (
-        <div className="absolute right-0 z-30 mt-1 w-72 rounded-md border border-[rgb(var(--border-line))] bg-surface-1 shadow-lg">
+        <div className="absolute right-0 top-full z-50 mt-1 w-80 max-w-[calc(100vw-2rem)] overflow-hidden rounded-md border border-[rgb(var(--border-line))] bg-surface-1 shadow-popover lg:left-0 lg:right-auto">
           {columns.length > 0 && (
             <div className="border-b border-[rgb(var(--border-line))] p-2">
               <input
@@ -403,10 +404,11 @@ function AddFieldMenu({
                     setOpen(false);
                     setQ('');
                   }}
-                  className="flex w-full items-center justify-between gap-2 rounded px-2 py-1.5 text-left text-caption text-text-primary hover:bg-surface-2"
+                  className="grid w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-3 rounded px-2 py-1.5 text-left text-caption text-text-primary hover:bg-surface-2"
+                  title={`${c.name}${c.type ? ` (${c.type})` : ''}`}
                 >
-                  <span className="truncate font-medium">{c.name}</span>
-                  <span className="shrink-0 text-tiny text-text-tertiary">
+                  <span className="min-w-0 truncate font-medium">{c.name}</span>
+                  <span className="max-w-[11rem] shrink-0 truncate text-tiny text-text-tertiary">
                     {c.type ? `${c.type} → ` : ''}
                     {inferWidgetFromColumnType(c.type)}
                   </span>
@@ -512,6 +514,7 @@ export default function FormScreenEditor({
   );
   const pages = form.pages || [];
   const sections = form.sections || [];
+  const relatedRecords = form.related_records || [];
   const initialValues = form.initial_values || {};
   const initialEntries = Object.entries(initialValues);
   const isMultiStep = pages.length > 0;
@@ -620,6 +623,44 @@ export default function FormScreenEditor({
   const allFieldsUsed =
     fieldColumnOptions.length > 0 && fieldColumnOptions.every((column) => column in initialValues);
 
+  const addRelatedRecord = () => {
+    const child = allScreens.find(
+      (item) => item.id !== screen.id && (item.kind === 'form' || item.kind === 'table'),
+    );
+    const parentKey =
+      (screen.primary_key_columns || []).find(Boolean) || tableCols[0]?.name || '';
+    const childTable = tables.find((table) => table.id === child?.table_id);
+    const childFk =
+      childTable?.columns.find((column) => column.name === parentKey)?.name ||
+      childTable?.columns[0]?.name ||
+      parentKey;
+    const next: RelatedRecordConfigSpec = {
+      id: `related_${relatedRecords.length + 1}`,
+      label: child ? child.title : 'Related records',
+      child_screen_id: child?.id || '',
+      parent_key_column: parentKey,
+      child_foreign_key_column: childFk,
+      allow_multiple: true,
+      show_existing: true,
+      allow_add_after_save: true,
+      keep_parent_context: true,
+      display_columns: [],
+      finish_screen_id: null,
+    };
+    updateForm({ related_records: [...relatedRecords, next] });
+    setActiveItem('related');
+  };
+
+  const updateRelatedRecord = (index: number, patch: Partial<RelatedRecordConfigSpec>) => {
+    const next = [...relatedRecords];
+    next[index] = { ...next[index], ...patch };
+    updateForm({ related_records: next });
+  };
+
+  const removeRelatedRecord = (index: number) => {
+    updateForm({ related_records: relatedRecords.filter((_, itemIndex) => itemIndex !== index) });
+  };
+
   const renderInspector = () => {
     if (activeItem === 'layout') {
       return (
@@ -652,6 +693,27 @@ export default function FormScreenEditor({
             allScreens={allScreens}
             fieldColumnOptions={fieldColumnOptions}
             onChange={updateForm}
+          />
+        </BuilderInspectorPanel>
+      );
+    }
+
+    if (activeItem === 'related') {
+      return (
+        <BuilderInspectorPanel
+          icon={<Link2 className="h-4 w-4" />}
+          title="Related records"
+          subtitle="Bind child records to the saved parent row without exposing the FK to the user."
+        >
+          <RelatedRecordsInspector
+            screen={screen}
+            allScreens={allScreens}
+            tables={tables}
+            parentColumns={tableCols.map((column) => column.name)}
+            relations={relatedRecords}
+            onAdd={addRelatedRecord}
+            onChange={updateRelatedRecord}
+            onRemove={removeRelatedRecord}
           />
         </BuilderInspectorPanel>
       );
@@ -776,6 +838,17 @@ export default function FormScreenEditor({
               subtitle={form.after_submit?.go_to_screen ? 'Navigate after save' : 'Stay on this screen'}
               active={activeItem === 'submit'}
               onClick={() => setActiveItem('submit')}
+            />
+            <BuilderNavigatorItem
+              icon={<Link2 className="h-3.5 w-3.5" />}
+              label="Related records"
+              subtitle={
+                relatedRecords.length > 0
+                  ? `${relatedRecords.length} relation${relatedRecords.length === 1 ? '' : 's'}`
+                  : 'No child flow'
+              }
+              active={activeItem === 'related'}
+              onClick={() => setActiveItem('related')}
             />
             <BuilderNavigatorItem
               icon={<FileInput className="h-3.5 w-3.5" />}
@@ -1109,6 +1182,204 @@ function SubmitFlowInspector({
           placeholder="vd: vi_tri_gps (để trống = tắt)"
         />
       </Lbl>
+    </div>
+  );
+}
+
+function RelatedRecordsInspector({
+  screen,
+  allScreens,
+  tables,
+  parentColumns,
+  relations,
+  onAdd,
+  onChange,
+  onRemove,
+}: {
+  screen: ScreenSpec;
+  allScreens: ScreenSpec[];
+  tables: DatasetTableInfo[];
+  parentColumns: string[];
+  relations: RelatedRecordConfigSpec[];
+  onAdd: () => void;
+  onChange: (index: number, patch: Partial<RelatedRecordConfigSpec>) => void;
+  onRemove: (index: number) => void;
+}) {
+  const childScreens = allScreens.filter(
+    (item) => item.id !== screen.id && (item.kind === 'form' || item.kind === 'table'),
+  );
+  const screenById = new Map(allScreens.map((item) => [item.id, item]));
+  const tableById = new Map(tables.map((table) => [table.id, table]));
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between gap-3">
+        <div className="text-caption text-text-tertiary">
+          Use this when one parent row owns many child rows.
+        </div>
+        <BuilderActionButton onClick={onAdd}>
+          <Plus className="h-3.5 w-3.5" /> Add relation
+        </BuilderActionButton>
+      </div>
+
+      {relations.length === 0 ? (
+        <BuilderEmptyHint className="text-left">
+          No child flow yet. Add a relation to keep a parent key and bind child records automatically.
+        </BuilderEmptyHint>
+      ) : (
+        relations.map((relation, index) => {
+          const child = screenById.get(relation.child_screen_id);
+          const childTable = child ? tableById.get(child.table_id || 0) : undefined;
+          const childColumns = childTable?.columns.map((column) => column.name) || [];
+          const finishScreens = allScreens.filter((item) => item.id !== child?.id);
+          return (
+            <div
+              key={`${relation.id}:${index}`}
+              className="rounded-md border border-[rgb(var(--border-line))] bg-surface-1 p-3"
+            >
+              <div className="mb-3 flex items-center justify-between gap-2">
+                <div className="min-w-0">
+                  <div className="truncate text-caption font-medium text-text-primary">
+                    {relation.label || relation.id || 'Related records'}
+                  </div>
+                  <div className="truncate text-tiny text-text-tertiary">
+                    {relation.parent_key_column || 'parent key'} {'->'} {relation.child_foreign_key_column || 'child FK'}
+                  </div>
+                </div>
+                <BuilderIconButton
+                  onClick={() => onRemove(index)}
+                  title="Delete relation"
+                  variant="danger"
+                >
+                  <Trash2 className="h-3.5 w-3.5 text-danger" />
+                </BuilderIconButton>
+              </div>
+
+              <div className="space-y-3">
+                <div className={BUILDER_GRID_2}>
+                  <Lbl label="Relation ID">
+                    <input
+                      value={relation.id || ''}
+                      onChange={(event) =>
+                        onChange(index, {
+                          id: event.target.value.replace(/[^A-Za-z0-9_-]/g, '_'),
+                        })
+                      }
+                      className={`${INPUT} font-mono`}
+                      placeholder="production_details"
+                    />
+                  </Lbl>
+                  <Lbl label="Display label">
+                    <input
+                      value={relation.label || ''}
+                      onChange={(event) => onChange(index, { label: event.target.value || null })}
+                      className={INPUT}
+                      placeholder="Chi tiết sản lượng"
+                    />
+                  </Lbl>
+                  <Lbl label="Child screen">
+                    <select
+                      value={relation.child_screen_id || ''}
+                      onChange={(event) => {
+                        const childScreenId = event.target.value;
+                        const nextChild = screenById.get(childScreenId);
+                        const nextChildTable = nextChild ? tableById.get(nextChild.table_id || 0) : undefined;
+                        const parentKey = relation.parent_key_column || parentColumns[0] || '';
+                        const fk =
+                          nextChildTable?.columns.find((column) => column.name === parentKey)?.name ||
+                          nextChildTable?.columns[0]?.name ||
+                          relation.child_foreign_key_column ||
+                          '';
+                        onChange(index, {
+                          child_screen_id: childScreenId,
+                          child_foreign_key_column: fk,
+                        });
+                      }}
+                      className={INPUT}
+                    >
+                      <option value="">- pick a child screen -</option>
+                      {childScreens.map((item) => (
+                        <option key={item.id} value={item.id}>
+                          {item.title}
+                        </option>
+                      ))}
+                    </select>
+                  </Lbl>
+                  <Lbl label="Finish screen">
+                    <select
+                      value={relation.finish_screen_id || ''}
+                      onChange={(event) =>
+                        onChange(index, { finish_screen_id: event.target.value || null })
+                      }
+                      className={INPUT}
+                    >
+                      <option value="">Stay on child screen</option>
+                      {finishScreens.map((item) => (
+                        <option key={item.id} value={item.id}>
+                          {item.title}
+                        </option>
+                      ))}
+                    </select>
+                  </Lbl>
+                  <Lbl label="Parent key">
+                    <SingleColumnPicker
+                      sourceColumns={parentColumns}
+                      value={relation.parent_key_column || null}
+                      onChange={(next) => onChange(index, { parent_key_column: next || '' })}
+                      placeholder="Pick parent key..."
+                    />
+                  </Lbl>
+                  <Lbl label="Child foreign key">
+                    <SingleColumnPicker
+                      sourceColumns={childColumns}
+                      value={relation.child_foreign_key_column || null}
+                      onChange={(next) => onChange(index, { child_foreign_key_column: next || '' })}
+                      placeholder="Pick child FK..."
+                    />
+                  </Lbl>
+                </div>
+
+                <Lbl label="Child list display columns">
+                  <MultiColumnPicker
+                    sourceColumns={childColumns}
+                    value={relation.display_columns || []}
+                    onChange={(display_columns) => onChange(index, { display_columns })}
+                    placeholder="Pick columns to show in the child list..."
+                    emptyHint="Pick a child screen first."
+                  />
+                </Lbl>
+
+                <div className="flex flex-wrap gap-2">
+                  <ToggleChip
+                    label="Allow multiple"
+                    checked={relation.allow_multiple !== false}
+                    onChange={(allow_multiple) => onChange(index, { allow_multiple })}
+                  />
+                  <ToggleChip
+                    label="Show existing"
+                    checked={relation.show_existing !== false}
+                    onChange={(show_existing) => onChange(index, { show_existing })}
+                  />
+                  <ToggleChip
+                    label="Add after save"
+                    checked={relation.allow_add_after_save !== false}
+                    onChange={(allow_add_after_save) =>
+                      onChange(index, { allow_add_after_save })
+                    }
+                  />
+                  <ToggleChip
+                    label="Keep context"
+                    checked={relation.keep_parent_context !== false}
+                    onChange={(keep_parent_context) =>
+                      onChange(index, { keep_parent_context })
+                    }
+                  />
+                </div>
+              </div>
+            </div>
+          );
+        })
+      )}
     </div>
   );
 }

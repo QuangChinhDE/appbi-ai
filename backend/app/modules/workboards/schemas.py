@@ -803,6 +803,28 @@ class GeocodeConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class RelatedRecordConfig(BaseModel):
+    """Logical 1:N relation flow owned by a parent form.
+
+    This stays screen/table based instead of requiring a physical datasource FK,
+    so it works for SQL sources and Google Sheets alike.
+    """
+
+    id: str = Field(..., min_length=1, max_length=64)
+    label: Optional[str] = Field(default=None, max_length=120)
+    child_screen_id: str = Field(..., min_length=1, max_length=64)
+    parent_key_column: str = Field(..., min_length=1, max_length=120)
+    child_foreign_key_column: str = Field(..., min_length=1, max_length=120)
+    allow_multiple: bool = True
+    show_existing: bool = True
+    allow_add_after_save: bool = True
+    keep_parent_context: bool = True
+    display_columns: List[str] = Field(default_factory=list)
+    finish_screen_id: Optional[str] = Field(default=None, max_length=64)
+
+    model_config = ConfigDict(extra="forbid")
+
+
 class FormScreenSpec(BaseModel):
     """A data-entry screen bound to one dataset table.
 
@@ -815,6 +837,14 @@ class FormScreenSpec(BaseModel):
     fields: List[FormField] = Field(default_factory=list)
     submit_label: Optional[str] = None
     after_submit: Optional[ScreenAction] = None
+    related_records: List[RelatedRecordConfig] = Field(
+        default_factory=list,
+        description=(
+            "Parent-child entry flows. After saving this form, the runtime can "
+            "open a child screen while the backend injects the child FK from a "
+            "trusted parent context."
+        ),
+    )
     initial_values: Dict[str, Any] = Field(
         default_factory=dict,
         description="Per-column defaults; supports {{app_user.x}} / {{today}} placeholders.",
@@ -2087,6 +2117,14 @@ class AutoNumberConfig(BaseModel):
     is the safest default — the sequence keeps growing forever.
     """
 
+    table_id: Optional[int] = Field(
+        default=None,
+        gt=0,
+        description=(
+            "Optional dataset table scope. When omitted, the rule is legacy "
+            "workboard-wide and matches any insert carrying this column name."
+        ),
+    )
     column: str = Field(..., min_length=1, max_length=120)
     pattern: str = Field(
         ...,
