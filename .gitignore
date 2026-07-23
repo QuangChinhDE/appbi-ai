@@ -159,6 +159,7 @@ backend/scripts/regression_*.py
 !backend/tests/test_distinct_self_target.py
 !backend/tests/test_filter_layered_merge.py
 !backend/tests/test_workboard_offline_relation_phase2.py
+!backend/tests/test_non_fanning_reachability.py
 # Golden matrix — tracked so CI/reviewers can replay. BQ cases (ds55/56/65)
 # need a datasource → integration tier; the snowflake fixture seeds a local
 # Postgres and runs in CI.
