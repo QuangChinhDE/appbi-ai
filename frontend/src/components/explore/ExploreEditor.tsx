@@ -5,11 +5,13 @@
 
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
-import { Save, ArrowLeft, ChevronDown, ChevronRight, ChevronUp, Pencil, Check, Search, Settings2, Play, RotateCcw, Database, Link2, Code2, Eye } from 'lucide-react';
+import { Save, ArrowLeft, ChevronDown, ChevronRight, ChevronUp, Pencil, Check, Search, Settings2, Play, RotateCcw, Database, Code2, Eye } from 'lucide-react';
 import { HelpTooltip } from '@/components/ui/HelpTooltip';
 import { useI18n } from '@/providers/LanguageProvider';
 import { useDataset, useTablePreview, type ColumnMetadata } from '@/hooks/use-datasets';
 import { ExploreSourceSelector } from '@/components/explore/ExploreSourceSelector';
+import { BaseTablePicker } from '@/components/explore/BaseTablePicker';
+import { pickRecommendedBaseTableId } from '@/lib/semantic-base';
 import { DatasetTableGrid } from '@/components/datasets/DatasetTableGrid';
 import { ExploreChart } from '@/components/explore/ExploreChart';
 import { ChartErrorBoundary } from '@/components/dashboards/ChartErrorBoundary';
@@ -1162,6 +1164,14 @@ export function ExploreEditor({
   const { data: chart, isLoading: isChartLoading } = useChart(isEphemeral ? 0 : (chartId ?? 0));
   const { data: dataset } = useDataset(selectedDatasetId);
   const { data: datasetModel, isLoading: isDatasetModelLoading } = useDatasetModel(selectedDatasetId);
+  // Model-aware base recommendation: the central fact (measure table reaching
+  // the most others via N:1). Drives the "recommended" marker in the base
+  // picker; the auto-derive-from-first-field default is unchanged so the common
+  // "measure by dim" chart still anchors on the dim (member-preserving).
+  const recommendedBaseTableId = useMemo(
+    () => pickRecommendedBaseTableId(datasetModel ?? null),
+    [datasetModel],
+  );
   const resPerms = getResourcePermissions(isNew ? 'full' : chart?.user_permission);
 
   /**
@@ -3002,7 +3012,6 @@ export function ExploreEditor({
               const joinableCount = Math.max(0, activeRelationshipSummary.activeViewCount - 1);
               const hasJoined = crossUsed && joinedCount > 0;
               const hasJoinable = !crossUsed && joinableCount > 0;
-              const Icon = hasJoined ? Link2 : Database;
               const tone = hasJoined
                 ? 'border-success/40 bg-success/10 text-success'
                 : 'border-[rgb(var(--border-line))] bg-surface-2 text-text-tertiary';
@@ -3018,14 +3027,18 @@ export function ExploreEditor({
                     })
                   : t('explore.editor.dataBaseTitle', { base: baseLabel });
               return (
-                <span
-                  className={`inline-flex shrink-0 items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium ${tone}`}
-                  title={tip}
-                >
-                  <Icon className="h-3 w-3 shrink-0" />
-                  <span className="max-w-[160px] truncate">{baseLabel}</span>
-                  {hasJoined && <span className="opacity-70">+{joinedCount}</span>}
-                </span>
+                <BaseTablePicker
+                  tables={dataset?.tables ?? []}
+                  selectedTableId={selectedTableId}
+                  recommendedTableId={recommendedBaseTableId}
+                  onChange={setSelectedTableId}
+                  baseLabel={baseLabel}
+                  joinedCount={joinedCount}
+                  tone={tone}
+                  hasJoined={hasJoined}
+                  tip={tip}
+                  disabled={!resPerms.canEdit}
+                />
               );
             })()}
           </div>

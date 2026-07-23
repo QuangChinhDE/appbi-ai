@@ -545,6 +545,21 @@ class SemanticQueryEngine:
         # (no group dims) + filters (EXISTS, not a grouping JOIN) are unaffected.
         if not self._isolation_active:
             self._validate_group_grain(dimensions, pivots, measures)
+            # ── DIMS-ONLY multi-fact fan-out guard (PowerBI parity) ──────────
+            # Every measure guard above gates on `measures`, so a chart with NO
+            # measure (a Table / list that just SELECTs columns) slips through:
+            # the normal build below flat-LEFT-JOINs every dim view, and if two
+            # of them are DIFFERENT facts joined only through a shared dim
+            # (chasm), the join fans the base rows into their cartesian product
+            # (n×m rows) — the "n-n" a DA sees when pulling raw columns from two
+            # fact tables into one table. With no measure the BASE view IS the
+            # grain, so every dim/pivot view must be M:1-reachable from it
+            # (itself, or a star/snowflake spoke); a view reachable only via a
+            # 1:N hop is another fact → fail loud (same policy as the measure
+            # paths) rather than render duplicated rows. Single-fact tables and
+            # single-table selects stay safe (all views M:1-reachable).
+            if not measures and (dimensions or pivots):
+                self._validate_dims_only_grain(explore.base_view_name, dimensions, pivots)
 
         # Fetch pivot values if pivoting
         pivot_values = []
@@ -4390,6 +4405,38 @@ class SemanticQueryEngine:
                     f"qua shared dim (chasm). Đổi chiều, thêm quan hệ M:1 trong "
                     f"Data Model, hoặc bỏ measure khỏi chart."
                 )
+
+    def _validate_dims_only_grain(self, base_view_name, dimensions, pivots) -> None:
+        """STRICT grain guard for a MEASURE-LESS chart (Table / list). With no
+        measure the base view defines the row grain; every dim/pivot view must
+        be M:1-reachable from it. A dim on ANOTHER fact (reachable only via a
+        1:N hop through a shared dim) would force a fan-out JOIN that multiplies
+        the rows into a cartesian product. Fail loud rather than render the
+        duplicated ("n-n") rows. Single-fact / single-table selects → every view
+        is M:1-reachable → no-op. See the call site in ``generate_sql``."""
+        if not base_view_name:
+            return
+        group_views: set[str] = set()
+        for ref in list(dimensions or []) + list(pivots or []):
+            try:
+                v = self._parse_field_ref(ref)[0]
+            except Exception:
+                continue
+            if v:
+                group_views.add(v)
+        if not group_views:
+            return
+        safe = self._m1_reachable_views(base_view_name) | {base_view_name}
+        unsafe = sorted(v for v in group_views if v not in safe)
+        if unsafe:
+            raise ValueError(
+                f"Các cột {unsafe} thuộc bảng fact khác — không có đường M:1 từ "
+                f"bảng gốc '{base_view_name}'. Ghép cột từ nhiều bảng fact vào MỘT "
+                f"bảng/list (không có measure) sẽ JOIN chéo qua shared dim (chasm) "
+                f"→ nhân dòng (fan-out), ra số/hàng sai. Hãy: thêm measure để engine "
+                f"tách theo từng fact, tách thành nhiều chart, hoặc chỉ chọn cột từ "
+                f"MỘT bảng fact + các bảng dim của nó."
+            )
 
     def _m1_reachable_views(self, fact: str) -> set[str]:
         """Views reachable from ``fact`` by following the join graph FORWARD
