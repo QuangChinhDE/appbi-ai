@@ -146,13 +146,15 @@ export function DashboardGrid({
   const layouts = liftLayoutToTop(
     dashboardCharts.map((dc) => {
       const layout = dc.layout;
+      const chartType = String(dc.chart?.chart_type ?? '').toUpperCase();
+      const isKpi = chartType === 'KPI';
       return {
         i: dc.id.toString(),
         x: layout.x || 0,
         y: layout.y || 0,
         w: layout.w || 4,
         h: layout.h || 4,
-        minW: 2,
+        minW: isKpi ? 3 : 2,
         minH: 2,
         resizeHandles: ['se', 'sw', 'ne', 'nw'] as Array<'se' | 'sw' | 'ne' | 'nw'>,
       };

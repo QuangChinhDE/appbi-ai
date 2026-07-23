@@ -82,6 +82,8 @@ interface ChartPreviewProps {
   styleConfig?: ChartStyleConfig;
   onSelectDataPoint?: (selection: { field: string; value: unknown } | null) => void;
   onStyleConfigChange?: (nextStyleConfig: ChartStyleConfig) => void;
+  embedded?: boolean;
+  kpiLabelInHeader?: boolean;
 }
 
 const DEFAULT_COLORS = [
@@ -252,6 +254,8 @@ export function ChartPreview({
   styleConfig,
   onSelectDataPoint,
   onStyleConfigChange,
+  embedded = false,
+  kpiLabelInHeader = false,
 }: ChartPreviewProps) {
   const style = useMemo(
     () => normalizeChartStyleConfig(styleConfig, config.conditional_formatting),
@@ -307,6 +311,7 @@ export function ChartPreview({
   const stackMode = style.stackMode ?? 'normal';
   const dualYAxis = style.dualYAxis ?? false;
   const yAxisRightLabel = style.yAxisRightLabel?.trim() || undefined;
+  const yAxisRightSeriesKey = style.yAxisRightSeriesKey?.trim() || undefined;
   const scatterLabelField = style.scatterLabelField?.trim() || undefined;
   const sortRules = style.chartSortRules ?? [];
   const dataLimit = style.dataLimit;
@@ -453,6 +458,11 @@ export function ChartPreview({
     const dateLikeXAxis = isDateLikeAxis(sortedData, config.xField, xAxisLabel);
     const displayData = sortRowsByDateAxis(sortedData, config.xField, dateLikeXAxis && sortRules.length === 0);
     const { angle, height, textAnchor, interval, labelOffset } = buildXAxisProps(displayData.length, fontSize, xAxisLabel);
+    const rightAxisField = dualYAxis && config.yFields.length >= 2
+      ? (config.yFields.includes(yAxisRightSeriesKey || '') ? yAxisRightSeriesKey! : config.yFields[1])
+      : undefined;
+    const rightAxisIndex = rightAxisField ? Math.max(0, config.yFields.indexOf(rightAxisField)) : 0;
+    const rightAxisColor = rightAxisField ? getSeriesColor(rightAxisField, rightAxisIndex) : undefined;
     return (
       <div className="h-full flex flex-col">
         {ChartTitleEl}
@@ -462,6 +472,17 @@ export function ChartPreview({
               {showGrid && <CartesianGrid strokeDasharray="3 3" />}
               <XAxis dataKey={config.xField} tick={{ fontSize, angle, textAnchor } as any} height={height} interval={interval as any} tickFormatter={dateLikeXAxis ? formatDateAxisValue : undefined} label={xAxisLabel ? { value: xAxisLabel, position: 'insideBottom', offset: labelOffset } : undefined} />
               <YAxis tickFormatter={yTickFormatter} domain={yDomain} tick={{ fontSize }} label={yAxisLabel ? { value: yAxisLabel, angle: -90, position: 'insideLeft' } : undefined} />
+              {rightAxisField && (
+                <YAxis
+                  yAxisId="right"
+                  orientation="right"
+                  tick={{ fontSize, fill: rightAxisColor }}
+                  tickFormatter={(value: any) => formatNumber(value, style)}
+                  axisLine={{ stroke: rightAxisColor }}
+                  tickLine={{ stroke: rightAxisColor }}
+                  label={{ value: yAxisRightLabel || getSeriesLabel(rightAxisField), angle: 90, position: 'insideRight', fontSize, dx: 15, fill: rightAxisColor }}
+                />
+              )}
               <Tooltip formatter={(v: any) => formatNumber(v, style)} labelFormatter={dateLikeXAxis ? formatDateAxisValue : undefined} />
               {showLegend && legendProps && <Legend {...legendProps} />}
               {config.yFields.map((field, index) => (
@@ -469,7 +490,8 @@ export function ChartPreview({
                   stroke={getSeriesColor(field, index)}
                   strokeWidth={lineWidth}
                   dot={showDots}
-                  strokeDasharray={lineDash}>
+                  strokeDasharray={lineDash}
+                  yAxisId={field === rightAxisField ? 'right' : 0}>
                   {showDataLabels && <LabelList position="top" formatter={(v: any) => formatNumber(v, style)} style={{ fontSize: fontSize - 1 }} />}
                 </Line>
               ))}
@@ -734,6 +756,11 @@ export function ChartPreview({
     const gran = timeSeriesGranularity;
     const tsValueFields = timeSeriesValueFields;
     const tsData = sortRowsByDateAxis(sortedData, config.timeField, gran === 'raw' && sortRules.length === 0);
+    const rightAxisField = dualYAxis && tsValueFields.length >= 2
+      ? (tsValueFields.includes(yAxisRightSeriesKey || '') ? yAxisRightSeriesKey! : tsValueFields[1])
+      : undefined;
+    const rightAxisIndex = rightAxisField ? Math.max(0, tsValueFields.indexOf(rightAxisField)) : 0;
+    const rightAxisColor = rightAxisField ? getSeriesColor(rightAxisField, rightAxisIndex) : undefined;
     return (
       <div className="h-full flex flex-col">
         {ChartTitleEl}
@@ -745,6 +772,17 @@ export function ChartPreview({
                 tickFormatter={(value) => gran === 'raw' ? formatDateAxisValue(value) : String(value)}
                 label={xAxisLabel ? { value: xAxisLabel, position: 'insideBottom', offset: -5 } : undefined} />
               <YAxis tickFormatter={yTickFormatter} domain={yDomain} tick={{ fontSize }} label={yAxisLabel ? { value: yAxisLabel, angle: -90, position: 'insideLeft' } : undefined} />
+              {rightAxisField && (
+                <YAxis
+                  yAxisId="right"
+                  orientation="right"
+                  tick={{ fontSize, fill: rightAxisColor }}
+                  tickFormatter={(value: any) => formatNumber(value, style)}
+                  axisLine={{ stroke: rightAxisColor }}
+                  tickLine={{ stroke: rightAxisColor }}
+                  label={{ value: yAxisRightLabel || getSeriesLabel(rightAxisField), angle: 90, position: 'insideRight', fontSize, dx: 15, fill: rightAxisColor }}
+                />
+              )}
               <Tooltip
                 labelFormatter={(value) => gran === 'raw' ? formatDateAxisValue(value) : String(value)}
                 formatter={(v: any) => formatNumber(v, style)} />
@@ -752,7 +790,8 @@ export function ChartPreview({
               {tsValueFields.map((field, index) => (
                 <Line key={field} type="monotone" dataKey={field} name={getSeriesLabel(field)}
                   stroke={config.color || getSeriesColor(field, index)}
-                  strokeWidth={lineWidth} dot={showDots} strokeDasharray={lineDash}>
+                  strokeWidth={lineWidth} dot={showDots} strokeDasharray={lineDash}
+                  yAxisId={field === rightAxisField ? 'right' : 0}>
                   {showDataLabels && <LabelList position="top" formatter={(v: any) => formatNumber(v, style)} style={{ fontSize: fontSize - 1 }} />}
                 </Line>
               ))}
@@ -895,8 +934,8 @@ export function ChartPreview({
     return (
       <div className="h-full flex flex-col">
         {ChartTitleEl}
-        <div className="flex-1 flex items-center justify-center">
-          <div className="w-full max-w-xl">
+        <div className={`flex-1 flex ${embedded ? 'items-stretch' : 'items-center justify-center'}`}>
+          <div className={embedded ? 'w-full h-full' : 'w-full max-w-xl'}>
             <KpiCard
               value={value}
               label={label}
@@ -906,8 +945,10 @@ export function ChartPreview({
               contextTemplate={style.kpiContextTemplate}
               benchmarkValue={kpiBenchmarkValue}
               benchmarkLabel={style.kpiBenchmarkLabel}
+              showBenchmarkValue={style.kpiShowBenchmarkValue}
               showDelta={style.kpiShowDelta}
               goalDirection={style.kpiGoalDirection}
+              backgroundMode={style.kpiBackgroundMode}
               accentColor={style.kpiAccentColor}
               enableColorRules={style.kpiEnableColorRules}
               colorRules={style.kpiColorRules}
@@ -917,6 +958,8 @@ export function ChartPreview({
               accentBorder={style.kpiAccentBorder}
               gradientBg={style.kpiGradientBg}
               valueFontSize={kpiValueFontSize}
+              hideLabel={kpiLabelInHeader}
+              embedded={embedded}
             />
           </div>
         </div>

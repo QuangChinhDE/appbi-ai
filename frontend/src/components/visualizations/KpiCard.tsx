@@ -4,7 +4,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import * as LucideIcons from 'lucide-react';
 import { Minus, Target, TrendingDown, TrendingUp } from 'lucide-react';
 import type { NumberFormat } from '@/components/explore/ExploreChartConfig';
-import type { KpiGoalDirection, KpiValueColorRule } from '@/types/api';
+import type { KpiBackgroundMode, KpiGoalDirection, KpiValueColorRule } from '@/types/api';
 import { useDashboardChartTheme } from '@/components/dashboards/DashboardThemeProvider';
 
 type KpiCardProps = {
@@ -24,6 +24,7 @@ type KpiCardProps = {
   showBenchmarkValue?: boolean;
   showDelta?: boolean;
   goalDirection?: KpiGoalDirection;
+  backgroundMode?: KpiBackgroundMode;
   accentColor?: string;
   enableColorRules?: boolean;
   colorRules?: KpiValueColorRule[];
@@ -47,6 +48,11 @@ type KpiCardProps = {
 
 const DEFAULT_ACCENT_COLOR = '#2563eb';
 const FALLBACK_VALUE_COLOR = '#0f172a';
+const FALLBACK_TONE_COLORS = {
+  good: '#16a34a',
+  bad: '#dc2626',
+  neutral: '#64748b',
+} as const;
 
 function toNumber(value: number | string | null | undefined): number | null {
   if (typeof value === 'number') {
@@ -59,6 +65,37 @@ function toNumber(value: number | string | null | undefined): number | null {
     return Number.isFinite(parsed) ? parsed : null;
   }
   return null;
+}
+
+function colorWithAlpha(color: string | undefined, alpha: number): string {
+  const c = color?.trim();
+  const a = Math.min(1, Math.max(0, alpha));
+  if (!c) return `rgba(37, 99, 235, ${a})`;
+
+  const shortHex = c.match(/^#([0-9a-f]{3})$/i);
+  if (shortHex) {
+    const [r, g, b] = shortHex[1].split('').map((part) => parseInt(`${part}${part}`, 16));
+    return `rgba(${r}, ${g}, ${b}, ${a})`;
+  }
+
+  const fullHex = c.match(/^#([0-9a-f]{6})$/i);
+  if (fullHex) {
+    const raw = fullHex[1];
+    const r = parseInt(raw.slice(0, 2), 16);
+    const g = parseInt(raw.slice(2, 4), 16);
+    const b = parseInt(raw.slice(4, 6), 16);
+    return `rgba(${r}, ${g}, ${b}, ${a})`;
+  }
+
+  const percent = Math.round(a * 100);
+  return `color-mix(in srgb, ${c} ${percent}%, transparent)`;
+}
+
+function buildTintedBackground(color: string | undefined, stronger = false): string {
+  const top = colorWithAlpha(color, stronger ? 0.22 : 0.16);
+  const mid = colorWithAlpha(color, stronger ? 0.12 : 0.08);
+  const low = colorWithAlpha(color, stronger ? 0.06 : 0.03);
+  return `linear-gradient(135deg, ${top} 0%, ${mid} 48%, ${low} 100%)`;
 }
 
 type DisplayUnits = 'auto' | 'none' | 'thousands' | 'millions' | 'billions';
@@ -251,6 +288,7 @@ export function KpiCard({
   showBenchmarkValue = true,
   showDelta = true,
   goalDirection = 'up',
+  backgroundMode = 'auto',
   accentColor = DEFAULT_ACCENT_COLOR,
   enableColorRules = false,
   colorRules = [],
@@ -310,11 +348,46 @@ export function KpiCard({
     label: label?.trim() || 'KPI',
   };
   const contextText = template ? interpolateTemplate(template, tokenMap) : '';
-  const deltaAppearance = hasDelta && delta !== null ? getDeltaAppearance(delta, goalDirection) : null;
+  const benchmarkAppearance = delta !== null ? getDeltaAppearance(delta, goalDirection) : null;
+  const deltaAppearance = hasDelta && delta !== null ? benchmarkAppearance : null;
   const legacyComparison = typeof comparison === 'number' ? comparison : null;
   const legacyComparisonTone = legacyComparison !== null ? getLegacyComparisonTone(legacyComparison) : null;
   const DeltaIcon = deltaAppearance?.icon;
   const ComparisonIcon = legacyComparisonTone?.icon;
+  const benchmarkToneColor = benchmarkAppearance
+    ? (toneColor(benchmarkAppearance.tone) ?? FALLBACK_TONE_COLORS[benchmarkAppearance.tone])
+    : undefined;
+  const statusBackgroundColor = matchedRule?.backgroundColor
+    || matchedRule?.color
+    || benchmarkToneColor
+    || valueColor
+    || effectiveAccent
+    || DEFAULT_ACCENT_COLOR;
+  const backgroundSetting = backgroundMode || 'auto';
+  const hasStatusSignal = Boolean(matchedRule || hasBenchmark);
+  const useStatusBackground = backgroundSetting === 'status'
+    || (backgroundSetting === 'auto' && hasStatusSignal);
+  const useAccentBackground = backgroundSetting === 'accent'
+    || (backgroundSetting === 'auto' && !useStatusBackground && gradientBg);
+  const cardBackground = useStatusBackground
+    ? buildTintedBackground(statusBackgroundColor, Boolean(matchedRule))
+    : useAccentBackground
+      ? buildTintedBackground(effectiveAccent || DEFAULT_ACCENT_COLOR)
+      : undefined;
+  const panelBackgroundStyle = (useStatusBackground || useAccentBackground)
+    ? {
+        backgroundColor: colorWithAlpha(statusBackgroundColor, 0.09),
+        boxShadow: `inset 0 0 0 1px ${colorWithAlpha(statusBackgroundColor, 0.12)}`,
+      }
+    : undefined;
+  const statusPillStyle = matchedRule
+    ? {
+        color: matchedRule.color,
+        backgroundColor: colorWithAlpha(statusBackgroundColor, 0.13),
+        borderColor: colorWithAlpha(statusBackgroundColor, 0.24),
+      }
+    : undefined;
+  const showHeaderIcon = hideLabel && Boolean(IconComponent);
   const resolvedValueFontSize = typeof valueFontSize === 'number' && Number.isFinite(valueFontSize)
     ? Math.min(Math.max(Math.round(valueFontSize), 16), 80)
     : undefined;
@@ -366,7 +439,8 @@ export function KpiCard({
   // semibold, a glyph is ≈0.62em wide, so maxFont ≈ usableWidth / (chars·0.62).
   // Subtract the tile padding and, when a status pill shares the row, its width.
   const valueCharCount = Math.max((formattedValue ?? '').length, 1);
-  const usableW = Math.max(0, boxW - 16 - (statusLabel ? 84 : 0));
+  const sideRailReserve = (statusLabel ? 84 : 0) + (showHeaderIcon ? 40 : 0);
+  const usableW = Math.max(0, boxW - 16 - sideRailReserve);
   const widthFont = usableW > 0 ? usableW / (valueCharCount * 0.62) : Infinity;
   const autoValueFont = autoFit
     ? Math.round(Math.min(fontCeil, Math.max(16, Math.min(heightFont, widthFont))))
@@ -387,15 +461,13 @@ export function KpiCard({
   return (
     <div
       ref={rootRef}
-      className={`overflow-hidden ${showOwnFrame ? 'rounded-2xl border shadow-linear-sm' : ''} ${embedded ? 'flex h-full flex-col justify-center' : 'bg-surface-1'}`}
+      className={`overflow-hidden ${showOwnFrame ? 'rounded-2xl border shadow-linear-sm' : ''} ${embedded ? `flex h-full flex-col justify-center ${cardBackground ? 'rounded-md' : ''}` : 'bg-surface-1'}`}
       style={{
         borderColor: showOwnFrame
           ? (accentBorder ? (accentColor || DEFAULT_ACCENT_COLOR) : 'rgb(var(--border-line))')
           : undefined,
         borderWidth: showOwnFrame ? (accentBorder ? 2 : 1) : undefined,
-        background: gradientBg
-          ? `linear-gradient(135deg, ${accentColor || DEFAULT_ACCENT_COLOR}10, transparent 60%)`
-          : undefined,
+        background: cardBackground,
       }}
     >
       {showGradientBar && (
@@ -448,17 +520,36 @@ export function KpiCard({
             )}
           </div>
 
-          {statusLabel && (
-            <span className="shrink-0 rounded-full border border-[rgb(var(--border-line))] bg-surface-2 px-3 py-1 text-[11px] font-semibold uppercase tracking-wide text-text-secondary">
-              {statusLabel}
-            </span>
+          {(showHeaderIcon || statusLabel) && (
+            <div className="shrink-0 flex items-center gap-2">
+              {showHeaderIcon && IconComponent && (
+                <span
+                  className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-[rgb(var(--border-line))] bg-surface-2"
+                  style={{
+                    color: iconColor || effectiveAccent || DEFAULT_ACCENT_COLOR,
+                    backgroundColor: colorWithAlpha(iconColor || effectiveAccent || DEFAULT_ACCENT_COLOR, 0.10),
+                    borderColor: colorWithAlpha(iconColor || effectiveAccent || DEFAULT_ACCENT_COLOR, 0.18),
+                  }}
+                >
+                  <IconComponent className="h-4 w-4" />
+                </span>
+              )}
+              {statusLabel && (
+                <span
+                  className="rounded-full border border-[rgb(var(--border-line))] bg-surface-2 px-3 py-1 text-[11px] font-semibold uppercase tracking-wide text-text-secondary"
+                  style={statusPillStyle}
+                >
+                  {statusLabel}
+                </span>
+              )}
+            </div>
           )}
         </div>
 
         {(showBenchmarkPanel || hasDelta || legacyComparison !== null) && !dropPanels && (
           <div className={`grid gap-3 border-t border-[rgb(var(--border-line))] sm:grid-cols-2 ${compact ? 'mt-2 pt-2' : 'mt-5 pt-4'}`}>
             {showBenchmarkPanel && (
-              <div className="rounded-xl bg-surface-2 px-4 py-3">
+              <div className="rounded-xl bg-surface-2 px-4 py-3" style={panelBackgroundStyle}>
                 <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wide text-text-tertiary">
                   <Target className="h-3.5 w-3.5" />
                   <span>{benchmarkLabel?.trim() || 'Benchmark'}</span>
@@ -472,7 +563,7 @@ export function KpiCard({
             {hasDelta && delta !== null && deltaAppearance && DeltaIcon && (
               <div
                 className={`rounded-xl px-4 py-3 ${toneColor(deltaAppearance.tone) ? '' : deltaAppearance.surfaceClass}`}
-                style={toneColor(deltaAppearance.tone) ? { backgroundColor: `${toneColor(deltaAppearance.tone)}1a` } : undefined}
+                style={toneColor(deltaAppearance.tone) ? { backgroundColor: colorWithAlpha(toneColor(deltaAppearance.tone), 0.10) } : panelBackgroundStyle}
               >
                 <div
                   className={`text-[11px] font-semibold uppercase tracking-wide ${toneColor(deltaAppearance.tone) ? '' : deltaAppearance.textClass}`}
@@ -494,7 +585,7 @@ export function KpiCard({
             )}
 
             {!hasDelta && legacyComparison !== null && legacyComparisonTone && ComparisonIcon && (
-              <div className={`rounded-xl px-4 py-3 ${legacyComparisonTone.surfaceClass}`}>
+              <div className={`rounded-xl px-4 py-3 ${legacyComparisonTone.surfaceClass}`} style={panelBackgroundStyle}>
                 <div className={`text-[11px] font-semibold uppercase tracking-wide ${legacyComparisonTone.textClass}`}>
                   Trend
                 </div>

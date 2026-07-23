@@ -1956,6 +1956,7 @@ function ExploreChartInner({
     return ratio >= 5;
   }, [type, comboBarSeries, comboLineSeries, comboData]);
   const dualYAxis = (style.dualYAxis ?? false) || autoDualYForBarLine;
+  const yAxisRightSeriesKey = style.yAxisRightSeriesKey?.trim() || undefined;
   const yAxisRightLabel = style.yAxisRightLabel?.trim()
     || (type === 'BAR_LINE' ? comboLineSeries?.[0]?.label : undefined)
     || undefined;
@@ -2025,6 +2026,19 @@ function ExploreChartInner({
     const longest = Math.max(sample.length, 3) + 1; // +1 for a possible minus sign
     return Math.min(150, Math.max(40, Math.ceil(longest * fontSize * 0.62) + 12));
   }, [categoricalData, metrics, style, fontSize]);
+  const estimateYAxisWidth = useCallback((rows: Record<string, any>[], keys: string[], seriesKey?: string) => {
+    let maxAbs = 0;
+    for (const row of rows) {
+      for (const key of keys) {
+        const value = Math.abs(Number(row?.[key]));
+        if (Number.isFinite(value) && value > maxAbs) maxAbs = value;
+      }
+    }
+    if (!(maxAbs > 0)) return undefined;
+    const sample = formatAxisValue(maxAbs, style, seriesKey);
+    const longest = Math.max(sample.length, 3) + 1;
+    return Math.min(150, Math.max(42, Math.ceil(longest * fontSize * 0.62) + 12));
+  }, [fontSize, style]);
 
   // BI-standard (Power BI / Tableau): a cartesian chart labels its axes by
   // default so you can see WHICH dimension it's grouped by — not blank axes.
@@ -2128,18 +2142,18 @@ function ExploreChartInner({
     const halfLabel = Math.ceil((Math.min(maxChars, 12) * fontSize * 0.6) / 2);
     return { ...CHART_BASE_MARGIN, right: Math.max(CHART_BASE_MARGIN.right, halfLabel + 4) };
   }, [categoricalData, data, xField, xAxisIsDateLike, fontSize, xAxisLabel, responsive.maxXBand]);
-  const renderYAxis = () => {
+  const renderYAxis = (seriesKeyOverride?: string, widthOverride?: number) => {
     // Phase-16.x — when the chart plots a SINGLE metric, format the value axis
     // with THAT metric's resolved format (incl. the measure's % / currency via
     // the merged seriesFormats above) so the axis matches the data labels. With
     // multiple metrics the axis can't pick one format, so it keeps the global.
-    const axisSeriesKey = metrics.length === 1 ? metricKey(metrics[0]) : undefined;
+    const axisSeriesKey = seriesKeyOverride ?? (metrics.length === 1 ? metricKey(metrics[0]) : undefined);
     const axisTickFormatter = (value: any) => formatAxisValue(value, style, axisSeriesKey);
     // Axis TITLE is rendered as a DOM label by `axisTitled` (not an SVG
     // <Label>) so it stays readable, never collides with the legend, and never
     // scrolls off-screen on a wide horizontally-scrolling chart.
     return (
-    <YAxis tick={{ fontSize, fill: axisTickFill }} tickFormatter={axisTickFormatter} domain={yDomain} allowDataOverflow={yAxisClamp} width={yAxisWidth} />
+    <YAxis tick={{ fontSize, fill: axisTickFill }} tickFormatter={axisTickFormatter} domain={yDomain} allowDataOverflow={yAxisClamp} width={widthOverride ?? yAxisWidth} />
     );
   };
   // Render the X/Y axis TITLES as DOM labels around the chart (instead of SVG
@@ -2150,10 +2164,15 @@ function ExploreChartInner({
   // X-axis title in the middle of a 10,000px SVG. Titles auto-hide on a tile
   // too small to spare the room (responsive). Y title sits left of the plot,
   // X title centered below it.
-  const axisTitled = (chart: React.ReactNode): React.ReactNode => {
+  const axisTitled = (
+    chart: React.ReactNode,
+    options?: { rightYLabel?: string; rightYColor?: string },
+  ): React.ReactNode => {
+    const rightYLabel = options?.rightYLabel?.trim();
     const showY = Boolean(yAxisLabel) && rootSize.width >= 220;
+    const showRightY = Boolean(rightYLabel) && rootSize.width >= 280;
     const showX = Boolean(xAxisLabel) && rootSize.height >= 150;
-    if (!showY && !showX) return chart;
+    if (!showY && !showX && !showRightY) return chart;
     return (
       <div className="flex-1 min-h-0 flex">
         {showY && (
@@ -2179,6 +2198,17 @@ function ExploreChartInner({
             </div>
           )}
         </div>
+        {showRightY && (
+          <div className="flex shrink-0 items-center justify-center" style={{ width: fontSize + 8 }}>
+            <span
+              className="overflow-hidden whitespace-nowrap text-text-tertiary"
+              style={{ writingMode: 'vertical-rl', fontSize, maxHeight: '100%', textOverflow: 'ellipsis', color: options?.rightYColor }}
+              title={rightYLabel}
+            >
+              {rightYLabel}
+            </span>
+          </div>
+        )}
       </div>
     );
   };
@@ -2452,6 +2482,7 @@ function ExploreChartInner({
               showBenchmarkValue={style.kpiShowBenchmarkValue}
               showDelta={style.kpiShowDelta}
               goalDirection={style.kpiGoalDirection}
+              backgroundMode={style.kpiBackgroundMode}
               accentColor={style.kpiAccentColor}
               enableColorRules={style.kpiEnableColorRules}
               colorRules={style.kpiColorRules}
@@ -3260,6 +3291,28 @@ function ExploreChartInner({
     // Cross-highlight: dim the baseline line and overlay a solid line of the
     // P-contribution (`<key>__hl`). Keeps full series context (PBI-parity).
     const displayData = isHighlight ? buildHighlightSplitRows(baseLineData, displaySeries) : baseLineData;
+    const lineDualYAxis = dualYAxis && displaySeries.length >= 2;
+    const selectedRightSeries = yAxisRightSeriesKey
+      ? displaySeries.find((series) => series.key === yAxisRightSeriesKey)
+      : undefined;
+    const rightAxisSeries = lineDualYAxis
+      ? (selectedRightSeries ?? displaySeries.find((series, index) => index > 0 && !hiddenSeries.has(series.key)) ?? displaySeries[1])
+      : undefined;
+    const rightAxisIndex = rightAxisSeries
+      ? Math.max(0, displaySeries.findIndex((series) => series.key === rightAxisSeries.key))
+      : 0;
+    const rightAxisColor = rightAxisSeries ? getSeriesColor(rightAxisSeries.key, rightAxisIndex) : axisTickFill;
+    const leftAxisSeries = rightAxisSeries
+      ? displaySeries.filter((series) => series.key !== rightAxisSeries.key)
+      : displaySeries;
+    const leftAxisSeriesKey = leftAxisSeries.length === 1 ? leftAxisSeries[0].key : undefined;
+    const leftAxisWidth = rightAxisSeries
+      ? estimateYAxisWidth(displayData, leftAxisSeries.map((series) => series.key), leftAxisSeriesKey)
+      : undefined;
+    const rightAxisWidth = rightAxisSeries
+      ? estimateYAxisWidth(displayData, [rightAxisSeries.key], rightAxisSeries.key)
+      : undefined;
+    const rightAxisLabel = style.yAxisRightLabel?.trim() || rightAxisSeries?.label;
     return (
       <div ref={rootRef} className="h-full flex flex-col">
         {ChartTitleEl}
@@ -3270,7 +3323,18 @@ function ExploreChartInner({
             <LineChart data={displayData} margin={cartesianMargin} onClick={handleCategoricalChartClick}>
               {showGrid && <CartesianGrid strokeDasharray="3 3" stroke={gridStroke} />}
               {renderXAxis(xField, displayData.length, dateLikeXAxis)}
-              {renderYAxis()}
+              {renderYAxis(leftAxisSeriesKey, leftAxisWidth)}
+              {rightAxisSeries && (
+                <YAxis
+                  yAxisId="right"
+                  orientation="right"
+                  tick={{ fontSize, fill: rightAxisColor }}
+                  tickFormatter={(value: any) => formatAxisValue(value, style, rightAxisSeries.key)}
+                  width={rightAxisWidth}
+                  axisLine={{ stroke: rightAxisColor }}
+                  tickLine={{ stroke: rightAxisColor }}
+                />
+              )}
               <Tooltip
                 content={(p: any) => (
                   <CustomTooltip {...p} series={displaySeries} style={style} fontSize={fontSize} xField={xField} labelFormatter={dateLikeXAxis ? formatDateAxisValue : undefined} />
@@ -3288,7 +3352,8 @@ function ExploreChartInner({
                       strokeOpacity={isHighlight ? HIGHLIGHT_DIM_OPACITY : 1}
                       strokeWidth={lineWidth}
                       dot={dotsForCount(displayData.length)}
-                      strokeDasharray={lineDash}>
+                      strokeDasharray={lineDash}
+                      yAxisId={rightAxisSeries?.key === series.key ? 'right' : 0}>
                       {showDataLabels && !isHighlight && (
                         <LabelList dataKey={series.key} content={dataLabelContent(series.key, series.label, 'point')} />
                       )}
@@ -3302,7 +3367,8 @@ function ExploreChartInner({
                         strokeWidth={lineWidth + 1}
                         dot={dotsForCount(displayData.length)}
                         legendType="none"
-                        connectNulls={false} />
+                        connectNulls={false}
+                        yAxisId={rightAxisSeries?.key === series.key ? 'right' : 0} />
                     )}
                   </React.Fragment>
                 );
@@ -3311,7 +3377,10 @@ function ExploreChartInner({
               {renderAnnotations()}
             </LineChart>,
             displayData.length,
-          ))}
+          ), {
+            rightYColor: rightAxisColor,
+            rightYLabel: rightAxisLabel,
+          })}
         </div>
       </div>
     );

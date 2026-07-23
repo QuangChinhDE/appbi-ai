@@ -557,7 +557,7 @@ function buildPivotTableModel(args: {
   const columnField = roleConfig.tableColumnDimension;
   const metric = roleConfig.tablePivotMetric;
 
-  if (!rowField || !columnField || !metric || data.length === 0) {
+  if (roleConfig.tableMode !== 'pivot' || !rowField || !columnField || !metric || data.length === 0) {
     // Phase-15.24: guards against (a) `selectedColumns: []` (empty array
     // passes through `??` since it isn't nullish — collapses to undefined
     // so the row-keys fallback fires) and (b) `data[0]` being null (BE
@@ -658,7 +658,7 @@ export function buildExploreChartModel(args: {
     return { key: wf.name, label: `${baseLabel} (running total)` };
   });
   const xField = (type === 'TIME_SERIES' || type === 'RIBBON') ? (timeField || dimension) : dimension;
-  const pivotTableModel = (type === 'TABLE' || type === 'MATRIX')
+  const pivotTableModel = (type === 'TABLE' || type === 'MATRIX') && normalizedRoleConfig.tableMode === 'pivot'
     ? buildPivotTableModel({ data, roleConfig: normalizedRoleConfig, preAggregated })
     : null;
   const tableData = pivotTableModel?.rows ?? data;

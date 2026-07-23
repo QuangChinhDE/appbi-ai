@@ -173,8 +173,10 @@ export function packNewGridTiles(
  */
 export function defaultSizeForChartType(chartType: string | null | undefined): { w: number; h: number } {
   const t = String(chartType || '').toLowerCase();
-  // Small reference cards.
-  if (t === 'kpi' || t === 'card' || t === 'podium') return { w: 3, h: 3 };
+  // KPI reference cards: 3 per row on the 12-col grid, wide enough for long
+  // values plus benchmark/delta without forcing the typography to shrink hard.
+  if (t === 'kpi' || t === 'card') return { w: 4, h: 3 };
+  if (t === 'podium') return { w: 6, h: 4 };
   // Single-number-ish gauges / bullets — narrow, modest height.
   if (t === 'gauge' || t === 'bullet') return { w: 3, h: 4 };
   // Detail grids — wide and tall (many rows).

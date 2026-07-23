@@ -1554,6 +1554,8 @@ function ChartTileBase({
               data={filteredData}
               config={legacyRenderChartConfig}
               styleConfig={chartRenderStyleConfig}
+              embedded
+              kpiLabelInHeader={isKpiCard}
               onSelectDataPoint={onSelectCrossFilter && chartSemanticBinding?.datasetId != null
                 ? handleCrossFilterSelection
                 : undefined}
