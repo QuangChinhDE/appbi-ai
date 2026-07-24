@@ -10,6 +10,7 @@
  * `img-src 'self' data:` CSP (external URLs are blocked in production).
  */
 import type { CSSProperties } from 'react';
+import type { ExperienceResolved } from '@/lib/api/workspace';
 
 export interface ThemeBackground {
   kind: 'color' | 'gradient' | 'image';
@@ -158,4 +159,254 @@ export function cardClassVars(): CSSProperties {
     borderRadius: 'var(--wb-radius)',
     boxShadow: 'var(--wb-shadow)',
   } as CSSProperties;
+}
+
+type ExperienceOverride = NonNullable<ExperienceResolved['overrides']>;
+
+const EXPERIENCE_DEFAULTS: ExperienceResolved = {
+  schema_version: 1,
+  preset: null,
+  theme: {
+    primary: '#2563eb',
+    success: '#16a34a',
+    warning: '#f59e0b',
+    danger: '#ef4444',
+    info: '#3b82f6',
+    neutral: '#6b7280',
+    background: '#f8fafc',
+    surface: '#ffffff',
+    border: '#e5e7eb',
+    text: '#111827',
+    font_family: 'system',
+    heading_weight: 'semibold',
+    body_weight: 'regular',
+    type_scale: 100,
+    density: 'cozy',
+    radius: 'small',
+    elevation: 'small',
+    motion: 'standard',
+    mode: 'auto',
+    app_background: null,
+  },
+  shell: {
+    sticky_header: true,
+    show_search: false,
+    show_logo: true,
+    content_width: 'full_bleed',
+    content_width_px: null,
+    page_padding: 'cozy',
+    footer_enabled: false,
+    background: 'gray',
+  },
+  navigation: {
+    desktop_kind: 'sidebar',
+    mobile_kind: 'bottom_nav',
+    sidebar_width: 224,
+    default_collapsed: false,
+    show_icons: true,
+    show_labels: true,
+    active_style: 'pill',
+    breadcrumbs: false,
+  },
+  feedback: {
+    loading: 'spinner',
+    empty_style: 'message',
+    success: 'inline',
+    confirmation: 'modal',
+    error_retry: true,
+    motion_ms: 160,
+  },
+  explicit: false,
+  overrides: {},
+};
+
+/** Resolve an unsaved Experience Studio draft in the browser. This mirrors the
+ * backend resolver closely enough for the preview bridge while preserving the
+ * legacy branding/nav values as the inheritance layer. */
+export function resolveDraftExperience(
+  legacyTheme: WbTheme | null | undefined,
+  legacyNav: { desktop_kind?: 'sidebar' | 'top_tabs'; mobile_kind?: 'bottom_nav' | 'drawer' } | null | undefined,
+  override: ExperienceOverride | null | undefined,
+): ExperienceResolved {
+  const legacy = legacyTheme || {};
+  const raw = override || {};
+  return {
+    ...EXPERIENCE_DEFAULTS,
+    schema_version: raw.schema_version || 1,
+    preset: raw.preset ?? null,
+    theme: {
+      ...EXPERIENCE_DEFAULTS.theme,
+      ...(legacy.primary_color ? { primary: legacy.primary_color } : {}),
+      ...(legacy.accent_color ? { info: legacy.accent_color } : {}),
+      ...(legacy.theme ? { mode: legacy.theme } : {}),
+      ...(legacy.font_family ? { font_family: legacy.font_family } : {}),
+      ...(raw.theme || {}),
+    },
+    shell: { ...EXPERIENCE_DEFAULTS.shell, ...(raw.shell || {}) },
+    navigation: {
+      ...EXPERIENCE_DEFAULTS.navigation,
+      ...(legacyNav?.desktop_kind ? { desktop_kind: legacyNav.desktop_kind } : {}),
+      ...(legacyNav?.mobile_kind ? { mobile_kind: legacyNav.mobile_kind } : {}),
+      ...(raw.navigation || {}),
+    },
+    feedback: { ...EXPERIENCE_DEFAULTS.feedback, ...(raw.feedback || {}) },
+    explicit: Boolean(override),
+    overrides: raw,
+  };
+}
+
+const EXPERIENCE_RADII: Record<ExperienceResolved['theme']['radius'], string> = {
+  none: '0px',
+  small: '6px',
+  medium: '10px',
+  large: '16px',
+  full: '9999px',
+};
+
+const EXPERIENCE_SHADOWS: Record<ExperienceResolved['theme']['elevation'], string> = {
+  none: 'none',
+  small: '0 1px 2px rgb(15 23 42 / 0.08)',
+  medium: '0 6px 18px rgb(15 23 42 / 0.12)',
+  large: '0 18px 42px rgb(15 23 42 / 0.18)',
+};
+
+/** CSS variables for an explicit experience contract. Unset color/shape fields
+ * keep the legacy theme variables, which is what makes partial adoption and
+ * dark-mode inheritance safe. */
+export function experienceThemeVars(
+  experience: ExperienceResolved | null | undefined,
+  legacyTheme: WbTheme | null | undefined,
+  mode: 'light' | 'dark',
+): CSSProperties {
+  const base = themeVars(legacyTheme, mode) as Record<string, string>;
+  if (!experience?.explicit) return base as CSSProperties;
+
+  const rawTheme = experience.overrides?.theme || {};
+  const dark = mode === 'dark';
+  const statusDefaults = dark
+    ? {
+        success: '#22c55e',
+        warning: '#f59e0b',
+        danger: '#f87171',
+        info: '#60a5fa',
+        neutral: '#94a3b8',
+      }
+    : {
+        success: '#16a34a',
+        warning: '#d97706',
+        danger: '#dc2626',
+        info: '#2563eb',
+        neutral: '#64748b',
+      };
+  const font = FONT_STACKS[rawTheme.font_family || experience.theme.font_family] || base['--wb-font'];
+  const rawFeedback = experience.overrides?.feedback || {};
+  const motionMs =
+    rawFeedback.motion_ms !== undefined
+      ? experience.feedback.motion_ms
+      : rawTheme.motion === 'instant'
+        ? 0
+        : rawTheme.motion === 'expressive'
+          ? 280
+          : rawTheme.motion === 'standard'
+            ? 160
+            : experience.feedback.motion_ms;
+
+  return {
+    ...base,
+    ['--wb-primary' as string]: experience.theme.primary,
+    ['--wb-accent' as string]: experience.theme.primary,
+    ['--wb-success' as string]: rawTheme.success || statusDefaults.success,
+    ['--wb-warning' as string]: rawTheme.warning || statusDefaults.warning,
+    ['--wb-danger' as string]: rawTheme.danger || statusDefaults.danger,
+    ['--wb-info' as string]: rawTheme.info || statusDefaults.info,
+    ['--wb-neutral' as string]: rawTheme.neutral || statusDefaults.neutral,
+    ['--wb-bg' as string]: rawTheme.background || base['--wb-bg'],
+    ['--wb-surface' as string]: rawTheme.surface || base['--wb-surface'],
+    ['--wb-surface-2' as string]:
+      rawTheme.background || base['--wb-surface-2'],
+    ['--wb-text' as string]: rawTheme.text || base['--wb-text'],
+    ['--wb-text-muted' as string]: rawTheme.neutral || base['--wb-text-muted'],
+    ['--wb-border' as string]: rawTheme.border || base['--wb-border'],
+    ['--wb-radius' as string]:
+      rawTheme.radius ? EXPERIENCE_RADII[experience.theme.radius] : base['--wb-radius'],
+    ['--wb-shadow' as string]:
+      rawTheme.elevation
+        ? EXPERIENCE_SHADOWS[experience.theme.elevation]
+        : base['--wb-shadow'],
+    ['--wb-font' as string]: font,
+    ['--wb-motion-ms' as string]: `${motionMs}ms`,
+    fontFamily: font,
+    color: rawTheme.text || base['--wb-text'],
+  } as CSSProperties;
+}
+
+/**
+ * Semantic compatibility sweep for the public runtime. It is deliberately
+ * scoped to explicit v1 boards: legacy boards continue through darkModeCss()
+ * untouched, while v1 boards get immediate behavior from every color/shape/
+ * density knob without a risky mechanical rewrite of the 9k-line renderer.
+ */
+export function experienceCss(): string {
+  const s = '.wb-app[data-experience="v1"]';
+  return `
+${s}{background-color:var(--wb-bg)!important;color:var(--wb-text);}
+${s} .bg-white,${s} .bg-white\\/90,${s} .bg-white\\/95{background-color:var(--wb-surface)!important;}
+${s} .bg-slate-50,${s} .bg-slate-50\\/30,${s} .bg-slate-50\\/40,${s} .bg-slate-50\\/60,
+${s} .bg-slate-100,${s} .bg-slate-100\\/80{background-color:var(--wb-surface-2)!important;}
+${s} .text-slate-950,${s} .text-slate-900,${s} .text-slate-800,${s} .text-slate-700{color:var(--wb-text)!important;}
+${s} .text-slate-600,${s} .text-slate-500,${s} .text-slate-400,${s} .text-slate-300{color:var(--wb-text-muted)!important;}
+${s} .border-slate-100,${s} .border-slate-200,${s} .border-slate-300,${s} .border-slate-400{border-color:var(--wb-border)!important;}
+${s} .bg-emerald-50,${s} .bg-green-50{background-color:color-mix(in srgb,var(--wb-success) 12%,var(--wb-surface))!important;}
+${s} .text-emerald-600,${s} .text-emerald-700,${s} .text-emerald-800,${s} .text-green-600,${s} .text-green-700{color:var(--wb-success)!important;}
+${s} .border-emerald-200,${s} .border-green-200{border-color:color-mix(in srgb,var(--wb-success) 35%,var(--wb-border))!important;}
+${s} .bg-amber-50,${s} .bg-orange-50{background-color:color-mix(in srgb,var(--wb-warning) 12%,var(--wb-surface))!important;}
+${s} .text-amber-600,${s} .text-amber-700,${s} .text-amber-800,${s} .text-orange-600,${s} .text-orange-700{color:var(--wb-warning)!important;}
+${s} .border-amber-200,${s} .border-orange-200{border-color:color-mix(in srgb,var(--wb-warning) 35%,var(--wb-border))!important;}
+${s} .bg-rose-50,${s} .bg-red-50{background-color:color-mix(in srgb,var(--wb-danger) 12%,var(--wb-surface))!important;}
+${s} .text-rose-600,${s} .text-rose-700,${s} .text-red-600,${s} .text-red-700{color:var(--wb-danger)!important;}
+${s} .border-rose-200,${s} .border-red-200{border-color:color-mix(in srgb,var(--wb-danger) 35%,var(--wb-border))!important;}
+${s} .text-blue-600,${s} .text-blue-700,${s} .text-indigo-600,${s} .text-indigo-700{color:var(--wb-info)!important;}
+${s} .bg-blue-50,${s} .bg-indigo-50{background-color:color-mix(in srgb,var(--wb-info) 10%,var(--wb-surface))!important;}
+${s} input,${s} select,${s} textarea{background-color:var(--wb-surface);color:var(--wb-text);border-color:var(--wb-border);transition-duration:var(--wb-motion-ms);}
+${s} .hover\\:bg-slate-50:hover,${s} .hover\\:bg-slate-100:hover{background-color:var(--wb-surface-2)!important;}
+${s} .rounded-md,${s} .rounded-lg{border-radius:var(--wb-radius)!important;}
+${s} .rounded-xl,${s} .rounded-2xl{border-radius:calc(var(--wb-radius) + 4px)!important;}
+${s} .shadow-sm,${s} .shadow-md{box-shadow:var(--wb-shadow)!important;}
+${s} button,${s} input,${s} select,${s} textarea,${s} [class*="transition"]{transition-duration:var(--wb-motion-ms)!important;}
+${s}[data-density="compact"] input,${s}[data-density="compact"] select,${s}[data-density="compact"] textarea{min-height:2rem;padding-top:.3rem;padding-bottom:.3rem;}
+${s}[data-density="compact"] th,${s}[data-density="compact"] td{padding-top:.35rem!important;padding-bottom:.35rem!important;}
+${s}[data-density="comfortable"] input,${s}[data-density="comfortable"] select,${s}[data-density="comfortable"] textarea{min-height:2.75rem;padding-top:.7rem;padding-bottom:.7rem;}
+${s}[data-density="comfortable"] th,${s}[data-density="comfortable"] td{padding-top:.75rem!important;padding-bottom:.75rem!important;}
+.wb-app .wb-screen[data-content-width] > *{max-width:100%!important;}
+.wb-app .wb-screen[data-card-radius="custom"] .rounded-md,
+.wb-app .wb-screen[data-card-radius="custom"] .rounded-lg,
+.wb-app .wb-screen[data-card-radius="custom"] .rounded-xl,
+.wb-app .wb-screen[data-card-radius="custom"] .rounded-2xl{border-radius:var(--wb-screen-radius)!important;}
+.wb-app .wb-screen[data-shadow="none"] > *{box-shadow:none!important;}
+.wb-app .wb-screen[data-shadow="small"] > *{box-shadow:0 1px 2px rgb(15 23 42 / .08)!important;}
+.wb-app .wb-screen[data-shadow="medium"] > *{box-shadow:0 8px 24px rgb(15 23 42 / .12)!important;}
+.wb-app .wb-screen[data-shadow="large"] > *{box-shadow:0 20px 48px rgb(15 23 42 / .18)!important;}
+.wb-app .wb-screen[data-density="compact"] input,
+.wb-app .wb-screen[data-density="compact"] select,
+.wb-app .wb-screen[data-density="compact"] textarea{min-height:2rem;padding-top:.3rem;padding-bottom:.3rem;}
+.wb-app .wb-screen[data-density="compact"] th,
+.wb-app .wb-screen[data-density="compact"] td{padding-top:.35rem!important;padding-bottom:.35rem!important;}
+.wb-app .wb-screen[data-density="comfortable"] input,
+.wb-app .wb-screen[data-density="comfortable"] select,
+.wb-app .wb-screen[data-density="comfortable"] textarea{min-height:2.75rem;padding-top:.7rem;padding-bottom:.7rem;}
+.wb-app .wb-screen[data-density="comfortable"] th,
+.wb-app .wb-screen[data-density="comfortable"] td{padding-top:.75rem!important;padding-bottom:.75rem!important;}
+.wb-app .wb-screen[data-motion="instant"] button,
+.wb-app .wb-screen[data-motion="instant"] input,
+.wb-app .wb-screen[data-motion="instant"] select,
+.wb-app .wb-screen[data-motion="instant"] textarea{transition-duration:0ms!important;}
+.wb-app .wb-screen[data-motion="standard"] button,
+.wb-app .wb-screen[data-motion="standard"] input,
+.wb-app .wb-screen[data-motion="standard"] select,
+.wb-app .wb-screen[data-motion="standard"] textarea{transition-duration:160ms!important;}
+.wb-app .wb-screen[data-motion="expressive"] button,
+.wb-app .wb-screen[data-motion="expressive"] input,
+.wb-app .wb-screen[data-motion="expressive"] select,
+.wb-app .wb-screen[data-motion="expressive"] textarea{transition-duration:280ms!important;}
+`.trim();
 }

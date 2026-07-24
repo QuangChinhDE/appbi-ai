@@ -1581,9 +1581,16 @@ if settings.WORKBOARDS_ENABLED:
             except Exception:
                 shared_context = None
         if screen.kind == "form":
-            return screen_runtime.render_form_screen(
-                db, wb, screen, identity=identity, shared_context=shared_context
-            )
+            return {
+                **screen_runtime.render_form_screen(
+                    db, wb, screen, identity=identity, shared_context=shared_context
+                ),
+                "presentation": (
+                    screen.presentation.model_dump(exclude_none=True)
+                    if screen.presentation is not None
+                    else None
+                ),
+            }
         if screen.kind == "table":
             return {
                 **screen_runtime.render_table_screen(
@@ -1594,12 +1601,24 @@ if settings.WORKBOARDS_ENABLED:
                 "title": screen.title,
                 "icon": screen.icon,
                 "description": screen.description,
+                "presentation": (
+                    screen.presentation.model_dump(exclude_none=True)
+                    if screen.presentation is not None
+                    else None
+                ),
             }
         if screen.kind == "doc":
-            return screen_runtime.render_doc_screen(
-                db, wb, screen, identity=identity, app_user_payload=app_user,
-                shared_context=shared_context,
-            )
+            return {
+                **screen_runtime.render_doc_screen(
+                    db, wb, screen, identity=identity, app_user_payload=app_user,
+                    shared_context=shared_context,
+                ),
+                "presentation": (
+                    screen.presentation.model_dump(exclude_none=True)
+                    if screen.presentation is not None
+                    else None
+                ),
+            }
         if screen.kind == "dashboard":
             if screen.dashboard is None:
                 raise HTTPException(
@@ -1647,6 +1666,11 @@ if settings.WORKBOARDS_ENABLED:
                 "title": screen.title,
                 "icon": screen.icon,
                 "description": screen.description,
+                "presentation": (
+                    screen.presentation.model_dump(exclude_none=True)
+                    if screen.presentation is not None
+                    else None
+                ),
                 "dashboard": {
                     "share_token": effective_token,
                     "password": screen.dashboard.password,
@@ -2057,6 +2081,42 @@ if settings.WORKBOARDS_ENABLED:
         )
 
 
+    @router.post(
+        "/workspaces/{token}/workboards/{workboard_id}"
+        "/screens/{screen_id}/actions/{action_id}/open-related-records"
+    )
+    def workspace_open_related_records(
+        token: str,
+        workboard_id: int,
+        screen_id: str,
+        action_id: str,
+        body: dict,
+        request: Request,
+        db: Session = Depends(get_db),
+    ):
+        ws = _load_workspace_or_404(db, token)
+        app_user = _require_workspace_app_user(request, ws, db=db)
+        wb = _resolve_workboard_for_workspace(
+            db, ws, workboard_id, request=request, app_user=app_user
+        )
+        identity = identity_from_app_user(app_user)
+        layout = screen_runtime.parse_layout(wb)
+        screen = screen_runtime.get_screen(layout, screen_id)
+        if _screen_blocked(screen, identity, ws, wb):
+            raise HTTPException(status_code=403, detail="You don't have access to that screen.")
+        pk = body.get("pk") if isinstance(body, dict) else None
+        if not isinstance(pk, dict) or not pk:
+            raise HTTPException(status_code=400, detail="pk is required.")
+        return screen_runtime.open_related_records_context(
+            db,
+            wb,
+            screen,
+            action_id=action_id,
+            pk=pk,
+            identity=identity,
+        )
+
+
     @router.post("/workspaces/{token}/workboards/{workboard_id}/screens/{screen_id}/ocr-extract")
     @_limiter.limit("20/minute")
     def workspace_screen_ocr_extract(
@@ -2459,6 +2519,7 @@ if settings.WORKBOARDS_ENABLED:
             result = screen_runtime.delete_screen_row(
                 db, wb, screen, pk, identity=identity
             )
+            db.commit()
         except WorkboardValidationError as exc:
             raise HTTPException(
                 status_code=422,

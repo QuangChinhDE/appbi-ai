@@ -13,12 +13,23 @@
 'use client';
 
 import React, { useEffect, useState } from 'react';
-import { Monitor, Smartphone } from 'lucide-react';
+import {
+  MessageSquare,
+  Monitor,
+  Navigation,
+  Palette,
+  PanelLeft,
+  RotateCcw,
+  Smartphone,
+} from 'lucide-react';
 
 import type {
   MiniAppLayoutSpec,
   BrandingSpec,
+  ExperienceSpec,
   PrintTemplateSpec,
+  ScreenPresentationSpec,
+  ScreenSpec,
   ThemeBackgroundSpec,
   ThemeMode,
   ThemeFont,
@@ -785,5 +796,780 @@ export function AutoNumberSection({
         </button>
       </div>
     </section>
+  );
+}
+
+// ── Experience Studio (v1 presentation contract) ───────────────────────────
+// Edits layout.experience — the app-wide presentation contract. Additive +
+// cosmetic; never touches fields/columns/RLS/actions. Resolved server-side so
+// old boards (no experience block) render identically via the legacy adapter.
+type StudioCategory = 'theme' | 'shell' | 'navigation' | 'screen' | 'feedback';
+type ExperienceTheme = NonNullable<ExperienceSpec['theme']>;
+type ExperienceShell = NonNullable<ExperienceSpec['shell']>;
+type ExperienceNavigation = NonNullable<ExperienceSpec['navigation']>;
+type ExperienceFeedback = NonNullable<ExperienceSpec['feedback']>;
+
+function withoutUndefined<T extends object>(value: T): Partial<T> {
+  return Object.fromEntries(
+    Object.entries(value).filter(([, item]) => item !== undefined),
+  ) as Partial<T>;
+}
+
+function ColorTokenField({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value?: string;
+  onChange: (next?: string) => void;
+}) {
+  const [draft, setDraft] = useState(value || '');
+  useEffect(() => setDraft(value || ''), [value]);
+  const valid = draft === '' || /^#[0-9a-fA-F]{6}$/.test(draft);
+  const commit = () => {
+    if (valid) onChange(draft || undefined);
+  };
+  return (
+    <label className="grid grid-cols-[2.25rem_5rem_minmax(0,1fr)] items-center gap-2">
+      <input
+        type="color"
+        aria-label={`Chọn màu ${label}`}
+        value={valid && draft ? draft : '#64748b'}
+        onChange={(event) => {
+          setDraft(event.target.value);
+          onChange(event.target.value);
+        }}
+        className="h-8 w-9 cursor-pointer rounded-md border border-[rgb(var(--border-line))] bg-transparent p-0.5"
+      />
+      <span className="text-tiny font-medium text-text-secondary">{label}</span>
+      <input
+        value={draft}
+        onChange={(event) => setDraft(event.target.value)}
+        onBlur={commit}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter') event.currentTarget.blur();
+        }}
+        className={`${INPUT} font-mono ${valid ? '' : 'border-danger'}`}
+        placeholder="Kế thừa"
+      />
+    </label>
+  );
+}
+
+function TriStateSelect({
+  value,
+  onChange,
+}: {
+  value?: boolean;
+  onChange: (next?: boolean) => void;
+}) {
+  return (
+    <select
+      value={value === undefined ? '' : value ? 'true' : 'false'}
+      onChange={(event) =>
+        onChange(event.target.value === '' ? undefined : event.target.value === 'true')
+      }
+      className={INPUT}
+    >
+      <option value="">Kế thừa</option>
+      <option value="true">Bật</option>
+      <option value="false">Tắt</option>
+    </select>
+  );
+}
+
+export function ExperienceStudioSection({
+  layout,
+  onChange,
+  screen,
+  onScreenChange,
+  disabled = false,
+}: {
+  layout: MiniAppLayoutSpec;
+  onChange: (next: MiniAppLayoutSpec) => void;
+  screen?: ScreenSpec | null;
+  onScreenChange?: (next: ScreenSpec) => void;
+  disabled?: boolean;
+}) {
+  const [category, setCategory] = useState<StudioCategory>('theme');
+  const exp: ExperienceSpec = layout.experience || {};
+  const theme = exp.theme || {};
+  const shell = exp.shell || {};
+  const nav = exp.navigation || {};
+  const feedback = exp.feedback || {};
+  const presentation = screen?.presentation || {};
+
+  useEffect(() => {
+    if (category === 'screen' && !screen) setCategory('theme');
+  }, [category, screen]);
+
+  const writeExperience = (next: ExperienceSpec) => {
+    const cleaned: ExperienceSpec = { ...next };
+    for (const key of ['theme', 'shell', 'navigation', 'feedback'] as const) {
+      const section = cleaned[key];
+      if (section && Object.keys(withoutUndefined(section)).length === 0) delete cleaned[key];
+    }
+    const meaningful = Boolean(
+      cleaned.preset ||
+        cleaned.theme ||
+        cleaned.shell ||
+        cleaned.navigation ||
+        cleaned.feedback,
+    );
+    const nextLayout = { ...layout };
+    if (meaningful) nextLayout.experience = { ...cleaned, schema_version: 1 };
+    else delete nextLayout.experience;
+    onChange(nextLayout);
+  };
+
+  const setTheme = (patch: Partial<ExperienceTheme>) =>
+    writeExperience({
+      ...exp,
+      theme: withoutUndefined({ ...theme, ...patch }) as ExperienceTheme,
+    });
+  const setShell = (patch: Partial<ExperienceShell>) =>
+    writeExperience({
+      ...exp,
+      shell: withoutUndefined({ ...shell, ...patch }) as ExperienceShell,
+    });
+  const setNav = (patch: Partial<ExperienceNavigation>) =>
+    writeExperience({
+      ...exp,
+      navigation: withoutUndefined({ ...nav, ...patch }) as ExperienceNavigation,
+    });
+  const setFeedback = (patch: Partial<ExperienceFeedback>) =>
+    writeExperience({
+      ...exp,
+      feedback: withoutUndefined({ ...feedback, ...patch }) as ExperienceFeedback,
+    });
+  const resetCategory = () => {
+    if (category === 'screen') {
+      if (screen && onScreenChange) onScreenChange({ ...screen, presentation: null });
+      return;
+    }
+    const next = { ...exp };
+    delete next[category];
+    writeExperience(next);
+  };
+  const setPresentation = (patch: Partial<ScreenPresentationSpec>) => {
+    if (!screen || !onScreenChange) return;
+    const next = withoutUndefined({ ...presentation, ...patch }) as ScreenPresentationSpec;
+    onScreenChange({ ...screen, presentation: Object.keys(next).length ? next : null });
+  };
+  const setFormPresentation = (
+    patch: Partial<NonNullable<ScreenPresentationSpec['form']>>,
+  ) => {
+    const next = withoutUndefined({ ...(presentation.form || {}), ...patch });
+    setPresentation({
+      form: Object.keys(next).length
+        ? (next as NonNullable<ScreenPresentationSpec['form']>)
+        : undefined,
+    });
+  };
+  const setTablePresentation = (
+    patch: Partial<NonNullable<ScreenPresentationSpec['table']>>,
+  ) => {
+    const next = withoutUndefined({ ...(presentation.table || {}), ...patch });
+    setPresentation({
+      table: Object.keys(next).length
+        ? (next as NonNullable<ScreenPresentationSpec['table']>)
+        : undefined,
+    });
+  };
+
+  const categories: Array<{
+    id: StudioCategory;
+    label: string;
+    icon: React.ElementType;
+    hidden?: boolean;
+  }> = [
+    { id: 'theme', label: 'Theme', icon: Palette },
+    { id: 'shell', label: 'Shell', icon: PanelLeft },
+    { id: 'navigation', label: 'Navigation', icon: Navigation },
+    { id: 'screen', label: 'Screen', icon: Monitor, hidden: !screen },
+    { id: 'feedback', label: 'Feedback', icon: MessageSquare },
+  ];
+
+  const COLOR_TOKENS: Array<[keyof ExperienceTheme, string]> = [
+    ['primary', 'Primary'],
+    ['success', 'Success'],
+    ['warning', 'Warning'],
+    ['danger', 'Danger'],
+    ['info', 'Info'],
+    ['neutral', 'Neutral'],
+    ['background', 'Background'],
+    ['surface', 'Surface'],
+    ['border', 'Border'],
+    ['text', 'Text'],
+  ];
+
+  return (
+    <div className="flex min-h-[560px] flex-col overflow-hidden rounded-lg border border-[rgb(var(--border-line))] bg-surface-0 md:flex-row">
+      <nav className="flex shrink-0 gap-1 overflow-x-auto border-b border-[rgb(var(--border-line))] bg-surface-1 p-2 md:w-40 md:flex-col md:border-b-0 md:border-r">
+        {categories.filter((item) => !item.hidden).map((item) => {
+          const Icon = item.icon;
+          const active = category === item.id;
+          return (
+            <button
+              key={item.id}
+              type="button"
+              onClick={() => setCategory(item.id)}
+              className={`flex min-h-10 shrink-0 items-center gap-2 rounded-md px-3 py-2 text-left text-caption font-medium transition-colors ${
+                active
+                  ? 'bg-brand/10 text-brand'
+                  : 'text-text-secondary hover:bg-surface-2 hover:text-text-primary'
+              }`}
+            >
+              <Icon className="h-4 w-4 shrink-0" />
+              {item.label}
+            </button>
+          );
+        })}
+      </nav>
+
+      <fieldset disabled={disabled} className="min-w-0 flex-1">
+        <div className="sticky top-0 z-10 flex min-h-12 items-center justify-between border-b border-[rgb(var(--border-line))] bg-surface-0/95 px-4 backdrop-blur">
+          <div className="min-w-0">
+            <h3 className="truncate text-caption font-emphasis text-text-primary">
+              {category === 'screen' ? screen?.title || 'Current screen' : categories.find((item) => item.id === category)?.label}
+            </h3>
+            {category === 'screen' && (
+              <span className="text-tiny uppercase text-text-quaternary">{screen?.kind}</span>
+            )}
+          </div>
+          <button
+            type="button"
+            onClick={resetCategory}
+            className="inline-flex items-center gap-1.5 rounded-md px-2 py-1.5 text-tiny font-medium text-text-tertiary hover:bg-surface-2 hover:text-text-primary"
+          >
+            <RotateCcw className="h-3.5 w-3.5" />
+            Kế thừa
+          </button>
+        </div>
+
+        <div className="space-y-6 p-4">
+          {category === 'theme' && (
+            <>
+              <section>
+                <h4 className={SECTION_H}>Semantic colors</h4>
+                <div className="grid gap-2 lg:grid-cols-2">
+                  {COLOR_TOKENS.map(([key, label]) => (
+                    <ColorTokenField
+                      key={key}
+                      label={label}
+                      value={theme[key] as string | undefined}
+                      onChange={(value) =>
+                        setTheme({ [key]: value } as Partial<ExperienceTheme>)
+                      }
+                    />
+                  ))}
+                </div>
+              </section>
+              <section className="grid gap-3 border-t border-[rgb(var(--border-line))] pt-5 sm:grid-cols-2">
+                <Lbl label="Font chữ">
+                  <select
+                    value={theme.font_family || ''}
+                    onChange={(event) => setTheme({ font_family: event.target.value || undefined })}
+                    className={INPUT}
+                  >
+                    <option value="">Kế thừa</option>
+                    <option value="system">System</option>
+                    <option value="inter">Inter</option>
+                    <option value="be-vietnam">Be Vietnam Pro</option>
+                    <option value="roboto">Roboto</option>
+                    <option value="serif">Serif</option>
+                    <option value="mono">Mono</option>
+                  </select>
+                </Lbl>
+                <Lbl label="Chế độ">
+                  <select
+                    value={theme.mode || ''}
+                    onChange={(event) =>
+                      setTheme({ mode: (event.target.value || undefined) as ExperienceTheme['mode'] })
+                    }
+                    className={INPUT}
+                  >
+                    <option value="">Kế thừa</option>
+                    <option value="auto">Auto</option>
+                    <option value="light">Light</option>
+                    <option value="dark">Dark</option>
+                  </select>
+                </Lbl>
+                <Lbl label="Mật độ">
+                  <select
+                    value={theme.density || ''}
+                    onChange={(event) =>
+                      setTheme({ density: (event.target.value || undefined) as ExperienceTheme['density'] })
+                    }
+                    className={INPUT}
+                  >
+                    <option value="">Kế thừa</option>
+                    <option value="compact">Compact</option>
+                    <option value="cozy">Cozy</option>
+                    <option value="comfortable">Comfortable</option>
+                  </select>
+                </Lbl>
+                <Lbl label="Bo góc">
+                  <select
+                    value={theme.radius || ''}
+                    onChange={(event) =>
+                      setTheme({ radius: (event.target.value || undefined) as ExperienceTheme['radius'] })
+                    }
+                    className={INPUT}
+                  >
+                    <option value="">Kế thừa</option>
+                    <option value="none">None</option>
+                    <option value="small">Small</option>
+                    <option value="medium">Medium</option>
+                    <option value="large">Large</option>
+                    <option value="full">Full</option>
+                  </select>
+                </Lbl>
+                <Lbl label="Độ nổi">
+                  <select
+                    value={theme.elevation || ''}
+                    onChange={(event) =>
+                      setTheme({ elevation: (event.target.value || undefined) as ExperienceTheme['elevation'] })
+                    }
+                    className={INPUT}
+                  >
+                    <option value="">Kế thừa</option>
+                    <option value="none">None</option>
+                    <option value="small">Small</option>
+                    <option value="medium">Medium</option>
+                    <option value="large">Large</option>
+                  </select>
+                </Lbl>
+                <Lbl label="Chuyển động">
+                  <select
+                    value={theme.motion || ''}
+                    onChange={(event) =>
+                      setTheme({ motion: (event.target.value || undefined) as ExperienceTheme['motion'] })
+                    }
+                    className={INPUT}
+                  >
+                    <option value="">Kế thừa</option>
+                    <option value="instant">Instant</option>
+                    <option value="standard">Standard</option>
+                    <option value="expressive">Expressive</option>
+                  </select>
+                </Lbl>
+              </section>
+            </>
+          )}
+
+          {category === 'shell' && (
+            <section className="grid gap-3 sm:grid-cols-2">
+              <Lbl label="Bề rộng nội dung">
+                <select
+                  value={shell.content_width || ''}
+                  onChange={(event) =>
+                    setShell({ content_width: (event.target.value || undefined) as ExperienceShell['content_width'] })
+                  }
+                  className={INPUT}
+                >
+                  <option value="">Kế thừa</option>
+                  <option value="full_bleed">Full bleed</option>
+                  <option value="constrained">Constrained</option>
+                  <option value="wide">Wide</option>
+                </select>
+              </Lbl>
+              <Lbl label="Khoảng đệm trang">
+                <select
+                  value={shell.page_padding || ''}
+                  onChange={(event) =>
+                    setShell({ page_padding: (event.target.value || undefined) as ExperienceShell['page_padding'] })
+                  }
+                  className={INPUT}
+                >
+                  <option value="">Kế thừa</option>
+                  <option value="compact">Compact</option>
+                  <option value="cozy">Cozy</option>
+                  <option value="comfortable">Comfortable</option>
+                </select>
+              </Lbl>
+              <Lbl label="Nền ứng dụng">
+                <select
+                  value={shell.background || ''}
+                  onChange={(event) =>
+                    setShell({ background: (event.target.value || undefined) as ExperienceShell['background'] })
+                  }
+                  className={INPUT}
+                >
+                  <option value="">Kế thừa</option>
+                  <option value="light">Sáng</option>
+                  <option value="gray">Xám nhạt</option>
+                  <option value="dark">Tối</option>
+                  <option value="custom">Tùy chỉnh</option>
+                </select>
+              </Lbl>
+              <Lbl label="Màu nền tùy chỉnh">
+                <ColorTokenField
+                  label="Color"
+                  value={theme.app_background || undefined}
+                  onChange={(value) => setTheme({ app_background: value })}
+                />
+              </Lbl>
+              <Lbl label="Sticky header">
+                <TriStateSelect
+                  value={shell.sticky_header}
+                  onChange={(sticky_header) => setShell({ sticky_header })}
+                />
+              </Lbl>
+              <Lbl label="Hiện tìm kiếm">
+                <TriStateSelect
+                  value={shell.show_search}
+                  onChange={(show_search) => setShell({ show_search })}
+                />
+              </Lbl>
+              <Lbl label="Hiện logo">
+                <TriStateSelect value={shell.show_logo} onChange={(show_logo) => setShell({ show_logo })} />
+              </Lbl>
+              <Lbl label="Hiện footer">
+                <TriStateSelect
+                  value={shell.footer_enabled}
+                  onChange={(footer_enabled) => setShell({ footer_enabled })}
+                />
+              </Lbl>
+            </section>
+          )}
+
+          {category === 'navigation' && (
+            <section className="grid gap-3 sm:grid-cols-2">
+              <Lbl label="Desktop">
+                <select
+                  value={nav.desktop_kind || ''}
+                  onChange={(event) =>
+                    setNav({ desktop_kind: (event.target.value || undefined) as ExperienceNavigation['desktop_kind'] })
+                  }
+                  className={INPUT}
+                >
+                  <option value="">Kế thừa</option>
+                  <option value="sidebar">Sidebar</option>
+                  <option value="top_tabs">Top tabs</option>
+                  <option value="compact_rail">Compact rail</option>
+                </select>
+              </Lbl>
+              <Lbl label="Mobile">
+                <select
+                  value={nav.mobile_kind || ''}
+                  onChange={(event) =>
+                    setNav({ mobile_kind: (event.target.value || undefined) as ExperienceNavigation['mobile_kind'] })
+                  }
+                  className={INPUT}
+                >
+                  <option value="">Kế thừa</option>
+                  <option value="bottom_nav">Bottom nav</option>
+                  <option value="drawer">Drawer</option>
+                </select>
+              </Lbl>
+              <Lbl label="Kiểu active">
+                <select
+                  value={nav.active_style || ''}
+                  onChange={(event) =>
+                    setNav({ active_style: (event.target.value || undefined) as ExperienceNavigation['active_style'] })
+                  }
+                  className={INPUT}
+                >
+                  <option value="">Kế thừa</option>
+                  <option value="pill">Pill</option>
+                  <option value="bar">Bar</option>
+                  <option value="highlight">Highlight</option>
+                </select>
+              </Lbl>
+              <Lbl label="Bề rộng sidebar">
+                <input
+                  type="number"
+                  min={180}
+                  max={400}
+                  value={nav.sidebar_width ?? ''}
+                  onChange={(event) =>
+                    setNav({
+                      sidebar_width: event.target.value ? Number(event.target.value) : undefined,
+                    })
+                  }
+                  className={INPUT}
+                  placeholder="Kế thừa"
+                />
+              </Lbl>
+              <Lbl label="Mặc định thu gọn">
+                <TriStateSelect
+                  value={nav.default_collapsed}
+                  onChange={(default_collapsed) => setNav({ default_collapsed })}
+                />
+              </Lbl>
+              <Lbl label="Hiện icon">
+                <TriStateSelect value={nav.show_icons} onChange={(show_icons) => setNav({ show_icons })} />
+              </Lbl>
+              <Lbl label="Hiện nhãn">
+                <TriStateSelect value={nav.show_labels} onChange={(show_labels) => setNav({ show_labels })} />
+              </Lbl>
+              <Lbl label="Breadcrumbs">
+                <TriStateSelect
+                  value={nav.breadcrumbs}
+                  onChange={(breadcrumbs) => setNav({ breadcrumbs })}
+                />
+              </Lbl>
+            </section>
+          )}
+
+          {category === 'feedback' && (
+            <section className="grid gap-3 sm:grid-cols-2">
+              <Lbl label="Loading">
+                <select
+                  value={feedback.loading || ''}
+                  onChange={(event) =>
+                    setFeedback({ loading: (event.target.value || undefined) as ExperienceFeedback['loading'] })
+                  }
+                  className={INPUT}
+                >
+                  <option value="">Kế thừa</option>
+                  <option value="skeleton">Skeleton</option>
+                  <option value="spinner">Spinner</option>
+                </select>
+              </Lbl>
+              <Lbl label="Empty state">
+                <select
+                  value={feedback.empty_style || ''}
+                  onChange={(event) =>
+                    setFeedback({ empty_style: (event.target.value || undefined) as ExperienceFeedback['empty_style'] })
+                  }
+                  className={INPUT}
+                >
+                  <option value="">Kế thừa</option>
+                  <option value="illustration">Illustration</option>
+                  <option value="message">Message</option>
+                  <option value="minimal">Minimal</option>
+                </select>
+              </Lbl>
+              <Lbl label="Success feedback">
+                <select
+                  value={feedback.success || ''}
+                  onChange={(event) =>
+                    setFeedback({ success: (event.target.value || undefined) as ExperienceFeedback['success'] })
+                  }
+                  className={INPUT}
+                >
+                  <option value="">Kế thừa</option>
+                  <option value="toast">Toast</option>
+                  <option value="inline">Inline</option>
+                  <option value="banner">Banner</option>
+                </select>
+              </Lbl>
+              <Lbl label="Cho phép thử lại">
+                <TriStateSelect
+                  value={feedback.error_retry}
+                  onChange={(error_retry) => setFeedback({ error_retry })}
+                />
+              </Lbl>
+              <Lbl label="Thời lượng motion (ms)">
+                <input
+                  type="number"
+                  min={0}
+                  max={1000}
+                  step={20}
+                  value={feedback.motion_ms ?? ''}
+                  onChange={(event) =>
+                    setFeedback({
+                      motion_ms: event.target.value ? Number(event.target.value) : undefined,
+                    })
+                  }
+                  className={INPUT}
+                  placeholder="Kế thừa"
+                />
+              </Lbl>
+            </section>
+          )}
+
+          {category === 'screen' && screen && (
+            <>
+              <section className="grid gap-3 sm:grid-cols-2">
+                <Lbl label="Bề rộng nội dung">
+                  <select
+                    value={presentation.content_width || ''}
+                    onChange={(event) =>
+                      setPresentation({
+                        content_width: (event.target.value || undefined) as ScreenPresentationSpec['content_width'],
+                      })
+                    }
+                    className={INPUT}
+                  >
+                    <option value="">Theo app</option>
+                    <option value="narrow">Narrow</option>
+                    <option value="standard">Standard</option>
+                    <option value="wide">Wide</option>
+                  </select>
+                </Lbl>
+                <Lbl label="Mật độ">
+                  <select
+                    value={presentation.density || ''}
+                    onChange={(event) =>
+                      setPresentation({
+                        density: (event.target.value || undefined) as ScreenPresentationSpec['density'],
+                      })
+                    }
+                    className={INPUT}
+                  >
+                    <option value="">Theo app</option>
+                    <option value="compact">Compact</option>
+                    <option value="cozy">Cozy</option>
+                    <option value="comfortable">Comfortable</option>
+                  </select>
+                </Lbl>
+                <Lbl label="Padding (px)">
+                  <input
+                    type="number"
+                    min={0}
+                    max={64}
+                    value={presentation.page_padding ?? ''}
+                    onChange={(event) =>
+                      setPresentation({
+                        page_padding: event.target.value ? Number(event.target.value) : undefined,
+                      })
+                    }
+                    className={INPUT}
+                    placeholder="Theo app"
+                  />
+                </Lbl>
+                <Lbl label="Bo góc card (px)">
+                  <input
+                    type="number"
+                    min={0}
+                    max={32}
+                    value={presentation.card_radius ?? ''}
+                    onChange={(event) =>
+                      setPresentation({
+                        card_radius: event.target.value ? Number(event.target.value) : undefined,
+                      })
+                    }
+                    className={INPUT}
+                    placeholder="Theo app"
+                  />
+                </Lbl>
+                <Lbl label="Độ nổi">
+                  <select
+                    value={presentation.shadow || ''}
+                    onChange={(event) =>
+                      setPresentation({
+                        shadow: (event.target.value || undefined) as ScreenPresentationSpec['shadow'],
+                      })
+                    }
+                    className={INPUT}
+                  >
+                    <option value="">Theo app</option>
+                    <option value="none">None</option>
+                    <option value="small">Small</option>
+                    <option value="medium">Medium</option>
+                    <option value="large">Large</option>
+                  </select>
+                </Lbl>
+                <Lbl label="Chuyển động">
+                  <select
+                    value={presentation.motion || ''}
+                    onChange={(event) =>
+                      setPresentation({
+                        motion: (event.target.value || undefined) as ScreenPresentationSpec['motion'],
+                      })
+                    }
+                    className={INPUT}
+                  >
+                    <option value="">Theo app</option>
+                    <option value="instant">Instant</option>
+                    <option value="standard">Standard</option>
+                    <option value="expressive">Expressive</option>
+                  </select>
+                </Lbl>
+              </section>
+
+              {screen.kind === 'form' && (
+                <section className="grid gap-3 border-t border-[rgb(var(--border-line))] pt-5 sm:grid-cols-2">
+                  <Lbl label="Số cột">
+                    <select
+                      value={presentation.form?.columns || ''}
+                      onChange={(event) =>
+                        setFormPresentation({
+                          columns: event.target.value
+                            ? (Number(event.target.value) as 1 | 2 | 3)
+                            : undefined,
+                        })
+                      }
+                      className={INPUT}
+                    >
+                      <option value="">Tự động</option>
+                      <option value="1">1 cột</option>
+                      <option value="2">2 cột</option>
+                      <option value="3">3 cột</option>
+                    </select>
+                  </Lbl>
+                  <Lbl label="Kiểu section">
+                    <select
+                      value={presentation.form?.section_style || ''}
+                      onChange={(event) =>
+                        setFormPresentation({
+                          section_style: (event.target.value || undefined) as NonNullable<ScreenPresentationSpec['form']>['section_style'],
+                        })
+                      }
+                      className={INPUT}
+                    >
+                      <option value="">Plain</option>
+                      <option value="divided">Divided</option>
+                      <option value="surface">Surface</option>
+                    </select>
+                  </Lbl>
+                  <Lbl label="Sticky action bar">
+                    <TriStateSelect
+                      value={presentation.sticky_action_bar}
+                      onChange={(sticky_action_bar) => setPresentation({ sticky_action_bar })}
+                    />
+                  </Lbl>
+                </section>
+              )}
+
+              {screen.kind === 'table' && (
+                <section className="grid gap-3 border-t border-[rgb(var(--border-line))] pt-5 sm:grid-cols-2">
+                  <Lbl label="Sticky table header">
+                    <TriStateSelect
+                      value={presentation.table?.sticky_header}
+                      onChange={(sticky_header) => setTablePresentation({ sticky_header })}
+                    />
+                  </Lbl>
+                  <Lbl label="Chiều cao dòng">
+                    <select
+                      value={presentation.table?.row_height || ''}
+                      onChange={(event) =>
+                        setTablePresentation({
+                          row_height: (event.target.value || undefined) as NonNullable<ScreenPresentationSpec['table']>['row_height'],
+                        })
+                      }
+                      className={INPUT}
+                    >
+                      <option value="">Theo app</option>
+                      <option value="compact">Compact</option>
+                      <option value="cozy">Cozy</option>
+                      <option value="comfortable">Comfortable</option>
+                    </select>
+                  </Lbl>
+                  <Lbl label="Vị trí filter">
+                    <select
+                      value={presentation.table?.filter_position || ''}
+                      onChange={(event) =>
+                        setTablePresentation({
+                          filter_position: (event.target.value || undefined) as NonNullable<ScreenPresentationSpec['table']>['filter_position'],
+                        })
+                      }
+                      className={INPUT}
+                    >
+                      <option value="">Top</option>
+                      <option value="sticky">Sticky top</option>
+                    </select>
+                  </Lbl>
+                </section>
+              )}
+            </>
+          )}
+        </div>
+      </fieldset>
+    </div>
   );
 }

@@ -23,6 +23,7 @@ import {
   Eye,
   EyeOff,
   LayoutGrid,
+  Palette,
   Loader2,
   Lock,
   Save,
@@ -33,8 +34,6 @@ import { apiClient } from '@/lib/api-client';
 import { useDatasets } from '@/hooks/use-datasets';
 import { useWorkboardPresence } from '@/hooks/use-workboard-presence';
 import { getResourcePermissions } from '@/hooks/use-resource-permission';
-import { toast } from '@/lib/toast';
-import { Button } from '@/components/ui/Button';
 import {
   ensureLayout,
   MiniAppLayoutSpec,
@@ -43,6 +42,7 @@ import {
 } from './types';
 import ScreenEditor from './ScreenEditor';
 import BuilderLivePreview from './BuilderLivePreview';
+import { ExperienceStudioSection } from './AppSettingsEditor';
 import { registerAutosaveFlush } from './autosaveFlushRegistry';
 import CanvasOverview from './CanvasOverview';
 import ScreenSwitcherModal from './ScreenSwitcherModal';
@@ -137,7 +137,7 @@ export default function WorkboardBuilder({ workboard }: Props) {
   // editor. We keep both on the same URL so refresh + back/forward stay
   // simple; if a user wants a deep link to a specific screen we can add
   // it later as a search param.
-  const [mode, setMode] = useState<'canvas' | 'editor'>('canvas');
+  const [mode, setMode] = useState<'canvas' | 'editor' | 'design'>('canvas');
   const [previewCollapsed, setPreviewCollapsed] = useState(false);
   const [focusFieldColumn, setFocusFieldColumn] = useState<string | null>(null);
   const [switcherOpen, setSwitcherOpen] = useState(false);
@@ -153,9 +153,10 @@ export default function WorkboardBuilder({ workboard }: Props) {
 
   // ── Co-edit soft-lock ──
   // The screen the user currently has open in the editor (their "cursor").
-  // null on the canvas / app-settings — those aren't screen-scoped so no lock
-  // applies there.
-  const editingScreenId = mode === 'editor' ? activeScreenId : null;
+  // null on the canvas. Design keeps the current screen lock because its Screen
+  // category persists through the same screen-scoped save path as Build.
+  const editingScreenId =
+    mode === 'editor' || mode === 'design' ? activeScreenId : null;
   const presence = useWorkboardPresence(workboard.id, canEdit, editingScreenId);
   // Someone ELSE holds the lock on the screen I'm viewing → I'm view-only for
   // it until I take over (or they leave). The backend version-409 guard is the
@@ -553,6 +554,7 @@ export default function WorkboardBuilder({ workboard }: Props) {
   // replaces the old fixed three-pane workspace — see the redesign notes
   // in ``wordboard_redesign/README.md``.
   const isEditor = mode === 'editor' && activeScreen !== null;
+  const isDesign = mode === 'design';
   const boundDataset = useMemo(
     () => datasets.find((d) => d.id === boundDatasetId) ?? null,
     [datasets, boundDatasetId],
@@ -592,7 +594,7 @@ export default function WorkboardBuilder({ workboard }: Props) {
           hop between screens without round-tripping through Canvas.
           Canvas mode keeps the summary "N screens · K need attention". */}
       <div className="flex h-11 shrink-0 items-center gap-2 border-b border-[rgb(var(--border-line))] bg-surface-1 px-4">
-        {isEditor ? (
+        {(isEditor || isDesign) && activeScreen ? (
           <>
             <button
               type="button"
@@ -628,6 +630,33 @@ export default function WorkboardBuilder({ workboard }: Props) {
             )}
           </span>
         )}
+
+        <div className="ml-2 flex items-center gap-0.5 rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 p-0.5">
+          <button
+            type="button"
+            onClick={() => setMode(activeScreen ? 'editor' : 'canvas')}
+            className={`rounded-md px-2.5 py-1 text-caption font-medium transition-colors ${
+              !isDesign ? 'bg-surface-0 text-text-primary shadow-sm' : 'text-text-tertiary hover:text-text-primary'
+            }`}
+          >
+            Build
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setMode('design');
+              setPreviewCollapsed(false);
+              window.localStorage.setItem(PREVIEW_COLLAPSED_KEY, '0');
+              queueMicrotask(() => previewPanelRef.current?.expand());
+            }}
+            className={`inline-flex items-center gap-1 rounded-md px-2.5 py-1 text-caption font-medium transition-colors ${
+              isDesign ? 'bg-surface-0 text-brand shadow-sm' : 'text-text-tertiary hover:text-text-primary'
+            }`}
+            title="Experience Studio — tùy chỉnh giao diện toàn app"
+          >
+            <Palette className="h-3.5 w-3.5" /> Design
+          </button>
+        </div>
 
         <div className="flex-1" />
 
@@ -694,7 +723,23 @@ export default function WorkboardBuilder({ workboard }: Props) {
       >
         <Panel id="editor" order={1} minSize={30} defaultSize={55}>
           <main className="wb-editor-pane relative h-full min-w-0 overflow-y-auto bg-surface-0">
-            {isEditor && activeScreen ? (
+            {isDesign ? (
+              <div className="w-full px-4 py-5 sm:px-6 lg:px-8">
+                <div className="mb-4">
+                  <h2 className="text-base font-bold text-text-primary">Experience Studio — Design</h2>
+                  <p className="mt-0.5 text-caption text-text-tertiary">
+                    Thiết kế toàn app và presentation của screen đang chọn trên cùng một preview.
+                  </p>
+                </div>
+                <ExperienceStudioSection
+                  layout={layout}
+                  onChange={setLayout}
+                  screen={activeScreen}
+                  onScreenChange={updateScreen}
+                  disabled={!canWrite}
+                />
+              </div>
+            ) : isEditor && activeScreen ? (
               <div
                 className={`w-full px-4 py-5 sm:px-6 lg:px-8 ${
                   activeScreenLocked ? 'pointer-events-none select-none opacity-60' : ''
@@ -770,6 +815,8 @@ export default function WorkboardBuilder({ workboard }: Props) {
         >
           <BuilderLivePreview
             workboard={workboard}
+            draftLayout={layout}
+            reloadOnSave={!isDesign}
             saveStatus={autosave.status}
             savedAt={autosave.savedAt}
             saveError={autosave.errorMessage}
@@ -786,7 +833,7 @@ export default function WorkboardBuilder({ workboard }: Props) {
           currentScreenId={activeScreenId}
           onPick={(id) => {
             setActiveScreenId(id);
-            setMode('editor');
+            if (!isDesign) setMode('editor');
             setFocusFieldColumn(null);
             writeBuilderUrl(id);
           }}

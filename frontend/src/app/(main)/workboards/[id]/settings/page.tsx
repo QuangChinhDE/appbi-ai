@@ -60,6 +60,7 @@ import {
   DatasetSection,
   NavigationSection,
   ThemeSection,
+  ExperienceStudioSection,
   PrintTemplateSection,
   AutoNumberSection,
   SettingsPanel,
@@ -324,9 +325,18 @@ function SettingsInner({ workboard }: { workboard: Workboard }) {
           )}
 
           {section === 'appearance' && (
-            <SettingsPanel title="Thương hiệu · Theme · Login" icon={<Palette className="h-4 w-4" />}>
-              <ThemeSection layout={layout} onChange={setLayout} />
-            </SettingsPanel>
+            <>
+              <SettingsPanel title="Experience Studio (v2) · Semantic theme" icon={<Palette className="h-4 w-4" />}>
+                <ExperienceStudioSection
+                  layout={layout}
+                  onChange={setLayout}
+                  disabled={!canEdit}
+                />
+              </SettingsPanel>
+              <SettingsPanel title="Thương hiệu · Theme · Login (legacy)" icon={<Palette className="h-4 w-4" />}>
+                <ThemeSection layout={layout} onChange={setLayout} />
+              </SettingsPanel>
+            </>
           )}
 
           {section === 'navigation' && (

@@ -685,8 +685,11 @@ class ScreenAction(BaseModel):
     label: str = Field(..., min_length=1, max_length=120)
     icon: Optional[str] = None
     style: Literal["primary", "secondary", "ghost", "danger"] = "primary"
+    action_type: Literal["navigate", "open_related_records"] = "navigate"
     go_to_screen: Optional[str] = None
     carry: List[str] = Field(default_factory=list)
+    relation_id: Optional[str] = Field(default=None, max_length=64)
+    parent_screen_id: Optional[str] = Field(default=None, max_length=64)
     confirm_message: Optional[str] = None
     visible_for_roles: List[str] = Field(default_factory=list)
 
@@ -819,6 +822,7 @@ class RelatedRecordConfig(BaseModel):
     show_existing: bool = True
     allow_add_after_save: bool = True
     keep_parent_context: bool = True
+    delete_behavior: Literal["restrict", "cascade", "unlink"] = "restrict"
     display_columns: List[str] = Field(default_factory=list)
     finish_screen_id: Optional[str] = Field(default=None, max_length=64)
 
@@ -2004,6 +2008,127 @@ class DashboardScreenSpec(BaseModel):
 # Screen + navigation + layout root
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Experience contract v1 — presentation-only design system (Experience Studio).
+# ADDITIVE + purely cosmetic. Every field is Optional and every model is
+# ``extra="ignore"`` so the frontend can evolve without a 422 and a stray/legacy
+# key never breaks a layout save. Business logic (fields, columns, RLS, actions,
+# parent/child, offline, auto-number, webhooks) lives elsewhere and is untouched.
+# ---------------------------------------------------------------------------
+class ExperienceTheme(BaseModel):
+    """Semantic tokens + typography/density/shape/motion for the whole app."""
+
+    primary: Optional[str] = Field(default=None, pattern=r"^#[0-9a-fA-F]{6}$")
+    success: Optional[str] = Field(default=None, pattern=r"^#[0-9a-fA-F]{6}$")
+    warning: Optional[str] = Field(default=None, pattern=r"^#[0-9a-fA-F]{6}$")
+    danger: Optional[str] = Field(default=None, pattern=r"^#[0-9a-fA-F]{6}$")
+    info: Optional[str] = Field(default=None, pattern=r"^#[0-9a-fA-F]{6}$")
+    neutral: Optional[str] = Field(default=None, pattern=r"^#[0-9a-fA-F]{6}$")
+    background: Optional[str] = Field(default=None, pattern=r"^#[0-9a-fA-F]{6}$")
+    surface: Optional[str] = Field(default=None, pattern=r"^#[0-9a-fA-F]{6}$")
+    border: Optional[str] = Field(default=None, pattern=r"^#[0-9a-fA-F]{6}$")
+    text: Optional[str] = Field(default=None, pattern=r"^#[0-9a-fA-F]{6}$")
+    font_family: Optional[
+        Literal["system", "inter", "be-vietnam", "roboto", "serif", "mono"]
+    ] = None
+    heading_weight: Optional[Literal["regular", "medium", "semibold", "bold"]] = None
+    body_weight: Optional[Literal["regular", "medium"]] = None
+    type_scale: Optional[int] = Field(default=None, ge=80, le=140, description="Base type scale %.")
+    density: Optional[Literal["compact", "cozy", "comfortable"]] = None
+    radius: Optional[Literal["none", "small", "medium", "large", "full"]] = None
+    elevation: Optional[Literal["none", "small", "medium", "large"]] = None
+    motion: Optional[Literal["instant", "standard", "expressive"]] = None
+    mode: Optional[Literal["light", "dark", "auto"]] = None
+    app_background: Optional[str] = Field(
+        default=None, pattern=r"^#[0-9a-fA-F]{6}$"
+    )
+
+    model_config = ConfigDict(extra="ignore")
+
+
+class ExperienceShell(BaseModel):
+    """Header/footer/content-frame chrome. Nav KIND lives in navigation only."""
+
+    sticky_header: Optional[bool] = None
+    show_search: Optional[bool] = None
+    show_logo: Optional[bool] = None
+    content_width: Optional[Literal["full_bleed", "constrained", "wide"]] = None
+    content_width_px: Optional[int] = Field(default=None, ge=600, le=2400)
+    page_padding: Optional[Literal["compact", "cozy", "comfortable"]] = None
+    footer_enabled: Optional[bool] = None
+    background: Optional[Literal["light", "gray", "dark", "custom"]] = None
+
+    model_config = ConfigDict(extra="ignore")
+
+
+class ExperienceNavigation(BaseModel):
+    """Presentation of the mini-app nav (supersedes the legacy MiniAppNav look).
+
+    The nav ITEMS/order stay in ``mini_app_nav``/``screen_groups`` (business
+    structure); this only styles how that nav is rendered.
+    """
+
+    desktop_kind: Optional[Literal["sidebar", "top_tabs", "compact_rail"]] = None
+    mobile_kind: Optional[Literal["bottom_nav", "drawer"]] = None
+    sidebar_width: Optional[int] = Field(default=None, ge=180, le=400)
+    default_collapsed: Optional[bool] = None
+    show_icons: Optional[bool] = None
+    show_labels: Optional[bool] = None
+    active_style: Optional[Literal["pill", "bar", "highlight"]] = None
+    breadcrumbs: Optional[bool] = None
+
+    model_config = ConfigDict(extra="ignore")
+
+
+class ExperienceFeedback(BaseModel):
+    """Feedback & motion: loading/empty/success/error/confirmation presentation."""
+
+    loading: Optional[Literal["skeleton", "spinner"]] = None
+    empty_style: Optional[Literal["illustration", "message", "minimal"]] = None
+    success: Optional[Literal["toast", "inline", "banner"]] = None
+    confirmation: Optional[Literal["modal", "drawer", "inline"]] = None
+    error_retry: Optional[bool] = None
+    motion_ms: Optional[int] = Field(default=None, ge=0, le=1000)
+
+    model_config = ConfigDict(extra="ignore")
+
+
+class Experience(BaseModel):
+    """App-level presentation contract (Experience Studio). Optional; when absent
+    the runtime falls back to the legacy ``branding``/``mini_app_nav`` via an
+    adapter, so existing workboards render identically."""
+
+    schema_version: int = 1
+    preset: Optional[str] = Field(default=None, max_length=64)
+    theme: ExperienceTheme = Field(default_factory=ExperienceTheme)
+    shell: ExperienceShell = Field(default_factory=ExperienceShell)
+    navigation: ExperienceNavigation = Field(default_factory=ExperienceNavigation)
+    feedback: ExperienceFeedback = Field(default_factory=ExperienceFeedback)
+
+    model_config = ConfigDict(extra="ignore")
+
+
+class ScreenPresentation(BaseModel):
+    """Per-screen presentation overrides. Purely cosmetic; inherits from the
+    app-level ``experience`` when a field is unset. Per-kind blocks are tolerant
+    dicts so each renderer can add knobs without a schema round-trip."""
+
+    content_width: Optional[Literal["narrow", "standard", "wide"]] = None
+    page_padding: Optional[int] = Field(default=None, ge=0, le=64)
+    card_radius: Optional[int] = Field(default=None, ge=0, le=32)
+    shadow: Optional[Literal["none", "small", "medium", "large"]] = None
+    motion: Optional[Literal["instant", "standard", "expressive"]] = None
+    density: Optional[Literal["compact", "cozy", "comfortable"]] = None
+    sticky_action_bar: Optional[bool] = None
+    form: Dict[str, Any] = Field(default_factory=dict)
+    table: Dict[str, Any] = Field(default_factory=dict)
+    doc: Dict[str, Any] = Field(default_factory=dict)
+    dashboard: Dict[str, Any] = Field(default_factory=dict)
+    responsive: Dict[str, Any] = Field(default_factory=dict)
+
+    model_config = ConfigDict(extra="ignore")
+
+
 class Screen(BaseModel):
     """A single screen of the mini-app.
 
@@ -2027,6 +2152,10 @@ class Screen(BaseModel):
     table: Optional[TableScreenSpec] = None
     doc: Optional[DocScreenSpec] = None
     dashboard: Optional[DashboardScreenSpec] = None
+
+    # Presentation-only overrides (Experience Studio). Optional + cosmetic;
+    # inherits the app-level ``experience`` when unset. Never affects data/logic.
+    presentation: Optional[ScreenPresentation] = None
 
     # Central column label map: {db_column_name: display_label}.
     # Used by table/doc screens to show friendly column headers instead of raw
@@ -2219,6 +2348,10 @@ class LayoutJson(BaseModel):
     screen_groups: List[ScreenGroup] = Field(default_factory=_builtins.list)
     # Reusable print letterhead for doc screens (print + Excel export).
     print_template: Optional[PrintTemplate] = None
+    # Experience Studio presentation contract (v1). Optional; when absent the
+    # runtime adapts legacy ``branding``/``mini_app_nav`` so old boards are
+    # visually unchanged. Purely cosmetic — never touches business logic.
+    experience: Optional[Experience] = None
 
     # ignore unknown future fields rather than erroring out clients
     model_config = ConfigDict(extra="ignore")

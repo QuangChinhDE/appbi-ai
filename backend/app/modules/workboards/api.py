@@ -948,6 +948,26 @@ def compute_workboard_audit(db: Session, wb: Workboard) -> dict[str, Any]:
                         screen=screen,
                         context={"relation_index": index, "column": parent_key},
                     )
+                parent_pk_columns = {
+                    str(column)
+                    for column in (screen.get("primary_key_columns") or [])
+                    if str(column)
+                }
+                if parent_key and parent_key not in parent_pk_columns:
+                    _add(
+                        severity="error",
+                        code="unsafe_relation_parent_key",
+                        detail=(
+                            f"Related Records '{rel_label}' must use one of the "
+                            "parent screen's primary key columns."
+                        ),
+                        screen=screen,
+                        context={
+                            "relation_index": index,
+                            "column": parent_key,
+                            "primary_key_columns": sorted(parent_pk_columns),
+                        },
+                    )
                 child_table_id = child_screen.get("table_id") if child_screen else None
                 child_cols = _column_set(child_table_id)
                 if child_fk and child_fk not in child_cols:
@@ -1162,6 +1182,40 @@ def compute_workboard_audit(db: Session, wb: Workboard) -> dict[str, Any]:
                 _check_ref(ra.get("go_to_screen"), code="dangling_go_to_screen",
                            label=f"Row action '{ra.get('label') or ra.get('id')}'",
                            severity="warning", screen=screen)
+                if ra.get("action_type") == "open_related_records":
+                    parent_screen_id = str(ra.get("parent_screen_id") or "").strip()
+                    relation_id = str(ra.get("relation_id") or "").strip()
+                    parent_screen = screens_by_id.get(parent_screen_id)
+                    parent_form = (
+                        parent_screen.get("form")
+                        if isinstance(parent_screen, dict)
+                        and isinstance(parent_screen.get("form"), dict)
+                        else {}
+                    )
+                    relation_found = any(
+                        isinstance(relation, dict)
+                        and relation.get("id") == relation_id
+                        for relation in (parent_form.get("related_records") or [])
+                    )
+                    if (
+                        not parent_screen
+                        or parent_screen.get("table_id") != screen.get("table_id")
+                        or not relation_found
+                    ):
+                        _add(
+                            severity="error",
+                            code="invalid_open_related_records_action",
+                            detail=(
+                                f"Row action '{ra.get('label') or ra.get('id')}' must "
+                                "target a relation owned by a parent form on the same table."
+                            ),
+                            screen=screen,
+                            context={
+                                "action_id": ra.get("id"),
+                                "parent_screen_id": parent_screen_id,
+                                "relation_id": relation_id,
+                            },
+                        )
         pos = table.get("pos_cart") if isinstance(table.get("pos_cart"), dict) else {}
         _check_ref(pos.get("header_screen_id"), code="dangling_pos_header_screen",
                    label="POS cart header screen", severity="warning", screen=screen)

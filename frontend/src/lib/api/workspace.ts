@@ -105,6 +105,51 @@ export interface AppShellScreenGroup {
   screen_ids: string[];
 }
 
+export interface ExperienceResolved {
+  schema_version?: number;
+  preset?: string | null;
+  theme: {
+    primary: string; success: string; warning: string; danger: string; info: string;
+    neutral: string; background: string; surface: string; border: string; text: string;
+    font_family: string; heading_weight: string; body_weight: string; type_scale: number;
+    density: 'compact' | 'cozy' | 'comfortable';
+    radius: 'none' | 'small' | 'medium' | 'large' | 'full';
+    elevation: 'none' | 'small' | 'medium' | 'large';
+    motion: 'instant' | 'standard' | 'expressive';
+    mode: 'light' | 'dark' | 'auto';
+    app_background?: string | null;
+  };
+  shell: {
+    sticky_header: boolean; show_search: boolean; show_logo: boolean;
+    content_width: 'full_bleed' | 'constrained' | 'wide'; content_width_px?: number | null;
+    page_padding: 'compact' | 'cozy' | 'comfortable'; footer_enabled: boolean;
+    background: 'light' | 'gray' | 'dark' | 'custom';
+  };
+  navigation: {
+    desktop_kind: 'sidebar' | 'top_tabs' | 'compact_rail';
+    mobile_kind: 'bottom_nav' | 'drawer';
+    sidebar_width: number; default_collapsed: boolean; show_icons: boolean;
+    show_labels: boolean; active_style: 'pill' | 'bar' | 'highlight'; breadcrumbs: boolean;
+  };
+  feedback: {
+    loading: 'skeleton' | 'spinner'; empty_style: 'illustration' | 'message' | 'minimal';
+    success: 'toast' | 'inline' | 'banner'; confirmation: 'modal' | 'drawer' | 'inline';
+    error_retry: boolean; motion_ms: number;
+  };
+  /** True only when layout.experience exists. Legacy boards keep the old
+   * compatibility renderer instead of receiving the broad semantic sweep. */
+  explicit?: boolean;
+  /** Exact author-authored block, before defaults/legacy inheritance. */
+  overrides?: {
+    schema_version?: number;
+    preset?: string | null;
+    theme?: Partial<ExperienceResolved['theme']>;
+    shell?: Partial<ExperienceResolved['shell']>;
+    navigation?: Partial<ExperienceResolved['navigation']>;
+    feedback?: Partial<ExperienceResolved['feedback']>;
+  };
+}
+
 export interface AppShellResponse {
   workboard: {
     id: number;
@@ -114,6 +159,9 @@ export interface AppShellResponse {
     description?: string | null;
   };
   branding: WorkspaceBranding;
+  /** Resolved presentation contract (Experience Studio). Always populated by the
+   * backend (defaults ← legacy branding/nav adapter ← explicit experience). */
+  experience?: ExperienceResolved;
   /** Storage-aware media size ceiling (KB); FE pre-checks uploads against it. */
   media_max_kb?: number;
   nav: AppShellNav;
@@ -130,10 +178,37 @@ export interface ScreenAction {
   label: string;
   icon?: string | null;
   style?: 'primary' | 'secondary' | 'ghost' | 'danger';
+  action_type?: 'navigate' | 'open_related_records';
   go_to_screen?: string | null;
   carry?: string[];
+  relation_id?: string | null;
+  parent_screen_id?: string | null;
   confirm_message?: string | null;
   visible_for_roles?: string[];
+}
+
+export interface ScreenPresentation {
+  content_width?: 'narrow' | 'standard' | 'wide';
+  page_padding?: number;
+  card_radius?: number;
+  shadow?: 'none' | 'small' | 'medium' | 'large';
+  motion?: 'instant' | 'standard' | 'expressive';
+  density?: 'compact' | 'cozy' | 'comfortable';
+  sticky_action_bar?: boolean;
+  form?: {
+    columns?: 1 | 2 | 3;
+    section_style?: 'plain' | 'divided' | 'surface';
+  };
+  table?: {
+    sticky_header?: boolean;
+    row_height?: 'compact' | 'cozy' | 'comfortable';
+    filter_position?: 'top' | 'sticky';
+    action_placement?: 'inline' | 'top_bar' | 'drawer';
+    mobile_rendering?: 'table' | 'cards' | 'list';
+  };
+  doc?: Record<string, unknown>;
+  dashboard?: Record<string, unknown>;
+  responsive?: Record<string, unknown>;
 }
 
 export interface RelatedRecordConfig {
@@ -146,6 +221,7 @@ export interface RelatedRecordConfig {
   show_existing?: boolean;
   allow_add_after_save?: boolean;
   keep_parent_context?: boolean;
+  delete_behavior?: 'restrict' | 'cascade' | 'unlink';
   display_columns?: string[];
   finish_screen_id?: string | null;
 }
@@ -155,6 +231,24 @@ export interface RelatedRecordsResponse {
   primary_key_columns?: string[];
   rows: Array<Record<string, unknown>>;
   total_count?: number;
+}
+
+export interface OpenRelatedRecordsResponse {
+  child_screen_id: string;
+  parent_values: Record<string, unknown>;
+  relation_context: {
+    relation_id: string;
+    relation_label?: string | null;
+    parent_screen_id: string;
+    child_screen_id: string;
+    parent_key_column: string;
+    parent_key_value: unknown;
+    child_foreign_key_column: string;
+    finish_screen_id?: string | null;
+    show_existing?: boolean;
+    allow_multiple?: boolean;
+    keep_parent_context?: boolean;
+  };
 }
 
 export interface FormScreenResponse {
@@ -182,6 +276,7 @@ export interface FormScreenResponse {
   sections?: string[];
   /** Photo-capture / OCR — runtime only learns whether it is enabled. */
   ocr?: { enabled?: boolean } | null;
+  presentation?: ScreenPresentation | null;
 }
 
 export interface OcrExtractResult {
@@ -244,8 +339,11 @@ export interface TableScreenResponse {
       label: string;
       icon?: string | null;
       style?: 'primary' | 'secondary' | 'ghost' | 'danger';
+      action_type?: 'navigate' | 'open_related_records';
       go_to_screen?: string | null;
       carry?: string[];
+      relation_id?: string | null;
+      parent_screen_id?: string | null;
       confirm_message?: string | null;
       visible_for_roles?: string[];
     }>;
@@ -446,6 +544,7 @@ export interface TableScreenResponse {
   column_groups?: Array<{ label: string; columns: string[] }>;
   merges?: Array<{ column: string; row_start: number; row_span: number }>;
   column_labels?: Record<string, string>;
+  presentation?: ScreenPresentation | null;
 }
 
 export interface TableRowDetailResponse {
@@ -482,6 +581,7 @@ export interface DocScreenResponse {
   blocks: DocBlockRendered[];
   context?: Record<string, unknown>;
   print_template?: PrintTemplate | null;
+  presentation?: ScreenPresentation | null;
 }
 
 export interface DashboardScreenResponse {
@@ -490,6 +590,7 @@ export interface DashboardScreenResponse {
   title: string;
   icon?: string | null;
   description?: string | null;
+  presentation?: ScreenPresentation | null;
   dashboard: {
     share_token: string;
     password?: string | null;
@@ -665,6 +766,20 @@ export const workspaceApi = {
           parent_key_value: JSON.stringify(params.parent_key_value ?? null),
         },
       },
+    );
+    return r.data;
+  },
+  async openRelatedRecords(
+    token: string,
+    workboardId: number,
+    screenId: string,
+    actionId: string,
+    pk: Record<string, unknown>,
+  ): Promise<OpenRelatedRecordsResponse> {
+    const r = await client.post(
+      `/public/workspaces/${token}/workboards/${workboardId}` +
+        `/screens/${screenId}/actions/${actionId}/open-related-records`,
+      { pk },
     );
     return r.data;
   },

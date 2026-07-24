@@ -1115,7 +1115,11 @@ export default function DashboardDetailPage() {
       // Default footprint per widget type — picked so the widget is visible
       // immediately after dropping (a 4×2 grid cell is too short for text/countdown).
       const sizeByType: Record<string, { w: number; h: number; wPx: number; hPx: number }> = {
-        text: { w: 4, h: 2, wPx: 360, hPx: 120 },
+        // Text/heading widgets are almost always a one-line section header, so
+        // default to a slim band (1 grid row) instead of a 2-row box that leaves
+        // a big empty gap under the text. The DA can still stretch it for a
+        // multi-line note.
+        text: { w: 4, h: 1, wPx: 360, hPx: 64 },
         countdown: { w: 4, h: 3, wPx: 360, hPx: 200 },
         image: { w: 4, h: 4, wPx: 360, hPx: 240 },
         shape: { w: 4, h: 1, wPx: 360, hPx: 80 },

@@ -1857,7 +1857,13 @@ export function ExploreEditor({
   const isRunningQuery = previewChartData.isPending;
   const filterColumns = sqlMode === 'custom'
     ? (customConfigColumns ?? [])
-    : [...dedupedPreviewColumns, ...semanticColumns.filter((column) => column.type !== 'number')];
+    // Chart filters run as a pre-aggregation WHERE, so offer every DIMENSION —
+    // including numeric dimension columns (e.g. count_login) which the viewer
+    // filters with >/</between/=. Only exclude declared aggregation MEASURES
+    // (a measure belongs in HAVING, not WHERE). The old `type !== 'number'`
+    // guard wrongly hid ALL numeric columns, so a numeric dimension could never
+    // be found in the field picker ("No fields match" on count_login).
+    : [...dedupedPreviewColumns, ...semanticColumns.filter((column) => column.fieldKind !== 'measure')];
   const filterRows = sqlMode === 'custom'
     ? (customQueryState?.rows ?? [])
     : previewRows;

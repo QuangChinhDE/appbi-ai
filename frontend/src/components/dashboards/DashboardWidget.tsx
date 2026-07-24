@@ -58,12 +58,16 @@ function TextWidget({ config, params }: { config: any; params: Record<string, an
   // Border + bg + radius come from the outer tile wrapper (DashboardGrid /
   // DashboardCanvas) so widgets and charts share the same card chrome.
   // Only the inner padding + typography lives here.
+  // Vertically center the text so a one-line heading sits in the middle of the
+  // (now slim) band instead of hugging the top-left with empty space beneath —
+  // the "big empty box" that read as unpolished. items-center keeps it centered
+  // when short but still lets a long note scroll from the top.
   return (
     <div
-      className="h-full w-full overflow-auto p-4"
+      className="flex h-full w-full items-center overflow-auto p-4"
       style={{ textAlign: align, color, fontSize, fontWeight }}
     >
-      {renderMarkdown(rendered)}
+      <div className="min-h-0 w-full">{renderMarkdown(rendered)}</div>
     </div>
   );
 }

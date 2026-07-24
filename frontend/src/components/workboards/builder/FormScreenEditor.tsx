@@ -624,11 +624,11 @@ export default function FormScreenEditor({
     fieldColumnOptions.length > 0 && fieldColumnOptions.every((column) => column in initialValues);
 
   const addRelatedRecord = () => {
+    const parentKey = (screen.primary_key_columns || []).find(Boolean) || '';
+    if (!parentKey) return;
     const child = allScreens.find(
       (item) => item.id !== screen.id && (item.kind === 'form' || item.kind === 'table'),
     );
-    const parentKey =
-      (screen.primary_key_columns || []).find(Boolean) || tableCols[0]?.name || '';
     const childTable = tables.find((table) => table.id === child?.table_id);
     const childFk =
       childTable?.columns.find((column) => column.name === parentKey)?.name ||
@@ -644,6 +644,7 @@ export default function FormScreenEditor({
       show_existing: true,
       allow_add_after_save: true,
       keep_parent_context: true,
+      delete_behavior: 'restrict',
       display_columns: [],
       finish_screen_id: null,
     };
@@ -709,7 +710,7 @@ export default function FormScreenEditor({
             screen={screen}
             allScreens={allScreens}
             tables={tables}
-            parentColumns={tableCols.map((column) => column.name)}
+            parentColumns={(screen.primary_key_columns || []).filter(Boolean)}
             relations={relatedRecords}
             onAdd={addRelatedRecord}
             onChange={updateRelatedRecord}
@@ -1217,10 +1218,19 @@ function RelatedRecordsInspector({
         <div className="text-caption text-text-tertiary">
           Use this when one parent row owns many child rows.
         </div>
-        <BuilderActionButton onClick={onAdd}>
+        <BuilderActionButton
+          onClick={onAdd}
+          disabled={parentColumns.length === 0 || childScreens.length === 0}
+        >
           <Plus className="h-3.5 w-3.5" /> Add relation
         </BuilderActionButton>
       </div>
+
+      {parentColumns.length === 0 ? (
+        <BuilderEmptyHint className="text-left">
+          Configure at least one primary key column on the parent screen before adding a relation.
+        </BuilderEmptyHint>
+      ) : null}
 
       {relations.length === 0 ? (
         <BuilderEmptyHint className="text-left">
@@ -1336,6 +1346,22 @@ function RelatedRecordsInspector({
                       onChange={(next) => onChange(index, { child_foreign_key_column: next || '' })}
                       placeholder="Pick child FK..."
                     />
+                  </Lbl>
+                  <Lbl label="When parent is deleted">
+                    <select
+                      value={relation.delete_behavior || 'restrict'}
+                      onChange={(event) =>
+                        onChange(index, {
+                          delete_behavior: event.target
+                            .value as RelatedRecordConfigSpec['delete_behavior'],
+                        })
+                      }
+                      className={INPUT}
+                    >
+                      <option value="restrict">Restrict while children exist</option>
+                      <option value="cascade">Delete child records</option>
+                      <option value="unlink">Keep children and clear FK</option>
+                    </select>
                   </Lbl>
                 </div>
 

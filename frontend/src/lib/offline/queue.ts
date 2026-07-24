@@ -35,12 +35,13 @@ export interface QueuedSubmit {
 export interface OfflineRelationFlow extends OfflineRelationRef {
   token: string;
   workboardId: number;
-  parentOpId: string;
+  parentOpId?: string | null;
   relationLabel?: string | null;
   parentKeyValue?: unknown;
   parentValues?: Record<string, unknown>;
   finishScreenId?: string | null;
   showExisting?: boolean;
+  allowMultiple?: boolean;
   keepParentContext?: boolean;
   status: RelationFlowStatus;
   error?: string | null;

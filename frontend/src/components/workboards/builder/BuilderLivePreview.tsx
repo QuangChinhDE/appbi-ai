@@ -2,9 +2,8 @@
  * BuilderLivePreview — iframe pane embedded inside the builder.
  *
  * Mints a preview-session cookie once (so the iframe authenticates as a
- * picked role) and reloads the iframe whenever auto-save lands. Reload
- * is keyed by ``reloadKey`` from the parent so we don't refresh on every
- * keystroke — only when ``status`` flips to "saved".
+ * picked role). Build changes reload after auto-save; Design changes cross a
+ * same-origin presentation bridge and update the mounted runtime immediately.
  *
  * Because the iframe is same-origin and same workspace cookie, every
  * permission check (RLS, write enforcement) behaves exactly as a real
@@ -46,6 +45,11 @@ import {
 import { Button } from '@/components/ui/Button';
 import { WORKBOARD_CONG_CHANGED } from '@/components/workboards/WorkboardShareModal';
 import { useI18n } from '@/providers/LanguageProvider';
+import type { MiniAppLayoutSpec } from './types';
+import {
+  WORKBOARD_PREVIEW_PATCH,
+  type WorkboardPreviewPatch,
+} from '@/lib/workboard-preview-bridge';
 
 function getApiErrorMessage(error: unknown, fallback: string) {
   const maybeApiError = error as { response?: { data?: { detail?: unknown } } };
@@ -63,6 +67,10 @@ const FRAME_DIMENSIONS: Record<DeviceFrame, { w: string; minH: string }> = {
 
 interface Props {
   workboard: Workboard;
+  /** Current unsaved layout; only presentation fields cross the iframe bridge. */
+  draftLayout?: MiniAppLayoutSpec;
+  /** Build/data changes still reload after save; Design changes do not. */
+  reloadOnSave?: boolean;
   /** Status badge from auto-save hook. */
   saveStatus: AutosaveStatus;
   savedAt: Date | null;
@@ -76,6 +84,8 @@ interface Props {
 
 export default function BuilderLivePreview({
   workboard,
+  draftLayout,
+  reloadOnSave = true,
   saveStatus,
   savedAt,
   saveError,
@@ -84,7 +94,7 @@ export default function BuilderLivePreview({
   onToggle,
 }: Props) {
   const { t } = useI18n();
-  const [workspaces, setWorkspaces] = useState<WorkspaceLite[]>([]);
+  const [, setWorkspaces] = useState<WorkspaceLite[]>([]);
   const [activeWs, setActiveWs] = useState<WorkspaceLite | null>(null);
   const [appUsers, setAppUsers] = useState<WorkboardAppUserResponse[]>([]);
   const [loadingUsers, setLoadingUsers] = useState(true);
@@ -277,32 +287,45 @@ export default function BuilderLivePreview({
   ]);
 
   // ── Reload iframe when auto-save lands ───────────────────────────
+  const sendDraftPatch = useCallback(() => {
+    const target = iframeRef.current?.contentWindow;
+    if (!target || typeof window === 'undefined') return;
+    const activeScreen = draftLayout?.screens.find(
+      (screen) => screen.id === activeScreenId,
+    );
+    const message: WorkboardPreviewPatch = {
+      type: WORKBOARD_PREVIEW_PATCH,
+      workboardId: workboard.id,
+      screenId: activeScreenId,
+      experience:
+        (draftLayout?.experience as Record<string, unknown> | undefined) ?? null,
+      presentation:
+        (activeScreen?.presentation as Record<string, unknown> | null | undefined) ??
+        null,
+    };
+    target.postMessage(message, window.location.origin);
+  }, [activeScreenId, draftLayout, workboard.id]);
+
+  useEffect(() => {
+    if (sessionReady) sendDraftPatch();
+  }, [sendDraftPatch, sessionReady]);
+
   const lastSavedRef = useRef<Date | null>(null);
   useEffect(() => {
-    if (saveStatus === 'saved' && sessionReady && savedAt) {
+    if (reloadOnSave && saveStatus === 'saved' && sessionReady && savedAt) {
       // Only reload when savedAt actually advances.
       if (lastSavedRef.current !== savedAt) {
         lastSavedRef.current = savedAt;
         setIframeKey((k) => k + 1);
       }
     }
-  }, [saveStatus, savedAt, sessionReady]);
+  }, [reloadOnSave, saveStatus, savedAt, sessionReady]);
 
   // ── Reload iframe when active screen changes (jump to that screen) ─
-  useEffect(() => {
-    // Re-key the iframe so it lands on the latest layout + can route
-    // to the active screen (handled by hash).
-    if (sessionReady) {
-      setIframeKey((k) => k + 1);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeScreenId]);
-
   const previewUrl = useMemo(() => {
     if (!activeWs) return null;
-    const base = `/ws/${activeWs.token}/workboards/${workboard.id}`;
-    return activeScreenId ? `${base}#screen=${activeScreenId}` : base;
-  }, [activeWs, workboard.id, activeScreenId]);
+    return `/ws/${activeWs.token}/workboards/${workboard.id}`;
+  }, [activeWs, workboard.id]);
 
   // All Cổng management (create / attach / activate / copy link) now lives in
   // the topbar "Chia sẻ" modal — Live Preview only TESTS screens. When that
@@ -503,6 +526,7 @@ export default function BuilderLivePreview({
                 src={previewUrl}
                 className="h-full w-full bg-white"
                 title={t('workboards.livePreview.iframeTitle')}
+                onLoad={sendDraftPatch}
               />
             </div>
           </div>

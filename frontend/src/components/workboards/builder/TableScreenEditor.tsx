@@ -417,6 +417,21 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
     () => tableSpec.row_actions || [],
     [tableSpec.row_actions],
   );
+  const relatedRecordTargets = useMemo(
+    () =>
+      allScreens.flatMap((candidate) =>
+        candidate.kind === 'form' &&
+        candidate.table_id === screen.table_id &&
+        candidate.form?.related_records
+          ? candidate.form.related_records.map((relation) => ({
+              parentScreenId: candidate.id,
+              parentTitle: candidate.title,
+              relation,
+            }))
+          : [],
+      ),
+    [allScreens, screen.table_id],
+  );
   const totals = tableSpec.totals || {};
   const boundTable = tables.find((table) => table.id === screen.table_id);
   const tableCols = boundTable?.columns ?? [];
@@ -739,7 +754,15 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
     }
     const next: ScreenAction[] = [
       ...rowActions,
-      { id, label: 'Mở', style: 'secondary', go_to_screen: null, carry: [], visible_for_roles: [] },
+      {
+        id,
+        label: 'Mở',
+        style: 'secondary',
+        action_type: 'navigate',
+        go_to_screen: null,
+        carry: [],
+        visible_for_roles: [],
+      },
     ];
     updateTable({ row_actions: next });
     setActiveItem('row_actions');
@@ -1145,7 +1168,7 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
         <BuilderInspectorPanel
           icon={<ChevronRight className="h-4 w-4" />}
           title="Row actions"
-          subtitle="Buttons at the end of each row — navigate to another screen carrying that row's values (e.g. open a detail form)."
+          subtitle="Add navigation actions or open a trusted Parent–Child relation from an existing row."
         >
           <div className="space-y-3">
             <div className="flex items-center justify-between">
@@ -1211,22 +1234,72 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
                             <option value="danger">Danger</option>
                           </select>
                         </Lbl>
-                        <Lbl label="Go to screen">
+                        <Lbl label="Action">
                           <select
-                            value={action.go_to_screen || ''}
+                            value={action.action_type || 'navigate'}
                             onChange={(e) =>
-                              updateRowAction(index, { go_to_screen: e.target.value || null })
+                              updateRowAction(index, {
+                                action_type: e.target.value as NonNullable<
+                                  ScreenAction['action_type']
+                                >,
+                                ...(e.target.value === 'navigate'
+                                  ? { relation_id: null, parent_screen_id: null }
+                                  : { go_to_screen: null, carry: [] }),
+                              })
                             }
                             className={INPUT}
                           >
-                            <option value="">— none —</option>
-                            {navScreens.map((s) => (
-                              <option key={s.id} value={s.id}>
-                                {s.title}
-                              </option>
-                            ))}
+                            <option value="navigate">Navigate to screen</option>
+                            <option value="open_related_records">Open Related Records</option>
                           </select>
                         </Lbl>
+                        {(action.action_type || 'navigate') === 'open_related_records' ? (
+                          <Lbl label="Relation">
+                            <select
+                              value={
+                                action.parent_screen_id && action.relation_id
+                                  ? `${action.parent_screen_id}::${action.relation_id}`
+                                  : ''
+                              }
+                              onChange={(event) => {
+                                const [parentScreenId, relationId] =
+                                  event.target.value.split('::');
+                                updateRowAction(index, {
+                                  parent_screen_id: parentScreenId || null,
+                                  relation_id: relationId || null,
+                                });
+                              }}
+                              className={INPUT}
+                            >
+                              <option value="">— pick a relation —</option>
+                              {relatedRecordTargets.map(({ parentScreenId, parentTitle, relation }) => (
+                                <option
+                                  key={`${parentScreenId}:${relation.id}`}
+                                  value={`${parentScreenId}::${relation.id}`}
+                                >
+                                  {relation.label || relation.id} ({parentTitle})
+                                </option>
+                              ))}
+                            </select>
+                          </Lbl>
+                        ) : (
+                          <Lbl label="Go to screen">
+                            <select
+                              value={action.go_to_screen || ''}
+                              onChange={(e) =>
+                                updateRowAction(index, { go_to_screen: e.target.value || null })
+                              }
+                              className={INPUT}
+                            >
+                              <option value="">— none —</option>
+                              {navScreens.map((s) => (
+                                <option key={s.id} value={s.id}>
+                                  {s.title}
+                                </option>
+                              ))}
+                            </select>
+                          </Lbl>
+                        )}
                         <Lbl label="Confirm message (tùy chọn)">
                           <input
                             value={action.confirm_message || ''}
@@ -1240,7 +1313,7 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
                           />
                         </Lbl>
                       </div>
-                      {action.go_to_screen && (
+                      {(action.action_type || 'navigate') === 'navigate' && action.go_to_screen && (
                         <Lbl label="Carry columns to next screen">
                           {columnNames.length > 0 ? (
                             <MultiColumnPicker
