@@ -1839,8 +1839,12 @@ function SeriesLabelsEditor({
 
   const setLabel = (key: string, value: string) => {
     const next = { ...(seriesLabels ?? {}) };
-    const trimmed = value.trim();
-    if (trimmed) next[key] = trimmed;
+    // Keep the RAW value (including inner/trailing spaces) while the user types
+    // so a space isn't stripped mid-edit — that made "Tỉ lệ active" collapse to
+    // "Tỉlệactive". Only gate on a trimmed check to decide store-vs-clear; the
+    // stored value is trimmed later by normalizeLabelOverrideMap on save and by
+    // the renderer (seriesLabels[key]?.trim()), so no leading/trailing space ships.
+    if (value.trim()) next[key] = value;
     else delete next[key];
     onChange(Object.keys(next).length > 0 ? next : undefined);
   };
