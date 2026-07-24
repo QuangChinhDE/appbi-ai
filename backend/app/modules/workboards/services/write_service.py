@@ -192,16 +192,42 @@ def _table_columns(table: DatasetTable) -> List[str]:
     return cols
 
 
+def _table_primary_key_columns(table: DatasetTable) -> List[str]:
+    cache = table.columns_cache
+    if isinstance(cache, dict):
+        cache = cache.get("columns")
+    columns = [item for item in (cache or []) if isinstance(item, dict)]
+    flagged = [
+        str(item.get("name"))
+        for item in columns
+        if item.get("name") and bool(item.get("is_primary_key"))
+    ]
+    if flagged:
+        return flagged
+    names = [
+        str(item.get("name"))
+        for item in columns
+        if item.get("name")
+    ]
+    if "id" in names:
+        return ["id"]
+    id_columns = [name for name in names if name.endswith("_id")]
+    return [id_columns[0]] if id_columns else []
+
+
 def _build_context(
-    db: Session, workboard: Workboard
+    db: Session,
+    workboard: Workboard,
+    *,
+    target_table_id: Optional[int] = None,
+    primary_key_columns: Optional[List[str]] = None,
 ) -> _WriteContext:
     # Resolve NON-layout write config stage-correctly: a public LIVE write reads
     # write_mode / optimistic-lock column / dataset binding from the PUBLISHED
     # snapshot (published_runtime_config); a Builder Preview reads the live
-    # columns. Driven by the _wb_use_published flag. (The write TARGET table + PK
-    # come from the per-screen swap on the workboard object, already
-    # published-correct via the layout read-split, so those keep reading
-    # workboard.primary_table_id / primary_key_columns below.)
+    # columns. Driven by the _wb_use_published flag. Screen writes pass their
+    # target table + PK explicitly, leaving the persisted legacy primary
+    # binding untouched.
     from app.modules.workboards.services.runtime_config import (
         effective_layout_raw,
         resolve_runtime_config,
@@ -211,6 +237,11 @@ def _build_context(
     _write_cfg = _rc.write
     bound_dataset_id = _rc.binding.get("dataset_id")
     optimistic_lock_column = _write_cfg.get("optimistic_lock_column")
+    active_table_id = (
+        target_table_id
+        or _rc.binding.get("primary_table_id")
+        or workboard.primary_table_id
+    )
 
     if (_write_cfg.get("write_mode") or "direct") != "direct":
         raise WorkboardWriteError(
@@ -219,14 +250,14 @@ def _build_context(
 
     table = (
         db.query(DatasetTable)
-        .filter(DatasetTable.id == workboard.primary_table_id)
+        .filter(DatasetTable.id == active_table_id)
         .first()
     )
     if not table:
-        raise WorkboardWriteError("Primary table not found", status_code=404)
+        raise WorkboardWriteError("Target table not found", status_code=404)
     if table.dataset_id != bound_dataset_id:
         raise WorkboardWriteError(
-            "Primary table does not belong to the workboard's dataset",
+            "Target table does not belong to the workboard's dataset",
             status_code=400,
         )
     if table.source_kind != "physical_table":
@@ -264,17 +295,31 @@ def _build_context(
         raise WorkboardWriteError(f"Workboard layout is invalid: {exc}") from exc
 
     allowed = _table_columns(table)
-    pk_cols = list(workboard.primary_key_columns or [])
+    if primary_key_columns is not None:
+        pk_cols = list(primary_key_columns)
+    elif target_table_id is not None:
+        pk_cols = _table_primary_key_columns(table)
+    else:
+        pk_cols = list(
+            _rc.binding.get("primary_key_columns")
+            or workboard.primary_key_columns
+            or []
+        )
     if not pk_cols:
         raise WorkboardWriteError(
-            "Workboard primary_key_columns is empty; configure it in the builder before writing."
+            "Target primary_key_columns is empty; configure it in the builder before writing."
+        )
+    missing_pk = [column for column in pk_cols if column not in allowed]
+    if missing_pk:
+        raise WorkboardWriteError(
+            f"Target primary key columns are missing: {', '.join(missing_pk)}."
         )
 
     rules = (
         db.query(DatasetQualityRule)
         .filter(
             DatasetQualityRule.dataset_id == bound_dataset_id,
-            DatasetQualityRule.table_id == workboard.primary_table_id,
+            DatasetQualityRule.table_id == active_table_id,
             DatasetQualityRule.enabled.is_(True),
         )
         .all()
@@ -416,6 +461,8 @@ def _apply_auto_number_on_insert(
     values: Dict[str, Any],
     layout: LayoutJson,
     now: datetime,
+    *,
+    target_table_id: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Fill blank auto-number columns with the next value from their sequence.
 
@@ -427,7 +474,7 @@ def _apply_auto_number_on_insert(
     if not configs:
         return values
     out = dict(values)
-    active_table_id = getattr(workboard, "primary_table_id", None)
+    active_table_id = target_table_id or getattr(workboard, "primary_table_id", None)
     for cfg in configs:
         scoped_table_id = getattr(cfg, "table_id", None)
         if scoped_table_id and int(scoped_table_id) != int(active_table_id or 0):
@@ -572,14 +619,29 @@ class WorkboardWriteService:
         workboard: Workboard,
         values: Dict[str, Any],
         user: Optional[User],
+        *,
+        target_table_id: Optional[int] = None,
+        primary_key_columns: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
-        ctx = _build_context(db, workboard)
+        ctx = _build_context(
+            db,
+            workboard,
+            target_table_id=target_table_id,
+            primary_key_columns=primary_key_columns,
+        )
         clean = _filter_to_allowed_columns(values, ctx.allowed_columns)
         now = datetime.now(timezone.utc)
         # Auto-number runs BEFORE audit fields + validation so the rendered
         # value can be referenced by audit / quality rules and so the value
         # actually lands in the row payload that gets validated.
-        clean = _apply_auto_number_on_insert(db, workboard, clean, ctx.layout, now)
+        clean = _apply_auto_number_on_insert(
+            db,
+            workboard,
+            clean,
+            ctx.layout,
+            now,
+            target_table_id=ctx.dataset_table.id,
+        )
         clean = _apply_audit_on_insert(clean, ctx.layout, user, now)
         warnings = _enforce_validation(ctx.rules, clean)
 
@@ -641,6 +703,9 @@ class WorkboardWriteService:
         workboard: Workboard,
         rows: List[Dict[str, Any]],
         user: Optional[User],
+        *,
+        target_table_id: Optional[int] = None,
+        primary_key_columns: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """Insert multiple rows through the same validation/audit contract.
 
@@ -651,7 +716,12 @@ class WorkboardWriteService:
         if not rows:
             return {"action": "insert_many", "affected_rows": 0, "results": []}
 
-        ctx = _build_context(db, workboard)
+        ctx = _build_context(
+            db,
+            workboard,
+            target_table_id=target_table_id,
+            primary_key_columns=primary_key_columns,
+        )
         ds_type = (
             ctx.datasource.type.value
             if hasattr(ctx.datasource.type, "value")
@@ -659,7 +729,14 @@ class WorkboardWriteService:
         )
         if ds_type != "google_sheets":
             results = [
-                WorkboardWriteService.insert_row(db, workboard, row, user)
+                WorkboardWriteService.insert_row(
+                    db,
+                    workboard,
+                    row,
+                    user,
+                    target_table_id=target_table_id,
+                    primary_key_columns=primary_key_columns,
+                )
                 for row in rows
             ]
             return {
@@ -673,7 +750,14 @@ class WorkboardWriteService:
         warnings_by_row: List[List[Dict[str, Any]]] = []
         for row in rows:
             clean = _filter_to_allowed_columns(row, ctx.allowed_columns)
-            clean = _apply_auto_number_on_insert(db, workboard, clean, ctx.layout, now)
+            clean = _apply_auto_number_on_insert(
+                db,
+                workboard,
+                clean,
+                ctx.layout,
+                now,
+                target_table_id=ctx.dataset_table.id,
+            )
             clean = _apply_audit_on_insert(clean, ctx.layout, user, now)
             warnings_by_row.append(_enforce_validation(ctx.rules, clean))
             prepared.append(clean)
@@ -730,8 +814,16 @@ class WorkboardWriteService:
         values: Dict[str, Any],
         user: Optional[User],
         lock_token: Any = None,
+        *,
+        target_table_id: Optional[int] = None,
+        primary_key_columns: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
-        ctx = _build_context(db, workboard)
+        ctx = _build_context(
+            db,
+            workboard,
+            target_table_id=target_table_id,
+            primary_key_columns=primary_key_columns,
+        )
         clean = _filter_to_allowed_columns(values, ctx.allowed_columns)
         # Never allow PK columns to be updated through the workboard.
         for pk_col in ctx.primary_key_columns:
@@ -802,12 +894,20 @@ class WorkboardWriteService:
         workboard: Workboard,
         updates: List[Dict[str, Any]],
         user: Optional[User],
+        *,
+        target_table_id: Optional[int] = None,
+        primary_key_columns: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """Update multiple rows, using a batch path where the datasource supports it."""
         if not updates:
             return {"action": "update_many", "affected_rows": 0, "results": []}
 
-        ctx = _build_context(db, workboard)
+        ctx = _build_context(
+            db,
+            workboard,
+            target_table_id=target_table_id,
+            primary_key_columns=primary_key_columns,
+        )
         ds_type = (
             ctx.datasource.type.value
             if hasattr(ctx.datasource.type, "value")
@@ -822,6 +922,8 @@ class WorkboardWriteService:
                     item.get("values") if isinstance(item, dict) else {},
                     user,
                     lock_token=item.get("lock_token") if isinstance(item, dict) else None,
+                    target_table_id=target_table_id,
+                    primary_key_columns=primary_key_columns,
                 )
                 for item in updates
             ]
@@ -904,8 +1006,16 @@ class WorkboardWriteService:
         pk: Dict[str, Any],
         user: Optional[User],
         lock_token: Any = None,
+        *,
+        target_table_id: Optional[int] = None,
+        primary_key_columns: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
-        ctx = _build_context(db, workboard)
+        ctx = _build_context(
+            db,
+            workboard,
+            target_table_id=target_table_id,
+            primary_key_columns=primary_key_columns,
+        )
 
         ds_type = (
             ctx.datasource.type.value

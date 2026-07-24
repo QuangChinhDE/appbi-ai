@@ -44,6 +44,7 @@ import {
   Printer,
   RefreshCw,
   ScanLine,
+  Search,
   Send,
   Trash2,
   Upload,
@@ -56,10 +57,13 @@ import {
   AppShellScreenStub,
   DashboardScreenResponse,
   DocScreenResponse,
+  ExperienceResolved,
   FormScreenResponse,
   PrintTemplate,
   RelatedRecordsResponse,
+  ScreenAction,
   ScreenResponse,
+  ScreenPresentation,
   TableRowDetailResponse,
   TableScreenResponse,
   workspaceApi,
@@ -71,9 +75,11 @@ import {
 } from '@/lib/api/public';
 import { evaluateTruthy, evaluateExpr } from '@/lib/wb-expr';
 import {
-  themeVars,
   backgroundStyle,
   darkModeCss,
+  experienceCss,
+  experienceThemeVars,
+  resolveDraftExperience,
   resolveMode,
   type WbTheme,
 } from '@/lib/wb-theme';
@@ -94,6 +100,7 @@ import {
 } from '@/lib/offline/queue';
 import { isNetworkError, syncSubmits } from '@/lib/offline/sync';
 import { toast } from '@/lib/toast';
+import { isWorkboardPreviewPatch } from '@/lib/workboard-preview-bridge';
 
 // Icon mapping is centralised in ScreenIconRegistry so the builder
 // picker and the runtime can't drift. Anything not in the registry
@@ -134,6 +141,7 @@ interface RuntimeRelationContext {
   child_foreign_key_column: string;
   finish_screen_id?: string | null;
   show_existing?: boolean;
+  allow_multiple?: boolean;
   keep_parent_context?: boolean;
   flow_id?: string | null;
   parent_op_id?: string | null;
@@ -162,6 +170,7 @@ function asRelationContext(value: unknown, currentScreenId: string): RuntimeRela
     child_foreign_key_column: childFk,
     finish_screen_id: typeof raw.finish_screen_id === 'string' ? raw.finish_screen_id : null,
     show_existing: raw.show_existing !== false,
+    allow_multiple: raw.allow_multiple !== false,
     keep_parent_context: raw.keep_parent_context !== false,
     flow_id: typeof raw.flow_id === 'string' ? raw.flow_id : null,
     parent_op_id: typeof raw.parent_op_id === 'string' ? raw.parent_op_id : null,
@@ -187,6 +196,7 @@ function relationContextFromFlow(flow: OfflineRelationFlow): RuntimeRelationCont
     child_foreign_key_column: flow.childForeignKeyColumn,
     finish_screen_id: flow.finishScreenId || null,
     show_existing: flow.showExisting !== false,
+    allow_multiple: flow.allowMultiple !== false,
     keep_parent_context: flow.keepParentContext !== false,
     flow_id: flow.flowId,
     parent_op_id: flow.parentOpId,
@@ -283,10 +293,34 @@ export default function WorkspaceWorkboardPage() {
   const [shared, setShared] = useState<Record<string, unknown>>({});
   const [device, setDevice] = useState<DeviceMode>('desktop');
   const [error, setError] = useState<string | null>(null);
+  const [previewPatch, setPreviewPatch] = useState<{
+    screenId?: string | null;
+    experience?: Record<string, unknown> | null;
+    presentation?: ScreenPresentation | null;
+  } | null>(null);
   // How many mini-apps this app-user can reach in the workspace. Drives
   // whether the "back to workspace menu" button is worth showing — for a
   // single-app workspace the launcher is pointless, so we hide it.
   const [siblingApps, setSiblingApps] = useState<number | null>(null);
+
+  // Same-origin Builder preview bridge. Only presentation data is accepted;
+  // API-fetched fields, rows, RLS and actions remain authoritative.
+  useEffect(() => {
+    if (typeof window === 'undefined' || window.parent === window) return;
+    const onMessage = (event: MessageEvent) => {
+      if (event.origin !== window.location.origin) return;
+      if (event.source !== window.parent) return;
+      if (!isWorkboardPreviewPatch(event.data)) return;
+      if (event.data.workboardId !== workboardId) return;
+      setPreviewPatch({
+        screenId: event.data.screenId,
+        experience: event.data.experience,
+        presentation: event.data.presentation as ScreenPresentation | null | undefined,
+      });
+    };
+    window.addEventListener('message', onMessage);
+    return () => window.removeEventListener('message', onMessage);
+  }, [workboardId]);
 
   // Detect device + listen for resize. Listening to plain ``resize`` is
   // necessary because we want the layout to flip the moment the user
@@ -510,6 +544,19 @@ export default function WorkspaceWorkboardPage() {
     return () => window.removeEventListener('popstate', onPop);
   }, [shell]);
 
+  useEffect(() => {
+    const requested = previewPatch?.screenId;
+    if (!shell || !requested || requested === activeScreenId) return;
+    if (!shell.screens.some((screen) => screen.id === requested)) return;
+    setActiveScreenId(requested);
+    if (typeof window !== 'undefined') {
+      const url = new URL(window.location.href);
+      url.search = `?screen=${encodeURIComponent(requested)}`;
+      url.hash = '';
+      window.history.replaceState({ wbScreen: requested }, '', url);
+    }
+  }, [activeScreenId, previewPatch?.screenId, shell]);
+
   // Reflect the current screen in the browser tab title (and thus in the
   // labelled back/forward history entries).
   useEffect(() => {
@@ -544,16 +591,40 @@ export default function WorkspaceWorkboardPage() {
     );
   }
 
-  const accent = shell.branding.primary_color || '#2563eb';
+  // ── Experience contract (Experience Studio) ──────────────────────────
+  // Resolved server-side (defaults ← legacy branding/nav ← explicit experience),
+  // so for legacy boards these values equal the old branding → identical render.
+  const theme = shell.branding as WbTheme;
+  const exp: ExperienceResolved | undefined = previewPatch
+    ? resolveDraftExperience(
+        theme,
+        shell.nav,
+        previewPatch.experience as NonNullable<ExperienceResolved['overrides']> | null,
+      )
+    : shell.experience;
+  const accent = exp?.theme?.primary || shell.branding.primary_color || '#2563eb';
   const appName = shell.branding.app_name || shell.workboard.name;
   // ── Theme (design system) ─────────────────────────────────────────────
-  const theme = shell.branding as WbTheme;
-  const mode = resolveMode(theme.theme);
+  const mode = resolveMode(exp?.theme?.mode || theme.theme);
   setRuntimeMediaCap(shell.media_max_kb);
   const rootThemeStyle = {
-    ...themeVars(theme, mode),
+    ...experienceThemeVars(exp, theme, mode),
     ...backgroundStyle(theme.background, 'var(--wb-bg)'),
-  };
+    // Semantic tokens from the resolved experience — additive CSS vars that
+    // components can adopt incrementally; `accent` already reads primary above.
+  } as React.CSSProperties;
+  if (exp?.explicit && exp.overrides?.shell?.background) {
+    const shellBackground = exp.shell.background;
+    rootThemeStyle.background =
+      shellBackground === 'custom'
+        ? exp.theme.app_background || 'var(--wb-bg)'
+        : shellBackground === 'dark'
+          ? '#0b1220'
+          : shellBackground === 'light'
+            ? 'var(--wb-surface)'
+            : 'var(--wb-bg)';
+    rootThemeStyle.backgroundImage = 'none';
+  }
 
   // ── Layout decision ───────────────────────────────────────────────────
   // Only a genuine PHONE (<768px) gets the mobile nav (bottom_nav | drawer).
@@ -563,18 +634,39 @@ export default function WorkspaceWorkboardPage() {
   // desktop window from being mistaken for a "tablet" and dumped onto the
   // top-tabs layout (the reported bug).
   const isMobile = effectiveDevice === 'mobile';
-  const isSidebar = !isMobile && shell.nav.desktop_kind === 'sidebar';
-  const isTopTabs = !isMobile && shell.nav.desktop_kind === 'top_tabs';
-  const isDrawer = isMobile && shell.nav.mobile_kind === 'drawer';
+  const desktopNavKind = exp?.navigation.desktop_kind || shell.nav.desktop_kind;
+  const mobileNavKind = exp?.navigation.mobile_kind || shell.nav.mobile_kind;
+  const isSidebar =
+    !isMobile && (desktopNavKind === 'sidebar' || desktopNavKind === 'compact_rail');
+  const isCompactRail = !isMobile && desktopNavKind === 'compact_rail';
+  const isTopTabs = !isMobile && desktopNavKind === 'top_tabs';
+  const isDrawer = isMobile && mobileNavKind === 'drawer';
   const isBottomNav = isMobile && !isDrawer;
+  const pagePaddingClass =
+    exp?.explicit && exp.shell.page_padding === 'compact'
+      ? 'px-2 pt-2 sm:px-3 sm:pt-3'
+      : exp?.explicit && exp.shell.page_padding === 'comfortable'
+        ? 'px-4 pt-4 sm:px-8 sm:pt-6'
+        : 'px-3 pt-3 sm:px-6 sm:pt-4';
+  const contentMaxWidth =
+    !exp?.explicit || exp.shell.content_width === 'full_bleed'
+      ? undefined
+      : exp.shell.content_width_px
+        ? `${exp.shell.content_width_px}px`
+        : exp.shell.content_width === 'wide'
+          ? '1600px'
+          : '1200px';
 
   return (
     <div
       className="wb-app flex min-h-screen flex-col bg-slate-50"
       data-theme={mode}
+      data-experience={exp?.explicit ? 'v1' : 'legacy'}
+      data-density={exp?.theme.density || 'cozy'}
       style={rootThemeStyle}
     >
       <style>{darkModeCss()}</style>
+      <style>{experienceCss()}</style>
       {/* Print isolation: when printLabel() runs it flags <body>, and only the
           element marked .wb-print-target (a QR label / doc) stays visible. */}
       <style>{`@media print {
@@ -628,6 +720,11 @@ export default function WorkspaceWorkboardPage() {
         logoLayout={shell.branding.logo_layout}
         token={token}
         workboardId={workboardId}
+        sticky={exp?.explicit ? exp.shell.sticky_header : true}
+        showLogo={exp?.explicit ? exp.shell.show_logo : true}
+        showSearch={exp?.explicit ? exp.shell.show_search : false}
+        screens={navItems}
+        onNavigate={goToScreen}
         showBackToMenu={(siblingApps ?? 1) > 1}
         onLogout={async () => {
           try {
@@ -646,6 +743,9 @@ export default function WorkspaceWorkboardPage() {
           activeId={activeScreenId}
           onSelect={(id) => goToScreen(id)}
           accent={accent}
+          showIcons={exp?.navigation.show_icons}
+          showLabels={exp?.navigation.show_labels}
+          activeStyle={exp?.navigation.active_style}
         />
       )}
 
@@ -657,19 +757,41 @@ export default function WorkspaceWorkboardPage() {
             activeId={activeScreenId}
             onSelect={(id) => goToScreen(id)}
             accent={accent}
+            compact={isCompactRail}
+            width={exp?.navigation.sidebar_width}
+            defaultCollapsed={exp?.navigation.default_collapsed}
+            showIcons={exp?.navigation.show_icons}
+            showLabels={exp?.navigation.show_labels}
+            activeStyle={exp?.navigation.active_style}
           />
         )}
         <main
-          className={`min-w-0 flex-1 ${isBottomNav ? 'pb-20' : 'pb-6'} px-3 pt-3 sm:px-6 sm:pt-4`}
+          className={`min-w-0 flex-1 ${isBottomNav ? 'pb-20' : 'pb-6'} ${pagePaddingClass}`}
+          style={{ maxWidth: contentMaxWidth, marginInline: contentMaxWidth ? 'auto' : undefined }}
         >
+          {exp?.navigation.breadcrumbs && activeScreenId && (
+            <div className="mb-3 flex min-w-0 items-center gap-1.5 text-xs text-slate-500">
+              <span className="truncate">{appName}</span>
+              <ChevronRight className="h-3 w-3 shrink-0" />
+              <span className="truncate font-medium text-slate-700">
+                {shell.screens.find((screen) => screen.id === activeScreenId)?.title}
+              </span>
+            </div>
+          )}
           {activeScreenId ? (
             <ScreenContainer
-              key={`${activeScreenId}-${JSON.stringify(shared)}`}
+              key={activeScreenId}
               token={token}
               workboardId={workboardId}
               screenId={activeScreenId}
               shared={shared}
               accent={accent}
+              experience={exp}
+              presentationOverride={
+                previewPatch?.screenId === activeScreenId
+                  ? previewPatch.presentation
+                  : undefined
+              }
               viewerRole={shell?.viewer?.role ?? null}
               onNavigate={goToScreen}
             />
@@ -681,6 +803,12 @@ export default function WorkspaceWorkboardPage() {
         </main>
       </div>
 
+      {exp?.explicit && exp.shell.footer_enabled && (
+        <footer className="border-t border-slate-200 bg-white px-4 py-2 text-center text-xs text-slate-500">
+          {appName}
+        </footer>
+      )}
+
       {isBottomNav && (
         <BottomNav
           items={navItems}
@@ -688,6 +816,9 @@ export default function WorkspaceWorkboardPage() {
           activeId={activeScreenId}
           onSelect={(id) => goToScreen(id)}
           accent={accent}
+          showIcons={exp?.navigation.show_icons}
+          showLabels={exp?.navigation.show_labels}
+          activeStyle={exp?.navigation.active_style}
         />
       )}
 
@@ -698,6 +829,9 @@ export default function WorkspaceWorkboardPage() {
           activeId={activeScreenId}
           onSelect={(id) => goToScreen(id)}
           accent={accent}
+          showIcons={exp?.navigation.show_icons}
+          showLabels={exp?.navigation.show_labels}
+          activeStyle={exp?.navigation.active_style}
         />
       )}
     </div>
@@ -712,12 +846,18 @@ function MobileDrawer({
   activeId,
   onSelect,
   accent,
+  showIcons = true,
+  showLabels = true,
+  activeStyle = 'pill',
 }: {
   items: AppShellScreenStub[];
   sections?: NavSection[] | null;
   activeId: string | null;
   onSelect: (id: string) => void;
   accent: string;
+  showIcons?: boolean;
+  showLabels?: boolean;
+  activeStyle?: 'pill' | 'bar' | 'highlight';
 }) {
   const [open, setOpen] = useState(false);
   const allScreens = sections ? sections.flatMap((s) => s.screens) : items;
@@ -734,6 +874,9 @@ function MobileDrawer({
       icon={pickIcon(s.icon)}
       label={s.title}
       layout="sidebar"
+      showIcon={showIcons}
+      showLabel={showLabels}
+      activeStyle={activeStyle}
     />
   );
   return (
@@ -801,6 +944,11 @@ function Header({
   logoLayout,
   token,
   workboardId,
+  sticky = true,
+  showLogo = true,
+  showSearch = false,
+  screens,
+  onNavigate,
   showBackToMenu = false,
   onLogout,
   onBackToMenu,
@@ -812,15 +960,29 @@ function Header({
   logoLayout?: 'mark' | 'wide' | null;
   token: string;
   workboardId: number;
+  sticky?: boolean;
+  showLogo?: boolean;
+  showSearch?: boolean;
+  screens: AppShellScreenStub[];
+  onNavigate: (screenId: string) => void;
   showBackToMenu?: boolean;
   onLogout: () => void;
   onBackToMenu: () => void;
 }) {
   const logoSrc = logoData || logoUrl;
   const wideLogo = logoLayout === 'wide';
+  const [searchQuery, setSearchQuery] = useState('');
+  const searchResults = searchQuery.trim()
+    ? screens
+        .filter((screen) => {
+          const haystack = `${screen.title} ${screen.description || ''}`.toLocaleLowerCase();
+          return haystack.includes(searchQuery.trim().toLocaleLowerCase());
+        })
+        .slice(0, 6)
+    : [];
   return (
     <header
-      className="sticky top-0 z-30 border-b border-slate-200 bg-white/95 backdrop-blur"
+      className={`${sticky ? 'sticky top-0' : 'relative'} z-30 border-b border-slate-200 bg-white/95 backdrop-blur`}
       style={{ borderTopColor: accent, borderTopWidth: 3 }}
     >
       <div className="flex items-center gap-3 px-4 py-3 sm:px-6">
@@ -833,22 +995,65 @@ function Header({
             <ArrowLeft className="h-3.5 w-3.5" />
           </button>
         )}
-        <div
-          className={`flex h-9 shrink-0 items-center justify-center overflow-hidden rounded-lg ${
-            wideLogo ? 'w-20 bg-white p-1 ring-1 ring-slate-200' : 'w-9'
-          }`}
-          style={{ backgroundColor: logoSrc ? undefined : accent }}
-        >
-          {logoSrc ? (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img src={logoSrc} alt="" className="h-full w-full object-contain" />
-          ) : (
-            <Factory className="h-4 w-4 text-white" />
-          )}
-        </div>
+        {showLogo && (
+          <div
+            className={`flex h-9 shrink-0 items-center justify-center overflow-hidden rounded-lg ${
+              wideLogo ? 'w-20 bg-white p-1 ring-1 ring-slate-200' : 'w-9'
+            }`}
+            style={{ backgroundColor: logoSrc ? undefined : accent }}
+          >
+            {logoSrc ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img src={logoSrc} alt="" className="h-full w-full object-contain" />
+            ) : (
+              <Factory className="h-4 w-4 text-white" />
+            )}
+          </div>
+        )}
         <h1 className="flex-1 truncate text-base font-semibold text-slate-900">
           {appName}
         </h1>
+
+        {showSearch && (
+          <div className="relative hidden w-full max-w-sm md:block">
+            <Search className="pointer-events-none absolute left-2.5 top-2 h-4 w-4 text-slate-400" />
+            <input
+              value={searchQuery}
+              onChange={(event) => setSearchQuery(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' && searchResults[0]) {
+                  onNavigate(searchResults[0].id);
+                  setSearchQuery('');
+                }
+              }}
+              className="h-8 w-full rounded-md border border-slate-200 bg-white pl-8 pr-3 text-sm outline-none focus:border-slate-400"
+              placeholder="Tìm màn hình..."
+              aria-label="Tìm màn hình"
+            />
+            {searchResults.length > 0 && (
+              <div className="absolute inset-x-0 top-9 z-50 overflow-hidden rounded-md border border-slate-200 bg-white shadow-lg">
+                {searchResults.map((screen) => (
+                  <button
+                    key={screen.id}
+                    type="button"
+                    onClick={() => {
+                      onNavigate(screen.id);
+                      setSearchQuery('');
+                    }}
+                    className="block w-full px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-50"
+                  >
+                    <span className="block truncate font-medium">{screen.title}</span>
+                    {screen.description && (
+                      <span className="block truncate text-xs text-slate-400">
+                        {screen.description}
+                      </span>
+                    )}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
 
         <PushToggle token={token} workboardId={workboardId} accent={accent} />
 
@@ -956,6 +1161,9 @@ function NavBtn({
   icon: Icon,
   label,
   layout,
+  showIcon = true,
+  showLabel = true,
+  activeStyle = 'pill',
 }: {
   active: boolean;
   accent: string;
@@ -963,17 +1171,33 @@ function NavBtn({
   icon: React.ElementType;
   label: string;
   layout: 'sidebar' | 'bottom' | 'top';
+  showIcon?: boolean;
+  showLabel?: boolean;
+  activeStyle?: 'pill' | 'bar' | 'highlight';
 }) {
+  const iconVisible = showIcon || !showLabel;
   if (layout === 'bottom') {
     return (
       <button
         type="button"
         onClick={onClick}
-        className="flex flex-col items-center justify-center gap-0.5 px-2 py-2"
-        style={{ color: active ? accent : '#64748b' }}
+        className="relative flex flex-col items-center justify-center gap-0.5 px-2 py-2"
+        style={{
+          color: active ? accent : '#64748b',
+          backgroundColor:
+            active && activeStyle !== 'bar'
+              ? `color-mix(in srgb, ${accent} ${activeStyle === 'pill' ? 10 : 5}%, transparent)`
+              : undefined,
+        }}
       >
-        <Icon className="h-5 w-5" />
-        <span className="text-[11px] font-medium leading-tight">{label}</span>
+        {active && activeStyle === 'bar' && (
+          <span
+            className="absolute inset-x-4 top-0 h-0.5 rounded-full"
+            style={{ backgroundColor: accent }}
+          />
+        )}
+        {iconVisible && <Icon className="h-5 w-5" />}
+        {showLabel && <span className="text-[11px] font-medium leading-tight">{label}</span>}
       </button>
     );
   }
@@ -985,10 +1209,23 @@ function NavBtn({
         className={`flex items-center gap-2 border-b-2 px-3 py-2.5 text-sm font-medium transition-colors ${
           active ? 'text-slate-900' : 'border-transparent text-slate-600 hover:text-slate-900'
         }`}
-        style={active ? { borderColor: accent, color: accent } : undefined}
+        style={
+          active
+            ? {
+                borderColor: activeStyle === 'bar' ? accent : 'transparent',
+                backgroundColor:
+                  activeStyle === 'pill'
+                    ? `color-mix(in srgb, ${accent} 12%, transparent)`
+                    : activeStyle === 'highlight'
+                      ? `color-mix(in srgb, ${accent} 6%, transparent)`
+                      : undefined,
+                color: accent,
+              }
+            : undefined
+        }
       >
-        <Icon className="h-4 w-4" />
-        {label}
+        {iconVisible && <Icon className="h-4 w-4" />}
+        {showLabel && label}
       </button>
     );
   }
@@ -997,13 +1234,26 @@ function NavBtn({
       type="button"
       onClick={onClick}
       title={label}
-      className={`flex w-full min-w-0 items-center gap-2 rounded-md px-3 py-2 text-sm transition-colors ${
-        active ? 'font-semibold' : 'text-slate-600 hover:bg-slate-100'
+      className={`flex w-full min-w-0 items-center gap-2 rounded-md border-l-2 px-3 py-2 text-sm transition-colors ${
+        active ? 'font-semibold' : 'border-transparent text-slate-600 hover:bg-slate-100'
       }`}
-      style={active ? { backgroundColor: `${accent}18`, color: accent } : undefined}
+      style={
+        active
+          ? {
+              backgroundColor:
+                activeStyle === 'pill'
+                  ? `color-mix(in srgb, ${accent} 12%, transparent)`
+                  : activeStyle === 'highlight'
+                    ? `color-mix(in srgb, ${accent} 6%, transparent)`
+                    : undefined,
+              borderLeftColor: activeStyle === 'bar' ? accent : 'transparent',
+              color: accent,
+            }
+          : undefined
+      }
     >
-      <Icon className="h-4 w-4 shrink-0" />
-      <span className="min-w-0 truncate">{label}</span>
+      {iconVisible && <Icon className="h-4 w-4 shrink-0" />}
+      {showLabel && <span className="min-w-0 truncate">{label}</span>}
     </button>
   );
 }
@@ -1014,13 +1264,31 @@ function Sidebar({
   activeId,
   onSelect,
   accent,
+  compact = false,
+  width = 224,
+  defaultCollapsed = false,
+  showIcons = true,
+  showLabels = true,
+  activeStyle = 'pill',
 }: {
   items: AppShellScreenStub[];
   sections?: NavSection[] | null;
   activeId: string | null;
   onSelect: (id: string) => void;
   accent: string;
+  showIcons?: boolean;
+  showLabels?: boolean;
+  activeStyle?: 'pill' | 'bar' | 'highlight';
+  compact?: boolean;
+  width?: number;
+  defaultCollapsed?: boolean;
 }) {
+  const [collapsed, setCollapsed] = useState(compact || defaultCollapsed);
+  useEffect(() => {
+    setCollapsed(compact || defaultCollapsed);
+  }, [compact, defaultCollapsed]);
+  const labelsVisible = showLabels && !collapsed;
+  const iconsVisible = showIcons || !labelsVisible;
   const renderBtn = (s: AppShellScreenStub) => (
     <NavBtn
       key={s.id}
@@ -1030,27 +1298,46 @@ function Sidebar({
       icon={pickIcon(s.icon)}
       label={s.title}
       layout="sidebar"
+      showIcon={iconsVisible}
+      showLabel={labelsVisible}
+      activeStyle={activeStyle}
     />
   );
   return (
-    <aside className="hidden w-56 shrink-0 border-r border-slate-200 bg-white p-3 md:block">
+    <aside
+      className="hidden shrink-0 flex-col border-r border-slate-200 bg-white p-3 transition-[width] md:flex"
+      style={{ width: collapsed ? 72 : Math.max(180, Math.min(400, width)) }}
+    >
       {sections && sections.length > 0 ? (
-        <div className="space-y-4">
+        <div className="flex-1 space-y-4 overflow-y-auto">
           {sections.map((sec) => {
             const SecIcon = sec.icon ? pickIcon(sec.icon) : null;
             return (
               <div key={sec.id} className="space-y-1">
-                <div className="flex items-center gap-1.5 px-2 pb-0.5 text-[11px] font-semibold uppercase tracking-wide text-slate-400">
-                  {SecIcon && <SecIcon className="h-3 w-3 shrink-0" />}
-                  <span className="truncate">{sec.label}</span>
-                </div>
+                {labelsVisible && (
+                  <div className="flex items-center gap-1.5 px-2 pb-0.5 text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+                    {SecIcon && <SecIcon className="h-3 w-3 shrink-0" />}
+                    <span className="truncate">{sec.label}</span>
+                  </div>
+                )}
                 {sec.screens.map(renderBtn)}
               </div>
             );
           })}
         </div>
       ) : (
-        <div className="space-y-1">{items.map(renderBtn)}</div>
+        <div className="flex-1 space-y-1 overflow-y-auto">{items.map(renderBtn)}</div>
+      )}
+      {!compact && (
+        <button
+          type="button"
+          onClick={() => setCollapsed((value) => !value)}
+          className="mt-3 flex h-8 items-center justify-center rounded-md text-slate-500 hover:bg-slate-100"
+          title={collapsed ? 'Mở rộng sidebar' : 'Thu gọn sidebar'}
+          aria-label={collapsed ? 'Mở rộng sidebar' : 'Thu gọn sidebar'}
+        >
+          {collapsed ? <ChevronRight className="h-4 w-4" /> : <ChevronLeft className="h-4 w-4" />}
+        </button>
       )}
     </aside>
   );
@@ -1062,12 +1349,18 @@ function TopTabs({
   activeId,
   onSelect,
   accent,
+  showIcons = true,
+  showLabels = true,
+  activeStyle = 'bar',
 }: {
   items: AppShellScreenStub[];
   sections?: NavSection[] | null;
   activeId: string | null;
   onSelect: (id: string) => void;
   accent: string;
+  showIcons?: boolean;
+  showLabels?: boolean;
+  activeStyle?: 'pill' | 'bar' | 'highlight';
 }) {
   // Grouped (2-tier) when workspaces exist: row 1 = workspace tabs, row 2 =
   // the active workspace's screens. The active workspace is whichever one
@@ -1113,6 +1406,9 @@ function TopTabs({
               icon={pickIcon(s.icon)}
               label={s.title}
               layout="top"
+              showIcon={showIcons}
+              showLabel={showLabels}
+              activeStyle={activeStyle}
             />
           ))}
         </nav>
@@ -1131,6 +1427,9 @@ function TopTabs({
             icon={pickIcon(s.icon)}
             label={s.title}
             layout="top"
+            showIcon={showIcons}
+            showLabel={showLabels}
+            activeStyle={activeStyle}
           />
         ))}
       </nav>
@@ -1144,12 +1443,18 @@ function BottomNav({
   activeId,
   onSelect,
   accent,
+  showIcons = true,
+  showLabels = true,
+  activeStyle = 'pill',
 }: {
   items: AppShellScreenStub[];
   sections?: NavSection[] | null;
   activeId: string | null;
   onSelect: (id: string) => void;
   accent: string;
+  showIcons?: boolean;
+  showLabels?: boolean;
+  activeStyle?: 'pill' | 'bar' | 'highlight';
 }) {
   const [showMore, setShowMore] = useState(false);
   // Four primary items keeps touch targets readable on small phones; the rest
@@ -1267,6 +1572,9 @@ function BottomNav({
             icon={pickIcon(s.icon)}
             label={s.title}
             layout="bottom"
+            showIcon={showIcons}
+            showLabel={showLabels}
+            activeStyle={activeStyle}
           />
         ))}
         {showMoreButton && (
@@ -1277,7 +1585,11 @@ function BottomNav({
             style={{ color: moreActive || showMore ? accent : '#64748b' }}
           >
             <MoreHorizontal className="h-5 w-5" />
-            <span className="text-[11px] font-medium leading-tight">{grouped ? 'Mục' : 'Thêm'}</span>
+            {showLabels && (
+              <span className="text-[11px] font-medium leading-tight">
+                {grouped ? 'Mục' : 'Thêm'}
+              </span>
+            )}
           </button>
         )}
       </nav>
@@ -1287,12 +1599,55 @@ function BottomNav({
 
 // ── Screen container — fetches on screen change ───────────────────────────
 
+function ScreenPresentationFrame({
+  presentation,
+  children,
+}: {
+  presentation?: ScreenPresentation | null;
+  children: React.ReactNode;
+}) {
+  if (!presentation) return <>{children}</>;
+  const maxWidth = {
+    narrow: '48rem',
+    standard: '72rem',
+    wide: '96rem',
+  }[presentation.content_width || 'standard'];
+  const style = {
+    maxWidth: presentation.content_width ? maxWidth : undefined,
+    padding:
+      presentation.page_padding !== undefined
+        ? `${Math.max(0, Math.min(64, presentation.page_padding))}px`
+        : undefined,
+    ['--wb-screen-radius' as string]:
+      presentation.card_radius !== undefined
+        ? `${Math.max(0, Math.min(32, presentation.card_radius))}px`
+        : undefined,
+  } as React.CSSProperties;
+
+  return (
+    <div
+      className="wb-screen mx-auto w-full"
+      data-presentation="v1"
+      data-content-width={presentation.content_width || undefined}
+      data-density={presentation.table?.row_height || presentation.density || undefined}
+      data-shadow={presentation.shadow || undefined}
+      data-motion={presentation.motion || undefined}
+      data-card-radius={presentation.card_radius !== undefined ? 'custom' : undefined}
+      style={style}
+    >
+      {children}
+    </div>
+  );
+}
+
 function ScreenContainer({
   token,
   workboardId,
   screenId,
   shared,
   accent,
+  experience,
+  presentationOverride,
   viewerRole,
   onNavigate,
 }: {
@@ -1301,6 +1656,8 @@ function ScreenContainer({
   screenId: string;
   shared: Record<string, unknown>;
   accent: string;
+  experience?: ExperienceResolved;
+  presentationOverride?: ScreenPresentation | null;
   viewerRole?: string | null;
   onNavigate: (next: string, carry?: Record<string, unknown>) => void;
 }) {
@@ -1311,13 +1668,12 @@ function ScreenContainer({
   useEffect(() => {
     let alive = true;
     setLoading(true);
-    setData(null);
     (async () => {
       try {
         const r = await workspaceApi.getScreen(token, workboardId, screenId, shared);
         if (alive) setData(r);
       } catch {
-        if (alive) setData(null);
+        // Keep the previous payload visible when a background refresh fails.
       } finally {
         if (alive) setLoading(false);
       }
@@ -1325,11 +1681,21 @@ function ScreenContainer({
     return () => {
       alive = false;
     };
-    // shared is included in the parent's `key` so we don't need it here.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [token, workboardId, screenId, reloadKey]);
+  }, [token, workboardId, screenId, shared, reloadKey]);
 
-  if (loading) {
+  if (loading && !data) {
+    if (experience?.feedback.loading === 'skeleton') {
+      return (
+        <div className="mx-auto w-full max-w-5xl animate-pulse space-y-4 rounded-xl bg-white p-6 shadow-sm">
+          <div className="h-5 w-40 rounded bg-slate-200" />
+          <div className="h-10 rounded bg-slate-100" />
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div className="h-28 rounded bg-slate-100" />
+            <div className="h-28 rounded bg-slate-100" />
+          </div>
+        </div>
+      );
+    }
     return <Loader2 className="mx-auto my-10 h-6 w-6 animate-spin text-slate-400" />;
   }
   if (!data) {
@@ -1339,70 +1705,169 @@ function ScreenContainer({
         {offline
           ? 'Màn hình này chưa được tải để dùng offline. Hãy mở nó một lần khi có mạng, sau đó vẫn dùng được khi mất mạng.'
           : 'Không tải được màn hình này.'}
+        {!offline && experience?.feedback.error_retry && (
+          <button
+            type="button"
+            onClick={() => setReloadKey((key) => key + 1)}
+            className="mx-auto mt-4 flex items-center gap-2 rounded-md border border-slate-300 px-3 py-2 font-medium text-slate-700 hover:bg-slate-50"
+          >
+            <RefreshCw className="h-4 w-4" />
+            Thử lại
+          </button>
+        )}
       </div>
     );
   }
+  const presentation =
+    presentationOverride === undefined ? data.presentation : presentationOverride;
+  const handleTableAction = async (
+    action: ScreenAction,
+    row: Record<string, unknown>,
+  ) => {
+    if (action.action_type === 'open_related_records') {
+      const tableData = data.kind === 'table' ? data : null;
+      const pk: Record<string, unknown> = {};
+      for (const column of tableData?.primary_key_columns || []) {
+        if (column in row) pk[column] = row[column];
+      }
+      if (
+        !tableData ||
+        (tableData.primary_key_columns || []).length === 0 ||
+        Object.keys(pk).length !== (tableData.primary_key_columns || []).length
+      ) {
+        toast.error('KhÃ´ng xÃ¡c Ä‘á»‹nh Ä‘Æ°á»£c khÃ³a cá»§a Parent.');
+        return;
+      }
+      try {
+        const resolved = await workspaceApi.openRelatedRecords(
+          token,
+          workboardId,
+          tableData.screen_id,
+          action.id,
+          pk,
+        );
+        const relation = resolved.relation_context;
+        const now = Date.now();
+        const flow: OfflineRelationFlow = {
+          flowId: newRelationFlowId(),
+          token,
+          workboardId,
+          parentOpId: null,
+          relationId: relation.relation_id,
+          relationLabel: relation.relation_label || null,
+          parentScreenId: relation.parent_screen_id,
+          childScreenId: relation.child_screen_id,
+          parentKeyColumn: relation.parent_key_column,
+          parentKeyValue: relation.parent_key_value,
+          childForeignKeyColumn: relation.child_foreign_key_column,
+          parentValues: resolved.parent_values,
+          finishScreenId: relation.finish_screen_id || null,
+          showExisting: relation.show_existing !== false,
+          allowMultiple: relation.allow_multiple !== false,
+          keepParentContext: relation.keep_parent_context !== false,
+          status: 'active',
+          error: null,
+          createdAt: now,
+          updatedAt: now,
+        };
+        let context: RuntimeRelationContext = {
+          ...relation,
+          allow_multiple: relation.allow_multiple !== false,
+          keep_parent_context: relation.keep_parent_context !== false,
+        };
+        try {
+          await saveRelationFlow(flow);
+          context = relationContextFromFlow(flow);
+        } catch {
+          // The online flow still works when IndexedDB is unavailable.
+        }
+        onNavigate(resolved.child_screen_id, {
+          [relation.parent_key_column]: relation.parent_key_value,
+          __wb_relation_context: context,
+        });
+      } catch (error: unknown) {
+        const detail = (error as ApiErrorLike)?.response?.data?.detail;
+        toast.error(typeof detail === 'string' ? detail : 'KhÃ´ng má»Ÿ Ä‘Æ°á»£c báº£n ghi liÃªn quan.');
+      }
+      return;
+    }
+    if (action.go_to_screen) {
+      const carry: Record<string, unknown> = {};
+      for (const col of action.carry || []) {
+        if (col in row) carry[col] = row[col];
+      }
+      onNavigate(action.go_to_screen, carry);
+    }
+  };
   if (data.kind === 'form') {
     return (
-      <FormScreen
-        spec={data}
-        token={token}
-        workboardId={workboardId}
-        accent={accent}
-        shared={shared}
-        onNavigate={onNavigate}
-        onSaved={(carry, nextScreen) => {
-          if (nextScreen) onNavigate(nextScreen, carry);
-          else setReloadKey((k) => k + 1);
-        }}
-      />
+      <ScreenPresentationFrame presentation={presentation}>
+        <FormScreen
+          spec={data}
+          token={token}
+          workboardId={workboardId}
+          accent={accent}
+          shared={shared}
+          experience={experience}
+          presentation={presentation}
+          onNavigate={onNavigate}
+          onSaved={(carry, nextScreen) => {
+            if (nextScreen) onNavigate(nextScreen, carry);
+            else setReloadKey((k) => k + 1);
+          }}
+        />
+      </ScreenPresentationFrame>
     );
   }
   if (data.kind === 'table' && data.table_view?.pos_cart) {
     return (
-      <PosCartScreen
-        spec={data}
-        token={token}
-        workboardId={workboardId}
-        accent={accent}
-        onNavigate={onNavigate}
-      />
+      <ScreenPresentationFrame presentation={presentation}>
+        <PosCartScreen
+          spec={data}
+          token={token}
+          workboardId={workboardId}
+          accent={accent}
+          onNavigate={onNavigate}
+        />
+      </ScreenPresentationFrame>
     );
   }
   if (data.kind === 'table') {
     return (
-      <TableScreen
-        spec={data}
-        token={token}
-        workboardId={workboardId}
-        accent={accent}
-        viewerRole={viewerRole}
-        shared={shared}
-        onAction={(action, row) => {
-          if (action.go_to_screen) {
-            const carry: Record<string, unknown> = {};
-            for (const col of action.carry || []) {
-              if (col in row) carry[col] = row[col];
-            }
-            onNavigate(action.go_to_screen, carry);
-          }
-        }}
-      />
+      <ScreenPresentationFrame presentation={presentation}>
+        <TableScreen
+          spec={data}
+          token={token}
+          workboardId={workboardId}
+          accent={accent}
+          presentation={presentation}
+          emptyStyle={experience?.feedback.empty_style}
+          viewerRole={viewerRole}
+          shared={shared}
+          onAction={(action, row) => void handleTableAction(action, row)}
+        />
+      </ScreenPresentationFrame>
     );
   }
   if (data.kind === 'doc') {
     return (
-      <DocScreen
-        spec={data}
-        token={token}
-        workboardId={workboardId}
-        shared={shared}
-        accent={accent}
-      />
+      <ScreenPresentationFrame presentation={presentation}>
+        <DocScreen
+          spec={data}
+          token={token}
+          workboardId={workboardId}
+          shared={shared}
+          accent={accent}
+        />
+      </ScreenPresentationFrame>
     );
   }
   if (data.kind === 'dashboard') {
-    return <DashboardScreen spec={data} />;
+    return (
+      <ScreenPresentationFrame presentation={presentation}>
+        <DashboardScreen spec={data} />
+      </ScreenPresentationFrame>
+    );
   }
   return null;
 }
@@ -1511,6 +1976,8 @@ function FormScreen({
   workboardId,
   accent,
   shared,
+  experience,
+  presentation,
   onSaved,
   onNavigate,
 }: {
@@ -1519,6 +1986,8 @@ function FormScreen({
   workboardId: number;
   accent: string;
   shared: Record<string, unknown>;
+  experience?: ExperienceResolved;
+  presentation?: ScreenPresentation | null;
   onSaved: (carry: Record<string, unknown>, nextScreen?: string) => void;
   onNavigate?: (screenId: string, carry?: Record<string, unknown>) => void;
 }) {
@@ -1579,6 +2048,25 @@ function FormScreen({
   const [relatedRows, setRelatedRows] = useState<RelatedRecordsResponse | null>(null);
   const [relatedLoading, setRelatedLoading] = useState(false);
   const [relatedError, setRelatedError] = useState<string | null>(null);
+  const relatedRecordCount =
+    (relatedRows?.total_count ?? relatedRows?.rows.length ?? 0) + queuedRelatedRows.length;
+  const editingRelatedRowFromShared =
+    !ignoreSharedSeed &&
+    (spec.primary_key_columns || []).length > 0 &&
+    (spec.primary_key_columns || []).every((column) => {
+      const value = shared[column];
+      return value !== undefined && value !== null && value !== '';
+    });
+  const relationAtCapacity =
+    relationContext?.allow_multiple === false &&
+    relatedRecordCount > 0 &&
+    !editingRelatedRowFromShared;
+
+  useEffect(() => {
+    if (success && experience?.feedback.success === 'toast') {
+      toast.success(success);
+    }
+  }, [experience?.feedback.success, success]);
 
   const reloadRelatedRows = useCallback(async () => {
     if (!baseRelationContext) {
@@ -1802,6 +2290,13 @@ function FormScreen({
       await finishCurrentRelation();
       return true;
     }
+    if (
+      relationContext.keep_parent_context === false ||
+      relationContext.allow_multiple === false
+    ) {
+      await finishCurrentRelation();
+      return true;
+    }
     setValues(buildInitial());
     setCurrentPage(1);
     setOcrFilled(new Set());
@@ -1814,15 +2309,24 @@ function FormScreen({
     mode: FormSubmitMode = 'default',
   ) => {
     e?.preventDefault();
+    const relationPkColumns = (spec.primary_key_columns || []).map(String);
+    const editingExistingRelationRow =
+      Boolean(relationContext) &&
+      !ignoreSharedSeed &&
+      relationPkColumns.length > 0 &&
+      relationPkColumns.every((column) => {
+        const value = shared[column];
+        return value !== undefined && value !== null && value !== '';
+      });
+    if (relationAtCapacity && !editingExistingRelationRow) {
+      if (mode === 'finish') {
+        await finishCurrentRelation();
+      } else {
+        setSubmitError('Quan há»‡ nÃ y chá»‰ cho phÃ©p má»™t báº£n ghi Child cho má»—i Parent.');
+      }
+      return;
+    }
     if (mode === 'finish' && relationContext) {
-      const pkColumns = (spec.primary_key_columns || []).map(String);
-      const editingExisting =
-        !ignoreSharedSeed &&
-        pkColumns.length > 0 &&
-        pkColumns.every((column) => {
-          const value = shared[column];
-          return value !== undefined && value !== null && value !== '';
-        });
       const baseline = buildFreshInitial();
       const hasDraft = allFields.some((field) => {
         const column = String(field.column || '');
@@ -1836,7 +2340,7 @@ function FormScreen({
         if (value === undefined || value === null || value === '') return false;
         return JSON.stringify(value) !== JSON.stringify(baseline[column]);
       });
-      if (!editingExisting && !hasDraft) {
+      if (!editingExistingRelationRow && !hasDraft) {
         setSuccess('Đã hoàn tất.');
         await finishCurrentRelation();
         return;
@@ -2016,6 +2520,7 @@ function FormScreen({
             parentValues: savedContext,
             finishScreenId: followRelation.finish_screen_id || null,
             showExisting: followRelation.show_existing !== false,
+            allowMultiple: followRelation.allow_multiple !== false,
             keepParentContext: followRelation.keep_parent_context !== false,
             status: 'active',
             error: null,
@@ -2040,6 +2545,15 @@ function FormScreen({
           next = followRelation.child_screen_id;
         }
       }
+      if (
+        relationContext &&
+        (mode === 'finish' ||
+          relationContext.keep_parent_context === false ||
+          relationContext.allow_multiple === false)
+      ) {
+        await finishCurrentRelation();
+        return;
+      }
       if (relationContext && mode === 'add_next') {
         await reloadRelatedRows();
         if (isEditing) setIgnoreSharedSeed(true);
@@ -2049,12 +2563,10 @@ function FormScreen({
         setTimeout(() => setSuccess(null), 2500);
         return;
       }
-      if (relationContext && mode === 'finish') {
-        await finishCurrentRelation();
-        return;
-      }
-      // Brief delay so user sees the success badge before navigating.
-      setTimeout(() => onSaved(carry, next), 600);
+      // Inline/banner feedback needs a brief readable pause. Toast feedback
+      // remains visible across navigation, so it can continue immediately.
+      if (experience?.feedback.success === 'toast') onSaved(carry, next);
+      else setTimeout(() => onSaved(carry, next), 600);
     } catch (err: unknown) {
       // Offline (no server reachable) + a NEW row → queue it locally and let the
       // user keep working; it syncs automatically on reconnect. Editing offline
@@ -2084,6 +2596,7 @@ function FormScreen({
               parentValues: offlinePayload,
               finishScreenId: followRelationForSubmit.finish_screen_id || null,
               showExisting: followRelationForSubmit.show_existing !== false,
+              allowMultiple: followRelationForSubmit.allow_multiple !== false,
               keepParentContext: followRelationForSubmit.keep_parent_context !== false,
               status: 'pending_parent',
               error: null,
@@ -2197,6 +2710,14 @@ function FormScreen({
       ...derivedSections,
     ]),
   );
+  const formColumns = presentation?.form?.columns;
+  const formGridClass =
+    formColumns === 3
+      ? 'grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3'
+      : formColumns === 2
+        ? 'grid grid-cols-1 gap-3 sm:grid-cols-2'
+        : 'space-y-3';
+  const sectionStyle = presentation?.form?.section_style || 'plain';
 
   return (
     <div className="mx-auto w-full max-w-3xl rounded-xl bg-white p-5 shadow-sm sm:p-6 xl:max-w-5xl 2xl:max-w-6xl">
@@ -2316,9 +2837,26 @@ function FormScreen({
         {sectionOrder.map((sec) => {
           const list = fieldsBySection[sec];
           return (
-            <div key={sec} className="space-y-3">
+            <div
+              key={sec}
+              className={`${formGridClass} ${
+                sectionStyle === 'surface'
+                  ? 'rounded-lg border border-slate-200 bg-slate-50 p-4'
+                  : sectionStyle === 'divided'
+                    ? 'border-b border-slate-200 pb-5'
+                    : ''
+              }`}
+            >
               {sec !== '_default' && (
-                <h3 className="border-b border-slate-200 pb-1 text-sm font-semibold text-slate-800">
+                <h3
+                  className={`border-b border-slate-200 pb-1 text-sm font-semibold text-slate-800 ${
+                    formColumns === 3
+                      ? 'md:col-span-2 xl:col-span-3'
+                      : formColumns === 2
+                        ? 'sm:col-span-2'
+                        : ''
+                  }`}
+                >
                   {sec}
                 </h3>
               )}
@@ -2368,14 +2906,24 @@ function FormScreen({
             {submitError}
           </p>
         )}
-        {success && (
-          <p className="flex items-center gap-2 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
+        {success && experience?.feedback.success !== 'toast' && (
+          <p
+            className={`flex items-center gap-2 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700 ${
+              experience?.feedback.success === 'banner' ? 'shadow-sm' : ''
+            }`}
+          >
             <CheckCircle2 className="h-4 w-4" />
             {success}
           </p>
         )}
 
-        <div className="flex items-center justify-between gap-2 pt-1">
+        <div
+          className={`flex items-center justify-between gap-2 pt-1 ${
+            presentation?.sticky_action_bar
+              ? 'sticky bottom-3 z-20 rounded-lg border border-slate-200 bg-white/95 p-3 shadow-md backdrop-blur'
+              : ''
+          }`}
+        >
           {isMultiPage && currentPage > 1 ? (
             <button
               type="button"
@@ -2413,17 +2961,30 @@ function FormScreen({
               >
                 Hoàn tất
               </button>
-              <button
-                key="wb-form-relation-add-next"
-                type="button"
-                onClick={(event) => handleSubmit(event, 'add_next')}
-                disabled={submitting}
-                className="flex items-center gap-2 rounded-md px-5 py-2 text-sm font-semibold text-white disabled:opacity-60"
-                style={{ backgroundColor: accent }}
-              >
-                {submitting && <Loader2 className="h-4 w-4 animate-spin" />}
-                Lưu & thêm tiếp
-              </button>
+              {!relationAtCapacity ? (
+                <button
+                  key="wb-form-relation-save"
+                  type="button"
+                  onClick={(event) =>
+                    handleSubmit(
+                      event,
+                      relationContext.allow_multiple === false ||
+                        relationContext.keep_parent_context === false
+                        ? 'finish'
+                        : 'add_next',
+                    )
+                  }
+                  disabled={submitting}
+                  className="flex items-center gap-2 rounded-md px-5 py-2 text-sm font-semibold text-white disabled:opacity-60"
+                  style={{ backgroundColor: accent }}
+                >
+                  {submitting && <Loader2 className="h-4 w-4 animate-spin" />}
+                  {relationContext.allow_multiple === false ||
+                  relationContext.keep_parent_context === false
+                    ? 'Lưu & hoàn tất'
+                    : 'Lưu & thêm tiếp'}
+                </button>
+              ) : null}
             </div>
           ) : (
             <button
@@ -5687,16 +6248,7 @@ function FormattedCell({
 // RLS still rules the wire — backend re-checks can_update / can_delete /
 // can_create on every request so a viewer can't bypass by hand-editing.
 
-type RowActionDescriptor = {
-  id: string;
-  label: string;
-  icon?: string | null;
-  style?: 'primary' | 'secondary' | 'ghost' | 'danger';
-  go_to_screen?: string | null;
-  carry?: string[];
-  confirm_message?: string | null;
-  visible_for_roles?: string[];
-};
+type RowActionDescriptor = ScreenAction;
 
 type RuntimeTableFilter = {
   column: string;
@@ -6686,6 +7238,8 @@ function TableScreen({
   token,
   workboardId,
   accent,
+  presentation,
+  emptyStyle = 'message',
   viewerRole,
   shared,
   onAction,
@@ -6694,6 +7248,8 @@ function TableScreen({
   token: string;
   workboardId: number;
   accent: string;
+  presentation?: ScreenPresentation | null;
+  emptyStyle?: ExperienceResolved['feedback']['empty_style'];
   viewerRole?: string | null;
   shared: Record<string, unknown>;
   onAction: (action: RowActionDescriptor, row: Record<string, unknown>) => void;
@@ -7481,7 +8037,11 @@ function TableScreen({
             event.preventDefault();
             void reloadRows(filterValues);
           }}
-          className="border-b border-slate-100 bg-slate-50/70 px-4 py-3"
+          className={`border-b border-slate-100 bg-slate-50/70 px-4 py-3 ${
+            presentation?.table?.filter_position === 'sticky'
+              ? 'sticky top-0 z-20 shadow-sm'
+              : ''
+          }`}
         >
           <div className="grid gap-2 md:grid-cols-3">
             {configuredFilters.map((filter, idx) => {
@@ -7779,7 +8339,13 @@ function TableScreen({
       <div>
       <div className="max-w-full min-w-0 overflow-x-auto overscroll-x-contain">
         <table className="min-w-max w-full text-sm">
-          <thead>
+          <thead
+            className={
+              presentation?.table?.sticky_header
+                ? 'sticky top-0 z-10 bg-white shadow-sm'
+                : undefined
+            }
+          >
             {columnGroups.length > 0 ? (
               <tr className="border-b border-slate-200 bg-slate-100">
                 {(() => {
@@ -7920,7 +8486,20 @@ function TableScreen({
                   }
                   className="p-10 text-center text-sm text-slate-500"
                 >
-                  {empty}
+                  <div
+                    className={`mx-auto flex max-w-sm items-center justify-center ${
+                      emptyStyle === 'illustration'
+                        ? 'flex-col gap-2 py-3'
+                        : emptyStyle === 'minimal'
+                          ? 'py-0 text-xs'
+                          : 'py-2'
+                    }`}
+                  >
+                    {emptyStyle === 'illustration' && (
+                      <ClipboardList className="h-9 w-9 text-slate-300" />
+                    )}
+                    <span>{empty}</span>
+                  </div>
                 </td>
               </tr>
             ) : null}
@@ -8288,11 +8867,56 @@ function TableScreen({
                   {panelError}
                 </div>
               ) : panelDetail ? (
-                <DetailPanelBody
-                  detail={panelDetail}
-                  draft={panelDraft}
-                  setDraft={setPanelDraft}
-                />
+                <>
+                  <DetailPanelBody
+                    detail={panelDetail}
+                    draft={panelDraft}
+                    setDraft={setPanelDraft}
+                  />
+                  {panelMode === 'edit' && rowActions.length > 0 ? (
+                    <div className="mt-5 border-t border-slate-200 pt-4">
+                      <div className="mb-2 text-xs font-semibold uppercase text-slate-500">
+                        Hành động
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        {rowActions.map((action) => {
+                          const style = action.style || 'primary';
+                          const className =
+                            style === 'danger'
+                              ? 'bg-rose-600 text-white hover:bg-rose-700'
+                              : style === 'secondary'
+                                ? 'border border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
+                                : style === 'ghost'
+                                  ? 'text-slate-700 hover:bg-slate-100'
+                                  : 'text-white';
+                          return (
+                            <button
+                              key={action.id}
+                              type="button"
+                              onClick={() => {
+                                if (
+                                  action.confirm_message &&
+                                  !window.confirm(action.confirm_message)
+                                ) {
+                                  return;
+                                }
+                                onAction(action, panelDetail.row);
+                              }}
+                              className={`rounded-md px-3 py-2 text-xs font-medium ${className}`}
+                              style={
+                                style === 'primary'
+                                  ? { backgroundColor: accent }
+                                  : undefined
+                              }
+                            >
+                              {action.label}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ) : null}
+                </>
               ) : null}
             </div>
             {panelDetail && (panelDetail.editable_columns || []).length > 0 && (

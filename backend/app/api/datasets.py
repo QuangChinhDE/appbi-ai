@@ -3843,56 +3843,61 @@ def remove_table_from_dataset(
                 ))
 
     # ------------------------------------------------------------------
-    # Check 5: workboards that reference this table either as the primary
-    # table or via any screen.table_id inside their layout. Without this
-    # block, the FK CASCADE on Workboard.primary_table_id silently deletes
-    # the entire mini-app + submissions when the user removes a single
-    # table; for screen-level references the row stays but every screen
-    # bound to the missing table becomes a 400 at runtime.
+    # Check 5: real Workboard bindings block deletion. A hidden legacy
+    # primary-table anchor can move to another physical table when no draft
+    # or live Screen, Lookup, auto-number, or typed dependency still uses it.
     # ------------------------------------------------------------------
     from app.modules.workboards.models import Workboard
+    from app.modules.workboards.services.table_binding import (
+        reassign_legacy_primary_table,
+        workboard_table_references,
+    )
+
     blocking_workboards: list[dict[str, Any]] = []
+    primary_reassignments: list[tuple[Workboard, DatasetTable]] = []
+    replacement_table = next(
+        (
+            table
+            for table in sorted(other_tables, key=lambda item: int(item.id))
+            if table.source_kind == "physical_table" and table.enabled is not False
+        ),
+        None,
+    )
     workboards_in_dataset = (
         db.query(Workboard)
         .filter(Workboard.dataset_id == dataset_id)
         .all()
     )
     for wb in workboards_in_dataset:
-        if wb.primary_table_id == table_id:
+        references = workboard_table_references(wb, table_id)
+        if references:
+            blocking_workboards.append(_build_delete_constraint(
+                "workboard_dependency",
+                id=wb.id,
+                name=wb.name,
+                object_label=f'Workboard "{wb.name}" (table dependency)',
+                detail=(
+                    f"{len(references)} draft/live Screen, Lookup, or dependency "
+                    "reference(s) still use this table."
+                ),
+                references=references,
+            ))
+            continue
+        if wb.primary_table_id != table_id:
+            continue
+        if replacement_table is None:
             blocking_workboards.append(_build_delete_constraint(
                 "workboard_primary_table",
                 id=wb.id,
                 name=wb.name,
                 object_label=f'Workboard "{wb.name}" (primary table)',
-                detail="This table is the workboard's primary data source.",
-            ))
-            continue
-        layout = wb.layout_json or {}
-        screens = layout.get("screens") if isinstance(layout, dict) else None
-        if not isinstance(screens, list):
-            continue
-        screen_refs = []
-        for screen in screens:
-            if not isinstance(screen, dict):
-                continue
-            if screen.get("table_id") == table_id:
-                screen_refs.append({
-                    "screen_id": screen.get("id"),
-                    "screen_kind": screen.get("kind"),
-                    "screen_title": screen.get("title"),
-                })
-        if screen_refs:
-            blocking_workboards.append(_build_delete_constraint(
-                "workboard_screen",
-                id=wb.id,
-                name=wb.name,
-                object_label=f'Workboard "{wb.name}" (screen reference)',
                 detail=(
-                    f"{len(screen_refs)} screen(s) bind this table — "
-                    "remove or rebind them in the workboard builder first."
+                    "This is only the legacy primary anchor, but the dataset has "
+                    "no other physical table to receive that anchor."
                 ),
-                screens=screen_refs,
             ))
+            continue
+        primary_reassignments.append((wb, replacement_table))
 
     constraints = []
     for ch in blocking_charts:
@@ -3919,6 +3924,11 @@ def remove_table_from_dataset(
                 "constraints": constraints,
             },
         )
+
+    for workboard, replacement in primary_reassignments:
+        reassign_legacy_primary_table(workboard, replacement)
+    if primary_reassignments:
+        db.flush()
 
     EmbeddingService.delete_embedding(db, "dataset_table", table_id)
 

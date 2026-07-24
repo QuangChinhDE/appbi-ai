@@ -1103,6 +1103,8 @@ def _resolve_relation_bound_values(
     child_screen: Screen,
     relation_context: Optional[Dict[str, Any]],
     identity: CallerIdentity,
+    *,
+    enforce_cardinality: bool = False,
 ) -> Dict[str, Any]:
     """Validate a parent-child relation context and return server-bound values.
 
@@ -1139,6 +1141,11 @@ def _resolve_relation_bound_values(
         raise HTTPException(status_code=400, detail="Related-record config was not found.")
     if relation.child_screen_id != child_screen.id:
         raise HTTPException(status_code=403, detail="Child screen is not part of this relation.")
+    if relation.parent_key_column not in set(parent_screen.primary_key_columns or []):
+        raise HTTPException(
+            status_code=400,
+            detail="Relation parent key must be one of the parent screen's primary_key_columns.",
+        )
 
     if not parent_screen.table_id or not child_screen.table_id:
         raise HTTPException(status_code=400, detail="Relation screens must be bound to tables.")
@@ -1178,7 +1185,154 @@ def _resolve_relation_bound_values(
     if not (result.get("rows") or []):
         raise HTTPException(status_code=403, detail="You don't have access to the parent row.")
 
+    if enforce_cardinality and not relation.allow_multiple:
+        child_datasource = _load_datasource(db, child_table)
+        if child_datasource is None:
+            raise HTTPException(status_code=400, detail="Relation child datasource is missing.")
+        existing = LiveQueryService.execute_preview_query(
+            child_datasource,
+            child_table,
+            limit=1,
+            offset=0,
+            filters=[
+                {
+                    "field": relation.child_foreign_key_column,
+                    "operator": "eq",
+                    "value": parent_key_value,
+                }
+            ],
+        )
+        if existing.get("rows") or []:
+            raise HTTPException(
+                status_code=409,
+                detail="This relation allows only one child record for each parent.",
+            )
+
     return {relation.child_foreign_key_column: parent_key_value}
+
+
+def open_related_records_context(
+    db: Session,
+    workboard: Workboard,
+    source_screen: Screen,
+    *,
+    action_id: str,
+    pk: Dict[str, Any],
+    identity: CallerIdentity,
+) -> Dict[str, Any]:
+    """Resolve a row action into a server-verified relation context.
+
+    The client supplies only the stored action id and row PK. Relation ownership,
+    the parent key value, child target, and policy flags all come from the
+    published layout after both the source-table and parent-form RLS checks pass.
+    """
+
+    if source_screen.kind != "table" or source_screen.table is None or not source_screen.table_id:
+        raise HTTPException(status_code=400, detail="Open Related Records requires a table screen.")
+    action = next(
+        (item for item in (source_screen.table.row_actions or []) if item.id == action_id),
+        None,
+    )
+    if action is None or action.action_type != "open_related_records":
+        raise HTTPException(status_code=404, detail="Open Related Records action was not found.")
+    if identity.is_app_user and not is_owner_role(identity.role) and action.visible_for_roles:
+        role = (identity.role or "").strip().lower()
+        if not any(item.strip().lower() == role for item in action.visible_for_roles):
+            raise HTTPException(status_code=403, detail="You don't have access to that action.")
+    relation_id = str(action.relation_id or "").strip()
+    if not relation_id:
+        raise HTTPException(status_code=400, detail="The row action has no relation_id.")
+
+    layout = parse_layout(workboard)
+    candidates: List[Screen] = []
+    for candidate in layout.screens:
+        if (
+            candidate.kind == "form"
+            and candidate.form is not None
+            and candidate.table_id == source_screen.table_id
+            and (not action.parent_screen_id or candidate.id == action.parent_screen_id)
+            and any(item.id == relation_id for item in (candidate.form.related_records or []))
+        ):
+            candidates.append(candidate)
+    if len(candidates) != 1:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "The relation_id must resolve to exactly one parent form bound "
+                "to this table."
+            ),
+        )
+    parent_screen = candidates[0]
+    relation = next(
+        item for item in (parent_screen.form.related_records or []) if item.id == relation_id
+    )
+    if relation.parent_key_column not in set(parent_screen.primary_key_columns or []):
+        raise HTTPException(
+            status_code=400,
+            detail="Relation parent key must be one of the parent screen's primary_key_columns.",
+        )
+
+    required_pk = list(source_screen.primary_key_columns or [])
+    if not required_pk or any(column not in pk for column in required_pk):
+        raise HTTPException(status_code=400, detail="A complete row primary key is required.")
+    source_table = _load_table(db, source_screen.table_id)
+    datasource = _load_datasource(db, source_table) if source_table else None
+    if not source_table or not datasource:
+        raise HTTPException(status_code=400, detail="Source table binding is missing.")
+    rls_filters, allowed = build_rls_filter(
+        source_screen.rls, source_screen.rls_default, identity
+    )
+    if not allowed:
+        raise HTTPException(status_code=403, detail="You don't have access to that row.")
+    filters = [
+        {"field": column, "operator": "eq", "value": pk[column]}
+        for column in required_pk
+    ] + rls_filters
+    result = LiveQueryService.execute_preview_query(
+        datasource, source_table, limit=1, offset=0, filters=filters
+    )
+    rows = result.get("rows") or []
+    if not rows:
+        raise HTTPException(status_code=403, detail="You don't have access to that row.")
+    parent_row = rows[0]
+    parent_key_value = parent_row.get(relation.parent_key_column)
+    if parent_key_value is None or (
+        isinstance(parent_key_value, str) and not parent_key_value.strip()
+    ):
+        raise HTTPException(status_code=409, detail="The selected parent row has no relation key.")
+
+    child_screen = get_screen(layout, relation.child_screen_id)
+    if not role_has_screen_grant(child_screen, identity):
+        raise HTTPException(status_code=403, detail="You don't have access to the child screen.")
+    _resolve_relation_bound_values(
+        db,
+        workboard,
+        layout,
+        child_screen,
+        {
+            "relation_id": relation.id,
+            "parent_screen_id": parent_screen.id,
+            "parent_key_value": parent_key_value,
+        },
+        identity,
+    )
+    return {
+        "child_screen_id": child_screen.id,
+        "parent_values": parent_row,
+        "relation_context": {
+            "relation_id": relation.id,
+            "relation_label": relation.label,
+            "parent_screen_id": parent_screen.id,
+            "child_screen_id": child_screen.id,
+            "parent_key_column": relation.parent_key_column,
+            "parent_key_value": parent_key_value,
+            "child_foreign_key_column": relation.child_foreign_key_column,
+            "finish_screen_id": relation.finish_screen_id,
+            "show_existing": relation.show_existing,
+            "allow_multiple": relation.allow_multiple,
+            "keep_parent_context": relation.keep_parent_context,
+        },
+    }
 
 
 def render_related_records(
@@ -1552,6 +1706,7 @@ def insert_screen_row(
         screen,
         relation_context,
         identity,
+        enforce_cardinality=True,
     )
     if relation_bound:
         cleaned.update(relation_bound)
@@ -1561,20 +1716,14 @@ def insert_screen_row(
     if screen.kind == "form":
         # Value-level status guard on top of RLS column masking (insert = no prev).
         _enforce_status_rules(_status_fields(screen), cleaned, identity, previous_row=None)
-    # Hand off to the existing write service, but point it at the screen's
-    # table by temporarily swapping ``primary_table_id`` on the workboard
-    # instance — the service reads it lazily, so this is safe within the
-    # request lifetime.
-    original_table = workboard.primary_table_id
-    original_pk = list(workboard.primary_key_columns or [])
-    workboard.primary_table_id = screen.table_id
-    if screen.primary_key_columns:
-        workboard.primary_key_columns = list(screen.primary_key_columns)
-    try:
-        result = WorkboardWriteService.insert_row(db, workboard, cleaned, None)
-    finally:
-        workboard.primary_table_id = original_table
-        workboard.primary_key_columns = original_pk
+    result = WorkboardWriteService.insert_row(
+        db,
+        workboard,
+        cleaned,
+        None,
+        target_table_id=screen.table_id,
+        primary_key_columns=list(screen.primary_key_columns or []),
+    )
     if op_entry is not None:
         op_entry.result_payload = result
         db.flush()
@@ -1653,17 +1802,14 @@ def insert_screen_rows(
             )
         )
 
-    original_table = workboard.primary_table_id
-    original_pk = list(workboard.primary_key_columns or [])
-    workboard.primary_table_id = screen.table_id
-    if screen.primary_key_columns:
-        workboard.primary_key_columns = list(screen.primary_key_columns)
-    try:
-        result = WorkboardWriteService.insert_rows(db, workboard, prepared, None)
-    finally:
-        workboard.primary_table_id = original_table
-        workboard.primary_key_columns = original_pk
-    return result
+    return WorkboardWriteService.insert_rows(
+        db,
+        workboard,
+        prepared,
+        None,
+        target_table_id=screen.table_id,
+        primary_key_columns=list(screen.primary_key_columns or []),
+    )
 
 
 def update_screen_rows(
@@ -1760,17 +1906,14 @@ def update_screen_rows(
             "lock_token": item.get("lock_token") if isinstance(item, dict) else None,
         })
 
-    original_table = workboard.primary_table_id
-    original_pk = list(workboard.primary_key_columns or [])
-    workboard.primary_table_id = screen.table_id
-    if screen.primary_key_columns:
-        workboard.primary_key_columns = list(screen.primary_key_columns)
-    try:
-        result = WorkboardWriteService.update_rows(db, workboard, prepared, None)
-    finally:
-        workboard.primary_table_id = original_table
-        workboard.primary_key_columns = original_pk
-    return result
+    return WorkboardWriteService.update_rows(
+        db,
+        workboard,
+        prepared,
+        None,
+        target_table_id=screen.table_id,
+        primary_key_columns=list(screen.primary_key_columns or []),
+    )
 
 
 def update_screen_row(
@@ -1865,17 +2008,15 @@ def update_screen_row(
                 status_code=403, detail="You don't have access to that row."
             )
 
-    original_table = workboard.primary_table_id
-    original_pk = list(workboard.primary_key_columns or [])
-    workboard.primary_table_id = screen.table_id
-    if screen.primary_key_columns:
-        workboard.primary_key_columns = list(screen.primary_key_columns)
-    try:
-        result = WorkboardWriteService.update_row(db, workboard, pk, cleaned, None)
-    finally:
-        workboard.primary_table_id = original_table
-        workboard.primary_key_columns = original_pk
-    return result
+    return WorkboardWriteService.update_row(
+        db,
+        workboard,
+        pk,
+        cleaned,
+        None,
+        target_table_id=screen.table_id,
+        primary_key_columns=list(screen.primary_key_columns or []),
+    )
 
 
 # ── Table screen helpers ────────────────────────────────────────────────
@@ -1893,6 +2034,228 @@ def _resolve_table_defaults(
     return _resolve_initial_values(
         dict(screen.table.default_values or {}), identity=identity
     )
+
+
+def _query_relation_rows(
+    datasource: DataSource,
+    table: DatasetTable,
+    filters: List[Dict[str, Any]],
+    *,
+    max_rows: int = 5000,
+) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    offset = 0
+    page_size = 500
+    while True:
+        limit = min(page_size, max_rows + 1 - len(rows))
+        result = LiveQueryService.execute_preview_query(
+            datasource,
+            table,
+            limit=limit,
+            offset=offset,
+            filters=filters,
+        )
+        page = result.get("rows") or []
+        rows.extend(page)
+        if len(rows) > max_rows:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Relation delete affects more than 5,000 child rows. "
+                    "Narrow or archive the children before deleting the parent."
+                ),
+            )
+        if len(page) < limit:
+            return rows
+        offset += len(page)
+
+
+def _apply_parent_relation_delete_behaviors(
+    db: Session,
+    workboard: Workboard,
+    layout: LayoutJson,
+    *,
+    parent_table_id: int,
+    parent_row: Dict[str, Any],
+    identity: CallerIdentity,
+    delete_stack: Set[tuple[int, str]],
+) -> None:
+    plans: List[Dict[str, Any]] = []
+    seen_relations: Set[tuple[int, str, str, str]] = set()
+    for parent_screen in layout.screens:
+        if (
+            parent_screen.kind != "form"
+            or parent_screen.form is None
+            or parent_screen.table_id != parent_table_id
+        ):
+            continue
+        parent_pk = set(parent_screen.primary_key_columns or [])
+        for relation in parent_screen.form.related_records or []:
+            if relation.parent_key_column not in parent_pk:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"Relation '{relation.id}' has an unsafe parent key. "
+                        "Select one of the parent screen's primary_key_columns."
+                    ),
+                )
+            parent_key_value = parent_row.get(relation.parent_key_column)
+            if parent_key_value is None or (
+                isinstance(parent_key_value, str) and not parent_key_value.strip()
+            ):
+                continue
+            child_screen = get_screen(layout, relation.child_screen_id)
+            if not child_screen.table_id:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Relation '{relation.id}' has no child table binding.",
+                )
+            relation_signature = (
+                int(child_screen.table_id),
+                relation.child_foreign_key_column,
+                json.dumps(parent_key_value, sort_keys=True, default=str),
+                relation.delete_behavior,
+            )
+            if relation_signature in seen_relations:
+                continue
+            seen_relations.add(relation_signature)
+            child_table = _load_table(db, child_screen.table_id)
+            child_datasource = _load_datasource(db, child_table) if child_table else None
+            if not child_table or not child_datasource:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Relation '{relation.id}' child datasource is missing.",
+                )
+            relation_filter = [
+                {
+                    "field": relation.child_foreign_key_column,
+                    "operator": "eq",
+                    "value": parent_key_value,
+                }
+            ]
+            child_rows = _query_relation_rows(
+                child_datasource, child_table, relation_filter
+            )
+            if not child_rows:
+                continue
+            if relation.delete_behavior == "restrict":
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"Cannot delete this parent while relation '{relation.id}' "
+                        f"still has {len(child_rows)} child record(s)."
+                    ),
+                )
+
+            operation = "delete" if relation.delete_behavior == "cascade" else "update"
+            unlink_values = (
+                {relation.child_foreign_key_column: None}
+                if operation == "update"
+                else {}
+            )
+            clean_unlink = enforce_write_access(
+                child_screen.rls,
+                child_screen.rls_default,
+                identity,
+                op=operation,
+                row_values=unlink_values,
+            )
+            rls_filters, allowed = build_rls_filter(
+                child_screen.rls, child_screen.rls_default, identity
+            )
+            if not allowed:
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"You don't have access to modify relation '{relation.id}'.",
+                )
+            child_pk = list(child_screen.primary_key_columns or [])
+            if not child_pk or any(
+                any(column not in row for column in child_pk) for row in child_rows
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Relation '{relation.id}' child screen needs a complete primary key.",
+                )
+            if rls_filters:
+                accessible_rows = _query_relation_rows(
+                    child_datasource,
+                    child_table,
+                    relation_filter + rls_filters,
+                )
+                accessible_keys = {
+                    tuple(json.dumps(row.get(col), default=str) for col in child_pk)
+                    for row in accessible_rows
+                }
+                child_keys = {
+                    tuple(json.dumps(row.get(col), default=str) for col in child_pk)
+                    for row in child_rows
+                }
+                if accessible_keys != child_keys:
+                    raise HTTPException(
+                        status_code=403,
+                        detail=(
+                            f"Some child records in relation '{relation.id}' are "
+                            "outside your row-level access."
+                        ),
+                    )
+            plans.append(
+                {
+                    "behavior": relation.delete_behavior,
+                    "child_screen": child_screen,
+                    "child_rows": child_rows,
+                    "child_pk": child_pk,
+                    "unlink_values": clean_unlink,
+                }
+            )
+
+    for plan in plans:
+        child_screen = plan["child_screen"]
+        for child_row in plan["child_rows"]:
+            child_pk_values = {
+                column: child_row.get(column) for column in plan["child_pk"]
+            }
+            if plan["behavior"] == "unlink":
+                WorkboardWriteService.update_row(
+                    db,
+                    workboard,
+                    child_pk_values,
+                    plan["unlink_values"],
+                    None,
+                    target_table_id=child_screen.table_id,
+                    primary_key_columns=plan["child_pk"],
+                )
+                continue
+
+            stack_key = (
+                int(child_screen.table_id),
+                json.dumps(child_pk_values, sort_keys=True, default=str),
+            )
+            if stack_key in delete_stack:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Cyclic cascade relation detected; use restrict or unlink.",
+                )
+            delete_stack.add(stack_key)
+            try:
+                _apply_parent_relation_delete_behaviors(
+                    db,
+                    workboard,
+                    layout,
+                    parent_table_id=int(child_screen.table_id),
+                    parent_row=child_row,
+                    identity=identity,
+                    delete_stack=delete_stack,
+                )
+                WorkboardWriteService.delete_row(
+                    db,
+                    workboard,
+                    child_pk_values,
+                    None,
+                    target_table_id=child_screen.table_id,
+                    primary_key_columns=plan["child_pk"],
+                )
+            finally:
+                delete_stack.discard(stack_key)
 
 
 def delete_screen_row(
@@ -1930,33 +2293,48 @@ def delete_screen_row(
     )
     if not allowed:
         raise HTTPException(status_code=403, detail="You don't have access to that row.")
-    if rls_filters:
-        table = _load_table(db, screen.table_id)
-        datasource = _load_datasource(db, table) if table else None
-        if not table or not datasource:
-            raise HTTPException(status_code=400, detail="Screen table missing.")
-        check_filters = [
-            {"field": k, "operator": "eq", "value": v} for k, v in (pk or {}).items()
-        ] + rls_filters
-        result = LiveQueryService.execute_preview_query(
-            datasource, table, limit=1, offset=0, filters=check_filters
+    primary_key_columns = list(screen.primary_key_columns or [])
+    if not primary_key_columns or any(column not in (pk or {}) for column in primary_key_columns):
+        raise HTTPException(status_code=400, detail="A complete row primary key is required.")
+    table = _load_table(db, screen.table_id)
+    datasource = _load_datasource(db, table) if table else None
+    if not table or not datasource:
+        raise HTTPException(status_code=400, detail="Screen table missing.")
+    check_filters = [
+        {"field": column, "operator": "eq", "value": pk[column]}
+        for column in primary_key_columns
+    ] + rls_filters
+    result = LiveQueryService.execute_preview_query(
+        datasource, table, limit=1, offset=0, filters=check_filters
+    )
+    parent_rows = result.get("rows") or []
+    if not parent_rows:
+        raise HTTPException(
+            status_code=403, detail="You don't have access to that row."
         )
-        if not (result.get("rows") or []):
-            raise HTTPException(
-                status_code=403, detail="You don't have access to that row."
-            )
+    layout = parse_layout(workboard)
+    root_key = (
+        int(screen.table_id),
+        json.dumps(pk, sort_keys=True, default=str),
+    )
+    _apply_parent_relation_delete_behaviors(
+        db,
+        workboard,
+        layout,
+        parent_table_id=int(screen.table_id),
+        parent_row=parent_rows[0],
+        identity=identity,
+        delete_stack={root_key},
+    )
 
-    original_table = workboard.primary_table_id
-    original_pk = list(workboard.primary_key_columns or [])
-    workboard.primary_table_id = screen.table_id
-    if screen.primary_key_columns:
-        workboard.primary_key_columns = list(screen.primary_key_columns)
-    try:
-        result = WorkboardWriteService.delete_row(db, workboard, pk or {}, None)
-    finally:
-        workboard.primary_table_id = original_table
-        workboard.primary_key_columns = original_pk
-    return result
+    return WorkboardWriteService.delete_row(
+        db,
+        workboard,
+        pk or {},
+        None,
+        target_table_id=screen.table_id,
+        primary_key_columns=primary_key_columns,
+    )
 
 
 def fetch_table_row_for_panel(
@@ -3254,6 +3632,79 @@ def _build_templated_excel(
 
 # ── Public app shell payload ──────────────────────────────────────────────
 
+def _default_experience() -> Dict[str, Any]:
+    """Fully-populated default presentation contract, so the runtime always
+    receives concrete tokens (no null-handling needed client-side)."""
+    return {
+        "schema_version": 1,
+        "preset": None,
+        "theme": {
+            "primary": "#2563eb", "success": "#16a34a", "warning": "#f59e0b",
+            "danger": "#ef4444", "info": "#3b82f6", "neutral": "#6b7280",
+            "background": "#f8fafc", "surface": "#ffffff", "border": "#e5e7eb",
+            "text": "#111827", "font_family": "system", "heading_weight": "semibold",
+            "body_weight": "regular", "type_scale": 100, "density": "cozy",
+            "radius": "small", "elevation": "small", "motion": "standard",
+            "mode": "auto", "app_background": None,
+        },
+        "shell": {
+            "sticky_header": True, "show_search": False, "show_logo": True,
+            "content_width": "full_bleed", "content_width_px": None,
+            "page_padding": "cozy", "footer_enabled": False, "background": "gray",
+        },
+        "navigation": {
+            "desktop_kind": "sidebar", "mobile_kind": "bottom_nav",
+            "sidebar_width": 224, "default_collapsed": False, "show_icons": True,
+            "show_labels": True, "active_style": "pill", "breadcrumbs": False,
+        },
+        "feedback": {
+            "loading": "spinner", "empty_style": "message", "success": "inline",
+            "confirmation": "modal", "error_retry": True, "motion_ms": 160,
+        },
+        # Runtime-only metadata. ``overrides`` is the exact author-authored
+        # block, allowing the frontend to distinguish inheritance from an
+        # explicit token (important for legacy dark mode and draft preview).
+        "explicit": False,
+        "overrides": {},
+    }
+
+
+def resolve_experience(layout: LayoutJson) -> Dict[str, Any]:
+    """Effective presentation = defaults ← legacy(branding/mini_app_nav) ←
+    explicit ``experience``. Keeps old boards visually identical when they have
+    no ``experience`` block (the adapter maps their branding/nav look)."""
+    eff = _default_experience()
+    b = getattr(layout, "branding", None)
+    if b is not None:
+        if getattr(b, "primary_color", None):
+            eff["theme"]["primary"] = b.primary_color
+        if getattr(b, "accent_color", None):
+            eff["theme"]["info"] = b.accent_color
+        if getattr(b, "theme", None):
+            eff["theme"]["mode"] = b.theme
+        if getattr(b, "font_family", None):
+            eff["theme"]["font_family"] = b.font_family
+    nav = getattr(layout, "mini_app_nav", None)
+    if nav is not None:
+        if getattr(nav, "desktop_kind", None):
+            eff["navigation"]["desktop_kind"] = nav.desktop_kind
+        if getattr(nav, "mobile_kind", None):
+            eff["navigation"]["mobile_kind"] = nav.mobile_kind
+    exp = getattr(layout, "experience", None)
+    if exp is not None:
+        eff["explicit"] = True
+        eff["overrides"] = exp.model_dump(exclude_none=True)
+        eff["schema_version"] = getattr(exp, "schema_version", 1) or 1
+        if getattr(exp, "preset", None):
+            eff["preset"] = exp.preset
+        for section in ("theme", "shell", "navigation", "feedback"):
+            sec = getattr(exp, section, None)
+            if sec is not None:
+                for key, value in sec.model_dump(exclude_none=True).items():
+                    eff[section][key] = value
+    return eff
+
+
 def render_app_shell(
     workboard: Workboard,
     identity: CallerIdentity,
@@ -3312,6 +3763,7 @@ def render_app_shell(
             "description": workboard.description,
         },
         "branding": layout.branding.model_dump(),
+        "experience": resolve_experience(layout),
         "media_max_kb": (
             media_cap_kb(db, workboard) if db is not None else WORKBOARD_MEDIA_MAX_KB
         ),

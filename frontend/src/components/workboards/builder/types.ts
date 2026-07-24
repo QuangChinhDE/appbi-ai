@@ -14,8 +14,11 @@ export interface ScreenAction {
   label: string;
   icon?: string | null;
   style?: 'primary' | 'secondary' | 'ghost' | 'danger';
+  action_type?: 'navigate' | 'open_related_records';
   go_to_screen?: string | null;
   carry?: string[];
+  relation_id?: string | null;
+  parent_screen_id?: string | null;
   confirm_message?: string | null;
   visible_for_roles?: string[];
 }
@@ -148,6 +151,7 @@ export interface RelatedRecordConfigSpec {
   show_existing?: boolean;
   allow_add_after_save?: boolean;
   keep_parent_context?: boolean;
+  delete_behavior?: 'restrict' | 'cascade' | 'unlink';
   display_columns?: string[];
   finish_screen_id?: string | null;
 }
@@ -517,6 +521,30 @@ export interface ScreenRlsRuleSpec {
   readonly_columns?: string[] | null;
 }
 
+export interface ScreenPresentationSpec {
+  content_width?: 'narrow' | 'standard' | 'wide';
+  page_padding?: number;
+  card_radius?: number;
+  shadow?: 'none' | 'small' | 'medium' | 'large';
+  motion?: 'instant' | 'standard' | 'expressive';
+  density?: 'compact' | 'cozy' | 'comfortable';
+  sticky_action_bar?: boolean;
+  form?: {
+    columns?: 1 | 2 | 3;
+    section_style?: 'plain' | 'divided' | 'surface';
+  };
+  table?: {
+    sticky_header?: boolean;
+    row_height?: 'compact' | 'cozy' | 'comfortable';
+    filter_position?: 'top' | 'sticky';
+    action_placement?: 'inline' | 'top_bar' | 'drawer';
+    mobile_rendering?: 'table' | 'cards' | 'list';
+  };
+  doc?: Record<string, unknown>;
+  dashboard?: Record<string, unknown>;
+  responsive?: Record<string, unknown>;
+}
+
 export interface ScreenSpec {
   id: string;
   kind: ScreenKind;
@@ -531,6 +559,8 @@ export interface ScreenSpec {
   table?: TableScreenSpecBuilt | null;
   doc?: DocScreenSpecBuilt | null;
   dashboard?: DashboardScreenSpecBuilt | null;
+  /** Presentation-only overrides; absent fields inherit app experience. */
+  presentation?: ScreenPresentationSpec | null;
   rls?: ScreenRlsRuleSpec[];
   rls_default?: ScreenRlsRuleSpec | null;
 }
@@ -626,10 +656,48 @@ export interface PrintTemplateSpec {
   accent_color?: string | null;
 }
 
+export interface ExperienceSpec {
+  schema_version?: number;
+  preset?: string | null;
+  theme?: {
+    primary?: string; success?: string; warning?: string; danger?: string; info?: string;
+    neutral?: string; background?: string; surface?: string; border?: string; text?: string;
+    font_family?: string;
+    heading_weight?: 'regular' | 'medium' | 'semibold' | 'bold';
+    body_weight?: 'regular' | 'medium';
+    type_scale?: number;
+    density?: 'compact' | 'cozy' | 'comfortable';
+    radius?: 'none' | 'small' | 'medium' | 'large' | 'full';
+    elevation?: 'none' | 'small' | 'medium' | 'large';
+    motion?: 'instant' | 'standard' | 'expressive';
+    mode?: 'light' | 'dark' | 'auto';
+    app_background?: string | null;
+  };
+  shell?: {
+    sticky_header?: boolean; show_search?: boolean; show_logo?: boolean;
+    content_width?: 'full_bleed' | 'constrained' | 'wide'; content_width_px?: number | null;
+    page_padding?: 'compact' | 'cozy' | 'comfortable'; footer_enabled?: boolean;
+    background?: 'light' | 'gray' | 'dark' | 'custom';
+  };
+  navigation?: {
+    desktop_kind?: 'sidebar' | 'top_tabs' | 'compact_rail';
+    mobile_kind?: 'bottom_nav' | 'drawer';
+    sidebar_width?: number; default_collapsed?: boolean; show_icons?: boolean;
+    show_labels?: boolean; active_style?: 'pill' | 'bar' | 'highlight'; breadcrumbs?: boolean;
+  };
+  feedback?: {
+    loading?: 'skeleton' | 'spinner'; empty_style?: 'illustration' | 'message' | 'minimal';
+    success?: 'toast' | 'inline' | 'banner'; confirmation?: 'modal' | 'drawer' | 'inline';
+    error_retry?: boolean; motion_ms?: number;
+  };
+}
+
 export interface MiniAppLayoutSpec {
   screens: ScreenSpec[];
   mini_app_nav: MiniAppNavSpec;
   branding?: BrandingSpec;
+  /** Experience Studio presentation contract (v1). Additive + cosmetic. */
+  experience?: ExperienceSpec;
   audit?: unknown;
   auto_number_columns?: AutoNumberConfigSpec[];
   /** Named workspaces (screen groups). Empty = flat nav (legacy). */
