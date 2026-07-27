@@ -75,6 +75,12 @@ services:
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-123456}
       ADMIN_NAME: ${ADMIN_NAME:-Admin}
       DATA_DIR: /app/.data
+      # Server-side PDF export: the API only accepts render jobs when a
+      # pdf-worker is actually running (compose profile "pdf"). Otherwise the
+      # frontend keeps using the in-browser exporter.
+      PDF_EXPORT_ENABLED: ${PDF_EXPORT_ENABLED:-false}
+      PDF_FILE_TTL_HOURS: ${PDF_FILE_TTL_HOURS:-48}
+      PDF_QUOTA_PER_LINK_HOUR: ${PDF_QUOTA_PER_LINK_HOUR:-20}
       DATASOURCE_ENCRYPTION_KEY: ${DATASOURCE_ENCRYPTION_KEY:-}
       GCP_SERVICE_ACCOUNT_JSON: ${GCP_SERVICE_ACCOUNT_JSON:-}
       GCP_SERVICE_ACCOUNT_EMAIL: ${GCP_SERVICE_ACCOUNT_EMAIL:-}
@@ -119,6 +125,46 @@ services:
       # Bind to 127.0.0.1 so the frontend is reachable only via nginx,
       # not directly from the public internet.
       - "127.0.0.1:${FRONTEND_PORT:-3000}:3000"
+    networks:
+      - appbi-net
+
+  # ── PDF render worker (server-side export engine) ──────────────────────
+  # Opt-in: `docker compose --profile pdf up -d pdf-worker`, with
+  # PDF_EXPORT_ENABLED=true in .env so the API starts accepting export jobs.
+  # Without it the app still exports — in the viewer's browser — so the base
+  # stack stays light (this image carries Chromium, ~600MB).
+  pdf-worker:
+    profiles: ["pdf"]
+    build:
+      context: .
+      dockerfile: backend/Dockerfile.pdf
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-}
+      DB_HOST: ${DB_HOST:-appbi-db}
+      DB_PORT: ${DB_PORT:-5432}
+      DB_USER: ${DB_USER:-appbi}
+      DB_PASSWORD: ${DB_PASSWORD:-appbi}
+      DB_NAME: ${DB_NAME:-appbi}
+      SECRET_KEY: ${SECRET_KEY:-change-this-in-production}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      DATA_DIR: /app/.data
+      DATASOURCE_ENCRYPTION_KEY: ${DATASOURCE_ENCRYPTION_KEY:-}
+      PDF_EXPORT_ENABLED: "true"
+      # Container-to-container URL of the report frontend.
+      PDF_RENDER_BASE_URL: ${PDF_RENDER_BASE_URL:-http://frontend:3000}
+      PDF_RENDER_PAGE_TIMEOUT: ${PDF_RENDER_PAGE_TIMEOUT:-120}
+      PDF_FILE_TTL_HOURS: ${PDF_FILE_TTL_HOURS:-48}
+    volumes:
+      # SAME volume as the backend: the worker writes the PDF, the API serves it.
+      - appbi_data:/app/.data
+    # Chromium needs more than Docker's default 64MB /dev/shm or it crashes on
+    # bigger reports.
+    shm_size: "1gb"
+    depends_on:
+      - backend
     networks:
       - appbi-net
 

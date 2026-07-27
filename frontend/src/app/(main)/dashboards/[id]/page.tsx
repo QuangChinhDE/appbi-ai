@@ -30,7 +30,7 @@ import { DashboardChartManagerModal } from '@/components/dashboards/DashboardCha
 import { DashboardHtmlImportModal } from '@/components/dashboards/DashboardHtmlImportModal';
 import { ConfirmDialog } from '@/components/common/ConfirmDialog';
 import { useDashboardPresence } from '@/hooks/use-dashboard-presence';
-import { ExportModeContext, openPdfPreviewTab } from '@/lib/export-mode';
+import { ExportModeContext, openPdfPreviewTab, safePdfFilename } from '@/lib/export-mode';
 import { ExportPdfDialog, type ExportPdfChoices } from '@/components/dashboards/ExportPdfDialog';
 import type { PdfProgress } from '@/lib/export-pdf';
 import { ShareDialog } from '@/components/common/ShareDialog';
@@ -2255,7 +2255,7 @@ export default function DashboardDetailPage() {
     const originalPageId = activePageId;
     try {
       const { exportDashboardPdf } = await import('@/lib/export-pdf');
-      const safeName = (dashboard.name || 'dashboard').replace(/[^a-zA-Z0-9_\-\s]/g, '').trim() || 'dashboard';
+      const safeName = safePdfFilename(dashboard.name, 'dashboard');
       const filtersSummary = summarizeAppliedFilters();
       const chosen = dashboardPages.filter((p) => choices.pageIds.includes(p.id));
       const result = await exportDashboardPdf({
@@ -2264,40 +2264,22 @@ export default function DashboardDetailPage() {
         title: dashboard.name || 'Dashboard',
         orientation: choices.orientation,
         format: choices.format,
+        layout: choices.layout,
         onProgress: setExportProgress,
         pages: chosen.map((p) => ({
           name: p.name,
           filtersSummary,
           getRoot: async () => {
             setCurrentPageId(p.id);
-            // Let the switched-to page's tiles mount + fire their fetches.
+            // Let the switched-to page's tiles mount + fire their own fetches
+            // (build-page tiles fetch individually — there's no central fetch to
+            // await). The exporter then runs the shared readiness protocol
+            // (waitForRenderReady) before capturing, so the duplicate poll that
+            // used to live here is gone: one implementation, one behaviour on
+            // all three surfaces.
             await new Promise<void>((resolve) => {
-              requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(resolve, 400)));
+              requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(resolve, 250)));
             });
-            // Build-page tiles each fetch their own data (no central fetch to
-            // await) AND recharts paints a frame AFTER data arrives — so capturing
-            // on "spinners gone" alone can snapshot a chart mid-mount (blank).
-            // Single readiness poll: wait until there are NO loading spinners AND
-            // the count of tiles holding a SIZED svg/canvas/table is stable across
-            // reads. Exits as soon as the page settles; capped so a failing tile
-            // can't hang the export.
-            let prevReady = -1;
-            let stable = 0;
-            const deadline = Date.now() + 14000;
-            while (Date.now() < deadline) {
-              const root = dashboardContentRef.current;
-              const spinners = root?.querySelectorAll('.animate-spin').length ?? 0;
-              let ready = 0;
-              root?.querySelectorAll('.react-grid-item').forEach((t) => {
-                const el = t.querySelector('svg, canvas, table') as HTMLElement | null;
-                if (el && el.getBoundingClientRect().height > 24) ready += 1;
-              });
-              if (spinners === 0 && ready > 0 && ready === prevReady) { stable += 1; if (stable >= 2) break; } else { stable = 0; }
-              prevReady = ready;
-              await new Promise((r) => setTimeout(r, 300));
-            }
-            // small final settle so the just-painted frame is fully drawn
-            await new Promise((r) => setTimeout(r, 300));
             return dashboardContentRef.current;
           },
         })),

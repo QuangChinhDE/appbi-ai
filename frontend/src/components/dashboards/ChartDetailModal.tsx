@@ -282,7 +282,10 @@ function inferSortLimitColumns(
 ): ColumnMetadata[] {
   if (
     !rows.length ||
-    TABLE_LIKE_CHART_TYPES.has(chartType) ||
+    // A flat TABLE supports sort + Top/Bottom N (its columns come from
+    // model.tableData); only MATRIX (pivot), single-number metrics, and PODIUM
+    // are excluded. Mirror of ExploreEditor.inferSortLimitColumns.
+    chartType === 'MATRIX' ||
     NO_DIMENSION_METRIC_CHART_TYPES.has(chartType) ||
     chartType === 'PODIUM'
   ) {
@@ -297,6 +300,9 @@ function inferSortLimitColumns(
   });
 
   const sortRows = (() => {
+    if (chartType === 'TABLE') {
+      return model.tableData;
+    }
     if (SCATTER_LIKE_CHART_TYPES.has(chartType)) {
       return model.scatterPoints;
     }

@@ -221,6 +221,29 @@ class Settings(BaseSettings):
     LIVE_QUERY_SHARED_CACHE_DB_PATH: str = ""           # defaults to DATA_DIR/live_query_cache.sqlite3
     LIVE_QUERY_SHARED_CACHE_MAX_SIZE: int = 4096        # global shared-cache row cap
 
+    # ── Server-side PDF export (pdf-worker container) ───────────────────
+    # The API accepts export jobs only when a worker can actually pick them up;
+    # otherwise the frontend falls back to the in-browser exporter, so a stack
+    # deployed WITHOUT the worker keeps working exactly as before.
+    PDF_EXPORT_ENABLED: bool = False
+    # Base URL the WORKER uses to reach the frontend (container-to-container).
+    PDF_RENDER_BASE_URL: str = "http://frontend:3000"
+    # Seconds the worker waits for one dashboard page to become render-ready.
+    PDF_RENDER_PAGE_TIMEOUT: int = 120
+    # Hard ceiling for one job (all pages) — protects the worker from a hung tile.
+    PDF_RENDER_JOB_TIMEOUT: int = 900
+    # A running job whose heartbeat is older than this is considered dead and is
+    # requeued (worker crash / container restart).
+    PDF_JOB_LEASE_SECONDS: int = 180
+    PDF_JOB_MAX_ATTEMPTS: int = 3
+    # Retention for rendered files + their job rows' download links.
+    PDF_FILE_TTL_HOURS: int = 48
+    # Quota: exports started per rolling hour, per public link and per user.
+    PDF_QUOTA_PER_LINK_HOUR: int = 20
+    PDF_QUOTA_PER_USER_HOUR: int = 60
+    # Global cap on jobs a single worker runs at once.
+    PDF_WORKER_CONCURRENCY: int = 1
+
     # ── SMTP / Email Notifications ──────────────────────────────────────
     # Used by: dataset quality scheduled runs -> email PDF report.
     # When SMTP_HOST is empty, the email delivery is skipped gracefully and

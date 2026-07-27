@@ -14,6 +14,30 @@ export function useExportMode(): boolean {
   return useContext(ExportModeContext);
 }
 
+/** Characters a filesystem genuinely refuses. Built with RegExp() from an
+ *  escaped string so this source file never carries a raw control byte. */
+const FILENAME_FORBIDDEN = new RegExp("[\\\\/:*?\"<>|]", 'g');
+
+/**
+ * Turn a report name into a download filename that is still READABLE.
+ *
+ * The old rule stripped everything outside `[a-zA-Z0-9_\-\s]`, which deletes
+ * Vietnamese diacritics character by character: "Olist – Phân tích Toàn diện"
+ * came down as "Olist  Phn tch Ton din.pdf" — a DA can't tell those files apart
+ * in a downloads folder. Every modern browser/OS accepts Unicode filenames, so
+ * keep the letters and only remove what a filesystem refuses, plus trailing
+ * dots/spaces (Windows). Falls back to `fallback` if nothing usable is left.
+ */
+export function safePdfFilename(name: string | null | undefined, fallback: string): string {
+  const cleaned = (name || '')
+    .replace(FILENAME_FORBIDDEN, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/[. ]+$/, '')
+    .slice(0, 120);
+  return cleaned || fallback;
+}
+
 /**
  * Open a blank tab for the PDF preview. MUST be called synchronously inside the
  * export click handler (before any `await`) — a PDF export runs for several

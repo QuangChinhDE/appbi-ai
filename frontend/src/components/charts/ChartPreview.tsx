@@ -886,14 +886,17 @@ export function ChartPreview({
 
   // Render Table
   if (chartType === ChartType.TABLE) {
+    // Apply Sort & Limit (Top/Bottom N) to the table rows so a flat "Top 10"
+    // table renders the capped, ordered set — parity with ExploreChart.
+    const limitedData = applyDataLimit(applySortRules(data, sortRules), dataLimit, dataLimitDir);
     // Phase-15.24: `data[0] ?? {}` guard against null rows from the BE.
-    const columns = data.length > 0 ? Object.keys(data[0] ?? {}) : [];
+    const columns = limitedData.length > 0 ? Object.keys(limitedData[0] ?? {}) : [];
     return (
       <div className="h-full flex flex-col">
         {ChartTitleEl}
         <div className="flex-1 min-h-0">
           <TableVisualization
-            data={data}
+            data={limitedData}
             columns={columns}
             maxRows={50}
             conditionalFormatting={style.tableEnableConditionalFormatting ? style.tableConditionalFormatting : undefined}

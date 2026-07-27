@@ -79,6 +79,10 @@ export function ReadonlyChartTile({
   useEffect(() => {
     if (forceVisible) {
       setHasBeenVisible(true);
+      // Report visibility too: the parent gates its chart-data fetch on the set
+      // of tiles that have reported in, so a force-visible tile that stayed
+      // silent rendered forever-empty on the print/export surface.
+      onVisible?.();
       return;
     }
     if (hasBeenVisible) return;
