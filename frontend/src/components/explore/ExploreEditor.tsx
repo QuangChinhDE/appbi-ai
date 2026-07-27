@@ -525,7 +525,10 @@ function inferSortLimitColumns(
 ): ColumnMetadata[] {
   if (
     !rows.length ||
-    TABLE_LIKE_CHART_TYPES.has(chartType) ||
+    // MATRIX (pivot) has no flat row list to sort/limit; single-number metrics
+    // and PODIUM likewise. A flat TABLE DOES support sort + Top/Bottom N, so it
+    // is intentionally NOT excluded here (its columns come from model.tableData).
+    chartType === 'MATRIX' ||
     NO_DIMENSION_METRIC_CHART_TYPES.has(chartType) ||
     chartType === 'PODIUM'
   ) {
@@ -540,6 +543,9 @@ function inferSortLimitColumns(
   });
 
   const sortRows = (() => {
+    if (chartType === 'TABLE') {
+      return model.tableData;
+    }
     if (SCATTER_LIKE_CHART_TYPES.has(chartType)) {
       return model.scatterPoints;
     }

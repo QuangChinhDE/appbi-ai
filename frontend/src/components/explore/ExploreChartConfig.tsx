@@ -3713,7 +3713,11 @@ export function ExploreChartConfig({
     setBenchmarkLines(benchmarkLines.map((l, idx) => (idx === i ? { ...l, ...patch } : l)));
   const removeBenchmarkLine = (i: number) =>
     setBenchmarkLines(benchmarkLines.filter((_, idx) => idx !== i));
-  const supportsDataSection = !isTableLike && !isNoDimensionMetric;
+  // Sort & Limit (Top/Bottom N) applies to a flat TABLE too — it's how a DA
+  // builds a "Top 10 users" table. Only MATRIX (a pivot) and single-number
+  // metrics (KPI/GAUGE/BULLET) have no meaningful row sort/limit. (Was gated on
+  // !isTableLike, which wrongly stripped the controls from every TABLE.)
+  const supportsDataSection = !isNoDimensionMetric && chartType !== 'MATRIX';
   const chartBindingTitle = queryMode === 'custom' ? t('explore.config.sqlColumnRoles') : t('explore.config.fieldRoles');
   const tableBindingTitle = isPivotEnabled ? t('explore.config.pivotLayout') : t('explore.config.visibleColumns');
   const tableRoleSectionHint = queryMode === 'custom'
@@ -3740,6 +3744,8 @@ export function ExploreChartConfig({
     return keywords.some((k) => k.toLowerCase().includes(formatSearchLower));
   }, [formatSearchActive, formatSearchLower]);
   const kpiSetupStep = isStyleOnly ? 'Step 1' : 'Step 3';
+  // Step badge for the TABLE-only Sort & Limit panel (after Table Structure).
+  const sortLimitSectionStep = isStyleOnly ? 'Step 1' : 'Step 3';
   const currentChartTypeMeta = useMemo(
     () => CHART_TYPE_GRID.find((item) => item.value === chartType) ?? DEFAULT_CHART_TYPE_META,
     [chartType]
@@ -4032,6 +4038,83 @@ export function ExploreChartConfig({
     }),
     [baseViewName, joinKeyRefs],
   );
+
+  // Sort & Limit (Top/Bottom N) editor — extracted so it can render in BOTH the
+  // non-table "Axes & Scale" format group AND the TABLE config area (a flat
+  // table needs Top N too). Guarded by supportsDataSection (TABLE + charts;
+  // never MATRIX/KPI/GAUGE/BULLET).
+  const sortLimitDisclosure = supportsDataSection ? (
+    <Disclosure title={t('explore.config.sortLimit')} hint={t('explore.config.sortLimitHint')}>
+      {/* Sort rules */}
+      <div className="space-y-2">
+        <div className="flex items-center justify-between">
+          <span className="text-xs font-semibold text-text-secondary">{t('explore.config.sortRules')}</span>
+          <button type="button"
+            onClick={() => {
+              if (sortLimitCols.length === 0) return;
+              updStyle({ chartSortRules: [...chartSortRules, { field: sortLimitCols[0].name, direction: 'asc' }] });
+            }}
+            disabled={sortLimitCols.length === 0}
+            className="text-xs text-brand hover:text-brand disabled:cursor-not-allowed disabled:text-text-quaternary">{t('explore.config.addRule')}</button>
+        </div>
+        {chartSortRules.length === 0 && sortLimitCols.length === 0 && (
+          <p className="text-[11px] text-text-quaternary italic">{t('explore.config.runQueryEnableSorting')}</p>
+        )}
+        {chartSortRules.map((rule, i) => (
+          <div key={i} className="flex items-center gap-1.5 rounded-md border border-[rgb(var(--border-line))] bg-surface-2 p-2">
+            <span className="text-[11px] text-text-quaternary w-4 text-center">{i + 1}</span>
+            <select value={rule.field}
+              onChange={e => updStyle({ chartSortRules: chartSortRules.map((r, ri) => ri === i ? { ...r, field: e.target.value } : r) })}
+              className="flex-1 px-1.5 py-1 text-xs border border-[rgb(var(--border-strong))] rounded-md bg-surface-1 min-w-0">
+              {sortLimitCols.map(c => <option key={c.name} value={c.name} title={c.name}>{colLabel(c)}</option>)}
+            </select>
+            <select value={rule.direction}
+              onChange={e => updStyle({ chartSortRules: chartSortRules.map((r, ri) => ri === i ? { ...r, direction: e.target.value as 'asc' | 'desc' } : r) })}
+              className="w-20 px-1.5 py-1 text-xs border border-[rgb(var(--border-strong))] rounded-md bg-surface-1">
+              <option value="asc">ASC</option>
+              <option value="desc">DESC</option>
+            </select>
+            <button type="button"
+              onClick={() => updStyle({ chartSortRules: chartSortRules.filter((_, ri) => ri !== i) })}
+              className="p-0.5 text-text-quaternary hover:text-danger flex-shrink-0">
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        ))}
+      </div>
+
+      {/* Limit (Top/Bottom N) — caps rows AFTER the sort rules; blank = all. */}
+      <div className="mt-3 space-y-1.5 border-t border-[rgb(var(--border-line))] pt-3">
+        <span className="text-xs font-semibold text-text-secondary">{t('explore.config.limit')}</span>
+        <div className="flex items-center gap-1.5">
+          <select
+            value={styleConfig.dataLimitDirection ?? 'top'}
+            onChange={e => updStyle({ dataLimitDirection: e.target.value as 'top' | 'bottom' })}
+            className="w-24 px-1.5 py-1 text-xs border border-[rgb(var(--border-strong))] rounded-md bg-surface-1">
+            <option value="top">{t('explore.config.top')}</option>
+            <option value="bottom">{t('explore.config.bottom')}</option>
+          </select>
+          <input
+            type="number"
+            min={1}
+            step={1}
+            inputMode="numeric"
+            placeholder={t('explore.config.allRows')}
+            value={styleConfig.dataLimit === undefined || styleConfig.dataLimit === '' ? '' : styleConfig.dataLimit}
+            onChange={e => {
+              const raw = e.target.value;
+              if (raw === '') { updStyle({ dataLimit: undefined }); return; }
+              const n = Math.max(1, Math.floor(Number(raw)));
+              updStyle({ dataLimit: Number.isFinite(n) ? n : undefined });
+            }}
+            className="flex-1 min-w-0 px-2 py-1 text-xs border border-[rgb(var(--border-strong))] rounded-md bg-surface-1"
+          />
+          <span className="text-[11px] text-text-quaternary">{t('explore.config.rows')}</span>
+        </div>
+        <p className="text-[10px] text-text-quaternary">{t('explore.config.limitHelp')}</p>
+      </div>
+    </Disclosure>
+  ) : null;
 
   return (
     <FieldPickerContext.Provider value={fieldPickerCtx}>
@@ -5556,6 +5639,14 @@ export function ExploreChartConfig({
           "Format" panel with 3 collapsible FormatGroups: Visual / Axes &
           Scale / Advanced. The "Most-used Settings" inner Disclosure was
           removed — its content lives directly under the Visual group. */}
+      {/* Sort & Limit for a flat TABLE — the Format pane below is gated to
+          non-tables (showQuickView), so tables get Top/Bottom N here. */}
+      {isTableLike && sortLimitDisclosure && (
+        <SectionPanel step={sortLimitSectionStep} title={t('explore.config.sortLimit')}>
+          {sortLimitDisclosure}
+        </SectionPanel>
+      )}
+
       {showQuickView && (
         <SectionPanel
           step={quickViewStep}
@@ -6733,83 +6824,8 @@ export function ExploreChartConfig({
         </Disclosure>
       )}
 
-      {/* Sort & Limit */}
-      {supportsDataSection && (
-        <Disclosure title={t('explore.config.sortLimit')} hint={t('explore.config.sortLimitHint')}>
-          {/* Sort rules */}
-          <div className="space-y-2">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-semibold text-text-secondary">{t('explore.config.sortRules')}</span>
-              <button type="button"
-                onClick={() => {
-                  if (sortLimitCols.length === 0) return;
-                  updStyle({ chartSortRules: [...chartSortRules, { field: sortLimitCols[0].name, direction: 'asc' }] });
-                }}
-                disabled={sortLimitCols.length === 0}
-                className="text-xs text-brand hover:text-brand disabled:cursor-not-allowed disabled:text-text-quaternary">{t('explore.config.addRule')}</button>
-            </div>
-            {chartSortRules.length === 0 && sortLimitCols.length === 0 && (
-              <p className="text-[11px] text-text-quaternary italic">{t('explore.config.runQueryEnableSorting')}</p>
-            )}
-            {chartSortRules.map((rule, i) => (
-              <div key={i} className="flex items-center gap-1.5 rounded-md border border-[rgb(var(--border-line))] bg-surface-2 p-2">
-                <span className="text-[11px] text-text-quaternary w-4 text-center">{i + 1}</span>
-                <select value={rule.field}
-                  onChange={e => updStyle({ chartSortRules: chartSortRules.map((r, ri) => ri === i ? { ...r, field: e.target.value } : r) })}
-                  className="flex-1 px-1.5 py-1 text-xs border border-[rgb(var(--border-strong))] rounded-md bg-surface-1 min-w-0">
-                  {sortLimitCols.map(c => <option key={c.name} value={c.name} title={c.name}>{colLabel(c)}</option>)}
-                </select>
-                <select value={rule.direction}
-                  onChange={e => updStyle({ chartSortRules: chartSortRules.map((r, ri) => ri === i ? { ...r, direction: e.target.value as 'asc' | 'desc' } : r) })}
-                  className="w-20 px-1.5 py-1 text-xs border border-[rgb(var(--border-strong))] rounded-md bg-surface-1">
-                  <option value="asc">ASC</option>
-                  <option value="desc">DESC</option>
-                </select>
-                <button type="button"
-                  onClick={() => updStyle({ chartSortRules: chartSortRules.filter((_, ri) => ri !== i) })}
-                  className="p-0.5 text-text-quaternary hover:text-danger flex-shrink-0">
-                  <X className="w-3.5 h-3.5" />
-                </button>
-              </div>
-            ))}
-          </div>
-
-          {/* BUG-012 — Limit (Top/Bottom N). Caps how many rows the chart
-              renders AFTER the sort rules above are applied. Blank = no cap
-              (every row renders). The render path reads styleConfig.dataLimit
-              / dataLimitDirection via applyDataLimit in ExploreChart and
-              ChartPreview. */}
-          <div className="mt-3 space-y-1.5 border-t border-[rgb(var(--border-line))] pt-3">
-            <span className="text-xs font-semibold text-text-secondary">{t('explore.config.limit')}</span>
-            <div className="flex items-center gap-1.5">
-              <select
-                value={styleConfig.dataLimitDirection ?? 'top'}
-                onChange={e => updStyle({ dataLimitDirection: e.target.value as 'top' | 'bottom' })}
-                className="w-24 px-1.5 py-1 text-xs border border-[rgb(var(--border-strong))] rounded-md bg-surface-1">
-                <option value="top">{t('explore.config.top')}</option>
-                <option value="bottom">{t('explore.config.bottom')}</option>
-              </select>
-              <input
-                type="number"
-                min={1}
-                step={1}
-                inputMode="numeric"
-                placeholder={t('explore.config.allRows')}
-                value={styleConfig.dataLimit === undefined || styleConfig.dataLimit === '' ? '' : styleConfig.dataLimit}
-                onChange={e => {
-                  const raw = e.target.value;
-                  if (raw === '') { updStyle({ dataLimit: undefined }); return; }
-                  const n = Math.max(1, Math.floor(Number(raw)));
-                  updStyle({ dataLimit: Number.isFinite(n) ? n : undefined });
-                }}
-                className="flex-1 min-w-0 px-2 py-1 text-xs border border-[rgb(var(--border-strong))] rounded-md bg-surface-1"
-              />
-              <span className="text-[11px] text-text-quaternary">{t('explore.config.rows')}</span>
-            </div>
-            <p className="text-[10px] text-text-quaternary">{t('explore.config.limitHelp')}</p>
-          </div>
-        </Disclosure>
-      )}
+      {/* Sort & Limit — shared editor (also rendered in the TABLE panel) */}
+      {sortLimitDisclosure}
           </FormatGroup>
         )}
         </SectionPanel>
