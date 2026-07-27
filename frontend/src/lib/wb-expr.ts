@@ -11,6 +11,7 @@
  *   Functions   IF(cond, then, else)  COALESCE(a,b,...)  ROUND(x[,n])  ABS(x)
  *               CEIL(x)  FLOOR(x)  GREATEST(a,b,...)  LEAST(a,b,...)
  *               NULLIF(a,b)  IN(value, a, b, ...)  NOT(expr)
+ *               SUM_SPLIT(value[, delimiter])  — sum "20;31;25" -> 76
  *
  * Failures return ``null`` so a malformed expression in the layout never
  * breaks the form — the rule simply doesn't fire.
@@ -178,14 +179,74 @@ class Parser {
   }
 }
 
+/**
+ * Parse a numeric string honouring the vi-VN format (``.`` = thousands,
+ * ``,`` = decimal). Deterministic locale rule — mirrors
+ * ``number_parser.parse_locale_number`` on the backend so a preview total and
+ * the stored total never disagree. Returns ``null`` for non-numbers.
+ */
+export function parseLocaleNumber(text: string): number | null {
+  let s = text.trim();
+  if (!s) return null;
+  const neg = s.startsWith('(') && s.endsWith(')');
+  if (neg) s = s.slice(1, -1).trim();
+  s = s.replace(/ /g, '').replace(/ /g, '').replace(/ /g, ''); // NBSP + thin spaces
+  if (!s) return null;
+  if (s.includes(',')) {
+    s = s.replace(/\./g, '').replace(/,/g, '.');
+  } else if (s.includes('.')) {
+    // A lone dot is thousands grouping ONLY for valid vi-VN groups
+    // ("1.000.000"->1000000, "1.234"->1234); otherwise it is a decimal
+    // point ("98.0"->98.0) and must NOT be inflated ×10.
+    const parts = s.split('.');
+    const isGrouping =
+      parts.length >= 2 &&
+      parts.every((p) => /^\d+$/.test(p)) &&
+      parts[0].length >= 1 &&
+      parts[0].length <= 3 &&
+      parts.slice(1).every((p) => p.length === 3);
+    if (isGrouping) s = parts.join('');
+  }
+  const val = Number(s);
+  if (Number.isNaN(val) || !Number.isFinite(val)) return null;
+  return neg ? -val : val;
+}
+
 function coerceNumber(v: unknown): number | null {
   if (v === null || v === undefined || typeof v === 'boolean') return null;
   if (typeof v === 'number') return Number.isFinite(v) ? v : null;
-  if (typeof v === 'string') {
-    const n = parseFloat(v);
-    return Number.isNaN(n) ? null : n;
-  }
+  if (typeof v === 'string') return parseLocaleNumber(v);
   return null;
+}
+
+/**
+ * Sum a delimited numeric string ("20;31;25" -> 76). Generic — knows nothing
+ * about weight/qty. Empty segments skipped; null/"" -> 0. A non-numeric
+ * segment throws in ``strict`` mode (persisted computed fields) and returns
+ * ``null`` in safe mode (conditional-UI rules). Mirrors ``number_parser.sum_split``.
+ */
+function sumSplit(value: unknown, delimiter: string, strict: boolean): number | null {
+  if (value === null || value === undefined) return 0;
+  if (typeof value === 'boolean') {
+    if (strict) throw new Error(`SUM_SPLIT: unsupported value ${value}`);
+    return null;
+  }
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+  const s = String(value);
+  if (!s.trim()) return 0;
+  const delim = typeof delimiter === 'string' && delimiter !== '' ? delimiter : ';';
+  let total = 0;
+  for (const part of s.split(delim)) {
+    const seg = part.trim();
+    if (!seg) continue;
+    const n = parseLocaleNumber(seg);
+    if (n === null) {
+      if (strict) throw new Error(`SUM_SPLIT: non-numeric segment ${JSON.stringify(seg)}`);
+      return null;
+    }
+    total += n;
+  }
+  return total;
 }
 
 function truthy(v: unknown): boolean {
@@ -344,6 +405,13 @@ function evalNode(node: Node, ctx: EvalContext): unknown {
         const b = coerceNumber(args[1]);
         return a === null || b === null ? null : a ** b;
       }
+      if (N === 'SUM_SPLIT') {
+        const delim =
+          args.length > 1 && args[1] !== null && args[1] !== undefined && String(args[1]) !== ''
+            ? String(args[1])
+            : ';';
+        return sumSplit(args[0], delim, Boolean((ctx as { __strict__?: boolean }).__strict__));
+      }
       // Date parts (ISO string)
       if (N === 'YEAR' || N === 'MONTH' || N === 'DAY') {
         const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(args[0] == null ? '' : String(args[0]));
@@ -362,6 +430,31 @@ export function evaluateExpr(expression: string | null | undefined, ctx: EvalCon
     return evalNode(new Parser(tokens).parse(), ctx);
   } catch {
     return null;
+  }
+}
+
+export interface DetailedResult {
+  value: unknown;
+  error?: { code: string; message: string };
+}
+
+/**
+ * Strict evaluation for computed fields that persist — mirrors
+ * ``expr_eval.evaluate_detailed``. Runs with ``__strict__`` so SUM_SPLIT throws
+ * on a non-numeric segment; returns ``{value, error?}`` rather than swallowing
+ * to null, so a preview can warn before the server rejects the save.
+ */
+export function evaluateExprDetailed(
+  expression: string | null | undefined,
+  ctx: EvalContext,
+): DetailedResult {
+  if (!expression) return { value: null };
+  const strictCtx = { ...ctx, __strict__: true } as EvalContext;
+  try {
+    const tokens = tokenize(expression);
+    return { value: evalNode(new Parser(tokens).parse(), strictCtx) };
+  } catch (e) {
+    return { value: null, error: { code: 'expr_eval_error', message: String((e as Error)?.message ?? e) } };
   }
 }
 

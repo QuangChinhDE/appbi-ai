@@ -33,6 +33,7 @@ import type {
   ThemeBackgroundSpec,
   ThemeMode,
   ThemeFont,
+  AutoNumberConfigSpec,
 } from './types';
 import { INPUT, Lbl } from './ScreenEditor';
 import { GRADIENT_PRESETS } from '@/lib/wb-theme';
@@ -691,97 +692,232 @@ export function AutoNumberSection({
   onChange: (next: MiniAppLayoutSpec) => void;
 }) {
   const configs = layout.auto_number_columns || [];
+  const [expanded, setExpanded] = useState<Set<number>>(new Set());
   const update = (next: typeof configs) =>
     onChange({ ...layout, auto_number_columns: next });
+  const patch = (idx: number, changes: Partial<AutoNumberConfigSpec>) => {
+    const next = [...configs];
+    next[idx] = { ...next[idx], ...changes };
+    update(next);
+  };
+  const columnsFor = (tableId?: number | null) =>
+    tableId ? tables.find((t) => t.id === tableId)?.columns || [] : [];
+  const toggleExpanded = (idx: number) => {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(idx)) next.delete(idx);
+      else next.add(idx);
+      return next;
+    });
+  };
   return (
     <section>
       <h3 className="mb-2 text-tiny font-emphasis uppercase tracking-wider text-text-quaternary">
-        Auto-number columns
+        Cột mã tự động
       </h3>
       <p className="mb-3 text-caption text-text-tertiary">
-        Server fills these columns on insert when the user leaves them blank.
-        Use placeholders like <code>{'{YYYY}{MM}{DD}'}</code> and{' '}
-        <code>{'{N:4}'}</code> in the pattern.
+        Máy chủ tự điền các cột này khi người dùng để trống. Dùng placeholder như{' '}
+        <code>{'{YYYY}{MM}{DD}'}</code> và <code>{'{N:4}'}</code> trong mẫu.
+        Mở <span className="font-medium">Phạm vi &amp; chính sách</span> để đánh số
+        riêng theo từng nhóm (vd: mã chuyến theo ngày + xe).
       </p>
       <div className="space-y-2">
-        {configs.map((cfg, idx) => (
-          <div
-            key={idx}
-            className="grid grid-cols-12 gap-2 rounded-md border border-[rgb(var(--border-line))] bg-surface-0 p-2"
-          >
-            <select
-              value={cfg.table_id || ''}
-              onChange={(e) => {
-                const next = [...configs];
-                const tableId = Number(e.target.value) || null;
-                next[idx] = { ...cfg, table_id: tableId };
-                update(next);
-              }}
-              className={`${INPUT} col-span-3`}
-              title="Scope this sequence to one table, or keep legacy all-table behaviour."
+        {configs.map((cfg, idx) => {
+          const cols = columnsFor(cfg.table_id);
+          const isOpen = expanded.has(idx);
+          const scopeCols = cfg.scope_columns || [];
+          return (
+            <div
+              key={idx}
+              className="rounded-md border border-[rgb(var(--border-line))] bg-surface-0 p-2"
             >
-              <option value="">All tables (legacy)</option>
-              {tables.map((table) => (
-                <option key={table.id} value={table.id}>
-                  {table.display_name}
-                </option>
-              ))}
-            </select>
-            <input
-              value={cfg.column}
-              onChange={(e) => {
-                const next = [...configs];
-                next[idx] = { ...cfg, column: e.target.value };
-                update(next);
-              }}
-              placeholder="column"
-              className={`${INPUT} col-span-3`}
-              list={`auto-number-columns-${idx}`}
-            />
-            {cfg.table_id ? (
-              <datalist id={`auto-number-columns-${idx}`}>
-                {(tables.find((table) => table.id === cfg.table_id)?.columns || []).map((column) => (
-                  <option key={column.name} value={column.name} />
-                ))}
-              </datalist>
-            ) : null}
-            <input
-              value={cfg.pattern}
-              onChange={(e) => {
-                const next = [...configs];
-                next[idx] = { ...cfg, pattern: e.target.value };
-                update(next);
-              }}
-              placeholder="PO-{YYYY}{MM}{DD}-{N:4}"
-              className={`${INPUT} col-span-3`}
-            />
-            <select
-              value={cfg.reset || 'never'}
-              onChange={(e) => {
-                const next = [...configs];
-                next[idx] = {
-                  ...cfg,
-                  reset: e.target.value as 'never' | 'daily' | 'monthly' | 'yearly',
-                };
-                update(next);
-              }}
-              className={`${INPUT} col-span-2`}
-            >
-              <option value="never">No reset</option>
-              <option value="daily">Reset daily</option>
-              <option value="monthly">Reset monthly</option>
-              <option value="yearly">Reset yearly</option>
-            </select>
-            <button
-              type="button"
-              onClick={() => update(configs.filter((_, i) => i !== idx))}
-              className="col-span-1 rounded-md text-caption text-status-danger hover:bg-status-danger/10"
-              title="Remove"
-            >
-              ×
-            </button>
-          </div>
-        ))}
+              <div className="grid grid-cols-12 gap-2">
+                <select
+                  value={cfg.table_id || ''}
+                  onChange={(e) => patch(idx, { table_id: Number(e.target.value) || null })}
+                  className={`${INPUT} col-span-3`}
+                  title="Gắn dãy số vào một bảng, hoặc giữ hành vi cũ (mọi bảng)."
+                >
+                  <option value="">Mọi bảng (cũ)</option>
+                  {tables.map((table) => (
+                    <option key={table.id} value={table.id}>
+                      {table.display_name}
+                    </option>
+                  ))}
+                </select>
+                <input
+                  value={cfg.column}
+                  onChange={(e) => patch(idx, { column: e.target.value })}
+                  placeholder="cột"
+                  className={`${INPUT} col-span-3`}
+                  list={`auto-number-columns-${idx}`}
+                />
+                {cfg.table_id ? (
+                  <datalist id={`auto-number-columns-${idx}`}>
+                    {cols.map((column) => (
+                      <option key={column.name} value={column.name} />
+                    ))}
+                  </datalist>
+                ) : null}
+                <input
+                  value={cfg.pattern}
+                  onChange={(e) => patch(idx, { pattern: e.target.value })}
+                  placeholder="PO-{YYYY}{MM}{DD}-{N:4}"
+                  className={`${INPUT} col-span-3`}
+                />
+                <select
+                  value={cfg.reset || 'never'}
+                  onChange={(e) =>
+                    patch(idx, {
+                      reset: e.target.value as 'never' | 'daily' | 'monthly' | 'yearly',
+                    })
+                  }
+                  className={`${INPUT} col-span-2`}
+                >
+                  <option value="never">Không reset</option>
+                  <option value="daily">Reset theo ngày</option>
+                  <option value="monthly">Reset theo tháng</option>
+                  <option value="yearly">Reset theo năm</option>
+                </select>
+                <button
+                  type="button"
+                  onClick={() => update(configs.filter((_, i) => i !== idx))}
+                  className="col-span-1 rounded-md text-caption text-status-danger hover:bg-status-danger/10"
+                  title="Xoá"
+                >
+                  ×
+                </button>
+              </div>
+              <div className="mt-1.5 flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => toggleExpanded(idx)}
+                  className="text-tiny font-medium text-brand-600 hover:underline"
+                >
+                  {isOpen ? '▾' : '▸'} Phạm vi &amp; chính sách
+                  {scopeCols.length > 0 ? (
+                    <span className="ml-1 rounded bg-brand-50 px-1 text-brand-700">
+                      {scopeCols.length} cột phạm vi
+                    </span>
+                  ) : null}
+                </button>
+              </div>
+              {isOpen ? (
+                <div className="mt-2 space-y-3 rounded-md border border-dashed border-[rgb(var(--border-line))] bg-surface-1 p-3">
+                  {/* Scope columns */}
+                  <div>
+                    <div className="mb-1 text-tiny font-medium text-text-secondary">
+                      Đánh số riêng theo (cột phạm vi)
+                    </div>
+                    {cols.length > 0 ? (
+                      <div className="flex flex-wrap gap-1.5">
+                        {cols.map((column) => {
+                          const on = scopeCols.includes(column.name);
+                          return (
+                            <button
+                              key={column.name}
+                              type="button"
+                              onClick={() =>
+                                patch(idx, {
+                                  scope_columns: on
+                                    ? scopeCols.filter((c) => c !== column.name)
+                                    : [...scopeCols, column.name],
+                                })
+                              }
+                              className={`rounded-full border px-2 py-0.5 text-tiny ${
+                                on
+                                  ? 'border-brand-500 bg-brand-50 text-brand-700'
+                                  : 'border-[rgb(var(--border-line))] text-text-secondary hover:bg-surface-2'
+                              }`}
+                            >
+                              {column.name}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      <p className="text-tiny text-text-tertiary">
+                        Chọn một bảng cụ thể ở trên để hiện danh sách cột.
+                      </p>
+                    )}
+                    <p className="mt-1 text-tiny text-text-tertiary">
+                      Bộ đếm khởi động lại độc lập cho mỗi tổ hợp giá trị. Vd: (ngày, xe) →
+                      mỗi xe trong ngày đếm 1, 2, 3…
+                    </p>
+                  </div>
+                  {/* Date column */}
+                  <label className="block">
+                    <div className="mb-1 text-tiny font-medium text-text-secondary">
+                      Cột ngày quyết định kỳ (tuỳ chọn)
+                    </div>
+                    <select
+                      value={cfg.date_column || ''}
+                      onChange={(e) => patch(idx, { date_column: e.target.value || null })}
+                      className={INPUT}
+                    >
+                      <option value="">Theo thời điểm nhập</option>
+                      {cols.map((column) => (
+                        <option key={column.name} value={column.name}>
+                          {column.name}
+                        </option>
+                      ))}
+                    </select>
+                    <p className="mt-1 text-tiny text-text-tertiary">
+                      Kỳ reset và các phần ngày trong mẫu ({'{YYYY}/{MM}/{DD}'}) lấy theo cột
+                      này thay vì lúc bấm lưu.
+                    </p>
+                  </label>
+                  {/* Policies */}
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                    <label className="flex items-center gap-2 text-tiny text-text-secondary">
+                      <input
+                        type="checkbox"
+                        checked={cfg.allow_manual_override !== false}
+                        onChange={(e) => patch(idx, { allow_manual_override: e.target.checked })}
+                        className="h-3.5 w-3.5"
+                      />
+                      Cho phép nhập tay đè lên
+                    </label>
+                    <label className="block">
+                      <div className="mb-1 text-tiny font-medium text-text-secondary">
+                        Khi thiếu cột phạm vi
+                      </div>
+                      <select
+                        value={cfg.missing_scope_behavior || 'empty'}
+                        onChange={(e) =>
+                          patch(idx, {
+                            missing_scope_behavior: e.target.value as 'empty' | 'error',
+                          })
+                        }
+                        className={INPUT}
+                      >
+                        <option value="empty">Để trống (bỏ qua)</option>
+                        <option value="error">Báo lỗi (chặn lưu)</option>
+                      </select>
+                    </label>
+                    <label className="block">
+                      <div className="mb-1 text-tiny font-medium text-text-secondary">
+                        Khi cấp số lỗi
+                      </div>
+                      <select
+                        value={cfg.on_error || 'leave_blank'}
+                        onChange={(e) =>
+                          patch(idx, {
+                            on_error: e.target.value as 'leave_blank' | 'block',
+                          })
+                        }
+                        className={INPUT}
+                      >
+                        <option value="leave_blank">Để trống, vẫn lưu</option>
+                        <option value="block">Chặn lưu, báo lỗi</option>
+                      </select>
+                    </label>
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          );
+        })}
         <button
           type="button"
           onClick={() =>
@@ -792,7 +928,7 @@ export function AutoNumberSection({
           }
           className="rounded-md border border-dashed border-[rgb(var(--border-line))] px-3 py-1.5 text-caption text-text-secondary hover:bg-surface-2"
         >
-          + Thêm cột auto-number
+          + Thêm cột mã tự động
         </button>
       </div>
     </section>

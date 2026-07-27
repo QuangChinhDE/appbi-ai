@@ -2268,6 +2268,53 @@ class AutoNumberConfig(BaseModel):
     start_at: int = Field(default=1, ge=0)
     """First sequence number issued. Bumped by the runtime on each insert."""
 
+    # ── Scoped sequences (P0) ────────────────────────────────────────────────
+    # A "scope" restarts the counter independently per distinct combination of
+    # the listed columns. Example: mã chuyến scoped by (ngày, xe) → the same
+    # date+vehicle counts 1,2,3…; a different vehicle on that date starts at 1
+    # again. Empty ``scope_columns`` keeps the legacy single global counter, so
+    # existing rules are byte-for-byte unchanged.
+    scope_columns: List[str] = Field(
+        default_factory=_builtins.list,
+        description=(
+            "Columns whose distinct combination gets its own counter. Empty = "
+            "one counter for the whole (reset-period) bucket (legacy behaviour)."
+        ),
+    )
+    date_column: Optional[str] = Field(
+        default=None,
+        description=(
+            "When set, the reset period ({YYYY}/{MM}/{DD} and daily/monthly/"
+            "yearly reset) is derived from THIS row column instead of the insert "
+            "wall-clock. Lets 'chuyến của ngày giao' key off the trip date the "
+            "user entered, not when they pressed save."
+        ),
+    )
+    allow_manual_override: bool = Field(
+        default=True,
+        description=(
+            "When True, an insert that already carries a non-blank value for "
+            "``column`` keeps it (no counter consumed). When False, the server "
+            "always overwrites with the generated value."
+        ),
+    )
+    missing_scope_behavior: Literal["empty", "error"] = Field(
+        default="empty",
+        description=(
+            "What to do when a required scope/date column is blank on insert. "
+            "'empty' = leave the auto-number blank (skip generation, no counter "
+            "consumed); 'error' = reject the insert with 422."
+        ),
+    )
+    on_error: Literal["leave_blank", "block"] = Field(
+        default="leave_blank",
+        description=(
+            "Fallback when the counter cannot be claimed (e.g. DB contention "
+            "after retries). 'leave_blank' lets the row save without a number; "
+            "'block' surfaces the failure as an error."
+        ),
+    )
+
     model_config = ConfigDict(extra="forbid")
 
 

@@ -2061,6 +2061,12 @@ function FieldInspector({
                 className={INPUT}
                 placeholder="[san_luong] * [drc] / 100"
               />
+              <p className="mt-1 text-tiny text-text-tertiary">
+                Máy chủ tính lại giá trị này (không tin số do trình duyệt gửi lên).
+                Dùng <code>SUM_SPLIT([cot])</code> để cộng chuỗi ngăn cách dấu chấm
+                phẩy — vd <code>&quot;20;31;25&quot;</code> → 76. Đổi ký tự ngăn cách:{' '}
+                <code>SUM_SPLIT([cot], &quot;|&quot;)</code>.
+              </p>
             </Lbl>
           )}
           {(field.widget === 'computed' || field.widget === 'number') && (
