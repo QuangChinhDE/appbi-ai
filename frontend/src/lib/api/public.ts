@@ -13,6 +13,19 @@ import axios from 'axios';
 import type { Dashboard } from '@/types/api';
 import type { BaseFilter } from '@/lib/filters';
 
+/** One server-side render job as the polling endpoint returns it. */
+export interface PublicExportJob {
+  id: string;
+  status: 'queued' | 'running' | 'succeeded' | 'partial' | 'failed' | 'cancelled';
+  progress: number;
+  message: string | null;
+  warnings: Array<{ page: string; chart: string; reason: string }>;
+  page_count: number | null;
+  file_size: number | null;
+  error: string | null;
+  download_token?: string;
+}
+
 // NEXT_PUBLIC_API_URL is baked as '/api/v1' (relative) so it works on any domain.
 // Next.js rewrites or nginx proxy the requests to the backend.
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? '/api/v1';
@@ -91,6 +104,62 @@ export const publicDashboardApi = {
     );
     return res.data;
   },
+
+  // ── Server-side PDF export (job API) ──────────────────────────────────
+  // The browser asks the server to render the report, then polls. Falls back to
+  // the in-browser exporter when `server_engine` is false (no worker deployed).
+
+  getExportCapabilities: async (
+    token: string,
+    sessionToken?: string,
+  ): Promise<{ server_engine: boolean; max_pages_per_hour: number }> => {
+    const headers = sessionToken ? { 'X-Public-Session': sessionToken } : {};
+    const res = await publicClient.get(`/public/dashboards/${token}/exports/capabilities`, { headers });
+    return res.data;
+  },
+
+  createExportJob: async (
+    token: string,
+    sessionToken: string | undefined,
+    body: {
+      pages?: string[];
+      orientation?: string;
+      page_format?: string;
+      layout?: string;
+      filters?: BaseFilter[];
+      session?: string;
+    },
+  ): Promise<PublicExportJob> => {
+    const headers = sessionToken ? { 'X-Public-Session': sessionToken } : {};
+    const res = await publicClient.post(`/public/dashboards/${token}/exports`, body, { headers });
+    return res.data;
+  },
+
+  getExportJob: async (
+    token: string,
+    jobId: string,
+    sessionToken?: string,
+  ): Promise<PublicExportJob> => {
+    const headers = sessionToken ? { 'X-Public-Session': sessionToken } : {};
+    const res = await publicClient.get(`/public/dashboards/${token}/exports/${jobId}`, { headers });
+    return res.data;
+  },
+
+  cancelExportJob: async (
+    token: string,
+    jobId: string,
+    sessionToken?: string,
+  ): Promise<PublicExportJob> => {
+    const headers = sessionToken ? { 'X-Public-Session': sessionToken } : {};
+    const res = await publicClient.post(
+      `/public/dashboards/${token}/exports/${jobId}/cancel`, {}, { headers },
+    );
+    return res.data;
+  },
+
+  /** Absolute URL of the finished file (secret-bearing, expires with the job). */
+  exportDownloadUrl: (token: string, jobId: string, downloadToken: string): string =>
+    `${API_BASE}/public/dashboards/${token}/exports/${jobId}/download?dl=${encodeURIComponent(downloadToken)}`,
 
   getFilterDistinctValues: async (
     token: string,

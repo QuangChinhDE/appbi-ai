@@ -20,8 +20,9 @@ import { DashboardWidget } from '@/components/dashboards/DashboardWidget';
 import { DashboardThemeProvider, getDashboardGridMargin } from '@/components/dashboards/DashboardThemeProvider';
 import { ReadonlyChartTile } from '@/components/dashboards/ReadonlyChartTile';
 import { ExportPdfDialog, type ExportPdfChoices } from '@/components/dashboards/ExportPdfDialog';
-import type { PdfProgress } from '@/lib/export-pdf';
-import { ExportModeContext, openPdfPreviewTab } from '@/lib/export-mode';
+import type { PdfExportWarning, PdfProgress } from '@/lib/export-pdf';
+import { ExportModeContext, openPdfPreviewTab, safePdfFilename } from '@/lib/export-mode';
+import { parsePrintRenderOptions, type PrintRenderOptions } from '@/lib/print-render';
 import { toast } from '@/lib/toast';
 import { DashboardFilterBar } from '@/components/dashboards/DashboardFilterBar';
 import { SlicerCluster } from '@/components/dashboards/SlicerCluster';
@@ -46,6 +47,7 @@ import { applyScopeBound, getColumnKey, getDistinctValueFilterContext, getFilter
 import { usePublicFilterDistinctValues } from '@/hooks/use-public-filter-distinct-values';
 import { buildPublicLinkTheme } from '@/lib/public-link-appearance';
 import { buildPublicDashboardFilterRuntime } from '@/lib/public-dashboard-runtime';
+import { mergeSeedWithViewerSelections, resolvePublicPageFilterContext } from '@/lib/public-page-filters';
 import type { ChartDataResponse, Dashboard, DashboardChart } from '@/types/api';
 
 // Phase-B5 — COARSE-breakpoint responsive grid for the public report.
@@ -237,7 +239,37 @@ function getErrorMessage(error: any): string {
  * public chart-data endpoint allows 300 req/min, so 8 concurrent stays well
  * within budget even on a 20-tile dashboard with filter re-fetches.
  */
+/** Group dashboard tiles into their authored rows (same `y`), left to right. */
+function groupTilesIntoRows(charts: DashboardChart[]): DashboardChart[][] {
+  const sorted = [...charts].sort((a, b) => {
+    const ay = a.layout?.y ?? 0;
+    const by = b.layout?.y ?? 0;
+    if (ay !== by) return ay - by;
+    return (a.layout?.x ?? 0) - (b.layout?.x ?? 0);
+  });
+  const rows: DashboardChart[][] = [];
+  let currentY: number | null = null;
+  for (const chart of sorted) {
+    const y = chart.layout?.y ?? 0;
+    if (currentY === null || y !== currentY) {
+      rows.push([chart]);
+      currentY = y;
+    } else {
+      rows[rows.length - 1].push(chart);
+    }
+  }
+  return rows;
+}
+
 const CHART_FETCH_CONCURRENCY = 8;
+// PDF export retries a chart that failed to load before giving up and listing it
+// as missing in the report. Warehouse hiccups (BQ rate limit, a Sheets quota
+// blip) are transient; a one-shot fetch turned them into silently empty tiles.
+const EXPORT_FETCH_ATTEMPTS = 3;
+// Server-render polling: 1.2s is responsive without hammering the API, and a
+// 15-minute ceiling is well past the worst dashboard we have seen render.
+const SERVER_EXPORT_POLL_MS = 1200;
+const SERVER_EXPORT_TIMEOUT_MS = 15 * 60 * 1000;
 
 async function runWithConcurrency<T, R>(
   items: T[],
@@ -275,6 +307,13 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
   const [snapshotStale, setSnapshotStale] = useState(false);
   const [chartData, setChartData] = useState<Record<number, ChartDataResponse>>({});
   const [chartErrors, setChartErrors] = useState<Record<number, string>>({});
+  // Mirrors of the two maps above. PDF export walks pages in a loop and must see
+  // what the PREVIOUS iteration just fetched; a closure snapshot would report
+  // every chart as "still missing" and refetch the whole report page by page.
+  const chartDataRef = useRef<Record<number, ChartDataResponse>>({});
+  const chartErrorsRef = useRef<Record<number, string>>({});
+  useEffect(() => { chartDataRef.current = chartData; }, [chartData]);
+  useEffect(() => { chartErrorsRef.current = chartErrors; }, [chartErrors]);
   // #2 — per-chart viewer date-hierarchy grain (BE re-query). State drives the
   // tile's active highlight; the ref is read inside the fetch callback so a
   // grain change doesn't have to be a useCallback dependency.
@@ -330,8 +369,25 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
   const [authError, setAuthError] = useState<string | null>(null);
   const [authSubmitting, setAuthSubmitting] = useState(false);
   const [isExportingPdf, setIsExportingPdf] = useState(false);
+  // PRINT MODE — the surface the server-side render worker loads
+  // (`/d/<token>?print=1&page=<id>&filters=<base64>`). It strips every piece of
+  // chrome (masthead, tabs, slicer bar, AI bot, export button), forces export
+  // mode so tables render all rows, pins the requested page + viewer filters,
+  // and finally sets `window.__APPBI_PDF_READY__` so Chromium knows the page is
+  // safe to print. Rendering the REAL view (not a parallel "print component")
+  // is deliberate: the printed report can never drift from what the viewer saw,
+  // and the page-scope filter rules have exactly one implementation.
+  const [printOptions, setPrintOptions] = useState<PrintRenderOptions | null>(null);
+  const printMode = printOptions !== null;
+  const printFiltersAppliedRef = useRef(false);
+  const printReadyRef = useRef(false);
   const [isExportDialogOpen, setIsExportDialogOpen] = useState(false);
   const [exportProgress, setExportProgress] = useState<PdfProgress | null>(null);
+  // Is a render worker deployed? Probed once; false → the in-browser exporter
+  // stays the engine, so a stack without the pdf-worker container behaves
+  // exactly as it did before the server engine existed.
+  const [serverExportReady, setServerExportReady] = useState(false);
+  const exportJobIdRef = useRef<string | null>(null);
   // Chart ids that have entered the viewport at least once. Tiles report visibility
   // via onVisible; the fetch effect uses this set to gate which charts to request.
   const [visibleChartIds, setVisibleChartIds] = useState<Set<number>>(() => new Set());
@@ -341,6 +397,13 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
 
   const sessionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const chartRequestIdRef = useRef(0);
+  // True for the whole duration of a PDF export. Export takes over page
+  // switching + data fetching, so the reactive effects (slicer seed, page
+  // fetch, viewport fetch, highlight refetch) must stand down — otherwise they
+  // race the exporter, bump chartRequestIdRef and make it discard the very
+  // response it is waiting for. A ref (not state) because the effects need the
+  // value in the same tick the export sets it.
+  const exportInProgressRef = useRef(false);
   const skipNextPageLoadRef = useRef<string | null>(null);
   const skipCrossFilterRefreshRef = useRef<string | null>(null);
   const appliedFilterSignatureRef = useRef(JSON.stringify([] as BaseFilter[]));
@@ -353,6 +416,11 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
   useEffect(() => {
     appliedViewerFiltersRef.current = appliedViewerFilters;
   }, [appliedViewerFilters]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    setPrintOptions(parsePrintRenderOptions(window.location.search));
+  }, []);
 
   const clearSessionTimer = useCallback(() => {
     if (sessionTimerRef.current) {
@@ -405,6 +473,20 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
       setLoading(false);
     }
   }, [scheduleSessionExpiry, token]);
+
+  useEffect(() => {
+    if (printMode) setForceVisibleAll(true);
+  }, [printMode]);
+
+  useEffect(() => {
+    if (!token || pageState !== 'loaded' || printMode) return;
+    let cancelled = false;
+    publicDashboardApi
+      .getExportCapabilities(token, getPublicSession(token) ?? undefined)
+      .then((caps) => { if (!cancelled) setServerExportReady(Boolean(caps?.server_engine)); })
+      .catch(() => { /* older backend / no worker → keep the browser engine */ });
+    return () => { cancelled = true; };
+  }, [token, pageState, printMode]);
 
   useEffect(() => {
     if (!token) return;
@@ -534,85 +616,38 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
     // Legacy fallback: pre-Phase-A dashboards still send
     // `public_filters_config` only. Treat that as the slicer source
     // so old shared links keep working.
-    const allConfigSlicers = Array.isArray((dashboard as any).slicers_config)
-      ? ((dashboard as any).slicers_config as BaseFilter[])
-      : [];
-    // PBI "Sync slicers" scope on public: a 'custom'-scoped slicer only shows
-    // a control on pages where pageScope[page].visible, and only filters where
-    // pageScope[page].filter. 'all' (or unset) → everywhere. ('page'-scoped
-    // slicers live in pages_config[page].slicers, surfaced via rawPageSlicers.)
-    const _slicerVisibleHere = (s: any): boolean => {
-      const sc = (s as any)?.scope || 'all';
-      if (sc === 'custom') return Boolean((s as any).pageScope?.[activePageId ?? '']?.visible);
-      return true;
-    };
-    const _slicerFiltersHere = (s: any): boolean => {
-      const sc = (s as any)?.scope || 'all';
-      if (sc === 'custom') return Boolean((s as any).pageScope?.[activePageId ?? '']?.filter);
-      return true;
-    };
-    const slicersFromConfig = allConfigSlicers.filter(_slicerVisibleHere);
-    // Custom slicers that FILTER this page but aren't VISIBLE here → apply
-    // their value silently (no control), like a hidden page filter.
-    const silentScopedSlicers = allConfigSlicers.filter((s) => !_slicerVisibleHere(s) && _slicerFiltersHere(s));
-    const filtersAsSlicers = Array.isArray((dashboard as any).filters_config)
-      ? ((dashboard as any).filters_config as BaseFilter[]).filter((f) => {
-          const mode = (f as any).publicMode ?? 'visible';
-          return mode === 'visible';
-        })
-      : [];
-    const legacyPublicConfig = (slicersFromConfig.length === 0 && filtersAsSlicers.length === 0)
-      ? (Array.isArray(dashboard.public_filters_config)
-          ? (dashboard.public_filters_config as BaseFilter[])
-          : [])
-      : [];
-    const activePageObj = dashboardPages.find((p) => p.id === activePageId);
-    const rawPageSlicers = Array.isArray((activePageObj as any)?.slicers)
-      ? ((activePageObj as any).slicers as BaseFilter[])
-      : [];
-    const rawPageFilters = Array.isArray((activePageObj as any)?.filters)
-      ? ((activePageObj as any).filters as BaseFilter[]).filter((f) => {
-          const mode = (f as any).publicMode ?? 'visible';
-          return mode === 'visible';
-        })
-      : [];
-    // Viewer-facing CONTROL set rendered on the public bar = report-level
-    // slicers + visible report filters (filters_config publicMode=visible) +
-    // legacy public_filters_config + THIS page's slicers. Page-level
-    // filter-pane entries (rawPageFilters) are intentionally NOT controls —
-    // see pageHiddenFilters below (PBI parity: the Filter Pane is author-side
-    // and hidden from public viewers; only slicers are interactive).
-    const controlSeed: BaseFilter[] = [
-      ...slicersFromConfig,
-      ...filtersAsSlicers,
-      ...legacyPublicConfig,
-      ...rawPageSlicers,
-    ];
+    // Export freezes the filter state: while a PDF export is running IT drives
+    // page switching + fetching with an explicitly resolved per-page context
+    // (see doExportPdf). Re-seeding here on every programmatic page switch would
+    // rewrite appliedViewerFilters mid-export → the signature effect below wipes
+    // chartData → already-captured tiles blank out. Snapshot semantics: what the
+    // viewer had applied when they pressed Export is what the whole PDF shows.
+    if (exportInProgressRef.current) return;
+    // Single source of truth for "which filters does page X carry" lives in
+    // lib/public-page-filters (pure). Extracted from this effect so PDF export
+    // can resolve ANOTHER page's context synchronously, without waiting for a
+    // re-render of this one — see the page-filter A/B bug documented there.
+    const { controlSeed, hiddenFilters } = resolvePublicPageFilterContext(
+      dashboard as unknown as Record<string, unknown>,
+      dashboardPages,
+      activePageId,
+    );
     // "Filters on this page" + filter-only scoped slicers → constrain the
     // ACTIVE page's chart data but stay hidden from the control bar. Reset per
     // page (active page only), so a page A filter never leaks onto page B.
-    setPageHiddenFilters([...rawPageFilters, ...silentScopedSlicers]);
+    setPageHiddenFilters(hiddenFilters);
     // De-dupe by fieldKey. On token change we reset; on page switch we preserve
     // the viewer's edits for fields still present in the new control seed.
     const isFirstSeed = seededFiltersForTokenRef.current !== token;
     seededFiltersForTokenRef.current = token;
-    const seedByKey = new Map<string, BaseFilter>();
-    for (const f of controlSeed) seedByKey.set(f.fieldKey ?? f.field, f);
-    const merged: BaseFilter[] = [];
-    if (!isFirstSeed) {
-      // Preserve viewer's edits for any field that still exists in the
-      // seed; otherwise fall back to the (possibly newly added) seed.
-      // Read from ref (not closure) so a fast page switch right after an
-      // edit doesn't drop the just-typed selection.
-      const existingByKey = new Map<string, BaseFilter>();
-      for (const f of appliedViewerFiltersRef.current) existingByKey.set(f.fieldKey ?? f.field, f);
-      for (const [key, seedFilter] of seedByKey.entries()) {
-        const existing = existingByKey.get(key);
-        merged.push(existing ?? seedFilter);
-      }
-    } else {
-      for (const f of seedByKey.values()) merged.push(f);
-    }
+    // Preserve the viewer's edits for any field the new page still offers;
+    // otherwise fall back to the (possibly newly added) seed. Reads from the ref
+    // (not the closure) so a fast page switch right after an edit doesn't drop
+    // the just-typed selection.
+    const merged: BaseFilter[] = mergeSeedWithViewerSelections(
+      controlSeed,
+      isFirstSeed ? [] : appliedViewerFiltersRef.current,
+    );
     setDraftViewerFilters(merged);
     setAppliedViewerFilters(merged);
     appliedFilterSignatureRef.current = JSON.stringify(merged);
@@ -672,9 +707,23 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
     pageId: string,
     sessionToken?: string,
     pageCrossFilterState: typeof crossFilterState = crossFilterState,
-    options?: { chartIds?: number[]; force?: boolean },
-  ) => {
-    if (!dashboard) return false;
+    options?: {
+      chartIds?: number[];
+      force?: boolean;
+      /**
+       * Filter context to use INSTEAD of the live state. PDF export resolves the
+       * target page's own context up-front (lib/public-page-filters) and passes
+       * it here: reading `pageHiddenFiltersRef` would give page A's page-scope
+       * filters while fetching page B's charts (the state hasn't re-seeded yet),
+       * which silently exported the wrong slice of data.
+       */
+      viewerFilters?: BaseFilter[];
+      hiddenFilters?: BaseFilter[];
+      /** Don't touch the shared loading/error banners (export drives its own UI). */
+      silent?: boolean;
+    },
+  ): Promise<{ ok: boolean; failed: number[] }> => {
+    if (!dashboard) return { ok: false, failed: [] };
 
     const requestId = ++chartRequestIdRef.current;
     const allCharts = getDashboardChartsForPage(dashboard.dashboard_charts, pageId)
@@ -686,13 +735,17 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
       ? allCharts.filter((dc) => options.chartIds!.includes(dc.chart_id))
       : allCharts;
 
-    setChartsLoading(true);
-    setChartLoadError(null);
+    if (!options?.silent) {
+      setChartsLoading(true);
+      setChartLoadError(null);
+    }
 
     if (!targetCharts.length) {
-      setChartsLoading(false);
-      setIsApplyingFilters(false);
-      return true;
+      if (!options?.silent) {
+        setChartsLoading(false);
+        setIsApplyingFilters(false);
+      }
+      return { ok: true, failed: [] };
     }
 
     try {
@@ -712,15 +765,17 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
       // The server resolves dashboard+link+filters once and fans out the queries
       // concurrently, so this is byte-identical to the old per-chart loop but
       // without N round-trips / the browser's per-host socket queue.
+      const viewerFilterSet = options?.viewerFilters ?? appliedViewerFilters;
+      const hiddenFilterSet = options?.hiddenFilters ?? pageHiddenFiltersRef.current;
       const batchItems = targetCharts.map((dashboardChart) => {
         const baseViewerFilters = pageCrossFilterState?.sourceChartId === dashboardChart.chart_id
-          ? appliedViewerFilters
+          ? viewerFilterSet
           : pageCrossFilterState
-            ? [...appliedViewerFilters, pageCrossFilterState.filter]
-            : appliedViewerFilters;
+            ? [...viewerFilterSet, pageCrossFilterState.filter]
+            : viewerFilterSet;
         return {
           chart_id: dashboardChart.chart_id,
-          filters: applyScopeBound(baseViewerFilters, pageHiddenFiltersRef.current),
+          filters: applyScopeBound(baseViewerFilters, hiddenFilterSet),
           granularity: chartGrainsRef.current[dashboardChart.chart_id],
         };
       });
@@ -749,7 +804,7 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
             clearPublicSession(token);
             setPageState('reauth');
           }
-          return false;
+          return { ok: false, failed: targetCharts.map((dc) => dc.chart_id) };
         }
         // Whole-batch transport failure → mark every target tile errored so the
         // page shows the error state instead of an infinite spinner.
@@ -758,48 +813,43 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
       }
 
       if (requestId !== chartRequestIdRef.current) {
-        return false;
+        return { ok: false, failed: [] };
       }
 
       const unauthorized = entries.find((entry) => (entry as any).status === 401);
       if (unauthorized) {
         clearPublicSession(token);
         setPageState('reauth');
-        return false;
+        return { ok: false, failed: targetCharts.map((dc) => dc.chart_id) };
       }
 
-      setChartData((current) => {
-        const next = { ...current };
-        for (const entry of entries) {
-          if (entry.data) {
-            next[entry.chartId] = entry.data;
-          } else {
-            delete next[entry.chartId];
-          }
-        }
-        return next;
-      });
-      setChartErrors((current) => {
-        const next = { ...current };
-        for (const entry of entries) {
-          if (entry.error) {
-            next[entry.chartId] = entry.error;
-          } else {
-            delete next[entry.chartId];
-          }
-        }
-        return next;
-      });
+      // Update the refs SYNCHRONOUSLY as well as the state: a caller that awaits
+      // this call (PDF export) needs the result before React commits, both to
+      // report the real per-chart error message and to avoid refetching what it
+      // just loaded.
+      const nextData = { ...chartDataRef.current };
+      const nextErrors = { ...chartErrorsRef.current };
+      for (const entry of entries) {
+        if (entry.data) nextData[entry.chartId] = entry.data;
+        else delete nextData[entry.chartId];
+        if (entry.error) nextErrors[entry.chartId] = entry.error;
+        else delete nextErrors[entry.chartId];
+      }
+      chartDataRef.current = nextData;
+      chartErrorsRef.current = nextErrors;
+      setChartData(nextData);
+      setChartErrors(nextErrors);
 
-      if (entries.some((entry) => entry.error)) {
+      const failed = entries.filter((entry) => entry.error).map((entry) => entry.chartId);
+      if (failed.length && !options?.silent) {
         setChartLoadError('Some charts could not be loaded in this shared view.');
       }
       if (sessionToken) {
         scheduleSessionExpiry(token);
       }
-      return true;
+      return { ok: failed.length === 0, failed };
     } finally {
-      if (requestId === chartRequestIdRef.current) {
+      if (requestId === chartRequestIdRef.current && !options?.silent) {
         setChartsLoading(false);
         setIsApplyingFilters(false);
       }
@@ -813,6 +863,10 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
   // (no fetch). Gated on interactionsMode='highlight' (opt-in) so existing
   // public links are byte-for-byte unchanged.
   useEffect(() => {
+    // Same stand-down as the page-fetch effect: during export the page id changes
+    // programmatically, and a highlight overlay refetch would compete with the
+    // exporter's batch (and capture a half-applied highlight).
+    if (exportInProgressRef.current) return;
     if (interactionsMode !== 'highlight' || !highlightState || !dashboard) {
       setHighlightChartData((cur) => (Object.keys(cur).length ? {} : cur));
       return;
@@ -877,6 +931,13 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
 
   useEffect(() => {
     if (!dashboard || pageState !== 'loaded') return;
+    // Export owns the fetch loop while it runs (it walks every selected page and
+    // resolves that page's filters itself). Letting this effect also fire on the
+    // programmatic page switch would start a SECOND batch that bumps
+    // chartRequestIdRef — the exporter's own in-flight response then fails the
+    // `requestId === current` check and its data is thrown away, so the tile is
+    // captured empty.
+    if (exportInProgressRef.current) return;
     // Fix #10: hold the first fetch until default filters are seeded, so a tile
     // doesn't fire a throwaway query with empty filters that the seed then
     // invalidates. Once seeded, this effect re-runs (filtersSeeded is a dep) and
@@ -894,9 +955,12 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
     // The visibility effect below picks up the rest as the user scrolls.
     const targetCharts = getDashboardChartsForPage(dashboard.dashboard_charts, activePageId)
       .filter((dc) => (!dc.widget_type || dc.widget_type === 'chart') && dc.chart_id);
+    // forceVisibleAll (PDF export / print render) means "every tile counts as
+    // visible" — otherwise the viewport gate would starve off-screen tiles and
+    // the printed report would come out empty below the fold.
     const lazyIds = targetCharts
       .map((dc) => dc.chart_id)
-      .filter((id) => visibleChartIds.has(id));
+      .filter((id) => forceVisibleAll || visibleChartIds.has(id));
     if (lazyIds.length === 0) {
       // Nothing visible yet (initial mount before IntersectionObserver fires).
       // Skip — the visibility effect will trigger fetch as tiles report in.
@@ -906,7 +970,7 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
     fetchChartsForPage(activePageId, storedSession ?? undefined, crossFilterState, {
       chartIds: lazyIds,
     });
-  }, [activePageId, crossFilterState, dashboard, fetchChartsForPage, filtersSeeded, pageState, token, visibleChartIds]);
+  }, [activePageId, crossFilterState, dashboard, fetchChartsForPage, filtersSeeded, forceVisibleAll, pageState, token, visibleChartIds]);
 
   const handlePasswordSubmit = useCallback(async (password: string) => {
     setAuthSubmitting(true);
@@ -950,34 +1014,188 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
       .join(' · ');
   }, [appliedViewerFilters]);
 
-  // Phase-B22 — hybrid export (tables = real text + links, charts = sharp
-  // image), driven by the pre-export dialog. Replaces the old raster path.
+  /**
+   * Server-side export: hand the request to the render worker and poll.
+   *
+   * Everything heavy (opening each page, waiting for charts, printing) happens
+   * in a Chromium container, so the viewer's tab is free after ~1 request and
+   * the file is identical no matter what machine asked for it. Returns false
+   * when the job could not be completed — the caller then falls back to the
+   * in-browser engine rather than leaving the user with nothing.
+   */
+  const runServerExport = useCallback(async (
+    choices: ExportPdfChoices,
+    previewWindow: Window | null,
+  ): Promise<boolean> => {
+    if (!dashboard) return false;
+    const session = getPublicSession(token) ?? undefined;
+    const pageNameById = new Map(dashboardPages.map((p) => [p.id, p.name]));
+    const chosen = choices.pageIds.length ? choices.pageIds : [activePageId];
+    let job;
+    try {
+      job = await publicDashboardApi.createExportJob(token, session, {
+        pages: chosen,
+        orientation: choices.orientation,
+        page_format: choices.format,
+        layout: choices.layout,
+        filters: appliedViewerFiltersRef.current,
+        session,
+      });
+    } catch (err: any) {
+      if (err?.response?.status === 429) {
+        toast.error('Đã vượt giới hạn xuất PDF', {
+          description: err?.response?.data?.detail || 'Vui lòng thử lại sau ít phút.',
+        });
+        return true; // a quota rejection is an answer, not a reason to re-render locally
+      }
+      return false;
+    }
+    exportJobIdRef.current = job.id;
+    setExportProgress({ phase: 'prepare', ratio: 0.02, message: job.message || 'Đã xếp hàng chờ xử lý…' });
+
+    const deadline = Date.now() + SERVER_EXPORT_TIMEOUT_MS;
+    let current = job;
+    while (Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, SERVER_EXPORT_POLL_MS));
+      try {
+        current = await publicDashboardApi.getExportJob(token, job.id, session);
+      } catch {
+        continue; // a dropped poll is not a failed render
+      }
+      setExportProgress({
+        phase: current.status === 'queued' ? 'prepare' : 'page',
+        ratio: Math.max(0.02, Math.min(0.99, (current.progress ?? 0) / 100)),
+        message: current.message || 'Đang dựng báo cáo trên máy chủ…',
+      });
+      if (['succeeded', 'partial', 'failed', 'cancelled'].includes(current.status)) break;
+    }
+    exportJobIdRef.current = null;
+
+    if ((current.status === 'succeeded' || current.status === 'partial') && current.download_token) {
+      const url = publicDashboardApi.exportDownloadUrl(token, current.id, current.download_token);
+      // Same delivery as the browser engine: show it in the pre-opened tab AND
+      // save a copy with a proper filename.
+      try { if (previewWindow && !previewWindow.closed) previewWindow.location.href = url; } catch { /* noop */ }
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${safePdfFilename(dashboard.public_link_name || dashboard.name, 'bao-cao')}.pdf`;
+      a.rel = 'noopener';
+      a.style.display = 'none';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setExportProgress({ phase: 'done', ratio: 1, message: 'Hoàn tất — đã tải PDF về máy.' });
+      if (current.warnings?.length) {
+        toast.warning(`PDF thiếu ${current.warnings.length} phần`, {
+          description: `${current.warnings.slice(0, 3).map((w) => w.chart).join(', ')} — phần thiếu được ghi trong báo cáo.`,
+        });
+      }
+      return true;
+    }
+    if (current.status === 'cancelled') return true;
+    return false;
+  }, [activePageId, dashboard, dashboardPages, token]);
+
+  // Hybrid export (tables = real text + links, charts = sharp image), driven by
+  // the pre-export dialog.
+  //
+  // Export is a SNAPSHOT: the viewer's filters at click time are frozen
+  // (exportInProgressRef makes the reactive effects stand down) and every page is
+  // fetched with ITS OWN resolved filter context, so a multi-page PDF can no
+  // longer mix page A's page-scope filters into page B's numbers.
   const doExportPdf = useCallback(async (choices: ExportPdfChoices) => {
     if (!dashboard) return;
     // Open the preview tab NOW, synchronously inside the export click, so the
     // popup blocker (which fires once the seconds-long capture has spent the
     // user activation) doesn't eat it. We fill it with the PDF when ready.
     const previewWindow = openPdfPreviewTab();
+    exportInProgressRef.current = true;
     setIsExportingPdf(true);
     setExportProgress({ phase: 'prepare', ratio: 0, message: 'Đang chuẩn bị…' });
+
+    // Preferred path: let the server render it. Falls through to the in-browser
+    // engine when no worker is deployed or the job could not be completed, so
+    // the button never dead-ends.
+    if (serverExportReady) {
+      try {
+        const done = await runServerExport(choices, previewWindow);
+        if (done) {
+          exportInProgressRef.current = false;
+          setIsExportingPdf(false);
+          setIsExportDialogOpen(false);
+          setExportProgress(null);
+          return;
+        }
+        toast.info('Chuyển sang xuất tại trình duyệt', {
+          description: 'Máy chủ dựng PDF không phản hồi, đang tạo file ngay trên trình duyệt của bạn.',
+        });
+      } catch (err) {
+        console.error('server PDF export failed', err);
+      }
+    }
     // Disable lazy gating during export so every tile renders, including
     // off-screen ones. Fetch any not-yet-loaded chart data per page below.
     setForceVisibleAll(true);
     const originalPageId = activePageId;
+    // Frozen inputs for the whole run (state keeps moving after we finish).
+    const frozenViewerFilters = appliedViewerFiltersRef.current;
+    const frozenCharts = dashboard.dashboard_charts ?? [];
+    const chartNameById = new Map<number, string>(
+      frozenCharts
+        .filter((dc) => dc.chart_id)
+        .map((dc) => [dc.chart_id, dc.chart?.name || `Biểu đồ #${dc.chart_id}`] as [number, string]),
+    );
+    // Charts that never produced data → listed in the PDF + the toast instead of
+    // silently exporting an empty tile.
+    const failures: PdfExportWarning[] = [];
     try {
-      const safeName = (dashboard.name || 'shared-dashboard').replace(/[^a-zA-Z0-9_\-\s]/g, '').trim() || 'dashboard';
+      const safeName = safePdfFilename(dashboard.public_link_name || dashboard.name, 'bao-cao');
       const storedSession = getPublicSession(token) ?? undefined;
       const filtersSummary = summarizeViewerFilters();
 
-      // Ensure every chart on a given page has data fetched (concurrency-limited).
-      const ensurePageDataLoaded = async (pageId: string) => {
-        const targetCharts = getDashboardChartsForPage(dashboard.dashboard_charts, pageId)
+      // Fetch every chart of `pageId` with THAT page's filter context, retrying
+      // the ones that fail; whatever is still broken is recorded as a warning.
+      const ensurePageDataLoaded = async (pageId: string, pageName: string) => {
+        const targetCharts = getDashboardChartsForPage(frozenCharts, pageId)
           .filter((dc) => (!dc.widget_type || dc.widget_type === 'chart') && dc.chart_id);
-        const missingIds = targetCharts
+        if (targetCharts.length === 0) return;
+        const { controlSeed, hiddenFilters } = resolvePublicPageFilterContext(
+          dashboard as unknown as Record<string, unknown>,
+          dashboardPages,
+          pageId,
+        );
+        // The viewer's live selections still win for fields this page offers —
+        // same rule as switching to the page by hand.
+        const viewerFilters = mergeSeedWithViewerSelections(controlSeed, frozenViewerFilters);
+        // Read the CURRENT data map (not a closure snapshot): earlier pages of
+        // this same export have already written into it.
+        let pending = targetCharts
           .map((dc) => dc.chart_id)
-          .filter((id) => !chartData[id] && !chartErrors[id]);
-        if (missingIds.length === 0) return;
-        await fetchChartsForPage(pageId, storedSession, null, { chartIds: missingIds });
+          .filter((id) => !chartDataRef.current[id]);
+        for (let attempt = 0; pending.length > 0 && attempt < EXPORT_FETCH_ATTEMPTS; attempt++) {
+          if (attempt > 0) {
+            setExportProgress({
+              phase: 'page',
+              ratio: 0.05,
+              message: `Đang tải lại ${pending.length} biểu đồ lỗi (lần ${attempt + 1}/${EXPORT_FETCH_ATTEMPTS})…`,
+            });
+            await new Promise((resolve) => setTimeout(resolve, 800 * attempt));
+          }
+          const res = await fetchChartsForPage(pageId, storedSession, null, {
+            chartIds: pending,
+            viewerFilters,
+            hiddenFilters,
+            silent: true,
+          });
+          pending = res.failed;
+        }
+        for (const id of pending) {
+          failures.push({
+            page: pageName,
+            chart: chartNameById.get(id) || `Biểu đồ #${id}`,
+            reason: chartErrorsRef.current[id] || 'Không tải được dữ liệu',
+          });
+        }
       };
 
       const reportTitle = dashboard.public_link_name || dashboard.name || 'Dashboard';
@@ -987,10 +1205,20 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
         filtersSummary,
         getRoot: async () => {
           setCurrentPageId(p.id);
-          await ensurePageDataLoaded(p.id);
-          // Wait for React to re-render with the new page's charts + layout.
+          // Keep the on-screen state coherent with the page being captured (the
+          // fetch above already used this context explicitly).
+          setPageHiddenFilters(
+            resolvePublicPageFilterContext(
+              dashboard as unknown as Record<string, unknown>,
+              dashboardPages,
+              p.id,
+            ).hiddenFilters,
+          );
+          await ensurePageDataLoaded(p.id, p.name);
+          // Let React commit the new page's tiles; the exporter then runs its own
+          // readiness protocol (waitForRenderReady) before capturing anything.
           await new Promise<void>((resolve) => {
-            requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(resolve, 700)));
+            requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(resolve, 60)));
           });
           return gridSectionRef.current;
         },
@@ -1002,10 +1230,18 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
         title: reportTitle,
         orientation: choices.orientation,
         format: choices.format,
+        layout: choices.layout,
         onProgress: setExportProgress,
         pages: pageSources,
         previewWindow,
+        dataAsOf: snapshotAsOf,
+        warnings: failures,
       });
+      if (failures.length) {
+        toast.warning(`PDF thiếu ${failures.length} biểu đồ`, {
+          description: `${failures.slice(0, 3).map((f) => f.chart).join(', ')}${failures.length > 3 ? '…' : ''} — file vẫn tải về, phần thiếu được liệt kê ở cuối báo cáo.`,
+        });
+      }
       if (result === 'saved') {
         // The preview tab was blocked → at least tell them the file downloaded.
         try { previewWindow?.close(); } catch { /* noop */ }
@@ -1020,13 +1256,57 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
         description: 'Không tạo được file PDF. Vui lòng thử lại; nếu vẫn lỗi, thử bớt số trang export.',
       });
     } finally {
+      exportInProgressRef.current = false;
       setCurrentPageId(originalPageId);
       setIsExportingPdf(false);
       setForceVisibleAll(false);
       setIsExportDialogOpen(false);
       setExportProgress(null);
     }
-  }, [activePageId, chartData, chartErrors, dashboard, dashboardPages, fetchChartsForPage, summarizeViewerFilters, token]);
+  }, [activePageId, dashboard, dashboardPages, fetchChartsForPage, runServerExport, serverExportReady, snapshotAsOf, summarizeViewerFilters, token]);
+
+  // Print mode: pin the requested page and the viewer's filter selections, then
+  // hand control to the readiness protocol.
+  useEffect(() => {
+    if (!printOptions || !dashboard) return;
+    if (printOptions.pageId && currentPageId !== printOptions.pageId) {
+      setCurrentPageId(printOptions.pageId);
+    }
+  }, [printOptions, dashboard, currentPageId]);
+
+  useEffect(() => {
+    if (!printOptions || !dashboard || !filtersSeeded) return;
+    if (printFiltersAppliedRef.current) return;
+    printFiltersAppliedRef.current = true;
+    if (!printOptions.filters.length) return;
+    // Overlay the requester's selections on top of the page's own seed, keyed by
+    // field — same rule as a viewer changing a slicer by hand.
+    const byKey = new Map<string, BaseFilter>();
+    for (const f of appliedViewerFiltersRef.current) byKey.set(f.fieldKey ?? f.field, f);
+    for (const f of printOptions.filters) byKey.set(f.fieldKey ?? f.field, f);
+    const merged = [...byKey.values()];
+    setDraftViewerFilters(merged);
+    setAppliedViewerFilters(merged);
+  }, [printOptions, dashboard, filtersSeeded]);
+
+  useEffect(() => {
+    if (!printMode || printReadyRef.current) return;
+    if (pageState !== 'loaded' || chartsLoading) return;
+    const root = gridSectionRef.current;
+    if (!root) return;
+    let cancelled = false;
+    (async () => {
+      const { waitForRenderReady } = await import('@/lib/render-ready');
+      const result = await waitForRenderReady(root, { timeoutMs: 60000 });
+      if (cancelled) return;
+      printReadyRef.current = true;
+      // The worker polls for BOTH: the flag is the contract, the attribute makes
+      // it visible in a screenshot/devtools when debugging a stuck render.
+      (window as unknown as { __APPBI_PDF_READY__?: boolean }).__APPBI_PDF_READY__ = true;
+      document.body.setAttribute('data-pdf-ready', result.ready ? 'true' : 'timeout');
+    })();
+    return () => { cancelled = true; };
+  }, [printMode, pageState, chartsLoading]);
 
   const filterRuntime = useMemo(
     () => buildPublicDashboardFilterRuntime(visibleDashboardCharts, chartData),
@@ -1560,8 +1840,72 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
     </div>
   ) : null;
 
+  /**
+   * One tile, rendered identically wherever it lands: inside the interactive
+   * react-grid-layout canvas, or inside the static print flow below. Extracted
+   * so the printed report can never diverge from the screen version.
+   */
+  function renderTileNode(dashboardChart: DashboardChart) {
+    const isWidget = Boolean(
+      dashboardChart.widget_type && dashboardChart.widget_type !== 'chart'
+    );
+    if (isWidget) {
+      return (
+        <div key={dashboardChart.id.toString()} className="h-full">
+          <DashboardWidget widget={dashboardChart} />
+        </div>
+      );
+    }
+
+    const chart = dashboardChart.chart;
+    const payload = chartData[dashboardChart.chart_id];
+    const chartError = chartErrors[dashboardChart.chart_id];
+    const title = dashboardChart.layout.custom_title ?? '';
+
+    return (
+      <div key={dashboardChart.id.toString()} data-chart-id={dashboardChart.chart_id} className="h-full rounded-xl transition-all duration-300">
+        <ChartErrorBoundary chartId={dashboardChart.chart_id}>
+          <ReadonlyChartTile
+            chart={chart}
+            chartData={payload}
+            error={chartError}
+            title={title}
+            layout={dashboardChart.layout}
+            compact={publicTheme.density.compact}
+            showChartTypeLabel={false}
+            onSelectCrossFilter={(dashboardChart.layout as any)?.highlightEnabled !== false ? (filter) => handleCrossFilterChange(dashboardChart.chart_id, filter) : undefined}
+            isCrossFilterSource={crossFilterState?.sourceChartId === dashboardChart.chart_id}
+            highlightFilter={crossFilterState?.sourceChartId === dashboardChart.chart_id && (dashboardChart.layout as any)?.highlightEnabled !== false ? (crossFilterState?.filter ?? null) : null}
+            isHighlightSource={crossFilterState?.sourceChartId === dashboardChart.chart_id}
+            highlightData={null}
+            forceVisible={forceVisibleAll}
+            publicDatasetModels={(dashboard as any)?.public_dataset_models ?? null}
+            viewerGrain={chartGrains[dashboardChart.chart_id]}
+            onViewerDrill={(g) => handleChartDrill(dashboardChart.chart_id, g)}
+            onVisible={() => {
+              setVisibleChartIds((current) => {
+                if (current.has(dashboardChart.chart_id)) return current;
+                const next = new Set(current);
+                next.add(dashboardChart.chart_id);
+                return next;
+              });
+            }}
+          />
+        </ChartErrorBoundary>
+      </div>
+    );
+  }
+
+  // Tiles grouped into the dashboard's own rows (authored `y`, ordered by `x`)
+  // for the print flow. NOT a hook: this sits below the loading/password/error
+  // early returns above, so a `useMemo` here would be skipped on the first
+  // render and blow up with React #310 ("rendered more hooks than last time").
+  // The grouping is a sort over a handful of tiles — memoising it would cost
+  // more than it saves.
+  const printTileRows = printMode ? groupTilesIntoRows(visibleDashboardCharts) : [];
+
   const gridSectionEl = (
-    <ExportModeContext.Provider value={isExportingPdf}>
+    <ExportModeContext.Provider value={isExportingPdf || printMode}>
       <section
         ref={gridSectionRef}
         className={`px-1 pb-1 pt-0 transition-opacity duration-200 sm:px-1.5 ${pendingPageId ? 'opacity-70' : 'opacity-100'} ${slicerClusterPositionLeft ? 'min-w-0 flex-1' : 'w-full'}`}
@@ -1584,62 +1928,60 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
               compactType={null}
               preventCollision={true}
             >
-              {visibleDashboardCharts.map((dashboardChart: DashboardChart) => {
-                const isWidget = Boolean(
-                  dashboardChart.widget_type && dashboardChart.widget_type !== 'chart'
-                );
-                if (isWidget) {
-                  return (
-                    <div key={dashboardChart.id.toString()} className="h-full">
-                      <DashboardWidget widget={dashboardChart} />
-                    </div>
-                  );
-                }
-
-                const chart = dashboardChart.chart;
-                const payload = chartData[dashboardChart.chart_id];
-                const chartError = chartErrors[dashboardChart.chart_id];
-                const title = dashboardChart.layout.custom_title ?? '';
-
-                return (
-                  <div key={dashboardChart.id.toString()} data-chart-id={dashboardChart.chart_id} className="h-full rounded-xl transition-all duration-300">
-                    <ChartErrorBoundary chartId={dashboardChart.chart_id}>
-                      <ReadonlyChartTile
-                        chart={chart}
-                        chartData={payload}
-                        error={chartError}
-                        title={title}
-                        layout={dashboardChart.layout}
-                        compact={publicTheme.density.compact}
-                        showChartTypeLabel={false}
-                        onSelectCrossFilter={(dashboardChart.layout as any)?.highlightEnabled !== false ? (filter) => handleCrossFilterChange(dashboardChart.chart_id, filter) : undefined}
-                        isCrossFilterSource={crossFilterState?.sourceChartId === dashboardChart.chart_id}
-                        highlightFilter={crossFilterState?.sourceChartId === dashboardChart.chart_id && (dashboardChart.layout as any)?.highlightEnabled !== false ? (crossFilterState?.filter ?? null) : null}
-                        isHighlightSource={crossFilterState?.sourceChartId === dashboardChart.chart_id}
-                        highlightData={null}
-                        forceVisible={forceVisibleAll}
-                        publicDatasetModels={(dashboard as any)?.public_dataset_models ?? null}
-                        viewerGrain={chartGrains[dashboardChart.chart_id]}
-                        onViewerDrill={(g) => handleChartDrill(dashboardChart.chart_id, g)}
-                        onVisible={() => {
-                          setVisibleChartIds((current) => {
-                            if (current.has(dashboardChart.chart_id)) return current;
-                            const next = new Set(current);
-                            next.add(dashboardChart.chart_id);
-                            return next;
-                          });
-                        }}
-                      />
-                    </ChartErrorBoundary>
-                  </div>
-                );
-              })}
+              {visibleDashboardCharts.map(renderTileNode)}
             </ResponsiveReportGrid>
           </div>
         )}
       </section>
     </ExportModeContext.Provider>
   );
+
+  if (printMode) {
+    // Paper shell: no app chrome, no scroll container, white background.
+    //
+    // The tiles are laid out as STATIC ROWS here instead of the interactive
+    // react-grid canvas. react-grid-layout positions every tile absolutely, and
+    // `break-inside: avoid` has no effect on an absolutely-positioned box — so
+    // printing the canvas sliced charts in half across sheet boundaries. A row
+    // of plain flex children keeps the authored side-by-side arrangement AND
+    // lets Chromium move a whole row to the next sheet when it doesn't fit.
+    const rowGap = getDashboardGridMargin(dashboard?.theme_config)[1] ?? 8;
+    return (
+      <DashboardThemeProvider
+        theme={dashboard?.theme_config}
+        className="min-h-[200px] bg-white text-text-primary"
+        style={publicTheme.pageStyle}
+      >
+        <ExportModeContext.Provider value>
+          <main className="w-full px-3 py-2" data-pdf-root="1">
+            <section ref={gridSectionRef}>
+              {printTileRows.map((row, rowIndex) => (
+                <div
+                  key={`pdf-row-${rowIndex}`}
+                  className="pdf-print-row"
+                  style={{ display: 'flex', gap: `${rowGap}px`, marginBottom: `${rowGap}px` }}
+                >
+                  {row.map((dashboardChart) => (
+                    <div
+                      key={dashboardChart.id}
+                      style={{
+                        // Same fraction of the width the author gave the tile on
+                        // the 12-column grid, so the sheet mirrors the screen.
+                        flex: `0 0 calc(${((dashboardChart.layout?.w ?? 12) / 12) * 100}% - ${rowGap}px)`,
+                        height: `${(dashboardChart.layout?.h ?? 4) * 80 + (((dashboardChart.layout?.h ?? 4) - 1) * rowGap)}px`,
+                      }}
+                    >
+                      {renderTileNode(dashboardChart)}
+                    </div>
+                  ))}
+                </div>
+              ))}
+            </section>
+          </main>
+        </ExportModeContext.Provider>
+      </DashboardThemeProvider>
+    );
+  }
 
   return (
     <DashboardThemeProvider

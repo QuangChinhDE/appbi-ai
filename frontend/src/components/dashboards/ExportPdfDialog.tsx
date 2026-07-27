@@ -2,12 +2,14 @@
 
 import React, { useState } from 'react';
 import { X, FileDown, Loader2 } from 'lucide-react';
-import type { PdfOrientation, PdfPageSize, PdfProgress } from '@/lib/export-pdf';
+import type { PdfLayoutMode, PdfOrientation, PdfPageSize, PdfProgress } from '@/lib/export-pdf';
 import { useI18n } from '@/providers/LanguageProvider';
 
 export interface ExportPdfChoices {
   orientation: PdfOrientation;
   format: PdfPageSize;
+  /** Tile placement on the paper — see PdfLayoutMode. */
+  layout: PdfLayoutMode;
   pageIds: string[];
 }
 
@@ -27,6 +29,7 @@ export function ExportPdfDialog({ isOpen, onClose, pages, isExporting, onExport,
   const { t } = useI18n();
   const [orientation, setOrientation] = useState<PdfOrientation>('landscape');
   const [format, setFormat] = useState<PdfPageSize>('a4');
+  const [layout, setLayout] = useState<PdfLayoutMode>('tiled');
   const [selected, setSelected] = useState<Set<string>>(() => new Set(pages.map((p) => p.id)));
 
   React.useEffect(() => {
@@ -87,6 +90,14 @@ export function ExportPdfDialog({ isOpen, onClose, pages, isExporting, onExport,
               </div>
             </div>
             <div>
+              <div className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-text-tertiary">{t('dashboards.exportPdf.layout')}</div>
+              <div className="flex gap-2">
+                <button className={segBtn(layout === 'tiled')} onClick={() => setLayout('tiled')}>{t('dashboards.exportPdf.layoutTiled')}</button>
+                <button className={segBtn(layout === 'single')} onClick={() => setLayout('single')}>{t('dashboards.exportPdf.layoutSingle')}</button>
+              </div>
+              <p className="mt-1.5 text-[11px] leading-snug text-text-quaternary">{t('dashboards.exportPdf.layoutHint')}</p>
+            </div>
+            <div>
               <div className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-text-tertiary">{t('dashboards.exportPdf.pageSize')}</div>
               <div className="flex gap-2">
                 {(['a4', 'a3', 'letter'] as PdfPageSize[]).map((f) => (
@@ -115,7 +126,7 @@ export function ExportPdfDialog({ isOpen, onClose, pages, isExporting, onExport,
         <div className="flex items-center justify-end gap-2 border-t border-[rgb(var(--border-line))] px-5 py-3">
           <button onClick={onClose} disabled={isExporting} className="rounded-md border border-[rgb(var(--border-line))] bg-surface-2 px-3 py-1.5 text-sm hover:bg-surface-3 disabled:opacity-40">{t('common.cancel')}</button>
           <button
-            onClick={() => canExport && onExport({ orientation, format, pageIds: chosenIds })}
+            onClick={() => canExport && onExport({ orientation, format, layout, pageIds: chosenIds })}
             disabled={!canExport}
             className="inline-flex items-center gap-1.5 rounded-md bg-brand px-3 py-1.5 text-sm font-medium text-white hover:bg-brand-hover disabled:opacity-50"
           >

@@ -1046,3 +1046,28 @@
 .react-grid-item .react-resizable-handle::after { opacity: 0 !important; }
 .react-grid-item:hover .react-resizable-handle::after { opacity: 1 !important; }
 
+
+/* ── Print / server-side PDF render ────────────────────────────────────────
+   The render worker loads the report with `?print=1` (see lib/print-render.ts)
+   and prints it with headless Chromium. Two things matter on paper that never
+   matter on screen:
+     • a tile must not be sliced in half by a page break — `break-inside: avoid`
+       moves the whole card to the next sheet instead;
+     • the page must be plain white with no elevation, otherwise every card
+       prints a grey halo where its shadow was.
+   Scoped to the print root so the normal interactive report is untouched. */
+[data-pdf-root] .pdf-print-row,
+[data-pdf-root] .react-grid-item,
+[data-pdf-root] .dashboard-tile {
+  break-inside: avoid;
+  page-break-inside: avoid;
+  box-shadow: none !important;
+}
+[data-pdf-root] .react-resizable-handle { display: none !important; }
+
+@media print {
+  html, body { background: #ffffff !important; }
+  [data-pdf-root] { padding: 0 !important; }
+  /* Chromium draws its own running header/footer from the worker's templates. */
+  [data-pdf-hide-on-print] { display: none !important; }
+}

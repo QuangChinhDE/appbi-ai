@@ -3,6 +3,7 @@ Models package initialization.
 """
 from app.models.user import AuthProvider, User, UserStatus
 from app.models.resource_share import ResourceShare, ResourceType, SharePermission
+from app.models.export_job import DashboardExportJob, ExportJobStatus
 from app.models.models import (
     DataSource,
     DataSourceType,
@@ -102,4 +103,6 @@ __all__ = [
     "WorkboardSubmission",
     "WorkboardWorkspace",
     "WorkboardAppLoginAttempt",
+    "DashboardExportJob",
+    "ExportJobStatus",
 ]

@@ -2874,12 +2874,16 @@ function ExploreChartInner({
     const tableHighlightKeys = isHighlight
       ? new Set((highlightModel?.tableData ?? []).map(tableRowDimKey))
       : null;
+    // Apply the Sort & Limit config (Top/Bottom N) to the table rows — a flat
+    // table needs this for "Top 10" lists. Mirrors the categorical/pie/combo
+    // paths; column set is unchanged (only rows are ordered + capped).
+    const displayTableData = applyDataLimit(applySortRules(tableData, sortRules), dataLimit, dataLimitDir);
     return (
       <div ref={rootRef} className="h-full flex flex-col">
         {ChartTitleEl}
         <div className="flex-1 min-h-0">
           <TableVisualization
-            data={tableData}
+            data={displayTableData}
             columns={tableColumns}
             highlightRowKeys={tableHighlightKeys}
             rowDimKey={tableRowDimKey}

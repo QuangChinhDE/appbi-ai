@@ -1,0 +1,52 @@
+# PDF render worker — the backend code running on top of Playwright's own image.
+#
+# Kept as a SEPARATE image on purpose: Chromium and its system libraries add
+# well over a gigabyte, and the API/scheduler containers have no use for them. A
+# deployment that doesn't want server-side export simply doesn't start this
+# service (PDF_EXPORT_ENABLED=false) and the app falls back to the in-browser
+# exporter.
+#
+# Why the official Playwright base rather than python:slim + `playwright install
+# --with-deps`: on Debian slim that command fails outright (it asks for
+# `ttf-unifont` / `ttf-ubuntu-font-family`, which bookworm no longer ships). The
+# vendored image already carries a matching Chromium build, all of its shared
+# libraries and the font set — including the ones Vietnamese text needs.
+#
+# Build from the repo root, same context as backend/Dockerfile:
+#   docker compose --profile pdf build pdf-worker
+FROM mcr.microsoft.com/playwright/python:v1.49.1-jammy
+
+WORKDIR /app
+
+# libpq/pkg-config cover a source build of psycopg2 if pip ever falls back to
+# one; postgresql-client gives the entrypoint its pg_isready wait loop.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    libpq-dev \
+    pkg-config \
+    postgresql-client \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY backend/requirements.txt .
+ENV PIP_DEFAULT_TIMEOUT=180 \
+    PIP_RETRIES=8 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+# mysqlclient is only used by the API's MySQL connector path, which the worker
+# never touches — drop it so this image doesn't need the MySQL dev headers.
+# The base image ships the BROWSERS but not the playwright python package, so it
+# is installed here (no `playwright install`: the binaries are already present).
+RUN grep -v -E '^(mysqlclient)' requirements.txt > requirements.pdf.txt \
+    && pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir -r requirements.pdf.txt \
+    && pip install --no-cache-dir pypdf==5.1.0 playwright==1.49.1
+
+COPY backend/app/ ./app/
+COPY backend/pdf-entrypoint.sh /tmp/pdf-entrypoint.sh
+# Strip CR bytes — a Windows checkout leaves CRLF, which breaks the shebang.
+RUN tr -d '\015' < /tmp/pdf-entrypoint.sh > /usr/local/bin/pdf-entrypoint.sh \
+    && chmod +x /usr/local/bin/pdf-entrypoint.sh
+
+ENV PYTHONUNBUFFERED=1 \
+    PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+
+ENTRYPOINT ["/usr/local/bin/pdf-entrypoint.sh"]

@@ -1,4 +1,4 @@
-﻿"""
+"""
 Public (unauthenticated) endpoints for shared dashboard links.
 
 POST /public/dashboards/{token}/auth               â†’ exchange password for session token
@@ -34,6 +34,11 @@ from app.services.dashboard_ai_bot.public_link_config import (
     sanitize_report_context_note,
     web_search_enabled,
 )
+import uuid as _uuid
+
+from fastapi.responses import FileResponse
+
+from app.services import pdf_export_service
 from app.services.embed_link_service import resolve_embed_grant_link
 from app.services.filter_layered_merge import (
     apply_link_scope_bounds,
@@ -2907,6 +2912,175 @@ def get_public_charts_data_batch(
 #   data: {"type":"tool_result","tool":"...","ok":true}\n\n
 #   data: {"type":"error","text":"..."}\n\n
 #   data: {"type":"done"}\n\n
+
+
+# ── Server-side PDF export ───────────────────────────────────────────────────
+#
+# The browser used to build the PDF itself: minutes of work on the viewer's
+# machine, dead if the tab closed, impossible to schedule or audit. These
+# endpoints record the request as a job; the `pdf-worker` container renders it
+# with headless Chromium and stores the file. The frontend polls status and then
+# downloads through a secret-bearing URL.
+#
+# When no worker is deployed, /exports/capabilities reports the engine as
+# unavailable and the frontend transparently keeps using the in-browser
+# exporter — a stack without the worker behaves exactly as before.
+
+
+class _ExportCreateBody(BaseModel):
+    # Dashboard page ids to include, in order. Empty → the whole report.
+    pages: list[str] | None = None
+    orientation: str | None = "landscape"
+    page_format: str | None = "a4"
+    layout: str | None = "tiled"
+    # The viewer's slicer selections at click time, so the rendered PDF is the
+    # slice they were looking at (the render page re-applies them).
+    filters: list[dict] | None = None
+    # Session token for a password-protected link — the worker must be able to
+    # open the same protected view the requester can.
+    session: str | None = None
+
+
+@router.get("/dashboards/{token}/exports/capabilities")
+@_limiter.limit("60/minute")
+def get_public_export_capabilities(
+    token: str,
+    request: Request,
+    db: Session = Depends(get_db),
+    x_public_session: str | None = Header(default=None),
+):
+    """Does this deployment have a render worker? Drives engine selection in the UI."""
+    _get_dashboard_by_token(token, db, session_token=x_public_session, track_access=False)
+    return {
+        "server_engine": pdf_export_service.engine_available(),
+        "max_pages_per_hour": settings.PDF_QUOTA_PER_LINK_HOUR,
+    }
+
+
+@router.post("/dashboards/{token}/exports", status_code=status.HTTP_202_ACCEPTED)
+@_limiter.limit("30/minute")
+def create_public_export_job(
+    token: str,
+    request: Request,
+    body: _ExportCreateBody,
+    db: Session = Depends(get_db),
+    x_public_session: str | None = Header(default=None),
+):
+    """Queue a server-side PDF render for this shared link."""
+    if not pdf_export_service.engine_available():
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Server-side PDF export is not enabled on this deployment.",
+        )
+    dash, _public_filters, _link, _appearance = _get_dashboard_by_token(
+        token, db, session_token=x_public_session, track_access=False,
+    )
+    # Denormalise what the worker needs for the running header/footer so it never
+    # has to re-resolve the dashboard: page names, report title, provenance line
+    # and the download filename all travel with the job.
+    pages_config = dash.pages_config if isinstance(dash.pages_config, list) else []
+    page_names = {
+        str(pc.get("id")): str(pc.get("name") or "")
+        for pc in pages_config
+        if isinstance(pc, dict) and pc.get("id")
+    }
+    report_title = str(getattr(dash, "public_link_name", None) or dash.name or "Báo cáo")
+    exported_at = datetime.now(timezone.utc).astimezone().strftime("%d/%m/%Y %H:%M")
+    params = {
+        "title": report_title,
+        "subtitle": f"Xuất lúc {exported_at}",
+        "page_names": page_names,
+        "filename": f"{report_title}.pdf",
+        "pages": [str(p) for p in (body.pages or [])],
+        "orientation": "portrait" if str(body.orientation or "").lower() == "portrait" else "landscape",
+        "format": (body.page_format or "a4").lower() if (body.page_format or "a4").lower() in {"a4", "a3", "letter"} else "a4",
+        "layout": "single" if str(body.layout or "").lower() == "single" else "tiled",
+        "filters": [f for f in (body.filters or []) if isinstance(f, dict)],
+        "surface": "public",
+        "session": body.session or x_public_session or None,
+    }
+    try:
+        job = pdf_export_service.create_job(
+            db,
+            dashboard_id=dash.id,
+            params=params,
+            link_token=token,
+            requester_ip=get_remote_address(request),
+        )
+    except pdf_export_service.ExportQuotaExceeded as exc:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=f"Đã vượt giới hạn {exc.limit} lượt xuất PDF mỗi giờ cho link này. Vui lòng thử lại sau.",
+        ) from exc
+    return pdf_export_service.job_to_dict(job)
+
+
+def _load_public_job(token: str, job_id: str, db: Session):
+    try:
+        parsed = _uuid.UUID(str(job_id))
+    except (ValueError, AttributeError, TypeError):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Export job not found.")
+    job = pdf_export_service.get_job(db, parsed)
+    # Scope the job to the link that created it: a token holder can only ever
+    # see their own link's exports, never another share's.
+    if job is None or job.link_token != token:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Export job not found.")
+    return job
+
+
+@router.get("/dashboards/{token}/exports/{job_id}")
+@_limiter.limit("600/minute")
+def get_public_export_job(
+    token: str,
+    job_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+    x_public_session: str | None = Header(default=None),
+):
+    """Poll one job. Rate limit is generous — this is a 1s progress poll."""
+    _get_dashboard_by_token(token, db, session_token=x_public_session, track_access=False)
+    return pdf_export_service.job_to_dict(_load_public_job(token, job_id, db))
+
+
+@router.post("/dashboards/{token}/exports/{job_id}/cancel")
+@_limiter.limit("60/minute")
+def cancel_public_export_job(
+    token: str,
+    job_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+    x_public_session: str | None = Header(default=None),
+):
+    """Viewer pressed Stop / closed the dialog — free the worker."""
+    _get_dashboard_by_token(token, db, session_token=x_public_session, track_access=False)
+    job = _load_public_job(token, job_id, db)
+    return pdf_export_service.job_to_dict(pdf_export_service.cancel_job(db, job))
+
+
+@router.get("/dashboards/{token}/exports/{job_id}/download")
+@_limiter.limit("60/minute")
+def download_public_export(
+    token: str,
+    job_id: str,
+    request: Request,
+    dl: str = Query(..., description="download_secret returned with the finished job"),
+    db: Session = Depends(get_db),
+    x_public_session: str | None = Header(default=None),
+):
+    """Stream the rendered PDF. Requires the job's own random secret, so a
+    guessed job id alone never yields the bytes."""
+    _get_dashboard_by_token(token, db, session_token=x_public_session, track_access=False)
+    job = _load_public_job(token, job_id, db)
+    if not pdf_export_service.verify_download_secret(job, dl):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid download token.")
+    if not pdf_export_service.download_ready(job):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Export file is no longer available.")
+    filename = str((job.params or {}).get("filename") or "bao-cao.pdf")
+    return FileResponse(
+        job.file_path,
+        media_type="application/pdf",
+        filename=filename if filename.lower().endswith(".pdf") else f"{filename}.pdf",
+    )
 
 
 @router.get("/dashboards/{token}/ai/recon")
