@@ -1885,16 +1885,44 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
    * react-grid-layout canvas, or inside the static print flow below. Extracted
    * so the printed report can never diverge from the screen version.
    */
+  // Render a non-chart widget (text / image / countdown / shape / parameter
+  // switcher) with the SAME card chrome the builder gives it, so a published
+  // report matches what the author designed. Without this the public view
+  // wrapped every widget in a bare <div>, so a text note rendered as naked text
+  // floating on the page background and an image lost its border/rounding.
+  // Pure-visual widgets (shape, which also draws line/divider) and the
+  // self-framed parameter switcher stay frameless to avoid a double frame.
+  function renderWidgetNode(dashboardChart: DashboardChart) {
+    const wtype = dashboardChart.widget_type;
+    const frameless = wtype === 'shape' || wtype === 'parameter_switcher';
+    return (
+      <div key={dashboardChart.id.toString()} className="h-full">
+        {frameless ? (
+          <div className="h-full w-full">
+            <DashboardWidget widget={dashboardChart} />
+          </div>
+        ) : (
+          <div
+            className="dashboard-tile h-full w-full overflow-hidden rounded-lg border bg-surface-1"
+            style={{
+              borderRadius: 'var(--dashboard-card-radius, 0.5rem)',
+              borderWidth: 'var(--dashboard-card-border-width, 1px)',
+              borderColor: 'var(--dashboard-card-border-color, rgb(var(--border-line)))',
+            }}
+          >
+            <DashboardWidget widget={dashboardChart} />
+          </div>
+        )}
+      </div>
+    );
+  }
+
   function renderTileNode(dashboardChart: DashboardChart) {
     const isWidget = Boolean(
       dashboardChart.widget_type && dashboardChart.widget_type !== 'chart'
     );
     if (isWidget) {
-      return (
-        <div key={dashboardChart.id.toString()} className="h-full">
-          <DashboardWidget widget={dashboardChart} />
-        </div>
-      );
+      return renderWidgetNode(dashboardChart);
     }
 
     const chart = dashboardChart.chart;
@@ -2437,11 +2465,7 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
                     dashboardChart.widget_type && dashboardChart.widget_type !== 'chart'
                   );
                   if (isWidget) {
-                    return (
-                      <div key={dashboardChart.id.toString()} className="h-full">
-                        <DashboardWidget widget={dashboardChart} />
-                      </div>
-                    );
+                    return renderWidgetNode(dashboardChart);
                   }
 
                   const chart = dashboardChart.chart;
