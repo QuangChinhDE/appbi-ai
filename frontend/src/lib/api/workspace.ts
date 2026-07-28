@@ -268,6 +268,12 @@ export interface FormScreenResponse {
   /** Columns the workboard auto-fills on insert when left blank.
    *  Treat as readonly with a hint so the user knows typing is ignored. */
   auto_number_columns?: string[];
+  /** Per-column scope metadata so the FE can guide the user on which fields a
+   *  scoped sequence depends on (scope_columns + date_column). */
+  auto_number_meta?: Record<
+    string,
+    { scope_columns?: string[]; date_column?: string | null; missing_scope_behavior?: string }
+  >;
   /** When set, the FE captures device GPS at submit and writes "lat,lng" here. */
   geo_stamp_column?: string | null;
   /** Pages array for multi-step forms (optional). */

@@ -1606,6 +1606,18 @@ def render_form_screen(
     auto_number_columns = [
         cfg.column for cfg in (layout.auto_number_columns or []) if cfg.column
     ]
+    # Per-column scope metadata so the FE can tell the user WHICH fields must be
+    # filled first for a scoped sequence to generate (otherwise a scoped rule
+    # silently produces no number — confusing). Additive; back-compat preserved.
+    auto_number_meta = {
+        cfg.column: {
+            "scope_columns": list(getattr(cfg, "scope_columns", None) or []),
+            "date_column": getattr(cfg, "date_column", None),
+            "missing_scope_behavior": getattr(cfg, "missing_scope_behavior", "empty"),
+        }
+        for cfg in (layout.auto_number_columns or [])
+        if cfg.column
+    }
 
     return {
         "screen_id": screen.id,
@@ -1636,6 +1648,7 @@ def render_form_screen(
         # treats these as readonly + shows a hint so users don't think the
         # form is broken when typing into them is ignored.
         "auto_number_columns": auto_number_columns,
+        "auto_number_meta": auto_number_meta,
         # When set, the FE captures device GPS at submit and writes "lat,lng"
         # into this column (anti-fraud geo-audit).
         "geo_stamp_column": screen.form.geo_stamp_column,

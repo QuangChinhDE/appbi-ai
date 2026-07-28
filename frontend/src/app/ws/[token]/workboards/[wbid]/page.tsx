@@ -73,7 +73,7 @@ import {
   publicDashboardApi,
   savePublicSession,
 } from '@/lib/api/public';
-import { evaluateTruthy, evaluateExpr } from '@/lib/wb-expr';
+import { evaluateTruthy, evaluateExpr, evaluateExprDetailed } from '@/lib/wb-expr';
 import {
   backgroundStyle,
   darkModeCss,
@@ -2180,6 +2180,15 @@ function FormScreen({
   const autoNumberSet = new Set(
     (spec.auto_number_columns || []).map((c) => String(c)),
   );
+  // col -> {scope_columns, date_column} so a scoped auto-number field can tell
+  // the user which fields to fill first (a scoped rule with blank scope columns
+  // generates nothing). Label lookup happens at render time.
+  const autoNumberMeta = (spec.auto_number_meta || {}) as Record<
+    string,
+    { scope_columns?: string[]; date_column?: string | null; missing_scope_behavior?: string }
+  >;
+  const fieldLabels: Record<string, string> = {};
+  for (const f of allFields) fieldLabels[String(f.column)] = String(f.label || f.column);
   // Distribute fields per page when multi-page; default page=1 for unassigned fields.
   const fieldsByPage: Record<number, RuntimeField[]> = {};
   for (const f of allFields) {
@@ -2883,6 +2892,8 @@ function FormScreen({
                       value={values[col]}
                       evalCtx={evalCtx}
                       autoNumberSet={autoNumberSet}
+                      autoNumberMeta={autoNumberMeta}
+                      fieldLabels={fieldLabels}
                       onNavigate={onNavigate}
                       onChange={(v) => {
                         setValues((curr) => ({ ...curr, [col]: v }));
@@ -3210,6 +3221,8 @@ function Field({
   onChange,
   evalCtx,
   autoNumberSet,
+  autoNumberMeta,
+  fieldLabels,
   onNavigate,
 }: {
   field: RuntimeField;
@@ -3218,6 +3231,8 @@ function Field({
   onChange: (v: unknown) => void;
   evalCtx?: RuntimeEvalCtx;
   autoNumberSet?: Set<string>;
+  autoNumberMeta?: Record<string, { scope_columns?: string[]; date_column?: string | null; missing_scope_behavior?: string }>;
+  fieldLabels?: Record<string, string>;
   onNavigate?: (screenId: string, carry?: Record<string, unknown>) => void;
 }) {
   const col = String(field.column);
@@ -3515,11 +3530,42 @@ function Field({
           Giá trị do dataset tự tính (cột <code>{computedFromDataset}</code>) — không thể chỉnh trực tiếp ở đây.
         </p>
       )}
-      {isAutoNumberCol && !computedFromDataset && (
-        <p className="text-xs text-slate-500 italic">
-          Hệ thống sẽ tự sinh giá trị cho cột này khi lưu — bỏ trống là đủ.
-        </p>
-      )}
+      {isAutoNumberCol && !computedFromDataset && (() => {
+        const meta = autoNumberMeta?.[col];
+        const scopeCols = meta?.scope_columns || [];
+        const dateCol = meta?.date_column;
+        // Columns whose value the sequence depends on (scope + date driver).
+        // Dedupe — the date column is often also a scope column.
+        const deps = [...new Set([...scopeCols, ...(dateCol ? [dateCol] : [])])];
+        if (deps.length === 0) {
+          return (
+            <p className="text-xs text-slate-500 italic">
+              Hệ thống sẽ tự sinh giá trị cho cột này khi lưu — bỏ trống là đủ.
+            </p>
+          );
+        }
+        const rowNow = (evalCtx?.row as Record<string, unknown>) || {};
+        const missing = deps.filter((c) => {
+          const v = rowNow[c];
+          return v == null || (typeof v === 'string' && v.trim() === '');
+        });
+        const depLabels = deps.map((c) => fieldLabels?.[c] || c).join(', ');
+        const errorMode = meta?.missing_scope_behavior === 'error';
+        if (missing.length > 0) {
+          const missLabels = missing.map((c) => fieldLabels?.[c] || c).join(', ');
+          return (
+            <p className="text-xs text-amber-600">
+              Số tự sinh theo {depLabels}. Hãy điền {missLabels} trước
+              {errorMode ? ' (bắt buộc)' : ''} — bỏ trống ô này.
+            </p>
+          );
+        }
+        return (
+          <p className="text-xs text-slate-500 italic">
+            Hệ thống sẽ tự sinh khi lưu (đánh số riêng theo {depLabels}) — bỏ trống ô này.
+          </p>
+        );
+      })()}
     </div>
   );
 }
@@ -5278,20 +5324,47 @@ function ComputedField({
   onChange: (next: unknown) => void;
   evalCtx?: RuntimeEvalCtx;
 }) {
-  const raw = evalCtx ? evaluateExpr(formula, evalCtx) : null;
+  // Strict eval so a non-numeric SUM_SPLIT segment surfaces as a visible reason
+  // (not a silent blank the user only discovers when the server 422s on submit).
+  const detailed = evalCtx ? evaluateExprDetailed(formula, evalCtx) : { value: null };
+  const hasError = !!detailed.error;
+  const raw = detailed.value;
   const computed = typeof raw === 'number' && Number.isFinite(raw) ? Math.round(raw * 1e6) / 1e6 : raw ?? '';
-  // Persist the computed value into the form state so it is submitted.
+  // Persist the computed value into the form state so it is submitted. On an
+  // error, persist '' so no stale number rides along (the server recomputes +
+  // rejects anyway; this keeps the client honest).
   useEffect(() => {
-    if (String(computed ?? '') !== String(value ?? '')) onChange(computed === '' ? '' : computed);
+    const next = hasError ? '' : computed === '' ? '' : computed;
+    if (String(next ?? '') !== String(value ?? '')) onChange(next);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [String(computed ?? '')]);
+  }, [String(computed ?? ''), hasError]);
 
   return (
-    <div className="flex items-center gap-2">
-      <div className="w-full rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700">
-        {computed === '' || computed == null ? <span className="text-slate-400">—</span> : String(computed)}
+    <div className="space-y-1">
+      <div className="flex items-center gap-2">
+        <div
+          className={`w-full rounded-md border px-3 py-2 text-sm ${
+            hasError
+              ? 'border-amber-300 bg-amber-50 text-amber-700'
+              : 'border-slate-200 bg-slate-50 text-slate-700'
+          }`}
+        >
+          {hasError ? (
+            <span className="text-amber-500">—</span>
+          ) : computed === '' || computed == null ? (
+            <span className="text-slate-400">—</span>
+          ) : (
+            String(computed)
+          )}
+        </div>
+        {unit && <span className="shrink-0 text-sm text-slate-500">{unit}</span>}
       </div>
-      {unit && <span className="shrink-0 text-sm text-slate-500">{unit}</span>}
+      {hasError && (
+        <p className="text-xs text-amber-600">
+          Chưa tính được — kiểm tra dữ liệu nhập (mỗi phần phải là số, cách nhau bằng
+          dấu <code>;</code>).
+        </p>
+      )}
     </div>
   );
 }
