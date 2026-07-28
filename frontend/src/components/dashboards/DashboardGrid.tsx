@@ -139,13 +139,23 @@ export function DashboardGrid({
 }: DashboardGridProps) {
   const { t } = useI18n();
   // Convert backend layout to react-grid-layout format.
-  // resizeHandles: 4 corners only. Edges removed per DA feedback —
-  // 8 handles is noisy and users accidentally hit an edge when they
-  // wanted a corner. Each corner stretches BOTH width and height,
-  // so 4 handles cover every resize direction without confusion.
+  //
+  // CHARTS: 4 corner handles only + a 2×2 floor. Edges were removed per DA
+  // feedback — 8 handles is noisy and users accidentally hit an edge when they
+  // wanted a corner; each corner stretches BOTH width and height.
+  //
+  // WIDGETS (text / shape / divider / image / countdown — lightweight visual
+  // add-ons, not charts): behave like a shape in a design tool — resize from ANY
+  // edge OR corner (edges are exactly what you want to nudge a divider's width or
+  // a banner's height), and shrink all the way to 1×1 so a slim heading/divider
+  // stays slim instead of being forced to a 2-row (160px) block with dead space.
+  type Handle = 's' | 'w' | 'e' | 'n' | 'se' | 'sw' | 'ne' | 'nw';
+  const CHART_HANDLES: Handle[] = ['se', 'sw', 'ne', 'nw'];
+  const WIDGET_HANDLES: Handle[] = ['s', 'w', 'e', 'n', 'se', 'sw', 'ne', 'nw'];
   const layouts = liftLayoutToTop(
     dashboardCharts.map((dc) => {
       const layout = dc.layout;
+      const isWidget = Boolean(dc.widget_type && dc.widget_type !== 'chart');
       const chartType = String(dc.chart?.chart_type ?? '').toUpperCase();
       const isKpi = chartType === 'KPI';
       return {
@@ -154,9 +164,9 @@ export function DashboardGrid({
         y: layout.y || 0,
         w: layout.w || 4,
         h: layout.h || 4,
-        minW: isKpi ? 3 : 2,
-        minH: 2,
-        resizeHandles: ['se', 'sw', 'ne', 'nw'] as Array<'se' | 'sw' | 'ne' | 'nw'>,
+        minW: isWidget ? 1 : (isKpi ? 3 : 2),
+        minH: isWidget ? 1 : 2,
+        resizeHandles: (isWidget ? WIDGET_HANDLES : CHART_HANDLES),
       };
     }),
   );
@@ -223,6 +233,9 @@ export function DashboardGrid({
       onDragStart={markUserGesture}
       onResizeStart={markUserGesture}
       draggableHandle=".drag-handle"
+      // Never start a drag from an interactive control or the widget's own
+      // edit/delete cluster (whole widget bodies are now drag handles).
+      draggableCancel=".no-drag, button, select, input, textarea, a"
       isDraggable={!!onLayoutChange}
       isResizable={!!onLayoutChange}
       compactType={null}
@@ -238,23 +251,22 @@ export function DashboardGrid({
           dc.widget_type === 'shape'
         );
         const tile = isWidget ? (
+          // The WHOLE widget body is the drag handle (a widget is a visual
+          // add-on you move like a shape, not a chart with a header). The thin
+          // 20px top strip was a fiddly target — especially on a slim h=1 tile
+          // where it was 25% of the tile. draggableCancel (on the grid) stops a
+          // drag from starting on the edit/delete buttons or any form control.
           <div
-            className={`group relative h-full w-full ${
+            className={`group relative h-full w-full ${canEdit ? 'drag-handle cursor-move' : ''} ${
               isVisualWidget
                 ? ''
                 : 'dashboard-tile bi-card-hover rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 overflow-hidden'
             }`}
+            title={canEdit ? t('dashboards.grid.dragToMove') : undefined}
           >
-            {/* Drag handle for react-grid-layout — required so widgets are draggable */}
-            {canEdit && (
-              <div
-                className="drag-handle bi-drag-grip absolute inset-x-0 top-0 z-10 h-5 bg-transparent"
-                title={t('dashboards.grid.dragToMove')}
-              />
-            )}
             <DashboardWidget widget={dc} params={params} onParamChange={onParamChange} />
             {canEdit && (
-              <div className="absolute right-2 top-2 z-20 flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100">
+              <div className="no-drag absolute right-2 top-2 z-20 flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100">
                 {onEditWidget && (
                   <button
                     type="button"
