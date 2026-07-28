@@ -42,6 +42,8 @@ import {
   normalizeDashboardPages,
   liftLayoutToTop,
   deriveStackedLayout,
+  computeReportRowHeight,
+  REPORT_STACK_BREAKPOINT,
 } from '@/lib/dashboard-pages';
 import { applyScopeBound, getColumnKey, getDistinctValueFilterContext, getFilterDisplayLabel, getFilterKey, type BaseFilter, type ColumnInfo } from '@/lib/filters';
 import { usePublicFilterDistinctValues } from '@/hooks/use-public-filter-distinct-values';
@@ -50,19 +52,46 @@ import { buildPublicDashboardFilterRuntime } from '@/lib/public-dashboard-runtim
 import { mergeSeedWithViewerSelections, resolvePublicPageFilterContext } from '@/lib/public-page-filters';
 import type { ChartDataResponse, Dashboard, DashboardChart } from '@/types/api';
 
-// Phase-B5 — COARSE-breakpoint responsive grid for the public report.
+// Phase-B5 / Phase-B9 — responsive "Fit to width" grid for the public report.
 // Two breakpoints ONLY:
-//   • lg  (≥768px): 12 columns, renders the EXACT authored layout — so any
-//     desktop resize (1920→800, DevTools, window drag) stays in lg and never
-//     reflows/jumps. This is byte-identical to the old fixed-grid behavior.
-//   • xs  (<768px): 1 column, renders a pre-derived vertical stack — proper
-//     mobile/tablet view instead of micro-tiles.
+//   • lg  (≥ REPORT_STACK_BREAKPOINT grid px): 12 columns, the EXACT authored
+//     layout — so a desktop resize stays in lg and never reflows/jumps. The row
+//     height scales WITH the grid width (see computeReportRowHeight) so tiles keep
+//     their authored aspect ratio on a TV, laptop, or tablet alike.
+//   • xs  (< REPORT_STACK_BREAKPOINT): 1 column, a pre-derived vertical stack —
+//     a real phone view instead of micro-tiles (or the old giant stacked cards).
 // Explicit layouts for BOTH breakpoints means react-grid-layout never
 // auto-generates (and never reflows) a layout. compactType=null +
 // preventCollision preserve coordinates exactly as provided.
 const ResponsiveReportGrid = WidthProvider(Responsive);
-const REPORT_BREAKPOINTS = { lg: 768, xs: 0 };
+const REPORT_BREAKPOINTS = { lg: REPORT_STACK_BREAKPOINT, xs: 0 };
 const REPORT_COLS = { lg: 12, xs: 1 };
+
+// Measure an element's CONTENT width (excludes padding) via ResizeObserver and
+// keep it in state. Used to drive the report grid's proportional row height from
+// the same width react-grid-layout lays out against, so both stay in lockstep on
+// resize. Returns a ref-callback (re-attaches cleanly across the two mutually
+// exclusive grid branches) + the latest measured width.
+function useContentWidth(): [(node: HTMLElement | null) => void, number | null] {
+  const [width, setWidth] = useState<number | null>(null);
+  const observerRef = useRef<ResizeObserver | null>(null);
+  const setRef = useCallback((node: HTMLElement | null) => {
+    if (observerRef.current) {
+      observerRef.current.disconnect();
+      observerRef.current = null;
+    }
+    if (node && typeof ResizeObserver !== 'undefined') {
+      const observer = new ResizeObserver((entries) => {
+        const contentWidth = entries[0]?.contentRect?.width;
+        if (typeof contentWidth === 'number' && contentWidth > 0) setWidth(contentWidth);
+      });
+      observer.observe(node);
+      observerRef.current = observer;
+    }
+  }, []);
+  useEffect(() => () => observerRef.current?.disconnect(), []);
+  return [setRef, width];
+}
 
 type PageState = 'unknown' | 'loading' | 'password_gate' | 'reauth' | 'loaded' | 'error';
 
@@ -394,6 +423,11 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
   const [forceVisibleAll, setForceVisibleAll] = useState(false);
   const publicContentRef = useRef<HTMLElement>(null);
   const gridSectionRef = useRef<HTMLElement>(null);
+  // "Fit to width": measure the grid wrapper and scale the react-grid row height
+  // with it, so tiles keep their authored aspect ratio from phone to TV. The
+  // ref-callback attaches to whichever of the two grid branches is mounted.
+  const [gridMeasureRef, gridWidth] = useContentWidth();
+  const reportRowHeight = computeReportRowHeight(gridWidth);
 
   const sessionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const chartRequestIdRef = useRef(0);
@@ -1921,13 +1955,16 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
             <p className="text-caption text-text-tertiary">No charts on this page yet.</p>
           </div>
         ) : (
-          <div className={`${publicTheme.density.compact ? 'px-2 pb-2 pt-0' : 'px-3 pb-3 pt-0.5'}`}>
+          <div
+            ref={gridMeasureRef}
+            className={`${publicTheme.density.compact ? 'px-2 pb-2 pt-0' : 'px-3 pb-3 pt-0.5'}`}
+          >
             <ResponsiveReportGrid
               className="layout"
               layouts={{ lg: layouts, xs: deriveStackedLayout(layouts) }}
               breakpoints={REPORT_BREAKPOINTS}
               cols={REPORT_COLS}
-              rowHeight={80}
+              rowHeight={reportRowHeight}
               margin={getDashboardGridMargin(dashboard?.theme_config)}
               isDraggable={false}
               isResizable={false}
@@ -2377,13 +2414,16 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
               <p className="text-caption text-text-tertiary">No charts on this page yet.</p>
             </div>
           ) : (
-            <div className={`${publicTheme.density.compact ? 'px-2 pb-2 pt-0' : 'px-3 pb-3 pt-0.5'}`}>
+            <div
+              ref={gridMeasureRef}
+              className={`${publicTheme.density.compact ? 'px-2 pb-2 pt-0' : 'px-3 pb-3 pt-0.5'}`}
+            >
               <ResponsiveReportGrid
                 className="layout"
                 layouts={{ lg: layouts, xs: deriveStackedLayout(layouts) }}
                 breakpoints={REPORT_BREAKPOINTS}
                 cols={REPORT_COLS}
-                rowHeight={80}
+                rowHeight={reportRowHeight}
                 margin={getDashboardGridMargin(dashboard?.theme_config)}
                 isDraggable={false}
                 isResizable={false}
