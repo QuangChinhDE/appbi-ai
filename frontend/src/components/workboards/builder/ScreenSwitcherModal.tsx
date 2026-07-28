@@ -31,6 +31,7 @@ import {
   X,
 } from 'lucide-react';
 
+import { useI18n } from '@/providers/LanguageProvider';
 import type { ScreenKind, ScreenSpec } from './types';
 
 const KIND_ICON: Record<ScreenKind, React.ElementType> = {
@@ -40,12 +41,11 @@ const KIND_ICON: Record<ScreenKind, React.ElementType> = {
   dashboard: LayoutDashboard,
 };
 
-const KIND_LABEL: Record<ScreenKind, string> = {
-  form: 'Form',
-  table: 'Table',
-  doc: 'Document',
-  dashboard: 'Dashboard',
-};
+type Translate = (key: string, values?: Record<string, string | number>) => string;
+
+function kindLabel(kind: ScreenKind, t: Translate): string {
+  return t(`workboards.builder.kind.${kind}`);
+}
 
 type ScreenStatusKind = 'ok' | 'warn' | 'err';
 
@@ -86,6 +86,7 @@ export default function ScreenSwitcherModal({
   onAllScreens,
   onClose,
 }: Props) {
+  const { t } = useI18n();
   const [query, setQuery] = useState('');
   const [highlightIdx, setHighlightIdx] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -100,9 +101,9 @@ export default function ScreenSwitcherModal({
     return screens.filter(
       (s) =>
         (s.title || '').toLowerCase().includes(q) ||
-        KIND_LABEL[s.kind].toLowerCase().includes(q),
+        kindLabel(s.kind, t).toLowerCase().includes(q),
     );
-  }, [screens, query]);
+  }, [screens, query, t]);
 
   // Reset the highlight when the filter changes — otherwise the
   // selection ring lands on a row that no longer exists, which feels
@@ -169,7 +170,7 @@ export default function ScreenSwitcherModal({
     <div
       role="dialog"
       aria-modal="true"
-      aria-label="Switch screen"
+      aria-label={t('workboards.switcher.dialogLabel')}
       onKeyDown={onKeyDown}
       className="fixed inset-0 z-40 flex items-start justify-center bg-overlay/84 px-4 pt-[12vh] backdrop-blur-[3px] animate-fade-in"
       onMouseDown={(event) => {
@@ -185,7 +186,7 @@ export default function ScreenSwitcherModal({
             ref={inputRef}
             value={query}
             onChange={(event) => setQuery(event.target.value)}
-            placeholder="Search screens by name or kind…"
+            placeholder={t('workboards.switcher.searchPlaceholder')}
             className="min-w-0 flex-1 bg-transparent text-caption text-text-primary placeholder:text-text-quaternary focus:outline-none"
           />
           <kbd className="hidden h-5 select-none items-center rounded border border-[rgb(var(--border-line))] bg-surface-2 px-1.5 text-tiny font-emphasis text-text-tertiary sm:inline-flex">
@@ -195,7 +196,7 @@ export default function ScreenSwitcherModal({
             type="button"
             onClick={onClose}
             className="rounded p-1 text-text-tertiary hover:bg-surface-2 hover:text-text-primary sm:hidden"
-            title="Close"
+            title={t('common.close')}
           >
             <X className="h-3.5 w-3.5" />
           </button>
@@ -212,7 +213,7 @@ export default function ScreenSwitcherModal({
         >
           {filtered.length === 0 ? (
             <div className="px-3 py-10 text-center text-caption text-text-tertiary">
-              No screens match &ldquo;{query}&rdquo;.
+              {t('workboards.switcher.noMatches', { query })}
             </div>
           ) : (
             filtered.map((s, idx) => {
@@ -246,21 +247,27 @@ export default function ScreenSwitcherModal({
                   <div className="min-w-0 flex-1">
                     <div className="flex min-w-0 items-center gap-2">
                       <span className="truncate text-caption font-emphasis text-text-primary">
-                        {s.title || 'Untitled screen'}
+                        {s.title || t('workboards.builder.untitledScreen')}
                       </span>
                       <span className="inline-flex items-center rounded-sm bg-surface-2 px-1.5 py-0.5 text-tiny font-emphasis uppercase tracking-wider text-text-tertiary">
-                        {KIND_LABEL[s.kind]}
+                        {kindLabel(s.kind, t)}
                       </span>
                       {isCurrent ? (
                         <span className="text-tiny font-emphasis uppercase tracking-wider text-brand">
-                          Current
+                          {t('workboards.switcher.current')}
                         </span>
                       ) : null}
                     </div>
                   </div>
                   <span
                     className={`h-1.5 w-1.5 shrink-0 rounded-full ${STATUS_DOT[status]}`}
-                    title={status === 'ok' ? 'Configured' : status === 'warn' ? 'Needs attention' : 'No data source'}
+                    title={
+                      status === 'ok'
+                        ? t('workboards.canvas.status.configured')
+                        : status === 'warn'
+                          ? t('workboards.switcher.needsAttention')
+                          : t('workboards.canvas.status.noDataSource')
+                    }
                   />
                 </button>
               );
@@ -274,11 +281,11 @@ export default function ScreenSwitcherModal({
             <span className="inline-flex items-center gap-1">
               <kbd className="rounded border border-[rgb(var(--border-line))] bg-surface-1 px-1 font-emphasis">↑</kbd>
               <kbd className="rounded border border-[rgb(var(--border-line))] bg-surface-1 px-1 font-emphasis">↓</kbd>
-              move
+              {t('workboards.switcher.move')}
             </span>
             <span className="inline-flex items-center gap-1">
               <kbd className="rounded border border-[rgb(var(--border-line))] bg-surface-1 px-1 font-emphasis">Enter</kbd>
-              open
+              {t('common.open')}
             </span>
           </div>
           <button
@@ -290,7 +297,7 @@ export default function ScreenSwitcherModal({
             className="ml-auto inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-tiny font-emphasis text-text-secondary hover:bg-surface-1 hover:text-text-primary"
           >
             <LayoutGrid className="h-3 w-3" />
-            View all screens
+            {t('workboards.switcher.viewAllScreens')}
           </button>
         </div>
       </div>

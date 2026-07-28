@@ -18,6 +18,7 @@ import {
 } from 'lucide-react';
 
 import { Tabs, type TabItem } from '@/components/ui/Tabs';
+import { useI18n } from '@/providers/LanguageProvider';
 import { BUILDER_GRID_2, BuilderSection } from './BuilderChrome';
 import { CheckboxMultiSelect, MultiColumnPicker } from './BuilderValueControls';
 import { buildAppUserRoleOptions, normalizeAppUserRole } from './appUserRoles';
@@ -59,13 +60,6 @@ interface Props {
 // the screen kind is communicated via the breadcrumb eyebrow instead.
 type TabId = 'content' | 'permission' | 'settings';
 
-const KIND_LABELS: Record<ScreenSpec['kind'], string> = {
-  form: 'Form',
-  table: 'Table',
-  doc: 'Document',
-  dashboard: 'Dashboard',
-};
-
 const KIND_ICONS: Record<ScreenSpec['kind'], React.ElementType> = {
   form: ClipboardEdit,
   table: TableIcon,
@@ -84,6 +78,7 @@ export default function ScreenEditor({
   onFocusFieldHandled,
   onDeleteScreen,
 }: Props) {
+  const { t } = useI18n();
   const [tab, setTab] = useState<TabId>('content');
 
   React.useEffect(() => {
@@ -99,11 +94,12 @@ export default function ScreenEditor({
   const contentCount = fieldCount ?? tableColCount ?? blockCount;
   const ruleCount = (screen.rls || []).length;
   const KindIcon = KIND_ICONS[screen.kind];
+  const kindLabel = t(`workboards.builder.kind.${screen.kind}`);
 
   const items: TabItem<TabId>[] = [
-    { key: 'content', label: 'Content', badge: badge(contentCount) },
-    { key: 'permission', label: 'Access', badge: badge(ruleCount) },
-    { key: 'settings', label: 'Settings' },
+    { key: 'content', label: t('workboards.builder.tabs.content'), badge: badge(contentCount) },
+    { key: 'permission', label: t('workboards.builder.tabs.access'), badge: badge(ruleCount) },
+    { key: 'settings', label: t('workboards.builder.tabs.settings') },
   ];
 
   return (
@@ -114,10 +110,10 @@ export default function ScreenEditor({
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-1.5 text-tiny font-emphasis uppercase tracking-wider text-text-quaternary">
             <KindIcon className="h-3 w-3" />
-            {KIND_LABELS[screen.kind]} · screen
+            {t('workboards.builder.screenKindEyebrow', { kind: kindLabel })}
           </div>
           <h2 className="mt-1 truncate text-h3 font-strong text-text-primary">
-            {screen.title || 'Untitled screen'}
+            {screen.title || t('workboards.builder.untitledScreen')}
           </h2>
           {screen.description ? (
             <p className="mt-1 text-caption text-text-tertiary">{screen.description}</p>
@@ -128,10 +124,10 @@ export default function ScreenEditor({
             type="button"
             onClick={onDeleteScreen}
             className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-2.5 text-caption text-text-tertiary hover:border-danger/40 hover:bg-danger/5 hover:text-danger"
-            title="Delete this screen"
+            title={t('workboards.builder.deleteThisScreen')}
           >
             <Trash2 className="h-3.5 w-3.5" />
-            Delete
+            {t('workboards.builder.delete')}
           </button>
         )}
       </div>
@@ -213,7 +209,8 @@ function PermissionTab({
   workboardId?: number;
   onChange: (next: ScreenSpec) => void;
 }) {
-  const roleOptions = buildAppUserRoleOptions(screen.visible_for_roles).filter(
+  const { t } = useI18n();
+  const roleOptions = buildAppUserRoleOptions(screen.visible_for_roles, t).filter(
     (option) => option.value !== 'owner',
   );
   const selectedRoles = new Set(
@@ -226,33 +223,35 @@ function PermissionTab({
     <div className="space-y-4">
       {/* Behaviour banner — what each role gets by default */}
       <div className="rounded-lg border border-info/20 bg-info/5 px-3 py-2.5 text-caption text-text-secondary">
-        <div className="font-medium text-text-primary">Defaults by role</div>
+        <div className="font-medium text-text-primary">
+          {t('workboards.builder.permission.defaultsByRole')}
+        </div>
         <ul className="mt-1 space-y-0.5">
           <li>
-            • <span className="font-medium">Owner</span> — always full access, ignores all rules. No config needed.
+            {t('workboards.builder.permission.ownerDefault')}
           </li>
           <li>
-            • <span className="font-medium">Admin</span> — sees every row. Add a rule only to narrow Admin access.
+            {t('workboards.builder.permission.adminDefault')}
           </li>
           <li>
-            • <span className="font-medium">User</span> — restricted by the rules below (no User rule = User sees nothing).
+            {t('workboards.builder.permission.userDefault')}
           </li>
         </ul>
       </div>
 
       {screen.kind === 'dashboard' ? (
         <BuilderSection
-          title="Role rules"
-          description="Embedded dashboards use the Dashboard module's own filter / permission pipeline — no row-level RLS here. Restrict who can open the screen below."
+          title={t('workboards.builder.permission.roleRules')}
+          description={t('workboards.builder.permission.dashboardRoleRulesDescription')}
         >
           <p className="rounded-md border border-dashed border-[rgb(var(--border-line))] bg-surface-2 px-3 py-2.5 text-caption text-text-tertiary">
-            RLS is not used for Dashboard screens.
+            {t('workboards.builder.permission.dashboardNoRls')}
           </p>
         </BuilderSection>
       ) : (
         <BuilderSection
-          title="Role rules"
-          description="Each rule = one role + view/edit/delete scope. Owner is hidden because it always has full access."
+          title={t('workboards.builder.permission.roleRules')}
+          description={t('workboards.builder.permission.roleRulesDescription')}
         >
           <RlsEditor
             screen={screen}
@@ -264,8 +263,8 @@ function PermissionTab({
       )}
 
       <BuilderSection
-        title="Roles allowed to open this screen"
-        description="Empty = every signed-in user can open it (subject to the rules above). Pick specific roles to gate at the menu level."
+        title={t('workboards.builder.permission.openRoles')}
+        description={t('workboards.builder.permission.openRolesDescription')}
       >
         <CheckboxMultiSelect
           options={roleOptions}
@@ -294,31 +293,32 @@ function SettingsTab({
   tables: DatasetTableInfo[];
   onChange: (next: ScreenSpec) => void;
 }) {
+  const { t } = useI18n();
   const tableCols = tables.find((table) => table.id === screen.table_id)?.columns ?? [];
 
   return (
     <div className="space-y-4">
       <BuilderSection
-        title="Display"
-        description="What the user sees when navigating to this screen."
+        title={t('workboards.builder.settings.display')}
+        description={t('workboards.builder.settings.displayDescription')}
       >
         <div className={BUILDER_GRID_2}>
-          <Field label="Screen title">
+          <Field label={t('workboards.builder.settings.screenTitle')}>
             <input
               value={screen.title}
               onChange={(event) => onChange({ ...screen, title: event.target.value })}
               className={INPUT}
-              placeholder="e.g. Ca làm việc"
+              placeholder={t('workboards.builder.settings.screenTitlePlaceholder')}
             />
           </Field>
-          <Field label="Short description">
+          <Field label={t('workboards.builder.settings.shortDescription')}>
             <input
               value={screen.description || ''}
               onChange={(event) =>
                 onChange({ ...screen, description: event.target.value })
               }
               className={INPUT}
-              placeholder="Optional hint shown to end users"
+              placeholder={t('workboards.builder.settings.shortDescriptionPlaceholder')}
             />
           </Field>
         </div>
@@ -331,16 +331,16 @@ function SettingsTab({
             }
             className="h-3.5 w-3.5"
           />
-          Show in mini-app navigation
+          {t('workboards.builder.settings.showInNavigation')}
         </label>
       </BuilderSection>
 
       <BuilderSection
-        title="Identifier & icon"
-        description="The screen ID is a fixed technical identifier — it's referenced by navigation, screen groups, and actions, so it can't be renamed here."
+        title={t('workboards.builder.settings.identifierIcon')}
+        description={t('workboards.builder.settings.identifierIconDescription')}
       >
         <div className={BUILDER_GRID_2}>
-          <Field label="ID (internal slug)">
+          <Field label={t('workboards.builder.settings.internalId')}>
             {/* Read-only: screen.id is the join key for mini_app_nav.items,
                 screen_groups[].screen_ids, and go_to_screen/after_submit_screen/
                 header_screen_id/scan_go_to_screen. Renaming it in place would
@@ -349,23 +349,23 @@ function SettingsTab({
             <input
               value={screen.id}
               readOnly
-              title="Mã định danh kỹ thuật cố định — được tham chiếu bởi điều hướng, nhóm màn hình và hành động; không thể đổi tên."
+              title={t('workboards.builder.settings.internalIdTitle')}
               className={`${INPUT} cursor-not-allowed bg-slate-50 text-slate-400`}
             />
           </Field>
-          <Field label="Icon">
+          <Field label={t('workboards.builder.settings.icon')}>
             <IconPicker
               value={screen.icon}
               onChange={(next) => onChange({ ...screen, icon: next })}
-              placeholder="Pick an icon"
+              placeholder={t('workboards.builder.iconPicker.placeholder')}
             />
           </Field>
         </div>
       </BuilderSection>
 
       <BuilderSection
-        title="Primary key columns"
-        description="Columns that uniquely identify a row. Required only if you want to allow edit / delete."
+        title={t('workboards.builder.settings.primaryKeyColumns')}
+        description={t('workboards.builder.settings.primaryKeyDescription')}
       >
         {tableCols.length > 0 ? (
           <MultiColumnPicker
@@ -374,7 +374,7 @@ function SettingsTab({
             onChange={(primaryKeyColumns) =>
               onChange({ ...screen, primary_key_columns: primaryKeyColumns })
             }
-            placeholder="Pick primary-key columns…"
+            placeholder={t('workboards.builder.settings.primaryKeyPlaceholder')}
           />
         ) : (
           <input
@@ -389,7 +389,7 @@ function SettingsTab({
               })
             }
             className={INPUT}
-            placeholder="e.g. shift_id"
+            placeholder={t('workboards.builder.settings.primaryKeyTextPlaceholder')}
           />
         )}
       </BuilderSection>

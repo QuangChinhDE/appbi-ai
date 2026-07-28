@@ -3,6 +3,7 @@
 import React from 'react';
 import { ChevronDown, Plus, X } from 'lucide-react';
 
+import { useI18n } from '@/providers/LanguageProvider';
 import { BUILDER_INPUT } from './BuilderChrome';
 
 export interface SelectOption {
@@ -36,6 +37,7 @@ function VariableInsertButton({
 }) {
   const [open, setOpen] = React.useState(false);
   const wrapRef = React.useRef<HTMLDivElement | null>(null);
+  const { t } = useI18n();
 
   React.useEffect(() => {
     if (!open) return;
@@ -53,10 +55,10 @@ function VariableInsertButton({
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        title="Insert a dynamic variable into the expression"
+        title={t('workboards.builder.value.insertVariableTitle')}
         className="inline-flex h-9 shrink-0 items-center gap-0.5 rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-2 text-caption font-medium text-text-secondary hover:bg-surface-2 hover:text-text-primary"
       >
-        + Variable
+        {t('workboards.builder.value.insertVariable')}
         <ChevronDown className="h-3 w-3" />
       </button>
       {open && (
@@ -88,7 +90,7 @@ export function CheckboxMultiSelect({
   selectedValues,
   onChange,
   columns = 3,
-  emptyMessage = 'No options available.',
+  emptyMessage,
   compact = false,
 }: {
   options: SelectOption[];
@@ -99,11 +101,12 @@ export function CheckboxMultiSelect({
   /** Compact = 1-line rows, no description, no min-height. */
   compact?: boolean;
 }) {
+  const { t } = useI18n();
   const selected = new Set(selectedValues);
   if (options.length === 0) {
     return (
       <div className="rounded-md border border-dashed border-[rgb(var(--border-line))] bg-surface-0 px-3 py-2 text-caption text-text-tertiary">
-        {emptyMessage}
+        {emptyMessage ?? t('workboards.builder.value.noOptionsAvailable')}
       </div>
     );
   }
@@ -165,7 +168,7 @@ export function MultiColumnPicker({
   sourceColumns,
   value,
   onChange,
-  placeholder = 'Click to add columns…',
+  placeholder,
   emptyHint,
 }: {
   sourceColumns: string[];
@@ -175,6 +178,7 @@ export function MultiColumnPicker({
   /** Optional override for the empty-popover message. */
   emptyHint?: string;
 }) {
+  const { t } = useI18n();
   const [open, setOpen] = React.useState(false);
   const [query, setQuery] = React.useState('');
   const wrapRef = React.useRef<HTMLDivElement | null>(null);
@@ -213,7 +217,9 @@ export function MultiColumnPicker({
         className="flex w-full min-h-9 flex-wrap items-center gap-1 rounded-md border border-[rgb(var(--border-line))] bg-surface-0 px-2 py-1.5 text-left text-caption text-text-secondary hover:border-brand/30"
       >
         {value.length === 0 && (
-          <span className="text-text-tertiary">{placeholder}</span>
+          <span className="text-text-tertiary">
+            {placeholder ?? t('workboards.builder.value.addColumnsPlaceholder')}
+          </span>
         )}
         {value.map((name) => (
           <span
@@ -229,7 +235,7 @@ export function MultiColumnPicker({
                 remove(name);
               }}
               className="flex cursor-pointer items-center justify-center rounded hover:bg-brand/20"
-              title="Remove"
+              title={t('workboards.builder.value.remove')}
             >
               <X className="h-3 w-3" />
             </span>
@@ -249,14 +255,16 @@ export function MultiColumnPicker({
               autoFocus
               value={query}
               onChange={(event) => setQuery(event.target.value)}
-              placeholder={`Search ${candidates.length} options…`}
+              placeholder={t('workboards.builder.value.searchOptions', { count: candidates.length })}
               className="h-7 w-full rounded border border-[rgb(var(--border-line))] bg-surface-0 px-2 text-caption"
             />
           </div>
           {filtered.length === 0 ? (
             <p className="px-2 py-3 text-center text-caption text-text-tertiary">
               {emptyHint ??
-                (candidates.length === 0 ? 'All options selected.' : 'No match.')}
+                (candidates.length === 0
+                  ? t('workboards.builder.value.allOptionsSelected')
+                  : t('workboards.builder.value.noMatch'))}
             </p>
           ) : (
             <div className="p-1">
@@ -293,7 +301,7 @@ export function SingleColumnPicker({
   sourceColumns,
   value,
   onChange,
-  placeholder = 'Click to pick…',
+  placeholder,
   emptyHint,
   clearable = true,
   /** Optional pretty labels: by `value` → display string. */
@@ -308,6 +316,7 @@ export function SingleColumnPicker({
   clearable?: boolean;
   labelByValue?: Record<string, string>;
 }) {
+  const { t } = useI18n();
   const [open, setOpen] = React.useState(false);
   const [query, setQuery] = React.useState('');
   const wrapRef = React.useRef<HTMLDivElement | null>(null);
@@ -351,14 +360,16 @@ export function SingleColumnPicker({
                   onChange(null);
                 }}
                 className="flex cursor-pointer items-center justify-center rounded hover:bg-brand/20"
-                title="Clear"
+                title={t('workboards.builder.value.clear')}
               >
                 <X className="h-3 w-3" />
               </span>
             )}
           </span>
         ) : (
-          <span className="text-text-tertiary">{placeholder}</span>
+          <span className="text-text-tertiary">
+            {placeholder ?? t('workboards.builder.value.pickPlaceholder')}
+          </span>
         )}
         <ChevronDown
           className={`ml-auto h-3.5 w-3.5 text-text-tertiary transition-transform ${
@@ -374,13 +385,16 @@ export function SingleColumnPicker({
               autoFocus
               value={query}
               onChange={(event) => setQuery(event.target.value)}
-              placeholder={`Search ${sourceColumns.length} options…`}
+              placeholder={t('workboards.builder.value.searchOptions', { count: sourceColumns.length })}
               className="h-7 w-full rounded border border-[rgb(var(--border-line))] bg-surface-0 px-2 text-caption"
             />
           </div>
           {filtered.length === 0 ? (
             <p className="px-2 py-3 text-center text-caption text-text-tertiary">
-              {emptyHint ?? (sourceColumns.length === 0 ? 'No options.' : 'No match.')}
+              {emptyHint ??
+                (sourceColumns.length === 0
+                  ? t('workboards.builder.value.noOptions')
+                  : t('workboards.builder.value.noMatch'))}
             </p>
           ) : (
             <div className="p-1">
@@ -424,6 +438,7 @@ export function FixedExpressionInput({
   expressionPlaceholder?: string;
   expressionOptions?: SelectOption[];
 }) {
+  const { t } = useI18n();
   const stringValue = value == null ? '' : String(value);
   const [mode, setMode] = React.useState<ValueMode>(() => guessValueMode(value));
   const inputRef = React.useRef<HTMLInputElement | null>(null);
@@ -469,8 +484,8 @@ export function FixedExpressionInput({
             onClick={() => setMode(nextMode)}
             title={
               nextMode === 'fixed'
-                ? 'Fixed value (typed directly)'
-                : 'Dynamic expression (insert variables)'
+                ? t('workboards.builder.value.fixedValueTitle')
+                : t('workboards.builder.value.expressionValueTitle')
             }
             className={`inline-flex h-full items-center px-2 font-medium transition-colors ${
               mode === nextMode

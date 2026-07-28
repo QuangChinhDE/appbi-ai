@@ -38,6 +38,7 @@ import type {
 import { INPUT, Lbl } from './ScreenEditor';
 import { GRADIENT_PRESETS } from '@/lib/wb-theme';
 import type { Dataset } from '@/hooks/use-datasets';
+import { useI18n } from '@/providers/LanguageProvider';
 
 interface DatasetTableInfo {
   id: number;
@@ -58,6 +59,7 @@ export function DatasetSection({
   datasetChangePending?: boolean;
   onDatasetChange: (datasetId: number) => Promise<void> | void;
 }) {
+  const { t } = useI18n();
   const [selectedDatasetId, setSelectedDatasetId] = useState(currentDatasetId);
   useEffect(() => {
     setSelectedDatasetId(currentDatasetId);
@@ -66,7 +68,7 @@ export function DatasetSection({
   return (
     <div>
       <div className="grid grid-cols-[minmax(0,1fr)_auto] items-end gap-3">
-        <Lbl label="Dataset đang dùng">
+        <Lbl label={t('workboards.settings.datasetCurrent')}>
           <select
             value={selectedDatasetId}
             onChange={(e) => setSelectedDatasetId(Number(e.target.value))}
@@ -85,13 +87,12 @@ export function DatasetSection({
           onClick={() => onDatasetChange(selectedDatasetId)}
           className="rounded-md border border-[rgb(var(--border-line))] bg-surface-0 px-3 py-1.5 text-caption font-emphasis text-text-secondary hover:border-brand hover:text-brand disabled:cursor-not-allowed disabled:opacity-50"
         >
-          {datasetChangePending ? 'Đang đổi...' : 'Đổi dataset'}
+          {datasetChangePending ? t('workboards.settings.datasetChanging') : t('workboards.settings.changeDataset')}
         </button>
       </div>
       {datasetChanged && (
         <p className="mt-2 text-caption text-warning">
-          Các screen đang trỏ tới bảng ngoài dataset mới sẽ được gỡ để bạn map lại. Bấm “Đổi
-          dataset” để xem trước tác động.
+          {t('workboards.settings.datasetChangeWarning')}
         </p>
       )}
     </div>
@@ -106,6 +107,7 @@ export function NavigationSection({
   layout: MiniAppLayoutSpec;
   onChange: (next: MiniAppLayoutSpec) => void;
 }) {
+  const { t } = useI18n();
   const nav = layout.mini_app_nav;
   return (
     <div className="grid gap-4 lg:grid-cols-2">
@@ -119,7 +121,7 @@ export function NavigationSection({
           onChange={(mobile_kind) => onChange({ ...layout, mini_app_nav: { ...nav, mobile_kind } })}
           options={[
             { value: 'bottom_nav', label: 'Bottom nav' },
-            { value: 'drawer', label: 'Drawer' },
+            { value: 'drawer', label: t('workboards.settings.nav.drawer') },
           ]}
         />
       </div>
@@ -133,7 +135,7 @@ export function NavigationSection({
           onChange={(desktop_kind) => onChange({ ...layout, mini_app_nav: { ...nav, desktop_kind } })}
           options={[
             { value: 'sidebar', label: 'Sidebar' },
-            { value: 'top_tabs', label: 'Top tabs' },
+            { value: 'top_tabs', label: t('workboards.settings.nav.topTabs') },
           ]}
         />
       </div>
@@ -297,6 +299,7 @@ function BackgroundEditor({
   value?: ThemeBackgroundSpec | null;
   onChange: (bg: ThemeBackgroundSpec | null) => void;
 }) {
+  const { t } = useI18n();
   const bg = value || { kind: 'color' as const };
   const [uploadErr, setUploadErr] = useState<string | null>(null);
   return (
@@ -310,21 +313,21 @@ function BackgroundEditor({
             }
             className={INPUT}
           >
-            <option value="color">Màu đơn</option>
+            <option value="color">{t('workboards.settings.background.color')}</option>
             <option value="gradient">Gradient</option>
-            <option value="image">Ảnh nền</option>
+            <option value="image">{t('workboards.settings.background.image')}</option>
           </select>
         </Lbl>
         {bg.kind === 'color' && (
           <ColorField
-            label="Màu nền"
+            label={t('workboards.settings.background.colorLabel')}
             value={bg.color}
             fallback="#f1f5f9"
             onChange={(hex) => onChange({ ...bg, color: hex })}
           />
         )}
         {bg.kind === 'gradient' && (
-          <Lbl label="Kiểu gradient">
+          <Lbl label={t('workboards.settings.background.gradientPreset')}>
             <select
               value={bg.gradient_preset || 'ocean'}
               onChange={(e) => onChange({ ...bg, gradient_preset: e.target.value })}
@@ -358,7 +361,7 @@ function BackgroundEditor({
                 const uri = await compressImageToDataUri(f, 200);
                 onChange({ ...bg, image_data: uri });
               } catch {
-                setUploadErr('Không đọc được ảnh.');
+                setUploadErr(t('workboards.settings.imageReadFailed'));
               }
             }}
             className="text-caption"
@@ -375,7 +378,7 @@ function BackgroundEditor({
             />
           )}
           <p className="mt-1 text-caption text-text-tertiary">
-            Ảnh được nén &amp; nhúng (~200KB) để hợp CSP. URL ngoài bị chặn.
+            {t('workboards.settings.background.imageHint')}
           </p>
         </div>
       )}
@@ -390,15 +393,16 @@ export function PrintTemplateSection({
   layout: MiniAppLayoutSpec;
   onChange: (next: MiniAppLayoutSpec) => void;
 }) {
+  const { t } = useI18n();
   const pt: PrintTemplateSpec = layout.print_template || {};
   const [logoErr, setLogoErr] = useState<string | null>(null);
   const set = (patch: Partial<PrintTemplateSpec>) =>
     onChange({ ...layout, print_template: { ...pt, ...patch } });
   return (
     <section>
-      <h3 className={SECTION_H}>Mẫu in / Letterhead (phiếu &amp; báo cáo)</h3>
+      <h3 className={SECTION_H}>{t('workboards.settings.printTemplateHeading')}</h3>
       <p className="mb-2 text-caption text-text-tertiary">
-        Hiện ở đầu mọi tài liệu khi bấm <b>In</b> hoặc <b>Xuất Excel</b> — cấu hình 1 lần, dùng cho tất cả phiếu/báo cáo.
+        {t('workboards.settings.printTemplateDescription')}
       </p>
       <label className="mb-2 flex items-center gap-2 text-caption text-text-secondary">
         <input
@@ -406,16 +410,16 @@ export function PrintTemplateSection({
           checked={pt.enabled !== false}
           onChange={(e) => set({ enabled: e.target.checked })}
         />
-        Bật letterhead
+        {t('workboards.settings.enableLetterhead')}
       </label>
       <div className="grid grid-cols-2 gap-3">
-        <Lbl label="Tên công ty">
-          <input value={pt.company_name || ''} onChange={(e) => set({ company_name: e.target.value })} className={INPUT} placeholder="VD: Công ty ABC" />
+        <Lbl label={t('workboards.settings.companyName')}>
+          <input value={pt.company_name || ''} onChange={(e) => set({ company_name: e.target.value })} className={INPUT} placeholder={t('workboards.settings.companyNamePlaceholder')} />
         </Lbl>
-        <Lbl label="Mã số thuế">
+        <Lbl label={t('workboards.settings.taxCode')}>
           <input value={pt.tax_code || ''} onChange={(e) => set({ tax_code: e.target.value })} className={INPUT} />
         </Lbl>
-        <Lbl label="Địa chỉ">
+        <Lbl label={t('workboards.settings.address')}>
           <input value={pt.address || ''} onChange={(e) => set({ address: e.target.value })} className={INPUT} />
         </Lbl>
         <Lbl label="Hotline">
@@ -427,18 +431,18 @@ export function PrintTemplateSection({
         <Lbl label="Website">
           <input value={pt.website || ''} onChange={(e) => set({ website: e.target.value })} className={INPUT} />
         </Lbl>
-        <Lbl label="Ghi chú chân trang">
+        <Lbl label={t('workboards.settings.footerNote')}>
           <input value={pt.footer_note || ''} onChange={(e) => set({ footer_note: e.target.value })} className={INPUT} />
         </Lbl>
         <ColorField
-          label="Màu nhấn letterhead"
+          label={t('workboards.settings.letterheadAccent')}
           value={pt.accent_color}
           fallback="#0f766e"
           onChange={(hex) => set({ accent_color: hex })}
         />
       </div>
       <div className="mt-2">
-        <Lbl label="Logo (tải ảnh — nhúng, hợp CSP)">
+        <Lbl label={t('workboards.settings.letterheadLogo')}>
           <input
             type="file"
             accept="image/*"
@@ -449,7 +453,7 @@ export function PrintTemplateSection({
               try {
                 set({ logo_data: await compressImageToDataUri(f, 120) });
               } catch {
-                setLogoErr('Không đọc được ảnh.');
+                setLogoErr(t('workboards.settings.imageReadFailed'));
               }
             }}
             className="text-caption"
@@ -472,6 +476,7 @@ export function ThemeSection({
   layout: MiniAppLayoutSpec;
   onChange: (next: MiniAppLayoutSpec) => void;
 }) {
+  const { t } = useI18n();
   const branding: BrandingSpec = layout.branding || {};
   const set = (patch: Partial<BrandingSpec>) =>
     onChange({ ...layout, branding: { ...branding, ...patch } });
@@ -482,14 +487,14 @@ export function ThemeSection({
   return (
     <>
       <section>
-        <h3 className={SECTION_H}>Thương hiệu</h3>
+        <h3 className={SECTION_H}>{t('workboards.settings.branding')}</h3>
         <div className="grid grid-cols-2 gap-3">
-          <Lbl label="Tên app">
+          <Lbl label={t('workboards.settings.appName')}>
             <input
               value={branding.app_name || ''}
               onChange={(e) => set({ app_name: e.target.value })}
               className={INPUT}
-              placeholder="VD: Nhật ký sản xuất"
+              placeholder={t('workboards.settings.brandingAppNamePlaceholder')}
             />
           </Lbl>
           <Lbl label="Logo URL">
@@ -499,19 +504,19 @@ export function ThemeSection({
               className={INPUT}
             />
           </Lbl>
-          <Lbl label="Kiểu logo header">
+          <Lbl label={t('workboards.settings.headerLogoLayout')}>
             <select
               value={branding.logo_layout || 'mark'}
               onChange={(e) => set({ logo_layout: e.target.value as 'mark' | 'wide' })}
               className={INPUT}
             >
-              <option value="mark">Biểu tượng vuông</option>
-              <option value="wide">Logo ngang</option>
+              <option value="mark">{t('workboards.settings.logoMark')}</option>
+              <option value="wide">{t('workboards.settings.logoWide')}</option>
             </select>
           </Lbl>
           <div className="col-span-2 rounded-lg border border-[rgb(var(--border-line))] bg-[rgb(var(--surface-subtle))] p-3">
             <div className="flex flex-wrap items-center gap-3">
-              <Lbl label="Upload logo app (nhúng, hợp CSP)">
+              <Lbl label={t('workboards.settings.uploadAppLogo')}>
                 <input
                   type="file"
                   accept="image/*"
@@ -522,7 +527,7 @@ export function ThemeSection({
                     try {
                       set({ logo_data: await compressImageToDataUri(f, 120) });
                     } catch {
-                      setLogoErr('Không đọc được ảnh.');
+                      setLogoErr(t('workboards.settings.imageReadFailed'));
                     }
                   }}
                   className="text-caption"
@@ -544,16 +549,16 @@ export function ThemeSection({
                   onClick={() => set({ logo_data: null })}
                   className="rounded-md border border-[rgb(var(--border-line))] bg-[rgb(var(--surface-base))] px-2 py-1 text-caption text-text-secondary hover:bg-[rgb(var(--surface-hover))]"
                 >
-                  Xóa logo upload
+                  {t('workboards.settings.clearUploadedLogo')}
                 </button>
               )}
             </div>
             {logoErr && <p className="mt-1 text-caption text-status-danger">{logoErr}</p>}
             <p className="mt-2 text-caption text-text-tertiary">
-              Logo vuông phù hợp icon app; logo ngang phù hợp thương hiệu dạng banner. Banner in/PDF nên đặt ở mục Letterhead bên dưới.
+              {t('workboards.settings.logoHint')}
             </p>
           </div>
-          <Lbl label="Lời chào (trang login)">
+          <Lbl label={t('workboards.settings.loginWelcome')}>
             <input
               value={branding.welcome_text || ''}
               onChange={(e) => set({ welcome_text: e.target.value })}
@@ -573,38 +578,38 @@ export function ThemeSection({
       </section>
 
       <section>
-        <h3 className={SECTION_H}>Màu &amp; chế độ</h3>
+        <h3 className={SECTION_H}>{t('workboards.settings.colorsMode')}</h3>
         <div className="grid grid-cols-2 gap-3">
           <ColorField
-            label="Màu chính"
+            label={t('workboards.settings.primaryColor')}
             value={branding.primary_color}
             fallback="#2563eb"
             onChange={(hex) => set({ primary_color: hex })}
           />
           <ColorField
-            label="Màu nhấn (accent)"
+            label={t('workboards.settings.accentColor')}
             value={branding.accent_color}
             fallback="#2563eb"
             onChange={(hex) => set({ accent_color: hex })}
           />
-          <Lbl label="Chế độ">
+          <Lbl label={t('workboards.settings.mode')}>
             <select
               value={branding.theme || 'auto'}
               onChange={(e) => set({ theme: e.target.value as ThemeMode })}
               className={INPUT}
             >
-              <option value="auto">Tự động (theo máy)</option>
-              <option value="light">Sáng</option>
-              <option value="dark">Tối</option>
+              <option value="auto">{t('workboards.settings.modeAuto')}</option>
+              <option value="light">{t('workboards.settings.modeLight')}</option>
+              <option value="dark">{t('workboards.settings.modeDark')}</option>
             </select>
           </Lbl>
-          <Lbl label="Phông chữ">
+          <Lbl label={t('workboards.settings.font')}>
             <select
               value={branding.font_family || 'system'}
               onChange={(e) => set({ font_family: e.target.value as ThemeFont })}
               className={INPUT}
             >
-              <option value="system">Hệ thống</option>
+              <option value="system">{t('workboards.settings.systemFont')}</option>
               <option value="inter">Inter</option>
               <option value="be-vietnam">Be Vietnam Pro</option>
               <option value="roboto">Roboto</option>
@@ -616,18 +621,18 @@ export function ThemeSection({
       </section>
 
       <section>
-        <h3 className={SECTION_H}>Nền app</h3>
+        <h3 className={SECTION_H}>{t('workboards.settings.appBackground')}</h3>
         <BackgroundEditor
-          label="Kiểu nền"
+          label={t('workboards.settings.backgroundType')}
           value={branding.background}
           onChange={(bg) => set({ background: bg })}
         />
       </section>
 
       <section>
-        <h3 className={SECTION_H}>Thẻ &amp; header</h3>
+        <h3 className={SECTION_H}>{t('workboards.settings.cardsHeader')}</h3>
         <div className="grid grid-cols-3 gap-3">
-          <Lbl label="Bo góc thẻ">
+          <Lbl label={t('workboards.settings.cardRadius')}>
             <select
               value={card.radius || 'lg'}
               onChange={(e) =>
@@ -635,14 +640,14 @@ export function ThemeSection({
               }
               className={INPUT}
             >
-              <option value="none">Không</option>
-              <option value="sm">Nhỏ</option>
-              <option value="md">Vừa</option>
-              <option value="lg">Lớn</option>
-              <option value="xl">Rất lớn</option>
+              <option value="none">{t('workboards.settings.none')}</option>
+              <option value="sm">{t('workboards.settings.sizeSmall')}</option>
+              <option value="md">{t('workboards.settings.sizeMedium')}</option>
+              <option value="lg">{t('workboards.settings.sizeLarge')}</option>
+              <option value="xl">{t('workboards.settings.sizeExtraLarge')}</option>
             </select>
           </Lbl>
-          <Lbl label="Đổ bóng">
+          <Lbl label={t('workboards.settings.shadow')}>
             <select
               value={card.shadow || 'sm'}
               onChange={(e) =>
@@ -650,29 +655,29 @@ export function ThemeSection({
               }
               className={INPUT}
             >
-              <option value="none">Không</option>
-              <option value="sm">Nhẹ</option>
-              <option value="md">Rõ</option>
+              <option value="none">{t('workboards.settings.none')}</option>
+              <option value="sm">{t('workboards.settings.shadowLight')}</option>
+              <option value="md">{t('workboards.settings.shadowStrong')}</option>
             </select>
           </Lbl>
-          <Lbl label="Kiểu header">
+          <Lbl label={t('workboards.settings.headerStyle')}>
             <select
               value={branding.header_style || 'line'}
               onChange={(e) => set({ header_style: e.target.value as never })}
               className={INPUT}
             >
-              <option value="line">Viền dưới</option>
-              <option value="fill">Nền màu</option>
-              <option value="minimal">Tối giản</option>
+              <option value="line">{t('workboards.settings.headerLine')}</option>
+              <option value="fill">{t('workboards.settings.headerFill')}</option>
+              <option value="minimal">{t('workboards.settings.headerMinimal')}</option>
             </select>
           </Lbl>
         </div>
       </section>
 
       <section>
-        <h3 className={SECTION_H}>Nền trang login (tuỳ chọn)</h3>
+        <h3 className={SECTION_H}>{t('workboards.settings.loginBackground')}</h3>
         <BackgroundEditor
-          label="Kiểu nền login"
+          label={t('workboards.settings.loginBackgroundType')}
           value={branding.login?.background}
           onChange={(bg) => set({ login: { ...(branding.login || {}), background: bg } })}
         />
@@ -691,6 +696,7 @@ export function AutoNumberSection({
   tables?: DatasetTableInfo[];
   onChange: (next: MiniAppLayoutSpec) => void;
 }) {
+  const { t } = useI18n();
   const configs = layout.auto_number_columns || [];
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
   const update = (next: typeof configs) =>
@@ -713,13 +719,13 @@ export function AutoNumberSection({
   return (
     <section>
       <h3 className="mb-2 text-tiny font-emphasis uppercase tracking-wider text-text-quaternary">
-        Cột mã tự động
+        {t('workboards.settings.autoNumberColumns')}
       </h3>
       <p className="mb-3 text-caption text-text-tertiary">
-        Máy chủ tự điền các cột này khi người dùng để trống. Dùng placeholder như{' '}
-        <code>{'{YYYY}{MM}{DD}'}</code> và <code>{'{N:4}'}</code> trong mẫu.
-        Mở <span className="font-medium">Phạm vi &amp; chính sách</span> để đánh số
-        riêng theo từng nhóm (vd: mã chuyến theo ngày + xe).
+        {t('workboards.settings.autoNumberDescriptionPrefix')}{' '}
+        <code>{'{YYYY}{MM}{DD}'}</code> {t('workboards.settings.and')}{' '}
+        <code>{'{N:4}'}</code> {t('workboards.settings.autoNumberDescriptionMiddle')}
+        {t('workboards.settings.autoNumberDescriptionSuffix')}
       </p>
       <div className="space-y-2">
         {configs.map((cfg, idx) => {
@@ -736,9 +742,9 @@ export function AutoNumberSection({
                   value={cfg.table_id || ''}
                   onChange={(e) => patch(idx, { table_id: Number(e.target.value) || null })}
                   className={`${INPUT} col-span-3`}
-                  title="Gắn dãy số vào một bảng, hoặc giữ hành vi cũ (mọi bảng)."
+                  title={t('workboards.settings.autoNumberTableTitle')}
                 >
-                  <option value="">Mọi bảng (cũ)</option>
+                  <option value="">{t('workboards.settings.allTablesLegacy')}</option>
                   {tables.map((table) => (
                     <option key={table.id} value={table.id}>
                       {table.display_name}
@@ -748,7 +754,7 @@ export function AutoNumberSection({
                 <input
                   value={cfg.column}
                   onChange={(e) => patch(idx, { column: e.target.value })}
-                  placeholder="cột"
+                  placeholder={t('workboards.settings.columnPlaceholder')}
                   className={`${INPUT} col-span-3`}
                   list={`auto-number-columns-${idx}`}
                 />
@@ -774,16 +780,16 @@ export function AutoNumberSection({
                   }
                   className={`${INPUT} col-span-2`}
                 >
-                  <option value="never">Không reset</option>
-                  <option value="daily">Reset theo ngày</option>
-                  <option value="monthly">Reset theo tháng</option>
-                  <option value="yearly">Reset theo năm</option>
+                  <option value="never">{t('workboards.settings.resetNever')}</option>
+                  <option value="daily">{t('workboards.settings.resetDaily')}</option>
+                  <option value="monthly">{t('workboards.settings.resetMonthly')}</option>
+                  <option value="yearly">{t('workboards.settings.resetYearly')}</option>
                 </select>
                 <button
                   type="button"
                   onClick={() => update(configs.filter((_, i) => i !== idx))}
                   className="col-span-1 rounded-md text-caption text-status-danger hover:bg-status-danger/10"
-                  title="Xoá"
+                  title={t('common.delete')}
                 >
                   ×
                 </button>
@@ -794,10 +800,10 @@ export function AutoNumberSection({
                   onClick={() => toggleExpanded(idx)}
                   className="text-tiny font-medium text-brand-600 hover:underline"
                 >
-                  {isOpen ? '▾' : '▸'} Phạm vi &amp; chính sách
+                  {isOpen ? '▾' : '▸'} {t('workboards.settings.scopePolicy')}
                   {scopeCols.length > 0 ? (
                     <span className="ml-1 rounded bg-brand-50 px-1 text-brand-700">
-                      {scopeCols.length} cột phạm vi
+                      {t('workboards.settings.scopeColumnCount', { count: scopeCols.length })}
                     </span>
                   ) : null}
                 </button>
@@ -807,7 +813,7 @@ export function AutoNumberSection({
                   {/* Scope columns */}
                   <div>
                     <div className="mb-1 text-tiny font-medium text-text-secondary">
-                      Đánh số riêng theo (cột phạm vi)
+                      {t('workboards.settings.scopeColumns')}
                     </div>
                     {cols.length > 0 ? (
                       <div className="flex flex-wrap gap-1.5">
@@ -837,25 +843,24 @@ export function AutoNumberSection({
                       </div>
                     ) : (
                       <p className="text-tiny text-text-tertiary">
-                        Chọn một bảng cụ thể ở trên để hiện danh sách cột.
+                        {t('workboards.settings.pickSpecificTable')}
                       </p>
                     )}
                     <p className="mt-1 text-tiny text-text-tertiary">
-                      Bộ đếm khởi động lại độc lập cho mỗi tổ hợp giá trị. Vd: (ngày, xe) →
-                      mỗi xe trong ngày đếm 1, 2, 3…
+                      {t('workboards.settings.scopeHint')}
                     </p>
                   </div>
                   {/* Date column */}
                   <label className="block">
                     <div className="mb-1 text-tiny font-medium text-text-secondary">
-                      Cột ngày quyết định kỳ (tuỳ chọn)
+                      {t('workboards.settings.dateColumn')}
                     </div>
                     <select
                       value={cfg.date_column || ''}
                       onChange={(e) => patch(idx, { date_column: e.target.value || null })}
                       className={INPUT}
                     >
-                      <option value="">Theo thời điểm nhập</option>
+                      <option value="">{t('workboards.settings.entryTime')}</option>
                       {cols.map((column) => (
                         <option key={column.name} value={column.name}>
                           {column.name}
@@ -863,8 +868,7 @@ export function AutoNumberSection({
                       ))}
                     </select>
                     <p className="mt-1 text-tiny text-text-tertiary">
-                      Kỳ reset và các phần ngày trong mẫu ({'{YYYY}/{MM}/{DD}'}) lấy theo cột
-                      này thay vì lúc bấm lưu.
+                      {t('workboards.settings.dateColumnHint')}
                     </p>
                   </label>
                   {/* Policies */}
@@ -876,11 +880,11 @@ export function AutoNumberSection({
                         onChange={(e) => patch(idx, { allow_manual_override: e.target.checked })}
                         className="h-3.5 w-3.5"
                       />
-                      Cho phép nhập tay đè lên
+                      {t('workboards.settings.allowManualOverride')}
                     </label>
                     <label className="block">
                       <div className="mb-1 text-tiny font-medium text-text-secondary">
-                        Khi thiếu cột phạm vi
+                        {t('workboards.settings.whenMissingScope')}
                       </div>
                       <select
                         value={cfg.missing_scope_behavior || 'empty'}
@@ -891,13 +895,13 @@ export function AutoNumberSection({
                         }
                         className={INPUT}
                       >
-                        <option value="empty">Để trống (bỏ qua)</option>
-                        <option value="error">Báo lỗi (chặn lưu)</option>
+                        <option value="empty">{t('workboards.settings.leaveEmptySkip')}</option>
+                        <option value="error">{t('workboards.settings.errorBlockSave')}</option>
                       </select>
                     </label>
                     <label className="block">
                       <div className="mb-1 text-tiny font-medium text-text-secondary">
-                        Khi cấp số lỗi
+                        {t('workboards.settings.whenNumberingFails')}
                       </div>
                       <select
                         value={cfg.on_error || 'leave_blank'}
@@ -908,8 +912,8 @@ export function AutoNumberSection({
                         }
                         className={INPUT}
                       >
-                        <option value="leave_blank">Để trống, vẫn lưu</option>
-                        <option value="block">Chặn lưu, báo lỗi</option>
+                        <option value="leave_blank">{t('workboards.settings.leaveBlankSave')}</option>
+                        <option value="block">{t('workboards.settings.blockSave')}</option>
                       </select>
                     </label>
                   </div>
@@ -928,7 +932,7 @@ export function AutoNumberSection({
           }
           className="rounded-md border border-dashed border-[rgb(var(--border-line))] px-3 py-1.5 text-caption text-text-secondary hover:bg-surface-2"
         >
-          + Thêm cột mã tự động
+          {t('workboards.settings.addAutoNumberColumn')}
         </button>
       </div>
     </section>
@@ -960,6 +964,7 @@ function ColorTokenField({
   value?: string;
   onChange: (next?: string) => void;
 }) {
+  const { t } = useI18n();
   const [draft, setDraft] = useState(value || '');
   useEffect(() => setDraft(value || ''), [value]);
   const valid = draft === '' || /^#[0-9a-fA-F]{6}$/.test(draft);
@@ -970,7 +975,7 @@ function ColorTokenField({
     <label className="grid grid-cols-[2.25rem_5rem_minmax(0,1fr)] items-center gap-2">
       <input
         type="color"
-        aria-label={`Chọn màu ${label}`}
+        aria-label={t('workboards.settings.pickColor', { label })}
         value={valid && draft ? draft : '#64748b'}
         onChange={(event) => {
           setDraft(event.target.value);
@@ -987,7 +992,7 @@ function ColorTokenField({
           if (event.key === 'Enter') event.currentTarget.blur();
         }}
         className={`${INPUT} font-mono ${valid ? '' : 'border-danger'}`}
-        placeholder="Kế thừa"
+        placeholder={t('workboards.settings.inherit')}
       />
     </label>
   );
@@ -1000,6 +1005,7 @@ function TriStateSelect({
   value?: boolean;
   onChange: (next?: boolean) => void;
 }) {
+  const { t } = useI18n();
   return (
     <select
       value={value === undefined ? '' : value ? 'true' : 'false'}
@@ -1008,9 +1014,9 @@ function TriStateSelect({
       }
       className={INPUT}
     >
-      <option value="">Kế thừa</option>
-      <option value="true">Bật</option>
-      <option value="false">Tắt</option>
+      <option value="">{t('workboards.settings.inherit')}</option>
+      <option value="true">{t('workboards.settings.enabled')}</option>
+      <option value="false">{t('workboards.settings.disabled')}</option>
     </select>
   );
 }
@@ -1028,6 +1034,7 @@ export function ExperienceStudioSection({
   onScreenChange?: (next: ScreenSpec) => void;
   disabled?: boolean;
 }) {
+  const { t } = useI18n();
   const [category, setCategory] = useState<StudioCategory>('theme');
   const exp: ExperienceSpec = layout.experience || {};
   const theme = exp.theme || {};
@@ -1120,24 +1127,24 @@ export function ExperienceStudioSection({
     icon: React.ElementType;
     hidden?: boolean;
   }> = [
-    { id: 'theme', label: 'Theme', icon: Palette },
-    { id: 'shell', label: 'Shell', icon: PanelLeft },
-    { id: 'navigation', label: 'Navigation', icon: Navigation },
-    { id: 'screen', label: 'Screen', icon: Monitor, hidden: !screen },
-    { id: 'feedback', label: 'Feedback', icon: MessageSquare },
+    { id: 'theme', label: t('workboards.settings.experience.theme'), icon: Palette },
+    { id: 'shell', label: t('workboards.settings.experience.shell'), icon: PanelLeft },
+    { id: 'navigation', label: t('workboards.settings.experience.navigation'), icon: Navigation },
+    { id: 'screen', label: t('workboards.settings.experience.screen'), icon: Monitor, hidden: !screen },
+    { id: 'feedback', label: t('workboards.settings.experience.feedback'), icon: MessageSquare },
   ];
 
   const COLOR_TOKENS: Array<[keyof ExperienceTheme, string]> = [
-    ['primary', 'Primary'],
-    ['success', 'Success'],
-    ['warning', 'Warning'],
-    ['danger', 'Danger'],
-    ['info', 'Info'],
-    ['neutral', 'Neutral'],
-    ['background', 'Background'],
-    ['surface', 'Surface'],
-    ['border', 'Border'],
-    ['text', 'Text'],
+    ['primary', t('workboards.settings.color.primary')],
+    ['success', t('workboards.settings.color.success')],
+    ['warning', t('workboards.settings.color.warning')],
+    ['danger', t('workboards.settings.color.danger')],
+    ['info', t('workboards.settings.color.info')],
+    ['neutral', t('workboards.settings.color.neutral')],
+    ['background', t('workboards.settings.color.background')],
+    ['surface', t('workboards.settings.color.surface')],
+    ['border', t('workboards.settings.color.border')],
+    ['text', t('workboards.settings.color.text')],
   ];
 
   return (
@@ -1168,7 +1175,9 @@ export function ExperienceStudioSection({
         <div className="sticky top-0 z-10 flex min-h-12 items-center justify-between border-b border-[rgb(var(--border-line))] bg-surface-0/95 px-4 backdrop-blur">
           <div className="min-w-0">
             <h3 className="truncate text-caption font-emphasis text-text-primary">
-              {category === 'screen' ? screen?.title || 'Current screen' : categories.find((item) => item.id === category)?.label}
+              {category === 'screen'
+                ? screen?.title || t('workboards.settings.experience.currentScreen')
+                : categories.find((item) => item.id === category)?.label}
             </h3>
             {category === 'screen' && (
               <span className="text-tiny uppercase text-text-quaternary">{screen?.kind}</span>
@@ -1180,7 +1189,7 @@ export function ExperienceStudioSection({
             className="inline-flex items-center gap-1.5 rounded-md px-2 py-1.5 text-tiny font-medium text-text-tertiary hover:bg-surface-2 hover:text-text-primary"
           >
             <RotateCcw className="h-3.5 w-3.5" />
-            Kế thừa
+            {t('workboards.settings.inherit')}
           </button>
         </div>
 
@@ -1188,7 +1197,7 @@ export function ExperienceStudioSection({
           {category === 'theme' && (
             <>
               <section>
-                <h4 className={SECTION_H}>Semantic colors</h4>
+                <h4 className={SECTION_H}>{t('workboards.settings.semanticColors')}</h4>
                 <div className="grid gap-2 lg:grid-cols-2">
                   {COLOR_TOKENS.map(([key, label]) => (
                     <ColorTokenField
@@ -1203,13 +1212,13 @@ export function ExperienceStudioSection({
                 </div>
               </section>
               <section className="grid gap-3 border-t border-[rgb(var(--border-line))] pt-5 sm:grid-cols-2">
-                <Lbl label="Font chữ">
+                <Lbl label={t('workboards.settings.font')}>
                   <select
                     value={theme.font_family || ''}
                     onChange={(event) => setTheme({ font_family: event.target.value || undefined })}
                     className={INPUT}
                   >
-                    <option value="">Kế thừa</option>
+                    <option value="">{t('workboards.settings.inherit')}</option>
                     <option value="system">System</option>
                     <option value="inter">Inter</option>
                     <option value="be-vietnam">Be Vietnam Pro</option>
@@ -1218,7 +1227,7 @@ export function ExperienceStudioSection({
                     <option value="mono">Mono</option>
                   </select>
                 </Lbl>
-                <Lbl label="Chế độ">
+                <Lbl label={t('workboards.settings.mode')}>
                   <select
                     value={theme.mode || ''}
                     onChange={(event) =>
@@ -1226,13 +1235,13 @@ export function ExperienceStudioSection({
                     }
                     className={INPUT}
                   >
-                    <option value="">Kế thừa</option>
+                    <option value="">{t('workboards.settings.inherit')}</option>
                     <option value="auto">Auto</option>
                     <option value="light">Light</option>
                     <option value="dark">Dark</option>
                   </select>
                 </Lbl>
-                <Lbl label="Mật độ">
+                <Lbl label={t('workboards.settings.density')}>
                   <select
                     value={theme.density || ''}
                     onChange={(event) =>
@@ -1240,13 +1249,13 @@ export function ExperienceStudioSection({
                     }
                     className={INPUT}
                   >
-                    <option value="">Kế thừa</option>
+                    <option value="">{t('workboards.settings.inherit')}</option>
                     <option value="compact">Compact</option>
                     <option value="cozy">Cozy</option>
                     <option value="comfortable">Comfortable</option>
                   </select>
                 </Lbl>
-                <Lbl label="Bo góc">
+                <Lbl label={t('workboards.settings.radius')}>
                   <select
                     value={theme.radius || ''}
                     onChange={(event) =>
@@ -1254,7 +1263,7 @@ export function ExperienceStudioSection({
                     }
                     className={INPUT}
                   >
-                    <option value="">Kế thừa</option>
+                    <option value="">{t('workboards.settings.inherit')}</option>
                     <option value="none">None</option>
                     <option value="small">Small</option>
                     <option value="medium">Medium</option>
@@ -1262,7 +1271,7 @@ export function ExperienceStudioSection({
                     <option value="full">Full</option>
                   </select>
                 </Lbl>
-                <Lbl label="Độ nổi">
+                <Lbl label={t('workboards.settings.elevation')}>
                   <select
                     value={theme.elevation || ''}
                     onChange={(event) =>
@@ -1270,14 +1279,14 @@ export function ExperienceStudioSection({
                     }
                     className={INPUT}
                   >
-                    <option value="">Kế thừa</option>
+                    <option value="">{t('workboards.settings.inherit')}</option>
                     <option value="none">None</option>
                     <option value="small">Small</option>
                     <option value="medium">Medium</option>
                     <option value="large">Large</option>
                   </select>
                 </Lbl>
-                <Lbl label="Chuyển động">
+                <Lbl label={t('workboards.settings.motion')}>
                   <select
                     value={theme.motion || ''}
                     onChange={(event) =>
@@ -1285,7 +1294,7 @@ export function ExperienceStudioSection({
                     }
                     className={INPUT}
                   >
-                    <option value="">Kế thừa</option>
+                    <option value="">{t('workboards.settings.inherit')}</option>
                     <option value="instant">Instant</option>
                     <option value="standard">Standard</option>
                     <option value="expressive">Expressive</option>
@@ -1297,7 +1306,7 @@ export function ExperienceStudioSection({
 
           {category === 'shell' && (
             <section className="grid gap-3 sm:grid-cols-2">
-              <Lbl label="Bề rộng nội dung">
+              <Lbl label={t('workboards.settings.contentWidth')}>
                 <select
                   value={shell.content_width || ''}
                   onChange={(event) =>
@@ -1305,13 +1314,13 @@ export function ExperienceStudioSection({
                   }
                   className={INPUT}
                 >
-                  <option value="">Kế thừa</option>
+                  <option value="">{t('workboards.settings.inherit')}</option>
                   <option value="full_bleed">Full bleed</option>
                   <option value="constrained">Constrained</option>
                   <option value="wide">Wide</option>
                 </select>
               </Lbl>
-              <Lbl label="Khoảng đệm trang">
+              <Lbl label={t('workboards.settings.pagePadding')}>
                 <select
                   value={shell.page_padding || ''}
                   onChange={(event) =>
@@ -1319,13 +1328,13 @@ export function ExperienceStudioSection({
                   }
                   className={INPUT}
                 >
-                  <option value="">Kế thừa</option>
+                  <option value="">{t('workboards.settings.inherit')}</option>
                   <option value="compact">Compact</option>
                   <option value="cozy">Cozy</option>
                   <option value="comfortable">Comfortable</option>
                 </select>
               </Lbl>
-              <Lbl label="Nền ứng dụng">
+              <Lbl label={t('workboards.settings.appBackground')}>
                 <select
                   value={shell.background || ''}
                   onChange={(event) =>
@@ -1333,14 +1342,14 @@ export function ExperienceStudioSection({
                   }
                   className={INPUT}
                 >
-                  <option value="">Kế thừa</option>
-                  <option value="light">Sáng</option>
-                  <option value="gray">Xám nhạt</option>
-                  <option value="dark">Tối</option>
-                  <option value="custom">Tùy chỉnh</option>
+                  <option value="">{t('workboards.settings.inherit')}</option>
+                  <option value="light">{t('workboards.settings.modeLight')}</option>
+                  <option value="gray">{t('workboards.settings.grayLight')}</option>
+                  <option value="dark">{t('workboards.settings.modeDark')}</option>
+                  <option value="custom">{t('workboards.settings.custom')}</option>
                 </select>
               </Lbl>
-              <Lbl label="Màu nền tùy chỉnh">
+              <Lbl label={t('workboards.settings.customBackgroundColor')}>
                 <ColorTokenField
                   label="Color"
                   value={theme.app_background || undefined}
@@ -1353,16 +1362,16 @@ export function ExperienceStudioSection({
                   onChange={(sticky_header) => setShell({ sticky_header })}
                 />
               </Lbl>
-              <Lbl label="Hiện tìm kiếm">
+              <Lbl label={t('workboards.settings.showSearch')}>
                 <TriStateSelect
                   value={shell.show_search}
                   onChange={(show_search) => setShell({ show_search })}
                 />
               </Lbl>
-              <Lbl label="Hiện logo">
+              <Lbl label={t('workboards.settings.showLogo')}>
                 <TriStateSelect value={shell.show_logo} onChange={(show_logo) => setShell({ show_logo })} />
               </Lbl>
-              <Lbl label="Hiện footer">
+              <Lbl label={t('workboards.settings.showFooter')}>
                 <TriStateSelect
                   value={shell.footer_enabled}
                   onChange={(footer_enabled) => setShell({ footer_enabled })}
@@ -1381,7 +1390,7 @@ export function ExperienceStudioSection({
                   }
                   className={INPUT}
                 >
-                  <option value="">Kế thừa</option>
+                  <option value="">{t('workboards.settings.inherit')}</option>
                   <option value="sidebar">Sidebar</option>
                   <option value="top_tabs">Top tabs</option>
                   <option value="compact_rail">Compact rail</option>
@@ -1395,12 +1404,12 @@ export function ExperienceStudioSection({
                   }
                   className={INPUT}
                 >
-                  <option value="">Kế thừa</option>
+                  <option value="">{t('workboards.settings.inherit')}</option>
                   <option value="bottom_nav">Bottom nav</option>
                   <option value="drawer">Drawer</option>
                 </select>
               </Lbl>
-              <Lbl label="Kiểu active">
+              <Lbl label={t('workboards.settings.activeStyle')}>
                 <select
                   value={nav.active_style || ''}
                   onChange={(event) =>
@@ -1408,13 +1417,13 @@ export function ExperienceStudioSection({
                   }
                   className={INPUT}
                 >
-                  <option value="">Kế thừa</option>
+                  <option value="">{t('workboards.settings.inherit')}</option>
                   <option value="pill">Pill</option>
                   <option value="bar">Bar</option>
                   <option value="highlight">Highlight</option>
                 </select>
               </Lbl>
-              <Lbl label="Bề rộng sidebar">
+              <Lbl label={t('workboards.settings.sidebarWidth')}>
                 <input
                   type="number"
                   min={180}
@@ -1426,19 +1435,19 @@ export function ExperienceStudioSection({
                     })
                   }
                   className={INPUT}
-                  placeholder="Kế thừa"
+                  placeholder={t('workboards.settings.inherit')}
                 />
               </Lbl>
-              <Lbl label="Mặc định thu gọn">
+              <Lbl label={t('workboards.settings.defaultCollapsed')}>
                 <TriStateSelect
                   value={nav.default_collapsed}
                   onChange={(default_collapsed) => setNav({ default_collapsed })}
                 />
               </Lbl>
-              <Lbl label="Hiện icon">
+              <Lbl label={t('workboards.settings.showIcons')}>
                 <TriStateSelect value={nav.show_icons} onChange={(show_icons) => setNav({ show_icons })} />
               </Lbl>
-              <Lbl label="Hiện nhãn">
+              <Lbl label={t('workboards.settings.showLabels')}>
                 <TriStateSelect value={nav.show_labels} onChange={(show_labels) => setNav({ show_labels })} />
               </Lbl>
               <Lbl label="Breadcrumbs">
@@ -1460,7 +1469,7 @@ export function ExperienceStudioSection({
                   }
                   className={INPUT}
                 >
-                  <option value="">Kế thừa</option>
+                  <option value="">{t('workboards.settings.inherit')}</option>
                   <option value="skeleton">Skeleton</option>
                   <option value="spinner">Spinner</option>
                 </select>
@@ -1473,7 +1482,7 @@ export function ExperienceStudioSection({
                   }
                   className={INPUT}
                 >
-                  <option value="">Kế thừa</option>
+                  <option value="">{t('workboards.settings.inherit')}</option>
                   <option value="illustration">Illustration</option>
                   <option value="message">Message</option>
                   <option value="minimal">Minimal</option>
@@ -1487,19 +1496,19 @@ export function ExperienceStudioSection({
                   }
                   className={INPUT}
                 >
-                  <option value="">Kế thừa</option>
+                  <option value="">{t('workboards.settings.inherit')}</option>
                   <option value="toast">Toast</option>
                   <option value="inline">Inline</option>
                   <option value="banner">Banner</option>
                 </select>
               </Lbl>
-              <Lbl label="Cho phép thử lại">
+              <Lbl label={t('workboards.settings.allowRetry')}>
                 <TriStateSelect
                   value={feedback.error_retry}
                   onChange={(error_retry) => setFeedback({ error_retry })}
                 />
               </Lbl>
-              <Lbl label="Thời lượng motion (ms)">
+              <Lbl label={t('workboards.settings.motionDurationMs')}>
                 <input
                   type="number"
                   min={0}
@@ -1512,7 +1521,7 @@ export function ExperienceStudioSection({
                     })
                   }
                   className={INPUT}
-                  placeholder="Kế thừa"
+                  placeholder={t('workboards.settings.inherit')}
                 />
               </Lbl>
             </section>
@@ -1521,7 +1530,7 @@ export function ExperienceStudioSection({
           {category === 'screen' && screen && (
             <>
               <section className="grid gap-3 sm:grid-cols-2">
-                <Lbl label="Bề rộng nội dung">
+                <Lbl label={t('workboards.settings.contentWidth')}>
                   <select
                     value={presentation.content_width || ''}
                     onChange={(event) =>
@@ -1531,13 +1540,13 @@ export function ExperienceStudioSection({
                     }
                     className={INPUT}
                   >
-                    <option value="">Theo app</option>
+                    <option value="">{t('workboards.settings.followApp')}</option>
                     <option value="narrow">Narrow</option>
                     <option value="standard">Standard</option>
                     <option value="wide">Wide</option>
                   </select>
                 </Lbl>
-                <Lbl label="Mật độ">
+                <Lbl label={t('workboards.settings.density')}>
                   <select
                     value={presentation.density || ''}
                     onChange={(event) =>
@@ -1547,7 +1556,7 @@ export function ExperienceStudioSection({
                     }
                     className={INPUT}
                   >
-                    <option value="">Theo app</option>
+                    <option value="">{t('workboards.settings.followApp')}</option>
                     <option value="compact">Compact</option>
                     <option value="cozy">Cozy</option>
                     <option value="comfortable">Comfortable</option>
@@ -1565,10 +1574,10 @@ export function ExperienceStudioSection({
                       })
                     }
                     className={INPUT}
-                    placeholder="Theo app"
+                    placeholder={t('workboards.settings.followApp')}
                   />
                 </Lbl>
-                <Lbl label="Bo góc card (px)">
+                <Lbl label={t('workboards.settings.cardRadiusPx')}>
                   <input
                     type="number"
                     min={0}
@@ -1580,10 +1589,10 @@ export function ExperienceStudioSection({
                       })
                     }
                     className={INPUT}
-                    placeholder="Theo app"
+                    placeholder={t('workboards.settings.followApp')}
                   />
                 </Lbl>
-                <Lbl label="Độ nổi">
+                <Lbl label={t('workboards.settings.elevation')}>
                   <select
                     value={presentation.shadow || ''}
                     onChange={(event) =>
@@ -1593,14 +1602,14 @@ export function ExperienceStudioSection({
                     }
                     className={INPUT}
                   >
-                    <option value="">Theo app</option>
+                    <option value="">{t('workboards.settings.followApp')}</option>
                     <option value="none">None</option>
                     <option value="small">Small</option>
                     <option value="medium">Medium</option>
                     <option value="large">Large</option>
                   </select>
                 </Lbl>
-                <Lbl label="Chuyển động">
+                <Lbl label={t('workboards.settings.motion')}>
                   <select
                     value={presentation.motion || ''}
                     onChange={(event) =>
@@ -1610,7 +1619,7 @@ export function ExperienceStudioSection({
                     }
                     className={INPUT}
                   >
-                    <option value="">Theo app</option>
+                    <option value="">{t('workboards.settings.followApp')}</option>
                     <option value="instant">Instant</option>
                     <option value="standard">Standard</option>
                     <option value="expressive">Expressive</option>
@@ -1620,7 +1629,7 @@ export function ExperienceStudioSection({
 
               {screen.kind === 'form' && (
                 <section className="grid gap-3 border-t border-[rgb(var(--border-line))] pt-5 sm:grid-cols-2">
-                  <Lbl label="Số cột">
+                  <Lbl label={t('workboards.settings.columnCountLabel')}>
                     <select
                       value={presentation.form?.columns || ''}
                       onChange={(event) =>
@@ -1632,13 +1641,13 @@ export function ExperienceStudioSection({
                       }
                       className={INPUT}
                     >
-                      <option value="">Tự động</option>
-                      <option value="1">1 cột</option>
-                      <option value="2">2 cột</option>
-                      <option value="3">3 cột</option>
+                      <option value="">{t('workboards.settings.auto')}</option>
+                      <option value="1">{t('workboards.settings.oneColumn')}</option>
+                      <option value="2">{t('workboards.settings.twoColumns')}</option>
+                      <option value="3">{t('workboards.settings.threeColumns')}</option>
                     </select>
                   </Lbl>
-                  <Lbl label="Kiểu section">
+                  <Lbl label={t('workboards.settings.sectionStyle')}>
                     <select
                       value={presentation.form?.section_style || ''}
                       onChange={(event) =>
@@ -1670,7 +1679,7 @@ export function ExperienceStudioSection({
                       onChange={(sticky_header) => setTablePresentation({ sticky_header })}
                     />
                   </Lbl>
-                  <Lbl label="Chiều cao dòng">
+                  <Lbl label={t('workboards.settings.rowHeight')}>
                     <select
                       value={presentation.table?.row_height || ''}
                       onChange={(event) =>
@@ -1680,13 +1689,13 @@ export function ExperienceStudioSection({
                       }
                       className={INPUT}
                     >
-                      <option value="">Theo app</option>
+                      <option value="">{t('workboards.settings.followApp')}</option>
                       <option value="compact">Compact</option>
                       <option value="cozy">Cozy</option>
                       <option value="comfortable">Comfortable</option>
                     </select>
                   </Lbl>
-                  <Lbl label="Vị trí filter">
+                  <Lbl label={t('workboards.settings.filterPosition')}>
                     <select
                       value={presentation.table?.filter_position || ''}
                       onChange={(event) =>

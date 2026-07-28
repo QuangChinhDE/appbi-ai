@@ -34,6 +34,7 @@ import { apiClient } from '@/lib/api-client';
 import { useDatasets } from '@/hooks/use-datasets';
 import { useWorkboardPresence } from '@/hooks/use-workboard-presence';
 import { getResourcePermissions } from '@/hooks/use-resource-permission';
+import { useI18n } from '@/providers/LanguageProvider';
 import {
   ensureLayout,
   MiniAppLayoutSpec,
@@ -120,6 +121,7 @@ function presenceInitials(name: string): string {
 }
 
 export default function WorkboardBuilder({ workboard }: Props) {
+  const { t } = useI18n();
   const { data: datasets = [] } = useDatasets();
   const [boundDatasetId, setBoundDatasetId] = useState(workboard.dataset_id);
   const [layout, setLayoutRaw] = useState<MiniAppLayoutSpec>(() =>
@@ -569,14 +571,15 @@ export default function WorkboardBuilder({ workboard }: Props) {
       {!canEdit && (
         <div className="flex shrink-0 items-center gap-2 border-b border-amber-200 bg-amber-50 px-4 py-2 text-xs font-medium text-amber-800">
           <Eye className="h-3.5 w-3.5" />
-          Chế độ chỉ xem — bạn không có quyền chỉnh sửa mini-app này. Mọi thay đổi sẽ không được lưu.
+          {t('workboards.builder.viewOnlyBanner')}
         </div>
       )}
       {canEdit && activeScreenLocked && (
         <div className="flex shrink-0 items-center gap-2 border-b border-amber-200 bg-amber-50 px-4 py-2 text-xs font-medium text-amber-900">
           <Lock className="h-3.5 w-3.5 shrink-0" />
           <span className="flex-1">
-            <strong>{presence.lock?.holder_name || 'Người khác'}</strong> đang chỉnh sửa màn hình này — bạn đang ở chế độ xem.
+            <strong>{presence.lock?.holder_name || t('workboards.builder.someoneElse')}</strong>{' '}
+            {t('workboards.builder.lockedByOther')}
           </span>
           <button
             type="button"
@@ -584,7 +587,7 @@ export default function WorkboardBuilder({ workboard }: Props) {
             className="inline-flex items-center gap-1 rounded-md bg-amber-600 px-2 py-1 font-semibold text-white transition-colors hover:bg-amber-700"
           >
             <Lock className="h-3 w-3" />
-            Chiếm quyền chỉnh sửa
+            {t('workboards.builder.takeOverEditing')}
           </button>
         </div>
       )}
@@ -600,10 +603,10 @@ export default function WorkboardBuilder({ workboard }: Props) {
               type="button"
               onClick={backToCanvas}
               className="inline-flex items-center gap-1.5 rounded-md px-1.5 py-1 text-caption text-text-tertiary transition-colors hover:bg-surface-2 hover:text-text-primary"
-              title="Back to all screens"
+              title={t('workboards.builder.backToAllScreens')}
             >
               <LayoutGrid className="h-3.5 w-3.5" />
-              All screens
+              {t('workboards.builder.allScreens')}
             </button>
             <span className="text-text-quaternary">/</span>
             {activeScreen && (
@@ -613,7 +616,7 @@ export default function WorkboardBuilder({ workboard }: Props) {
                 aria-haspopup="dialog"
                 aria-expanded={switcherOpen}
                 className="group inline-flex max-w-[320px] items-center gap-1 rounded-md px-1.5 py-1 text-caption font-emphasis text-text-primary transition-colors hover:bg-surface-2"
-                title="Switch to another screen (or press to search)"
+                title={t('workboards.builder.switchScreenTitle')}
               >
                 <span className="truncate">{activeScreen.title}</span>
                 <ChevronDown className="h-3.5 w-3.5 shrink-0 text-text-tertiary transition-transform group-hover:text-text-primary" />
@@ -622,10 +625,10 @@ export default function WorkboardBuilder({ workboard }: Props) {
           </>
         ) : (
           <span className="text-caption font-emphasis text-text-secondary">
-            {totalScreens} {totalScreens === 1 ? 'screen' : 'screens'}
+            {t('workboards.canvas.screenCount', { count: totalScreens })}
             {screensWithIssues > 0 && (
               <span className="ml-1 text-warning">
-                · {screensWithIssues} need attention
+                {t('workboards.builder.needAttentionSuffix', { count: screensWithIssues })}
               </span>
             )}
           </span>
@@ -639,7 +642,7 @@ export default function WorkboardBuilder({ workboard }: Props) {
               !isDesign ? 'bg-surface-0 text-text-primary shadow-sm' : 'text-text-tertiary hover:text-text-primary'
             }`}
           >
-            Build
+            {t('workboards.layout.builder')}
           </button>
           <button
             type="button"
@@ -652,9 +655,9 @@ export default function WorkboardBuilder({ workboard }: Props) {
             className={`inline-flex items-center gap-1 rounded-md px-2.5 py-1 text-caption font-medium transition-colors ${
               isDesign ? 'bg-surface-0 text-brand shadow-sm' : 'text-text-tertiary hover:text-text-primary'
             }`}
-            title="Experience Studio — tùy chỉnh giao diện toàn app"
+            title={t('workboards.builder.designTitle')}
           >
-            <Palette className="h-3.5 w-3.5" /> Design
+            <Palette className="h-3.5 w-3.5" /> {t('workboards.builder.design')}
           </button>
         </div>
 
@@ -673,7 +676,7 @@ export default function WorkboardBuilder({ workboard }: Props) {
                   key={ed.user_key}
                   className="inline-flex h-6 w-6 items-center justify-center rounded-full text-[10px] font-semibold text-white ring-2 ring-surface-1"
                   style={{ backgroundColor: presenceColor(ed.user_key) }}
-                  title={`${ed.name}${where ? ` · đang ở "${where}"` : ''}${onSameScreen ? ' · cùng màn hình' : ''}`}
+                  title={`${ed.name}${where ? t('workboards.builder.presenceAt', { screen: where }) : ''}${onSameScreen ? t('workboards.builder.presenceSameScreen') : ''}`}
                 >
                   {presenceInitials(ed.name)}
                 </span>
@@ -701,10 +704,10 @@ export default function WorkboardBuilder({ workboard }: Props) {
               ? 'bg-brand/10 text-brand'
               : 'text-text-secondary hover:bg-surface-2 hover:text-text-primary'
           }`}
-          title={previewCollapsed ? 'Open live preview' : 'Hide live preview'}
+          title={previewCollapsed ? t('workboards.builder.openLivePreview') : t('workboards.builder.hideLivePreview')}
         >
           {previewCollapsed ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />}
-          {previewCollapsed ? 'Live preview' : 'Hide preview'}
+          {previewCollapsed ? t('workboards.builder.livePreview') : t('workboards.builder.hidePreview')}
         </button>
       </div>
 
@@ -726,9 +729,11 @@ export default function WorkboardBuilder({ workboard }: Props) {
             {isDesign ? (
               <div className="w-full px-4 py-5 sm:px-6 lg:px-8">
                 <div className="mb-4">
-                  <h2 className="text-base font-bold text-text-primary">Experience Studio — Design</h2>
+                  <h2 className="text-base font-bold text-text-primary">
+                    {t('workboards.builder.designHeading')}
+                  </h2>
                   <p className="mt-0.5 text-caption text-text-tertiary">
-                    Thiết kế toàn app và presentation của screen đang chọn trên cùng một preview.
+                    {t('workboards.builder.designDescription')}
                   </p>
                 </div>
                 <ExperienceStudioSection

@@ -59,6 +59,17 @@ def _is_encrypted(value: str) -> bool:
     return isinstance(value, str) and value.startswith(_ENCRYPTED_PREFIX)
 
 
+def is_encrypted(value: str) -> bool:
+    """Public: True if the value is an at-rest ciphertext produced by encrypt_value()."""
+    return _is_encrypted(value)
+
+
+def is_encryption_configured() -> bool:
+    """True when an encryption key is set — so callers can fail closed rather than
+    silently persist a plaintext secret (which a DB leak would expose)."""
+    return _get_fernet() is not None
+
+
 def encrypt_value(plaintext: str) -> str:
     """Encrypt a string value. Returns prefixed ciphertext or original if no key."""
     f = _get_fernet()

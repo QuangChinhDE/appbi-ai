@@ -420,16 +420,19 @@ export function DataSourcePicker({
   onChange: (next: number | null) => void;
   disabled?: boolean;
 }) {
+  const { t } = useI18n();
   return (
     <div className="flex items-center gap-2 rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 px-3 py-2">
-      <span className="shrink-0 text-caption font-emphasis text-text-secondary">Data source</span>
+      <span className="shrink-0 text-caption font-emphasis text-text-secondary">
+        {t('workboards.builder.dataSource')}
+      </span>
       <select
         value={tableId ?? ''}
         onChange={(event) => onChange(event.target.value ? Number(event.target.value) : null)}
         disabled={disabled}
         className="min-h-9 flex-1 rounded-md border border-[rgb(var(--border-line))] bg-surface-0 px-2 py-1 text-caption text-text-primary focus:border-brand focus:outline-none"
       >
-        <option value="">— pick a table —</option>
+        <option value="">{t('workboards.builder.pickTable')}</option>
         {tables.map((table) => (
           <option key={table.id} value={table.id}>
             {table.display_name} ({table.source_table_name})

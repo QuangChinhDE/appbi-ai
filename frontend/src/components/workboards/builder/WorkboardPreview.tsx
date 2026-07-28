@@ -23,6 +23,7 @@ import {
   sortPreviewWorkspaces,
   type WorkspaceLite,
 } from './workspace-preview-utils';
+import { useI18n } from '@/providers/LanguageProvider';
 
 interface Props {
   workboard: Workboard;
@@ -35,6 +36,7 @@ function getApiErrorMessage(error: unknown, fallback: string) {
 }
 
 export default function WorkboardPreview({ workboard }: Props) {
+  const { t } = useI18n();
   const [workspaces, setWorkspaces] = useState<WorkspaceLite[]>([]);
   const [activeWorkspace, setActiveWorkspace] = useState<WorkspaceLite | null>(null);
   const [previewUsername, setPreviewUsername] = useState('');
@@ -57,7 +59,7 @@ export default function WorkboardPreview({ workboard }: Props) {
         setActiveWorkspace(ordered[0] ?? null);
         setSessionReady(false);
       } catch (e: unknown) {
-        setError(getApiErrorMessage(e, 'Could not load workspaces.'));
+        setError(getApiErrorMessage(e, t('workboards.preview.loadWorkspacesFailed')));
       } finally {
         if (alive) setLoading(false);
       }
@@ -65,7 +67,7 @@ export default function WorkboardPreview({ workboard }: Props) {
     return () => {
       alive = false;
     };
-  }, [workboard.id, workboardSlug]);
+  }, [t, workboard.id, workboardSlug]);
 
   const startPreview = useCallback(async () => {
     if (!activeWorkspace) return;
@@ -84,11 +86,11 @@ export default function WorkboardPreview({ workboard }: Props) {
       setSessionReady(true);
       setIframeKey((k) => k + 1);
     } catch (e: unknown) {
-      setError(getApiErrorMessage(e, 'Could not create preview session.'));
+      setError(getApiErrorMessage(e, t('workboards.preview.createSessionFailed')));
     } finally {
       setSessionLoading(false);
     }
-  }, [activeWorkspace, previewUsername, workboard.id]);
+  }, [activeWorkspace, previewUsername, t, workboard.id]);
 
   const previewUrl = useMemo(() => {
     if (!activeWorkspace) return null;
@@ -108,12 +110,12 @@ export default function WorkboardPreview({ workboard }: Props) {
       <div className="mx-auto max-w-2xl p-8">
         <div className="rounded-xl border border-warning/30 bg-warning/10 p-5 text-caption text-warning">
           <h2 className="mb-1 text-body font-emphasis">
-            No workspace is available for preview
+            {t('workboards.preview.noWorkspaceTitle')}
           </h2>
           <p>
-            Create a workspace in Settings → Workspaces. The default mode is{' '}
+            {t('workboards.preview.noWorkspacePrefix')}{' '}
             <code className="rounded bg-warning/20 px-1">public_app_users</code>{' '}
-            (uses the mini-app users managed in the Workboard builder).
+            {t('workboards.preview.noWorkspaceSuffix')}
           </p>
         </div>
       </div>
@@ -126,7 +128,7 @@ export default function WorkboardPreview({ workboard }: Props) {
     <div className="flex h-full">
       <aside className="w-64 shrink-0 overflow-y-auto border-r border-[rgb(var(--border-line))] bg-surface-1 p-4">
         <h3 className="mb-2 text-tiny font-emphasis uppercase tracking-wider text-text-quaternary">
-          Workspace
+          {t('workboards.preview.workspace')}
         </h3>
         <select
           value={activeWorkspace?.id ?? ''}
@@ -142,7 +144,7 @@ export default function WorkboardPreview({ workboard }: Props) {
           {workspaces.map((w) => (
             <option key={w.id} value={w.id}>
               {w.name}
-              {isWorkboardLinked(w, workboardSlug) ? '' : ' (preview)'}
+              {isWorkboardLinked(w, workboardSlug) ? '' : ` (${t('workboards.preview.previewSuffix')})`}
             </option>
           ))}
         </select>
@@ -150,7 +152,7 @@ export default function WorkboardPreview({ workboard }: Props) {
         {!isInternal ? (
           <>
             <h3 className="mt-4 mb-2 text-tiny font-emphasis uppercase tracking-wider text-text-quaternary">
-              App user preview
+              {t('workboards.preview.appUserPreview')}
             </h3>
             <input
               value={previewUsername}
@@ -158,18 +160,16 @@ export default function WorkboardPreview({ workboard }: Props) {
                 setPreviewUsername(e.target.value);
                 setSessionReady(false);
               }}
-              placeholder="Username preview"
+              placeholder={t('workboards.preview.usernamePlaceholder')}
               className="w-full rounded-md border border-[rgb(var(--border-line))] bg-surface-0 px-2 py-1.5 text-caption"
             />
             <p className="mt-1 text-caption text-text-tertiary">
-              Enter a real username from this Workboard, or leave it blank so
-              the backend picks the first active app user.
+              {t('workboards.preview.usernameHint')}
             </p>
           </>
         ) : (
           <p className="mt-4 rounded-md border border-[rgb(var(--border-line))] bg-surface-2 px-2 py-1.5 text-caption text-text-tertiary">
-            Internal workspace - preview runs as your AppBI account, so no user
-            selection is needed.
+            {t('workboards.preview.internalHint')}
           </p>
         )}
 
@@ -183,7 +183,7 @@ export default function WorkboardPreview({ workboard }: Props) {
           ) : (
             <UserCheck className="h-3.5 w-3.5" />
           )}
-          {sessionLoading ? 'Creating session...' : 'Start preview'}
+          {sessionLoading ? t('workboards.preview.creatingSession') : t('workboards.preview.startPreview')}
         </button>
 
         {sessionReady && (
@@ -192,7 +192,7 @@ export default function WorkboardPreview({ workboard }: Props) {
             className="mt-2 flex w-full items-center justify-center gap-1 rounded-md border border-[rgb(var(--border-line))] px-2 py-1.5 text-caption text-text-secondary hover:bg-surface-2"
           >
             <RefreshCw className="h-3 w-3" />
-            Refresh iframe
+            {t('workboards.preview.refreshIframe')}
           </button>
         )}
 
@@ -204,7 +204,7 @@ export default function WorkboardPreview({ workboard }: Props) {
             className="mt-2 flex w-full items-center justify-center gap-1 rounded-md border border-[rgb(var(--border-line))] px-2 py-1.5 text-caption text-text-secondary hover:bg-surface-2"
           >
             <ExternalLink className="h-3 w-3" />
-            Open in a new tab
+            {t('workboards.preview.openNewTab')}
           </a>
         )}
 
@@ -215,7 +215,7 @@ export default function WorkboardPreview({ workboard }: Props) {
         )}
 
         <div className="mt-5 border-t border-[rgb(var(--border-line))] pt-3 text-caption text-text-tertiary">
-          Preview uses the Workboard app users selected by role, so it does not depend on a fixed sample username.
+          {t('workboards.preview.footerHint')}
         </div>
       </aside>
 
@@ -225,7 +225,7 @@ export default function WorkboardPreview({ workboard }: Props) {
             <div>
               <UserCheck className="mx-auto mb-3 h-8 w-8 text-text-tertiary" />
               <p className="text-body text-text-secondary">
-                Pick a user and start preview to open the mini-app in the iframe
+                {t('workboards.preview.emptyIframeHint')}
               </p>
             </div>
           </div>
@@ -234,7 +234,7 @@ export default function WorkboardPreview({ workboard }: Props) {
             key={iframeKey}
             src={previewUrl}
             className="h-full w-full bg-white"
-            title="Mini-app preview"
+            title={t('workboards.preview.iframeTitle')}
           />
         ) : null}
       </div>

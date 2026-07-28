@@ -41,6 +41,7 @@ import type { ScreenGroupSpec, ScreenKind, ScreenSpec } from './types';
 import { resolveScreenIcon } from './ScreenIconRegistry';
 import IconPicker from './IconPicker';
 import { toast } from '@/lib/toast';
+import { useI18n } from '@/providers/LanguageProvider';
 
 const KIND_ICON: Record<ScreenKind, React.ElementType> = {
   form: ClipboardEdit,
@@ -49,12 +50,11 @@ const KIND_ICON: Record<ScreenKind, React.ElementType> = {
   dashboard: LayoutDashboard,
 };
 
-const KIND_LABEL: Record<ScreenKind, string> = {
-  form: 'Form',
-  table: 'Table',
-  doc: 'Document',
-  dashboard: 'Dashboard',
-};
+type Translate = (key: string, values?: Record<string, string | number>) => string;
+
+function screenKindLabel(kind: ScreenKind, t: Translate): string {
+  return t(`workboards.builder.kind.${kind}`);
+}
 
 type ScreenStatus =
   | { kind: 'ok'; label: string }
@@ -99,65 +99,69 @@ interface Props {
  * Compute a one-liner subtitle for a screen card from its spec — e.g.
  * "5 fields · 1 initial value" or "Pick a dashboard or paste a share token".
  */
-function screenSubtitle(s: ScreenSpec): string {
+function screenSubtitle(s: ScreenSpec, t: Translate): string {
   if (s.kind === 'form') {
     const fields = s.form?.fields?.length ?? 0;
     const initial = Object.keys(s.form?.initial_values || {}).length;
-    if (fields === 0) return 'No fields yet — add the first one.';
-    const initialPart = initial > 0 ? ` · ${initial} initial value${initial === 1 ? '' : 's'}` : '';
-    return `${fields} field${fields === 1 ? '' : 's'}${initialPart}`;
+    if (fields === 0) return t('workboards.canvas.noFieldsYet');
+    const initialPart =
+      initial > 0 ? t('workboards.canvas.initialValuesSuffix', { count: initial }) : '';
+    return `${t('workboards.canvas.fieldCount', { count: fields })}${initialPart}`;
   }
   if (s.kind === 'table') {
     const cols = s.table?.columns?.length ?? 0;
     const editable = (s.table?.editable_columns || []).length;
     const computed = s.table?.computed_columns?.length ?? 0;
     const actions = s.table?.row_actions?.length ?? 0;
-    if (cols === 0) return 'No columns yet — pick which to show.';
-    const editPart = editable > 0 ? ` · ${editable} editable` : ' · read-only';
-    const formulaPart = computed > 0 ? ` · ${computed} formula${computed === 1 ? '' : 's'}` : '';
-    const actionPart = actions > 0 ? ` · ${actions} row action${actions === 1 ? '' : 's'}` : '';
-    return `${cols} column${cols === 1 ? '' : 's'}${editPart}${formulaPart}${actionPart}`;
+    if (cols === 0) return t('workboards.canvas.noColumnsYet');
+    const editPart =
+      editable > 0 ? t('workboards.canvas.editableSuffix', { count: editable }) : t('workboards.canvas.readonlySuffix');
+    const formulaPart =
+      computed > 0 ? t('workboards.canvas.formulaSuffix', { count: computed }) : '';
+    const actionPart =
+      actions > 0 ? t('workboards.canvas.rowActionSuffix', { count: actions }) : '';
+    return `${t('workboards.canvas.columnCount', { count: cols })}${editPart}${formulaPart}${actionPart}`;
   }
   if (s.kind === 'doc') {
     const blocks = s.doc?.blocks?.length ?? 0;
     const page = s.doc?.page;
     const sizeLabel = page ? `${page.size ?? 'A4'} ${page.orientation ?? 'portrait'}` : 'A4 portrait';
-    if (blocks === 0) return `${sizeLabel} · no blocks — add a header + table to start.`;
-    return `${sizeLabel} · ${blocks} block${blocks === 1 ? '' : 's'}`;
+    if (blocks === 0) return t('workboards.canvas.noBlocksYet', { size: sizeLabel });
+    return t('workboards.canvas.blockCount', { size: sizeLabel, count: blocks });
   }
   if (s.kind === 'dashboard') {
     const d = s.dashboard;
     if (typeof d?.dashboard_id === 'number' && d.dashboard_id > 0) {
       const slots = (d.role_filter_mapping?.length || 0) + (d.static_filters?.length || 0);
       return slots > 0
-        ? `Managed dashboard #${d.dashboard_id} · ${slots} filter slot${slots === 1 ? '' : 's'}`
-        : `Managed dashboard #${d.dashboard_id}`;
+        ? t('workboards.canvas.managedDashboardWithSlots', { id: d.dashboard_id, count: slots })
+        : t('workboards.canvas.managedDashboard', { id: d.dashboard_id });
     }
-    if ((d?.share_token || '').trim()) return 'Manual share-token mode';
-    return 'Pick a dashboard or paste a share token.';
+    if ((d?.share_token || '').trim()) return t('workboards.canvas.manualShareTokenMode');
+    return t('workboards.canvas.pickDashboardOrToken');
   }
   return '';
 }
 
-function screenStatus(s: ScreenSpec): ScreenStatus {
+function screenStatus(s: ScreenSpec, t: Translate): ScreenStatus {
   if (s.kind === 'form' || s.kind === 'table' || s.kind === 'doc') {
-    if (!s.table_id) return { kind: 'err', label: 'No data source' };
+    if (!s.table_id) return { kind: 'err', label: t('workboards.canvas.status.noDataSource') };
   }
   if (s.kind === 'form' && (s.form?.fields?.length ?? 0) === 0) {
-    return { kind: 'warn', label: 'Needs fields' };
+    return { kind: 'warn', label: t('workboards.canvas.status.needsFields') };
   }
   if (s.kind === 'table' && (s.table?.columns?.length ?? 0) === 0) {
-    return { kind: 'warn', label: 'Needs columns' };
+    return { kind: 'warn', label: t('workboards.canvas.status.needsColumns') };
   }
   if (s.kind === 'doc' && (s.doc?.blocks?.length ?? 0) === 0) {
-    return { kind: 'warn', label: 'Needs blocks' };
+    return { kind: 'warn', label: t('workboards.canvas.status.needsBlocks') };
   }
   if (s.kind === 'dashboard') {
     const hasManaged = typeof s.dashboard?.dashboard_id === 'number' && (s.dashboard.dashboard_id ?? 0) > 0;
     const hasManual = !!(s.dashboard?.share_token || '').trim();
-    if (!hasManaged && !hasManual) return { kind: 'err', label: 'No source' };
+    if (!hasManaged && !hasManual) return { kind: 'err', label: t('workboards.canvas.status.noSource') };
   }
-  return { kind: 'ok', label: 'Configured' };
+  return { kind: 'ok', label: t('workboards.canvas.status.configured') };
 }
 
 const STATUS_COLOR: Record<ScreenStatus['kind'], string> = {
@@ -195,6 +199,7 @@ export default function CanvasOverview({
   onSetGroupIcon,
   canEdit = true,
 }: Props) {
+  const { t } = useI18n();
   // ── Which "drawer" (workspace tab) is open. Real group id, or a sentinel.
   const [activeTab, setActiveTab] = useState<string>(TAB_ALL);
   // Workspace create (inline pill at the end of the tab strip).
@@ -270,7 +275,7 @@ export default function CanvasOverview({
       return;
     }
     if (isDuplicateLabel(v)) {
-      setCreateError(`Đã có workspace tên “${v}”.`);
+      setCreateError(t('workboards.canvas.workspaceDuplicate', { name: v }));
       return;
     }
     pendingSelectRef.current = `ws-pending:${v}`;
@@ -314,7 +319,11 @@ export default function CanvasOverview({
   const handleMove = (screenId: string, targetGroupId: string | null, targetLabel: string) => {
     onAssignScreen(screenId, targetGroupId);
     setMoveMenuFor(null);
-    toast.success(targetGroupId ? `Đã chuyển sang “${targetLabel}”` : 'Đã bỏ khỏi workspace (về Khác)');
+    toast.success(
+      targetGroupId
+        ? t('workboards.canvas.movedToWorkspace', { name: targetLabel })
+        : t('workboards.canvas.movedToUngrouped'),
+    );
   };
 
   // Reorder helpers — always translate the visible position to the ABSOLUTE
@@ -332,7 +341,7 @@ export default function CanvasOverview({
   // ── Build the tab list. Always show [Tất cả] + (real workspaces) + [Khác
   // when there are groups] + the create pill.
   const tabs: Array<{ key: string; label: string; icon?: string | null; count: number; synthetic: boolean }> = [
-    { key: TAB_ALL, label: 'Tất cả', count: screens.length, synthetic: true },
+    { key: TAB_ALL, label: t('workboards.canvas.all'), count: screens.length, synthetic: true },
     ...groups.map((g) => ({
       key: g.id,
       label: g.label,
@@ -341,7 +350,7 @@ export default function CanvasOverview({
       synthetic: false,
     })),
     ...(groups.length > 0
-      ? [{ key: TAB_UNGROUPED, label: 'Khác', count: ungroupedCount, synthetic: true }]
+      ? [{ key: TAB_UNGROUPED, label: t('workboards.canvas.ungrouped'), count: ungroupedCount, synthetic: true }]
       : []),
   ];
 
@@ -373,10 +382,10 @@ export default function CanvasOverview({
 
   const ActiveIcon = activeGroup ? (resolveScreenIcon(activeGroup.icon) ?? Layers) : null;
   const addHint = activeGroup
-    ? `Thêm vào ▸ ${activeGroup.label}`
+    ? t('workboards.canvas.addIntoWorkspace', { name: activeGroup.label })
     : effectiveTab === TAB_UNGROUPED
-      ? 'Thêm vào ▸ Khác (chưa phân)'
-      : 'Thêm screen (chưa phân workspace)';
+      ? t('workboards.canvas.addIntoUngrouped')
+      : t('workboards.canvas.addUngroupedScreen');
 
   return (
     <div className="w-full px-6 py-6 lg:px-8">
@@ -387,14 +396,14 @@ export default function CanvasOverview({
         </div>
         <div className="min-w-0 flex-1">
           <div className="text-tiny font-emphasis uppercase tracking-wider text-text-quaternary">
-            Bound dataset
+            {t('workboards.canvas.boundDataset')}
           </div>
           <div className="mt-0.5 truncate text-caption font-emphasis text-text-primary">
-            {boundDataset?.name || '— no dataset —'}
+            {boundDataset?.name || t('workboards.canvas.noDataset')}
           </div>
           <div className="text-micro text-text-tertiary">
-            Mỗi screen chọn 1 bảng từ dataset này. {tables.length} bảng khả dụng. Đổi dataset &amp;
-            thiết lập app ở tab <strong>Cài đặt</strong>.
+            {t('workboards.canvas.datasetHintPrefix', { count: tables.length })}{' '}
+            <strong>{t('workboards.layout.settings')}</strong>.
           </div>
         </div>
       </div>
@@ -403,7 +412,7 @@ export default function CanvasOverview({
       <div className="mb-1 flex items-center gap-1.5">
         <Layers className="h-3.5 w-3.5 text-text-quaternary" />
         <span className="text-tiny font-emphasis uppercase tracking-wider text-text-quaternary">
-          Workspaces
+          {t('workboards.canvas.workspaces')}
         </span>
       </div>
       <div className="mb-3 flex flex-wrap items-center gap-1.5">
@@ -426,7 +435,7 @@ export default function CanvasOverview({
                   setCreateError(null);
                 }
               }}
-              placeholder="Tên workspace…"
+              placeholder={t('workboards.canvas.workspaceNamePlaceholder')}
               className="h-8 w-40 rounded-md border border-brand bg-surface-0 px-2.5 text-caption text-text-primary outline-none"
             />
             <button
@@ -435,7 +444,7 @@ export default function CanvasOverview({
               className="inline-flex h-8 items-center gap-1 rounded-md bg-brand px-2.5 text-tiny font-emphasis text-white hover:opacity-90"
             >
               <Check className="h-3.5 w-3.5" />
-              Thêm
+              {t('workboards.canvas.add')}
             </button>
             <button
               type="button"
@@ -458,7 +467,7 @@ export default function CanvasOverview({
               setCreateError(null);
             }}
             className="inline-flex h-8 items-center gap-1.5 rounded-md border border-dashed border-[rgb(var(--border-line))] px-2.5 text-tiny font-emphasis text-text-tertiary hover:border-brand hover:text-brand"
-            title="Tạo workspace mới"
+            title={t('workboards.canvas.createWorkspaceTitle')}
           >
             <FolderPlus className="h-3.5 w-3.5" />
             Workspace
@@ -476,7 +485,7 @@ export default function CanvasOverview({
                 type="button"
                 onClick={() => setIconOpen((v) => !v)}
                 className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-brand/10 text-brand hover:ring-2 hover:ring-brand/30"
-                title="Đổi biểu tượng workspace"
+                    title={t('workboards.canvas.changeWorkspaceIcon')}
               >
                 {ActiveIcon ? <ActiveIcon className="h-4 w-4" /> : <Layers className="h-4 w-4" />}
               </button>
@@ -501,7 +510,7 @@ export default function CanvasOverview({
                 </span>
               )}
               <span className="shrink-0 text-micro text-text-quaternary">
-                {visibleScreens.length} screen
+                {t('workboards.canvas.screenCount', { count: visibleScreens.length })}
               </span>
               {!renaming && (
                 <button
@@ -511,7 +520,7 @@ export default function CanvasOverview({
                     setEditName(activeGroup.label);
                   }}
                   className="rounded p-1 text-text-tertiary hover:bg-surface-2 hover:text-text-primary"
-                  title="Đổi tên workspace"
+                  title={t('workboards.canvas.renameWorkspace')}
                 >
                   <Pencil className="h-3.5 w-3.5" />
                 </button>
@@ -521,7 +530,7 @@ export default function CanvasOverview({
                 onClick={() => {
                   if (
                     confirm(
-                      `Xóa workspace "${activeGroup.label}"? Các screen bên trong KHÔNG bị xóa, chỉ về lại mục “Khác”.`,
+                      t('workboards.canvas.deleteWorkspaceConfirm', { name: activeGroup.label }),
                     )
                   ) {
                     onDeleteGroup(activeGroup.id);
@@ -529,16 +538,18 @@ export default function CanvasOverview({
                   }
                 }}
                 className="rounded p-1 text-text-quaternary opacity-70 hover:bg-danger/10 hover:text-danger hover:opacity-100"
-                title="Xóa workspace"
+                title={t('workboards.canvas.deleteWorkspace')}
               >
                 <Trash2 className="h-3.5 w-3.5" />
               </button>
             </>
           ) : (
             <span className="text-small font-strong text-text-primary">
-              {effectiveTab === TAB_UNGROUPED ? 'Khác (chưa phân workspace)' : 'Tất cả màn hình'}
+              {effectiveTab === TAB_UNGROUPED
+                ? t('workboards.canvas.ungroupedFull')
+                : t('workboards.canvas.allScreens')}
               <span className="ml-2 text-micro font-normal text-text-quaternary">
-                {visibleScreens.length} screen
+                {t('workboards.canvas.screenCount', { count: visibleScreens.length })}
               </span>
             </span>
           )}
@@ -554,10 +565,10 @@ export default function CanvasOverview({
                 type="button"
                 onClick={() => handleAddScreen(entry.kind)}
                 className="inline-flex h-8 items-center gap-1.5 rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-2.5 text-caption font-emphasis text-text-secondary hover:border-brand hover:text-brand"
-                title={`${entry.label} — ${addHint}`}
+                title={`${screenKindLabel(entry.kind, t)} - ${addHint}`}
               >
                 <Icon className="h-3.5 w-3.5" />
-                {entry.label}
+                {screenKindLabel(entry.kind, t)}
               </button>
             );
           })}
@@ -569,7 +580,7 @@ export default function CanvasOverview({
       {activeGroup && iconOpen && (
         <div className="mb-3 flex items-center gap-2 rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 px-3 py-2">
           <span className="text-tiny font-emphasis uppercase tracking-wider text-text-quaternary">
-            Biểu tượng
+            {t('workboards.canvas.icon')}
           </span>
           <div className="w-[260px]">
             <IconPicker
@@ -577,14 +588,14 @@ export default function CanvasOverview({
               onChange={(next) => {
                 onSetGroupIcon(activeGroup.id, next || null);
               }}
-              placeholder="Chọn biểu tượng (không bắt buộc)"
+              placeholder={t('workboards.canvas.iconOptionalPlaceholder')}
             />
           </div>
           <button
             type="button"
             onClick={() => setIconOpen(false)}
             className="ml-auto rounded p-1 text-text-tertiary hover:bg-surface-2"
-            title="Đóng"
+            title={t('common.close')}
           >
             <X className="h-3.5 w-3.5" />
           </button>
@@ -597,19 +608,19 @@ export default function CanvasOverview({
           <div className="mx-auto mb-3 flex h-11 w-11 items-center justify-center rounded-full bg-surface-2 text-text-tertiary">
             <Plus className="h-5 w-5" />
           </div>
-          <h3 className="text-small font-strong text-text-primary">Chưa có screen nào</h3>
+          <h3 className="text-small font-strong text-text-primary">
+            {t('workboards.canvas.emptyTitle')}
+          </h3>
           <p className="mx-auto mt-1 max-w-md text-caption text-text-tertiary">
-            Mini-app gồm một hoặc nhiều screen. Chọn loại ở trên để thêm screen đầu
-            tiên — Form để nhập liệu, Table để duyệt, Document để in báo cáo,
-            Dashboard để nhúng biểu đồ.
+            {t('workboards.canvas.emptyDescription')}
           </p>
         </div>
       ) : visibleScreens.length === 0 ? (
         <div className="rounded-xl border border-dashed border-[rgb(var(--border-line))] bg-surface-1 px-6 py-8 text-center">
           <p className="text-caption text-text-tertiary">
             {effectiveTab === TAB_UNGROUPED
-              ? 'Mọi screen đều đã được phân vào workspace.'
-              : 'Workspace này chưa có screen. Thêm screen mới (nút trên) hoặc chuyển screen từ workspace khác bằng nút “Chuyển” trên mỗi screen.'}
+              ? t('workboards.canvas.emptyUngrouped')
+              : t('workboards.canvas.emptyWorkspace')}
           </p>
         </div>
       ) : (
@@ -617,7 +628,7 @@ export default function CanvasOverview({
           {visibleScreens.map((s, vIdx) => {
             const PickedIcon = resolveScreenIcon(s.icon);
             const Icon = PickedIcon ?? KIND_ICON[s.kind];
-            const status = screenStatus(s);
+            const status = screenStatus(s, t);
             const table = tables.find((t) => t.id === s.table_id);
             const canUp = vIdx > 0;
             const canDown = vIdx < visibleScreens.length - 1;
@@ -676,7 +687,7 @@ export default function CanvasOverview({
                 {/* Drag handle */}
                 <span
                   className="flex h-8 w-5 cursor-grab items-center justify-center text-text-quaternary group-hover:text-text-tertiary active:cursor-grabbing"
-                  title="Kéo để sắp xếp"
+                  title={t('workboards.canvas.dragToReorder')}
                   onClick={(event) => event.stopPropagation()}
                 >
                   <GripVertical className="h-4 w-4" />
@@ -690,11 +701,11 @@ export default function CanvasOverview({
                       {s.title}
                     </span>
                     <span className="inline-flex items-center rounded-sm bg-surface-2 px-1.5 py-0.5 text-tiny font-emphasis uppercase tracking-wider text-text-tertiary">
-                      {KIND_LABEL[s.kind]}
+                      {screenKindLabel(s.kind, t)}
                     </span>
                   </div>
                   <div className="mt-0.5 truncate text-micro text-text-tertiary">
-                    {screenSubtitle(s)}
+                    {screenSubtitle(s, t)}
                   </div>
                 </div>
                 <div className="text-right text-micro text-text-quaternary">
@@ -703,7 +714,7 @@ export default function CanvasOverview({
                       {table.source_table_name}
                     </span>
                   ) : (
-                    'no table'
+                    t('workboards.canvas.noTable')
                   )}
                 </div>
                 <span
@@ -724,7 +735,7 @@ export default function CanvasOverview({
                       className={`rounded p-1 ${
                         menuOpen ? 'bg-brand/10 text-brand' : 'text-text-tertiary hover:bg-surface-2 hover:text-text-primary'
                       }`}
-                      title="Chuyển sang workspace khác"
+                      title={t('workboards.canvas.moveToWorkspace')}
                     >
                       <FolderInput className="h-3.5 w-3.5" />
                     </button>
@@ -742,7 +753,7 @@ export default function CanvasOverview({
                           onClick={(event) => event.stopPropagation()}
                         >
                           <div className="px-3 py-1 text-tiny font-emphasis uppercase tracking-wider text-text-quaternary">
-                            Chuyển “{s.title}” sang
+                            {t('workboards.canvas.moveScreenTo', { title: s.title })}
                           </div>
                           {groups.map((g) => {
                             const here = groupOfScreen.get(s.id) === g.id;
@@ -769,7 +780,7 @@ export default function CanvasOverview({
                           <button
                             type="button"
                             disabled={!groupOfScreen.has(s.id)}
-                            onClick={() => handleMove(s.id, null, 'Khác')}
+                            onClick={() => handleMove(s.id, null, t('workboards.canvas.ungrouped'))}
                             className={`flex w-full items-center gap-2 px-3 py-1.5 text-caption transition-colors ${
                               !groupOfScreen.has(s.id)
                                 ? 'cursor-default text-text-quaternary'
@@ -777,7 +788,9 @@ export default function CanvasOverview({
                             }`}
                           >
                             <Layers className="h-3.5 w-3.5 shrink-0 opacity-60" />
-                            <span className="min-w-0 flex-1 truncate text-left">— Khác (bỏ nhóm) —</span>
+                            <span className="min-w-0 flex-1 truncate text-left">
+                              {t('workboards.canvas.removeFromGroup')}
+                            </span>
                             {!groupOfScreen.has(s.id) && <Check className="h-3.5 w-3.5 shrink-0 text-brand" />}
                           </button>
                         </div>
@@ -792,7 +805,7 @@ export default function CanvasOverview({
                     }}
                     disabled={!canUp}
                     className="rounded p-1 text-text-tertiary hover:bg-surface-2 hover:text-text-primary disabled:opacity-30"
-                    title="Lên trên"
+                    title={t('workboards.canvas.moveUp')}
                   >
                     <ArrowUp className="h-3.5 w-3.5" />
                   </button>
@@ -804,7 +817,7 @@ export default function CanvasOverview({
                     }}
                     disabled={!canDown}
                     className="rounded p-1 text-text-tertiary hover:bg-surface-2 hover:text-text-primary disabled:opacity-30"
-                    title="Xuống dưới"
+                    title={t('workboards.canvas.moveDown')}
                   >
                     <ArrowDown className="h-3.5 w-3.5" />
                   </button>
@@ -816,7 +829,7 @@ export default function CanvasOverview({
                       onDeleteScreen(s.id);
                     }}
                     className="rounded p-1 text-text-quaternary opacity-60 hover:bg-danger/10 hover:text-danger hover:opacity-100"
-                    title="Xoá screen"
+                    title={t('workboards.canvas.deleteScreen')}
                   >
                     <Trash2 className="h-3.5 w-3.5" />
                   </button>

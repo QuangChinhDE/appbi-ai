@@ -156,16 +156,16 @@ export function WorkboardPublishToggle({ workboard, variant, canEdit = true }: P
     <Modal
       isOpen
       onClose={() => setAuditBlock(null)}
-      title="Chưa thể xuất bản"
+      title={t('workboards.publish.auditBlockedTitle')}
       size="sm"
       footer={
         <Button variant="ghost" size="sm" onClick={() => setAuditBlock(null)}>
-          Đóng
+          {t('common.close')}
         </Button>
       }
     >
       <p className="mb-3 text-caption text-text-secondary">
-        Ứng dụng còn {errorIssues.length} lỗi chặn. Sửa hết rồi xuất bản lại:
+        {t('workboards.publish.auditBlockedDescription', { count: errorIssues.length })}
       </p>
       <ul className="space-y-2">
         {errorIssues.map((issue, idx) => (
@@ -232,7 +232,7 @@ export function WorkboardPublishToggle({ workboard, variant, canEdit = true }: P
           }
           title={
             status === 'live_unpublished_changes'
-              ? 'Live · có thay đổi chưa xuất bản'
+              ? t('workboards.publish.unpublishedChangesTitle')
               : status === 'live'
                 ? t('workboards.publish.publishedTitle')
                 : t('workboards.publish.draftTitle')
@@ -261,13 +261,13 @@ export function WorkboardPublishToggle({ workboard, variant, canEdit = true }: P
 
   // pill variant (topbar)
   const pill = {
-    draft: { tone: 'warning' as const, dot: 'bg-warning', label: t('workboards.filter.draft'), title: 'Nhấn để xuất bản (Go live)' },
-    live: { tone: 'success' as const, dot: 'bg-success', label: t('workboards.filter.published'), title: 'Đang chạy — nhấn để chuyển về nháp' },
+    draft: { tone: 'warning' as const, dot: 'bg-warning', label: t('workboards.filter.draft'), title: t('workboards.publish.draftClickTitle') },
+    live: { tone: 'success' as const, dot: 'bg-success', label: t('workboards.filter.published'), title: t('workboards.publish.liveClickTitle') },
     live_unpublished_changes: {
       tone: 'warning' as const,
       dot: 'bg-amber-500',
-      label: 'Live · thay đổi chưa xuất bản',
-      title: 'Bản nháp có thay đổi chưa lên production — nhấn để xuất bản',
+      label: t('workboards.publish.unpublishedChangesLabel'),
+      title: t('workboards.publish.unpublishedChangesPillTitle'),
     },
   }[status];
 
@@ -293,7 +293,7 @@ function StatePill({ status }: { status: PublishStatus }) {
   const map = {
     draft: { tone: 'warning' as const, dot: 'bg-warning', label: t('workboards.filter.draft') },
     live: { tone: 'success' as const, dot: 'bg-success', label: t('workboards.filter.published') },
-    live_unpublished_changes: { tone: 'warning' as const, dot: 'bg-amber-500', label: 'Live · thay đổi chưa xuất bản' },
+    live_unpublished_changes: { tone: 'warning' as const, dot: 'bg-amber-500', label: t('workboards.publish.unpublishedChangesLabel') },
   }[status];
   return (
     <FilterTag tone={map.tone} disabled className="gap-1">

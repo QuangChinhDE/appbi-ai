@@ -39,6 +39,25 @@ export function safePdfFilename(name: string | null | undefined, fallback: strin
 }
 
 /**
+ * Show the finished PDF in a second browser tab as well as downloading it.
+ *
+ * Declared in `.env.example` as `NEXT_PUBLIC_PDF_PREVIEW_TAB`, default **false**
+ * (DA feedback 2026-07-28: "chỉ cần ở màn báo cáo nhìn process và xong tải
+ * thành pdf"). Watching progress on the report and getting a file is the whole
+ * job — the extra tab only ever showed a `blob:…uuid` address, which reads like
+ * a broken link to a business reader. Off, the export keeps the viewer on the
+ * report and simply saves the file; nothing else about the flow changes.
+ *
+ * A deployment that wants the side-by-side preview back sets the variable to
+ * `true` and rebuilds the frontend (NEXT_PUBLIC_* values are inlined at build
+ * time, like every other flag in this app). The pre-opened-tab mechanism below
+ * stays in the code either way: it must run inside the click, before any await,
+ * or the popup blocker eats it — subtle enough not to re-derive later.
+ */
+export const PDF_PREVIEW_TAB_ENABLED =
+  String(process.env.NEXT_PUBLIC_PDF_PREVIEW_TAB ?? 'false').toLowerCase() === 'true';
+
+/**
  * Open a blank tab for the PDF preview. MUST be called synchronously inside the
  * export click handler (before any `await`) — a PDF export runs for several
  * seconds, and by the time it finishes the transient user activation is spent,
@@ -46,9 +65,13 @@ export function safePdfFilename(name: string | null | undefined, fallback: strin
  * the activation is still live, show a "generating…" placeholder, and the
  * exporter navigates it to the finished PDF. Lives here (a tiny static module)
  * rather than in the heavy, dynamically-imported `export-pdf` chunk so it's
- * available without awaiting that import. Returns null if the popup was blocked.
+ * available without awaiting that import.
+ *
+ * Returns null when the feature is switched off (the normal case today) or when
+ * the popup was blocked — callers treat both the same way: download only.
  */
 export function openPdfPreviewTab(): Window | null {
+  if (!PDF_PREVIEW_TAB_ENABLED) return null;
   if (typeof window === 'undefined') return null;
   try {
     const w = window.open('', '_blank');

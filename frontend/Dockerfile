@@ -43,6 +43,10 @@ ARG NEXT_PUBLIC_APP_URL=http://localhost:3000
 ENV NEXT_PUBLIC_APP_URL=$NEXT_PUBLIC_APP_URL
 ARG NEXT_PUBLIC_WORKBOARDS_ENABLED=false
 ENV NEXT_PUBLIC_WORKBOARDS_ENABLED=$NEXT_PUBLIC_WORKBOARDS_ENABLED
+# PDF export delivery — false: progress on the report + download only;
+# true also opens the finished PDF in a second tab. Inlined by `next build`.
+ARG NEXT_PUBLIC_PDF_PREVIEW_TAB=false
+ENV NEXT_PUBLIC_PDF_PREVIEW_TAB=$NEXT_PUBLIC_PDF_PREVIEW_TAB
 
 # Copy dependencies from deps stage
 COPY --from=deps /app/node_modules ./node_modules

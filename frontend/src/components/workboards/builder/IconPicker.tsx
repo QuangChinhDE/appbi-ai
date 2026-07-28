@@ -13,8 +13,8 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ChevronDown, Search, X } from 'lucide-react';
 
+import { useI18n } from '@/providers/LanguageProvider';
 import {
-  GROUP_LABELS,
   SCREEN_ICONS,
   resolveScreenIcon,
   type ScreenIconEntry,
@@ -30,8 +30,9 @@ interface Props {
 export default function IconPicker({
   value,
   onChange,
-  placeholder = 'Pick an icon',
+  placeholder,
 }: Props) {
+  const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
   const rootRef = useRef<HTMLDivElement | null>(null);
@@ -111,7 +112,9 @@ export default function IconPicker({
               <span className="ml-1 text-text-tertiary">· {value}</span>
             </>
           ) : (
-            <span className="text-text-quaternary">{placeholder}</span>
+            <span className="text-text-quaternary">
+              {placeholder ?? t('workboards.builder.iconPicker.placeholder')}
+            </span>
           )}
         </span>
         <ChevronDown className="h-3.5 w-3.5 shrink-0 text-text-tertiary" />
@@ -120,7 +123,7 @@ export default function IconPicker({
       {open && (
         <div
           role="dialog"
-          aria-label="Pick an icon"
+          aria-label={t('workboards.builder.iconPicker.dialogLabel')}
           className="absolute left-0 top-full z-30 mt-1 w-[360px] overflow-hidden rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 shadow-popover animate-slide-up"
         >
           {/* Search header */}
@@ -130,7 +133,7 @@ export default function IconPicker({
               ref={inputRef}
               value={query}
               onChange={(event) => setQuery(event.target.value)}
-              placeholder="Search icons…"
+              placeholder={t('workboards.builder.iconPicker.searchPlaceholder')}
               className="min-w-0 flex-1 bg-transparent text-caption text-text-primary placeholder:text-text-quaternary focus:outline-none"
             />
             {query && (
@@ -138,7 +141,7 @@ export default function IconPicker({
                 type="button"
                 onClick={() => setQuery('')}
                 className="rounded p-0.5 text-text-tertiary hover:bg-surface-2 hover:text-text-primary"
-                title="Clear search"
+                title={t('workboards.builder.iconPicker.clearSearch')}
               >
                 <X className="h-3 w-3" />
               </button>
@@ -153,7 +156,7 @@ export default function IconPicker({
               return (
                 <section key={group} className="mb-2 last:mb-0">
                   <h4 className="mb-1 px-1 text-tiny font-emphasis uppercase tracking-wider text-text-quaternary">
-                    {GROUP_LABELS[group]}
+                    {t(`workboards.builder.iconPicker.group.${group}`)}
                   </h4>
                   <div className="grid grid-cols-6 gap-1">
                     {items.map((entry) => {
@@ -184,7 +187,7 @@ export default function IconPicker({
               (arr) => arr.length === 0,
             ) && (
               <p className="px-2 py-6 text-center text-caption text-text-tertiary">
-                No icons match &ldquo;{query}&rdquo;.
+                {t('workboards.builder.iconPicker.noMatches', { query })}
               </p>
             )}
           </div>

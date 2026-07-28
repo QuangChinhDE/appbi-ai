@@ -35,6 +35,7 @@ import type { MutableRefObject } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { workboardApi, type Workboard, type WorkboardLayoutJson } from '@/lib/api/workboards';
 import type { MiniAppLayoutSpec } from './types';
+import { useI18n } from '@/providers/LanguageProvider';
 
 export type AutosaveStatus = 'idle' | 'pending' | 'saving' | 'saved' | 'error';
 
@@ -83,6 +84,7 @@ export function useDebouncedAutosave(
   enabled: boolean,
   dirtyTracking?: AutosaveDirtyTracking,
 ): UseAutosaveResult {
+  const { t } = useI18n();
   const [status, setStatus] = useState<AutosaveStatus>('idle');
   const [savedAt, setSavedAt] = useState<Date | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -176,12 +178,10 @@ export function useDebouncedAutosave(
           if (httpStatus === 409) {
             // Stale whole-board (structural) save: a concurrent tab/session
             // advanced the board. Don't clobber — surface + refetch.
-            setErrorMessage(
-              'Bản nháp đã bị thay đổi ở nơi khác (tab/người khác). Tải lại trang để lấy bản mới nhất trước khi sửa tiếp.',
-            );
+            setErrorMessage(t('workboards.autosave.conflict'));
             void qc.invalidateQueries({ queryKey: ['workboards', workboardId] });
           } else {
-            setErrorMessage(getErrorMessage(err, 'Could not save.'));
+            setErrorMessage(getErrorMessage(err, t('workboards.autosave.saveFailed')));
           }
           // Re-mark the pending edits so the next edit/flush retries them
           // instead of dropping the un-persisted change.
@@ -202,7 +202,7 @@ export function useDebouncedAutosave(
       runningRef.current = null;
     });
     return runningRef.current;
-  }, [workboardId, qc, mergeLifecycle]);
+  }, [workboardId, qc, mergeLifecycle, t]);
 
   useEffect(() => {
     if (isInitialMount.current) {

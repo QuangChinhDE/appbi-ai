@@ -155,13 +155,13 @@ export default function BuilderLivePreview({
     setSessionError(null);
     try {
       const r = await apiClient.post<WorkspaceLite>('/workspaces', {
-        name: 'Xem thử (nội bộ)',
+        name: t('workboards.livePreview.internalWorkspaceName'),
         access_mode: 'internal',
         menu_config: [],
       });
       await loadWorkspaces(r.data?.id);
     } catch (err: unknown) {
-      setSessionError(getApiErrorMessage(err, 'Không tạo được nơi xem thử.'));
+      setSessionError(getApiErrorMessage(err, t('workboards.livePreview.createHostFailed')));
     } finally {
       setProvisioning(false);
     }
@@ -199,10 +199,10 @@ export default function BuilderLivePreview({
       const role = normalizeAppUserRole(user.role) || 'user';
       counts.set(role, (counts.get(role) || 0) + 1);
     }
-    return buildAppUserRoleOptions(Array.from(counts.keys()))
+    return buildAppUserRoleOptions(Array.from(counts.keys()), t)
       .filter((option) => counts.has(option.value))
       .map((option) => ({ ...option, count: counts.get(option.value) || 0 }));
-  }, [activePreviewUsers]);
+  }, [activePreviewUsers, t]);
 
   const filteredPreviewUsers = useMemo(() => {
     if (!previewRole) return activePreviewUsers;
@@ -400,7 +400,7 @@ export default function BuilderLivePreview({
                   {filteredPreviewUsers.length === 0
                     ? t('workboards.livePreview.noActiveUsers')
                     : previewRole
-                      ? t('workboards.livePreview.firstRole', { role: formatAppUserRoleLabel(previewRole) })
+                      ? t('workboards.livePreview.firstRole', { role: formatAppUserRoleLabel(previewRole, t) })
                       : t('workboards.livePreview.firstActiveUser')}
                 </option>
                 {filteredPreviewUsers.map((user) => (

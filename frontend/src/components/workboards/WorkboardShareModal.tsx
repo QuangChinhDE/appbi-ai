@@ -266,11 +266,11 @@ export default function WorkboardShareModal({ workboard, onClose }: Props) {
             <div className="min-w-0 text-white">
               <div className="mb-2 inline-flex items-center gap-1.5 rounded-md bg-white/15 px-2 py-1 text-tiny font-emphasis uppercase tracking-wider">
                 <Globe2 className="h-3.5 w-3.5" />
-                Public app delivery
+                {t('workboards.share.heroBadge')}
               </div>
               <h3 className="truncate text-body font-strong">{brandName}</h3>
               <p className="mt-1 max-w-xl text-caption text-white/85">
-                {branding.login?.tagline || branding.welcome_text || 'Link đăng nhập bằng PIN cho người dùng ngoài AppBI.'}
+                {branding.login?.tagline || branding.welcome_text || t('workboards.share.defaultTagline')}
               </p>
             </div>
             <div className="flex items-center gap-2 rounded-lg bg-white/92 px-3 py-2 text-slate-700 shadow-sm">
@@ -286,22 +286,22 @@ export default function WorkboardShareModal({ workboard, onClose }: Props) {
                   {brandName.slice(0, 1).toUpperCase()}
                 </div>
               )}
-              <div className="text-caption font-medium">Enterprise-ready</div>
+              <div className="text-caption font-medium">{t('workboards.share.enterpriseReady')}</div>
             </div>
           </div>
           <div className="grid gap-3 p-4 sm:grid-cols-3">
             <div className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-0 p-3">
               <div className="flex items-center gap-1.5 text-tiny font-emphasis uppercase tracking-wider text-text-quaternary">
                 <ShieldCheck className="h-3.5 w-3.5" />
-                Status
+                {t('workboards.share.statusLabel')}
               </div>
               <div className="mt-1 text-caption font-medium text-text-primary">
-                {primary ? (primary.is_active === false ? t('workboards.share.inactiveStatus') : t('workboards.share.activeStatus')) : 'Not public'}
+                {primary ? (primary.is_active === false ? t('workboards.share.inactiveStatus') : t('workboards.share.activeStatus')) : t('workboards.share.notPublicStatus')}
               </div>
             </div>
             <div className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-0 p-3">
               <div className="text-tiny font-emphasis uppercase tracking-wider text-text-quaternary">
-                Screens visible
+                {t('workboards.share.screensVisible')}
               </div>
               <div className="mt-1 text-caption font-medium text-text-primary">
                 {visibleCount}/{screens.length || 0}
@@ -310,12 +310,12 @@ export default function WorkboardShareModal({ workboard, onClose }: Props) {
             <div className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-0 p-3">
               <div className="flex items-center gap-1.5 text-tiny font-emphasis uppercase tracking-wider text-text-quaternary">
                 <Palette className="h-3.5 w-3.5" />
-                Branding
+                {t('workboards.share.brandingLabel')}
               </div>
               <div className="mt-2 flex items-center gap-2">
                 <span className="h-5 w-5 rounded border border-[rgb(var(--border-line))]" style={{ backgroundColor: primaryColor }} />
                 <span className="h-5 w-5 rounded border border-[rgb(var(--border-line))]" style={{ backgroundColor: accentColor }} />
-                <span className="text-caption text-text-secondary">App settings</span>
+                <span className="text-caption text-text-secondary">{t('workboards.share.appSettings')}</span>
               </div>
             </div>
           </div>
