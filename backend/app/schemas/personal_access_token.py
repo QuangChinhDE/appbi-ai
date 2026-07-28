@@ -34,6 +34,7 @@ class PersonalAccessTokenResponse(BaseModel):
     name: str
     token_hint: str
     scopes: dict[str, str] = {}
+    revealable: bool = False
     last_used_at: datetime | None = None
     expires_at: datetime | None = None
     revoked_at: datetime | None = None
@@ -44,6 +45,10 @@ class PersonalAccessTokenResponse(BaseModel):
 class PersonalAccessTokenCreateResponse(BaseModel):
     token: str
     item: PersonalAccessTokenResponse
+
+
+class PersonalAccessTokenRevealResponse(BaseModel):
+    token: str
 
 
 class AdminPersonalAccessTokenResponse(PersonalAccessTokenResponse):

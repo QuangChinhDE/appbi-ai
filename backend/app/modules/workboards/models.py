@@ -440,8 +440,10 @@ class WorkboardAutoNumberSequence(Base):
 
     Keyed by ``(workboard_id, column_name, bucket)``. ``bucket`` is the
     date partition (``"all"`` for ``reset='never'``, ``"2026"`` for yearly,
-    ``"2026-05"`` for monthly, ``"2026-05-15"`` for daily). The write
-    service does an UPSERT-then-RETURNING to claim the next value
+    ``"2026-05"`` for monthly, ``"2026-05-15"`` for daily). Scoped rules
+    append a ``"|s|<sha256>"`` digest of the scope-column values so each scope
+    counts independently within the same period (hence the 128-char width).
+    The write service does an UPSERT-then-RETURNING to claim the next value
     atomically so two concurrent inserts cannot collide on the same id.
     """
 
@@ -455,7 +457,7 @@ class WorkboardAutoNumberSequence(Base):
         index=True,
     )
     column_name = Column(String(120), nullable=False)
-    bucket = Column(String(32), nullable=False)
+    bucket = Column(String(128), nullable=False)
     next_value = Column(Integer, nullable=False, default=1, server_default="1")
     updated_at = Column(
         DateTime(timezone=True),

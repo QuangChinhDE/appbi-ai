@@ -183,6 +183,7 @@ export interface PersonalAccessTokenRecord {
   name: string;
   token_hint: string;
   scopes: Record<string, string>;
+  revealable: boolean;
   last_used_at: string | null;
   expires_at: string | null;
   revoked_at: string | null;
@@ -231,7 +232,19 @@ export const personalAccessTokensApi = {
     await apiClient.delete(`/auth/personal-access-tokens/${tokenId}/permanent`);
   },
 
-  // Admin oversight (settings=full): every user's tokens + revoke any.
+  // Reveal the full secret again (owner). Only works for revealable tokens.
+  reveal: async (tokenId: string): Promise<{ token: string }> => {
+    const response = await apiClient.get(`/auth/personal-access-tokens/${tokenId}/reveal`);
+    return response.data;
+  },
+
+  // Regenerate the secret (owner) — old secret stops working; new one shown once.
+  rotate: async (tokenId: string): Promise<PersonalAccessTokenCreateResponse> => {
+    const response = await apiClient.post(`/auth/personal-access-tokens/${tokenId}/rotate`);
+    return response.data;
+  },
+
+  // Admin oversight (settings=full): every user's tokens + revoke/reveal any.
   adminList: async (): Promise<AdminPersonalAccessTokenRecord[]> => {
     const response = await apiClient.get('/auth/personal-access-tokens/admin');
     return response.data;
@@ -239,6 +252,16 @@ export const personalAccessTokensApi = {
 
   adminRevoke: async (tokenId: string) => {
     await apiClient.delete(`/auth/personal-access-tokens/admin/${tokenId}`);
+  },
+
+  adminReveal: async (tokenId: string): Promise<{ token: string }> => {
+    const response = await apiClient.get(`/auth/personal-access-tokens/admin/${tokenId}/reveal`);
+    return response.data;
+  },
+
+  adminRotate: async (tokenId: string): Promise<PersonalAccessTokenCreateResponse> => {
+    const response = await apiClient.post(`/auth/personal-access-tokens/admin/${tokenId}/rotate`);
+    return response.data;
   },
 };
 

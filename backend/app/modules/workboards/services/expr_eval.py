@@ -28,6 +28,11 @@ import re
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
+from app.modules.workboards.services.number_parser import (
+    coerce_number as _shared_coerce_number,
+    sum_split as _sum_split,
+)
+
 
 _TOKEN_RE = re.compile(
     r"""
@@ -180,16 +185,10 @@ class _Parser:
 
 
 def _coerce_number(v: Any) -> Optional[float]:
-    if v is None or isinstance(v, bool):
-        return None
-    if isinstance(v, (int, float)):
-        return float(v)
-    if isinstance(v, str):
-        try:
-            return float(v.strip())
-        except ValueError:
-            return None
-    return None
+    # Delegate to the shared locale-aware parser so arithmetic here reads
+    # "1.234,5" / "20,5" identically to the FE preview and the BE footer
+    # totals — one source of truth (see number_parser).
+    return _shared_coerce_number(v)
 
 
 def _truthy(v: Any) -> bool:
@@ -373,6 +372,19 @@ def _eval(node: Any, ctx: Dict[str, Any]) -> Any:
             a = _coerce_number(evaluated[0]) if evaluated else None
             b = _coerce_number(evaluated[1]) if len(evaluated) > 1 else None
             return None if a is None or b is None else a ** b
+        if name == "SUM_SPLIT":
+            # SUM_SPLIT(value[, delimiter]) — sum a delimited numeric string
+            # ("20;31;25" -> 76). Strict mode (persisted computed fields, set
+            # via ctx["__strict__"]) raises on a non-numeric segment so the
+            # save is rejected; safe mode returns None so conditional-UI rules
+            # (show_if/required_if) simply "don't match".
+            val = evaluated[0] if evaluated else None
+            delim = (
+                str(evaluated[1])
+                if len(evaluated) > 1 and evaluated[1] is not None and str(evaluated[1]) != ""
+                else ";"
+            )
+            return _sum_split(val, delim, strict=bool(ctx.get("__strict__")))
         # ── Date parts (ISO date/datetime string) ──
         if name in ("YEAR", "MONTH", "DAY"):
             s = str(evaluated[0]) if evaluated and evaluated[0] is not None else ""
@@ -406,6 +418,30 @@ def evaluate(expression: Optional[str], ctx: Dict[str, Any]) -> Any:
         return _eval(node, ctx)
     except Exception:
         return None
+
+
+def evaluate_detailed(expression: Optional[str], ctx: Dict[str, Any]) -> Dict[str, Any]:
+    """Strict evaluation for computed fields that PERSIST.
+
+    Unlike :func:`evaluate` (which swallows every error into ``None`` so a
+    conditional rule simply "doesn't match"), this reports failures so the
+    write path can reject a bad save. Returns ``{"value": <result>}`` on
+    success or ``{"value": None, "error": {"code", "message"}}`` on any
+    parse/eval error. Runs with ``__strict__`` set so ``SUM_SPLIT`` raises on
+    a non-numeric segment instead of silently yielding ``None``.
+    """
+    if not expression:
+        return {"value": None}
+    strict_ctx = {**ctx, "__strict__": True}
+    try:
+        tokens = tokenize(expression)
+        node = _Parser(tokens).parse()
+        return {"value": _eval(node, strict_ctx)}
+    except Exception as e:  # noqa: BLE001 — surface message, not stack
+        return {
+            "value": None,
+            "error": {"code": "expr_eval_error", "message": str(e)},
+        }
 
 
 def evaluate_truthy(expression: Optional[str], ctx: Dict[str, Any], default: bool = True) -> bool:

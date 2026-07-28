@@ -864,6 +864,9 @@ def _apply_field_conditions(
     }
     cleaned = dict(values or {})
     violations: List[str] = []
+    # widget='computed' fields are DERIVED — recomputed server-side after the
+    # main loop (never trust the client's submitted value). Collected here.
+    computed_fields: List[Any] = []
     # Storage-aware hard ceiling for base64 media (see WORKBOARD_MEDIA_MAX_KB).
     # ``media_max_kb`` is chosen per screen from the datasource kind; the builder
     # can tighten it further per-field via FormField.max_file_kb.
@@ -965,6 +968,14 @@ def _apply_field_conditions(
             # Drop the column so the existing DB value (or default) wins.
             cleaned.pop(col, None)
             continue
+        if _widget == "computed":
+            # DERIVED, display-only value. NEVER trust the client's submitted
+            # number — a tampered payload could store anything. Strip it now;
+            # the authoritative value is recomputed from `formula` in the
+            # dedicated fixpoint pass below.
+            cleaned.pop(col, None)
+            computed_fields.append(field)
+            continue
         required_if_expr = getattr(field, "required_if", None)
         is_required_static = bool(getattr(field, "required", False))
         is_required = is_required_static
@@ -991,6 +1002,47 @@ def _apply_field_conditions(
                     custom_msg.strip() if custom_msg and custom_msg.strip()
                     else f"Trường '{label}' không thoả điều kiện kiểm tra."
                 )
+    # ── Server-authoritative recompute of widget='computed' fields ──────────
+    # Derive each value from `formula` (strict mode → a non-numeric SUM_SPLIT
+    # segment rejects the save). Iterate to a fixpoint so one computed field
+    # may reference another (mirrors the TABLE pipeline's topological pass).
+    if computed_fields:
+        from app.modules.workboards.services.expr_eval import evaluate_detailed
+
+        _cctx_base = {
+            "app_user": dict(identity.app_user or {}),
+            "shared": {},
+        }
+        for _ in range(len(computed_fields) + 1):
+            changed = False
+            _row_now = dict(cleaned)
+            for f in computed_fields:
+                _formula = (getattr(f, "formula", None) or "").strip()
+                if not _formula:
+                    continue
+                _res = evaluate_detailed(_formula, {"row": _row_now, **_cctx_base})
+                if _res.get("error") is None:
+                    _val = _res.get("value")
+                    if cleaned.get(f.column) != _val:
+                        cleaned[f.column] = _val
+                        changed = True
+            if not changed:
+                break
+        # Final settled pass: write results + surface strict errors as 422.
+        _row_final = dict(cleaned)
+        for f in computed_fields:
+            _formula = (getattr(f, "formula", None) or "").strip()
+            if not _formula:
+                # Draft/empty formula — no server value; leave column unwritten.
+                continue
+            _res = evaluate_detailed(_formula, {"row": _row_final, **_cctx_base})
+            if _res.get("error"):
+                _label = getattr(f, "label", None) or f.column
+                _msg = (_res.get("error") or {}).get("message") or "lỗi biểu thức"
+                violations.append(f"Trường '{_label}' không tính được: {_msg}.")
+            else:
+                cleaned[f.column] = _res.get("value")
+
     if violations:
         raise HTTPException(
             status_code=422,
@@ -1554,6 +1606,18 @@ def render_form_screen(
     auto_number_columns = [
         cfg.column for cfg in (layout.auto_number_columns or []) if cfg.column
     ]
+    # Per-column scope metadata so the FE can tell the user WHICH fields must be
+    # filled first for a scoped sequence to generate (otherwise a scoped rule
+    # silently produces no number — confusing). Additive; back-compat preserved.
+    auto_number_meta = {
+        cfg.column: {
+            "scope_columns": list(getattr(cfg, "scope_columns", None) or []),
+            "date_column": getattr(cfg, "date_column", None),
+            "missing_scope_behavior": getattr(cfg, "missing_scope_behavior", "empty"),
+        }
+        for cfg in (layout.auto_number_columns or [])
+        if cfg.column
+    }
 
     return {
         "screen_id": screen.id,
@@ -1584,6 +1648,7 @@ def render_form_screen(
         # treats these as readonly + shows a hint so users don't think the
         # form is broken when typing into them is ignored.
         "auto_number_columns": auto_number_columns,
+        "auto_number_meta": auto_number_meta,
         # When set, the FE captures device GPS at submit and writes "lat,lng"
         # into this column (anti-fraud geo-audit).
         "geo_stamp_column": screen.form.geo_stamp_column,

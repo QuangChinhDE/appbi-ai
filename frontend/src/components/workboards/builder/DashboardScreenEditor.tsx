@@ -27,6 +27,7 @@ import type {
   ScreenSpec,
 } from './types';
 import { apiClient } from '@/lib/api-client';
+import { useI18n } from '@/providers/LanguageProvider';
 
 interface AccessibleDashboard {
   id: number;
@@ -75,6 +76,7 @@ export default function DashboardScreenEditor({
   screen: ScreenSpec;
   onChange: (next: ScreenSpec) => void;
 }) {
+  const { t } = useI18n();
   const dashboard: DashboardScreenSpecBuilt = screen.dashboard || {};
   const update = (patch: Partial<DashboardScreenSpecBuilt>) =>
     onChange({ ...screen, dashboard: { ...dashboard, ...patch } });
@@ -101,7 +103,7 @@ export default function DashboardScreenEditor({
       const res = await apiClient.get('/dashboards/accessible-summary');
       setAccessible(Array.isArray(res.data) ? (res.data as AccessibleDashboard[]) : []);
     } catch (err) {
-      setListError(getApiErrorMessage(err, 'Failed to load accessible dashboards.'));
+      setListError(getApiErrorMessage(err, t('workboards.dashboard.loadAccessibleFailed')));
     } finally {
       setListLoading(false);
     }
@@ -139,7 +141,7 @@ export default function DashboardScreenEditor({
         setHasPublicFiltersConfig(Boolean(res.data.has_public_filters_config));
       } catch (err) {
         if (!alive) return;
-        setFieldsError(getApiErrorMessage(err, 'Failed to load dashboard filter fields.'));
+        setFieldsError(getApiErrorMessage(err, t('workboards.dashboard.loadFilterFieldsFailed')));
       } finally {
         if (alive) setFieldsLoading(false);
       }
@@ -237,7 +239,7 @@ export default function DashboardScreenEditor({
   return (
     <div className="space-y-4">
       {/* Source mode strip — top bar */}
-      <BuilderTopBar title="Source">
+      <BuilderTopBar title={t('workboards.dashboard.source')}>
         <BuilderTopBarItem label="Dashboard" className="flex-1">
           <select
             value={isManaged ? String(dashboard.dashboard_id) : '__manual__'}
@@ -253,7 +255,7 @@ export default function DashboardScreenEditor({
             disabled={listLoading}
             className="h-9 min-w-0 flex-1 rounded-md border border-[rgb(var(--border-line))] bg-surface-0 px-2 text-caption"
           >
-            <option value="__manual__">— Paste share token manually —</option>
+            <option value="__manual__">{t('workboards.dashboard.manualTokenOption')}</option>
             {accessible.map((d) => (
               <option key={d.id} value={d.id}>
                 {d.name}
@@ -267,10 +269,10 @@ export default function DashboardScreenEditor({
           onClick={() => void refreshList()}
           disabled={listLoading}
           className="inline-flex h-9 items-center gap-1 rounded-md border border-[rgb(var(--border-line))] bg-surface-0 px-2 text-caption text-text-secondary hover:bg-surface-2 disabled:opacity-50"
-          title="Refresh accessible dashboards"
+          title={t('workboards.dashboard.refreshDashboardsTitle')}
         >
           <RefreshCw className={`h-3 w-3 ${listLoading ? 'animate-spin' : ''}`} />
-          Refresh
+          {t('workboards.dashboard.refresh')}
         </button>
       </BuilderTopBar>
 
@@ -279,7 +281,7 @@ export default function DashboardScreenEditor({
       )}
       {!listError && !listLoading && accessible.length === 0 && (
         <p className="rounded-md border border-info/20 bg-info/5 px-3 py-2 text-caption text-text-secondary">
-          You have no shared dashboards. Create one first or use paste-token mode below.
+          {t('workboards.dashboard.noSharedDashboards')}
         </p>
       )}
 
@@ -291,16 +293,17 @@ export default function DashboardScreenEditor({
           )}
           <div className="mt-1 text-text-tertiary">
             {fieldsLoading
-              ? 'Loading filter fields…'
+              ? t('workboards.dashboard.loadingFilterFields')
               : fieldsError
                 ? fieldsError
                 : filterFields.length === 0
-                  ? 'This dashboard exposes no filter columns — only a plain embed, no role mapping or static filters. Configure Access filters in the Dashboard first, then Refresh.'
-                  : `${filterFields.length} filter columns available${
+                  ? t('workboards.dashboard.noFilterColumns')
+                  : t(
                       hasPublicFiltersConfig
-                        ? ' (from configured Access filters)'
-                        : ' (inferred from chart bindings)'
-                    }.`}
+                        ? 'workboards.dashboard.filterColumnsConfigured'
+                        : 'workboards.dashboard.filterColumnsInferred',
+                      { count: filterFields.length },
+                    )}
           </div>
         </div>
       )}
@@ -308,8 +311,8 @@ export default function DashboardScreenEditor({
       {isManaged && (
         <>
           <BuilderSection
-            title={`Role mapping (${mapping.length})`}
-            description="Each row = one dashboard filter slot to be auto-filled with the viewing app_user's role. Backend mints a separate public link per role."
+            title={t('workboards.dashboard.roleMappingTitle', { count: mapping.length })}
+            description={t('workboards.dashboard.roleMappingDescription')}
             action={
               <button
                 type="button"
@@ -319,13 +322,13 @@ export default function DashboardScreenEditor({
                 }
                 className="inline-flex items-center gap-1 rounded-md border border-[rgb(var(--border-line))] px-2 py-1 text-caption text-text-secondary hover:bg-surface-2 disabled:opacity-50"
               >
-                <Plus className="h-3 w-3" /> Add mapping
+                <Plus className="h-3 w-3" /> {t('workboards.dashboard.addMapping')}
               </button>
             }
           >
             {mapping.length === 0 && (
               <p className="rounded-md border border-dashed border-[rgb(var(--border-line))] px-3 py-2.5 text-caption text-text-tertiary">
-                No mappings yet — every role sees the same data. Add a mapping so each role only sees its own slice.
+                {t('workboards.dashboard.noMappings')}
               </p>
             )}
 
@@ -351,7 +354,7 @@ export default function DashboardScreenEditor({
                     >
                       {orphan && (
                         <option value={key} disabled>
-                          ⚠ {m.semanticField} (no longer on dashboard)
+                          {t('workboards.dashboard.orphanField', { field: m.semanticField })}
                         </option>
                       )}
                       {filterFields.map((opt) => {
@@ -373,12 +376,14 @@ export default function DashboardScreenEditor({
                       <option value="neq">≠</option>
                       <option value="contains">contains</option>
                     </select>
-                    <span className="text-caption text-text-tertiary">← app_user.role</span>
+                    <span className="text-caption text-text-tertiary">
+                      {t('workboards.dashboard.fromAppUserRole')}
+                    </span>
                     <button
                       type="button"
                       onClick={() => removeMapping(idx)}
                       className="ml-auto rounded p-1 text-text-tertiary hover:bg-surface-2 hover:text-danger"
-                      title="Delete mapping"
+                      title={t('workboards.dashboard.deleteMapping')}
                     >
                       <Trash2 className="h-3 w-3" />
                     </button>
@@ -389,8 +394,8 @@ export default function DashboardScreenEditor({
           </BuilderSection>
 
           <BuilderSection
-            title={`Static filters (${staticFilters.length})`}
-            description="Hard-coded slot values applied for every role. e.g. only year 2026, only status='active'."
+            title={t('workboards.dashboard.staticFiltersTitle', { count: staticFilters.length })}
+            description={t('workboards.dashboard.staticFiltersDescription')}
             action={
               <button
                 type="button"
@@ -398,13 +403,13 @@ export default function DashboardScreenEditor({
                 disabled={filterFields.length === 0}
                 className="inline-flex items-center gap-1 rounded-md border border-[rgb(var(--border-line))] px-2 py-1 text-caption text-text-secondary hover:bg-surface-2 disabled:opacity-50"
               >
-                <Plus className="h-3 w-3" /> Add filter
+                <Plus className="h-3 w-3" /> {t('workboards.dashboard.addFilter')}
               </button>
             }
           >
             {staticFilters.length === 0 && (
               <p className="rounded-md border border-dashed border-[rgb(var(--border-line))] px-3 py-2.5 text-caption text-text-tertiary">
-                No static filters yet. Add one when you want to pin a value across every role.
+                {t('workboards.dashboard.noStaticFilters')}
               </p>
             )}
 
@@ -436,7 +441,7 @@ export default function DashboardScreenEditor({
                     >
                       {orphan && (
                         <option value={key} disabled>
-                          ⚠ {f.semanticField} (no longer on dashboard)
+                          {t('workboards.dashboard.orphanField', { field: f.semanticField })}
                         </option>
                       )}
                       {filterFields.map((opt) => {
@@ -466,7 +471,11 @@ export default function DashboardScreenEditor({
                     </select>
                     <input
                       className={`${INPUT} flex-1 min-w-[140px]`}
-                      placeholder={isMulti ? 'Multiple values, comma-separated' : 'Value'}
+                      placeholder={
+                        isMulti
+                          ? t('workboards.dashboard.multiValuePlaceholder')
+                          : t('workboards.dashboard.valuePlaceholder')
+                      }
                       value={Array.isArray(f.value) ? f.value.join(', ') : String(f.value ?? '')}
                       onChange={(event) => {
                         const raw = event.target.value;
@@ -480,7 +489,7 @@ export default function DashboardScreenEditor({
                       type="button"
                       onClick={() => removeStaticFilter(idx)}
                       className="rounded p-1 text-text-tertiary hover:bg-surface-2 hover:text-danger"
-                      title="Delete filter"
+                      title={t('workboards.dashboard.deleteFilter')}
                     >
                       <Trash2 className="h-3 w-3" />
                     </button>
@@ -492,8 +501,10 @@ export default function DashboardScreenEditor({
 
           {managedRoles.length > 0 && (
             <BuilderSection
-              title={`Generated public links (${managedRoles.length + (managedTokensByRole['__default__'] ? 1 : 0)})`}
-              description="Auto-refreshed whenever you save the workboard or add/remove an app_user."
+              title={t('workboards.dashboard.generatedLinksTitle', {
+                count: managedRoles.length + (managedTokensByRole['__default__'] ? 1 : 0),
+              })}
+              description={t('workboards.dashboard.generatedLinksDescription')}
             >
               <ul className="space-y-0.5 text-caption text-text-tertiary">
                 {managedRoles.map((role) => (
@@ -507,13 +518,15 @@ export default function DashboardScreenEditor({
                       className="inline-flex items-center gap-0.5 text-brand hover:underline"
                     >
                       <ExternalLink className="h-3 w-3" />
-                      open
+                      {t('common.open')}
                     </a>
                   </li>
                 ))}
                 {managedTokensByRole['__default__'] && (
                   <li>
-                    <code className="rounded bg-surface-2 px-1 text-text-secondary">default</code>
+                    <code className="rounded bg-surface-2 px-1 text-text-secondary">
+                      {t('workboards.dashboard.defaultLink')}
+                    </code>
                     &nbsp;→&nbsp;
                     <a
                       href={`/embed/${managedTokensByRole['__default__']}`}
@@ -522,7 +535,7 @@ export default function DashboardScreenEditor({
                       className="inline-flex items-center gap-0.5 text-brand hover:underline"
                     >
                       <ExternalLink className="h-3 w-3" />
-                      open
+                      {t('common.open')}
                     </a>
                   </li>
                 )}
@@ -534,13 +547,13 @@ export default function DashboardScreenEditor({
 
       {!isManaged && (
         <BuilderSection
-          title="Manual share token"
-          description="Paste an existing share_token (from the Dashboard share dialog). The mini-app embeds the link as-is — no managed links, role mapping, or static filters."
+          title={t('workboards.dashboard.manualShareToken')}
+          description={t('workboards.dashboard.manualShareTokenDescription')}
         >
-          <Lbl label="Share token / URL">
+          <Lbl label={t('workboards.dashboard.shareTokenUrl')}>
             <input
               className={INPUT}
-              placeholder="e.g. abc123xyz or https://…/embed/abc123xyz"
+              placeholder={t('workboards.dashboard.shareTokenPlaceholder')}
               value={dashboard.share_token || ''}
               onChange={(event) =>
                 update({ share_token: extractTokenFromInput(event.target.value) || null })
@@ -555,7 +568,7 @@ export default function DashboardScreenEditor({
               className="inline-flex items-center gap-1 text-caption font-emphasis text-brand hover:underline"
             >
               <ExternalLink className="h-3 w-3" />
-              Open /embed/{dashboard.share_token} in a new tab
+              {t('workboards.dashboard.openEmbedLink', { token: dashboard.share_token })}
             </a>
           )}
         </BuilderSection>
@@ -563,34 +576,34 @@ export default function DashboardScreenEditor({
 
       {/* Advanced — iframe options (applies in both modes) */}
       <BuilderCollapsibleAdvanced
-        title="Iframe options"
-        description="Shared password and fixed height — applied to whichever embed mode is active."
+        title={t('workboards.dashboard.iframeOptions')}
+        description={t('workboards.dashboard.iframeOptionsDescription')}
         defaultOpen={hasAdvanced}
       >
         <div className="grid gap-3 sm:grid-cols-2">
-          <Lbl label="Shared password (if any)">
+          <Lbl label={t('workboards.dashboard.sharedPassword')}>
             <div className="relative">
               <input
                 type="text"
                 className={`${INPUT} pl-7`}
-                placeholder="Leave blank for unprotected links"
+                placeholder={t('workboards.dashboard.passwordPlaceholder')}
                 value={dashboard.password || ''}
                 onChange={(event) => update({ password: event.target.value || null })}
               />
               <Lock className="pointer-events-none absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-text-tertiary" />
             </div>
             <p className="mt-1 text-caption text-text-tertiary">
-              Applied to ALL managed links generated. Mini-app auto-authenticates on the user&apos;s behalf.
+              {t('workboards.dashboard.passwordHint')}
             </p>
           </Lbl>
 
-          <Lbl label="Iframe height (px)">
+          <Lbl label={t('workboards.dashboard.iframeHeight')}>
             <input
               type="number"
               min={200}
               max={4000}
               className={INPUT}
-              placeholder="Auto (fit content)"
+              placeholder={t('workboards.dashboard.autoHeightPlaceholder')}
               value={dashboard.height_px ?? ''}
               onChange={(event) => {
                 const raw = event.target.value;

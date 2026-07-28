@@ -725,43 +725,44 @@ export async function exportDashboardPdf(opts: PdfExportOptions): Promise<'opene
 }
 
 /**
- * Deliver the finished PDF: show it in a browser tab AND save a copy to disk.
+ * Deliver the finished PDF: save it to disk, and — only when the caller handed
+ * us a pre-opened tab — also show it there.
  *
- * Returns 'opened' when the PDF is showing in a tab, 'saved' when the tab was
- * blocked and we only managed the download. Always also triggers the download so
- * the user ends up with a real file on disk regardless.
+ * Returns 'opened' when the PDF is showing in a tab, 'saved' when it was only
+ * downloaded. The download always happens, so the user ends up with a real file
+ * either way.
  *
- * Why a `blob:` URL for both: it carries the bytes verbatim — the browser's PDF
- * viewer renders it in the tab, and the anchor `download` saves the complete
- * file with the right `.pdf` name. (A multi-MB `data:` URL silently fails or
- * truncates in Chrome, which is what made big full-table dashboards download an
- * unopenable file.) The tab is the caller's pre-opened `previewWindow` so the
- * popup blocker — which fires once the export's seconds-long capture has spent
- * the user activation — doesn't eat it.
+ * The preview tab is OFF by default (`PDF_PREVIEW_TAB_ENABLED`): a reader who
+ * clicks Export wants a file, and the extra tab only ever showed a
+ * `blob:…uuid` address that looks like a broken link. We therefore never call
+ * `window.open` from here on our own initiative — with the switch off,
+ * `previewWindow` is null and this is a pure download.
+ *
+ * Why a `blob:` URL: it carries the bytes verbatim, so the anchor `download`
+ * saves the complete file with the right `.pdf` name. (A multi-MB `data:` URL
+ * silently fails or truncates in Chrome, which is what made big full-table
+ * dashboards download an unopenable file.)
  */
 function downloadPdf(pdf: jsPDF, filename: string, previewWindow?: Window | null): 'opened' | 'saved' {
   const name = /\.pdf$/i.test(filename) ? filename : `${filename}.pdf`;
   const blob: Blob = pdf.output('blob');
   const url = URL.createObjectURL(blob);
 
-  // 1) Show it immediately in a tab beside the dashboard.
+  // 1) Optional: show it in the tab the caller opened inside the click. Never
+  //    open one from here — that is what produced the surprise blob: tab.
   let opened = false;
   try {
     if (previewWindow && !previewWindow.closed) {
       previewWindow.location.href = url;
       opened = true;
-    } else {
-      // No pre-opened tab (or it was blocked): a direct open here usually gets
-      // popup-blocked after the long export, but try anyway.
-      opened = !!window.open(url, '_blank');
     }
   } catch {
     opened = false;
   }
 
-  // 2) Always save a copy to disk too, with the correct filename. The anchor is
-  //    appended to <body> before click (Edge/Firefox ignore `download` on a
-  //    detached anchor).
+  // 2) Save it to disk with the correct filename — the primary delivery. The
+  //    anchor is appended to <body> before click (Edge/Firefox ignore
+  //    `download` on a detached anchor).
   try {
     const a = document.createElement('a');
     a.href = url;
@@ -772,10 +773,10 @@ function downloadPdf(pdf: jsPDF, filename: string, previewWindow?: Window | null
     a.click();
     a.remove();
   } catch {
-    /* download is best-effort; the tab above is the primary delivery */
+    /* nothing else we can do — the caller reports the failure */
   }
 
-  // Revoke late — the just-opened tab needs the URL to finish rendering.
+  // Revoke late — a preview tab (when enabled) needs the URL to finish rendering.
   setTimeout(() => URL.revokeObjectURL(url), 120000);
   return opened ? 'opened' : 'saved';
 }

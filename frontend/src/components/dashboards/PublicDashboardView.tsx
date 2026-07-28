@@ -21,7 +21,7 @@ import { DashboardThemeProvider, getDashboardGridMargin } from '@/components/das
 import { ReadonlyChartTile } from '@/components/dashboards/ReadonlyChartTile';
 import { ExportPdfDialog, type ExportPdfChoices } from '@/components/dashboards/ExportPdfDialog';
 import type { PdfExportWarning, PdfProgress } from '@/lib/export-pdf';
-import { ExportModeContext, openPdfPreviewTab, safePdfFilename } from '@/lib/export-mode';
+import { ExportModeContext, PDF_PREVIEW_TAB_ENABLED, openPdfPreviewTab, safePdfFilename } from '@/lib/export-mode';
 import { parsePrintRenderOptions, type PrintRenderOptions } from '@/lib/print-render';
 import { toast } from '@/lib/toast';
 import { DashboardFilterBar } from '@/components/dashboards/DashboardFilterBar';
@@ -1073,9 +1073,13 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
 
     if ((current.status === 'succeeded' || current.status === 'partial') && current.download_token) {
       const url = publicDashboardApi.exportDownloadUrl(token, current.id, current.download_token);
-      // Same delivery as the browser engine: show it in the pre-opened tab AND
-      // save a copy with a proper filename.
-      try { if (previewWindow && !previewWindow.closed) previewWindow.location.href = url; } catch { /* noop */ }
+      // Same delivery as the browser engine: download the file, and only show
+      // it in a tab when the (default-off) preview switch handed us one.
+      try {
+        if (PDF_PREVIEW_TAB_ENABLED && previewWindow && !previewWindow.closed) {
+          previewWindow.location.href = url;
+        }
+      } catch { /* noop */ }
       const a = document.createElement('a');
       a.href = url;
       a.download = `${safePdfFilename(dashboard.public_link_name || dashboard.name, 'bao-cao')}.pdf`;
@@ -1242,8 +1246,10 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
           description: `${failures.slice(0, 3).map((f) => f.chart).join(', ')}${failures.length > 3 ? '…' : ''} — file vẫn tải về, phần thiếu được liệt kê ở cuối báo cáo.`,
         });
       }
-      if (result === 'saved') {
-        // The preview tab was blocked → at least tell them the file downloaded.
+      if (result === 'saved' && PDF_PREVIEW_TAB_ENABLED) {
+        // Only meaningful while the preview tab is switched ON: it means the
+        // popup was blocked. With the tab off, "saved" IS the happy path and a
+        // toast about pop-ups would just confuse the reader.
         try { previewWindow?.close(); } catch { /* noop */ }
         toast.info('Đã tải PDF về máy', {
           description: 'Trình duyệt chặn mở tab mới. Cho phép pop-up cho trang này để xem PDF ngay tại tab bên cạnh.',

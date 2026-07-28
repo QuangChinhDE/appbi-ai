@@ -67,6 +67,7 @@ import {
 } from '@/components/workboards/builder/AppSettingsEditor';
 import WorkboardImportExportModal from '@/components/workboards/builder/WorkboardImportExportModal';
 import { registerAutosaveFlush } from '@/components/workboards/builder/autosaveFlushRegistry';
+import { useI18n } from '@/providers/LanguageProvider';
 
 type SectionKey = 'general' | 'data' | 'appearance' | 'navigation' | 'documents' | 'advanced';
 
@@ -97,14 +98,18 @@ function columnsFromCache(cache: unknown): { name: string; type?: string }[] {
     .map((c) => ({ name: String(c.name), type: c.type ? String(c.type) : undefined }));
 }
 
-const SECTIONS: Array<{ key: SectionKey; label: string; icon: React.ReactNode; hint: string }> = [
-  { key: 'general', label: 'Chung', icon: <Info className="h-4 w-4" />, hint: 'Tên · Mô tả · Định danh' },
-  { key: 'data', label: 'Dữ liệu', icon: <Database className="h-4 w-4" />, hint: 'Dataset · Ràng buộc · Rebind' },
-  { key: 'appearance', label: 'Giao diện', icon: <Palette className="h-4 w-4" />, hint: 'Thương hiệu · Theme · Login' },
-  { key: 'navigation', label: 'Điều hướng', icon: <Compass className="h-4 w-4" />, hint: 'Mobile · Desktop' },
-  { key: 'documents', label: 'Tài liệu', icon: <FileText className="h-4 w-4" />, hint: 'Mẫu in / letterhead' },
-  { key: 'advanced', label: 'Nâng cao', icon: <SlidersHorizontal className="h-4 w-4" />, hint: 'Auto-number · Export · Kỹ thuật' },
-];
+type Translate = (key: string, values?: Record<string, string | number>) => string;
+
+function getSections(t: Translate): Array<{ key: SectionKey; label: string; icon: React.ReactNode; hint: string }> {
+  return [
+    { key: 'general', label: t('workboards.settings.sections.general'), icon: <Info className="h-4 w-4" />, hint: t('workboards.settings.sections.generalHint') },
+    { key: 'data', label: t('workboards.settings.sections.data'), icon: <Database className="h-4 w-4" />, hint: t('workboards.settings.sections.dataHint') },
+    { key: 'appearance', label: t('workboards.settings.sections.appearance'), icon: <Palette className="h-4 w-4" />, hint: t('workboards.settings.sections.appearanceHint') },
+    { key: 'navigation', label: t('workboards.settings.sections.navigation'), icon: <Compass className="h-4 w-4" />, hint: t('workboards.settings.sections.navigationHint') },
+    { key: 'documents', label: t('workboards.settings.sections.documents'), icon: <FileText className="h-4 w-4" />, hint: t('workboards.settings.sections.documentsHint') },
+    { key: 'advanced', label: t('workboards.settings.sections.advanced'), icon: <SlidersHorizontal className="h-4 w-4" />, hint: t('workboards.settings.sections.advancedHint') },
+  ];
+}
 
 export default function WorkboardSettingsPage() {
   const params = useParams<{ id: string }>();
@@ -122,12 +127,14 @@ export default function WorkboardSettingsPage() {
 }
 
 function SettingsInner({ workboard }: { workboard: Workboard }) {
+  const { t } = useI18n();
   const id = workboard.id;
   const update = useUpdateWorkboard();
   const { data: datasets = [] } = useDatasets();
   const canEdit = getResourcePermissions(workboard.user_permission ?? undefined).canEdit;
 
   const [section, setSection] = useState<SectionKey>('general');
+  const sections = getSections(t);
 
   // ── Layout state + autosave (Appearance / Navigation / Documents / Auto-number).
   // Lazy-init from the loaded board (like the builder) so there's no
@@ -166,7 +173,7 @@ function SettingsInner({ workboard }: { workboard: Workboard }) {
       await update.mutateAsync({ id, data: patch });
       toast.success(okMsg);
     } catch {
-      toast.error('Không lưu được.');
+      toast.error(t('workboards.settings.saveFailed'));
     }
   };
 
@@ -183,7 +190,7 @@ function SettingsInner({ workboard }: { workboard: Workboard }) {
       const plan = await workboardApi.previewRebind(id, nextDatasetId);
       setRebindPlan({ ...plan, targetDatasetId: nextDatasetId });
     } catch {
-      toast.error('Không phân tích được tác động khi đổi dataset.');
+      toast.error(t('workboards.settings.rebindPreviewFailed'));
     }
   };
 
@@ -195,10 +202,10 @@ function SettingsInner({ workboard }: { workboard: Workboard }) {
         data: { dataset_id: rebindPlan.targetDatasetId },
       });
       setLayoutRaw(ensureLayout(updated.layout_json)); // reflect the rebound draft
-      toast.success('Đã đổi dataset (bản nháp). Xuất bản để áp dụng lên bản Live.');
+      toast.success(t('workboards.settings.datasetChangedToast'));
       setRebindPlan(null);
     } catch {
-      toast.error('Không đổi được dataset.');
+      toast.error(t('workboards.settings.datasetChangeFailed'));
     }
   };
 
@@ -232,9 +239,9 @@ function SettingsInner({ workboard }: { workboard: Workboard }) {
       {/* Left section nav */}
       <nav className="flex w-56 shrink-0 flex-col overflow-y-auto border-r border-[rgb(var(--border-line))] bg-surface-1 p-2">
         <div className="px-2 py-2 text-tiny font-emphasis uppercase tracking-wider text-text-quaternary">
-          Cài đặt app
+          {t('workboards.settings.title')}
         </div>
-        {SECTIONS.map((s) => (
+        {sections.map((s) => (
           <button
             key={s.key}
             onClick={() => setSection(s.key)}
@@ -262,28 +269,28 @@ function SettingsInner({ workboard }: { workboard: Workboard }) {
           {section === 'general' && (
             <>
               <AppHealthCard workboardId={id} />
-              <SettingsPanel title="Thông tin app" icon={<Info className="h-4 w-4" />}>
+              <SettingsPanel title={t('workboards.settings.appInfo')} icon={<Info className="h-4 w-4" />}>
                 <div className="space-y-4">
-                  <Field label="Tên app">
-                    <Input value={name} onChange={(e) => setName(e.target.value)} disabled={!canEdit} placeholder="VD: Chấm công cao su" />
+                  <Field label={t('workboards.settings.appName')}>
+                    <Input value={name} onChange={(e) => setName(e.target.value)} disabled={!canEdit} placeholder={t('workboards.settings.appNamePlaceholder')} />
                   </Field>
-                  <Field label="Mô tả">
-                    <Textarea value={description} onChange={(e) => setDescription(e.target.value)} disabled={!canEdit} rows={3} placeholder="Mô tả ngắn app này dùng để làm gì (không bắt buộc)." />
+                  <Field label={t('workboards.settings.description')}>
+                    <Textarea value={description} onChange={(e) => setDescription(e.target.value)} disabled={!canEdit} rows={3} placeholder={t('workboards.settings.descriptionPlaceholder')} />
                   </Field>
                 </div>
               </SettingsPanel>
 
-              <SettingsPanel title="Định danh" icon={<Info className="h-4 w-4" />}>
+              <SettingsPanel title={t('workboards.settings.identity')} icon={<Info className="h-4 w-4" />}>
                 <div className="grid gap-4 sm:grid-cols-2">
-                  <Field label="Icon (emoji, tuỳ chọn)">
-                    <Input value={icon} onChange={(e) => setIcon(e.target.value)} disabled={!canEdit} placeholder="VD: 📦" maxLength={8} />
+                  <Field label={t('workboards.settings.iconEmoji')}>
+                    <Input value={icon} onChange={(e) => setIcon(e.target.value)} disabled={!canEdit} placeholder={t('workboards.settings.iconEmojiPlaceholder')} maxLength={8} />
                   </Field>
-                  <Field label="Slug (dùng cho link Cổng — chỉ đọc)">
+                  <Field label={t('workboards.settings.slugReadonly')}>
                     <Input value={workboard.slug || ''} readOnly disabled />
                   </Field>
                 </div>
                 <p className="mt-2 text-tiny text-text-tertiary">
-                  Slug là định danh trong URL Cổng công khai; đổi slug sẽ làm hỏng các link đã chia sẻ nên khoá ở đây.
+                  {t('workboards.settings.slugHint')}
                 </p>
               </SettingsPanel>
 
@@ -294,7 +301,7 @@ function SettingsInner({ workboard }: { workboard: Workboard }) {
                   onSave={() =>
                     saveBoard(
                       { name: name.trim(), description: description.trim(), icon: icon.trim() || undefined },
-                      'Đã lưu thông tin app.',
+                      t('workboards.settings.appInfoSaved'),
                     )
                   }
                 />
@@ -312,13 +319,13 @@ function SettingsInner({ workboard }: { workboard: Workboard }) {
                   onDatasetChange={handleDatasetChange}
                 />
               </SettingsPanel>
-              <SettingsPanel title="Ràng buộc dữ liệu (chỉ đọc)" icon={<Database className="h-4 w-4" />}>
+              <SettingsPanel title={t('workboards.settings.dataBindingReadonly')} icon={<Database className="h-4 w-4" />}>
                 <div className="grid gap-3 sm:grid-cols-2 text-caption">
-                  <ReadonlyRow label="Bảng chính (primary table id)" value={String(workboard.primary_table_id ?? '—')} />
-                  <ReadonlyRow label="Khóa chính (primary key)" value={(workboard.primary_key_columns || []).join(', ') || '—'} />
+                  <ReadonlyRow label={t('workboards.settings.primaryTableId')} value={String(workboard.primary_table_id ?? '—')} />
+                  <ReadonlyRow label={t('workboards.settings.primaryKey')} value={(workboard.primary_key_columns || []).join(', ') || '—'} />
                 </div>
                 <p className="mt-2 text-tiny text-text-tertiary">
-                  Mỗi screen tự chọn bảng của nó trong Build. Đổi dataset ở trên sẽ tự remap các bảng cùng tên và gỡ bảng không còn tồn tại (xem trước trước khi áp dụng).
+                  {t('workboards.settings.dataBindingHint')}
                 </p>
               </SettingsPanel>
             </>
@@ -326,62 +333,62 @@ function SettingsInner({ workboard }: { workboard: Workboard }) {
 
           {section === 'appearance' && (
             <>
-              <SettingsPanel title="Experience Studio (v2) · Semantic theme" icon={<Palette className="h-4 w-4" />}>
+              <SettingsPanel title={t('workboards.settings.experienceStudio')} icon={<Palette className="h-4 w-4" />}>
                 <ExperienceStudioSection
                   layout={layout}
                   onChange={setLayout}
                   disabled={!canEdit}
                 />
               </SettingsPanel>
-              <SettingsPanel title="Thương hiệu · Theme · Login (legacy)" icon={<Palette className="h-4 w-4" />}>
+              <SettingsPanel title={t('workboards.settings.legacyBranding')} icon={<Palette className="h-4 w-4" />}>
                 <ThemeSection layout={layout} onChange={setLayout} />
               </SettingsPanel>
             </>
           )}
 
           {section === 'navigation' && (
-            <SettingsPanel title="Điều hướng" icon={<Compass className="h-4 w-4" />}>
+            <SettingsPanel title={t('workboards.settings.navigation')} icon={<Compass className="h-4 w-4" />}>
               <NavigationSection layout={layout} onChange={setLayout} />
             </SettingsPanel>
           )}
 
           {section === 'documents' && (
-            <SettingsPanel title="Mẫu in / Letterhead" icon={<FileText className="h-4 w-4" />}>
+            <SettingsPanel title={t('workboards.settings.printTemplate')} icon={<FileText className="h-4 w-4" />}>
               <PrintTemplateSection layout={layout} onChange={setLayout} />
             </SettingsPanel>
           )}
 
           {section === 'advanced' && (
             <>
-              <SettingsPanel title="Auto-number" icon={<SlidersHorizontal className="h-4 w-4" />}>
+              <SettingsPanel title={t('workboards.settings.autoNumber')} icon={<SlidersHorizontal className="h-4 w-4" />}>
                 <AutoNumberSection layout={layout} tables={tables} onChange={setLayout} />
               </SettingsPanel>
 
-              <SettingsPanel title="Import / Export" icon={<Download className="h-4 w-4" />}>
+              <SettingsPanel title={t('workboards.settings.importExport')} icon={<Download className="h-4 w-4" />}>
                 <p className="mb-3 text-caption text-text-tertiary">
-                  Xuất app thành bundle (kèm dataset + semantic) để sao lưu hoặc import sang môi trường khác. Import (tạo app mới từ bundle) thực hiện ở màn hình danh sách Workboards.
+                  {t('workboards.settings.importExportDescription')}
                 </p>
                 <Button variant="secondary" size="sm" leadingIcon={<Download className="h-3.5 w-3.5" />} onClick={() => setShowExport(true)}>
-                  Export app
+                  {t('workboards.settings.exportApp')}
                 </Button>
               </SettingsPanel>
 
-              <SettingsPanel title="Kỹ thuật" icon={<Wrench className="h-4 w-4" />}>
+              <SettingsPanel title={t('workboards.settings.technical')} icon={<Wrench className="h-4 w-4" />}>
                 <div className="grid gap-4 sm:grid-cols-2">
-                  <ReadonlyRow label="Chế độ ghi (write mode)" value={workboard.write_mode || '—'} />
-                  <Field label="Cột optimistic-lock (tuỳ chọn)">
-                    <Input value={lockColumn} onChange={(e) => setLockColumn(e.target.value)} disabled={!canEdit} placeholder="VD: updated_at" />
+                  <ReadonlyRow label={t('workboards.settings.writeMode')} value={workboard.write_mode || '—'} />
+                  <Field label={t('workboards.settings.optimisticLockColumn')}>
+                    <Input value={lockColumn} onChange={(e) => setLockColumn(e.target.value)} disabled={!canEdit} placeholder={t('workboards.settings.optimisticLockPlaceholder')} />
                   </Field>
                 </div>
                 <p className="mt-2 text-tiny text-text-tertiary">
-                  Cột optimistic-lock giúp chặn ghi đè khi 2 người sửa cùng 1 dòng. Để trống nếu không dùng.
+                  {t('workboards.settings.optimisticLockHint')}
                 </p>
                 {canEdit && (
                   <div className="mt-3">
                     <SaveBar
                       dirty={lockDirty}
                       loading={update.isPending}
-                      onSave={() => saveBoard({ optimistic_lock_column: lockColumn.trim() }, 'Đã lưu cài đặt kỹ thuật.')}
+                      onSave={() => saveBoard({ optimistic_lock_column: lockColumn.trim() }, t('workboards.settings.technicalSaved'))}
                     />
                   </div>
                 )}
@@ -395,25 +402,30 @@ function SettingsInner({ workboard }: { workboard: Workboard }) {
         <Modal
           isOpen
           onClose={() => setRebindPlan(null)}
-          title="Đổi dataset — xem tác động"
+          title={t('workboards.settings.rebindTitle')}
           size="md"
           footer={
             <>
               <Button variant="ghost" size="sm" onClick={() => setRebindPlan(null)}>
-                Huỷ
+                {t('common.cancel')}
               </Button>
               <Button variant="primary" size="sm" onClick={applyRebind} loading={update.isPending}>
-                Áp dụng vào bản nháp
+                {t('workboards.settings.applyToDraft')}
               </Button>
             </>
           }
         >
           <p className="mb-3 text-caption text-text-secondary">
-            {rebindPlan.remap_count} bảng tự map theo tên · {rebindPlan.clear_count} screen bị gỡ (map lại sau).
+            {t('workboards.settings.rebindSummary', {
+              remap: rebindPlan.remap_count,
+              clear: rebindPlan.clear_count,
+            })}
           </p>
           {rebindPlan.remapped.length > 0 && (
             <div className="mb-3">
-              <div className="mb-1 text-tiny font-emphasis uppercase tracking-wider text-text-quaternary">Tự map</div>
+              <div className="mb-1 text-tiny font-emphasis uppercase tracking-wider text-text-quaternary">
+                {t('workboards.settings.remapped')}
+              </div>
               <ul className="space-y-1">
                 {rebindPlan.remapped.map((r, i) => (
                   <li key={i} className="rounded border border-success/25 bg-success/5 px-2 py-1 text-tiny text-text-secondary">
@@ -425,7 +437,9 @@ function SettingsInner({ workboard }: { workboard: Workboard }) {
           )}
           {rebindPlan.cleared.length > 0 && (
             <div>
-              <div className="mb-1 text-tiny font-emphasis uppercase tracking-wider text-text-quaternary">Bị gỡ</div>
+              <div className="mb-1 text-tiny font-emphasis uppercase tracking-wider text-text-quaternary">
+                {t('workboards.settings.cleared')}
+              </div>
               <ul className="space-y-1">
                 {rebindPlan.cleared.map((r, i) => (
                   <li key={i} className="rounded border border-warning/30 bg-warning/5 px-2 py-1 text-tiny text-text-secondary">
@@ -464,11 +478,12 @@ function ReadonlyRow({ label, value }: { label: string; value: string }) {
 }
 
 function SaveBar({ dirty, loading, onSave }: { dirty: boolean; loading: boolean; onSave: () => void }) {
+  const { t } = useI18n();
   return (
     <div className="flex items-center justify-end gap-2">
-      {dirty && <span className="text-tiny text-text-tertiary">Có thay đổi chưa lưu</span>}
+      {dirty && <span className="text-tiny text-text-tertiary">{t('workboards.settings.unsavedChanges')}</span>}
       <Button variant="primary" size="sm" onClick={onSave} loading={loading} disabled={!dirty}>
-        Lưu thay đổi
+        {t('workboards.settings.saveChanges')}
       </Button>
     </div>
   );
@@ -483,31 +498,33 @@ function AutosaveBadge({
   savedAt: Date | null;
   error: string | null;
 }) {
+  const { t } = useI18n();
   if (status === 'saving' || status === 'pending') {
     return (
       <span className="flex items-center gap-1.5 text-tiny text-text-tertiary">
-        <Loader2 className="h-3 w-3 animate-spin" /> Đang lưu…
+        <Loader2 className="h-3 w-3 animate-spin" /> {t('workboards.settings.saving')}
       </span>
     );
   }
   if (status === 'error') {
     return (
       <span className="flex items-center gap-1.5 text-tiny text-danger" title={error || ''}>
-        <AlertTriangle className="h-3 w-3" /> Lỗi lưu
+        <AlertTriangle className="h-3 w-3" /> {t('workboards.settings.saveError')}
       </span>
     );
   }
   if (status === 'saved' && savedAt) {
     return (
       <span className="flex items-center gap-1.5 text-tiny text-success">
-        <CheckCircle2 className="h-3 w-3" /> Đã lưu tự động
+        <CheckCircle2 className="h-3 w-3" /> {t('workboards.settings.autoSaved')}
       </span>
     );
   }
-  return <span className="text-tiny text-text-quaternary">Tự động lưu</span>;
+  return <span className="text-tiny text-text-quaternary">{t('workboards.settings.autosave')}</span>;
 }
 
 function AppHealthCard({ workboardId }: { workboardId: number }) {
+  const { t } = useI18n();
   const { data: audit, isFetching, refetch } = useWorkboardReadinessAudit(workboardId);
   const errors = (audit?.issues || []).filter((i: WorkboardAuditIssue) => i.severity === 'error');
   const warnings = (audit?.issues || []).filter((i: WorkboardAuditIssue) => i.severity === 'warning');
@@ -529,8 +546,11 @@ function AppHealthCard({ workboardId }: { workboardId: number }) {
           <div>
             <p className={`text-caption font-semibold ${healthy ? 'text-success' : 'text-danger'}`}>
               {healthy
-                ? 'Sẵn sàng xuất bản'
-                : `Chưa thể xuất bản — còn ${errors.length} lỗi chặn${warnings.length ? ` · ${warnings.length} cảnh báo` : ''}`}
+                ? t('workboards.settings.readyToPublish')
+                : t('workboards.settings.notReadyToPublish', {
+                    errors: errors.length,
+                    warnings: warnings.length,
+                  })}
             </p>
             {errors.length > 0 && (
               <ul className="mt-2 space-y-1">
@@ -544,7 +564,7 @@ function AppHealthCard({ workboardId }: { workboardId: number }) {
           </div>
         </div>
         <Button variant="ghost" size="xs" onClick={() => void refetch()} leadingIcon={<RefreshCw className={`h-3.5 w-3.5 ${isFetching ? 'animate-spin' : ''}`} />}>
-          Làm mới
+          {t('workboards.settings.refresh')}
         </Button>
       </div>
     </section>

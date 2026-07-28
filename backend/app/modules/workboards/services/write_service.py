@@ -24,10 +24,12 @@ Design contract:
 """
 from __future__ import annotations
 
+import hashlib
 import re
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
+from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from app.core.logging import get_logger
@@ -370,6 +372,57 @@ def _auto_number_bucket(reset: str, now: datetime) -> str:
     return "all"
 
 
+def _parse_row_date(raw: Any) -> Optional[datetime]:
+    """Best-effort parse of a row date value for auto-number period scoping.
+
+    Handles native date/datetime, ISO ``YYYY-MM-DD`` (optionally with time),
+    and vi-VN ``DD/MM/YYYY`` / ``DD-MM-YYYY``. Returns ``None`` when the value
+    is not a recognisable date.
+    """
+    if isinstance(raw, datetime):
+        return raw
+    if isinstance(raw, date):
+        return datetime(raw.year, raw.month, raw.day)
+    s = str(raw).strip() if raw is not None else ""
+    if not s:
+        return None
+    m = re.match(r"^(\d{4})-(\d{1,2})-(\d{1,2})", s)
+    if m:
+        try:
+            return datetime(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+        except ValueError:
+            return None
+    m = re.match(r"^(\d{1,2})[/-](\d{1,2})[/-](\d{4})", s)
+    if m:
+        try:
+            return datetime(int(m.group(3)), int(m.group(2)), int(m.group(1)))
+        except ValueError:
+            return None
+    return None
+
+
+def _auto_number_scope_key(config: Any, values: Dict[str, Any]) -> Optional[str]:
+    """Canonical scope key from ``scope_columns``.
+
+    Returns ``""`` when the rule is unscoped (legacy single counter), a stable
+    64-hex digest when every scope column has a value, or ``None`` when any
+    scope column is blank (missing scope — caller decides empty-vs-error).
+    """
+    cols = list(getattr(config, "scope_columns", None) or [])
+    if not cols:
+        return ""
+    parts: List[str] = []
+    for c in cols:
+        raw = values.get(c)
+        if raw is None or (isinstance(raw, str) and raw.strip() == ""):
+            return None
+        # Case-sensitive, whitespace-trimmed — "XE01" and "xe01" are distinct
+        # scopes (vehicle codes are canonical identifiers, not free text).
+        parts.append(f"{c}=\x1e{str(raw).strip()}")
+    canonical = "\x1f".join(parts)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
 def _render_auto_number_pattern(pattern: str, seq: int, now: datetime, padding: int) -> str:
     """Render an AutoNumberConfig pattern.
 
@@ -397,19 +450,62 @@ def _claim_auto_number_value(
     workboard: Workboard,
     config: Any,
     now: datetime,
-) -> str:
+    values: Dict[str, Any],
+) -> Optional[str]:
     """Reserve the next sequence value for ``config.column`` and render it.
 
     Uses an UPSERT on :class:`WorkboardAutoNumberSequence` so two concurrent
     inserts cannot end up with the same id. The pattern is rendered
     against the value we just reserved; the caller writes that into the
     insert payload.
+
+    Scoped rules (``scope_columns`` / ``date_column``) restart the counter per
+    distinct scope: the counter lives in a bucket keyed by both the reset
+    period AND a digest of the scope-column values, so "27/07 + XE01" and
+    "27/07 + XE02" count independently. Returns ``None`` (leave blank, no
+    counter consumed) when a required scope/date column is missing and the
+    policy is ``missing_scope_behavior='empty'``; raises 422 when it is
+    ``'error'``.
     """
-    from sqlalchemy import delete
+    from sqlalchemy import delete, not_, or_
     from sqlalchemy.dialects.postgresql import insert as pg_insert
     from app.modules.workboards.models import WorkboardAutoNumberSequence
 
-    bucket = _auto_number_bucket(config.reset, now)
+    # ── Reference datetime: a row date_column overrides wall-clock for both
+    # the reset period AND the pattern's {YYYY}/{MM}/{DD} parts, so the number
+    # keys off the business date the user entered, not when they pressed save.
+    date_column = getattr(config, "date_column", None)
+    ref_dt = now
+    date_missing = False
+    if date_column:
+        parsed = _parse_row_date(values.get(date_column))
+        if parsed is None:
+            date_missing = True
+        else:
+            ref_dt = parsed
+
+    scope_key = _auto_number_scope_key(config, values)
+    if date_missing or scope_key is None:
+        if getattr(config, "missing_scope_behavior", "empty") == "error":
+            missing_cols = []
+            if date_missing and date_column:
+                missing_cols.append(date_column)
+            if scope_key is None:
+                missing_cols.extend(list(getattr(config, "scope_columns", None) or []))
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "Số tự động cho cột "
+                    f"'{config.column}' cần các trường: "
+                    f"{', '.join(dict.fromkeys(missing_cols)) or 'phạm vi'}."
+                ),
+            )
+        return None  # leave blank — no counter consumed
+
+    period_key = _auto_number_bucket(config.reset, ref_dt)
+    # Legacy (unscoped) rules keep a bucket that is EXACTLY the period key so
+    # their existing counter rows keep matching — byte-for-byte unchanged.
+    bucket = period_key if not scope_key else f"{period_key}|s|{scope_key}"
     scoped_table_id = getattr(config, "table_id", None)
     column_name = (
         f"table:{int(scoped_table_id)}:{config.column}"
@@ -421,13 +517,19 @@ def _claim_auto_number_value(
     # Honour the reset contract: when reset != "never", a new period must start
     # the sequence over. Drop stale buckets for this column so a workboard that
     # was paused across a period boundary (and any orphaned old-period rows)
-    # cannot leak a non-reset counter into the new period.
+    # cannot leak a non-reset counter into the new period. Match on the PERIOD
+    # part only so sibling scopes within the CURRENT period are preserved.
     if getattr(config, "reset", "never") != "never":
         db.execute(
             delete(WorkboardAutoNumberSequence).where(
                 WorkboardAutoNumberSequence.workboard_id == workboard.id,
                 WorkboardAutoNumberSequence.column_name == column_name,
-                WorkboardAutoNumberSequence.bucket != bucket,
+                not_(
+                    or_(
+                        WorkboardAutoNumberSequence.bucket == period_key,
+                        WorkboardAutoNumberSequence.bucket.like(period_key + "|s|%"),
+                    )
+                ),
             )
         )
 
@@ -451,7 +553,7 @@ def _claim_auto_number_value(
     claimed = max(int(next_value) - 1, seed)
     db.commit()
     return _render_auto_number_pattern(
-        config.pattern, claimed, now, int(config.padding or 0)
+        config.pattern, claimed, ref_dt, int(config.padding or 0)
     )
 
 
@@ -481,16 +583,31 @@ def _apply_auto_number_on_insert(
             continue
         col = cfg.column
         existing = out.get(col)
-        if existing not in (None, "", []):
+        # allow_manual_override (default True): a caller-supplied value wins and
+        # consumes no counter (imports, corrections). When False the server is
+        # authoritative and always overwrites.
+        if getattr(cfg, "allow_manual_override", True) and existing not in (None, "", []):
             continue
         try:
-            out[col] = _claim_auto_number_value(db, workboard, cfg, now)
+            claimed = _claim_auto_number_value(db, workboard, cfg, now, out)
+            if claimed is not None:
+                out[col] = claimed
+            # None → missing scope with policy 'empty': leave blank on purpose.
+        except HTTPException:
+            # missing_scope_behavior='error' — a deliberate 422, surface it.
+            raise
         except Exception:
             logger.exception(
-                "Auto-number claim failed (workboard=%s column=%s) — leaving blank",
+                "Auto-number claim failed (workboard=%s column=%s)",
                 workboard.id,
                 col,
             )
+            if getattr(cfg, "on_error", "leave_blank") == "block":
+                raise HTTPException(
+                    status_code=503,
+                    detail=f"Không cấp được số tự động cho cột '{col}', vui lòng thử lại.",
+                )
+            # else leave blank
     return out
 
 

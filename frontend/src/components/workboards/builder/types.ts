@@ -641,6 +641,15 @@ export interface AutoNumberConfigSpec {
   reset?: 'never' | 'daily' | 'monthly' | 'yearly';
   padding?: number;
   start_at?: number;
+  // Scoped sequences (P0): counter restarts per distinct combination of these
+  // columns. Empty = one global counter (legacy).
+  scope_columns?: string[];
+  // Derive the reset period + pattern date parts from this row column instead
+  // of the insert wall-clock (e.g. key mã chuyến off the trip date entered).
+  date_column?: string | null;
+  allow_manual_override?: boolean;
+  missing_scope_behavior?: 'empty' | 'error';
+  on_error?: 'leave_blank' | 'block';
 }
 
 export interface PrintTemplateSpec {

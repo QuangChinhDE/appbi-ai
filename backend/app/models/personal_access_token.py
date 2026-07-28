@@ -17,6 +17,10 @@ class PersonalAccessToken(Base):
     owner_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     name = Column(String(255), nullable=False)
     secret_hash = Column(String(128), nullable=False)
+    # Reversibly-encrypted secret (Fernet, key in app env — NOT in the DB) so the
+    # owner/admin can reveal the token again. Null = created before reveal was
+    # enabled, or no encryption key configured (reveal unavailable → rotate).
+    secret_enc = Column(String, nullable=True)
     secret_suffix = Column(String(12), nullable=False)
     scopes = Column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
     last_used_at = Column(DateTime(timezone=True), nullable=True)

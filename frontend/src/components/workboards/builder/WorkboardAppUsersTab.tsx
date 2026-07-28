@@ -747,7 +747,7 @@ export default function WorkboardAppUsersTab({ workboard }: Props) {
                     <td className="px-3 py-2 text-text-secondary">
                       {user.role ? (
                         <span className="inline-flex items-center rounded bg-surface-2 px-1.5 py-0.5 text-caption">
-                          {formatAppUserRoleLabel(user.role)}
+                          {formatAppUserRoleLabel(user.role, t)}
                         </span>
                       ) : (
                         '—'
@@ -888,8 +888,8 @@ function AppUserEditModal({
   const isCreate = user === null;
   const normalizedExistingRole = normalizeAppUserRole(user?.role) || 'user';
   const roleOptions = useMemo(
-    () => buildAppUserRoleOptions([user?.role, ...accessFields.flatMap((field) => field.roles)]),
-    [accessFields, user?.role],
+    () => buildAppUserRoleOptions([user?.role, ...accessFields.flatMap((field) => field.roles)], t),
+    [accessFields, t, user?.role],
   );
   const [username, setUsername] = useState(user?.username ?? '');
   const [fullName, setFullName] = useState(user?.full_name ?? '');
@@ -937,7 +937,7 @@ function AppUserEditModal({
     const map: Record<string, string> = {};
     for (const row of existingUsers) {
       if (!row.username) continue;
-      const roleLabel = row.role ? formatAppUserRoleLabel(row.role) : '';
+      const roleLabel = row.role ? formatAppUserRoleLabel(row.role, t) : '';
       map[row.username] = row.full_name
         ? `${row.username} — ${row.full_name}${roleLabel ? ` (${roleLabel})` : ''}`
         : roleLabel
@@ -945,7 +945,7 @@ function AppUserEditModal({
           : row.username;
     }
     return map;
-  }, [existingUsers]);
+  }, [existingUsers, t]);
 
   const effectiveAccessFields = useMemo(
     () =>
@@ -1324,7 +1324,8 @@ function AppUserEditModal({
                       />
                     )}
                     <p className="mt-1 text-caption text-text-tertiary">
-                      {t('workboards.users.usedByRole')} {field.roles.map((roleValue) => formatAppUserRoleLabel(roleValue)).join(', ')}
+                      {t('workboards.users.usedByRole')}{' '}
+                      {field.roles.map((roleValue) => formatAppUserRoleLabel(roleValue, t)).join(', ')}
                     </p>
                     <p className="text-caption text-text-quaternary">
                       {t('workboards.users.sourceLabel')} {field.sources.map((source) => `${source.screenTitle} → ${source.column}`).join(' | ')}
@@ -1400,6 +1401,7 @@ function AppUserEditModal({
 }
 
 function AccessIssueDescription({ row }: { row: AccessIssue }) {
+  const { t } = useI18n();
   const code = (text: string) => (
     <code className="rounded bg-surface-2 px-1 text-text-secondary">{text}</code>
   );
@@ -1407,33 +1409,33 @@ function AccessIssueDescription({ row }: { row: AccessIssue }) {
     case 'missing_miniapp_user_column':
       return (
         <>
-          Thiếu cột {code(MINIAPP_USER_COLUMN)} — bảng này được dùng làm nguồn
-          cho screen {code(row.screenTitle)}. Thêm cột để mini-app tự lọc theo
-          username (giá trị từng dòng = username của app user sở hữu).
+          {t('workboards.users.accessIssue.missingMiniappColumnPrefix')}{' '}
+          {code(MINIAPP_USER_COLUMN)} {t('workboards.users.accessIssue.missingMiniappColumnMiddle')}{' '}
+          {code(row.screenTitle)}. {t('workboards.users.accessIssue.missingMiniappColumnSuffix')}
         </>
       );
     case 'legacy_rule_column':
       return (
         <>
-          Rule RLS cũ đang lọc theo cột {code(row.column)} thay vì{' '}
-          {code(MINIAPP_USER_COLUMN)} ({row.screenTitle}). Convention mới yêu
-          cầu mọi bảng fact lọc qua {code(MINIAPP_USER_COLUMN)}; rule này sẽ
-          không nhận được giá trị mặc định khi tạo user.
+          {t('workboards.users.accessIssue.legacyRulePrefix')} {code(row.column)}{' '}
+          {t('workboards.users.accessIssue.legacyRuleMiddle')}{' '}
+          {code(MINIAPP_USER_COLUMN)} ({row.screenTitle}).{' '}
+          {t('workboards.users.accessIssue.legacyRuleSuffix')} {code(MINIAPP_USER_COLUMN)}.
         </>
       );
     case 'missing_column':
       return (
         <>
-          Thiếu cột {code(row.column)} — RLS placeholder{' '}
-          {code(`{{app_user.${row.fieldKey}}}`)} không có chỗ để lọc (
-          {row.screenTitle}).
+          {t('workboards.users.accessIssue.missingColumnPrefix')}{' '}
+          {code(row.column)} - {t('workboards.users.accessIssue.missingColumnMiddle')}{' '}
+          {code(`{{app_user.${row.fieldKey}}}`)} ({row.screenTitle}).
         </>
       );
     case 'empty_column':
       return (
         <>
-          Cột {code(row.column)} chưa có giá trị nào — app user không có lựa
-          chọn để gán quyền ({row.screenTitle}).
+          {t('workboards.users.accessIssue.emptyColumnPrefix')}{' '}
+          {code(row.column)} {t('workboards.users.accessIssue.emptyColumnSuffix')} ({row.screenTitle}).
         </>
       );
     default:
@@ -1454,6 +1456,7 @@ function AccessAuditBanner({
   onRefresh: () => void;
   loading: boolean;
 }) {
+  const { t } = useI18n();
   const { tables, summary } = audit;
   const unknowns = tables.filter((t) => t.mode === 'unknown');
   const joinedThrough = tables.filter((t) => t.mode === 'joined_through');
@@ -1479,11 +1482,15 @@ function AccessAuditBanner({
         <div className="flex-1 space-y-2">
           <div className="flex items-center gap-3">
             <span className="font-medium text-text-primary">
-              Phân quyền dữ liệu
+              {t('workboards.users.accessAudit.title')}
             </span>
             <span className="text-text-tertiary">
-              {summary.per_user} per-user · {summary.joined_through} qua quan hệ ·{' '}
-              {summary.shared} shared · {summary.unknown} chưa rõ
+              {t('workboards.users.accessAudit.summary', {
+                perUser: summary.per_user,
+                joined: summary.joined_through,
+                shared: summary.shared,
+                unknown: summary.unknown,
+              })}
             </span>
             <button
               type="button"
@@ -1491,7 +1498,7 @@ function AccessAuditBanner({
               disabled={loading}
               className="ml-auto text-info hover:underline disabled:opacity-50"
             >
-              {loading ? 'Refreshing…' : 'Refresh'}
+              {loading ? t('workboards.users.accessAudit.refreshing') : t('workboards.users.accessAudit.refresh')}
             </button>
           </div>
           {tables.map((entry) => (
@@ -1517,6 +1524,7 @@ function AccessAuditRow({
   datasetId: number;
   onToggleShared: (tableId: number, shared: boolean) => void;
 }) {
+  const { t } = useI18n();
   const modeStyle: Record<typeof entry.mode, string> = {
     per_user: 'bg-success/10 text-success',
     joined_through: 'bg-info/10 text-info',
@@ -1524,10 +1532,10 @@ function AccessAuditRow({
     unknown: 'bg-danger/10 text-danger',
   };
   const modeLabel: Record<typeof entry.mode, string> = {
-    per_user: 'per-user',
-    joined_through: 'qua quan hệ',
-    shared: 'shared',
-    unknown: 'chưa rõ',
+    per_user: t('workboards.users.accessAudit.mode.perUser'),
+    joined_through: t('workboards.users.accessAudit.mode.joined'),
+    shared: t('workboards.users.accessAudit.mode.shared'),
+    unknown: t('workboards.users.accessAudit.mode.unknown'),
   };
   return (
     <div className="rounded bg-surface-0/60 p-2">
@@ -1543,16 +1551,16 @@ function AccessAuditRow({
           rel="noreferrer"
           className="ml-auto inline-flex items-center gap-1 rounded border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-0.5 text-caption text-text-secondary hover:border-brand/40 hover:text-brand"
         >
-          Mở dataset
+          {t('workboards.users.openDataset')}
         </a>
         {entry.mode === 'unknown' && (
           <button
             type="button"
             onClick={() => onToggleShared(entry.table_id, true)}
             className="rounded border border-warning/30 bg-warning/5 px-2 py-0.5 text-caption text-warning hover:bg-warning/10"
-            title="Đánh dấu bảng là shared / dim public"
+            title={t('workboards.users.markSharedTitle')}
           >
-            Đánh dấu shared
+            {t('workboards.users.markShared')}
           </button>
         )}
         {entry.mode === 'shared' && (
@@ -1561,7 +1569,7 @@ function AccessAuditRow({
             onClick={() => onToggleShared(entry.table_id, false)}
             className="rounded border border-[rgb(var(--border-line))] px-2 py-0.5 text-caption text-text-secondary hover:bg-surface-2"
           >
-            Bỏ shared
+            {t('workboards.users.unmarkShared')}
           </button>
         )}
       </div>
@@ -1601,6 +1609,7 @@ function AccessIssuesBanner({
   datasetId: number;
   issues: AccessIssue[];
 }) {
+  const { t } = useI18n();
   const grouped = useMemo(() => {
     const map = new Map<number, { tableLabel: string; rows: AccessIssue[] }>();
     for (const issue of issues) {
@@ -1633,16 +1642,14 @@ function AccessIssuesBanner({
         <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
         <div className="flex-1 space-y-2">
           <div className="font-medium">
-            Source dữ liệu chưa sẵn sàng để phân quyền theo app user
+            {t('workboards.users.accessIssues.title')}
           </div>
           <p className="text-text-secondary">
-            Mỗi bảng fact dùng trong screen phải có cột{' '}
+            {t('workboards.users.accessIssues.descriptionPrefix')}{' '}
             <code className="rounded bg-surface-2 px-1 text-text-secondary">
               miniapp_user
             </code>{' '}
-            để mini-app tự lọc theo username của app user (dim không cần — dim
-            kế thừa quyền qua join). Thiếu cột → mini-app sẽ trả 0 dòng cho
-            user không phải owner.
+            {t('workboards.users.accessIssues.descriptionSuffix')}
           </p>
           <ul className="space-y-1.5">
             {grouped.map((group) => (
@@ -1657,7 +1664,7 @@ function AccessIssuesBanner({
                     rel="noreferrer"
                     className="inline-flex items-center gap-1 rounded border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-0.5 text-caption text-text-secondary hover:border-brand/40 hover:text-brand"
                   >
-                    Mở dataset
+                    {t('workboards.users.openDataset')}
                   </a>
                 </div>
                 <ul className="mt-1 space-y-0.5 text-text-tertiary">

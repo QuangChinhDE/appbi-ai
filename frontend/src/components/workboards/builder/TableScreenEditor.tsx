@@ -74,6 +74,7 @@ import type {
   ScreenAction,
 } from './types';
 import { INPUT, Lbl } from './ScreenEditor';
+import { useI18n } from '@/providers/LanguageProvider';
 
 interface DatasetTableInfo {
   id: number;
@@ -117,14 +118,14 @@ type ActiveItem =
 // Same data, different render — the card grid replaces the old <select>.
 const DISPLAY_MODE_OPTIONS: Array<{
   value: 'table' | 'gallery' | 'calendar' | 'route_map';
-  label: string;
-  desc: string;
+  labelKey: string;
+  descKey: string;
   icon: React.ElementType;
 }> = [
-  { value: 'table', label: 'Table', desc: 'Hiển thị dữ liệu dạng bảng có nhiều cột và nhiều dòng.', icon: LayoutGrid },
-  { value: 'gallery', label: 'Gallery', desc: 'Hiển thị dạng thẻ, phù hợp với nội dung trực quan.', icon: ImageIcon },
-  { value: 'calendar', label: 'Calendar', desc: 'Hiển thị theo lịch để quản lý các sự kiện theo thời gian.', icon: CalendarDays },
-  { value: 'route_map', label: 'Route map', desc: 'Hiển thị trên bản đồ và quản lý tuyến đường, điểm đến.', icon: MapPinned },
+  { value: 'table', labelKey: 'workboards.table.displayMode.table', descKey: 'workboards.table.displayMode.tableDesc', icon: LayoutGrid },
+  { value: 'gallery', labelKey: 'workboards.table.displayMode.gallery', descKey: 'workboards.table.displayMode.galleryDesc', icon: ImageIcon },
+  { value: 'calendar', labelKey: 'workboards.table.displayMode.calendar', descKey: 'workboards.table.displayMode.calendarDesc', icon: CalendarDays },
+  { value: 'route_map', labelKey: 'workboards.table.displayMode.routeMap', descKey: 'workboards.table.displayMode.routeMapDesc', icon: MapPinned },
 ];
 
 // Quick-link cards under "Các cấu hình chính" — jump to the main config objects.
@@ -132,20 +133,20 @@ const DISPLAY_MODE_OPTIONS: Array<{
 // hidden when Gallery / Calendar / Route map is the active display mode.
 const CONFIG_SHORTCUTS: Array<{
   key: ActiveItem;
-  label: string;
-  desc: string;
+  labelKey: string;
+  descKey: string;
   icon: React.ElementType;
   tableOnly?: boolean;
 }> = [
-  { key: 'columns', label: 'Fields', desc: 'Chọn và sắp xếp các cột hiển thị trong bảng.', icon: Columns3 },
-  { key: 'editable', label: 'Editable fields', desc: 'Chọn cột có thể chỉnh sửa và cấu hình quy tắc.', icon: PencilLine },
-  { key: 'settings', label: 'Filters & sorting', desc: 'Cấu hình bộ lọc, sắp xếp và thứ tự mặc định.', icon: Filter },
-  { key: 'column_meta', label: 'Column presentation', desc: 'Căn chỉnh, độ rộng cột, định dạng hiển thị.', icon: Settings2, tableOnly: true },
-  { key: 'column_groups', label: 'Header groups', desc: 'Nhóm các cột theo cách hiển thị logic.', icon: Columns3, tableOnly: true },
-  { key: 'row_merge', label: 'Row merge', desc: 'Gộp ô theo giá trị để giảm lặp dữ liệu.', icon: Rows3, tableOnly: true },
-  { key: 'format_rules', label: 'Conditional formatting', desc: 'Tô màu, biểu tượng theo điều kiện dữ liệu.', icon: Palette, tableOnly: true },
-  { key: 'totals', label: 'Footer totals', desc: 'Tổng hợp cuối bảng cho các cột số liệu.', icon: Sigma, tableOnly: true },
-  { key: 'kpi', label: 'KPI tiles', desc: 'Hiển thị các chỉ số tổng quan dạng thẻ.', icon: LayoutGrid },
+  { key: 'columns', labelKey: 'workboards.table.shortcut.fields', descKey: 'workboards.table.shortcut.fieldsDesc', icon: Columns3 },
+  { key: 'editable', labelKey: 'workboards.table.shortcut.editableFields', descKey: 'workboards.table.shortcut.editableFieldsDesc', icon: PencilLine },
+  { key: 'settings', labelKey: 'workboards.table.shortcut.filtersSorting', descKey: 'workboards.table.shortcut.filtersSortingDesc', icon: Filter },
+  { key: 'column_meta', labelKey: 'workboards.table.shortcut.columnPresentation', descKey: 'workboards.table.shortcut.columnPresentationDesc', icon: Settings2, tableOnly: true },
+  { key: 'column_groups', labelKey: 'workboards.table.shortcut.headerGroups', descKey: 'workboards.table.shortcut.headerGroupsDesc', icon: Columns3, tableOnly: true },
+  { key: 'row_merge', labelKey: 'workboards.table.shortcut.rowMerge', descKey: 'workboards.table.shortcut.rowMergeDesc', icon: Rows3, tableOnly: true },
+  { key: 'format_rules', labelKey: 'workboards.table.shortcut.conditionalFormatting', descKey: 'workboards.table.shortcut.conditionalFormattingDesc', icon: Palette, tableOnly: true },
+  { key: 'totals', labelKey: 'workboards.table.shortcut.footerTotals', descKey: 'workboards.table.shortcut.footerTotalsDesc', icon: Sigma, tableOnly: true },
+  { key: 'kpi', labelKey: 'workboards.table.shortcut.kpiTiles', descKey: 'workboards.table.shortcut.kpiTilesDesc', icon: LayoutGrid },
 ];
 
 function DisplayModeCard({
@@ -257,6 +258,14 @@ function DerivedSubGroup({
       <div className="space-y-1">{children}</div>
     </div>
   );
+}
+
+function displayModeLabel(
+  mode: 'table' | 'gallery' | 'calendar' | 'route_map' | undefined,
+  t: ReturnType<typeof useI18n>['t'],
+): string {
+  const option = DISPLAY_MODE_OPTIONS.find((item) => item.value === (mode || 'table'));
+  return option ? t(option.labelKey) : t('workboards.table.displayMode.table');
 }
 
 const EMPTY_TABLE: TableSpec = {
@@ -395,6 +404,7 @@ function LookupModelSuggestions({
 }
 
 export default function TableScreenEditor({ screen, allScreens, tables, onChange }: Props) {
+  const { t } = useI18n();
   const tableSpec = screen.table || EMPTY_TABLE;
   const filters = useMemo(() => tableSpec.filters || [], [tableSpec.filters]);
   const computed = useMemo(
@@ -842,12 +852,12 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
       return (
         <BuilderInspectorPanel
           icon={<Columns3 className="h-4 w-4" />}
-          title="Visible columns"
-          subtitle="Pick which columns the table shows. Order controls table order."
+          title={t('workboards.table.visibleColumnsTitle')}
+          subtitle={t('workboards.table.visibleColumnsSubtitle')}
         >
           {pickable.length === 0 ? (
             <BuilderEmptyHint className="text-left">
-              No data source selected, or the table has no columns.
+              {t('workboards.table.noColumnsDataSource')}
             </BuilderEmptyHint>
           ) : (
             <>
@@ -870,13 +880,11 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
                     ),
                   });
                 }}
-                placeholder="Click to pick columns to display..."
+                placeholder={t('workboards.table.pickColumnsPlaceholder')}
               />
               {(computed.length > 0 || lookups.length > 0 || rollups.length > 0) && (
                 <p className="mt-2 text-caption text-text-tertiary">
-                  Computed, lookup and roll-up columns appear in this picker too
-                  — they render read-only at runtime regardless of the editable
-                  list.
+                  {t('workboards.table.derivedColumnsHint')}
                 </p>
               )}
             </>
@@ -894,25 +902,23 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
       return (
         <BuilderInspectorPanel
           icon={<PencilLine className="h-4 w-4" />}
-          title="Editable columns"
-          subtitle="Cells in unchecked columns are read-only at runtime."
+          title={t('workboards.table.editableColumnsTitle')}
+          subtitle={t('workboards.table.editableColumnsSubtitle')}
         >
           {editableCandidates.length === 0 ? (
             <BuilderEmptyHint className="text-left">
-              No editable candidates yet. Pick visible columns first (computed
-              and lookup columns are always read-only).
+              {t('workboards.table.noEditableCandidates')}
             </BuilderEmptyHint>
           ) : (
             <MultiColumnPicker
               sourceColumns={editableCandidates}
               value={(tableSpec.editable_columns || []).filter((c) => !derived.has(c))}
               onChange={(editable_columns) => updateTable({ editable_columns })}
-              placeholder="No editable columns - table is read-only."
+              placeholder={t('workboards.table.noEditableColumns')}
             />
           )}
           <p className="mt-2 text-caption text-text-tertiary">
-            Role-level write permissions (Permissions tab) still apply on top of
-            this list.
+            {t('workboards.table.roleWriteHint')}
           </p>
         </BuilderInspectorPanel>
       );
@@ -922,8 +928,8 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
       return (
         <BuilderInspectorPanel
           icon={<Settings2 className="h-4 w-4" />}
-          title="Row behaviour"
-          subtitle="Show or hide the add row and delete buttons."
+          title={t('workboards.table.rowBehaviourTitle')}
+          subtitle={t('workboards.table.rowBehaviourSubtitle')}
         >
           <div className="space-y-3">
             <label className="flex items-start gap-2">
@@ -937,10 +943,10 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
               />
               <span className="text-caption text-text-secondary">
                 <span className="font-emphasis text-text-primary">
-                  Allow adding rows
+                  {t('workboards.table.allowAddingRows')}
                 </span>
                 <span className="ml-1 text-text-tertiary">
-                  - shows an &quot;Add row&quot; button at the bottom of the table.
+                  {t('workboards.table.allowAddingRowsHint')}
                 </span>
               </span>
             </label>
@@ -955,10 +961,10 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
               />
               <span className="text-caption text-text-secondary">
                 <span className="font-emphasis text-text-primary">
-                  Allow deleting rows
+                  {t('workboards.table.allowDeletingRows')}
                 </span>
                 <span className="ml-1 text-text-tertiary">
-                  - shows a trash icon at the end of each row.
+                  {t('workboards.table.allowDeletingRowsHint')}
                 </span>
               </span>
             </label>
@@ -971,15 +977,15 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
       return (
         <BuilderInspectorPanel
           icon={<Filter className="h-4 w-4" />}
-          title="Filters & sorting"
-          subtitle="Pre-set filters shown above the table, plus default ordering and page size."
+          title={t('workboards.table.filtersSortingTitle')}
+          subtitle={t('workboards.table.filtersSortingSubtitle')}
         >
           <div className="space-y-5">
             {/* Pre-set filters — the slicers rendered above the table. */}
             <div>
               <div className="mb-2 flex items-center justify-between">
                 <div className="text-caption font-emphasis text-text-secondary">
-                  Filters ({filters.length})
+                  {t('workboards.table.filtersCount', { count: filters.length })}
                 </div>
                 <button
                   type="button"
@@ -987,12 +993,12 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
                   disabled={columnNames.length === 0}
                   className="inline-flex items-center gap-1 rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1 text-tiny text-text-secondary hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-40"
                 >
-                  <Plus className="h-3.5 w-3.5" /> Add filter
+                  <Plus className="h-3.5 w-3.5" /> {t('workboards.table.addFilter')}
                 </button>
               </div>
               {filters.length === 0 ? (
                 <BuilderEmptyHint className="text-left">
-                  No pre-set filters. Add one to let viewers narrow the table.
+                  {t('workboards.table.noPresetFilters')}
                 </BuilderEmptyHint>
               ) : (
                 <div className="space-y-2">
@@ -1003,18 +1009,18 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
                     >
                       <div className="mb-2 flex items-center justify-between gap-2">
                         <span className="min-w-0 truncate text-caption font-medium text-text-primary">
-                          {filter.label?.trim() || filter.column || 'Filter'}
+                          {filter.label?.trim() || filter.column || t('workboards.table.filterFallback')}
                         </span>
                         <BuilderIconButton
                           onClick={() => removeFilter(index)}
-                          title="Delete filter"
+                          title={t('workboards.table.deleteFilter')}
                           variant="danger"
                         >
                           <Trash2 className="h-3.5 w-3.5 text-danger" />
                         </BuilderIconButton>
                       </div>
                       <div className={BUILDER_GRID_2}>
-                        <Lbl label="Column">
+                        <Lbl label={t('workboards.table.column')}>
                           <SingleColumnPicker
                             sourceColumns={columnNames}
                             value={filter.column}
@@ -1023,7 +1029,7 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
                             }
                           />
                         </Lbl>
-                        <Lbl label="Filter kind">
+                        <Lbl label={t('workboards.table.filterKind')}>
                           <select
                             value={filter.kind}
                             onChange={(event) =>
@@ -1033,13 +1039,13 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
                             }
                             className={INPUT}
                           >
-                            <option value="text">Text search</option>
-                            <option value="select">Single select</option>
-                            <option value="date_range">Date range</option>
-                            <option value="number_range">Number range</option>
+                            <option value="text">{t('workboards.table.filterText')}</option>
+                            <option value="select">{t('workboards.table.filterSelect')}</option>
+                            <option value="date_range">{t('workboards.table.filterDateRange')}</option>
+                            <option value="number_range">{t('workboards.table.filterNumberRange')}</option>
                           </select>
                         </Lbl>
-                        <Lbl label="Display label">
+                        <Lbl label={t('workboards.table.displayLabel')}>
                           <input
                             value={filter.label || ''}
                             onChange={(event) =>
@@ -1059,10 +1065,10 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
             {/* Sorting & paging. */}
             <div className="border-t border-[rgb(var(--border-line))] pt-4">
               <div className="mb-2 text-caption font-emphasis text-text-secondary">
-                Sorting &amp; paging
+                {t('workboards.table.sortingPaging')}
               </div>
               <div className={BUILDER_GRID_2}>
-                <Lbl label="Rows per page">
+                <Lbl label={t('workboards.table.rowsPerPage')}>
                   <input
                     type="number"
                     min={10}
@@ -1079,15 +1085,15 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
                     className={INPUT}
                   />
                 </Lbl>
-                <Lbl label="Default sort column">
+                <Lbl label={t('workboards.table.defaultSortColumn')}>
                   <SingleColumnPicker
                     sourceColumns={columnNames}
                     value={tableSpec.default_sort_column || null}
                     onChange={(next) => updateTable({ default_sort_column: next || null })}
-                    placeholder="No default sort"
+                    placeholder={t('workboards.table.noDefaultSort')}
                   />
                 </Lbl>
-                <Lbl label="Default sort direction">
+                <Lbl label={t('workboards.table.defaultSortDirection')}>
                   <select
                     value={tableSpec.default_sort_direction || 'desc'}
                     onChange={(event) =>
@@ -1098,8 +1104,8 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
                     }
                     className={INPUT}
                   >
-                    <option value="desc">Descending</option>
-                    <option value="asc">Ascending</option>
+                    <option value="desc">{t('workboards.table.descending')}</option>
+                    <option value="asc">{t('workboards.table.ascending')}</option>
                   </select>
                 </Lbl>
               </div>
@@ -1113,21 +1119,21 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
       return (
         <BuilderInspectorPanel
           icon={<Plus className="h-4 w-4" />}
-          title="New row defaults"
-          subtitle="Required columns and pre-filled values when a row is added."
+          title={t('workboards.table.newRowDefaultsTitle')}
+          subtitle={t('workboards.table.newRowDefaultsSubtitle')}
         >
           <div className="space-y-4">
-            <Lbl label="Required columns">
+            <Lbl label={t('workboards.table.requiredColumns')}>
               {tableSpec.columns.length === 0 ? (
                 <BuilderEmptyHint className="text-left">
-                  Pick visible columns first.
+                  {t('workboards.table.pickVisibleColumnsFirst')}
                 </BuilderEmptyHint>
               ) : (
                 <MultiColumnPicker
                   sourceColumns={tableSpec.columns}
                   value={tableSpec.required_columns || []}
                   onChange={(required_columns) => updateTable({ required_columns })}
-                  placeholder="No required columns."
+                  placeholder={t('workboards.table.noRequiredColumns')}
                 />
               )}
             </Lbl>
@@ -1145,17 +1151,17 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
       return (
         <BuilderInspectorPanel
           icon={<ListFilter className="h-4 w-4" />}
-          title="Empty state"
-          subtitle="Message shown when no rows match the filters."
+          title={t('workboards.table.emptyStateTitle')}
+          subtitle={t('workboards.table.emptyStateSubtitle')}
         >
-          <Lbl label="Empty state message">
+          <Lbl label={t('workboards.table.emptyStateMessage')}>
             <input
               value={tableSpec.empty_state_message || ''}
               onChange={(event) =>
                 updateTable({ empty_state_message: event.target.value })
               }
               className={INPUT}
-              placeholder="e.g. No matching rows. Tap + to add one."
+              placeholder={t('workboards.table.emptyStatePlaceholder')}
             />
           </Lbl>
         </BuilderInspectorPanel>
@@ -1167,13 +1173,13 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
       return (
         <BuilderInspectorPanel
           icon={<ChevronRight className="h-4 w-4" />}
-          title="Row actions"
-          subtitle="Add navigation actions or open a trusted Parent–Child relation from an existing row."
+          title={t('workboards.table.rowActionsTitle')}
+          subtitle={t('workboards.table.rowActionsSubtitle')}
         >
           <div className="space-y-3">
             <div className="flex items-center justify-between">
               <div className="text-caption font-emphasis text-text-secondary">
-                Actions ({rowActions.length})
+                {t('workboards.table.actionsCount', { count: rowActions.length })}
               </div>
               <button
                 type="button"
@@ -1799,16 +1805,16 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
       return (
         <BuilderInspectorPanel
           icon={<LayoutGrid className="h-4 w-4" />}
-          title="Display mode"
-          subtitle="Hãy chọn dạng hiển thị tổng thể cho màn hình. Cùng một nguồn dữ liệu — chỉ khác cách hiển thị."
+          title={t('workboards.table.displayModeTitle')}
+          subtitle={t('workboards.table.displayModeSubtitle')}
         >
           <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
             {DISPLAY_MODE_OPTIONS.map((opt) => (
               <DisplayModeCard
                 key={opt.value}
                 active={mode === opt.value}
-                label={opt.label}
-                desc={opt.desc}
+                label={t(opt.labelKey)}
+                desc={t(opt.descKey)}
                 icon={opt.icon}
                 onClick={() => updateTable({ display_mode: opt.value })}
               />
@@ -1817,12 +1823,11 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
           <div className="mt-3 flex items-start gap-2 rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 px-3 py-2.5 text-caption text-text-secondary">
             <LayoutGrid className="mt-0.5 h-4 w-4 shrink-0 text-brand" />
             <span>
-              Cấu trúc hiện tại:{' '}
+              {t('workboards.table.currentStructure')}{' '}
               <strong className="text-text-primary">
-                {DISPLAY_MODE_OPTIONS.find((o) => o.value === mode)?.label || 'Table'}
+                {displayModeLabel(mode, t)}
               </strong>
-              . Các đối tượng ở thanh bên vẫn dùng để cấu hình chi tiết dữ liệu, hành vi và cách
-              trình bày.
+              . {t('workboards.table.currentStructureHelp')}
             </span>
           </div>
 
@@ -2213,18 +2218,18 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
 
           <div className="mt-5 border-t border-[rgb(var(--border-line))] pt-4">
             <h3 className="mb-1 text-caption font-emphasis text-text-primary">
-              Các cấu hình chính cho{' '}
-              {DISPLAY_MODE_OPTIONS.find((o) => o.value === mode)?.label || 'Table'}
+              {t('workboards.table.shortcutsFor')}{' '}
+              {displayModeLabel(mode, t)}
             </h3>
             <p className="mb-3 text-tiny text-text-tertiary">
-              Mở nhanh các mục cấu hình thường dùng (cũng có ở thanh bên trái).
+              {t('workboards.table.shortcutsHelp')}
             </p>
             <div className="grid gap-2 sm:grid-cols-2">
               {CONFIG_SHORTCUTS.filter((c) => isTableMode || !c.tableOnly).map((c) => (
                 <ConfigShortcutCard
                   key={c.key}
-                  label={c.label}
-                  desc={c.desc}
+                  label={t(c.labelKey)}
+                  desc={t(c.descKey)}
                   icon={c.icon}
                   onClick={() => setActiveItem(c.key)}
                 />
@@ -2239,12 +2244,12 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
       return (
         <BuilderInspectorPanel
           icon={<LayoutGrid className="h-4 w-4" />}
-          title="KPI tiles"
-          subtitle="Thẻ chỉ số tổng quan (tổng/đếm/trung bình) hiện trên đầu bảng — vd Σ Sản lượng."
+          title={t('workboards.table.kpiTilesTitle')}
+          subtitle={t('workboards.table.kpiTilesSubtitle')}
         >
           <div className="space-y-2">
             <div className="flex items-center justify-between">
-              <div className="text-caption font-medium text-text-secondary">Danh sách thẻ KPI</div>
+              <div className="text-caption font-medium text-text-secondary">{t('workboards.table.kpiTilesList')}</div>
               <button
                 type="button"
                 onClick={() =>
@@ -2257,12 +2262,12 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
                 }
                 className="inline-flex items-center gap-1 rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1 text-xs text-text-secondary hover:bg-surface-2"
               >
-                <Plus className="h-3.5 w-3.5" /> Thêm thẻ
+                <Plus className="h-3.5 w-3.5" /> {t('workboards.table.addKpiTile')}
               </button>
             </div>
             {(tableSpec.stat_tiles || []).length === 0 ? (
               <BuilderEmptyHint className="text-left">
-                Chưa có thẻ KPI. Thêm để hiện tổng/đếm ngay trên đầu bảng (vd Σ Sản lượng).
+                {t('workboards.table.noKpiTiles')}
               </BuilderEmptyHint>
             ) : (
               (tableSpec.stat_tiles || []).map((tile, idx) => {
@@ -2277,14 +2282,14 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
                     <input
                       value={tile.label}
                       onChange={(event) => updateTile({ label: event.target.value })}
-                      placeholder="Nhãn (Σ Sản lượng)"
+                      placeholder={t('workboards.table.kpiLabelPlaceholder')}
                       className={INPUT}
                     />
                     <SingleColumnPicker
                       sourceColumns={tableSpec.columns || []}
                       value={tile.column || null}
                       onChange={(next) => updateTile({ column: next || '' })}
-                      placeholder="-- cột --"
+                      placeholder={t('workboards.table.pickColumnPlaceholder')}
                     />
                     <select
                       value={tile.agg || 'sum'}
@@ -2302,7 +2307,7 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
                     <input
                       value={tile.unit || ''}
                       onChange={(event) => updateTile({ unit: event.target.value || null })}
-                      placeholder="đơn vị"
+                      placeholder={t('workboards.table.unitPlaceholder')}
                       className={`${INPUT} w-20`}
                     />
                     <button
@@ -2313,7 +2318,7 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
                         })
                       }
                       className="shrink-0 text-rose-600"
-                      title="Xoá"
+                      title={t('workboards.table.deleteKpiTile')}
                     >
                       <Trash2 className="h-4 w-4" />
                     </button>
@@ -3384,8 +3389,8 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
           <BuilderNavigatorGroup title="Structure">
             <BuilderNavigatorItem
               icon={<LayoutGrid className="h-3.5 w-3.5" />}
-              label="Display mode"
-              subtitle={DISPLAY_MODE_OPTIONS.find((o) => o.value === (tableSpec.display_mode || 'table'))?.label || 'Table'}
+              label={t('workboards.table.displayModeTitle')}
+              subtitle={displayModeLabel(tableSpec.display_mode || 'table', t)}
               active={activeItem === 'display'}
               onClick={() => setActiveItem('display')}
             />
@@ -3394,126 +3399,130 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
           <BuilderNavigatorGroup title="Content">
             <BuilderNavigatorItem
               icon={<Columns3 className="h-3.5 w-3.5" />}
-              label="Fields"
-              subtitle={`${tableSpec.columns.length} selected`}
+              label={t('workboards.table.shortcut.fields')}
+              subtitle={t('workboards.table.selectedCount', { count: tableSpec.columns.length })}
               active={activeItem === 'columns'}
               onClick={() => setActiveItem('columns')}
             />
             <BuilderNavigatorItem
               icon={<Filter className="h-3.5 w-3.5" />}
-              label="Filters & sorting"
-              subtitle={`${filters.length} filter${filters.length === 1 ? '' : 's'} · ${
-                tableSpec.page_size ?? 100
-              }/page`}
+              label={t('workboards.table.filtersSortingTitle')}
+              subtitle={t('workboards.table.filtersPageSubtitle', {
+                count: filters.length,
+                pageSize: tableSpec.page_size ?? 100,
+              })}
               active={activeItem === 'settings'}
               onClick={() => setActiveItem('settings')}
             />
           </BuilderNavigatorGroup>
 
-          <BuilderNavigatorGroup title="Interaction">
+          <BuilderNavigatorGroup title={t('workboards.table.navigator.interaction')}>
             <BuilderNavigatorItem
               icon={<PencilLine className="h-3.5 w-3.5" />}
-              label="Editable fields"
-              subtitle={`${(tableSpec.editable_columns || []).length} of ${tableSpec.columns.length}`}
+              label={t('workboards.table.shortcut.editableFields')}
+              subtitle={t('workboards.table.editableOfTotal', {
+                editable: (tableSpec.editable_columns || []).length,
+                total: tableSpec.columns.length,
+              })}
               active={activeItem === 'editable'}
               onClick={() => setActiveItem('editable')}
             />
             <BuilderNavigatorItem
               icon={<Settings2 className="h-3.5 w-3.5" />}
-              label="Row behaviour"
-              subtitle={`Add: ${tableSpec.allow_add_row !== false ? 'on' : 'off'} - Delete: ${
-                tableSpec.allow_delete_row !== false ? 'on' : 'off'
-              }`}
+              label={t('workboards.table.rowBehaviourTitle')}
+              subtitle={t('workboards.table.rowBehaviourState', {
+                add: tableSpec.allow_add_row !== false ? t('workboards.table.on') : t('workboards.table.off'),
+                delete: tableSpec.allow_delete_row !== false ? t('workboards.table.on') : t('workboards.table.off'),
+              })}
               active={activeItem === 'behaviour'}
               onClick={() => setActiveItem('behaviour')}
             />
             <BuilderNavigatorItem
               icon={<Plus className="h-3.5 w-3.5" />}
-              label="New row defaults"
-              subtitle={`${(tableSpec.required_columns || []).length} required - ${
-                Object.keys(tableSpec.default_values || {}).length
-              } preset`}
+              label={t('workboards.table.newRowDefaultsTitle')}
+              subtitle={t('workboards.table.requiredPresetSubtitle', {
+                required: (tableSpec.required_columns || []).length,
+                presets: Object.keys(tableSpec.default_values || {}).length,
+              })}
               active={activeItem === 'defaults'}
               onClick={() => setActiveItem('defaults')}
             />
             <BuilderNavigatorItem
               icon={<PencilLine className="h-3.5 w-3.5" />}
-              label="Detail panel"
+              label={t('workboards.table.detailPanelTitle')}
               subtitle={
                 tableSpec.detail_panel?.enabled === false
-                  ? 'Disabled'
+                  ? t('workboards.table.disabled')
                   : (tableSpec.detail_panel?.editable_columns || []).length > 0
-                    ? `${(tableSpec.detail_panel?.editable_columns || []).length} editable`
-                    : 'Read-only'
+                    ? t('workboards.table.editableCount', { count: (tableSpec.detail_panel?.editable_columns || []).length })
+                    : t('workboards.table.readOnly')
               }
               active={activeItem === 'detail_panel'}
               onClick={() => setActiveItem('detail_panel')}
             />
             <BuilderNavigatorItem
               icon={<ChevronRight className="h-3.5 w-3.5" />}
-              label="Row actions"
+              label={t('workboards.table.rowActionsTitle')}
               subtitle={
                 rowActions.length === 0
-                  ? 'No actions'
-                  : `${rowActions.length} action${rowActions.length === 1 ? '' : 's'}`
+                  ? t('workboards.table.noActions')
+                  : t('workboards.table.actionsCount', { count: rowActions.length })
               }
               active={activeItem === 'row_actions'}
               onClick={() => setActiveItem('row_actions')}
             />
             <BuilderNavigatorItem
               icon={<ChevronRight className="h-3.5 w-3.5" />}
-              label="Chọn nhiều dòng"
-              subtitle={bulkActions.length === 0 ? 'Chưa có' : `${bulkActions.length} hành động`}
+              label={t('workboards.table.bulkActionsTitle')}
+              subtitle={bulkActions.length === 0 ? t('workboards.table.noneYet') : t('workboards.table.actionsCount', { count: bulkActions.length })}
               active={activeItem === 'bulk_actions'}
               onClick={() => setActiveItem('bulk_actions')}
             />
           </BuilderNavigatorGroup>
 
-          <BuilderNavigatorGroup title="Presentation">
+          <BuilderNavigatorGroup title={t('workboards.table.navigator.presentation')}>
             {isTableMode && (
               <>
             <BuilderNavigatorItem
               icon={<Settings2 className="h-3.5 w-3.5" />}
-              label="Column presentation"
+              label={t('workboards.table.shortcut.columnPresentation')}
               subtitle={
                 Object.keys(tableSpec.column_metadata || {}).length === 0
-                  ? 'Default labels'
-                  : `${Object.keys(tableSpec.column_metadata || {}).length} custom`
+                  ? t('workboards.table.defaultLabels')
+                  : t('workboards.table.customCount', { count: Object.keys(tableSpec.column_metadata || {}).length })
               }
               active={activeItem === 'column_meta'}
               onClick={() => setActiveItem('column_meta')}
             />
             <BuilderNavigatorItem
               icon={<Columns3 className="h-3.5 w-3.5" />}
-              label="Header groups"
+              label={t('workboards.table.shortcut.headerGroups')}
               subtitle={
                 (tableSpec.column_groups || []).length === 0
-                  ? 'No groups'
-                  : `${(tableSpec.column_groups || []).length} group${
-                      (tableSpec.column_groups || []).length === 1 ? '' : 's'
-                    }`
+                  ? t('workboards.table.noGroups')
+                  : t('workboards.table.groupsCount', { count: (tableSpec.column_groups || []).length })
               }
               active={activeItem === 'column_groups'}
               onClick={() => setActiveItem('column_groups')}
             />
             <BuilderNavigatorItem
               icon={<Rows3 className="h-3.5 w-3.5" />}
-              label="Row merge"
+              label={t('workboards.table.shortcut.rowMerge')}
               subtitle={
                 (tableSpec.group_by || []).length === 0
-                  ? 'No merging'
-                  : `By ${(tableSpec.group_by || []).join(', ')}`
+                  ? t('workboards.table.noMerging')
+                  : t('workboards.table.mergeBy', { columns: (tableSpec.group_by || []).join(', ') })
               }
               active={activeItem === 'row_merge'}
               onClick={() => setActiveItem('row_merge')}
             />
             <BuilderNavigatorItem
               icon={<Palette className="h-3.5 w-3.5" />}
-              label="Conditional formatting"
+              label={t('workboards.table.shortcut.conditionalFormatting')}
               subtitle={
                 formatRules.length === 0
-                  ? 'No rules'
-                  : `${formatRules.length} rule${formatRules.length === 1 ? '' : 's'}`
+                  ? t('workboards.table.noRules')
+                  : t('workboards.table.rulesCount', { count: formatRules.length })
               }
               active={activeItem === 'format_rules'}
               onClick={() => setActiveItem('format_rules')}
@@ -3522,24 +3531,22 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
             )}
             <BuilderNavigatorItem
               icon={<ListFilter className="h-3.5 w-3.5" />}
-              label="Empty state"
-              subtitle={tableSpec.empty_state_message ? 'Custom message' : 'Default message'}
+              label={t('workboards.table.emptyStateTitle')}
+              subtitle={tableSpec.empty_state_message ? t('workboards.table.customMessage') : t('workboards.table.defaultMessage')}
               active={activeItem === 'empty'}
               onClick={() => setActiveItem('empty')}
             />
           </BuilderNavigatorGroup>
 
-          <BuilderNavigatorGroup title="Summary">
+          <BuilderNavigatorGroup title={t('workboards.table.navigator.summary')}>
             {isTableMode && (
             <BuilderNavigatorItem
               icon={<Sigma className="h-3.5 w-3.5" />}
-              label="Footer totals"
+              label={t('workboards.table.shortcut.footerTotals')}
               subtitle={
                 Object.keys(totals).length === 0
-                  ? 'No totals'
-                  : `${Object.keys(totals).length} column${
-                      Object.keys(totals).length === 1 ? '' : 's'
-                    }`
+                  ? t('workboards.table.noTotals')
+                  : t('workboards.table.columnsCount', { count: Object.keys(totals).length })
               }
               active={activeItem === 'totals'}
               onClick={() => setActiveItem('totals')}
@@ -3547,13 +3554,11 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
             )}
             <BuilderNavigatorItem
               icon={<LayoutGrid className="h-3.5 w-3.5" />}
-              label="KPI tiles"
+              label={t('workboards.table.kpiTilesTitle')}
               subtitle={
                 (tableSpec.stat_tiles || []).length === 0
-                  ? 'No tiles'
-                  : `${(tableSpec.stat_tiles || []).length} tile${
-                      (tableSpec.stat_tiles || []).length === 1 ? '' : 's'
-                    }`
+                  ? t('workboards.table.noTiles')
+                  : t('workboards.table.tilesCount', { count: (tableSpec.stat_tiles || []).length })
               }
               active={activeItem === 'kpi'}
               onClick={() => setActiveItem('kpi')}
@@ -3561,11 +3566,11 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
           </BuilderNavigatorGroup>
 
           {isTableMode && (
-            <BuilderNavigatorGroup title="Specialized">
+            <BuilderNavigatorGroup title={t('workboards.table.navigator.specialized')}>
               <BuilderNavigatorItem
                 icon={<ScanLine className="h-3.5 w-3.5" />}
-                label="POS / Scan → Cart"
-                subtitle={tableSpec.pos_cart ? 'Đang bật' : 'Tắt'}
+                label={t('workboards.table.posCartTitle')}
+                subtitle={tableSpec.pos_cart ? t('workboards.table.on') : t('workboards.table.off')}
                 active={activeItem === 'pos_cart'}
                 onClick={() => setActiveItem('pos_cart')}
               />
@@ -3574,19 +3579,19 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
 
           <section>
             <h3 className="mb-1.5 text-tiny font-emphasis uppercase tracking-wider text-text-quaternary">
-              Derived data
+              {t('workboards.table.navigator.derivedData')}
             </h3>
             <div className="space-y-3">
               <DerivedSubGroup
-                label="Computed"
+                label={t('workboards.table.derived.computed')}
                 count={computed.length}
                 onAdd={addComputed}
-                addTitle="Add computed column"
+                addTitle={t('workboards.table.derived.addComputed')}
                 addDisabled={columnNames.length === 0}
               >
                 {computed.length === 0 ? (
                   <BuilderEmptyHint className="px-3 py-3">
-                    No formula columns yet.
+                    {t('workboards.table.derived.noFormulaColumns')}
                   </BuilderEmptyHint>
                 ) : (
                   computed.map((col, index) => (
@@ -3594,13 +3599,13 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
                       key={`${col.name}:${index}`}
                       icon={<Calculator className="h-3.5 w-3.5" />}
                       label={col.label?.trim() || col.name}
-                      subtitle={col.formula.trim() ? col.formula.slice(0, 40) : 'No formula yet'}
+                      subtitle={col.formula.trim() ? col.formula.slice(0, 40) : t('workboards.table.derived.noFormulaYet')}
                       active={activeItem === `computed:${index}`}
                       onClick={() => setActiveItem(`computed:${index}`)}
                       action={
                         <BuilderIconButton
                           onClick={() => removeComputed(index)}
-                          title="Delete column"
+                          title={t('workboards.table.derived.deleteColumn')}
                           variant="danger"
                         >
                           <Trash2 className="h-3 w-3 text-danger" />
@@ -3612,15 +3617,15 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
               </DerivedSubGroup>
 
               <DerivedSubGroup
-                label="Lookup"
+                label={t('workboards.table.derived.lookup')}
                 count={lookups.length}
                 onAdd={addLookup}
-                addTitle="Add lookup column"
+                addTitle={t('workboards.table.derived.addLookup')}
                 addDisabled={tables.length === 0}
               >
                 {lookups.length === 0 ? (
                   <BuilderEmptyHint className="px-3 py-3">
-                    No lookup columns yet.
+                    {t('workboards.table.derived.noLookupColumns')}
                   </BuilderEmptyHint>
                 ) : (
                   lookups.map((col, index) => {
@@ -3633,14 +3638,14 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
                         subtitle={
                           remoteTable
                             ? `${remoteTable.display_name}.${col.return_column || '?'}`
-                            : 'No table selected'
+                            : t('workboards.table.derived.noTableSelected')
                         }
                         active={activeItem === `lookup:${index}`}
                         onClick={() => setActiveItem(`lookup:${index}`)}
                         action={
                           <BuilderIconButton
                             onClick={() => removeLookup(index)}
-                            title="Delete column"
+                            title={t('workboards.table.derived.deleteColumn')}
                             variant="danger"
                           >
                             <Trash2 className="h-3 w-3 text-danger" />
@@ -3653,15 +3658,15 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
               </DerivedSubGroup>
 
               <DerivedSubGroup
-                label="Roll-up"
+                label={t('workboards.table.derived.rollup')}
                 count={rollups.length}
                 onAdd={addRollup}
-                addTitle="Add roll-up column"
+                addTitle={t('workboards.table.derived.addRollup')}
                 addDisabled={tables.length === 0}
               >
                 {rollups.length === 0 ? (
                   <BuilderEmptyHint className="px-3 py-3">
-                    Chưa có cột roll-up (gộp bảng con).
+                    {t('workboards.table.derived.noRollupColumns')}
                   </BuilderEmptyHint>
                 ) : (
                   rollups.map((col, index) => {
@@ -3674,14 +3679,14 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
                         subtitle={
                           remoteTable
                             ? `${col.agg || 'count'}(${remoteTable.display_name})`
-                            : 'No table selected'
+                            : t('workboards.table.derived.noTableSelected')
                         }
                         active={activeItem === `rollup:${index}`}
                         onClick={() => setActiveItem(`rollup:${index}`)}
                         action={
                           <BuilderIconButton
                             onClick={() => removeRollup(index)}
-                            title="Delete column"
+                            title={t('workboards.table.derived.deleteColumn')}
                             variant="danger"
                           >
                             <Trash2 className="h-3 w-3 text-danger" />

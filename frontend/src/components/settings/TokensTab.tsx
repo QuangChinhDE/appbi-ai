@@ -16,6 +16,7 @@ import { FieldGroup, Input, Select } from '@/components/ui/Input';
 import { Badge } from '@/components/ui/Badge';
 import { Tabs } from '@/components/ui/Tabs';
 import { ConfirmDialog } from '@/components/common/ConfirmDialog';
+import { Modal } from '@/components/common/Modal';
 import { useI18n } from '@/providers/LanguageProvider';
 import { usePermissions, hasPermission, type ModuleKey, type PermissionLevel } from '@/hooks/use-permissions';
 import { moduleLabel, levelLabel, initials } from './shared';
@@ -45,6 +46,26 @@ function isExpiredToken(token: PersonalAccessTokenRecord): boolean {
 
 type TokenFormState = { tokenId: string; name: string; expiry: string; scopes: Record<string, string> };
 type RevealedTokenState = { token: string; tokenId: string; name: string };
+
+/** Modal that shows a full token string again (from a reveal call), with copy. */
+function RevealTokenModal({ token, onClose }: { token: string; onClose: () => void }) {
+  const { t } = useI18n();
+  const copy = async () => { await navigator.clipboard.writeText(token); toast.success(t('settings.tokens.copiedToast')); };
+  return (
+    <Modal
+      isOpen onClose={onClose} title={t('settings.tokens.revealTitle')} size="md"
+      footer={(
+        <>
+          <Button variant="secondary" onClick={onClose}>{t('settings.common.cancel')}</Button>
+          <Button variant="primary" onClick={copy}>{t('settings.tokens.copy')}</Button>
+        </>
+      )}
+    >
+      <p className="mb-3 text-caption text-text-tertiary">{t('settings.tokens.copyHint')}</p>
+      <div className="break-all rounded-md border border-[rgb(var(--border-strong))] bg-surface-2 px-3 py-3 font-mono text-caption text-text-primary">{token}</div>
+    </Modal>
+  );
+}
 
 /* ═══════════ TOKENS TAB (sub-tabs) ═══════════ */
 
@@ -87,7 +108,9 @@ export function PersonalTokensPanel() {
   const [editForm, setEditForm] = useState<TokenFormState | null>(null);
   const [revealed, setRevealed] = useState<RevealedTokenState | null>(null);
   const [revealedHidden, setRevealedHidden] = useState(false);
+  const [revealedFull, setRevealedFull] = useState<string | null>(null);
   const [tokenToDelete, setTokenToDelete] = useState<PersonalAccessTokenRecord | null>(null);
+  const [tokenToRotate, setTokenToRotate] = useState<PersonalAccessTokenRecord | null>(null);
 
   const { data: tokens = [], isLoading } = useQuery<PersonalAccessTokenRecord[]>({
     queryKey: ['personal-access-tokens'], queryFn: personalAccessTokensApi.list,
@@ -146,6 +169,18 @@ export function PersonalTokensPanel() {
     mutationFn: (id: string) => personalAccessTokensApi.deletePermanently(id),
     onSuccess: () => { setEditForm(null); qc.invalidateQueries({ queryKey: ['personal-access-tokens'] }); toast.success(t('settings.tokens.deletedToast')); },
     onError: (err) => toast.error(extractApiError(err, t('settings.tokens.deleteFailed'))),
+  });
+
+  const revealMutation = useMutation({
+    mutationFn: (id: string) => personalAccessTokensApi.reveal(id),
+    onSuccess: (data) => setRevealedFull(data.token),
+    onError: (err) => toast.error(extractApiError(err, t('settings.tokens.revealFailed'))),
+  });
+
+  const rotateMutation = useMutation({
+    mutationFn: (id: string) => personalAccessTokensApi.rotate(id),
+    onSuccess: (data) => { setTokenToRotate(null); setRevealedFull(data.token); qc.invalidateQueries({ queryKey: ['personal-access-tokens'] }); toast.success(t('settings.tokens.rotatedToast')); },
+    onError: (err) => { setTokenToRotate(null); toast.error(extractApiError(err, t('settings.tokens.rotateFailed'))); },
   });
 
   const selectedScopeCount = Object.values(scopes).filter((l) => l && l !== 'none').length;
@@ -270,9 +305,13 @@ export function PersonalTokensPanel() {
                       <p className="mt-1 font-mono text-tiny text-text-quaternary">{token.token_hint}</p>
                     </div>
                     <div className="flex flex-wrap gap-2">
+                      {!isRevoked && token.revealable && (
+                        <Button variant="secondary" size="xs" loading={revealMutation.isPending && revealMutation.variables === token.id} onClick={() => revealMutation.mutate(token.id)}>{t('settings.tokens.reveal')}</Button>
+                      )}
                       {!isRevoked && (
                         <>
                           <Button variant="secondary" size="xs" disabled={updateMutation.isPending || deleteMutation.isPending} onClick={() => startEditing(token)}>{t('settings.tokens.edit')}</Button>
+                          <Button variant="secondary" size="xs" loading={rotateMutation.isPending && rotateMutation.variables === token.id} onClick={() => setTokenToRotate(token)}>{t('settings.tokens.rotate')}</Button>
                           <Button variant="danger" size="xs" loading={revokeMutation.isPending && revokeMutation.variables === token.id} onClick={() => revokeMutation.mutate(token.id)}>{t('settings.tokens.revoke')}</Button>
                         </>
                       )}
@@ -353,6 +392,18 @@ export function PersonalTokensPanel() {
         confirmLabel={t('settings.tokens.deletePermanently')}
         variant="danger"
       />
+
+      <ConfirmDialog
+        isOpen={!!tokenToRotate}
+        onClose={() => setTokenToRotate(null)}
+        onConfirm={() => { if (tokenToRotate) rotateMutation.mutate(tokenToRotate.id); }}
+        title={t('settings.tokens.rotateConfirmTitle')}
+        description={t('settings.tokens.rotateConfirmBody')}
+        confirmLabel={t('settings.tokens.rotate')}
+        variant="warning"
+      />
+
+      {revealedFull && <RevealTokenModal token={revealedFull} onClose={() => setRevealedFull(null)} />}
     </div>
   );
 }
@@ -364,6 +415,8 @@ function AdminTokensPanel() {
   const qc = useQueryClient();
   const [search, setSearch] = useState('');
   const [toRevoke, setToRevoke] = useState<AdminPersonalAccessTokenRecord | null>(null);
+  const [toRotate, setToRotate] = useState<AdminPersonalAccessTokenRecord | null>(null);
+  const [revealedFull, setRevealedFull] = useState<string | null>(null);
 
   const { data: tokens = [], isLoading } = useQuery<AdminPersonalAccessTokenRecord[]>({
     queryKey: ['personal-access-tokens', 'admin'], queryFn: personalAccessTokensApi.adminList,
@@ -373,6 +426,18 @@ function AdminTokensPanel() {
     mutationFn: (id: string) => personalAccessTokensApi.adminRevoke(id),
     onSuccess: () => { setToRevoke(null); qc.invalidateQueries({ queryKey: ['personal-access-tokens', 'admin'] }); toast.success(t('settings.tokens.revokedToast')); },
     onError: (err) => toast.error(extractApiError(err, t('settings.tokens.revokeFailed'))),
+  });
+
+  const revealMutation = useMutation({
+    mutationFn: (id: string) => personalAccessTokensApi.adminReveal(id),
+    onSuccess: (data) => setRevealedFull(data.token),
+    onError: (err) => toast.error(extractApiError(err, t('settings.tokens.revealFailed'))),
+  });
+
+  const rotateMutation = useMutation({
+    mutationFn: (id: string) => personalAccessTokensApi.adminRotate(id),
+    onSuccess: (data) => { setToRotate(null); setRevealedFull(data.token); qc.invalidateQueries({ queryKey: ['personal-access-tokens', 'admin'] }); toast.success(t('settings.tokens.rotatedToast')); },
+    onError: (err) => { setToRotate(null); toast.error(extractApiError(err, t('settings.tokens.rotateFailed'))); },
   });
 
   const fmt = (v: string | null) => (v ? new Date(v).toLocaleDateString(locale) : t('settings.common.never'));
@@ -440,9 +505,17 @@ function AdminTokensPanel() {
                     </td>
                     <td className="px-4 py-3 text-text-tertiary">{tk.last_used_at ? fmt(tk.last_used_at) : t('settings.common.never')}</td>
                     <td className="px-4 py-3 text-right">
-                      {!isRevoked && (
-                        <Button variant="danger" size="xs" onClick={() => setToRevoke(tk)}>{t('settings.tokens.revoke')}</Button>
-                      )}
+                      <div className="flex justify-end gap-2">
+                        {tk.revealable && !isRevoked && (
+                          <Button variant="secondary" size="xs" loading={revealMutation.isPending && revealMutation.variables === tk.id} onClick={() => revealMutation.mutate(tk.id)}>{t('settings.tokens.reveal')}</Button>
+                        )}
+                        {!isRevoked && (
+                          <Button variant="secondary" size="xs" loading={rotateMutation.isPending && rotateMutation.variables === tk.id} onClick={() => setToRotate(tk)}>{t('settings.tokens.rotate')}</Button>
+                        )}
+                        {!isRevoked && (
+                          <Button variant="danger" size="xs" onClick={() => setToRevoke(tk)}>{t('settings.tokens.revoke')}</Button>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 );
@@ -461,6 +534,18 @@ function AdminTokensPanel() {
         confirmLabel={t('settings.tokens.revoke')}
         variant="danger"
       />
+
+      <ConfirmDialog
+        isOpen={!!toRotate}
+        onClose={() => setToRotate(null)}
+        onConfirm={() => { if (toRotate) rotateMutation.mutate(toRotate.id); }}
+        title={t('settings.tokens.rotateConfirmTitle')}
+        description={t('settings.tokens.rotateConfirmBody')}
+        confirmLabel={t('settings.tokens.rotate')}
+        variant="warning"
+      />
+
+      {revealedFull && <RevealTokenModal token={revealedFull} onClose={() => setRevealedFull(null)} />}
     </div>
   );
 }

@@ -30,7 +30,7 @@ import { DashboardChartManagerModal } from '@/components/dashboards/DashboardCha
 import { DashboardHtmlImportModal } from '@/components/dashboards/DashboardHtmlImportModal';
 import { ConfirmDialog } from '@/components/common/ConfirmDialog';
 import { useDashboardPresence } from '@/hooks/use-dashboard-presence';
-import { ExportModeContext, openPdfPreviewTab, safePdfFilename } from '@/lib/export-mode';
+import { ExportModeContext, PDF_PREVIEW_TAB_ENABLED, openPdfPreviewTab, safePdfFilename } from '@/lib/export-mode';
 import { ExportPdfDialog, type ExportPdfChoices } from '@/components/dashboards/ExportPdfDialog';
 import type { PdfProgress } from '@/lib/export-pdf';
 import { ShareDialog } from '@/components/common/ShareDialog';
@@ -2285,7 +2285,9 @@ export default function DashboardDetailPage() {
         })),
       });
       setIsExportDialogOpen(false);
-      if (result === 'saved') {
+      if (result === 'saved' && PDF_PREVIEW_TAB_ENABLED) {
+        // See the public view: with the preview tab off, 'saved' is success and
+        // the pop-up hint would be nonsense.
         try { previewWindow?.close(); } catch { /* noop */ }
         toast.info(t('dashboards.detail.pdfDownloaded'), {
           description: t('dashboards.detail.pdfPopupBlocked'),

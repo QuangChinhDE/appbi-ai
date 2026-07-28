@@ -49,6 +49,7 @@ import {
 import type { FormFieldSpec, RelatedRecordConfigSpec, ScreenSpec } from './types';
 import { INPUT, Lbl } from './ScreenEditor';
 import { workboardApi } from '@/lib/api/workboards';
+import { useI18n } from '@/providers/LanguageProvider';
 
 interface DatasetTableInfo {
   id: number;
@@ -72,6 +73,7 @@ type FormSpec = NonNullable<ScreenSpec['form']>;
 type FormPage = NonNullable<FormSpec['pages']>[number];
 type LookupRuntime = NonNullable<FormFieldSpec['lookup']>;
 type FormActiveItem = 'layout' | 'submit' | 'related' | 'initial' | 'ocr' | `field:${number}`;
+type Translate = ReturnType<typeof useI18n>['t'];
 
 type OcrSpec = NonNullable<FormSpec['ocr']>;
 
@@ -82,41 +84,6 @@ type RelationshipHop = {
 };
 
 const EMPTY_FORM: FormSpec = { fields: [], initial_values: {} };
-
-const WIDGETS: { value: FormFieldSpec['widget']; label: string }[] = [
-  { value: 'text', label: 'Text' },
-  { value: 'textarea', label: 'Long text' },
-  { value: 'number', label: 'Number' },
-  { value: 'select', label: 'Select' },
-  { value: 'date', label: 'Date' },
-  { value: 'datetime', label: 'Date + time' },
-  { value: 'checkbox', label: 'On / off' },
-  { value: 'file', label: 'File upload (base64, ≤1MB)' },
-  { value: 'image', label: 'Image upload (base64, ≤1MB)' },
-  { value: 'images', label: 'Nhiều ảnh (chụp thực địa)' },
-  { value: 'map', label: 'Bản đồ (chọn vùng trên map)' },
-  { value: 'geopoint', label: 'Vị trí GPS (chấm công/định vị)' },
-  { value: 'signature', label: 'Chữ ký tay' },
-  { value: 'barcode', label: 'Quét mã QR / Barcode' },
-  { value: 'audio', label: 'Ghi âm ghi chú' },
-  { value: 'computed', label: 'Tính tự động (công thức)' },
-  { value: 'status', label: 'Trạng thái / duyệt' },
-  // ── Rich input types ──────────────────────────────────────────────
-  { value: 'enum_list', label: 'Chọn nhiều' },
-  { value: 'rating', label: 'Đánh giá (sao)' },
-  { value: 'slider', label: 'Thanh trượt (slider)' },
-  { value: 'email', label: 'Email' },
-  { value: 'phone', label: 'Số điện thoại' },
-  { value: 'url', label: 'Đường dẫn (URL)' },
-  { value: 'rich_text', label: 'Văn bản định dạng (Markdown)' },
-  { value: 'currency', label: 'Tiền tệ' },
-  { value: 'percent', label: 'Phần trăm (%)' },
-  { value: 'time', label: 'Giờ (time)' },
-  { value: 'duration', label: 'Khoảng thời gian' },
-  { value: 'color', label: 'Màu sắc' },
-  { value: 'video', label: 'Video (clip ngắn)' },
-  { value: 'qr', label: 'Mã QR (hiển thị / in tem)' },
-];
 
 // ── Field-type picker taxonomy ────────────────────────────────────────────
 // A user-facing categorisation LAYERED OVER the runtime widget enum (the enum
@@ -207,18 +174,83 @@ const FIELD_TYPE_GROUPS: {
   },
 ];
 
-const WIDGET_LABEL: Record<string, string> = Object.fromEntries(
-  FIELD_TYPE_GROUPS.flatMap((g) => g.items.map((it) => [it.widget as string, it.label])),
-);
+const FORM_WIDGET_LABEL_KEYS: Record<string, string> = {
+  text: 'workboards.form.widget.text',
+  textarea: 'workboards.form.widget.textarea',
+  number: 'workboards.form.widget.number',
+  select: 'workboards.form.widget.select',
+  lookup: 'workboards.form.widget.select',
+  date: 'workboards.form.widget.date',
+  datetime: 'workboards.form.widget.datetime',
+  checkbox: 'workboards.form.widget.checkbox',
+  file: 'workboards.form.widget.file',
+  image: 'workboards.form.widget.image',
+  images: 'workboards.form.widget.images',
+  map: 'workboards.form.widget.map',
+  geopoint: 'workboards.form.widget.geopoint',
+  signature: 'workboards.form.widget.signature',
+  barcode: 'workboards.form.widget.barcode',
+  audio: 'workboards.form.widget.audio',
+  computed: 'workboards.form.widget.computed',
+  status: 'workboards.form.widget.status',
+  enum_list: 'workboards.form.widget.enumList',
+  rating: 'workboards.form.widget.rating',
+  slider: 'workboards.form.widget.slider',
+  email: 'workboards.form.widget.email',
+  phone: 'workboards.form.widget.phone',
+  url: 'workboards.form.widget.url',
+  rich_text: 'workboards.form.widget.richText',
+  currency: 'workboards.form.widget.currency',
+  percent: 'workboards.form.widget.percent',
+  time: 'workboards.form.widget.time',
+  duration: 'workboards.form.widget.duration',
+  color: 'workboards.form.widget.color',
+  video: 'workboards.form.widget.video',
+  qr: 'workboards.form.widget.qr',
+};
+
+const FIELD_TYPE_CATEGORY_KEYS = [
+  'workboards.form.fieldGroup.text',
+  'workboards.form.fieldGroup.number',
+  'workboards.form.fieldGroup.choice',
+  'workboards.form.fieldGroup.dateTime',
+  'workboards.form.fieldGroup.media',
+  'workboards.form.fieldGroup.location',
+  'workboards.form.fieldGroup.computed',
+  'workboards.form.fieldGroup.workflow',
+  'workboards.form.fieldGroup.specialInput',
+  'workboards.form.fieldGroup.output',
+  'workboards.form.fieldGroup.other',
+];
+
+const FIELD_TYPE_HINT_KEYS: Partial<Record<string, string>> = {
+  select: 'workboards.form.widgetHint.select',
+  status: 'workboards.form.widgetHint.status',
+  barcode: 'workboards.form.widgetHint.barcode',
+  qr: 'workboards.form.widgetHint.qr',
+};
+
+function widgetLabel(widget: FormFieldSpec['widget'], t: Translate): string {
+  return t(FORM_WIDGET_LABEL_KEYS[widget as string] || 'workboards.form.widget.unknown', {
+    widget: String(widget),
+  });
+}
+
+function fieldTypeHint(widget: FormFieldSpec['widget'], t: Translate): string | null {
+  const key = FIELD_TYPE_HINT_KEYS[widget as string];
+  return key ? t(key) : null;
+}
 
 // Searchable, categorised replacement for the flat 31-item "Field type" select.
 // Emits a widget; the caller maps select↔lookup / enum_list defaults exactly as
 // the old <select> did, so nothing downstream changes.
 function FieldTypePicker({
   widget,
+  t,
   onSelect,
 }: {
   widget: FormFieldSpec['widget'];
+  t: Translate;
   onSelect: (w: FormFieldSpec['widget']) => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -237,19 +269,27 @@ function FieldTypePicker({
   }, [open]);
   // lookup collapses to the 'select' entry for display (source axis differentiates).
   const shown = widget === 'lookup' ? 'select' : widget;
-  const currentLabel = WIDGET_LABEL[shown as string] || String(shown);
+  const currentLabel = widgetLabel(shown as FormFieldSpec['widget'], t);
   const ql = q.trim().toLowerCase();
-  const groups = FIELD_TYPE_GROUPS.map((g) => ({
-    category: g.category,
-    items: ql
-      ? g.items.filter(
-          (it) =>
-            it.label.toLowerCase().includes(ql) ||
-            g.category.toLowerCase().includes(ql) ||
-            (it.hint || '').toLowerCase().includes(ql),
-        )
-      : g.items,
-  })).filter((g) => g.items.length > 0);
+  const groups = FIELD_TYPE_GROUPS.map((g, groupIndex) => {
+    const category = t(FIELD_TYPE_CATEGORY_KEYS[groupIndex] || 'workboards.form.fieldGroup.other');
+    const localizedItems = g.items.map((it) => ({
+      ...it,
+      label: widgetLabel(it.widget, t),
+      hint: fieldTypeHint(it.widget, t),
+    }));
+    return {
+      category,
+      items: ql
+        ? localizedItems.filter(
+            (it) =>
+              it.label.toLowerCase().includes(ql) ||
+              category.toLowerCase().includes(ql) ||
+              (it.hint || '').toLowerCase().includes(ql),
+          )
+        : localizedItems,
+    };
+  }).filter((g) => g.items.length > 0);
   const pick = (w: FormFieldSpec['widget']) => {
     onSelect(w);
     setOpen(false);
@@ -272,14 +312,14 @@ function FieldTypePicker({
               autoFocus
               value={q}
               onChange={(event) => setQ(event.target.value)}
-              placeholder="Tìm loại trường..."
+              placeholder={t('workboards.form.fieldTypeSearchPlaceholder')}
               className={INPUT}
             />
           </div>
           <div className="max-h-72 overflow-auto p-1">
             {groups.length === 0 ? (
               <span className="block px-2 py-2 text-caption text-text-tertiary">
-                Không có kết quả.
+                {t('workboards.form.noFieldTypeResults')}
               </span>
             ) : (
               groups.map((g) => (
@@ -333,11 +373,13 @@ function inferWidgetFromColumnType(type?: string): FormFieldSpec['widget'] {
 function AddFieldMenu({
   columns,
   usedColumns,
+  t,
   onAddColumn,
   onAddCustom,
 }: {
   columns: { name: string; type?: string }[];
   usedColumns: Set<string>;
+  t: Translate;
   onAddColumn: (col: { name: string; type?: string }) => void;
   onAddCustom: () => void;
 }) {
@@ -364,7 +406,7 @@ function AddFieldMenu({
         type="button"
         onClick={() => setOpen((v) => !v)}
         className="rounded p-1 text-text-tertiary hover:bg-surface-2 hover:text-brand"
-        title="Add field"
+        title={t('workboards.form.addField')}
       >
         <Plus className="h-3.5 w-3.5" />
       </button>
@@ -376,7 +418,7 @@ function AddFieldMenu({
                 autoFocus
                 value={q}
                 onChange={(event) => setQ(event.target.value)}
-                placeholder="Tìm cột nguồn..."
+                placeholder={t('workboards.form.sourceColumnSearchPlaceholder')}
                 className={INPUT}
               />
             </div>
@@ -384,15 +426,15 @@ function AddFieldMenu({
           <div className="max-h-64 overflow-auto p-1">
             {columns.length === 0 ? (
               <span className="block px-2 py-2 text-caption text-text-tertiary">
-                Nguồn chưa có cột — dùng trường tùy chỉnh bên dưới.
+                {t('workboards.form.noSourceColumnsUseCustom')}
               </span>
             ) : available.length === 0 ? (
               <span className="block px-2 py-2 text-caption text-text-tertiary">
-                Đã thêm hết cột nguồn.
+                {t('workboards.form.allSourceColumnsAdded')}
               </span>
             ) : filtered.length === 0 ? (
               <span className="block px-2 py-2 text-caption text-text-tertiary">
-                Không có cột khớp.
+                {t('workboards.form.noMatchingColumns')}
               </span>
             ) : (
               filtered.map((c) => (
@@ -426,7 +468,7 @@ function AddFieldMenu({
               }}
               className="block w-full rounded px-2 py-1.5 text-left text-caption text-text-secondary hover:bg-surface-2"
             >
-              + Trường tùy chỉnh (không gắn cột)
+              {t('workboards.form.addCustomField')}
             </button>
           </div>
         </div>
@@ -435,16 +477,14 @@ function AddFieldMenu({
   );
 }
 
-const COMMON_EXPRESSION_OPTIONS: SelectOption[] = [
-  { value: '{{app_user.username}}', label: 'Signed-in user - username' },
-  { value: '{{app_user.full_name}}', label: 'Signed-in user - full name' },
-  { value: '{{app_user.role}}', label: 'Signed-in user - role' },
-  { value: '{{today}}', label: 'Today' },
-  { value: '{{now}}', label: 'Now' },
-];
-
-function widgetLabel(widget: FormFieldSpec['widget']): string {
-  return WIDGETS.find((item) => item.value === widget)?.label || widget;
+function commonExpressionOptions(t: Translate): SelectOption[] {
+  return [
+    { value: '{{app_user.username}}', label: t('workboards.form.expression.username') },
+    { value: '{{app_user.full_name}}', label: t('workboards.form.expression.fullName') },
+    { value: '{{app_user.role}}', label: t('workboards.form.expression.role') },
+    { value: '{{today}}', label: t('workboards.form.expression.today') },
+    { value: '{{now}}', label: t('workboards.form.expression.now') },
+  ];
 }
 
 function ToggleChip({
@@ -504,6 +544,7 @@ export default function FormScreenEditor({
   onFocusFieldHandled,
   workboardId,
 }: Props) {
+  const { t } = useI18n();
   const form = screen.form || EMPTY_FORM;
   const fields = form.fields || [];
   const boundTable = tables.find((table) => table.id === screen.table_id);
@@ -636,7 +677,7 @@ export default function FormScreenEditor({
       parentKey;
     const next: RelatedRecordConfigSpec = {
       id: `related_${relatedRecords.length + 1}`,
-      label: child ? child.title : 'Related records',
+      label: child ? child.title : t('workboards.form.relatedRecordsFallback'),
       child_screen_id: child?.id || '',
       parent_key_column: parentKey,
       child_foreign_key_column: childFk,
@@ -667,10 +708,11 @@ export default function FormScreenEditor({
       return (
         <BuilderInspectorPanel
           icon={<LayoutList className="h-4 w-4" />}
-          title="Form layout"
-          subtitle="Structure the form before configuring individual fields."
+          title={t('workboards.form.layoutTitle')}
+          subtitle={t('workboards.form.layoutSubtitle')}
         >
           <FormLayoutInspector
+            t={t}
             pages={pages}
             sections={sections}
             isMultiStep={isMultiStep}
@@ -685,10 +727,11 @@ export default function FormScreenEditor({
       return (
         <BuilderInspectorPanel
           icon={<Route className="h-4 w-4" />}
-          title="Submit flow"
-          subtitle="Control the save button and what happens after a successful submit."
+          title={t('workboards.form.submitFlowTitle')}
+          subtitle={t('workboards.form.submitFlowSubtitle')}
         >
           <SubmitFlowInspector
+            t={t}
             screen={screen}
             form={form}
             allScreens={allScreens}
@@ -703,10 +746,11 @@ export default function FormScreenEditor({
       return (
         <BuilderInspectorPanel
           icon={<Link2 className="h-4 w-4" />}
-          title="Related records"
-          subtitle="Bind child records to the saved parent row without exposing the FK to the user."
+          title={t('workboards.form.relatedRecordsTitle')}
+          subtitle={t('workboards.form.relatedRecordsSubtitle')}
         >
           <RelatedRecordsInspector
+            t={t}
             screen={screen}
             allScreens={allScreens}
             tables={tables}
@@ -724,10 +768,11 @@ export default function FormScreenEditor({
       return (
         <BuilderInspectorPanel
           icon={<FileInput className="h-4 w-4" />}
-          title="Initial values (mồi cả form)"
-          subtitle="Mồi giá trị chung khi mở form mới. Ghi đè 'Default value' của từng trường; nhưng bị ghi đè bởi giá trị mang sang từ màn trước (row-action / after-submit)."
+          title={t('workboards.form.initialValuesTitle')}
+          subtitle={t('workboards.form.initialValuesSubtitle')}
         >
           <InitialValuesInspector
+            t={t}
             entries={initialEntries}
             fieldOptions={fieldColumnOptions}
             allValues={initialValues}
@@ -744,10 +789,11 @@ export default function FormScreenEditor({
       return (
         <BuilderInspectorPanel
           icon={<Camera className="h-4 w-4" />}
-          title="Chụp ảnh tự điền (OCR)"
-          subtitle="Cho phép người nhập chụp ảnh phiếu để hệ thống tự điền vào biểu mẫu."
+          title={t('workboards.form.ocrTitle')}
+          subtitle={t('workboards.form.ocrSubtitle')}
         >
           <OcrInspector
+            t={t}
             ocr={(form.ocr || {}) as OcrSpec}
             onChange={(next) => updateForm({ ocr: next })}
             workboardId={workboardId}
@@ -762,13 +808,13 @@ export default function FormScreenEditor({
         <BuilderInspectorPanel
           icon={<ClipboardList className="h-4 w-4" />}
           title={activeField.label?.trim() || activeField.column}
-          subtitle={`${widgetLabel(activeField.widget)} - column ${activeField.column}${
-            activeField.readonly ? ' - readonly' : ''
+          subtitle={`${widgetLabel(activeField.widget, t)} - ${t('workboards.form.columnLower')} ${activeField.column}${
+            activeField.readonly ? ` - ${t('workboards.form.readonlyBadge')}` : ''
           }`}
           action={
             <BuilderIconButton
               onClick={() => removeField(activeFieldIndex)}
-              title="Delete field"
+              title={t('workboards.form.deleteField')}
               variant="danger"
             >
               <Trash2 className="h-3.5 w-3.5 text-danger" />
@@ -776,6 +822,7 @@ export default function FormScreenEditor({
           }
         >
           <FieldInspector
+            t={t}
             field={activeField}
             tableCols={tableCols}
             tables={tables}
@@ -791,10 +838,10 @@ export default function FormScreenEditor({
     return (
       <BuilderInspectorPanel
         icon={<ClipboardList className="h-4 w-4" />}
-        title="Fields"
-        subtitle="Add a field to start configuring the form body."
+        title={t('workboards.form.fieldsTitle')}
+        subtitle={t('workboards.form.fieldsSubtitle')}
       >
-        <BuilderEmptyHint>No fields yet. Add one from the left panel.</BuilderEmptyHint>
+        <BuilderEmptyHint>{t('workboards.form.noFieldsFromLeft')}</BuilderEmptyHint>
       </BuilderInspectorPanel>
     );
   };
@@ -811,68 +858,71 @@ export default function FormScreenEditor({
         <BuilderTableMissingBanner tableId={screen.table_id} />
       ) : !screen.table_id ? (
         <BuilderEmptyHint className="text-left">
-          Pick a primary data source before adding fields. Form fields are bound to columns
-          in that table.
+          {t('workboards.form.pickDataSourceFirst')}
         </BuilderEmptyHint>
       ) : null}
 
       <BuilderObjectEditor>
         <BuilderNavigator
-          title="Form objects"
-          description="Select a setup area or a field, then edit its details on the right."
+          title={t('workboards.form.objectsTitle')}
+          description={t('workboards.form.objectsDescription')}
         >
-          <BuilderNavigatorGroup title="Setup">
+          <BuilderNavigatorGroup title={t('workboards.form.setupGroup')}>
             <BuilderNavigatorItem
               icon={<LayoutList className="h-3.5 w-3.5" />}
-              label="Form layout"
+              label={t('workboards.form.layoutTitle')}
               subtitle={
                 isMultiStep
-                  ? `${pages.length} steps - ${sections.length} groups`
-                  : `${sections.length} groups`
+                  ? t('workboards.form.layoutMultiStepSubtitle', {
+                      steps: pages.length,
+                      groups: sections.length,
+                    })
+                  : t('workboards.form.layoutGroupsSubtitle', { groups: sections.length })
               }
               active={activeItem === 'layout'}
               onClick={() => setActiveItem('layout')}
             />
             <BuilderNavigatorItem
               icon={<Route className="h-3.5 w-3.5" />}
-              label="Submit flow"
-              subtitle={form.after_submit?.go_to_screen ? 'Navigate after save' : 'Stay on this screen'}
+              label={t('workboards.form.submitFlowTitle')}
+              subtitle={form.after_submit?.go_to_screen ? t('workboards.form.navigateAfterSave') : t('workboards.form.stayOnThisScreen')}
               active={activeItem === 'submit'}
               onClick={() => setActiveItem('submit')}
             />
             <BuilderNavigatorItem
               icon={<Link2 className="h-3.5 w-3.5" />}
-              label="Related records"
+              label={t('workboards.form.relatedRecordsTitle')}
               subtitle={
                 relatedRecords.length > 0
-                  ? `${relatedRecords.length} relation${relatedRecords.length === 1 ? '' : 's'}`
-                  : 'No child flow'
+                  ? t('workboards.form.relationsCount', { count: relatedRecords.length })
+                  : t('workboards.form.noChildFlow')
               }
               active={activeItem === 'related'}
               onClick={() => setActiveItem('related')}
             />
             <BuilderNavigatorItem
               icon={<FileInput className="h-3.5 w-3.5" />}
-              label="Initial values"
-              subtitle={`${initialEntries.length} preset${initialEntries.length === 1 ? '' : 's'}`}
+              label={t('workboards.form.initialValuesTitle')}
+              subtitle={t('workboards.form.presetsCount', { count: initialEntries.length })}
               active={activeItem === 'initial'}
               onClick={() => setActiveItem('initial')}
             />
             <BuilderNavigatorItem
               icon={<Camera className="h-3.5 w-3.5" />}
-              label="Chụp ảnh tự điền"
-              subtitle={form.ocr?.enabled ? `Bật · ${form.ocr?.provider || 'anthropic'}` : 'Tắt'}
+              label={t('workboards.form.ocrTitle')}
+              subtitle={form.ocr?.enabled ? t('workboards.form.ocrOnWithProvider', { provider: form.ocr?.provider || 'anthropic' }) : t('workboards.form.off')}
               active={activeItem === 'ocr'}
               onClick={() => setActiveItem('ocr')}
             />
           </BuilderNavigatorGroup>
 
           <BuilderNavigatorGroup
-            title={`Fields (${fields.length})`}
+            title={t('workboards.form.fieldsCount', { count: fields.length })}
             action={
               <AddFieldMenu
                 columns={tableCols}
                 usedColumns={new Set(fields.map((f) => f.column))}
+                t={t}
                 onAddColumn={addFieldForColumn}
                 onAddCustom={addCustomField}
               />
@@ -880,15 +930,16 @@ export default function FormScreenEditor({
           >
             {tablesLoading ? (
               <p className="rounded-md border border-dashed border-[rgb(var(--border-line))] px-3 py-2 text-caption text-text-tertiary">
-                Loading source columns...
+                {t('workboards.form.loadingSourceColumns')}
               </p>
             ) : fields.length === 0 ? (
-              <BuilderEmptyHint className="px-3 py-4">No fields yet.</BuilderEmptyHint>
+              <BuilderEmptyHint className="px-3 py-4">{t('workboards.form.noFieldsYet')}</BuilderEmptyHint>
             ) : (
               fields.map((field, index) => (
                 <FormFieldNavigatorItem
                   key={`${field.column}:${index}`}
                   field={field}
+                  t={t}
                   active={activeItem === `field:${index}`}
                   canMoveUp={index > 0}
                   canMoveDown={index < fields.length - 1}
@@ -910,6 +961,7 @@ export default function FormScreenEditor({
 
 function FormFieldNavigatorItem({
   field,
+  t,
   active,
   onSelect,
   onMoveUp,
@@ -919,6 +971,7 @@ function FormFieldNavigatorItem({
   canMoveDown,
 }: {
   field: FormFieldSpec;
+  t: Translate;
   active: boolean;
   onSelect: () => void;
   onMoveUp: () => void;
@@ -928,18 +981,18 @@ function FormFieldNavigatorItem({
   canMoveDown: boolean;
 }) {
   const title = field.label?.trim() || field.column;
-  const typeShort = widgetLabel(field.widget);
+  const typeShort = widgetLabel(field.widget, t);
 
   return (
     <BuilderNavigatorItem
       icon={<GripVertical className="h-3.5 w-3.5" />}
       label={title}
-      subtitle={`${typeShort} - ${field.column}${field.required ? ' - required' : ''}`}
+      subtitle={`${typeShort} - ${field.column}${field.required ? ` - ${t('workboards.form.requiredBadge')}` : ''}`}
       active={active}
       onClick={onSelect}
       badge={
         field.readonly ? (
-          <span className="rounded bg-surface-2 px-1 text-caption text-text-tertiary">readonly</span>
+          <span className="rounded bg-surface-2 px-1 text-caption text-text-tertiary">{t('workboards.form.readonlyBadge')}</span>
         ) : null
       }
       action={
@@ -949,7 +1002,7 @@ function FormFieldNavigatorItem({
               type="button"
               onClick={onMoveUp}
               className="rounded p-0.5 hover:bg-surface-1"
-              title="Move up"
+              title={t('workboards.form.moveUp')}
             >
               <ArrowUp className="h-3 w-3 text-text-tertiary" />
             </button>
@@ -959,7 +1012,7 @@ function FormFieldNavigatorItem({
               type="button"
               onClick={onMoveDown}
               className="rounded p-0.5 hover:bg-surface-1"
-              title="Move down"
+              title={t('workboards.form.moveDown')}
             >
               <ArrowDown className="h-3 w-3 text-text-tertiary" />
             </button>
@@ -968,7 +1021,7 @@ function FormFieldNavigatorItem({
             type="button"
             onClick={onRemove}
             className="rounded p-0.5 hover:bg-danger/10"
-            title="Delete"
+            title={t('workboards.form.delete')}
           >
             <Trash2 className="h-3 w-3 text-danger" />
           </button>
@@ -979,12 +1032,14 @@ function FormFieldNavigatorItem({
 }
 
 function FormLayoutInspector({
+  t,
   pages,
   sections,
   isMultiStep,
   onPagesChange,
   onSectionsChange,
 }: {
+  t: Translate;
   pages: FormPage[];
   sections: string[];
   isMultiStep: boolean;
@@ -993,13 +1048,13 @@ function FormLayoutInspector({
 }) {
   const addStep = () => {
     const nextId = Math.max(0, ...pages.map((page) => page.id)) + 1;
-    onPagesChange([...pages, { id: nextId, title: `Step ${nextId}` }]);
+    onPagesChange([...pages, { id: nextId, title: t('workboards.form.stepFallback', { count: nextId }) }]);
   };
 
   return (
     <div className="space-y-5">
       <div className={BUILDER_GRID_2}>
-        <Lbl label="Group names">
+        <Lbl label={t('workboards.form.groupNames')}>
           <input
             value={sections.join(', ')}
             onChange={(event) =>
@@ -1011,23 +1066,23 @@ function FormLayoutInspector({
               )
             }
             className={INPUT}
-            placeholder="Header, Quantities, Quality, Other"
+            placeholder={t('workboards.form.groupNamesPlaceholder')}
           />
         </Lbl>
-        <Lbl label="Form flow">
+        <Lbl label={t('workboards.form.formFlow')}>
           <select
             value={isMultiStep ? 'multi_step' : 'single_page'}
             onChange={(event) => {
               if (event.target.value === 'multi_step') {
-                onPagesChange(isMultiStep ? pages : [{ id: 1, title: 'Step 1' }]);
+                onPagesChange(isMultiStep ? pages : [{ id: 1, title: t('workboards.form.stepFallback', { count: 1 }) }]);
               } else {
                 onPagesChange([]);
               }
             }}
             className={INPUT}
           >
-            <option value="single_page">Single page</option>
-            <option value="multi_step">Multi-step wizard</option>
+            <option value="single_page">{t('workboards.form.singlePage')}</option>
+            <option value="multi_step">{t('workboards.form.multiStepWizard')}</option>
           </select>
         </Lbl>
       </div>
@@ -1035,10 +1090,10 @@ function FormLayoutInspector({
       {isMultiStep ? (
         <div className="space-y-2">
           <div className="flex items-center justify-between gap-2">
-            <h3 className="text-caption font-medium text-text-secondary">Steps</h3>
+            <h3 className="text-caption font-medium text-text-secondary">{t('workboards.form.steps')}</h3>
             <BuilderActionButton onClick={addStep}>
               <Plus className="h-3.5 w-3.5" />
-              Add step
+              {t('workboards.form.addStep')}
             </BuilderActionButton>
           </div>
           <div className="space-y-2">
@@ -1058,7 +1113,7 @@ function FormLayoutInspector({
                     onPagesChange(next);
                   }}
                   className={INPUT}
-                  placeholder="Step title"
+                  placeholder={t('workboards.form.stepTitlePlaceholder')}
                 />
                 <input
                   value={page.description || ''}
@@ -1068,11 +1123,11 @@ function FormLayoutInspector({
                     onPagesChange(next);
                   }}
                   className={INPUT}
-                  placeholder="Optional description"
+                  placeholder={t('workboards.form.optionalDescriptionPlaceholder')}
                 />
                 <BuilderIconButton
                   onClick={() => onPagesChange(pages.filter((_, itemIndex) => itemIndex !== index))}
-                  title="Delete step"
+                  title={t('workboards.form.deleteStep')}
                   variant="danger"
                 >
                   <Trash2 className="h-3.5 w-3.5 text-danger" />
@@ -1083,8 +1138,7 @@ function FormLayoutInspector({
         </div>
       ) : (
         <BuilderEmptyHint className="text-left">
-          Single-page forms can still use groups. Turn on multi-step mode when the form
-          has a clear step-by-step workflow.
+          {t('workboards.form.singlePageHint')}
         </BuilderEmptyHint>
       )}
     </div>
@@ -1092,12 +1146,14 @@ function FormLayoutInspector({
 }
 
 function SubmitFlowInspector({
+  t,
   screen,
   form,
   allScreens,
   fieldColumnOptions,
   onChange,
 }: {
+  t: Translate;
   screen: ScreenSpec;
   form: FormSpec;
   allScreens: ScreenSpec[];
@@ -1106,15 +1162,15 @@ function SubmitFlowInspector({
 }) {
   return (
     <div className={BUILDER_GRID_2}>
-      <Lbl label="Submit button label">
+      <Lbl label={t('workboards.form.submitButtonLabel')}>
         <input
           value={form.submit_label || ''}
           onChange={(event) => onChange({ submit_label: event.target.value })}
           className={INPUT}
-          placeholder="Save"
+          placeholder={t('workboards.form.savePlaceholder')}
         />
       </Lbl>
-      <Lbl label="After successful save">
+      <Lbl label={t('workboards.form.afterSuccessfulSave')}>
         <select
           value={form.after_submit?.go_to_screen || ''}
           onChange={(event) =>
@@ -1122,7 +1178,7 @@ function SubmitFlowInspector({
               after_submit: event.target.value
                 ? {
                     id: form.after_submit?.id || 'after-submit',
-                    label: form.after_submit?.label || 'Saved',
+                    label: form.after_submit?.label || t('workboards.form.savedLabel'),
                     go_to_screen: event.target.value,
                     carry: form.after_submit?.carry || [],
                   }
@@ -1131,18 +1187,18 @@ function SubmitFlowInspector({
           }
           className={INPUT}
         >
-          <option value="">Stay on this screen</option>
+          <option value="">{t('workboards.form.stayOnThisScreen')}</option>
           {allScreens
             .filter((item) => item.id !== screen.id)
             .map((item) => (
               <option key={item.id} value={item.id}>
-                Go to: {item.title}
+                {t('workboards.form.goToScreen', { title: item.title })}
               </option>
             ))}
         </select>
       </Lbl>
       {form.after_submit?.go_to_screen && (
-        <Lbl label="Carry values to the next screen" className="wb-col-span-2">
+        <Lbl label={t('workboards.form.carryValuesToNextScreen')} className="wb-col-span-2">
           {fieldColumnOptions.length > 0 ? (
             <MultiColumnPicker
               sourceColumns={fieldColumnOptions}
@@ -1152,8 +1208,8 @@ function SubmitFlowInspector({
                   after_submit: { ...form.after_submit!, carry },
                 })
               }
-              placeholder="Pick columns to carry over..."
-              emptyHint="No fields available to carry."
+              placeholder={t('workboards.form.pickCarryColumnsPlaceholder')}
+              emptyHint={t('workboards.form.noFieldsAvailableToCarry')}
             />
           ) : (
             <input
@@ -1175,12 +1231,12 @@ function SubmitFlowInspector({
           )}
         </Lbl>
       )}
-      <Lbl label="Đóng dấu GPS khi lưu (geo-stamp) — cột lưu 'lat,lng'" className="wb-col-span-2">
+      <Lbl label={t('workboards.form.geoStampLabel')} className="wb-col-span-2">
         <input
           value={form.geo_stamp_column || ''}
           onChange={(event) => onChange({ geo_stamp_column: event.target.value || null })}
           className={INPUT}
-          placeholder="vd: vi_tri_gps (để trống = tắt)"
+          placeholder={t('workboards.form.geoStampPlaceholder')}
         />
       </Lbl>
     </div>
@@ -1188,6 +1244,7 @@ function SubmitFlowInspector({
 }
 
 function RelatedRecordsInspector({
+  t,
   screen,
   allScreens,
   tables,
@@ -1197,6 +1254,7 @@ function RelatedRecordsInspector({
   onChange,
   onRemove,
 }: {
+  t: Translate;
   screen: ScreenSpec;
   allScreens: ScreenSpec[];
   tables: DatasetTableInfo[];
@@ -1216,25 +1274,25 @@ function RelatedRecordsInspector({
     <div className="space-y-3">
       <div className="flex items-center justify-between gap-3">
         <div className="text-caption text-text-tertiary">
-          Use this when one parent row owns many child rows.
+          {t('workboards.form.relatedHelp')}
         </div>
         <BuilderActionButton
           onClick={onAdd}
           disabled={parentColumns.length === 0 || childScreens.length === 0}
         >
-          <Plus className="h-3.5 w-3.5" /> Add relation
+          <Plus className="h-3.5 w-3.5" /> {t('workboards.form.addRelation')}
         </BuilderActionButton>
       </div>
 
       {parentColumns.length === 0 ? (
         <BuilderEmptyHint className="text-left">
-          Configure at least one primary key column on the parent screen before adding a relation.
+          {t('workboards.form.parentKeyRequired')}
         </BuilderEmptyHint>
       ) : null}
 
       {relations.length === 0 ? (
         <BuilderEmptyHint className="text-left">
-          No child flow yet. Add a relation to keep a parent key and bind child records automatically.
+          {t('workboards.form.noChildFlowHint')}
         </BuilderEmptyHint>
       ) : (
         relations.map((relation, index) => {
@@ -1250,15 +1308,15 @@ function RelatedRecordsInspector({
               <div className="mb-3 flex items-center justify-between gap-2">
                 <div className="min-w-0">
                   <div className="truncate text-caption font-medium text-text-primary">
-                    {relation.label || relation.id || 'Related records'}
+                    {relation.label || relation.id || t('workboards.form.relatedRecordsFallback')}
                   </div>
                   <div className="truncate text-tiny text-text-tertiary">
-                    {relation.parent_key_column || 'parent key'} {'->'} {relation.child_foreign_key_column || 'child FK'}
+                    {relation.parent_key_column || t('workboards.form.parentKeyFallback')} {'->'} {relation.child_foreign_key_column || t('workboards.form.childFkFallback')}
                   </div>
                 </div>
                 <BuilderIconButton
                   onClick={() => onRemove(index)}
-                  title="Delete relation"
+                  title={t('workboards.form.deleteRelation')}
                   variant="danger"
                 >
                   <Trash2 className="h-3.5 w-3.5 text-danger" />
@@ -1267,7 +1325,7 @@ function RelatedRecordsInspector({
 
               <div className="space-y-3">
                 <div className={BUILDER_GRID_2}>
-                  <Lbl label="Relation ID">
+                  <Lbl label={t('workboards.form.relationId')}>
                     <input
                       value={relation.id || ''}
                       onChange={(event) =>
@@ -1279,15 +1337,15 @@ function RelatedRecordsInspector({
                       placeholder="production_details"
                     />
                   </Lbl>
-                  <Lbl label="Display label">
+                  <Lbl label={t('workboards.form.displayLabel')}>
                     <input
                       value={relation.label || ''}
                       onChange={(event) => onChange(index, { label: event.target.value || null })}
                       className={INPUT}
-                      placeholder="Chi tiết sản lượng"
+                      placeholder={t('workboards.form.relationLabelPlaceholder')}
                     />
                   </Lbl>
-                  <Lbl label="Child screen">
+                  <Lbl label={t('workboards.form.childScreen')}>
                     <select
                       value={relation.child_screen_id || ''}
                       onChange={(event) => {
@@ -1307,7 +1365,7 @@ function RelatedRecordsInspector({
                       }}
                       className={INPUT}
                     >
-                      <option value="">- pick a child screen -</option>
+                      <option value="">{t('workboards.form.pickChildScreen')}</option>
                       {childScreens.map((item) => (
                         <option key={item.id} value={item.id}>
                           {item.title}
@@ -1315,7 +1373,7 @@ function RelatedRecordsInspector({
                       ))}
                     </select>
                   </Lbl>
-                  <Lbl label="Finish screen">
+                  <Lbl label={t('workboards.form.finishScreen')}>
                     <select
                       value={relation.finish_screen_id || ''}
                       onChange={(event) =>
@@ -1323,7 +1381,7 @@ function RelatedRecordsInspector({
                       }
                       className={INPUT}
                     >
-                      <option value="">Stay on child screen</option>
+                      <option value="">{t('workboards.form.stayOnChildScreen')}</option>
                       {finishScreens.map((item) => (
                         <option key={item.id} value={item.id}>
                           {item.title}
@@ -1331,23 +1389,23 @@ function RelatedRecordsInspector({
                       ))}
                     </select>
                   </Lbl>
-                  <Lbl label="Parent key">
+                  <Lbl label={t('workboards.form.parentKey')}>
                     <SingleColumnPicker
                       sourceColumns={parentColumns}
                       value={relation.parent_key_column || null}
                       onChange={(next) => onChange(index, { parent_key_column: next || '' })}
-                      placeholder="Pick parent key..."
+                      placeholder={t('workboards.form.pickParentKey')}
                     />
                   </Lbl>
-                  <Lbl label="Child foreign key">
+                  <Lbl label={t('workboards.form.childForeignKey')}>
                     <SingleColumnPicker
                       sourceColumns={childColumns}
                       value={relation.child_foreign_key_column || null}
                       onChange={(next) => onChange(index, { child_foreign_key_column: next || '' })}
-                      placeholder="Pick child FK..."
+                      placeholder={t('workboards.form.pickChildFk')}
                     />
                   </Lbl>
-                  <Lbl label="When parent is deleted">
+                  <Lbl label={t('workboards.form.whenParentDeleted')}>
                     <select
                       value={relation.delete_behavior || 'restrict'}
                       onChange={(event) =>
@@ -1358,43 +1416,43 @@ function RelatedRecordsInspector({
                       }
                       className={INPUT}
                     >
-                      <option value="restrict">Restrict while children exist</option>
-                      <option value="cascade">Delete child records</option>
-                      <option value="unlink">Keep children and clear FK</option>
+                      <option value="restrict">{t('workboards.form.deleteRestrict')}</option>
+                      <option value="cascade">{t('workboards.form.deleteCascade')}</option>
+                      <option value="unlink">{t('workboards.form.deleteUnlink')}</option>
                     </select>
                   </Lbl>
                 </div>
 
-                <Lbl label="Child list display columns">
+                <Lbl label={t('workboards.form.childListDisplayColumns')}>
                   <MultiColumnPicker
                     sourceColumns={childColumns}
                     value={relation.display_columns || []}
                     onChange={(display_columns) => onChange(index, { display_columns })}
-                    placeholder="Pick columns to show in the child list..."
-                    emptyHint="Pick a child screen first."
+                    placeholder={t('workboards.form.pickChildListColumns')}
+                    emptyHint={t('workboards.form.pickChildScreenFirst')}
                   />
                 </Lbl>
 
                 <div className="flex flex-wrap gap-2">
                   <ToggleChip
-                    label="Allow multiple"
+                    label={t('workboards.form.allowMultiple')}
                     checked={relation.allow_multiple !== false}
                     onChange={(allow_multiple) => onChange(index, { allow_multiple })}
                   />
                   <ToggleChip
-                    label="Show existing"
+                    label={t('workboards.form.showExisting')}
                     checked={relation.show_existing !== false}
                     onChange={(show_existing) => onChange(index, { show_existing })}
                   />
                   <ToggleChip
-                    label="Add after save"
+                    label={t('workboards.form.addAfterSave')}
                     checked={relation.allow_add_after_save !== false}
                     onChange={(allow_add_after_save) =>
                       onChange(index, { allow_add_after_save })
                     }
                   />
                   <ToggleChip
-                    label="Keep context"
+                    label={t('workboards.form.keepContext')}
                     checked={relation.keep_parent_context !== false}
                     onChange={(keep_parent_context) =>
                       onChange(index, { keep_parent_context })
@@ -1422,11 +1480,13 @@ const OCR_PROVIDERS: {
 ];
 
 function OcrInspector({
+  t,
   ocr,
   onChange,
   workboardId,
   screenId,
 }: {
+  t: Translate;
   ocr: OcrSpec;
   onChange: (next: OcrSpec) => void;
   workboardId?: number;
@@ -1458,11 +1518,11 @@ function OcrInspector({
       });
       setTestResult(
         r.ok
-          ? { ok: true, msg: `Kết nối thành công${r.model ? ` · ${r.model}` : ''}` }
-          : { ok: false, msg: r.message || 'Kết nối thất bại.' },
+          ? { ok: true, msg: r.model ? t('workboards.form.ocrConnectionSuccessWithModel', { model: r.model }) : t('workboards.form.ocrConnectionSuccess') }
+          : { ok: false, msg: r.message || t('workboards.form.ocrConnectionFailed') },
       );
     } catch {
-      setTestResult({ ok: false, msg: 'Không gọi được máy chủ để kiểm tra.' });
+      setTestResult({ ok: false, msg: t('workboards.form.ocrConnectionServerFailed') });
     } finally {
       setTesting(false);
     }
@@ -1494,9 +1554,9 @@ function OcrInspector({
           className="h-4 w-4 rounded border-[rgb(var(--border-line))]"
         />
         <span>
-          Cho phép chụp ảnh để tự điền biểu mẫu
+          {t('workboards.form.ocrEnableLabel')}
           <span className="block text-caption text-text-tertiary">
-            Khi bật, người nhập có thể chụp ảnh phiếu; hệ thống đọc và điền sẵn vào các trường.
+            {t('workboards.form.ocrEnableDescription')}
           </span>
         </span>
       </label>
@@ -1504,7 +1564,7 @@ function OcrInspector({
       {ocr.enabled && (
         <div className="space-y-3 rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 p-3">
           <div className={BUILDER_GRID_2}>
-            <Lbl label="Nhà cung cấp AI">
+            <Lbl label={t('workboards.form.ocrProvider')}>
               <select
                 value={provider}
                 onChange={(e) => {
@@ -1529,7 +1589,7 @@ function OcrInspector({
               >
                 {/* keep a previously-saved custom model visible/selectable */}
                 {ocr.model && !modelOptions.includes(ocr.model) && (
-                  <option value={ocr.model}>{ocr.model} (tuỳ chỉnh)</option>
+                  <option value={ocr.model}>{t('workboards.form.ocrCustomModel', { model: ocr.model })}</option>
                 )}
                 {modelOptions.map((m) => (
                   <option key={m} value={m}>{m}</option>
@@ -1537,7 +1597,7 @@ function OcrInspector({
               </select>
             </Lbl>
           </div>
-          <Lbl label="Token (API key)">
+          <Lbl label={t('workboards.form.ocrToken')}>
             <div className="relative">
               <input
                 type={showKey ? 'text' : 'password'}
@@ -1547,15 +1607,15 @@ function OcrInspector({
                 className={`${INPUT} pr-10`}
                 placeholder={
                   ocr.api_key_set
-                    ? '•••••••••• đã lưu — bấm 👁 để xem, hoặc nhập khoá mới'
-                    : 'Dán token của nhà cung cấp'
+                    ? t('workboards.form.ocrSavedTokenPlaceholder')
+                    : t('workboards.form.ocrTokenPlaceholder')
                 }
               />
               {(ocr.api_key_set || hasTyped) && (
                 <button
                   type="button"
                   onClick={toggleEye}
-                  title={showKey ? 'Ẩn token' : 'Xem token'}
+                  title={showKey ? t('workboards.form.ocrHideToken') : t('workboards.form.ocrShowToken')}
                   className="absolute right-2 top-1/2 -translate-y-1/2 text-text-tertiary hover:text-text-primary"
                 >
                   {revealing ? (
@@ -1569,7 +1629,7 @@ function OcrInspector({
               )}
             </div>
             <span className="mt-1 block text-caption text-text-tertiary">
-              Token được mã hoá khi lưu (không hiển thị mặc định). Để trống khi lưu = giữ khoá đã lưu.
+              {t('workboards.form.ocrTokenHelp')}
             </span>
             <div className="mt-2 flex flex-wrap items-center gap-2">
               <button
@@ -1578,13 +1638,13 @@ function OcrInspector({
                 disabled={testing || !canTest}
                 title={
                   canTest
-                    ? 'Gọi thử nhà cung cấp để xác nhận token + model hoạt động'
-                    : 'Hãy dán (hoặc đã lưu) token trước khi kiểm tra'
+                    ? t('workboards.form.ocrTestTitle')
+                    : t('workboards.form.ocrTestDisabledTitle')
                 }
                 className="inline-flex items-center gap-1.5 rounded-md border border-[rgb(var(--border-line))] bg-surface-0 px-2.5 py-1.5 text-caption font-medium text-text-primary hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {testing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <CheckCircle2 className="h-3.5 w-3.5" />}
-                {testing ? 'Đang kiểm tra…' : 'Kiểm tra kết nối'}
+                {testing ? t('workboards.form.ocrTesting') : t('workboards.form.ocrTestConnection')}
               </button>
               {testResult && (
                 <span
@@ -1598,16 +1658,16 @@ function OcrInspector({
               )}
             </div>
           </Lbl>
-          <Lbl label="Hướng dẫn cho AI (prompt — tuỳ chọn)">
+          <Lbl label={t('workboards.form.ocrPromptLabel')}>
             <textarea
               value={ocr.hint || ''}
               onChange={(e) => patch({ hint: e.target.value })}
               className={INPUT}
               rows={3}
-              placeholder="Dạy thêm cho AI về bố cục phiếu. VD: Mã công tơ ở góc trên phải; chỉ số đầu/cuối kỳ ở bảng giữa; ngày dạng dd/mm/yyyy…"
+              placeholder={t('workboards.form.ocrPromptPlaceholder')}
             />
             <span className="mt-1 block text-caption text-text-tertiary">
-              Hệ thống tự gửi kèm danh sách cột của biểu mẫu cho AI; phần này để bổ sung ngữ cảnh phiếu.
+              {t('workboards.form.ocrPromptHelp')}
             </span>
           </Lbl>
         </div>
@@ -1617,6 +1677,7 @@ function OcrInspector({
 }
 
 function InitialValuesInspector({
+  t,
   entries,
   fieldOptions,
   allValues,
@@ -1625,6 +1686,7 @@ function InitialValuesInspector({
   onChange,
   onRemove,
 }: {
+  t: Translate;
   entries: Array<[string, unknown]>;
   fieldOptions: string[];
   allValues: Record<string, unknown>;
@@ -1637,24 +1699,25 @@ function InitialValuesInspector({
     <div className="space-y-3">
       <div className="flex items-center justify-between gap-2">
         <p className="text-caption text-text-tertiary">
-          One row per field to pre-fill with a fixed value or expression.
+          {t('workboards.form.initialValuesHelp')}
         </p>
         <BuilderActionButton
           onClick={onAdd}
           disabled={fieldOptions.length === 0 || allFieldsUsed}
         >
           <Plus className="h-3.5 w-3.5" />
-          Add value
+          {t('workboards.form.addInitialValue')}
         </BuilderActionButton>
       </div>
       {entries.length === 0 ? (
-        <BuilderEmptyHint>No initial values yet.</BuilderEmptyHint>
+        <BuilderEmptyHint>{t('workboards.form.noInitialValues')}</BuilderEmptyHint>
       ) : (
         <div className="space-y-2">
           {entries.map(([key, value]) => (
             <InitialValueRow
               key={key}
               fieldKey={key}
+              t={t}
               value={value}
               fieldOptions={fieldOptions}
               allValues={allValues}
@@ -1670,6 +1733,7 @@ function InitialValuesInspector({
 
 function InitialValueRow({
   fieldKey,
+  t,
   value,
   fieldOptions,
   allValues,
@@ -1677,6 +1741,7 @@ function InitialValueRow({
   onRemove,
 }: {
   fieldKey: string;
+  t: Translate;
   value: unknown;
   fieldOptions: string[];
   allValues: Record<string, unknown>;
@@ -1707,17 +1772,17 @@ function InitialValueRow({
           value={fieldKey}
           onChange={(event) => onChange(fieldKey, event.target.value, value)}
           className={INPUT}
-          placeholder="Column name"
+          placeholder={t('workboards.form.columnNamePlaceholder')}
         />
       )}
       <FixedExpressionInput
         value={value}
         onChange={(next) => onChange(fieldKey, fieldKey, next)}
-        fixedPlaceholder="Fixed value"
-        expressionPlaceholder="e.g. {{app_user.username}}"
-        expressionOptions={COMMON_EXPRESSION_OPTIONS}
+        fixedPlaceholder={t('workboards.form.fixedValuePlaceholder')}
+        expressionPlaceholder={t('workboards.form.expressionPlaceholder')}
+        expressionOptions={commonExpressionOptions(t)}
       />
-      <BuilderIconButton onClick={onRemove} title="Delete" variant="danger">
+      <BuilderIconButton onClick={onRemove} title={t('workboards.form.delete')} variant="danger">
         <Trash2 className="h-3.5 w-3.5 text-danger" />
       </BuilderIconButton>
     </div>
@@ -1725,6 +1790,7 @@ function InitialValueRow({
 }
 
 function FieldInspector({
+  t,
   field,
   tableCols,
   tables,
@@ -1733,6 +1799,7 @@ function FieldInspector({
   allScreens,
   onChange,
 }: {
+  t: Translate;
   field: FormFieldSpec;
   tableCols: { name: string; type?: string }[];
   tables: DatasetTableInfo[];
@@ -1750,9 +1817,9 @@ function FieldInspector({
 
   return (
     <div className="space-y-3">
-      <CollapsibleGroup title="Basic">
+      <CollapsibleGroup title={t('workboards.form.basicGroup')}>
         <div className={BUILDER_GRID_3}>
-          <Lbl label="Column">
+          <Lbl label={t('workboards.form.column')}>
             {tableCols.length > 0 ? (
               <SingleColumnPicker
                 sourceColumns={tableCols.map((column) => column.name)}
@@ -1774,16 +1841,17 @@ function FieldInspector({
               />
             )}
           </Lbl>
-          <Lbl label="Display label">
+          <Lbl label={t('workboards.form.displayLabel')}>
             <input
               value={field.label || ''}
               onChange={(event) => onChange({ label: event.target.value })}
               className={INPUT}
             />
           </Lbl>
-          <Lbl label="Field type">
+          <Lbl label={t('workboards.form.fieldType')}>
             <FieldTypePicker
               widget={field.widget}
+              t={t}
               onSelect={(widget) => {
                 if (widget === 'select') {
                   onChange({
@@ -1805,7 +1873,7 @@ function FieldInspector({
             />
           </Lbl>
           {(field.widget === 'select' || field.widget === 'lookup') && (
-            <Lbl label="Nguồn lựa chọn">
+            <Lbl label={t('workboards.form.choiceSource')}>
               <select
                 value={selectSource}
                 onChange={(event) => {
@@ -1820,13 +1888,13 @@ function FieldInspector({
                 }}
                 className={INPUT}
               >
-                <option value="static">Static</option>
-                <option value="dataset_table">From table</option>
+                <option value="static">{t('workboards.form.choiceSourceStatic')}</option>
+                <option value="dataset_table">{t('workboards.form.choiceSourceTable')}</option>
               </select>
             </Lbl>
           )}
           {field.widget === 'enum_list' && (
-            <Lbl label="Kiểu chọn">
+            <Lbl label={t('workboards.form.enumListStyle')}>
               <select
                 value={enumListStyle}
                 onChange={(event) =>
@@ -1845,7 +1913,7 @@ function FieldInspector({
           {(field.widget === 'select' ||
             field.widget === 'lookup' ||
             field.widget === 'enum_list') && (
-            <Lbl label="Ô tìm kiếm khi chọn">
+            <Lbl label={t('workboards.form.choiceSearchMode')}>
               <select
                 value={field.searchable || 'auto'}
                 onChange={(event) =>
@@ -1855,24 +1923,24 @@ function FieldInspector({
                 }
                 className={INPUT}
               >
-                <option value="auto">Tự động (khi danh sách dài)</option>
-                <option value="always">Luôn hiện</option>
-                <option value="never">Tắt</option>
+                <option value="auto">{t('workboards.form.choiceSearchAuto')}</option>
+                <option value="always">{t('workboards.form.choiceSearchAlways')}</option>
+                <option value="never">{t('workboards.form.choiceSearchNever')}</option>
               </select>
             </Lbl>
           )}
         </div>
       </CollapsibleGroup>
 
-      <CollapsibleGroup title="Display">
+      <CollapsibleGroup title={t('workboards.form.displayGroup')}>
         <div className={BUILDER_GRID_4}>
-          <Lbl label="Content group">
+          <Lbl label={t('workboards.form.contentGroup')}>
             <select
               value={sectionValue}
               onChange={(event) => onChange({ section: event.target.value || null })}
               className={INPUT}
             >
-              <option value="">No group</option>
+              <option value="">{t('workboards.form.noGroup')}</option>
               {sectionOptions.map((section) => (
                 <option key={section} value={section}>
                   {section}
@@ -1881,7 +1949,7 @@ function FieldInspector({
             </select>
           </Lbl>
           {pageOptions.length > 0 && (
-            <Lbl label="Step">
+            <Lbl label={t('workboards.form.step')}>
               <select
                 value={pageValue ?? ''}
                 onChange={(event) =>
@@ -1891,7 +1959,7 @@ function FieldInspector({
                 }
                 className={INPUT}
               >
-                <option value="">Default step</option>
+                <option value="">{t('workboards.form.defaultStep')}</option>
                 {pageOptions.map((page) => (
                   <option key={page.id} value={page.id}>
                     {page.id}. {page.title}
@@ -1900,14 +1968,14 @@ function FieldInspector({
               </select>
             </Lbl>
           )}
-          <Lbl label="Placeholder">
+          <Lbl label={t('workboards.form.placeholderLabel')}>
             <input
               value={field.placeholder || ''}
               onChange={(event) => onChange({ placeholder: event.target.value })}
               className={INPUT}
             />
           </Lbl>
-          <Lbl label="Help text">
+          <Lbl label={t('workboards.form.helpText')}>
             <input
               value={field.help_text || ''}
               onChange={(event) => onChange({ help_text: event.target.value })}
@@ -1917,30 +1985,29 @@ function FieldInspector({
         </div>
       </CollapsibleGroup>
 
-      <CollapsibleGroup title="Rules">
+      <CollapsibleGroup title={t('workboards.form.rulesGroup')}>
         <div className="flex flex-wrap gap-2">
           <ToggleChip
-            label="Required"
+            label={t('workboards.form.required')}
             checked={!!field.required}
             onChange={(checked) => onChange({ required: checked })}
           />
           <ToggleChip
-            label="Readonly"
+            label={t('workboards.form.readonly')}
             checked={!!field.readonly}
             onChange={(checked) => onChange({ readonly: checked })}
           />
         </div>
-        <Lbl label="Default value (mặc định của trường)">
+        <Lbl label={t('workboards.form.defaultValueLabel')}>
           <FixedExpressionInput
             value={field.default}
             onChange={(next) => onChange({ default: next })}
-            fixedPlaceholder="Fixed value"
-            expressionPlaceholder="e.g. {{app_user.username}}"
-            expressionOptions={COMMON_EXPRESSION_OPTIONS}
+            fixedPlaceholder={t('workboards.form.fixedValuePlaceholder')}
+            expressionPlaceholder={t('workboards.form.expressionPlaceholder')}
+            expressionOptions={commonExpressionOptions(t)}
           />
           <p className="mt-1 text-tiny text-text-tertiary">
-            Áp dụng khi mở form mới. Thứ tự ưu tiên: giá trị mang sang từ màn
-            trước › Initial values (cả form) › Default value này.
+            {t('workboards.form.defaultValueHelp')}
           </p>
         </Lbl>
       </CollapsibleGroup>
@@ -1949,8 +2016,8 @@ function FieldInspector({
         field.widget === 'lookup' ||
         field.widget === 'map' ||
         field.widget === 'enum_list') && (
-        <CollapsibleGroup title={field.widget === 'map' ? 'Bản đồ / vùng' : 'Options'}>
-          <LookupEditor field={field} tables={tables} onChange={onChange} />
+        <CollapsibleGroup title={field.widget === 'map' ? t('workboards.form.mapAreaGroup') : t('workboards.form.optionsGroup')}>
+          <LookupEditor t={t} field={field} tables={tables} onChange={onChange} />
         </CollapsibleGroup>
       )}
 
@@ -1965,10 +2032,10 @@ function FieldInspector({
         field.widget === 'qr' ||
         field.widget === 'barcode' ||
         field.widget === 'enum_list') && (
-        <CollapsibleGroup title="Cấu hình widget">
+        <CollapsibleGroup title={t('workboards.form.widgetConfigGroup')}>
           {field.widget === 'rating' && (
             <div className={BUILDER_GRID_2}>
-              <Lbl label="Số sao tối đa">
+              <Lbl label={t('workboards.form.maxStars')}>
                 <input
                   type="number"
                   min={1}
@@ -1987,7 +2054,7 @@ function FieldInspector({
                   onChange={(event) => onChange({ allow_half: event.target.checked })}
                   className="h-4 w-4 rounded border-slate-300"
                 />
-                Cho nửa sao
+                {t('workboards.form.allowHalfStars')}
               </label>
             </div>
           )}
@@ -2009,7 +2076,7 @@ function FieldInspector({
                   className={INPUT}
                 />
               </Lbl>
-              <Lbl label="Bước (step)">
+              <Lbl label={t('workboards.form.stepSize')}>
                 <input
                   type="number"
                   min={0}
@@ -2019,7 +2086,7 @@ function FieldInspector({
                   className={INPUT}
                 />
               </Lbl>
-              <Lbl label="Đơn vị">
+              <Lbl label={t('workboards.form.unit')}>
                 <input
                   value={field.unit || ''}
                   onChange={(event) => onChange({ unit: event.target.value || null })}
@@ -2030,7 +2097,7 @@ function FieldInspector({
             </div>
           )}
           {field.widget === 'currency' && (
-            <Lbl label="Mã / ký hiệu tiền tệ">
+            <Lbl label={t('workboards.form.currencyCode')}>
               <input
                 value={field.currency_code || ''}
                 onChange={(event) => onChange({ currency_code: event.target.value || null })}
@@ -2040,7 +2107,7 @@ function FieldInspector({
             </Lbl>
           )}
           {field.widget === 'enum_list' && (
-            <Lbl label="Số lựa chọn tối đa (bỏ trống = không giới hạn)">
+            <Lbl label={t('workboards.form.maxSelect')}>
               <input
                 type="number"
                 min={1}
@@ -2054,17 +2121,24 @@ function FieldInspector({
             </Lbl>
           )}
           {field.widget === 'computed' && (
-            <Lbl label="Công thức (VD: [san_luong] * [drc] / 100)">
+            <Lbl label={t('workboards.form.formulaLabel')}>
               <input
                 value={field.formula || ''}
                 onChange={(event) => onChange({ formula: event.target.value || null })}
                 className={INPUT}
                 placeholder="[san_luong] * [drc] / 100"
               />
+              <p className="mt-1 text-tiny text-text-tertiary">
+                {t('workboards.form.formulaHelpPrefix')}{' '}
+                <code>SUM_SPLIT([cot])</code>{' '}
+                {t('workboards.form.formulaHelpMiddle')}{' '}
+                <code>&quot;20;31;25&quot;</code> → 76. {t('workboards.form.formulaHelpSuffix')}{' '}
+                <code>SUM_SPLIT([cot], &quot;|&quot;)</code>.
+              </p>
             </Lbl>
           )}
           {(field.widget === 'computed' || field.widget === 'number') && (
-            <Lbl label="Đơn vị (hậu tố, VD: kg, %)">
+            <Lbl label={t('workboards.form.unitSuffix')}>
               <input
                 value={field.unit || ''}
                 onChange={(event) => onChange({ unit: event.target.value || null })}
@@ -2081,11 +2155,11 @@ function FieldInspector({
                 onChange={(event) => onChange({ capture_only: event.target.checked })}
                 className="h-4 w-4 rounded border-slate-300"
               />
-              Chỉ cho chụp trực tiếp (không chọn từ thư viện)
+              {t('workboards.form.captureOnly')}
             </label>
           )}
           {field.widget === 'images' && (
-            <Lbl label="Số ảnh tối đa">
+            <Lbl label={t('workboards.form.maxImages')}>
               <input
                 type="number"
                 min={1}
@@ -2099,11 +2173,11 @@ function FieldInspector({
             </Lbl>
           )}
           {field.widget === 'status' && (
-            <StatusStatesEditor field={field} onChange={onChange} />
+            <StatusStatesEditor t={t} field={field} onChange={onChange} />
           )}
           {field.widget === 'qr' && (
             <div className="space-y-2">
-              <Lbl label="Cột nguồn (giá trị mã hoá vào QR)">
+              <Lbl label={t('workboards.form.qrSourceColumn')}>
                 <SingleColumnPicker
                   sourceColumns={tableCols.map((c) => c.name)}
                   value={field.qr_source_column || field.column}
@@ -2111,7 +2185,7 @@ function FieldInspector({
                   clearable
                 />
               </Lbl>
-              <Lbl label="Hoặc mẫu giá trị (ưu tiên) — {{app_url}}, [cột]">
+              <Lbl label={t('workboards.form.qrValueTemplate')}>
                 <input
                   value={field.qr_value_template || ''}
                   onChange={(e) => onChange({ qr_value_template: e.target.value || null })}
@@ -2120,7 +2194,7 @@ function FieldInspector({
                 />
               </Lbl>
               <div className={BUILDER_GRID_2}>
-                <Lbl label="Kích thước (px)">
+                <Lbl label={t('workboards.form.qrSize')}>
                   <input
                     type="number"
                     min={48}
@@ -2130,7 +2204,7 @@ function FieldInspector({
                     className={INPUT}
                   />
                 </Lbl>
-                <Lbl label="Chú thích dưới mã">
+                <Lbl label={t('workboards.form.qrCaption')}>
                   <input
                     value={field.qr_caption || ''}
                     onChange={(e) => onChange({ qr_caption: e.target.value || null })}
@@ -2143,15 +2217,15 @@ function FieldInspector({
           {field.widget === 'barcode' && (
             <div className="space-y-2">
               <p className="text-xs text-slate-500">
-                Sau khi quét được mã, tự chuyển sang màn hình sau (để mở form cập nhật đã điền sẵn).
+                {t('workboards.form.barcodeHelp')}
               </p>
-              <Lbl label="Quét xong mở màn hình">
+              <Lbl label={t('workboards.form.scanGoToScreen')}>
                 <select
                   value={field.scan_go_to_screen || ''}
                   onChange={(e) => onChange({ scan_go_to_screen: e.target.value || null })}
                   className={INPUT}
                 >
-                  <option value="">— Không chuyển (chỉ lưu mã) —</option>
+                  <option value="">{t('workboards.form.scanNoNavigation')}</option>
                   {allScreens.map((s) => (
                     <option key={s.id} value={s.id}>
                       {s.title || s.id}
@@ -2160,7 +2234,7 @@ function FieldInspector({
                 </select>
               </Lbl>
               {field.scan_go_to_screen && (
-                <Lbl label="Mang mã sang cột (ở màn hình đích)">
+                <Lbl label={t('workboards.form.scanCarryAs')}>
                   <input
                     value={field.scan_carry_as || ''}
                     onChange={(e) => onChange({ scan_carry_as: e.target.value || null })}
@@ -2174,9 +2248,9 @@ function FieldInspector({
         </CollapsibleGroup>
       )}
 
-      <CollapsibleGroup title="Advanced" defaultOpen={false}>
+      <CollapsibleGroup title={t('workboards.form.advancedGroup')} defaultOpen={false}>
         <div className={BUILDER_GRID_4}>
-          <Lbl label="Show when (show_if)">
+          <Lbl label={t('workboards.form.showWhen')}>
             <input
               value={field.show_if || ''}
               onChange={(event) => onChange({ show_if: event.target.value || null })}
@@ -2184,7 +2258,7 @@ function FieldInspector({
               placeholder="[status] == 'open'"
             />
           </Lbl>
-          <Lbl label="Required when (required_if)">
+          <Lbl label={t('workboards.form.requiredWhen')}>
             <input
               value={field.required_if || ''}
               onChange={(event) => onChange({ required_if: event.target.value || null })}
@@ -2192,7 +2266,7 @@ function FieldInspector({
               placeholder="[defect_qty] > 0"
             />
           </Lbl>
-          <Lbl label="Readonly when (readonly_if)">
+          <Lbl label={t('workboards.form.readonlyWhen')}>
             <input
               value={field.readonly_if || ''}
               onChange={(event) => onChange({ readonly_if: event.target.value || null })}
@@ -2200,7 +2274,7 @@ function FieldInspector({
               placeholder="[submitted] == true"
             />
           </Lbl>
-          <Lbl label="Valid when (valid_if)" className="wb-col-span-2">
+          <Lbl label={t('workboards.form.validWhen')} className="wb-col-span-2">
             <input
               value={field.valid_if || ''}
               onChange={(event) => onChange({ valid_if: event.target.value || null })}
@@ -2208,24 +2282,24 @@ function FieldInspector({
               placeholder="[end_date] >= [start_date]"
             />
           </Lbl>
-          <Lbl label="Validation error message" className="wb-col-span-2">
+          <Lbl label={t('workboards.form.validationErrorMessage')} className="wb-col-span-2">
             <input
               value={field.valid_if_error || ''}
               onChange={(event) => onChange({ valid_if_error: event.target.value || null })}
               className={INPUT}
-              placeholder="Ngày kết thúc phải ≥ ngày bắt đầu"
+              placeholder={t('workboards.form.validationErrorPlaceholder')}
             />
           </Lbl>
-          <Lbl label="Auto-compute from dataset" className="wb-col-span-2">
+          <Lbl label={t('workboards.form.autoComputeFromDataset')} className="wb-col-span-2">
             <SingleColumnPicker
               sourceColumns={tableCols.map((column) => column.name)}
               value={computedValue || null}
               onChange={(next) => onChange({ computed_from_dataset: next })}
-              placeholder="Not used"
+              placeholder={t('workboards.form.notUsed')}
             />
           </Lbl>
           {(field.widget === 'file' || field.widget === 'image') && (
-            <Lbl label="Max file size (KB)" className="wb-col-span-2">
+            <Lbl label={t('workboards.form.maxFileSizeKb')} className="wb-col-span-2">
               <input
                 type="number"
                 min={1}
@@ -2237,7 +2311,7 @@ function FieldInspector({
                   })
                 }
                 className={INPUT}
-                placeholder="Mặc định 1024"
+                placeholder={t('workboards.form.default1024')}
               />
             </Lbl>
           )}
@@ -2248,10 +2322,12 @@ function FieldInspector({
 }
 
 function LookupEditor({
+  t,
   field,
   tables,
   onChange,
 }: {
+  t: Translate;
   field: FormFieldSpec;
   tables: DatasetTableInfo[];
   onChange: (patch: Partial<FormFieldSpec>) => void;
@@ -2263,7 +2339,7 @@ function LookupEditor({
   return (
     <div className="space-y-3">
       <div className={BUILDER_GRID_2}>
-        <Lbl label="Source kind">
+        <Lbl label={t('workboards.form.sourceKind')}>
           <select
             value={lookup.kind}
             onChange={(event) =>
@@ -2276,13 +2352,13 @@ function LookupEditor({
             }
             className={INPUT}
           >
-            <option value="static">Static list</option>
-            <option value="dataset_table">From dataset table</option>
+            <option value="static">{t('workboards.form.staticList')}</option>
+            <option value="dataset_table">{t('workboards.form.fromDatasetTable')}</option>
           </select>
         </Lbl>
 
         {lookup.kind === 'dataset_table' && (
-          <Lbl label="Source table">
+          <Lbl label={t('workboards.form.sourceTable')}>
             <SingleColumnPicker
               sourceColumns={tables.map((table) => String(table.id))}
               value={lookup.table_id != null ? String(lookup.table_id) : null}
@@ -2294,7 +2370,7 @@ function LookupEditor({
                   },
                 })
               }
-              placeholder="-- pick a table --"
+              placeholder={t('workboards.form.pickTablePlaceholder')}
               labelByValue={Object.fromEntries(
                 tables.map((table) => [String(table.id), table.display_name]),
               )}
@@ -2304,20 +2380,20 @@ function LookupEditor({
 
         {lookup.kind === 'dataset_table' && (
           <>
-            <Lbl label="Value column">
+            <Lbl label={t('workboards.form.valueColumn')}>
               <SingleColumnPicker
                 sourceColumns={lookupCols.map((column) => column.name)}
                 value={lookup.value_column || null}
                 onChange={(next) => onChange({ lookup: { ...lookup, value_column: next || '' } })}
-                placeholder="-- pick a column --"
+                placeholder={t('workboards.form.pickColumnPlaceholder')}
               />
             </Lbl>
-            <Lbl label="Display column">
+            <Lbl label={t('workboards.form.displayColumn')}>
               <SingleColumnPicker
                 sourceColumns={lookupCols.map((column) => column.name)}
                 value={lookup.label_column || null}
                 onChange={(next) => onChange({ lookup: { ...lookup, label_column: next || '' } })}
-                placeholder="Default = value column"
+                placeholder={t('workboards.form.defaultValueColumn')}
               />
             </Lbl>
           </>
@@ -2325,15 +2401,15 @@ function LookupEditor({
 
         {lookup.kind === 'dataset_table' && field.widget === 'map' && (
           <>
-            <Lbl label="Cột geometry (GeoJSON Polygon)">
+            <Lbl label={t('workboards.form.geometryColumn')}>
               <SingleColumnPicker
                 sourceColumns={lookupCols.map((column) => column.name)}
                 value={lookup.geometry_column || null}
                 onChange={(next) => onChange({ lookup: { ...lookup, geometry_column: next || '' } })}
-                placeholder="-- cột chứa GeoJSON --"
+                placeholder={t('workboards.form.geoJsonColumnPlaceholder')}
               />
             </Lbl>
-            <Lbl label="Kiểu bản đồ nền">
+            <Lbl label={t('workboards.form.basemap')}>
               <select
                 value={lookup.basemap || 'satellite'}
                 onChange={(event) =>
@@ -2346,25 +2422,25 @@ function LookupEditor({
                 }
                 className={INPUT}
               >
-                <option value="satellite">Vệ tinh</option>
-                <option value="streets">Đường phố</option>
-                <option value="light">Nền sáng</option>
+                <option value="satellite">{t('workboards.form.basemapSatellite')}</option>
+                <option value="streets">{t('workboards.form.basemapStreets')}</option>
+                <option value="light">{t('workboards.form.basemapLight')}</option>
               </select>
             </Lbl>
-            <Lbl label="Cột vĩ độ (lat) — tùy chọn, fallback marker">
+            <Lbl label={t('workboards.form.latColumn')}>
               <SingleColumnPicker
                 sourceColumns={lookupCols.map((column) => column.name)}
                 value={lookup.lat_column || null}
                 onChange={(next) => onChange({ lookup: { ...lookup, lat_column: next || '' } })}
-                placeholder="-- không bắt buộc --"
+                placeholder={t('workboards.form.optionalPlaceholder')}
               />
             </Lbl>
-            <Lbl label="Cột kinh độ (lng) — tùy chọn, fallback marker">
+            <Lbl label={t('workboards.form.lngColumn')}>
               <SingleColumnPicker
                 sourceColumns={lookupCols.map((column) => column.name)}
                 value={lookup.lng_column || null}
                 onChange={(next) => onChange({ lookup: { ...lookup, lng_column: next || '' } })}
-                placeholder="-- không bắt buộc --"
+                placeholder={t('workboards.form.optionalPlaceholder')}
               />
             </Lbl>
           </>
@@ -2375,22 +2451,22 @@ function LookupEditor({
             field.widget === 'lookup' ||
             field.widget === 'enum_list') && (
             <>
-              <Lbl label="Lọc theo field (cột form cha) — tùy chọn">
+              <Lbl label={t('workboards.form.filterByField')}>
                 <input
                   value={lookup.filter_by_field || ''}
                   onChange={(event) =>
                     onChange({ lookup: { ...lookup, filter_by_field: event.target.value || null } })
                   }
                   className={INPUT}
-                  placeholder="VD: lo_id (field chọn trước đó)"
+                  placeholder={t('workboards.form.filterByFieldPlaceholder')}
                 />
               </Lbl>
-              <Lbl label="Cột khớp trên bảng nguồn">
+              <Lbl label={t('workboards.form.filterColumn')}>
                 <SingleColumnPicker
                   sourceColumns={lookupCols.map((column) => column.name)}
                   value={lookup.filter_column || null}
                   onChange={(next) => onChange({ lookup: { ...lookup, filter_column: next || '' } })}
-                  placeholder="-- cột để lọc --"
+                  placeholder={t('workboards.form.filterColumnPlaceholder')}
                 />
               </Lbl>
             </>
@@ -2399,11 +2475,13 @@ function LookupEditor({
 
       {lookup.kind === 'static' ? (
         <StaticValuesEditor
+          t={t}
           values={lookup.values || []}
           onChange={(values) => onChange({ lookup: { ...lookup, values } })}
         />
       ) : (
         <RelationshipPathEditor
+          t={t}
           tableId={lookup.table_id ?? null}
           tables={tables}
           path={(lookup.relationship_path || []) as RelationshipHop[]}
@@ -2422,11 +2500,13 @@ function LookupEditor({
 }
 
 function RelationshipPathEditor({
+  t,
   tableId,
   tables,
   path,
   onChange,
 }: {
+  t: Translate;
   tableId: number | null;
   tables: DatasetTableInfo[];
   path: RelationshipHop[];
@@ -2463,19 +2543,19 @@ function RelationshipPathEditor({
     <div className="rounded-md border border-[rgb(var(--border-line))] bg-surface-1 p-3">
       <div className="mb-2">
         <div className="text-caption font-emphasis text-text-secondary">
-          Nested relationships
+          {t('workboards.form.nestedRelationships')}
         </div>
         <p className="mt-0.5 text-caption text-text-tertiary">
-          Optional chain for resolving display labels through related tables.
+          {t('workboards.form.nestedRelationshipsHelp')}
         </p>
       </div>
 
       {loading ? (
-        <p className="mb-3 text-caption text-text-tertiary">Loading relationship suggestions...</p>
+        <p className="mb-3 text-caption text-text-tertiary">{t('workboards.form.loadingRelationshipSuggestions')}</p>
       ) : suggestions.length > 0 ? (
         <div className="mb-3 space-y-1.5">
           {suggestions.map((suggestion, index) => {
-            const targetDisplay = String(suggestion.target_table_display || 'Target table');
+            const targetDisplay = String(suggestion.target_table_display || t('workboards.form.targetTableFallback'));
             const toCol = String(suggestion.to_column || '');
             const labelCol =
               (suggestion.suggested_label_columns as string[] | undefined)?.[0] || null;
@@ -2494,13 +2574,13 @@ function RelationshipPathEditor({
                 }
                 className="w-full rounded-md border border-[rgb(var(--border-line))] bg-surface-0 px-3 py-2 text-left text-caption hover:border-brand"
               >
-                <span className="font-emphasis text-text-primary">Use {targetDisplay}</span>
+                <span className="font-emphasis text-text-primary">{t('workboards.form.useTargetTable', { table: targetDisplay })}</span>
                 <span className="block text-text-tertiary">
-                  Join key: <code className="font-mono">{toCol || 'unknown'}</code>
+                  {t('workboards.form.joinKey')}: <code className="font-mono">{toCol || t('workboards.form.unknown')}</code>
                   {labelCol ? (
                     <>
                       {' '}
-                      - Label: <code className="font-mono">{labelCol}</code>
+                      - {t('workboards.form.labelColumnShort')}: <code className="font-mono">{labelCol}</code>
                     </>
                   ) : null}
                 </span>
@@ -2522,18 +2602,18 @@ function RelationshipPathEditor({
               >
                 <div className="mb-2 flex items-center justify-between gap-2">
                   <span className="rounded bg-brand/10 px-2 py-0.5 text-caption font-emphasis text-brand">
-                    Step {index + 1}
+                    {t('workboards.form.stepFallback', { count: index + 1 })}
                   </span>
                   <BuilderIconButton
                     onClick={() => onChange(path.filter((_, itemIndex) => itemIndex !== index))}
-                    title="Delete step"
+                    title={t('workboards.form.deleteStep')}
                     variant="danger"
                   >
                     <Trash2 className="h-3.5 w-3.5 text-danger" />
                   </BuilderIconButton>
                 </div>
                 <div className={BUILDER_GRID_3}>
-                  <Lbl label="Target table">
+                  <Lbl label={t('workboards.form.targetTable')}>
                     <SingleColumnPicker
                       sourceColumns={tables.map((table) => String(table.id))}
                       value={hop.table_id != null ? String(hop.table_id) : null}
@@ -2546,28 +2626,28 @@ function RelationshipPathEditor({
                           label_column: null,
                         });
                       }}
-                      placeholder="-- pick a table --"
+                      placeholder={t('workboards.form.pickTablePlaceholder')}
                       clearable={false}
                       labelByValue={Object.fromEntries(
                         tables.map((table) => [String(table.id), table.display_name]),
                       )}
                     />
                   </Lbl>
-                  <Lbl label="Join key">
+                  <Lbl label={t('workboards.form.joinKey')}>
                     <SingleColumnPicker
                       sourceColumns={cols.map((column) => column.name)}
                       value={hop.value_column || null}
                       onChange={(next) => updateHop(index, { value_column: next })}
-                      placeholder={targetTable ? '-- pick a column --' : 'Pick a table first'}
+                      placeholder={targetTable ? t('workboards.form.pickColumnPlaceholder') : t('workboards.form.pickTableFirst')}
                       clearable={false}
                     />
                   </Lbl>
-                  <Lbl label="Display column">
+                  <Lbl label={t('workboards.form.displayColumn')}>
                     <SingleColumnPicker
                       sourceColumns={cols.map((column) => column.name)}
                       value={hop.label_column || null}
                       onChange={(next) => updateHop(index, { label_column: next })}
-                      placeholder={targetTable ? 'Default = join key' : 'Pick a table first'}
+                      placeholder={targetTable ? t('workboards.form.defaultJoinKey') : t('workboards.form.pickTableFirst')}
                     />
                   </Lbl>
                 </div>
@@ -2576,7 +2656,7 @@ function RelationshipPathEditor({
           })}
         </div>
       ) : (
-        <BuilderEmptyHint>No relationship steps yet.</BuilderEmptyHint>
+        <BuilderEmptyHint>{t('workboards.form.noRelationshipSteps')}</BuilderEmptyHint>
       )}
 
       <BuilderActionButton
@@ -2596,16 +2676,18 @@ function RelationshipPathEditor({
         className="mt-3 w-full justify-center"
       >
         <Plus className="h-3.5 w-3.5" />
-        Add step
+        {t('workboards.form.addStep')}
       </BuilderActionButton>
     </div>
   );
 }
 
 function StaticValuesEditor({
+  t,
   values,
   onChange,
 }: {
+  t: Translate;
   values: Array<{ label: string; value: unknown }>;
   onChange: (next: Array<{ label: string; value: unknown }>) => void;
 }) {
@@ -2620,7 +2702,7 @@ function StaticValuesEditor({
 
   return (
     <div className="space-y-2 rounded-md border border-[rgb(var(--border-line))] bg-surface-1 p-3">
-      <div className="text-caption font-emphasis text-text-secondary">Choices</div>
+      <div className="text-caption font-emphasis text-text-secondary">{t('workboards.form.choices')}</div>
       {values.length > 0 ? (
         <div className="space-y-2">
           {values.map((value, index) => (
@@ -2628,18 +2710,18 @@ function StaticValuesEditor({
               <input
                 value={value.label}
                 onChange={(event) => update(index, { label: event.target.value })}
-                placeholder="Display label"
+                placeholder={t('workboards.form.displayLabel')}
                 className={INPUT}
               />
               <input
                 value={String(value.value ?? '')}
                 onChange={(event) => update(index, { value: event.target.value })}
-                placeholder="Value"
+                placeholder={t('workboards.form.value')}
                 className={INPUT}
               />
               <BuilderIconButton
                 onClick={() => onChange(values.filter((_, itemIndex) => itemIndex !== index))}
-                title="Delete"
+                title={t('workboards.form.delete')}
                 variant="danger"
               >
                 <Trash2 className="h-3.5 w-3.5 text-danger" />
@@ -2648,11 +2730,11 @@ function StaticValuesEditor({
           ))}
         </div>
       ) : (
-        <BuilderEmptyHint>No choices yet.</BuilderEmptyHint>
+        <BuilderEmptyHint>{t('workboards.form.noChoices')}</BuilderEmptyHint>
       )}
       <BuilderActionButton onClick={() => onChange([...values, { label: '', value: '' }])}>
         <Plus className="h-3.5 w-3.5" />
-        Add choice
+        {t('workboards.form.addChoice')}
       </BuilderActionButton>
     </div>
   );
@@ -2661,9 +2743,11 @@ function StaticValuesEditor({
 const STATUS_COLORS = ['slate', 'green', 'amber', 'red', 'blue', 'violet'];
 
 function StatusStatesEditor({
+  t,
   field,
   onChange,
 }: {
+  t: Translate;
   field: FormFieldSpec;
   onChange: (patch: Partial<FormFieldSpec>) => void;
 }) {
@@ -2680,7 +2764,7 @@ function StatusStatesEditor({
   };
   return (
     <div className="space-y-2 rounded-md border border-[rgb(var(--border-line))] bg-surface-1 p-3">
-      <div className="text-caption font-emphasis text-text-secondary">Các trạng thái</div>
+      <div className="text-caption font-emphasis text-text-secondary">{t('workboards.form.statusStates')}</div>
       {states.length > 0 ? (
         <div className="space-y-2">
           {states.map((s, index) => (
@@ -2688,13 +2772,13 @@ function StatusStatesEditor({
               <input
                 value={s.value}
                 onChange={(event) => updateState(index, { value: event.target.value })}
-                placeholder="giá trị (vd: cho_duyet)"
+                placeholder={t('workboards.form.statusValuePlaceholder')}
                 className={INPUT}
               />
               <input
                 value={s.label || ''}
                 onChange={(event) => updateState(index, { label: event.target.value })}
-                placeholder="nhãn (vd: Chờ duyệt)"
+                placeholder={t('workboards.form.statusLabelPlaceholder')}
                 className={INPUT}
               />
               <select
@@ -2708,7 +2792,7 @@ function StatusStatesEditor({
               </select>
               <BuilderIconButton
                 onClick={() => setCfg({ states: states.filter((_, i) => i !== index) })}
-                title="Delete"
+                title={t('workboards.form.delete')}
                 variant="danger"
               >
                 <Trash2 className="h-3.5 w-3.5 text-danger" />
@@ -2717,15 +2801,15 @@ function StatusStatesEditor({
           ))}
         </div>
       ) : (
-        <BuilderEmptyHint>Chưa có trạng thái nào.</BuilderEmptyHint>
+        <BuilderEmptyHint>{t('workboards.form.noStatusStates')}</BuilderEmptyHint>
       )}
       <BuilderActionButton
         onClick={() => setCfg({ states: [...states, { value: '', label: '', color: 'slate' }] })}
       >
         <Plus className="h-3.5 w-3.5" />
-        Thêm trạng thái
+        {t('workboards.form.addStatusState')}
       </BuilderActionButton>
-      <Lbl label="Chỉ role này được đổi trạng thái (cách nhau dấu phẩy) — trống = ai sửa được dòng đều đổi được">
+      <Lbl label={t('workboards.form.statusEditableRoles')}>
         <input
           value={(cfg.editable_by_roles || []).join(', ')}
           onChange={(event) =>
@@ -2737,13 +2821,13 @@ function StatusStatesEditor({
             })
           }
           className={INPUT}
-          placeholder="vd: admin, quan_doc"
+          placeholder={t('workboards.form.statusRolesPlaceholder')}
         />
       </Lbl>
       {states.length > 0 && (
         <div className="space-y-1.5 border-t border-[rgb(var(--border-line))] pt-2">
           <div className="text-caption font-emphasis text-text-secondary">
-            Luồng chuyển hợp lệ (bỏ trống = cho chuyển tự do; máy chủ chặn bước sai)
+            {t('workboards.form.statusTransitions')}
           </div>
           {states.map((s) => {
             const from = s.value;
@@ -2751,7 +2835,7 @@ function StatusStatesEditor({
             return (
               <div key={from || Math.random()} className="flex items-center gap-2">
                 <span className="w-28 shrink-0 truncate text-xs text-text-secondary" title={from}>
-                  {s.label || from || '—'} →
+                  {s.label || from || t('workboards.form.emptyDash')} →
                 </span>
                 <input
                   value={nexts.join(', ')}
@@ -2766,7 +2850,7 @@ function StatusStatesEditor({
                     setCfg({ allowed_transitions: map });
                   }}
                   className={INPUT}
-                  placeholder="giá trị được phép chuyển tới (vd: dang_giao, huy)"
+                  placeholder={t('workboards.form.statusTransitionsPlaceholder')}
                   disabled={!from}
                 />
               </div>

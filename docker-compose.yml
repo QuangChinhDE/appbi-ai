@@ -81,6 +81,7 @@ services:
       PDF_EXPORT_ENABLED: ${PDF_EXPORT_ENABLED:-false}
       PDF_FILE_TTL_HOURS: ${PDF_FILE_TTL_HOURS:-48}
       PDF_QUOTA_PER_LINK_HOUR: ${PDF_QUOTA_PER_LINK_HOUR:-20}
+      PDF_QUOTA_PER_USER_HOUR: ${PDF_QUOTA_PER_USER_HOUR:-60}
       DATASOURCE_ENCRYPTION_KEY: ${DATASOURCE_ENCRYPTION_KEY:-}
       GCP_SERVICE_ACCOUNT_JSON: ${GCP_SERVICE_ACCOUNT_JSON:-}
       GCP_SERVICE_ACCOUNT_EMAIL: ${GCP_SERVICE_ACCOUNT_EMAIL:-}
@@ -112,6 +113,9 @@ services:
         NEXT_PUBLIC_GOOGLE_CLIENT_ID: ${NEXT_PUBLIC_GOOGLE_CLIENT_ID:-}
         # WebSocket cannot be proxied through Next.js rewrites — must be baked.
         NEXT_PUBLIC_WORKBOARDS_ENABLED: ${NEXT_PUBLIC_WORKBOARDS_ENABLED:-true}
+        # PDF export delivery: false = progress on the report + download only;
+        # true also opens the finished file in a second tab. Baked at build time.
+        NEXT_PUBLIC_PDF_PREVIEW_TAB: ${NEXT_PUBLIC_PDF_PREVIEW_TAB:-false}
     restart: unless-stopped
     environment:
       BACKEND_URL: http://backend:8000/api/v1
@@ -121,6 +125,7 @@ services:
       NEXT_PUBLIC_AUTH_GOOGLE_ENABLED: ${NEXT_PUBLIC_AUTH_GOOGLE_ENABLED:-false}
       NEXT_PUBLIC_GOOGLE_CLIENT_ID: ${NEXT_PUBLIC_GOOGLE_CLIENT_ID:-}
       NEXT_PUBLIC_WORKBOARDS_ENABLED: ${NEXT_PUBLIC_WORKBOARDS_ENABLED:-true}
+      NEXT_PUBLIC_PDF_PREVIEW_TAB: ${NEXT_PUBLIC_PDF_PREVIEW_TAB:-false}
     ports:
       # Bind to 127.0.0.1 so the frontend is reachable only via nginx,
       # not directly from the public internet.

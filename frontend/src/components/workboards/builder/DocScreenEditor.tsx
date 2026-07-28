@@ -47,6 +47,7 @@ import {
 } from './BuilderChrome';
 import type { DocBlockSpec, ScreenSpec } from './types';
 import { INPUT, Lbl } from './ScreenEditor';
+import { useI18n } from '@/providers/LanguageProvider';
 
 interface DatasetTableInfo {
   id: number;
@@ -57,22 +58,23 @@ interface DatasetTableInfo {
 
 type BlockKind = DocBlockSpec['type'];
 type DocActiveItem = 'page' | `block:${number}`;
+type Translate = ReturnType<typeof useI18n>['t'];
 
-const BLOCK_META: Record<BlockKind, { label: string; icon: React.ComponentType<{ className?: string }>; group: 'text' | 'data' | 'layout' }> = {
-  header: { label: 'Header', icon: Heading1, group: 'text' },
-  text: { label: 'Text', icon: Type, group: 'text' },
-  footer: { label: 'Footer', icon: FileText, group: 'text' },
-  data_table: { label: 'Data table', icon: Table2, group: 'data' },
-  kv_grid: { label: 'Key-value grid', icon: LayoutGrid, group: 'data' },
-  qr_code: { label: 'Mã QR', icon: QrCode, group: 'data' },
-  spacer: { label: 'Spacer', icon: Minus, group: 'layout' },
-  signature: { label: 'Signature', icon: PenTool, group: 'layout' },
+const BLOCK_META: Record<BlockKind, { labelKey: string; icon: React.ComponentType<{ className?: string }>; group: 'text' | 'data' | 'layout' }> = {
+  header: { labelKey: 'workboards.doc.block.header', icon: Heading1, group: 'text' },
+  text: { labelKey: 'workboards.doc.block.text', icon: Type, group: 'text' },
+  footer: { labelKey: 'workboards.doc.block.footer', icon: FileText, group: 'text' },
+  data_table: { labelKey: 'workboards.doc.block.dataTable', icon: Table2, group: 'data' },
+  kv_grid: { labelKey: 'workboards.doc.block.kvGrid', icon: LayoutGrid, group: 'data' },
+  qr_code: { labelKey: 'workboards.doc.block.qrCode', icon: QrCode, group: 'data' },
+  spacer: { labelKey: 'workboards.doc.block.spacer', icon: Minus, group: 'layout' },
+  signature: { labelKey: 'workboards.doc.block.signature', icon: PenTool, group: 'layout' },
 };
 
-const BLOCK_GROUPS: Array<{ id: 'text' | 'data' | 'layout'; label: string; kinds: BlockKind[] }> = [
-  { id: 'text', label: 'Title & text', kinds: ['header', 'text', 'footer'] },
-  { id: 'data', label: 'Data', kinds: ['data_table', 'kv_grid', 'qr_code'] },
-  { id: 'layout', label: 'Layout & sign-off', kinds: ['spacer', 'signature'] },
+const BLOCK_GROUPS: Array<{ id: 'text' | 'data' | 'layout'; labelKey: string; kinds: BlockKind[] }> = [
+  { id: 'text', labelKey: 'workboards.doc.blockGroup.text', kinds: ['header', 'text', 'footer'] },
+  { id: 'data', labelKey: 'workboards.doc.blockGroup.data', kinds: ['data_table', 'kv_grid', 'qr_code'] },
+  { id: 'layout', labelKey: 'workboards.doc.blockGroup.layout', kinds: ['spacer', 'signature'] },
 ];
 
 const DOC_EXPRESSION_OPTIONS: SelectOption[] = [
@@ -94,6 +96,7 @@ export default function DocScreenEditor({
   workboardId?: number;
   onChange: (next: ScreenSpec) => void;
 }) {
+  const { t } = useI18n();
   const doc = screen.doc || { blocks: [] };
   const blocks = doc.blocks || [];
   const [activeItem, setActiveItem] = useState<DocActiveItem>('page');
@@ -135,7 +138,7 @@ export default function DocScreenEditor({
   };
 
   const addBlock = (type: BlockKind) => {
-    const fresh = makeFreshBlock(type);
+    const fresh = makeFreshBlock(type, t);
     updateDoc({ blocks: [...blocks, fresh] });
     setActiveItem(`block:${blocks.length}`);
   };
@@ -165,8 +168,8 @@ export default function DocScreenEditor({
         {activeItem === 'page' ? (
           <BuilderInspectorPanel
             icon={<FileText className="h-4 w-4" />}
-            title="Page setup"
-            subtitle="Paper, orientation, margins, and the primary source used by data blocks."
+            title={t('workboards.doc.pageSetupTitle')}
+            subtitle={t('workboards.doc.pageSetupSubtitle')}
           >
             <PageSetupInspector page={doc.page} onChange={(page) => updateDoc({ page })} />
           </BuilderInspectorPanel>
@@ -185,12 +188,16 @@ export default function DocScreenEditor({
     </div>
   );
 }
-function makeFreshBlock(type: BlockKind): DocBlockSpec {
+function makeFreshBlock(type: BlockKind, t: Translate): DocBlockSpec {
   switch (type) {
     case 'header':
-      return { type, title: 'Title', subtitle: '', align: 'center' };
+      return { type, title: t('workboards.doc.defaultTitle'), subtitle: '', align: 'center' };
     case 'kv_grid':
-      return { type, columns: 4, items: [{ label: 'Label', value: 'Value' }] };
+      return {
+        type,
+        columns: 4,
+        items: [{ label: t('workboards.doc.defaultLabel'), value: t('workboards.doc.defaultValue') }],
+      };
     case 'data_table':
       return {
         type,
@@ -211,7 +218,7 @@ function makeFreshBlock(type: BlockKind): DocBlockSpec {
     case 'spacer':
       return { type, height_mm: 4 };
     case 'signature':
-      return { type, slots: [{ label: 'Signer', role: '' }] };
+      return { type, slots: [{ label: t('workboards.doc.defaultSigner'), role: '' }] };
     case 'qr_code':
       return { type, value: '{{shared.ma_don}}', size: 180, align: 'center', caption: '' };
     default:
@@ -228,13 +235,14 @@ function PageSetupInspector({
   page: NonNullable<ScreenSpec['doc']>['page'];
   onChange: (next: NonNullable<NonNullable<ScreenSpec['doc']>['page']>) => void;
 }) {
+  const { t } = useI18n();
   const size = page?.size || 'A4';
   const orientation = page?.orientation || 'portrait';
   const margin = page?.margin_mm ?? 15;
 
   return (
     <div className={BUILDER_GRID_3}>
-      <Lbl label="Paper">
+      <Lbl label={t('workboards.doc.paper')}>
         <select
           value={size}
           onChange={(event) => onChange({ ...page, size: event.target.value as 'A4' | 'A3' | 'Letter' })}
@@ -245,7 +253,7 @@ function PageSetupInspector({
           <option value="Letter">Letter</option>
         </select>
       </Lbl>
-      <Lbl label="Orientation">
+      <Lbl label={t('workboards.doc.orientation')}>
         <select
           value={orientation}
           onChange={(event) =>
@@ -253,11 +261,11 @@ function PageSetupInspector({
           }
           className={INPUT}
         >
-          <option value="portrait">Portrait</option>
-          <option value="landscape">Landscape</option>
+          <option value="portrait">{t('workboards.doc.portrait')}</option>
+          <option value="landscape">{t('workboards.doc.landscape')}</option>
         </select>
       </Lbl>
-      <Lbl label="Margin (mm)">
+      <Lbl label={t('workboards.doc.marginMm')}>
         <input
           type="number"
           min={0}
@@ -296,10 +304,11 @@ function Outline({
   onMoveDown: (idx: number) => void;
   onRemove: (idx: number) => void;
 }) {
+  const { t } = useI18n();
   return (
     <aside className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-3">
       <h2 className="mb-2 text-caption font-emphasis text-text-secondary">
-        Document objects
+        {t('workboards.doc.documentObjects')}
       </h2>
 
       <div className="space-y-1">
@@ -316,20 +325,20 @@ function Outline({
             onClick={onSelectPage}
             className="flex min-w-0 flex-1 flex-col text-left"
           >
-            <span className="truncate font-medium text-text-primary">Page setup</span>
+            <span className="truncate font-medium text-text-primary">{t('workboards.doc.pageSetup')}</span>
             <span className="truncate text-caption text-text-tertiary">
-              {page?.size || 'A4'} - {page?.orientation || 'portrait'} - {page?.margin_mm ?? 15} mm
+              {page?.size || 'A4'} - {page?.orientation === 'landscape' ? t('workboards.doc.landscape') : t('workboards.doc.portrait')} - {page?.margin_mm ?? 15} mm
             </span>
           </button>
         </div>
 
         <div className="px-1 pt-3 text-tiny font-emphasis uppercase tracking-wider text-text-quaternary">
-          Blocks ({blocks.length})
+          {t('workboards.doc.blocksCount', { count: blocks.length })}
         </div>
         {blocks.map((block, idx) => {
           const meta = BLOCK_META[block.type];
           const Icon = meta.icon;
-          const subtitle = describeBlock(block);
+          const subtitle = describeBlock(block, t);
           const isActive = idx === activeIdx;
           return (
             <div
@@ -349,7 +358,7 @@ function Outline({
                 <Icon className="h-3.5 w-3.5 shrink-0 text-text-tertiary" />
                 <span className="min-w-0 flex-1">
                   <span className="block truncate font-medium text-text-primary">
-                    {meta.label}
+                    {t(meta.labelKey)}
                   </span>
                   {subtitle && (
                     <span className="block truncate text-caption text-text-tertiary">{subtitle}</span>
@@ -361,7 +370,7 @@ function Outline({
                   <button
                     type="button"
                     onClick={() => onMoveUp(idx)}
-                    title="Move up"
+                    title={t('workboards.doc.moveUp')}
                     className="rounded p-1 text-text-tertiary hover:bg-surface-0 hover:text-text-primary"
                   >
                     <ArrowUp className="h-3 w-3" />
@@ -371,7 +380,7 @@ function Outline({
                   <button
                     type="button"
                     onClick={() => onMoveDown(idx)}
-                    title="Move down"
+                    title={t('workboards.doc.moveDown')}
                     className="rounded p-1 text-text-tertiary hover:bg-surface-0 hover:text-text-primary"
                   >
                     <ArrowDown className="h-3 w-3" />
@@ -380,7 +389,7 @@ function Outline({
                 <button
                   type="button"
                   onClick={() => onRemove(idx)}
-                  title="Delete"
+                  title={t('common.delete')}
                   className="rounded p-1 text-text-tertiary hover:bg-danger/10 hover:text-danger"
                 >
                   <Trash2 className="h-3 w-3" />
@@ -391,7 +400,7 @@ function Outline({
         })}
         {blocks.length === 0 && (
           <p className="rounded-md border border-dashed border-[rgb(var(--border-line))] p-3 text-center text-caption text-text-tertiary">
-            No blocks yet. Add one below.
+            {t('workboards.doc.noBlocksYet')}
           </p>
         )}
       </div>
@@ -401,7 +410,7 @@ function Outline({
   );
 }
 
-function describeBlock(block: DocBlockSpec): string {
+function describeBlock(block: DocBlockSpec, t: Translate): string {
   switch (block.type) {
     case 'header': {
       const title = String(block.title || '').trim();
@@ -414,15 +423,15 @@ function describeBlock(block: DocBlockSpec): string {
     case 'data_table': {
       const source = String(block.source || 'primary');
       const cols = Array.isArray(block.columns) ? block.columns.length : 0;
-      return `${source === 'primary' ? 'primary source' : 'specific table'} - ${cols} cols`;
+      return `${source === 'primary' ? t('workboards.doc.primarySource') : t('workboards.doc.specificTable')} - ${t('workboards.doc.colsCount', { count: cols })}`;
     }
     case 'kv_grid': {
       const items = Array.isArray(block.items) ? block.items.length : 0;
-      return `${items} cell${items === 1 ? '' : 's'}`;
+      return t('workboards.doc.cellsCount', { count: items });
     }
     case 'signature': {
       const slots = Array.isArray(block.slots) ? block.slots.length : 0;
-      return `${slots} slot${slots === 1 ? '' : 's'}`;
+      return t('workboards.doc.slotsCount', { count: slots });
     }
     case 'spacer':
       return `${Number(block.height_mm ?? 4)} mm`;
@@ -437,6 +446,7 @@ function describeBlock(block: DocBlockSpec): string {
 }
 
 function AddBlockMenu({ onAdd }: { onAdd: (type: BlockKind) => void }) {
+  const { t } = useI18n();
   const [open, setOpen] = useState(false);
   return (
     <div className="relative mt-3">
@@ -446,7 +456,7 @@ function AddBlockMenu({ onAdd }: { onAdd: (type: BlockKind) => void }) {
         className="flex w-full items-center justify-center gap-1.5 rounded-md border border-dashed border-[rgb(var(--border-line))] py-1.5 text-caption font-medium text-text-secondary hover:border-brand/40 hover:bg-brand/5 hover:text-text-primary"
       >
         <Plus className="h-3.5 w-3.5" />
-        Add block
+        {t('workboards.doc.addBlock')}
         <ChevronDown className={`h-3 w-3 transition-transform ${open ? 'rotate-180' : ''}`} />
       </button>
       {open && (
@@ -457,7 +467,7 @@ function AddBlockMenu({ onAdd }: { onAdd: (type: BlockKind) => void }) {
           {BLOCK_GROUPS.map((group) => (
             <div key={group.id} className="mb-2 last:mb-0">
               <p className="px-1.5 pb-1 text-tiny font-emphasis uppercase tracking-wider text-text-quaternary">
-                {group.label}
+                {t(group.labelKey)}
               </p>
               {group.kinds.map((kind) => {
                 const meta = BLOCK_META[kind];
@@ -473,7 +483,7 @@ function AddBlockMenu({ onAdd }: { onAdd: (type: BlockKind) => void }) {
                     className="flex w-full items-center gap-2 rounded px-1.5 py-1.5 text-caption text-text-secondary hover:bg-surface-2 hover:text-text-primary"
                   >
                     <Icon className="h-3.5 w-3.5 text-text-tertiary" />
-                    {meta.label}
+                    {t(meta.labelKey)}
                   </button>
                 );
               })}
@@ -504,14 +514,15 @@ function Inspector({
   onChange: (patch: Partial<DocBlockSpec>) => void;
   onRemove: () => void;
 }) {
+  const { t } = useI18n();
   if (!block) {
     return (
       <BuilderInspectorPanel
         icon={<FileText className="h-4 w-4" />}
-        title="Document blocks"
-        subtitle="Add a block from the left panel to start editing the document."
+        title={t('workboards.doc.documentBlocks')}
+        subtitle={t('workboards.doc.documentBlocksSubtitle')}
       >
-        <BuilderEmptyHint>No block selected.</BuilderEmptyHint>
+        <BuilderEmptyHint>{t('workboards.doc.noBlockSelected')}</BuilderEmptyHint>
       </BuilderInspectorPanel>
     );
   }
@@ -522,10 +533,10 @@ function Inspector({
   return (
     <BuilderInspectorPanel
       icon={<Icon className="h-4 w-4" />}
-      title={meta.label}
-      subtitle={describeBlock(block)}
+      title={t(meta.labelKey)}
+      subtitle={describeBlock(block, t)}
       action={
-        <BuilderIconButton onClick={onRemove} title="Delete block" variant="danger">
+        <BuilderIconButton onClick={onRemove} title={t('workboards.doc.deleteBlock')} variant="danger">
           <Trash2 className="h-3.5 w-3.5 text-danger" />
         </BuilderIconButton>
       }
@@ -558,9 +569,10 @@ function QrCodeInspector({
   block: DocBlockSpec;
   onChange: (patch: Partial<DocBlockSpec>) => void;
 }) {
+  const { t } = useI18n();
   return (
     <div className="space-y-2">
-      <Lbl label="Giá trị mã hoá — {{shared.cột}}, {{app_user.x}}, {{app_url}} hoặc chuỗi cố định">
+      <Lbl label={t('workboards.doc.qrValueLabel')}>
         <input
           value={String(block.value ?? '')}
           onChange={(e) => onChange({ value: e.target.value })}
@@ -569,7 +581,7 @@ function QrCodeInspector({
         />
       </Lbl>
       <div className="grid grid-cols-2 gap-2">
-        <Lbl label="Kích thước (px)">
+        <Lbl label={t('workboards.doc.qrSize')}>
           <input
             type="number"
             min={48}
@@ -579,19 +591,19 @@ function QrCodeInspector({
             className={INPUT}
           />
         </Lbl>
-        <Lbl label="Căn lề">
+        <Lbl label={t('workboards.doc.align')}>
           <select
             value={String(block.align ?? 'center')}
             onChange={(e) => onChange({ align: e.target.value })}
             className={INPUT}
           >
-            <option value="left">Trái</option>
-            <option value="center">Giữa</option>
-            <option value="right">Phải</option>
+            <option value="left">{t('workboards.doc.alignLeft')}</option>
+            <option value="center">{t('workboards.doc.alignCenter')}</option>
+            <option value="right">{t('workboards.doc.alignRight')}</option>
           </select>
         </Lbl>
       </div>
-      <Lbl label="Chú thích dưới mã">
+      <Lbl label={t('workboards.doc.qrCaption')}>
         <input
           value={String(block.caption ?? '')}
           onChange={(e) => onChange({ caption: e.target.value })}
@@ -609,31 +621,32 @@ function HeaderInspector({
   block: DocBlockSpec;
   onChange: (patch: Partial<DocBlockSpec>) => void;
 }) {
+  const { t } = useI18n();
   return (
     <div className={BUILDER_GRID_3}>
-      <Lbl label="Title">
+      <Lbl label={t('workboards.doc.title')}>
         <input
           value={String(block.title ?? '')}
           onChange={(event) => onChange({ title: event.target.value })}
           className={INPUT}
         />
       </Lbl>
-      <Lbl label="Subtitle">
+      <Lbl label={t('workboards.doc.subtitle')}>
         <input
           value={String(block.subtitle ?? '')}
           onChange={(event) => onChange({ subtitle: event.target.value })}
           className={INPUT}
         />
       </Lbl>
-      <Lbl label="Align">
+      <Lbl label={t('workboards.doc.align')}>
         <select
           value={String(block.align ?? 'center')}
           onChange={(event) => onChange({ align: event.target.value })}
           className={INPUT}
         >
-          <option value="left">Left</option>
-          <option value="center">Center</option>
-          <option value="right">Right</option>
+          <option value="left">{t('workboards.doc.alignLeft')}</option>
+          <option value="center">{t('workboards.doc.alignCenter')}</option>
+          <option value="right">{t('workboards.doc.alignRight')}</option>
         </select>
       </Lbl>
     </div>
@@ -647,9 +660,10 @@ function TextInspector({
   block: DocBlockSpec;
   onChange: (patch: Partial<DocBlockSpec>) => void;
 }) {
+  const { t } = useI18n();
   return (
     <div className="space-y-3">
-      <Lbl label="Content">
+      <Lbl label={t('workboards.doc.content')}>
         <textarea
           value={String(block.content ?? '')}
           onChange={(event) => onChange({ content: event.target.value })}
@@ -657,15 +671,15 @@ function TextInspector({
           className={INPUT}
         />
       </Lbl>
-      <Lbl label="Align">
+      <Lbl label={t('workboards.doc.align')}>
         <select
           value={String(block.align ?? 'left')}
           onChange={(event) => onChange({ align: event.target.value })}
           className={INPUT}
         >
-          <option value="left">Left</option>
-          <option value="center">Center</option>
-          <option value="right">Right</option>
+          <option value="left">{t('workboards.doc.alignLeft')}</option>
+          <option value="center">{t('workboards.doc.alignCenter')}</option>
+          <option value="right">{t('workboards.doc.alignRight')}</option>
         </select>
       </Lbl>
     </div>
@@ -679,8 +693,9 @@ function SpacerInspector({
   block: DocBlockSpec;
   onChange: (patch: Partial<DocBlockSpec>) => void;
 }) {
+  const { t } = useI18n();
   return (
-    <Lbl label="Height (mm)">
+    <Lbl label={t('workboards.doc.heightMm')}>
       <input
         type="number"
         value={Number(block.height_mm ?? 4)}
@@ -698,10 +713,11 @@ function FooterInspector({
   block: DocBlockSpec;
   onChange: (patch: Partial<DocBlockSpec>) => void;
 }) {
+  const { t } = useI18n();
   return (
     <div className={BUILDER_GRID_3}>
       {(['left', 'center', 'right'] as const).map((side) => (
-        <Lbl key={side} label={side[0].toUpperCase() + side.slice(1)}>
+        <Lbl key={side} label={t(`workboards.doc.footer.${side}`)}>
           <input
             value={String(block[side] ?? '')}
             onChange={(event) => onChange({ [side]: event.target.value } as Partial<DocBlockSpec>)}
@@ -722,6 +738,7 @@ function KvGridEditor({
   block: DocBlockSpec;
   onChange: (patch: Partial<DocBlockSpec>) => void;
 }) {
+  const { t } = useI18n();
   const items =
     (((block as { items?: Array<{ label: string; value: string }> }).items) || []) as Array<{
       label: string;
@@ -749,19 +766,19 @@ function KvGridEditor({
             <input
               value={item.label}
               onChange={(event) => updateItem(idx, { label: event.target.value })}
-              placeholder="Label"
+              placeholder={t('workboards.doc.defaultLabel')}
               className={INPUT}
             />
             <FixedExpressionInput
               value={item.value}
               onChange={(next) => updateItem(idx, { value: next })}
-              fixedPlaceholder="Fixed value"
-              expressionPlaceholder="{{today}} or placeholder"
+              fixedPlaceholder={t('workboards.doc.fixedValuePlaceholder')}
+              expressionPlaceholder={t('workboards.doc.expressionPlaceholder')}
               expressionOptions={DOC_EXPRESSION_OPTIONS}
             />
             <BuilderIconButton
               onClick={() => onChange({ items: items.filter((_, index) => index !== idx) })}
-              title="Delete cell"
+              title={t('workboards.doc.deleteCell')}
               variant="danger"
             >
               <Trash2 className="h-3.5 w-3.5 text-danger" />
@@ -774,10 +791,10 @@ function KvGridEditor({
           onClick={() => onChange({ items: [...items, { label: '', value: '' }] })}
         >
           <Plus className="h-3.5 w-3.5" />
-          Add cell
+          {t('workboards.doc.addCell')}
         </BuilderActionButton>
         <label className="flex items-center gap-1.5 text-caption text-text-secondary">
-          Columns per row
+          {t('workboards.doc.columnsPerRow')}
           <input
             type="number"
             min={1}
@@ -855,6 +872,7 @@ function DataTableEditor({
   screenId: string;
   onChange: (patch: Partial<DocBlockSpec>) => void;
 }) {
+  const { t } = useI18n();
   const source = String(block.source || 'primary');
   const sourceTableId =
     source === 'primary'
@@ -908,16 +926,15 @@ function DataTableEditor({
       {/* Column object controls. */}
       {source === 'primary' && !screenTableId ? (
         <BuilderEmptyHint className="text-left">
-          This table uses the document primary source. Pick a data source at the top
-          of the editor, or switch this block to a specific table.
+          {t('workboards.doc.primarySourceMissing')}
         </BuilderEmptyHint>
       ) : null}
 
       <BuilderSubsection
-        title="Columns"
+        title={t('workboards.doc.columns')}
         action={
           <span className="rounded bg-surface-2 px-2 py-1 text-caption font-medium text-text-tertiary">
-            {selectedColumns.length} selected
+            {t('workboards.doc.selectedCount', { count: selectedColumns.length })}
           </span>
         }
       >
@@ -931,8 +948,8 @@ function DataTableEditor({
 
       {/* Advanced header groups. */}
       <BuilderCollapsibleAdvanced
-        title="Header groups"
-        description="Span multiple columns under a shared super-header (e.g. Q1/Q2/Q3 grouped under 'Quarter')."
+        title={t('workboards.doc.headerGroups')}
+        description={t('workboards.doc.headerGroupsDescription')}
         defaultOpen={columnGroups.length > 0}
       >
         <ColumnGroupsEditor
@@ -944,8 +961,8 @@ function DataTableEditor({
 
       {/* Advanced transform. */}
       <BuilderCollapsibleAdvanced
-        title="Transform: pivot / unpivot"
-        description="Reshape data in-memory before rendering. Does not touch the database."
+        title={t('workboards.doc.transformTitle')}
+        description={t('workboards.doc.transformDescription')}
         defaultOpen={!!transform}
       >
         <TransformEditor
@@ -958,8 +975,8 @@ function DataTableEditor({
       {/* Context filters — bind a column to a carried runtime value so a
           per-record document (a printable phiếu) shows only that record. */}
       <BuilderCollapsibleAdvanced
-        title="Lọc theo ngữ cảnh"
-        description="Chỉ hiện dòng của bản ghi được mở (vd: lọc theo ma_don mang sang từ nút/POS) — để in đúng 1 phiếu."
+        title={t('workboards.doc.contextFiltersTitle')}
+        description={t('workboards.doc.contextFiltersDescription')}
         defaultOpen={Array.isArray(block.context_filters) && (block.context_filters as unknown[]).length > 0}
       >
         <ContextFiltersEditor
@@ -971,11 +988,11 @@ function DataTableEditor({
 
       {/* Advanced export. */}
       <BuilderCollapsibleAdvanced
-        title="Export"
-        description="Let end users download the table as Excel."
+        title={t('workboards.doc.exportTitle')}
+        description={t('workboards.doc.exportDescription')}
         defaultOpen={!!block.allow_export_excel}
       >
-        <Lbl label="Allow Excel export">
+        <Lbl label={t('workboards.doc.allowExcelExport')}>
           <select
             value={block.allow_export_excel ? 'yes' : 'no'}
             onChange={(event) =>
@@ -983,16 +1000,16 @@ function DataTableEditor({
             }
             className={INPUT}
           >
-            <option value="no">No</option>
-            <option value="yes">Yes - show download button</option>
+            <option value="no">{t('workboards.doc.no')}</option>
+            <option value="yes">{t('workboards.doc.yesShowDownload')}</option>
           </select>
         </Lbl>
       </BuilderCollapsibleAdvanced>
 
       {/* Sync triggers — buttons that POST the rendered table to webhooks. */}
       <BuilderCollapsibleAdvanced
-        title="Sync triggers"
-        description='Nút "Đồng bộ" trên block, gửi dữ liệu sang webhook đã cấu hình ở tab Webhook.'
+        title={t('workboards.doc.syncTriggersTitle')}
+        description={t('workboards.doc.syncTriggersDescription')}
         defaultOpen={Array.isArray(block.sync_triggers) && (block.sync_triggers as unknown[]).length > 0}
       >
         <SyncTriggersEditor
@@ -1018,13 +1035,14 @@ function ContextFiltersEditor({
   columns: string[];
   onChange: (next: Array<Record<string, unknown>>) => void;
 }) {
+  const { t } = useI18n();
   const update = (idx: number, patch: Record<string, unknown>) =>
     onChange(filters.map((f, i) => (i === idx ? { ...f, ...patch } : f)));
   return (
     <div className="space-y-2">
       {filters.length === 0 && (
         <p className="text-tiny text-text-tertiary">
-          Chưa có bộ lọc. Thêm để giới hạn dòng theo giá trị mang sang (vd: cột <code>ma_don</code> = giá trị <code>ma_don</code>).
+          {t('workboards.doc.noContextFiltersPrefix')} <code>ma_don</code> = <code>ma_don</code>.
         </p>
       )}
       {filters.map((f, i) => (
@@ -1034,7 +1052,7 @@ function ContextFiltersEditor({
             onChange={(e) => update(i, { column: e.target.value })}
             className={INPUT}
           >
-            <option value="">— cột —</option>
+            <option value="">{t('workboards.doc.pickColumn')}</option>
             {columns.map((c) => (
               <option key={c} value={c}>{c}</option>
             ))}
@@ -1047,7 +1065,7 @@ function ContextFiltersEditor({
             value={String(f.from_shared ?? '')}
             onChange={(e) => update(i, { from_shared: e.target.value })}
             className={INPUT}
-            placeholder="khoá mang sang (vd: ma_don)"
+            placeholder={t('workboards.doc.sharedKeyPlaceholder')}
           />
           <label className="flex shrink-0 items-center gap-1 text-tiny text-text-secondary">
             <input
@@ -1055,11 +1073,11 @@ function ContextFiltersEditor({
               checked={f.required !== false}
               onChange={(e) => update(i, { required: e.target.checked })}
             />
-            bắt buộc
+            {t('workboards.doc.required')}
           </label>
           <BuilderIconButton
             onClick={() => onChange(filters.filter((_, idx) => idx !== i))}
-            title="Xoá"
+            title={t('common.delete')}
             variant="danger"
           >
             <Trash2 className="h-3.5 w-3.5 text-danger" />
@@ -1071,7 +1089,7 @@ function ContextFiltersEditor({
         onClick={() => onChange([...filters, { column: '', from_shared: '', required: true }])}
         className="inline-flex items-center gap-1 text-caption text-text-secondary hover:text-text-primary"
       >
-        <Plus className="h-3.5 w-3.5" /> Thêm bộ lọc
+        <Plus className="h-3.5 w-3.5" /> {t('workboards.doc.addFilter')}
       </button>
     </div>
   );
@@ -1098,10 +1116,11 @@ function DataTableTopBar({
   filtersFromView: boolean;
   onPatch: (patch: Partial<DocBlockSpec>) => void;
 }) {
+  const { t } = useI18n();
   const isLookup = source.startsWith('lookup:');
   return (
-    <BuilderTopBar title="Table options" className="bg-surface-0">
-      <BuilderTopBarItem label="From">
+    <BuilderTopBar title={t('workboards.doc.tableOptions')} className="bg-surface-0">
+      <BuilderTopBarItem label={t('workboards.doc.from')}>
         <select
           value={isLookup ? 'lookup' : 'primary'}
           onChange={(event) => {
@@ -1111,8 +1130,8 @@ function DataTableTopBar({
           }}
           className="h-9 rounded-md border border-[rgb(var(--border-line))] bg-surface-0 px-2 text-caption"
         >
-          <option value="primary">Primary source</option>
-          <option value="lookup">Specific table</option>
+          <option value="primary">{t('workboards.doc.primarySource')}</option>
+          <option value="lookup">{t('workboards.doc.specificTable')}</option>
         </select>
         {isLookup && (
           <select
@@ -1128,15 +1147,15 @@ function DataTableTopBar({
           </select>
         )}
       </BuilderTopBarItem>
-      <BuilderTopBarItem label="Title" className="flex-1">
+      <BuilderTopBarItem label={t('workboards.doc.title')} className="flex-1">
         <input
           value={title}
           onChange={(event) => onPatch({ title: event.target.value })}
-          placeholder="Optional heading"
+          placeholder={t('workboards.doc.optionalHeading')}
           className="h-9 min-w-0 flex-1 rounded-md border border-[rgb(var(--border-line))] bg-surface-0 px-2 text-caption"
         />
       </BuilderTopBarItem>
-      <BuilderTopBarItem label="Limit">
+      <BuilderTopBarItem label={t('workboards.doc.limit')}>
         <input
           type="number"
           value={maxRows}
@@ -1151,7 +1170,7 @@ function DataTableTopBar({
           onChange={(event) => onPatch({ show_index: event.target.checked })}
           className="h-3.5 w-3.5"
         />
-        Show row #
+        {t('workboards.doc.showRowNumber')}
       </label>
       <label className="flex min-h-9 items-center gap-1.5 text-caption text-text-secondary">
         <input
@@ -1160,7 +1179,7 @@ function DataTableTopBar({
           onChange={(event) => onPatch({ filters_from_view: event.target.checked })}
           className="h-3.5 w-3.5"
         />
-        Inherit filters
+        {t('workboards.doc.inheritFilters')}
       </label>
     </BuilderTopBar>
   );
@@ -1173,28 +1192,29 @@ function ColumnTypeWarnings({
   selected: string[];
   typesByName: Map<string, string | undefined>;
 }) {
+  const { t } = useI18n();
   // Warn when a selected column no longer exists in the source (typo, rename, table switch).
   const missing = selected.filter((col) => !typesByName.has(col));
   if (missing.length === 0) return null;
   return (
     <div className="rounded-md border border-warning/30 bg-warning/5 px-3 py-2 text-caption text-text-secondary">
-      <b>Warning:</b> these selected columns don&apos;t exist on the current source:{' '}
-      <code className="font-mono">{missing.join(', ')}</code>. Remove them or switch source.
+      <b>{t('workboards.doc.warning')}:</b> {t('workboards.doc.missingColumnsWarningPrefix')}{' '}
+      <code className="font-mono">{missing.join(', ')}</code>. {t('workboards.doc.missingColumnsWarningSuffix')}
     </div>
   );
 }
 
 // Column object editor
 
-const FORMAT_OPTIONS: Array<{ value: string; label: string }> = [
-  { value: '', label: 'Auto' },
-  { value: 'integer', label: 'Integer (1,234)' },
-  { value: 'number', label: 'Number (1,234.50)' },
-  { value: 'currency', label: 'Currency' },
-  { value: 'percent', label: 'Percent' },
-  { value: 'date', label: 'Date' },
-  { value: 'datetime', label: 'Date + time' },
-  { value: 'text', label: 'Text (no formatting)' },
+const FORMAT_OPTIONS: Array<{ value: string; labelKey: string }> = [
+  { value: '', labelKey: 'workboards.doc.format.auto' },
+  { value: 'integer', labelKey: 'workboards.doc.format.integer' },
+  { value: 'number', labelKey: 'workboards.doc.format.number' },
+  { value: 'currency', labelKey: 'workboards.doc.format.currency' },
+  { value: 'percent', labelKey: 'workboards.doc.format.percent' },
+  { value: 'date', labelKey: 'workboards.doc.format.date' },
+  { value: 'datetime', labelKey: 'workboards.doc.format.datetime' },
+  { value: 'text', labelKey: 'workboards.doc.format.text' },
 ];
 
 function ColumnObjectsEditor({
@@ -1208,6 +1228,7 @@ function ColumnObjectsEditor({
   metadata: ColumnMetaMap;
   onChange: (nextSelected: string[], nextMetadata: ColumnMetaMap) => void;
 }) {
+  const { t } = useI18n();
   const [activeName, setActiveName] = useState<string | null>(selected[0] ?? null);
   const [dragIdx, setDragIdx] = useState<number | null>(null);
 
@@ -1301,12 +1322,12 @@ function ColumnObjectsEditor({
         <input
           value={query}
           onChange={(event) => setQuery(event.target.value)}
-          placeholder="Find source column"
+          placeholder={t('workboards.doc.findSourceColumn')}
           disabled={availableNotSelected.length === 0}
           className="h-9 min-w-[180px] flex-1 rounded-md border border-[rgb(var(--border-line))] bg-surface-0 px-2 text-caption disabled:cursor-not-allowed disabled:opacity-50"
         />
         <select
-          aria-label="Add source column"
+          aria-label={t('workboards.doc.addSourceColumn')}
           value=""
           onChange={(event) => {
             const column = available.find((item) => item.name === event.target.value);
@@ -1319,7 +1340,9 @@ function ColumnObjectsEditor({
           className="h-9 min-w-[180px] rounded-md border border-[rgb(var(--border-line))] bg-surface-0 px-2 text-caption disabled:cursor-not-allowed disabled:opacity-50"
         >
           <option value="">
-            {availableNotSelected.length === 0 ? 'No source columns left' : 'Add column...'}
+            {availableNotSelected.length === 0
+              ? t('workboards.doc.noSourceColumnsLeft')
+              : t('workboards.doc.addColumnPlaceholder')}
           </option>
           {addOptions.map((column) => (
             <option key={column.name} value={column.name}>
@@ -1334,7 +1357,7 @@ function ColumnObjectsEditor({
           className="h-9"
         >
           <Plus className="h-3.5 w-3.5" />
-          Add all
+          {t('workboards.doc.addAll')}
         </BuilderActionButton>
         <BuilderActionButton
           onClick={clearAll}
@@ -1342,7 +1365,7 @@ function ColumnObjectsEditor({
           variant="danger"
           className="h-9"
         >
-          Clear
+          {t('workboards.doc.clear')}
         </BuilderActionButton>
       </div>
 
@@ -1350,13 +1373,13 @@ function ColumnObjectsEditor({
         <div className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-0 p-2">
         <div className="mb-2 flex items-center justify-between gap-2 px-1">
           <span className="text-caption font-emphasis text-text-secondary">
-            Selected columns
+            {t('workboards.doc.selectedColumns')}
           </span>
           <span className="text-caption text-text-tertiary">{selected.length}</span>
         </div>
         <div className="max-h-[480px] overflow-y-auto p-1">
           {selected.length === 0 ? (
-            <BuilderEmptyHint className="px-3 py-6">No columns selected.</BuilderEmptyHint>
+            <BuilderEmptyHint className="px-3 py-6">{t('workboards.doc.noColumnsSelected')}</BuilderEmptyHint>
           ) : (
             selected.map((name, idx) => {
               const type = available.find((c) => c.name === name)?.type;
@@ -1399,7 +1422,7 @@ function ColumnObjectsEditor({
                           {type ? <span>{type}</span> : null}
                           {meta.format ? <span>{meta.format}</span> : null}
                           {meta.total ? <span>{meta.total}</span> : null}
-                          {meta.merge ? <span>merge</span> : null}
+                          {meta.merge ? <span>{t('workboards.doc.merge')}</span> : null}
                         </span>
                       </span>
                     </button>
@@ -1408,7 +1431,7 @@ function ColumnObjectsEditor({
                         type="button"
                         onClick={() => moveColumn(idx, idx - 1)}
                         disabled={idx === 0}
-                        title="Move up"
+                        title={t('workboards.doc.moveUp')}
                         className="rounded p-1 text-text-tertiary hover:bg-surface-0 hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-30"
                       >
                         <ArrowUp className="h-3 w-3" />
@@ -1417,7 +1440,7 @@ function ColumnObjectsEditor({
                         type="button"
                         onClick={() => moveColumn(idx, idx + 1)}
                         disabled={idx === selected.length - 1}
-                        title="Move down"
+                        title={t('workboards.doc.moveDown')}
                         className="rounded p-1 text-text-tertiary hover:bg-surface-0 hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-30"
                       >
                         <ArrowDown className="h-3 w-3" />
@@ -1425,7 +1448,7 @@ function ColumnObjectsEditor({
                       <button
                         type="button"
                         onClick={() => removeColumn(name)}
-                        title="Remove"
+                        title={t('workboards.doc.remove')}
                         className="rounded p-1 text-text-tertiary hover:bg-danger/10 hover:text-danger"
                       >
                         <X className="h-3 w-3" />
@@ -1464,10 +1487,11 @@ function ColumnSettingsPanel({
   onUpdate: (patch: Partial<DataTableColumnMeta>) => void;
   onRemove: () => void;
 }) {
+  const { t } = useI18n();
   if (!name || !meta) {
     return (
       <div className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-0 p-3">
-        <BuilderEmptyHint className="px-3 py-8">No column selected.</BuilderEmptyHint>
+        <BuilderEmptyHint className="px-3 py-8">{t('workboards.doc.noColumnSelected')}</BuilderEmptyHint>
       </div>
     );
   }
@@ -1486,13 +1510,13 @@ function ColumnSettingsPanel({
             {type ? ` - ${type}` : ''}
           </p>
         </div>
-        <BuilderIconButton onClick={onRemove} title="Remove column" variant="danger">
+        <BuilderIconButton onClick={onRemove} title={t('workboards.doc.removeColumn')} variant="danger">
           <X className="h-3.5 w-3.5 text-danger" />
         </BuilderIconButton>
       </div>
 
       <div className="grid gap-3 sm:grid-cols-2">
-        <Lbl label="Display label">
+        <Lbl label={t('workboards.doc.displayLabel')}>
           <input
             value={meta.label ?? ''}
             onChange={(event) => onUpdate({ label: event.target.value })}
@@ -1500,7 +1524,7 @@ function ColumnSettingsPanel({
             className={INPUT}
           />
         </Lbl>
-        <Lbl label="Width (px)">
+        <Lbl label={t('workboards.doc.widthPx')}>
           <input
             type="number"
             value={meta.width_px ?? ''}
@@ -1509,11 +1533,11 @@ function ColumnSettingsPanel({
                 width_px: event.target.value ? Number(event.target.value) : null,
               })
             }
-            placeholder="auto"
+            placeholder={t('workboards.doc.auto')}
             className={INPUT}
           />
         </Lbl>
-        <Lbl label="Format">
+        <Lbl label={t('workboards.doc.formatLabel')}>
           <select
             value={meta.format ?? ''}
             onChange={(event) => onUpdate({ format: event.target.value || null })}
@@ -1521,12 +1545,12 @@ function ColumnSettingsPanel({
           >
             {FORMAT_OPTIONS.map((opt) => (
               <option key={opt.value} value={opt.value}>
-                {opt.label}
+                {t(opt.labelKey)}
               </option>
             ))}
           </select>
         </Lbl>
-        <Lbl label="Align">
+        <Lbl label={t('workboards.doc.align')}>
           <select
             value={meta.align ?? ''}
             onChange={(event) =>
@@ -1536,13 +1560,13 @@ function ColumnSettingsPanel({
             }
             className={INPUT}
           >
-            <option value="">Auto</option>
-            <option value="left">Left</option>
-            <option value="center">Center</option>
-            <option value="right">Right</option>
+            <option value="">{t('workboards.doc.auto')}</option>
+            <option value="left">{t('workboards.doc.alignLeft')}</option>
+            <option value="center">{t('workboards.doc.alignCenter')}</option>
+            <option value="right">{t('workboards.doc.alignRight')}</option>
           </select>
         </Lbl>
-        <Lbl label="Footer total">
+        <Lbl label={t('workboards.doc.footerTotal')}>
           <select
             value={meta.total ?? ''}
             onChange={(event) =>
@@ -1552,12 +1576,12 @@ function ColumnSettingsPanel({
             }
             className={INPUT}
           >
-            <option value="">None</option>
-            {isNumeric && <option value="sum">Sum</option>}
-            {isNumeric && <option value="avg">Average</option>}
-            <option value="count">Count</option>
-            {isNumeric && <option value="min">Min</option>}
-            {isNumeric && <option value="max">Max</option>}
+            <option value="">{t('workboards.doc.none')}</option>
+            {isNumeric && <option value="sum">{t('workboards.doc.sum')}</option>}
+            {isNumeric && <option value="avg">{t('workboards.doc.average')}</option>}
+            <option value="count">{t('workboards.doc.count')}</option>
+            {isNumeric && <option value="min">{t('workboards.doc.min')}</option>}
+            {isNumeric && <option value="max">{t('workboards.doc.max')}</option>}
           </select>
         </Lbl>
         <label className="flex min-h-9 items-center gap-2 self-end rounded-md border border-[rgb(var(--border-line))] bg-surface-0 px-3 py-2 text-caption text-text-secondary">
@@ -1567,7 +1591,7 @@ function ColumnSettingsPanel({
             onChange={(event) => onUpdate({ merge: event.target.checked })}
             className="h-3.5 w-3.5"
           />
-          Merge equal cells
+          {t('workboards.doc.mergeEqualCells')}
         </label>
       </div>
     </div>
@@ -1609,6 +1633,7 @@ function TransformEditor({
   transform: TransformSpec | null;
   onChange: (next: TransformSpec | null) => void;
 }) {
+  const { t } = useI18n();
   const kind: 'none' | 'unpivot' | 'pivot' = transform?.kind ?? 'none';
 
   const setKind = (next: 'none' | 'unpivot' | 'pivot') => {
@@ -1639,7 +1664,7 @@ function TransformEditor({
 
   return (
     <div className="space-y-3">
-      <Lbl label="Mode">
+      <Lbl label={t('workboards.doc.mode')}>
         <select
           value={kind}
           onChange={(event) =>
@@ -1647,15 +1672,15 @@ function TransformEditor({
           }
           className={INPUT}
         >
-          <option value="none">No transform</option>
-          <option value="unpivot">Unpivot (wide → long)</option>
-          <option value="pivot">Pivot (long → wide)</option>
+          <option value="none">{t('workboards.doc.noTransform')}</option>
+          <option value="unpivot">{t('workboards.doc.unpivot')}</option>
+          <option value="pivot">{t('workboards.doc.pivot')}</option>
         </select>
       </Lbl>
 
       {transform?.kind === 'unpivot' && (
         <div className="space-y-2">
-          <Lbl label="Keep as identifier (id_columns)">
+          <Lbl label={t('workboards.doc.keepAsIdentifier')}>
             {sourceColumns.length > 0 ? (
               <MultiColumnPicker
                 sourceColumns={sourceColumns}
@@ -1678,7 +1703,7 @@ function TransformEditor({
               />
             )}
           </Lbl>
-          <Lbl label="Columns to unpivot (value_columns)">
+          <Lbl label={t('workboards.doc.columnsToUnpivot')}>
             {sourceColumns.length > 0 ? (
               <MultiColumnPicker
                 sourceColumns={sourceColumns}
@@ -1702,7 +1727,7 @@ function TransformEditor({
             )}
           </Lbl>
           <div className={BUILDER_GRID_3}>
-            <Lbl label="Variable column name">
+            <Lbl label={t('workboards.doc.variableColumnName')}>
               <input
                 value={transform.var_name ?? 'variable'}
                 onChange={(event) =>
@@ -1711,7 +1736,7 @@ function TransformEditor({
                 className={INPUT}
               />
             </Lbl>
-            <Lbl label="Value column name">
+            <Lbl label={t('workboards.doc.valueColumnName')}>
               <input
                 value={transform.value_name ?? 'value'}
                 onChange={(event) =>
@@ -1720,7 +1745,7 @@ function TransformEditor({
                 className={INPUT}
               />
             </Lbl>
-            <Lbl label="Drop null cells?">
+            <Lbl label={t('workboards.doc.dropNullCells')}>
               <select
                 value={transform.drop_nulls === false ? 'no' : 'yes'}
                 onChange={(event) =>
@@ -1731,8 +1756,8 @@ function TransformEditor({
                 }
                 className={INPUT}
               >
-                <option value="yes">Yes</option>
-                <option value="no">No</option>
+                <option value="yes">{t('workboards.doc.yes')}</option>
+                <option value="no">{t('workboards.doc.no')}</option>
               </select>
             </Lbl>
           </div>
@@ -1741,7 +1766,7 @@ function TransformEditor({
 
       {transform?.kind === 'pivot' && (
         <div className="space-y-2">
-          <Lbl label="Index columns (group by)">
+          <Lbl label={t('workboards.doc.indexColumns')}>
             {sourceColumns.length > 0 ? (
               <MultiColumnPicker
                 sourceColumns={sourceColumns}
@@ -1764,9 +1789,9 @@ function TransformEditor({
               />
             )}
           </Lbl>
-          <Lbl label="Header columns">
+          <Lbl label={t('workboards.doc.headerColumns')}>
             <p className="mb-1 text-caption text-text-tertiary">
-              Pick 1 column for a flat pivot, or 2+ to build a two-level grouped header.
+              {t('workboards.doc.headerColumnsHint')}
             </p>
             {sourceColumns.length > 0 ? (
               <MultiColumnPicker
@@ -1784,12 +1809,12 @@ function TransformEditor({
                   onChange({ ...transform, columns: arr.length === 1 ? arr[0] : arr });
                 }}
                 className={INPUT}
-                placeholder="e.g. group, product_type"
+                placeholder={t('workboards.doc.headerColumnsPlaceholder')}
               />
             )}
           </Lbl>
           <div className={BUILDER_GRID_3}>
-            <Lbl label="Value column">
+            <Lbl label={t('workboards.doc.valueColumn')}>
               <select
                 value={transform.values ?? ''}
                 onChange={(event) =>
@@ -1797,7 +1822,7 @@ function TransformEditor({
                 }
                 className={INPUT}
               >
-                <option value="">Pick...</option>
+                <option value="">{t('workboards.doc.pick')}</option>
                 {sourceColumns.map((c) => (
                   <option key={c} value={c}>
                     {c}
@@ -1805,7 +1830,7 @@ function TransformEditor({
                 ))}
               </select>
             </Lbl>
-            <Lbl label="Aggregation">
+            <Lbl label={t('workboards.doc.aggregation')}>
               <select
                 value={transform.agg ?? 'sum'}
                 onChange={(event) =>
@@ -1824,7 +1849,7 @@ function TransformEditor({
                 <option value="first">first</option>
               </select>
             </Lbl>
-            <Lbl label="Max pivot columns">
+            <Lbl label={t('workboards.doc.maxPivotColumns')}>
               <input
                 type="number"
                 min={1}
@@ -1841,8 +1866,8 @@ function TransformEditor({
             </Lbl>
           </div>
           <p className="text-caption text-text-tertiary">
-            Pivot runs in memory over at most <b>max_rows</b> fetched rows. Distinct values
-            in the header column above <b>max pivot columns</b> will return error 422.
+            {t('workboards.doc.pivotHintPrefix')} <b>max_rows</b> {t('workboards.doc.pivotHintMiddle')}{' '}
+            <b>max pivot columns</b> {t('workboards.doc.pivotHintSuffix')}
           </p>
         </div>
       )}
@@ -1859,6 +1884,7 @@ function SignatureEditor({
   block: DocBlockSpec;
   onChange: (patch: Partial<DocBlockSpec>) => void;
 }) {
+  const { t } = useI18n();
   const slots =
     (((block as { slots?: Array<{ label: string; role?: string }> }).slots) || []) as Array<{
       label: string;
@@ -1881,18 +1907,18 @@ function SignatureEditor({
           <input
             value={slot.label}
             onChange={(event) => updateSlot(idx, { label: event.target.value })}
-            placeholder="Label (e.g. Accountant)"
+            placeholder={t('workboards.doc.signatureLabelPlaceholder')}
             className={INPUT}
           />
           <input
             value={slot.role || ''}
             onChange={(event) => updateSlot(idx, { role: event.target.value })}
-            placeholder="Role (optional)"
+            placeholder={t('workboards.doc.signatureRolePlaceholder')}
             className={INPUT}
           />
           <BuilderIconButton
             onClick={() => onChange({ slots: slots.filter((_, index) => index !== idx) })}
-            title="Delete slot"
+            title={t('workboards.doc.deleteSlot')}
             variant="danger"
           >
             <Trash2 className="h-3.5 w-3.5 text-danger" />
@@ -1904,22 +1930,22 @@ function SignatureEditor({
           onClick={() => onChange({ slots: [...slots, { label: '', role: '' }] })}
         >
           <Plus className="h-3.5 w-3.5" />
-          Add slot
+          {t('workboards.doc.addSlot')}
         </BuilderActionButton>
         {slots.length === 0 && (
           <BuilderActionButton
             onClick={() =>
               onChange({
                 slots: [
-                  { label: 'Prepared by', role: '' },
-                  { label: 'Accountant', role: '' },
-                  { label: 'Warehouse keeper', role: '' },
-                  { label: 'Director', role: '' },
+                  { label: t('workboards.doc.preparedBy'), role: '' },
+                  { label: t('workboards.doc.accountant'), role: '' },
+                  { label: t('workboards.doc.warehouseKeeper'), role: '' },
+                  { label: t('workboards.doc.director'), role: '' },
                 ],
               })
             }
           >
-            Add 4 common slots
+            {t('workboards.doc.addCommonSlots')}
           </BuilderActionButton>
         )}
       </div>
@@ -1947,6 +1973,7 @@ function ColumnGroupsEditor({
   groups: Array<{ label?: string; columns?: string[] }>;
   onChange: (next: Array<{ label: string; columns: string[] }>) => void;
 }) {
+  const { t } = useI18n();
   const updateGroup = (
     idx: number,
     patch: Partial<{ label: string; columns: string[] }>,
@@ -1967,7 +1994,7 @@ function ColumnGroupsEditor({
         columns: Array.isArray(group.columns) ? [...group.columns] : [],
       })),
       {
-        label: `Group ${groups.length + 1}`,
+        label: t('workboards.doc.defaultGroupName', { count: groups.length + 1 }),
         columns: selectedColumns.slice(0, 2),
       },
     ]);
@@ -1975,21 +2002,21 @@ function ColumnGroupsEditor({
 
   return (
     <BuilderSubsection
-      title="Header groups"
-      description="Each group spans a contiguous slice of columns to build a 2-level header."
+      title={t('workboards.doc.headerGroups')}
+      description={t('workboards.doc.headerGroupsEditorDescription')}
       action={
         <BuilderActionButton
           onClick={addGroup}
           disabled={selectedColumns.length < 2}
         >
           <Plus className="h-3.5 w-3.5" />
-          Add group
+          {t('workboards.doc.addGroup')}
         </BuilderActionButton>
       }
     >
       {groups.length === 0 ? (
         <p className="text-caption text-text-tertiary">
-          No groups yet. Pick at least 2 display columns to create a grouped header.
+          {t('workboards.doc.noGroupsYet')}
         </p>
       ) : (
         <div className="space-y-2">
@@ -2006,7 +2033,7 @@ function ColumnGroupsEditor({
                 <input
                   value={String(group.label || '')}
                   onChange={(event) => updateGroup(idx, { label: event.target.value })}
-                  placeholder="Group name"
+                  placeholder={t('workboards.doc.groupName')}
                   className={INPUT}
                 />
                 <select
@@ -2020,7 +2047,7 @@ function ColumnGroupsEditor({
                 >
                   {selectedColumns.map((column) => (
                     <option key={column} value={column}>
-                      From: {column}
+                      {t('workboards.doc.fromColumn', { column })}
                     </option>
                   ))}
                 </select>
@@ -2035,19 +2062,19 @@ function ColumnGroupsEditor({
                 >
                   {selectedColumns.map((column) => (
                     <option key={column} value={column}>
-                      To: {column}
+                      {t('workboards.doc.toColumn', { column })}
                     </option>
                   ))}
                 </select>
                 <BuilderIconButton
                   onClick={() => onChange(groups.filter((_, index) => index !== idx) as Array<{ label: string; columns: string[] }>)}
-                  title="Delete group"
+                  title={t('workboards.doc.deleteGroup')}
                   variant="danger"
                 >
                   <Trash2 className="h-3.5 w-3.5 text-danger" />
                 </BuilderIconButton>
                 <div className="col-span-4 text-caption text-text-tertiary">
-                  Covers: {preview || '(invalid range)'}
+                  {t('workboards.doc.covers')}: {preview || t('workboards.doc.invalidRange')}
                 </div>
               </div>
             );
@@ -2090,18 +2117,19 @@ function SyncTriggersEditor({
   screenId: string;
   onChange: (next: SyncTrigger[]) => void;
 }) {
+  const { t } = useI18n();
   const list: SyncTrigger[] = useMemo(
     () =>
-      (triggers || []).map((t) => ({
-        id: String(t.id ?? ''),
-        label: typeof t.label === 'string' ? t.label : 'Đồng bộ',
+      (triggers || []).map((trigger) => ({
+        id: String(trigger.id ?? ''),
+        label: typeof trigger.label === 'string' ? trigger.label : t('workboards.doc.defaultSyncLabel'),
         confirm_message:
-          typeof t.confirm_message === 'string' ? t.confirm_message : '',
-        webhook_ids: Array.isArray(t.webhook_ids) ? (t.webhook_ids as string[]) : [],
-        run_mode: t.run_mode === 'sequential' ? 'sequential' : 'parallel',
-        stop_chain_on_error: t.stop_chain_on_error !== false,
+          typeof trigger.confirm_message === 'string' ? trigger.confirm_message : '',
+        webhook_ids: Array.isArray(trigger.webhook_ids) ? (trigger.webhook_ids as string[]) : [],
+        run_mode: trigger.run_mode === 'sequential' ? 'sequential' : 'parallel',
+        stop_chain_on_error: trigger.stop_chain_on_error !== false,
       })),
-    [triggers],
+    [triggers, t],
   );
 
   const [scopedWebhooks, setScopedWebhooks] = useState<WebhookConfig[] | null>(null);
@@ -2133,9 +2161,9 @@ function SyncTriggersEditor({
     }
     onChange([
       ...list,
-      {
-        id,
-        label: 'Đồng bộ',
+        {
+          id,
+        label: t('workboards.doc.defaultSyncLabel'),
         webhook_ids: [],
         run_mode: 'parallel',
         stop_chain_on_error: true,
@@ -2161,21 +2189,22 @@ function SyncTriggersEditor({
     return (
       <div className="space-y-2">
         <p className="text-xs text-text-tertiary">
-          Khi user xem doc này, nút <span className="font-medium">Đồng bộ</span>{' '}
-          sẽ gửi dữ liệu tới các webhook bạn chọn ở dưới.
+          {t('workboards.doc.syncEmptyDescriptionPrefix')}{' '}
+          <span className="font-medium">{t('workboards.doc.defaultSyncLabel')}</span>{' '}
+          {t('workboards.doc.syncEmptyDescriptionSuffix')}
         </p>
         <button
           type="button"
           onClick={add}
           className="inline-flex items-center gap-1 rounded border border-dashed border-[rgb(var(--border-line))] px-2 py-1 text-xs text-text-tertiary hover:bg-surface-2"
         >
-          + Thêm nút đồng bộ
+          {t('workboards.doc.addSyncButton')}
         </button>
         {scopedWebhooks && scopedWebhooks.length === 0 && (
           <p className="rounded border border-amber-200 bg-amber-50 px-2 py-1.5 text-[11px] text-amber-700">
-            Doc này chưa có webhook nào. Tạo webhook ở tab{' '}
-            <span className="font-medium">Webhook</span> và gán cho doc này
-            trước, sau đó quay lại đây để chọn.
+            {t('workboards.doc.noDocWebhooksPrefix')}{' '}
+            <span className="font-medium">Webhook</span> {t('workboards.doc.noDocWebhooksMiddle')}
+            {t('workboards.doc.noDocWebhooksSuffix')}
           </p>
         )}
       </div>
@@ -2184,35 +2213,35 @@ function SyncTriggersEditor({
 
   return (
     <div className="space-y-3">
-      {list.map((t, idx) => {
-        const selected = t.webhook_ids || [];
+      {list.map((trigger, idx) => {
+        const selected = trigger.webhook_ids || [];
         const multi = selected.length >= 2;
-        const isSequential = (t.run_mode || 'parallel') === 'sequential';
+        const isSequential = (trigger.run_mode || 'parallel') === 'sequential';
         const advancedOpen = openAdvanced[idx] || false;
         return (
           <div
-            key={t.id || idx}
+            key={trigger.id || idx}
             className="space-y-2 rounded border border-[rgb(var(--border-line))] p-2.5"
           >
-            <Lbl label="Tên nút">
+            <Lbl label={t('workboards.doc.buttonName')}>
               <input
-                value={t.label ?? ''}
+                value={trigger.label ?? ''}
                 onChange={(e) => update(idx, { label: e.target.value })}
-                placeholder="Đồng bộ"
+                placeholder={t('workboards.doc.defaultSyncLabel')}
                 className={INPUT}
               />
             </Lbl>
 
             <div>
               <label className="mb-1 block text-xs font-medium text-text-secondary">
-                Webhook nào sẽ chạy
+                {t('workboards.doc.webhooksToRun')}
               </label>
               {loading && scopedWebhooks === null ? (
-                <p className="text-[11px] text-text-tertiary">Đang tải…</p>
+                <p className="text-[11px] text-text-tertiary">{t('workboards.doc.loading')}</p>
               ) : !scopedWebhooks || scopedWebhooks.length === 0 ? (
                 <p className="rounded border border-amber-200 bg-amber-50 px-2 py-1.5 text-[11px] text-amber-700">
-                  Doc này chưa có webhook nào. Tạo trong tab{' '}
-                  <span className="font-medium">Webhook</span> trước.
+                  {t('workboards.doc.noWebhooksShortPrefix')}{' '}
+                  <span className="font-medium">Webhook</span> {t('workboards.doc.noWebhooksShortSuffix')}
                 </p>
               ) : (
                 <div className="space-y-1 rounded border border-[rgb(var(--border-line))] bg-surface-1 p-2">
@@ -2229,7 +2258,7 @@ function SyncTriggersEditor({
                       <span className="font-medium text-text-primary">{w.name}</span>
                       {!w.is_active && (
                         <span className="rounded bg-slate-100 px-1 py-px text-[10px] text-slate-600">
-                          tắt
+                          {t('workboards.doc.inactive')}
                         </span>
                       )}
                     </label>
@@ -2240,9 +2269,9 @@ function SyncTriggersEditor({
 
             {/* Multi-webhook execution mode — only shown when ≥2 selected. */}
             {multi && (
-              <Lbl label="Chạy các webhook">
+              <Lbl label={t('workboards.doc.runWebhooks')}>
                 <select
-                  value={t.run_mode ?? 'parallel'}
+                  value={trigger.run_mode ?? 'parallel'}
                   onChange={(e) =>
                     update(idx, {
                       run_mode: e.target.value as 'parallel' | 'sequential',
@@ -2250,19 +2279,19 @@ function SyncTriggersEditor({
                   }
                   className={INPUT}
                 >
-                  <option value="parallel">Cùng lúc (nhanh hơn)</option>
-                  <option value="sequential">Lần lượt</option>
+                  <option value="parallel">{t('workboards.doc.runParallel')}</option>
+                  <option value="sequential">{t('workboards.doc.runSequential')}</option>
                 </select>
                 {isSequential && (
                   <label className="mt-1.5 flex items-center gap-2 text-[11px] text-text-secondary">
                     <input
                       type="checkbox"
-                      checked={t.stop_chain_on_error !== false}
+                      checked={trigger.stop_chain_on_error !== false}
                       onChange={(e) =>
                         update(idx, { stop_chain_on_error: e.target.checked })
                       }
                     />
-                    Dừng nếu 1 webhook thất bại
+                    {t('workboards.doc.stopOnError')}
                   </label>
                 )}
               </Lbl>
@@ -2276,16 +2305,16 @@ function SyncTriggersEditor({
               }
               className="text-[11px] text-text-tertiary hover:text-text-secondary"
             >
-              {advancedOpen ? '▾' : '▸'} Tuỳ chọn nâng cao
+              {advancedOpen ? '▾' : '▸'} {t('workboards.doc.advancedOptions')}
             </button>
             {advancedOpen && (
-              <Lbl label="Xác nhận trước khi chạy (tuỳ chọn)">
+              <Lbl label={t('workboards.doc.confirmBeforeRun')}>
                 <input
-                  value={t.confirm_message ?? ''}
+                  value={trigger.confirm_message ?? ''}
                   onChange={(e) =>
                     update(idx, { confirm_message: e.target.value })
                   }
-                  placeholder="vd: Đẩy ca này lên ERP?"
+                  placeholder={t('workboards.doc.confirmPlaceholder')}
                   className={INPUT}
                 />
               </Lbl>
@@ -2297,7 +2326,7 @@ function SyncTriggersEditor({
                 onClick={() => remove(idx)}
                 className="text-xs text-rose-600 hover:underline"
               >
-                Xoá
+                {t('common.delete')}
               </button>
             </div>
           </div>
@@ -2308,7 +2337,7 @@ function SyncTriggersEditor({
         onClick={add}
         className="rounded border border-dashed border-[rgb(var(--border-line))] px-2 py-1 text-xs text-text-tertiary hover:bg-surface-2"
       >
-        + Thêm nút đồng bộ
+        {t('workboards.doc.addSyncButton')}
       </button>
     </div>
   );
