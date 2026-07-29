@@ -94,6 +94,20 @@ export function WidgetEditModal({ isOpen, onClose, dashboardId, widget }: Props)
         {widgetType === 'parameter_switcher' && (
           <ParameterSwitcherForm config={config} setConfig={setConfig} />
         )}
+        {/* Per-widget "transparent background": drop the card frame so the
+            dashboard's own background shows through. Shape/parameter switcher
+            are already frameless, so the toggle is only offered for the framed
+            widget kinds. */}
+        {(widgetType === 'text' || widgetType === 'countdown' || widgetType === 'image') && (
+          <label className="flex items-center gap-2 border-t border-[rgb(var(--border-line))] pt-3 text-[12px] text-text-secondary">
+            <input
+              type="checkbox"
+              checked={config.transparentBackground === true}
+              onChange={(e) => set('transparentBackground', e.target.checked)}
+            />
+            {t('dashboards.widgetEdit.transparentBackground')}
+          </label>
+        )}
       </div>
     </Modal>
   );

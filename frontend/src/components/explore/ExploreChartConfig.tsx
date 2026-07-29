@@ -264,6 +264,13 @@ export interface ChartStyleConfig {
   legendPosition?: LegendPosition;
   // Grid
   showGrid?: boolean;
+  // Tile — when true the dashboard tile drops its card background + border +
+  // shadow so the DASHBOARD's own background (color/image/theme) shows through
+  // (per-tile "transparent background", Power BI parity). Frameless. Has no
+  // visible effect in the Explore preview (no dashboard bg there) — it applies
+  // on dashboard tiles + the public report. Editable per-tile via the tile
+  // Appearance editor (styleConfigOverride).
+  transparentBackground?: boolean;
   // Palette
   palette?: ChartPaletteName;
   // Per-series color overrides (priority: seriesColors[key] > palette[i]).
@@ -411,6 +418,7 @@ export const DEFAULT_STYLE_CONFIG: ChartStyleConfig = {
   axisDisplayUnits: 'auto',
   legendPosition: 'bottom',
   showGrid: true,
+  transparentBackground: false,
   palette: 'default',
   fontSize: 12,
   chartTitleFontSize: undefined,

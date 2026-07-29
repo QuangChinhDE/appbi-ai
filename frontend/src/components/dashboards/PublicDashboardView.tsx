@@ -1894,7 +1894,11 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
   // self-framed parameter switcher stay frameless to avoid a double frame.
   function renderWidgetNode(dashboardChart: DashboardChart) {
     const wtype = dashboardChart.widget_type;
-    const frameless = wtype === 'shape' || wtype === 'parameter_switcher';
+    // `transparentBackground` (per-widget config) drops the card frame so the
+    // dashboard's own background shows through — same frameless path shape and
+    // the self-framed parameter switcher already take.
+    const transparentWidget = ((dashboardChart.widget_config ?? {}) as Record<string, any>).transparentBackground === true;
+    const frameless = wtype === 'shape' || wtype === 'parameter_switcher' || transparentWidget;
     return (
       <div key={dashboardChart.id.toString()} className="h-full">
         {frameless ? (

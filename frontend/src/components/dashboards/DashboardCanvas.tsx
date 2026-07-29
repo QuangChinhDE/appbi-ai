@@ -486,6 +486,7 @@ export function DashboardCanvas({
                 <div
                   className={`relative h-full w-full group ${
                     dc.widget_type === 'shape'
+                    || ((dc.widget_config ?? {}) as Record<string, any>).transparentBackground === true
                       ? ''
                       : 'dashboard-tile bi-card-hover rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 overflow-hidden'
                   }`}

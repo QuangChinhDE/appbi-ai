@@ -151,6 +151,10 @@ export function ReadonlyChartTile({
   const displayTitle = customTileTitle || configuredChartTitle || chartNameTrim;
   // Phase-B15 — dashboard theme title font/color (empty {} when unthemed).
   const dashTheme = useDashboardChartTheme();
+  // Per-tile "transparent background": drop the card bg/border/shadow so the
+  // dashboard's own background shows through (frameless). Cross-filter/highlight
+  // rings still render (Tailwind ring = box-shadow, independent of the border).
+  const transparentTile = effectiveStyleConfig.transparentBackground === true;
   const themeTitleStyle: CSSProperties | undefined =
     dashTheme.titleFontSize || dashTheme.titleColor
       ? { fontSize: dashTheme.titleFontSize, color: dashTheme.titleColor }
@@ -320,26 +324,36 @@ export function ReadonlyChartTile({
       /* Phase-B4 — flat "BI card": 8px radius, 1px hairline border, NO heavy
          drop-shadow/backdrop-blur (read as a web card before), tighter padding.
          Phase-B14 — honor the dashboard theme's card radius/border. */
-      className={`dashboard-tile group relative h-full overflow-hidden rounded-lg border bg-surface-1 p-3 transition-colors ${
+      className={`dashboard-tile group relative h-full overflow-hidden rounded-lg p-3 transition-colors ${
+        transparentTile ? '' : 'border bg-surface-1'
+      } ${
         isCrossFilterSource || isHighlightSource
           ? 'border-sky-300 ring-2 ring-sky-100'
-          : 'border-[rgb(var(--border-line))] hover:border-[rgb(var(--border-strong))]'
+          : transparentTile
+            ? ''
+            : 'border-[rgb(var(--border-line))] hover:border-[rgb(var(--border-strong))]'
       }`}
       style={{
         borderRadius: 'var(--dashboard-card-radius, 0.5rem)',
-        borderWidth: 'var(--dashboard-card-border-width, 1px)',
-        ...(isCrossFilterSource || isHighlightSource
-          ? {}
-          : { borderColor: 'var(--dashboard-card-border-color, rgb(var(--border-line)))' }),
-        // Phase-B16 — translucent "glass" tile that floats over a bg image.
-        ...(dashTheme.cardBg
-          ? {
-              background: dashTheme.cardBg,
-              backdropFilter: dashTheme.cardBackdrop,
-              WebkitBackdropFilter: dashTheme.cardBackdrop,
-              boxShadow: '0 10px 30px -14px rgba(2, 6, 23, 0.45)',
-            }
-          : {}),
+        // Frameless when transparent: no border/bg/shadow → dashboard bg shows
+        // through. (A cross-filter/highlight ring still renders via Tailwind.)
+        ...(transparentTile
+          ? { borderWidth: 0, background: 'transparent' }
+          : {
+              borderWidth: 'var(--dashboard-card-border-width, 1px)',
+              ...(isCrossFilterSource || isHighlightSource
+                ? {}
+                : { borderColor: 'var(--dashboard-card-border-color, rgb(var(--border-line)))' }),
+              // Phase-B16 — translucent "glass" tile that floats over a bg image.
+              ...(dashTheme.cardBg
+                ? {
+                    background: dashTheme.cardBg,
+                    backdropFilter: dashTheme.cardBackdrop,
+                    WebkitBackdropFilter: dashTheme.cardBackdrop,
+                    boxShadow: '0 10px 30px -14px rgba(2, 6, 23, 0.45)',
+                  }
+                : {}),
+            }),
       }}
     >
       <div className="flex h-full min-h-0 flex-col">

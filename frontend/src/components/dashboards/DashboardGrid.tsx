@@ -245,6 +245,11 @@ export function DashboardGrid({
         const isVisualWidget = isWidget && (
           dc.widget_type === 'shape'
         );
+        // Per-widget "transparent background" also drops the card frame so the
+        // dashboard bg shows through (text/image/countdown widgets).
+        const transparentWidget = isWidget
+          && ((dc.widget_config ?? {}) as Record<string, any>).transparentBackground === true;
+        const framelessWidget = isVisualWidget || transparentWidget;
         const tile = isWidget ? (
           // The WHOLE widget body is the drag handle (a widget is a visual
           // add-on you move like a shape, not a chart with a header). The thin
@@ -253,7 +258,7 @@ export function DashboardGrid({
           // drag from starting on the edit/delete buttons or any form control.
           <div
             className={`group relative h-full w-full ${canEdit ? 'drag-handle cursor-move' : ''} ${
-              isVisualWidget
+              framelessWidget
                 ? ''
                 : 'dashboard-tile bi-card-hover rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 overflow-hidden'
             }`}
