@@ -32,13 +32,18 @@ function statusMeta(status: DatasetRefreshRun['status']): {
   }
 }
 
-function fmtWhen(iso: string | null): string {
+function fmtWhen(iso: string | null, tz?: string | null): string {
   if (!iso) return '—';
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return '—';
-  return d.toLocaleString([], {
+  const opts: Intl.DateTimeFormatOptions = {
     day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit',
-  });
+  };
+  try {
+    return d.toLocaleString([], tz ? { ...opts, timeZone: tz } : opts);
+  } catch {
+    return d.toLocaleString([], opts);  // invalid tz → viewer-local
+  }
 }
 
 function fmtDuration(ms: number | null): string {
@@ -55,7 +60,9 @@ function RunRow({ run }: { run: DatasetRefreshRun }) {
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const meta = statusMeta(run.status);
-  const canExpand = run.status === 'failed' && !!run.error;
+  const hasError = run.status === 'failed' && !!run.error;
+  const hasTableDetail = Array.isArray(run.tables) && run.tables.length > 0;
+  const canExpand = hasError || hasTableDetail;
   const triggerLabel = run.trigger === 'scheduled'
     ? t('datasets.refreshHistory.triggerScheduled')
     : run.trigger === 'source_change'
@@ -75,7 +82,10 @@ function RunRow({ run }: { run: DatasetRefreshRun }) {
           {t(meta.key)}
         </Badge>
         <span className="min-w-0 flex-1">
-          <span className="block truncate text-sm text-text-primary">{fmtWhen(run.started_at || run.created_at)}</span>
+          <span className="block truncate text-sm text-text-primary">
+            {fmtWhen(run.started_at || run.created_at, run.timezone)}
+            {run.timezone && <span className="ml-1 text-tiny font-normal text-text-quaternary">({run.timezone})</span>}
+          </span>
           <span className="block truncate text-tiny text-text-quaternary">
             {triggerLabel}
             {run.duration_ms != null && ` · ${fmtDuration(run.duration_ms)}`}
@@ -89,13 +99,40 @@ function RunRow({ run }: { run: DatasetRefreshRun }) {
         )}
       </button>
       {canExpand && open && (
-        <div className="border-t border-[rgb(var(--border-line))] px-3 py-2">
-          <span className="mb-1 block text-tiny font-emphasis uppercase tracking-wide text-danger">
-            {t('datasets.refreshHistory.errorLabel')}
-          </span>
-          <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-words rounded bg-surface-2 p-2 text-tiny text-text-secondary">
-            {run.error}
-          </pre>
+        <div className="space-y-2 border-t border-[rgb(var(--border-line))] px-3 py-2">
+          {hasTableDetail && (
+            <div>
+              <span className="mb-1 block text-tiny font-emphasis uppercase tracking-wide text-text-tertiary">
+                {t('datasets.refreshHistory.perTableLabel')}
+              </span>
+              <div className="overflow-hidden rounded border border-[rgb(var(--border-line))]">
+                {run.tables!.map((tb, i) => (
+                  <div
+                    key={tb.table_id ?? i}
+                    className={`flex items-center justify-between gap-3 px-2 py-1 text-tiny ${i % 2 ? 'bg-surface-2' : 'bg-surface-1'}`}
+                  >
+                    <span className="min-w-0 flex-1 truncate text-text-secondary">{tb.name}</span>
+                    <span className="shrink-0 tabular-nums text-text-primary">
+                      {tb.rows != null ? tb.rows.toLocaleString() : '—'} {t('datasets.refreshHistory.rows')}
+                    </span>
+                    <span className="w-16 shrink-0 text-right tabular-nums text-text-quaternary">
+                      {tb.build_ms != null ? fmtDuration(tb.build_ms) : ''}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+          {hasError && (
+            <div>
+              <span className="mb-1 block text-tiny font-emphasis uppercase tracking-wide text-danger">
+                {t('datasets.refreshHistory.errorLabel')}
+              </span>
+              <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-words rounded bg-surface-2 p-2 text-tiny text-text-secondary">
+                {run.error}
+              </pre>
+            </div>
+          )}
         </div>
       )}
     </div>

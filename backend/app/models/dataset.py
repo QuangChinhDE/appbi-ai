@@ -377,6 +377,12 @@ class DatasetRefreshRun(Base):
     generation = Column(BigInteger, nullable=True)       # published generation produced (epoch-ms)
     tables_built = Column(Integer, nullable=True)        # tables materialized this run
     rows_total = Column(BigInteger, nullable=True)       # rows synced this run (best-effort)
+    # The zone this run's clock should be READ in: the schedule's timezone for a
+    # scheduled run, or the user's browser timezone for a manual run (the server
+    # itself is UTC). started_at/finished_at stay UTC; the UI formats them here.
+    timezone = Column(String(64), nullable=True)
+    # Per-table breakdown [{table_id, name, rows, build_ms}] for the detail view.
+    tables = Column(JSONB, nullable=True)
     error = Column(Text, nullable=True)                  # failure reason (status=failed)
     triggered_by_id = Column(String(36), nullable=True)  # user UUID string (null for scheduled)
     started_at = Column(DateTime, nullable=True)

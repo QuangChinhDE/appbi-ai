@@ -4,6 +4,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiClient as api } from '@/lib/api-client';
 import { sortByUpdatedAtDesc } from '@/lib/sort';
+import { getBrowserTimezone } from '@/lib/timezones';
 
 // ===== Types =====
 
@@ -611,9 +612,11 @@ export function useSyncAndPublishDataset() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async (datasetId: number) => {
+      // Send the user's browser timezone so a MANUAL refresh is logged (and shown
+      // in history) in the zone it was kicked off from — the server is UTC.
       const response = await api.post<{ ok: boolean; started?: boolean; publish_state: string }>(
         `/datasets/${datasetId}/publish`,
-        {}
+        { timezone: getBrowserTimezone() }
       );
       return response.data;
     },
@@ -737,15 +740,23 @@ export function useSaveSnapshotConfig() {
 // ===== Refresh history (Sync & Publish / scheduled refresh runs) =====
 
 export type DatasetRefreshRunStatus = 'running' | 'success' | 'failed' | 'stopped';
+export interface DatasetRefreshRunTable {
+  table_id: number | null;
+  name: string;
+  rows: number | null;
+  build_ms: number | null;
+}
 export interface DatasetRefreshRun {
   id: number;
   status: DatasetRefreshRunStatus;
   trigger: string;                 // manual | scheduled | source_change
+  timezone: string | null;         // zone to READ started_at/finished_at in
   generation: number | null;       // published generation produced (epoch-ms)
   tables_built: number | null;
   rows_total: number | null;
+  tables: DatasetRefreshRunTable[] | null;  // per-table breakdown (detail view)
   error: string | null;            // failure reason
-  started_at: string | null;
+  started_at: string | null;       // UTC ISO (has 'Z')
   finished_at: string | null;
   duration_ms: number | null;
   created_at: string | null;

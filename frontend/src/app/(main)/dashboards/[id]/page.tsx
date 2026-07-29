@@ -3,7 +3,7 @@
 import React, { useState, useCallback, useEffect } from 'react';
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
-import { ArrowLeft, Plus, Loader2, Edit2, Check, X, Share2, Globe, Sparkles, Trash2, LayoutGrid, Download, MoreHorizontal, ChevronDown, Filter, RefreshCw, GripVertical } from 'lucide-react';
+import { ArrowLeft, Plus, Loader2, Edit2, Check, X, Share2, Globe, Sparkles, Trash2, LayoutGrid, Download, MoreHorizontal, ChevronDown, Filter, Clock, GripVertical } from 'lucide-react';
 import { Layout } from 'react-grid-layout';
 import { useQueries, useIsFetching, useQueryClient } from '@tanstack/react-query';
 import {
@@ -804,13 +804,10 @@ export default function DashboardDetailPage() {
   // since pane state is a viewing preference.
   const [isFilterPaneOpen, setIsFilterPaneOpen] = useState(false);
 
-  // Dashboard perf #5 — snapshot "Refresh data" state.
-  const [isRefreshingSnapshots, setIsRefreshingSnapshots] = useState(false);
+  // Read-only snapshot freshness ("data as of"). Refresh itself now lives in the
+  // Dataset (scheduled / manual Sync & Publish, with history) — the per-dashboard
+  // "Refresh data" action + its polling were removed, so we only READ freshness.
   const [snapshotAsOf, setSnapshotAsOf] = useState<string | null>(null);
-  const snapshotPollRef = React.useRef<ReturnType<typeof setInterval> | null>(null);
-  React.useEffect(() => () => {
-    if (snapshotPollRef.current) clearInterval(snapshotPollRef.current);
-  }, []);
   // Populate the "Số tính đến" label on load (not only after a Refresh) so the
   // builder always shows when the snapshot data was last updated.
   useEffect(() => {
@@ -821,74 +818,6 @@ export default function DashboardDetailPage() {
       .catch(() => { /* materialization off / not eligible → no label */ });
     return () => { cancelled = true; };
   }, [dashboardId]);
-
-  // #6 — invalidate ONLY this dashboard's chart DATA (not the whole 'charts'
-  // group across every dashboard, and not chart METADATA). After a snapshot
-  // rebuild only the data changed, so refetching each tile's data is enough —
-  // avoids the refetch storm the broad invalidate caused.
-  const invalidateDashboardChartData = useCallback(() => {
-    const ids = Array.from(new Set(
-      (dashboard?.dashboard_charts ?? [])
-        .map((dc) => dc.chart_id)
-        .filter((id): id is number => typeof id === 'number'),
-    ));
-    if (ids.length === 0) {
-      queryClient.invalidateQueries({ queryKey: ['charts'] });  // fallback
-      return;
-    }
-    for (const cid of ids) {
-      queryClient.invalidateQueries({ queryKey: ['charts', cid, 'data'] });
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dashboard, queryClient]);
-
-  const handleRefreshSnapshots = useCallback(async () => {
-    if (isRefreshingSnapshots) return;
-    setIsRefreshingSnapshots(true);
-    const stopPoll = () => {
-      if (snapshotPollRef.current) { clearInterval(snapshotPollRef.current); snapshotPollRef.current = null; }
-    };
-    const done = (asOf: string | null) => {
-      stopPoll();
-      setSnapshotAsOf(asOf);
-      invalidateDashboardChartData();  // refetch this dashboard's tiles against fresh snapshots
-      setIsRefreshingSnapshots(false);
-      if (asOf) {
-        const stamp = new Date(asOf).toLocaleString([], { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
-        toast.success(t('dashboards.detail.snapshotRefreshed', { time: stamp }));
-      } else {
-        toast.success(t('dashboards.detail.snapshotRefreshedNoop'));
-      }
-    };
-    try {
-      // ASYNC: returns immediately; the rebuild runs in the background so the
-      // request never hangs (fixes the sync-refresh + nginx-120s timeout).
-      const res = await dashboardApi.refreshSnapshots(dashboardId);
-      if (!res?.building) {
-        done(res?.as_of ?? null);  // nothing materialized / finished instantly
-        return;
-      }
-      // Rebuild in flight → poll freshness until it clears (10-min safety cap).
-      setSnapshotAsOf(res?.as_of ?? null);
-      const deadline = Date.now() + 10 * 60 * 1000;
-      stopPoll();
-      snapshotPollRef.current = setInterval(async () => {
-        try {
-          const info = await dashboardApi.getSnapshotInfo(dashboardId);
-          if (!info?.building || Date.now() > deadline) {
-            done(info?.as_of ?? null);
-          } else {
-            setSnapshotAsOf(info?.as_of ?? null);  // keep the label live during build
-          }
-        } catch { /* transient poll error → keep polling */ }
-      }, 2500);
-    } catch {
-      stopPoll();
-      setIsRefreshingSnapshots(false);
-      toast.error(t('dashboards.detail.snapshotRefreshFailed'));
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isRefreshingSnapshots, dashboardId, invalidateDashboardChartData, t]);
 
   // Filter changes are applied explicitly via the Apply action.
   //
@@ -2675,27 +2604,25 @@ export default function DashboardDetailPage() {
 
             {/* Primary actions — collapsed to [Filter] [⋯] [+ Add] */}
             <div className="flex shrink-0 items-center gap-1">
-              {/* Dashboard perf #5 — Refresh data (rebuild snapshots → latest
-                  numbers) + "Số tính đến HH:MM" freshness hint. */}
-              <button
-                type="button"
-                onClick={handleRefreshSnapshots}
-                disabled={isRefreshingSnapshots}
-                className="inline-flex h-7 items-center gap-1.5 rounded-md border border-[rgba(255,255,255,0.08)] bg-[rgba(255,255,255,0.02)] px-2 text-[12px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] disabled:opacity-50"
-                title={snapshotAsOf
-                  ? t('dashboards.detail.snapshotAsOf', { time: new Date(snapshotAsOf).toLocaleString() })
-                  : t('dashboards.detail.refreshData')}
-              >
-                {isRefreshingSnapshots
-                  ? <Loader2 className="h-3 w-3 animate-spin" />
-                  : <RefreshCw className="h-3 w-3" />}
-                <span>{t('dashboards.detail.refreshData')}</span>
-                {snapshotAsOf && (
-                  <span className="text-[10px] text-text-quaternary">
-                    {new Date(snapshotAsOf).toLocaleString([], { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })}
+              {/* Data freshness — READ-ONLY. The dashboard reads the dataset's
+                  refreshed data; refresh itself now happens IN THE DATASET
+                  (scheduled or manual Sync & Publish, with history), so the old
+                  per-dashboard "Refresh data" action was removed — a dashboard
+                  rebuild never advanced a PUBLISHED dataset's pinned generation
+                  anyway (misleading no-op). This just surfaces "data as of". */}
+              {snapshotAsOf && (
+                <span
+                  className="inline-flex h-7 items-center gap-1.5 rounded-md border border-[rgba(255,255,255,0.08)] bg-[rgba(255,255,255,0.02)] px-2 text-[11px] font-[510] text-text-tertiary"
+                  title={t('dashboards.detail.dataAsOfHint')}
+                >
+                  <Clock className="h-3 w-3 text-text-quaternary" />
+                  <span>
+                    {t('dashboards.detail.snapshotAsOf', {
+                      time: new Date(snapshotAsOf).toLocaleString([], { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }),
+                    })}
                   </span>
-                )}
-              </button>
+                </span>
+              )}
 
               {/* Filter pane toggle (Phase-15.81).
                   Opens the right-dock FilterPane sidebar instead of the

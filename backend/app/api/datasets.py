@@ -6,7 +6,7 @@ import re
 from types import SimpleNamespace
 from datetime import datetime, date
 from urllib.parse import quote
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException, Query, Response
 from sqlalchemy import or_
 from sqlalchemy.orm import Session, selectinload
 
@@ -2453,10 +2453,15 @@ def sync_and_publish_dataset(
     dataset_id: int,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    payload: Optional[dict] = Body(default=None),
 ):
     """Sync & Publish: lock the design, ETL one complete snapshot generation,
     validate, and pin it as the published generation Dashboards read. Async —
-    returns immediately; poll GET /publish-status. Requires MANAGE on the dataset."""
+    returns immediately; poll GET /publish-status. Requires MANAGE on the dataset.
+
+    Optional body ``{"timezone": "<IANA>"}`` — the user's browser timezone, logged
+    on the refresh-run so history shows the manual run in the zone it was kicked
+    from (the server itself is UTC)."""
     from app.models.dataset import Dataset
     from app.services import dataset_grants_service, dataset_publish_service
 
@@ -2468,8 +2473,9 @@ def sync_and_publish_dataset(
     if ds.publish_state is None:
         ds.publish_state = "draft"
         db.commit()
+    tz = str((payload or {}).get("timezone") or "").strip() or None
     res = dataset_publish_service.start_sync_and_publish(
-        dataset_id, trigger="manual", triggered_by_id=str(current_user.id),
+        dataset_id, trigger="manual", triggered_by_id=str(current_user.id), timezone=tz,
     )
     return {"ok": True, **res, "publish_state": "syncing" if res.get("started") else ds.publish_state}
 
@@ -2500,7 +2506,11 @@ def dataset_refresh_runs(
     )
 
     def _iso(dt):
-        return dt.isoformat() if dt is not None else None
+        # started_at/finished_at/created_at are naive UTC (server is UTC). Emit an
+        # explicit 'Z' so the browser parses them AS UTC (a bare ISO string is read
+        # as browser-local → the history clock would be off by the tz offset), then
+        # the FE formats each instant in the run's own `timezone`.
+        return (dt.isoformat() + "Z") if dt is not None else None
 
     return {
         "runs": [
@@ -2508,9 +2518,11 @@ def dataset_refresh_runs(
                 "id": r.id,
                 "status": r.status,
                 "trigger": r.trigger,
+                "timezone": r.timezone,
                 "generation": r.generation,
                 "tables_built": r.tables_built,
                 "rows_total": r.rows_total,
+                "tables": r.tables,
                 "error": r.error,
                 "started_at": _iso(r.started_at),
                 "finished_at": _iso(r.finished_at),
