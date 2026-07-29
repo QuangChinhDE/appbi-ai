@@ -231,44 +231,35 @@ export function deriveStackedLayout<T extends { x: number; y: number; w: number;
 // tall-and-squished on a small window — and a hard 768px cliff dropped the whole
 // tablet band into a 1-column stack of oversized cards.
 //
-// Fix = "Fit to width" (PBI-style): the row height scales WITH the measured grid
-// width, so column width and row height grow/shrink together and every tile keeps
-// the aspect ratio it was authored at — the report scales as ONE unit.
-//
-//   • ≥ REPORT_STACK_BREAKPOINT (grid px): authored 12-col layout, rows scaled
-//     proportionally. Calibrated so a ~1360px grid reproduces the historical
-//     80px row (≈ byte-identical to the old fixed grid at desktop width).
-//   • <  REPORT_STACK_BREAKPOINT: 1-col vertical stack (deriveStackedLayout) at a
-//     fixed comfortable row height — a real phone view, not micro-tiles.
+// Fix (revised): the public/embed report must be WYSIWYG with the BUILDER. The
+// builder edits at a FIXED 80px row, so the public view uses the SAME fixed 80px
+// row on any desktop/tablet width — the author sees exactly what viewers get,
+// with no scaled-up "bigger on the public link than in build" surprise. (An
+// earlier revision scaled the row height with width to "fill" wide screens; that
+// made cards visibly larger than the builder on a wide monitor, which read as too
+// big / less tidy — so it's reverted to fixed.) Columns still fill the width via
+// react-grid-layout's WidthProvider; only the ROW height is pinned. On a phone
+// (< REPORT_STACK_BREAKPOINT) the layout collapses to a 1-col vertical stack at a
+// slightly tighter fixed row.
 //
 // 640 grid px ≈ 710 window px after app-shell chrome, so tablets (portrait 768 /
-// landscape 1024) now get the scaled multi-column layout instead of a column of
-// giant full-width cards.
-//
-// The grid fills the available width (no hard canvas cap) so a TV shows the report
-// edge to edge rather than letterboxed; the row-height clamp below keeps tiles from
-// running away on a 4K wall. Fully proportional up to ~2.5K px, then rows cap.
+// landscape 1024) get the multi-column layout; only true phones stack.
 export const REPORT_STACK_BREAKPOINT = 640;
 
 /**
- * Row height (px) for the responsive public/embed report grid, given the MEASURED
- * grid container width. Scales linearly with width so tiles keep their authored
- * aspect ratio at any viewport; clamped so extremes stay sane; a fixed comfortable
- * height below the stack breakpoint (1-col phone view).
+ * Row height (px) for the public/embed report grid, given the MEASURED grid
+ * container width. FIXED at the builder's row height on desktop/tablet so the
+ * published report matches the builder (no scaled-up cards); a slightly tighter
+ * fixed row below the stack breakpoint (1-col phone view).
  */
 export function computeReportRowHeight(
   containerWidth: number | null | undefined,
-  opts?: { refWidth?: number; base?: number; min?: number; max?: number; stackRow?: number },
+  opts?: { base?: number; stackRow?: number },
 ): number {
-  const base = opts?.base ?? 80;
-  if (!containerWidth || !Number.isFinite(containerWidth) || containerWidth <= 0) return base;
+  const base = opts?.base ?? 80;              // MUST match the builder (DashboardGrid rowHeight)
   const stackRow = opts?.stackRow ?? 72;
-  if (containerWidth < REPORT_STACK_BREAKPOINT) return stackRow;
-  const refWidth = opts?.refWidth ?? 1360;
-  const min = opts?.min ?? 48;
-  const max = opts?.max ?? 150;
-  const scaled = Math.round(base * (containerWidth / refWidth));
-  return Math.max(min, Math.min(max, scaled));
+  if (!containerWidth || !Number.isFinite(containerWidth) || containerWidth <= 0) return base;
+  return containerWidth < REPORT_STACK_BREAKPOINT ? stackRow : base;
 }
 
 export function liftLayoutToTop<T extends { y: number }>(layouts: T[]): T[] {

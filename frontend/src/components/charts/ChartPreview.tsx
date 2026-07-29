@@ -98,7 +98,14 @@ const DEFAULT_COLORS = [
 ];
 
 // ── X-axis smart helpers (mirrors ExploreChart) ───────────────────────────────
-const SCROLL_THRESHOLD = 40;
+// A categorical X-axis should STRETCH to fill the tile's dragged width, not leave
+// excess (chart narrower than the tile) and not scroll horizontally more than it
+// has to. So: fit-to-width up to SCROLL_THRESHOLD categories (labels thin out via
+// `interval`), and only beyond that fall back to a horizontal scroll — and even
+// then the plot still fills the tile and scrolls ONLY when the categories genuinely
+// need more than the tile's width (see wrapScrollable). Threshold raised 40→56 so
+// moderately-dense charts fill instead of scrolling.
+const SCROLL_THRESHOLD = 56;
 const MIN_ITEM_WIDTH   = 38;
 
 function buildXAxisProps(count: number, fontSize: number, xAxisLabel?: string) {
@@ -124,10 +131,14 @@ function wrapScrollable(el: React.ReactNode, count: number): React.ReactNode {
       </ResponsiveContainer>
     );
   }
-  const chartWidth = Math.max(count * MIN_ITEM_WIDTH, 700);
+  // Inner plot FILLS the tile (width:100%) but never shrinks below the width the
+  // categories need to stay readable (minWidth). So on a wide tile it stretches
+  // edge-to-edge with NO excess; only when the tile is narrower than that minimum
+  // does it scroll — and just by the overflow, not a fixed oversized canvas.
+  const minChartWidth = count * MIN_ITEM_WIDTH;
   return (
     <div style={{ width: '100%', height: '100%', overflowX: 'auto', overflowY: 'hidden' }}>
-      <div style={{ width: chartWidth, height: '100%' }}>
+      <div style={{ width: '100%', minWidth: minChartWidth, height: '100%' }}>
         <ResponsiveContainer width="100%" height="100%">
           {el as React.ReactElement}
         </ResponsiveContainer>
