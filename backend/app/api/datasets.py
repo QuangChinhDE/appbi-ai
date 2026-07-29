@@ -2468,8 +2468,58 @@ def sync_and_publish_dataset(
     if ds.publish_state is None:
         ds.publish_state = "draft"
         db.commit()
-    res = dataset_publish_service.start_sync_and_publish(dataset_id)
+    res = dataset_publish_service.start_sync_and_publish(
+        dataset_id, trigger="manual", triggered_by_id=str(current_user.id),
+    )
     return {"ok": True, **res, "publish_state": "syncing" if res.get("started") else ds.publish_state}
+
+
+@router.get("/{dataset_id}/refresh-runs")
+def dataset_refresh_runs(
+    dataset_id: int,
+    limit: int = 20,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Recent Sync & Publish / scheduled-refresh runs (newest first) for the
+    'Refresh history' modal: status, trigger, timing, generation, rows, and the
+    failure reason. Requires VIEW on the dataset."""
+    from app.models.dataset import Dataset, DatasetRefreshRun
+
+    ds = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if not ds:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    require_view_access(db, current_user, ds, "datasets")
+    lim = max(1, min(int(limit or 20), 100))
+    runs = (
+        db.query(DatasetRefreshRun)
+        .filter(DatasetRefreshRun.dataset_id == dataset_id)
+        .order_by(DatasetRefreshRun.id.desc())
+        .limit(lim)
+        .all()
+    )
+
+    def _iso(dt):
+        return dt.isoformat() if dt is not None else None
+
+    return {
+        "runs": [
+            {
+                "id": r.id,
+                "status": r.status,
+                "trigger": r.trigger,
+                "generation": r.generation,
+                "tables_built": r.tables_built,
+                "rows_total": r.rows_total,
+                "error": r.error,
+                "started_at": _iso(r.started_at),
+                "finished_at": _iso(r.finished_at),
+                "duration_ms": r.duration_ms,
+                "created_at": _iso(r.created_at),
+            }
+            for r in runs
+        ]
+    }
 
 
 @router.get("/{dataset_id}/publish-status")

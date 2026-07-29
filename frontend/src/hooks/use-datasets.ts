@@ -734,6 +734,43 @@ export function useSaveSnapshotConfig() {
   });
 }
 
+// ===== Refresh history (Sync & Publish / scheduled refresh runs) =====
+
+export type DatasetRefreshRunStatus = 'running' | 'success' | 'failed' | 'stopped';
+export interface DatasetRefreshRun {
+  id: number;
+  status: DatasetRefreshRunStatus;
+  trigger: string;                 // manual | scheduled | source_change
+  generation: number | null;       // published generation produced (epoch-ms)
+  tables_built: number | null;
+  rows_total: number | null;
+  error: string | null;            // failure reason
+  started_at: string | null;
+  finished_at: string | null;
+  duration_ms: number | null;
+  created_at: string | null;
+}
+
+/** Recent refresh runs for the "Refresh history" modal. Polls while a run is
+ *  in flight so a running row settles to success/failed live. */
+export function useDatasetRefreshRuns(datasetId: number | null, enabled = true) {
+  return useQuery({
+    queryKey: [...datasetKeys.detail(datasetId!), 'refresh-runs'],
+    queryFn: async () => {
+      const response = await api.get<{ runs: DatasetRefreshRun[] }>(
+        `/datasets/${datasetId}/refresh-runs`,
+        { params: { limit: 30 } },
+      );
+      return response.data.runs;
+    },
+    enabled: datasetId !== null && enabled,
+    refetchInterval: (query) =>
+      (query.state.data as DatasetRefreshRun[] | undefined)?.some((r) => r.status === 'running')
+        ? 3000
+        : false,
+  });
+}
+
 export function useRevokeDatasetGrant() {
   const queryClient = useQueryClient();
   return useMutation({

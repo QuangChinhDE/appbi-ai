@@ -353,3 +353,33 @@ class DatasetDependency(Base):
         # a child pins a given parent once
         # (UniqueConstraint declared in migration to keep model import light)
     )
+
+
+class DatasetRefreshRun(Base):
+    """One recorded execution of Sync & Publish / scheduled refresh for a dataset.
+
+    Powers the "Refresh history" modal — the DA sees each run's outcome
+    (success / failure / stopped), when it ran, how long it took, which
+    generation it produced, and — on failure — WHY. Written at the single
+    execution point (``dataset_publish_service._sync_and_publish_blocking``):
+    one row per run, flipped from ``running`` to a terminal status on every
+    exit (incl. the background crash handler). The Dataset's ``last_sync_error``
+    still holds only the LATEST error; this table is the persistent log.
+    """
+    __tablename__ = "dataset_refresh_runs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    dataset_id = Column(Integer, ForeignKey("datasets.id", ondelete="CASCADE"), nullable=False, index=True)
+    # running | success | failed | stopped
+    status = Column(String(16), nullable=False, default="running", index=True)
+    # manual | scheduled | source_change
+    trigger = Column(String(20), nullable=False, default="manual")
+    generation = Column(BigInteger, nullable=True)       # published generation produced (epoch-ms)
+    tables_built = Column(Integer, nullable=True)        # tables materialized this run
+    rows_total = Column(BigInteger, nullable=True)       # rows synced this run (best-effort)
+    error = Column(Text, nullable=True)                  # failure reason (status=failed)
+    triggered_by_id = Column(String(36), nullable=True)  # user UUID string (null for scheduled)
+    started_at = Column(DateTime, nullable=True)
+    finished_at = Column(DateTime, nullable=True)
+    duration_ms = Column(BigInteger, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=True, index=True)
