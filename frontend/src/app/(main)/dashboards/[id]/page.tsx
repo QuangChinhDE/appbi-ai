@@ -3,7 +3,7 @@
 import React, { useState, useCallback, useEffect } from 'react';
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
-import { ArrowLeft, Plus, Loader2, Edit2, Check, X, Share2, Globe, Sparkles, Trash2, LayoutGrid, Download, MoreHorizontal, ChevronDown, Filter, RefreshCw } from 'lucide-react';
+import { ArrowLeft, Plus, Loader2, Edit2, Check, X, Share2, Globe, Sparkles, Trash2, LayoutGrid, Download, MoreHorizontal, ChevronDown, Filter, RefreshCw, GripVertical } from 'lucide-react';
 import { Layout } from 'react-grid-layout';
 import { useQueries, useIsFetching, useQueryClient } from '@tanstack/react-query';
 import {
@@ -248,6 +248,9 @@ export default function DashboardDetailPage() {
   const [isWidgetMenuOpen, setIsWidgetMenuOpen] = useState(false);
   const [isMoreMenuOpen, setIsMoreMenuOpen] = useState(false);
   const [isPagesMenuOpen, setIsPagesMenuOpen] = useState(false);
+  // Drag-to-reorder page tabs in the Pages dropdown.
+  const [draggingPageId, setDraggingPageId] = useState<string | null>(null);
+  const [dragOverPageId, setDragOverPageId] = useState<string | null>(null);
   // Phase-15.81 — kept for backward compat with onClick handlers in other
   // menus that still call setIsFilterPopoverOpen(false). The Filter popover
   // itself is gone — the right-dock FilterPane (isFilterPaneOpen) replaces
@@ -1461,6 +1464,26 @@ export default function DashboardDetailPage() {
     }
   }, [dashboardId, queryClient]);
 
+  // Drag-to-reorder the page tabs. Reorders the FULL page objects (each keeps
+  // its filters/slicers/layout) and persists the new order to the draft — same
+  // path as add/rename/delete. The active page is unchanged. Dropping onto a
+  // target inserts the dragged page at that target's slot.
+  const handleReorderPages = useCallback(async (fromId: string, toId: string) => {
+    if (!fromId || !toId || fromId === toId) return;
+    const fromIdx = dashboardPages.findIndex((page) => page.id === fromId);
+    const toIdx = dashboardPages.findIndex((page) => page.id === toId);
+    if (fromIdx < 0 || toIdx < 0) return;
+    const next = [...dashboardPages];
+    const [moved] = next.splice(fromIdx, 1);
+    next.splice(toIdx, 0, moved);
+    try {
+      await persistPagesConfig(next);
+    } catch (error) {
+      console.error('Failed to reorder dashboard pages:', error);
+      toast.error(t('dashboards.detail.pageReorderFailed'));
+    }
+  }, [dashboardPages, persistPagesConfig, t]);
+
   const handleAddPage = async () => {
     const nextPage: DashboardPageConfig = {
       id: createDashboardPageId(),
@@ -2473,20 +2496,55 @@ export default function DashboardDetailPage() {
                             <div className="max-h-[60vh] overflow-y-auto">
                               {dashboardPages.map((page) => {
                                 const isActive = page.id === activePageId;
+                                const isDragging = draggingPageId === page.id;
+                                const isDragOver = dragOverPageId === page.id && draggingPageId !== page.id;
                                 return (
-                                  <button
+                                  <div
                                     key={page.id}
-                                    type="button"
-                                    onClick={() => handleSwitchPage(page.id)}
-                                    className={`flex w-full items-center gap-2 px-3 py-2 text-left text-[13px] font-[510] transition-colors ${
+                                    draggable={canEditResource}
+                                    onDragStart={(e) => {
+                                      if (!canEditResource) return;
+                                      setDraggingPageId(page.id);
+                                      e.dataTransfer.effectAllowed = 'move';
+                                      try { e.dataTransfer.setData('text/plain', page.id); } catch { /* noop */ }
+                                    }}
+                                    onDragOver={(e) => {
+                                      if (!canEditResource || !draggingPageId) return;
+                                      e.preventDefault();
+                                      e.dataTransfer.dropEffect = 'move';
+                                      if (dragOverPageId !== page.id) setDragOverPageId(page.id);
+                                    }}
+                                    onDrop={(e) => {
+                                      if (!canEditResource) return;
+                                      e.preventDefault();
+                                      const fromId = draggingPageId || e.dataTransfer.getData('text/plain');
+                                      setDraggingPageId(null);
+                                      setDragOverPageId(null);
+                                      if (fromId) handleReorderPages(fromId, page.id);
+                                    }}
+                                    onDragEnd={() => { setDraggingPageId(null); setDragOverPageId(null); }}
+                                    className={`group/pagerow flex w-full items-center gap-1.5 border-t-2 px-2 py-2 text-[13px] font-[510] transition-colors ${
                                       isActive
                                         ? 'bg-[rgba(94,106,210,0.15)] text-brand'
                                         : 'text-text-secondary hover:bg-[rgba(255,255,255,0.04)] hover:text-text-primary'
-                                    }`}
+                                    } ${isDragging ? 'opacity-40' : ''} ${isDragOver ? 'border-brand' : 'border-transparent'}`}
+                                    title={canEditResource ? t('dashboards.detail.dragToReorderPage') : undefined}
                                   >
-                                    <span className="flex-1 truncate">{page.name}</span>
-                                    {isActive && <Check className="h-3 w-3" />}
-                                  </button>
+                                    {canEditResource && (
+                                      <GripVertical
+                                        className="h-3.5 w-3.5 shrink-0 cursor-grab text-text-quaternary opacity-40 transition-opacity group-hover/pagerow:opacity-100 active:cursor-grabbing"
+                                        aria-hidden
+                                      />
+                                    )}
+                                    <button
+                                      type="button"
+                                      onClick={() => handleSwitchPage(page.id)}
+                                      className="flex min-w-0 flex-1 items-center gap-2 bg-transparent text-left"
+                                    >
+                                      <span className="flex-1 truncate">{page.name}</span>
+                                      {isActive && <Check className="h-3 w-3 shrink-0" />}
+                                    </button>
+                                  </div>
                                 );
                               })}
                             </div>

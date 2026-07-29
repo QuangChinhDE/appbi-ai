@@ -28,10 +28,12 @@ from app.models.models import Dashboard
 from app.models.user import User
 from app.services.embed_link_service import (
     DEFAULT_TTL_SECONDS,
+    HEADER_MAX_LENGTH,
     canonicalize_filters,
     compute_filter_hash,
     get_or_create_embed_link,
     mint_embed_grant,
+    sanitize_embed_header,
     validate_and_lock_filters,
 )
 
@@ -57,6 +59,12 @@ class EmbedResolveRequest(BaseModel):
     dashboard_id: int = Field(..., ge=1)
     filters: list[dict] = Field(default_factory=list)
     ttl_seconds: int | None = Field(default=None, ge=60, le=86400)
+    # Title the embedded report should show, e.g. "Doanh thu — Chi nhánh Hà Nội".
+    # Omitted → the report keeps its managed link's internal name
+    # ("embed:<dashboard>:<filter-hash>"), which is fine for debugging but reads
+    # as a code to whoever opens the iframe. Stored per grant, so two host apps
+    # embedding the same data slice can title it differently.
+    header: str | None = Field(default=None, max_length=HEADER_MAX_LENGTH)
     # Safety gate: embedding the WHOLE report (no row-scoping) must be explicit.
     # No filters + full_report=False → 400, so a caller can't accidentally leak
     # the entire dataset by forgetting the per-viewer scope.
@@ -68,6 +76,10 @@ class EmbedResolveResponse(BaseModel):
     embed_path: str
     expires_at: datetime
     filter_hash: str
+    # The title this link will actually display, after trimming/normalising the
+    # requested `header` (null = the report falls back to its link name). Echoed
+    # back so the caller can assert what the viewer will see.
+    header: str | None = None
 
 
 def _request_origin(request: Request) -> str:
@@ -111,11 +123,12 @@ def resolve_embed_link(
     link = get_or_create_embed_link(db, dash, locked, filter_hash)
 
     ttl = min(body.ttl_seconds or DEFAULT_TTL_SECONDS, DEFAULT_TTL_SECONDS)
-    raw_token, grant = mint_embed_grant(db, link, current_user.id, ttl)
+    header = sanitize_embed_header(body.header)
+    raw_token, grant = mint_embed_grant(db, link, current_user.id, ttl, header=header)
 
     logger.info(
-        "embed_resolve user=%s dashboard=%s filter_hash=%s ttl=%s ip=%s",
-        current_user.id, dash.id, filter_hash[:12], ttl,
+        "embed_resolve user=%s dashboard=%s filter_hash=%s ttl=%s header=%r ip=%s",
+        current_user.id, dash.id, filter_hash[:12], ttl, header,
         (request.headers.get("x-forwarded-for") or (request.client.host if request.client else "")),
     )
     origin = _request_origin(request)
@@ -125,4 +138,5 @@ def resolve_embed_link(
         embed_path=embed_path,
         expires_at=grant.expires_at,
         filter_hash=filter_hash,
+        header=header,
     )

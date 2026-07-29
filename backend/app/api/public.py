@@ -39,7 +39,7 @@ import uuid as _uuid
 from fastapi.responses import FileResponse
 
 from app.services import pdf_export_service
-from app.services.embed_link_service import resolve_embed_grant_link
+from app.services.embed_link_service import resolve_embed_grant
 from app.services.filter_layered_merge import (
     apply_link_scope_bounds,
     link_entry_has_value,
@@ -852,8 +852,9 @@ def _get_dashboard_by_token(
     # the entire block below is unchanged for them. Grants carry their own
     # expiry/revocation (checked in resolve_embed_grant_link); they are gated by
     # the token-authenticated integration endpoint, not by a viewer password.
-    grant_link = resolve_embed_grant_link(token, db)
-    if grant_link is not None:
+    resolved_grant = resolve_embed_grant(token, db)
+    if resolved_grant is not None:
+        grant_link, grant = resolved_grant
         dash = _load_dash(Dashboard.id == grant_link.dashboard_id)
         if not dash:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dashboard not found.")
@@ -861,7 +862,13 @@ def _get_dashboard_by_token(
             grant_link.access_count = (grant_link.access_count or 0) + 1
             grant_link.last_accessed_at = datetime.now(timezone.utc)
             db.commit()
-        return dash, grant_link.filters_config or [], grant_link.name, grant_link.appearance_config or {}
+        # Display name: the `header` the host app passed to /embed/resolve wins.
+        # Without it the viewer saw the managed link's INTERNAL name
+        # ("embed:71:a7fa6994") as the report title — an implementation detail in
+        # front of a business reader. This is the title the masthead shows and the
+        # one stamped into an exported PDF.
+        display_name = getattr(grant, "header", None) or grant_link.name
+        return dash, grant_link.filters_config or [], display_name, grant_link.appearance_config or {}
 
     # Try new multi-link table first
     link = db.query(DashboardPublicLink).filter(
