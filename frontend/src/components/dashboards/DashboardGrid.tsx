@@ -140,33 +140,28 @@ export function DashboardGrid({
   const { t } = useI18n();
   // Convert backend layout to react-grid-layout format.
   //
-  // CHARTS: 4 corner handles only + a 2×2 floor. Edges were removed per DA
-  // feedback — 8 handles is noisy and users accidentally hit an edge when they
-  // wanted a corner; each corner stretches BOTH width and height.
-  //
-  // WIDGETS (text / shape / divider / image / countdown — lightweight visual
-  // add-ons, not charts): behave like a shape in a design tool — resize from ANY
-  // edge OR corner (edges are exactly what you want to nudge a divider's width or
-  // a banner's height), and shrink all the way to 1×1 so a slim heading/divider
-  // stays slim instead of being forced to a 2-row (160px) block with dead space.
-  type Handle = 's' | 'w' | 'e' | 'n' | 'se' | 'sw' | 'ne' | 'nw';
-  const CHART_HANDLES: Handle[] = ['se', 'sw', 'ne', 'nw'];
-  const WIDGET_HANDLES: Handle[] = ['s', 'w', 'e', 'n', 'se', 'sw', 'ne', 'nw'];
+  // Resize is FLEXIBLE for both charts and widgets: 8 handles (every edge AND
+  // corner) so you can nudge JUST the width or JUST the height, plus a 1-row
+  // floor so a card — a KPI especially — can be made tight instead of being
+  // forced to a 2-row block with dead space under the value. (Charts were
+  // previously pinned to 4 corners + a 2×2 floor; that made single-axis sizing
+  // fiddly and left KPI cards looking empty, so it's lifted.) Charts keep a
+  // 2-column minimum so they stay legible; widgets can shrink to a single column.
+  const RESIZE_HANDLES: Array<'s' | 'w' | 'e' | 'n' | 'se' | 'sw' | 'ne' | 'nw'> =
+    ['s', 'w', 'e', 'n', 'se', 'sw', 'ne', 'nw'];
   const layouts = liftLayoutToTop(
     dashboardCharts.map((dc) => {
       const layout = dc.layout;
       const isWidget = Boolean(dc.widget_type && dc.widget_type !== 'chart');
-      const chartType = String(dc.chart?.chart_type ?? '').toUpperCase();
-      const isKpi = chartType === 'KPI';
       return {
         i: dc.id.toString(),
         x: layout.x || 0,
         y: layout.y || 0,
         w: layout.w || 4,
         h: layout.h || 4,
-        minW: isWidget ? 1 : (isKpi ? 3 : 2),
-        minH: isWidget ? 1 : 2,
-        resizeHandles: (isWidget ? WIDGET_HANDLES : CHART_HANDLES),
+        minW: isWidget ? 1 : 2,
+        minH: 1,
+        resizeHandles: RESIZE_HANDLES,
       };
     }),
   );

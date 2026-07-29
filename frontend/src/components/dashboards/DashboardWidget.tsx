@@ -58,16 +58,21 @@ function TextWidget({ config, params }: { config: any; params: Record<string, an
   // Border + bg + radius come from the outer tile wrapper (DashboardGrid /
   // DashboardCanvas) so widgets and charts share the same card chrome.
   // Only the inner padding + typography lives here.
-  // Vertically center the text so a one-line heading sits in the middle of the
-  // (now slim) band instead of hugging the top-left with empty space beneath —
-  // the "big empty box" that read as unpolished. items-center keeps it centered
-  // when short but still lets a long note scroll from the top.
+  //
+  // Vertical placement: a one-line heading should sit centered in the band, but a
+  // longer note must show ALL of its text and scroll — never get clipped. The old
+  // `items-center` did the opposite: once the text was taller than the band it
+  // centered the block so the TOP overflowed out of the scroll area and couldn't
+  // be reached (the "chữ bị cắt / không thấy hết" report). The scroll-safe pattern
+  // is a flex COLUMN with the content using `my-auto`: auto margins center it when
+  // it fits, and collapse to 0 (content pinned to top, fully scrollable) when it
+  // overflows. `break-words` (in renderMarkdown) already wraps long lines.
   return (
     <div
-      className="flex h-full w-full items-center overflow-auto px-4 py-2.5"
+      className="flex h-full w-full flex-col overflow-auto px-4 py-2.5"
       style={{ textAlign: align, color, fontSize, fontWeight }}
     >
-      <div className="min-h-0 w-full">{renderMarkdown(rendered)}</div>
+      <div className="my-auto w-full min-h-0">{renderMarkdown(rendered)}</div>
     </div>
   );
 }

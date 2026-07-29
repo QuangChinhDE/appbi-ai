@@ -457,5 +457,12 @@ class EmbedGrant(Base):
     revoked_at = Column(DateTime(timezone=True), nullable=True)
     use_count = Column(Integer, nullable=False, default=0)
 
+    # Title the host app wants the embedded report to show ("header" in the
+    # resolve payload). Lives on the GRANT, not on the managed link: links are
+    # deduped by filter set, so two host apps embedding the same slice under
+    # different titles would otherwise overwrite each other's header. Empty →
+    # the report falls back to the managed link's internal name.
+    header = Column(String(200), nullable=True)
+
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     last_used_at = Column(DateTime(timezone=True), nullable=True)

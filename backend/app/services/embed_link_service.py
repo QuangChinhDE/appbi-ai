@@ -255,11 +255,35 @@ def _purge_expired_grants(db: Session) -> None:
         db.rollback()
 
 
+HEADER_MAX_LENGTH = 200
+
+
+def sanitize_embed_header(raw: str | None) -> str | None:
+    """Clean a caller-supplied embed title.
+
+    It is rendered as the report masthead and stamped into exported PDFs, so
+    collapse whitespace, drop control characters (a stray newline would break the
+    PDF header line) and bound the length. Returns None for anything empty, which
+    makes the report fall back to its previous name.
+    """
+    if raw is None:
+        return None
+    # Control characters become a SPACE, never nothing: dropping them outright
+    # glued the words on either side together (a header carrying a newline came
+    # out as "Doanh thuQ3" instead of "Doanh thu Q3").
+    text = "".join(ch if ch.isprintable() else " " for ch in str(raw))
+    text = " ".join(text.split()).strip()
+    if not text:
+        return None
+    return text[:HEADER_MAX_LENGTH]
+
+
 def mint_embed_grant(
     db: Session,
     link: DashboardPublicLink,
     created_by,
     ttl_seconds: int,
+    header: str | None = None,
 ) -> tuple[str, EmbedGrant]:
     raw = f"{EMBED_GRANT_PREFIX}{secrets.token_hex(EMBED_GRANT_HEX_CHARS // 2)}"
     grant = EmbedGrant(
@@ -268,6 +292,7 @@ def mint_embed_grant(
         token_hash=_hash_token(raw),
         created_by=created_by,
         expires_at=datetime.now(timezone.utc) + timedelta(seconds=ttl_seconds),
+        header=sanitize_embed_header(header),
     )
     db.add(grant)
     db.commit()
@@ -278,11 +303,15 @@ def mint_embed_grant(
     return raw, grant
 
 
-def resolve_embed_grant_link(token: str, db: Session) -> DashboardPublicLink | None:
-    """Resolve a grant token to its active managed link, enforcing
-    expiry/revocation. Returns None when the token is not a grant token (so the
-    caller falls through to normal link resolution). Raises 410/404 for an
-    invalid/expired/revoked grant.
+def resolve_embed_grant(token: str, db: Session) -> tuple[DashboardPublicLink, EmbedGrant] | None:
+    """Resolve a grant token to its active managed link AND the grant itself,
+    enforcing expiry/revocation.
+
+    The grant is returned alongside the link because per-mint presentation lives
+    there (today: `header`, the title the host app wants the embedded report to
+    show). Returns None when the token is not a grant token, so the caller falls
+    through to normal link resolution. Raises 410/404 for an invalid, expired or
+    revoked grant.
     """
     if not token or not token.startswith(EMBED_GRANT_PREFIX):
         return None
@@ -325,4 +354,11 @@ def resolve_embed_grant_link(token: str, db: Session) -> DashboardPublicLink | N
     # modified (grant/link were only read), so there is no pending change to
     # commit or roll back; the caller manages the surrounding transaction. This
     # is what removes the per-request UPDATE+commit under concurrent embed load.
-    return link
+    return link, grant
+
+
+def resolve_embed_grant_link(token: str, db: Session) -> DashboardPublicLink | None:
+    """Link-only view of resolve_embed_grant, for callers that don't need the
+    grant's presentation fields."""
+    resolved = resolve_embed_grant(token, db)
+    return resolved[0] if resolved else None

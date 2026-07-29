@@ -427,11 +427,17 @@ export function KpiCard({
   const dropPanels = autoFit && boxH < 210;
   const compact = autoFit && boxH < 280;
   // Value font derived from available height. Ceiling = author/theme override
-  // or 56; floor = 18 so it stays legible. Reserve more height for the value
+  // or 72; floor = 18 so it stays legible. Reserve more height for the value
   // when panels share the card.
-  const fontCeil = resolvedValueFontSize ?? (dashTheme.kpiFontSize as number | undefined) ?? 56;
-  // Height budget — the original behaviour.
-  const heightFont = boxH * ((panelsPresent && !dropPanels) ? 0.22 : 0.36);
+  const fontCeil = resolvedValueFontSize ?? (dashTheme.kpiFontSize as number | undefined) ?? 72;
+  // Height budget. A KPI with just label+value (no benchmark/delta panels) was
+  // only taking ~0.36 of the tile height, so the number sat small with a big
+  // empty band under it ("card trông trống/xấu"). Give the headline a larger
+  // share so it FILLS the card; the width clamp below still guarantees it never
+  // overflows or wraps. Cards WITH panels keep a smaller share (the panels need
+  // the room). A context line, when present, also wants breathing room.
+  const valueHeightShare = (panelsPresent && !dropPanels) ? 0.24 : (contextText ? 0.4 : 0.52);
+  const heightFont = boxH * valueHeightShare;
   // Width budget — the fix. A long full-format number (e.g. "3,907,698,730",
   // 13 chars) at a height-derived 56px is far WIDER than a narrow tile, so the
   // old height-only auto-fit let it wrap mid-number ("3,907,698,73" / "0").
