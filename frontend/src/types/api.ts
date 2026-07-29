@@ -218,7 +218,11 @@ export type DashboardWidgetType =
   | 'countdown'
   | 'image'
   | 'shape'
-  | 'parameter_switcher';
+  | 'parameter_switcher'
+  // Modern/SaaS "element" widgets (decorative inserts).
+  | 'section_header'
+  | 'callout'
+  | 'hero_strip';
 
 export interface DashboardThemeConfig {
   mode?: 'light' | 'dark';
@@ -260,6 +264,11 @@ export interface DashboardThemeConfig {
   glassCards?: boolean;           // translucent tiles so the image shows through
   /** Phase-B16 — id of the applied built-in preset (for highlighting). */
   presetId?: string;
+  /** Report "skin" — 'modern' turns on the Modern/SaaS ambient look (card
+   *  accent-bar + tint gradient + soft shadow) and clean chart chrome
+   *  (light solid gridlines instead of the busy dashed default).
+   *  Undefined/'classic' keeps the existing flat look — so it's fully opt-in. */
+  skin?: 'modern' | 'classic';
   hoverAnimation?: 'none' | 'lift' | 'scale' | 'glow' | string;
   hoverEffect?: string;
   [k: string]: any;

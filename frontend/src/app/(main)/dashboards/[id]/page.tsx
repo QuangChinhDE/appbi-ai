@@ -1025,7 +1025,7 @@ export default function DashboardDetailPage() {
   };
 
   const handleAddWidget = useCallback(
-    async (widgetType: 'text' | 'countdown' | 'image' | 'shape' | 'parameter_switcher') => {
+    async (widgetType: 'text' | 'countdown' | 'image' | 'shape' | 'parameter_switcher' | 'section_header' | 'callout' | 'hero_strip') => {
       if (!dashboard) return;
       const defaults: Record<string, any> = {
         text: { template: 'Hello {{today()}}', align: 'left', fontSize: 18 },
@@ -1042,6 +1042,10 @@ export default function DashboardDetailPage() {
             { label: 'Q2', value: 'Q2' },
           ],
         },
+        // Modern/SaaS "element" widgets (decorative inserts).
+        section_header: { eyebrow: 'KHU VỰC', title: 'Tiêu đề mục', subtitle: '' },
+        callout: { title: 'Chú thích', text: 'Nhập insight hoặc ghi chú cho khu vực này…', tone: 'accent' },
+        hero_strip: { title: dashboard.name || 'Tên báo cáo', subtitle: 'Mô tả ngắn về báo cáo', metric: '', metricLabel: '' },
       };
 
       // Default footprint per widget type — picked so the widget is visible
@@ -1056,6 +1060,10 @@ export default function DashboardDetailPage() {
         image: { w: 4, h: 4, wPx: 360, hPx: 240 },
         shape: { w: 4, h: 1, wPx: 360, hPx: 80 },
         parameter_switcher: { w: 4, h: 2, wPx: 360, hPx: 120 },
+        // Section header + hero span wide (they head a row); callout is a small note.
+        section_header: { w: 12, h: 1, wPx: 1080, hPx: 56 },
+        hero_strip: { w: 12, h: 2, wPx: 1080, hPx: 120 },
+        callout: { w: 4, h: 2, wPx: 360, hPx: 110 },
       };
       const size = sizeByType[widgetType];
 
@@ -2782,6 +2790,9 @@ export default function DashboardDetailPage() {
                           {isWidgetSubmenuOpen && (
                             <div className="bg-[rgba(255,255,255,0.02)]">
                               {([
+                                ['section_header', t('dashboards.detail.widgetSectionHeader')],
+                                ['hero_strip', t('dashboards.detail.widgetHeroStrip')],
+                                ['callout', t('dashboards.detail.widgetCallout')],
                                 ['text', t('dashboards.detail.widgetText')],
                                 ['countdown', t('dashboards.detail.widgetCountdown')],
                                 ['image', t('dashboards.detail.widgetImage')],

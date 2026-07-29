@@ -244,6 +244,9 @@ export function DashboardGrid({
         // (Shape becomes a coloured pill inside a white frame).
         const isVisualWidget = isWidget && (
           dc.widget_type === 'shape'
+          || dc.widget_type === 'section_header'
+          || dc.widget_type === 'callout'
+          || dc.widget_type === 'hero_strip'
         );
         // Per-widget "transparent background" also drops the card frame so the
         // dashboard bg shows through (text/image/countdown widgets).

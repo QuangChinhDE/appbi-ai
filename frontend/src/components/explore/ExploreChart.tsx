@@ -1511,6 +1511,10 @@ function ExploreChartInner({
   );
   const gridStroke = dashboardTheme.gridlineColor || undefined;
   const axisTickFill = dashboardTheme.axisLabelColor || undefined;
+  // Modern/SaaS skin → clean chart chrome: gridlines become a light SOLID hair
+  // line instead of the busy dashed "3 3" (the preset also sets a very faint
+  // gridlineColor). Classic look keeps the dashed default. Opt-in, no breakage.
+  const gridDash = dashboardTheme.skin === 'modern' ? undefined : '3 3';
   // Resolve per-series color: explicit override beats palette index.
   const getSeriesColor = useCallback(
     (key: string, index: number): string => {
@@ -2839,7 +2843,7 @@ function ExploreChartInner({
         <div className="flex-1 min-h-0">
           <ResponsiveContainer width="100%" height="100%">
             <ScatterChart onClick={handleScatterClick}>
-              {showGrid && <CartesianGrid strokeDasharray="3 3" stroke={gridStroke} />}
+              {showGrid && <CartesianGrid strokeDasharray={gridDash} stroke={gridStroke} />}
               <XAxis dataKey="x" name={fieldLabel(scatterX, labelMap)} type="number" tick={{ fontSize, fill: axisTickFill }}
                 label={{ value: style.xAxisLabel || fieldLabel(scatterX, labelMap), position: 'insideBottom', offset: -5, fontSize }} />
               <YAxis dataKey="y" name={fieldLabel(scatterY, labelMap)} type="number" tick={{ fontSize, fill: axisTickFill }}
@@ -2990,7 +2994,7 @@ function ExploreChartInner({
           {axisTitled(wrapScrollable(
             <BarChart data={displayData} margin={cartesianMargin} onClick={handleCategoricalChartClick}
               stackOffset={isPercent ? 'expand' : undefined}>
-              {showGrid && <CartesianGrid strokeDasharray="3 3" stroke={gridStroke} />}
+              {showGrid && <CartesianGrid strokeDasharray={gridDash} stroke={gridStroke} />}
               {renderXAxis(xField, displayData.length, xAxisIsDateLike)}
               {percentYAxis}
               {/* Phase-15.86 — STACKED_BAR was using a bare Tooltip
@@ -3247,7 +3251,7 @@ function ExploreChartInner({
           {TruncationBanner}
           {axisTitled(wrapScrollable(
             <AreaChart data={displayData} margin={cartesianMargin} onClick={handleCategoricalChartClick}>
-              {showGrid && <CartesianGrid strokeDasharray="3 3" stroke={gridStroke} />}
+              {showGrid && <CartesianGrid strokeDasharray={gridDash} stroke={gridStroke} />}
               {renderXAxis(xField, displayData.length, dateLikeXAxis)}
               {renderYAxis()}
               <Tooltip
@@ -3344,7 +3348,7 @@ function ExploreChartInner({
           {TruncationBanner}
           {axisTitled(wrapScrollable(
             <LineChart data={displayData} margin={cartesianMargin} onClick={handleCategoricalChartClick}>
-              {showGrid && <CartesianGrid strokeDasharray="3 3" stroke={gridStroke} />}
+              {showGrid && <CartesianGrid strokeDasharray={gridDash} stroke={gridStroke} />}
               {renderXAxis(xField, displayData.length, dateLikeXAxis)}
               {renderYAxis(leftAxisSeriesKey, leftAxisWidth)}
               {rightAxisSeries && (
@@ -3424,7 +3428,7 @@ function ExploreChartInner({
       : undefined; // let ResponsiveContainer fill parent
     const innerChart = (
       <BarChart data={hbarData} layout="vertical" margin={CHART_BASE_MARGIN} onClick={handleCategoricalChartClick}>
-        {showGrid && <CartesianGrid strokeDasharray="3 3" stroke={gridStroke} />}
+        {showGrid && <CartesianGrid strokeDasharray={gridDash} stroke={gridStroke} />}
         {/* Phase-15.22: category labels on horizontal bar live on YAxis.
             Same interval=0 + truncate-with-tooltip treatment as XAxis on
             other types. width=160 (up from 120) gives room for typical
@@ -3558,7 +3562,7 @@ function ExploreChartInner({
           {TruncationBanner}
           {axisTitled(wrapScrollable(
             <ComposedChart data={displayData} margin={cartesianMargin} onClick={handleCategoricalChartClick}>
-              {showGrid && <CartesianGrid strokeDasharray="3 3" stroke={gridStroke} />}
+              {showGrid && <CartesianGrid strokeDasharray={gridDash} stroke={gridStroke} />}
               {renderXAxis(xField!, displayData.length, xAxisIsDateLike)}
               {renderYAxis()}
               {dualYAxis && (
@@ -3702,7 +3706,7 @@ function ExploreChartInner({
         {TruncationBanner}
         {axisTitled(wrapScrollable(
           <BarChart data={barChartData} margin={cartesianMargin} onClick={handleCategoricalChartClick}>
-            {showGrid && <CartesianGrid strokeDasharray="3 3" stroke={gridStroke} />}
+            {showGrid && <CartesianGrid strokeDasharray={gridDash} stroke={gridStroke} />}
             {renderXAxis(xField, barChartData.length, xAxisIsDateLike)}
             {renderYAxis()}
             <Tooltip

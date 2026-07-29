@@ -132,6 +132,9 @@ export function normalizeDashboardTheme(theme?: DashboardThemeConfig | null) {
   const bgOverlayRaw = typeof raw.bgOverlay === 'number' ? raw.bgOverlay : Number(raw.bgOverlay);
   const bgOverlay = Number.isFinite(bgOverlayRaw) ? Math.min(Math.max(bgOverlayRaw, 0), 0.9) : undefined;
   const glassCards = raw.glassCards === true || String(raw.glassCards) === 'true';
+  // Report "skin": 'modern' = Modern/SaaS ambient + clean-chrome look. Anything
+  // else (incl. undefined) is the classic flat look → fully opt-in, no breakage.
+  const skin = raw.skin === 'modern' ? 'modern' as const : undefined;
   // #4 — dashboard-wide "Display units" (PBI parity). Applies to value axes +
   // KPI values so a report reads in one consistent magnitude (tỷ/triệu/nghìn).
   const DU = new Set(['auto', 'none', 'thousands', 'millions', 'billions']);
@@ -168,6 +171,7 @@ export function normalizeDashboardTheme(theme?: DashboardThemeConfig | null) {
     backgroundPosition: str(raw.backgroundPosition) ?? 'center',
     bgOverlay,
     glassCards,
+    skin,
   };
 }
 
@@ -191,6 +195,8 @@ export type DashboardChartTheme = {
   accent?: string;
   /** #4 — dashboard-wide display units for value axes + KPI values. */
   displayUnits?: 'auto' | 'none' | 'thousands' | 'millions' | 'billions';
+  /** Modern/SaaS skin flag — charts read this to switch to clean chrome. */
+  skin?: 'modern';
 };
 
 export const DashboardThemeContext = React.createContext<DashboardChartTheme>({});
@@ -282,6 +288,7 @@ export function DashboardThemeProvider({ theme, children, className, style: base
     titleColor: t.titleColor,
     accent: t.accent,
     displayUnits: t.displayUnits,
+    skin: t.skin,
     // Phase-B16 — translucent "glass" tiles so a background image shows through.
     // High opacity keeps charts crisp (low opacity reads muddy, esp. dark over a
     // bright image); the blur + the tile shadow give a clean "floating" look.
@@ -300,6 +307,7 @@ export function DashboardThemeProvider({ theme, children, className, style: base
         data-dashboard-theme={t.mode}
         data-dashboard-card={t.cardStyle}
         data-dashboard-density={t.density}
+        data-dashboard-skin={t.skin ?? 'classic'}
         data-dashboard-hover={t.hoverAnimation ?? 'none'}
         style={style}
       >
