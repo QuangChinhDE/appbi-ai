@@ -114,13 +114,13 @@ export function NavigationSection({
       <div>
         <div className="mb-2 flex items-center gap-2 text-caption font-medium text-text-secondary">
           <Smartphone className="h-4 w-4" />
-          Mobile
+          {t('workboards.settings.mobile')}
         </div>
         <SegmentedControl
           value={nav.mobile_kind}
           onChange={(mobile_kind) => onChange({ ...layout, mini_app_nav: { ...nav, mobile_kind } })}
           options={[
-            { value: 'bottom_nav', label: 'Bottom nav' },
+            { value: 'bottom_nav', label: t('workboards.settings.nav.bottomNav') },
             { value: 'drawer', label: t('workboards.settings.nav.drawer') },
           ]}
         />
@@ -128,13 +128,13 @@ export function NavigationSection({
       <div>
         <div className="mb-2 flex items-center gap-2 text-caption font-medium text-text-secondary">
           <Monitor className="h-4 w-4" />
-          Desktop
+          {t('workboards.settings.desktop')}
         </div>
         <SegmentedControl
           value={nav.desktop_kind}
           onChange={(desktop_kind) => onChange({ ...layout, mini_app_nav: { ...nav, desktop_kind } })}
           options={[
-            { value: 'sidebar', label: 'Sidebar' },
+            { value: 'sidebar', label: t('workboards.settings.nav.sidebar') },
             { value: 'top_tabs', label: t('workboards.settings.nav.topTabs') },
           ]}
         />
@@ -314,7 +314,7 @@ function BackgroundEditor({
             className={INPUT}
           >
             <option value="color">{t('workboards.settings.background.color')}</option>
-            <option value="gradient">Gradient</option>
+            <option value="gradient">{t('workboards.settings.background.gradient')}</option>
             <option value="image">{t('workboards.settings.background.image')}</option>
           </select>
         </Lbl>
@@ -422,13 +422,13 @@ export function PrintTemplateSection({
         <Lbl label={t('workboards.settings.address')}>
           <input value={pt.address || ''} onChange={(e) => set({ address: e.target.value })} className={INPUT} />
         </Lbl>
-        <Lbl label="Hotline">
+        <Lbl label={t('workboards.settings.hotline')}>
           <input value={pt.hotline || ''} onChange={(e) => set({ hotline: e.target.value })} className={INPUT} />
         </Lbl>
-        <Lbl label="Email">
+        <Lbl label={t('workboards.settings.email')}>
           <input value={pt.email || ''} onChange={(e) => set({ email: e.target.value })} className={INPUT} />
         </Lbl>
-        <Lbl label="Website">
+        <Lbl label={t('workboards.settings.website')}>
           <input value={pt.website || ''} onChange={(e) => set({ website: e.target.value })} className={INPUT} />
         </Lbl>
         <Lbl label={t('workboards.settings.footerNote')}>
@@ -462,7 +462,7 @@ export function PrintTemplateSection({
         {logoErr && <p className="mt-1 text-caption text-status-danger">{logoErr}</p>}
         {pt.logo_data && (
           // eslint-disable-next-line @next/next/no-img-element
-          <img src={pt.logo_data} alt="logo" className="mt-1 h-12 rounded object-contain" />
+          <img src={pt.logo_data} alt={t('workboards.settings.logoAlt')} className="mt-1 h-12 rounded object-contain" />
         )}
       </div>
     </section>
@@ -497,7 +497,7 @@ export function ThemeSection({
               placeholder={t('workboards.settings.brandingAppNamePlaceholder')}
             />
           </Lbl>
-          <Lbl label="Logo URL">
+          <Lbl label={t('workboards.settings.logoUrl')}>
             <input
               value={branding.logo_url || ''}
               onChange={(e) => set({ logo_url: e.target.value })}
@@ -540,7 +540,7 @@ export function ThemeSection({
                   }`}
                 >
                   {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img src={logoPreview} alt="logo preview" className="h-full w-full object-contain" />
+                  <img src={logoPreview} alt={t('workboards.settings.logoPreviewAlt')} className="h-full w-full object-contain" />
                 </div>
               )}
               {branding.logo_data && (
@@ -565,7 +565,7 @@ export function ThemeSection({
               className={INPUT}
             />
           </Lbl>
-          <Lbl label="Tagline login">
+          <Lbl label={t('workboards.settings.loginTagline')}>
             <input
               value={branding.login?.tagline || ''}
               onChange={(e) =>
@@ -613,8 +613,8 @@ export function ThemeSection({
               <option value="inter">Inter</option>
               <option value="be-vietnam">Be Vietnam Pro</option>
               <option value="roboto">Roboto</option>
-              <option value="serif">Serif</option>
-              <option value="mono">Mono</option>
+              <option value="serif">{t('workboards.settings.font.serif')}</option>
+              <option value="mono">{t('workboards.settings.font.mono')}</option>
             </select>
           </Lbl>
         </div>
@@ -1219,12 +1219,12 @@ export function ExperienceStudioSection({
                     className={INPUT}
                   >
                     <option value="">{t('workboards.settings.inherit')}</option>
-                    <option value="system">System</option>
+                    <option value="system">{t('workboards.settings.systemFont')}</option>
                     <option value="inter">Inter</option>
                     <option value="be-vietnam">Be Vietnam Pro</option>
                     <option value="roboto">Roboto</option>
-                    <option value="serif">Serif</option>
-                    <option value="mono">Mono</option>
+                    <option value="serif">{t('workboards.settings.font.serif')}</option>
+                    <option value="mono">{t('workboards.settings.font.mono')}</option>
                   </select>
                 </Lbl>
                 <Lbl label={t('workboards.settings.mode')}>
@@ -1236,9 +1236,9 @@ export function ExperienceStudioSection({
                     className={INPUT}
                   >
                     <option value="">{t('workboards.settings.inherit')}</option>
-                    <option value="auto">Auto</option>
-                    <option value="light">Light</option>
-                    <option value="dark">Dark</option>
+                    <option value="auto">{t('workboards.settings.modeAuto')}</option>
+                    <option value="light">{t('workboards.settings.modeLight')}</option>
+                    <option value="dark">{t('workboards.settings.modeDark')}</option>
                   </select>
                 </Lbl>
                 <Lbl label={t('workboards.settings.density')}>
@@ -1250,9 +1250,9 @@ export function ExperienceStudioSection({
                     className={INPUT}
                   >
                     <option value="">{t('workboards.settings.inherit')}</option>
-                    <option value="compact">Compact</option>
-                    <option value="cozy">Cozy</option>
-                    <option value="comfortable">Comfortable</option>
+                    <option value="compact">{t('workboards.settings.option.compact')}</option>
+                    <option value="cozy">{t('workboards.settings.option.cozy')}</option>
+                    <option value="comfortable">{t('workboards.settings.option.comfortable')}</option>
                   </select>
                 </Lbl>
                 <Lbl label={t('workboards.settings.radius')}>
@@ -1264,11 +1264,11 @@ export function ExperienceStudioSection({
                     className={INPUT}
                   >
                     <option value="">{t('workboards.settings.inherit')}</option>
-                    <option value="none">None</option>
-                    <option value="small">Small</option>
-                    <option value="medium">Medium</option>
-                    <option value="large">Large</option>
-                    <option value="full">Full</option>
+                    <option value="none">{t('workboards.settings.option.none')}</option>
+                    <option value="small">{t('workboards.settings.option.small')}</option>
+                    <option value="medium">{t('workboards.settings.option.medium')}</option>
+                    <option value="large">{t('workboards.settings.option.large')}</option>
+                    <option value="full">{t('workboards.settings.option.full')}</option>
                   </select>
                 </Lbl>
                 <Lbl label={t('workboards.settings.elevation')}>
@@ -1280,10 +1280,10 @@ export function ExperienceStudioSection({
                     className={INPUT}
                   >
                     <option value="">{t('workboards.settings.inherit')}</option>
-                    <option value="none">None</option>
-                    <option value="small">Small</option>
-                    <option value="medium">Medium</option>
-                    <option value="large">Large</option>
+                    <option value="none">{t('workboards.settings.option.none')}</option>
+                    <option value="small">{t('workboards.settings.option.small')}</option>
+                    <option value="medium">{t('workboards.settings.option.medium')}</option>
+                    <option value="large">{t('workboards.settings.option.large')}</option>
                   </select>
                 </Lbl>
                 <Lbl label={t('workboards.settings.motion')}>
@@ -1295,9 +1295,9 @@ export function ExperienceStudioSection({
                     className={INPUT}
                   >
                     <option value="">{t('workboards.settings.inherit')}</option>
-                    <option value="instant">Instant</option>
-                    <option value="standard">Standard</option>
-                    <option value="expressive">Expressive</option>
+                    <option value="instant">{t('workboards.settings.option.instant')}</option>
+                    <option value="standard">{t('workboards.settings.option.standard')}</option>
+                    <option value="expressive">{t('workboards.settings.option.expressive')}</option>
                   </select>
                 </Lbl>
               </section>
@@ -1315,9 +1315,9 @@ export function ExperienceStudioSection({
                   className={INPUT}
                 >
                   <option value="">{t('workboards.settings.inherit')}</option>
-                  <option value="full_bleed">Full bleed</option>
-                  <option value="constrained">Constrained</option>
-                  <option value="wide">Wide</option>
+                  <option value="full_bleed">{t('workboards.settings.option.fullBleed')}</option>
+                  <option value="constrained">{t('workboards.settings.option.constrained')}</option>
+                  <option value="wide">{t('workboards.settings.option.wide')}</option>
                 </select>
               </Lbl>
               <Lbl label={t('workboards.settings.pagePadding')}>
@@ -1329,9 +1329,9 @@ export function ExperienceStudioSection({
                   className={INPUT}
                 >
                   <option value="">{t('workboards.settings.inherit')}</option>
-                  <option value="compact">Compact</option>
-                  <option value="cozy">Cozy</option>
-                  <option value="comfortable">Comfortable</option>
+                  <option value="compact">{t('workboards.settings.option.compact')}</option>
+                  <option value="cozy">{t('workboards.settings.option.cozy')}</option>
+                  <option value="comfortable">{t('workboards.settings.option.comfortable')}</option>
                 </select>
               </Lbl>
               <Lbl label={t('workboards.settings.appBackground')}>
@@ -1351,12 +1351,12 @@ export function ExperienceStudioSection({
               </Lbl>
               <Lbl label={t('workboards.settings.customBackgroundColor')}>
                 <ColorTokenField
-                  label="Color"
+                  label={t('workboards.settings.colorValue')}
                   value={theme.app_background || undefined}
                   onChange={(value) => setTheme({ app_background: value })}
                 />
               </Lbl>
-              <Lbl label="Sticky header">
+              <Lbl label={t('workboards.settings.stickyHeader')}>
                 <TriStateSelect
                   value={shell.sticky_header}
                   onChange={(sticky_header) => setShell({ sticky_header })}
@@ -1382,7 +1382,7 @@ export function ExperienceStudioSection({
 
           {category === 'navigation' && (
             <section className="grid gap-3 sm:grid-cols-2">
-              <Lbl label="Desktop">
+              <Lbl label={t('workboards.settings.desktop')}>
                 <select
                   value={nav.desktop_kind || ''}
                   onChange={(event) =>
@@ -1391,12 +1391,12 @@ export function ExperienceStudioSection({
                   className={INPUT}
                 >
                   <option value="">{t('workboards.settings.inherit')}</option>
-                  <option value="sidebar">Sidebar</option>
-                  <option value="top_tabs">Top tabs</option>
-                  <option value="compact_rail">Compact rail</option>
+                  <option value="sidebar">{t('workboards.settings.nav.sidebar')}</option>
+                  <option value="top_tabs">{t('workboards.settings.nav.topTabs')}</option>
+                  <option value="compact_rail">{t('workboards.settings.nav.compactRail')}</option>
                 </select>
               </Lbl>
-              <Lbl label="Mobile">
+              <Lbl label={t('workboards.settings.mobile')}>
                 <select
                   value={nav.mobile_kind || ''}
                   onChange={(event) =>
@@ -1405,8 +1405,8 @@ export function ExperienceStudioSection({
                   className={INPUT}
                 >
                   <option value="">{t('workboards.settings.inherit')}</option>
-                  <option value="bottom_nav">Bottom nav</option>
-                  <option value="drawer">Drawer</option>
+                  <option value="bottom_nav">{t('workboards.settings.nav.bottomNav')}</option>
+                  <option value="drawer">{t('workboards.settings.nav.drawer')}</option>
                 </select>
               </Lbl>
               <Lbl label={t('workboards.settings.activeStyle')}>
@@ -1418,9 +1418,9 @@ export function ExperienceStudioSection({
                   className={INPUT}
                 >
                   <option value="">{t('workboards.settings.inherit')}</option>
-                  <option value="pill">Pill</option>
-                  <option value="bar">Bar</option>
-                  <option value="highlight">Highlight</option>
+                  <option value="pill">{t('workboards.settings.option.pill')}</option>
+                  <option value="bar">{t('workboards.settings.option.bar')}</option>
+                  <option value="highlight">{t('workboards.settings.option.highlight')}</option>
                 </select>
               </Lbl>
               <Lbl label={t('workboards.settings.sidebarWidth')}>
@@ -1450,7 +1450,7 @@ export function ExperienceStudioSection({
               <Lbl label={t('workboards.settings.showLabels')}>
                 <TriStateSelect value={nav.show_labels} onChange={(show_labels) => setNav({ show_labels })} />
               </Lbl>
-              <Lbl label="Breadcrumbs">
+              <Lbl label={t('workboards.settings.breadcrumbs')}>
                 <TriStateSelect
                   value={nav.breadcrumbs}
                   onChange={(breadcrumbs) => setNav({ breadcrumbs })}
@@ -1461,7 +1461,7 @@ export function ExperienceStudioSection({
 
           {category === 'feedback' && (
             <section className="grid gap-3 sm:grid-cols-2">
-              <Lbl label="Loading">
+              <Lbl label={t('workboards.settings.loadingState')}>
                 <select
                   value={feedback.loading || ''}
                   onChange={(event) =>
@@ -1470,11 +1470,11 @@ export function ExperienceStudioSection({
                   className={INPUT}
                 >
                   <option value="">{t('workboards.settings.inherit')}</option>
-                  <option value="skeleton">Skeleton</option>
-                  <option value="spinner">Spinner</option>
+                  <option value="skeleton">{t('workboards.settings.option.skeleton')}</option>
+                  <option value="spinner">{t('workboards.settings.option.spinner')}</option>
                 </select>
               </Lbl>
-              <Lbl label="Empty state">
+              <Lbl label={t('workboards.settings.emptyState')}>
                 <select
                   value={feedback.empty_style || ''}
                   onChange={(event) =>
@@ -1483,12 +1483,12 @@ export function ExperienceStudioSection({
                   className={INPUT}
                 >
                   <option value="">{t('workboards.settings.inherit')}</option>
-                  <option value="illustration">Illustration</option>
-                  <option value="message">Message</option>
-                  <option value="minimal">Minimal</option>
+                  <option value="illustration">{t('workboards.settings.option.illustration')}</option>
+                  <option value="message">{t('workboards.settings.option.message')}</option>
+                  <option value="minimal">{t('workboards.settings.option.minimal')}</option>
                 </select>
               </Lbl>
-              <Lbl label="Success feedback">
+              <Lbl label={t('workboards.settings.successFeedback')}>
                 <select
                   value={feedback.success || ''}
                   onChange={(event) =>
@@ -1497,9 +1497,9 @@ export function ExperienceStudioSection({
                   className={INPUT}
                 >
                   <option value="">{t('workboards.settings.inherit')}</option>
-                  <option value="toast">Toast</option>
-                  <option value="inline">Inline</option>
-                  <option value="banner">Banner</option>
+                  <option value="toast">{t('workboards.settings.option.toast')}</option>
+                  <option value="inline">{t('workboards.settings.option.inline')}</option>
+                  <option value="banner">{t('workboards.settings.option.banner')}</option>
                 </select>
               </Lbl>
               <Lbl label={t('workboards.settings.allowRetry')}>
@@ -1541,9 +1541,9 @@ export function ExperienceStudioSection({
                     className={INPUT}
                   >
                     <option value="">{t('workboards.settings.followApp')}</option>
-                    <option value="narrow">Narrow</option>
-                    <option value="standard">Standard</option>
-                    <option value="wide">Wide</option>
+                    <option value="narrow">{t('workboards.settings.option.narrow')}</option>
+                    <option value="standard">{t('workboards.settings.option.standard')}</option>
+                    <option value="wide">{t('workboards.settings.option.wide')}</option>
                   </select>
                 </Lbl>
                 <Lbl label={t('workboards.settings.density')}>
@@ -1557,12 +1557,12 @@ export function ExperienceStudioSection({
                     className={INPUT}
                   >
                     <option value="">{t('workboards.settings.followApp')}</option>
-                    <option value="compact">Compact</option>
-                    <option value="cozy">Cozy</option>
-                    <option value="comfortable">Comfortable</option>
+                    <option value="compact">{t('workboards.settings.option.compact')}</option>
+                    <option value="cozy">{t('workboards.settings.option.cozy')}</option>
+                    <option value="comfortable">{t('workboards.settings.option.comfortable')}</option>
                   </select>
                 </Lbl>
-                <Lbl label="Padding (px)">
+                <Lbl label={t('workboards.settings.paddingPx')}>
                   <input
                     type="number"
                     min={0}
@@ -1603,10 +1603,10 @@ export function ExperienceStudioSection({
                     className={INPUT}
                   >
                     <option value="">{t('workboards.settings.followApp')}</option>
-                    <option value="none">None</option>
-                    <option value="small">Small</option>
-                    <option value="medium">Medium</option>
-                    <option value="large">Large</option>
+                    <option value="none">{t('workboards.settings.option.none')}</option>
+                    <option value="small">{t('workboards.settings.option.small')}</option>
+                    <option value="medium">{t('workboards.settings.option.medium')}</option>
+                    <option value="large">{t('workboards.settings.option.large')}</option>
                   </select>
                 </Lbl>
                 <Lbl label={t('workboards.settings.motion')}>
@@ -1620,9 +1620,9 @@ export function ExperienceStudioSection({
                     className={INPUT}
                   >
                     <option value="">{t('workboards.settings.followApp')}</option>
-                    <option value="instant">Instant</option>
-                    <option value="standard">Standard</option>
-                    <option value="expressive">Expressive</option>
+                    <option value="instant">{t('workboards.settings.option.instant')}</option>
+                    <option value="standard">{t('workboards.settings.option.standard')}</option>
+                    <option value="expressive">{t('workboards.settings.option.expressive')}</option>
                   </select>
                 </Lbl>
               </section>
@@ -1657,12 +1657,12 @@ export function ExperienceStudioSection({
                       }
                       className={INPUT}
                     >
-                      <option value="">Plain</option>
-                      <option value="divided">Divided</option>
-                      <option value="surface">Surface</option>
+                      <option value="">{t('workboards.settings.option.plain')}</option>
+                      <option value="divided">{t('workboards.settings.option.divided')}</option>
+                      <option value="surface">{t('workboards.settings.option.surface')}</option>
                     </select>
                   </Lbl>
-                  <Lbl label="Sticky action bar">
+                  <Lbl label={t('workboards.settings.stickyActionBar')}>
                     <TriStateSelect
                       value={presentation.sticky_action_bar}
                       onChange={(sticky_action_bar) => setPresentation({ sticky_action_bar })}
@@ -1673,7 +1673,7 @@ export function ExperienceStudioSection({
 
               {screen.kind === 'table' && (
                 <section className="grid gap-3 border-t border-[rgb(var(--border-line))] pt-5 sm:grid-cols-2">
-                  <Lbl label="Sticky table header">
+                  <Lbl label={t('workboards.settings.stickyTableHeader')}>
                     <TriStateSelect
                       value={presentation.table?.sticky_header}
                       onChange={(sticky_header) => setTablePresentation({ sticky_header })}
@@ -1690,9 +1690,9 @@ export function ExperienceStudioSection({
                       className={INPUT}
                     >
                       <option value="">{t('workboards.settings.followApp')}</option>
-                      <option value="compact">Compact</option>
-                      <option value="cozy">Cozy</option>
-                      <option value="comfortable">Comfortable</option>
+                      <option value="compact">{t('workboards.settings.option.compact')}</option>
+                      <option value="cozy">{t('workboards.settings.option.cozy')}</option>
+                      <option value="comfortable">{t('workboards.settings.option.comfortable')}</option>
                     </select>
                   </Lbl>
                   <Lbl label={t('workboards.settings.filterPosition')}>
@@ -1705,8 +1705,8 @@ export function ExperienceStudioSection({
                       }
                       className={INPUT}
                     >
-                      <option value="">Top</option>
-                      <option value="sticky">Sticky top</option>
+                      <option value="">{t('workboards.settings.option.top')}</option>
+                      <option value="sticky">{t('workboards.settings.option.stickyTop')}</option>
                     </select>
                   </Lbl>
                 </section>

@@ -25,6 +25,7 @@ import {
   resolveMode,
   type WbTheme,
 } from '@/lib/wb-theme';
+import { useI18n } from '@/providers/LanguageProvider';
 
 // Map menu icon strings to lucide components. Falling back to ClipboardList
 // keeps the cards looking consistent for icons we don't bundle yet.
@@ -42,6 +43,7 @@ function pickIcon(name?: string | null) {
 }
 
 export default function WorkspacePage() {
+  const { t } = useI18n();
   const params = useParams<{ token: string }>();
   const router = useRouter();
   const token = String(params.token || '');
@@ -86,7 +88,7 @@ export default function WorkspacePage() {
           if (!alive) return;
           setError(
             innerErr?.response?.data?.detail ||
-              'Không tìm thấy workspace hoặc liên kết đã bị thu hồi.',
+              t('workboards.portal.notFound'),
           );
         }
       } finally {
@@ -120,7 +122,9 @@ export default function WorkspacePage() {
     return (
       <div className="flex min-h-screen items-center justify-center bg-slate-50 p-6">
         <div className="max-w-md rounded-xl border border-rose-200 bg-white p-6 shadow-sm">
-          <h1 className="text-base font-semibold text-rose-600">Không thể mở workspace</h1>
+          <h1 className="text-base font-semibold text-rose-600">
+            {t('workboards.portal.openFailedTitle')}
+          </h1>
           <p className="mt-2 text-sm text-slate-700">{error}</p>
         </div>
       </div>
@@ -131,7 +135,7 @@ export default function WorkspacePage() {
     e.preventDefault();
     setLoginError(null);
     if (!username.trim() || !pin) {
-      setLoginError('Vui lòng nhập username và PIN.');
+      setLoginError(t('workboards.portal.usernamePinRequired'));
       return;
     }
     setSubmitting(true);
@@ -149,7 +153,7 @@ export default function WorkspacePage() {
       setMeta(m.workspace);
     } catch (err: any) {
       const detail = err?.response?.data?.detail;
-      setLoginError(typeof detail === 'string' ? detail : 'Đăng nhập thất bại.');
+      setLoginError(typeof detail === 'string' ? detail : t('workboards.portal.loginFailed'));
     } finally {
       setSubmitting(false);
     }
@@ -195,7 +199,7 @@ export default function WorkspacePage() {
             )}
             <div>
               <h1 className="text-lg font-semibold text-slate-900">
-                {branding?.app_name || meta?.name || 'Workspace'}
+                {branding?.app_name || meta?.name || t('workboards.portal.workspaceFallback')}
               </h1>
               {meta?.description && (
                 <p className="text-xs text-slate-500">{meta.description}</p>
@@ -212,7 +216,7 @@ export default function WorkspacePage() {
           <form onSubmit={handleLogin} className="space-y-3">
             <label className="block">
               <span className="mb-1 block text-sm font-medium text-slate-700">
-                Tên đăng nhập
+                {t('workboards.portal.username')}
               </span>
               <input
                 type="text"
@@ -222,7 +226,7 @@ export default function WorkspacePage() {
                 autoFocus
                 autoComplete="username"
                 className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-slate-500 focus:outline-none"
-                placeholder="VD: w001"
+                placeholder={t('workboards.portal.usernamePlaceholder')}
               />
             </label>
 
@@ -236,7 +240,7 @@ export default function WorkspacePage() {
                 inputMode="numeric"
                 autoComplete="current-password"
                 className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-slate-500 focus:outline-none"
-                placeholder="PIN của bạn"
+                placeholder={t('workboards.portal.pinPlaceholder')}
               />
             </label>
 
@@ -257,7 +261,7 @@ export default function WorkspacePage() {
               ) : (
                 <LogIn className="h-4 w-4" />
               )}
-              {submitting ? 'Đang xử lý…' : 'Đăng nhập'}
+              {submitting ? t('workboards.portal.submitting') : t('workboards.portal.login')}
             </button>
           </form>
         </div>
@@ -293,9 +297,9 @@ export default function WorkspacePage() {
                 {menu.app_user.full_name || menu.app_user.username}
                 {menu.app_user.role ? ` • ${menu.app_user.role}` : ''}
                 {(menu.app_user.context as Record<string, unknown> | undefined)?.team_id
-                  ? ` • Tổ ${
-                      (menu.app_user.context as Record<string, unknown>)?.team_id
-                    }`
+                  ? t('workboards.portal.team', {
+                      team: String((menu.app_user.context as Record<string, unknown>)?.team_id),
+                    })
                   : ''}
               </p>
             </div>
@@ -305,20 +309,22 @@ export default function WorkspacePage() {
             className="flex items-center gap-1.5 rounded-md border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50"
           >
             <LogOut className="h-3.5 w-3.5" />
-            Đăng xuất
+            {t('workboards.portal.logout')}
           </button>
         </div>
       </header>
 
       <main className="mx-auto max-w-5xl px-6 py-8">
-        <h2 className="mb-1 text-sm font-medium text-slate-500">Công việc của bạn</h2>
+        <h2 className="mb-1 text-sm font-medium text-slate-500">
+          {t('workboards.portal.tasksTitle')}
+        </h2>
         <p className="mb-6 text-xs text-slate-400">
-          Chọn một thẻ bên dưới để bắt đầu.
+          {t('workboards.portal.tasksSubtitle')}
         </p>
 
         {menu.menu.length === 0 ? (
           <div className="rounded-lg border border-dashed border-slate-300 bg-white p-10 text-center text-sm text-slate-500">
-            Hiện chưa có công việc nào được phân cho bạn.
+            {t('workboards.portal.noTasks')}
           </div>
         ) : (
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">

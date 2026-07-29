@@ -862,11 +862,12 @@ function SavePill({
   savedAt: Date | null;
   error: string | null;
 }) {
+  const { t, locale } = useI18n();
   if (status === 'saving') {
     return (
       <span className="inline-flex h-6 items-center gap-1.5 rounded-full bg-info/10 px-2.5 text-tiny font-emphasis text-info">
         <Loader2 className="h-3 w-3 animate-spin" />
-        Saving
+        {t('workboards.builder.autosave.saving')}
       </span>
     );
   }
@@ -874,7 +875,7 @@ function SavePill({
     return (
       <span className="inline-flex h-6 items-center gap-1.5 rounded-full bg-warning/10 px-2.5 text-tiny font-emphasis text-warning">
         <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-warning" />
-        Editing
+        {t('workboards.builder.autosave.editing')}
       </span>
     );
   }
@@ -882,10 +883,10 @@ function SavePill({
     return (
       <span
         className="inline-flex h-6 max-w-[260px] items-center gap-1.5 rounded-full bg-danger/10 px-2.5 text-tiny font-emphasis text-danger"
-        title={error || 'Save failed - edit again to retry'}
+        title={error || t('workboards.builder.autosave.saveFailedRetry')}
       >
         <AlertCircle className="h-3 w-3 shrink-0" />
-        <span className="truncate">Save failed</span>
+        <span className="truncate">{t('workboards.builder.autosave.saveFailed')}</span>
       </span>
     );
   }
@@ -893,14 +894,14 @@ function SavePill({
     return (
       <span className="inline-flex h-6 items-center gap-1.5 rounded-full bg-success/10 px-2.5 text-tiny font-emphasis text-success">
         <CheckCircle2 className="h-3 w-3" />
-        Synced {savedAt.toLocaleTimeString()}
+        {t('workboards.builder.autosave.syncedAt', { time: savedAt.toLocaleTimeString(locale) })}
       </span>
     );
   }
   return (
     <span className="inline-flex h-6 items-center gap-1.5 rounded-full bg-surface-2 px-2.5 text-tiny font-emphasis text-text-tertiary">
       <Save className="h-3 w-3" />
-      Auto-saves
+      {t('workboards.builder.autosave.autoSaves')}
     </span>
   );
 }

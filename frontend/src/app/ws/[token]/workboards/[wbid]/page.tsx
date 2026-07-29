@@ -101,6 +101,7 @@ import {
 import { isNetworkError, syncSubmits } from '@/lib/offline/sync';
 import { toast } from '@/lib/toast';
 import { isWorkboardPreviewPatch } from '@/lib/workboard-preview-bridge';
+import { useI18n } from '@/providers/LanguageProvider';
 
 // Icon mapping is centralised in ScreenIconRegistry so the builder
 // picker and the runtime can't drift. Anything not in the registry
@@ -283,6 +284,7 @@ function detectDevice(): DeviceMode {
 }
 
 export default function WorkspaceWorkboardPage() {
+  const { t: rt } = useI18n();
   const router = useRouter();
   const params = useParams<{ token: string; wbid: string }>();
   const token = String(params.token || '');
@@ -453,14 +455,14 @@ export default function WorkspaceWorkboardPage() {
         setError(
           typeof apiError.response?.data?.detail === 'string'
             ? apiError.response.data.detail
-            : 'Không tải được mini-app.',
+            : rt('workboards.runtime.loadMiniAppFailed'),
         );
       }
     })();
     return () => {
       alive = false;
     };
-  }, [token, workboardId, router]);
+  }, [token, workboardId, router, rt]);
 
   const navItems: AppShellScreenStub[] = useMemo(() => {
     if (!shell) return [];
@@ -499,10 +501,10 @@ export default function WorkspaceWorkboardPage() {
     }
     const ungrouped = navItems.filter((s) => !placed.has(s.id));
     if (ungrouped.length > 0) {
-      sections.push({ id: '__other__', label: 'Khác', icon: null, screens: ungrouped });
+      sections.push({ id: '__other__', label: rt('workboards.runtime.otherSection'), icon: null, screens: ungrouped });
     }
     return sections.length > 0 ? sections : null;
-  }, [shell, navItems]);
+  }, [shell, navItems, rt]);
 
   const goToScreen = useCallback(
     (screenId: string, carry?: Record<string, unknown>) => {
@@ -570,13 +572,15 @@ export default function WorkspaceWorkboardPage() {
     return (
       <div className="flex min-h-screen items-center justify-center bg-slate-50 p-6">
         <div className="max-w-md rounded-xl border border-rose-200 bg-white p-6 shadow-sm">
-          <h1 className="text-base font-semibold text-rose-600">Lỗi</h1>
+          <h1 className="text-base font-semibold text-rose-600">
+            {rt('workboards.runtime.errorTitle')}
+          </h1>
           <p className="mt-2 text-sm text-slate-700">{error}</p>
           <button
             onClick={() => router.push(`/ws/${token}`)}
             className="mt-4 text-sm text-blue-600 hover:underline"
           >
-            ← Quay lại menu
+            {rt('workboards.runtime.backToMenu')}
           </button>
         </div>
       </div>
@@ -797,7 +801,7 @@ export default function WorkspaceWorkboardPage() {
             />
           ) : (
             <div className="rounded-xl bg-white p-10 text-center text-sm text-slate-500 shadow-sm">
-              Chưa có màn hình nào hiển thị cho tài khoản của bạn.
+              {rt('workboards.runtime.noScreensForAccount')}
             </div>
           )}
         </main>
@@ -859,6 +863,7 @@ function MobileDrawer({
   showLabels?: boolean;
   activeStyle?: 'pill' | 'bar' | 'highlight';
 }) {
+  const { t: rt } = useI18n();
   const [open, setOpen] = useState(false);
   const allScreens = sections ? sections.flatMap((s) => s.screens) : items;
   const active = allScreens.find((s) => s.id === activeId);
@@ -886,7 +891,7 @@ function MobileDrawer({
         onClick={() => setOpen(true)}
         className="fixed bottom-4 left-4 z-30 flex items-center gap-2 rounded-full px-4 py-2.5 text-sm font-semibold text-white shadow-lg"
         style={{ backgroundColor: accent }}
-        aria-label="Mở menu"
+        aria-label={rt('workboards.runtime.openMenu')}
       >
         <Menu className="h-5 w-5" />
         <span className="max-w-[140px] truncate">{active?.title || 'Menu'}</span>
@@ -899,12 +904,14 @@ function MobileDrawer({
           />
           <nav className="absolute inset-y-0 left-0 flex w-72 max-w-[80%] flex-col gap-1 overflow-y-auto bg-white p-3 shadow-xl">
             <div className="mb-2 flex items-center justify-between px-1">
-              <span className="text-sm font-semibold text-slate-700">Màn hình</span>
+              <span className="text-sm font-semibold text-slate-700">
+                {rt('workboards.runtime.screens')}
+              </span>
               <button
                 type="button"
                 onClick={() => setOpen(false)}
                 className="rounded-md p-1 text-slate-500 hover:bg-slate-100"
-                aria-label="Đóng menu"
+                aria-label={rt('workboards.runtime.closeMenu')}
               >
                 <X className="h-5 w-5" />
               </button>
@@ -969,6 +976,7 @@ function Header({
   onLogout: () => void;
   onBackToMenu: () => void;
 }) {
+  const { t: rt } = useI18n();
   const logoSrc = logoData || logoUrl;
   const wideLogo = logoLayout === 'wide';
   const [searchQuery, setSearchQuery] = useState('');
@@ -990,7 +998,7 @@ function Header({
           <button
             onClick={onBackToMenu}
             className="flex items-center gap-1 rounded-md px-2 py-1 text-xs text-slate-500 hover:bg-slate-100"
-            title="Trở lại menu workspace"
+            title={rt('workboards.runtime.backToWorkspaceMenu')}
           >
             <ArrowLeft className="h-3.5 w-3.5" />
           </button>
@@ -1027,8 +1035,8 @@ function Header({
                 }
               }}
               className="h-8 w-full rounded-md border border-slate-200 bg-white pl-8 pr-3 text-sm outline-none focus:border-slate-400"
-              placeholder="Tìm màn hình..."
-              aria-label="Tìm màn hình"
+              placeholder={rt('workboards.runtime.searchScreensPlaceholder')}
+              aria-label={rt('workboards.runtime.searchScreens')}
             />
             {searchResults.length > 0 && (
               <div className="absolute inset-x-0 top-9 z-50 overflow-hidden rounded-md border border-slate-200 bg-white shadow-lg">
@@ -1062,7 +1070,7 @@ function Header({
           className="flex items-center gap-1 rounded-md border border-slate-200 px-2 py-1 text-xs font-medium text-slate-600 hover:bg-slate-50"
         >
           <LogOut className="h-3.5 w-3.5" />
-          <span className="hidden sm:inline">Đăng xuất</span>
+          <span className="hidden sm:inline">{rt('workboards.runtime.logout')}</span>
         </button>
       </div>
     </header>
@@ -1088,6 +1096,7 @@ function PushToggle({
   workboardId: number;
   accent: string;
 }) {
+  const { t: rt } = useI18n();
   const [state, setState] = useState<'hidden' | 'idle' | 'on' | 'busy'>('hidden');
 
   useEffect(() => {
@@ -1142,12 +1151,14 @@ function PushToggle({
     <button
       onClick={enable}
       disabled={state === 'busy' || state === 'on'}
-      title={state === 'on' ? 'Đã bật thông báo' : 'Bật thông báo'}
+      title={state === 'on' ? rt('workboards.runtime.notificationsOnTitle') : rt('workboards.runtime.enableNotificationsTitle')}
       className="flex items-center gap-1 rounded-md border px-2 py-1 text-xs font-medium hover:bg-slate-50 disabled:opacity-70"
       style={{ borderColor: state === 'on' ? accent : '#e2e8f0', color: state === 'on' ? accent : '#475569' }}
     >
       {state === 'busy' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Bell className="h-3.5 w-3.5" />}
-      <span className="hidden sm:inline">{state === 'on' ? 'Đã bật' : 'Thông báo'}</span>
+      <span className="hidden sm:inline">
+        {state === 'on' ? rt('workboards.runtime.notificationsOn') : rt('workboards.runtime.notifications')}
+      </span>
     </button>
   );
 }
@@ -1283,6 +1294,7 @@ function Sidebar({
   width?: number;
   defaultCollapsed?: boolean;
 }) {
+  const { t: rt } = useI18n();
   const [collapsed, setCollapsed] = useState(compact || defaultCollapsed);
   useEffect(() => {
     setCollapsed(compact || defaultCollapsed);
@@ -1333,8 +1345,8 @@ function Sidebar({
           type="button"
           onClick={() => setCollapsed((value) => !value)}
           className="mt-3 flex h-8 items-center justify-center rounded-md text-slate-500 hover:bg-slate-100"
-          title={collapsed ? 'Mở rộng sidebar' : 'Thu gọn sidebar'}
-          aria-label={collapsed ? 'Mở rộng sidebar' : 'Thu gọn sidebar'}
+          title={collapsed ? rt('workboards.runtime.expandSidebar') : rt('workboards.runtime.collapseSidebar')}
+          aria-label={collapsed ? rt('workboards.runtime.expandSidebar') : rt('workboards.runtime.collapseSidebar')}
         >
           {collapsed ? <ChevronRight className="h-4 w-4" /> : <ChevronLeft className="h-4 w-4" />}
         </button>
@@ -1456,6 +1468,7 @@ function BottomNav({
   showLabels?: boolean;
   activeStyle?: 'pill' | 'bar' | 'highlight';
 }) {
+  const { t: rt } = useI18n();
   const [showMore, setShowMore] = useState(false);
   // Four primary items keeps touch targets readable on small phones; the rest
   // live in the More sheet instead of squeezing labels into tiny columns.
@@ -1503,7 +1516,9 @@ function BottomNav({
           >
             <div className="mx-auto mb-3 mt-2 h-1 w-10 rounded-full bg-slate-200" />
             <div className="border-b border-slate-100 px-4 pb-2">
-              <h3 className="text-sm font-semibold text-slate-700">Thêm menu</h3>
+              <h3 className="text-sm font-semibold text-slate-700">
+                {rt('workboards.runtime.moreMenu')}
+              </h3>
             </div>
             <div className="py-1">
               {sheetSections
@@ -1587,7 +1602,7 @@ function BottomNav({
             <MoreHorizontal className="h-5 w-5" />
             {showLabels && (
               <span className="text-[11px] font-medium leading-tight">
-                {grouped ? 'Mục' : 'Thêm'}
+                {grouped ? rt('workboards.runtime.items') : rt('workboards.runtime.more')}
               </span>
             )}
           </button>
@@ -1661,6 +1676,7 @@ function ScreenContainer({
   viewerRole?: string | null;
   onNavigate: (next: string, carry?: Record<string, unknown>) => void;
 }) {
+  const { t: rt } = useI18n();
   const [data, setData] = useState<ScreenResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [reloadKey, setReloadKey] = useState(0);
@@ -1703,8 +1719,8 @@ function ScreenContainer({
     return (
       <div className="rounded-xl bg-white p-6 text-center text-sm text-slate-500 shadow-sm">
         {offline
-          ? 'Màn hình này chưa được tải để dùng offline. Hãy mở nó một lần khi có mạng, sau đó vẫn dùng được khi mất mạng.'
-          : 'Không tải được màn hình này.'}
+          ? rt('workboards.runtime.screenOfflineNotCached')
+          : rt('workboards.runtime.screenLoadFailed')}
         {!offline && experience?.feedback.error_retry && (
           <button
             type="button"
@@ -1712,7 +1728,7 @@ function ScreenContainer({
             className="mx-auto mt-4 flex items-center gap-2 rounded-md border border-slate-300 px-3 py-2 font-medium text-slate-700 hover:bg-slate-50"
           >
             <RefreshCw className="h-4 w-4" />
-            Thử lại
+            {rt('workboards.runtime.retry')}
           </button>
         )}
       </div>
@@ -1735,7 +1751,7 @@ function ScreenContainer({
         (tableData.primary_key_columns || []).length === 0 ||
         Object.keys(pk).length !== (tableData.primary_key_columns || []).length
       ) {
-        toast.error('KhÃ´ng xÃ¡c Ä‘á»‹nh Ä‘Æ°á»£c khÃ³a cá»§a Parent.');
+        toast.error(rt('workboards.runtime.parentKeyMissing'));
         return;
       }
       try {
@@ -1787,7 +1803,7 @@ function ScreenContainer({
         });
       } catch (error: unknown) {
         const detail = (error as ApiErrorLike)?.response?.data?.detail;
-        toast.error(typeof detail === 'string' ? detail : 'KhÃ´ng má»Ÿ Ä‘Æ°á»£c báº£n ghi liÃªn quan.');
+        toast.error(typeof detail === 'string' ? detail : rt('workboards.runtime.openRelatedFailed'));
       }
       return;
     }
@@ -1879,6 +1895,7 @@ function ScreenContainer({
 // runtime — no duplication.
 
 function DashboardScreen({ spec }: { spec: DashboardScreenResponse }) {
+  const { t: rt } = useI18n();
   const { share_token: shareToken, password, height_px: heightPx } = spec.dashboard;
   const [iframeReady, setIframeReady] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
@@ -1910,7 +1927,7 @@ function DashboardScreen({ spec }: { spec: DashboardScreenResponse }) {
         if (alive) setIframeReady(true);
       } catch {
         if (alive) {
-          setAuthError('Không xác thực được dashboard. Có thể public link đã đổi password hoặc bị thu hồi.');
+          setAuthError(rt('workboards.runtime.dashboardAuthFailed'));
           setIframeReady(true);
         }
       }
@@ -1918,7 +1935,7 @@ function DashboardScreen({ spec }: { spec: DashboardScreenResponse }) {
     return () => {
       alive = false;
     };
-  }, [shareToken, password]);
+  }, [shareToken, password, rt]);
 
   // The /embed page posts { type: 'appbi:resize', height } so we can grow the
   // iframe to fit its content. If the builder pinned a fixed height we ignore
@@ -1941,7 +1958,7 @@ function DashboardScreen({ spec }: { spec: DashboardScreenResponse }) {
   if (!shareToken) {
     return (
       <div className="rounded-xl bg-white p-6 text-center text-sm text-slate-500 shadow-sm">
-        Màn hình Dashboard chưa được cấu hình share token.
+        {rt('workboards.runtime.dashboardMissingShareToken')}
       </div>
     );
   }
@@ -1991,6 +2008,7 @@ function FormScreen({
   onSaved: (carry: Record<string, unknown>, nextScreen?: string) => void;
   onNavigate?: (screenId: string, carry?: Record<string, unknown>) => void;
 }) {
+  const { t: rt } = useI18n();
   const [ignoreSharedSeed, setIgnoreSharedSeed] = useState(false);
   const buildInitial = useCallback(() => {
     const merged: Record<string, unknown> = {};
@@ -2101,7 +2119,7 @@ function FormScreen({
       setRelatedLoading(false);
       setRelatedError(
         storedFlow?.status === 'error'
-          ? storedFlow.error || 'Đồng bộ Parent thất bại.'
+          ? storedFlow.error || rt('workboards.runtime.parentSyncFailed')
           : null,
       );
       return;
@@ -2117,12 +2135,12 @@ function FormScreen({
       setRelatedRows(rows);
     } catch (err) {
       if (!isNetworkError(err) || queued.length === 0) {
-        setRelatedError('Không tải được danh sách chi tiết đã đồng bộ.');
+        setRelatedError(rt('workboards.runtime.relatedRowsLoadFailed'));
       }
     } finally {
       setRelatedLoading(false);
     }
-  }, [baseRelationContext, token, workboardId]);
+  }, [baseRelationContext, token, workboardId, rt]);
 
   useEffect(() => {
     void reloadRelatedRows();
@@ -2139,7 +2157,7 @@ function FormScreen({
     setOcrNote(null);
     if (!file) return;
     if (file.size > 9 * 1024 * 1024) {
-      setOcrError('Ảnh quá lớn (tối đa ~9 MB). Hãy chụp lại với độ phân giải thấp hơn.');
+      setOcrError(rt('workboards.runtime.ocrFileTooLarge'));
       return;
     }
     const reader = new FileReader();
@@ -2153,21 +2171,21 @@ function FormScreen({
         const keys = Object.keys(got);
         if (keys.length === 0) {
           setOcrNote(null);
-          setOcrError('Chưa đọc được trường nào từ ảnh. Hãy chụp rõ hơn hoặc nhập tay.');
+          setOcrError(rt('workboards.runtime.ocrNoFields'));
           return;
         }
         setValues((curr) => ({ ...curr, ...got }));
         setOcrFilled(new Set(keys));
-        setOcrNote(`Đã điền ${keys.length} trường từ ảnh — vui lòng kiểm tra (ô vàng) trước khi lưu.`);
+        setOcrNote(rt('workboards.runtime.ocrFilledFields', { count: keys.length }));
       } catch (err: unknown) {
         const detail =
           (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-        setOcrError(typeof detail === 'string' ? detail : 'Không nhận diện được ảnh. Vui lòng thử lại.');
+        setOcrError(typeof detail === 'string' ? detail : rt('workboards.runtime.ocrFailed'));
       } finally {
         setOcrBusy(false);
       }
     };
-    reader.onerror = () => setOcrError('Không đọc được tệp ảnh.');
+    reader.onerror = () => setOcrError(rt('workboards.runtime.ocrReadFileFailed'));
     reader.readAsDataURL(file);
   };
 
@@ -2225,7 +2243,7 @@ function FormScreen({
         : !!f.required;
       const v = values[col];
       if (required && (v === undefined || v === null || v === '')) {
-        setSubmitError(`Vui lòng điền "${String(f.label || col)}"`);
+        setSubmitError(rt('workboards.runtime.requiredField', { field: String(f.label || col) }));
         return false;
       }
     }
@@ -2290,7 +2308,7 @@ function FormScreen({
       relation,
     });
     notifyOfflineQueueChanged();
-    setSuccess('Đã lưu tạm, đang chờ đồng bộ.');
+    setSuccess(rt('workboards.runtime.savedQueuedSync'));
     await reloadRelatedRows();
     if (typeof navigator !== 'undefined' && navigator.onLine) {
       void syncSubmits().catch(() => undefined);
@@ -2331,7 +2349,7 @@ function FormScreen({
       if (mode === 'finish') {
         await finishCurrentRelation();
       } else {
-        setSubmitError('Quan há»‡ nÃ y chá»‰ cho phÃ©p má»™t báº£n ghi Child cho má»—i Parent.');
+        setSubmitError(rt('workboards.runtime.relationChildLimit'));
       }
       return;
     }
@@ -2350,7 +2368,7 @@ function FormScreen({
         return JSON.stringify(value) !== JSON.stringify(baseline[column]);
       });
       if (!editingExistingRelationRow && !hasDraft) {
-        setSuccess('Đã hoàn tất.');
+        setSuccess(rt('workboards.runtime.completed'));
         await finishCurrentRelation();
         return;
       }
@@ -2431,7 +2449,7 @@ function FormScreen({
             typeof (f as RuntimeField).valid_if_error === 'string' &&
             (f as RuntimeField).valid_if_error
               ? String((f as RuntimeField).valid_if_error)
-              : `Trường "${f.label || col}" không thoả điều kiện kiểm tra.`;
+              : rt('workboards.runtime.validationFailedForField', { field: String(f.label || col) });
           setSubmitError(msg);
           setSubmitting(false);
           return;
@@ -2492,7 +2510,7 @@ function FormScreen({
           relationPayload,
         );
       }
-      setSuccess(isEditing ? 'Đã cập nhật.' : 'Đã lưu.');
+      setSuccess(isEditing ? rt('workboards.runtime.updated') : rt('workboards.runtime.saved'));
       const savedContext: Record<string, unknown> = { ...submittedPayload, ...pk };
       const row =
         result && typeof result.row === 'object' && result.row !== null
@@ -2636,7 +2654,7 @@ function FormScreen({
             if (proposedKey !== undefined && proposedKey !== null && proposedKey !== '') {
               carry[followRelationForSubmit.parent_key_column] = proposedKey;
             }
-            setSuccess('Đã lưu Parent tạm và mở phần nhập chi tiết.');
+            setSuccess(rt('workboards.runtime.parentQueuedOpenChild'));
             onSaved(carry, followRelationForSubmit.child_screen_id);
             return;
           }
@@ -2654,7 +2672,7 @@ function FormScreen({
           if (typeof navigator !== 'undefined' && navigator.onLine) {
             void syncSubmits().catch(() => undefined);
           }
-          setSuccess('Đã lưu tạm khi ngoại tuyến — sẽ tự gửi khi có mạng.');
+          setSuccess(rt('workboards.runtime.savedOfflineQueued'));
           // Stay on the form: calling onSaved would navigate / re-fetch the
           // screen over the (still-offline) network → "Không tải được màn hình".
           // Instead reset locally for the next entry; the queued row syncs on
@@ -2665,7 +2683,7 @@ function FormScreen({
           setTimeout(() => setSuccess(null), 4000);
           return;
         } catch {
-          setSubmitError('Không lưu tạm được khi ngoại tuyến. Vui lòng thử lại khi có mạng.');
+          setSubmitError(rt('workboards.runtime.offlineQueueFailed'));
           return;
         }
       }
@@ -2673,7 +2691,7 @@ function FormScreen({
         try {
           if (await queueRelationChild(opId, offlinePayload, mode)) return;
         } catch {
-          setSubmitError('Không lưu tạm được bản ghi Child trên thiết bị.');
+          setSubmitError(rt('workboards.runtime.childQueueFailed'));
           return;
         }
       }
@@ -2681,7 +2699,7 @@ function FormScreen({
       if (typeof detail === 'string') setSubmitError(detail);
       else if (detail && typeof detail === 'object' && 'message' in detail) {
         setSubmitError(String((detail as { message: string }).message));
-      } else setSubmitError('Lưu thất bại. Vui lòng kiểm tra lại các trường.');
+      } else setSubmitError(rt('workboards.runtime.saveFailedCheckFields'));
     } finally {
       setSubmitting(false);
     }
@@ -2790,10 +2808,10 @@ function FormScreen({
               </div>
               <div className="min-w-0 flex-1">
                 <p className="text-sm font-semibold text-blue-900">
-                  {ocrBusy ? 'Đang đọc ảnh…' : 'Chụp ảnh phiếu để điền nhanh'}
+                  {ocrBusy ? rt('workboards.runtime.ocrReading') : rt('workboards.runtime.ocrQuickFill')}
                 </p>
                 <p className="text-xs text-slate-600">
-                  Bấm để chụp ảnh hoặc chọn tệp ảnh — kéo-thả ảnh vào đây cũng được. Hệ thống tự điền, bạn kiểm tra rồi lưu.
+                  {rt('workboards.runtime.ocrDropHint')}
                 </p>
               </div>
               <span
@@ -2801,7 +2819,7 @@ function FormScreen({
                 style={{ backgroundColor: accent }}
               >
                 <Upload className="h-4 w-4" />
-                Chọn ảnh
+                {rt('workboards.runtime.chooseImage')}
               </span>
               {/* Explicit ref-click (not label-wrap) = bulletproof across browsers.
                   No `capture` attr: mobile shows Camera + Thư viện + Tệp; desktop opens file picker. */}
@@ -2941,7 +2959,7 @@ function FormScreen({
               onClick={goPrevPage}
               className="rounded-md border border-slate-300 px-4 py-2 text-sm text-slate-700 hover:bg-slate-50"
             >
-              ← Quay lại
+              {rt('workboards.runtime.back')}
             </button>
           ) : (
             <span />
@@ -2959,7 +2977,7 @@ function FormScreen({
               className="flex items-center gap-2 rounded-md px-5 py-2 text-sm font-semibold text-white"
               style={{ backgroundColor: accent }}
             >
-              Bước kế →
+              {rt('workboards.runtime.nextStep')}
             </button>
           ) : relationContext ? (
             <div className="flex flex-wrap justify-end gap-2">
@@ -2970,7 +2988,7 @@ function FormScreen({
                 disabled={submitting}
                 className="rounded-md border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60"
               >
-                Hoàn tất
+                {rt('workboards.runtime.finish')}
               </button>
               {!relationAtCapacity ? (
                 <button
@@ -2992,8 +3010,8 @@ function FormScreen({
                   {submitting && <Loader2 className="h-4 w-4 animate-spin" />}
                   {relationContext.allow_multiple === false ||
                   relationContext.keep_parent_context === false
-                    ? 'Lưu & hoàn tất'
-                    : 'Lưu & thêm tiếp'}
+                    ? rt('workboards.runtime.saveAndFinish')
+                    : rt('workboards.runtime.saveAndAddNext')}
                 </button>
               ) : null}
             </div>
@@ -3007,7 +3025,7 @@ function FormScreen({
               style={{ backgroundColor: accent }}
             >
               {submitting && <Loader2 className="h-4 w-4 animate-spin" />}
-              {spec.submit_label || 'Lưu'}
+              {spec.submit_label || rt('workboards.runtime.save')}
             </button>
           )}
         </div>
@@ -3035,6 +3053,7 @@ function RelatedRecordsPanel({
   onRefresh: () => void;
   onEdit?: (row: Record<string, unknown>) => void;
 }) {
+  const { t: rt } = useI18n();
   const serverRows = rows?.rows || [];
   const queuedColumns = Array.from(
     new Set(queuedRows.flatMap((item) => Object.keys(item.values))),
@@ -3051,12 +3070,12 @@ function RelatedRecordsPanel({
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="min-w-0">
           <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-            {context.relation_label || 'Related records'}
+            {context.relation_label || rt('workboards.runtime.relatedRecords')}
           </div>
           <div className="truncate text-sm font-semibold text-slate-900">
             {parentKeyReady
               ? `${context.parent_key_column}: ${String(context.parent_key_value)}`
-              : 'Parent đang chờ cấp mã trên máy chủ'}
+              : rt('workboards.runtime.parentWaitingServerKey')}
           </div>
           {context.sync_status && (
             <div
@@ -3076,10 +3095,10 @@ function RelatedRecordsPanel({
                 <CheckCircle2 className="h-3 w-3" />
               )}
               {context.sync_status === 'error'
-                ? 'Đồng bộ Parent lỗi'
+                ? rt('workboards.runtime.parentSyncError')
                 : context.sync_status === 'pending_parent'
-                  ? 'Parent chờ đồng bộ'
-                  : 'Parent đã đồng bộ'}
+                  ? rt('workboards.runtime.parentSyncPending')
+                  : rt('workboards.runtime.parentSynced')}
             </div>
           )}
         </div>
@@ -3090,7 +3109,7 @@ function RelatedRecordsPanel({
             className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100"
           >
             <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />
-            {count} dòng
+            {rt('workboards.runtime.rowCount', { count })}
           </button>
         )}
       </div>
@@ -3104,18 +3123,18 @@ function RelatedRecordsPanel({
           {loading && serverRows.length === 0 && queuedRows.length === 0 ? (
             <div className="flex items-center gap-2 px-3 py-3 text-sm text-slate-500">
               <Loader2 className="h-4 w-4 animate-spin" />
-              Đang tải danh sách...
+              {rt('workboards.runtime.loadingList')}
             </div>
           ) : (serverRows.length === 0 && queuedRows.length === 0) || columns.length === 0 ? (
             <div className="px-3 py-3 text-sm text-slate-500">
-              Chưa có dòng chi tiết nào.
+              {rt('workboards.runtime.noRelatedRows')}
             </div>
           ) : (
             <table className="min-w-full divide-y divide-slate-200 text-sm">
               <thead className="sticky top-0 z-10 bg-slate-50">
                 <tr>
                   <th className="w-28 px-3 py-2 text-left text-xs font-semibold text-slate-500">
-                    Trạng thái
+                    {rt('workboards.runtime.status')}
                   </th>
                   {columns.map((column) => (
                     <th key={column} className="px-3 py-2 text-left text-xs font-semibold text-slate-500">
@@ -3130,12 +3149,12 @@ function RelatedRecordsPanel({
                     key={`server-${index}`}
                     onClick={() => onEdit?.(row)}
                     className={onEdit ? 'cursor-pointer hover:bg-slate-50' : undefined}
-                    title={onEdit ? 'Mở dòng này để sửa' : undefined}
+                    title={onEdit ? rt('workboards.runtime.openRowToEdit') : undefined}
                   >
                     <td className="px-3 py-2">
                       <span className="inline-flex items-center gap-1 text-xs font-semibold text-emerald-700">
                         <CheckCircle2 className="h-3.5 w-3.5" />
-                        Đã đồng bộ
+                        {rt('workboards.runtime.synced')}
                       </span>
                     </td>
                     {columns.map((column) => (
@@ -3159,7 +3178,7 @@ function RelatedRecordsPanel({
                         ) : (
                           <RefreshCw className="h-3.5 w-3.5" />
                         )}
-                        {item.status === 'error' ? 'Sync lỗi' : 'Chờ đồng bộ'}
+                        {item.status === 'error' ? rt('workboards.runtime.syncError') : rt('workboards.runtime.syncPending')}
                       </span>
                     </td>
                     {columns.map((column) => (
@@ -3190,11 +3209,13 @@ function PageProgressBar({
   current: number;
   accent: string;
 }) {
+  const { t: rt } = useI18n();
   return (
     <div className="mb-5">
       <div className="mb-2 flex items-center justify-between text-xs text-slate-500">
         <span>
-          Bước {current}/{pages.length}: <strong className="text-slate-800">{pages[current - 1]?.title}</strong>
+          {rt('workboards.runtime.stepProgress', { current, total: pages.length })}:{' '}
+          <strong className="text-slate-800">{pages[current - 1]?.title}</strong>
         </span>
         <span>{Math.round((current / pages.length) * 100)}%</span>
       </div>
@@ -3235,6 +3256,7 @@ function Field({
   fieldLabels?: Record<string, string>;
   onNavigate?: (screenId: string, carry?: Record<string, unknown>) => void;
 }) {
+  const { t: rt } = useI18n();
   const col = String(field.column);
   const widget = String(field.widget || 'text');
   const label = String(field.label || col);
@@ -3310,7 +3332,7 @@ function Field({
             disabled={readonly}
             className="h-4 w-4 rounded border-slate-300"
           />
-          {help || 'Đồng ý'}
+          {help || rt('workboards.runtime.agree')}
         </label>
       ) : widget === 'select' || widget === 'lookup' ? (
         shouldShowSearch(field.searchable, effectiveOpts.length) ? (
@@ -3321,8 +3343,8 @@ function Field({
             disabled={readonly}
             placeholder={
               filterByField && (parentVal == null || parentVal === '')
-                ? '— chọn mục ở trên trước —'
-                : '— chọn —'
+                ? rt('workboards.runtime.selectParentFirst')
+                : rt('workboards.runtime.selectPlaceholder')
             }
             allowSearch
           />
@@ -3336,8 +3358,8 @@ function Field({
           >
             <option value="">
               {filterByField && (parentVal == null || parentVal === '')
-                ? '— chọn mục ở trên trước —'
-                : '— chọn —'}
+                ? rt('workboards.runtime.selectParentFirst')
+                : rt('workboards.runtime.selectPlaceholder')}
             </option>
             {effectiveOpts.map((opt) => (
               <option key={String(opt.value)} value={String(opt.value)}>
@@ -3527,7 +3549,7 @@ function Field({
       )}
       {computedFromDataset && (
         <p className="text-xs text-slate-500 italic">
-          Giá trị do dataset tự tính (cột <code>{computedFromDataset}</code>) — không thể chỉnh trực tiếp ở đây.
+          {rt('workboards.runtime.datasetComputedValue', { column: computedFromDataset })}
         </p>
       )}
       {isAutoNumberCol && !computedFromDataset && (() => {
@@ -3540,7 +3562,7 @@ function Field({
         if (deps.length === 0) {
           return (
             <p className="text-xs text-slate-500 italic">
-              Hệ thống sẽ tự sinh giá trị cho cột này khi lưu — bỏ trống là đủ.
+              {rt('workboards.runtime.autoNumberGeneratedOnSave')}
             </p>
           );
         }
@@ -3555,14 +3577,17 @@ function Field({
           const missLabels = missing.map((c) => fieldLabels?.[c] || c).join(', ');
           return (
             <p className="text-xs text-amber-600">
-              Số tự sinh theo {depLabels}. Hãy điền {missLabels} trước
-              {errorMode ? ' (bắt buộc)' : ''} — bỏ trống ô này.
+              {rt('workboards.runtime.autoNumberMissingDeps', {
+                deps: depLabels,
+                missing: missLabels,
+                required: errorMode ? rt('workboards.runtime.requiredSuffix') : '',
+              })}
             </p>
           );
         }
         return (
           <p className="text-xs text-slate-500 italic">
-            Hệ thống sẽ tự sinh khi lưu (đánh số riêng theo {depLabels}) — bỏ trống ô này.
+            {rt('workboards.runtime.autoNumberScopedReady', { deps: depLabels })}
           </p>
         );
       })()}
@@ -3582,6 +3607,7 @@ function RatingField({
   onChange: (v: unknown) => void;
   readonly: boolean;
 }) {
+  const { t: rt } = useI18n();
   const max = Math.min(Math.max(Number(field.max_stars) || 5, 1), 10);
   const current = Number(value) || 0;
   return (
@@ -3597,7 +3623,7 @@ function RatingField({
             onClick={() => onChange(current === n ? 0 : n)}
             className="text-2xl leading-none transition disabled:cursor-default"
             style={{ color: filled ? '#f59e0b' : '#cbd5e1' }}
-            aria-label={`${n} sao`}
+            aria-label={rt('workboards.runtime.starRating', { count: n })}
           >
             {filled ? '★' : '☆'}
           </button>
@@ -3656,6 +3682,7 @@ function DurationField({
   onChange: (v: unknown) => void;
   readonly: boolean;
 }) {
+  const { t: rt } = useI18n();
   const total = Number(value) || 0;
   const hours = Math.floor(total / 60);
   const mins = total % 60;
@@ -3673,7 +3700,7 @@ function DurationField({
         className={cls}
         placeholder="0"
       />
-      <span>giờ</span>
+      <span>{rt('workboards.runtime.hours')}</span>
       <input
         type="number"
         min={0}
@@ -3684,7 +3711,7 @@ function DurationField({
         className={cls}
         placeholder="0"
       />
-      <span>phút</span>
+      <span>{rt('workboards.runtime.minutes')}</span>
     </div>
   );
 }
@@ -3708,7 +3735,7 @@ function SearchableSelect({
   disabled,
   placeholder,
   allowSearch,
-  clearLabel = '— chọn —',
+  clearLabel,
 }: {
   value: string;
   onChange: (v: string) => void;
@@ -3718,6 +3745,7 @@ function SearchableSelect({
   allowSearch: boolean;
   clearLabel?: string;
 }) {
+  const { t: rt } = useI18n();
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState('');
   const wrapRef = useRef<HTMLDivElement | null>(null);
@@ -3756,7 +3784,7 @@ function SearchableSelect({
         className="flex h-9 w-full items-center justify-between rounded-md border border-slate-300 bg-white px-3 text-left text-sm text-slate-700 disabled:bg-slate-50 disabled:text-slate-400"
       >
         <span className={selected ? 'truncate' : 'truncate text-slate-400'}>
-          {selected ? selected.label : placeholder || '— chọn —'}
+          {selected ? selected.label : placeholder || rt('workboards.runtime.selectPlaceholder')}
         </span>
         <ChevronDown className="h-4 w-4 shrink-0 text-slate-400" />
       </button>
@@ -3768,7 +3796,7 @@ function SearchableSelect({
                 autoFocus
                 value={q}
                 onChange={(event) => setQ(event.target.value)}
-                placeholder="Tìm..."
+                placeholder={rt('workboards.runtime.searchPlaceholder')}
                 className="h-8 w-full rounded border border-slate-200 px-2 text-sm outline-none focus:border-slate-400"
               />
             </div>
@@ -3779,10 +3807,12 @@ function SearchableSelect({
               onClick={() => pick('')}
               className="block w-full truncate rounded px-2 py-1.5 text-left text-sm text-slate-400 hover:bg-slate-50"
             >
-              {clearLabel}
+              {clearLabel || rt('workboards.runtime.selectPlaceholder')}
             </button>
             {filtered.length === 0 ? (
-              <span className="block px-2 py-2 text-sm text-slate-400">Không có kết quả.</span>
+              <span className="block px-2 py-2 text-sm text-slate-400">
+                {rt('workboards.runtime.noResults')}
+              </span>
             ) : (
               filtered.map((o) => {
                 const v = String(o.value);
@@ -3821,6 +3851,7 @@ function EnumListField({
   onChange: (v: unknown) => void;
   readonly: boolean;
 }) {
+  const { t: rt } = useI18n();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
   const selected: string[] = Array.isArray(value)
@@ -3887,14 +3918,16 @@ function EnumListField({
           className="flex min-h-10 w-full items-center justify-between rounded-md border border-slate-300 bg-white px-3 py-2 text-left text-sm text-slate-700 disabled:bg-slate-50 disabled:text-slate-400"
         >
           <span className={selected.length ? '' : 'text-slate-400'}>
-            {selected.length ? selectedLabels : '— chọn —'}
+            {selected.length ? selectedLabels : rt('workboards.runtime.selectPlaceholder')}
           </span>
           <ChevronDown className="h-4 w-4 text-slate-400" />
         </button>
         {open && (
           <div className="absolute z-20 mt-1 w-full rounded-md border border-slate-200 bg-white shadow-lg">
             {options.length === 0 ? (
-              <span className="block px-3 py-2 text-sm text-slate-400">Chưa có lựa chọn.</span>
+              <span className="block px-3 py-2 text-sm text-slate-400">
+                {rt('workboards.runtime.noOptions')}
+              </span>
             ) : (
               <>
                 {showSearch && (
@@ -3903,7 +3936,7 @@ function EnumListField({
                       autoFocus
                       value={query}
                       onChange={(event) => setQuery(event.target.value)}
-                      placeholder="Tìm..."
+                      placeholder={rt('workboards.runtime.searchPlaceholder')}
                       className="h-8 w-full rounded border border-slate-200 px-2 text-sm outline-none focus:border-slate-400"
                     />
                   </div>
@@ -3917,11 +3950,13 @@ function EnumListField({
                       disabled={readonly}
                       className="h-4 w-4 rounded border-slate-300"
                     />
-                    Select all
+                    {rt('workboards.runtime.selectAll')}
                   </label>
                   <div className="my-1 border-t border-slate-100" />
                   {shownOptions.length === 0 ? (
-                    <span className="block px-2 py-2 text-sm text-slate-400">Không có kết quả.</span>
+                    <span className="block px-2 py-2 text-sm text-slate-400">
+                      {rt('workboards.runtime.noResults')}
+                    </span>
                   ) : (
                     shownOptions.map((opt) => {
                       const val = String(opt.value);
@@ -3962,13 +3997,13 @@ function EnumListField({
     return (
       <div className="space-y-2">
         {options.length === 0 && (
-          <span className="text-sm text-slate-400">Chưa có lựa chọn.</span>
+          <span className="text-sm text-slate-400">{rt('workboards.runtime.noOptions')}</span>
         )}
         {showSearch && options.length > 0 && (
           <input
             value={query}
             onChange={(event) => setQuery(event.target.value)}
-            placeholder="Tìm..."
+            placeholder={rt('workboards.runtime.searchPlaceholder')}
             className="h-8 w-full rounded border border-slate-200 px-2 text-sm outline-none focus:border-slate-400"
           />
         )}
@@ -3981,11 +4016,11 @@ function EnumListField({
               disabled={readonly}
               className="h-4 w-4 rounded border-slate-300"
             />
-            Select all
+            {rt('workboards.runtime.selectAll')}
           </label>
         )}
         {shownOptions.length === 0 && options.length > 0 && (
-          <span className="text-sm text-slate-400">Không có kết quả.</span>
+          <span className="text-sm text-slate-400">{rt('workboards.runtime.noResults')}</span>
         )}
         {shownOptions.map((opt) => {
           const val = String(opt.value);
@@ -4016,7 +4051,7 @@ function EnumListField({
   return (
     <div className="flex flex-wrap gap-2">
       {options.length === 0 && (
-        <span className="text-sm text-slate-400">Chưa có lựa chọn.</span>
+        <span className="text-sm text-slate-400">{rt('workboards.runtime.noOptions')}</span>
       )}
       {options.map((opt) => {
         const val = String(opt.value);
@@ -4088,6 +4123,7 @@ function RichTextField({
   readonly: boolean;
   placeholder?: string;
 }) {
+  const { t: rt } = useI18n();
   const text = value == null ? '' : String(value);
   const [preview, setPreview] = useState(false);
   const ref = useRef<HTMLTextAreaElement | null>(null);
@@ -4104,14 +4140,16 @@ function RichTextField({
       <div className="flex items-center gap-1 border-b border-slate-200 px-2 py-1 text-sm">
         <button type="button" disabled={readonly} onClick={() => wrap('**', '**')} className="rounded px-2 py-0.5 font-bold hover:bg-slate-100">B</button>
         <button type="button" disabled={readonly} onClick={() => wrap('*', '*')} className="rounded px-2 py-0.5 italic hover:bg-slate-100">I</button>
-        <button type="button" disabled={readonly} onClick={() => wrap('\n- ', '')} className="rounded px-2 py-0.5 hover:bg-slate-100">• List</button>
+        <button type="button" disabled={readonly} onClick={() => wrap('\n- ', '')} className="rounded px-2 py-0.5 hover:bg-slate-100">
+          {rt('workboards.runtime.markdownList')}
+        </button>
         <button type="button" disabled={readonly} onClick={() => wrap('[', '](https://)')} className="rounded px-2 py-0.5 hover:bg-slate-100">🔗</button>
         <button
           type="button"
           onClick={() => setPreview((p) => !p)}
           className={`ml-auto rounded px-2 py-0.5 hover:bg-slate-100 ${preview ? 'text-blue-600' : 'text-slate-500'}`}
         >
-          {preview ? 'Sửa' : 'Xem'}
+          {preview ? rt('workboards.runtime.edit') : rt('workboards.runtime.preview')}
         </button>
       </div>
       {preview ? (
@@ -4125,7 +4163,7 @@ function RichTextField({
           value={text}
           onChange={(e) => onChange(e.target.value)}
           disabled={readonly}
-          placeholder={placeholder || 'Hỗ trợ **đậm**, *nghiêng*, - danh sách, [link](url)'}
+          placeholder={placeholder || rt('workboards.runtime.richTextPlaceholder')}
           rows={4}
           className="w-full resize-y px-3 py-2 text-sm focus:outline-none disabled:bg-slate-100"
         />
@@ -4146,6 +4184,7 @@ function VideoField({
   onChange: (v: unknown) => void;
   readonly: boolean;
 }) {
+  const { t: rt } = useI18n();
   const [error, setError] = useState<string | null>(null);
   const maxKb = Math.min(Number(field.max_file_kb) || FILE_HARD_CAP_KB, FILE_HARD_CAP_KB);
   const src = typeof value === 'string' && value.startsWith('data:video') ? value : null;
@@ -4161,7 +4200,7 @@ function VideoField({
               onClick={() => onChange('')}
               className="text-xs text-rose-600 hover:underline"
             >
-              Xoá video
+              {rt('workboards.runtime.deleteVideo')}
             </button>
           )}
         </div>
@@ -4176,7 +4215,7 @@ function VideoField({
             if (!f) return;
             setError(null);
             if (f.size / 1024 > maxKb) {
-              setError(`Video lớn hơn giới hạn ${maxKb} KB.`);
+              setError(rt('workboards.runtime.videoTooLarge', { max: maxKb }));
               return;
             }
             const reader = new FileReader();
@@ -4188,7 +4227,7 @@ function VideoField({
       )}
       {error && <p className="text-xs text-rose-600">{error}</p>}
       <p className="text-xs text-slate-400">
-        Tối đa {maxKb} KB — nên dùng clip ngắn (nguồn Postgres, không Google Sheets).
+        {rt('workboards.runtime.videoMaxHint', { max: maxKb })}
       </p>
     </div>
   );
@@ -4226,6 +4265,7 @@ function FileUploadField({
   isImage: boolean;
   captureOnly?: boolean;
 }) {
+  const { t: rt } = useI18n();
   const [error, setError] = useState<string | null>(null);
   const maxKb = Math.min(
     Number(field.max_file_kb) || FILE_HARD_CAP_KB,
@@ -4242,7 +4282,7 @@ function FileUploadField({
     }
     const sizeKb = Math.round(file.size / 1024);
     if (sizeKb > maxKb) {
-      setError(`Tệp ${sizeKb} KB vượt giới hạn ${maxKb} KB.`);
+      setError(rt('workboards.runtime.fileTooLarge', { size: sizeKb, max: maxKb }));
       return;
     }
     const reader = new FileReader();
@@ -4252,7 +4292,7 @@ function FileUploadField({
         onChange(result);
       }
     };
-    reader.onerror = () => setError('Không đọc được tệp.');
+    reader.onerror = () => setError(rt('workboards.runtime.fileReadFailed'));
     reader.readAsDataURL(file);
   };
 
@@ -4295,7 +4335,7 @@ function FileUploadField({
               }}
               className="text-xs text-rose-600 hover:underline"
             >
-              Xoá
+              {rt('workboards.runtime.delete')}
             </button>
           )}
         </div>
@@ -4303,7 +4343,7 @@ function FileUploadField({
       {error && <p className="text-xs text-rose-600">{error}</p>}
       {!error && (
         <p className="text-xs text-slate-500">
-          Tối đa {maxKb} KB. Tệp được lưu trực tiếp trong cơ sở dữ liệu — phù hợp cho ảnh/scan nhỏ.
+          {rt('workboards.runtime.fileMaxHint', { max: maxKb })}
         </p>
       )}
     </div>
@@ -4342,6 +4382,7 @@ function MultiImageField({
   readonly: boolean;
   captureOnly?: boolean;
 }) {
+  const { t: rt } = useI18n();
   const [error, setError] = useState<string | null>(null);
   const items = asImageArray(value);
   const maxKb = Math.min(Number(field.max_file_kb) || FILE_HARD_CAP_KB, FILE_HARD_CAP_KB);
@@ -4352,7 +4393,7 @@ function MultiImageField({
     if (!files || files.length === 0) return;
     const room = maxItems - items.length;
     if (room <= 0) {
-      setError(`Tối đa ${maxItems} ảnh.`);
+      setError(rt('workboards.runtime.maxImages', { max: maxItems }));
       return;
     }
     const chosen = Array.from(files).slice(0, room);
@@ -4360,7 +4401,7 @@ function MultiImageField({
       (file) =>
         new Promise<string | null>((resolve) => {
           if (Math.round(file.size / 1024) > maxKb) {
-            setError(`Có ảnh vượt ${maxKb} KB — hãy chụp nhỏ hơn.`);
+            setError(rt('workboards.runtime.imageTooLarge', { max: maxKb }));
             resolve(null);
             return;
           }
@@ -4389,6 +4430,7 @@ function MultiImageField({
                   type="button"
                   onClick={() => onChange(items.filter((_, j) => j !== i))}
                   className="absolute right-1 top-1 rounded-full bg-black/60 px-1.5 text-xs text-white"
+                  aria-label={rt('workboards.runtime.removeImage')}
                 >
                   ×
                 </button>
@@ -4411,7 +4453,12 @@ function MultiImageField({
         <p className="text-xs text-rose-600">{error}</p>
       ) : (
         <p className="text-xs text-slate-500">
-          {items.length}/{maxItems} ảnh · tối đa {maxKb} KB mỗi ảnh{captureOnly ? ' · chỉ chụp trực tiếp' : ''}.
+          {rt('workboards.runtime.imageCountHint', {
+            count: items.length,
+            max: maxItems,
+            size: maxKb,
+            capture: captureOnly ? rt('workboards.runtime.captureOnlySuffix') : '',
+          })}
         </p>
       )}
     </div>
@@ -4430,6 +4477,7 @@ function GeoPointField({
   onChange: (next: unknown) => void;
   readonly: boolean;
 }) {
+  const { t: rt } = useI18n();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [accuracy, setAccuracy] = useState<number | null>(null);
@@ -4441,7 +4489,7 @@ function GeoPointField({
   const capture = () => {
     setError(null);
     if (typeof navigator === 'undefined' || !navigator.geolocation) {
-      setError('Thiết bị không hỗ trợ định vị.');
+      setError(rt('workboards.runtime.geolocationUnsupported'));
       return;
     }
     setBusy(true);
@@ -4453,7 +4501,7 @@ function GeoPointField({
       },
       (err) => {
         setBusy(false);
-        setError(err.code === 1 ? 'Bạn đã từ chối quyền vị trí.' : 'Không lấy được vị trí.');
+        setError(err.code === 1 ? rt('workboards.runtime.locationDenied') : rt('workboards.runtime.locationFailed'));
       },
       { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 },
     );
@@ -4491,7 +4539,7 @@ function GeoPointField({
             className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 disabled:opacity-60 hover:bg-slate-50"
           >
             {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <MapPin className="h-4 w-4" />}
-            {hasPoint ? 'Cập nhật vị trí' : 'Lấy vị trí của tôi'}
+            {hasPoint ? rt('workboards.runtime.updateLocation') : rt('workboards.runtime.getMyLocation')}
           </button>
         )}
         {hasPoint && (
@@ -4518,6 +4566,7 @@ function SignatureField({
   onChange: (next: unknown) => void;
   readonly: boolean;
 }) {
+  const { t: rt } = useI18n();
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const drawing = useRef(false);
   const dirty = useRef(false);
@@ -4563,9 +4612,9 @@ function SignatureField({
   if (readonly) {
     return stringValue.startsWith('data:image') ? (
       // eslint-disable-next-line @next/next/no-img-element
-      <img src={stringValue} alt="signature" className="h-28 rounded-md border border-slate-200 bg-white" />
+      <img src={stringValue} alt={rt('workboards.runtime.signatureAlt')} className="h-28 rounded-md border border-slate-200 bg-white" />
     ) : (
-      <p className="text-sm text-slate-400">Chưa ký.</p>
+      <p className="text-sm text-slate-400">{rt('workboards.runtime.notSigned')}</p>
     );
   }
 
@@ -4583,9 +4632,9 @@ function SignatureField({
       />
       <div className="flex items-center gap-3">
         <button type="button" onClick={clear} className="text-xs text-rose-600 hover:underline">
-          Xoá & ký lại
+          {rt('workboards.runtime.clearAndSignAgain')}
         </button>
-        <span className="text-xs text-slate-500">Ký bằng ngón tay / chuột vào ô trên.</span>
+        <span className="text-xs text-slate-500">{rt('workboards.runtime.signatureHint')}</span>
       </div>
     </div>
   );
@@ -4638,6 +4687,7 @@ function QrField({
   value: unknown;
   evalCtx?: RuntimeEvalCtx;
 }) {
+  const { t: rt } = useI18n();
   const size = typeof field.qr_size === 'number' ? field.qr_size : 160;
   const caption = typeof field.qr_caption === 'string' ? field.qr_caption : '';
   const template = typeof field.qr_value_template === 'string' ? field.qr_value_template : '';
@@ -4660,7 +4710,7 @@ function QrField({
           <QRCodeSVG value={encoded} size={size} level="M" marginSize={2} />
         </div>
       ) : (
-        <div className="text-xs text-slate-400">Chưa có giá trị để tạo mã QR</div>
+        <div className="text-xs text-slate-400">{rt('workboards.runtime.noQrValue')}</div>
       )}
       {caption && <div className="text-center text-xs text-slate-600">{caption}</div>}
       {encoded && (
@@ -4669,7 +4719,7 @@ function QrField({
           onClick={printLabel}
           className="print:hidden inline-flex items-center gap-1 text-xs text-blue-600 hover:underline"
         >
-          <Printer className="h-3.5 w-3.5" /> In tem
+          <Printer className="h-3.5 w-3.5" /> {rt('workboards.runtime.printLabel')}
         </button>
       )}
     </div>
@@ -4715,6 +4765,7 @@ function BulkRecipeModal({
   showMap?: boolean;
   onToggleMap?: () => void;
 }) {
+  const { t: rt } = useI18n();
   const resourceInputs = action.resource_inputs || [];
   const constraints = action.constraints || [];
   const previewAgg = action.preview_aggregates || [];
@@ -4790,7 +4841,7 @@ function BulkRecipeModal({
   // left column, the route map wide on the right — while the MODAL keeps the
   // original narrow vertical stack.
   const pickersBlock = loading ? (
-    <p className="mt-4 text-sm text-slate-500">Đang tải lựa chọn…</p>
+    <p className="mt-4 text-sm text-slate-500">{rt('workboards.runtime.loadingChoices')}</p>
   ) : (
     resourceInputs.map((ri) => (
       <div key={ri.id} className="mt-3">
@@ -4803,7 +4854,7 @@ function BulkRecipeModal({
           onChange={(e) => setPicked((p) => ({ ...p, [ri.id]: e.target.value }))}
           className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
         >
-          <option value="">— Chọn —</option>
+          <option value="">{rt('workboards.runtime.selectOption')}</option>
           {(options[ri.id] || []).map((o, i) => (
             <option key={i} value={String(o[ri.value_column])}>
               {String(o[ri.label_column || ri.value_column] ?? o[ri.value_column] ?? '')}
@@ -4833,9 +4884,9 @@ function BulkRecipeModal({
           </span>
         </div>
         {pending ? (
-          <div className="mt-0.5 text-xs">Hãy chọn tài nguyên để kiểm tra ràng buộc.</div>
+          <div className="mt-0.5 text-xs">{rt('workboards.runtime.chooseResourceForConstraint')}</div>
         ) : !s.ok ? (
-          <div className="mt-0.5 text-xs">{s.c.error_message || 'Vượt giới hạn — không thể xác nhận.'}</div>
+          <div className="mt-0.5 text-xs">{s.c.error_message || rt('workboards.runtime.limitExceededCannotConfirm')}</div>
         ) : null}
       </div>
     );
@@ -4845,7 +4896,7 @@ function BulkRecipeModal({
     action.route_preview && selectedRows.length > 0 ? (
       <div className="overflow-hidden rounded-xl border border-slate-200">
         <div className="border-b border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-medium text-slate-600">
-          Tuyến giao của các đơn đã chọn
+          {rt('workboards.runtime.selectedOrdersRoute')}
         </div>
         <RouteMapView
           rows={selectedRows}
@@ -4855,7 +4906,7 @@ function BulkRecipeModal({
           onOpen={() => {}}
           panelEnabled={false}
           compact={variant !== 'panel'}
-          emptyMessage="Các đơn đã chọn chưa có toạ độ (Lat/Long) để vẽ tuyến."
+          emptyMessage={rt('workboards.runtime.selectedOrdersNoCoords')}
         />
       </div>
     ) : null;
@@ -4864,7 +4915,7 @@ function BulkRecipeModal({
     <div className="mt-5 flex justify-end gap-2">
       {variant === 'modal' ? (
         <button onClick={onClose} className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm text-slate-700 hover:bg-slate-50">
-          Huỷ
+          {rt('workboards.runtime.cancel')}
         </button>
       ) : null}
       <button
@@ -4875,7 +4926,7 @@ function BulkRecipeModal({
         className="inline-flex w-full items-center justify-center gap-1.5 rounded-lg px-4 py-2 text-sm font-semibold text-white shadow-sm disabled:opacity-40"
       >
         {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-        {variant === 'panel' ? action.label : 'Xác nhận'}
+        {variant === 'panel' ? action.label : rt('workboards.runtime.confirm')}
       </button>
     </div>
   );
@@ -4893,10 +4944,10 @@ function BulkRecipeModal({
       </div>
       <p className="mt-1 text-sm text-slate-500">
         {selectedRows.length > 0
-          ? `Đã chọn ${selectedRows.length} dòng.`
+          ? rt('workboards.runtime.selectedRowsSentence', { count: selectedRows.length })
           : variant === 'panel'
-            ? 'Chọn các dòng ở bảng phía trên để lập kế hoạch.'
-            : 'Đã chọn 0 dòng.'}
+            ? rt('workboards.runtime.selectRowsAboveToPlan')
+            : rt('workboards.runtime.selectedRowsSentence', { count: 0 })}
       </p>
       {previewAgg.length ? (
         <div className="mt-3 flex flex-wrap gap-1.5">
@@ -4933,7 +4984,7 @@ function BulkRecipeModal({
             <div className="mt-3 lg:mt-0 lg:min-w-0 lg:flex-1">
               {mapBlock ?? (
                 <div className="flex min-h-[240px] items-center justify-center rounded-xl border border-dashed border-slate-200 bg-slate-50/60 p-6 text-center text-sm text-slate-400">
-                  Chọn đơn ở bảng phía trên để xem tuyến giao trên bản đồ.
+                  {rt('workboards.runtime.selectOrdersToViewRoute')}
                 </div>
               )}
             </div>
@@ -4955,7 +5006,7 @@ function BulkRecipeModal({
     return (
       <>
         {loading ? (
-          <span className="text-xs text-slate-500">Đang tải lựa chọn…</span>
+          <span className="text-xs text-slate-500">{rt('workboards.runtime.loadingChoices')}</span>
         ) : (
           resourceInputs.map((ri) => (
             <label key={ri.id} className="inline-flex items-center gap-1.5 text-xs font-medium text-slate-600">
@@ -4965,7 +5016,7 @@ function BulkRecipeModal({
                 onChange={(e) => setPicked((p) => ({ ...p, [ri.id]: e.target.value }))}
                 className="max-w-[12rem] rounded-lg border border-slate-300 bg-white px-2 py-1 text-sm"
               >
-                <option value="">— Chọn —</option>
+                <option value="">{rt('workboards.runtime.selectOption')}</option>
                 {(options[ri.id] || []).map((o, i) => (
                   <option key={i} value={String(o[ri.value_column])}>
                     {String(o[ri.label_column || ri.value_column] ?? o[ri.value_column] ?? '')}
@@ -4985,7 +5036,7 @@ function BulkRecipeModal({
           return (
             <span
               key={i}
-              title={!pending && !s.ok ? (s.c.error_message || 'Vượt giới hạn') : undefined}
+              title={!pending && !s.ok ? (s.c.error_message || rt('workboards.runtime.limitExceeded')) : undefined}
               className={`inline-flex items-center gap-1 whitespace-nowrap rounded-full px-2.5 py-1 text-xs font-medium ${tone}`}
             >
               {s.c.label || s.c.agg_column}: {fmt(s.actual)} {s.c.op || '<='} {pending ? '—' : fmt(s.limit as number)}
@@ -4999,7 +5050,7 @@ function BulkRecipeModal({
             onClick={onToggleMap}
             className="inline-flex items-center gap-1 rounded-lg border border-slate-300 bg-white px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50"
           >
-            {showMap ? 'Ẩn tuyến' : 'Xem tuyến'}
+            {showMap ? rt('workboards.runtime.hideRoute') : rt('workboards.runtime.viewRoute')}
           </button>
         ) : null}
         <button
@@ -5008,7 +5059,7 @@ function BulkRecipeModal({
           onClick={() => onRun(resources)}
           style={{ backgroundColor: accent }}
           className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-lg px-3 py-1.5 text-sm font-semibold text-white shadow-sm disabled:opacity-40"
-          title={missingResource ? 'Chọn đủ tài nguyên để tiếp tục' : anyViolated ? 'Vượt giới hạn — bỏ bớt dòng' : undefined}
+          title={missingResource ? rt('workboards.runtime.chooseEnoughResources') : anyViolated ? rt('workboards.runtime.limitExceededRemoveRows') : undefined}
         >
           {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
           {action.icon ? `${action.icon} ` : ''}{action.label}
@@ -5046,6 +5097,7 @@ function BarcodeField({
   field?: RuntimeField;
   onNavigate?: (screenId: string, carry?: Record<string, unknown>) => void;
 }) {
+  const { t: rt } = useI18n();
   const [scanning, setScanning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -5132,7 +5184,7 @@ function BarcodeField({
       };
       rafRef.current = requestAnimationFrame(tick);
     } catch {
-      setError('Không mở được camera — cấp quyền camera hoặc nhập tay bên dưới.');
+      setError(rt('workboards.runtime.cameraOpenFailedManual'));
       stop();
     }
   };
@@ -5160,7 +5212,7 @@ function BarcodeField({
       if (!result?.data) throw new Error('not-found');
       emit(result.data);
     } catch {
-      setError('Không đọc được mã trong ảnh. Hãy chụp gần hơn, đủ sáng và thử lại.');
+      setError(rt('workboards.runtime.barcodeImageReadFailed'));
     } finally {
       if (photoInputRef.current) photoInputRef.current.value = '';
     }
@@ -5173,7 +5225,7 @@ function BarcodeField({
           {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
           <video ref={videoRef} className="h-48 w-full rounded-md border border-slate-300 bg-black object-cover" />
           <button type="button" onClick={stop} className="text-xs text-rose-600 hover:underline">
-            Dừng quét
+            {rt('workboards.runtime.stopScan')}
           </button>
         </div>
       )}
@@ -5189,7 +5241,7 @@ function BarcodeField({
             }
           }}
           disabled={readonly}
-          placeholder={placeholder || (scanTarget ? 'Quét/nhập mã rồi Enter' : 'Mã (quét hoặc nhập tay)')}
+          placeholder={placeholder || (scanTarget ? rt('workboards.runtime.scanEnterPlaceholder') : rt('workboards.runtime.codeScanManualPlaceholder'))}
           className={baseInput}
         />
         {!readonly && supported && !scanning && (
@@ -5198,7 +5250,7 @@ function BarcodeField({
             onClick={scan}
             className="inline-flex shrink-0 items-center gap-1 rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 hover:bg-slate-50"
           >
-            <ScanLine className="h-4 w-4" /> Quét
+            <ScanLine className="h-4 w-4" /> {rt('workboards.runtime.scan')}
           </button>
         )}
         {!readonly && (
@@ -5218,7 +5270,7 @@ function BarcodeField({
               onClick={() => photoInputRef.current?.click()}
               className="inline-flex shrink-0 items-center gap-1 rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 hover:bg-slate-50"
             >
-              <ScanLine className="h-4 w-4" /> Ảnh
+              <ScanLine className="h-4 w-4" /> {rt('workboards.runtime.photo')}
             </button>
           </>
         )}
@@ -5242,6 +5294,7 @@ function AudioField({
   onChange: (next: unknown) => void;
   readonly: boolean;
 }) {
+  const { t: rt } = useI18n();
   const [recording, setRecording] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const recRef = useRef<MediaRecorder | null>(null);
@@ -5260,7 +5313,10 @@ function AudioField({
         stream.getTracks().forEach((t) => t.stop());
         const blob = new Blob(chunksRef.current, { type: rec.mimeType || 'audio/webm' });
         if (Math.round(blob.size / 1024) > maxKb) {
-          setError(`Ghi âm ${Math.round(blob.size / 1024)} KB vượt ${maxKb} KB — hãy nói ngắn hơn.`);
+          setError(rt('workboards.runtime.audioTooLarge', {
+            size: Math.round(blob.size / 1024),
+            max: maxKb,
+          }));
           return;
         }
         const r = new FileReader();
@@ -5271,7 +5327,7 @@ function AudioField({
       rec.start();
       setRecording(true);
     } catch {
-      setError('Không truy cập được micro.');
+      setError(rt('workboards.runtime.microphoneFailed'));
     }
   };
   const stop = () => {
@@ -5289,16 +5345,16 @@ function AudioField({
         <div className="flex items-center gap-3">
           {!recording ? (
             <button type="button" onClick={start} className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-50">
-              <Mic className="h-4 w-4" /> {stringValue ? 'Ghi lại' : 'Ghi âm'}
+              <Mic className="h-4 w-4" /> {stringValue ? rt('workboards.runtime.recordAgain') : rt('workboards.runtime.recordAudio')}
             </button>
           ) : (
             <button type="button" onClick={stop} className="inline-flex items-center gap-1.5 rounded-md bg-rose-600 px-3 py-1.5 text-sm font-medium text-white">
-              <span className="h-2 w-2 animate-pulse rounded-full bg-white" /> Dừng
+              <span className="h-2 w-2 animate-pulse rounded-full bg-white" /> {rt('workboards.runtime.stop')}
             </button>
           )}
           {stringValue && !recording && (
             <button type="button" onClick={() => onChange('')} className="text-xs text-rose-600 hover:underline">
-              Xoá
+              {rt('workboards.runtime.delete')}
             </button>
           )}
         </div>
@@ -5324,6 +5380,7 @@ function ComputedField({
   onChange: (next: unknown) => void;
   evalCtx?: RuntimeEvalCtx;
 }) {
+  const { t: rt } = useI18n();
   // Strict eval so a non-numeric SUM_SPLIT segment surfaces as a visible reason
   // (not a silent blank the user only discovers when the server 422s on submit).
   const detailed = evalCtx ? evaluateExprDetailed(formula, evalCtx) : { value: null };
@@ -5361,8 +5418,8 @@ function ComputedField({
       </div>
       {hasError && (
         <p className="text-xs text-amber-600">
-          Chưa tính được — kiểm tra dữ liệu nhập (mỗi phần phải là số, cách nhau bằng
-          dấu <code>;</code>).
+          {rt('workboards.runtime.computedInvalid')}{' '}
+          <code>;</code>.
         </p>
       )}
     </div>
@@ -5394,6 +5451,7 @@ function StatusField({
   readonly: boolean;
   viewerRole: string;
 }) {
+  const { t: rt } = useI18n();
   const cfg = field.status_config || {};
   const states = cfg.states || [];
   const editableRoles = cfg.editable_by_roles || [];
@@ -5416,7 +5474,7 @@ function StatusField({
       onChange={(e) => onChange(e.target.value)}
       className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-slate-500 focus:outline-none"
     >
-      <option value="">— chọn trạng thái —</option>
+      <option value="">{rt('workboards.runtime.selectStatus')}</option>
       {states.map((s) => (
         <option key={String(s.value)} value={String(s.value)}>
           {s.label || s.value}
@@ -5506,6 +5564,9 @@ function buildRouteStops(
   rows: Array<Record<string, unknown>>,
   config: RouteMapConfigView,
   pkCols: string[],
+  allStopsLabel: string,
+  pointLabel: (index: number) => string,
+  locale: string,
 ): { stops: RouteMapStop[]; skipped: number } {
   const stops: RouteMapStop[] = [];
   let skipped = 0;
@@ -5518,21 +5579,21 @@ function buildRouteStops(
       return;
     }
     const routeRaw = config.route_id_column ? row[config.route_id_column] : null;
-    const routeId = routeRaw == null || routeRaw === '' ? 'Tất cả điểm' : String(routeRaw);
+    const routeId = routeRaw == null || routeRaw === '' ? allStopsLabel : String(routeRaw);
     const titleRaw = config.title_column ? row[config.title_column] : row[fallbackTitle];
     const order = config.order_column ? parseRouteNumber(row[config.order_column]) : null;
     stops.push({
       row,
       lat,
       lng,
-      label: titleRaw == null || titleRaw === '' ? `Điểm ${sourceIndex + 1}` : String(titleRaw),
+      label: titleRaw == null || titleRaw === '' ? pointLabel(sourceIndex + 1) : String(titleRaw),
       routeId,
       order,
       sourceIndex,
     });
   });
   stops.sort((a, b) => {
-    if (a.routeId !== b.routeId) return a.routeId.localeCompare(b.routeId, 'vi');
+    if (a.routeId !== b.routeId) return a.routeId.localeCompare(b.routeId, locale);
     if (a.order != null && b.order != null && a.order !== b.order) return a.order - b.order;
     if (a.order != null && b.order == null) return -1;
     if (a.order == null && b.order != null) return 1;
@@ -5606,6 +5667,7 @@ function RouteMapView({
   shared?: Record<string, unknown>;
   onAction?: (action: RowActionDescriptor, row: Record<string, unknown>) => void;
 }) {
+  const { t: rt, locale } = useI18n();
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [selectedRouteId, setSelectedRouteId] = useState<string>('');
   const [routeLine, setRouteLine] = useState<Array<[number, number]> | null>(null);
@@ -5631,7 +5693,18 @@ function RouteMapView({
   const markerMapRef = useRef<Map<string, { marker: any; seq: number | string }>>(new Map());
   const leafletRef = useRef<any>(null);
   /* eslint-enable @typescript-eslint/no-explicit-any */
-  const { stops, skipped } = useMemo(() => buildRouteStops(rows, config, pkCols), [rows, config, pkCols]);
+  const { stops, skipped } = useMemo(
+    () =>
+      buildRouteStops(
+        rows,
+        config,
+        pkCols,
+        rt('workboards.runtime.allStops'),
+        (index) => rt('workboards.runtime.routePoint', { index }),
+        locale,
+      ),
+    [rows, config, pkCols, rt, locale],
+  );
   const routeIds = useMemo(() => Array.from(new Set(stops.map((s) => s.routeId))), [stops]);
 
   useEffect(() => {
@@ -5835,7 +5908,7 @@ function RouteMapView({
   if (rows.length === 0) {
     return (
       <div className="px-4 py-10 text-center text-sm text-slate-500">
-        {emptyMessage || 'Chưa có dữ liệu để hiển thị tuyến.'}
+        {emptyMessage || rt('workboards.runtime.routeNoData')}
       </div>
     );
   }
@@ -5843,12 +5916,12 @@ function RouteMapView({
   if (stops.length === 0) {
     return (
       <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-4 text-sm text-amber-800">
-        Không có dòng nào có tọa độ hợp lệ. Kiểm tra cấu hình cột vĩ độ/kinh độ của route map.
+        {rt('workboards.runtime.routeNoValidCoords')}
       </div>
     );
   }
 
-  const routeLabel = selectedRouteId || 'Tất cả điểm';
+  const routeLabel = selectedRouteId || rt('workboards.runtime.allStops');
   const sideEnabled = config.show_side_panel !== false;
 
   return (
@@ -5858,17 +5931,17 @@ function RouteMapView({
         <div className="mr-auto min-w-[180px]">
           <div className="text-sm font-semibold text-slate-800">{routeLabel}</div>
           <div className="text-xs text-slate-500">
-            {visibleStops.length} điểm
-            {totalWeight != null ? ` · ${totalWeight.toLocaleString('vi-VN')} kg` : ''}
-            {totalValue != null ? ` · ${totalValue.toLocaleString('vi-VN')} đ` : ''}
+            {rt('workboards.runtime.pointCount', { count: visibleStops.length })}
+            {totalWeight != null ? ` · ${totalWeight.toLocaleString(locale)} kg` : ''}
+            {totalValue != null ? ` · ${totalValue.toLocaleString(locale)} ${rt('workboards.runtime.currencyDong')}` : ''}
             {(config.line_mode || 'road') === 'road'
               ? routeLineStatus === 'loading'
-                ? ' · đang lấy tuyến đường'
+                ? ` · ${rt('workboards.runtime.routeLoadingLine')}`
                 : routeLineStatus === 'road'
-                  ? ' · tuyến theo đường thật'
-                  : ' · tuyến tạm theo đường thẳng'
+                  ? ` · ${rt('workboards.runtime.routeRoadLine')}`
+                  : ` · ${rt('workboards.runtime.routeStraightLine')}`
               : ''}
-            {skipped > 0 ? ` · bỏ qua ${skipped} dòng thiếu tọa độ` : ''}
+            {skipped > 0 ? ` · ${rt('workboards.runtime.routeSkippedRows', { count: skipped })}` : ''}
           </div>
         </div>
         {routeIds.length > 1 ? (
@@ -5894,13 +5967,13 @@ function RouteMapView({
         >
           <div className="min-w-[200px]">
             <div className={`text-sm font-semibold ${overBudget ? 'text-rose-700' : 'text-emerald-800'}`}>
-              {budget.label || 'Đã chọn'}: {budgetSum.toLocaleString('vi-VN')}
-              {budgetLimit != null ? ` / ${budgetLimit.toLocaleString('vi-VN')}` : ''}
+              {budget.label || rt('workboards.runtime.selected')}: {budgetSum.toLocaleString(locale)}
+              {budgetLimit != null ? ` / ${budgetLimit.toLocaleString(locale)}` : ''}
               {budget.unit ? ` ${budget.unit}` : ''}
             </div>
             <div className="text-xs text-slate-500">
-              {selectedStops.length} điểm đã chọn
-              {overBudget ? ' · Vượt ngưỡng!' : ''}
+              {rt('workboards.runtime.selectedPoints', { count: selectedStops.length })}
+              {overBudget ? ` · ${rt('workboards.runtime.overBudget')}` : ''}
             </div>
           </div>
           {budgetLimit != null ? (
@@ -5917,21 +5990,21 @@ function RouteMapView({
               onClick={() => setSelectedKeys(new Set())}
               className="rounded-md border border-slate-300 bg-white px-2 py-1 text-xs text-slate-600 hover:bg-slate-50"
             >
-              Bỏ chọn
+              {rt('workboards.runtime.clearSelection')}
             </button>
           ) : null}
           {budget.action_go_to_screen && onAction ? (
             <button
               type="button"
               disabled={blocked || selectedStops.length === 0}
-              title={blocked ? 'Vượt ngưỡng — bỏ bớt điểm để tiếp tục' : undefined}
+              title={blocked ? rt('workboards.runtime.overBudgetRemovePoints') : undefined}
               onClick={() => {
                 if (blocked || selectedStops.length === 0) return;
                 const totalKey = `${budget.value_column}_total`;
                 onAction(
                   {
                     id: 'route-budget-confirm',
-                    label: budget.action_label || 'Xác nhận',
+                    label: budget.action_label || rt('workboards.runtime.confirm'),
                     go_to_screen: budget.action_go_to_screen || null,
                     carry: ['selected_count', totalKey],
                   },
@@ -5944,7 +6017,7 @@ function RouteMapView({
                   : 'bg-teal-600 hover:bg-teal-700'
               }`}
             >
-              {budget.action_label || 'Xác nhận'}
+              {budget.action_label || rt('workboards.runtime.confirm')}
             </button>
           ) : null}
         </div>
@@ -5961,8 +6034,10 @@ function RouteMapView({
         {sideEnabled ? (
           <div className="max-h-[446px] overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
             <div className="border-b border-slate-100 px-4 py-3">
-              <div className="text-base font-semibold text-slate-900">{config.side_panel_title || 'Thứ tự giao'}</div>
-              <div className="text-xs text-slate-500">{visibleStops.length} điểm trên tuyến</div>
+              <div className="text-base font-semibold text-slate-900">{config.side_panel_title || rt('workboards.runtime.routeOrder')}</div>
+              <div className="text-xs text-slate-500">
+                {rt('workboards.runtime.pointsOnRoute', { count: visibleStops.length })}
+              </div>
             </div>
             <div className="max-h-[374px] space-y-2 overflow-auto p-3">
               {visibleStops.map((stop, index) => {
@@ -6002,22 +6077,22 @@ function RouteMapView({
                           if (value == null || value === '') return null;
                           return (
                             <div key={column} className="truncate text-xs text-slate-600">
-                              {formatCellValue(value)}
+                              {formatCellValue(value, locale, rt('workboards.runtime.yes'), rt('workboards.runtime.no'))}
                             </div>
                           );
                         })}
                         <div className="mt-1 flex flex-wrap gap-x-2 gap-y-0.5 text-[11px] text-slate-500">
                           {config.weight_column && stop.row[config.weight_column] != null ? (
-                            <span>{formatCellValue(stop.row[config.weight_column])} kg</span>
+                            <span>{formatCellValue(stop.row[config.weight_column], locale, rt('workboards.runtime.yes'), rt('workboards.runtime.no'))} kg</span>
                           ) : null}
                           {config.deadline_column && stop.row[config.deadline_column] != null ? (
-                            <span>Hạn: {formatCellValue(stop.row[config.deadline_column])}</span>
+                            <span>{rt('workboards.runtime.deadline')}: {formatCellValue(stop.row[config.deadline_column], locale, rt('workboards.runtime.yes'), rt('workboards.runtime.no'))}</span>
                           ) : null}
                           {config.vehicle_column && stop.row[config.vehicle_column] != null ? (
-                            <span>Xe: {formatCellValue(stop.row[config.vehicle_column])}</span>
+                            <span>{rt('workboards.runtime.vehicle')}: {formatCellValue(stop.row[config.vehicle_column], locale, rt('workboards.runtime.yes'), rt('workboards.runtime.no'))}</span>
                           ) : null}
                           {config.status_column && stop.row[config.status_column] != null ? (
-                            <span>{colLabels[config.status_column] || config.status_column}: {formatCellValue(stop.row[config.status_column])}</span>
+                            <span>{colLabels[config.status_column] || config.status_column}: {formatCellValue(stop.row[config.status_column], locale, rt('workboards.runtime.yes'), rt('workboards.runtime.no'))}</span>
                           ) : null}
                         </div>
                       </div>
@@ -6060,6 +6135,7 @@ function MapSelectField({
   readonly: boolean;
   basemap: string;
 }) {
+  const { t: rt } = useI18n();
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<unknown>(null);
   // Keep each option's rendered layer so the value-effect can restyle without
@@ -6169,7 +6245,7 @@ function MapSelectField({
   if (options.length === 0) {
     return (
       <div className="rounded-md border border-dashed border-slate-300 bg-slate-50 px-3 py-6 text-center text-sm text-slate-500">
-        Chưa có vùng nào để hiển thị. Kiểm tra cấu hình bảng dữ liệu / cột geometry.
+        {rt('workboards.runtime.mapNoRegions')}
       </div>
     );
   }
@@ -6184,10 +6260,10 @@ function MapSelectField({
       <p className="text-xs text-slate-500">
         {selectedLabel ? (
           <>
-            Đã chọn: <span className="font-medium text-slate-700">{selectedLabel}</span>
+            {rt('workboards.runtime.selected')}: <span className="font-medium text-slate-700">{selectedLabel}</span>
           </>
         ) : (
-          'Chạm vào một vùng trên bản đồ để chọn.'
+          rt('workboards.runtime.tapRegionToSelect')
         )}
       </p>
     </div>
@@ -6196,12 +6272,17 @@ function MapSelectField({
 
 // ── Cell value formatter ─────────────────────────────────────────────────
 
-function formatCellValue(value: unknown): string {
+function formatCellValue(
+  value: unknown,
+  locale = 'en-US',
+  trueLabel = 'Yes',
+  falseLabel = 'No',
+): string {
   if (value === null || value === undefined) return '';
-  if (typeof value === 'boolean') return value ? 'Có' : 'Không';
+  if (typeof value === 'boolean') return value ? trueLabel : falseLabel;
   if (typeof value === 'number') {
     if (!Number.isFinite(value)) return String(value);
-    return value.toLocaleString('vi-VN');
+    return value.toLocaleString(locale);
   }
   const s = String(value);
   // ISO date/datetime
@@ -6210,8 +6291,8 @@ function formatCellValue(value: unknown): string {
       const d = new Date(s);
       if (!Number.isNaN(d.getTime())) {
         return /^\d{4}-\d{2}-\d{2}$/.test(s)
-          ? d.toLocaleDateString('vi-VN')
-          : d.toLocaleString('vi-VN');
+          ? d.toLocaleDateString(locale)
+          : d.toLocaleString(locale);
       }
     } catch {
       // fall through
@@ -6221,6 +6302,7 @@ function formatCellValue(value: unknown): string {
 }
 
 function CellDisplay({ value }: { value: unknown }) {
+  const { t: rt, locale } = useI18n();
   if (typeof value === 'boolean') {
     return (
       <span
@@ -6232,7 +6314,7 @@ function CellDisplay({ value }: { value: unknown }) {
       </span>
     );
   }
-  const s = formatCellValue(value);
+  const s = formatCellValue(value, locale, rt('workboards.runtime.yes'), rt('workboards.runtime.no'));
   if (typeof value === 'string' && /^https?:\/\//i.test(value)) {
     return (
       <a
@@ -6260,6 +6342,7 @@ function FormattedCell({
   value: unknown;
   format: string | null;
 }) {
+  const { locale } = useI18n();
   if (value === null || value === undefined || value === '') {
     return <span className="text-slate-300">—</span>;
   }
@@ -6287,7 +6370,7 @@ function FormattedCell({
   if (format === 'currency' && Number.isFinite(numeric)) {
     return (
       <>
-        {numeric.toLocaleString('vi-VN', { style: 'currency', currency: 'VND' })}
+        {numeric.toLocaleString(locale, { style: 'currency', currency: 'VND' })}
       </>
     );
   }
@@ -6295,10 +6378,10 @@ function FormattedCell({
     return <>{(numeric * 100).toFixed(2)}%</>;
   }
   if (format === 'integer' && Number.isFinite(numeric)) {
-    return <>{Math.round(numeric).toLocaleString('vi-VN')}</>;
+    return <>{Math.round(numeric).toLocaleString(locale)}</>;
   }
   if (format === 'number' && Number.isFinite(numeric)) {
-    return <>{numeric.toLocaleString('vi-VN', { maximumFractionDigits: 4 })}</>;
+    return <>{numeric.toLocaleString(locale, { maximumFractionDigits: 4 })}</>;
   }
   if (format === 'date' || format === 'datetime') {
     return <CellDisplay value={value} />;
@@ -6367,6 +6450,7 @@ function GalleryView({
   emptyMessage?: string | null;
   rowFormat?: (row: Record<string, unknown>) => { tone: string; icon?: string | null; label?: string | null } | null;
 }) {
+  const { t: rt } = useI18n();
   const groupCol = config.group_by_column || null;
   const perRow = Math.min(Math.max(Number(config.columns_per_row) || 3, 1), 6);
   // Responsive: cap columns on small screens so cards don't get tiny on phones.
@@ -6399,7 +6483,7 @@ function GalleryView({
   if (rows.length === 0) {
     return (
       <div className="px-4 py-10 text-center text-sm text-slate-500">
-        {emptyMessage || 'Chưa có dữ liệu.'}
+        {emptyMessage || rt('workboards.runtime.noData')}
       </div>
     );
   }
@@ -6482,8 +6566,6 @@ const CAL_TONES = [
   { dot: 'bg-rose-500', chip: 'bg-rose-50 text-rose-700 ring-1 ring-inset ring-rose-200' },
   { dot: 'bg-slate-400', chip: 'bg-slate-50 text-slate-600 ring-1 ring-inset ring-slate-200' },
 ];
-const CAL_WEEKDAYS = ['T2', 'T3', 'T4', 'T5', 'T6', 'T7', 'CN'];
-
 function toDayKey(v: unknown): string | null {
   if (v == null || v === '') return null;
   const s = String(v);
@@ -6511,6 +6593,19 @@ function CalendarView({
   onEditRow: (row: Record<string, unknown>) => void;
   onAddOnDate: (dateKey: string) => void;
 }) {
+  const { t: rt, locale } = useI18n();
+  const weekDays = useMemo(
+    () => [
+      rt('workboards.runtime.weekdayMon'),
+      rt('workboards.runtime.weekdayTue'),
+      rt('workboards.runtime.weekdayWed'),
+      rt('workboards.runtime.weekdayThu'),
+      rt('workboards.runtime.weekdayFri'),
+      rt('workboards.runtime.weekdaySat'),
+      rt('workboards.runtime.weekdaySun'),
+    ],
+    [rt],
+  );
   // Bucket rows by day; assign a stable tone per distinct color-column value.
   const { byDay, toneIdxFor, legend } = useMemo(() => {
     const map: Record<string, Array<Record<string, unknown>>> = {};
@@ -6552,7 +6647,7 @@ function CalendarView({
   useEffect(() => setYm(initial), [initial]);
 
   const first = new Date(ym.y, ym.m, 1);
-  const monthName = first.toLocaleDateString('vi-VN', { month: 'long', year: 'numeric' });
+  const monthName = first.toLocaleDateString(locale, { month: 'long', year: 'numeric' });
   const startOffset = (first.getDay() + 6) % 7; // Monday-first
   const daysInMonth = new Date(ym.y, ym.m + 1, 0).getDate();
   const cells: Array<{ day: number; key: string } | null> = [];
@@ -6574,7 +6669,9 @@ function CalendarView({
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
         <div>
           <div className="text-base font-semibold capitalize text-slate-800">{monthName}</div>
-          <div className="text-xs text-slate-400">{monthCount} ghi nhận trong tháng</div>
+          <div className="text-xs text-slate-400">
+            {rt('workboards.runtime.monthRecordCount', { count: monthCount })}
+          </div>
         </div>
         <div className="flex items-center gap-1.5">
           <button
@@ -6582,14 +6679,14 @@ function CalendarView({
             onClick={() => setYm({ y: new Date().getFullYear(), m: new Date().getMonth() })}
             className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50"
           >
-            Hôm nay
+            {rt('workboards.runtime.today')}
           </button>
           <div className="flex items-center overflow-hidden rounded-lg border border-slate-200 bg-white">
-            <button type="button" onClick={() => shift(-1)} aria-label="Tháng trước" className="px-2 py-1.5 text-slate-500 hover:bg-slate-50">
+            <button type="button" onClick={() => shift(-1)} aria-label={rt('workboards.runtime.previousMonth')} className="px-2 py-1.5 text-slate-500 hover:bg-slate-50">
               <ChevronLeft className="h-4 w-4" />
             </button>
             <span className="h-4 w-px bg-slate-200" />
-            <button type="button" onClick={() => shift(1)} aria-label="Tháng sau" className="px-2 py-1.5 text-slate-500 hover:bg-slate-50">
+            <button type="button" onClick={() => shift(1)} aria-label={rt('workboards.runtime.nextMonth')} className="px-2 py-1.5 text-slate-500 hover:bg-slate-50">
               <ChevronRight className="h-4 w-4" />
             </button>
           </div>
@@ -6599,7 +6696,7 @@ function CalendarView({
       {/* Grid */}
       <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
         <div className="grid grid-cols-7 border-b border-slate-100">
-          {CAL_WEEKDAYS.map((w, i) => (
+          {weekDays.map((w, i) => (
             <div
               key={w}
               className={`px-2 py-2 text-center text-[11px] font-semibold uppercase tracking-wide ${
@@ -6635,14 +6732,14 @@ function CalendarView({
                         {cell.day}
                       </span>
                       {canAdd && (
-                        <span className="rounded-md p-0.5 text-slate-300 opacity-0 transition group-hover:opacity-100" title="Thêm ghi nhận">
+                        <span className="rounded-md p-0.5 text-slate-300 opacity-0 transition group-hover:opacity-100" title={rt('workboards.runtime.addRecord')}>
                           <Plus className="h-3.5 w-3.5" />
                         </span>
                       )}
                     </div>
                     <div className="space-y-1">
                       {dayRows.slice(0, 3).map((row, j) => {
-                        const label = config.title_column ? String(row[config.title_column] ?? '') : 'Bản ghi';
+                        const label = config.title_column ? String(row[config.title_column] ?? '') : rt('workboards.runtime.record');
                         const tone = CAL_TONES[toneIdxFor(row)];
                         return (
                           <button
@@ -6655,7 +6752,7 @@ function CalendarView({
                             className={`flex w-full items-center gap-1 rounded-md px-1.5 py-1 text-left text-[11px] ${tone.chip} ${
                               canEdit ? 'hover:brightness-[0.97]' : 'cursor-default'
                             }`}
-                            title={canEdit ? `Sửa: ${label}` : label}
+                            title={canEdit ? rt('workboards.runtime.editRecordTitle', { label }) : label}
                           >
                             <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${tone.dot}`} />
                             <span className="truncate">{label || '•'}</span>
@@ -6663,7 +6760,9 @@ function CalendarView({
                         );
                       })}
                       {dayRows.length > 3 && (
-                        <div className="px-1 text-[10px] font-medium text-slate-400">+{dayRows.length - 3} ghi nhận</div>
+                        <div className="px-1 text-[10px] font-medium text-slate-400">
+                          {rt('workboards.runtime.moreRecords', { count: dayRows.length - 3 })}
+                        </div>
                       )}
                     </div>
                   </>
@@ -6682,7 +6781,7 @@ function CalendarView({
             {l.value}
           </span>
         ))}
-        {canAdd && <span className="text-slate-400">· Chạm ô ngày để thêm · chạm thẻ để sửa</span>}
+        {canAdd && <span className="text-slate-400">{rt('workboards.runtime.calendarHint')}</span>}
       </div>
     </div>
   );
@@ -6788,6 +6887,7 @@ function PosCartScreen({
   accent: string;
   onNavigate: (screenId: string, carry?: Record<string, unknown>) => void;
 }) {
+  const { t: rt, locale } = useI18n();
   const cfg = spec.table_view?.pos_cart as NonNullable<
     NonNullable<TableScreenResponse['table_view']>['pos_cart']
   >;
@@ -6898,10 +6998,10 @@ function PosCartScreen({
       };
       rafRef.current = requestAnimationFrame(tick);
     } catch {
-      setScanError('Không mở được camera — cấp quyền camera cho trang, hoặc nhập/tìm mã bên dưới.');
+      setScanError(rt('workboards.runtime.cameraOpenFailedSearch'));
       stopScan();
     }
-  }, [addByCode, stopScan]);
+  }, [addByCode, stopScan, rt]);
 
   const decodePhoto = useCallback(async (file: File) => {
     setScanError(null);
@@ -6926,11 +7026,11 @@ function PosCartScreen({
       if (!result?.data) throw new Error('not-found');
       addByCode(result.data);
     } catch {
-      setScanError('Không đọc được mã trong ảnh. Hãy chụp gần hơn, đủ sáng và thử lại.');
+      setScanError(rt('workboards.runtime.barcodeImageReadFailed'));
     } finally {
       if (photoInputRef.current) photoInputRef.current.value = '';
     }
-  }, [addByCode]);
+  }, [addByCode, rt]);
 
   const setQty = (code: string, qty: number) =>
     setLines((prev) =>
@@ -6965,12 +7065,12 @@ function PosCartScreen({
     setError(null);
     for (const h of headerInputs) {
       if (h.required && !String(header[h.column] ?? '').trim()) {
-        setError(`Thiếu "${h.label}".`);
+        setError(rt('workboards.runtime.missingField', { field: h.label }));
         return;
       }
     }
     if (lines.length === 0) {
-      setError('Chưa quét sản phẩm nào.');
+      setError(rt('workboards.runtime.noScannedProducts'));
       return;
     }
     setSubmitting(true);
@@ -7017,7 +7117,11 @@ function PosCartScreen({
       );
       if (res.failure > 0) {
         const first = res.results.find((x) => !x.ok);
-        setError(`Lưu ${res.success}/${res.total} dòng. Lỗi: ${first?.error || 'không rõ'}.`);
+        setError(rt('workboards.runtime.posPartialSaveError', {
+          success: res.success,
+          total: res.total,
+          error: first?.error || rt('workboards.runtime.unknownError'),
+        }));
         setSubmitting(false);
         return;
       }
@@ -7032,10 +7136,10 @@ function PosCartScreen({
         onNavigate(cfg.after_submit_screen, carry);
       }
     } catch (e) {
-      setError(isNetworkError(e) ? 'Mất mạng — thử lại khi có kết nối.' : 'Không lưu được phiếu.');
+      setError(isNetworkError(e) ? rt('workboards.runtime.networkRetry') : rt('workboards.runtime.receiptSaveFailed'));
       setSubmitting(false);
     }
-  }, [cfg, header, headerInputs, lines, genOrderId, stopScan, token, workboardId, spec.screen_id, onNavigate]);
+  }, [cfg, header, headerInputs, lines, genOrderId, stopScan, token, workboardId, spec.screen_id, onNavigate, rt]);
 
   if (!cfg) return null;
 
@@ -7059,7 +7163,7 @@ function PosCartScreen({
                   onChange={(e) => setHeader((p) => ({ ...p, [h.column]: e.target.value }))}
                   className={inputCls}
                 >
-                  <option value="">— Chọn —</option>
+                  <option value="">{rt('workboards.runtime.selectOption')}</option>
                   {(h.options || []).map((o) => (
                     <option key={o} value={o}>
                       {o}
@@ -7086,7 +7190,7 @@ function PosCartScreen({
             {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
             <video ref={videoRef} className="h-56 w-full rounded-lg border border-slate-300 bg-black object-cover" />
             <button type="button" onClick={stopScan} className="text-xs text-rose-600 hover:underline">
-              Dừng quét
+              {rt('workboards.runtime.stopScan')}
             </button>
           </div>
         )}
@@ -7101,7 +7205,7 @@ function PosCartScreen({
                 setManual('');
               }
             }}
-            placeholder="Quét hoặc nhập mã hàng rồi Enter"
+            placeholder={rt('workboards.runtime.scanProductPlaceholder')}
             className={inputCls}
           />
           {scanSupported && !scanning && (
@@ -7111,7 +7215,7 @@ function PosCartScreen({
               className="inline-flex shrink-0 items-center gap-1.5 rounded-lg px-4 py-2 text-sm font-medium text-white"
               style={{ backgroundColor: accent }}
             >
-              <ScanLine className="h-4 w-4" /> Quét
+              <ScanLine className="h-4 w-4" /> {rt('workboards.runtime.scan')}
             </button>
           )}
           <input
@@ -7129,7 +7233,7 @@ function PosCartScreen({
             onClick={() => photoInputRef.current?.click()}
             className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
           >
-            <ScanLine className="h-4 w-4" /> Ảnh
+            <ScanLine className="h-4 w-4" /> {rt('workboards.runtime.photo')}
           </button>
         </div>
         {scanError && <p className="text-xs text-rose-600">{scanError}</p>}
@@ -7139,7 +7243,7 @@ function PosCartScreen({
             <input
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="Tìm sản phẩm theo tên / mã…"
+              placeholder={rt('workboards.runtime.productSearchPlaceholder')}
               className={inputCls}
             />
             {searchHits.length > 0 && (
@@ -7178,21 +7282,21 @@ function PosCartScreen({
           style={{ backgroundColor: `${accent}0D` }}
         >
           <div>
-            <span className="text-sm font-semibold text-slate-800">Danh sách quét</span>
+            <span className="text-sm font-semibold text-slate-800">{rt('workboards.runtime.scanList')}</span>
             <p className="mt-0.5 text-xs text-slate-500 sm:hidden">
-              Kiểm tra số lượng trước khi lưu phiếu
+              {rt('workboards.runtime.checkQtyBeforeSave')}
             </p>
           </div>
           <span
             className="rounded-full px-2.5 py-1 text-xs font-semibold"
             style={{ backgroundColor: `${accent}18`, color: accent }}
           >
-            {lines.length} mặt hàng · SL {grandQty}
+            {rt('workboards.runtime.cartSummary', { items: lines.length, qty: grandQty })}
           </span>
         </div>
         {lines.length === 0 ? (
           <div className="px-4 py-10 text-center text-sm text-slate-400">
-            {cfg.empty_hint || 'Quét mã để thêm sản phẩm vào danh sách.'}
+            {cfg.empty_hint || rt('workboards.runtime.scanToAddProduct')}
           </div>
         ) : (
           <ul className="divide-y divide-slate-100">
@@ -7208,7 +7312,7 @@ function PosCartScreen({
                         {l.code}
                       </span>
                       {l.price > 0 && (
-                        <span>{l.price.toLocaleString('vi-VN')} ₫ / đơn vị</span>
+                        <span>{rt('workboards.runtime.unitPrice', { price: l.price.toLocaleString(locale) })}</span>
                       )}
                     </div>
                   </div>
@@ -7216,7 +7320,7 @@ function PosCartScreen({
                     type="button"
                     onClick={() => removeLine(l.code)}
                     className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-rose-500 hover:bg-rose-50 sm:hidden"
-                    aria-label="Xóa sản phẩm"
+                    aria-label={rt('workboards.runtime.removeProduct')}
                   >
                     <Trash2 className="h-4 w-4" />
                   </button>
@@ -7248,10 +7352,10 @@ function PosCartScreen({
                   {l.price > 0 && (
                     <div className="min-w-[112px] text-right">
                       <p className="text-[11px] font-medium uppercase tracking-wide text-slate-400 sm:hidden">
-                        Thành tiền
+                        {rt('workboards.runtime.lineAmount')}
                       </p>
                       <p className="text-sm font-bold text-slate-900">
-                        {(l.qty * l.price).toLocaleString('vi-VN')} ₫
+                        {(l.qty * l.price).toLocaleString(locale)} ₫
                       </p>
                     </div>
                   )}
@@ -7259,7 +7363,7 @@ function PosCartScreen({
                     type="button"
                     onClick={() => removeLine(l.code)}
                     className="hidden h-8 w-8 shrink-0 items-center justify-center rounded-md text-rose-500 hover:bg-rose-50 sm:flex"
-                    aria-label="Xóa sản phẩm"
+                    aria-label={rt('workboards.runtime.removeProduct')}
                   >
                     <Trash2 className="h-4 w-4" />
                   </button>
@@ -7270,9 +7374,9 @@ function PosCartScreen({
         )}
         {grandAmount > 0 && (
           <div className="flex items-center justify-between border-t border-slate-100 bg-slate-50 px-4 py-3">
-            <span className="text-sm font-semibold text-slate-700">Tổng tiền</span>
+            <span className="text-sm font-semibold text-slate-700">{rt('workboards.runtime.totalAmount')}</span>
             <span className="text-lg font-bold text-slate-950">
-              {grandAmount.toLocaleString('vi-VN')} ₫
+              {grandAmount.toLocaleString(locale)} ₫
             </span>
           </div>
         )}
@@ -7298,7 +7402,7 @@ function PosCartScreen({
           ) : (
             <Printer className="h-5 w-5" />
           )}
-          {cfg.submit_label || 'Lưu phiếu'}
+          {cfg.submit_label || rt('workboards.runtime.saveReceipt')}
           {lines.length > 0 && !submitting && <span className="opacity-90">({lines.length})</span>}
         </button>
       </div>
@@ -7327,6 +7431,7 @@ function TableScreen({
   shared: Record<string, unknown>;
   onAction: (action: RowActionDescriptor, row: Record<string, unknown>) => void;
 }) {
+  const { t: rt } = useI18n();
   type Row = Record<string, unknown>;
 
   const [current, setCurrent] = useState<TableScreenResponse>(spec);
@@ -7509,7 +7614,7 @@ function TableScreen({
     const target = viewerRole.toLowerCase();
     return allow.some((r) => r.toLowerCase() === target);
   });
-  const empty = tv.empty_state_message || 'No data yet.';
+  const empty = tv.empty_state_message || rt('workboards.runtime.noDataYet');
 
   // Bulk "gom" actions (select many → combine into one parent). Role-filtered
   // exactly like row_actions; presence toggles the checkbox column + action bar.
@@ -7704,7 +7809,7 @@ function TableScreen({
         selected_pks,
         resources,
       });
-      toast.success((res.success_message || 'Đã hoàn tất') + (res.primary_code ? ` → ${res.primary_code}` : ''));
+      toast.success((res.success_message || rt('workboards.runtime.completed')) + (res.primary_code ? ` → ${res.primary_code}` : ''));
       setSelectedKeys(new Set());
       setBulkModal(null);
       await reloadRows(filterValues);
@@ -7715,7 +7820,7 @@ function TableScreen({
           ? String((detail as { message?: unknown }).message)
           : typeof detail === 'string'
             ? detail
-            : 'Thao tác thất bại.';
+            : rt('workboards.runtime.actionFailed');
       toast.error(msg);
     } finally {
       setBulkBusy(false);
@@ -7729,13 +7834,15 @@ function TableScreen({
     const keys = [...selectedKeys];
     const min = action.min_selection || 1;
     if (keys.length < min) {
-      toast.warning(`Chọn tối thiểu ${min} dòng.`);
+      toast.warning(rt('workboards.runtime.selectAtLeastRows', { min }));
       return;
     }
     const badSame = bulkGuardBad(action);
     if (badSame.length) {
       toast.warning(
-        `Chỉ gộp được các dòng cùng: ${badSame.map((c) => colLabels[c] || c).join(', ')}.`,
+        rt('workboards.runtime.bulkSameColumnsOnly', {
+          columns: badSame.map((c) => colLabels[c] || c).join(', '),
+        }),
       );
       return;
     }
@@ -7790,16 +7897,16 @@ function TableScreen({
           failed.push(key);
         }
       }
-      const base = (action.success_message || 'Đã gộp {n} dòng').replace('{n}', String(ok));
-      if (failed.length) toast.warning(`${base} → ${code} (${failed.length} lỗi)`);
+      const base = (action.success_message || rt('workboards.runtime.bulkMergedRows', { count: ok })).replace('{n}', String(ok));
+      if (failed.length) toast.warning(rt('workboards.runtime.bulkMergedWithErrors', { message: base, code, count: failed.length }));
       else toast.success(`${base} → ${code}`);
       setSelectedKeys(new Set());
       await reloadRows(filterValues);
     } catch (err: unknown) {
       const msg =
         (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ||
-        'Không tạo được bản ghi tổng hợp.';
-      toast.error(`Gộp thất bại: ${String(msg)}`);
+        rt('workboards.runtime.createAggregateFailed');
+      toast.error(rt('workboards.runtime.bulkFailed', { message: String(msg) }));
     } finally {
       setBulkBusy(false);
     }
@@ -7840,7 +7947,7 @@ function TableScreen({
       }, 1500);
     } catch (err: unknown) {
       const msg =
-        (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail || 'Save failed';
+        (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail || rt('workboards.runtime.saveFailed');
       setRowStatus((prev) => ({ ...prev, [rowKey]: { status: 'error', error: String(msg) } }));
       void reloadRows(filterValues);
     }
@@ -7877,7 +7984,7 @@ function TableScreen({
 
   const deleteRow = async (row: Row) => {
     if (!allowDelete) return;
-    if (!confirm('Delete this row?')) return;
+    if (!confirm(rt('workboards.runtime.deleteRowConfirm'))) return;
     const rowKey = tableRowKey(row, pkCols);
     const pk: Record<string, unknown> = {};
     for (const c of pkCols) pk[c] = row[c];
@@ -7890,7 +7997,7 @@ function TableScreen({
       }));
     } catch (err: unknown) {
       const msg =
-        (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail || 'Delete failed';
+        (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail || rt('workboards.runtime.deleteFailed');
       setRowStatus((prev) => ({ ...prev, [rowKey]: { status: 'error', error: String(msg) } }));
     }
   };
@@ -7946,7 +8053,7 @@ function TableScreen({
         failure: result.failure,
         errors: result.results
           .filter((r) => !r.ok)
-          .map((r) => ({ index: r.index, error: r.error || 'Insert failed' })),
+          .map((r) => ({ index: r.index, error: r.error || rt('workboards.runtime.insertFailed') })),
       });
       if (result.success > 0) await reloadRows(filterValues);
       if (result.failure === 0) {
@@ -7959,7 +8066,7 @@ function TableScreen({
         total: parsed.length,
         success: 0,
         failure: parsed.length,
-        errors: [{ index: 0, error: typeof detail === 'string' ? detail : 'Bulk insert failed' }],
+        errors: [{ index: 0, error: typeof detail === 'string' ? detail : rt('workboards.runtime.bulkInsertFailed') }],
       });
     } finally {
       setBulkSubmitting(false);
@@ -7977,7 +8084,7 @@ function TableScreen({
   const submitGhost = async () => {
     if (!allowAdd) return;
     if (ghostMissingRequired.length > 0) {
-      setGhostError(`Required: ${ghostMissingRequired.join(', ')}`);
+      setGhostError(rt('workboards.runtime.requiredColumns', { columns: ghostMissingRequired.join(', ') }));
       return;
     }
     setAdding(true);
@@ -7990,7 +8097,7 @@ function TableScreen({
       const msg =
         (err as { response?: { data?: { detail?: string | { message?: string } } } })?.response
           ?.data?.detail;
-      const detail = typeof msg === 'string' ? msg : msg?.message || 'Add row failed';
+      const detail = typeof msg === 'string' ? msg : msg?.message || rt('workboards.runtime.addRowFailed');
       setGhostError(detail);
     } finally {
       setAdding(false);
@@ -8017,7 +8124,7 @@ function TableScreen({
       setPanelDetail(detail);
     } catch (err: unknown) {
       const msg =
-        (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail || 'Cannot load row.';
+        (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail || rt('workboards.runtime.cannotLoadRow');
       setPanelError(String(msg));
       setPanelDetail(null);
     } finally {
@@ -8083,7 +8190,7 @@ function TableScreen({
       const msg =
         (err as { response?: { data?: { detail?: string | { message?: string } } } })?.response
           ?.data?.detail;
-      const detail = typeof msg === 'string' ? msg : msg?.message || 'Save failed';
+      const detail = typeof msg === 'string' ? msg : msg?.message || rt('workboards.runtime.saveFailed');
       setPanelError(detail);
     } finally {
       setPanelSaving(false);
@@ -8126,7 +8233,7 @@ function TableScreen({
                   <div key={key} className="grid gap-2 sm:grid-cols-2 md:col-span-2">
                     <label className="block">
                       <span className="mb-1 block text-xs font-medium text-slate-600">
-                        {label} from
+                        {label} {rt('workboards.runtime.from')}
                       </span>
                       <input
                         type={type}
@@ -8142,7 +8249,7 @@ function TableScreen({
                     </label>
                     <label className="block">
                       <span className="mb-1 block text-xs font-medium text-slate-600">
-                        {label} to
+                        {label} {rt('workboards.runtime.to')}
                       </span>
                       <input
                         type={type}
@@ -8171,8 +8278,8 @@ function TableScreen({
                         value={filterValues[key] || ''}
                         onChange={(v) => setFilterValues((prev) => ({ ...prev, [key]: v }))}
                         options={selectOpts.map((opt) => ({ label: opt, value: opt }))}
-                        placeholder="— Tất cả —"
-                        clearLabel="— Tất cả —"
+                        placeholder={rt('workboards.runtime.allFilter')}
+                        clearLabel={rt('workboards.runtime.allFilter')}
                         allowSearch
                       />
                     </label>
@@ -8188,7 +8295,7 @@ function TableScreen({
                       }
                       className="h-9 w-full rounded-md border border-slate-200 bg-white px-2 text-sm outline-none focus:border-slate-400"
                     >
-                      <option value="">— Tất cả —</option>
+                      <option value="">{rt('workboards.runtime.allFilter')}</option>
                       {selectOpts.map((opt) => (
                         <option key={opt} value={opt}>
                           {opt}
@@ -8206,7 +8313,7 @@ function TableScreen({
                     onChange={(event) =>
                       setFilterValues((prev) => ({ ...prev, [key]: event.target.value }))
                     }
-                    placeholder={filter.kind === 'select' ? 'Exact value' : 'Search'}
+                    placeholder={filter.kind === 'select' ? rt('workboards.runtime.exactValue') : rt('workboards.runtime.search')}
                     className="h-9 w-full rounded-md border border-slate-200 bg-white px-2 text-sm outline-none focus:border-slate-400"
                   />
                 </label>
@@ -8220,7 +8327,7 @@ function TableScreen({
               className="w-full rounded-md px-3 py-2 text-sm font-medium text-white disabled:opacity-60 sm:w-auto sm:py-1.5"
               style={{ backgroundColor: accent }}
             >
-              {filterLoading ? 'Đang lọc...' : 'Áp dụng bộ lọc'}
+              {filterLoading ? rt('workboards.runtime.filtering') : rt('workboards.runtime.applyFilters')}
             </button>
             <button
               type="button"
@@ -8228,7 +8335,7 @@ function TableScreen({
               disabled={filterLoading || Object.keys(filterValues).length === 0}
               className="w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-600 disabled:opacity-50 sm:w-auto sm:py-1.5"
             >
-              Xóa lọc
+              {rt('workboards.runtime.clearFilters')}
             </button>
           </div>
         </form>
@@ -8291,14 +8398,14 @@ function TableScreen({
       {selectionEnabled && selectedKeys.size > 0 ? (
         <div className="sticky top-0 z-20 mb-2 flex flex-wrap items-center gap-3 rounded-xl border border-slate-200 bg-white/95 px-4 py-2.5 shadow-md backdrop-blur">
           <span className="text-sm font-semibold text-slate-800">
-            Đã chọn {selectedKeys.size} dòng
+            {rt('workboards.runtime.selectedRows', { count: selectedKeys.size })}
           </span>
           <button
             type="button"
             onClick={() => setSelectedKeys(new Set())}
             className="text-xs font-medium text-slate-500 hover:text-slate-700 hover:underline"
           >
-            Bỏ chọn
+            {rt('workboards.runtime.clearSelection')}
           </button>
           {previewChips.length > 0 ? (
             <div className="flex flex-wrap items-center gap-1.5">
@@ -8357,7 +8464,9 @@ function TableScreen({
                   onClick={() => void runBulkAction(a)}
                   title={
                     blocked
-                      ? `Chỉ gộp được các dòng cùng: ${bad.map((c) => colLabels[c] || c).join(', ')}`
+                      ? rt('workboards.runtime.bulkSameColumnsOnly', {
+                          columns: bad.map((c) => colLabels[c] || c).join(', '),
+                        })
                       : a.label
                   }
                   className={`inline-flex items-center gap-1.5 rounded-lg px-3.5 py-1.5 text-sm font-semibold shadow-sm disabled:opacity-50 ${cls}`}
@@ -8375,13 +8484,13 @@ function TableScreen({
       {showRoute && panelAction?.route_preview && selectedKeys.size > 0 ? (
         <div className="mb-2 overflow-hidden rounded-xl border border-slate-200">
           <div className="flex items-center justify-between border-b border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-medium text-slate-600">
-            <span>Tuyến giao của các đơn đã chọn</span>
+            <span>{rt('workboards.runtime.selectedOrdersRoute')}</span>
             <button
               type="button"
               onClick={() => setShowRoute(false)}
               className="rounded px-1.5 text-slate-400 hover:bg-slate-200 hover:text-slate-600"
             >
-              Ẩn ✕
+              {rt('workboards.runtime.hideRoute')} ✕
             </button>
           </div>
           <RouteMapView
@@ -8391,7 +8500,7 @@ function TableScreen({
             pkCols={pkCols}
             onOpen={() => {}}
             panelEnabled={false}
-            emptyMessage="Các đơn đã chọn chưa có toạ độ (Lat/Long) để vẽ tuyến."
+            emptyMessage={rt('workboards.runtime.selectedOrdersNoCoords')}
           />
         </div>
       ) : null}
@@ -8428,7 +8537,7 @@ function TableScreen({
                       <th key="g:sel" rowSpan={2} className="w-10 px-2 text-center align-middle">
                         <input
                           type="checkbox"
-                          aria-label="Chọn tất cả"
+                          aria-label={rt('workboards.runtime.selectAll')}
                           className="h-4 w-4 cursor-pointer accent-teal-600"
                           checked={rows.length > 0 && rows.every((r) => selectedKeys.has(tableRowKey(r, pkCols)))}
                           onChange={toggleSelectAll}
@@ -8476,7 +8585,7 @@ function TableScreen({
                 <th className="w-10 px-2 text-center align-middle">
                   <input
                     type="checkbox"
-                    aria-label="Chọn tất cả"
+                    aria-label={rt('workboards.runtime.selectAll')}
                     className="h-4 w-4 cursor-pointer accent-teal-600"
                     checked={rows.length > 0 && rows.every((r) => selectedKeys.has(tableRowKey(r, pkCols)))}
                     onChange={toggleSelectAll}
@@ -8502,11 +8611,15 @@ function TableScreen({
                 // from. Computed JS columns get a different hint (server
                 // sandbox eval).
                 const lookupTooltip = lookupSpec
-                  ? `Cột tra cứu: lấy '${lookupSpec.return_column}' từ bảng id=${lookupSpec.from_table_id}. ` +
-                    `Khớp khi ${lookupSpec.match_column_local} = ${lookupSpec.match_column_remote}.`
+                  ? rt('workboards.runtime.lookupTooltip', {
+                      column: lookupSpec.return_column,
+                      table: lookupSpec.from_table_id,
+                      local: lookupSpec.match_column_local,
+                      remote: lookupSpec.match_column_remote,
+                    })
                   : 'Lookup';
                 const computedTooltip = computedSpec
-                  ? 'Computed (JavaScript, evaluate trên server)'
+                  ? rt('workboards.runtime.computedTooltip')
                   : 'Computed';
                 return (
                   <th
@@ -8527,7 +8640,7 @@ function TableScreen({
                     ) : isRollup ? (
                       <span
                         className="ml-1 text-[10px] font-normal text-amber-600"
-                        title={`Roll-up: ${rollupSpec?.agg || 'count'} từ bảng con`}
+                        title={rt('workboards.runtime.rollupTooltip', { agg: rollupSpec?.agg || 'count' })}
                       >
                         Σ
                       </span>
@@ -8601,7 +8714,7 @@ function TableScreen({
                     >
                       <input
                         type="checkbox"
-                        aria-label="Chọn dòng"
+                        aria-label={rt('workboards.runtime.selectRow')}
                         className="h-4 w-4 cursor-pointer accent-teal-600"
                         checked={selectedKeys.has(rowKey)}
                         onChange={() => toggleRowSelected(rowKey)}
@@ -8691,7 +8804,7 @@ function TableScreen({
                             type="button"
                             onClick={() => void deleteRow(row)}
                             className="rounded p-1 text-slate-400 hover:bg-red-50 hover:text-red-600"
-                            title="Delete row"
+                            title={rt('workboards.runtime.deleteRow')}
                           >
                             <Trash2 className="h-3.5 w-3.5" />
                           </button>
@@ -8713,7 +8826,7 @@ function TableScreen({
                       {editable ? (
                         <TableCellInput
                           value={ghost[c]}
-                          placeholder={requiredCols.has(c) ? 'Required' : ''}
+                          placeholder={requiredCols.has(c) ? rt('workboards.runtime.required') : ''}
                           onCommit={(next) => setGhost((prev) => ({ ...prev, [c]: next }))}
                           meta={(tv.column_metadata || {})[c] as CellMeta}
                         />
@@ -8721,7 +8834,7 @@ function TableScreen({
                         // Computed cells preview after the row lands —
                         // they're evaluated server-side on the next page
                         // refresh.
-                        <span className="text-xs text-slate-400">ƒ (auto)</span>
+                        <span className="text-xs text-slate-400">{rt('workboards.runtime.autoFormula')}</span>
                       ) : (
                         <span className="text-xs text-slate-400">—</span>
                       )}
@@ -8738,12 +8851,12 @@ function TableScreen({
                       style={{ backgroundColor: accent }}
                       title={
                         ghostMissingRequired.length > 0
-                          ? `Required: ${ghostMissingRequired.join(', ')}`
-                          : 'Add row'
+                          ? rt('workboards.runtime.requiredColumns', { columns: ghostMissingRequired.join(', ') })
+                          : rt('workboards.runtime.addRow')
                       }
                     >
                       {adding ? <Loader2 className="h-3 w-3 animate-spin" /> : <Plus className="h-3 w-3" />}
-                      Add
+                      {rt('workboards.runtime.add')}
                     </button>
                     <button
                       type="button"
@@ -8752,9 +8865,9 @@ function TableScreen({
                         setBulkOpen(true);
                       }}
                       className="inline-flex items-center gap-1 rounded-md border border-slate-300 px-2 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50"
-                      title="Dán nhiều dòng từ Excel"
+                      title={rt('workboards.runtime.pasteRowsTitle')}
                     >
-                      📋 Paste rows
+                      📋 {rt('workboards.runtime.pasteRows')}
                     </button>
                   </div>
                 </td>
@@ -8797,8 +8910,8 @@ function TableScreen({
       {(tablePage > 1 || hasNextPage) && (
         <div className="flex items-center justify-between gap-2 border-t border-slate-100 px-4 py-2 text-xs text-slate-600">
           <span>
-            Trang {tablePage}
-            {rows.length ? ` · ${rows.length} dòng` : ''}
+            {rt('workboards.runtime.pageNumber', { page: tablePage })}
+            {rows.length ? ` · ${rt('workboards.runtime.rowCount', { count: rows.length })}` : ''}
           </span>
           <div className="flex items-center gap-1">
             <button
@@ -8807,7 +8920,7 @@ function TableScreen({
               disabled={tablePage <= 1 || filterLoading}
               className="rounded-md border border-slate-300 px-3 py-1 disabled:opacity-40 hover:bg-slate-50"
             >
-              ← Trước
+              {rt('workboards.runtime.previous')}
             </button>
             <button
               type="button"
@@ -8815,7 +8928,7 @@ function TableScreen({
               disabled={!hasNextPage || filterLoading}
               className="rounded-md border border-slate-300 px-3 py-1 disabled:opacity-40 hover:bg-slate-50"
             >
-              Sau →
+              {rt('workboards.runtime.next')}
             </button>
           </div>
         </div>
@@ -8831,7 +8944,7 @@ function TableScreen({
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
           <div className="w-full max-w-2xl rounded-xl bg-white shadow-xl">
             <div className="flex items-center justify-between border-b border-slate-200 px-5 py-3">
-              <h3 className="text-sm font-semibold text-slate-900">Dán nhiều dòng</h3>
+              <h3 className="text-sm font-semibold text-slate-900">{rt('workboards.runtime.pasteRowsTitle')}</h3>
               <button
                 type="button"
                 onClick={() => {
@@ -8846,10 +8959,9 @@ function TableScreen({
             </div>
             <div className="space-y-3 px-5 py-4">
               <div className="text-xs text-slate-600">
-                Sao chép từ Excel/Google Sheets rồi dán vào ô bên dưới (mỗi dòng = 1 record,
-                các cột cách bằng tab).
+                {rt('workboards.runtime.pasteRowsHelp')}
                 <br />
-                Thứ tự cột:{' '}
+                {rt('workboards.runtime.columnOrder')}:{' '}
                 <code className="rounded bg-slate-100 px-1 py-0.5">{bulkColumns.join('\t')}</code>
               </div>
               <textarea
@@ -8861,25 +8973,28 @@ function TableScreen({
               />
               <div className="text-xs text-slate-500">
                 {parseBulkText(bulkText).length > 0
-                  ? `Sẽ nhập ${parseBulkText(bulkText).length} dòng`
-                  : 'Chưa có dòng hợp lệ'}
-                . Tối đa 500 dòng/lần.
+                  ? rt('workboards.runtime.willImportRows', { count: parseBulkText(bulkText).length })
+                  : rt('workboards.runtime.noValidRows')}
+                . {rt('workboards.runtime.maxRowsPerImport', { count: 500 })}
               </div>
               {bulkResult && (
                 <div className="rounded-md border border-slate-200 bg-slate-50 p-3 text-xs">
                   <div className="font-medium text-slate-700">
-                    Đã xử lý {bulkResult.total} dòng: {bulkResult.success} thành công,{' '}
-                    {bulkResult.failure} lỗi.
+                    {rt('workboards.runtime.bulkImportResult', {
+                      total: bulkResult.total,
+                      success: bulkResult.success,
+                      failure: bulkResult.failure,
+                    })}
                   </div>
                   {bulkResult.errors.length > 0 && (
                     <ul className="mt-2 space-y-1 text-rose-700">
                       {bulkResult.errors.slice(0, 10).map((err) => (
                         <li key={err.index}>
-                          Dòng {err.index + 1}: {err.error}
+                          {rt('workboards.runtime.rowError', { row: err.index + 1, error: err.error })}
                         </li>
                       ))}
                       {bulkResult.errors.length > 10 && (
-                        <li>... và {bulkResult.errors.length - 10} dòng khác.</li>
+                        <li>{rt('workboards.runtime.moreRowErrors', { count: bulkResult.errors.length - 10 })}</li>
                       )}
                     </ul>
                   )}
@@ -8896,7 +9011,7 @@ function TableScreen({
                 }}
                 className="rounded-md border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
               >
-                Huỷ
+                {rt('workboards.runtime.cancel')}
               </button>
               <button
                 type="button"
@@ -8905,7 +9020,7 @@ function TableScreen({
                 className="rounded-md px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50"
                 style={{ backgroundColor: accent }}
               >
-                {bulkSubmitting ? 'Đang lưu...' : 'Nhập'}
+                {bulkSubmitting ? rt('workboards.runtime.saving') : rt('workboards.runtime.import')}
               </button>
             </div>
           </div>
@@ -8919,8 +9034,8 @@ function TableScreen({
             <div className="flex items-center justify-between border-b border-slate-200 px-5 py-3">
               <h3 className="text-sm font-semibold text-slate-900">
                 {panelMode === 'create'
-                  ? `Thêm mới · ${spec.title || ''}`.trim().replace(/·\s*$/, '')
-                  : panelDetail?.title || spec.title || 'Chi tiết'}
+                  ? rt('workboards.runtime.addNewTitle', { title: spec.title || '' }).trim()
+                  : panelDetail?.title || spec.title || rt('workboards.runtime.detail')}
               </h3>
               <button
                 type="button"
@@ -8933,7 +9048,7 @@ function TableScreen({
             <div className="flex-1 overflow-y-auto px-5 py-4">
               {panelLoading ? (
                 <div className="flex items-center gap-2 text-sm text-slate-500">
-                  <Loader2 className="h-4 w-4 animate-spin" /> Loading...
+                  <Loader2 className="h-4 w-4 animate-spin" /> {rt('workboards.runtime.loading')}
                 </div>
               ) : panelError ? (
                 <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
@@ -8949,7 +9064,7 @@ function TableScreen({
                   {panelMode === 'edit' && rowActions.length > 0 ? (
                     <div className="mt-5 border-t border-slate-200 pt-4">
                       <div className="mb-2 text-xs font-semibold uppercase text-slate-500">
-                        Hành động
+                        {rt('workboards.runtime.actions')}
                       </div>
                       <div className="flex flex-wrap gap-2">
                         {rowActions.map((action) => {
@@ -9000,7 +9115,7 @@ function TableScreen({
                   disabled={panelSaving}
                   className="w-full rounded-md border border-slate-300 px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-40 sm:w-auto sm:py-1.5"
                 >
-                  {panelMode === 'create' ? 'Huỷ' : 'Huỷ thay đổi'}
+                  {panelMode === 'create' ? rt('workboards.runtime.cancel') : rt('workboards.runtime.discardChanges')}
                 </button>
                 <button
                   type="button"
@@ -9009,7 +9124,7 @@ function TableScreen({
                   className="w-full rounded-md px-3 py-2 text-xs font-medium text-white disabled:opacity-50 sm:w-auto sm:py-1.5"
                   style={{ backgroundColor: accent }}
                 >
-                  {panelSaving ? 'Đang lưu...' : panelMode === 'create' ? 'Thêm' : 'Lưu'}
+                  {panelSaving ? rt('workboards.runtime.saving') : panelMode === 'create' ? rt('workboards.runtime.add') : rt('workboards.runtime.save')}
                 </button>
               </div>
             )}
@@ -9278,9 +9393,10 @@ function TextCellInput({
 // address, set up once in App Settings (print_template). Part of the
 // .wb-print-target so it prints/PDFs with the doc.
 function PrintLetterhead({ template }: { template: PrintTemplate }) {
+  const { t: rt } = useI18n();
   const accent = template.accent_color || '#0f766e';
   const lines = [
-    template.address ? `Địa chỉ: ${template.address}` : null,
+    template.address ? rt('workboards.runtime.addressLine', { address: template.address }) : null,
     template.tax_code ? `MST: ${template.tax_code}` : null,
     template.hotline ? `Hotline: ${template.hotline}` : null,
     template.email || null,
@@ -9331,6 +9447,7 @@ function DocExportButton({
   compactLabel?: boolean;
   variant?: 'toolbar' | 'floating';
 }) {
+  const { t: rt } = useI18n();
   const [exporting, setExporting] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
 
@@ -9362,7 +9479,7 @@ function DocExportButton({
         setExportError(
           typeof apiError.response?.data?.detail === 'string'
             ? apiError.response.data.detail
-            : 'Không xuất được Excel.',
+            : rt('workboards.runtime.excelExportFailed'),
         );
       }
     } finally {
@@ -9374,7 +9491,7 @@ function DocExportButton({
     ? 'Excel'
     : blockTitle
       ? `Excel: ${blockTitle}`
-      : 'Xuất Excel';
+      : rt('workboards.runtime.exportExcel');
   const floating = variant === 'floating';
 
   return (
@@ -9388,14 +9505,14 @@ function DocExportButton({
             ? 'inline-flex h-11 items-center justify-center gap-1.5 rounded-full border border-slate-200 bg-white px-4 text-sm font-semibold text-slate-700 shadow-sm hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60'
             : 'inline-flex h-9 items-center justify-center gap-1.5 rounded-full border border-slate-200 bg-white px-3 text-sm font-medium text-slate-700 shadow-sm hover:border-slate-300 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60'
         }
-        title={blockTitle ? `Xuất Excel: ${blockTitle}` : 'Xuất Excel'}
+        title={blockTitle ? rt('workboards.runtime.exportExcelTitle', { title: blockTitle }) : rt('workboards.runtime.exportExcel')}
       >
         {exporting ? (
           <Loader2 className="h-4 w-4 animate-spin" />
         ) : (
           <Download className="h-4 w-4" />
         )}
-        <span>{exporting ? 'Đang xuất…' : label}</span>
+        <span>{exporting ? rt('workboards.runtime.exporting') : label}</span>
       </button>
       {exportError && (
         <span className="max-w-xs text-xs text-rose-600">{exportError}</span>
@@ -9417,6 +9534,7 @@ function DocScreen({
   shared?: Record<string, unknown>;
   accent: string;
 }) {
+  const { t: rt } = useI18n();
   const exportableBlocks = (spec.blocks || [])
     .map((block, index) => ({
       block,
@@ -9431,7 +9549,7 @@ function DocScreen({
       <div className="mb-3 flex items-center justify-between gap-3 rounded-lg border border-slate-200 bg-white/90 px-3 py-2 shadow-sm print:hidden">
         <div className="min-w-0 flex-1">
           <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">
-            Tài liệu
+            {rt('workboards.runtime.document')}
           </p>
           <h2 className="truncate text-sm font-semibold text-slate-800">
             {spec.title}
@@ -9443,7 +9561,7 @@ function DocScreen({
             onClick={printLabel}
             className="inline-flex h-9 items-center justify-center gap-1.5 rounded-full bg-white px-3 text-sm font-medium text-slate-700 shadow-sm hover:bg-slate-50"
           >
-            <Printer className="h-4 w-4" /> In
+            <Printer className="h-4 w-4" /> {rt('workboards.runtime.print')}
           </button>
           {exportableBlocks.map(({ index, title }) => (
             <DocExportButton
@@ -9470,7 +9588,7 @@ function DocScreen({
             className="inline-flex h-11 items-center justify-center gap-1.5 rounded-full px-4 text-sm font-semibold text-white shadow-sm"
             style={{ backgroundColor: accent }}
           >
-            <Printer className="h-4 w-4" /> In
+            <Printer className="h-4 w-4" /> {rt('workboards.runtime.print')}
           </button>
           {exportableBlocks.map(({ index, title }) => (
             <DocExportButton
@@ -9529,6 +9647,7 @@ function DocBlock({
   blockIndex: number;
   shared?: Record<string, unknown>;
 }) {
+  const { t: rt } = useI18n();
   const t = String(block.type || '');
   if (t === 'header') {
     const align = (block.align as string) || 'center';
@@ -9611,7 +9730,7 @@ function DocBlock({
             <div className="font-medium">{String(s.label || '')}</div>
             {s.role ? <div className="text-xs text-slate-500">{String(s.role)}</div> : null}
             <div className="mt-12 border-t border-slate-400 pt-1 text-[11px] text-slate-400">
-              Ký &amp; ghi rõ họ tên
+              {rt('workboards.runtime.signAndFullName')}
             </div>
           </div>
         ))}
@@ -9643,7 +9762,7 @@ function DocBlock({
           {encoded ? (
             <QRCodeSVG value={encoded} size={size} level="M" marginSize={2} />
           ) : (
-            <div className="text-xs text-slate-400">Chưa có giá trị để tạo mã QR</div>
+            <div className="text-xs text-slate-400">{rt('workboards.runtime.noQrValue')}</div>
           )}
           {caption && <div className="text-center text-xs text-slate-600">{caption}</div>}
         </div>
@@ -9666,6 +9785,7 @@ interface FooterRow {
   agg: string;
   label: string;
   values: Record<string, unknown>;
+  legacy?: boolean;
 }
 
 function normalizeFooterRows(footer: unknown): FooterRow[] {
@@ -9679,7 +9799,7 @@ function normalizeFooterRows(footer: unknown): FooterRow[] {
     }));
   }
   // Legacy flat shape
-  return [{ agg: 'sum', label: 'Tổng', values: obj }];
+  return [{ agg: 'sum', label: '', values: obj, legacy: true }];
 }
 
 function normalizeColumnGroups(
@@ -9793,6 +9913,7 @@ function BlockSyncControls({
   blockIndex: number;
   shared?: Record<string, unknown>;
 }) {
+  const { t: rt } = useI18n();
   const [busyTriggerId, setBusyTriggerId] = useState<string | null>(null);
   const [groupId, setGroupId] = useState<string | null>(null);
   const [runs, setRuns] = useState<GroupRun[]>([]);
@@ -9820,7 +9941,7 @@ function BlockSyncControls({
           stopPolling();
           setBusyTriggerId(null);
           if (result.status === 'success') {
-            setSuccessFlash('Đã đồng bộ xong.');
+            setSuccessFlash(rt('workboards.runtime.syncCompleted'));
             setTimeout(() => setSuccessFlash(null), 4000);
           }
         } else {
@@ -9831,13 +9952,13 @@ function BlockSyncControls({
         setErrorMsg(
           typeof apiError.response?.data?.detail === 'string'
             ? apiError.response.data.detail
-            : 'Không lấy được trạng thái đồng bộ.',
+            : rt('workboards.runtime.syncStatusFailed'),
         );
         stopPolling();
         setBusyTriggerId(null);
       }
     },
-    [token, workboardId],
+    [token, workboardId, rt],
   );
 
   const onTrigger = async (trigger: SyncTriggerSpec) => {
@@ -9875,7 +9996,7 @@ function BlockSyncControls({
       setErrorMsg(
         typeof apiError.response?.data?.detail === 'string'
           ? apiError.response.data.detail
-          : 'Không khởi chạy được đồng bộ.',
+          : rt('workboards.runtime.syncStartFailed'),
       );
       setAggStatus('idle');
       setBusyTriggerId(null);
@@ -9911,7 +10032,7 @@ function BlockSyncControls({
             onClick={() => onTrigger(t)}
             disabled={inFlight && busyTriggerId !== t.id ? true : busyTriggerId === t.id}
             className="flex items-center gap-1 rounded-md border border-emerald-200 bg-emerald-50 px-2 py-1 text-xs font-medium text-emerald-700 hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-60"
-            title={t.label || 'Đồng bộ'}
+            title={t.label || rt('workboards.runtime.sync')}
           >
             {busyTriggerId === t.id ? (
               <RefreshCw className="h-3.5 w-3.5 animate-spin" />
@@ -9919,7 +10040,7 @@ function BlockSyncControls({
               <Send className="h-3.5 w-3.5" />
             )}
             <span>
-              {busyTriggerId === t.id ? 'Đang đồng bộ…' : t.label || 'Đồng bộ'}
+              {busyTriggerId === t.id ? rt('workboards.runtime.syncing') : t.label || rt('workboards.runtime.sync')}
             </span>
           </button>
         ))}
@@ -9928,10 +10049,10 @@ function BlockSyncControls({
             type="button"
             onClick={onCancel}
             className="flex items-center gap-1 rounded-md border border-rose-200 bg-white px-2 py-1 text-xs font-medium text-rose-600 hover:bg-rose-50"
-            title="Huỷ đồng bộ"
+            title={rt('workboards.runtime.cancelSync')}
           >
             <XCircle className="h-3.5 w-3.5" />
-            <span>Huỷ</span>
+            <span>{rt('workboards.runtime.cancel')}</span>
           </button>
         )}
       </div>
@@ -9953,20 +10074,20 @@ function BlockSyncControls({
           {aggStatus === 'success' && (
             <>
               <CheckCircle2 className="mr-1 inline h-3 w-3" />
-              Đã đồng bộ xong ({doneBatches} batch)
+              {rt('workboards.runtime.syncDoneBatches', { count: doneBatches })}
             </>
           )}
-          {aggStatus === 'cancelled' && 'Đã huỷ'}
+          {aggStatus === 'cancelled' && rt('workboards.runtime.cancelled')}
           {aggStatus === 'failed' && (
             <>
               <AlertTriangle className="mr-1 inline h-3 w-3" />
-              Đồng bộ thất bại
+              {rt('workboards.runtime.syncFailed')}
             </>
           )}
           {aggStatus === 'partial' && (
             <>
               <AlertTriangle className="mr-1 inline h-3 w-3" />
-              Một số webhook thất bại
+              {rt('workboards.runtime.someWebhooksFailed')}
             </>
           )}
         </p>
@@ -10006,6 +10127,7 @@ function DocDataTable({
   blockIndex: number;
   shared?: Record<string, unknown>;
 }) {
+  const { t: rt, locale } = useI18n();
   const data = (block.data as Record<string, unknown>) || {};
   const cols = (data.columns as string[]) || [];
   const rows = (data.rows as Array<Record<string, unknown>>) || [];
@@ -10058,7 +10180,7 @@ function DocDataTable({
       setExportError(
         typeof apiError.response?.data?.detail === 'string'
           ? apiError.response.data.detail
-          : 'Không xuất được Excel.',
+          : rt('workboards.runtime.excelExportFailed'),
       );
     } finally {
       setExporting(false);
@@ -10087,10 +10209,10 @@ function DocDataTable({
     if (NUMERIC_FMT.has(f)) {
       const n = Number(String(v).replace(/[^0-9.\-]/g, ''));
       if (!Number.isFinite(n)) return String(v);
-      if (f === 'currency') return `${n.toLocaleString('vi-VN')} ₫`;
-      if (f === 'integer') return Math.round(n).toLocaleString('vi-VN');
-      if (f === 'percent') return `${(n * 100).toLocaleString('vi-VN', { maximumFractionDigits: 1 })}%`;
-      return n.toLocaleString('vi-VN', { maximumFractionDigits: 4 });
+      if (f === 'currency') return `${n.toLocaleString(locale)} ₫`;
+      if (f === 'integer') return Math.round(n).toLocaleString(locale);
+      if (f === 'percent') return `${(n * 100).toLocaleString(locale, { maximumFractionDigits: 1 })}%`;
+      return n.toLocaleString(locale, { maximumFractionDigits: 4 });
     }
     return String(v);
   };
@@ -10110,14 +10232,14 @@ function DocDataTable({
               onClick={onExport}
               disabled={exporting}
               className="flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2.5 py-1 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
-              title="Tải Excel theo biểu mẫu"
+              title={rt('workboards.runtime.downloadExcelTemplate')}
             >
               {exporting ? (
                 <Loader2 className="h-3.5 w-3.5 animate-spin" />
               ) : (
                 <Download className="h-3.5 w-3.5" />
               )}
-              <span>{exporting ? 'Đang xuất…' : 'Xuất Excel'}</span>
+              <span>{exporting ? rt('workboards.runtime.exporting') : rt('workboards.runtime.exportExcel')}</span>
             </button>
           )}
           {syncTriggers.length > 0 && (
@@ -10180,7 +10302,8 @@ function DocDataTable({
                 <tr key={frIdx} className="bg-slate-50">
                   {cols.map((c, ci) => {
                     const v = (fr.values as Record<string, unknown>)[c];
-                    const isLabelCell = v == null && ci === 0 && fr.label;
+                    const label = fr.legacy ? rt('workboards.runtime.total') : String(fr.label);
+                    const isLabelCell = v == null && ci === 0 && label;
                     const numeric = isNumericCol(c);
                     return (
                       <td
@@ -10190,7 +10313,7 @@ function DocDataTable({
                         } ${frIdx === 0 ? 'border-t-2 border-t-slate-400' : ''}`}
                       >
                         {isLabelCell
-                          ? String(fr.label)
+                          ? label
                           : v == null
                             ? ''
                             : numeric

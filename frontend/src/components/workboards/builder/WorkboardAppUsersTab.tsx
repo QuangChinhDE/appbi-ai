@@ -1575,7 +1575,7 @@ function AccessAuditRow({
       </div>
       {entry.chain && entry.chain.length > 0 && (
         <div className="mt-1 text-caption text-text-tertiary">
-          Chain:{' '}
+          {t('workboards.users.chain')}:{' '}
           {entry.chain.map((hop, idx) => (
             <span key={idx}>
               {idx > 0 ? ' → ' : ''}
@@ -1588,11 +1588,11 @@ function AccessAuditRow({
       )}
       {entry.legacy_rules.length > 0 && (
         <div className="mt-1 text-caption text-warning">
-          Legacy rule:{' '}
+          {t('workboards.users.legacyRule')}:{' '}
           {entry.legacy_rules.map((r, idx) => (
             <span key={idx}>
               {idx > 0 ? '; ' : ''}
-              {r.screen_title}: filter_column =
+              {r.screen_title}: {t('workboards.users.filterColumn')} =
               <code className="ml-1 rounded bg-surface-2 px-1 text-text-secondary">{r.filter_column}</code>
             </span>
           ))}

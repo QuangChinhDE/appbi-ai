@@ -138,6 +138,7 @@ export function BuilderCollapsibleAdvanced({
   defaultOpen?: boolean;
   children: React.ReactNode;
 }) {
+  const { t } = useI18n();
   return (
     <details
       className="group rounded-lg border border-[rgb(var(--border-line))] bg-surface-0 open:bg-surface-1"
@@ -149,7 +150,7 @@ export function BuilderCollapsibleAdvanced({
           <span className="min-w-0 truncate">
             {title}
             <span className="ml-1.5 rounded bg-surface-2 px-1.5 py-0.5 text-tiny font-emphasis uppercase tracking-wider text-text-quaternary">
-              advanced
+              {t('workboards.builder.advanced')}
             </span>
           </span>
         </span>
