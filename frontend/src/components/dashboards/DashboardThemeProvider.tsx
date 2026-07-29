@@ -218,64 +218,62 @@ export function getDashboardGridMargin(theme?: DashboardThemeConfig | null): [nu
  * keep working.
  */
 export function DashboardThemeProvider({ theme, children, className, style: baseStyle }: Props) {
-  const t = normalizeDashboardTheme(theme);
-  const accentRgb = t.accent ? hexToRgbTriplet(t.accent) : undefined;
+  // PERF — memoize the normalized theme, wrapper style, and chart-theme context
+  // value, all keyed on the (stable, react-query-cached) `theme` prop. Before
+  // this, every one of these objects was rebuilt on EVERY render of the provider,
+  // so the context value changed identity on any unrelated parent re-render
+  // (focus a tile, drag, edit a filter, a presence tick…). That forced every
+  // chart (`useDashboardChartTheme`) and every `ChartTile` (also a context
+  // consumer) to re-render on each build interaction — the "lag" the user felt.
+  // Now the value is referentially stable unless the theme itself changes.
+  const t = React.useMemo(() => normalizeDashboardTheme(theme), [theme]);
 
-  const style: React.CSSProperties = { ...(baseStyle ?? {}) };
-  if (t.accent) {
-    (style as any)['--dashboard-accent'] = t.accent;
-  }
-  if (accentRgb) {
-    (style as any)['--brand'] = accentRgb;
-  }
-  if (t.fontFamily) {
-    style.fontFamily = t.fontFamily;
-  }
-  // Phase-B16 — a background IMAGE takes over the page background; otherwise the
-  // plain color/gradient applies. Mutually exclusive so the CSS `background`
-  // shorthand never wipes the image layer. A scrim is baked in as a gradient
-  // layer for legibility, and a plain page color sits underneath as a fallback.
-  if (t.backgroundImage) {
-    const url = `url("${t.backgroundImage}")`;
-    if (t.bgOverlay && t.bgOverlay > 0) {
-      const scrim = t.mode === 'dark'
-        ? `rgba(15, 23, 42, ${t.bgOverlay})`
-        : `rgba(255, 255, 255, ${t.bgOverlay})`;
-      style.backgroundImage = `linear-gradient(${scrim}, ${scrim}), ${url}`;
-    } else {
-      style.backgroundImage = url;
+  const style = React.useMemo<React.CSSProperties>(() => {
+    const accentRgb = t.accent ? hexToRgbTriplet(t.accent) : undefined;
+    const s: React.CSSProperties = { ...(baseStyle ?? {}) };
+    if (t.accent) (s as any)['--dashboard-accent'] = t.accent;
+    if (accentRgb) (s as any)['--brand'] = accentRgb;
+    if (t.fontFamily) s.fontFamily = t.fontFamily;
+    // Phase-B16 — a background IMAGE takes over the page background; otherwise the
+    // plain color/gradient applies. Mutually exclusive so the CSS `background`
+    // shorthand never wipes the image layer. A scrim is baked in for legibility.
+    if (t.backgroundImage) {
+      const url = `url("${t.backgroundImage}")`;
+      if (t.bgOverlay && t.bgOverlay > 0) {
+        const scrim = t.mode === 'dark'
+          ? `rgba(15, 23, 42, ${t.bgOverlay})`
+          : `rgba(255, 255, 255, ${t.bgOverlay})`;
+        s.backgroundImage = `linear-gradient(${scrim}, ${scrim}), ${url}`;
+      } else {
+        s.backgroundImage = url;
+      }
+      s.backgroundSize = t.backgroundSize || 'cover';
+      s.backgroundPosition = t.backgroundPosition || 'center';
+      s.backgroundRepeat = 'no-repeat';
+      s.backgroundAttachment = 'local';
+      if (t.background && !/gradient|url\(/i.test(t.background)) {
+        s.backgroundColor = t.background; // plain color fallback under the image
+      }
+    } else if (t.background) {
+      s.background = t.background;
     }
-    style.backgroundSize = t.backgroundSize || 'cover';
-    style.backgroundPosition = t.backgroundPosition || 'center';
-    style.backgroundRepeat = 'no-repeat';
-    style.backgroundAttachment = 'local';
-    if (t.background && !/gradient|url\(/i.test(t.background)) {
-      style.backgroundColor = t.background; // plain color fallback under the image
-    }
-  } else if (t.background) {
-    style.background = t.background;
-  }
-  (style as any)['--dashboard-card-radius'] = t.cardRadius;
-  (style as any)['--dashboard-card-padding'] = t.cardPadding;
-  (style as any)['--dashboard-grid-gap'] = `${t.gridGap}px`;
-  if (t.cardBorderWidth) {
-    (style as any)['--dashboard-card-border-width'] = t.cardBorderWidth;
-  }
-  if (t.cardBorderColor) {
-    (style as any)['--dashboard-card-border-color'] = t.cardBorderColor;
-  }
-  if (t.cardShadow) {
-    (style as any)['--dashboard-card-shadow'] = t.cardShadow;
-  }
-  // Phase-B15 — text + structural vars (consumed by tiles / chart CSS).
-  if (t.titleFontSize) (style as any)['--dashboard-title-size'] = t.titleFontSize;
-  if (t.titleColor) (style as any)['--dashboard-title-color'] = t.titleColor;
-  if (t.labelFontSize) (style as any)['--dashboard-label-size'] = t.labelFontSize;
-  if (t.kpiFontSize) (style as any)['--dashboard-kpi-size'] = t.kpiFontSize;
-  if (t.gridlineColor) (style as any)['--dashboard-gridline-color'] = t.gridlineColor;
-  if (t.axisLabelColor) (style as any)['--dashboard-axis-label-color'] = t.axisLabelColor;
+    (s as any)['--dashboard-card-radius'] = t.cardRadius;
+    (s as any)['--dashboard-card-padding'] = t.cardPadding;
+    (s as any)['--dashboard-grid-gap'] = `${t.gridGap}px`;
+    if (t.cardBorderWidth) (s as any)['--dashboard-card-border-width'] = t.cardBorderWidth;
+    if (t.cardBorderColor) (s as any)['--dashboard-card-border-color'] = t.cardBorderColor;
+    if (t.cardShadow) (s as any)['--dashboard-card-shadow'] = t.cardShadow;
+    // Phase-B15 — text + structural vars (consumed by tiles / chart CSS).
+    if (t.titleFontSize) (s as any)['--dashboard-title-size'] = t.titleFontSize;
+    if (t.titleColor) (s as any)['--dashboard-title-color'] = t.titleColor;
+    if (t.labelFontSize) (s as any)['--dashboard-label-size'] = t.labelFontSize;
+    if (t.kpiFontSize) (s as any)['--dashboard-kpi-size'] = t.kpiFontSize;
+    if (t.gridlineColor) (s as any)['--dashboard-gridline-color'] = t.gridlineColor;
+    if (t.axisLabelColor) (s as any)['--dashboard-axis-label-color'] = t.axisLabelColor;
+    return s;
+  }, [t, baseStyle]);
 
-  const chartTheme: DashboardChartTheme = {
+  const chartTheme = React.useMemo<DashboardChartTheme>(() => ({
     dataColors: t.dataColors,
     goodColor: t.goodColor,
     neutralColor: t.neutralColor,
@@ -290,15 +288,13 @@ export function DashboardThemeProvider({ theme, children, className, style: base
     displayUnits: t.displayUnits,
     skin: t.skin,
     // Phase-B16 — translucent "glass" tiles so a background image shows through.
-    // High opacity keeps charts crisp (low opacity reads muddy, esp. dark over a
-    // bright image); the blur + the tile shadow give a clean "floating" look.
     ...(t.glassCards
       ? {
           cardBg: t.mode === 'dark' ? 'rgba(15, 23, 42, 0.84)' : 'rgba(255, 255, 255, 0.86)',
           cardBackdrop: 'blur(14px) saturate(1.2)',
         }
       : {}),
-  };
+  }), [t]);
 
   return (
     <DashboardThemeContext.Provider value={chartTheme}>
