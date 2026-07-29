@@ -34,6 +34,17 @@ EMBED_GRANT_PREFIX = "emb_"
 EMBED_GRANT_HEX_CHARS = 252  # 126 random bytes
 EMBED_LINK_SOURCE = "embed_api"
 DEFAULT_TTL_SECONDS = 3600
+# A single embed VIEW fires 1 metadata request + N chart-data requests within a
+# few seconds, and every one resolves the grant. Persisting use_count on each
+# turns one page-load into N+1 UPDATE+commit on the grants table — write
+# amplification that bites hardest exactly under concurrent embed load. Only
+# persist the "recently used" telemetry once per window; the count stays a
+# good-enough signal without hammering the DB.
+_USE_COUNT_WRITE_WINDOW_SECONDS = 60
+# Grants rotate (a fresh row per view) and self-expire, so the table would grow
+# unbounded under heavy viewing. Opportunistically sweep expired rows on a small
+# fraction of mints instead of running a scheduler.
+_GRANT_PURGE_PROBABILITY_DENOM = 20  # ≈5% of mints trigger a cleanup
 _ALLOWED_OPS = {
     "eq", "neq", "ne", "in", "not_in", "gt", "gte", "lt", "lte",
     "between", "contains", "not_contains", "starts_with", "is_null", "is_not_null",
@@ -174,11 +185,19 @@ def get_or_create_embed_link(
         .first()
     )
     if existing:
-        # Keep it usable + config fresh (dashboard fields may have shifted).
+        # Keep it usable + config fresh (dashboard fields may have shifted), but
+        # only WRITE when something actually changed — resolve is called on every
+        # viewer mint, and an unconditional commit here was a needless UPDATE per
+        # call on the hot path.
+        changed = False
         if not existing.is_active:
             existing.is_active = True
-        existing.filters_config = locked_filters
-        db.commit()
+            changed = True
+        if existing.filters_config != locked_filters:
+            existing.filters_config = locked_filters
+            changed = True
+        if changed:
+            db.commit()
         return existing
 
     link = DashboardPublicLink(
@@ -221,6 +240,21 @@ def _hash_token(raw: str) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
+def _purge_expired_grants(db: Session) -> None:
+    """Best-effort sweep of already-expired grants so the rotating-token table
+    stays lean under high embed-view volume. Never raises — cleanup must never
+    break link minting. Revoked-but-unexpired grants are left alone (they expire
+    on their own and any audit value is kept until then)."""
+    try:
+        now = datetime.now(timezone.utc)
+        db.query(EmbedGrant).filter(EmbedGrant.expires_at < now).delete(
+            synchronize_session=False
+        )
+        db.commit()
+    except Exception:  # noqa: BLE001 — maintenance, must not surface to the caller
+        db.rollback()
+
+
 def mint_embed_grant(
     db: Session,
     link: DashboardPublicLink,
@@ -237,6 +271,10 @@ def mint_embed_grant(
     )
     db.add(grant)
     db.commit()
+    # Opportunistic maintenance (~5% of mints): keep the grants table from
+    # growing unbounded as tokens rotate + expire, without a separate scheduler.
+    if secrets.randbelow(_GRANT_PURGE_PROBABILITY_DENOM) == 0:
+        _purge_expired_grants(db)
     return raw, grant
 
 
@@ -272,7 +310,19 @@ def resolve_embed_grant_link(token: str, db: Session) -> DashboardPublicLink | N
     if not link:
         raise HTTPException(status_code=status.HTTP_410_GONE, detail="This embed link is no longer available.")
 
-    grant.use_count = (grant.use_count or 0) + 1
-    grant.last_used_at = now
-    db.commit()
+    # Throttle telemetry writes (see _USE_COUNT_WRITE_WINDOW_SECONDS): one embed
+    # view resolves the grant on its metadata request AND on every chart-data
+    # request. Only persist use_count/last_used_at once per window so a busy
+    # report doesn't turn each viewer into N+1 UPDATE+commit on the grants table.
+    prev = grant.last_used_at
+    if prev is not None and prev.tzinfo is None:
+        prev = prev.replace(tzinfo=timezone.utc)
+    if prev is None or (now - prev).total_seconds() >= _USE_COUNT_WRITE_WINDOW_SECONDS:
+        grant.use_count = (grant.use_count or 0) + 1
+        grant.last_used_at = now
+        db.commit()
+    # else: inside the throttle window — skip the write entirely. Nothing was
+    # modified (grant/link were only read), so there is no pending change to
+    # commit or roll back; the caller manages the surrounding transaction. This
+    # is what removes the per-request UPDATE+commit under concurrent embed load.
     return link

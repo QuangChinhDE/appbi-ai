@@ -11,6 +11,7 @@ The embed (`emb_`) token resolves through the existing public endpoints via
 api/public.py:_get_dashboard_by_token — the underlying managed link's own token
 is never exposed, and normal public/share links are unaffected.
 """
+import hashlib
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -37,6 +38,19 @@ from app.services.embed_link_service import (
 router = APIRouter(prefix="/integrations", tags=["integrations"])
 logger = logging.getLogger(__name__)
 _limiter = Limiter(key_func=get_remote_address)
+
+
+def _resolve_rate_key(request: Request) -> str:
+    """Rate-limit key for /embed/resolve: the caller's PAT (Authorization
+    header), NOT their IP. A host app mints one scoped link per viewer from a
+    single server IP — keying by IP would throttle the whole integration as if
+    it were one abusive client. Keying by the (hashed) bearer token gives each
+    integrating account its own generous budget. Falls back to IP when no
+    Authorization header is present (shouldn't happen — the route is authed)."""
+    auth = (request.headers.get("authorization") or "").strip()
+    if auth:
+        return "pat:" + hashlib.sha256(auth.encode("utf-8")).hexdigest()
+    return get_remote_address(request)
 
 
 class EmbedResolveRequest(BaseModel):
@@ -68,7 +82,7 @@ def _request_origin(request: Request) -> str:
 
 
 @router.post("/embed/resolve", response_model=EmbedResolveResponse)
-@_limiter.limit("120/minute")
+@_limiter.limit(lambda: settings.EMBED_RESOLVE_RATE_LIMIT, key_func=_resolve_rate_key)
 def resolve_embed_link(
     body: EmbedResolveRequest,
     request: Request,
