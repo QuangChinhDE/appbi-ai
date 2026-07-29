@@ -1889,12 +1889,23 @@ function ExploreChartInner({
   // limit. The tooltip always keeps the exact value — nothing is lost.
   const LABEL_DENSITY_POINT = 20;
   const LABEL_DENSITY_BAR = 30;
+  // HORIZONTAL_BAR stacks bars VERTICALLY (≥ MIN_ROW_HEIGHT=32px each) with one
+  // label per row, so labels don't crowd the way a vertical bar's do — the 30
+  // cap wrongly blanked ALL labels on a tall list (a DA enabled data labels on a
+  // 113-row HBAR and saw nothing → "data label không work"). Allow far more here;
+  // per-row spacing + auto-hide-overlap keep it readable. The ceiling only bounds
+  // the O(n²) auto-hide cost on a pathological chart.
+  const LABEL_DENSITY_HBAR = 250;
   // Every cartesian branch (BAR/AREA/LINE/HBAR/ComposedChart) plots
   // `displayData = sortedCategoricalData`, so its length is the true count of
   // marks that would each receive a printed label.
   const cartesianPointCount = sortedCategoricalData.length;
   const dataLabelContent = (seriesKey: string, seriesLabel: string, orientation: 'vertical' | 'horizontal' | 'point') => {
-    const densityLimit = orientation === 'point' ? LABEL_DENSITY_POINT : LABEL_DENSITY_BAR;
+    const densityLimit = orientation === 'point'
+      ? LABEL_DENSITY_POINT
+      : orientation === 'horizontal'
+        ? LABEL_DENSITY_HBAR
+        : LABEL_DENSITY_BAR;
     // Dense chart → render no printed label (tooltip still carries the value).
     if (cartesianPointCount > densityLimit) return () => null;
     const resolved = resolveDataLabelStyle(style, seriesKey);

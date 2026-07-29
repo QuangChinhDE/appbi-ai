@@ -307,7 +307,11 @@ export function ChartPreview({
 
   const fontSize = style.fontSize ?? 12;
   const barRadius = style.barRadius ?? 4;
-  const showDataLabels = style.showDataLabels ?? false;
+  // Honor the NEW data-label config (dataLabelConfig.enabled, set by the Data
+  // Labels toggle in the config UI) as well as the legacy showDataLabels flag —
+  // otherwise a chart whose labels were turned on via the new UI showed them in
+  // Explore but not on the dashboard tile (this render path).
+  const showDataLabels = style.dataLabelConfig?.enabled ?? style.showDataLabels ?? false;
   const showDots = style.showDots ?? true;
   const lineStyle = style.lineStyle ?? 'solid';
   const xAxisLabel = style.xAxisLabel || undefined;
