@@ -64,7 +64,7 @@ function TextWidget({ config, params }: { config: any; params: Record<string, an
   // when short but still lets a long note scroll from the top.
   return (
     <div
-      className="flex h-full w-full items-center overflow-auto p-4"
+      className="flex h-full w-full items-center overflow-auto px-4 py-2.5"
       style={{ textAlign: align, color, fontSize, fontWeight }}
     >
       <div className="min-h-0 w-full">{renderMarkdown(rendered)}</div>

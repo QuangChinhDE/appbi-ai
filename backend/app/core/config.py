@@ -208,11 +208,17 @@ class Settings(BaseSettings):
     # lowest-id materialization-enabled BQ datasource in the system.
     MATERIALIZATION_HOST_DATASOURCE_ID: Optional[int] = None
     # ── DB connection pool (SQLAlchemy) ─────────────────────────────────────
-    # Sized for concurrent long BigQuery queries; the connection is released
-    # during each warehouse call (chart_service) so these rarely bind. Keep
-    # (pool_size + max_overflow) × uvicorn_workers below Postgres max_connections.
+    # Sized for concurrent report views. get_db holds a connection for the whole
+    # request, and on a COLD burst the public-meta coalescing waiters keep holding
+    # theirs while polling for the leader's result — so peak concurrent requests
+    # per worker is bounded by (pool_size + max_overflow). 40/worker absorbs a
+    # realistic burst; the connection is still released during the slow BigQuery
+    # call itself (chart_service). HARD RULE: (pool_size + max_overflow) ×
+    # WEB_CONCURRENCY (+ the pdf-worker's own pool) MUST stay below Postgres
+    # max_connections. Defaults: 4 workers × 40 = 160 + pdf ≈ 40 → set Postgres
+    # max_connections ≥ 250 (docker-compose local-db does this).
     DB_POOL_SIZE: int = 20
-    DB_MAX_OVERFLOW: int = 30
+    DB_MAX_OVERFLOW: int = 20
     DB_POOL_TIMEOUT: int = 10                            # fail fast on exhaustion
     DB_POOL_RECYCLE: int = 1800                          # drop conns after 30 min
     LIVE_QUERY_CACHE_TTL: int = 300                     # 5 minutes
@@ -220,6 +226,14 @@ class Settings(BaseSettings):
     LIVE_QUERY_SHARED_CACHE_ENABLED: bool = True        # persistent cross-reload/process cache
     LIVE_QUERY_SHARED_CACHE_DB_PATH: str = ""           # defaults to DATA_DIR/live_query_cache.sqlite3
     LIVE_QUERY_SHARED_CACHE_MAX_SIZE: int = 4096        # global shared-cache row cap
+
+    # ── Embed M2M resolve rate limit ────────────────────────────────────────
+    # POST /integrations/embed/resolve is PAT-authenticated and cheap (DB only,
+    # never touches the warehouse) — a trusted host app mints a scoped link per
+    # viewer. It is keyed by the CALLER'S PAT (not IP) so one integrating server
+    # minting links for thousands of viewers isn't throttled as a single IP.
+    # Generous by default; still blocks a runaway mint loop.
+    EMBED_RESOLVE_RATE_LIMIT: str = "6000/minute"
 
     # ── Server-side PDF export (pdf-worker container) ───────────────────
     # The API accepts export jobs only when a worker can actually pick them up;

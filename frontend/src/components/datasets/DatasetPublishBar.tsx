@@ -22,6 +22,7 @@ import {
   FileEdit,
   RadioTower,
   Users,
+  History,
 } from 'lucide-react';
 import { Badge, type BadgeProps } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
@@ -36,6 +37,7 @@ import {
 import { DatasetGrantsModal } from './DatasetGrantsModal';
 import { SyncPublishModal } from './SyncPublishModal';
 import { SyncProgressPopup } from './SyncProgressPopup';
+import { RefreshHistoryModal } from './RefreshHistoryModal';
 
 function formatWhen(iso: string | null): string {
   if (!iso) return '';
@@ -86,6 +88,7 @@ export function DatasetPublishControls({ datasetId, canEditFallback }: ControlsP
   const publish = useSyncAndPublishDataset();
   const [grantsOpen, setGrantsOpen] = useState(false);
   const [syncOpen, setSyncOpen] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
 
   const caps = grants?.my_capabilities ?? [];
   const canManage = caps.includes('manage') || (grants === undefined && !!canEditFallback);
@@ -152,8 +155,18 @@ export function DatasetPublishControls({ datasetId, canEditFallback }: ControlsP
           {t('datasets.publish.share')}
         </Button>
       )}
+      <Button
+        size="xs"
+        variant="ghost"
+        leadingIcon={<History className="h-3.5 w-3.5" />}
+        onClick={() => setHistoryOpen(true)}
+        title={t('datasets.refreshHistory.buttonTitle')}
+      >
+        {t('datasets.refreshHistory.button')}
+      </Button>
       {grantsOpen && <DatasetGrantsModal datasetId={datasetId} onClose={() => setGrantsOpen(false)} />}
       {syncOpen && <SyncPublishModal datasetId={datasetId} onClose={() => setSyncOpen(false)} />}
+      {historyOpen && <RefreshHistoryModal datasetId={datasetId} onClose={() => setHistoryOpen(false)} />}
       {/* Persistent, server-driven sync progress — auto-reopens on tab reload
           while a sync runs; offers Hide/Stop. Fixed-position (floats). */}
       <SyncProgressPopup datasetId={datasetId} />

@@ -67,6 +67,7 @@ import {
 } from 'lucide-react';
 
 import { cn } from '@/lib/utils';
+import { useI18n } from '@/providers/LanguageProvider';
 
 export interface AvailableColumn {
   name: string;
@@ -85,31 +86,31 @@ interface Props {
 interface HelperEntry {
   name: string;
   signature: string;
-  description: string;
+  descriptionKey: string;
 }
 
 const HELPERS: HelperEntry[] = [
-  { name: '$helpers.sum',     signature: '$helpers.sum(rows, "col")',                            description: 'Cộng tất cả giá trị số của cột "col".' },
-  { name: '$helpers.avg',     signature: '$helpers.avg(rows, "col")',                            description: 'Trung bình cộng, trả null khi rỗng.' },
-  { name: '$helpers.min',     signature: '$helpers.min(rows, "col")',                            description: 'Giá trị nhỏ nhất.' },
-  { name: '$helpers.max',     signature: '$helpers.max(rows, "col")',                            description: 'Giá trị lớn nhất.' },
-  { name: '$helpers.count',   signature: '$helpers.count(rows, predicate?)',                     description: 'Đếm rows (có thể truyền predicate).' },
-  { name: '$helpers.sumIf',   signature: '$helpers.sumIf(rows, r => r.x > 10, "qty")',           description: 'SUMIF — cộng có điều kiện.' },
-  { name: '$helpers.countIf', signature: '$helpers.countIf(rows, r => r.x > 10)',                description: 'COUNTIF — đếm có điều kiện.' },
-  { name: '$helpers.lookup',  signature: '$helpers.lookup(rows, "key", value, "returnKey"?)',    description: 'Tìm row đầu tiên khớp, trả 1 field hoặc nguyên row.' },
-  { name: '$helpers.today',   signature: '$helpers.today()',                                     description: 'ISO date UTC hôm nay.' },
-  { name: '$helpers.now',     signature: '$helpers.now()',                                       description: 'ISO datetime UTC hiện tại.' },
-  { name: '$helpers.dayjs',   signature: '$helpers.dayjs(input?).format("YYYY-MM-DD")',          description: 'Wrapper ngày giờ: format / diff / add.' },
-  { name: '$helpers.format',  signature: '$helpers.format(value, "#,##0.00")',                   description: 'Format số: 0 / 0.00 / #,##0 / 0% / 0.00%.' },
+  { name: '$helpers.sum',     signature: '$helpers.sum(rows, "col")',                            descriptionKey: 'workboards.formula.helper.sum' },
+  { name: '$helpers.avg',     signature: '$helpers.avg(rows, "col")',                            descriptionKey: 'workboards.formula.helper.avg' },
+  { name: '$helpers.min',     signature: '$helpers.min(rows, "col")',                            descriptionKey: 'workboards.formula.helper.min' },
+  { name: '$helpers.max',     signature: '$helpers.max(rows, "col")',                            descriptionKey: 'workboards.formula.helper.max' },
+  { name: '$helpers.count',   signature: '$helpers.count(rows, predicate?)',                     descriptionKey: 'workboards.formula.helper.count' },
+  { name: '$helpers.sumIf',   signature: '$helpers.sumIf(rows, r => r.x > 10, "qty")',           descriptionKey: 'workboards.formula.helper.sumIf' },
+  { name: '$helpers.countIf', signature: '$helpers.countIf(rows, r => r.x > 10)',                descriptionKey: 'workboards.formula.helper.countIf' },
+  { name: '$helpers.lookup',  signature: '$helpers.lookup(rows, "key", value, "returnKey"?)',    descriptionKey: 'workboards.formula.helper.lookup' },
+  { name: '$helpers.today',   signature: '$helpers.today()',                                     descriptionKey: 'workboards.formula.helper.today' },
+  { name: '$helpers.now',     signature: '$helpers.now()',                                       descriptionKey: 'workboards.formula.helper.now' },
+  { name: '$helpers.dayjs',   signature: '$helpers.dayjs(input?).format("YYYY-MM-DD")',          descriptionKey: 'workboards.formula.helper.dayjs' },
+  { name: '$helpers.format',  signature: '$helpers.format(value, "#,##0.00")',                   descriptionKey: 'workboards.formula.helper.format' },
 ];
 
 const SOURCE_META: Record<
   AvailableColumn['source'],
-  { label: string; Icon: React.ElementType; badge: string }
+  { labelKey: string; Icon: React.ElementType; badge: string }
 > = {
-  db:       { label: 'Bảng gốc',  Icon: Database,   badge: 'bg-surface-2 text-text-tertiary' },
-  lookup:   { label: 'Lookup',    Icon: Link2,      badge: 'bg-info/10 text-info' },
-  computed: { label: 'Computed',  Icon: Calculator, badge: 'bg-brand/10 text-brand' },
+  db:       { labelKey: 'workboards.formula.source.db',       Icon: Database,   badge: 'bg-surface-2 text-text-tertiary' },
+  lookup:   { labelKey: 'workboards.formula.source.lookup',   Icon: Link2,      badge: 'bg-info/10 text-info' },
+  computed: { labelKey: 'workboards.formula.source.computed', Icon: Calculator, badge: 'bg-brand/10 text-brand' },
 };
 
 function includesSearch(value: string | undefined, query: string): boolean {
@@ -179,7 +180,7 @@ function makeCompletions(columns: AvailableColumn[]) {
           label: h.name.replace('$helpers.', ''),
           type: 'function',
           detail: h.signature.replace('$helpers.', ''),
-          info: h.description,
+          info: h.signature,
         })),
         validFor: /^\w*$/,
       };
@@ -193,6 +194,7 @@ export default function JsFormulaEditor({
   onChange,
   availableColumns,
 }: Props) {
+  const { t: tr } = useI18n();
   const containerRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
   const onChangeRef = useRef(onChange);
@@ -397,9 +399,9 @@ export default function JsFormulaEditor({
       (helper) =>
         includesSearch(helper.name, query) ||
         includesSearch(helper.signature, query) ||
-        includesSearch(helper.description, query),
+        includesSearch(tr(helper.descriptionKey), query),
     );
-  }, [search]);
+  }, [search, tr]);
 
   const lineCount = useMemo(() => {
     if (!value) return 1;
@@ -448,9 +450,9 @@ export default function JsFormulaEditor({
         </span>
         <div className="min-w-0">
           <div className="text-caption font-emphasis text-text-primary">
-            JavaScript formula
+            {tr('workboards.formula.title')}
           </div>
-          <div className="text-tiny text-text-tertiary">QuickJS sandbox</div>
+          <div className="text-tiny text-text-tertiary">{tr('workboards.formula.sandbox')}</div>
         </div>
         <div className="ml-auto flex flex-wrap items-center gap-1.5 text-tiny text-text-tertiary">
           {['row', 'rows', 'index', '$helpers'].map((token) => (
@@ -488,10 +490,10 @@ export default function JsFormulaEditor({
           />
           <div className="flex flex-wrap items-center gap-2 border-t border-[rgb(var(--border-line))] bg-surface-1 px-3 py-1.5 text-tiny text-text-tertiary">
             <span>
-              {lineCount} dòng · {value.length} ký tự
+              {tr('workboards.formula.editorStats', { lines: lineCount, chars: value.length })}
             </span>
             <span className="ml-auto rounded bg-surface-2 px-1.5 py-0.5 font-emphasis text-text-secondary">
-              Ctrl+Space để autocomplete
+              {tr('workboards.formula.autocompleteHint')}
             </span>
           </div>
         </div>
@@ -505,7 +507,7 @@ export default function JsFormulaEditor({
           <div className="border-b border-[rgb(var(--border-line))] p-2">
             <div className="flex items-center gap-1.5 px-1 text-tiny font-emphasis uppercase tracking-wider text-text-tertiary">
               <Database className="h-3 w-3" />
-              Columns
+              {tr('workboards.formula.columns')}
               <span className="rounded bg-surface-2 px-1 normal-case font-normal text-text-quaternary">
                 {availableColumns.length}
               </span>
@@ -528,7 +530,7 @@ export default function JsFormulaEditor({
                     ? 'border-brand/30 bg-brand/10 text-brand'
                     : 'border-[rgb(var(--border-line))] bg-surface-0 text-text-tertiary hover:text-text-primary',
                 )}
-                title={searchOpen ? 'Đóng tìm kiếm' : 'Tìm cột / helper'}
+                title={searchOpen ? tr('workboards.formula.closeSearch') : tr('workboards.formula.searchColumnsHelpers')}
               >
                 <Search className="h-3 w-3" />
               </button>
@@ -548,7 +550,7 @@ export default function JsFormulaEditor({
                     }
                   }}
                   className="h-8 w-full rounded-md border border-[rgb(var(--border-line))] bg-surface-0 pl-8 pr-2 text-caption text-text-primary outline-none transition-colors placeholder:text-text-quaternary focus:border-brand"
-                  placeholder="Tìm cột / helper… (Esc đóng)"
+                  placeholder={tr('workboards.formula.searchPlaceholder')}
                 />
               </label>
             ) : null}
@@ -556,7 +558,7 @@ export default function JsFormulaEditor({
           <div className="min-h-0 flex-1 overflow-y-auto p-2 space-y-1.5">
             {totalColumnsAfterSearch === 0 ? (
               <div className="rounded-md border border-dashed border-[rgb(var(--border-line))] bg-surface-0 px-3 py-6 text-center text-caption text-text-tertiary">
-                {search.trim() ? 'Không có cột khớp.' : 'Không có cột nào.'}
+                {search.trim() ? tr('workboards.formula.noColumnMatches') : tr('workboards.formula.noColumns')}
               </div>
             ) : (
               (['db', 'lookup', 'computed'] as const).map((source) =>
@@ -576,6 +578,7 @@ export default function JsFormulaEditor({
                     copiedKey={copiedKey}
                     onInsert={insertSnippet}
                     onCopy={copyText}
+                    tr={tr}
                   />
                 ),
               )
@@ -606,7 +609,7 @@ export default function JsFormulaEditor({
                     ))}
                   <Sparkles className="h-3 w-3 text-text-tertiary" />
                   <span className="text-tiny font-emphasis text-text-secondary">
-                    Helpers
+                    {tr('workboards.formula.helpers')}
                   </span>
                   <span className="ml-auto rounded bg-surface-2 px-1.5 py-0.5 text-micro text-text-tertiary">
                     {filteredHelpers.length}
@@ -621,6 +624,7 @@ export default function JsFormulaEditor({
                         copied={copiedKey === `helper:${h.name}`}
                         onInsert={() => insertSnippet(h.signature)}
                         onCopy={() => copyText(`helper:${h.name}`, h.signature)}
+                        tr={tr}
                       />
                     ))}
                   </div>
@@ -643,6 +647,7 @@ function ColumnGroup({
   copiedKey,
   onInsert,
   onCopy,
+  tr,
 }: {
   source: AvailableColumn['source'];
   columns: AvailableColumn[];
@@ -654,8 +659,10 @@ function ColumnGroup({
   copiedKey: string | null;
   onInsert: (snippet: string) => void;
   onCopy: (key: string, text: string) => void;
+  tr: ReturnType<typeof useI18n>['t'];
 }) {
   const meta = SOURCE_META[source];
+  const label = tr(meta.labelKey);
   return (
     <section>
       <button
@@ -676,7 +683,7 @@ function ColumnGroup({
           ))}
         <meta.Icon className="h-3 w-3 text-text-tertiary" />
         <span className="text-tiny font-emphasis text-text-secondary">
-          {meta.label}
+          {label}
         </span>
         <span className="ml-auto rounded bg-surface-2 px-1.5 py-0.5 text-micro text-text-tertiary">
           {columns.length}
@@ -692,11 +699,12 @@ function ColumnGroup({
                 key={`${source}:${column.name}`}
                 title={snippet}
                 subtitle={column.origin || column.label}
-                badge={meta.label}
+                badge={label}
                 badgeClassName={meta.badge}
                 copied={copiedKey === key}
                 onInsert={() => onInsert(snippet)}
                 onCopy={() => onCopy(key, snippet)}
+                tr={tr}
               />
             );
           })}
@@ -711,22 +719,25 @@ function HelperRow({
   copied,
   onInsert,
   onCopy,
+  tr,
 }: {
   helper: HelperEntry;
   copied: boolean;
   onInsert: () => void;
   onCopy: () => void;
+  tr: ReturnType<typeof useI18n>['t'];
 }) {
   return (
     <ReferenceRow
       title={helper.name}
       subtitle={helper.signature}
-      description={helper.description}
+      description={tr(helper.descriptionKey)}
       badge="ƒ"
       badgeClassName="bg-brand/10 text-brand"
       copied={copied}
       onInsert={onInsert}
       onCopy={onCopy}
+      tr={tr}
     />
   );
 }
@@ -740,6 +751,7 @@ function ReferenceRow({
   copied,
   onInsert,
   onCopy,
+  tr,
 }: {
   title: string;
   subtitle?: string;
@@ -749,6 +761,7 @@ function ReferenceRow({
   copied: boolean;
   onInsert: () => void;
   onCopy: () => void;
+  tr: ReturnType<typeof useI18n>['t'];
 }) {
   return (
     <div className="group rounded-md border border-transparent bg-surface-0 px-2 py-1.5 transition-colors hover:border-[rgb(var(--border-line))] hover:bg-surface-2">
@@ -787,7 +800,7 @@ function ReferenceRow({
               onInsert();
             }}
             className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-[rgb(var(--border-line))] bg-surface-1 text-text-tertiary transition-colors hover:border-brand/30 hover:text-brand"
-            title="Chèn vào editor"
+            title={tr('workboards.formula.insertIntoEditor')}
           >
             <Plus className="h-3.5 w-3.5" />
           </button>
@@ -796,7 +809,7 @@ function ReferenceRow({
             onMouseDown={(event) => event.preventDefault()}
             onClick={onCopy}
             className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-[rgb(var(--border-line))] bg-surface-1 text-text-tertiary transition-colors hover:border-brand/30 hover:text-brand"
-            title="Copy"
+            title={tr('workboards.formula.copy')}
           >
             {copied ? (
               <Check className="h-3.5 w-3.5 text-success" />

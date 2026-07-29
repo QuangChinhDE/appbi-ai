@@ -17,6 +17,7 @@ import { Badge, type BadgeProps } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
 import { Input, Select } from '@/components/ui/Input';
 import { toast } from '@/lib/toast';
+import { getBrowserTimezone, listTimezones, timezoneOffsetLabel } from '@/lib/timezones';
 import { useI18n } from '@/providers/LanguageProvider';
 import {
   useDatasetSnapshotConfig,
@@ -46,16 +47,19 @@ export function SyncPublishModal({ datasetId, onClose }: { datasetId: number; on
   const save = useSaveSnapshotConfig();
   const publish = useSyncAndPublishDataset();
 
-  const [schedule, setSchedule] = useState<SnapshotSchedule>({ mode: 'manual', timezone: 'UTC' });
+  const browserTz = useMemo(() => getBrowserTimezone(), []);
+  const tzOptions = useMemo(() => listTimezones(), []);
+  const [schedule, setSchedule] = useState<SnapshotSchedule>({ mode: 'manual', timezone: browserTz });
   const [tablesCfg, setTablesCfg] = useState<Record<string, SnapshotTableConfig>>({});
 
   useEffect(() => {
     if (!data) return;
-    setSchedule(data.schedule || { mode: 'manual' });
+    // New (unsaved) schedules default to the viewer's own zone, not silent UTC.
+    setSchedule(data.schedule || { mode: 'manual', timezone: browserTz });
     const init: Record<string, SnapshotTableConfig> = {};
     for (const tb of data.tables) init[String(tb.id)] = { ...tb.config };
     setTablesCfg(init);
-  }, [data]);
+  }, [data, browserTz]);
 
   const busy = save.isPending || publish.isPending;
 
@@ -142,8 +146,29 @@ export function SyncPublishModal({ datasetId, onClose }: { datasetId: number; on
                   <Input value={schedule.cron || ''} placeholder="0 2 * * *" onChange={(e) => setSchedule({ ...schedule, cron: e.target.value })} />
                 </label>
               )}
+              {schedule.mode !== 'manual' && (
+                <label className="w-56">
+                  <span className="mb-1 block text-tiny text-text-tertiary">{t('datasets.sync.timezone')}</span>
+                  <Select
+                    value={schedule.timezone || browserTz}
+                    onChange={(e) => setSchedule({ ...schedule, timezone: e.target.value })}
+                  >
+                    {tzOptions.map((tz) => {
+                      const off = timezoneOffsetLabel(tz);
+                      return (
+                        <option key={tz} value={tz}>
+                          {off ? `${tz} (${off})` : tz}
+                        </option>
+                      );
+                    })}
+                  </Select>
+                </label>
+              )}
             </div>
-            <p className="mt-1.5 text-tiny text-text-quaternary">{t('datasets.sync.scheduleHint')}</p>
+            <p className="mt-1.5 text-tiny text-text-quaternary">
+              {t('datasets.sync.scheduleHint')}
+              {schedule.mode !== 'manual' && ` ${t('datasets.sync.timezoneHint', { tz: schedule.timezone || browserTz })}`}
+            </p>
           </section>
 
           {/* Per-table storage */}

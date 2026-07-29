@@ -11,6 +11,26 @@ services:
     profiles: ["local-db"]
     image: pgvector/pgvector:pg16
     restart: unless-stopped
+    # Tuned for the 4-vCPU / 16GB VM. max_connections=250 is the ceiling the
+    # backend pool math (4 workers × 40 + pdf-worker) sits under; the memory
+    # settings are conservative because Postgres shares the box with the API,
+    # frontend and (optionally) the Chromium pdf-worker. If you point the stack
+    # at an EXTERNAL/managed Postgres (DATABASE_URL set), apply the same
+    # max_connections there — this command only affects the bundled local-db.
+    command:
+      - "postgres"
+      - "-c"
+      - "max_connections=250"
+      - "-c"
+      - "shared_buffers=1GB"
+      - "-c"
+      - "effective_cache_size=4GB"
+      - "-c"
+      - "work_mem=16MB"
+      - "-c"
+      - "maintenance_work_mem=256MB"
+      - "-c"
+      - "max_wal_size=2GB"
     environment:
       POSTGRES_USER: ${DB_USER:-appbi}
       POSTGRES_PASSWORD: ${DB_PASSWORD:-appbi}
@@ -60,10 +80,19 @@ services:
       AUTH_GOOGLE_AUTO_CREATE_USERS: ${AUTH_GOOGLE_AUTO_CREATE_USERS:-false}
       AUTH_GOOGLE_BOOTSTRAP_ADMIN_EMAIL: ${AUTH_GOOGLE_BOOTSTRAP_ADMIN_EMAIL:-}
       API_RELOAD: "false"
-      # uvicorn worker count (read by entrypoint.sh). Default 1 keeps prior
-      # behaviour; set WEB_CONCURRENCY in .env (run.sh syncs it from .env.example)
-      # to scale concurrent report serving.
-      WEB_CONCURRENCY: ${WEB_CONCURRENCY:-1}
+      # uvicorn worker count (read by entrypoint.sh). Default 4 = one per core on
+      # the recommended 4-vCPU VM; override WEB_CONCURRENCY in .env for other
+      # sizes. Each worker keeps its OWN DB pool, so this is coupled to the pool
+      # sizes below and to Postgres max_connections (local-db sets it to 250).
+      WEB_CONCURRENCY: ${WEB_CONCURRENCY:-4}
+      # Per-worker SQLAlchemy pool. get_db holds a connection for the whole
+      # request (incl. the brief public-meta coalescing wait on a cold burst), so
+      # 40/worker is sized to absorb a realistic concurrent-view burst. Ceiling
+      # rule: (POOL_SIZE + MAX_OVERFLOW) × WEB_CONCURRENCY (+ pdf-worker) MUST stay
+      # under Postgres max_connections. Defaults: 4 × (20+20) = 160, + pdf ≈ 40,
+      # under the local-db max_connections=250 below.
+      DB_POOL_SIZE: ${DB_POOL_SIZE:-20}
+      DB_MAX_OVERFLOW: ${DB_MAX_OVERFLOW:-20}
       SEED_DEMO_DATA: ${SEED_DEMO_DATA:-false}
       # Workboard module — bundled with the core stack.
       WORKBOARDS_ENABLED: ${WORKBOARDS_ENABLED:-true}
@@ -168,6 +197,13 @@ services:
     # Chromium needs more than Docker's default 64MB /dev/shm or it crashes on
     # bigger reports.
     shm_size: "1gb"
+    # Hard resource ceiling so a heavy render (Chromium is the memory/CPU hog on
+    # the box) can NEVER starve the API/DB on the shared 4-vCPU / 16GB VM. The
+    # worker processes render jobs and every render drives a full report's worth
+    # of chart-data through the backend, so keep it boxed in; per-link/user hourly
+    # quotas (PDF_QUOTA_*) already bound how often it runs.
+    cpus: "1.5"
+    mem_limit: "2g"
     depends_on:
       - backend
     networks:

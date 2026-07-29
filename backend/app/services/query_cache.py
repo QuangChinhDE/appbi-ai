@@ -17,7 +17,7 @@ import sqlite3
 import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 from cachetools import TTLCache
 
@@ -721,10 +721,19 @@ def set_public_meta(token: str, data: Dict[str, Any]) -> None:
 
 
 def begin_coalesced_public_meta(
-    token: str, *, wait_timeout: float = 15.0, poll_interval: float = 0.2
+    token: str, *, wait_timeout: float = 15.0, poll_interval: float = 0.2,
+    on_wait: Optional[Callable[[], None]] = None,
 ) -> tuple[Optional[Dict[str, Any]], bool]:
     """Coalesce concurrent metadata builds for one token across workers. Returns
-    ``(cached_or_None, is_leader)`` — same contract as ``begin_coalesced_compute``."""
+    ``(cached_or_None, is_leader)`` — same contract as ``begin_coalesced_compute``.
+
+    ``on_wait`` (if given) is invoked exactly ONCE, right when this caller becomes
+    a WAITER (i.e. another worker is the leader), before the poll loop starts. The
+    caller uses it to release resources it doesn't need while merely polling the
+    shared cache — most importantly its pooled DB connection. This is what keeps
+    N concurrent viewers of the SAME report from each pinning a connection during
+    the leader's build and exhausting the pool. The leader path returns
+    immediately WITHOUT calling ``on_wait`` (it keeps its connection to build)."""
     store = _get_shared_store()
     if store is None:
         return None, True
@@ -735,6 +744,11 @@ def begin_coalesced_public_meta(
     except Exception as exc:  # noqa: BLE001
         _log_shared_cache_failure("pubmeta-claim", exc)
         return None, True
+    if on_wait is not None:
+        try:
+            on_wait()
+        except Exception as exc:  # noqa: BLE001 — releasing is best-effort
+            _log_shared_cache_failure("pubmeta-on-wait", exc)
     deadline = time.monotonic() + max(float(wait_timeout), 0.0)
     while time.monotonic() < deadline:
         time.sleep(poll_interval)

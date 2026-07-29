@@ -285,22 +285,22 @@ const EMPTY_TABLE: TableSpec = {
   totals: {},
 };
 
-const CELL_FORMATS: Array<{ value: CellFormat; label: string }> = [
-  { value: 'text', label: 'Text' },
-  { value: 'number', label: 'Number' },
-  { value: 'integer', label: 'Integer' },
-  { value: 'currency', label: 'Currency' },
-  { value: 'percent', label: 'Percent' },
-  { value: 'date', label: 'Date' },
-  { value: 'datetime', label: 'Date + time' },
+const CELL_FORMATS: Array<{ value: CellFormat; labelKey: string }> = [
+  { value: 'text', labelKey: 'workboards.table.format.text' },
+  { value: 'number', labelKey: 'workboards.table.format.number' },
+  { value: 'integer', labelKey: 'workboards.table.format.integer' },
+  { value: 'currency', labelKey: 'workboards.table.format.currency' },
+  { value: 'percent', labelKey: 'workboards.table.format.percent' },
+  { value: 'date', labelKey: 'workboards.table.format.date' },
+  { value: 'datetime', labelKey: 'workboards.table.format.datetime' },
 ];
 
-const TOTALS_KINDS: Array<{ value: TableTotalsKind; label: string }> = [
-  { value: 'sum', label: 'Sum' },
-  { value: 'avg', label: 'Average' },
-  { value: 'min', label: 'Min' },
-  { value: 'max', label: 'Max' },
-  { value: 'count', label: 'Count (non-empty)' },
+const TOTALS_KINDS: Array<{ value: TableTotalsKind; labelKey: string }> = [
+  { value: 'sum', labelKey: 'workboards.table.agg.sum' },
+  { value: 'avg', labelKey: 'workboards.table.agg.avg' },
+  { value: 'min', labelKey: 'workboards.table.agg.min' },
+  { value: 'max', labelKey: 'workboards.table.agg.max' },
+  { value: 'count', labelKey: 'workboards.table.agg.countNonEmpty' },
 ];
 
 /** Model-driven VLOOKUP suggestions. Reads the dataset semantic model's
@@ -319,6 +319,7 @@ function LookupModelSuggestions({
     label?: string | null;
   }) => void;
 }) {
+  const { t } = useI18n();
   const [items, setItems] = useState<Array<Record<string, unknown>>>([]);
   const [loading, setLoading] = useState(false);
   const [deep, setDeep] = useState(false);
@@ -340,33 +341,33 @@ function LookupModelSuggestions({
 
   if (!fromTableId) return null;
   if (loading) {
-    return <p className="text-caption text-text-tertiary">Đang tải gợi ý quan hệ từ Model…</p>;
+    return <p className="text-caption text-text-tertiary">{t('workboards.table.lookup.loadingSuggestions')}</p>;
   }
   return (
     <div className="rounded-md border border-[rgb(var(--border-line))] bg-surface-1 p-2.5">
       <div className="mb-1.5 flex items-center justify-between gap-2">
-        <span className="text-caption font-emphasis text-text-secondary">Gợi ý từ Model</span>
+        <span className="text-caption font-emphasis text-text-secondary">{t('workboards.table.lookup.modelSuggestions')}</span>
         {!deep && (
           <button
             type="button"
             onClick={() => setDeep(true)}
             className="text-caption text-brand hover:underline"
-            title="Quét trùng dữ liệu để tìm cả quan hệ khác tên cột (vd status↔status_code)"
+            title={t('workboards.table.lookup.deepScanTitle')}
           >
-            Tìm thêm (quét dữ liệu)
+            {t('workboards.table.lookup.deepScan')}
           </button>
         )}
       </div>
       {!items.length ? (
         <p className="text-caption text-text-tertiary">
           {deep
-            ? 'Không tìm thấy quan hệ nào (kể cả quét dữ liệu). Hãy cấu hình thủ công bên dưới.'
-            : 'Chưa có quan hệ trong Model. Bấm “Tìm thêm (quét dữ liệu)” hoặc cấu hình thủ công.'}
+            ? t('workboards.table.lookup.noDeepSuggestions')
+            : t('workboards.table.lookup.noSuggestions')}
         </p>
       ) : (
       <div className="space-y-1.5">
         {items.map((s, i) => {
-          const disp = String(s.target_table_display || 'Bảng liên quan');
+          const disp = String(s.target_table_display || t('workboards.table.lookup.relatedTable'));
           const fromCol = String(s.from_column || '');
           const toCol = String(s.to_column || '');
           const labelCol =
@@ -385,12 +386,12 @@ function LookupModelSuggestions({
               }
               className="w-full rounded-md border border-[rgb(var(--border-line))] bg-surface-0 px-3 py-2 text-left text-caption hover:border-brand"
             >
-              <span className="font-emphasis text-text-primary">Dùng {disp}</span>
+              <span className="font-emphasis text-text-primary">{t('workboards.table.lookup.useTable', { table: disp })}</span>
               <span className="block text-text-tertiary">
-                Khớp: <code className="font-mono">{fromCol} = {toCol}</code>
+                {t('workboards.table.lookup.match')}: <code className="font-mono">{fromCol} = {toCol}</code>
                 {labelCol ? (
                   <>
-                    {' '}· Lấy: <code className="font-mono">{labelCol}</code>
+                    {' '}· {t('workboards.table.lookup.take')}: <code className="font-mono">{labelCol}</code>
                   </>
                 ) : null}
               </span>
@@ -766,7 +767,7 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
       ...rowActions,
       {
         id,
-        label: 'Mở',
+        label: t('workboards.table.defaultOpenLabel'),
         style: 'secondary',
         action_type: 'navigate',
         go_to_screen: null,
@@ -811,7 +812,7 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
         ...bulkActions,
         {
           id,
-          label: 'Gộp các dòng đã chọn',
+          label: t('workboards.table.defaultBulkActionLabel'),
           style: 'primary',
           // Simple-mode write targets — BE requires these (non-empty) when `steps`
           // is empty; defaulted so it saves, the author points them at the real
@@ -1186,14 +1187,13 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
                 onClick={addRowAction}
                 className="inline-flex items-center gap-1 rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1 text-tiny text-text-secondary hover:bg-surface-2"
               >
-                <Plus className="h-3.5 w-3.5" /> Add action
+                <Plus className="h-3.5 w-3.5" /> {t('workboards.table.addAction')}
               </button>
             </div>
 
             {rowActions.length === 0 ? (
               <BuilderEmptyHint className="text-left">
-                No row actions. Add one to let viewers jump to a linked screen
-                (e.g. open a detail form) carrying the row&apos;s values.
+                {t('workboards.table.noRowActionsHint')}
               </BuilderEmptyHint>
             ) : (
               <div className="space-y-3">
@@ -1204,11 +1204,11 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
                   >
                     <div className="mb-2 flex items-center justify-between gap-2">
                       <span className="min-w-0 truncate text-caption font-medium text-text-primary">
-                        {action.label?.trim() || 'Action'}
+                        {action.label?.trim() || t('workboards.table.actionFallback')}
                       </span>
                       <BuilderIconButton
                         onClick={() => removeRowAction(index)}
-                        title="Delete action"
+                        title={t('workboards.table.deleteAction')}
                         variant="danger"
                       >
                         <Trash2 className="h-3.5 w-3.5 text-danger" />
@@ -1216,15 +1216,15 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
                     </div>
                     <div className="space-y-3">
                       <div className={BUILDER_GRID_2}>
-                        <Lbl label="Button label">
+                        <Lbl label={t('workboards.table.buttonLabel')}>
                           <input
                             value={action.label || ''}
                             onChange={(e) => updateRowAction(index, { label: e.target.value })}
                             className={INPUT}
-                            placeholder="Mở chi tiết"
+                            placeholder={t('workboards.table.buttonLabelPlaceholder')}
                           />
                         </Lbl>
-                        <Lbl label="Style">
+                        <Lbl label={t('workboards.table.buttonStyle')}>
                           <select
                             value={action.style || 'secondary'}
                             onChange={(e) =>
@@ -1234,13 +1234,13 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
                             }
                             className={INPUT}
                           >
-                            <option value="primary">Primary</option>
-                            <option value="secondary">Secondary</option>
-                            <option value="ghost">Ghost</option>
-                            <option value="danger">Danger</option>
+                            <option value="primary">{t('workboards.table.style.primary')}</option>
+                            <option value="secondary">{t('workboards.table.style.secondary')}</option>
+                            <option value="ghost">{t('workboards.table.style.ghost')}</option>
+                            <option value="danger">{t('workboards.table.style.danger')}</option>
                           </select>
                         </Lbl>
-                        <Lbl label="Action">
+                        <Lbl label={t('workboards.table.actionType')}>
                           <select
                             value={action.action_type || 'navigate'}
                             onChange={(e) =>
@@ -1255,12 +1255,12 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
                             }
                             className={INPUT}
                           >
-                            <option value="navigate">Navigate to screen</option>
-                            <option value="open_related_records">Open Related Records</option>
+                            <option value="navigate">{t('workboards.table.actionNavigate')}</option>
+                            <option value="open_related_records">{t('workboards.table.actionOpenRelated')}</option>
                           </select>
                         </Lbl>
                         {(action.action_type || 'navigate') === 'open_related_records' ? (
-                          <Lbl label="Relation">
+                          <Lbl label={t('workboards.table.relation')}>
                             <select
                               value={
                                 action.parent_screen_id && action.relation_id
@@ -1277,7 +1277,7 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
                               }}
                               className={INPUT}
                             >
-                              <option value="">— pick a relation —</option>
+                              <option value="">{t('workboards.table.pickRelation')}</option>
                               {relatedRecordTargets.map(({ parentScreenId, parentTitle, relation }) => (
                                 <option
                                   key={`${parentScreenId}:${relation.id}`}
@@ -1289,7 +1289,7 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
                             </select>
                           </Lbl>
                         ) : (
-                          <Lbl label="Go to screen">
+                          <Lbl label={t('workboards.table.goToScreen')}>
                             <select
                               value={action.go_to_screen || ''}
                               onChange={(e) =>
@@ -1297,7 +1297,7 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
                               }
                               className={INPUT}
                             >
-                              <option value="">— none —</option>
+                              <option value="">{t('workboards.table.none')}</option>
                               {navScreens.map((s) => (
                                 <option key={s.id} value={s.id}>
                                   {s.title}
@@ -1306,7 +1306,7 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
                             </select>
                           </Lbl>
                         )}
-                        <Lbl label="Confirm message (tùy chọn)">
+                        <Lbl label={t('workboards.table.confirmMessageOptional')}>
                           <input
                             value={action.confirm_message || ''}
                             onChange={(e) =>
@@ -1315,18 +1315,18 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
                               })
                             }
                             className={INPUT}
-                            placeholder="Bạn chắc chắn?"
+                            placeholder={t('workboards.table.confirmMessagePlaceholder')}
                           />
                         </Lbl>
                       </div>
                       {(action.action_type || 'navigate') === 'navigate' && action.go_to_screen && (
-                        <Lbl label="Carry columns to next screen">
+                        <Lbl label={t('workboards.table.carryColumns')}>
                           {columnNames.length > 0 ? (
                             <MultiColumnPicker
                               sourceColumns={columnNames}
                               value={action.carry || []}
                               onChange={(carry) => updateRowAction(index, { carry })}
-                              placeholder="Pick columns to carry over..."
+                              placeholder={t('workboards.table.carryColumnsPlaceholder')}
                             />
                           ) : (
                             <input
@@ -1345,7 +1345,7 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
                           )}
                         </Lbl>
                       )}
-                      <Lbl label="Chỉ hiện cho vai trò (tùy chọn, cách nhau dấu phẩy)">
+                      <Lbl label={t('workboards.table.visibleForRolesOptional')}>
                         <input
                           value={(action.visible_for_roles || []).join(', ')}
                           onChange={(e) =>
@@ -1357,7 +1357,7 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
                             })
                           }
                           className={INPUT}
-                          placeholder="để trống = mọi vai trò"
+                          placeholder={t('workboards.table.allRolesPlaceholder')}
                         />
                       </Lbl>
                     </div>
@@ -1376,24 +1376,26 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
       return (
         <BuilderInspectorPanel
           icon={<ChevronRight className="h-4 w-4" />}
-          title="Chọn nhiều dòng → hành động"
-          subtitle="Bật ô tích chọn + 1 thanh lệnh gọn (đếm/kiểm tra → duyệt) cho gộp đơn, điều xe… Đổi cột kiểm tra ở 'Ràng buộc'; tắt = xoá hành động."
+          title={t('workboards.table.bulk.title')}
+          subtitle={t('workboards.table.bulk.subtitle')}
         >
           <div className="space-y-3">
             <div className="flex items-center justify-between">
-              <div className="text-caption font-emphasis text-text-secondary">Hành động ({bulkActions.length})</div>
+              <div className="text-caption font-emphasis text-text-secondary">
+                {t('workboards.table.actionsCount', { count: bulkActions.length })}
+              </div>
               <button
                 type="button"
                 onClick={addBulk}
                 className="inline-flex items-center gap-1 rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1 text-tiny text-text-secondary hover:bg-surface-2"
               >
-                <Plus className="h-3.5 w-3.5" /> Thêm
+                <Plus className="h-3.5 w-3.5" /> {t('workboards.table.addAction')}
               </button>
             </div>
 
             {bulkActions.length === 0 ? (
               <BuilderEmptyHint className="text-left">
-                Chưa có. Thêm 1 hành động để tích nhiều dòng rồi gộp/điều phối (vd: gộp đơn thành 1 chuyến, kiểm tra tổng khối lượng ≤ tải trọng xe).
+                {t('workboards.table.bulk.emptyHint')}
               </BuilderEmptyHint>
             ) : (
               <div className="space-y-4">
@@ -1406,42 +1408,46 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
                     <div key={index} className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 p-3">
                       <div className="mb-2 flex items-center justify-between gap-2">
                         <span className="min-w-0 truncate text-caption font-medium text-text-primary">
-                          {action.label?.trim() || 'Hành động'}
-                          {advanced ? <span className="ml-1 text-tiny text-text-tertiary">· nâng cao</span> : null}
+                          {action.label?.trim() || t('workboards.table.actionFallback')}
+                          {advanced ? (
+                            <span className="ml-1 text-tiny text-text-tertiary">
+                              · {t('workboards.table.advanced')}
+                            </span>
+                          ) : null}
                         </span>
-                        <BuilderIconButton onClick={() => removeBulk(index)} title="Xoá (tắt) hành động" variant="danger">
+                        <BuilderIconButton onClick={() => removeBulk(index)} title={t('workboards.table.bulk.deleteAction')} variant="danger">
                           <Trash2 className="h-3.5 w-3.5 text-danger" />
                         </BuilderIconButton>
                       </div>
 
                       <div className="space-y-3">
                         <div className={BUILDER_GRID_2}>
-                          <Lbl label="Nhãn nút">
-                            <input value={action.label || ''} onChange={(e) => updateBulk(index, { label: e.target.value })} className={INPUT} placeholder="Xếp nhiều đơn lên xe" />
+                          <Lbl label={t('workboards.table.buttonLabel')}>
+                            <input value={action.label || ''} onChange={(e) => updateBulk(index, { label: e.target.value })} className={INPUT} placeholder={t('workboards.table.bulk.buttonLabelPlaceholder')} />
                           </Lbl>
-                          <Lbl label="Kiểu nút">
+                          <Lbl label={t('workboards.table.buttonStyle')}>
                             <select value={action.style || 'primary'} onChange={(e) => updateBulk(index, { style: e.target.value as NonNullable<TableSpec['bulk_actions']>[number]['style'] })} className={INPUT}>
-                              <option value="primary">Primary</option>
-                              <option value="secondary">Secondary</option>
-                              <option value="ghost">Ghost</option>
-                              <option value="danger">Danger</option>
+                              <option value="primary">{t('workboards.table.style.primary')}</option>
+                              <option value="secondary">{t('workboards.table.style.secondary')}</option>
+                              <option value="ghost">{t('workboards.table.style.ghost')}</option>
+                              <option value="danger">{t('workboards.table.style.danger')}</option>
                             </select>
                           </Lbl>
-                          <Lbl label="Icon (tùy chọn)">
+                          <Lbl label={t('workboards.table.iconOptional')}>
                             <input value={action.icon || ''} onChange={(e) => updateBulk(index, { icon: e.target.value || null })} className={INPUT} placeholder="🚚" />
                           </Lbl>
-                          <Lbl label="Số dòng tối thiểu">
+                          <Lbl label={t('workboards.table.minRows')}>
                             <input type="number" min={1} value={action.min_selection ?? 1} onChange={(e) => updateBulk(index, { min_selection: Math.max(1, Number(e.target.value) || 1) })} className={INPUT} />
                           </Lbl>
                         </div>
 
                         <div className="rounded-md border border-[rgb(var(--border-line))] bg-surface-2/40 p-2.5">
                           <div className="mb-1.5 flex items-center justify-between">
-                            <div className="text-tiny font-emphasis text-text-secondary">Ràng buộc kiểm tra khi chọn (vd tổng KL ≤ tải trọng)</div>
-                            <button type="button" onClick={() => updateBulk(index, { constraints: [...cons, { agg_column: columnNames[0] || '', agg: 'sum', op: '<=', limit: null, limit_from_resource: ress[0]?.id || null }] })} className="text-tiny text-brand hover:underline">+ Thêm</button>
+                            <div className="text-tiny font-emphasis text-text-secondary">{t('workboards.table.bulk.constraintsTitle')}</div>
+                            <button type="button" onClick={() => updateBulk(index, { constraints: [...cons, { agg_column: columnNames[0] || '', agg: 'sum', op: '<=', limit: null, limit_from_resource: ress[0]?.id || null }] })} className="text-tiny text-brand hover:underline">+ {t('workboards.table.add')}</button>
                           </div>
                           {cons.length === 0 ? (
-                            <p className="text-tiny text-text-tertiary">Không có = chỉ hiển thị số liệu, không chặn.</p>
+                            <p className="text-tiny text-text-tertiary">{t('workboards.table.bulk.noConstraintsHint')}</p>
                           ) : (
                             <div className="space-y-2">
                               {cons.map((c, ci) => {
@@ -1450,27 +1456,27 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
                                   <div key={ci} className="rounded border border-[rgb(var(--border-line))] bg-surface-1 p-2">
                                     <div className="mb-1 flex items-center justify-between">
                                       <span className="text-tiny text-text-tertiary">#{ci + 1}</span>
-                                      <button type="button" onClick={() => updateBulk(index, { constraints: cons.filter((_, xi) => xi !== ci) })} className="text-tiny text-danger hover:underline">Xoá</button>
+                                      <button type="button" onClick={() => updateBulk(index, { constraints: cons.filter((_, xi) => xi !== ci) })} className="text-tiny text-danger hover:underline">{t('workboards.table.delete')}</button>
                                     </div>
                                     <div className={BUILDER_GRID_2}>
-                                      <Lbl label="Cột kiểm tra (cộng dồn)">
+                                      <Lbl label={t('workboards.table.bulk.constraintColumn')}>
                                         <SingleColumnPicker sourceColumns={columnNames} value={c.agg_column || null} onChange={(next) => setC({ agg_column: next || '' })} />
                                       </Lbl>
-                                      <Lbl label="Phép gộp">
+                                      <Lbl label={t('workboards.table.aggregate')}>
                                         <select value={c.agg || 'sum'} onChange={(e) => setC({ agg: e.target.value as typeof c.agg })} className={INPUT}>{AGG_OPTS.map((a) => <option key={a} value={a}>{a}</option>)}</select>
                                       </Lbl>
-                                      <Lbl label="So sánh">
+                                      <Lbl label={t('workboards.table.compare')}>
                                         <select value={c.op || '<='} onChange={(e) => setC({ op: e.target.value as typeof c.op })} className={INPUT}>{(['<=', '<', '>=', '>'] as const).map((o) => <option key={o} value={o}>{o}</option>)}</select>
                                       </Lbl>
-                                      <Lbl label="Nhãn (tùy chọn)">
-                                        <input value={c.label || ''} onChange={(e) => setC({ label: e.target.value || null })} className={INPUT} placeholder="Tổng khối lượng ≤ tải trọng xe" />
+                                      <Lbl label={t('workboards.table.labelOptional')}>
+                                        <input value={c.label || ''} onChange={(e) => setC({ label: e.target.value || null })} className={INPUT} placeholder={t('workboards.table.bulk.constraintLabelPlaceholder')} />
                                       </Lbl>
-                                      <Lbl label="Ngưỡng cố định">
+                                      <Lbl label={t('workboards.table.fixedLimit')}>
                                         <input type="number" value={c.limit ?? ''} onChange={(e) => setC({ limit: e.target.value === '' ? null : Number(e.target.value) })} className={INPUT} placeholder="vd 2500" disabled={!!c.limit_from_resource} />
                                       </Lbl>
-                                      <Lbl label="… hoặc lấy từ tài nguyên">
+                                      <Lbl label={t('workboards.table.bulk.limitFromResource')}>
                                         <select value={c.limit_from_resource || ''} onChange={(e) => setC({ limit_from_resource: e.target.value || null })} className={INPUT}>
-                                          <option value="">— dùng ngưỡng cố định —</option>
+                                          <option value="">{t('workboards.table.bulk.useFixedLimit')}</option>
                                           {ress.map((r) => <option key={r.id} value={r.id}>{r.label || r.id}</option>)}
                                         </select>
                                       </Lbl>
@@ -1484,21 +1490,21 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
 
                         <div className="rounded-md border border-[rgb(var(--border-line))] bg-surface-2/40 p-2.5">
                           <div className="mb-1.5 flex items-center justify-between">
-                            <div className="text-tiny font-emphasis text-text-secondary">Tổng hiển thị trên thanh lệnh (chip)</div>
-                            <button type="button" onClick={() => updateBulk(index, { preview_aggregates: [...aggs, { label: '', column: columnNames[0] || '', agg: 'sum', format: 'number' }] })} className="text-tiny text-brand hover:underline">+ Thêm</button>
+                            <div className="text-tiny font-emphasis text-text-secondary">{t('workboards.table.bulk.previewAggregatesTitle')}</div>
+                            <button type="button" onClick={() => updateBulk(index, { preview_aggregates: [...aggs, { label: '', column: columnNames[0] || '', agg: 'sum', format: 'number' }] })} className="text-tiny text-brand hover:underline">+ {t('workboards.table.add')}</button>
                           </div>
                           {aggs.length === 0 ? (
-                            <p className="text-tiny text-text-tertiary">Vd: “Tổng kg”, “Doanh thu”.</p>
+                            <p className="text-tiny text-text-tertiary">{t('workboards.table.bulk.previewAggregatesHint')}</p>
                           ) : (
                             <div className="space-y-2">
                               {aggs.map((pa, pi) => {
                                 const setA = (patch: Partial<typeof pa>) => updateBulk(index, { preview_aggregates: aggs.map((x, xi) => (xi === pi ? { ...x, ...patch } : x)) });
                                 return (
                                   <div key={pi} className="grid grid-cols-[1fr_1fr_auto_auto] items-end gap-2">
-                                    <Lbl label="Nhãn"><input value={pa.label || ''} onChange={(e) => setA({ label: e.target.value })} className={INPUT} placeholder="Tổng kg" /></Lbl>
-                                    <Lbl label="Cột"><SingleColumnPicker sourceColumns={columnNames} value={pa.column || null} onChange={(next) => setA({ column: next || '' })} /></Lbl>
-                                    <Lbl label="Gộp"><select value={pa.agg || 'sum'} onChange={(e) => setA({ agg: e.target.value as typeof pa.agg })} className={INPUT}>{AGG_OPTS.map((a) => <option key={a} value={a}>{a}</option>)}</select></Lbl>
-                                    <button type="button" onClick={() => updateBulk(index, { preview_aggregates: aggs.filter((_, xi) => xi !== pi) })} className="mb-1 text-tiny text-danger hover:underline">Xoá</button>
+                                    <Lbl label={t('workboards.table.label')}><input value={pa.label || ''} onChange={(e) => setA({ label: e.target.value })} className={INPUT} placeholder={t('workboards.table.bulk.previewAggregateLabelPlaceholder')} /></Lbl>
+                                    <Lbl label={t('workboards.table.column')}><SingleColumnPicker sourceColumns={columnNames} value={pa.column || null} onChange={(next) => setA({ column: next || '' })} /></Lbl>
+                                    <Lbl label={t('workboards.table.aggregate')}><select value={pa.agg || 'sum'} onChange={(e) => setA({ agg: e.target.value as typeof pa.agg })} className={INPUT}>{AGG_OPTS.map((a) => <option key={a} value={a}>{a}</option>)}</select></Lbl>
+                                    <button type="button" onClick={() => updateBulk(index, { preview_aggregates: aggs.filter((_, xi) => xi !== pi) })} className="mb-1 text-tiny text-danger hover:underline">{t('workboards.table.delete')}</button>
                                   </div>
                                 );
                               })}
@@ -1508,11 +1514,11 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
 
                         <div className="rounded-md border border-[rgb(var(--border-line))] bg-surface-2/40 p-2.5">
                           <div className="mb-1.5 flex items-center justify-between">
-                            <div className="text-tiny font-emphasis text-text-secondary">Tài nguyên phải chọn trước (Xe/Kho…)</div>
-                            <button type="button" onClick={() => updateBulk(index, { resource_inputs: [...ress, { id: `res_${ress.length + 1}`, label: '', source_screen_id: otherScreens[0]?.id || '', value_column: '', label_column: null, capacity_column: null, required: true }] })} className="text-tiny text-brand hover:underline">+ Thêm</button>
+                            <div className="text-tiny font-emphasis text-text-secondary">{t('workboards.table.bulk.resourcesTitle')}</div>
+                            <button type="button" onClick={() => updateBulk(index, { resource_inputs: [...ress, { id: `res_${ress.length + 1}`, label: '', source_screen_id: otherScreens[0]?.id || '', value_column: '', label_column: null, capacity_column: null, required: true }] })} className="text-tiny text-brand hover:underline">+ {t('workboards.table.add')}</button>
                           </div>
                           {ress.length === 0 ? (
-                            <p className="text-tiny text-text-tertiary">Vd: chọn Xe (tải trọng cấp ngưỡng cho ràng buộc), chọn Kho.</p>
+                            <p className="text-tiny text-text-tertiary">{t('workboards.table.bulk.resourcesHint')}</p>
                           ) : (
                             <div className="space-y-2">
                               {ress.map((r, ri) => {
@@ -1521,15 +1527,15 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
                                   <div key={ri} className="rounded border border-[rgb(var(--border-line))] bg-surface-1 p-2">
                                     <div className="mb-1 flex items-center justify-between">
                                       <span className="text-tiny text-text-tertiary">{r.id}</span>
-                                      <button type="button" onClick={() => updateBulk(index, { resource_inputs: ress.filter((_, xi) => xi !== ri) })} className="text-tiny text-danger hover:underline">Xoá</button>
+                                      <button type="button" onClick={() => updateBulk(index, { resource_inputs: ress.filter((_, xi) => xi !== ri) })} className="text-tiny text-danger hover:underline">{t('workboards.table.delete')}</button>
                                     </div>
                                     <div className={BUILDER_GRID_2}>
-                                      <Lbl label="Nhãn picker"><input value={r.label || ''} onChange={(e) => setR({ label: e.target.value })} className={INPUT} placeholder="Chọn xe" /></Lbl>
-                                      <Lbl label="Màn nguồn (bảng)"><select value={r.source_screen_id || ''} onChange={(e) => setR({ source_screen_id: e.target.value })} className={INPUT}><option value="">— chọn màn —</option>{otherScreens.map((s) => <option key={s.id} value={s.id}>{s.title}</option>)}</select></Lbl>
-                                      <Lbl label="Cột giá trị"><input value={r.value_column || ''} onChange={(e) => setR({ value_column: e.target.value })} className={INPUT} placeholder="MaXe" /></Lbl>
-                                      <Lbl label="Cột hiển thị (tùy chọn)"><input value={r.label_column || ''} onChange={(e) => setR({ label_column: e.target.value || null })} className={INPUT} placeholder="BienSo" /></Lbl>
-                                      <Lbl label="Cột sức chứa (ngưỡng)"><input value={r.capacity_column || ''} onChange={(e) => setR({ capacity_column: e.target.value || null })} className={INPUT} placeholder="TaiTrongToiDaKg" /></Lbl>
-                                      <label className="flex items-center gap-2 self-end pb-1 text-caption text-text-secondary"><input type="checkbox" checked={r.required !== false} onChange={(e) => setR({ required: e.target.checked })} /> Bắt buộc</label>
+                                      <Lbl label={t('workboards.table.bulk.resourcePickerLabel')}><input value={r.label || ''} onChange={(e) => setR({ label: e.target.value })} className={INPUT} placeholder={t('workboards.table.bulk.resourcePickerPlaceholder')} /></Lbl>
+                                      <Lbl label={t('workboards.table.bulk.sourceScreen')}><select value={r.source_screen_id || ''} onChange={(e) => setR({ source_screen_id: e.target.value })} className={INPUT}><option value="">{t('workboards.table.pickScreen')}</option>{otherScreens.map((s) => <option key={s.id} value={s.id}>{s.title}</option>)}</select></Lbl>
+                                      <Lbl label={t('workboards.table.valueColumn')}><input value={r.value_column || ''} onChange={(e) => setR({ value_column: e.target.value })} className={INPUT} placeholder="MaXe" /></Lbl>
+                                      <Lbl label={t('workboards.table.displayColumnOptional')}><input value={r.label_column || ''} onChange={(e) => setR({ label_column: e.target.value || null })} className={INPUT} placeholder="BienSo" /></Lbl>
+                                      <Lbl label={t('workboards.table.bulk.capacityColumn')}><input value={r.capacity_column || ''} onChange={(e) => setR({ capacity_column: e.target.value || null })} className={INPUT} placeholder="TaiTrongToiDaKg" /></Lbl>
+                                      <label className="flex items-center gap-2 self-end pb-1 text-caption text-text-secondary"><input type="checkbox" checked={r.required !== false} onChange={(e) => setR({ required: e.target.checked })} /> {t('workboards.table.required')}</label>
                                     </div>
                                   </div>
                                 );
@@ -1540,37 +1546,37 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
 
                         <div className="rounded-md border border-[rgb(var(--border-line))] bg-surface-2/40 p-2.5">
                           <div className="flex items-center justify-between">
-                            <div className="text-tiny font-emphasis text-text-secondary">Xem tuyến trên bản đồ (tùy chọn)</div>
+                            <div className="text-tiny font-emphasis text-text-secondary">{t('workboards.table.bulk.routePreviewTitle')}</div>
                             {action.route_preview ? (
-                              <button type="button" onClick={() => updateBulk(index, { route_preview: null })} className="text-tiny text-danger hover:underline">Tắt</button>
+                              <button type="button" onClick={() => updateBulk(index, { route_preview: null })} className="text-tiny text-danger hover:underline">{t('workboards.table.off')}</button>
                             ) : (
-                              <button type="button" onClick={() => updateBulk(index, { route_preview: { lat_column: columnNames[0] || '', lng_column: columnNames[0] || '', line_mode: 'road' } })} className="text-tiny text-brand hover:underline">+ Bật</button>
+                              <button type="button" onClick={() => updateBulk(index, { route_preview: { lat_column: columnNames[0] || '', lng_column: columnNames[0] || '', line_mode: 'road' } })} className="text-tiny text-brand hover:underline">+ {t('workboards.table.on')}</button>
                             )}
                           </div>
                           {action.route_preview ? (
                             <div className={`mt-2 ${BUILDER_GRID_2}`}>
-                              <Lbl label="Cột Lat"><SingleColumnPicker sourceColumns={columnNames} value={action.route_preview.lat_column || null} onChange={(next) => updateBulk(index, { route_preview: { ...action.route_preview!, lat_column: next || '' } })} /></Lbl>
-                              <Lbl label="Cột Lng"><SingleColumnPicker sourceColumns={columnNames} value={action.route_preview.lng_column || null} onChange={(next) => updateBulk(index, { route_preview: { ...action.route_preview!, lng_column: next || '' } })} /></Lbl>
-                              <Lbl label="Cột thứ tự (tùy chọn)"><SingleColumnPicker sourceColumns={columnNames} value={action.route_preview.order_column || null} onChange={(next) => updateBulk(index, { route_preview: { ...action.route_preview!, order_column: next || null } })} /></Lbl>
+                              <Lbl label={t('workboards.table.latColumn')}><SingleColumnPicker sourceColumns={columnNames} value={action.route_preview.lat_column || null} onChange={(next) => updateBulk(index, { route_preview: { ...action.route_preview!, lat_column: next || '' } })} /></Lbl>
+                              <Lbl label={t('workboards.table.lngColumn')}><SingleColumnPicker sourceColumns={columnNames} value={action.route_preview.lng_column || null} onChange={(next) => updateBulk(index, { route_preview: { ...action.route_preview!, lng_column: next || '' } })} /></Lbl>
+                              <Lbl label={t('workboards.table.orderColumnOptional')}><SingleColumnPicker sourceColumns={columnNames} value={action.route_preview.order_column || null} onChange={(next) => updateBulk(index, { route_preview: { ...action.route_preview!, order_column: next || null } })} /></Lbl>
                             </div>
                           ) : null}
                         </div>
 
                         {advanced ? (
                           <p className="rounded-md bg-surface-2/60 px-2.5 py-2 text-tiny text-text-tertiary">
-                            Luồng ghi nâng cao: {action.steps!.length} bước (tạo bản ghi cha + gán dòng…). Quản lý qua MCP; tại đây chỉnh phần hiển thị/kiểm tra ở trên.
+                            {t('workboards.table.bulk.advancedFlow', { count: action.steps!.length })}
                           </p>
                         ) : (
                           <div className={BUILDER_GRID_2}>
-                            <Lbl label="Màn tạo bản ghi cha"><select value={action.parent_screen_id || ''} onChange={(e) => updateBulk(index, { parent_screen_id: e.target.value })} className={INPUT}><option value="">— chọn màn —</option>{otherScreens.map((s) => <option key={s.id} value={s.id}>{s.title}</option>)}</select></Lbl>
-                            <Lbl label="Cột mã bản ghi cha"><input value={action.parent_code_column || ''} onChange={(e) => updateBulk(index, { parent_code_column: e.target.value })} className={INPUT} placeholder="ma_chuyen" /></Lbl>
-                            <Lbl label="Cột FK trên dòng đã chọn"><SingleColumnPicker sourceColumns={columnNames} value={action.set_column || null} onChange={(next) => updateBulk(index, { set_column: next || '' })} /></Lbl>
-                            <Lbl label="Tiền tố mã"><input value={action.code_prefix || ''} onChange={(e) => updateBulk(index, { code_prefix: e.target.value })} className={INPUT} placeholder="CX" /></Lbl>
+                            <Lbl label={t('workboards.table.bulk.parentScreen')}><select value={action.parent_screen_id || ''} onChange={(e) => updateBulk(index, { parent_screen_id: e.target.value })} className={INPUT}><option value="">{t('workboards.table.pickScreen')}</option>{otherScreens.map((s) => <option key={s.id} value={s.id}>{s.title}</option>)}</select></Lbl>
+                            <Lbl label={t('workboards.table.bulk.parentCodeColumn')}><input value={action.parent_code_column || ''} onChange={(e) => updateBulk(index, { parent_code_column: e.target.value })} className={INPUT} placeholder="ma_chuyen" /></Lbl>
+                            <Lbl label={t('workboards.table.bulk.selectedRowFkColumn')}><SingleColumnPicker sourceColumns={columnNames} value={action.set_column || null} onChange={(next) => updateBulk(index, { set_column: next || '' })} /></Lbl>
+                            <Lbl label={t('workboards.table.bulk.codePrefix')}><input value={action.code_prefix || ''} onChange={(e) => updateBulk(index, { code_prefix: e.target.value })} className={INPUT} placeholder="CX" /></Lbl>
                           </div>
                         )}
 
-                        <Lbl label="Chỉ hiện cho vai trò (tùy chọn, cách nhau dấu phẩy)">
-                          <input value={(action.visible_for_roles || []).join(', ')} onChange={(e) => updateBulk(index, { visible_for_roles: e.target.value.split(',').map((s) => s.trim()).filter(Boolean) })} className={INPUT} placeholder="để trống = mọi vai trò" />
+                        <Lbl label={t('workboards.table.visibleForRolesOptional')}>
+                          <input value={(action.visible_for_roles || []).join(', ')} onChange={(e) => updateBulk(index, { visible_for_roles: e.target.value.split(',').map((s) => s.trim()).filter(Boolean) })} className={INPUT} placeholder={t('workboards.table.allRolesPlaceholder')} />
                         </Lbl>
                       </div>
                     </div>
@@ -1603,13 +1609,15 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
         allowBlank?: boolean;
       }) => (
         <select value={value || ''} onChange={(e) => onPick(e.target.value)} className={INPUT}>
-          {allowBlank && <option value="">— chọn cột —</option>}
+          {allowBlank && <option value="">{t('workboards.table.pickColumn')}</option>}
           {cols.map((c) => (
             <option key={c} value={c}>
               {c}
             </option>
           ))}
-          {value && !cols.includes(value) && <option value={value}>{value} (tự nhập)</option>}
+          {value && !cols.includes(value) && (
+            <option value={value}>{t('workboards.table.customColumnOption', { column: value })}</option>
+          )}
         </select>
       );
       const hdr = pos?.header_inputs || [];
@@ -1620,8 +1628,8 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
       return (
         <BuilderInspectorPanel
           icon={<ScanLine className="h-4 w-4" />}
-          title="Chế độ POS — quét → giỏ → 1 lần lưu"
-          subtitle="Quét mã (camera) dồn vào 1 danh sách như máy tính tiền siêu thị; bấm Lưu mới ghi tất cả xuống dữ liệu 1 lần rồi mở phiếu để in."
+          title={t('workboards.table.pos.title')}
+          subtitle={t('workboards.table.pos.subtitle')}
         >
           <div className="space-y-3">
             <label className="flex items-start gap-2">
@@ -1639,7 +1647,7 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
                           catalog_copy: {},
                           header_inputs: [],
                           order_id_prefix: 'PN',
-                          submit_label: 'Lưu & In phiếu',
+                          submit_label: t('workboards.table.pos.defaultSubmitLabel'),
                           allow_manual_search: true,
                         }
                       : null,
@@ -1648,22 +1656,22 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
                 className="mt-0.5"
               />
               <span className="text-caption text-text-secondary">
-                <span className="font-emphasis text-text-primary">Bật chế độ POS quét</span>
+                <span className="font-emphasis text-text-primary">{t('workboards.table.pos.enable')}</span>
                 <span className="ml-1 text-text-tertiary">
-                  — thay lưới bảng bằng giao diện quét mã + giỏ hàng.
+                  {t('workboards.table.pos.enableHint')}
                 </span>
               </span>
             </label>
 
             {pos && (
               <>
-                <Lbl label="Bảng danh mục sản phẩm (catalog)">
+                <Lbl label={t('workboards.table.pos.catalogTable')}>
                   <select
                     value={pos.catalog_table_id || 0}
                     onChange={(e) => setPos({ catalog_table_id: Number(e.target.value) })}
                     className={INPUT}
                   >
-                    <option value={0}>— chọn bảng —</option>
+                    <option value={0}>{t('workboards.table.pickTable')}</option>
                     {tables.map((t) => (
                       <option key={t.id} value={t.id}>
                         {t.display_name}
@@ -1672,51 +1680,51 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
                   </select>
                 </Lbl>
                 <div className={BUILDER_GRID_2}>
-                  <Lbl label="Cột mã khớp (trong catalog)">
+                  <Lbl label={t('workboards.table.pos.catalogMatchColumn')}>
                     <ColSel value={pos.catalog_match_column} cols={catCols} onPick={(v) => setPos({ catalog_match_column: v })} />
                   </Lbl>
-                  <Lbl label="Cột tên hàng (catalog)">
+                  <Lbl label={t('workboards.table.pos.catalogLabelColumn')}>
                     <ColSel value={pos.catalog_label_column} cols={catCols} onPick={(v) => setPos({ catalog_label_column: v })} />
                   </Lbl>
-                  <Lbl label="Cột đơn giá (catalog)">
+                  <Lbl label={t('workboards.table.pos.catalogPriceColumn')}>
                     <ColSel value={pos.catalog_price_column} cols={catCols} onPick={(v) => setPos({ catalog_price_column: v })} />
                   </Lbl>
-                  <Lbl label="Cột mã trên dòng (ghi xuống)">
+                  <Lbl label={t('workboards.table.pos.lineBarcodeColumn')}>
                     <ColSel value={pos.barcode_column} cols={ownCols} onPick={(v) => setPos({ barcode_column: v })} />
                   </Lbl>
-                  <Lbl label="Cột số lượng (dòng)">
+                  <Lbl label={t('workboards.table.pos.lineQuantityColumn')}>
                     <ColSel value={pos.quantity_column} cols={ownCols} onPick={(v) => setPos({ quantity_column: v })} />
                   </Lbl>
-                  <Lbl label="Cột thành tiền (dòng)">
+                  <Lbl label={t('workboards.table.pos.lineAmountColumn')}>
                     <ColSel value={pos.amount_column} cols={ownCols} onPick={(v) => setPos({ amount_column: v })} />
                   </Lbl>
-                  <Lbl label="Cột số phiếu (sinh tự động)">
+                  <Lbl label={t('workboards.table.pos.orderIdColumn')}>
                     <ColSel value={pos.order_id_column} cols={ownCols} onPick={(v) => setPos({ order_id_column: v })} />
                   </Lbl>
-                  <Lbl label="Tiền tố số phiếu">
+                  <Lbl label={t('workboards.table.pos.orderIdPrefix')}>
                     <input value={pos.order_id_prefix || ''} onChange={(e) => setPos({ order_id_prefix: e.target.value })} className={INPUT} placeholder="PN" />
                   </Lbl>
-                  <Lbl label="Cột ngày (dòng)">
+                  <Lbl label={t('workboards.table.pos.lineDateColumn')}>
                     <ColSel value={pos.date_column} cols={ownCols} onPick={(v) => setPos({ date_column: v })} />
                   </Lbl>
                 </div>
 
                 <div className="rounded-md border border-border-subtle p-2">
                   <div className="mb-1 flex items-center justify-between">
-                    <span className="text-caption font-emphasis text-text-primary">Cột catalog → cột dòng</span>
-                    <BuilderIconButton title="Thêm" onClick={() => setCopy([...(copyPairs as [string, string][]), ['', '']])}>
+                    <span className="text-caption font-emphasis text-text-primary">{t('workboards.table.pos.catalogCopyTitle')}</span>
+                    <BuilderIconButton title={t('workboards.table.add')} onClick={() => setCopy([...(copyPairs as [string, string][]), ['', '']])}>
                       <Plus className="h-3.5 w-3.5" />
                     </BuilderIconButton>
                   </div>
                   {copyPairs.length === 0 && (
-                    <p className="text-tiny text-text-tertiary">Sao chép tên hàng/ĐVT/đơn giá từ catalog xuống mỗi dòng.</p>
+                    <p className="text-tiny text-text-tertiary">{t('workboards.table.pos.catalogCopyHint')}</p>
                   )}
                   {copyPairs.map(([lineCol, catCol], i) => (
                     <div key={i} className="mb-1 flex items-center gap-1">
                       <ColSel value={lineCol} cols={ownCols} onPick={(v) => { const p = [...copyPairs] as [string, string][]; p[i] = [v, catCol]; setCopy(p); }} />
                       <span className="text-text-tertiary">←</span>
                       <ColSel value={catCol} cols={catCols} onPick={(v) => { const p = [...copyPairs] as [string, string][]; p[i] = [lineCol, v]; setCopy(p); }} />
-                      <BuilderIconButton title="Xoá" variant="danger" onClick={() => setCopy((copyPairs as [string, string][]).filter((_, idx) => idx !== i))}>
+                      <BuilderIconButton title={t('workboards.table.delete')} variant="danger" onClick={() => setCopy((copyPairs as [string, string][]).filter((_, idx) => idx !== i))}>
                         <Trash2 className="h-3.5 w-3.5 text-danger" />
                       </BuilderIconButton>
                     </div>
@@ -1725,54 +1733,54 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
 
                 <div className="rounded-md border border-border-subtle p-2">
                   <div className="mb-1 flex items-center justify-between">
-                    <span className="text-caption font-emphasis text-text-primary">Trường đầu phiếu (nhập 1 lần)</span>
-                    <BuilderIconButton title="Thêm" onClick={() => setHdr([...hdr, { column: '', label: '', kind: 'text', options: [], required: false, write_to_line: true }])}>
+                    <span className="text-caption font-emphasis text-text-primary">{t('workboards.table.pos.headerInputsTitle')}</span>
+                    <BuilderIconButton title={t('workboards.table.add')} onClick={() => setHdr([...hdr, { column: '', label: '', kind: 'text', options: [], required: false, write_to_line: true }])}>
                       <Plus className="h-3.5 w-3.5" />
                     </BuilderIconButton>
                   </div>
                   {hdr.map((h, i) => (
                     <div key={i} className="mb-2 space-y-1 rounded border border-border-subtle p-1.5">
-                      <div className={BUILDER_GRID_2}>
-                        <ColSel value={h.column} cols={ownCols} onPick={(v) => setHdr(hdr.map((x, idx) => (idx === i ? { ...x, column: v } : x)))} />
-                        <input value={h.label} onChange={(e) => setHdr(hdr.map((x, idx) => (idx === i ? { ...x, label: e.target.value } : x)))} className={INPUT} placeholder="Nhãn (vd: Loại phiếu)" />
-                        <select value={h.kind || 'text'} onChange={(e) => setHdr(hdr.map((x, idx) => (idx === i ? { ...x, kind: e.target.value as 'text' | 'select' | 'date' } : x)))} className={INPUT}>
-                          <option value="text">Văn bản</option>
-                          <option value="select">Chọn</option>
-                          <option value="date">Ngày</option>
-                        </select>
-                        <input value={(h.options || []).join(', ')} onChange={(e) => setHdr(hdr.map((x, idx) => (idx === i ? { ...x, options: e.target.value.split(',').map((s) => s.trim()).filter(Boolean) } : x)))} className={INPUT} placeholder="Lựa chọn: A, B, C" />
-                      </div>
-                      <div className="flex items-center gap-3 text-tiny">
-                        <label className="flex items-center gap-1"><input type="checkbox" checked={!!h.required} onChange={(e) => setHdr(hdr.map((x, idx) => (idx === i ? { ...x, required: e.target.checked } : x)))} /> Bắt buộc</label>
-                        <label className="flex items-center gap-1"><input type="checkbox" checked={h.write_to_line !== false} onChange={(e) => setHdr(hdr.map((x, idx) => (idx === i ? { ...x, write_to_line: e.target.checked } : x)))} /> Ghi vào dòng</label>
-                        <BuilderIconButton title="Xoá" variant="danger" onClick={() => setHdr(hdr.filter((_, idx) => idx !== i))}>
-                          <Trash2 className="h-3.5 w-3.5 text-danger" />
-                        </BuilderIconButton>
+                        <div className={BUILDER_GRID_2}>
+                          <ColSel value={h.column} cols={ownCols} onPick={(v) => setHdr(hdr.map((x, idx) => (idx === i ? { ...x, column: v } : x)))} />
+                          <input value={h.label} onChange={(e) => setHdr(hdr.map((x, idx) => (idx === i ? { ...x, label: e.target.value } : x)))} className={INPUT} placeholder={t('workboards.table.pos.headerLabelPlaceholder')} />
+                          <select value={h.kind || 'text'} onChange={(e) => setHdr(hdr.map((x, idx) => (idx === i ? { ...x, kind: e.target.value as 'text' | 'select' | 'date' } : x)))} className={INPUT}>
+                            <option value="text">{t('workboards.table.input.text')}</option>
+                            <option value="select">{t('workboards.table.input.select')}</option>
+                            <option value="date">{t('workboards.table.input.date')}</option>
+                          </select>
+                          <input value={(h.options || []).join(', ')} onChange={(e) => setHdr(hdr.map((x, idx) => (idx === i ? { ...x, options: e.target.value.split(',').map((s) => s.trim()).filter(Boolean) } : x)))} className={INPUT} placeholder={t('workboards.table.pos.optionsPlaceholder')} />
+                        </div>
+                        <div className="flex items-center gap-3 text-tiny">
+                          <label className="flex items-center gap-1"><input type="checkbox" checked={!!h.required} onChange={(e) => setHdr(hdr.map((x, idx) => (idx === i ? { ...x, required: e.target.checked } : x)))} /> {t('workboards.table.required')}</label>
+                          <label className="flex items-center gap-1"><input type="checkbox" checked={h.write_to_line !== false} onChange={(e) => setHdr(hdr.map((x, idx) => (idx === i ? { ...x, write_to_line: e.target.checked } : x)))} /> {t('workboards.table.pos.writeToLine')}</label>
+                          <BuilderIconButton title={t('workboards.table.delete')} variant="danger" onClick={() => setHdr(hdr.filter((_, idx) => idx !== i))}>
+                            <Trash2 className="h-3.5 w-3.5 text-danger" />
+                          </BuilderIconButton>
                       </div>
                     </div>
                   ))}
                 </div>
 
                 <div className={BUILDER_GRID_2}>
-                  <Lbl label="Nút Lưu (nhãn)">
-                    <input value={pos.submit_label || ''} onChange={(e) => setPos({ submit_label: e.target.value })} className={INPUT} placeholder="Lưu & In phiếu" />
+                  <Lbl label={t('workboards.table.pos.submitLabel')}>
+                    <input value={pos.submit_label || ''} onChange={(e) => setPos({ submit_label: e.target.value })} className={INPUT} placeholder={t('workboards.table.pos.defaultSubmitLabel')} />
                   </Lbl>
-                  <Lbl label="Mở màn sau khi lưu (id)">
+                  <Lbl label={t('workboards.table.pos.afterSubmitScreen')}>
                     <input value={pos.after_submit_screen || ''} onChange={(e) => setPos({ after_submit_screen: e.target.value })} className={INPUT} placeholder="vd: phieu_nhap" />
                   </Lbl>
-                  <Lbl label="Màn ghi header phiếu (id)">
-                    <input value={pos.header_screen_id || ''} onChange={(e) => setPos({ header_screen_id: e.target.value })} className={INPUT} placeholder="vd: don_header (ghi 1 dòng vào bảng phiếu)" />
+                  <Lbl label={t('workboards.table.pos.headerScreen')}>
+                    <input value={pos.header_screen_id || ''} onChange={(e) => setPos({ header_screen_id: e.target.value })} className={INPUT} placeholder={t('workboards.table.pos.headerScreenPlaceholder')} />
                   </Lbl>
-                  <Lbl label="Mang theo cột (dấu phẩy)">
+                  <Lbl label={t('workboards.table.pos.carryColumns')}>
                     <input value={(pos.after_submit_carry || []).join(', ')} onChange={(e) => setPos({ after_submit_carry: e.target.value.split(',').map((s) => s.trim()).filter(Boolean) })} className={INPUT} placeholder="ma_don, loai, ma_kho" />
                   </Lbl>
-                  <Lbl label="Gợi ý khi giỏ trống">
+                  <Lbl label={t('workboards.table.pos.emptyHint')}>
                     <input value={pos.empty_hint || ''} onChange={(e) => setPos({ empty_hint: e.target.value })} className={INPUT} />
                   </Lbl>
                 </div>
                 <label className="flex items-center gap-2 text-caption text-text-secondary">
                   <input type="checkbox" checked={pos.allow_manual_search !== false} onChange={(e) => setPos({ allow_manual_search: e.target.checked })} />
-                  Cho tìm sản phẩm bằng ô tìm kiếm (ngoài quét mã)
+                  {t('workboards.table.pos.allowManualSearch')}
                 </label>
               </>
             )}
@@ -1835,32 +1843,32 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
             <div className="mt-3 space-y-3">
               {visibleCols.length === 0 ? (
                 <BuilderEmptyHint className="text-left">
-                  Hãy chọn cột hiển thị trước — Calendar cần một cột ngày.
+                  {t('workboards.table.display.calendarNeedsVisibleColumns')}
                 </BuilderEmptyHint>
               ) : (
                 <>
-                  <Lbl label="Cột ngày (bắt buộc)">
+                  <Lbl label={t('workboards.table.display.calendarDateColumn')}>
                     <SingleColumnPicker
                       sourceColumns={visibleCols}
                       value={cal.date_column || null}
                       onChange={(next) => updateCalendar({ date_column: next || '' })}
-                      placeholder="-- cột ngày đặt bản ghi lên lịch --"
+                      placeholder={t('workboards.table.display.calendarDatePlaceholder')}
                     />
                   </Lbl>
-                  <Lbl label="Cột nhãn trên ô ngày (tùy chọn)">
+                  <Lbl label={t('workboards.table.display.calendarTitleColumn')}>
                     <SingleColumnPicker
                       sourceColumns={visibleCols}
                       value={cal.title_column || null}
                       onChange={(next) => updateCalendar({ title_column: next || null })}
-                      placeholder="-- mặc định: khoá chính --"
+                      placeholder={t('workboards.table.display.defaultPrimaryKeyPlaceholder')}
                     />
                   </Lbl>
-                  <Lbl label="Cột tô màu chip (tùy chọn, vd trạng thái)">
+                  <Lbl label={t('workboards.table.display.calendarColorColumn')}>
                     <SingleColumnPicker
                       sourceColumns={visibleCols}
                       value={cal.color_column || null}
                       onChange={(next) => updateCalendar({ color_column: next || null })}
-                      placeholder="-- không --"
+                      placeholder={t('workboards.table.none')}
                     />
                   </Lbl>
                 </>
@@ -1872,43 +1880,43 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
             <div className="mt-3 space-y-3">
               {visibleCols.length === 0 ? (
                 <BuilderEmptyHint className="text-left">
-                  Hãy chọn cột hiển thị trước — Gallery lấy ảnh và nhãn từ các cột đang hiển thị.
+                  {t('workboards.table.display.galleryNeedsVisibleColumns')}
                 </BuilderEmptyHint>
               ) : (
                 <>
-                  <Lbl label="Cột ảnh (bắt buộc)">
+                  <Lbl label={t('workboards.table.display.galleryImageColumn')}>
                     <SingleColumnPicker
                       sourceColumns={visibleCols}
                       value={gc.image_column || null}
                       onChange={(next) => updateGallery({ image_column: next || '' })}
-                      placeholder="-- cột chứa ảnh (data:image) --"
+                      placeholder={t('workboards.table.display.galleryImagePlaceholder')}
                     />
                   </Lbl>
-                  <Lbl label="Cột tiêu đề thẻ (tùy chọn)">
+                  <Lbl label={t('workboards.table.display.galleryTitleColumn')}>
                     <SingleColumnPicker
                       sourceColumns={visibleCols}
                       value={gc.title_column || null}
                       onChange={(next) => updateGallery({ title_column: next || null })}
-                      placeholder="-- không --"
+                      placeholder={t('workboards.table.none')}
                     />
                   </Lbl>
-                  <Lbl label="Cột mô tả phụ (tùy chọn)">
+                  <Lbl label={t('workboards.table.display.gallerySubtitleColumn')}>
                     <SingleColumnPicker
                       sourceColumns={visibleCols}
                       value={gc.subtitle_column || null}
                       onChange={(next) => updateGallery({ subtitle_column: next || null })}
-                      placeholder="-- không --"
+                      placeholder={t('workboards.table.none')}
                     />
                   </Lbl>
-                  <Lbl label="Nhóm theo cột (vd: ngày ghi nhận)">
+                  <Lbl label={t('workboards.table.display.galleryGroupColumn')}>
                     <SingleColumnPicker
                       sourceColumns={visibleCols}
                       value={gc.group_by_column || null}
                       onChange={(next) => updateGallery({ group_by_column: next || null })}
-                      placeholder="-- không nhóm --"
+                      placeholder={t('workboards.table.display.noGrouping')}
                     />
                   </Lbl>
-                  <Lbl label="Số thẻ mỗi hàng">
+                  <Lbl label={t('workboards.table.display.cardsPerRow')}>
                     <input
                       type="number"
                       min={1}
@@ -1931,68 +1939,68 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
             <div className="mt-3 space-y-3">
               {visibleCols.length === 0 ? (
                 <BuilderEmptyHint className="text-left">
-                  Hãy chọn cột hiển thị trước — Route map cần ít nhất cột vĩ độ và kinh độ.
+                  {t('workboards.table.display.routeNeedsVisibleColumns')}
                 </BuilderEmptyHint>
               ) : (
                 <>
                   <div className="rounded-lg border border-teal-100 bg-teal-50 px-3 py-2 text-xs text-teal-800">
-                    Mỗi dòng dữ liệu là một điểm dừng. Chọn cột tọa độ, cột nhóm tuyến/chuyến và cột thứ tự nếu có.
+                    {t('workboards.table.display.routeHelp')}
                   </div>
                   <div className={BUILDER_GRID_2}>
-                    <Lbl label="Cột vĩ độ / Latitude">
+                    <Lbl label={t('workboards.table.latColumn')}>
                       <SingleColumnPicker
                         sourceColumns={visibleCols}
                         value={routeMap.lat_column || null}
                         onChange={(next) => updateRouteMap({ lat_column: next || '' })}
-                        placeholder="-- chọn cột lat/vĩ độ --"
+                        placeholder={t('workboards.table.display.routeLatPlaceholder')}
                       />
                     </Lbl>
-                    <Lbl label="Cột kinh độ / Longitude">
+                    <Lbl label={t('workboards.table.lngColumn')}>
                       <SingleColumnPicker
                         sourceColumns={visibleCols}
                         value={routeMap.lng_column || null}
                         onChange={(next) => updateRouteMap({ lng_column: next || '' })}
-                        placeholder="-- chọn cột long/lng/kinh độ --"
+                        placeholder={t('workboards.table.display.routeLngPlaceholder')}
                       />
                     </Lbl>
                   </div>
                   <div className={BUILDER_GRID_2}>
-                    <Lbl label="Cột nhãn marker">
+                    <Lbl label={t('workboards.table.display.markerLabelColumn')}>
                       <SingleColumnPicker
                         sourceColumns={visibleCols}
                         value={routeMap.title_column || null}
                         onChange={(next) => updateRouteMap({ title_column: next || null })}
-                        placeholder="-- ví dụ: Mã đơn giao --"
+                        placeholder={t('workboards.table.display.routeMarkerPlaceholder')}
                       />
                     </Lbl>
-                    <Lbl label="Cột nhóm tuyến/chuyến">
+                    <Lbl label={t('workboards.table.display.routeGroupColumn')}>
                       <SingleColumnPicker
                         sourceColumns={visibleCols}
                         value={routeMap.route_id_column || null}
                         onChange={(next) => updateRouteMap({ route_id_column: next || null })}
-                        placeholder="-- ví dụ: Mã chuyến / mã tuyến --"
+                        placeholder={t('workboards.table.display.routeGroupPlaceholder')}
                       />
                     </Lbl>
                   </div>
                   <div className={BUILDER_GRID_2}>
-                    <Lbl label="Cột thứ tự điểm">
+                    <Lbl label={t('workboards.table.display.pointOrderColumn')}>
                       <SingleColumnPicker
                         sourceColumns={visibleCols}
                         value={routeMap.order_column || null}
                         onChange={(next) => updateRouteMap({ order_column: next || null })}
-                        placeholder="-- ví dụ: Thứ tự giao --"
+                        placeholder={t('workboards.table.display.pointOrderPlaceholder')}
                       />
                     </Lbl>
-                    <Lbl label="Cột xe/tài nguyên">
+                    <Lbl label={t('workboards.table.display.vehicleColumn')}>
                       <SingleColumnPicker
                         sourceColumns={visibleCols}
                         value={routeMap.vehicle_column || null}
                         onChange={(next) => updateRouteMap({ vehicle_column: next || null })}
-                        placeholder="-- ví dụ: Mã xe --"
+                        placeholder={t('workboards.table.display.vehiclePlaceholder')}
                       />
                     </Lbl>
                   </div>
-                  <Lbl label="Cột phụ đề trong danh sách điểm">
+                  <Lbl label={t('workboards.table.display.pointSubtitleColumns')}>
                     <MultiColumnPicker
                       sourceColumns={visibleCols}
                       value={routeMap.subtitle_columns || []}
@@ -2000,71 +2008,71 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
                     />
                   </Lbl>
                   <div className={BUILDER_GRID_2}>
-                    <Lbl label="Cột khối lượng">
+                    <Lbl label={t('workboards.table.display.weightColumn')}>
                       <SingleColumnPicker
                         sourceColumns={visibleCols}
                         value={routeMap.weight_column || null}
                         onChange={(next) => updateRouteMap({ weight_column: next || null })}
-                        placeholder="-- không --"
+                        placeholder={t('workboards.table.none')}
                       />
                     </Lbl>
-                    <Lbl label="Cột giá trị">
+                    <Lbl label={t('workboards.table.valueColumn')}>
                       <SingleColumnPicker
                         sourceColumns={visibleCols}
                         value={routeMap.value_column || null}
                         onChange={(next) => updateRouteMap({ value_column: next || null })}
-                        placeholder="-- không --"
+                        placeholder={t('workboards.table.none')}
                       />
                     </Lbl>
                   </div>
                   <div className={BUILDER_GRID_2}>
-                    <Lbl label="Cột hạn giao/deadline">
+                    <Lbl label={t('workboards.table.display.deadlineColumn')}>
                       <SingleColumnPicker
                         sourceColumns={visibleCols}
                         value={routeMap.deadline_column || null}
                         onChange={(next) => updateRouteMap({ deadline_column: next || null })}
-                        placeholder="-- không --"
+                        placeholder={t('workboards.table.none')}
                       />
                     </Lbl>
-                    <Lbl label="Cột trạng thái">
+                    <Lbl label={t('workboards.table.display.statusColumn')}>
                       <SingleColumnPicker
                         sourceColumns={visibleCols}
                         value={routeMap.status_column || null}
                         onChange={(next) => updateRouteMap({ status_column: next || null })}
-                        placeholder="-- không --"
+                        placeholder={t('workboards.table.none')}
                       />
                     </Lbl>
                   </div>
                   <div className={BUILDER_GRID_2}>
-                    <Lbl label="Kiểu đường tuyến">
+                    <Lbl label={t('workboards.table.display.routeLineMode')}>
                       <select
                         value={routeMap.line_mode || 'road'}
                         onChange={(event) => updateRouteMap({ line_mode: event.target.value as 'straight' | 'road' })}
                         className={INPUT}
                       >
-                        <option value="road">Theo đường thật (OSRM)</option>
-                        <option value="straight">Đường thẳng</option>
+                        <option value="road">{t('workboards.table.display.routeLineRoad')}</option>
+                        <option value="straight">{t('workboards.table.display.routeLineStraight')}</option>
                       </select>
                     </Lbl>
-                    <Lbl label="Nền bản đồ">
+                    <Lbl label={t('workboards.table.display.basemap')}>
                       <select
                         value={routeMap.basemap || 'streets'}
                         onChange={(event) => updateRouteMap({ basemap: event.target.value as 'satellite' | 'streets' | 'light' })}
                         className={INPUT}
                       >
-                        <option value="streets">Đường phố</option>
-                        <option value="light">Sáng / nhẹ</option>
-                        <option value="satellite">Vệ tinh</option>
+                        <option value="streets">{t('workboards.table.display.basemapStreets')}</option>
+                        <option value="light">{t('workboards.table.display.basemapLight')}</option>
+                        <option value="satellite">{t('workboards.table.display.basemapSatellite')}</option>
                       </select>
                     </Lbl>
                   </div>
                   <div className={BUILDER_GRID_2}>
-                    <Lbl label="Tiêu đề panel bên phải">
+                    <Lbl label={t('workboards.table.display.sidePanelTitle')}>
                       <input
                         value={routeMap.side_panel_title || ''}
                         onChange={(event) => updateRouteMap({ side_panel_title: event.target.value || null })}
                         className={INPUT}
-                        placeholder="Thứ tự giao"
+                        placeholder={t('workboards.table.display.sidePanelTitlePlaceholder')}
                       />
                     </Lbl>
                   </div>
@@ -2074,13 +2082,13 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
                       checked={routeMap.show_side_panel !== false}
                       onChange={(event) => updateRouteMap({ show_side_panel: event.target.checked })}
                     />
-                    Hiển thị danh sách thứ tự điểm bên phải bản đồ
+                    {t('workboards.table.display.showSidePanel')}
                   </label>
 
                   <div className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 p-3">
                     <div className="mb-1 flex items-center justify-between">
                       <div className="text-caption font-emphasis text-text-secondary">
-                        Ngân sách khi chọn điểm (tùy chọn)
+                        {t('workboards.table.display.selectionBudgetTitle')}
                       </div>
                       {routeMap.selection_budget ? (
                         <button
@@ -2088,7 +2096,7 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
                           onClick={() => updateRouteMap({ selection_budget: null })}
                           className="text-tiny text-danger hover:underline"
                         >
-                          Xoá
+                          {t('workboards.table.delete')}
                         </button>
                       ) : (
                         <button
@@ -2100,18 +2108,21 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
                           }
                           className="text-tiny text-brand hover:underline"
                         >
-                          + Bật
+                          + {t('workboards.table.on')}
                         </button>
                       )}
                     </div>
                     {routeMap.selection_budget ? (
                       <div className="space-y-3">
                         <p className="text-tiny text-text-tertiary">
-                          Tick/point chọn điểm → cộng dồn 1 cột giá trị, so với ngưỡng; vượt thì
-                          báo đỏ{routeMap.selection_budget.block_when_over !== false ? ' + chặn nút xác nhận' : ''}.
+                          {t('workboards.table.display.selectionBudgetHelp')}
+                          {routeMap.selection_budget.block_when_over !== false
+                            ? ` + ${t('workboards.table.display.blockConfirmSuffix')}`
+                            : ''}
+                          .
                         </p>
                         <div className={BUILDER_GRID_2}>
-                          <Lbl label="Cột giá trị cộng dồn">
+                          <Lbl label={t('workboards.table.display.selectionValueColumn')}>
                             <SingleColumnPicker
                               sourceColumns={columnNames}
                               value={routeMap.selection_budget.value_column || null}
@@ -2122,7 +2133,7 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
                               }
                             />
                           </Lbl>
-                          <Lbl label="Ngưỡng (số hoặc {{shared.x}})">
+                          <Lbl label={t('workboards.table.display.selectionLimit')}>
                             <input
                               value={routeMap.selection_budget.limit || ''}
                               onChange={(e) =>
@@ -2131,10 +2142,10 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
                                 })
                               }
                               className={INPUT}
-                              placeholder="vd 2000 hoặc {{shared.capacity}}"
+                              placeholder={t('workboards.table.display.selectionLimitPlaceholder')}
                             />
                           </Lbl>
-                          <Lbl label="Đơn vị">
+                          <Lbl label={t('workboards.table.unit')}>
                             <input
                               value={routeMap.selection_budget.unit || ''}
                               onChange={(e) =>
@@ -2146,7 +2157,7 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
                               placeholder="kg"
                             />
                           </Lbl>
-                          <Lbl label="Nhãn">
+                          <Lbl label={t('workboards.table.label')}>
                             <input
                               value={routeMap.selection_budget.label || ''}
                               onChange={(e) =>
@@ -2155,7 +2166,7 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
                                 })
                               }
                               className={INPUT}
-                              placeholder="Đã chọn"
+                              placeholder={t('workboards.table.display.selectionLabelPlaceholder')}
                             />
                           </Lbl>
                         </div>
@@ -2169,10 +2180,10 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
                               })
                             }
                           />
-                          Chặn nút xác nhận khi vượt ngưỡng
+                          {t('workboards.table.display.blockWhenOver')}
                         </label>
                         <div className={BUILDER_GRID_2}>
-                          <Lbl label="Mở màn khi xác nhận (tùy chọn)">
+                          <Lbl label={t('workboards.table.display.actionScreenOptional')}>
                             <select
                               value={routeMap.selection_budget.action_go_to_screen || ''}
                               onChange={(e) =>
@@ -2185,7 +2196,7 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
                               }
                               className={INPUT}
                             >
-                              <option value="">— không —</option>
+                              <option value="">{t('workboards.table.none')}</option>
                               {allScreens
                                 .filter((s) => s.id !== screen.id)
                                 .map((s) => (
@@ -2195,7 +2206,7 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
                                 ))}
                             </select>
                           </Lbl>
-                          <Lbl label="Nhãn nút xác nhận">
+                          <Lbl label={t('workboards.table.display.actionLabel')}>
                             <input
                               value={routeMap.selection_budget.action_label || ''}
                               onChange={(e) =>
@@ -2204,7 +2215,7 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
                                 })
                               }
                               className={INPUT}
-                              placeholder="Xác nhận"
+                              placeholder={t('workboards.table.display.actionLabelPlaceholder')}
                             />
                           </Lbl>
                         </div>
@@ -2337,12 +2348,12 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
       return (
         <BuilderInspectorPanel
           icon={<Sigma className="h-4 w-4" />}
-          title="Footer totals"
-          subtitle="Aggregate columns into a footer row (current page only)."
+          title={t('workboards.table.totals.title')}
+          subtitle={t('workboards.table.totals.subtitle')}
         >
           {tableSpec.columns.length === 0 ? (
             <BuilderEmptyHint className="text-left">
-              Pick visible columns first.
+              {t('workboards.table.pickVisibleColumnsFirst')}
             </BuilderEmptyHint>
           ) : (
             <div className="space-y-1.5">
@@ -2364,10 +2375,10 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
                       }}
                       className={`${INPUT} flex-1`}
                     >
-                      <option value="">— none —</option>
+                      <option value="">{t('workboards.table.none')}</option>
                       {TOTALS_KINDS.map((k) => (
                         <option key={k.value} value={k.value}>
-                          {k.label}
+                          {t(k.labelKey)}
                         </option>
                       ))}
                     </select>
@@ -2377,9 +2388,7 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
             </div>
           )}
           <p className="mt-3 text-caption text-text-tertiary">
-            Aggregations run over the rows currently visible (after filters and
-            paging). To total across the entire table, build a dataset measure
-            and surface it via a dashboard screen.
+            {t('workboards.table.totals.help')}
           </p>
         </BuilderInspectorPanel>
       );
@@ -2409,19 +2418,18 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
       return (
         <BuilderInspectorPanel
           icon={<Columns3 className="h-4 w-4" />}
-          title="Header groups (multi-level header)"
-          subtitle="Merge column headers — like a 'Q1 2026' label spanning the Jan/Feb/Mar columns."
+          title={t('workboards.table.headerGroups.title')}
+          subtitle={t('workboards.table.headerGroups.subtitle')}
         >
           {tableSpec.columns.length === 0 ? (
             <BuilderEmptyHint className="text-left">
-              Pick visible columns first.
+              {t('workboards.table.pickVisibleColumnsFirst')}
             </BuilderEmptyHint>
           ) : (
             <div className="space-y-3">
               {groups.length === 0 ? (
                 <BuilderEmptyHint className="text-left">
-                  No header groups yet. Add one to merge consecutive columns under
-                  a shared label.
+                  {t('workboards.table.headerGroups.emptyHint')}
                 </BuilderEmptyHint>
               ) : (
                 groups.map((group, idx) => (
@@ -2434,11 +2442,11 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
                         value={group.label}
                         onChange={(event) => updateGroup(idx, { label: event.target.value })}
                         className={`${INPUT} flex-1`}
-                        placeholder="e.g. Q1 2026"
+                        placeholder={t('workboards.table.headerGroups.labelPlaceholder')}
                       />
                       <BuilderIconButton
                         onClick={() => removeGroup(idx)}
-                        title="Remove group"
+                        title={t('workboards.table.headerGroups.removeGroup')}
                         variant="danger"
                       >
                         <Trash2 className="h-3 w-3 text-danger" />
@@ -2448,7 +2456,7 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
                       sourceColumns={availableFor(idx)}
                       value={group.columns}
                       onChange={(columns) => updateGroup(idx, { columns })}
-                      placeholder="Pick the columns this header spans..."
+                      placeholder={t('workboards.table.headerGroups.columnsPlaceholder')}
                     />
                   </div>
                 ))
@@ -2458,15 +2466,13 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
                 onClick={addGroup}
                 className="rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-3 py-1.5 text-caption hover:bg-surface-2"
               >
-                + Add header group
+                + {t('workboards.table.headerGroups.addGroup')}
               </button>
               <p className="text-caption text-text-tertiary">
-                Each group must contain at least 2 columns and they must be
-                contiguous in the visible-columns list. Otherwise the runtime
-                skips the group silently.
+                {t('workboards.table.headerGroups.help')}
                 {Array.from(assigned).length > 0 ? (
                   <>
-                    <br />Currently assigned: {Array.from(assigned).length} cell(s).
+                    <br />{t('workboards.table.headerGroups.assignedCount', { count: Array.from(assigned).length })}
                   </>
                 ) : null}
               </p>
@@ -2483,26 +2489,23 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
       return (
         <BuilderInspectorPanel
           icon={<Rows3 className="h-4 w-4" />}
-          title="Row merge (Google-Sheets style)"
-          subtitle="When consecutive rows share a value in these columns, the first cell spans the run."
+          title={t('workboards.table.rowMerge.title')}
+          subtitle={t('workboards.table.rowMerge.subtitle')}
         >
           {candidates.length === 0 ? (
             <BuilderEmptyHint className="text-left">
-              No mergeable columns. Editable columns cannot be merged - merge +
-              inline edit conflict. Pick a read-only column.
+              {t('workboards.table.rowMerge.noCandidates')}
             </BuilderEmptyHint>
           ) : (
             <MultiColumnPicker
               sourceColumns={candidates}
               value={groupBy}
               onChange={(value) => updateTable({ group_by: value })}
-              placeholder="Pick columns to merge consecutive identical cells..."
+              placeholder={t('workboards.table.rowMerge.columnsPlaceholder')}
             />
           )}
           <p className="mt-2 text-caption text-text-tertiary">
-            Order matters: merging happens left-to-right, so a leading column
-            partitions the page first, then later columns merge within each
-            partition.
+            {t('workboards.table.rowMerge.help')}
           </p>
         </BuilderInspectorPanel>
       );
@@ -2515,30 +2518,30 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
         const next = { ...meta, [col]: { ...(meta[col] || {}), ...patch } };
         updateTable({ column_metadata: next });
       };
-      const TABLE_INPUT_TYPES: Array<{ value: TableInputType; label: string }> = [
-        { value: 'text', label: 'Text' },
-        { value: 'number', label: 'Number' },
-        { value: 'currency', label: 'Currency' },
-        { value: 'percent', label: 'Percent' },
-        { value: 'date', label: 'Date' },
-        { value: 'datetime', label: 'Date+time' },
-        { value: 'time', label: 'Time' },
-        { value: 'checkbox', label: 'Checkbox' },
-        { value: 'select', label: 'Select' },
-        { value: 'enum_list', label: 'Multi-select' },
-        { value: 'rating', label: 'Rating' },
-        { value: 'color', label: 'Color' },
-        { value: 'slider', label: 'Slider' },
+      const TABLE_INPUT_TYPES: Array<{ value: TableInputType; labelKey: string }> = [
+        { value: 'text', labelKey: 'workboards.table.input.text' },
+        { value: 'number', labelKey: 'workboards.table.input.number' },
+        { value: 'currency', labelKey: 'workboards.table.input.currency' },
+        { value: 'percent', labelKey: 'workboards.table.input.percent' },
+        { value: 'date', labelKey: 'workboards.table.input.date' },
+        { value: 'datetime', labelKey: 'workboards.table.input.datetime' },
+        { value: 'time', labelKey: 'workboards.table.input.time' },
+        { value: 'checkbox', labelKey: 'workboards.table.input.checkbox' },
+        { value: 'select', labelKey: 'workboards.table.input.select' },
+        { value: 'enum_list', labelKey: 'workboards.table.input.multiSelect' },
+        { value: 'rating', labelKey: 'workboards.table.input.rating' },
+        { value: 'color', labelKey: 'workboards.table.input.color' },
+        { value: 'slider', labelKey: 'workboards.table.input.slider' },
       ];
       return (
         <BuilderInspectorPanel
           icon={<Settings2 className="h-4 w-4" />}
-          title="Column presentation"
-          subtitle="Friendly labels, widths, formats and alignment — overrides the raw column name."
+          title={t('workboards.table.columnMeta.title')}
+          subtitle={t('workboards.table.columnMeta.subtitle')}
         >
           {tableSpec.columns.length === 0 ? (
             <BuilderEmptyHint className="text-left">
-              Pick visible columns first.
+              {t('workboards.table.pickVisibleColumnsFirst')}
             </BuilderEmptyHint>
           ) : (
             <div className="space-y-2">
@@ -2551,7 +2554,7 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
                       <input
                         value={m.label || ''}
                         onChange={(event) => update(col, { label: event.target.value })}
-                        placeholder="Friendly label"
+                        placeholder={t('workboards.table.columnMeta.friendlyLabel')}
                         className={INPUT}
                       />
                       <input
@@ -2561,7 +2564,7 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
                           const v = event.target.value;
                           update(col, { width_px: v ? Number(v) : null });
                         }}
-                        placeholder="Width px"
+                        placeholder={t('workboards.table.columnMeta.widthPx')}
                         className={INPUT}
                       />
                       <select
@@ -2573,10 +2576,10 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
                         }
                         className={INPUT}
                       >
-                        <option value="">— format —</option>
+                        <option value="">{t('workboards.table.columnMeta.pickFormat')}</option>
                         {CELL_FORMATS.map((f) => (
                           <option key={f.value} value={f.value}>
-                            {f.label}
+                            {t(f.labelKey)}
                           </option>
                         ))}
                       </select>
@@ -2589,16 +2592,16 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
                         }
                         className={INPUT}
                       >
-                        <option value="">— align —</option>
-                        <option value="left">Left</option>
-                        <option value="center">Center</option>
-                        <option value="right">Right</option>
+                        <option value="">{t('workboards.table.columnMeta.pickAlign')}</option>
+                        <option value="left">{t('workboards.table.align.left')}</option>
+                        <option value="center">{t('workboards.table.align.center')}</option>
+                        <option value="right">{t('workboards.table.align.right')}</option>
                       </select>
                     </div>
                     {editableSet.has(col) && (
                       <div className="mt-1 space-y-2 rounded bg-surface-2 p-2">
                         <div className="grid grid-cols-2 gap-2">
-                          <Lbl label="Kiểu ô nhập (khi sửa)">
+                          <Lbl label={t('workboards.table.columnMeta.inputType')}>
                             <select
                               value={m.input_type || ''}
                               onChange={(event) =>
@@ -2608,16 +2611,16 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
                               }
                               className={INPUT}
                             >
-                              <option value="">Text (mặc định)</option>
-                              {TABLE_INPUT_TYPES.map((t) => (
-                                <option key={t.value} value={t.value}>
-                                  {t.label}
+                              <option value="">{t('workboards.table.columnMeta.defaultTextInput')}</option>
+                              {TABLE_INPUT_TYPES.map((input) => (
+                                <option key={input.value} value={input.value}>
+                                  {t(input.labelKey)}
                                 </option>
                               ))}
                             </select>
                           </Lbl>
                           {m.input_type === 'currency' && (
-                            <Lbl label="Ký hiệu tiền">
+                            <Lbl label={t('workboards.table.columnMeta.currencyCode')}>
                               <input
                                 value={m.currency_code || ''}
                                 onChange={(event) =>
@@ -2629,7 +2632,7 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
                             </Lbl>
                           )}
                           {m.input_type === 'rating' && (
-                            <Lbl label="Số sao">
+                            <Lbl label={t('workboards.table.columnMeta.maxStars')}>
                               <input
                                 type="number"
                                 min={1}
@@ -2670,7 +2673,7 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
                           </div>
                         )}
                         {(m.input_type === 'select' || m.input_type === 'enum_list') && (
-                          <Lbl label="Lựa chọn (mỗi dòng: label|value)">
+                          <Lbl label={t('workboards.table.columnMeta.options')}>
                             <textarea
                               value={(m.options || [])
                                 .map((o) => `${o.label}|${String(o.value)}`)
@@ -2689,7 +2692,7 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
                               }
                               rows={3}
                               className={INPUT}
-                              placeholder={'Tốt|good\nKhá|ok'}
+                              placeholder={t('workboards.table.columnMeta.optionsPlaceholder')}
                             />
                           </Lbl>
                         )}
@@ -2717,8 +2720,8 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
       return (
         <BuilderInspectorPanel
           icon={<PencilLine className="h-4 w-4" />}
-          title="Detail side panel"
-          subtitle="Opens when an end user clicks a row. Shows fields hidden from the grid for density."
+          title={t('workboards.table.detail.title')}
+          subtitle={t('workboards.table.detail.subtitle')}
         >
           <label className="flex items-center gap-2">
             <input
@@ -2727,31 +2730,31 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
               onChange={(event) => updatePanel({ enabled: event.target.checked })}
             />
             <span className="text-caption text-text-secondary">
-              <span className="font-emphasis text-text-primary">Enable panel</span>
+              <span className="font-emphasis text-text-primary">{t('workboards.table.detail.enable')}</span>
               <span className="ml-1 text-text-tertiary">
-                — when off, clicking a row does nothing (inline-edit only).
+                {t('workboards.table.detail.enableHint')}
               </span>
             </span>
           </label>
           {panel.enabled !== false && (
             <div className="mt-3 space-y-3">
-              <Lbl label="Panel title (defaults to screen title)">
+              <Lbl label={t('workboards.table.detail.panelTitle')}>
                 <input
                   value={panel.title || ''}
                   onChange={(event) => updatePanel({ title: event.target.value })}
                   className={INPUT}
-                  placeholder="e.g. Đơn hàng"
+                  placeholder={t('workboards.table.detail.panelTitlePlaceholder')}
                 />
               </Lbl>
-              <Lbl label="Columns shown in the panel (empty = same as table columns)">
+              <Lbl label={t('workboards.table.detail.columns')}>
                 <MultiColumnPicker
                   sourceColumns={allCols}
                   value={panel.columns || []}
                   onChange={(value) => updatePanel({ columns: value })}
-                  placeholder="Pick columns to surface in the side panel..."
+                  placeholder={t('workboards.table.detail.columnsPlaceholder')}
                 />
               </Lbl>
-              <Lbl label="Editable from the panel">
+              <Lbl label={t('workboards.table.detail.editableColumns')}>
                 <MultiColumnPicker
                   sourceColumns={(panel.columns && panel.columns.length > 0 ? panel.columns : allCols).filter(
                     (c) =>
@@ -2760,18 +2763,18 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
                   )}
                   value={panel.editable_columns || []}
                   onChange={(value) => updatePanel({ editable_columns: value })}
-                  placeholder="Empty = panel is read-only (use inline-edit instead)."
+                  placeholder={t('workboards.table.detail.editablePlaceholder')}
                 />
               </Lbl>
               <div>
                 <div className="mb-1 flex items-center justify-between">
                   <span className="text-caption font-emphasis text-text-secondary">
-                    Sections (optional grouping)
+                    {t('workboards.table.detail.sections')}
                   </span>
                   <button
                     type="button"
                     onClick={() => {
-                      const baseName = 'Section';
+                      const baseName = t('workboards.table.detail.defaultSection');
                       let name = baseName;
                       let suffix = 1;
                       while (name in sections) {
@@ -2782,12 +2785,12 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
                     }}
                     className="text-caption text-brand hover:underline"
                   >
-                    + Add section
+                    + {t('workboards.table.detail.addSection')}
                   </button>
                 </div>
                 {sectionNames.length === 0 ? (
                   <BuilderEmptyHint className="text-left">
-                    No sections — every column is shown in one default group.
+                    {t('workboards.table.detail.noSections')}
                   </BuilderEmptyHint>
                 ) : (
                   <div className="space-y-2">
@@ -2816,7 +2819,7 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
                               delete next[sectionName];
                               updatePanel({ sections: next });
                             }}
-                            title="Remove section"
+                            title={t('workboards.table.detail.removeSection')}
                             variant="danger"
                           >
                             <Trash2 className="h-3 w-3 text-danger" />
@@ -2829,7 +2832,7 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
                             const next = { ...sections, [sectionName]: value };
                             updatePanel({ sections: next });
                           }}
-                          placeholder="Pick columns in this section..."
+                          placeholder={t('workboards.table.detail.sectionColumnsPlaceholder')}
                         />
                       </div>
                     ))}
@@ -2875,11 +2878,11 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
         <BuilderInspectorPanel
           icon={<Calculator className="h-4 w-4" />}
           title={col.label?.trim() || col.name}
-          subtitle="JavaScript computed column — evaluated server-side in a QuickJS sandbox (1000ms / row)."
+          subtitle={t('workboards.table.computed.subtitle')}
           action={
             <BuilderIconButton
               onClick={() => removeComputed(activeComputedIndex)}
-              title="Delete column"
+              title={t('workboards.table.derived.deleteColumn')}
               variant="danger"
             >
               <Trash2 className="h-3.5 w-3.5 text-danger" />
@@ -2888,7 +2891,7 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
         >
           <div className="space-y-3">
             <div className={BUILDER_GRID_2}>
-              <Lbl label="Column name (identifier)">
+              <Lbl label={t('workboards.table.derived.columnName')}>
                 <input
                   value={col.name}
                   onChange={(event) => {
@@ -2899,7 +2902,7 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
                   className={`${INPUT} font-mono`}
                 />
               </Lbl>
-              <Lbl label="Display label">
+              <Lbl label={t('workboards.table.derived.displayLabel')}>
                 <input
                   value={col.label || ''}
                   onChange={(event) =>
@@ -2909,7 +2912,7 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
                   placeholder={col.name}
                 />
               </Lbl>
-              <Lbl label="Format">
+              <Lbl label={t('workboards.table.derived.format')}>
                 <select
                   value={col.format || ''}
                   onChange={(event) =>
@@ -2919,17 +2922,17 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
                   }
                   className={INPUT}
                 >
-                  <option value="">— auto —</option>
+                  <option value="">{t('workboards.table.auto')}</option>
                   {CELL_FORMATS.map((f) => (
                     <option key={f.value} value={f.value}>
-                      {f.label}
+                      {t(f.labelKey)}
                     </option>
                   ))}
                 </select>
               </Lbl>
             </div>
 
-            <Lbl label="Formula">
+            <Lbl label={t('workboards.table.computed.formula')}>
               <JsFormulaEditor
                 value={col.formula}
                 onChange={(formula) =>
@@ -2941,7 +2944,7 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
             {!tableSpec.columns.includes(col.name) ? (
               <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-[rgb(var(--border-line))] bg-surface-0 px-3 py-2">
                 <span className="text-caption text-text-tertiary">
-                  Hidden from the table.
+                  {t('workboards.table.derived.hiddenFromTable')}
                 </span>
                 <button
                   type="button"
@@ -2949,20 +2952,20 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
                   className="inline-flex h-8 items-center gap-1.5 rounded-md border border-brand/30 bg-brand/10 px-2.5 text-caption font-emphasis text-brand hover:bg-brand/15"
                 >
                   <Plus className="h-3.5 w-3.5" />
-                  Show column
+                  {t('workboards.table.derived.showColumn')}
                 </button>
               </div>
             ) : (
               <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-success/20 bg-success/5 px-3 py-2">
                 <span className="text-caption font-emphasis text-success">
-                  Visible in the table
+                  {t('workboards.table.derived.visibleInTable')}
                 </span>
                 <button
                   type="button"
                   onClick={() => toggleColumnVisible(col.name)}
                   className="text-caption text-text-tertiary hover:text-text-primary"
                 >
-                  Hide
+                  {t('workboards.table.derived.hide')}
                 </button>
               </div>
             )}
@@ -2980,11 +2983,11 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
         <BuilderInspectorPanel
           icon={<Link2 className="h-4 w-4" />}
           title={col.label?.trim() || col.name}
-          subtitle="VLOOKUP from a related dataset table (read-only)"
+          subtitle={t('workboards.table.lookup.subtitle')}
           action={
             <BuilderIconButton
               onClick={() => removeLookup(activeLookupIndex)}
-              title="Delete column"
+              title={t('workboards.table.derived.deleteColumn')}
               variant="danger"
             >
               <Trash2 className="h-3.5 w-3.5 text-danger" />
@@ -3004,7 +3007,7 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
               }
             />
             <div className={BUILDER_GRID_2}>
-              <Lbl label="Column name (identifier)">
+              <Lbl label={t('workboards.table.derived.columnName')}>
                 <input
                   value={col.name}
                   onChange={(event) => {
@@ -3014,7 +3017,7 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
                   className={`${INPUT} font-mono`}
                 />
               </Lbl>
-              <Lbl label="Display label">
+              <Lbl label={t('workboards.table.derived.displayLabel')}>
                 <input
                   value={col.label || ''}
                   onChange={(event) =>
@@ -3024,7 +3027,7 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
                   placeholder={col.name}
                 />
               </Lbl>
-              <Lbl label="Linked dataset table">
+              <Lbl label={t('workboards.table.lookup.linkedTable')}>
                 <select
                   value={col.from_table_id || 0}
                   onChange={(event) =>
@@ -3034,7 +3037,7 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
                   }
                   className={INPUT}
                 >
-                  <option value="">— pick a table —</option>
+                  <option value="">{t('workboards.table.pickTable')}</option>
                   {tables.map((table) => (
                     <option key={table.id} value={table.id}>
                       {table.display_name}
@@ -3042,7 +3045,7 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
                   ))}
                 </select>
               </Lbl>
-              <Lbl label="Format">
+              <Lbl label={t('workboards.table.derived.format')}>
                 <select
                   value={col.format || ''}
                   onChange={(event) =>
@@ -3052,15 +3055,15 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
                   }
                   className={INPUT}
                 >
-                  <option value="">— auto —</option>
+                  <option value="">{t('workboards.table.auto')}</option>
                   {CELL_FORMATS.map((f) => (
                     <option key={f.value} value={f.value}>
-                      {f.label}
+                      {t(f.labelKey)}
                     </option>
                   ))}
                 </select>
               </Lbl>
-              <Lbl label="Match on (this table)">
+              <Lbl label={t('workboards.table.lookup.matchThisTable')}>
                 <SingleColumnPicker
                   sourceColumns={columnNames}
                   value={col.match_column_local || null}
@@ -3069,7 +3072,7 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
                   }
                 />
               </Lbl>
-              <Lbl label="Match on (linked table)">
+              <Lbl label={t('workboards.table.lookup.matchLinkedTable')}>
                 <SingleColumnPicker
                   sourceColumns={remoteColumns}
                   value={col.match_column_remote || null}
@@ -3078,7 +3081,7 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
                   }
                 />
               </Lbl>
-              <Lbl label="Return column">
+              <Lbl label={t('workboards.table.lookup.returnColumn')}>
                 <SingleColumnPicker
                   sourceColumns={remoteColumns}
                   value={col.return_column || null}
@@ -3094,24 +3097,22 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
                 onClick={() => toggleColumnVisible(col.name)}
                 className="text-caption text-brand hover:underline"
               >
-                + Show this column in the table
+                + {t('workboards.table.derived.showColumnInTable')}
               </button>
             ) : (
               <p className="text-caption text-text-tertiary">
-                ✓ Visible in the table.{' '}
+                ✓ {t('workboards.table.derived.visibleInTable')}.{' '}
                 <button
                   type="button"
                   onClick={() => toggleColumnVisible(col.name)}
                   className="text-brand hover:underline"
                 >
-                  Hide
+                  {t('workboards.table.derived.hide')}
                 </button>
               </p>
             )}
             <p className="text-caption text-text-tertiary">
-              Lookup runs once per page with a single batched query against the
-              linked table. Values are resolved on the server — the runtime
-              cannot bypass the RLS of the linked table.
+              {t('workboards.table.lookup.help')}
             </p>
           </div>
         </BuilderInspectorPanel>
@@ -3128,11 +3129,11 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
         <BuilderInspectorPanel
           icon={<Sigma className="h-4 w-4" />}
           title={col.label?.trim() || col.name}
-          subtitle="Aggregate rows from a related child table (read-only)"
+          subtitle={t('workboards.table.rollup.subtitle')}
           action={
             <BuilderIconButton
               onClick={() => removeRollup(activeRollupIndex)}
-              title="Delete column"
+              title={t('workboards.table.derived.deleteColumn')}
               variant="danger"
             >
               <Trash2 className="h-3.5 w-3.5 text-danger" />
@@ -3141,7 +3142,7 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
         >
           <div className="space-y-3">
             <div className={BUILDER_GRID_2}>
-              <Lbl label="Column name (identifier)">
+              <Lbl label={t('workboards.table.derived.columnName')}>
                 <input
                   value={col.name}
                   onChange={(event) => {
@@ -3151,7 +3152,7 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
                   className={`${INPUT} font-mono`}
                 />
               </Lbl>
-              <Lbl label="Display label">
+              <Lbl label={t('workboards.table.derived.displayLabel')}>
                 <input
                   value={col.label || ''}
                   onChange={(event) =>
@@ -3161,7 +3162,7 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
                   placeholder={col.name}
                 />
               </Lbl>
-              <Lbl label="Child dataset table">
+              <Lbl label={t('workboards.table.rollup.childTable')}>
                 <select
                   value={col.from_table_id || 0}
                   onChange={(event) =>
@@ -3171,7 +3172,7 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
                   }
                   className={INPUT}
                 >
-                  <option value="">— pick a table —</option>
+                  <option value="">{t('workboards.table.pickTable')}</option>
                   {tables.map((table) => (
                     <option key={table.id} value={table.id}>
                       {table.display_name}
@@ -3179,7 +3180,7 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
                   ))}
                 </select>
               </Lbl>
-              <Lbl label="Aggregate">
+              <Lbl label={t('workboards.table.aggregate')}>
                 <select
                   value={col.agg || 'count'}
                   onChange={(event) =>
@@ -3189,14 +3190,14 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
                   }
                   className={INPUT}
                 >
-                  <option value="count">Count (số dòng con)</option>
-                  <option value="sum">Sum</option>
-                  <option value="avg">Average</option>
-                  <option value="min">Min</option>
-                  <option value="max">Max</option>
+                  <option value="count">{t('workboards.table.rollup.countChildren')}</option>
+                  <option value="sum">{t('workboards.table.agg.sum')}</option>
+                  <option value="avg">{t('workboards.table.agg.avg')}</option>
+                  <option value="min">{t('workboards.table.agg.min')}</option>
+                  <option value="max">{t('workboards.table.agg.max')}</option>
                 </select>
               </Lbl>
-              <Lbl label="Match on (this table)">
+              <Lbl label={t('workboards.table.lookup.matchThisTable')}>
                 <SingleColumnPicker
                   sourceColumns={columnNames}
                   value={col.match_column_local || null}
@@ -3205,7 +3206,7 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
                   }
                 />
               </Lbl>
-              <Lbl label="Match on (child table)">
+              <Lbl label={t('workboards.table.rollup.matchChildTable')}>
                 <SingleColumnPicker
                   sourceColumns={remoteColumns}
                   value={col.match_column_remote || null}
@@ -3215,7 +3216,7 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
                 />
               </Lbl>
               {needsValueColumn ? (
-                <Lbl label="Value column (child)">
+                <Lbl label={t('workboards.table.rollup.valueColumnChild')}>
                   <SingleColumnPicker
                     sourceColumns={remoteColumns}
                     value={col.value_column || null}
@@ -3225,7 +3226,7 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
                   />
                 </Lbl>
               ) : null}
-              <Lbl label="Format">
+              <Lbl label={t('workboards.table.derived.format')}>
                 <select
                   value={col.format || ''}
                   onChange={(event) =>
@@ -3235,10 +3236,10 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
                   }
                   className={INPUT}
                 >
-                  <option value="">— auto —</option>
+                  <option value="">{t('workboards.table.auto')}</option>
                   {CELL_FORMATS.map((f) => (
                     <option key={f.value} value={f.value}>
-                      {f.label}
+                      {t(f.labelKey)}
                     </option>
                   ))}
                 </select>
@@ -3246,13 +3247,11 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
             </div>
             {needsValueColumn && !col.value_column ? (
               <p className="text-caption text-amber-600">
-                Chọn một cột số ở bảng con để {col.agg}.
+                {t('workboards.table.rollup.pickNumericColumn', { agg: col.agg || 'count' })}
               </p>
             ) : null}
             <p className="text-caption text-text-tertiary">
-              Roll-up chạy một lần mỗi trang: gom các dòng của bảng con theo khóa
-              khớp rồi tính {col.agg || 'count'} bằng máy chủ (tôn trọng RLS của
-              bảng con). Ví dụ: đếm số lần ghi nhận, tổng sản lượng theo lô.
+              {t('workboards.table.rollup.help', { agg: col.agg || 'count' })}
             </p>
           </div>
         </BuilderInspectorPanel>
@@ -3260,29 +3259,30 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
     }
 
     if (activeItem === 'format_rules') {
-      const FMT_COLORS: Array<{ value: FormatRuleColor; label: string; dot: string }> = [
-        { value: 'green', label: 'Xanh lá', dot: 'bg-emerald-500' },
-        { value: 'amber', label: 'Vàng', dot: 'bg-amber-500' },
-        { value: 'red', label: 'Đỏ', dot: 'bg-rose-500' },
-        { value: 'blue', label: 'Xanh dương', dot: 'bg-sky-500' },
-        { value: 'violet', label: 'Tím', dot: 'bg-violet-500' },
-        { value: 'slate', label: 'Xám', dot: 'bg-slate-400' },
+      const FMT_COLORS: Array<{ value: FormatRuleColor; labelKey: string; dot: string }> = [
+        { value: 'green', labelKey: 'workboards.table.color.green', dot: 'bg-emerald-500' },
+        { value: 'amber', labelKey: 'workboards.table.color.amber', dot: 'bg-amber-500' },
+        { value: 'red', labelKey: 'workboards.table.color.red', dot: 'bg-rose-500' },
+        { value: 'blue', labelKey: 'workboards.table.color.blue', dot: 'bg-sky-500' },
+        { value: 'violet', labelKey: 'workboards.table.color.violet', dot: 'bg-violet-500' },
+        { value: 'slate', labelKey: 'workboards.table.color.slate', dot: 'bg-slate-400' },
       ];
       return (
         <BuilderInspectorPanel
           icon={<Palette className="h-4 w-4" />}
-          title="Định dạng có điều kiện"
-          subtitle="Tô màu dòng/ô khi biểu thức đúng — áp cho cả bảng, gallery"
+          title={t('workboards.table.formatRules.title')}
+          subtitle={t('workboards.table.formatRules.subtitle')}
           action={
-            <BuilderIconButton onClick={addFormatRule} title="Thêm quy tắc">
+            <BuilderIconButton onClick={addFormatRule} title={t('workboards.table.formatRules.addRule')}>
               <Plus className="h-3.5 w-3.5" />
             </BuilderIconButton>
           }
         >
           {formatRules.length === 0 ? (
             <BuilderEmptyHint>
-              Chưa có quy tắc. Ví dụ: <code>{'{{row.san_luong}} < 100'}</code> → tô
-              đỏ dòng sản lượng thấp.
+              {t('workboards.table.formatRules.emptyPrefix')}{' '}
+              <code>{'{{row.san_luong}} < 100'}</code>{' '}
+              {t('workboards.table.formatRules.emptySuffix')}
             </BuilderEmptyHint>
           ) : (
             <div className="space-y-4">
@@ -3293,17 +3293,17 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
                 >
                   <div className="flex items-center justify-between">
                     <span className="text-caption font-medium text-text-secondary">
-                      Quy tắc {idx + 1}
+                      {t('workboards.table.formatRules.ruleNumber', { number: idx + 1 })}
                     </span>
                     <BuilderIconButton
                       onClick={() => removeFormatRule(idx)}
-                      title="Xóa quy tắc"
+                      title={t('workboards.table.formatRules.deleteRule')}
                       variant="danger"
                     >
                       <Trash2 className="h-3.5 w-3.5 text-danger" />
                     </BuilderIconButton>
                   </div>
-                  <Lbl label="Biểu thức (khi đúng thì áp dụng)">
+                  <Lbl label={t('workboards.table.formatRules.expression')}>
                     <input
                       value={rule.when}
                       onChange={(event) =>
@@ -3314,7 +3314,7 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
                     />
                   </Lbl>
                   <div className={BUILDER_GRID_2}>
-                    <Lbl label="Màu">
+                    <Lbl label={t('workboards.table.formatRules.color')}>
                       <select
                         value={rule.color || 'amber'}
                         onChange={(event) =>
@@ -3326,12 +3326,12 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
                       >
                         {FMT_COLORS.map((c) => (
                           <option key={c.value} value={c.value}>
-                            {c.label}
+                            {t(c.labelKey)}
                           </option>
                         ))}
                       </select>
                     </Lbl>
-                    <Lbl label="Biểu tượng (tùy chọn)">
+                    <Lbl label={t('workboards.table.formatRules.iconOptional')}>
                       <input
                         value={rule.icon || ''}
                         onChange={(event) =>
@@ -3342,7 +3342,7 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
                       />
                     </Lbl>
                   </div>
-                  <Lbl label="Áp cho cột (bỏ trống = cả dòng)">
+                  <Lbl label={t('workboards.table.formatRules.applyColumns')}>
                     <MultiColumnPicker
                       sourceColumns={allReferenceableColumns}
                       value={rule.columns || []}
@@ -3354,9 +3354,9 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
             </div>
           )}
           <p className="mt-3 text-caption text-text-tertiary">
-            Biểu thức dùng cùng cú pháp với show_if/valid_if:{' '}
-            <code>{'{{row.cot}}'}</code>, AND/OR, so sánh, hàm CONCAT/YEAR…
-            Quy tắc đầu tiên khớp sẽ thắng.
+            {t('workboards.table.formatRules.helpPrefix')}{' '}
+            <code>{'{{row.cot}}'}</code>
+            {t('workboards.table.formatRules.helpSuffix')}
           </p>
         </BuilderInspectorPanel>
       );
@@ -3377,16 +3377,16 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
         <BuilderTableMissingBanner tableId={screen.table_id} />
       ) : !screen.table_id ? (
         <BuilderEmptyHint className="text-left">
-          Pick a primary data source before configuring columns or filters.
+          {t('workboards.table.pickDataSourceFirst')}
         </BuilderEmptyHint>
       ) : null}
 
       <BuilderObjectEditor>
         <BuilderNavigator
-          title="Table objects"
-          description="Configure the visible columns, which ones are editable, layout, and pre-set filters."
+          title={t('workboards.table.navigator.title')}
+          description={t('workboards.table.navigator.description')}
         >
-          <BuilderNavigatorGroup title="Structure">
+          <BuilderNavigatorGroup title={t('workboards.table.navigator.structure')}>
             <BuilderNavigatorItem
               icon={<LayoutGrid className="h-3.5 w-3.5" />}
               label={t('workboards.table.displayModeTitle')}
@@ -3396,7 +3396,7 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
             />
           </BuilderNavigatorGroup>
 
-          <BuilderNavigatorGroup title="Content">
+          <BuilderNavigatorGroup title={t('workboards.table.navigator.content')}>
             <BuilderNavigatorItem
               icon={<Columns3 className="h-3.5 w-3.5" />}
               label={t('workboards.table.shortcut.fields')}
@@ -3716,6 +3716,7 @@ function DefaultValuesEditor({
   columns: string[];
   onChange: (next: Record<string, unknown>) => void;
 }) {
+  const { t } = useI18n();
   const entries = Object.entries(defaults);
   const available = columns.filter((c) => !(c in defaults));
   const [picked, setPicked] = useState<string>(available[0] || '');
@@ -3743,16 +3744,16 @@ function DefaultValuesEditor({
   return (
     <div className="space-y-2">
       <div className="text-caption font-emphasis text-text-secondary">
-        Default values
+        {t('workboards.table.defaults.title')}
       </div>
       <p className="text-caption text-text-tertiary">
-        Pre-fill these columns when a new row is added. Supports placeholders:{' '}
+        {t('workboards.table.defaults.help')}{' '}
         <code className="rounded bg-surface-2 px-1">{'{{app_user.username}}'}</code>,{' '}
         <code className="rounded bg-surface-2 px-1">{'{{today}}'}</code>,{' '}
         <code className="rounded bg-surface-2 px-1">{'{{now}}'}</code>.
       </p>
       {entries.length === 0 ? (
-        <BuilderEmptyHint className="text-left">No defaults set yet.</BuilderEmptyHint>
+        <BuilderEmptyHint className="text-left">{t('workboards.table.defaults.empty')}</BuilderEmptyHint>
       ) : (
         <div className="space-y-1.5">
           {entries.map(([col, val]) => (
@@ -3764,11 +3765,11 @@ function DefaultValuesEditor({
                 value={typeof val === 'string' ? val : String(val ?? '')}
                 onChange={(event) => setValue(col, event.target.value)}
                 className={`${INPUT} flex-1`}
-                placeholder="value or {{placeholder}}"
+                placeholder={t('workboards.table.defaults.valuePlaceholder')}
               />
               <BuilderIconButton
                 onClick={() => removeValue(col)}
-                title="Remove default"
+                title={t('workboards.table.defaults.removeDefault')}
                 variant="danger"
               >
                 <Trash2 className="h-3 w-3 text-danger" />
@@ -3796,7 +3797,7 @@ function DefaultValuesEditor({
             disabled={!picked}
             className="rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-3 py-1 text-caption hover:bg-surface-2 disabled:opacity-50"
           >
-            Add default
+            {t('workboards.table.defaults.addDefault')}
           </button>
         </div>
       ) : null}

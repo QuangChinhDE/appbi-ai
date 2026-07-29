@@ -223,6 +223,54 @@ export function deriveStackedLayout<T extends { x: number; y: number; w: number;
   });
 }
 
+// ── Responsive report grid (public / embed) ─────────────────────────────────
+// The authored dashboard is a 12-col grid. A PUBLIC report must look
+// "chuẩn chỉnh" on every screen (TV / desktop / laptop / tablet / phone). The
+// old grid froze the row height at 80px while column width stayed fluid, so a
+// tile's aspect ratio drifted with the viewer's width — wide-and-short on a TV,
+// tall-and-squished on a small window — and a hard 768px cliff dropped the whole
+// tablet band into a 1-column stack of oversized cards.
+//
+// Fix = "Fit to width" (PBI-style): the row height scales WITH the measured grid
+// width, so column width and row height grow/shrink together and every tile keeps
+// the aspect ratio it was authored at — the report scales as ONE unit.
+//
+//   • ≥ REPORT_STACK_BREAKPOINT (grid px): authored 12-col layout, rows scaled
+//     proportionally. Calibrated so a ~1360px grid reproduces the historical
+//     80px row (≈ byte-identical to the old fixed grid at desktop width).
+//   • <  REPORT_STACK_BREAKPOINT: 1-col vertical stack (deriveStackedLayout) at a
+//     fixed comfortable row height — a real phone view, not micro-tiles.
+//
+// 640 grid px ≈ 710 window px after app-shell chrome, so tablets (portrait 768 /
+// landscape 1024) now get the scaled multi-column layout instead of a column of
+// giant full-width cards.
+//
+// The grid fills the available width (no hard canvas cap) so a TV shows the report
+// edge to edge rather than letterboxed; the row-height clamp below keeps tiles from
+// running away on a 4K wall. Fully proportional up to ~2.5K px, then rows cap.
+export const REPORT_STACK_BREAKPOINT = 640;
+
+/**
+ * Row height (px) for the responsive public/embed report grid, given the MEASURED
+ * grid container width. Scales linearly with width so tiles keep their authored
+ * aspect ratio at any viewport; clamped so extremes stay sane; a fixed comfortable
+ * height below the stack breakpoint (1-col phone view).
+ */
+export function computeReportRowHeight(
+  containerWidth: number | null | undefined,
+  opts?: { refWidth?: number; base?: number; min?: number; max?: number; stackRow?: number },
+): number {
+  const base = opts?.base ?? 80;
+  if (!containerWidth || !Number.isFinite(containerWidth) || containerWidth <= 0) return base;
+  const stackRow = opts?.stackRow ?? 72;
+  if (containerWidth < REPORT_STACK_BREAKPOINT) return stackRow;
+  const refWidth = opts?.refWidth ?? 1360;
+  const min = opts?.min ?? 48;
+  const max = opts?.max ?? 150;
+  const scaled = Math.round(base * (containerWidth / refWidth));
+  return Math.max(min, Math.min(max, scaled));
+}
+
 export function liftLayoutToTop<T extends { y: number }>(layouts: T[]): T[] {
   if (!Array.isArray(layouts) || layouts.length === 0) return layouts;
   let minY = Infinity;

@@ -470,7 +470,7 @@ export default function CanvasOverview({
             title={t('workboards.canvas.createWorkspaceTitle')}
           >
             <FolderPlus className="h-3.5 w-3.5" />
-            Workspace
+            {t('workboards.canvas.workspace')}
           </button>
         )}
       </div>

@@ -374,7 +374,7 @@ export default function DashboardScreenEditor({
                     >
                       <option value="eq">=</option>
                       <option value="neq">≠</option>
-                      <option value="contains">contains</option>
+                      <option value="contains">{t('workboards.dashboard.operator.contains')}</option>
                     </select>
                     <span className="text-caption text-text-tertiary">
                       {t('workboards.dashboard.fromAppUserRole')}
@@ -461,13 +461,13 @@ export default function DashboardScreenEditor({
                     >
                       <option value="eq">=</option>
                       <option value="neq">≠</option>
-                      <option value="in">in</option>
-                      <option value="not_in">not in</option>
+                      <option value="in">{t('workboards.dashboard.operator.in')}</option>
+                      <option value="not_in">{t('workboards.dashboard.operator.notIn')}</option>
                       <option value="gt">&gt;</option>
                       <option value="gte">≥</option>
                       <option value="lt">&lt;</option>
                       <option value="lte">≤</option>
-                      <option value="contains">contains</option>
+                      <option value="contains">{t('workboards.dashboard.operator.contains')}</option>
                     </select>
                     <input
                       className={`${INPUT} flex-1 min-w-[140px]`}

@@ -95,81 +95,81 @@ const FIELD_TYPE_GROUPS: {
   items: Array<{ widget: FormFieldSpec['widget']; label: string; hint?: string }>;
 }[] = [
   {
-    category: 'Văn bản',
+    category: 'text',
     items: [
       { widget: 'text', label: 'Text' },
-      { widget: 'textarea', label: 'Văn bản dài' },
+      { widget: 'textarea', label: 'Textarea' },
       { widget: 'email', label: 'Email' },
-      { widget: 'phone', label: 'Số điện thoại' },
-      { widget: 'url', label: 'Đường dẫn (URL)' },
-      { widget: 'rich_text', label: 'Văn bản định dạng (Markdown)' },
+      { widget: 'phone', label: 'Phone' },
+      { widget: 'url', label: 'URL' },
+      { widget: 'rich_text', label: 'Rich text' },
     ],
   },
   {
-    category: 'Số',
+    category: 'number',
     items: [
-      { widget: 'number', label: 'Số' },
-      { widget: 'currency', label: 'Tiền tệ' },
-      { widget: 'percent', label: 'Phần trăm (%)' },
-      { widget: 'slider', label: 'Thanh trượt' },
+      { widget: 'number', label: 'Number' },
+      { widget: 'currency', label: 'Currency' },
+      { widget: 'percent', label: 'Percent' },
+      { widget: 'slider', label: 'Slider' },
     ],
   },
   {
-    category: 'Lựa chọn',
+    category: 'choice',
     items: [
-      { widget: 'select', label: 'Chọn một', hint: 'tĩnh hoặc từ bảng' },
-      { widget: 'enum_list', label: 'Chọn nhiều' },
+      { widget: 'select', label: 'Select', hint: 'static or table' },
+      { widget: 'enum_list', label: 'Multi-select' },
     ],
   },
   {
-    category: 'Ngày & giờ',
+    category: 'dateTime',
     items: [
-      { widget: 'date', label: 'Ngày' },
-      { widget: 'datetime', label: 'Ngày + giờ' },
-      { widget: 'time', label: 'Giờ' },
-      { widget: 'duration', label: 'Khoảng thời gian' },
+      { widget: 'date', label: 'Date' },
+      { widget: 'datetime', label: 'Date time' },
+      { widget: 'time', label: 'Time' },
+      { widget: 'duration', label: 'Duration' },
     ],
   },
   {
-    category: 'Hình ảnh & Tệp',
+    category: 'media',
     items: [
-      { widget: 'image', label: 'Ảnh (1 ảnh)' },
-      { widget: 'images', label: 'Nhiều ảnh' },
-      { widget: 'file', label: 'Tệp đính kèm' },
-      { widget: 'signature', label: 'Chữ ký tay' },
-      { widget: 'audio', label: 'Ghi âm' },
-      { widget: 'video', label: 'Video (clip ngắn)' },
+      { widget: 'image', label: 'Image' },
+      { widget: 'images', label: 'Images' },
+      { widget: 'file', label: 'File' },
+      { widget: 'signature', label: 'Signature' },
+      { widget: 'audio', label: 'Audio' },
+      { widget: 'video', label: 'Video' },
     ],
   },
   {
-    category: 'Vị trí',
+    category: 'location',
     items: [
-      { widget: 'geopoint', label: 'Vị trí GPS' },
-      { widget: 'map', label: 'Chọn vùng trên bản đồ' },
+      { widget: 'geopoint', label: 'GPS' },
+      { widget: 'map', label: 'Map select' },
     ],
   },
   {
-    category: 'Giá trị tính toán',
-    items: [{ widget: 'computed', label: 'Tính tự động (công thức)' }],
+    category: 'computed',
+    items: [{ widget: 'computed', label: 'Computed' }],
   },
   {
-    category: 'Quy trình',
-    items: [{ widget: 'status', label: 'Trạng thái / duyệt', hint: 'phân quyền + luồng chuyển' }],
+    category: 'workflow',
+    items: [{ widget: 'status', label: 'Status', hint: 'roles + transitions' }],
   },
   {
-    category: 'Nhập chuyên biệt',
-    items: [{ widget: 'barcode', label: 'Quét mã (Barcode/QR)', hint: 'quét để NHẬP giá trị' }],
+    category: 'specialInput',
+    items: [{ widget: 'barcode', label: 'Barcode/QR scan', hint: 'scan input' }],
   },
   {
-    category: 'Hiển thị / Output',
-    items: [{ widget: 'qr', label: 'Mã QR (in tem)', hint: 'SINH mã để hiển thị/in' }],
+    category: 'output',
+    items: [{ widget: 'qr', label: 'QR code', hint: 'display/print output' }],
   },
   {
-    category: 'Khác',
+    category: 'other',
     items: [
-      { widget: 'checkbox', label: 'Bật / tắt' },
-      { widget: 'rating', label: 'Đánh giá (sao)' },
-      { widget: 'color', label: 'Màu sắc' },
+      { widget: 'checkbox', label: 'Checkbox' },
+      { widget: 'rating', label: 'Rating' },
+      { widget: 'color', label: 'Color' },
     ],
   },
 ];
@@ -1904,9 +1904,9 @@ function FieldInspector({
                 }
                 className={INPUT}
               >
-                <option value="chips">Chips</option>
-                <option value="dropdown">Dropdown</option>
-                <option value="checkboxes">Checkbox</option>
+                <option value="chips">{t('workboards.form.enumListStyle.chips')}</option>
+                <option value="dropdown">{t('workboards.form.enumListStyle.dropdown')}</option>
+                <option value="checkboxes">{t('workboards.form.enumListStyle.checkbox')}</option>
               </select>
             </Lbl>
           )}

@@ -471,7 +471,7 @@ function WebhookEditorModal({
               {t('workboards.webhooks.docScreenHint')}
             </p>
           </Field>
-          <Field label="URL *">
+          <Field label={t('workboards.webhooks.urlRequired')}>
             <Input
               value={form.url}
               onChange={(e) => setForm({ ...form, url: e.target.value })}
@@ -488,7 +488,7 @@ function WebhookEditorModal({
           </Field>
 
           <div className="grid grid-cols-3 gap-3">
-            <Field label="Batch size (≤ 500)">
+            <Field label={t('workboards.webhooks.batchSizeLabel')}>
               <Input
                 type="number"
                 value={form.batch_size}
@@ -518,7 +518,7 @@ function WebhookEditorModal({
                 }
               />
             </Field>
-            <Field label="Timeout (ms)">
+            <Field label={t('workboards.webhooks.timeoutLabel')}>
               <Input
                 type="number"
                 value={form.timeout_ms}
@@ -551,7 +551,7 @@ function WebhookEditorModal({
             </label>
           </div>
 
-          <Field label="Headers (key-value)">
+          <Field label={t('workboards.webhooks.headersLabel')}>
             <div className="space-y-1.5">
               {form.headers.map((h, idx) => (
                 <div key={idx} className="flex items-center gap-2">

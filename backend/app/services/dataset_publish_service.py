@@ -34,7 +34,7 @@ from typing import Any, Dict, List, Optional
 
 from sqlalchemy.orm import Session
 
-from app.models.dataset import Dataset, DatasetTable
+from app.models.dataset import Dataset, DatasetTable, DatasetRefreshRun
 from app.services import query_cache as _qc
 
 logger = logging.getLogger(__name__)
@@ -43,6 +43,103 @@ LIFECYCLE_STATES = {
     "draft", "ready", "syncing", "published", "changes_pending", "sync_failed", "disabled",
 }
 _PUBLISH_LEASE_SECONDS = 3600  # a publish/sync owns the dataset for up to 1h
+_REFRESH_RUN_KEEP = 50  # rolling history depth per dataset
+
+
+# ── Refresh-run history log ──────────────────────────────────────────────────
+# One row per Sync & Publish / scheduled refresh, opened at start and flipped to
+# a terminal status at EVERY exit (incl. the background crash handler). Powers
+# the "Refresh history" modal. Best-effort throughout — history logging must
+# NEVER break or roll back the actual sync.
+
+def _refresh_run_start(
+    db: Session, dataset_id: int, trigger: str, triggered_by_id: Optional[str] = None
+) -> Optional[int]:
+    try:
+        run = DatasetRefreshRun(
+            dataset_id=dataset_id,
+            status="running",
+            trigger=(trigger or "manual"),
+            triggered_by_id=triggered_by_id,
+            started_at=datetime.utcnow(),
+            created_at=datetime.utcnow(),
+        )
+        db.add(run)
+        db.commit()
+        run_id = run.id
+        _prune_refresh_runs(db, dataset_id)
+        return run_id
+    except Exception:  # noqa: BLE001
+        db.rollback()
+        logger.warning("[publish] refresh-run start-log failed dataset=%s", dataset_id, exc_info=True)
+        return None
+
+
+def _refresh_run_finish(
+    db: Session,
+    run_id: Optional[int],
+    status: str,
+    *,
+    error: Optional[str] = None,
+    generation: Optional[int] = None,
+    tables_built: Optional[int] = None,
+    rows_total: Optional[int] = None,
+) -> None:
+    """Flip a run to a terminal status. Idempotent — only updates a still-running
+    row, so a crash-handler call after a normal terminal finalize is a no-op."""
+    if run_id is None:
+        return
+    try:
+        run = db.query(DatasetRefreshRun).filter(DatasetRefreshRun.id == run_id).first()
+        if run is None or run.status != "running":
+            return
+        run.status = status
+        run.finished_at = datetime.utcnow()
+        if run.started_at is not None:
+            run.duration_ms = int((run.finished_at - run.started_at).total_seconds() * 1000)
+        if error is not None:
+            run.error = str(error)[:4000]
+        if generation is not None:
+            run.generation = generation
+        if tables_built is not None:
+            run.tables_built = tables_built
+        if rows_total is not None:
+            run.rows_total = rows_total
+        db.commit()
+    except Exception:  # noqa: BLE001
+        db.rollback()
+        logger.warning("[publish] refresh-run finish-log failed run=%s", run_id, exc_info=True)
+
+
+def _prune_refresh_runs(db: Session, dataset_id: int) -> None:
+    """Keep only the most recent ``_REFRESH_RUN_KEEP`` runs per dataset."""
+    try:
+        old = [
+            r.id
+            for r in db.query(DatasetRefreshRun.id)
+            .filter(DatasetRefreshRun.dataset_id == dataset_id)
+            .order_by(DatasetRefreshRun.id.desc())
+            .offset(_REFRESH_RUN_KEEP)
+            .all()
+        ]
+        if old:
+            db.query(DatasetRefreshRun).filter(DatasetRefreshRun.id.in_(old)).delete(
+                synchronize_session=False
+            )
+            db.commit()
+    except Exception:  # noqa: BLE001
+        db.rollback()
+
+
+def _refresh_run_rows_total(dataset_id: int) -> Optional[int]:
+    """Best-effort rows-synced count for a finished run, from sync progress."""
+    try:
+        from app.services import sync_progress
+        snap = sync_progress.get(dataset_id) or {}
+        val = snap.get("rows_done_total")
+        return int(val) if val is not None else None
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def design_fingerprint(db: Session, dataset_id: int) -> str:
@@ -175,11 +272,14 @@ def _lease_key(dataset_id: int) -> str:
     return f"datasetpublish::{dataset_id}"
 
 
-def start_sync_and_publish(dataset_id: int, trigger: str = "manual") -> Dict[str, Any]:
+def start_sync_and_publish(
+    dataset_id: int, trigger: str = "manual", triggered_by_id: Optional[str] = None
+) -> Dict[str, Any]:
     """Kick a background Sync & Publish. Returns immediately (ETL is long).
     At most ONE publish per dataset at a time (cross-worker lease). NEVER raises.
     `trigger` ('manual'|'scheduled') is surfaced in the progress payload so the UI
-    shows the waiting overlay only for the manual sync the user just started."""
+    shows the waiting overlay only for the manual sync the user just started, and
+    recorded on the refresh-run history row."""
     from app.core.database import SessionLocal
     from app.services import sync_progress
 
@@ -190,8 +290,14 @@ def start_sync_and_publish(dataset_id: int, trigger: str = "manual") -> Dict[str
 
     def _run() -> None:
         db = SessionLocal()
+        # Open the history row HERE (before the blocking body) so the crash
+        # handler below can finalize it even if the body raises before its own
+        # terminal-branch finalize runs.
+        run_id = _refresh_run_start(db, dataset_id, trigger, triggered_by_id)
         try:
-            _sync_and_publish_blocking(db, dataset_id)
+            _sync_and_publish_blocking(
+                db, dataset_id, trigger=trigger, triggered_by_id=triggered_by_id, run_id=run_id
+            )
         except Exception:  # noqa: BLE001 — background must never crash a request
             logger.warning("[publish] sync&publish failed dataset=%s", dataset_id, exc_info=True)
             try:
@@ -203,6 +309,8 @@ def start_sync_and_publish(dataset_id: int, trigger: str = "manual") -> Dict[str
                 sync_progress.set_phase(dataset_id, "failed")
             except Exception:  # noqa: BLE001
                 db.rollback()
+            # Idempotent: no-op if a terminal branch already finalized the row.
+            _refresh_run_finish(db, run_id, "failed", error="internal error during sync")
         finally:
             db.close()
             _qc.release_global(_lease_key(dataset_id))
@@ -244,14 +352,30 @@ def reap_stuck_syncs() -> int:
     return n
 
 
-def _sync_and_publish_blocking(db: Session, dataset_id: int) -> Dict[str, Any]:
+def _sync_and_publish_blocking(
+    db: Session,
+    dataset_id: int,
+    trigger: str = "manual",
+    triggered_by_id: Optional[str] = None,
+    run_id: Optional[int] = None,
+) -> Dict[str, Any]:
     """The synchronous body (also usable from tests/CLI). Locks design → syncs a
     generation → validates → pins published_generation on success; keeps the
-    prior published_generation on failure."""
+    prior published_generation on failure.
+
+    Records a refresh-run history row (opened by the caller and threaded in via
+    ``run_id``, or opened here for direct/test callers) and flips it to a
+    terminal status at every exit."""
     from app.services import snapshot_service
+
+    # Direct/test callers don't pre-open a run row — do it here so history is
+    # recorded regardless of entry point.
+    if run_id is None:
+        run_id = _refresh_run_start(db, dataset_id, trigger, triggered_by_id)
 
     ds = db.query(Dataset).filter(Dataset.id == dataset_id).first()
     if ds is None:
+        _refresh_run_finish(db, run_id, "failed", error="dataset not found")
         return {"ok": False, "error": "dataset not found"}
 
     # Fresh run — drop any stale Stop flag so a prior cancel can't kill this sync.
@@ -278,6 +402,7 @@ def _sync_and_publish_blocking(db: Session, dataset_id: int) -> Dict[str, Any]:
         db.commit()
         from app.services import sync_progress as _spf
         _spf.set_phase(dataset_id, "failed")
+        _refresh_run_finish(db, run_id, "failed", error=str(exc))
         logger.warning("[publish] composition pre-flight FAILED dataset=%s: %s", dataset_id, exc)
         return {"ok": False, "error": str(exc)}
 
@@ -302,6 +427,10 @@ def _sync_and_publish_blocking(db: Session, dataset_id: int) -> Dict[str, Any]:
             db.commit()
         from app.services import sync_progress as _spstop
         _spstop.set_phase(dataset_id, "stopped")
+        _refresh_run_finish(
+            db, run_id, "stopped", generation=generation,
+            tables_built=len(built), rows_total=_refresh_run_rows_total(dataset_id),
+        )
         logger.info("[publish] sync STOPPED by user dataset=%s (kept generation=%s)",
                     dataset_id, ds.published_generation if ds is not None else None)
         return {"ok": False, "stopped": True, "generation": generation,
@@ -318,6 +447,10 @@ def _sync_and_publish_blocking(db: Session, dataset_id: int) -> Dict[str, Any]:
         ds.last_sync_error = reason
         db.commit()
         sync_progress.set_phase(dataset_id, "failed")
+        _refresh_run_finish(
+            db, run_id, "failed", error=reason, generation=generation,
+            tables_built=len(built), rows_total=_refresh_run_rows_total(dataset_id),
+        )
         logger.warning("[publish] validate FAILED dataset=%s gen=%s: %s", dataset_id, generation, reason)
         return {"ok": False, "error": reason, "generation": generation,
                 "built": built, "skipped": skipped}
@@ -354,6 +487,10 @@ def _sync_and_publish_blocking(db: Session, dataset_id: int) -> Dict[str, Any]:
         db.rollback()
 
     sync_progress.set_phase(dataset_id, "done")
+    _refresh_run_finish(
+        db, run_id, "success", generation=generation,
+        tables_built=len(built), rows_total=_refresh_run_rows_total(dataset_id),
+    )
     logger.info("[publish] PUBLISHED dataset=%s generation=%s (%d tables)", dataset_id, generation, len(built))
     return {"ok": True, "generation": generation, "built": built, "skipped": skipped}
 

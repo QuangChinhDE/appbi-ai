@@ -806,15 +806,46 @@ def _verify_public_session(session_token: str, link_token: str) -> bool:
         return False
 
 
+# Access-count telemetry is bumped on EVERY public/embed view. For a widely
+# shared link that means an UPDATE + row lock on the SAME row across every
+# concurrent viewer — they serialize on it and pin their pool connection while
+# waiting. Throttle to one write per window per link so a burst of viewers of the
+# same report doesn't contend on one row. EXCEPTION: links that enforce a
+# max_access_count need the exact running count, so those always bump.
+_ACCESS_BUMP_WINDOW_SECONDS = 30
+
+
+def _should_bump_access(last_accessed_at) -> bool:
+    if last_accessed_at is None:
+        return True
+    prev = last_accessed_at
+    if getattr(prev, "tzinfo", None) is None:
+        prev = prev.replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - prev).total_seconds() >= _ACCESS_BUMP_WINDOW_SECONDS
+
+
 def _get_dashboard_by_token(
     token: str,
     db: Session,
     session_token: str | None = None,
     *,
     track_access: bool = True,
+    load_dashboard: bool = True,
 ) -> tuple[Dashboard, list[dict], str | None, dict]:
     """Look up dashboard by token. Checks new multi-link table first, falls back to legacy share_token.
-    Returns (dashboard, filters_config_for_this_link, link_name, appearance_config)."""
+    Returns (dashboard, filters_config_for_this_link, link_name, appearance_config).
+
+    ``load_dashboard=False`` still performs ALL authentication (token/password/
+    expiry/access-limit + embed-grant validity + throttled access bump) but loads
+    only the bare Dashboard row — it SKIPS the eager joinedload of every chart.
+    The public-meta endpoint uses this for its first pass so a cache HIT (the
+    common case for a widely-viewed report) never pays the 70-chart load; only
+    the one request that actually rebuilds the structure loads the charts."""
+    def _load_dash(*filters):
+        q = db.query(Dashboard)
+        if load_dashboard:
+            q = q.options(joinedload(Dashboard.dashboard_charts).joinedload(DashboardChart.chart))
+        return q.filter(*filters).first()
     # Embed-grant tokens (from the M2M /integrations/embed/resolve endpoint)
     # resolve to a managed link WITHOUT exposing that link's own token. Purely
     # additive: normal public/share tokens never start with the grant prefix, so
@@ -823,15 +854,10 @@ def _get_dashboard_by_token(
     # the token-authenticated integration endpoint, not by a viewer password.
     grant_link = resolve_embed_grant_link(token, db)
     if grant_link is not None:
-        dash = (
-            db.query(Dashboard)
-            .options(joinedload(Dashboard.dashboard_charts).joinedload(DashboardChart.chart))
-            .filter(Dashboard.id == grant_link.dashboard_id)
-            .first()
-        )
+        dash = _load_dash(Dashboard.id == grant_link.dashboard_id)
         if not dash:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dashboard not found.")
-        if track_access:
+        if track_access and _should_bump_access(grant_link.last_accessed_at):
             grant_link.access_count = (grant_link.access_count or 0) + 1
             grant_link.last_accessed_at = datetime.now(timezone.utc)
             db.commit()
@@ -860,27 +886,20 @@ def _get_dashboard_by_token(
                     headers={"X-Link-Password-Required": "true"},
                 )
 
-        dash = (
-            db.query(Dashboard)
-            .options(joinedload(Dashboard.dashboard_charts).joinedload(DashboardChart.chart))
-            .filter(Dashboard.id == link.dashboard_id)
-            .first()
-        )
+        dash = _load_dash(Dashboard.id == link.dashboard_id)
         if not dash:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dashboard not found.")
-        if track_access:
+        # Capped links need the exact count to enforce max_access_count; unlimited
+        # (the widely-shared, high-traffic case) throttle to avoid per-view writes
+        # + row-lock contention on the shared link row.
+        if track_access and (link.max_access_count or _should_bump_access(link.last_accessed_at)):
             link.access_count = (link.access_count or 0) + 1
             link.last_accessed_at = datetime.now(timezone.utc)
             db.commit()
         return dash, link.filters_config or [], link.name, link.appearance_config or {}
 
     # Fallback to legacy share_token on Dashboard model
-    dash = (
-        db.query(Dashboard)
-        .options(joinedload(Dashboard.dashboard_charts).joinedload(DashboardChart.chart))
-        .filter(Dashboard.share_token == token)
-        .first()
-    )
+    dash = _load_dash(Dashboard.share_token == token)
     if not dash:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -918,7 +937,11 @@ def auth_public_link(
 
 
 @router.get("/dashboards/{token}", response_model=DashboardResponse)
-@_limiter.limit("30/minute")
+# This is the gate hit on EVERY public/embed view. Keep it generous: viewers
+# behind one office NAT (or multiple browser tabs) share a source IP, and the
+# response is cache+coalesce-backed (query_cache public-meta) so extra hits are
+# cheap. Still bounded enough to block bulk scraping of the structure.
+@_limiter.limit("120/minute")
 def get_public_dashboard(
     token: str,
     request: Request,
@@ -927,26 +950,42 @@ def get_public_dashboard(
 ):
     """Return dashboard structure for a public shared link. No auth required.
     Password-protected links require X-Public-Session header from /auth."""
-    dash, link_hidden_filters, link_name, appearance_config = _get_dashboard_by_token(
-        token,
-        db,
-        session_token=x_public_session,
-    )
+    # LIGHT auth pass: fully authenticate the token (password/expiry/access-limit
+    # + embed-grant validity) and do the throttled access bump, but do NOT load
+    # the (potentially 70-chart) dashboard yet. On a cache HIT — the common case
+    # for a widely-viewed report — we return the cached structure without ever
+    # paying that heavy load, which is what lets the endpoint absorb many
+    # simultaneous viewers of the same report.
+    _get_dashboard_by_token(token, db, session_token=x_public_session, load_dashboard=False)
 
     # Perf: everything built below (hydrate every chart + resolve every dataset's
     # semantic model + build the filter inventory) is IDENTICAL for all viewers
     # of a token and is the GATE before any tile can load — so N concurrent
     # viewers each rebuild it. Cache the built response by token (short TTL;
     # structure edits still surface within the TTL) and coalesce concurrent
-    # builds across workers — the same mechanism as chart-data. Auth + the
-    # access-count bump already ran per-request in `_get_dashboard_by_token`.
+    # builds across workers — the same mechanism as chart-data.
     from app.services import query_cache as _qc
     _meta_cached = _qc.get_public_meta(token)
     _meta_leader = False
+    # When many viewers open the SAME report at once they all coalesce on this
+    # token: ONE worker builds, the rest wait. A waiter only polls the shared
+    # (sqlite) cache — it needs NO Postgres connection — so it releases the pooled
+    # one via db.close() before waiting. Without this, N waiters each pin a
+    # connection through the ~seconds-long build and exhaust the per-worker pool
+    # (repro: 150 simultaneous same-token views → QueuePool timeouts while
+    # Postgres itself was <40% used).
     if _meta_cached is None:
-        _meta_cached, _meta_leader = _qc.begin_coalesced_public_meta(token)
+        _meta_cached, _meta_leader = _qc.begin_coalesced_public_meta(token, on_wait=db.close)
     if _meta_cached is not None:
         return _meta_cached
+
+    # Cache MISS → THIS request rebuilds the structure. Load the FULL dashboard
+    # now (the light pass above skipped the charts, and a waiter closed its
+    # connection). track_access=False: the access bump already ran on the light
+    # pass, so don't double-count.
+    dash, link_hidden_filters, link_name, appearance_config = _get_dashboard_by_token(
+        token, db, session_token=x_public_session, load_dashboard=True, track_access=False,
+    )
 
     # Public viewers get view-level permission (read-only, no edit actions)
     dash.user_permission = "view"

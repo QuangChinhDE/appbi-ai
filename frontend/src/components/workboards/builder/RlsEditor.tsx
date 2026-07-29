@@ -258,7 +258,7 @@ function RuleCard({
           {legacyColumnInUse && (
             <p className="mt-1.5 rounded-md border border-warning/30 bg-warning/5 px-2 py-1.5 text-[11px] text-warning">
               {t('workboards.rls.legacyColumnPrefix')}{' '}
-              <code className="font-mono">{rule.filter_column}</code> (legacy).
+              <code className="font-mono">{rule.filter_column}</code> ({t('workboards.rls.legacy')}).
               {' '}{t('workboards.rls.legacyColumnMiddle')}{' '}
               <code className="font-mono">{MINIAPP_USER_COLUMN}</code>{' '}
               {t('workboards.rls.legacyColumnActionPrefix')}{' '}
@@ -439,7 +439,7 @@ function AccessModeBanner({
             </p>
             {entry?.chain && entry.chain.length > 0 && (
               <p className="mt-1 text-text-tertiary">
-                Chain:{' '}
+                {t('workboards.rls.audit.chain')}:{' '}
                 {entry.chain.map((hop, idx) => (
                   <span key={idx}>
                     {idx > 0 ? ' → ' : ''}
