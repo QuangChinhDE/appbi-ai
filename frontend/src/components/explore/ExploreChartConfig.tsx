@@ -1938,13 +1938,48 @@ function DataLabelsEditor({
   const dlc: DataLabelConfig = styleConfig.dataLabelConfig ?? {};
   const enabled = dlc.enabled ?? styleConfig.showDataLabels ?? false;
 
+  // The data-label POSITION options are orientation-specific. Vertical bars
+  // place labels top/bottom/inside/center/outside; a HORIZONTAL_BAR instead has
+  // left / insideStart / center / insideEnd / right. The renderer (ExploreChart)
+  // already understands all of these — this just surfaces the right set + a
+  // sensible per-orientation default. Without it, a horizontal bar was stuck
+  // with the vertical options, where top/bottom/outside all collapse to the
+  // same outside-right placement (and long values overflow the plot, which is
+  // why people reached for a 90° rotation as a workaround).
+  const isHBar = chartType === 'HORIZONTAL_BAR';
+  const defaultPosition: DataLabelPosition = isHBar ? 'insideEnd' : 'top';
+  const POSITION_OPTIONS: { value: DataLabelPosition; label: string }[] = isHBar
+    ? [
+        { value: 'left', label: 'Outside left' },
+        { value: 'insideStart', label: 'Inside start' },
+        { value: 'center', label: 'Center' },
+        { value: 'insideEnd', label: 'Inside end' },
+        { value: 'right', label: 'Outside right' },
+      ]
+    : [
+        { value: 'top', label: 'Top' },
+        { value: 'bottom', label: 'Bottom' },
+        { value: 'inside', label: 'Inside' },
+        { value: 'center', label: 'Center' },
+        { value: 'outside', label: 'Outside' },
+      ];
+  // Keep the correct chip highlighted when a chart carries a position that
+  // isn't one of the current orientation's buttons (older charts, AI/import, or
+  // a vertical value on a horizontal bar): map it to the button it renders as.
+  const highlightPosition = (pos?: DataLabelPosition): DataLabelPosition | undefined => {
+    if (!isHBar || !pos) return pos;
+    if (pos === 'inside') return 'center';
+    if (pos === 'top' || pos === 'bottom' || pos === 'outside') return 'right';
+    return pos;
+  };
+
   // Resolve effective DataLabelStyle for the currently-edited target,
   // walking override → chart-level → defaults. The editor writes back
   // ONLY the diff against chart-level so per-series rows stay sparse.
   const isAll = target === '__all__';
   const currentStyle: DataLabelStyle = isAll
     ? {
-        position: dlc.position ?? 'top',
+        position: dlc.position ?? defaultPosition,
         rotation: dlc.rotation ?? 0,
         fontSize: dlc.fontSize,
         fontColor: dlc.fontColor,
@@ -2087,18 +2122,18 @@ function DataLabelsEditor({
               Position
             </label>
             <div className="flex flex-wrap gap-1">
-              {(['top', 'bottom', 'inside', 'center', 'outside'] as DataLabelPosition[]).map((p) => (
+              {POSITION_OPTIONS.map((opt) => (
                 <button
-                  key={p}
+                  key={opt.value}
                   type="button"
-                  onClick={() => patchTarget({ position: p })}
+                  onClick={() => patchTarget({ position: opt.value })}
                   className={`px-1.5 py-1 text-[11px] rounded border ${
-                    (currentStyle.position ?? (isAll ? 'top' : undefined)) === p
+                    (highlightPosition(currentStyle.position) ?? (isAll ? defaultPosition : undefined)) === opt.value
                       ? 'bg-brand text-white border-brand'
                       : 'bg-surface-1 border-[rgb(var(--border-line))] hover:bg-surface-2'
                   }`}
                 >
-                  {p}
+                  {opt.label}
                 </button>
               ))}
             </div>

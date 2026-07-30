@@ -661,6 +661,11 @@ function dataLabelFormatter(style?: ChartStyleConfig, seriesKey?: string, series
 function resolveDataLabelStyle(
   style: ChartStyleConfig | undefined,
   seriesKey: string,
+  // Orientation lets the DEFAULT position adapt to the bar direction. On a
+  // HORIZONTAL_BAR the sensible default is `insideEnd` (label inside the bar,
+  // flush to its end — the Power BI look) rather than `top` (which, having no
+  // horizontal meaning, falls through to outside-right and overflows the plot).
+  orientation?: 'vertical' | 'horizontal' | 'point',
 ): (Required<Pick<DataLabelStyle, 'position' | 'rotation' | 'fontSize' | 'fontColor' | 'background' | 'backgroundColor'>> & {
   format?: NumberFormat;
   autoHideOverlap: boolean;
@@ -671,9 +676,19 @@ function resolveDataLabelStyle(
   if (!enabled) return null;
 
   const override = dlc?.overrides?.[seriesKey];
-  const legacyPosition = (style?.dataLabelPosition as DataLabelPosition | undefined);
+  // `dataLabelPosition` is the DEPRECATED legacy field, and DEFAULT_STYLE_CONFIG
+  // seeds it with 'top' on EVERY chart. On a HORIZONTAL bar the legacy vertical
+  // positions (top/bottom) are meaningless, so that vestigial 'top' must NOT
+  // pre-empt the horizontal default — otherwise every horizontal bar sticks to
+  // the outside-right default and neither the new insideEnd default nor the
+  // config picker's highlight ever takes effect.
+  const legacyRaw = (style?.dataLabelPosition as DataLabelPosition | undefined);
+  const legacyPosition = (orientation === 'horizontal' && (legacyRaw === undefined || legacyRaw === 'top' || legacyRaw === 'bottom'))
+    ? undefined
+    : legacyRaw;
+  const orientationDefault: DataLabelPosition = orientation === 'horizontal' ? 'insideEnd' : 'top';
   return {
-    position: (override?.position ?? dlc?.position ?? legacyPosition ?? 'top') as DataLabelPosition,
+    position: (override?.position ?? dlc?.position ?? legacyPosition ?? orientationDefault) as DataLabelPosition,
     rotation: (override?.rotation ?? dlc?.rotation ?? 0) as DataLabelRotation,
     fontSize: override?.fontSize ?? dlc?.fontSize ?? (style?.fontSize ?? 11),
     fontColor: override?.fontColor ?? dlc?.fontColor ?? 'currentColor',
@@ -916,7 +931,14 @@ function buildDataLabelContent(opts: {
         case 'left':       cx = x - 4; textAnchor = 'end'; break;
         case 'inside':
         case 'center':     cx = x + width / 2; textAnchor = 'middle'; break;
-        case 'insideEnd':  cx = x + width - 4; textAnchor = 'end'; break;
+        case 'insideEnd':
+          // Sit inside the bar's end when the label fits; otherwise flip just
+          // outside the end so a short bar's label isn't clipped or spilled over
+          // the category axis. This "auto" fit is what makes insideEnd a safe
+          // default across charts with a wide value range (Power BI parity).
+          if (approxWidth <= width - 8) { cx = x + width - 4; textAnchor = 'end'; }
+          else { cx = x + width + 4; textAnchor = 'start'; }
+          break;
         case 'insideStart':cx = x + 4; textAnchor = 'start'; break;
         case 'right':
         default:           cx = x + width + 4; textAnchor = 'start';
@@ -1920,7 +1942,7 @@ function ExploreChartInner({
         : LABEL_DENSITY_BAR;
     // Dense chart → render no printed label (tooltip still carries the value).
     if (cartesianPointCount > densityLimit) return () => null;
-    const resolved = resolveDataLabelStyle(style, seriesKey);
+    const resolved = resolveDataLabelStyle(style, seriesKey, orientation);
     return buildDataLabelContent({
       resolved,
       seriesKey,
