@@ -500,14 +500,19 @@ function CustomLegend({
  * the number of categories exceeds SCROLL_THRESHOLD. The chart is given
  * sufficient horizontal space so every bar/point has breathing room.
  */
-function wrapScrollable(el: React.ReactNode, count: number): React.ReactNode {
+function wrapScrollable(el: React.ReactNode, count: number, fitToFrame = false): React.ReactNode {
   // BUG-XAXIS-CLIP — the chart is wrapped in a `flex-1 min-h-0` div so that,
   // inside the branch's flex-COLUMN container, it consumes only the height left
   // AFTER the date-drill bar / truncation banner. Previously the chart was a
   // bare `height:100%` ResponsiveContainer sized to the FULL parent height and
   // then pushed down by the drill bar, overflowing the tile's `overflow-hidden`
   // by ~25px and clipping the entire X-axis label band on dashboard tiles.
-  if (count <= SCROLL_THRESHOLD) {
+  // `fitToFrame` = compress everything into the tile's width, never scroll. Used
+  // by LINE / AREA / TIME_SERIES: a line reads fine with points packed tightly
+  // (it's a continuous trend, not discrete bars that each need width), so a
+  // 180-point daily series should sit inside the tile rather than force a
+  // horizontal scroll. Bars keep the scroll path below (each bar needs room).
+  if (fitToFrame || count <= SCROLL_THRESHOLD) {
     return (
       <div className="flex-1 min-h-0">
         <ResponsiveContainer width="100%" height="100%">
@@ -1819,6 +1824,33 @@ function ExploreChartInner({
   // otherwise the saved / ephemeral dateDrillLevel.
   const effectiveDrillLevel = onViewerDrill ? viewerGrain : style.dateDrillLevel;
   const drillActive = Boolean(effectiveDrillLevel);
+  // Only offer grains that make sense for THIS data's time span. Quarter/Year
+  // over a ~6-month range just yields 1-2 near-empty buckets, so gate the coarse
+  // grains on a minimum span. The currently-active grain is never hidden (so the
+  // selection stays visible even if the span later shrinks under the threshold).
+  const dateSpanDays = (() => {
+    const field = normalizedRoleConfig.timeField || xField;
+    if (!hasDateAxis || !field || !Array.isArray(data)) return null;
+    let min = Infinity;
+    let max = -Infinity;
+    for (const row of data) {
+      const raw = (row as any)?.[field];
+      if (raw == null || raw === '') continue;
+      const t = new Date(raw).getTime();
+      if (Number.isFinite(t)) { if (t < min) min = t; if (t > max) max = t; }
+    }
+    if (!Number.isFinite(min) || !Number.isFinite(max)) return null;
+    return (max - min) / 86_400_000;
+  })();
+  const MIN_SPAN_DAYS: Partial<Record<TimeGranularity, number>> = {
+    week: 14, month: 60, quarter: 270, year: 550,
+  };
+  const availableDrillLevels = DRILL_LEVELS.filter((opt) => {
+    if (opt.value === effectiveDrillLevel) return true; // never hide the active grain
+    const min = MIN_SPAN_DAYS[opt.value];
+    if (min == null || dateSpanDays == null) return true; // 'day' always; unknown span → show all
+    return dateSpanDays >= min;
+  });
   const handleDrillChange = (level: TimeGranularity | 'raw') => {
     const next = level === 'raw' ? undefined : level;
     if (onStyleConfigChange) {
@@ -1843,7 +1875,7 @@ function ExploreChartInner({
           <span className="mr-0.5 text-[10px] font-medium text-text-tertiary" title={t('explore.dateDrill.activeHint')}>
             {t('explore.dateDrill.groupByLabel')}
           </span>
-          {DRILL_LEVELS.map((opt) => (
+          {availableDrillLevels.map((opt) => (
             <button
               key={opt.value}
               type="button"
@@ -3325,6 +3357,7 @@ function ExploreChartInner({
               {renderAnnotations()}
             </AreaChart>,
             displayData.length,
+            true, // fit-to-frame: area compresses into the tile, never horizontal-scroll
           ))}
         </div>
       </div>
@@ -3426,6 +3459,7 @@ function ExploreChartInner({
               {renderAnnotations()}
             </LineChart>,
             displayData.length,
+            true, // fit-to-frame: line compresses into the tile, never horizontal-scroll
           ), {
             rightYColor: rightAxisColor,
             rightYLabel: rightAxisLabel,
