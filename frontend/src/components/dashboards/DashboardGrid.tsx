@@ -166,18 +166,16 @@ export function DashboardGrid({
     }),
   );
 
-  // Only persist layout when the user actually finishes dragging or resizing.
-  // react-grid-layout fires `onLayoutChange` for every internal recompute
-  // (initial mount, container resize while DevTools opens, compaction…) —
-  // forwarding those would clobber the saved layout with whatever it was
-  // momentarily reflowed to.
-  const isUserGestureRef = useRef(false);
-
-  const handleLayoutChange = (newLayout: Layout[]) => {
-    if (!isUserGestureRef.current) return;
-    isUserGestureRef.current = false;
-
-    // Match by item ID (not array index) so reordered arrays don't produce false-positives.
+  // Persist the layout ONLY when the user FINISHES a drag/resize, via
+  // react-grid-layout's onDragStop / onResizeStop — both hand us the FINAL,
+  // already-reflowed layout. This matters now that compaction is on: reflow
+  // fires many intermediate `onLayoutChange` events mid-drag, so saving on
+  // those would store a half-way position and the draft would "jump" on reload
+  // (the exact bug seen the last time reorder was enabled). Saving on "stop"
+  // captures only the settled result. Mount-time compaction never fires
+  // stop events, so it's shown but not persisted (public stays as-saved).
+  const persistLayout = (newLayout: Layout[]) => {
+    if (!onLayoutChange) return;
     const oldById = new Map(layouts.map((l) => [l.i, l]));
     const hasChanged = newLayout.some((item) => {
       const oldItem = oldById.get(item.i);
@@ -189,14 +187,7 @@ export function DashboardGrid({
           item.h !== oldItem.h)
       );
     });
-
-    if (hasChanged && onLayoutChange) {
-      onLayoutChange(newLayout);
-    }
-  };
-
-  const markUserGesture = () => {
-    isUserGestureRef.current = true;
+    if (hasChanged) onLayoutChange(newLayout);
   };
 
   if (dashboardCharts.length === 0) {
@@ -224,17 +215,19 @@ export function DashboardGrid({
       cols={12}
       rowHeight={80}
       margin={getDashboardGridMargin(themeConfig)}
-      onLayoutChange={handleLayoutChange}
-      onDragStart={markUserGesture}
-      onResizeStart={markUserGesture}
+      onDragStop={(l) => persistLayout(l)}
+      onResizeStop={(l) => persistLayout(l)}
       draggableHandle=".drag-handle"
       // Never start a drag from an interactive control or the widget's own
       // edit/delete cluster (whole widget bodies are now drag handles).
       draggableCancel=".no-drag, button, select, input, textarea, a"
       isDraggable={!!onLayoutChange}
       isResizable={!!onLayoutChange}
-      compactType={null}
-      preventCollision={true}
+      // Flexible reorder: dragging a tile between others reflows them (make
+      // room) instead of blocking. Vertical compaction keeps a report flowing
+      // top→bottom; the final settled layout is saved on drag/resize STOP.
+      compactType="vertical"
+      preventCollision={false}
     >
       {dashboardCharts.map((dc) => {
         const isWidget = dc.widget_type && dc.widget_type !== 'chart';
