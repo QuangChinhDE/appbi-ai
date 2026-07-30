@@ -12,7 +12,7 @@ import { DashboardFilter } from '@/lib/filters';
 import type { BaseFilter } from '@/lib/filters';
 import { Loader2, LayoutDashboard } from 'lucide-react';
 import { getDashboardGridMargin } from './DashboardThemeProvider';
-import { liftLayoutToTop } from '@/lib/dashboard-pages';
+import { liftLayoutToTop, DASHBOARD_GRID_COLS, dashboardRowHeight } from '@/lib/dashboard-pages';
 import { useExportMode } from '@/lib/export-mode';
 import { useI18n } from '@/providers/LanguageProvider';
 
@@ -157,10 +157,13 @@ export function DashboardGrid({
         i: dc.id.toString(),
         x: layout.x || 0,
         y: layout.y || 0,
-        w: layout.w || 4,
-        h: layout.h || 4,
-        minW: isWidget ? 1 : 2,
-        minH: 1,
+        w: layout.w || 12,
+        h: layout.h || 12,
+        // Finer-grid minimums (36-col / small-row): smaller than the old 2×1 so a
+        // DA can "thu vào bé hơn", while charts keep a legible floor (4 cols ≈ 11%
+        // width, 3 rows) and widgets can go tiny.
+        minW: isWidget ? 2 : 4,
+        minH: isWidget ? 1 : 3,
         resizeHandles: RESIZE_HANDLES,
       };
     }),
@@ -201,13 +204,16 @@ export function DashboardGrid({
     );
   }
 
+  // Finer grid: 36 cols + a row height coupled to the theme gap so ×3-migrated
+  // tiles keep their exact pixel size (see dashboardRowHeight). Margin unchanged.
+  const gridMargin = getDashboardGridMargin(themeConfig);
   return (
     <FixedGridLayout
       className="layout"
       layout={layouts}
-      cols={12}
-      rowHeight={80}
-      margin={getDashboardGridMargin(themeConfig)}
+      cols={DASHBOARD_GRID_COLS}
+      rowHeight={dashboardRowHeight(gridMargin[1])}
+      margin={gridMargin}
       onDragStop={(l) => persistLayout(l)}
       onResizeStop={(l) => persistLayout(l)}
       draggableHandle=".drag-handle"

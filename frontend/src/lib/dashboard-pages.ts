@@ -76,7 +76,76 @@ export function ensureDashboardPageId(
   return normalizedPages[0].id;
 }
 
-export const DASHBOARD_GRID_COLS = 12;
+// Finer grid (2026-07): the builder grid went 12→36 columns and the row unit
+// went 80px→(80-2·gap)/3 so a DA gets ~3× more resize/move stops ("thu vào bé
+// hơn, giãn nhiều nấc hơn"). Every persisted layout was migrated ×3 (see the
+// Alembic revision) so existing dashboards render pixel-IDENTICAL — RGL's column
+// width shrinks proportionally with `cols`, and the ×3 row-height formula below
+// keeps tile heights exact incl. the inter-tile margin. `GRID_FINER` = the scale.
+export const GRID_FINER = 3;
+export const DASHBOARD_GRID_COLS = 12 * GRID_FINER; // 36
+/** Logical row pitch of the OLD 80px grid — the reference the finer grid keeps. */
+export const DASHBOARD_ROW_BASE = 80;
+/**
+ * Finer grid row height that keeps a ×3-migrated tile's pixel height EXACT.
+ * Derivation: a tile of old height h (px = h·80 + (h-1)·gap) becomes h·3 finer
+ * rows; requiring 3h·R + (3h-1)·gap === h·80 + (h-1)·gap for all h gives
+ * R = (80 − 2·gap)/3. So it necessarily couples to the theme's grid gap.
+ */
+export function dashboardRowHeight(gridGap: number): number {
+  return Math.max(4, (DASHBOARD_ROW_BASE - 2 * (Number(gridGap) || 0)) / GRID_FINER);
+}
+
+// ── Legacy-grid upscale (lazy, no data migration) ───────────────────────────
+// Existing dashboards store layouts in the OLD 12-col grid. Rather than bulk-
+// rewrite persisted data (which would also touch pending drafts + teammates'
+// WIP), each tile self-describes its grid version via `layout.gv`; a tile with
+// gv < GRID_VERSION is scaled ×GRID_FINER at READ time so it renders on the
+// finer 36-col grid identically to before. Canvas px coords (xPx/yPx/wPx/hPx/z)
+// are grid-resolution-independent → never scaled. Idempotent: an already-finer
+// tile (gv === GRID_VERSION) is returned untouched. On save the FE writes finer
+// coords tagged gv=GRID_VERSION, so a tile upgrades the first time it's edited.
+export const GRID_VERSION = 2;
+export function scaleGridLayoutForRender<T extends Record<string, any> | null | undefined>(layout: T): T {
+  if (!layout || (layout as any).gv >= GRID_VERSION) return layout;
+  const s = GRID_FINER;
+  const sc = (v: any) => (typeof v === 'number' && Number.isFinite(v) ? v * s : v);
+  return {
+    ...(layout as any),
+    x: sc((layout as any).x),
+    y: sc((layout as any).y),
+    w: sc((layout as any).w),
+    h: sc((layout as any).h),
+    minW: sc((layout as any).minW),
+    maxW: sc((layout as any).maxW),
+    minH: sc((layout as any).minH),
+    maxH: sc((layout as any).maxH),
+    gv: GRID_VERSION,
+  } as T;
+}
+
+/**
+ * Upscale every legacy tile in a dashboard for render (charts + the per-chart BE
+ * draft-layout overlay). Pure/idempotent — call it right where the dashboard is
+ * consumed so the whole downstream render pipeline sees finer-grid coords.
+ */
+export function normalizeDashboardGridForRender<
+  D extends { dashboard_charts?: any[]; draft_layouts?: Record<string, any> | null },
+>(dash: D | null | undefined): D | null | undefined {
+  if (!dash) return dash;
+  const dashboard_charts = Array.isArray(dash.dashboard_charts)
+    ? dash.dashboard_charts.map((dc) =>
+        dc && dc.layout ? { ...dc, layout: scaleGridLayoutForRender(dc.layout) } : dc,
+      )
+    : dash.dashboard_charts;
+  let draft_layouts = dash.draft_layouts;
+  if (draft_layouts && typeof draft_layouts === 'object') {
+    draft_layouts = Object.fromEntries(
+      Object.entries(draft_layouts).map(([k, v]) => [k, scaleGridLayoutForRender(v as any)]),
+    ) as any;
+  }
+  return { ...dash, dashboard_charts, draft_layouts };
+}
 
 type GridRect = { x: number; y: number; w: number; h: number };
 
@@ -173,34 +242,33 @@ export function packNewGridTiles(
  */
 export function defaultSizeForChartType(chartType: string | null | undefined): { w: number; h: number } {
   const t = String(chartType || '').toLowerCase();
-  // KPI reference cards: 3 per row on the 12-col grid, wide enough for long
-  // values plus benchmark/delta without forcing the typography to shrink hard.
-  if (t === 'kpi' || t === 'card') return { w: 4, h: 3 };
-  if (t === 'podium') return { w: 6, h: 4 };
-  // Single-number-ish gauges / bullets — narrow, modest height.
-  if (t === 'gauge' || t === 'bullet') return { w: 3, h: 4 };
-  // Detail grids — wide and tall (many rows).
-  if (t === 'table' || t === 'matrix') return { w: 6, h: 8 };
-  // Part-to-whole / compact categorical — medium square.
-  if (t === 'pie' || t === 'donut' || t === 'polar_area' || t === 'funnel' || t === 'word_cloud' || t === 'radar') {
-    return { w: 4, h: 5 };
-  }
-  // Spatial / relationship charts that need breathing room.
-  if (
-    t === 'map_point' || t === 'map_region' || t === 'sankey' || t === 'sunburst'
-    || t === 'treemap' || t === 'heatmap' || t === 'scatter' || t === 'bubble' || t === 'boxplot'
-  ) {
-    return { w: 6, h: 6 };
-  }
-  // Time-series / comparison charts — wide, medium height.
-  if (
-    t === 'bar' || t === 'horizontal_bar' || t === 'line' || t === 'area' || t === 'time_series'
-    || t === 'stacked_bar' || t === 'grouped_bar' || t === 'bar_line' || t === 'waterfall'
-    || t === 'ribbon' || t === 'timeline'
-  ) {
-    return { w: 6, h: 5 };
-  }
-  return { w: 4, h: 4 };
+  // Sizes are authored in the OLD 12-col / 80px-row units (so this table stays
+  // readable) and scaled to the finer grid by GRID_FINER at the end — a KPI is
+  // still "3 per row", a table still wide+tall, spatial charts still roomy.
+  const base = ((): { w: number; h: number } => {
+    if (t === 'kpi' || t === 'card') return { w: 4, h: 3 };
+    if (t === 'podium') return { w: 6, h: 4 };
+    if (t === 'gauge' || t === 'bullet') return { w: 3, h: 4 };
+    if (t === 'table' || t === 'matrix') return { w: 6, h: 8 };
+    if (t === 'pie' || t === 'donut' || t === 'polar_area' || t === 'funnel' || t === 'word_cloud' || t === 'radar') {
+      return { w: 4, h: 5 };
+    }
+    if (
+      t === 'map_point' || t === 'map_region' || t === 'sankey' || t === 'sunburst'
+      || t === 'treemap' || t === 'heatmap' || t === 'scatter' || t === 'bubble' || t === 'boxplot'
+    ) {
+      return { w: 6, h: 6 };
+    }
+    if (
+      t === 'bar' || t === 'horizontal_bar' || t === 'line' || t === 'area' || t === 'time_series'
+      || t === 'stacked_bar' || t === 'grouped_bar' || t === 'bar_line' || t === 'waterfall'
+      || t === 'ribbon' || t === 'timeline'
+    ) {
+      return { w: 6, h: 5 };
+    }
+    return { w: 4, h: 4 };
+  })();
+  return { w: base.w * GRID_FINER, h: base.h * GRID_FINER };
 }
 
 /**
@@ -254,10 +322,13 @@ export const REPORT_STACK_BREAKPOINT = 640;
  */
 export function computeReportRowHeight(
   containerWidth: number | null | undefined,
-  opts?: { base?: number; stackRow?: number },
+  gridGap: number = 16,
 ): number {
-  const base = opts?.base ?? 80;              // MUST match the builder (DashboardGrid rowHeight)
-  const stackRow = opts?.stackRow ?? 72;
+  // Finer-grid row height — MUST match the builder (DashboardGrid rowHeight) so
+  // the published report is pixel-identical. Couples to the theme's grid gap
+  // (see dashboardRowHeight). A slightly tighter row below the stack breakpoint.
+  const base = dashboardRowHeight(gridGap);
+  const stackRow = Math.max(4, (72 - 2 * (Number(gridGap) || 0)) / GRID_FINER);
   if (!containerWidth || !Number.isFinite(containerWidth) || containerWidth <= 0) return base;
   return containerWidth < REPORT_STACK_BREAKPOINT ? stackRow : base;
 }

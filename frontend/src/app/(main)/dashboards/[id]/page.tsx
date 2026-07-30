@@ -67,6 +67,8 @@ import {
   getDashboardChartsForPage,
   normalizeDashboardPages,
   tidyPageLayout,
+  normalizeDashboardGridForRender,
+  GRID_VERSION,
 } from '@/lib/dashboard-pages';
 import {
   ensureCanvasLayout,
@@ -291,7 +293,16 @@ export default function DashboardDetailPage() {
   const distinctValuesRef = React.useRef<Map<string, Set<string>>>(new Map());
   const [distinctValues, setDistinctValues] = useState<Record<string, string[]>>({});
 
-  const { data: serverDashboard, isLoading: isLoadingDashboard } = useDashboard(dashboardId);
+  const { data: rawServerDashboard, isLoading: isLoadingDashboard } = useDashboard(dashboardId);
+  // Finer-grid lazy upscale: legacy (12-col) tiles + BE draft layouts are scaled
+  // ×3 for render here at the source, so the ENTIRE downstream pipeline (overlay
+  // memo, resolveDashboardChartLayout, DashboardGrid, save baselines) sees finer
+  // 36-col coords consistently. No persisted data is mutated (see
+  // scaleGridLayoutForRender); edited tiles save back tagged gv=GRID_VERSION.
+  const serverDashboard = React.useMemo(
+    () => normalizeDashboardGridForRender(rawServerDashboard),
+    [rawServerDashboard],
+  );
 
   // Phase-15.66 — local layout overrides (no auto-save). Drag/resize
   // only updates this map; explicit Save buttons flush to BE.
@@ -1197,15 +1208,18 @@ export default function DashboardDetailPage() {
         // default to a slim band (1 grid row) instead of a 2-row box that leaves
         // a big empty gap under the text. The DA can still stretch it for a
         // multi-line note.
-        text: { w: 4, h: 1, wPx: 360, hPx: 64 },
-        countdown: { w: 4, h: 3, wPx: 360, hPx: 200 },
-        image: { w: 4, h: 4, wPx: 360, hPx: 240 },
-        shape: { w: 4, h: 1, wPx: 360, hPx: 80 },
-        parameter_switcher: { w: 4, h: 2, wPx: 360, hPx: 120 },
-        // Section header + hero span wide (they head a row); callout is a small note.
-        section_header: { w: 12, h: 1, wPx: 1080, hPx: 56 },
-        hero_strip: { w: 12, h: 2, wPx: 1080, hPx: 120 },
-        callout: { w: 4, h: 2, wPx: 360, hPx: 110 },
+        // Grid w/h are in the finer 36-col grid (×3 of the old 12-col sizes so a
+        // widget keeps the same default footprint); wPx/hPx are canvas pixels
+        // (unchanged — independent of grid resolution).
+        text: { w: 12, h: 3, wPx: 360, hPx: 64 },
+        countdown: { w: 12, h: 9, wPx: 360, hPx: 200 },
+        image: { w: 12, h: 12, wPx: 360, hPx: 240 },
+        shape: { w: 12, h: 3, wPx: 360, hPx: 80 },
+        parameter_switcher: { w: 12, h: 6, wPx: 360, hPx: 120 },
+        // Section header + hero span full width (36); callout is a small note.
+        section_header: { w: 36, h: 3, wPx: 1080, hPx: 56 },
+        hero_strip: { w: 36, h: 6, wPx: 1080, hPx: 120 },
+        callout: { w: 12, h: 6, wPx: 360, hPx: 110 },
       };
       const size = sizeByType[widgetType];
 
@@ -1262,6 +1276,7 @@ export default function DashboardDetailPage() {
             hPx: size.hPx,
             z,
             pageId: activePageId ?? undefined,
+            gv: GRID_VERSION, // sizeByType is already finer (36-col) — mark so it's not re-scaled on read
           } as any,
           defaults[widgetType],
         );
@@ -1362,6 +1377,7 @@ export default function DashboardDetailPage() {
         layout: {
           ...layout,
           pageId: activePageId,
+          gv: GRID_VERSION, // AddChartModal packs on the finer 36-col grid — tag so read doesn't re-scale
         },
         parameters,
       });

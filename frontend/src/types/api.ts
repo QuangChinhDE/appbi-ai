@@ -589,6 +589,9 @@ export interface DashboardChartLayout {
   wPx?: number;
   hPx?: number;
   z?: number;
+  /** Grid version: tiles at the finer (36-col) grid are tagged GRID_VERSION;
+   *  legacy (12-col) tiles have it absent and are scaled ×3 for render. */
+  gv?: number;
 }
 
 export interface DashboardPageConfig {

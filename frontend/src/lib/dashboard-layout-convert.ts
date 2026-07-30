@@ -11,9 +11,11 @@
 
 import type { DashboardChartLayout } from '@/types/api';
 
-const GRID_COLS = 12;
-const GRID_ROW_HEIGHT = 80;
+// Finer grid (36 cols). Row height derived so a ×3-migrated tile converts to the
+// SAME canvas pixels as the old 12-col/80px grid: (80 − 2·margin)/3 = 16 here.
 const GRID_MARGIN = 16;
+const GRID_COLS = 36;
+const GRID_ROW_HEIGHT = (80 - 2 * GRID_MARGIN) / 3; // 16
 
 export type CanvasLayoutPatch = {
   xPx: number;

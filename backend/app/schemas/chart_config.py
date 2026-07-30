@@ -252,7 +252,7 @@ class DashboardChartLayout(BaseModel):
     i: Optional[str] = Field(None, description="Unique identifier (chart ID as string)")
     x: int = Field(..., ge=0, description="X position in grid (columns)")
     y: int = Field(..., ge=0, description="Y position in grid (rows)")
-    w: int = Field(..., ge=1, le=12, description="Width in grid columns (1-12)")
+    w: int = Field(..., ge=1, le=36, description="Width in grid columns (1-36; finer grid)")
     h: int = Field(..., ge=1, description="Height in grid rows")
 
     # Optional properties
