@@ -223,18 +223,24 @@ export function DashboardGrid({
       draggableCancel=".no-drag, button, select, input, textarea, a"
       isDraggable={!!onLayoutChange}
       isResizable={!!onLayoutChange}
-      // Free-form placement, matching the PUBLIC/read-only view (which is
-      // compactType=null) so the builder is WYSIWYG: a DA may leave an
-      // intentional empty gap between charts and it is preserved (no auto
-      // pull-up). `preventCollision=false` still gives flexible REORDER —
-      // dragging a tile between/onto others pushes them out of the way to make
-      // room instead of blocking the drop. (compactType='vertical' used briefly
-      // for reorder, but it forbade gaps AND diverged from the public view — the
-      // reorder benefit comes from preventCollision=false, not the compaction.)
-      // The settled layout is saved on drag/resize STOP, so no mid-drag jump.
-      // Users who WANT a packed grid have the explicit "Tidy layout" action.
+      // Free-form placement, matching the PUBLIC/read-only view (compactType=null)
+      // so the builder is WYSIWYG: a DA may leave an intentional empty gap between
+      // charts and it is preserved (no auto pull-up). This is the grid's ORIGINAL
+      // behaviour.
+      //
+      // preventCollision=TRUE on purpose. DO NOT flip it to chase "push-to-insert":
+      // with compactType=null a collision-push CASCADES downward with no
+      // re-compaction, which SCATTERS the whole report on a single drag (verified —
+      // one drag flung tiles to rows 5/7/12/…). And compactType="vertical" gives
+      // clean push-insert but FORBIDS gaps (and diverges from the public view).
+      // react-grid-layout cannot do "auto-spread on insert" AND "preserve gaps" at
+      // once — gaps win (explicit product decision), so a collision BLOCKS (the
+      // dragged tile holds its last valid spot) instead of scattering. To place a
+      // tile between two others, drop it into the gap / empty space; the explicit
+      // "Tidy layout" action packs the grid when a DA wants that. Save-on-
+      // drag/resize-STOP keeps the layout from jumping mid-drag regardless.
       compactType={null}
-      preventCollision={false}
+      preventCollision={true}
     >
       {dashboardCharts.map((dc) => {
         const isWidget = dc.widget_type && dc.widget_type !== 'chart';
