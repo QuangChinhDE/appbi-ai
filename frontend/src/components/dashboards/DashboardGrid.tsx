@@ -167,6 +167,9 @@ export function DashboardGrid({
       // width, 3 rows) and widgets can go tiny.
       minW: isWidget ? 2 : 4,
       minH: isWidget ? 1 : 3,
+      // Locked tile → react-grid-layout `static`: not draggable, not resizable,
+      // and never displaced by a neighbour. Prevents accidental nudges.
+      static: Boolean(layout.locked),
       resizeHandles: RESIZE_HANDLES,
     };
   });

@@ -592,6 +592,9 @@ export interface DashboardChartLayout {
   /** Grid version: tiles at the finer (36-col) grid are tagged GRID_VERSION;
    *  legacy (12-col) tiles have it absent and are scaled ×3 for render. */
   gv?: number;
+  /** Position lock: when true the grid renders this tile `static` — it can't be
+   *  dragged, resized, or displaced by a neighbour. */
+  locked?: boolean;
 }
 
 export interface DashboardPageConfig {

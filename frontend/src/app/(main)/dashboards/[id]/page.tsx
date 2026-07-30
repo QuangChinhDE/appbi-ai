@@ -21,7 +21,7 @@ import { DashboardGrid } from '@/components/dashboards/DashboardGrid';
 import { DashboardThemeProvider } from '@/components/dashboards/DashboardThemeProvider';
 import { DashboardThemeModal } from '@/components/dashboards/DashboardThemeModal';
 import { DashboardCanvas } from '@/components/dashboards/DashboardCanvas';
-import { Palette, Move, Undo2, Redo2 } from 'lucide-react';
+import { Palette, Move, Undo2, Redo2, ArrowUpToLine } from 'lucide-react';
 import { ChartTile } from '@/components/dashboards/ChartTile';
 import { WidgetEditModal } from '@/components/dashboards/WidgetEditModal';
 import { ParameterBindModal } from '@/components/dashboards/ParameterBindModal';
@@ -1001,6 +1001,38 @@ export default function DashboardDetailPage() {
     pushUndo({ kind: 'layout', prev: prevOverrides, next: merged });
     setLocalLayoutOverrides(merged);
     toast.success(t('dashboards.detail.tidyDone'));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dashboard, activePageId, resolveDashboardChartLayout, t]);
+
+  // Explicit "Dồn lên trên" — the ON-DEMAND replacement for the auto-lift that was
+  // removed from render (P0). Unlike Tidy (which re-flows tiles into clean rows),
+  // this ONLY removes the empty band above the topmost tile, preserving the DA's
+  // horizontal arrangement. Same local-override → Save-draft path (staged, undoable).
+  const handleCompactUp = useCallback(() => {
+    if (!dashboard) return;
+    const pageCharts = getDashboardChartsForPage(dashboard.dashboard_charts, activePageId);
+    if (pageCharts.length === 0) return;
+    const tiles = pageCharts.map((dc) => ({
+      id: dc.id,
+      x: Number(dc.layout?.x) || 0,
+      y: Number(dc.layout?.y) || 0,
+      w: Number(dc.layout?.w) || 4,
+      h: Number(dc.layout?.h) || 4,
+    }));
+    const minY = Math.min(...tiles.map((tl) => tl.y));
+    if (!Number.isFinite(minY) || minY <= 0) {
+      toast.info(t('dashboards.detail.compactUpNoop'));
+      return;
+    }
+    const next: Record<number, Record<string, any>> = {};
+    for (const tl of tiles) {
+      next[tl.id] = mergeGridLayout(resolveDashboardChartLayout(tl.id), { x: tl.x, y: tl.y - minY, w: tl.w, h: tl.h });
+    }
+    const prevOverrides = localLayoutOverridesRef.current;
+    const merged = { ...prevOverrides, ...next };
+    pushUndo({ kind: 'layout', prev: prevOverrides, next: merged });
+    setLocalLayoutOverrides(merged);
+    toast.success(t('dashboards.detail.compactUpDone'));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dashboard, activePageId, resolveDashboardChartLayout, t]);
 
@@ -2929,17 +2961,33 @@ export default function DashboardDetailPage() {
 
                           <div className="mx-3 my-1 border-t border-[rgba(255,255,255,0.06)]" />
 
+                          {/* Canvas is LOCKED for now — Grid (tiled) is the standard editor.
+                              "Switch to Canvas" is disabled so nobody starts a canvas layout
+                              the public report can't yet render WYSIWYG. "Switch to Grid" stays
+                              enabled so any dashboard already in canvas can move back to Grid. */}
                           <button
                             onClick={() => { handleToggleLayoutMode(); setIsMoreMenuOpen(false); }}
-                            className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] hover:text-text-primary"
-                            title={(dashboard?.layout_mode ?? 'grid') === 'grid' ? t('dashboards.detail.switchToCanvasMode') : t('dashboards.detail.switchToGridMode')}
+                            disabled={(dashboard?.layout_mode ?? 'grid') === 'grid'}
+                            className={`flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] transition-colors ${
+                              (dashboard?.layout_mode ?? 'grid') === 'grid'
+                                ? 'cursor-not-allowed text-text-quaternary opacity-60'
+                                : 'text-text-secondary hover:bg-[rgba(255,255,255,0.04)] hover:text-text-primary'
+                            }`}
+                            title={(dashboard?.layout_mode ?? 'grid') === 'grid' ? t('dashboards.detail.canvasLocked') : t('dashboards.detail.switchToGridMode')}
                           >
                             {(dashboard?.layout_mode ?? 'grid') === 'grid' ? (
                               <Move className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
                             ) : (
                               <LayoutGrid className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
                             )}
-                            {(dashboard?.layout_mode ?? 'grid') === 'grid' ? t('dashboards.detail.switchToCanvas') : t('dashboards.detail.switchToGrid')}
+                            <span className="flex-1 text-left">
+                              {(dashboard?.layout_mode ?? 'grid') === 'grid' ? t('dashboards.detail.switchToCanvas') : t('dashboards.detail.switchToGrid')}
+                            </span>
+                            {(dashboard?.layout_mode ?? 'grid') === 'grid' && (
+                              <span className="rounded bg-[rgba(255,255,255,0.06)] px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-text-quaternary">
+                                {t('dashboards.detail.canvasOffBadge')}
+                              </span>
+                            )}
                           </button>
 
                           {(dashboard?.layout_mode ?? 'grid') === 'grid' && (
@@ -2950,6 +2998,17 @@ export default function DashboardDetailPage() {
                             >
                               <LayoutGrid className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
                               {t('dashboards.detail.tidyLayout')}
+                            </button>
+                          )}
+
+                          {(dashboard?.layout_mode ?? 'grid') === 'grid' && (
+                            <button
+                              onClick={() => { handleCompactUp(); setIsMoreMenuOpen(false); }}
+                              className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] hover:text-text-primary"
+                              title={t('dashboards.detail.compactUpTooltip')}
+                            >
+                              <ArrowUpToLine className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
+                              {t('dashboards.detail.compactUp')}
                             </button>
                           )}
 
