@@ -1028,6 +1028,8 @@ function ChartTileBase({
          overflow-hidden (so the chart never spills), and tile content is inset
          by p-3 so it won't poke the rounded corners — only the menu escapes. */
       className={`dashboard-tile bi-card-hover relative group flex h-full flex-col rounded-lg p-3 ${
+        canEdit ? 'drag-handle cursor-move' : ''
+      } ${
         transparentTile ? '' : 'border bg-surface-1'
       } ${
         isCrossFilterSource || isHighlightSource
@@ -1444,7 +1446,12 @@ function ChartTileBase({
           chart is wired for cross-filter, so users discover the click-to-
           filter affordance instead of having to read docs. */}
       <div
-        className={`relative flex-1 min-h-0 overflow-hidden ${
+        /* `no-drag` (react-grid-layout draggableCancel): the whole card is a
+           drag-handle now (easy to grab — the old 24px header strip was too
+           fiddly), but a press that STARTS on the live chart body must not begin
+           a tile-drag, so click-to-cross-filter / click-a-mark stays intact.
+           Grab the header, padding frame, or title to move the tile. */
+        className={`no-drag relative flex-1 min-h-0 overflow-hidden ${
           onSelectCrossFilter && chartSemanticBinding?.datasetId != null
             ? 'cursor-crosshair'
             : ''
