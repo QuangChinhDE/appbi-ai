@@ -223,10 +223,17 @@ export function DashboardGrid({
       draggableCancel=".no-drag, button, select, input, textarea, a"
       isDraggable={!!onLayoutChange}
       isResizable={!!onLayoutChange}
-      // Flexible reorder: dragging a tile between others reflows them (make
-      // room) instead of blocking. Vertical compaction keeps a report flowing
-      // top→bottom; the final settled layout is saved on drag/resize STOP.
-      compactType="vertical"
+      // Free-form placement, matching the PUBLIC/read-only view (which is
+      // compactType=null) so the builder is WYSIWYG: a DA may leave an
+      // intentional empty gap between charts and it is preserved (no auto
+      // pull-up). `preventCollision=false` still gives flexible REORDER —
+      // dragging a tile between/onto others pushes them out of the way to make
+      // room instead of blocking the drop. (compactType='vertical' used briefly
+      // for reorder, but it forbade gaps AND diverged from the public view — the
+      // reorder benefit comes from preventCollision=false, not the compaction.)
+      // The settled layout is saved on drag/resize STOP, so no mid-drag jump.
+      // Users who WANT a packed grid have the explicit "Tidy layout" action.
+      compactType={null}
       preventCollision={false}
     >
       {dashboardCharts.map((dc) => {
