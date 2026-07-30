@@ -296,6 +296,15 @@
     animation: none !important;
   }
 
+  /* Builder edit mode (`rgl-no-anim` added to the grid by DashboardGrid when
+   * editable): kill the library's 200ms position transition on EVERY tile — not
+   * only the one being dragged — so when a gesture settles no SIBLING tile slides
+   * or animates to a new position. Prioritises pixel accuracy / cursor fidelity
+   * in the builder. The public report (no `rgl-no-anim`) keeps the transition. */
+  .rgl-no-anim .react-grid-item {
+    transition: none !important;
+  }
+
   /* Drag handle becomes visible on card hover with a gentle grip pattern.
    * Pattern: 6 dots in a 2×3 grid, low contrast unless the card is hovered. */
   .bi-drag-grip {
@@ -1100,4 +1109,179 @@
   [data-pdf-root] { padding: 0 !important; }
   /* Chromium draws its own running header/footer from the worker's templates. */
   [data-pdf-hide-on-print] { display: none !important; }
+}
+
+/* ══ Dashboard design system — token-driven surfaces ═══════════════════════
+ *
+ * Everything below is driven by the data attributes + CSS variables that
+ * DashboardThemeProvider puts on ONE wrapper (see lib/dashboard-theme-tokens).
+ * Styling here rather than inside each component is what makes the theme cover
+ * tables, slicers and widgets without every component growing theming code —
+ * and it means the builder, the public report and the printed PDF are styled by
+ * the same rules, so they cannot drift apart.
+ *
+ * Nothing here applies unless a theme sets the attribute, so an untouched
+ * dashboard renders exactly as before.
+ */
+
+/* ── Card treatments ──────────────────────────────────────────────────────── */
+[data-dashboard-cardtreatment] .dashboard-tile {
+  box-shadow: var(--dash-card-shadow, none);
+  backdrop-filter: var(--dash-card-blur, none);
+  -webkit-backdrop-filter: var(--dash-card-blur, none);
+}
+/* The accent bar + tint are BACKGROUND layers (not ::before) so they are clipped
+   by the card's border-radius and hug rounded corners exactly. */
+[data-dashboard-accentbar="top"] .dashboard-tile {
+  background-image:
+    linear-gradient(90deg, var(--dashboard-accent, #5b5bd6), color-mix(in srgb, var(--dashboard-accent, #5b5bd6) 55%, #ffffff)),
+    linear-gradient(180deg, color-mix(in srgb, var(--dashboard-accent, #5b5bd6) var(--dash-card-tint, 0%), transparent), transparent 82px);
+  background-size: 100% var(--dash-accent-size, 0px), 100% 100%;
+  background-position: top, top;
+  background-repeat: no-repeat;
+}
+[data-dashboard-accentbar="bottom"] .dashboard-tile {
+  background-image:
+    linear-gradient(90deg, var(--dashboard-accent, #5b5bd6), color-mix(in srgb, var(--dashboard-accent, #5b5bd6) 55%, #ffffff)),
+    linear-gradient(0deg, color-mix(in srgb, var(--dashboard-accent, #5b5bd6) var(--dash-card-tint, 0%), transparent), transparent 82px);
+  background-size: 100% var(--dash-accent-size, 0px), 100% 100%;
+  background-position: bottom, bottom;
+  background-repeat: no-repeat;
+}
+[data-dashboard-accentbar="left"] .dashboard-tile {
+  background-image:
+    linear-gradient(180deg, var(--dashboard-accent, #5b5bd6), color-mix(in srgb, var(--dashboard-accent, #5b5bd6) 55%, #ffffff)),
+    linear-gradient(90deg, color-mix(in srgb, var(--dashboard-accent, #5b5bd6) var(--dash-card-tint, 0%), transparent), transparent 120px);
+  background-size: var(--dash-accent-size, 0px) 100%, 100% 100%;
+  background-position: left, left;
+  background-repeat: no-repeat;
+}
+[data-dashboard-accentbar="right"] .dashboard-tile {
+  background-image:
+    linear-gradient(180deg, var(--dashboard-accent, #5b5bd6), color-mix(in srgb, var(--dashboard-accent, #5b5bd6) 55%, #ffffff)),
+    linear-gradient(270deg, color-mix(in srgb, var(--dashboard-accent, #5b5bd6) var(--dash-card-tint, 0%), transparent), transparent 120px);
+  background-size: var(--dash-accent-size, 0px) 100%, 100% 100%;
+  background-position: right, right;
+  background-repeat: no-repeat;
+}
+[data-dashboard-accentbar="none"] .dashboard-tile {
+  background-image: linear-gradient(180deg, color-mix(in srgb, var(--dashboard-accent, #5b5bd6) var(--dash-card-tint, 0%), transparent), transparent 82px);
+  background-repeat: no-repeat;
+}
+[data-dashboard-cardtreatment="outline"] .dashboard-tile {
+  border-width: 1.5px;
+  border-color: color-mix(in srgb, var(--dashboard-accent, #5b5bd6) 32%, rgb(var(--border-line)));
+}
+[data-dashboard-cardtreatment="frameless"] .dashboard-tile {
+  border-color: transparent;
+  background-color: transparent;
+}
+[data-dashboard-cardtreatment="glass"] .dashboard-tile {
+  background-color: color-mix(in srgb, rgb(var(--surface-1)) calc(var(--dash-card-opacity, 1) * 100%), transparent);
+}
+
+/* ── Typography roles ─────────────────────────────────────────────────────── */
+[data-dashboard-cardtreatment] [data-pdf-tile-title],
+[data-dashboard-cardtreatment] .dashboard-tile-title {
+  font-size: var(--dash-font-chartTitle, inherit);
+  font-weight: var(--dash-weight-chartTitle, 600);
+}
+[data-dashboard-cardtreatment] .dashboard-section-title {
+  font-size: var(--dash-font-sectionTitle, inherit);
+  font-weight: var(--dash-weight-sectionTitle, 600);
+}
+[data-dashboard-cardtreatment] .dashboard-kpi-label {
+  font-size: var(--dash-font-kpiLabel, inherit);
+  font-weight: var(--dash-weight-kpiLabel, 500);
+}
+
+/* ── Table / Matrix ───────────────────────────────────────────────────────── */
+[data-dashboard-tablestyle] .dashboard-tile table thead th {
+  font-size: var(--dash-font-tableHeader, inherit);
+  font-weight: var(--dash-weight-tableHeader, 600);
+}
+[data-dashboard-tablestyle] .dashboard-tile table tbody td {
+  font-size: var(--dash-font-tableBody, inherit);
+}
+[data-dashboard-tablestyle="zebra"] .dashboard-tile table tbody tr:nth-child(even) td {
+  background-color: color-mix(in srgb, rgb(var(--surface-2)) 60%, transparent);
+}
+[data-dashboard-tablestyle="compact"] .dashboard-tile table tbody td,
+[data-dashboard-tablestyle="compact"] .dashboard-tile table thead th {
+  padding-top: 3px;
+  padding-bottom: 3px;
+  line-height: 1.25;
+}
+/* Financial: numbers line up on the decimal and the total row reads as a total. */
+[data-dashboard-tablestyle="financial"] .dashboard-tile table tbody td {
+  font-variant-numeric: tabular-nums;
+}
+[data-dashboard-tablestyle="financial"] .dashboard-tile table tbody tr:last-child td {
+  border-top: 1.5px solid color-mix(in srgb, var(--dashboard-accent, #5b5bd6) 40%, rgb(var(--border-line)));
+  font-weight: 600;
+}
+[data-dashboard-tablestyle="executive"] .dashboard-tile table thead th {
+  background-color: color-mix(in srgb, var(--dashboard-accent, #5b5bd6) 10%, transparent);
+  color: rgb(var(--text-primary));
+  border-bottom: 1.5px solid color-mix(in srgb, var(--dashboard-accent, #5b5bd6) 45%, transparent);
+  text-transform: uppercase;
+  letter-spacing: .04em;
+}
+[data-dashboard-tablestyle="executive"] .dashboard-tile table tbody tr:hover td {
+  background-color: color-mix(in srgb, var(--dashboard-accent, #5b5bd6) 6%, transparent);
+}
+
+/* ── Slicers / filters ────────────────────────────────────────────────────── */
+[data-dashboard-slicerstyle] .dashboard-slicer {
+  font-size: var(--dash-font-filterLabel, inherit);
+}
+[data-dashboard-slicerstyle="pill"] .dashboard-slicer,
+[data-dashboard-slicerstyle="pill"] .dashboard-slicer > * {
+  border-radius: 999px;
+}
+[data-dashboard-slicerstyle="card"] .dashboard-slicer {
+  border-radius: var(--dashboard-card-radius, 12px);
+  box-shadow: var(--dash-card-shadow, none);
+  background-color: rgb(var(--surface-1));
+}
+[data-dashboard-slicerstyle="glass"] .dashboard-slicer {
+  backdrop-filter: blur(12px) saturate(1.2);
+  -webkit-backdrop-filter: blur(12px) saturate(1.2);
+  background-color: color-mix(in srgb, rgb(var(--surface-1)) 80%, transparent);
+}
+[data-dashboard-slicerstyle="minimal"] .dashboard-slicer {
+  border-color: transparent;
+  background-color: transparent;
+  box-shadow: none;
+}
+[data-dashboard-slicerstyle="compact"] .dashboard-slicer {
+  padding-top: 2px;
+  padding-bottom: 2px;
+}
+/* Slicers pick up the accent so they belong to the report, not to the app. */
+[data-dashboard-slicerstyle] .dashboard-slicer:focus-within {
+  border-color: color-mix(in srgb, var(--dashboard-accent, #5b5bd6) 55%, transparent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--dashboard-accent, #5b5bd6) 18%, transparent);
+}
+
+/* ── Widgets, states, tooltips ────────────────────────────────────────────── */
+[data-dashboard-cardtreatment] .dashboard-widget-text {
+  font-size: var(--dash-font-tableBody, inherit);
+}
+[data-dashboard-cardtreatment] .dashboard-empty-state,
+[data-dashboard-cardtreatment] .dashboard-error-state {
+  border-radius: var(--dashboard-card-radius, 12px);
+}
+[data-dashboard-chartchrome] .recharts-tooltip-wrapper .recharts-default-tooltip {
+  border-radius: calc(var(--dashboard-card-radius, 12px) / 2) !important;
+  border-color: color-mix(in srgb, var(--dashboard-accent, #5b5bd6) 22%, rgb(var(--border-line))) !important;
+  box-shadow: var(--dash-card-shadow, none) !important;
+  font-size: var(--dash-font-legend, inherit) !important;
+}
+[data-dashboard-chartchrome] .recharts-legend-item-text {
+  font-size: var(--dash-font-legend, inherit);
+}
+[data-dashboard-chartchrome="minimal"] .recharts-legend-wrapper,
+[data-dashboard-chartchrome="editorial"] .recharts-legend-wrapper {
+  font-size: calc(var(--dash-font-legend, 11px) * 0.94);
 }

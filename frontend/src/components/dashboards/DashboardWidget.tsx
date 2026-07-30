@@ -75,7 +75,8 @@ function TextWidget({ config, params }: { config: any; params: Record<string, an
   // overflows. `break-words` (in renderMarkdown) already wraps long lines.
   return (
     <div
-      className="flex h-full w-full flex-col overflow-auto px-4 py-2.5"
+      // Theme hook — text widgets follow the report's body type scale.
+      className="dashboard-widget-text flex h-full w-full flex-col overflow-auto px-4 py-2.5"
       style={{ textAlign: align, color, fontSize, fontWeight }}
     >
       <div className="my-auto w-full min-h-0">{renderMarkdown(rendered)}</div>

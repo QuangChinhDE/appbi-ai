@@ -21,7 +21,7 @@ import { DashboardGrid } from '@/components/dashboards/DashboardGrid';
 import { DashboardThemeProvider } from '@/components/dashboards/DashboardThemeProvider';
 import { DashboardThemeModal } from '@/components/dashboards/DashboardThemeModal';
 import { DashboardCanvas } from '@/components/dashboards/DashboardCanvas';
-import { Palette, Move, Undo2, Redo2 } from 'lucide-react';
+import { Palette, Move, Undo2, Redo2, ArrowUpToLine } from 'lucide-react';
 import { ChartTile } from '@/components/dashboards/ChartTile';
 import { WidgetEditModal } from '@/components/dashboards/WidgetEditModal';
 import { ParameterBindModal } from '@/components/dashboards/ParameterBindModal';
@@ -67,6 +67,8 @@ import {
   getDashboardChartsForPage,
   normalizeDashboardPages,
   tidyPageLayout,
+  normalizeDashboardGridForRender,
+  GRID_VERSION,
 } from '@/lib/dashboard-pages';
 import {
   ensureCanvasLayout,
@@ -291,7 +293,16 @@ export default function DashboardDetailPage() {
   const distinctValuesRef = React.useRef<Map<string, Set<string>>>(new Map());
   const [distinctValues, setDistinctValues] = useState<Record<string, string[]>>({});
 
-  const { data: serverDashboard, isLoading: isLoadingDashboard } = useDashboard(dashboardId);
+  const { data: rawServerDashboard, isLoading: isLoadingDashboard } = useDashboard(dashboardId);
+  // Finer-grid lazy upscale: legacy (12-col) tiles + BE draft layouts are scaled
+  // ×3 for render here at the source, so the ENTIRE downstream pipeline (overlay
+  // memo, resolveDashboardChartLayout, DashboardGrid, save baselines) sees finer
+  // 36-col coords consistently. No persisted data is mutated (see
+  // scaleGridLayoutForRender); edited tiles save back tagged gv=GRID_VERSION.
+  const serverDashboard = React.useMemo(
+    () => normalizeDashboardGridForRender(rawServerDashboard),
+    [rawServerDashboard],
+  );
 
   // Phase-15.66 — local layout overrides (no auto-save). Drag/resize
   // only updates this map; explicit Save buttons flush to BE.
@@ -935,34 +946,34 @@ export default function DashboardDetailPage() {
   //
   const handleLayoutChange = (newLayout: Layout[]) => {
     if (!serverDashboard) return;
-    // Build override map from the new react-grid-layout positions.
-    // Only record entries whose x/y/w/h actually differ from the
-    // baseline (serverDashboard layout merged with draft if any) so the
-    // "Save" button doesn't light up after a no-op gesture.
-    const next: Record<number, Record<string, any>> = {};
+    // One gesture = one chart: DashboardGrid forwards ONLY the moved tile, so we
+    // touch exactly the charts in `newLayout` and never re-read/re-write siblings.
+    // For each such chart, compare to its server+draft baseline (no local):
+    //   • back AT baseline  → DELETE its override, so returning a chart to its
+    //     original spot fully clears the "changed" state (no stale override, no
+    //     stuck "Unsaved" — dirty is derived from the override key count);
+    //   • otherwise         → record/update its override.
+    const prevOverrides = localLayoutOverridesRef.current;
+    const nextOverrides: Record<number, Record<string, any>> = { ...prevOverrides };
+    let changed = false;
     for (const item of newLayout) {
       const id = Number(item.i);
       const existing = serverDashboard.dashboard_charts?.find((dc) => dc.id === id);
       if (!existing) continue;
       const baseline = resolveDashboardChartLayout(id, {});
-      if (
-        baseline.x === item.x
-        && baseline.y === item.y
-        && baseline.w === item.w
-        && baseline.h === item.h
-      ) {
-        continue;
+      const atBaseline =
+        baseline.x === item.x && baseline.y === item.y
+        && baseline.w === item.w && baseline.h === item.h;
+      if (atBaseline) {
+        if (id in nextOverrides) { delete nextOverrides[id]; changed = true; }
+      } else {
+        nextOverrides[id] = mergeGridLayout(resolveDashboardChartLayout(id), item);
+        changed = true;
       }
-      next[id] = mergeGridLayout(resolveDashboardChartLayout(id), item);
     }
-    if (Object.keys(next).length === 0) {
-      // No real grid change. Keep unrelated canvas local edits intact.
-      return;
-    }
-    const prevOverrides = localLayoutOverridesRef.current;
-    const merged = { ...prevOverrides, ...next };
-    pushUndo({ kind: 'layout', prev: prevOverrides, next: merged });
-    setLocalLayoutOverrides(merged);
+    if (!changed) return; // net no-op → keep unrelated (e.g. canvas) local edits intact
+    pushUndo({ kind: 'layout', prev: prevOverrides, next: nextOverrides });
+    setLocalLayoutOverrides(nextOverrides);
   };
 
   // Phase-18 — "Sắp xếp gọn": re-flow the active page's tiles into a clean,
@@ -993,6 +1004,38 @@ export default function DashboardDetailPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dashboard, activePageId, resolveDashboardChartLayout, t]);
 
+  // Explicit "Dồn lên trên" — the ON-DEMAND replacement for the auto-lift that was
+  // removed from render (P0). Unlike Tidy (which re-flows tiles into clean rows),
+  // this ONLY removes the empty band above the topmost tile, preserving the DA's
+  // horizontal arrangement. Same local-override → Save-draft path (staged, undoable).
+  const handleCompactUp = useCallback(() => {
+    if (!dashboard) return;
+    const pageCharts = getDashboardChartsForPage(dashboard.dashboard_charts, activePageId);
+    if (pageCharts.length === 0) return;
+    const tiles = pageCharts.map((dc) => ({
+      id: dc.id,
+      x: Number(dc.layout?.x) || 0,
+      y: Number(dc.layout?.y) || 0,
+      w: Number(dc.layout?.w) || 4,
+      h: Number(dc.layout?.h) || 4,
+    }));
+    const minY = Math.min(...tiles.map((tl) => tl.y));
+    if (!Number.isFinite(minY) || minY <= 0) {
+      toast.info(t('dashboards.detail.compactUpNoop'));
+      return;
+    }
+    const next: Record<number, Record<string, any>> = {};
+    for (const tl of tiles) {
+      next[tl.id] = mergeGridLayout(resolveDashboardChartLayout(tl.id), { x: tl.x, y: tl.y - minY, w: tl.w, h: tl.h });
+    }
+    const prevOverrides = localLayoutOverridesRef.current;
+    const merged = { ...prevOverrides, ...next };
+    pushUndo({ kind: 'layout', prev: prevOverrides, next: merged });
+    setLocalLayoutOverrides(merged);
+    toast.success(t('dashboards.detail.compactUpDone'));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dashboard, activePageId, resolveDashboardChartLayout, t]);
+
   // Canvas-mode layout updates: same pattern — local state only.
   const handleCanvasLayoutChange = useCallback(
     (
@@ -1019,8 +1062,14 @@ export default function DashboardDetailPage() {
       layout,
     }));
     try {
-      await updateDraftLayoutMutation.mutateAsync({ dashboardId, chartLayouts });
-      setLocalLayoutOverrides({});
+      // Clear the local overrides in the mutation's onSuccess — the SAME batch as
+      // the hook's setQueryData(draft_layouts) — so the cache already reflects the
+      // saved coords in the commit that drops the overlay. Prevents a one-frame
+      // flash of the pre-save layout between "cache updated" and "overlay cleared".
+      await updateDraftLayoutMutation.mutateAsync(
+        { dashboardId, chartLayouts },
+        { onSuccess: () => setLocalLayoutOverrides({}) },
+      );
       return true;
     } catch (err) {
       console.error('Failed to flush draft layout:', err);
@@ -1197,15 +1246,18 @@ export default function DashboardDetailPage() {
         // default to a slim band (1 grid row) instead of a 2-row box that leaves
         // a big empty gap under the text. The DA can still stretch it for a
         // multi-line note.
-        text: { w: 4, h: 1, wPx: 360, hPx: 64 },
-        countdown: { w: 4, h: 3, wPx: 360, hPx: 200 },
-        image: { w: 4, h: 4, wPx: 360, hPx: 240 },
-        shape: { w: 4, h: 1, wPx: 360, hPx: 80 },
-        parameter_switcher: { w: 4, h: 2, wPx: 360, hPx: 120 },
-        // Section header + hero span wide (they head a row); callout is a small note.
-        section_header: { w: 12, h: 1, wPx: 1080, hPx: 56 },
-        hero_strip: { w: 12, h: 2, wPx: 1080, hPx: 120 },
-        callout: { w: 4, h: 2, wPx: 360, hPx: 110 },
+        // Grid w/h are in the finer 36-col grid (×3 of the old 12-col sizes so a
+        // widget keeps the same default footprint); wPx/hPx are canvas pixels
+        // (unchanged — independent of grid resolution).
+        text: { w: 12, h: 3, wPx: 360, hPx: 64 },
+        countdown: { w: 12, h: 9, wPx: 360, hPx: 200 },
+        image: { w: 12, h: 12, wPx: 360, hPx: 240 },
+        shape: { w: 12, h: 3, wPx: 360, hPx: 80 },
+        parameter_switcher: { w: 12, h: 6, wPx: 360, hPx: 120 },
+        // Section header + hero span full width (36); callout is a small note.
+        section_header: { w: 36, h: 3, wPx: 1080, hPx: 56 },
+        hero_strip: { w: 36, h: 6, wPx: 1080, hPx: 120 },
+        callout: { w: 12, h: 6, wPx: 360, hPx: 110 },
       };
       const size = sizeByType[widgetType];
 
@@ -1262,6 +1314,7 @@ export default function DashboardDetailPage() {
             hPx: size.hPx,
             z,
             pageId: activePageId ?? undefined,
+            gv: GRID_VERSION, // sizeByType is already finer (36-col) — mark so it's not re-scaled on read
           } as any,
           defaults[widgetType],
         );
@@ -1362,6 +1415,7 @@ export default function DashboardDetailPage() {
         layout: {
           ...layout,
           pageId: activePageId,
+          gv: GRID_VERSION, // AddChartModal packs on the finer 36-col grid — tag so read doesn't re-scale
         },
         parameters,
       });
@@ -2907,17 +2961,33 @@ export default function DashboardDetailPage() {
 
                           <div className="mx-3 my-1 border-t border-[rgba(255,255,255,0.06)]" />
 
+                          {/* Canvas is LOCKED for now — Grid (tiled) is the standard editor.
+                              "Switch to Canvas" is disabled so nobody starts a canvas layout
+                              the public report can't yet render WYSIWYG. "Switch to Grid" stays
+                              enabled so any dashboard already in canvas can move back to Grid. */}
                           <button
                             onClick={() => { handleToggleLayoutMode(); setIsMoreMenuOpen(false); }}
-                            className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] hover:text-text-primary"
-                            title={(dashboard?.layout_mode ?? 'grid') === 'grid' ? t('dashboards.detail.switchToCanvasMode') : t('dashboards.detail.switchToGridMode')}
+                            disabled={(dashboard?.layout_mode ?? 'grid') === 'grid'}
+                            className={`flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] transition-colors ${
+                              (dashboard?.layout_mode ?? 'grid') === 'grid'
+                                ? 'cursor-not-allowed text-text-quaternary opacity-60'
+                                : 'text-text-secondary hover:bg-[rgba(255,255,255,0.04)] hover:text-text-primary'
+                            }`}
+                            title={(dashboard?.layout_mode ?? 'grid') === 'grid' ? t('dashboards.detail.canvasLocked') : t('dashboards.detail.switchToGridMode')}
                           >
                             {(dashboard?.layout_mode ?? 'grid') === 'grid' ? (
                               <Move className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
                             ) : (
                               <LayoutGrid className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
                             )}
-                            {(dashboard?.layout_mode ?? 'grid') === 'grid' ? t('dashboards.detail.switchToCanvas') : t('dashboards.detail.switchToGrid')}
+                            <span className="flex-1 text-left">
+                              {(dashboard?.layout_mode ?? 'grid') === 'grid' ? t('dashboards.detail.switchToCanvas') : t('dashboards.detail.switchToGrid')}
+                            </span>
+                            {(dashboard?.layout_mode ?? 'grid') === 'grid' && (
+                              <span className="rounded bg-[rgba(255,255,255,0.06)] px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-text-quaternary">
+                                {t('dashboards.detail.canvasOffBadge')}
+                              </span>
+                            )}
                           </button>
 
                           {(dashboard?.layout_mode ?? 'grid') === 'grid' && (
@@ -2928,6 +2998,17 @@ export default function DashboardDetailPage() {
                             >
                               <LayoutGrid className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
                               {t('dashboards.detail.tidyLayout')}
+                            </button>
+                          )}
+
+                          {(dashboard?.layout_mode ?? 'grid') === 'grid' && (
+                            <button
+                              onClick={() => { handleCompactUp(); setIsMoreMenuOpen(false); }}
+                              className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] hover:text-text-primary"
+                              title={t('dashboards.detail.compactUpTooltip')}
+                            >
+                              <ArrowUpToLine className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
+                              {t('dashboards.detail.compactUp')}
                             </button>
                           )}
 

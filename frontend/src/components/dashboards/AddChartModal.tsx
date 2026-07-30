@@ -138,8 +138,10 @@ export function AddChartModal({
   // per-chart preview + instance-parameter form below (see focusedChartId).
   const [selectedChartIds, setSelectedChartIds] = useState<Set<number>>(new Set());
   const [pendingSelectionChartId, setPendingSelectionChartId] = useState<number | null>(null);
-  const [width, setWidth] = useState(4);
-  const [height, setHeight] = useState(4);
+  // Finer grid (36-col): manual W/H are in the new units. 12×12 ≈ the old 4×4
+  // default (a third of the width) so the manual-size default looks unchanged.
+  const [width, setWidth] = useState(12);
+  const [height, setHeight] = useState(12);
   // Phase-18 — when the DA hasn't touched W/H, each added chart is sized by its
   // TYPE (KPI small, table large, …) instead of a blanket 4×4. Touching either
   // input switches to "manual size for all" (the old single-size behavior).
@@ -492,9 +494,9 @@ export function AddChartModal({
                 <input
                   type="number"
                   value={width}
-                  onChange={(event) => { setSizeTouched(true); setWidth(clampGridValue(Number(event.target.value), 2, 12, 4)); }}
-                  min={2}
-                  max={12}
+                  onChange={(event) => { setSizeTouched(true); setWidth(clampGridValue(Number(event.target.value), 4, 36, 12)); }}
+                  min={4}
+                  max={36}
                   className="h-8 w-14 rounded-md border border-[rgb(var(--border-strong))] px-2 text-sm focus:border-transparent focus:outline-none focus:ring-2 focus:ring-brand"
                   disabled={isAdding}
                 />
@@ -504,9 +506,9 @@ export function AddChartModal({
                 <input
                   type="number"
                   value={height}
-                  onChange={(event) => { setSizeTouched(true); setHeight(clampGridValue(Number(event.target.value), 2, 10, 4)); }}
-                  min={2}
-                  max={10}
+                  onChange={(event) => { setSizeTouched(true); setHeight(clampGridValue(Number(event.target.value), 3, 30, 12)); }}
+                  min={3}
+                  max={30}
                   className="h-8 w-14 rounded-md border border-[rgb(var(--border-strong))] px-2 text-sm focus:border-transparent focus:outline-none focus:ring-2 focus:ring-brand"
                   disabled={isAdding}
                 />

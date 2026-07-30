@@ -40,9 +40,11 @@ import {
   ensureDashboardPageId,
   getDashboardChartsForPage,
   normalizeDashboardPages,
-  liftLayoutToTop,
   deriveStackedLayout,
   computeReportRowHeight,
+  dashboardRowHeight,
+  DASHBOARD_GRID_COLS,
+  normalizeDashboardGridForRender,
   REPORT_STACK_BREAKPOINT,
 } from '@/lib/dashboard-pages';
 import { applyScopeBound, getColumnKey, getDistinctValueFilterContext, getFilterDisplayLabel, getFilterKey, type BaseFilter, type ColumnInfo } from '@/lib/filters';
@@ -65,7 +67,9 @@ import type { ChartDataResponse, Dashboard, DashboardChart } from '@/types/api';
 // preventCollision preserve coordinates exactly as provided.
 const ResponsiveReportGrid = WidthProvider(Responsive);
 const REPORT_BREAKPOINTS = { lg: REPORT_STACK_BREAKPOINT, xs: 0 };
-const REPORT_COLS = { lg: 12, xs: 1 };
+// Finer grid: 36 cols on desktop/tablet (matches the builder; ×3-migrated coords
+// render identically). Phone stack stays 1-col.
+const REPORT_COLS = { lg: DASHBOARD_GRID_COLS, xs: 1 };
 
 // Measure an element's CONTENT width (excludes padding) via ResizeObserver and
 // keep it in state. Used to drive the report grid's proportional row height from
@@ -427,7 +431,9 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
   // with it, so tiles keep their authored aspect ratio from phone to TV. The
   // ref-callback attaches to whichever of the two grid branches is mounted.
   const [gridMeasureRef, gridWidth] = useContentWidth();
-  const reportRowHeight = computeReportRowHeight(gridWidth);
+  // Finer grid: row height couples to the theme gap so the ×3-migrated layout
+  // renders pixel-identical to the builder (see dashboardRowHeight).
+  const reportRowHeight = computeReportRowHeight(gridWidth, getDashboardGridMargin(dashboard?.theme_config)[1]);
 
   const sessionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const chartRequestIdRef = useRef(0);
@@ -484,8 +490,10 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
     setFiltersSeeded(false);
 
     try {
-      const nextDashboard = await publicDashboardApi.get(token, sessionToken);
-      setDashboard(nextDashboard);
+      // Finer-grid lazy upscale: legacy (12-col) tiles are scaled ×3 for render
+      // so the published report matches the builder without any data migration.
+      const nextDashboard = normalizeDashboardGridForRender(await publicDashboardApi.get(token, sessionToken));
+      setDashboard(nextDashboard ?? null);
       setPageState('loaded');
       // Fire-and-forget: fetch the report-level snapshot freshness for the
       // "data as of" label (never blocks the dashboard render).
@@ -1517,18 +1525,19 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
     );
   }
 
-  const layouts: Layout[] = liftLayoutToTop(
-    visibleDashboardCharts.map((dashboardChart) => {
-      const layout = dashboardChart.layout;
-      return {
-        i: dashboardChart.id.toString(),
-        x: layout.x || 0,
-        y: layout.y || 0,
-        w: layout.w || 4,
-        h: layout.h || 4,
-      };
-    }),
-  );
+  // Render at STORED coordinates — NO liftLayoutToTop. The public report must be
+  // pixel-WYSIWYG with the builder desktop: an intentional top gap the DA left is
+  // preserved, not normalized away.
+  const layouts: Layout[] = visibleDashboardCharts.map((dashboardChart) => {
+    const layout = dashboardChart.layout;
+    return {
+      i: dashboardChart.id.toString(),
+      x: layout.x || 0,
+      y: layout.y || 0,
+      w: layout.w || 4,
+      h: layout.h || 4,
+    };
+  });
 
   // Phase-G — single SlicerCluster node reused in both placements:
   // stacked above the grid (top) or as a left column (left). Defined
@@ -2043,9 +2052,11 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
                       key={dashboardChart.id}
                       style={{
                         // Same fraction of the width the author gave the tile on
-                        // the 12-column grid, so the sheet mirrors the screen.
-                        flex: `0 0 calc(${((dashboardChart.layout?.w ?? 12) / 12) * 100}% - ${rowGap}px)`,
-                        height: `${(dashboardChart.layout?.h ?? 4) * 80 + (((dashboardChart.layout?.h ?? 4) - 1) * rowGap)}px`,
+                        // the (finer, 36-column) grid, so the sheet mirrors the
+                        // screen. Row height uses the finer per-gap row unit so a
+                        // ×3-migrated tile keeps its exact printed height.
+                        flex: `0 0 calc(${((dashboardChart.layout?.w ?? DASHBOARD_GRID_COLS) / DASHBOARD_GRID_COLS) * 100}% - ${rowGap}px)`,
+                        height: `${(dashboardChart.layout?.h ?? 12) * dashboardRowHeight(rowGap) + (((dashboardChart.layout?.h ?? 12) - 1) * rowGap)}px`,
                       }}
                     >
                       {renderTileNode(dashboardChart)}

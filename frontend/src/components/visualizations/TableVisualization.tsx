@@ -645,11 +645,25 @@ export function TableVisualization({
 
   const allColumnWidthsResolved = cols.every((col) => typeof liveColumnWidths[col] === 'number' && liveColumnWidths[col] > 0);
   const tableWidth = allColumnWidthsResolved
-    ? cols.reduce((total, col) => total + liveColumnWidths[col], 0)
+    // Each measured width is Math.ceil'd (see the measure effect), so the raw sum
+    // overshoots the true total by up to `cols.length`px. Combined with
+    // `min-w-full`, that 1-2px overshoot renders a SPURIOUS hairline horizontal
+    // scrollbar even when the columns actually fit. Subtracting the rounding
+    // budget cancels it: `min-w-full` still stretches the table to fill the
+    // container, while a genuinely too-wide table overshoots by far more than
+    // `cols.length` and therefore still scrolls.
+    ? Math.max(0, cols.reduce((total, col) => total + liveColumnWidths[col], 0) - cols.length)
     : undefined;
 
   return (
-    <div className={clsx(exporting ? "w-full" : "h-full overflow-auto", className)}>
+    <div
+      className={clsx(exporting ? "w-full" : "h-full overflow-auto", className)}
+      // Reserve the vertical scrollbar's width permanently so that when rows
+      // overflow and it appears, it doesn't shrink the content box and push the
+      // full-width table into a SPURIOUS horizontal scroll. The table then only
+      // scrolls horizontally when the columns genuinely exceed the tile width.
+      style={exporting ? undefined : { scrollbarGutter: 'stable' }}
+    >
       <table
         className="border-separate border-spacing-0 text-sm min-w-full"
         style={{
@@ -661,7 +675,13 @@ export function TableVisualization({
             {cols.map((col) => (
               <col
                 key={`col-${col}`}
-                style={liveColumnWidths[col] ? { width: liveColumnWidths[col] } : undefined}
+                // −1px absorbs the Math.ceil applied to each measured width (see the
+                // measure effect): under table-fixed the colgroup drives layout, so a
+                // ceil-inflated sum overshoots the container and renders a spurious
+                // hairline horizontal scrollbar even when the columns fit. min-w-full
+                // redistributes the ≤1px/col slack back so nothing clips; a genuinely
+                // too-wide table still overshoots by far more and keeps scrolling.
+                style={liveColumnWidths[col] ? { width: Math.max(1, liveColumnWidths[col] - 1) } : undefined}
               />
             ))}
           </colgroup>

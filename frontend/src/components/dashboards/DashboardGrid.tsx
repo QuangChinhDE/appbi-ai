@@ -12,7 +12,7 @@ import { DashboardFilter } from '@/lib/filters';
 import type { BaseFilter } from '@/lib/filters';
 import { Loader2, LayoutDashboard } from 'lucide-react';
 import { getDashboardGridMargin } from './DashboardThemeProvider';
-import { liftLayoutToTop } from '@/lib/dashboard-pages';
+import { DASHBOARD_GRID_COLS, dashboardRowHeight } from '@/lib/dashboard-pages';
 import { useExportMode } from '@/lib/export-mode';
 import { useI18n } from '@/providers/LanguageProvider';
 
@@ -149,45 +149,44 @@ export function DashboardGrid({
   // 2-column minimum so they stay legible; widgets can shrink to a single column.
   const RESIZE_HANDLES: Array<'s' | 'w' | 'e' | 'n' | 'se' | 'sw' | 'ne' | 'nw'> =
     ['s', 'w', 'e', 'n', 'se', 'sw', 'ne', 'nw'];
-  const layouts = liftLayoutToTop(
-    dashboardCharts.map((dc) => {
-      const layout = dc.layout;
-      const isWidget = Boolean(dc.widget_type && dc.widget_type !== 'chart');
-      return {
-        i: dc.id.toString(),
-        x: layout.x || 0,
-        y: layout.y || 0,
-        w: layout.w || 4,
-        h: layout.h || 4,
-        minW: isWidget ? 1 : 2,
-        minH: 1,
-        resizeHandles: RESIZE_HANDLES,
-      };
-    }),
-  );
+  // Render tiles at their STORED coordinates — NO liftLayoutToTop. An empty band
+  // above the topmost tile is the DA's intentional spacing and must survive render
+  // (WYSIWYG with the published report). "Dồn lên trên" is an explicit, on-demand
+  // action only — never a render/persist side effect.
+  const layouts = dashboardCharts.map((dc) => {
+    const layout = dc.layout;
+    const isWidget = Boolean(dc.widget_type && dc.widget_type !== 'chart');
+    return {
+      i: dc.id.toString(),
+      x: layout.x || 0,
+      y: layout.y || 0,
+      w: layout.w || 12,
+      h: layout.h || 12,
+      // Finer-grid minimums (36-col / small-row): smaller than the old 2×1 so a
+      // DA can "thu vào bé hơn", while charts keep a legible floor (4 cols ≈ 11%
+      // width, 3 rows) and widgets can go tiny.
+      minW: isWidget ? 2 : 4,
+      minH: isWidget ? 1 : 3,
+      // Locked tile → react-grid-layout `static`: not draggable, not resizable,
+      // and never displaced by a neighbour. Prevents accidental nudges.
+      static: Boolean(layout.locked),
+      resizeHandles: RESIZE_HANDLES,
+    };
+  });
 
-  // Persist the layout ONLY when the user FINISHES a drag/resize, via
-  // react-grid-layout's onDragStop / onResizeStop — both hand us the FINAL,
-  // already-reflowed layout. This matters now that compaction is on: reflow
-  // fires many intermediate `onLayoutChange` events mid-drag, so saving on
-  // those would store a half-way position and the draft would "jump" on reload
-  // (the exact bug seen the last time reorder was enabled). Saving on "stop"
-  // captures only the settled result. Mount-time compaction never fires
-  // stop events, so it's shown but not persisted (public stays as-saved).
-  const persistLayout = (newLayout: Layout[]) => {
-    if (!onLayoutChange) return;
-    const oldById = new Map(layouts.map((l) => [l.i, l]));
-    const hasChanged = newLayout.some((item) => {
-      const oldItem = oldById.get(item.i);
-      return (
-        oldItem &&
-        (item.x !== oldItem.x ||
-          item.y !== oldItem.y ||
-          item.w !== oldItem.w ||
-          item.h !== oldItem.h)
-      );
-    });
-    if (hasChanged) onLayoutChange(newLayout);
+  // Persist ONLY the tile the user just finished manipulating. react-grid-layout
+  // hands the moved item as the 3rd onDragStop/onResizeStop arg; we forward JUST
+  // that item (a single-element array), never the whole layout — so a gesture is a
+  // one-chart transaction: sibling coordinates are never re-read or re-written.
+  // (Free-form compactType={null}+preventCollision already means siblings didn't
+  // move; this guarantees we don't RECORD them either.) Persisting on "stop" — not
+  // the mid-drag events — keeps the draft from jumping on reload.
+  const persistItem = (item?: Layout) => {
+    if (!onLayoutChange || !item) return;
+    const prev = layouts.find((l) => l.i === item.i);
+    const changed = !prev
+      || item.x !== prev.x || item.y !== prev.y || item.w !== prev.w || item.h !== prev.h;
+    if (changed) onLayoutChange([item]);
   };
 
   if (dashboardCharts.length === 0) {
@@ -208,26 +207,39 @@ export function DashboardGrid({
     );
   }
 
+  // Finer grid: 36 cols + a row height coupled to the theme gap so ×3-migrated
+  // tiles keep their exact pixel size (see dashboardRowHeight). Margin unchanged.
+  const gridMargin = getDashboardGridMargin(themeConfig);
   return (
     <FixedGridLayout
-      className="layout"
+      // `rgl-no-anim` (edit mode only) kills the library's 200ms position
+      // transition on ALL tiles so a settled drag doesn't leave siblings sliding
+      // — the builder prioritises pixel accuracy / cursor-fidelity. Public keeps
+      // the transition (plain `layout`).
+      className={onLayoutChange ? 'layout rgl-no-anim' : 'layout'}
       layout={layouts}
-      cols={12}
-      rowHeight={80}
-      margin={getDashboardGridMargin(themeConfig)}
-      onDragStop={(l) => persistLayout(l)}
-      onResizeStop={(l) => persistLayout(l)}
+      cols={DASHBOARD_GRID_COLS}
+      rowHeight={dashboardRowHeight(gridMargin[1])}
+      margin={gridMargin}
+      onDragStop={(_layout, _oldItem, newItem) => persistItem(newItem)}
+      onResizeStop={(_layout, _oldItem, newItem) => persistItem(newItem)}
       draggableHandle=".drag-handle"
       // Never start a drag from an interactive control or the widget's own
       // edit/delete cluster (whole widget bodies are now drag handles).
       draggableCancel=".no-drag, button, select, input, textarea, a"
       isDraggable={!!onLayoutChange}
       isResizable={!!onLayoutChange}
-      // Flexible reorder: dragging a tile between others reflows them (make
-      // room) instead of blocking. Vertical compaction keeps a report flowing
-      // top→bottom; the final settled layout is saved on drag/resize STOP.
-      compactType="vertical"
-      preventCollision={false}
+      // Grid arrange model = FREE-FORM / WYSIWYG (matches the published report,
+      // which renders with compactType={null} + preventCollision). A tile stays
+      // EXACTLY where the user drops it; dragging one tile never reflows the
+      // others (no more "cards suddenly jump down" when a tall tile is moved into
+      // their row). Dropping onto an occupied cell returns the dragged tile to
+      // its origin instead of cascading its neighbours. This keeps the builder
+      // pixel-identical to what viewers see, and keeps existing layouts rendering
+      // exactly as stored. Auto-pack (compactType="vertical") was rejected because
+      // its live reflow moved tiles the user hadn't touched.
+      compactType={null}
+      preventCollision={true}
     >
       {dashboardCharts.map((dc) => {
         const isWidget = dc.widget_type && dc.widget_type !== 'chart';

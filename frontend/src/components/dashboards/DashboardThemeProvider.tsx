@@ -2,6 +2,11 @@
 
 import React from 'react';
 import type { DashboardThemeConfig } from '@/types/api';
+import {
+  resolveStyleTokens,
+  styleTokensToCssVars,
+  type ResolvedStyleTokens,
+} from '@/lib/dashboard-theme-tokens';
 
 type Props = {
   theme?: DashboardThemeConfig | null;
@@ -197,6 +202,10 @@ export type DashboardChartTheme = {
   displayUnits?: 'auto' | 'none' | 'thousands' | 'millions' | 'billions';
   /** Modern/SaaS skin flag — charts read this to switch to clean chrome. */
   skin?: 'modern';
+  /** Full token set (card treatment, chart chrome, typography scale, styles).
+   *  Charts read `tokens.chart` for gridlines/bar radius/line width/etc. so the
+   *  chrome follows the theme instead of being hard-coded per chart type. */
+  tokens?: ResolvedStyleTokens;
 };
 
 export const DashboardThemeContext = React.createContext<DashboardChartTheme>({});
@@ -227,6 +236,7 @@ export function DashboardThemeProvider({ theme, children, className, style: base
   // consumer) to re-render on each build interaction — the "lag" the user felt.
   // Now the value is referentially stable unless the theme itself changes.
   const t = React.useMemo(() => normalizeDashboardTheme(theme), [theme]);
+  const tokens = React.useMemo(() => resolveStyleTokens(theme), [theme]);
 
   const style = React.useMemo<React.CSSProperties>(() => {
     const accentRgb = t.accent ? hexToRgbTriplet(t.accent) : undefined;
@@ -270,8 +280,14 @@ export function DashboardThemeProvider({ theme, children, className, style: base
     if (t.kpiFontSize) (s as any)['--dashboard-kpi-size'] = t.kpiFontSize;
     if (t.gridlineColor) (s as any)['--dashboard-gridline-color'] = t.gridlineColor;
     if (t.axisLabelColor) (s as any)['--dashboard-axis-label-color'] = t.axisLabelColor;
+    // Design-system tokens (card treatment, typography roles, chart chrome).
+    // One assignment here themes every surface that reads them in CSS: tiles,
+    // tables, slicers, widgets, tooltips, empty/error states.
+    for (const [k, v] of Object.entries(styleTokensToCssVars(tokens))) {
+      (s as any)[k] = v;
+    }
     return s;
-  }, [t, baseStyle]);
+  }, [t, baseStyle, tokens]);
 
   const chartTheme = React.useMemo<DashboardChartTheme>(() => ({
     dataColors: t.dataColors,
@@ -287,6 +303,7 @@ export function DashboardThemeProvider({ theme, children, className, style: base
     accent: t.accent,
     displayUnits: t.displayUnits,
     skin: t.skin,
+    tokens,
     // Phase-B16 — translucent "glass" tiles so a background image shows through.
     ...(t.glassCards
       ? {
@@ -294,7 +311,7 @@ export function DashboardThemeProvider({ theme, children, className, style: base
           cardBackdrop: 'blur(14px) saturate(1.2)',
         }
       : {}),
-  }), [t]);
+  }), [t, tokens]);
 
   return (
     <DashboardThemeContext.Provider value={chartTheme}>
@@ -304,6 +321,12 @@ export function DashboardThemeProvider({ theme, children, className, style: base
         data-dashboard-card={t.cardStyle}
         data-dashboard-density={t.density}
         data-dashboard-skin={t.skin ?? 'classic'}
+        data-dashboard-cardtreatment={tokens.cardTreatment}
+        data-dashboard-accentbar={tokens.accentBar}
+        data-dashboard-chartchrome={tokens.chartChrome}
+        data-dashboard-kpistyle={tokens.kpiStyle}
+        data-dashboard-tablestyle={tokens.tableStyle}
+        data-dashboard-slicerstyle={tokens.slicerStyle}
         data-dashboard-hover={t.hoverAnimation ?? 'none'}
         style={style}
       >

@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useMemo, useState, useRef, useEffect, useCallback } from 'react';
-import { X, Loader2, Pencil, Check, SlidersHorizontal, Eye, Palette, MoreHorizontal, ArrowRightLeft, ExternalLink, AlertTriangle, RefreshCw, Sparkles } from 'lucide-react';
+import { X, Loader2, Pencil, Check, SlidersHorizontal, Eye, Palette, MoreHorizontal, ArrowRightLeft, ExternalLink, AlertTriangle, RefreshCw, Sparkles, Lock } from 'lucide-react';
 import { useChart, useChartData } from '@/hooks/use-charts';
 import { useDatasetModel } from '@/hooks/use-dataset-model';
 import { buildSemanticLabelMap, buildSemanticFormatMap } from '@/lib/chart-semantic-maps';
@@ -628,6 +628,24 @@ function ChartTileBase({
     }).catch(() => { /* layout save is best-effort */ });
   }, [canEdit, dashboardId, dashboardChartId, currentLayout, highlightEnabled, queryClient]);
 
+  // Position lock: a locked chart can't be dragged or resized (the grid marks it
+  // `static`), so it can't be nudged by accident. Same optimistic-flip + live
+  // updateLayout pattern as the highlight toggle.
+  const [lockOverride, setLockOverride] = useState<boolean | null>(null);
+  useEffect(() => { setLockOverride(null); }, [currentLayout?.locked]);
+  const positionLocked = lockOverride ?? (currentLayout?.locked === true);
+  const toggleLocked = useCallback(() => {
+    if (!canEdit) return;
+    const next = !positionLocked;
+    setLockOverride(next);
+    dashboardApi.updateLayout(dashboardId, [{
+      id: dashboardChartId,
+      layout: { ...currentLayout, locked: next },
+    }]).then(() => {
+      queryClient.invalidateQueries({ queryKey: ['dashboards', dashboardId] });
+    }).catch(() => { /* layout save is best-effort */ });
+  }, [canEdit, dashboardId, dashboardChartId, currentLayout, positionLocked, queryClient]);
+
   const effectiveStyleConfig = useMemo(
     () => getEffectiveDashboardChartStyleConfig(chart, currentLayout),
     [chart, currentLayout],
@@ -1028,6 +1046,8 @@ function ChartTileBase({
          overflow-hidden (so the chart never spills), and tile content is inset
          by p-3 so it won't poke the rounded corners — only the menu escapes. */
       className={`dashboard-tile bi-card-hover relative group flex h-full flex-col rounded-lg p-3 ${
+        canEdit ? 'drag-handle cursor-move' : ''
+      } ${
         transparentTile ? '' : 'border bg-surface-1'
       } ${
         isCrossFilterSource || isHighlightSource
@@ -1306,6 +1326,33 @@ function ChartTileBase({
                         </span>
                       </button>
                     )}
+                    {canEdit && (
+                      <button
+                        type="button"
+                        role="switch"
+                        aria-checked={positionLocked}
+                        /* Lock position: flip in place (keep menu open). When on,
+                           the grid marks this tile `static` so it can't be dragged
+                           or resized by accident. */
+                        onClick={(e) => { e.stopPropagation(); toggleLocked(); }}
+                        className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(0,0,0,0.04)] hover:text-text-primary"
+                        title={t('dashboards.tile.lockPositionHint')}
+                      >
+                        <Lock className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
+                        <span className="flex-1 text-left">{t('dashboards.tile.lockPosition')}</span>
+                        <span
+                          className={`relative inline-flex h-[16px] w-[28px] shrink-0 items-center rounded-full transition-colors duration-150 ${
+                            positionLocked ? 'bg-brand' : 'bg-[rgb(var(--border-strong))]'
+                          }`}
+                        >
+                          <span
+                            className={`inline-block h-[12px] w-[12px] transform rounded-full bg-white shadow-sm transition-transform duration-150 ${
+                              positionLocked ? 'translate-x-[14px]' : 'translate-x-[2px]'
+                            }`}
+                          />
+                        </span>
+                      </button>
+                    )}
                     {canEdit && availablePages.length > 1 && onMoveToPage && (
                       <>
                         <div className="my-1 border-t border-[rgb(var(--border-line))]" />
@@ -1444,7 +1491,12 @@ function ChartTileBase({
           chart is wired for cross-filter, so users discover the click-to-
           filter affordance instead of having to read docs. */}
       <div
-        className={`relative flex-1 min-h-0 overflow-hidden ${
+        /* `no-drag` (react-grid-layout draggableCancel): the whole card is a
+           drag-handle now (easy to grab — the old 24px header strip was too
+           fiddly), but a press that STARTS on the live chart body must not begin
+           a tile-drag, so click-to-cross-filter / click-a-mark stays intact.
+           Grab the header, padding frame, or title to move the tile. */
+        className={`no-drag relative flex-1 min-h-0 overflow-hidden ${
           onSelectCrossFilter && chartSemanticBinding?.datasetId != null
             ? 'cursor-crosshair'
             : ''
@@ -1644,6 +1696,7 @@ function chartTilePropsEqual(prev: ChartTileProps, next: ChartTileProps): boolea
   // Per-chart highlight opt-out toggles the ⋯ menu label + (via the grid) the
   // click-source/target gating, so the tile must re-render when it flips.
   if (prev.currentLayout?.highlightEnabled !== next.currentLayout?.highlightEnabled) return false;
+  if (prev.currentLayout?.locked !== next.currentLayout?.locked) return false;
   if (prev.onRemove !== next.onRemove) return false;
   if (prev.onDataLoaded !== next.onDataLoaded) return false;
   if (prev.onSelectCrossFilter !== next.onSelectCrossFilter) return false;

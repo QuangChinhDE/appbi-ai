@@ -1806,7 +1806,11 @@ function FilterCard({
       <div
         ref={cardResizeRef}
         style={cardWidthStyle}
-        className={`relative flex flex-col gap-0.5 rounded-lg border bg-surface-1 px-3 py-2 transition-colors ${
+        // `dashboard-slicer` is the theme hook: the slicer style (card / pill /
+        // compact / glass / minimal) is applied from CSS via the wrapper's
+        // data-dashboard-slicerstyle, so a themed report styles its filters the
+        // same way it styles its cards instead of leaving them app-default.
+        className={`dashboard-slicer relative flex flex-col gap-0.5 rounded-lg border bg-surface-1 px-3 py-2 transition-colors ${
           popoverOpen
             ? 'border-brand ring-1 ring-brand/30'
             : hasValue
