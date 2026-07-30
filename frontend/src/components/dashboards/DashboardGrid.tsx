@@ -22,6 +22,57 @@ import { useI18n } from '@/providers/LanguageProvider';
 // breakpoint and clobber the saved layout.
 const FixedGridLayout = WidthProvider(GridLayout);
 
+// ── Smart-insert collision resolver ─────────────────────────────────────────
+// react-grid-layout can't do "auto-spread on insert" while preserving an
+// intentional empty gap (compactType='vertical' reflows but forbids gaps;
+// compactType=null either scatters on push or blocks). So the grid runs
+// allowOverlap (tiles may overlap DURING a drag — others stay put, no mid-drag
+// scatter) and we resolve on drag/resize STOP with this pure function:
+//
+//   • the moved/resized tile is FIXED where the user dropped it (priority);
+//   • every OTHER tile keeps its exact position UNLESS it overlaps a
+//     higher-priority (already-settled) tile, in which case it is pushed
+//     straight DOWN by the minimum needed to clear;
+//   • tiles are settled top→bottom so a push cascades onto the next tile — a
+//     clean, BOUNDED "make room" — while any tile off the collision path keeps
+//     its spot, so a gap the DA left on purpose survives.
+//
+// Result: dropping a chart between two others spreads only what's necessary
+// (auto-insert) AND gaps are preserved — without the runaway scatter of raw
+// compactType=null + preventCollision=false. Pure + testable; the settled layout
+// is saved through the normal onLayoutChange → save-on-stop path (save flow
+// untouched).
+type Rect = { x: number; y: number; w: number; h: number };
+function rectsOverlap(a: Rect, b: Rect): boolean {
+  return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+}
+export function resolveSmartInsert(
+  prev: Layout[],
+  movedId: string,
+  movedRect: Rect,
+): Layout[] {
+  const movedSrc = prev.find((l) => l.i === movedId);
+  if (!movedSrc) return prev;
+  const moved: Layout = { ...movedSrc, ...movedRect };
+  const others = prev
+    .filter((l) => l.i !== movedId)
+    .map((l) => ({ ...l }))
+    .sort((a, b) => a.y - b.y || a.x - b.x);
+  const placed: Layout[] = [moved];
+  for (const t of others) {
+    let guard = 0;
+    // Push t straight down until it clears every already-settled tile. Bounded:
+    // each step lands it just below a blocker and there are finitely many tiles.
+    while (guard++ < 500) {
+      const hit = placed.find((p) => rectsOverlap(t, p));
+      if (!hit) break;
+      t.y = hit.y + hit.h;
+    }
+    placed.push(t);
+  }
+  return placed;
+}
+
 /** Wrapper that defers rendering children until the element is visible. */
 function LazyChartSlot({ children }: { children: React.ReactNode }) {
   const ref = useRef<HTMLDivElement>(null);
@@ -166,28 +217,27 @@ export function DashboardGrid({
     }),
   );
 
-  // Persist the layout ONLY when the user FINISHES a drag/resize, via
-  // react-grid-layout's onDragStop / onResizeStop — both hand us the FINAL,
-  // already-reflowed layout. This matters now that compaction is on: reflow
-  // fires many intermediate `onLayoutChange` events mid-drag, so saving on
-  // those would store a half-way position and the draft would "jump" on reload
-  // (the exact bug seen the last time reorder was enabled). Saving on "stop"
-  // captures only the settled result. Mount-time compaction never fires
-  // stop events, so it's shown but not persisted (public stays as-saved).
-  const persistLayout = (newLayout: Layout[]) => {
-    if (!onLayoutChange) return;
-    const oldById = new Map(layouts.map((l) => [l.i, l]));
-    const hasChanged = newLayout.some((item) => {
-      const oldItem = oldById.get(item.i);
-      return (
-        oldItem &&
-        (item.x !== oldItem.x ||
-          item.y !== oldItem.y ||
-          item.w !== oldItem.w ||
-          item.h !== oldItem.h)
-      );
+  // Persist ONLY when the user FINISHES a drag/resize, via onDragStop /
+  // onResizeStop — RGL hands us the moved/resized item at its dropped position.
+  // We run smart-insert (resolveSmartInsert) to spread only the tiles that must
+  // move (auto-insert) while keeping gaps, then save the settled result. Saving
+  // on "stop" (not mid-drag onLayoutChange) is what keeps the draft from
+  // "jumping" on reload. Mount never fires a stop event, so the as-saved layout
+  // is shown but not re-persisted (public stays as-saved).
+  const persistSmartLayout = (moved: Layout | undefined) => {
+    if (!onLayoutChange || !moved) return;
+    const resolved = resolveSmartInsert(layouts, moved.i, {
+      x: moved.x,
+      y: moved.y,
+      w: moved.w,
+      h: moved.h,
     });
-    if (hasChanged) onLayoutChange(newLayout);
+    const oldById = new Map(layouts.map((l) => [l.i, l]));
+    const hasChanged = resolved.some((item) => {
+      const o = oldById.get(item.i);
+      return o && (item.x !== o.x || item.y !== o.y || item.w !== o.w || item.h !== o.h);
+    });
+    if (hasChanged) onLayoutChange(resolved);
   };
 
   if (dashboardCharts.length === 0) {
@@ -215,32 +265,25 @@ export function DashboardGrid({
       cols={12}
       rowHeight={80}
       margin={getDashboardGridMargin(themeConfig)}
-      onDragStop={(l) => persistLayout(l)}
-      onResizeStop={(l) => persistLayout(l)}
+      onDragStop={(_l, _oldItem, newItem) => persistSmartLayout(newItem)}
+      onResizeStop={(_l, _oldItem, newItem) => persistSmartLayout(newItem)}
       draggableHandle=".drag-handle"
       // Never start a drag from an interactive control or the widget's own
       // edit/delete cluster (whole widget bodies are now drag handles).
       draggableCancel=".no-drag, button, select, input, textarea, a"
       isDraggable={!!onLayoutChange}
       isResizable={!!onLayoutChange}
-      // Free-form placement, matching the PUBLIC/read-only view (compactType=null)
-      // so the builder is WYSIWYG: a DA may leave an intentional empty gap between
-      // charts and it is preserved (no auto pull-up). This is the grid's ORIGINAL
-      // behaviour.
-      //
-      // preventCollision=TRUE on purpose. DO NOT flip it to chase "push-to-insert":
-      // with compactType=null a collision-push CASCADES downward with no
-      // re-compaction, which SCATTERS the whole report on a single drag (verified —
-      // one drag flung tiles to rows 5/7/12/…). And compactType="vertical" gives
-      // clean push-insert but FORBIDS gaps (and diverges from the public view).
-      // react-grid-layout cannot do "auto-spread on insert" AND "preserve gaps" at
-      // once — gaps win (explicit product decision), so a collision BLOCKS (the
-      // dragged tile holds its last valid spot) instead of scattering. To place a
-      // tile between two others, drop it into the gap / empty space; the explicit
-      // "Tidy layout" action packs the grid when a DA wants that. Save-on-
-      // drag/resize-STOP keeps the layout from jumping mid-drag regardless.
+      // SMART-INSERT (see resolveSmartInsert above). compactType=null keeps the
+      // grid free-form so an intentional empty gap is preserved and the builder
+      // stays WYSIWYG with the public view. allowOverlap lets a tile float over
+      // others DURING the drag (others don't scatter mid-drag); on drag/resize
+      // STOP we resolve — the dropped tile pushes only the tiles it lands on
+      // straight down (auto-insert) and everything else keeps its place. This is
+      // the "gaps AND auto-spread, no scatter" behaviour raw RGL can't give
+      // (compactType=null+preventCollision=false scatters; ="vertical" forbids
+      // gaps). "Tidy layout" still packs the grid on demand.
       compactType={null}
-      preventCollision={true}
+      allowOverlap={true}
     >
       {dashboardCharts.map((dc) => {
         const isWidget = dc.widget_type && dc.widget_type !== 'chart';
