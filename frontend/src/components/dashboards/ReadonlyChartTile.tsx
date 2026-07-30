@@ -408,7 +408,7 @@ export function ReadonlyChartTile({
             return (
               <div className={`mb-2 flex min-h-[1.5rem] items-start gap-3 ${compact ? 'text-xs' : 'text-[13px]'}`}>
                 {kpiHeaderTitle && (
-                  <p data-pdf-tile-title className="min-w-0 flex-1 truncate font-medium text-text-secondary" style={themeTitleStyle} title={kpiHeaderTitle}>{kpiHeaderTitle}</p>
+                  <p data-pdf-tile-title className="dashboard-kpi-label min-w-0 flex-1 truncate font-medium text-text-secondary" style={themeTitleStyle} title={kpiHeaderTitle}>{kpiHeaderTitle}</p>
                 )}
                 {hasActions && (
                   <div className="ml-auto flex flex-shrink-0 items-center gap-1">

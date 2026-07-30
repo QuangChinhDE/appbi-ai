@@ -1,9 +1,16 @@
 'use client';
 
 import React, { useRef, useState } from 'react';
-import { X, Plus, Trash2, LayoutTemplate, Palette as PaletteIcon, Type, Square, BarChart3, ImageIcon, Upload, Check } from 'lucide-react';
+import { X, Plus, Trash2, LayoutTemplate, Palette as PaletteIcon, Type, Square, BarChart3, ImageIcon, Upload, Check, Sparkles, Download, Wand2, AlertTriangle } from 'lucide-react';
 import type { DashboardThemeConfig } from '@/types/api';
 import { useI18n } from '@/providers/LanguageProvider';
+import {
+  CARD_TREATMENTS, CHART_CHROMES, KPI_STYLES, TABLE_STYLES, SLICER_STYLES,
+  TYPOGRAPHY_ROLES, TYPO_BASE_DEFAULT,
+  contrastRatio, paletteFromBrandColor, resolveStyleTokens,
+  type CardTreatment, type ChartChrome, type KpiStyle, type TableStyle, type SlicerStyle,
+} from '@/lib/dashboard-theme-tokens';
+import { ThemeLivePreview } from './ThemeLivePreview';
 
 type Props = {
   initial: DashboardThemeConfig | null | undefined;
@@ -142,6 +149,7 @@ const SECTIONS = [
   { key: 'text', label: 'dashboards.themeModal.sectionText', icon: Type },
   { key: 'card', label: 'dashboards.themeModal.sectionCards', icon: Square },
   { key: 'chart', label: 'dashboards.themeModal.sectionCharts', icon: BarChart3 },
+  { key: 'styles', label: 'dashboards.themeModal.sectionStyles', icon: Sparkles },
 ] as const;
 type SectionKey = (typeof SECTIONS)[number]['key'];
 
@@ -329,7 +337,18 @@ export function DashboardThemeModal({ initial, onClose, onSave }: Props) {
     bgOverlay: typeof initial?.bgOverlay === 'number' ? initial.bgOverlay : undefined,
     glassCards: initial?.glassCards ?? false,
     presetId: initial?.presetId ?? '',
+    // The SKIN must round-trip. It used to be missing from this seed, so opening
+    // this dialog and pressing Save — without touching anything — dropped
+    // `skin:'modern'` on submit and the report silently fell back to the classic
+    // look while the Modern preset card still showed as selected.
+    skin: initial?.skin === 'modern' ? 'modern' : 'classic',
   });
+  // Basic vs Advanced. Basic is the whole job for most people: pick a look and
+  // go. Advanced exposes the individual tokens behind those looks — kept behind
+  // a switch so the everyday path is not a wall of sliders.
+  const [advanced, setAdvanced] = useState(false);
+  const [ioError, setIoError] = useState('');
+  const themeFileRef = useRef<HTMLInputElement>(null);
   const [saving, setSaving] = useState(false);
   const [bgError, setBgError] = useState<string>('');
   const fileRef = useRef<HTMLInputElement>(null);
@@ -358,8 +377,110 @@ export function DashboardThemeModal({ initial, onClose, onSave }: Props) {
   // uploaded background image + glass setting so a chosen image survives.
   const applyPreset = (p: ThemePreset) =>
     // `skin` set EXPLICITLY (not just spread) so switching from a Modern preset
-    // to a classic one clears it back to undefined instead of sticking.
-    setTheme((t) => ({ ...t, ...p.value, skin: p.value.skin, presetId: p.id, glassCards: t.glassCards, backgroundImage: t.backgroundImage }));
+    // to a classic one clears it instead of sticking.
+    setTheme((t) => ({
+      ...t,
+      ...p.value,
+      skin: p.value.skin === 'modern' ? 'modern' : 'classic',
+      presetId: p.id,
+      glassCards: t.glassCards,
+      backgroundImage: t.backgroundImage,
+    }));
+
+  // The SKIN is the design language (Modern vs Classic); a preset is just a set
+  // of starting values. Keeping them separate is what lets someone take Modern
+  // Indigo, repaint it in their brand colour and still have a Modern report —
+  // previously the only way to get Modern was to keep a Modern preset untouched.
+  const setSkin = (skin: 'modern' | 'classic') =>
+    setTheme((t) => ({
+      ...t,
+      skin,
+      // Modern needs a soft, rounded card to read as Modern at all; a sharp
+      // 0-radius card with an accent stripe just looks broken. Nudge the card
+      // when it is still at the classic default, never overwrite a real choice.
+      ...(skin === 'modern' && (!t.cardRadius || pxNum(t.cardRadius, 8) < 10)
+        ? { cardStyle: t.cardStyle === 'sharp' ? 'soft' : t.cardStyle, cardRadius: 16 }
+        : {}),
+    }));
+
+  // Which preset is this theme based on, and has the user moved away from it?
+  // Derived by COMPARING against the preset rather than tracking edits: it stays
+  // correct no matter how the value got there (preset click, manual edit, reset,
+  // or a theme saved by an older build).
+  const basePreset = PRESETS.find((p) => p.id === theme.presetId);
+  const isCustomised = React.useMemo(() => {
+    if (!basePreset) return false;
+    const same = (a: unknown, b: unknown) => {
+      if (Array.isArray(a) || Array.isArray(b)) return JSON.stringify(a ?? []) === JSON.stringify(b ?? []);
+      if (a == null || a === '') return b == null || b === '';
+      if (typeof a === 'number' || typeof b === 'number') return pxNum(a as any, NaN) === pxNum(b as any, NaN);
+      return String(a) === String(b);
+    };
+    return Object.entries(basePreset.value).some(([k, v]) => !same((theme as any)[k], v))
+      || (theme.skin === 'modern') !== (basePreset.value.skin === 'modern');
+  }, [basePreset, theme]);
+
+  // Style galleries. Each entry is a designed bundle of the tokens in
+  // lib/dashboard-theme-tokens — the user combines looks, never raw CSS, which
+  // is what keeps a heavily customised report from turning ugly.
+  const setStyle = (key: string, value: string) => setTheme((t) => ({ ...t, [key]: value }));
+
+  const tokens = React.useMemo(() => resolveStyleTokens(theme), [theme]);
+
+  /** Contrast of the accent against the report background (WCAG). Surfaced
+   *  because an on-brand accent is often unreadable on a light card, and nobody
+   *  discovers that until a viewer complains. */
+  const accentContrast = React.useMemo(() => {
+    const bg = /^#?[0-9a-f]{6}$/i.test(String(theme.background ?? '')) ? String(theme.background) : '#ffffff';
+    const ratio = contrastRatio(String(theme.accent || '#2563eb'), bg);
+    return ratio;
+  }, [theme.accent, theme.background]);
+
+  /** Build a full categorical palette from the accent (brand → palette). */
+  const generatePalette = () => {
+    const colors = paletteFromBrandColor(String(theme.accent || '#2563eb'), 8);
+    if (colors.length) setTheme((t) => ({ ...t, dataColors: colors }));
+  };
+
+  /** Export the theme as a .json file so it can be reused or version-controlled. */
+  const exportTheme = () => {
+    const blob = new Blob([JSON.stringify(theme, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'appbi-theme.json';
+    a.style.display = 'none';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+  };
+
+  const importTheme = async (file: File | null | undefined) => {
+    setIoError('');
+    if (!file) return;
+    try {
+      const parsed = JSON.parse(await file.text());
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('shape');
+      // Merge rather than replace: an exported theme from an older build may not
+      // carry every key, and dropping the ones it lacks would silently reset
+      // parts of the report the user never intended to change.
+      setTheme((t) => ({ ...t, ...parsed }));
+    } catch {
+      setIoError(t('dashboards.themeModal.importError'));
+    }
+  };
+
+  /** Back to the preset this theme started from, keeping the uploaded image. */
+  const resetToPreset = () => { if (basePreset) applyPreset(basePreset); };
+  /** Back to what the dashboard had when this dialog opened. */
+  const resetToSaved = () =>
+    setTheme((t) => ({
+      ...t,
+      ...(initial ?? {}),
+      skin: initial?.skin === 'modern' ? 'modern' : 'classic',
+      presetId: initial?.presetId ?? '',
+    }));
 
   // Background image upload (downscaled base64 stored in theme_config).
   const onPickImage = async (file: File | null | undefined) => {
@@ -419,7 +540,10 @@ export function DashboardThemeModal({ initial, onClose, onSave }: Props) {
         ...(typeof theme.bgOverlay === 'number' && theme.bgOverlay > 0 ? { bgOverlay: theme.bgOverlay } : {}),
         ...(theme.glassCards ? { glassCards: true } : {}),
         ...(str(theme.presetId) ? { presetId: str(theme.presetId) } : {}),
-        ...(theme.skin === 'modern' ? { skin: 'modern' as const } : {}),
+        // Written explicitly in BOTH directions: 'classic' has to be stored, not
+        // just omitted, so switching Modern → Classic is a real change instead of
+        // "no value" that a later default could re-interpret.
+        skin: theme.skin === 'modern' ? 'modern' : 'classic',
       };
       await onSave(cleaned);
       onClose();
@@ -440,15 +564,45 @@ export function DashboardThemeModal({ initial, onClose, onSave }: Props) {
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
       {/* Fixed height (not just max-height) so switching tabs never resizes the
           modal — the body scrolls internally instead of the frame stretching. */}
-      <div className="flex w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-[rgb(var(--border-line))] bg-surface-1 shadow-linear-lg" style={{ height: 'min(660px, 90vh)' }}>
+      {/* Sized like the Add-chart dialog (max-w-[92rem]): theming is a
+          side-by-side job — settings on the left, live preview on the right —
+          and a 42rem box left both panes cramped. Fixed height (not just
+          max-height) so switching tabs never resizes the frame; the panes
+          scroll internally. */}
+      <div className="flex w-full max-w-[92rem] flex-col overflow-hidden rounded-2xl border border-[rgb(var(--border-line))] bg-surface-1 shadow-linear-lg" style={{ height: 'min(860px, 92vh)' }}>
         <div className="flex items-center justify-between border-b border-[rgb(var(--border-line))] px-5 py-4">
           <div>
             <h2 className="text-base font-semibold">{t('dashboards.themeModal.title')}</h2>
             <p className="text-xs text-text-tertiary">{t('dashboards.themeModal.subtitle')}</p>
           </div>
-          <button onClick={onClose} className="text-text-tertiary hover:text-text-primary">
-            <X className="h-4 w-4" />
-          </button>
+          <div className="flex items-center gap-2">
+            {/* Advanced exposes the individual tokens behind the styles; Basic
+                keeps the everyday path to "pick a look and go". */}
+            <button
+              type="button"
+              onClick={() => setAdvanced((v) => !v)}
+              className={`rounded-md border px-2 py-1 text-[11px] font-medium transition ${
+                advanced
+                  ? 'border-brand bg-brand/10 text-brand'
+                  : 'border-[rgb(var(--border-line))] bg-surface-2 text-text-secondary hover:bg-surface-3'
+              }`}
+            >
+              {t(advanced ? 'dashboards.themeModal.modeAdvanced' : 'dashboards.themeModal.modeBasic')}
+            </button>
+            <button type="button" onClick={exportTheme} title={t('dashboards.themeModal.exportTheme')}
+              className="rounded-md border border-[rgb(var(--border-line))] bg-surface-2 p-1.5 text-text-secondary hover:bg-surface-3">
+              <Download className="h-3.5 w-3.5" />
+            </button>
+            <button type="button" onClick={() => themeFileRef.current?.click()} title={t('dashboards.themeModal.importTheme')}
+              className="rounded-md border border-[rgb(var(--border-line))] bg-surface-2 p-1.5 text-text-secondary hover:bg-surface-3">
+              <Upload className="h-3.5 w-3.5" />
+            </button>
+            <input ref={themeFileRef} type="file" accept="application/json,.json" className="hidden"
+              onChange={(e) => { void importTheme(e.target.files?.[0]); e.currentTarget.value = ''; }} />
+            <button onClick={onClose} className="text-text-tertiary hover:text-text-primary">
+              <X className="h-4 w-4" />
+            </button>
+          </div>
         </div>
 
         {/* Section tabs */}
@@ -473,16 +627,190 @@ export function DashboardThemeModal({ initial, onClose, onSave }: Props) {
           })}
         </div>
 
-        <div className="flex-1 overflow-y-auto px-5 py-5">
+        <div className="flex min-h-0 flex-1">
+        {/* The settings column gets the remaining width but caps its content:
+            a 60rem-wide row of two inputs is harder to scan, not easier. */}
+        <div className="flex-1 overflow-y-auto px-6 py-5">
+          <div className="mx-auto w-full max-w-4xl">
+          {/* ── STYLES (galleries) ───────────────────────────────── */}
+          {section === 'styles' && (
+            <div className="space-y-5">
+              <p className="text-xs text-text-quaternary">{t('dashboards.themeModal.stylesHint')}</p>
+              {([
+                { key: 'cardTreatment', label: 'dashboards.themeModal.cardStyleHeading', options: CARD_TREATMENTS, current: tokens.cardTreatment },
+                { key: 'chartChrome', label: 'dashboards.themeModal.chartStyleHeading', options: CHART_CHROMES, current: tokens.chartChrome },
+                { key: 'kpiStyle', label: 'dashboards.themeModal.kpiStyleHeading', options: KPI_STYLES, current: tokens.kpiStyle },
+                { key: 'tableStyle', label: 'dashboards.themeModal.tableStyleHeading', options: TABLE_STYLES, current: tokens.tableStyle },
+                { key: 'slicerStyle', label: 'dashboards.themeModal.slicerStyleHeading', options: SLICER_STYLES, current: tokens.slicerStyle },
+              ] as const).map((group) => (
+                <div key={group.key}>
+                  <div className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-text-tertiary">{t(group.label)}</div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {group.options.map((opt) => (
+                      <button
+                        key={opt}
+                        type="button"
+                        onClick={() => setStyle(group.key, opt)}
+                        className={`rounded-md border px-2.5 py-1 text-xs font-medium capitalize transition ${
+                          group.current === opt
+                            ? 'border-brand bg-brand/10 text-brand'
+                            : 'border-[rgb(var(--border-line))] bg-surface-2 text-text-secondary hover:bg-surface-3'
+                        }`}
+                      >
+                        {opt}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ))}
+
+              {advanced && (
+                <div className="space-y-4 rounded-lg border border-[rgb(var(--border-line))] bg-surface-2/40 p-3">
+                  <div className="text-xs font-semibold uppercase tracking-wide text-text-tertiary">{t('dashboards.themeModal.advancedHeading')}</div>
+
+                  {/* Card treatment details */}
+                  <div className="grid grid-cols-2 gap-3">
+                    <label className="flex flex-col gap-1 text-xs">
+                      <span className="text-text-tertiary">{t('dashboards.themeModal.accentBar')}</span>
+                      <select value={String(theme.accentBar ?? tokens.accentBar)} onChange={(e) => update('accentBar' as any, e.target.value as any)} className={inputCls}>
+                        {['top', 'bottom', 'left', 'right', 'none'].map((v) => <option key={v} value={v}>{v}</option>)}
+                      </select>
+                    </label>
+                    <label className="flex flex-col gap-1 text-xs">
+                      <span className="text-text-tertiary">{t('dashboards.themeModal.accentSize')}: {tokens.accentSize}px</span>
+                      <input type="range" min={0} max={8} value={tokens.accentSize}
+                        onChange={(e) => update('accentSize' as any, Number(e.target.value) as any)} />
+                    </label>
+                    <label className="flex flex-col gap-1 text-xs">
+                      <span className="text-text-tertiary">{t('dashboards.themeModal.cardTint')}: {tokens.tint}%</span>
+                      <input type="range" min={0} max={40} value={tokens.tint}
+                        onChange={(e) => update('cardTint' as any, Number(e.target.value) as any)} />
+                    </label>
+                    <label className="flex flex-col gap-1 text-xs">
+                      <span className="text-text-tertiary">{t('dashboards.themeModal.cardBlur')}: {tokens.blur}px</span>
+                      <input type="range" min={0} max={24} value={tokens.blur}
+                        onChange={(e) => update('cardBlur' as any, Number(e.target.value) as any)} />
+                    </label>
+                  </div>
+
+                  {/* Chart chrome details */}
+                  <div className="grid grid-cols-2 gap-3">
+                    <label className="flex flex-col gap-1 text-xs">
+                      <span className="text-text-tertiary">{t('dashboards.themeModal.gridlines')}</span>
+                      <select value={tokens.chart.gridlines} onChange={(e) => update('gridlines' as any, e.target.value as any)} className={inputCls}>
+                        {['none', 'light', 'solid', 'dashed'].map((v) => <option key={v} value={v}>{v}</option>)}
+                      </select>
+                    </label>
+                    <label className="flex flex-col gap-1 text-xs">
+                      <span className="text-text-tertiary">{t('dashboards.themeModal.legendStyle')}</span>
+                      <select value={tokens.chart.legend} onChange={(e) => update('legendStyle' as any, e.target.value as any)} className={inputCls}>
+                        {['default', 'compact', 'hidden'].map((v) => <option key={v} value={v}>{v}</option>)}
+                      </select>
+                    </label>
+                    <label className="flex flex-col gap-1 text-xs">
+                      <span className="text-text-tertiary">{t('dashboards.themeModal.barRadius')}: {tokens.chart.barRadius}px</span>
+                      <input type="range" min={0} max={16} value={tokens.chart.barRadius}
+                        onChange={(e) => update('barRadius' as any, Number(e.target.value) as any)} />
+                    </label>
+                    <label className="flex flex-col gap-1 text-xs">
+                      <span className="text-text-tertiary">{t('dashboards.themeModal.lineWidth')}: {tokens.chart.lineWidth}px</span>
+                      <input type="range" min={1} max={6} step={0.5} value={tokens.chart.lineWidth}
+                        onChange={(e) => update('lineWidth' as any, Number(e.target.value) as any)} />
+                    </label>
+                    <label className="flex flex-col gap-1 text-xs">
+                      <span className="text-text-tertiary">{t('dashboards.themeModal.areaOpacity')}: {Math.round(tokens.chart.areaOpacity * 100)}%</span>
+                      <input type="range" min={0} max={100} value={Math.round(tokens.chart.areaOpacity * 100)}
+                        onChange={(e) => update('areaOpacity' as any, (Number(e.target.value) / 100) as any)} />
+                    </label>
+                    <label className="flex items-center gap-2 pt-5 text-xs">
+                      <input type="checkbox" checked={tokens.chart.axisLine}
+                        onChange={(e) => update('axisLine' as any, e.target.checked as any)} />
+                      <span className="text-text-tertiary">{t('dashboards.themeModal.axisLine')}</span>
+                    </label>
+                  </div>
+
+                  {/* Typography roles */}
+                  <div>
+                    <div className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-text-tertiary">{t('dashboards.themeModal.typographyHeading')}</div>
+                    <label className="mb-2 flex flex-col gap-1 text-xs">
+                      <span className="text-text-tertiary">{t('dashboards.themeModal.typoBase')}: {tokens.typoBase}px</span>
+                      <input type="range" min={11} max={20} value={tokens.typoBase}
+                        onChange={(e) => update('typoBase' as any, Number(e.target.value) as any)} />
+                    </label>
+                    {/* Roles are shown as the resolved scale, not 13 free inputs:
+                        the point is a proportional type system, not 13 chances to
+                        make the report inconsistent. */}
+                    <div className="grid grid-cols-2 gap-x-3 gap-y-0.5">
+                      {TYPOGRAPHY_ROLES.map((r) => (
+                        <div key={r.key} className="flex items-baseline justify-between text-[11px]">
+                          <span className="text-text-quaternary">{r.key}</span>
+                          <span className="tabular-nums text-text-secondary">{Math.round(tokens.typoBase * r.scale * 10) / 10}px</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
           {/* ── MẪU ─────────────────────────────────────────────── */}
           {section === 'mau' && (
             <div className="space-y-5">
+              {/* SKIN — the design language, independent of the colour preset. */}
               <div>
-                <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-text-tertiary">{t('dashboards.themeModal.presetsHeading')}</div>
+                <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-text-tertiary">{t('dashboards.themeModal.skinHeading')}</div>
+                <div className="flex gap-2">
+                  {(['modern', 'classic'] as const).map((sk) => {
+                    const active = (theme.skin === 'modern') === (sk === 'modern');
+                    return (
+                      <button
+                        key={sk}
+                        type="button"
+                        onClick={() => setSkin(sk)}
+                        className={`flex-1 rounded-lg border px-3 py-2 text-left transition ${
+                          active
+                            ? 'border-brand bg-brand/5 ring-1 ring-brand/30'
+                            : 'border-[rgb(var(--border-line))] bg-surface-2 hover:bg-surface-3'
+                        }`}
+                      >
+                        <div className="text-sm font-medium text-text-primary">
+                          {t(sk === 'modern' ? 'dashboards.themeModal.skinModern' : 'dashboards.themeModal.skinClassic')}
+                        </div>
+                        <div className="text-[11px] leading-snug text-text-quaternary">
+                          {t(sk === 'modern' ? 'dashboards.themeModal.skinModernHint' : 'dashboards.themeModal.skinClassicHint')}
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div>
+                <div className="mb-2 flex items-center justify-between gap-2">
+                  <div className="text-xs font-semibold uppercase tracking-wide text-text-tertiary">{t('dashboards.themeModal.presetsHeading')}</div>
+                  {basePreset && isCustomised && (
+                    <div className="flex items-center gap-2">
+                      {/* A preset is a starting point: once anything differs, say so
+                          instead of leaving the card ticked as if it were pristine. */}
+                      <span className="rounded-full bg-surface-3 px-2 py-0.5 text-[11px] text-text-secondary">
+                        {t('dashboards.themeModal.customBasedOn', { preset: t(basePreset.label) })}
+                      </span>
+                      <button type="button" onClick={resetToPreset} className="text-[11px] font-medium text-brand hover:underline">
+                        {t('dashboards.themeModal.resetToPreset')}
+                      </button>
+                    </div>
+                  )}
+                </div>
                 <p className="mb-2.5 text-xs text-text-quaternary">{t('dashboards.themeModal.presetsHint')}</p>
-                <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-4">
+                <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3 lg:grid-cols-4">
                   {PRESETS.map((p) => (
-                    <ThemePresetCard key={p.id} preset={p} active={theme.presetId === p.id} onApply={() => applyPreset(p)} />
+                    <ThemePresetCard
+                      key={p.id}
+                      preset={p}
+                      active={theme.presetId === p.id && !isCustomised}
+                      onApply={() => applyPreset(p)}
+                    />
                   ))}
                 </div>
               </div>
@@ -565,6 +893,15 @@ export function DashboardThemeModal({ initial, onClose, onSave }: Props) {
                 <div className="mb-2 flex items-center justify-between">
                   <div className="text-xs font-semibold uppercase tracking-wide text-text-tertiary">{t('dashboards.themeModal.dataPaletteHeading')}</div>
                   <div className="flex gap-1">
+                    <button
+                      type="button"
+                      onClick={generatePalette}
+                      title={t('dashboards.themeModal.generateFromAccentHint')}
+                      className="inline-flex items-center gap-1 rounded-md border border-[rgb(var(--border-line))] bg-surface-2 px-2 py-1 text-[11px] font-medium text-text-secondary hover:bg-surface-3"
+                    >
+                      <Wand2 className="h-3 w-3" />
+                      {t('dashboards.themeModal.generateFromAccent')}
+                    </button>
                     {PALETTE_PRESETS.map((p) => (
                       <button key={p.label} type="button" onClick={() => update('dataColors', [...p.colors])}
                         className="rounded border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1 text-xs hover:bg-surface-3" title={t(p.label)}>
@@ -713,9 +1050,36 @@ export function DashboardThemeModal({ initial, onClose, onSave }: Props) {
               </div>
             </div>
           )}
+          </div>
+        </div>
+
+        {/* Live preview — every setting lands here immediately, so the user sees
+            the result before committing. Sample data on purpose: it shows every
+            surface at once and stays instant. */}
+        <div className="hidden w-[360px] shrink-0 overflow-y-auto border-l border-[rgb(var(--border-line))] bg-surface-2/40 p-4 md:block xl:w-[440px]">
+          <div className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-text-tertiary">
+            {t('dashboards.themeModal.previewHeading')}
+          </div>
+          <ThemeLivePreview theme={theme} />
+          {ioError && <p className="mt-2 text-[11px] text-danger">{ioError}</p>}
+          {accentContrast != null && accentContrast < 3 && (
+            <div className="mt-2 flex items-start gap-1.5 rounded-md border border-warning/30 bg-warning/10 px-2 py-1.5 text-[11px] text-warning">
+              <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0" />
+              <span>{t('dashboards.themeModal.contrastWarning', { ratio: String(accentContrast) })}</span>
+            </div>
+          )}
+        </div>
         </div>
 
         <div className="flex items-center justify-end gap-2 border-t border-[rgb(var(--border-line))] px-5 py-3">
+          <button
+            type="button"
+            onClick={resetToSaved}
+            className="mr-auto rounded-md px-2 py-1.5 text-xs text-text-tertiary hover:text-text-primary"
+            title={t('dashboards.themeModal.resetAllHint')}
+          >
+            {t('dashboards.themeModal.resetAll')}
+          </button>
           <button onClick={onClose} className="rounded-md border border-[rgb(var(--border-line))] bg-surface-2 px-3 py-1.5 text-sm hover:bg-surface-3">
             {t('common.cancel')}
           </button>

@@ -127,6 +127,17 @@ export function DashboardCanvas({
     return () => ro.disconnect();
   }, []);
 
+  // The committed layout from the parent (a drag commit, Undo/Redo, Discard, page
+  // switch, or reload) is AUTHORITATIVE. Whenever it changes and we are NOT mid-
+  // drag, drop any leftover WORKING overrides so stale drag state can never shadow
+  // the incoming props (the bug where Undo/Discard appeared to do nothing in
+  // Canvas mode). Props never change mid-drag, so an in-flight gesture (`drag`
+  // set) is never disturbed.
+  useEffect(() => {
+    if (drag) return;
+    setLocalOverrides((m) => (Object.keys(m).length ? {} : m));
+  }, [dashboardCharts, drag]);
+
   const designWidth = canvasConfig?.width ?? Math.max(containerWidth || 0, 1440);
   // Fit-to-width WITHOUT the old CSS `transform: scale()` (which rasterised the
   // whole canvas and blurred every chart + label). Instead we keep coordinates
@@ -393,6 +404,11 @@ export function DashboardCanvas({
       const maxZ = Math.max(0, ...hydrated.map((dc) => dc.layout.z ?? 0));
       onLayoutChange([{ id: drag.id, ...finalPos, z: maxZ + 1 }]);
     }
+    // Drop this tile's WORKING override now it's committed — in the SAME batch as
+    // onLayoutChange, so the incoming prop (== finalPos) replaces it with no flash.
+    // Without this the override would live for the whole mount and shadow later
+    // Undo/Discard/page-switch (the reset effect above is the safety net).
+    setLocalOverrides((m) => { if (!(drag.id in m)) return m; const n = { ...m }; delete n[drag.id]; return n; });
     setDrag(null);
     setGuides({ v: [], h: [] });
   }, [drag, localOverrides, onLayoutChange, hydrated]);

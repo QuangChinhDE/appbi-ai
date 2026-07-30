@@ -1562,8 +1562,18 @@ function ExploreChartInner({
   const hasExplicitFontSize = Boolean(
     _style && Object.prototype.hasOwnProperty.call(_style, 'fontSize') && style.fontSize !== 12,
   );
-  // Explicit user font size always wins; otherwise scale to the tile.
-  const fontSize = hasExplicitFontSize ? (style.fontSize as number) : responsive.fontSize;
+  // Explicit user font size always wins; then the DASHBOARD THEME's label size
+  // (it was being written to the theme and read by nobody — the "Label size"
+  // control did nothing); otherwise scale to the tile.
+  const themeLabelFontSize = (() => {
+    const raw = dashboardTheme.labelFontSize;
+    if (raw == null || raw === '') return undefined;
+    const n = typeof raw === 'number' ? raw : parseFloat(String(raw));
+    return Number.isFinite(n) && n > 0 ? n : undefined;
+  })();
+  const fontSize = hasExplicitFontSize
+    ? (style.fontSize as number)
+    : themeLabelFontSize ?? responsive.fontSize;
   const chartTitleFontSize = Math.max(style.chartTitleFontSize ?? fontSize, 14);
   const kpiValueFontSize = style.kpiValueFontSize ?? (hasExplicitFontSize ? style.fontSize : undefined);
   const tableNumberFormat = style.numberFormat && style.numberFormat !== 'compact' ? style.numberFormat : 'auto';
