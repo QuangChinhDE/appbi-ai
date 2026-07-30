@@ -170,12 +170,12 @@ export function DashboardGrid({
   );
 
   // Persist ONLY when the user FINISHES a drag/resize, via onDragStop /
-  // onResizeStop — react-grid-layout hands us the FINAL, already-compacted
-  // layout (compactType="vertical" reflowed the tiles live during the drag).
-  // We save that settled layout as-is. Saving on "stop" (NOT on the many mid-drag
-  // onLayoutChange events) is what keeps the draft from "jumping" on reload — the
-  // bug seen the first time reorder was enabled. Mount-time compaction fires no
-  // stop event, so it's shown but not re-persisted (public stays as-saved).
+  // onResizeStop — react-grid-layout hands us the FINAL settled layout. With the
+  // free-form model (compactType={null} + preventCollision) that layout is simply
+  // the tiles where the user dropped them (no compaction rewrites them). We save
+  // it as-is. Saving on "stop" (NOT on the many mid-drag onLayoutChange events) is
+  // what keeps the draft from "jumping" on reload — the bug seen the first time
+  // reorder was enabled.
   const persistLayout = (newLayout: Layout[]) => {
     if (!onLayoutChange) return;
     const oldById = new Map(layouts.map((l) => [l.i, l]));
@@ -222,15 +222,17 @@ export function DashboardGrid({
       draggableCancel=".no-drag, button, select, input, textarea, a"
       isDraggable={!!onLayoutChange}
       isResizable={!!onLayoutChange}
-      // Grid arrange model = AUTO-PACK (Power BI style, DA-chosen): dragging a
-      // tile between/onto others reflows them LIVE to make room (preventCollision
-      // =false) and the whole grid packs upward (compactType="vertical") so there
-      // are never overlaps or ragged holes. Trade-off (accepted): the grid does
-      // NOT keep an intentional empty gap — every tile flows to the top. Free
-      // pixel placement with gaps is the Canvas mode's job. The final settled
-      // layout is saved on drag/resize STOP so it never "jumps" mid-drag.
-      compactType="vertical"
-      preventCollision={false}
+      // Grid arrange model = FREE-FORM / WYSIWYG (matches the published report,
+      // which renders with compactType={null} + preventCollision). A tile stays
+      // EXACTLY where the user drops it; dragging one tile never reflows the
+      // others (no more "cards suddenly jump down" when a tall tile is moved into
+      // their row). Dropping onto an occupied cell returns the dragged tile to
+      // its origin instead of cascading its neighbours. This keeps the builder
+      // pixel-identical to what viewers see, and keeps existing layouts rendering
+      // exactly as stored. Auto-pack (compactType="vertical") was rejected because
+      // its live reflow moved tiles the user hadn't touched.
+      compactType={null}
+      preventCollision={true}
     >
       {dashboardCharts.map((dc) => {
         const isWidget = dc.widget_type && dc.widget_type !== 'chart';
