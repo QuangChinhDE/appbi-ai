@@ -2124,8 +2124,23 @@ def discard_dashboard_draft(
 
 class HeartbeatRequest(BaseModel):
     """`editing_chart_id` = the dashboard_chart the user currently has focused,
-    so collaborators can see WHERE this user is editing (GG-Sheets cursor)."""
+    `editing_page_id` = the page they currently have open — so collaborators can
+    see WHERE this user is editing (GG-Sheets cursor) and so per-page co-edit
+    rights (owner priority) can be resolved."""
     editing_chart_id: Optional[int] = None
+    editing_page_id: Optional[str] = None
+
+
+class RequestEditRequest(BaseModel):
+    """A non-owner asks the owner for edit rights on a specific page."""
+    page_id: str
+
+
+class RespondEditRequest(BaseModel):
+    """The owner approves/denies a pending edit request on a page."""
+    page_id: str
+    requester_key: str
+    approve: bool
 
 
 @router.post("/{dashboard_id}/editing/heartbeat", status_code=status.HTTP_200_OK)
@@ -2135,24 +2150,80 @@ def dashboard_editing_heartbeat(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Register the caller as currently editing this dashboard (and which tile)
-    and return the OTHER editors active right now + where they're editing.
-    Best-effort, in-memory, TTL-expired (see services/dashboard_presence)."""
+    """Register the caller as currently editing this dashboard (which tile + page)
+    and return the OTHER editors active right now, the caller's per-page edit
+    right (`lock`), and who holds each page. Owner priority is driven by
+    `is_owner` (the caller owns the dashboard). Best-effort, in-memory,
+    TTL-expired (see services/dashboard_presence)."""
     dash = db.query(Dashboard).filter(Dashboard.id == dashboard_id).first()
     if not dash:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dashboard not found")
     require_edit_access(db, current_user, dash, "dashboards")
-    others = dashboard_presence.heartbeat(
+    result = dashboard_presence.heartbeat(
         dashboard_id,
         str(current_user.id),
         getattr(current_user, "full_name", None) or current_user.email,
         current_user.email,
         editing_chart_id=payload.editing_chart_id if payload else None,
+        editing_page_id=payload.editing_page_id if payload else None,
+        is_owner=(dash.owner_id == current_user.id),
     )
     return {
-        "editors": others,
+        **result,
         "current_updated_at": dash.updated_at.isoformat() if dash.updated_at else None,
     }
+
+
+@router.post("/{dashboard_id}/editing/request-edit", status_code=status.HTTP_200_OK)
+def dashboard_editing_request_edit(
+    dashboard_id: int,
+    payload: RequestEditRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """A non-owner (with edit permission) asks the owner for edit rights on a
+    page the owner currently holds. Records a pending request the owner sees on
+    their next heartbeat. Returns the requester's freshly resolved edit-right."""
+    dash = db.query(Dashboard).filter(Dashboard.id == dashboard_id).first()
+    if not dash:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dashboard not found")
+    require_edit_access(db, current_user, dash, "dashboards")
+    lock = dashboard_presence.request_edit(
+        dashboard_id,
+        payload.page_id,
+        str(current_user.id),
+        getattr(current_user, "full_name", None) or current_user.email,
+        current_user.email,
+    )
+    return {"lock": lock}
+
+
+@router.post("/{dashboard_id}/editing/respond", status_code=status.HTTP_200_OK)
+def dashboard_editing_respond(
+    dashboard_id: int,
+    payload: RespondEditRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """The OWNER approves/denies a pending edit request on a page. Approve grants
+    the requester edit rights on that page (co-edit) until they leave; deny just
+    clears the request. Only the dashboard owner may respond."""
+    dash = db.query(Dashboard).filter(Dashboard.id == dashboard_id).first()
+    if not dash:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dashboard not found")
+    if dash.owner_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only the dashboard owner can respond to edit requests",
+        )
+    lock = dashboard_presence.respond_request(
+        dashboard_id,
+        payload.page_id,
+        str(current_user.id),
+        payload.requester_key,
+        bool(payload.approve),
+    )
+    return {"lock": lock}
 
 
 @router.post("/{dashboard_id}/editing/leave", status_code=status.HTTP_200_OK)

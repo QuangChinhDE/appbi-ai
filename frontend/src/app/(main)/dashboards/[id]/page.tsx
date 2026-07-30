@@ -3,7 +3,7 @@
 import React, { useState, useCallback, useEffect } from 'react';
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
-import { ArrowLeft, Plus, Loader2, Edit2, Check, X, Share2, Globe, Sparkles, Trash2, LayoutGrid, Download, MoreHorizontal, ChevronDown, Filter, Clock, GripVertical } from 'lucide-react';
+import { ArrowLeft, Plus, Loader2, Edit2, Check, X, Share2, Globe, Sparkles, Trash2, LayoutGrid, Download, MoreHorizontal, ChevronDown, Filter, Clock, GripVertical, Lock, Hand } from 'lucide-react';
 import { Layout } from 'react-grid-layout';
 import { useQueries, useIsFetching, useQueryClient } from '@tanstack/react-query';
 import {
@@ -30,6 +30,7 @@ import { DashboardChartManagerModal } from '@/components/dashboards/DashboardCha
 import { DashboardHtmlImportModal } from '@/components/dashboards/DashboardHtmlImportModal';
 import { ConfirmDialog } from '@/components/common/ConfirmDialog';
 import { useDashboardPresence } from '@/hooks/use-dashboard-presence';
+import { useCurrentUser } from '@/hooks/use-current-user';
 import { ExportModeContext, PDF_PREVIEW_TAB_ENABLED, openPdfPreviewTab, safePdfFilename } from '@/lib/export-mode';
 import { ExportPdfDialog, type ExportPdfChoices } from '@/components/dashboards/ExportPdfDialog';
 import type { PdfProgress } from '@/lib/export-pdf';
@@ -855,8 +856,26 @@ export default function DashboardDetailPage() {
   // its own filters inside the chart editor, so a focused-tile filter
   // scope here was redundant.
   const [focusedTileId, setFocusedTileId] = useState<number | null>(null);
-  // Phase-B17 — presence: heartbeat my focused tile, learn where others edit.
-  const otherEditors = useDashboardPresence(dashboardId, canEditResource, focusedTileId);
+  // Phase-B17/B19 — presence + per-page co-edit rights: heartbeat my focused
+  // tile + page, learn where others edit, and resolve who may edit THIS page
+  // (owner priority). `editLock.can_edit` is server-resolved.
+  const { data: me } = useCurrentUser();
+  const {
+    editors: otherEditors,
+    lock: editLock,
+    requestEdit,
+    respond: respondEditRequest,
+  } = useDashboardPresence(dashboardId, canEditResource, focusedTileId, activePageId);
+  // Owner of the dashboard (raw owner_id — `user_permission` collapses owner→'full'
+  // so it can't distinguish). Prefer the server's resolved flag once presence has
+  // beat; fall back to the local comparison before the first heartbeat.
+  const isOwner = editLock?.i_am_owner ?? (!!me?.id && me.id === dashboard?.owner_id);
+  // May the current user edit the CURRENT page? Editing is gated on this so a
+  // non-owner viewing a page the owner holds can't drag/resize/theme/add until
+  // the owner approves. Defaults to the base resource right until presence beats.
+  const canEditThisPage = canEditResource && (editLock?.can_edit ?? true);
+  // Pending edit requests on the active page (owner sees these to approve/deny).
+  const pendingEditRequests = editLock?.pending_requests ?? [];
   // Stable color per collaborator (shared by the toolbar avatar + tile ring).
   const colorFor = React.useCallback((key: string) => {
     const palette = ['#e8590c', '#9c36b5', '#1971c2', '#2f9e44', '#e64980', '#0c8599', '#f08c00'];
@@ -2863,7 +2882,11 @@ export default function DashboardDetailPage() {
                         </button>
                       )}
 
-                      {canEditResource && (
+                      {/* Edit actions require edit rights on the CURRENT page
+                          (owner-priority): a non-owner viewing a page the owner
+                          holds keeps Export/Share but loses every mutation entry
+                          point until the owner approves their edit request. */}
+                      {canEditThisPage && (
                         <>
                           <button
                             onClick={() => { setIsPublicShareOpen(true); setIsMoreMenuOpen(false); }}
@@ -2974,7 +2997,7 @@ export default function DashboardDetailPage() {
                 )}
               </div>
 
-              {canEditResource && (
+              {canEditThisPage && (
                 <button
                   onClick={() => setIsAddChartModalOpen(true)}
                   className="inline-flex h-7 items-center gap-1.5 rounded-md bg-brand px-2.5 text-[12px] font-[510] text-white shadow-sm transition-colors hover:bg-brand-hover"
@@ -3112,17 +3135,68 @@ export default function DashboardDetailPage() {
           ref={dashboardContentRef}
           className={draftSlicerClusterLayout?.position === 'left' ? 'min-w-0 flex-1' : ''}
         >
+        {/* Phase-B19 — per-page co-edit banners (owner-priority + request→approve).
+            Never shown during PDF export. */}
+        {!isExportingPdf && canEditResource && editLock && !editLock.i_am_owner && !editLock.can_edit && activePageId && (
+          <div className="mb-2 flex items-center justify-between gap-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[13px] text-amber-200">
+            <span className="flex items-center gap-2">
+              <Lock className="h-3.5 w-3.5 shrink-0" />
+              {editLock.holder_name
+                ? t('dashboards.detail.pageHeldBy', { name: editLock.holder_name })
+                : t('dashboards.detail.pageViewOnly')}
+            </span>
+            {pendingEditRequests.some((r) => r.requester_key === me?.id) ? (
+              <span className="shrink-0 text-amber-300/80">{t('dashboards.detail.editRequested')}</span>
+            ) : (
+              <button
+                type="button"
+                onClick={() => requestEdit(activePageId)}
+                className="shrink-0 rounded-md bg-amber-500/20 px-2.5 py-1 text-[12px] font-[510] text-amber-100 transition-colors hover:bg-amber-500/30"
+              >
+                {t('dashboards.detail.requestEdit')}
+              </button>
+            )}
+          </div>
+        )}
+        {!isExportingPdf && isOwner && activePageId && pendingEditRequests.length > 0 && (
+          <div className="mb-2 space-y-1.5 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2">
+            {pendingEditRequests.map((r) => (
+              <div key={r.requester_key} className="flex items-center justify-between gap-3 text-[13px] text-amber-200">
+                <span className="flex items-center gap-2">
+                  <Hand className="h-3.5 w-3.5 shrink-0" />
+                  {t('dashboards.detail.editRequestFrom', { name: r.name || r.email || '?' })}
+                </span>
+                <span className="flex shrink-0 items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => respondEditRequest(activePageId, r.requester_key, true)}
+                    className="rounded-md bg-emerald-500/25 px-2.5 py-1 text-[12px] font-[510] text-emerald-100 transition-colors hover:bg-emerald-500/35"
+                  >
+                    {t('dashboards.detail.approve')}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => respondEditRequest(activePageId, r.requester_key, false)}
+                    className="rounded-md bg-[rgba(255,255,255,0.08)] px-2.5 py-1 text-[12px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.12)]"
+                  >
+                    {t('dashboards.detail.deny')}
+                  </button>
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
         <ExportModeContext.Provider value={isExportingPdf}>
         {(dashboard?.layout_mode ?? 'grid') === 'canvas' ? (
           <DashboardCanvas
             dashboardId={dashboardId}
             dashboardCharts={visibleDashboardCharts}
             canvasConfig={dashboard?.canvas_config}
-            canEdit={canEditResource}
-            allowAppearanceEdit={canEditResource}
-            onLayoutChange={canEditResource ? handleCanvasLayoutChange : undefined}
-            onRemoveChart={canEditResource ? handleRemoveChart : undefined}
-            onEditWidget={canEditResource ? setEditingWidgetId : undefined}
+            canEdit={canEditThisPage}
+            allowAppearanceEdit={canEditThisPage}
+            onLayoutChange={canEditThisPage ? handleCanvasLayoutChange : undefined}
+            onRemoveChart={canEditThisPage ? handleRemoveChart : undefined}
+            onEditWidget={canEditThisPage ? setEditingWidgetId : undefined}
             removingChartId={removingChartId}
             filtersReady={filtersReady}
             globalFilters={effectiveFiltersWithParams}
@@ -3133,25 +3207,25 @@ export default function DashboardDetailPage() {
             onChartDataLoaded={semanticColumnsResult.columns.length > 0 ? undefined : handleChartDataLoaded}
             onSelectCrossFilter={handleCrossFilterChange}
             availablePages={dashboardPages}
-            onMoveChartToPage={canEditResource ? handleMoveChartToPage : undefined}
+            onMoveChartToPage={canEditThisPage ? handleMoveChartToPage : undefined}
             emptyMessage={emptyPageMessage}
             focusedDashboardChartId={focusedTileId}
             onFocusChart={setFocusedTileId}
             params={paramValues}
             onParamChange={handleParamChange}
-            onBindParameter={canEditResource ? setBindingChartId : undefined}
+            onBindParameter={canEditThisPage ? setBindingChartId : undefined}
           />
         ) : (
           <DashboardGrid
             dashboardId={dashboardId}
             dashboardCharts={visibleDashboardCharts}
-            canEdit={canEditResource}
-            allowAppearanceEdit={canEditResource}
+            canEdit={canEditThisPage}
+            allowAppearanceEdit={canEditThisPage}
             themeConfig={dashboard?.theme_config}
-            onLayoutChange={canEditResource ? handleLayoutChange : undefined}
+            onLayoutChange={canEditThisPage ? handleLayoutChange : undefined}
             presenceByChart={presenceByChart}
-            onRemoveChart={canEditResource ? handleRemoveChart : undefined}
-            onEditWidget={canEditResource ? setEditingWidgetId : undefined}
+            onRemoveChart={canEditThisPage ? handleRemoveChart : undefined}
+            onEditWidget={canEditThisPage ? setEditingWidgetId : undefined}
             removingChartId={removingChartId}
             filtersReady={filtersReady}
             globalFilters={effectiveFiltersWithParams}
@@ -3162,13 +3236,13 @@ export default function DashboardDetailPage() {
             onChartDataLoaded={semanticColumnsResult.columns.length > 0 ? undefined : handleChartDataLoaded}
             onSelectCrossFilter={handleCrossFilterChange}
             availablePages={dashboardPages}
-            onMoveChartToPage={canEditResource ? handleMoveChartToPage : undefined}
+            onMoveChartToPage={canEditThisPage ? handleMoveChartToPage : undefined}
             emptyMessage={emptyPageMessage}
             focusedDashboardChartId={focusedTileId}
             onFocusChart={setFocusedTileId}
             params={paramValues}
             onParamChange={handleParamChange}
-            onBindParameter={canEditResource ? setBindingChartId : undefined}
+            onBindParameter={canEditThisPage ? setBindingChartId : undefined}
           />
         )}
         </ExportModeContext.Provider>
