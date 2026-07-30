@@ -169,6 +169,177 @@ def validate_and_lock_filters(db: Session, dash: Dashboard, filters: list[dict])
 # Get-or-create the stable managed link
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Embed origin allowlist ("only these sites may iframe this link")
+# ---------------------------------------------------------------------------
+#
+# What this protects, and what it cannot: the ONLY reliable way to know which
+# site is framing us is the browser itself, via `Content-Security-Policy:
+# frame-ancestors` on the embed page (a page cannot lie to the browser about its
+# own origin). Requests the report makes from INSIDE the iframe carry the
+# report's own origin, not the host page's, so an allowlist check on the data
+# endpoints could never see the embedding domain. Hence: this module owns the
+# policy, the frontend middleware turns it into `frame-ancestors` + a refusal for
+# non-iframe opens, and the real anti-scraping controls remain the short TTL,
+# the rotating token and the server-locked filters.
+
+MAX_ALLOWED_ORIGINS = 20
+
+
+class InvalidEmbedOrigin(ValueError):
+    """A declared origin is not a usable allowlist entry."""
+
+
+def _split_origin(origin: str) -> tuple[str, str, str]:
+    """Split into (scheme, host, port) without pulling in urlparse quirks."""
+    raw = origin.strip().rstrip("/")
+    if "://" not in raw:
+        raise InvalidEmbedOrigin(
+            f"{origin!r}: include the scheme, e.g. https://app.base.vn"
+        )
+    scheme, _, rest = raw.partition("://")
+    scheme = scheme.lower()
+    if scheme not in ("https", "http"):
+        raise InvalidEmbedOrigin(f"{origin!r}: only http:// and https:// are supported")
+    if "/" in rest or "?" in rest or "#" in rest:
+        raise InvalidEmbedOrigin(
+            f"{origin!r}: an origin is scheme + host + optional port, with no path"
+        )
+    host, _, port = rest.partition(":")
+    host = host.lower()
+    if not host:
+        raise InvalidEmbedOrigin(f"{origin!r}: missing host")
+    if port and not port.isdigit():
+        raise InvalidEmbedOrigin(f"{origin!r}: port must be numeric")
+    return scheme, host, port
+
+
+def normalize_allowed_origins(values) -> list[str]:
+    """Validate + canonicalise a declared allowlist.
+
+    Accepts exact origins (``https://app.base.vn``, ``http://localhost:3000``)
+    and single-label wildcards (``https://*.base.vn``). Rejects a bare ``*``:
+    "embeddable from anywhere" is expressed by declaring NO allowlist, so a
+    typo'd star can never silently disable the restriction it was meant to add.
+    """
+    if values is None:
+        return []
+    if isinstance(values, str):
+        values = [values]
+    if not isinstance(values, (list, tuple)):
+        raise InvalidEmbedOrigin("allowed_origins must be a list of origins")
+    out: list[str] = []
+    for raw in values:
+        text = str(raw or "").strip()
+        if not text:
+            continue
+        if text == "*":
+            raise InvalidEmbedOrigin(
+                "'*' is not accepted — leave allowed_origins empty to keep the link embeddable anywhere"
+            )
+        scheme, host, port = _split_origin(text)
+        if host.startswith("*."):
+            bare = host[2:]
+            if not bare or "*" in bare or "." not in bare:
+                raise InvalidEmbedOrigin(
+                    f"{raw!r}: a wildcard must cover a real parent domain, e.g. https://*.base.vn"
+                )
+        elif "*" in host:
+            raise InvalidEmbedOrigin(
+                f"{raw!r}: a wildcard is only allowed as the leftmost label, e.g. https://*.base.vn"
+            )
+        canonical = f"{scheme}://{host}" + (f":{port}" if port else "")
+        if canonical not in out:
+            out.append(canonical)
+    if len(out) > MAX_ALLOWED_ORIGINS:
+        raise InvalidEmbedOrigin(f"at most {MAX_ALLOWED_ORIGINS} origins are allowed")
+    return out
+
+
+def origin_allowed(origin: str | None, allowlist: list[str] | None) -> bool:
+    """Does `origin` (an Origin header or a Referer's origin) match the allowlist?
+
+    An empty allowlist means "no restriction configured" → allowed.
+
+    Wildcards match on a DOT BOUNDARY only, which is the whole point of doing
+    this by hand: a naive ``endswith('base.vn')`` would also accept
+    ``evil-base.vn``, and a naive ``startswith`` would accept
+    ``base.vn.evil.com``. Both are real bypasses, so both are tested.
+    """
+    rules = allowlist or []
+    if not rules:
+        return True
+    if not origin:
+        return False
+    try:
+        scheme, host, port = _split_origin(origin)
+    except InvalidEmbedOrigin:
+        return False
+    for rule in rules:
+        try:
+            r_scheme, r_host, r_port = _split_origin(rule)
+        except InvalidEmbedOrigin:
+            continue
+        if scheme != r_scheme:
+            continue
+        # Absent port means the scheme default; treat "" and the default alike.
+        default_port = "443" if scheme == "https" else "80"
+        if (port or default_port) != (r_port or default_port):
+            continue
+        if r_host.startswith("*."):
+            parent = r_host[2:]
+            # A wildcard covers SUBDOMAINS, not the parent itself, and only on a
+            # label boundary.
+            if host.endswith("." + parent) and host != parent:
+                return True
+            continue
+        if host == r_host:
+            return True
+    return False
+
+
+def origin_of(url_or_origin: str | None) -> str | None:
+    """Reduce a Referer URL to its origin. Returns None when unusable."""
+    if not url_or_origin:
+        return None
+    text = str(url_or_origin).strip()
+    if "://" not in text:
+        return None
+    scheme, _, rest = text.partition("://")
+    authority = rest.split("/", 1)[0]
+    if not authority:
+        return None
+    return f"{scheme.lower()}://{authority.lower()}"
+
+
+def resolve_pat_allowed_origins(pat) -> list[str]:
+    """The allowlist declared on a PAT (empty list when unrestricted)."""
+    raw = getattr(pat, "embed_allowed_origins", None)
+    return [str(v) for v in raw] if isinstance(raw, list) else []
+
+
+def embed_policy_for_token(token: str, db: Session) -> dict:
+    """Framing policy for an embed grant token, for the frontend middleware.
+
+    Deliberately returns nothing but the policy: this is called without
+    authentication (the token IS the capability) on every iframe page load, so it
+    must not become a metadata oracle. An unknown/expired token yields the
+    unrestricted default rather than an error — the page itself still refuses the
+    token, and answering "that token doesn't exist" here would turn this into a
+    probe endpoint.
+    """
+    origins: list[str] = []
+    if token and token.startswith(EMBED_GRANT_PREFIX):
+        grant = (
+            db.query(EmbedGrant)
+            .filter(EmbedGrant.token_hash == _hash_token(token))
+            .first()
+        )
+        if grant is not None and isinstance(grant.allowed_origins, list):
+            origins = [str(v) for v in grant.allowed_origins]
+    return {"allowed_origins": origins, "enforced": bool(origins)}
+
+
 def get_or_create_embed_link(
     db: Session,
     dash: Dashboard,
@@ -284,6 +455,7 @@ def mint_embed_grant(
     created_by,
     ttl_seconds: int,
     header: str | None = None,
+    allowed_origins: list[str] | None = None,
 ) -> tuple[str, EmbedGrant]:
     raw = f"{EMBED_GRANT_PREFIX}{secrets.token_hex(EMBED_GRANT_HEX_CHARS // 2)}"
     grant = EmbedGrant(
@@ -293,6 +465,7 @@ def mint_embed_grant(
         created_by=created_by,
         expires_at=datetime.now(timezone.utc) + timedelta(seconds=ttl_seconds),
         header=sanitize_embed_header(header),
+        allowed_origins=list(allowed_origins) if allowed_origins else None,
     )
     db.add(grant)
     db.commit()

@@ -761,6 +761,25 @@ export function ChartDetailModal({
               <div className="border-b border-brand/20 bg-brand/10 px-5 py-3 text-[11px] text-brand">
                 {t('dashboards.chartDetail.appearanceTileHint')}
               </div>
+              {/* Per-tile "transparent background" — rendered here (not inside the
+                  chart-type-specific ExploreChartConfig sections, which don't all
+                  include it, e.g. KPI) so it's available for EVERY chart type.
+                  Drops the tile card bg/border/shadow so the dashboard background
+                  shows through. Saved into styleConfigOverride like other edits. */}
+              <label className="flex items-center gap-2 border-b border-[rgb(var(--border-line))] bg-surface-1 px-5 py-3 text-[13px] text-text-secondary">
+                <input
+                  type="checkbox"
+                  checked={draftStyleConfig.transparentBackground === true}
+                  onChange={(e) =>
+                    setDraftStyleConfig((prev) => ({ ...prev, transparentBackground: e.target.checked }))
+                  }
+                  className="h-4 w-4"
+                />
+                {t('explore.config.transparentBackground')}
+                <span className="text-[11px] text-text-tertiary">
+                  ({t('dashboards.chartDetail.transparentBackgroundHint')})
+                </span>
+              </label>
               {!chart ? (
                 <div className="flex h-full items-center justify-center p-6">
                   <Loader2 className="h-6 w-6 animate-spin text-brand" />

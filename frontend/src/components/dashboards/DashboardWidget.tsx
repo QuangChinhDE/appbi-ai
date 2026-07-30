@@ -39,6 +39,12 @@ export function DashboardWidget({ widget, params = {}, onParamChange }: Props) {
           onChange={(v) => onParamChange?.(cfg.paramName ?? '', v)}
         />
       );
+    case 'section_header':
+      return <SectionHeaderWidget config={cfg} />;
+    case 'callout':
+      return <CalloutWidget config={cfg} />;
+    case 'hero_strip':
+      return <HeroStripWidget config={cfg} />;
     default:
       return (
         <div className="flex h-full items-center justify-center rounded-xl border border-dashed border-[rgb(var(--border-strong))] bg-surface-2 text-xs text-text-tertiary">
@@ -172,6 +178,87 @@ function ShapeWidget({ config }: { config: any }) {
       className="dashboard-tile h-full w-full"
       style={{ background: color, borderRadius: kind === 'circle' ? '9999px' : radius, opacity: config.opacity ?? 0.85 }}
     />
+  );
+}
+
+// ── Report "element" widgets (decorative inserts, Modern/SaaS skin) ──────────
+// These are frameless (they draw their own styling) and pull the report accent
+// from the theme CSS var so they match whichever skin/preset is active.
+const ACCENT = 'var(--dashboard-accent, #5b5bd6)';
+
+function SectionHeaderWidget({ config }: { config: any }) {
+  const eyebrow = String(config.eyebrow ?? '');
+  const title = String(config.title ?? '');
+  const subtitle = String(config.subtitle ?? '');
+  return (
+    <div className="flex h-full w-full flex-col justify-center gap-1 px-1">
+      <div className="flex items-center gap-2.5">
+        <span className="h-4 w-1 shrink-0 rounded-full" style={{ background: ACCENT }} />
+        <div className="min-w-0">
+          {eyebrow && (
+            <div className="text-[10px] font-semibold uppercase tracking-[0.14em]" style={{ color: ACCENT }}>
+              {eyebrow}
+            </div>
+          )}
+          {title && <div className="truncate text-[15px] font-semibold leading-tight text-text-primary">{title}</div>}
+        </div>
+      </div>
+      {subtitle && <div className="ml-3.5 truncate text-xs text-text-tertiary">{subtitle}</div>}
+    </div>
+  );
+}
+
+function HeroStripWidget({ config }: { config: any }) {
+  const title = String(config.title ?? '');
+  const subtitle = String(config.subtitle ?? '');
+  const metric = String(config.metric ?? '');
+  const metricLabel = String(config.metricLabel ?? '');
+  return (
+    <div
+      className="relative flex h-full w-full items-center justify-between gap-4 overflow-hidden rounded-2xl px-5 py-4"
+      style={{
+        background: `linear-gradient(120deg, color-mix(in srgb, ${ACCENT} 14%, transparent), transparent 70%)`,
+        border: `1px solid color-mix(in srgb, ${ACCENT} 18%, transparent)`,
+      }}
+    >
+      <span className="absolute left-0 top-0 h-full w-1" style={{ background: ACCENT }} />
+      <div className="min-w-0">
+        {title && <div className="truncate text-lg font-bold text-text-primary">{title}</div>}
+        {subtitle && <div className="mt-0.5 truncate text-xs text-text-secondary">{subtitle}</div>}
+      </div>
+      {metric && (
+        <div className="shrink-0 text-right">
+          <div className="text-2xl font-bold tabular-nums" style={{ color: ACCENT }}>{metric}</div>
+          {metricLabel && <div className="text-[10px] uppercase tracking-wide text-text-tertiary">{metricLabel}</div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CalloutWidget({ config }: { config: any }) {
+  const title = String(config.title ?? '');
+  const text = String(config.text ?? '');
+  const tone = String(config.tone ?? 'accent') as 'accent' | 'good' | 'warn' | 'bad';
+  const color =
+    tone === 'good' ? 'var(--dashboard-good, #12b886)'
+    : tone === 'warn' ? 'var(--dashboard-warn, #c77d12)'
+    : tone === 'bad' ? 'var(--dashboard-bad, #e5604d)'
+    : ACCENT;
+  return (
+    <div
+      className="flex h-full w-full gap-3 overflow-auto rounded-xl px-4 py-3"
+      style={{
+        background: `color-mix(in srgb, ${color} 10%, transparent)`,
+        border: `1px solid color-mix(in srgb, ${color} 22%, transparent)`,
+      }}
+    >
+      <span className="w-1 shrink-0 rounded-full" style={{ background: color }} />
+      <div className="min-w-0">
+        {title && <div className="text-[13px] font-semibold text-text-primary">{title}</div>}
+        {text && <div className="mt-0.5 text-xs leading-relaxed text-text-secondary">{text}</div>}
+      </div>
+    </div>
   );
 }
 

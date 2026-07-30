@@ -3,7 +3,7 @@
 import React, { useState, useCallback, useEffect } from 'react';
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
-import { ArrowLeft, Plus, Loader2, Edit2, Check, X, Share2, Globe, Sparkles, Trash2, LayoutGrid, Download, MoreHorizontal, ChevronDown, Filter, RefreshCw, GripVertical } from 'lucide-react';
+import { ArrowLeft, Plus, Loader2, Edit2, Check, X, Share2, Globe, Sparkles, Trash2, LayoutGrid, Download, MoreHorizontal, ChevronDown, Filter, Clock, GripVertical, Lock, Hand } from 'lucide-react';
 import { Layout } from 'react-grid-layout';
 import { useQueries, useIsFetching, useQueryClient } from '@tanstack/react-query';
 import {
@@ -21,7 +21,7 @@ import { DashboardGrid } from '@/components/dashboards/DashboardGrid';
 import { DashboardThemeProvider } from '@/components/dashboards/DashboardThemeProvider';
 import { DashboardThemeModal } from '@/components/dashboards/DashboardThemeModal';
 import { DashboardCanvas } from '@/components/dashboards/DashboardCanvas';
-import { Palette, Move } from 'lucide-react';
+import { Palette, Move, Undo2, Redo2 } from 'lucide-react';
 import { ChartTile } from '@/components/dashboards/ChartTile';
 import { WidgetEditModal } from '@/components/dashboards/WidgetEditModal';
 import { ParameterBindModal } from '@/components/dashboards/ParameterBindModal';
@@ -30,6 +30,7 @@ import { DashboardChartManagerModal } from '@/components/dashboards/DashboardCha
 import { DashboardHtmlImportModal } from '@/components/dashboards/DashboardHtmlImportModal';
 import { ConfirmDialog } from '@/components/common/ConfirmDialog';
 import { useDashboardPresence } from '@/hooks/use-dashboard-presence';
+import { useCurrentUser } from '@/hooks/use-current-user';
 import { ExportModeContext, PDF_PREVIEW_TAB_ENABLED, openPdfPreviewTab, safePdfFilename } from '@/lib/export-mode';
 import { ExportPdfDialog, type ExportPdfChoices } from '@/components/dashboards/ExportPdfDialog';
 import type { PdfProgress } from '@/lib/export-pdf';
@@ -299,6 +300,10 @@ export default function DashboardDetailPage() {
   >({});
   const hasLocalLayoutChanges = Object.keys(localLayoutOverrides).length > 0;
   const hasAnyPendingChanges = hasLocalLayoutChanges || Boolean(serverDashboard?.has_draft);
+  // Always-current mirror of localLayoutOverrides so undo-capture can read the
+  // pre-change value without adding it to every handler's dep array.
+  const localLayoutOverridesRef = React.useRef(localLayoutOverrides);
+  localLayoutOverridesRef.current = localLayoutOverrides;
 
   // Memoized dashboard view: server data overlaid with (1) BE draft_layouts,
   // (2) in-progress local edits. Children see a normal dashboard_charts list.
@@ -371,6 +376,86 @@ export default function DashboardDetailPage() {
   const updateDraftLayoutMutation = useUpdateDashboardDraftLayout();
   const publishDashboardMutation = usePublishDashboard();
   const discardDraftMutation = useDiscardDashboardDraft();
+
+  // ── Undo / Redo (Ctrl+Z / Ctrl+Shift+Z) ───────────────────────────────────
+  // SCOPE by design (see plan): LAYOUT (Tier-1 `localLayoutOverrides`, a pure
+  // client buffer that Save-draft flushes) + THEME (re-applied via the SAME live
+  // update a manual theme change uses). Filters/slicers (auto-staged to the
+  // server draft) and widget/chart add-remove (live create/delete) are NOT
+  // undoable — those actions instead call resetUndo() so a restore can never
+  // desync the multi-tier draft/save flow. History caps at 50, lives in refs; a
+  // tick state re-renders the toolbar buttons.
+  type UndoEntry =
+    | { kind: 'layout'; prev: Record<number, Record<string, any>>; next: Record<number, Record<string, any>> }
+    | { kind: 'theme'; prev: any; next: any };
+  const undoRef = React.useRef<UndoEntry[]>([]);
+  const redoRef = React.useRef<UndoEntry[]>([]);
+  const [, setHistoryTick] = React.useState(0);
+  const bumpHistory = () => setHistoryTick((n) => n + 1);
+  const pushUndo = (entry: UndoEntry) => {
+    undoRef.current.push(entry);
+    if (undoRef.current.length > 50) undoRef.current.shift();
+    redoRef.current = []; // a fresh action invalidates the redo branch
+    bumpHistory();
+  };
+  const resetUndo = () => {
+    if (undoRef.current.length || redoRef.current.length) {
+      undoRef.current = [];
+      redoRef.current = [];
+      bumpHistory();
+    }
+  };
+  // Apply a theme_config (live update) — reused by the modal onSave and by theme
+  // undo/redo so both go through one path. Persist, then AUTHORITATIVELY patch the
+  // detail cache so the theme provider repaints live. A plain invalidate+refetch
+  // did NOT repaint in-session: the dashboard GET can be response-cached and
+  // return the pre-change theme, leaving the cached dashboard stale until a hard
+  // reload. setQueryData (the same pattern the draft-layout save uses, which is
+  // why layout edits repaint live) guarantees the in-session restyle for BOTH a
+  // manual theme change AND theme undo/redo. Only the LIST is invalidated (card
+  // refresh); the detail query is written directly to avoid racing a stale refetch.
+  const applyThemeConfig = async (theme: any) => {
+    // Optimistic-first: repaint the cached dashboard IMMEDIATELY so a manual theme
+    // change and (especially) Ctrl+Z undo feel instant, then persist in the
+    // background. On success reconcile with the server-normalized value; on
+    // failure a reload reconciles (the theme is already visually applied).
+    queryClient.setQueryData(['dashboards', dashboardId], (old: any) =>
+      old ? { ...old, theme_config: theme } : old);
+    try {
+      const updated = await dashboardApi.update(dashboardId, { theme_config: theme });
+      queryClient.setQueryData(['dashboards', dashboardId], (old: any) =>
+        old ? { ...old, theme_config: updated?.theme_config ?? theme } : old);
+      queryClient.invalidateQueries({ queryKey: ['dashboards'], exact: true });
+    } catch (err) {
+      console.error('Failed to persist theme:', err);
+    }
+  };
+  const applyUndoEntry = (entry: UndoEntry, dir: 'prev' | 'next') => {
+    const value = dir === 'prev' ? entry.prev : entry.next;
+    if (entry.kind === 'layout') setLocalLayoutOverrides(value);
+    else void applyThemeConfig(value);
+  };
+  const doUndo = () => {
+    const entry = undoRef.current.pop();
+    if (!entry) { toast.info(t('dashboards.detail.nothingToUndo')); return; }
+    redoRef.current.push(entry);
+    applyUndoEntry(entry, 'prev');
+    bumpHistory();
+    toast.success(t(entry.kind === 'layout' ? 'dashboards.detail.undoLayout' : 'dashboards.detail.undoTheme'));
+  };
+  const doRedo = () => {
+    const entry = redoRef.current.pop();
+    if (!entry) return;
+    undoRef.current.push(entry);
+    applyUndoEntry(entry, 'next');
+    bumpHistory();
+    toast.success(t('dashboards.detail.redoDone'));
+  };
+  const canUndo = undoRef.current.length > 0;
+  const canRedo = redoRef.current.length > 0;
+  // Latest-closure ref so the once-mounted keydown listener always calls current.
+  const undoActionsRef = React.useRef<{ undo: () => void; redo: () => void }>({ undo: () => {}, redo: () => {} });
+  undoActionsRef.current = { undo: doUndo, redo: doRedo };
   const dashboardPages = React.useMemo(
     () => normalizeDashboardPages(localPagesConfig ?? dashboard?.pages_config),
     [dashboard?.pages_config, localPagesConfig],
@@ -771,8 +856,26 @@ export default function DashboardDetailPage() {
   // its own filters inside the chart editor, so a focused-tile filter
   // scope here was redundant.
   const [focusedTileId, setFocusedTileId] = useState<number | null>(null);
-  // Phase-B17 — presence: heartbeat my focused tile, learn where others edit.
-  const otherEditors = useDashboardPresence(dashboardId, canEditResource, focusedTileId);
+  // Phase-B17/B19 — presence + per-page co-edit rights: heartbeat my focused
+  // tile + page, learn where others edit, and resolve who may edit THIS page
+  // (owner priority). `editLock.can_edit` is server-resolved.
+  const { data: me } = useCurrentUser();
+  const {
+    editors: otherEditors,
+    lock: editLock,
+    requestEdit,
+    respond: respondEditRequest,
+  } = useDashboardPresence(dashboardId, canEditResource, focusedTileId, activePageId);
+  // Owner of the dashboard (raw owner_id — `user_permission` collapses owner→'full'
+  // so it can't distinguish). Prefer the server's resolved flag once presence has
+  // beat; fall back to the local comparison before the first heartbeat.
+  const isOwner = editLock?.i_am_owner ?? (!!me?.id && me.id === dashboard?.owner_id);
+  // May the current user edit the CURRENT page? Editing is gated on this so a
+  // non-owner viewing a page the owner holds can't drag/resize/theme/add until
+  // the owner approves. Defaults to the base resource right until presence beats.
+  const canEditThisPage = canEditResource && (editLock?.can_edit ?? true);
+  // Pending edit requests on the active page (owner sees these to approve/deny).
+  const pendingEditRequests = editLock?.pending_requests ?? [];
   // Stable color per collaborator (shared by the toolbar avatar + tile ring).
   const colorFor = React.useCallback((key: string) => {
     const palette = ['#e8590c', '#9c36b5', '#1971c2', '#2f9e44', '#e64980', '#0c8599', '#f08c00'];
@@ -804,13 +907,10 @@ export default function DashboardDetailPage() {
   // since pane state is a viewing preference.
   const [isFilterPaneOpen, setIsFilterPaneOpen] = useState(false);
 
-  // Dashboard perf #5 — snapshot "Refresh data" state.
-  const [isRefreshingSnapshots, setIsRefreshingSnapshots] = useState(false);
+  // Read-only snapshot freshness ("data as of"). Refresh itself now lives in the
+  // Dataset (scheduled / manual Sync & Publish, with history) — the per-dashboard
+  // "Refresh data" action + its polling were removed, so we only READ freshness.
   const [snapshotAsOf, setSnapshotAsOf] = useState<string | null>(null);
-  const snapshotPollRef = React.useRef<ReturnType<typeof setInterval> | null>(null);
-  React.useEffect(() => () => {
-    if (snapshotPollRef.current) clearInterval(snapshotPollRef.current);
-  }, []);
   // Populate the "Số tính đến" label on load (not only after a Refresh) so the
   // builder always shows when the snapshot data was last updated.
   useEffect(() => {
@@ -821,74 +921,6 @@ export default function DashboardDetailPage() {
       .catch(() => { /* materialization off / not eligible → no label */ });
     return () => { cancelled = true; };
   }, [dashboardId]);
-
-  // #6 — invalidate ONLY this dashboard's chart DATA (not the whole 'charts'
-  // group across every dashboard, and not chart METADATA). After a snapshot
-  // rebuild only the data changed, so refetching each tile's data is enough —
-  // avoids the refetch storm the broad invalidate caused.
-  const invalidateDashboardChartData = useCallback(() => {
-    const ids = Array.from(new Set(
-      (dashboard?.dashboard_charts ?? [])
-        .map((dc) => dc.chart_id)
-        .filter((id): id is number => typeof id === 'number'),
-    ));
-    if (ids.length === 0) {
-      queryClient.invalidateQueries({ queryKey: ['charts'] });  // fallback
-      return;
-    }
-    for (const cid of ids) {
-      queryClient.invalidateQueries({ queryKey: ['charts', cid, 'data'] });
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dashboard, queryClient]);
-
-  const handleRefreshSnapshots = useCallback(async () => {
-    if (isRefreshingSnapshots) return;
-    setIsRefreshingSnapshots(true);
-    const stopPoll = () => {
-      if (snapshotPollRef.current) { clearInterval(snapshotPollRef.current); snapshotPollRef.current = null; }
-    };
-    const done = (asOf: string | null) => {
-      stopPoll();
-      setSnapshotAsOf(asOf);
-      invalidateDashboardChartData();  // refetch this dashboard's tiles against fresh snapshots
-      setIsRefreshingSnapshots(false);
-      if (asOf) {
-        const stamp = new Date(asOf).toLocaleString([], { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
-        toast.success(t('dashboards.detail.snapshotRefreshed', { time: stamp }));
-      } else {
-        toast.success(t('dashboards.detail.snapshotRefreshedNoop'));
-      }
-    };
-    try {
-      // ASYNC: returns immediately; the rebuild runs in the background so the
-      // request never hangs (fixes the sync-refresh + nginx-120s timeout).
-      const res = await dashboardApi.refreshSnapshots(dashboardId);
-      if (!res?.building) {
-        done(res?.as_of ?? null);  // nothing materialized / finished instantly
-        return;
-      }
-      // Rebuild in flight → poll freshness until it clears (10-min safety cap).
-      setSnapshotAsOf(res?.as_of ?? null);
-      const deadline = Date.now() + 10 * 60 * 1000;
-      stopPoll();
-      snapshotPollRef.current = setInterval(async () => {
-        try {
-          const info = await dashboardApi.getSnapshotInfo(dashboardId);
-          if (!info?.building || Date.now() > deadline) {
-            done(info?.as_of ?? null);
-          } else {
-            setSnapshotAsOf(info?.as_of ?? null);  // keep the label live during build
-          }
-        } catch { /* transient poll error → keep polling */ }
-      }, 2500);
-    } catch {
-      stopPoll();
-      setIsRefreshingSnapshots(false);
-      toast.error(t('dashboards.detail.snapshotRefreshFailed'));
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isRefreshingSnapshots, dashboardId, invalidateDashboardChartData, t]);
 
   // Filter changes are applied explicitly via the Apply action.
   //
@@ -927,7 +959,10 @@ export default function DashboardDetailPage() {
       // No real grid change. Keep unrelated canvas local edits intact.
       return;
     }
-    setLocalLayoutOverrides((prev) => ({ ...prev, ...next }));
+    const prevOverrides = localLayoutOverridesRef.current;
+    const merged = { ...prevOverrides, ...next };
+    pushUndo({ kind: 'layout', prev: prevOverrides, next: merged });
+    setLocalLayoutOverrides(merged);
   };
 
   // Phase-18 — "Sắp xếp gọn": re-flow the active page's tiles into a clean,
@@ -950,8 +985,12 @@ export default function DashboardDetailPage() {
     for (const t of tidied) {
       next[t.id] = mergeGridLayout(resolveDashboardChartLayout(t.id), t);
     }
-    setLocalLayoutOverrides((prev) => ({ ...prev, ...next }));
+    const prevOverrides = localLayoutOverridesRef.current;
+    const merged = { ...prevOverrides, ...next };
+    pushUndo({ kind: 'layout', prev: prevOverrides, next: merged });
+    setLocalLayoutOverrides(merged);
     toast.success(t('dashboards.detail.tidyDone'));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dashboard, activePageId, resolveDashboardChartLayout, t]);
 
   // Canvas-mode layout updates: same pattern — local state only.
@@ -960,14 +999,15 @@ export default function DashboardDetailPage() {
       updates: Array<{ id: number; xPx: number; yPx: number; wPx: number; hPx: number; z: number }>,
     ) => {
       if (!serverDashboard) return;
-      setLocalLayoutOverrides((prev) => {
-        const next = { ...prev };
-        for (const u of updates) {
-          next[u.id] = mergeCanvasLayout(resolveDashboardChartLayout(u.id, prev), u);
-        }
-        return next;
-      });
+      const prevOverrides = localLayoutOverridesRef.current;
+      const merged = { ...prevOverrides };
+      for (const u of updates) {
+        merged[u.id] = mergeCanvasLayout(resolveDashboardChartLayout(u.id, prevOverrides), u);
+      }
+      pushUndo({ kind: 'layout', prev: prevOverrides, next: merged });
+      setLocalLayoutOverrides(merged);
     },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [serverDashboard, resolveDashboardChartLayout],
   );
 
@@ -991,6 +1031,10 @@ export default function DashboardDetailPage() {
   const handleSaveDraft = async () => {
     const ok = await flushLocalLayoutsToDraft();
     if (ok) {
+      // Save flushes local overrides → the pre-save snapshots in the undo stack
+      // no longer map cleanly onto the now-empty override buffer, so clear the
+      // history (hard boundary) rather than allow a half-broken restore.
+      resetUndo();
       toast.success(t('dashboards.detail.draftSaved'));
     } else {
       toast.error(t('dashboards.detail.draftSaveFailed'));
@@ -1010,6 +1054,9 @@ export default function DashboardDetailPage() {
     if (canEditResource && hasLocalLayoutChanges) {
       await flushLocalLayoutsToDraft();
     }
+    // Page switch flushes overrides + changes which charts are on-screen — the
+    // undo entries (keyed to the previous page's override map) no longer apply.
+    resetUndo();
     setCurrentPageId(pageId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activePageId, canEditResource, hasLocalLayoutChanges]);
@@ -1023,10 +1070,32 @@ export default function DashboardDetailPage() {
   };
   React.useEffect(() => {
     if (!canEditResource) return;
+    const isEditableTarget = (el: EventTarget | null) => {
+      const node = el as HTMLElement | null;
+      if (!node || !node.tagName) return false;
+      const tag = node.tagName;
+      return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || node.isContentEditable;
+    };
     const onKey = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && (e.key === 's' || e.key === 'S')) {
         e.preventDefault();
         ctrlSRef.current();
+        return;
+      }
+      // Undo / Redo — skip while typing in a field so the browser's native
+      // text-undo keeps working; only the builder canvas is undone here.
+      if ((e.ctrlKey || e.metaKey) && !e.altKey && !isEditableTarget(e.target)) {
+        const key = e.key.toLowerCase();
+        if (key === 'z' && !e.shiftKey) {
+          e.preventDefault();
+          undoActionsRef.current.undo();
+          return;
+        }
+        if ((key === 'z' && e.shiftKey) || key === 'y') {
+          e.preventDefault();
+          undoActionsRef.current.redo();
+          return;
+        }
       }
     };
     window.addEventListener('keydown', onKey);
@@ -1057,6 +1126,7 @@ export default function DashboardDetailPage() {
       toast.error(t('dashboards.detail.publishAbortedDraftFailed'));
       return;
     }
+    resetUndo();
     try {
       await publishDashboardMutation.mutateAsync({ dashboardId, tileBaseV });
       toast.success(t('dashboards.detail.publishedNewVersion'));
@@ -1085,6 +1155,7 @@ export default function DashboardDetailPage() {
 
   const handleDiscardAll = async () => {
     setLocalLayoutOverrides({});
+    resetUndo();
     if (serverDashboard?.has_draft) {
       try {
         await discardDraftMutation.mutateAsync(dashboardId);
@@ -1096,7 +1167,7 @@ export default function DashboardDetailPage() {
   };
 
   const handleAddWidget = useCallback(
-    async (widgetType: 'text' | 'countdown' | 'image' | 'shape' | 'parameter_switcher') => {
+    async (widgetType: 'text' | 'countdown' | 'image' | 'shape' | 'parameter_switcher' | 'section_header' | 'callout' | 'hero_strip') => {
       if (!dashboard) return;
       const defaults: Record<string, any> = {
         text: { template: 'Hello {{today()}}', align: 'left', fontSize: 18 },
@@ -1113,6 +1184,10 @@ export default function DashboardDetailPage() {
             { label: 'Q2', value: 'Q2' },
           ],
         },
+        // Modern/SaaS "element" widgets (decorative inserts).
+        section_header: { eyebrow: 'KHU VỰC', title: 'Tiêu đề mục', subtitle: '' },
+        callout: { title: 'Chú thích', text: 'Nhập insight hoặc ghi chú cho khu vực này…', tone: 'accent' },
+        hero_strip: { title: dashboard.name || 'Tên báo cáo', subtitle: 'Mô tả ngắn về báo cáo', metric: '', metricLabel: '' },
       };
 
       // Default footprint per widget type — picked so the widget is visible
@@ -1127,6 +1202,10 @@ export default function DashboardDetailPage() {
         image: { w: 4, h: 4, wPx: 360, hPx: 240 },
         shape: { w: 4, h: 1, wPx: 360, hPx: 80 },
         parameter_switcher: { w: 4, h: 2, wPx: 360, hPx: 120 },
+        // Section header + hero span wide (they head a row); callout is a small note.
+        section_header: { w: 12, h: 1, wPx: 1080, hPx: 56 },
+        hero_strip: { w: 12, h: 2, wPx: 1080, hPx: 120 },
+        callout: { w: 4, h: 2, wPx: 360, hPx: 110 },
       };
       const size = sizeByType[widgetType];
 
@@ -1187,6 +1266,7 @@ export default function DashboardDetailPage() {
           defaults[widgetType],
         );
         await queryClient.invalidateQueries({ queryKey: ['dashboards', dashboardId] });
+        resetUndo(); // chart/widget set changed — prior layout undo entries are stale
         // Open edit modal for the freshly-created widget — auto-increment id
         // means the largest id in the response is the one we just inserted.
         const newest = (updated?.dashboard_charts ?? []).reduce<number | null>((acc, dc) => {
@@ -1205,11 +1285,15 @@ export default function DashboardDetailPage() {
         setIsWidgetMenuOpen(false);
       }
     },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [dashboard, dashboardId, activePageId, queryClient],
   );
 
   const handleToggleLayoutMode = useCallback(async () => {
     if (!dashboard) return;
+    // Grid (x/y cells) ↔ canvas (px) use different coordinate spaces, so undo
+    // entries captured in one mode can't be replayed in the other.
+    resetUndo();
     const next = (dashboard.layout_mode ?? 'grid') === 'grid' ? 'canvas' : 'grid';
     if (next === 'canvas') {
       const canvasWidth = Number((dashboard.canvas_config as any)?.width ?? 1440);
@@ -1233,6 +1317,7 @@ export default function DashboardDetailPage() {
     } catch (err) {
       console.error('Failed to toggle layout mode:', err);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dashboard, dashboardId, resolveDashboardChartLayout, updateDashboardMutation]);
 
   const handleCrossFilterChange = useCallback((sourceChartId: number, filter: BaseFilter | null) => {
@@ -1280,6 +1365,7 @@ export default function DashboardDetailPage() {
         },
         parameters,
       });
+      resetUndo(); // chart set changed — prior layout undo entries are stale
       // Modal-close is owned by AddChartModal now — it closes ONCE after the
       // whole batch finishes (DA6-F3 multi-add), so adding N charts doesn't
       // dismiss the picker after the first one.
@@ -1314,6 +1400,7 @@ export default function DashboardDetailPage() {
         dashboardId,
         dashboardChartId: dashboardChart.id,
       });
+      resetUndo(); // chart set changed — prior layout undo entries are stale
       toast.success(t('dashboards.detail.chartRemoved'));
     } catch (error) {
       console.error('Failed to remove chart:', error);
@@ -1580,6 +1667,7 @@ export default function DashboardDetailPage() {
           chartLayouts: chartLayoutsPayload,
         });
         setLocalLayoutOverrides({});
+        resetUndo(); // page deleted + overrides flushed — undo history is stale
       }
       await persistPagesConfig(dashboardPages.filter((page) => page.id !== pendingDeletePageId));
       if (activePageId === pendingDeletePageId) {
@@ -1612,6 +1700,7 @@ export default function DashboardDetailPage() {
           },
         }],
       });
+      resetUndo(); // chart moved pages — layout undo entries reference the old page set
       toast.success(t('dashboards.detail.chartMoved'));
     } catch (error) {
       console.error('Failed to move chart to page:', error);
@@ -2615,6 +2704,31 @@ export default function DashboardDetailPage() {
                       )}
                     </div>
                   )}
+                  {/* Undo / Redo (Ctrl+Z / Ctrl+Shift+Z) — layout + theme only.
+                      Shown whenever there's history (a theme change is a live
+                      write with no "pending" badge, so gate on the stacks). */}
+                  {canEditResource && (canUndo || canRedo) && (
+                    <div className="ml-2 flex shrink-0 items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={doUndo}
+                        disabled={!canUndo}
+                        className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-[rgba(255,255,255,0.08)] bg-[rgba(255,255,255,0.02)] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] disabled:opacity-40"
+                        title={t('dashboards.detail.undo')}
+                      >
+                        <Undo2 className="h-3.5 w-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={doRedo}
+                        disabled={!canRedo}
+                        className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-[rgba(255,255,255,0.08)] bg-[rgba(255,255,255,0.02)] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] disabled:opacity-40"
+                        title={t('dashboards.detail.redo')}
+                      >
+                        <Redo2 className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                  )}
                   {canEditResource && hasAnyPendingChanges && (
                     <div className="ml-2 flex shrink-0 items-center gap-1.5">
                       <span
@@ -2675,27 +2789,25 @@ export default function DashboardDetailPage() {
 
             {/* Primary actions — collapsed to [Filter] [⋯] [+ Add] */}
             <div className="flex shrink-0 items-center gap-1">
-              {/* Dashboard perf #5 — Refresh data (rebuild snapshots → latest
-                  numbers) + "Số tính đến HH:MM" freshness hint. */}
-              <button
-                type="button"
-                onClick={handleRefreshSnapshots}
-                disabled={isRefreshingSnapshots}
-                className="inline-flex h-7 items-center gap-1.5 rounded-md border border-[rgba(255,255,255,0.08)] bg-[rgba(255,255,255,0.02)] px-2 text-[12px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] disabled:opacity-50"
-                title={snapshotAsOf
-                  ? t('dashboards.detail.snapshotAsOf', { time: new Date(snapshotAsOf).toLocaleString() })
-                  : t('dashboards.detail.refreshData')}
-              >
-                {isRefreshingSnapshots
-                  ? <Loader2 className="h-3 w-3 animate-spin" />
-                  : <RefreshCw className="h-3 w-3" />}
-                <span>{t('dashboards.detail.refreshData')}</span>
-                {snapshotAsOf && (
-                  <span className="text-[10px] text-text-quaternary">
-                    {new Date(snapshotAsOf).toLocaleString([], { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })}
+              {/* Data freshness — READ-ONLY. The dashboard reads the dataset's
+                  refreshed data; refresh itself now happens IN THE DATASET
+                  (scheduled or manual Sync & Publish, with history), so the old
+                  per-dashboard "Refresh data" action was removed — a dashboard
+                  rebuild never advanced a PUBLISHED dataset's pinned generation
+                  anyway (misleading no-op). This just surfaces "data as of". */}
+              {snapshotAsOf && (
+                <span
+                  className="inline-flex h-7 items-center gap-1.5 rounded-md border border-[rgba(255,255,255,0.08)] bg-[rgba(255,255,255,0.02)] px-2 text-[11px] font-[510] text-text-tertiary"
+                  title={t('dashboards.detail.dataAsOfHint')}
+                >
+                  <Clock className="h-3 w-3 text-text-quaternary" />
+                  <span>
+                    {t('dashboards.detail.snapshotAsOf', {
+                      time: new Date(snapshotAsOf).toLocaleString([], { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }),
+                    })}
                   </span>
-                )}
-              </button>
+                </span>
+              )}
 
               {/* Filter pane toggle (Phase-15.81).
                   Opens the right-dock FilterPane sidebar instead of the
@@ -2770,7 +2882,11 @@ export default function DashboardDetailPage() {
                         </button>
                       )}
 
-                      {canEditResource && (
+                      {/* Edit actions require edit rights on the CURRENT page
+                          (owner-priority): a non-owner viewing a page the owner
+                          holds keeps Export/Share but loses every mutation entry
+                          point until the owner approves their edit request. */}
+                      {canEditThisPage && (
                         <>
                           <button
                             onClick={() => { setIsPublicShareOpen(true); setIsMoreMenuOpen(false); }}
@@ -2855,6 +2971,9 @@ export default function DashboardDetailPage() {
                           {isWidgetSubmenuOpen && (
                             <div className="bg-[rgba(255,255,255,0.02)]">
                               {([
+                                ['section_header', t('dashboards.detail.widgetSectionHeader')],
+                                ['hero_strip', t('dashboards.detail.widgetHeroStrip')],
+                                ['callout', t('dashboards.detail.widgetCallout')],
                                 ['text', t('dashboards.detail.widgetText')],
                                 ['countdown', t('dashboards.detail.widgetCountdown')],
                                 ['image', t('dashboards.detail.widgetImage')],
@@ -2878,7 +2997,7 @@ export default function DashboardDetailPage() {
                 )}
               </div>
 
-              {canEditResource && (
+              {canEditThisPage && (
                 <button
                   onClick={() => setIsAddChartModalOpen(true)}
                   className="inline-flex h-7 items-center gap-1.5 rounded-md bg-brand px-2.5 text-[12px] font-[510] text-white shadow-sm transition-colors hover:bg-brand-hover"
@@ -3016,17 +3135,68 @@ export default function DashboardDetailPage() {
           ref={dashboardContentRef}
           className={draftSlicerClusterLayout?.position === 'left' ? 'min-w-0 flex-1' : ''}
         >
+        {/* Phase-B19 — per-page co-edit banners (owner-priority + request→approve).
+            Never shown during PDF export. */}
+        {!isExportingPdf && canEditResource && editLock && !editLock.i_am_owner && !editLock.can_edit && activePageId && (
+          <div className="mb-2 flex items-center justify-between gap-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[13px] text-amber-200">
+            <span className="flex items-center gap-2">
+              <Lock className="h-3.5 w-3.5 shrink-0" />
+              {editLock.holder_name
+                ? t('dashboards.detail.pageHeldBy', { name: editLock.holder_name })
+                : t('dashboards.detail.pageViewOnly')}
+            </span>
+            {pendingEditRequests.some((r) => r.requester_key === me?.id) ? (
+              <span className="shrink-0 text-amber-300/80">{t('dashboards.detail.editRequested')}</span>
+            ) : (
+              <button
+                type="button"
+                onClick={() => requestEdit(activePageId)}
+                className="shrink-0 rounded-md bg-amber-500/20 px-2.5 py-1 text-[12px] font-[510] text-amber-100 transition-colors hover:bg-amber-500/30"
+              >
+                {t('dashboards.detail.requestEdit')}
+              </button>
+            )}
+          </div>
+        )}
+        {!isExportingPdf && isOwner && activePageId && pendingEditRequests.length > 0 && (
+          <div className="mb-2 space-y-1.5 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2">
+            {pendingEditRequests.map((r) => (
+              <div key={r.requester_key} className="flex items-center justify-between gap-3 text-[13px] text-amber-200">
+                <span className="flex items-center gap-2">
+                  <Hand className="h-3.5 w-3.5 shrink-0" />
+                  {t('dashboards.detail.editRequestFrom', { name: r.name || r.email || '?' })}
+                </span>
+                <span className="flex shrink-0 items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => respondEditRequest(activePageId, r.requester_key, true)}
+                    className="rounded-md bg-emerald-500/25 px-2.5 py-1 text-[12px] font-[510] text-emerald-100 transition-colors hover:bg-emerald-500/35"
+                  >
+                    {t('dashboards.detail.approve')}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => respondEditRequest(activePageId, r.requester_key, false)}
+                    className="rounded-md bg-[rgba(255,255,255,0.08)] px-2.5 py-1 text-[12px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.12)]"
+                  >
+                    {t('dashboards.detail.deny')}
+                  </button>
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
         <ExportModeContext.Provider value={isExportingPdf}>
         {(dashboard?.layout_mode ?? 'grid') === 'canvas' ? (
           <DashboardCanvas
             dashboardId={dashboardId}
             dashboardCharts={visibleDashboardCharts}
             canvasConfig={dashboard?.canvas_config}
-            canEdit={canEditResource}
-            allowAppearanceEdit={canEditResource}
-            onLayoutChange={canEditResource ? handleCanvasLayoutChange : undefined}
-            onRemoveChart={canEditResource ? handleRemoveChart : undefined}
-            onEditWidget={canEditResource ? setEditingWidgetId : undefined}
+            canEdit={canEditThisPage}
+            allowAppearanceEdit={canEditThisPage}
+            onLayoutChange={canEditThisPage ? handleCanvasLayoutChange : undefined}
+            onRemoveChart={canEditThisPage ? handleRemoveChart : undefined}
+            onEditWidget={canEditThisPage ? setEditingWidgetId : undefined}
             removingChartId={removingChartId}
             filtersReady={filtersReady}
             globalFilters={effectiveFiltersWithParams}
@@ -3037,25 +3207,25 @@ export default function DashboardDetailPage() {
             onChartDataLoaded={semanticColumnsResult.columns.length > 0 ? undefined : handleChartDataLoaded}
             onSelectCrossFilter={handleCrossFilterChange}
             availablePages={dashboardPages}
-            onMoveChartToPage={canEditResource ? handleMoveChartToPage : undefined}
+            onMoveChartToPage={canEditThisPage ? handleMoveChartToPage : undefined}
             emptyMessage={emptyPageMessage}
             focusedDashboardChartId={focusedTileId}
             onFocusChart={setFocusedTileId}
             params={paramValues}
             onParamChange={handleParamChange}
-            onBindParameter={canEditResource ? setBindingChartId : undefined}
+            onBindParameter={canEditThisPage ? setBindingChartId : undefined}
           />
         ) : (
           <DashboardGrid
             dashboardId={dashboardId}
             dashboardCharts={visibleDashboardCharts}
-            canEdit={canEditResource}
-            allowAppearanceEdit={canEditResource}
+            canEdit={canEditThisPage}
+            allowAppearanceEdit={canEditThisPage}
             themeConfig={dashboard?.theme_config}
-            onLayoutChange={canEditResource ? handleLayoutChange : undefined}
+            onLayoutChange={canEditThisPage ? handleLayoutChange : undefined}
             presenceByChart={presenceByChart}
-            onRemoveChart={canEditResource ? handleRemoveChart : undefined}
-            onEditWidget={canEditResource ? setEditingWidgetId : undefined}
+            onRemoveChart={canEditThisPage ? handleRemoveChart : undefined}
+            onEditWidget={canEditThisPage ? setEditingWidgetId : undefined}
             removingChartId={removingChartId}
             filtersReady={filtersReady}
             globalFilters={effectiveFiltersWithParams}
@@ -3066,13 +3236,13 @@ export default function DashboardDetailPage() {
             onChartDataLoaded={semanticColumnsResult.columns.length > 0 ? undefined : handleChartDataLoaded}
             onSelectCrossFilter={handleCrossFilterChange}
             availablePages={dashboardPages}
-            onMoveChartToPage={canEditResource ? handleMoveChartToPage : undefined}
+            onMoveChartToPage={canEditThisPage ? handleMoveChartToPage : undefined}
             emptyMessage={emptyPageMessage}
             focusedDashboardChartId={focusedTileId}
             onFocusChart={setFocusedTileId}
             params={paramValues}
             onParamChange={handleParamChange}
-            onBindParameter={canEditResource ? setBindingChartId : undefined}
+            onBindParameter={canEditThisPage ? setBindingChartId : undefined}
           />
         )}
         </ExportModeContext.Provider>
@@ -3321,11 +3491,12 @@ export default function DashboardDetailPage() {
             initial={dashboard.theme_config}
             onClose={() => setIsThemeOpen(false)}
             onSave={async (theme) => {
-              await dashboardApi.update(dashboardId, { theme_config: theme });
-              await updateDashboardMutation.mutateAsync({
-                id: dashboardId,
-                data: { theme_config: theme },
-              }).catch(() => {});
+              // Snapshot the current theme so Ctrl+Z can restore it (same live
+              // update path a manual change uses → cannot corrupt the draft).
+              // Use {} (→ server defaults) not null: normalize_dashboard_theme_config
+              // does dict(x) and would throw on a null restore.
+              pushUndo({ kind: 'theme', prev: dashboard?.theme_config ?? {}, next: theme });
+              await applyThemeConfig(theme);
             }}
           />
         )}

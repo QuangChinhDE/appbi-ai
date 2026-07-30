@@ -24,6 +24,9 @@ export function WidgetEditModal({ isOpen, onClose, dashboardId, widget }: Props)
     image: t('dashboards.widgetEdit.typeImage'),
     shape: t('dashboards.widgetEdit.typeShape'),
     parameter_switcher: t('dashboards.widgetEdit.typeParameterSwitcher'),
+    section_header: t('dashboards.widgetEdit.typeSectionHeader'),
+    callout: t('dashboards.widgetEdit.typeCallout'),
+    hero_strip: t('dashboards.widgetEdit.typeHeroStrip'),
   };
   const queryClient = useQueryClient();
   const [config, setConfig] = useState<Record<string, any>>({});
@@ -93,6 +96,23 @@ export function WidgetEditModal({ isOpen, onClose, dashboardId, widget }: Props)
         {widgetType === 'shape' && <ShapeWidgetForm config={config} set={set} />}
         {widgetType === 'parameter_switcher' && (
           <ParameterSwitcherForm config={config} setConfig={setConfig} />
+        )}
+        {widgetType === 'section_header' && <SectionHeaderForm config={config} set={set} />}
+        {widgetType === 'hero_strip' && <HeroStripForm config={config} set={set} />}
+        {widgetType === 'callout' && <CalloutForm config={config} set={set} />}
+        {/* Per-widget "transparent background": drop the card frame so the
+            dashboard's own background shows through. Shape/parameter switcher
+            are already frameless, so the toggle is only offered for the framed
+            widget kinds. */}
+        {(widgetType === 'text' || widgetType === 'countdown' || widgetType === 'image') && (
+          <label className="flex items-center gap-2 border-t border-[rgb(var(--border-line))] pt-3 text-[12px] text-text-secondary">
+            <input
+              type="checkbox"
+              checked={config.transparentBackground === true}
+              onChange={(e) => set('transparentBackground', e.target.checked)}
+            />
+            {t('dashboards.widgetEdit.transparentBackground')}
+          </label>
         )}
       </div>
     </Modal>
@@ -290,6 +310,67 @@ function ShapeWidgetForm({ config, set }: { config: any; set: (k: string, v: any
           />
         </Field>
       </div>
+    </>
+  );
+}
+
+function SectionHeaderForm({ config, set }: { config: any; set: (k: string, v: any) => void }) {
+  const { t } = useI18n();
+  return (
+    <>
+      <Field label={t('dashboards.widgetEdit.eyebrow')} hint={t('dashboards.widgetEdit.eyebrowHint')}>
+        <input className={inputClass} value={config.eyebrow ?? ''} onChange={(e) => set('eyebrow', e.target.value)} />
+      </Field>
+      <Field label={t('dashboards.widgetEdit.headingTitle')}>
+        <input className={inputClass} value={config.title ?? ''} onChange={(e) => set('title', e.target.value)} />
+      </Field>
+      <Field label={t('dashboards.widgetEdit.subtitle')}>
+        <input className={inputClass} value={config.subtitle ?? ''} onChange={(e) => set('subtitle', e.target.value)} />
+      </Field>
+    </>
+  );
+}
+
+function HeroStripForm({ config, set }: { config: any; set: (k: string, v: any) => void }) {
+  const { t } = useI18n();
+  return (
+    <>
+      <Field label={t('dashboards.widgetEdit.headingTitle')}>
+        <input className={inputClass} value={config.title ?? ''} onChange={(e) => set('title', e.target.value)} />
+      </Field>
+      <Field label={t('dashboards.widgetEdit.subtitle')}>
+        <input className={inputClass} value={config.subtitle ?? ''} onChange={(e) => set('subtitle', e.target.value)} />
+      </Field>
+      <div className="grid grid-cols-2 gap-3">
+        <Field label={t('dashboards.widgetEdit.heroMetric')}>
+          <input className={inputClass} value={config.metric ?? ''} onChange={(e) => set('metric', e.target.value)} placeholder="15.8M" />
+        </Field>
+        <Field label={t('dashboards.widgetEdit.heroMetricLabel')}>
+          <input className={inputClass} value={config.metricLabel ?? ''} onChange={(e) => set('metricLabel', e.target.value)} placeholder="GMV" />
+        </Field>
+      </div>
+    </>
+  );
+}
+
+function CalloutForm({ config, set }: { config: any; set: (k: string, v: any) => void }) {
+  const { t } = useI18n();
+  return (
+    <>
+      <Field label={t('dashboards.widgetEdit.headingTitle')}>
+        <input className={inputClass} value={config.title ?? ''} onChange={(e) => set('title', e.target.value)} />
+      </Field>
+      <Field label={t('dashboards.widgetEdit.calloutText')}>
+        <textarea className={inputClass} rows={3} value={config.text ?? ''} onChange={(e) => set('text', e.target.value)} />
+      </Field>
+      <Field label={t('dashboards.widgetEdit.calloutTone')}>
+        <select className={inputClass} value={config.tone ?? 'accent'} onChange={(e) => set('tone', e.target.value)}>
+          <option value="accent">{t('dashboards.widgetEdit.toneAccent')}</option>
+          <option value="good">{t('dashboards.widgetEdit.toneGood')}</option>
+          <option value="warn">{t('dashboards.widgetEdit.toneWarn')}</option>
+          <option value="bad">{t('dashboards.widgetEdit.toneBad')}</option>
+        </select>
+      </Field>
     </>
   );
 }

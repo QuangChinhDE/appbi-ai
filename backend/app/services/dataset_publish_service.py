@@ -53,7 +53,11 @@ _REFRESH_RUN_KEEP = 50  # rolling history depth per dataset
 # NEVER break or roll back the actual sync.
 
 def _refresh_run_start(
-    db: Session, dataset_id: int, trigger: str, triggered_by_id: Optional[str] = None
+    db: Session,
+    dataset_id: int,
+    trigger: str,
+    triggered_by_id: Optional[str] = None,
+    timezone: Optional[str] = None,
 ) -> Optional[int]:
     try:
         run = DatasetRefreshRun(
@@ -61,6 +65,7 @@ def _refresh_run_start(
             status="running",
             trigger=(trigger or "manual"),
             triggered_by_id=triggered_by_id,
+            timezone=(str(timezone).strip() or None) if timezone else None,
             started_at=datetime.utcnow(),
             created_at=datetime.utcnow(),
         )
@@ -84,6 +89,7 @@ def _refresh_run_finish(
     generation: Optional[int] = None,
     tables_built: Optional[int] = None,
     rows_total: Optional[int] = None,
+    tables: Optional[list] = None,
 ) -> None:
     """Flip a run to a terminal status. Idempotent — only updates a still-running
     row, so a crash-handler call after a normal terminal finalize is a no-op."""
@@ -105,6 +111,8 @@ def _refresh_run_finish(
             run.tables_built = tables_built
         if rows_total is not None:
             run.rows_total = rows_total
+        if tables is not None:
+            run.tables = tables
         db.commit()
     except Exception:  # noqa: BLE001
         db.rollback()
@@ -138,6 +146,33 @@ def _refresh_run_rows_total(dataset_id: int) -> Optional[int]:
         snap = sync_progress.get(dataset_id) or {}
         val = snap.get("rows_done_total")
         return int(val) if val is not None else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _refresh_run_tables(db: Session, dataset_id: int, built: Optional[list]) -> Optional[list]:
+    """Per-table breakdown for the run detail view: enrich the builder's
+    ``built:[{table_id,row_count,build_ms}]`` with each table's display name.
+    Best-effort — returns None on any error."""
+    if not built:
+        return None
+    try:
+        names = {
+            t.id: (t.display_name or t.source_table_name or f"table_{t.id}")
+            for t in db.query(DatasetTable).filter(DatasetTable.dataset_id == dataset_id).all()
+        }
+        out = []
+        for b in built:
+            if not isinstance(b, dict):
+                continue
+            tid = b.get("table_id")
+            out.append({
+                "table_id": tid,
+                "name": names.get(tid, f"table_{tid}"),
+                "rows": b.get("row_count"),
+                "build_ms": b.get("build_ms"),
+            })
+        return out or None
     except Exception:  # noqa: BLE001
         return None
 
@@ -273,7 +308,10 @@ def _lease_key(dataset_id: int) -> str:
 
 
 def start_sync_and_publish(
-    dataset_id: int, trigger: str = "manual", triggered_by_id: Optional[str] = None
+    dataset_id: int,
+    trigger: str = "manual",
+    triggered_by_id: Optional[str] = None,
+    timezone: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Kick a background Sync & Publish. Returns immediately (ETL is long).
     At most ONE publish per dataset at a time (cross-worker lease). NEVER raises.
@@ -293,10 +331,11 @@ def start_sync_and_publish(
         # Open the history row HERE (before the blocking body) so the crash
         # handler below can finalize it even if the body raises before its own
         # terminal-branch finalize runs.
-        run_id = _refresh_run_start(db, dataset_id, trigger, triggered_by_id)
+        run_id = _refresh_run_start(db, dataset_id, trigger, triggered_by_id, timezone)
         try:
             _sync_and_publish_blocking(
-                db, dataset_id, trigger=trigger, triggered_by_id=triggered_by_id, run_id=run_id
+                db, dataset_id, trigger=trigger, triggered_by_id=triggered_by_id,
+                run_id=run_id, timezone=timezone,
             )
         except Exception:  # noqa: BLE001 — background must never crash a request
             logger.warning("[publish] sync&publish failed dataset=%s", dataset_id, exc_info=True)
@@ -358,6 +397,7 @@ def _sync_and_publish_blocking(
     trigger: str = "manual",
     triggered_by_id: Optional[str] = None,
     run_id: Optional[int] = None,
+    timezone: Optional[str] = None,
 ) -> Dict[str, Any]:
     """The synchronous body (also usable from tests/CLI). Locks design → syncs a
     generation → validates → pins published_generation on success; keeps the
@@ -371,7 +411,7 @@ def _sync_and_publish_blocking(
     # Direct/test callers don't pre-open a run row — do it here so history is
     # recorded regardless of entry point.
     if run_id is None:
-        run_id = _refresh_run_start(db, dataset_id, trigger, triggered_by_id)
+        run_id = _refresh_run_start(db, dataset_id, trigger, triggered_by_id, timezone)
 
     ds = db.query(Dataset).filter(Dataset.id == dataset_id).first()
     if ds is None:
@@ -430,6 +470,7 @@ def _sync_and_publish_blocking(
         _refresh_run_finish(
             db, run_id, "stopped", generation=generation,
             tables_built=len(built), rows_total=_refresh_run_rows_total(dataset_id),
+            tables=_refresh_run_tables(db, dataset_id, built),
         )
         logger.info("[publish] sync STOPPED by user dataset=%s (kept generation=%s)",
                     dataset_id, ds.published_generation if ds is not None else None)
@@ -450,6 +491,7 @@ def _sync_and_publish_blocking(
         _refresh_run_finish(
             db, run_id, "failed", error=reason, generation=generation,
             tables_built=len(built), rows_total=_refresh_run_rows_total(dataset_id),
+            tables=_refresh_run_tables(db, dataset_id, built),
         )
         logger.warning("[publish] validate FAILED dataset=%s gen=%s: %s", dataset_id, generation, reason)
         return {"ok": False, "error": reason, "generation": generation,
@@ -490,6 +532,7 @@ def _sync_and_publish_blocking(
     _refresh_run_finish(
         db, run_id, "success", generation=generation,
         tables_built=len(built), rows_total=_refresh_run_rows_total(dataset_id),
+        tables=_refresh_run_tables(db, dataset_id, built),
     )
     logger.info("[publish] PUBLISHED dataset=%s generation=%s (%d tables)", dataset_id, generation, len(built))
     return {"ok": True, "generation": generation, "built": built, "skipped": skipped}

@@ -1,11 +1,13 @@
 """Self-service personal access token endpoints."""
 
 from datetime import datetime, timedelta, timezone
+import logging
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from slowapi import Limiter
 from slowapi.util import get_remote_address
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.core.crypto import decrypt_value, encrypt_value, is_encrypted, is_encryption_configured
@@ -36,9 +38,15 @@ from app.schemas.personal_access_token import (
     PersonalAccessTokenUpdate,
 )
 from app.services.audit_service import audit
+from app.services.embed_link_service import (
+    InvalidEmbedOrigin,
+    normalize_allowed_origins,
+    resolve_pat_allowed_origins,
+)
 
 router = APIRouter(prefix="/auth/personal-access-tokens", tags=["personal-access-tokens"])
 _limiter = Limiter(key_func=get_remote_address)
+logger = logging.getLogger(__name__)
 
 
 def _require_session_user(current_user: User = Depends(get_current_user)) -> User:
@@ -273,6 +281,67 @@ def list_all_personal_access_tokens(
         .all()
     )
     return [_serialize_admin_token(token, owner) for token, owner in rows]
+
+
+class _EmbedOriginsBody(BaseModel):
+    """Empty list = clear the restriction (links become embeddable anywhere)."""
+
+    allowed_origins: list[str] = []
+
+
+@router.get("/admin/{token_id}/embed-origins")
+def admin_get_embed_origins(
+    token_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    _: User = Depends(_require_admin_session),
+):
+    """Which sites may iframe the embed links this token mints.
+
+    Exists so "the customer's iframe went blank" is answerable in one call
+    without asking them for their token secret.
+    """
+    token = db.query(PersonalAccessToken).filter(PersonalAccessToken.id == token_id).first()
+    if not token:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Personal access token not found")
+    origins = resolve_pat_allowed_origins(token)
+    return {"token_id": str(token.id), "name": token.name, "allowed_origins": origins, "enforced": bool(origins)}
+
+
+@router.put("/admin/{token_id}/embed-origins")
+@_limiter.limit("30/minute")
+def admin_set_embed_origins(
+    token_id: uuid.UUID,
+    body: _EmbedOriginsBody,
+    request: Request,
+    db: Session = Depends(get_db),
+    admin: User = Depends(_require_admin_session),
+):
+    """Declare (or clear) the embed origin allowlist on someone else's token.
+
+    The host app can also declare it itself via /integrations/embed/resolve, but
+    that requires an integration change. This endpoint lets an operator switch the
+    restriction on for an integration that has ALREADY shipped — the partner's code
+    keeps sending the exact same payload it always did.
+
+    Unlike the resolve path, an empty list here DOES clear the restriction: this is
+    a deliberate operator action, not a value assembled from someone's config file.
+    """
+    token = db.query(PersonalAccessToken).filter(PersonalAccessToken.id == token_id).first()
+    if not token:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Personal access token not found")
+    try:
+        origins = normalize_allowed_origins(body.allowed_origins)
+    except InvalidEmbedOrigin as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    token.embed_allowed_origins = origins or None
+    db.commit()
+    logger.info(
+        "embed_origins_set_by_admin admin=%s pat=%s origins=%s",
+        admin.id, token_id, origins or "any",
+    )
+    # Existing grants keep the policy they were minted with; they expire within
+    # the hour, so the new setting is fully in force after one rotation.
+    return {"token_id": str(token.id), "name": token.name, "allowed_origins": origins, "enforced": bool(origins)}
 
 
 @router.delete("/admin/{token_id}", status_code=status.HTTP_204_NO_CONTENT)

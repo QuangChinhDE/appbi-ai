@@ -75,7 +75,12 @@ def _run_scheduled_refresh(dataset_id: int) -> None:
             )
             return
         from app.services import dataset_publish_service
-        res = dataset_publish_service.start_sync_and_publish(dataset_id, trigger="scheduled")
+        # Record the run in the schedule's OWN timezone (what the DA configured),
+        # so the history shows the scheduled fire time in that zone.
+        _tz = str((snapcfg.schedule_config(ds) or {}).get("timezone") or "UTC")
+        res = dataset_publish_service.start_sync_and_publish(
+            dataset_id, trigger="scheduled", timezone=_tz,
+        )
         logger.info("[snapshot_scheduler] scheduled refresh dataset=%s -> %s", dataset_id, res)
     except Exception as exc:  # noqa: BLE001
         logger.error("[snapshot_scheduler] scheduled refresh failed dataset=%s: %s", dataset_id, exc)

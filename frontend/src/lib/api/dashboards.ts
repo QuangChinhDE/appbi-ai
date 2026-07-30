@@ -29,6 +29,19 @@ import type {
   DashboardHtmlImportValidateResponse,
 } from '@/types/dashboard-html-import';
 
+/** Per-page co-edit right resolved by the presence service (owner-priority). */
+export type DashboardEditLock = {
+  page_id: string;
+  holder_key: string | null;
+  holder_name: string | null;
+  held_by_me: boolean;
+  owner_present: boolean;
+  i_am_owner: boolean;
+  i_am_granted: boolean;
+  can_edit: boolean;
+  pending_requests: Array<{ requester_key: string; name: string | null; email: string | null }>;
+};
+
 export const dashboardApi = {
   getAll: async (): Promise<Dashboard[]> => {
     const response = await apiClient.get('/dashboards/');
@@ -195,22 +208,52 @@ export const dashboardApi = {
     return response.data;
   },
 
-  // Phase-B17 — editor presence. Heartbeat reports which tile the user is on
-  // and returns the OTHER editors active now + where they're editing.
+  // Phase-B17/B19 — editor presence + per-page co-edit rights. Heartbeat reports
+  // which tile + page the user is on and returns the OTHER editors active now,
+  // the caller's edit-right for their current page (`lock`, owner-priority), and
+  // who holds each page.
   editingHeartbeat: async (
     dashboardId: number,
     editingChartId?: number | null,
+    editingPageId?: string | null,
   ): Promise<{
-    editors: Array<{ user_key: string; name: string; email: string; seconds_ago: number; editing_chart_id: number | null }>;
+    editors: Array<{ user_key: string; name: string; email: string; seconds_ago: number; editing_chart_id: number | null; editing_page_id: string | null; is_owner: boolean }>;
+    lock: DashboardEditLock | null;
+    page_holders: Record<string, { holder_key: string; holder_name: string | null }>;
     current_updated_at: string | null;
   }> => {
     const response = await apiClient.post(`/dashboards/${dashboardId}/editing/heartbeat`, {
       editing_chart_id: editingChartId ?? null,
+      editing_page_id: editingPageId ?? null,
     });
     return response.data;
   },
   editingLeave: async (dashboardId: number): Promise<void> => {
     await apiClient.post(`/dashboards/${dashboardId}/editing/leave`);
+  },
+  // A non-owner asks the owner for edit rights on a page the owner holds.
+  editingRequestEdit: async (
+    dashboardId: number,
+    pageId: string,
+  ): Promise<{ lock: DashboardEditLock | null }> => {
+    const response = await apiClient.post(`/dashboards/${dashboardId}/editing/request-edit`, {
+      page_id: pageId,
+    });
+    return response.data;
+  },
+  // The owner approves/denies a pending edit request on a page.
+  editingRespond: async (
+    dashboardId: number,
+    pageId: string,
+    requesterKey: string,
+    approve: boolean,
+  ): Promise<{ lock: DashboardEditLock | null }> => {
+    const response = await apiClient.post(`/dashboards/${dashboardId}/editing/respond`, {
+      page_id: pageId,
+      requester_key: requesterKey,
+      approve,
+    });
+    return response.data;
   },
 
   analyzeHtmlImport: async (input: DashboardHtmlImportAnalyzeInput): Promise<DashboardHtmlImportAnalyzeResponse> => {

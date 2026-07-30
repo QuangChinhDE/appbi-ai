@@ -654,6 +654,10 @@ function ChartTileBase({
     if (!effectiveStyleConfig.chartTitle) return effectiveStyleConfig;
     return { ...effectiveStyleConfig, chartTitle: '' };
   }, [effectiveStyleConfig]);
+  // Per-tile "transparent background": drop the card bg/border/shadow so the
+  // dashboard's own background shows through (frameless). Focus / cross-filter /
+  // collaborator rings still render (Tailwind ring / inline ring = box-shadow).
+  const transparentTile = effectiveStyleConfig.transparentBackground === true;
 
   // Focus input when entering edit mode
   useEffect(() => {
@@ -1023,32 +1027,43 @@ function ChartTileBase({
          clipped when the tile was small. The chart body has its own
          overflow-hidden (so the chart never spills), and tile content is inset
          by p-3 so it won't poke the rounded corners — only the menu escapes. */
-      className={`dashboard-tile bi-card-hover relative group flex h-full flex-col rounded-lg border bg-surface-1 p-3 ${
+      className={`dashboard-tile bi-card-hover relative group flex h-full flex-col rounded-lg p-3 ${
+        transparentTile ? '' : 'border bg-surface-1'
+      } ${
         isCrossFilterSource || isHighlightSource
           ? 'border-warning/40 ring-1 ring-warning'
           : isFocused
             ? 'border-brand/50 ring-2 ring-brand/40'
-            : 'border-[rgb(var(--border-line))]'
+            : transparentTile
+              ? ''
+              : 'border-[rgb(var(--border-line))]'
       }`}
       /* Phase-B14 — honor the dashboard theme's card radius/border (fallbacks
          keep the default flat look). Border COLOR only in the default state so
          the cross-filter/focus rings still read. */
       style={{
         borderRadius: 'var(--dashboard-card-radius, 0.5rem)',
-        borderWidth: 'var(--dashboard-card-border-width, 1px)',
-        ...(isCrossFilterSource || isHighlightSource || isFocused
-          ? {}
-          : { borderColor: 'var(--dashboard-card-border-color, rgb(var(--border-line)))' }),
-        // Phase-B16 — translucent "glass" tile that floats over a bg image.
-        ...(dashTheme.cardBg
-          ? {
-              background: dashTheme.cardBg,
-              backdropFilter: dashTheme.cardBackdrop,
-              WebkitBackdropFilter: dashTheme.cardBackdrop,
-              boxShadow: '0 10px 30px -14px rgba(2, 6, 23, 0.45)',
-            }
-          : {}),
-        // Phase-B17 — a collaborator is editing THIS tile: colored ring.
+        // Frameless when transparent: no border/bg/glass → dashboard bg shows
+        // through. Focus/cross-filter/collaborator rings below still render.
+        ...(transparentTile
+          ? { borderWidth: 0, background: 'transparent' }
+          : {
+              borderWidth: 'var(--dashboard-card-border-width, 1px)',
+              ...(isCrossFilterSource || isHighlightSource || isFocused
+                ? {}
+                : { borderColor: 'var(--dashboard-card-border-color, rgb(var(--border-line)))' }),
+              // Phase-B16 — translucent "glass" tile that floats over a bg image.
+              ...(dashTheme.cardBg
+                ? {
+                    background: dashTheme.cardBg,
+                    backdropFilter: dashTheme.cardBackdrop,
+                    WebkitBackdropFilter: dashTheme.cardBackdrop,
+                    boxShadow: '0 10px 30px -14px rgba(2, 6, 23, 0.45)',
+                  }
+                : {}),
+            }),
+        // Phase-B17 — a collaborator is editing THIS tile: colored ring (kept
+        // even when transparent so presence stays visible).
         ...(editingBy ? { boxShadow: `0 0 0 2px ${editingBy.color}`, borderColor: editingBy.color } : {}),
       }}
       // Phase-15.81 v6 — click body marks this tile as focused for
