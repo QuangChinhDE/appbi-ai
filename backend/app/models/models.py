@@ -5,7 +5,7 @@ from sqlalchemy import (
     Column, Integer, String, Text, DateTime, ForeignKey, JSON, Boolean, Enum, Float,
     UniqueConstraint,
 )
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from datetime import datetime
@@ -463,6 +463,13 @@ class EmbedGrant(Base):
     # different titles would otherwise overwrite each other's header. Empty →
     # the report falls back to the managed link's internal name.
     header = Column(String(200), nullable=True)
+
+    # Snapshot of the minting PAT's embed origin allowlist. Copied here so the
+    # policy lookup that guards the iframe is ONE row read by token (no join to
+    # the PAT on a hot path), and so an already-issued link keeps the policy it
+    # was issued under. Grants live ~1h, so a change on the PAT takes effect for
+    # every link minted after it — fast enough without touching live grants.
+    allowed_origins = Column(JSONB, nullable=True)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     last_used_at = Column(DateTime(timezone=True), nullable=True)

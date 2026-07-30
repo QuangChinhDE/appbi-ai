@@ -1898,7 +1898,9 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
     // dashboard's own background shows through — same frameless path shape and
     // the self-framed parameter switcher already take.
     const transparentWidget = ((dashboardChart.widget_config ?? {}) as Record<string, any>).transparentBackground === true;
-    const frameless = wtype === 'shape' || wtype === 'parameter_switcher' || transparentWidget;
+    // Decorative "element" widgets draw their own styling → frameless (no card).
+    const selfStyled = wtype === 'section_header' || wtype === 'callout' || wtype === 'hero_strip';
+    const frameless = wtype === 'shape' || wtype === 'parameter_switcher' || selfStyled || transparentWidget;
     return (
       <div key={dashboardChart.id.toString()} className="h-full">
         {frameless ? (

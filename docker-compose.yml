@@ -155,6 +155,10 @@ services:
       NEXT_PUBLIC_GOOGLE_CLIENT_ID: ${NEXT_PUBLIC_GOOGLE_CLIENT_ID:-}
       NEXT_PUBLIC_WORKBOARDS_ENABLED: ${NEXT_PUBLIC_WORKBOARDS_ENABLED:-true}
       NEXT_PUBLIC_PDF_PREVIEW_TAB: ${NEXT_PUBLIC_PDF_PREVIEW_TAB:-false}
+      # Deployment-wide framing floor for /embed and /d (space-separated origins).
+      # Per-integration allowlists live on the PAT and need nothing here. Runtime
+      # value (the middleware reads it per request), so no rebuild to change it.
+      EMBED_FRAME_ANCESTORS: ${EMBED_FRAME_ANCESTORS:-}
     ports:
       # Bind to 127.0.0.1 so the frontend is reachable only via nginx,
       # not directly from the public internet.

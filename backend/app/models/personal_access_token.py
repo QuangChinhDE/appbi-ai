@@ -23,6 +23,16 @@ class PersonalAccessToken(Base):
     secret_enc = Column(String, nullable=True)
     secret_suffix = Column(String(12), nullable=False)
     scopes = Column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
+    # Origins allowed to IFRAME the embed links this token mints, e.g.
+    # ["https://app.base.vn", "https://*.base-datateam.com"]. Declared ONCE per
+    # integration (any /integrations/embed/resolve call may set it, or an admin
+    # can) and then remembered, so the host app doesn't resend it on every mint.
+    #
+    # NULL / [] = unrestricted, which is the historical behaviour: links keep
+    # working anywhere. As soon as a list is present, enforcement turns on for
+    # this token's links — the browser refuses to frame them elsewhere and
+    # opening the URL outside an iframe is refused.
+    embed_allowed_origins = Column(JSONB, nullable=True)
     last_used_at = Column(DateTime(timezone=True), nullable=True)
     expires_at = Column(DateTime(timezone=True), nullable=True)
     revoked_at = Column(DateTime(timezone=True), nullable=True)

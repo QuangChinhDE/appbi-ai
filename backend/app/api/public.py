@@ -39,7 +39,7 @@ import uuid as _uuid
 from fastapi.responses import FileResponse
 
 from app.services import pdf_export_service
-from app.services.embed_link_service import resolve_embed_grant
+from app.services.embed_link_service import embed_policy_for_token, resolve_embed_grant
 from app.services.filter_layered_merge import (
     apply_link_scope_bounds,
     link_entry_has_value,
@@ -2958,6 +2958,31 @@ def get_public_charts_data_batch(
 #   data: {"type":"tool_result","tool":"...","ok":true}\n\n
 #   data: {"type":"error","text":"..."}\n\n
 #   data: {"type":"done"}\n\n
+
+
+# ── Embed framing policy ─────────────────────────────────────────────────────
+
+
+@router.get("/embed/{token}/policy")
+@_limiter.limit("600/minute")
+def get_embed_framing_policy(
+    token: str,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """Which sites may iframe this embed link.
+
+    Read by the frontend middleware on each embed page load so it can emit
+    `Content-Security-Policy: frame-ancestors …` — the browser is the only party
+    that can actually tell which site is framing us (a request made from INSIDE
+    the iframe carries the report's own origin, never the host page's).
+
+    Unauthenticated on purpose: the token IS the capability, and the middleware
+    needs the answer before rendering anything. It returns nothing but the policy,
+    and an unknown or expired token yields the unrestricted default rather than an
+    error — answering "no such token" here would turn this into a probe endpoint.
+    """
+    return embed_policy_for_token(token, db)
 
 
 # ── Server-side PDF export ───────────────────────────────────────────────────

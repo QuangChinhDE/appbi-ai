@@ -19,6 +19,46 @@ type Props = {
  *  any manual setup. `id` lets the editor highlight the active one. */
 type ThemePreset = { id: string; label: string; hint: string; value: DashboardThemeConfig };
 const PRESETS: ThemePreset[] = [
+  // ── Modern / SaaS skin — the "vibe-code" look: tinted cards + accent bar +
+  //    soft shadow + clean chart chrome. `skin:'modern'` drives the ambient CSS
+  //    + clean-chrome; the rest is a cohesive, restrained palette (accent-led,
+  //    not rainbow) so color lives around the chart, not inside every mark.
+  {
+    id: 'modern-indigo', label: 'dashboards.themeModal.presetModernIndigo', hint: 'dashboards.themeModal.presetModernIndigoHint',
+    value: {
+      mode: 'light', skin: 'modern', cardStyle: 'soft', density: 'normal', cardRadius: 16,
+      background: 'linear-gradient(180deg, #f7f8fb 0%, #f2f3f9 100%)', accent: '#5b5bd6',
+      dataColors: ['#5b5bd6', '#22b8cf', '#12b886', '#fab005', '#fa5252', '#be4bdb', '#4dabf7', '#748ffc'],
+      goodColor: '#12b886', neutralColor: '#868e96', badColor: '#fa5252',
+      cardBorderColor: 'rgba(20,26,42,0.08)',
+      cardShadow: '0 1px 2px rgba(20,26,42,.05), 0 10px 26px -14px rgba(20,26,42,.28)',
+      gridlineColor: 'rgba(20,26,42,0.06)', titleFontSize: 15,
+    },
+  },
+  {
+    id: 'modern-emerald', label: 'dashboards.themeModal.presetModernEmerald', hint: 'dashboards.themeModal.presetModernEmeraldHint',
+    value: {
+      mode: 'light', skin: 'modern', cardStyle: 'soft', density: 'normal', cardRadius: 16,
+      background: 'linear-gradient(180deg, #f5faf7 0%, #eff7f2 100%)', accent: '#0e9f6e',
+      dataColors: ['#0e9f6e', '#2cc98d', '#0ca5e9', '#fab005', '#fa7066', '#7c7ce6', '#12b8a6', '#868e96'],
+      goodColor: '#0e9f6e', neutralColor: '#868e96', badColor: '#fa5252',
+      cardBorderColor: 'rgba(20,26,42,0.08)',
+      cardShadow: '0 1px 2px rgba(20,26,42,.05), 0 10px 26px -14px rgba(20,26,42,.28)',
+      gridlineColor: 'rgba(20,26,42,0.06)', titleFontSize: 15,
+    },
+  },
+  {
+    id: 'modern-coral', label: 'dashboards.themeModal.presetModernCoral', hint: 'dashboards.themeModal.presetModernCoralHint',
+    value: {
+      mode: 'light', skin: 'modern', cardStyle: 'soft', density: 'normal', cardRadius: 16,
+      background: 'linear-gradient(180deg, #fdf6f4 0%, #fbf0ed 100%)', accent: '#e5604d',
+      dataColors: ['#e5604d', '#f0836f', '#fab005', '#12b886', '#5b5bd6', '#0ca5e9', '#be4bdb', '#868e96'],
+      goodColor: '#12b886', neutralColor: '#868e96', badColor: '#e5604d',
+      cardBorderColor: 'rgba(20,26,42,0.08)',
+      cardShadow: '0 1px 2px rgba(20,26,42,.05), 0 10px 26px -14px rgba(20,26,42,.28)',
+      gridlineColor: 'rgba(20,26,42,0.06)', titleFontSize: 15,
+    },
+  },
   {
     id: 'clean-light', label: 'dashboards.themeModal.presetCleanLight', hint: 'dashboards.themeModal.presetCleanLightHint',
     value: {
@@ -317,7 +357,9 @@ export function DashboardThemeModal({ initial, onClose, onSave }: Props) {
   // Apply a full-theme preset — replaces look-defining keys, preserves any
   // uploaded background image + glass setting so a chosen image survives.
   const applyPreset = (p: ThemePreset) =>
-    setTheme((t) => ({ ...t, ...p.value, presetId: p.id, glassCards: t.glassCards, backgroundImage: t.backgroundImage }));
+    // `skin` set EXPLICITLY (not just spread) so switching from a Modern preset
+    // to a classic one clears it back to undefined instead of sticking.
+    setTheme((t) => ({ ...t, ...p.value, skin: p.value.skin, presetId: p.id, glassCards: t.glassCards, backgroundImage: t.backgroundImage }));
 
   // Background image upload (downscaled base64 stored in theme_config).
   const onPickImage = async (file: File | null | undefined) => {
@@ -377,6 +419,7 @@ export function DashboardThemeModal({ initial, onClose, onSave }: Props) {
         ...(typeof theme.bgOverlay === 'number' && theme.bgOverlay > 0 ? { bgOverlay: theme.bgOverlay } : {}),
         ...(theme.glassCards ? { glassCards: true } : {}),
         ...(str(theme.presetId) ? { presetId: str(theme.presetId) } : {}),
+        ...(theme.skin === 'modern' ? { skin: 'modern' as const } : {}),
       };
       await onSave(cleaned);
       onClose();

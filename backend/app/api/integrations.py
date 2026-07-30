@@ -23,16 +23,24 @@ from datetime import datetime
 
 from app.core.config import settings
 from app.core.database import get_db
-from app.core.dependencies import get_current_user, require_view_access
+from app.core.dependencies import (
+    PERSONAL_ACCESS_TOKEN_ID_ATTR,
+    get_current_user,
+    require_view_access,
+)
+from app.models.personal_access_token import PersonalAccessToken
 from app.models.models import Dashboard
 from app.models.user import User
 from app.services.embed_link_service import (
     DEFAULT_TTL_SECONDS,
     HEADER_MAX_LENGTH,
+    InvalidEmbedOrigin,
     canonicalize_filters,
     compute_filter_hash,
     get_or_create_embed_link,
     mint_embed_grant,
+    normalize_allowed_origins,
+    resolve_pat_allowed_origins,
     sanitize_embed_header,
     validate_and_lock_filters,
 )
@@ -65,6 +73,17 @@ class EmbedResolveRequest(BaseModel):
     # as a code to whoever opens the iframe. Stored per grant, so two host apps
     # embedding the same data slice can title it differently.
     header: str | None = Field(default=None, max_length=HEADER_MAX_LENGTH)
+    # Sites allowed to iframe the links this token mints, e.g.
+    # ["https://app.base.vn", "https://*.base-datateam.com"].
+    #
+    # DECLARE ONCE: whatever you send is remembered on your PAT and applied to
+    # every later mint, so a host app sends it on one call (or an operator sets
+    # it for you) and its integration code never changes again. Omitted → keep
+    # whatever the token already declared. An EMPTY list is ignored rather than
+    # treated as "allow everywhere": a config that renders to [] in production
+    # must not be able to silently switch the protection off — clearing is done
+    # deliberately through the admin endpoint.
+    allowed_origins: list[str] | None = Field(default=None)
     # Safety gate: embedding the WHOLE report (no row-scoping) must be explicit.
     # No filters + full_report=False → 400, so a caller can't accidentally leak
     # the entire dataset by forgetting the per-viewer scope.
@@ -80,6 +99,9 @@ class EmbedResolveResponse(BaseModel):
     # requested `header` (null = the report falls back to its link name). Echoed
     # back so the caller can assert what the viewer will see.
     header: str | None = None
+    # Sites that may iframe this link (empty = embeddable anywhere, the default).
+    # Echoed back so a caller can assert the restriction actually took effect.
+    allowed_origins: list[str] = []
 
 
 def _request_origin(request: Request) -> str:
@@ -124,11 +146,46 @@ def resolve_embed_link(
 
     ttl = min(body.ttl_seconds or DEFAULT_TTL_SECONDS, DEFAULT_TTL_SECONDS)
     header = sanitize_embed_header(body.header)
-    raw_token, grant = mint_embed_grant(db, link, current_user.id, ttl, header=header)
+
+    # ── Embed origin allowlist ────────────────────────────────────────────────
+    # The declaration lives on the PAT so the host app states its domains once.
+    # A request that carries origins updates that declaration; one that doesn't
+    # inherits it. The value is then SNAPSHOT onto the grant, so the guard that
+    # runs on every iframe load is a single row read and an issued link keeps the
+    # policy it was issued under.
+    pat_id = getattr(current_user, PERSONAL_ACCESS_TOKEN_ID_ATTR, None)
+    pat = (
+        db.query(PersonalAccessToken).filter(PersonalAccessToken.id == pat_id).first()
+        if pat_id else None
+    )
+    try:
+        requested_origins = normalize_allowed_origins(body.allowed_origins)
+    except InvalidEmbedOrigin as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    if requested_origins and pat is not None and resolve_pat_allowed_origins(pat) != requested_origins:
+        pat.embed_allowed_origins = requested_origins
+        db.commit()
+        logger.info(
+            "embed_origins_declared pat=%s user=%s origins=%s",
+            pat_id, current_user.id, requested_origins,
+        )
+    if requested_origins:
+        effective_origins = requested_origins
+    elif pat is not None:
+        # Nothing sent → inherit what this integration declared earlier.
+        effective_origins = resolve_pat_allowed_origins(pat)
+    else:
+        # Session-authenticated call (no PAT to remember it on): the restriction
+        # applies to this one link.
+        effective_origins = []
+
+    raw_token, grant = mint_embed_grant(
+        db, link, current_user.id, ttl, header=header, allowed_origins=effective_origins,
+    )
 
     logger.info(
-        "embed_resolve user=%s dashboard=%s filter_hash=%s ttl=%s header=%r ip=%s",
-        current_user.id, dash.id, filter_hash[:12], ttl, header,
+        "embed_resolve user=%s dashboard=%s filter_hash=%s ttl=%s header=%r origins=%s ip=%s",
+        current_user.id, dash.id, filter_hash[:12], ttl, header, effective_origins or "any",
         (request.headers.get("x-forwarded-for") or (request.client.host if request.client else "")),
     )
     origin = _request_origin(request)
@@ -139,4 +196,5 @@ def resolve_embed_link(
         expires_at=grant.expires_at,
         filter_hash=filter_hash,
         header=header,
+        allowed_origins=effective_origins,
     )
