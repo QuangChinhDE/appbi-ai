@@ -40,7 +40,6 @@ import {
   ensureDashboardPageId,
   getDashboardChartsForPage,
   normalizeDashboardPages,
-  liftLayoutToTop,
   deriveStackedLayout,
   computeReportRowHeight,
   dashboardRowHeight,
@@ -1526,18 +1525,19 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
     );
   }
 
-  const layouts: Layout[] = liftLayoutToTop(
-    visibleDashboardCharts.map((dashboardChart) => {
-      const layout = dashboardChart.layout;
-      return {
-        i: dashboardChart.id.toString(),
-        x: layout.x || 0,
-        y: layout.y || 0,
-        w: layout.w || 4,
-        h: layout.h || 4,
-      };
-    }),
-  );
+  // Render at STORED coordinates — NO liftLayoutToTop. The public report must be
+  // pixel-WYSIWYG with the builder desktop: an intentional top gap the DA left is
+  // preserved, not normalized away.
+  const layouts: Layout[] = visibleDashboardCharts.map((dashboardChart) => {
+    const layout = dashboardChart.layout;
+    return {
+      i: dashboardChart.id.toString(),
+      x: layout.x || 0,
+      y: layout.y || 0,
+      w: layout.w || 4,
+      h: layout.h || 4,
+    };
+  });
 
   // Phase-G — single SlicerCluster node reused in both placements:
   // stacked above the grid (top) or as a left column (left). Defined

@@ -78,10 +78,12 @@ export function ensureDashboardPageId(
 
 // Finer grid (2026-07): the builder grid went 12→36 columns and the row unit
 // went 80px→(80-2·gap)/3 so a DA gets ~3× more resize/move stops ("thu vào bé
-// hơn, giãn nhiều nấc hơn"). Every persisted layout was migrated ×3 (see the
-// Alembic revision) so existing dashboards render pixel-IDENTICAL — RGL's column
-// width shrinks proportionally with `cols`, and the ×3 row-height formula below
-// keeps tile heights exact incl. the inter-tile margin. `GRID_FINER` = the scale.
+// hơn, giãn nhiều nấc hơn"). Existing (legacy, gv<2) layouts are scaled ×3 LAZILY
+// at read time by scaleGridLayoutForRender — there is NO backend migration yet
+// (a future Alembic revision will stamp gv=2 on all rows and retire this). They
+// render pixel-IDENTICAL because RGL's column width shrinks proportionally with
+// `cols` and the ×3 row-height formula below keeps tile heights exact incl. the
+// inter-tile margin. `GRID_FINER` = the scale.
 export const GRID_FINER = 3;
 export const DASHBOARD_GRID_COLS = 12 * GRID_FINER; // 36
 /** Logical row pitch of the OLD 80px grid — the reference the finer grid keeps. */

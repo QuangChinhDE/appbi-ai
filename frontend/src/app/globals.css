@@ -296,6 +296,15 @@
     animation: none !important;
   }
 
+  /* Builder edit mode (`rgl-no-anim` added to the grid by DashboardGrid when
+   * editable): kill the library's 200ms position transition on EVERY tile — not
+   * only the one being dragged — so when a gesture settles no SIBLING tile slides
+   * or animates to a new position. Prioritises pixel accuracy / cursor fidelity
+   * in the builder. The public report (no `rgl-no-anim`) keeps the transition. */
+  .rgl-no-anim .react-grid-item {
+    transition: none !important;
+  }
+
   /* Drag handle becomes visible on card hover with a gentle grip pattern.
    * Pattern: 6 dots in a 2×3 grid, low contrast unless the card is hovered. */
   .bi-drag-grip {

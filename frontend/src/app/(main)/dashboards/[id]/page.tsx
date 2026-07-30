@@ -946,34 +946,34 @@ export default function DashboardDetailPage() {
   //
   const handleLayoutChange = (newLayout: Layout[]) => {
     if (!serverDashboard) return;
-    // Build override map from the new react-grid-layout positions.
-    // Only record entries whose x/y/w/h actually differ from the
-    // baseline (serverDashboard layout merged with draft if any) so the
-    // "Save" button doesn't light up after a no-op gesture.
-    const next: Record<number, Record<string, any>> = {};
+    // One gesture = one chart: DashboardGrid forwards ONLY the moved tile, so we
+    // touch exactly the charts in `newLayout` and never re-read/re-write siblings.
+    // For each such chart, compare to its server+draft baseline (no local):
+    //   • back AT baseline  → DELETE its override, so returning a chart to its
+    //     original spot fully clears the "changed" state (no stale override, no
+    //     stuck "Unsaved" — dirty is derived from the override key count);
+    //   • otherwise         → record/update its override.
+    const prevOverrides = localLayoutOverridesRef.current;
+    const nextOverrides: Record<number, Record<string, any>> = { ...prevOverrides };
+    let changed = false;
     for (const item of newLayout) {
       const id = Number(item.i);
       const existing = serverDashboard.dashboard_charts?.find((dc) => dc.id === id);
       if (!existing) continue;
       const baseline = resolveDashboardChartLayout(id, {});
-      if (
-        baseline.x === item.x
-        && baseline.y === item.y
-        && baseline.w === item.w
-        && baseline.h === item.h
-      ) {
-        continue;
+      const atBaseline =
+        baseline.x === item.x && baseline.y === item.y
+        && baseline.w === item.w && baseline.h === item.h;
+      if (atBaseline) {
+        if (id in nextOverrides) { delete nextOverrides[id]; changed = true; }
+      } else {
+        nextOverrides[id] = mergeGridLayout(resolveDashboardChartLayout(id), item);
+        changed = true;
       }
-      next[id] = mergeGridLayout(resolveDashboardChartLayout(id), item);
     }
-    if (Object.keys(next).length === 0) {
-      // No real grid change. Keep unrelated canvas local edits intact.
-      return;
-    }
-    const prevOverrides = localLayoutOverridesRef.current;
-    const merged = { ...prevOverrides, ...next };
-    pushUndo({ kind: 'layout', prev: prevOverrides, next: merged });
-    setLocalLayoutOverrides(merged);
+    if (!changed) return; // net no-op → keep unrelated (e.g. canvas) local edits intact
+    pushUndo({ kind: 'layout', prev: prevOverrides, next: nextOverrides });
+    setLocalLayoutOverrides(nextOverrides);
   };
 
   // Phase-18 — "Sắp xếp gọn": re-flow the active page's tiles into a clean,
@@ -1030,8 +1030,14 @@ export default function DashboardDetailPage() {
       layout,
     }));
     try {
-      await updateDraftLayoutMutation.mutateAsync({ dashboardId, chartLayouts });
-      setLocalLayoutOverrides({});
+      // Clear the local overrides in the mutation's onSuccess — the SAME batch as
+      // the hook's setQueryData(draft_layouts) — so the cache already reflects the
+      // saved coords in the commit that drops the overlay. Prevents a one-frame
+      // flash of the pre-save layout between "cache updated" and "overlay cleared".
+      await updateDraftLayoutMutation.mutateAsync(
+        { dashboardId, chartLayouts },
+        { onSuccess: () => setLocalLayoutOverrides({}) },
+      );
       return true;
     } catch (err) {
       console.error('Failed to flush draft layout:', err);
