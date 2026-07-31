@@ -69,7 +69,9 @@ from app.services.dashboard_html_import_service import (
     build_dashboard_from_import_batch,
     create_manual_dataset_from_excel_source,
     create_manual_dataset_from_multi_excel_source,
+    delete_import_draft_dataset,
     parse_uploaded_source_sheets,
+    purge_stale_import_drafts,
     validate_chart_plans,
 )
 from app.core.logging import get_logger
@@ -344,12 +346,19 @@ def _dashboard_dataset_ids(db: Session, dash) -> set:
 
 
 def _dashboard_snapshot_as_of(db: Session, dash) -> Optional[Any]:
-    """Report-level snapshot freshness: the OLDEST built_at across the current
-    snapshots of every dataset this dashboard's charts read. Since a TTL rebuild
-    refreshes a dataset's snapshots together, this single timestamp is the
-    report's "last updated" — shown to builders and public viewers alike. None
-    when nothing is materialized (live)."""
-    from app.models.dataset import DatasetTable
+    """Report-level "data as of" = when the SERVED data was last refreshed,
+    OLDEST across the datasets the dashboard reads (a report is only as fresh as
+    its stalest source). UTC-aware, or None when nothing is materialized (live).
+
+    For a dataset in the PUBLISH lifecycle this is its ``published_at`` — the last
+    successful Sync & Publish, which is what "last refresh" means. The snapshot
+    ``built_at`` is WRONG for these: a watermark-REUSED table keeps its old
+    built_at, so ``as_of`` (oldest built_at) drags the label days into the past
+    even though the dataset was just re-published (DA report: refreshed 31/07 but
+    the dashboard showed 21/07). Legacy (non-lifecycle) datasets keep the
+    snapshot ``as_of`` fallback."""
+    from datetime import timezone as _tz
+    from app.models.dataset import Dataset, DatasetTable
     from app.services import snapshot_service
 
     charts = [dc.chart for dc in (dash.dashboard_charts or []) if dc.chart is not None]
@@ -1039,6 +1048,16 @@ async def prepare_html_import_draft(
     """
     normalized_mode = _normalize_import_source_mode(source_mode)
 
+    # Opportunistic TTL sweep: the wizard only cancels its draft from the
+    # browser, so a closed tab / crashed session leaks a draft that stays
+    # invisible in every listing yet still blocks deleting its datasource.
+    try:
+        purge_stale_import_drafts(db)
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.warning("Stale import-draft sweep failed", exc_info=True)
+
     if normalized_mode == "existing_dataset":
         if dataset_id is None:
             raise HTTPException(status_code=400, detail="dataset_id is required for existing_dataset.")
@@ -1153,36 +1172,8 @@ def cancel_html_import_draft(
         raise HTTPException(status_code=400, detail="Dataset is not a draft and will not be deleted.")
     require_edit_access(db, current_user, dataset_obj, "datasets")
 
-    table_ids = [t.id for t in dataset_obj.tables]
-    datasource_ids = {t.datasource_id for t in dataset_obj.tables if t.datasource_id}
-
     try:
-        if table_ids:
-            # Drafts should have no charts but clean up defensively so the
-            # dataset can be deleted without FK violations.
-            db.query(Chart).filter(Chart.dataset_table_id.in_(table_ids)).delete(
-                synchronize_session=False
-            )
-        db.delete(dataset_obj)
-        db.flush()
-
-        # Only delete manual datasources that were exclusively created for this
-        # draft (name prefixed by our helper) and are no longer referenced.
-        for ds_id in datasource_ids:
-            ds_row = db.query(DataSource).filter(DataSource.id == ds_id).first()
-            if not ds_row:
-                continue
-            if ds_row.type != DataSourceType.MANUAL:
-                continue
-            if not str(ds_row.name or "").startswith("[Dashboard Import]"):
-                continue
-            still_in_use = (
-                db.query(DatasetTable)
-                .filter(DatasetTable.datasource_id == ds_id)
-                .first()
-            )
-            if still_in_use is None:
-                db.delete(ds_row)
+        delete_import_draft_dataset(db, dataset_obj)
         db.commit()
     except HTTPException:
         raise
