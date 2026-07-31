@@ -14,6 +14,7 @@ import io
 import json
 import re
 import secrets
+from datetime import datetime, timedelta
 from difflib import SequenceMatcher
 from io import BytesIO
 from typing import Any, Dict, Iterable, List, Literal, Optional, Set, Tuple
@@ -26,7 +27,14 @@ from app.core.dependencies import require_edit_access, require_view_access
 from app.core.logging import get_logger
 from app.models import Dashboard
 from app.models.dataset import Dataset, DatasetTable
-from app.models.models import Chart, ChartMetadata, ChartType, DashboardChart
+from app.models.models import (
+    Chart,
+    ChartMetadata,
+    ChartType,
+    DashboardChart,
+    DataSource,
+    DataSourceType,
+)
 from app.models.user import User
 from app.schemas.dataset import DatasetCreate, TableCreate
 from app.schemas.schemas import DataSourceCreate
@@ -92,6 +100,14 @@ _STYLE_PAIR_RE = re.compile(r"\s*([^:]+)\s*:\s*([^;]+)")
 _SNAKE_RE = re.compile(r"[^a-z0-9]+")
 _WHITESPACE_RE = re.compile(r"\s+")
 _FIELD_TOKEN_RE = re.compile(r"[a-z0-9]+")
+
+# Manual datasources created BY the wizard carry this name prefix; only those
+# are eligible for automatic cleanup when their draft dataset goes away.
+IMPORT_DATASOURCE_NAME_PREFIX = "[Dashboard Import]"
+# A draft older than this was abandoned (tab closed / crash), so the
+# client-side cancel never fired. Swept opportunistically — see
+# purge_stale_import_drafts.
+IMPORT_DRAFT_TTL_HOURS = 48
 
 
 def build_ai_assist_meta(
@@ -3216,6 +3232,100 @@ def analyze_dashboard_html_import_batch(
     }
 
 
+def delete_import_draft_dataset(db: Session, dataset_obj: Dataset) -> None:
+    """Delete ONE draft dataset created by the HTML-import wizard.
+
+    Flushes but does NOT commit — the caller owns the transaction so a draft
+    purge can ride along with whatever else it is doing (e.g. deleting the
+    datasource the draft points at).
+
+    Also removes the wizard's own throw-away manual datasource once nothing
+    else references it. NOTE: the Dataset row must be deleted EXPLICITLY —
+    ``dataset_tables.datasource_id`` is ``ON DELETE CASCADE``, so dropping the
+    datasource alone wipes the tables and leaves the Dataset behind as an
+    invisible empty shell.
+    """
+    table_ids = [t.id for t in dataset_obj.tables]
+    datasource_ids = {t.datasource_id for t in dataset_obj.tables if t.datasource_id}
+
+    if table_ids:
+        # Drafts should have no charts but clean up defensively so the dataset
+        # can be deleted without leaving charts pointing at nothing.
+        db.query(Chart).filter(Chart.dataset_table_id.in_(table_ids)).delete(
+            synchronize_session=False
+        )
+    db.delete(dataset_obj)
+    db.flush()
+
+    for ds_id in datasource_ids:
+        ds_row = db.query(DataSource).filter(DataSource.id == ds_id).first()
+        if not ds_row:
+            continue
+        if ds_row.type != DataSourceType.MANUAL:
+            continue
+        if not str(ds_row.name or "").startswith(IMPORT_DATASOURCE_NAME_PREFIX):
+            continue
+        still_in_use = (
+            db.query(DatasetTable).filter(DatasetTable.datasource_id == ds_id).first()
+        )
+        if still_in_use is None:
+            db.delete(ds_row)
+    db.flush()
+
+
+def purge_stale_import_drafts(
+    db: Session,
+    *,
+    datasource_id: Optional[int] = None,
+    older_than_hours: Optional[int] = IMPORT_DRAFT_TTL_HOURS,
+) -> List[int]:
+    """Delete abandoned wizard drafts and return the ids that were removed.
+
+    Drafts are hidden from every listing, so an abandoned one is invisible yet
+    still counts as a "dataset using this source" — which silently blocks
+    ``DELETE /datasources/{id}`` forever. The wizard only cancels its draft
+    from the browser (modal close / beforeunload), so a crashed tab or a killed
+    session always leaks one.
+
+    ``datasource_id`` restricts the sweep to drafts touching that source, and
+    ``older_than_hours=None`` disables the age filter (used when the source is
+    being deleted anyway — age is irrelevant then). Never commits.
+    """
+    query = db.query(Dataset).filter(Dataset.is_draft.is_(True))
+    if older_than_hours is not None:
+        cutoff = datetime.utcnow() - timedelta(hours=older_than_hours)
+        # created_at is nullable on legacy rows — treat NULL as stale.
+        query = query.filter(
+            (Dataset.created_at.is_(None)) | (Dataset.created_at < cutoff)
+        )
+    if datasource_id is not None:
+        query = query.filter(
+            Dataset.id.in_(
+                db.query(DatasetTable.dataset_id).filter(
+                    DatasetTable.datasource_id == datasource_id
+                )
+            )
+        )
+
+    purged: List[int] = []
+    for dataset_obj in query.all():
+        dataset_id = dataset_obj.id
+        # SAVEPOINT per draft: one undeletable draft (unexpected FK) must not
+        # poison the caller's transaction or abort the rest of the sweep.
+        savepoint = db.begin_nested()
+        try:
+            delete_import_draft_dataset(db, dataset_obj)
+            savepoint.commit()
+        except Exception:
+            savepoint.rollback()
+            logger.warning("Could not purge stale import draft %s", dataset_id, exc_info=True)
+            continue
+        purged.append(dataset_id)
+    if purged:
+        logger.info("Purged stale dashboard-import drafts: %s", purged)
+    return purged
+
+
 def create_manual_dataset_from_excel_source(
     db: Session,
     *,
@@ -3238,7 +3348,7 @@ def create_manual_dataset_from_excel_source(
         raise ValueError("Uploaded Excel source does not contain usable data rows.")
 
     base_name = _normalize_text(requested_name) or _normalize_text(primary_sheet_name) or "Imported Data"
-    datasource_name = f"[Dashboard Import] {base_name}"
+    datasource_name = f"{IMPORT_DATASOURCE_NAME_PREFIX} {base_name}"
     data_source = DataSourceCRUDService.create(
         db,
         DataSourceCreate(
@@ -3314,7 +3424,7 @@ def create_manual_dataset_from_multi_excel_source(
     }
 
     base_name = _normalize_text(requested_name) or "Imported Data"
-    datasource_name = f"[Dashboard Import] {base_name}"
+    datasource_name = f"{IMPORT_DATASOURCE_NAME_PREFIX} {base_name}"
     data_source = DataSourceCRUDService.create(
         db,
         DataSourceCreate(

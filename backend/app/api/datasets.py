@@ -2491,11 +2491,16 @@ def dataset_refresh_runs(
     'Refresh history' modal: status, trigger, timing, generation, rows, and the
     failure reason. Requires VIEW on the dataset."""
     from app.models.dataset import Dataset, DatasetRefreshRun
+    from app.services import dataset_publish_service
 
     ds = db.query(Dataset).filter(Dataset.id == dataset_id).first()
     if not ds:
         raise HTTPException(status_code=404, detail="Dataset not found")
     require_view_access(db, current_user, ds, "datasets")
+    # Self-heal orphaned 'running' rows (crash/restart) so history never shows a
+    # spinner that can never settle — cheap, only touches rows whose sync isn't
+    # actually in flight (no publish lease held).
+    dataset_publish_service.reconcile_stuck_runs(db, dataset_id)
     lim = max(1, min(int(limit or 20), 100))
     runs = (
         db.query(DatasetRefreshRun)
@@ -2532,6 +2537,26 @@ def dataset_refresh_runs(
             for r in runs
         ]
     }
+
+
+@router.post("/{dataset_id}/refresh-runs/{run_id}/stop")
+def stop_dataset_refresh_run(
+    dataset_id: int,
+    run_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Stop a running refresh from the history modal. A live sync is asked to
+    stop cooperatively; an orphaned 'running' row (crash/restart) is reconciled
+    immediately. Requires MANAGE on the dataset."""
+    from app.models.dataset import Dataset
+    from app.services import dataset_grants_service, dataset_publish_service
+
+    ds = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if not ds:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    dataset_grants_service.require_capability(db, current_user, ds, "manage")
+    return dataset_publish_service.stop_refresh_run(db, dataset_id, run_id)
 
 
 @router.get("/{dataset_id}/publish-status")

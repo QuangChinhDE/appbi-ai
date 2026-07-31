@@ -36,6 +36,7 @@ from app.schemas import (
     SqlValidateResponse,
 )
 from app.services import DataSourceCRUDService, DataSourceConnectionService
+from app.services.dashboard_html_import_service import purge_stale_import_drafts
 from app.core.logging import get_logger
 from app.core.config import settings
 from app.services.google_data_access_service import get_google_data_access_status
@@ -410,7 +411,12 @@ def delete_data_source(
         )
     require_full_access(db, current_user, datasource, "data_sources")
 
+    # Draft datasets (HTML-import wizard) are hidden from EVERY listing, so
+    # counting them here blocks the delete with a constraint the user can never
+    # see or resolve in the UI. Only real datasets may block; abandoned drafts
+    # are purged below instead.
     blocking_datasets = db.query(Dataset).filter(
+        Dataset.is_draft.is_(False),
         Dataset.id.in_(
             db.query(Dataset.id)
             .join(Dataset.tables)
@@ -432,6 +438,30 @@ def delete_data_source(
                 "constraints": constraints,
             },
         )
+
+    # Nothing real references the source -> drop any invisible draft that does.
+    # This must happen EXPLICITLY: dataset_tables.datasource_id is ON DELETE
+    # CASCADE, so deleting the source alone would wipe the draft's tables and
+    # leave the Dataset row behind as an empty, unreachable shell.
+    try:
+        purged = purge_stale_import_drafts(
+            db, datasource_id=data_source_id, older_than_hours=None
+        )
+        if purged:
+            db.commit()
+            logger.info(
+                "Purged import drafts %s while deleting data source %s", purged, data_source_id
+            )
+    except Exception:
+        db.rollback()
+        logger.warning(
+            "Draft purge before data source %s delete failed", data_source_id, exc_info=True
+        )
+
+    # The purge may already have removed this very source (a wizard-created
+    # "[Dashboard Import]" source exists only for its draft) — that IS success.
+    if db.query(DataSource).filter(DataSource.id == data_source_id).first() is None:
+        return
 
     success = DataSourceCRUDService.delete(db, data_source_id)
     if not success:

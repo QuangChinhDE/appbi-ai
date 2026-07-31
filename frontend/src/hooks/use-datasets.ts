@@ -782,6 +782,21 @@ export function useDatasetRefreshRuns(datasetId: number | null, enabled = true) 
   });
 }
 
+/** Stop a running refresh from the history modal — settles a live sync or
+ *  reconciles an orphaned (crashed) 'running' row so it stops spinning. */
+export function useStopRefreshRun() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ datasetId, runId }: { datasetId: number; runId: number }) => {
+      const r = await api.post(`/datasets/${datasetId}/refresh-runs/${runId}/stop`);
+      return r.data as { ok: boolean; status?: string };
+    },
+    onSuccess: (_d, { datasetId }) => {
+      queryClient.invalidateQueries({ queryKey: [...datasetKeys.detail(datasetId), 'refresh-runs'] });
+    },
+  });
+}
+
 export function useRevokeDatasetGrant() {
   const queryClient = useQueryClient();
   return useMutation({
