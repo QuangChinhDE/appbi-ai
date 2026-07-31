@@ -150,6 +150,87 @@ def _refresh_run_rows_total(dataset_id: int) -> Optional[int]:
         return None
 
 
+def reconcile_stuck_runs(db: Session, dataset_id: Optional[int] = None, force: bool = False) -> int:
+    """Self-heal orphaned refresh-run rows. A run left ``running`` by a process
+    crash / restart (its terminal finalize + the background crash handler never
+    ran) would otherwise spin forever in history and can't be stopped. A run is a
+    GENUINE in-flight sync only while its dataset holds the publish LEASE (a live
+    sync claims it at start, releases it at end; a hard crash lets it lapse by
+    TTL, and the startup reaper frees it). So any ``running`` row whose dataset
+    does NOT hold the lease is stale → flip it to ``failed`` (and un-stick a
+    ``syncing`` publish_state the same way). A long real sync keeps its lease, so
+    it is never touched. Called lazily on read (GET /refresh-runs → self-heals
+    without a restart, once the lease has lapsed) and on startup by
+    ``reap_stuck_syncs``. NEVER raises."""
+    n = 0
+    try:
+        q = db.query(DatasetRefreshRun).filter(DatasetRefreshRun.status == "running")
+        if dataset_id is not None:
+            q = q.filter(DatasetRefreshRun.dataset_id == dataset_id)
+        for run in q.all():
+            if not force and _qc.is_claimed_global(_lease_key(run.dataset_id)):
+                continue  # a live sync holds the lease — genuinely in flight
+            if force:
+                # Startup: a fresh process runs no sync, so a still-claimed lease
+                # is a crash leftover — free it so it can't block the next sync.
+                try:
+                    _qc.release_global(_lease_key(run.dataset_id))
+                except Exception:  # noqa: BLE001
+                    pass
+            run.status = "failed"
+            run.finished_at = run.finished_at or datetime.utcnow()
+            if run.started_at is not None and run.duration_ms is None:
+                run.duration_ms = int((run.finished_at - run.started_at).total_seconds() * 1000)
+            if not run.error:
+                run.error = (
+                    "Bị gián đoạn (tiến trình dừng / khởi động lại) — refresh không "
+                    "hoàn tất. Chạy lại Sync & Publish."
+                )
+            # Un-stick a publish_state left at 'syncing' by the same crash.
+            ds = db.query(Dataset).filter(Dataset.id == run.dataset_id).first()
+            if ds is not None and str(getattr(ds, "publish_state", None) or "") == "syncing":
+                ds.publish_state = "published" if ds.published_generation is not None else "sync_failed"
+                if ds.published_generation is None:
+                    ds.last_sync_error = ds.last_sync_error or "Sync bị gián đoạn — chạy lại."
+            n += 1
+        if n:
+            db.commit()
+    except Exception:  # noqa: BLE001
+        db.rollback()
+        logger.warning("[publish] reconcile_stuck_runs failed", exc_info=True)
+    return n
+
+
+def stop_refresh_run(db: Session, dataset_id: int, run_id: int) -> Dict[str, Any]:
+    """Stop a running refresh from the history modal. If a sync is genuinely in
+    flight (lease held), ask it to stop — it settles to 'stopped' between tables.
+    Otherwise the row is an orphan (crashed) → reconcile it immediately so the
+    user isn't stuck watching a spinner that can never stop. NEVER raises."""
+    try:
+        run = db.query(DatasetRefreshRun).filter(
+            DatasetRefreshRun.id == run_id, DatasetRefreshRun.dataset_id == dataset_id
+        ).first()
+        if run is None:
+            return {"ok": False, "reason": "not_found"}
+        if run.status != "running":
+            return {"ok": True, "status": run.status}  # already settled
+        if _qc.is_claimed_global(_lease_key(dataset_id)):
+            # Live sync — cooperative stop (settles between tables); the run's own
+            # terminal branch records status='stopped'.
+            from app.services import sync_control, sync_progress
+            sync_control.request_stop(dataset_id)
+            sync_progress.set_phase(dataset_id, "stopping")
+            return {"ok": True, "status": "stopping"}
+        # Orphan — reconcile this run now.
+        reconcile_stuck_runs(db, dataset_id)
+        db.refresh(run)
+        return {"ok": True, "status": run.status}
+    except Exception as exc:  # noqa: BLE001
+        db.rollback()
+        logger.warning("[publish] stop_refresh_run failed run=%s", run_id, exc_info=True)
+        return {"ok": False, "reason": str(exc)[:200]}
+
+
 def _refresh_run_tables(db: Session, dataset_id: int, built: Optional[list]) -> Optional[list]:
     """Per-table breakdown for the run detail view: enrich the builder's
     ``built:[{table_id,row_count,build_ms}]`` with each table's display name.
@@ -383,6 +464,12 @@ def reap_stuck_syncs() -> int:
         if n:
             db.commit()
             logger.info("[publish] reaped %d stuck 'syncing' dataset(s) on startup", n)
+        # Also reconcile any refresh-run rows left 'running' by the crash/restart
+        # (a fresh process runs no sync → force) so history never shows a spinner
+        # that can't be stopped.
+        r = reconcile_stuck_runs(db, force=True)
+        if r:
+            logger.info("[publish] reconciled %d stuck 'running' refresh-run(s) on startup", r)
     except Exception:  # noqa: BLE001
         db.rollback()
         logger.warning("[publish] reap_stuck_syncs failed", exc_info=True)

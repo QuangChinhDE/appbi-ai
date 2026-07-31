@@ -363,12 +363,22 @@ def _dashboard_snapshot_as_of(db: Session, dash) -> Optional[Any]:
     }
     if not dataset_ids:
         return None
-    all_tids = [
-        t.id for t in db.query(DatasetTable.id)
-        .filter(DatasetTable.dataset_id.in_(list(dataset_ids)))
-        .all()
-    ]
-    return snapshot_service.as_of(db, all_tids)
+    stamps = []
+    for dsid in dataset_ids:
+        ds = db.query(Dataset).filter(Dataset.id == dsid).first()
+        if ds is None:
+            continue
+        pub = getattr(ds, "published_at", None)
+        state = str(getattr(ds, "publish_state", None) or "")
+        if state in ("published", "changes_pending") and pub is not None:
+            # published_at is naive UTC — stamp aware so isoformat emits +00:00.
+            stamps.append(pub if pub.tzinfo else pub.replace(tzinfo=_tz.utc))
+        else:
+            tids = [t.id for t in db.query(DatasetTable.id).filter(DatasetTable.dataset_id == dsid).all()]
+            a = snapshot_service.as_of(db, tids)
+            if a is not None:
+                stamps.append(a)
+    return min(stamps) if stamps else None
 
 
 @router.get("/{dashboard_id}/snapshots/info")

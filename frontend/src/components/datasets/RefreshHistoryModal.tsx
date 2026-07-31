@@ -13,7 +13,7 @@ import { CheckCircle2, XCircle, Loader2, Ban, History, ChevronDown, ChevronRight
 import { AppModalShell } from '@/components/common/AppModalShell';
 import { Badge, type BadgeProps } from '@/components/ui/Badge';
 import { useI18n } from '@/providers/LanguageProvider';
-import { useDatasetRefreshRuns, type DatasetRefreshRun } from '@/hooks/use-datasets';
+import { useDatasetRefreshRuns, useStopRefreshRun, type DatasetRefreshRun } from '@/hooks/use-datasets';
 
 function statusMeta(status: DatasetRefreshRun['status']): {
   variant: BadgeProps['variant'];
@@ -56,9 +56,10 @@ function fmtDuration(ms: number | null): string {
   return `${m}m ${rem}s`;
 }
 
-function RunRow({ run }: { run: DatasetRefreshRun }) {
+function RunRow({ run, datasetId }: { run: DatasetRefreshRun; datasetId: number }) {
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
+  const stop = useStopRefreshRun();
   const meta = statusMeta(run.status);
   const hasError = run.status === 'failed' && !!run.error;
   const hasTableDetail = Array.isArray(run.tables) && run.tables.length > 0;
@@ -71,33 +72,47 @@ function RunRow({ run }: { run: DatasetRefreshRun }) {
 
   return (
     <div className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-1">
-      <button
-        type="button"
-        disabled={!canExpand}
-        onClick={() => canExpand && setOpen((v) => !v)}
-        className={`flex w-full items-center gap-3 px-3 py-2.5 text-left ${canExpand ? 'cursor-pointer hover:bg-surface-2' : 'cursor-default'}`}
-      >
-        <Badge variant={meta.variant} size="sm">
-          <meta.Icon className={`mr-1 h-3 w-3 ${run.status === 'running' ? 'animate-spin' : ''}`} />
-          {t(meta.key)}
-        </Badge>
-        <span className="min-w-0 flex-1">
-          <span className="block truncate text-sm text-text-primary">
-            {fmtWhen(run.started_at || run.created_at, run.timezone)}
-            {run.timezone && <span className="ml-1 text-tiny font-normal text-text-quaternary">({run.timezone})</span>}
+      <div className="flex items-center">
+        <button
+          type="button"
+          disabled={!canExpand}
+          onClick={() => canExpand && setOpen((v) => !v)}
+          className={`flex min-w-0 flex-1 items-center gap-3 px-3 py-2.5 text-left ${canExpand ? 'cursor-pointer hover:bg-surface-2' : 'cursor-default'}`}
+        >
+          <Badge variant={meta.variant} size="sm">
+            <meta.Icon className={`mr-1 h-3 w-3 ${run.status === 'running' ? 'animate-spin' : ''}`} />
+            {t(meta.key)}
+          </Badge>
+          <span className="min-w-0 flex-1">
+            <span className="block truncate text-sm text-text-primary">
+              {fmtWhen(run.started_at || run.created_at, run.timezone)}
+              {run.timezone && <span className="ml-1 text-tiny font-normal text-text-quaternary">({run.timezone})</span>}
+            </span>
+            <span className="block truncate text-tiny text-text-quaternary">
+              {triggerLabel}
+              {run.duration_ms != null && ` · ${fmtDuration(run.duration_ms)}`}
+              {run.tables_built != null && ` · ${t('datasets.refreshHistory.tablesN', { count: run.tables_built })}`}
+              {run.rows_total != null && ` · ${run.rows_total.toLocaleString()} ${t('datasets.refreshHistory.rows')}`}
+            </span>
           </span>
-          <span className="block truncate text-tiny text-text-quaternary">
-            {triggerLabel}
-            {run.duration_ms != null && ` · ${fmtDuration(run.duration_ms)}`}
-            {run.tables_built != null && ` · ${t('datasets.refreshHistory.tablesN', { count: run.tables_built })}`}
-            {run.rows_total != null && ` · ${run.rows_total.toLocaleString()} ${t('datasets.refreshHistory.rows')}`}
-          </span>
-        </span>
-        {canExpand && (
-          open ? <ChevronDown className="h-4 w-4 shrink-0 text-text-quaternary" />
-               : <ChevronRight className="h-4 w-4 shrink-0 text-text-quaternary" />
+          {canExpand && (
+            open ? <ChevronDown className="h-4 w-4 shrink-0 text-text-quaternary" />
+                 : <ChevronRight className="h-4 w-4 shrink-0 text-text-quaternary" />
+          )}
+        </button>
+        {run.status === 'running' && (
+          <button
+            type="button"
+            onClick={() => stop.mutate({ datasetId, runId: run.id })}
+            disabled={stop.isPending}
+            title={t('datasets.refreshHistory.stopHint')}
+            className="mr-2 inline-flex shrink-0 items-center gap-1 rounded-md border border-danger/40 bg-danger/10 px-2 py-1 text-tiny font-medium text-danger hover:bg-danger/20 disabled:opacity-50"
+          >
+            {stop.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <Ban className="h-3 w-3" />}
+            {t('datasets.refreshHistory.stop')}
+          </button>
         )}
-      </button>
+      </div>
       {canExpand && open && (
         <div className="space-y-2 border-t border-[rgb(var(--border-line))] px-3 py-2">
           {hasTableDetail && (
@@ -161,7 +176,7 @@ export function RefreshHistoryModal({ datasetId, onClose }: { datasetId: number;
           {t('datasets.refreshHistory.empty')}
         </div>
       ) : (
-        runs.map((run) => <RunRow key={run.id} run={run} />)
+        runs.map((run) => <RunRow key={run.id} run={run} datasetId={datasetId} />)
       )}
     </AppModalShell>
   );
