@@ -1,6 +1,7 @@
 import html2canvas from 'html2canvas-pro';
 import { jsPDF } from 'jspdf';
 import { DEJAVU_SANS_REGULAR_B64, DEJAVU_SANS_BOLD_B64 } from './pdf-fonts';
+import { tileBoxMm, type ExportLayoutPlan } from './export-layout';
 import { waitForRenderReady } from './render-ready';
 
 export { waitForRenderReady } from './render-ready';
@@ -25,15 +26,26 @@ export type PdfPageSize = 'a4' | 'a3' | 'letter';
 export type PdfOrientation = 'portrait' | 'landscape';
 /**
  * How tiles are placed on the paper.
- *   • 'tiled'  — DEFAULT. Keeps the dashboard's own arrangement: tiles that sit
+ *   • 'snapshot' — THE DEFAULT. One dashboard page becomes exactly one sheet: the
+ *     page is captured ONCE and scaled to fit. Tables print the rows they show on
+ *     screen, nothing expands, and there is one capture per page instead of one
+ *     per tile — which is the entire point, since a chart-heavy report spent most
+ *     of its export time rasterising tiles one at a time.
+ *   • 'tiled'  — full data. Keeps the dashboard's own arrangement: tiles that sit
  *     side by side on screen stay side by side on the page, scaled to the page
- *     width. This is what makes the export look like the report.
- *   • 'single' — one tile per block, full page width, top to bottom. Useful when
- *     the reader wants every chart as big as possible.
+ *     width, and tables are drawn as real text with every row.
+ *   • 'single' — full data, one tile per block at full page width, top to bottom.
+ *     For a reader who wants every chart as big as possible.
+ *   • 'custom' — the arrangement the user made in the export-layout dialog: each
+ *     sheet is drawn from an explicit plan (see lib/export-layout). The plan
+ *     drives ONLY the export; the dashboard's own layout is never touched.
  * ('single' used to be the only mode, and it is why a row of six KPI cards came
  * out as six near-empty pages.)
  */
-export type PdfLayoutMode = 'tiled' | 'single';
+export type PdfLayoutMode = 'snapshot' | 'tiled' | 'single' | 'custom';
+
+/** Layouts that paginate to fit ALL the data (tables expand to every row). */
+export const FULL_DATA_LAYOUTS: PdfLayoutMode[] = ['tiled', 'single'];
 
 export interface PdfProgress {
   phase: 'prepare' | 'page' | 'capture' | 'finalize' | 'done';
@@ -57,7 +69,7 @@ export interface PdfExportOptions {
   title: string;
   orientation: PdfOrientation;
   format: PdfPageSize;
-  /** Tile placement — see PdfLayoutMode. Defaults to 'tiled'. */
+  /** Tile placement — see PdfLayoutMode. Defaults to 'snapshot'. */
   layout?: PdfLayoutMode;
   /** One entry per dashboard page to include, in order. */
   pages: PdfPageSource[];
@@ -65,6 +77,8 @@ export interface PdfExportOptions {
   dataAsOf?: string | null;
   /** Charts that failed to load — rendered as a warning section at the end. */
   warnings?: PdfExportWarning[];
+  /** Required when `layout: 'custom'` — the sheets the user arranged. */
+  plan?: ExportLayoutPlan;
   /** Progress reporter so the UI can show what's happening + how far along. */
   onProgress?: (p: PdfProgress) => void;
   /**
@@ -83,6 +97,11 @@ export interface PdfPageSource {
   /** Switch to this page, force-render its tiles, and return the DOM root to walk. */
   getRoot: () => Promise<HTMLElement | null>;
 }
+
+// Below this fit factor a snapshot sheet stops being comfortable to read, so we
+// flag it in the report's warning section instead of quietly shipping a page
+// nobody can use.
+const SNAPSHOT_SMALL_SCALE = 0.62;
 
 const MARGIN = 10; // mm
 const HEADER_H = 16; // mm reserved for the page header
@@ -208,7 +227,7 @@ function drawPageHeader(pdf: jsPDF, opts: PdfExportOptions, page: PdfPageSource,
 }
 
 /** Final pass: stamp "title … N / total" on every physical page. */
-function stampFooters(pdf: jsPDF, title: string) {
+function stampFooters(pdf: jsPDF, title: string, note?: string) {
   const total = pdf.getNumberOfPages();
   for (let i = 1; i <= total; i++) {
     pdf.setPage(i);
@@ -216,7 +235,8 @@ function stampFooters(pdf: jsPDF, title: string) {
     pdf.setFont(FONT, 'normal');
     pdf.setFontSize(8);
     pdf.setTextColor(148, 163, 184);
-    if (title) pdf.text(title, MARGIN, g.ph - MARGIN - 2, { maxWidth: g.usableW - 30 });
+    const left = note ? `${title} · ${note}` : title;
+    if (left) pdf.text(left, MARGIN, g.ph - MARGIN - 2, { maxWidth: g.usableW - 30 });
     pdf.text(`${i} / ${total}`, g.pw - MARGIN, g.ph - MARGIN - 2, { align: 'right' });
     pdf.setTextColor(15, 23, 42);
   }
@@ -590,6 +610,193 @@ function tileTable(tile: HTMLElement): HTMLTableElement | null {
   return table && table.querySelectorAll('tbody tr').length > 0 ? table : null;
 }
 
+/**
+ * Draw one dashboard page as a single scaled picture on one sheet.
+ *
+ * Why one capture instead of per-tile captures: html2canvas cost is dominated by
+ * the number of invocations (each one clones + re-lays-out its subtree), so a
+ * 20-tile page goes from 20 layout passes to 1. The trade is that everything on
+ * the sheet is an image — no selectable table text — which is exactly the deal
+ * the "snapshot" option offers, and why the full-data layouts stay available.
+ *
+ * The capture is scaled to FIT (never cropped, never enlarged past 1:1) and
+ * centred, so the sheet reads like a photo of the report. Returns the scale used
+ * so the caller can warn when the result got small enough to hurt.
+ */
+async function drawPageSnapshot(
+  pdf: jsPDF,
+  root: HTMLElement,
+  opts: PdfExportOptions,
+  page: PdfPageSource,
+  ctx: { pageNo: number; total: number },
+): Promise<{ scale: number; failed: boolean }> {
+  const g = geom(pdf);
+  const availW = g.usableW;
+  const availH = g.bottom - startContentY();
+  let dataUrl: string | null = null;
+  let cw = 0;
+  let ch = 0;
+  try {
+    // scale 1.6 keeps chart labels legible after the fit-shrink below without
+    // making a multi-MB page; JPEG for the same reason the tiled path uses it.
+    const canvas = await html2canvas(root, {
+      scale: 1.6,
+      useCORS: true,
+      logging: false,
+      backgroundColor: '#ffffff',
+      windowWidth: root.scrollWidth,
+      windowHeight: root.scrollHeight,
+    });
+    cw = canvas.width;
+    ch = canvas.height;
+    dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+  } catch {
+    dataUrl = null;
+  }
+  if (!dataUrl || !cw || !ch) {
+    pdf.setFont(FONT, 'normal');
+    pdf.setFontSize(9);
+    pdf.setTextColor(148, 163, 184);
+    pdf.text('(không chụp được trang này)', MARGIN + 3, startContentY() + 10);
+    pdf.setTextColor(15, 23, 42);
+    return { scale: 0, failed: true };
+  }
+  const fit = Math.min(1, availW / (cw / 3.7795), availH / (ch / 3.7795));
+  const drawW = (cw / 3.7795) * fit;
+  const drawH = (ch / 3.7795) * fit;
+  const x = MARGIN + Math.max(0, (availW - drawW) / 2);
+  pdf.addImage(dataUrl, 'JPEG', x, startContentY(), drawW, drawH);
+  return { scale: fit, failed: false };
+}
+
+/**
+ * Draw the sheets the user arranged.
+ *
+ * Every tile is captured at whatever size it happens to have on screen and then
+ * placed into its box on the sheet **preserving aspect ratio** (letterboxed, not
+ * stretched). Re-sizing each tile to its target box before capturing would fill
+ * the box exactly, but it means a layout pass plus a settle wait per tile — the
+ * kind of cost that made the old per-tile exporter slow. Aspect-correct and fast
+ * beats pixel-perfect and slow here; a distorted chart is a worse outcome than a
+ * little white space.
+ *
+ * Tiles are found by `data-chart-id`, which every dashboard surface already sets,
+ * so this works on the builder, the public report and the embed alike.
+ */
+async function drawArrangedSheets(
+  pdf: jsPDF,
+  opts: PdfExportOptions,
+  tilesByChartId: Map<number, HTMLElement>,
+  report: (p: PdfProgress) => void,
+  warnings: PdfExportWarning[],
+): Promise<void> {
+  const plan = opts.plan!;
+  const g = geom(pdf);
+  const usableW = g.usableW;
+  const usableH = g.bottom - startContentY();
+  let placed = 0;
+  const totalTiles = Math.max(1, plan.sheets.reduce((n, sh) => n + sh.tiles.length, 0));
+
+  for (let si = 0; si < plan.sheets.length; si++) {
+    const sheet = plan.sheets[si];
+    if (si > 0) pdf.addPage(opts.format, opts.orientation);
+    drawPageHeader(
+      pdf,
+      opts,
+      { name: sheet.title || `Tờ ${si + 1}`, getRoot: async () => null },
+      si + 1,
+      plan.sheets.length,
+    );
+
+    for (const tile of sheet.tiles) {
+      const el = tilesByChartId.get(tile.chartId);
+      const box = tileBoxMm(tile, plan, usableW, usableH);
+      const x0 = MARGIN + box.x;
+      const y0 = startContentY() + box.y;
+      placed += 1;
+      report({
+        phase: 'capture',
+        ratio: 0.05 + 0.9 * (placed / totalTiles),
+        message: `Tờ ${si + 1}/${plan.sheets.length}: đang xử lý ô ${placed}/${totalTiles}…`,
+      });
+
+      if (!el) {
+        warnings.push({
+          page: sheet.title || `Tờ ${si + 1}`,
+          chart: `Biểu đồ #${tile.chartId}`,
+          reason: 'Không tìm thấy biểu đồ này trên báo cáo khi xuất.',
+        });
+        continue;
+      }
+      try {
+        const canvas = await html2canvas(el, { scale: 1.5, useCORS: true, logging: false, backgroundColor: '#ffffff' });
+        const aspect = canvas.height / canvas.width;
+        // Letterbox: fit inside the box, keep the shape, centre what is left.
+        let w = box.w;
+        let h = w * aspect;
+        if (h > box.h) { h = box.h; w = h / aspect; }
+        pdf.addImage(
+          canvas.toDataURL('image/jpeg', 0.85),
+          'JPEG',
+          x0 + (box.w - w) / 2,
+          y0 + (box.h - h) / 2,
+          w,
+          h,
+        );
+      } catch {
+        warnings.push({
+          page: sheet.title || `Tờ ${si + 1}`,
+          chart: tileTitle(el) || `Biểu đồ #${tile.chartId}`,
+          reason: 'Không chụp được hình biểu đồ này (trình duyệt từ chối render).',
+        });
+      }
+    }
+  }
+}
+
+/**
+ * Small pictures of each tile, for the export arranger.
+ *
+ * Arranging by chart NAME alone means guessing what you are moving, so the
+ * arranger shows the real thing. Capture is deliberately cheap (≈240px wide,
+ * JPEG) and one-off: it walks the pages the caller offers, waits for the same
+ * readiness signal the exporter uses, and snapshots whatever tiles are there.
+ * A tile that fails to capture simply has no thumbnail — the arranger falls back
+ * to its name + type rather than blocking.
+ */
+export async function captureTileThumbnails(
+  pages: PdfPageSource[],
+  onProgress?: (done: number, total: number) => void,
+): Promise<Map<number, string>> {
+  const out = new Map<number, string>();
+  for (let i = 0; i < pages.length; i++) {
+    onProgress?.(i, pages.length);
+    const root = await pages[i].getRoot();
+    if (!root) continue;
+    await waitForRenderReady(root, { timeoutMs: 12000 });
+    const tiles = [...root.querySelectorAll<HTMLElement>('[data-chart-id]')];
+    for (const el of tiles) {
+      const id = Number(el.getAttribute('data-chart-id'));
+      if (!Number.isFinite(id) || out.has(id)) continue;
+      const box = (el.closest('.react-grid-item') as HTMLElement) || el;
+      try {
+        const w = box.getBoundingClientRect().width || 400;
+        const canvas = await html2canvas(box, {
+          scale: Math.min(0.5, 240 / Math.max(1, w)),
+          useCORS: true,
+          logging: false,
+          backgroundColor: '#ffffff',
+        });
+        out.set(id, canvas.toDataURL('image/jpeg', 0.7));
+      } catch {
+        /* no thumbnail for this tile — the arranger shows its name instead */
+      }
+    }
+  }
+  onProgress?.(pages.length, pages.length);
+  return out;
+}
+
 // ── Main entry ───────────────────────────────────────────────────────────────
 
 export async function exportDashboardPdf(opts: PdfExportOptions): Promise<'opened' | 'saved'> {
@@ -606,6 +813,36 @@ export async function exportDashboardPdf(opts: PdfExportOptions): Promise<'opene
   // exporter itself can't render. Both end up in the closing warning section.
   const warnings: PdfExportWarning[] = [...(opts.warnings ?? [])];
   report({ phase: 'prepare', ratio: 0.02, message: 'Đang chuẩn bị…' });
+
+  // 'custom' walks every selected page ONCE to collect the tile elements the plan
+  // refers to (a plan may mix charts from several pages onto one sheet), then
+  // draws the sheets. It deliberately does not use the per-page pagination below.
+  if (opts.layout === 'custom' && opts.plan) {
+    const tilesByChartId = new Map<number, HTMLElement>();
+    for (let i = 0; i < opts.pages.length; i++) {
+      const page = opts.pages[i];
+      report({
+        phase: 'page',
+        ratio: 0.02 + 0.03 * (i / Math.max(1, opts.pages.length)),
+        message: `Đang tải trang ${i + 1}/${opts.pages.length}${page.name ? ` — ${page.name}` : ''}…`,
+      });
+      const root = await page.getRoot();
+      if (!root) continue;
+      await waitForRenderReady(root);
+      root.querySelectorAll<HTMLElement>('[data-chart-id]').forEach((el) => {
+        const id = Number(el.getAttribute('data-chart-id'));
+        const tile = (el.closest('.react-grid-item') as HTMLElement) || el;
+        if (Number.isFinite(id) && !tilesByChartId.has(id)) tilesByChartId.set(id, tile);
+      });
+    }
+    await drawArrangedSheets(pdf, opts, tilesByChartId, report, warnings);
+    report({ phase: 'finalize', ratio: 0.96, message: 'Đang tạo file PDF…' });
+    drawWarnings(pdf, opts, warnings);
+    stampFooters(pdf, opts.title, 'Bố cục tự sắp');
+    const done = downloadPdf(pdf, opts.filename, opts.previewWindow);
+    report({ phase: 'done', ratio: 1, message: 'Hoàn tất — đã tải PDF về máy.' });
+    return done;
+  }
 
   for (let i = 0; i < opts.pages.length; i++) {
     const page = opts.pages[i];
@@ -641,6 +878,32 @@ export async function exportDashboardPdf(opts: PdfExportOptions): Promise<'opene
       });
     }
 
+    // SNAPSHOT (default): the whole page as one picture on one sheet. No tile
+    // walk, no table extraction — that is where the time went.
+    if ((opts.layout ?? 'snapshot') === 'snapshot') {
+      report({
+        phase: 'capture',
+        ratio: 0.05 + 0.9 * (pageBase + 0.5 / total),
+        message: `Đang chụp trang ${i + 1}/${total}${page.name ? ` — ${page.name}` : ''}…`,
+      });
+      const shot = await drawPageSnapshot(pdf, root, opts, page, { pageNo, total });
+      if (shot.failed) {
+        warnings.push({
+          page: page.name || `Trang ${i + 1}`,
+          chart: '(toàn trang)',
+          reason: 'Không chụp được trang này.',
+        });
+      } else if (shot.scale > 0 && shot.scale < SNAPSHOT_SMALL_SCALE) {
+        // Say it rather than shipping a sheet nobody can read.
+        warnings.push({
+          page: page.name || `Trang ${i + 1}`,
+          chart: '(toàn trang)',
+          reason: `Trang bị thu nhỏ còn ${Math.round(shot.scale * 100)}% để vừa một tờ — chọn khổ A3 hoặc hướng ngang để dễ đọc hơn.`,
+        });
+      }
+      continue;
+    }
+
     // Tiles in visual order (top→bottom, then left→right).
     const tiles = [...root.querySelectorAll<HTMLElement>('.react-grid-item')]
       .filter((t) => t.offsetParent !== null)
@@ -651,7 +914,7 @@ export async function exportDashboardPdf(opts: PdfExportOptions): Promise<'opene
       });
     if (tiles.length === 0) continue;
 
-    const layout: PdfLayoutMode = opts.layout ?? 'tiled';
+    const layout: PdfLayoutMode = opts.layout ?? 'snapshot';
     // Rows of the dashboard grid. In 'single' mode every tile is its own row, so
     // both layouts share one code path.
     const rows = layout === 'tiled' ? groupIntoRows(tiles) : tiles.map((t) => [t]);
@@ -714,7 +977,13 @@ export async function exportDashboardPdf(opts: PdfExportOptions): Promise<'opene
 
   report({ phase: 'finalize', ratio: 0.96, message: 'Đang tạo file PDF…' });
   drawWarnings(pdf, opts, warnings);
-  stampFooters(pdf, opts.title);
+  stampFooters(
+    pdf,
+    opts.title,
+    // A snapshot prints what the report shows, so a long table is truncated by
+    // design. Stamping it means the reader can tell without asking.
+    (opts.layout ?? 'snapshot') === 'snapshot' ? 'Ảnh trang — bảng in theo dữ liệu đang hiển thị' : undefined,
+  );
   const result = downloadPdf(pdf, opts.filename, opts.previewWindow);
   report({
     phase: 'done',

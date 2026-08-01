@@ -3,15 +3,36 @@
 import { createContext, useContext } from 'react';
 
 /**
- * Phase-B22 — when true, dashboard tiles render in "export mode": tables show
- * ALL rows (no 200-cap, no inner scroll) and lazy tiles render immediately, so
- * the PDF exporter captures the full content. Provided around the captured DOM
- * by each surface (build / public / embed) while a PDF export runs.
+ * How the dashboard renders while a PDF export runs. Provided around the
+ * captured DOM by each surface (build / public / embed).
+ *
+ *   false      — not exporting.
+ *   'snapshot' — the DEFAULT export: one dashboard page becomes one sheet, so we
+ *                only need the tiles to be RENDERED (lazy gating off). Tables
+ *                keep their on-screen rows.
+ *   'full'     — the "full data" export: tables additionally expand to EVERY row
+ *                (no 200-cap, no inner scroll) and the report paginates as long
+ *                as it needs to.
+ *
+ * The distinction matters for speed, which is the whole point of the snapshot
+ * mode: expanding every table to thousands of rows is the single most expensive
+ * thing an export does, and it is pure waste when the sheet is a scaled picture
+ * of the page. Both modes still need lazy tiles forced on — otherwise an
+ * off-screen chart is captured blank.
  */
-export const ExportModeContext = createContext(false);
+export type ExportRenderMode = false | 'snapshot' | 'full';
 
+export const ExportModeContext = createContext<ExportRenderMode>(false);
+
+/** True while ANY export is running — use for "render now, don't wait for
+ *  scroll" and "no enter animations" decisions. */
 export function useExportMode(): boolean {
-  return useContext(ExportModeContext);
+  return useContext(ExportModeContext) !== false;
+}
+
+/** True only for the full-data export — use for "show every row" decisions. */
+export function useFullDataExportMode(): boolean {
+  return useContext(ExportModeContext) === 'full';
 }
 
 /** Characters a filesystem genuinely refuses. Built with RegExp() from an

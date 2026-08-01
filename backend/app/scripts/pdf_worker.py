@@ -106,6 +106,15 @@ def _footer_template(subtitle: str) -> str:
     )
 
 
+def _is_full_data(job: DashboardExportJob) -> bool:
+    """True for the layouts that print ALL the data ('tiled' / 'single').
+
+    Snapshot is the default, so anything unrecognised (or absent, e.g. a job
+    queued by an older build) is treated as a snapshot.
+    """
+    return str(((job.params or {}).get("layout") or "snapshot")).lower() in ("tiled", "single", "full")
+
+
 def _render_url(job: DashboardExportJob, page_id: str) -> str:
     params = job.params or {}
     query = {"print": "1"}
@@ -115,6 +124,10 @@ def _render_url(job: DashboardExportJob, page_id: str) -> str:
     if filters:
         raw = json.dumps(filters, ensure_ascii=False).encode("utf-8")
         query["filters"] = base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+    # The page needs to know which export this is: 'full' expands every table to
+    # all its rows, 'snapshot' (default) prints what the report shows. Sending it
+    # here is what stops a snapshot job from paying for a thousand-row DOM.
+    query["layout"] = "full" if _is_full_data(job) else "snapshot"
     base = str(settings.PDF_RENDER_BASE_URL).rstrip("/")
     return f"{base}/d/{quote(job.link_token or '')}?{urlencode(query)}"
 
@@ -158,40 +171,59 @@ def _wait_ready(page, timeout_s: int) -> bool:
         return False
 
 
-# Below this factor the charts stop being readable, so we let the report
-# paginate normally instead of shrinking it further.
+# Below this factor the charts stop being readable. Snapshot exports ignore it
+# (the user asked for one sheet and gets an advisory instead); the full-data
+# layouts use it to decide between fitting and paginating.
 _MIN_FIT = 0.5
 
-_FIT_SCRIPT = """
-([availW, availH, minFit]) => {
+# Chromium's own bounds for page.pdf(scale=…).
+_PDF_SCALE_MIN = 0.1
+_PDF_SCALE_MAX = 2.0
+
+_MEASURE_SCRIPT = """
+() => {
   const root = document.querySelector('[data-pdf-root]');
-  if (!root) return 1;
-  const h = root.scrollHeight;
-  if (!h) return 1;
-  const scale = Math.min(1, availH / h);
-  if (scale >= 1 || scale < minFit) return scale >= 1 ? 1 : 0;
-  // The tiles are absolutely positioned by react-grid-layout, so `break-inside:
-  // avoid` cannot save a chart that straddles a page boundary — the browser
-  // slices it in half. Scaling the whole page down so one dashboard page lands
-  // on one sheet removes the boundary altogether, and it keeps the printed
-  // report looking like the dashboard.
-  root.style.transformOrigin = 'top left';
-  root.style.transform = 'scale(' + scale + ')';
-  root.style.width = (100 / scale) + '%';
-  return scale;
+  if (!root) return 0;
+  return Math.max(root.scrollHeight, root.offsetHeight, 0);
 }
 """
 
 
-def _fit_to_one_sheet(page, avail_w_px: int, avail_h_px: int) -> float:
-    """Try to make this dashboard page occupy exactly one sheet.
-
-    Returns the applied scale (1 = already fits, 0 = too tall to shrink
-    legibly, so the section paginates as-is)."""
+def _content_height_px(page) -> int:
+    """Rendered height of the report section, in CSS pixels."""
     try:
-        return float(page.evaluate(_FIT_SCRIPT, [avail_w_px, avail_h_px, _MIN_FIT]) or 1)
+        return int(page.evaluate(_MEASURE_SCRIPT) or 0)
     except Exception:  # noqa: BLE001
+        return 0
+
+
+def _fit_scale(page, avail_h_px: int, min_fit: float) -> float:
+    """How much to shrink so this dashboard page lands on ONE sheet.
+
+    Returns 1.0 when it already fits and 0.0 when it would have to shrink below
+    `min_fit` (caller then lets the section paginate normally).
+
+    This is deliberately a *print* scale handed to ``page.pdf(scale=…)`` rather
+    than a CSS transform on the DOM. The transform version — scale the root and
+    widen it by 1/scale to compensate — produced exactly the artefact the DA
+    reported: the tile FRAMES grew to the new width, but every Recharts
+    ResponsiveContainer had already measured itself at the old width and never
+    re-measured, so each chart sat as a postage stamp inside a full-width card.
+    Chromium's print scale re-renders the whole page at the target size instead,
+    so the layout composes at full width first and only then shrinks — charts fill
+    their cards, text stays vector, and no DOM is mutated.
+    """
+    h = _content_height_px(page)
+    if not h:
         return 1.0
+    # 0.985 keeps a hair of slack: a scale that lands exactly on the sheet height
+    # can still spill a sub-pixel row onto a second, blank page.
+    scale = min(1.0, (avail_h_px / h) * 0.985)
+    if scale >= 1.0:
+        return 1.0
+    if scale < min_fit:
+        return 0.0
+    return max(_PDF_SCALE_MIN, min(_PDF_SCALE_MAX, scale))
 
 
 def _merge_pdfs(sections: list[bytes]) -> tuple[bytes, int]:
@@ -232,7 +264,10 @@ def _render_job(browser, db, job: DashboardExportJob) -> None:
 
     context = browser.new_context(
         viewport={"width": width, "height": height},
-        device_scale_factor=2,          # crisp text/vector output
+        # Crisp text/vector output. A snapshot may re-render at width/scale (up to
+        # ~3.5k px wide); 2× on top of that is a needlessly large raster buffer, so
+        # the render loop steps this down when it widens the viewport.
+        device_scale_factor=2,
         locale="vi-VN",
         timezone_id=str(params.get("timezone") or "Asia/Ho_Chi_Minh"),
     )
@@ -262,9 +297,53 @@ def _render_job(browser, db, job: DashboardExportJob) -> None:
                         "reason": "Trang chưa vẽ xong trong thời gian cho phép — có thể thiếu dữ liệu.",
                     })
                 page.add_style_tag(content=page_css)
-                fit = _fit_to_one_sheet(page, width, height)
+                # Snapshot means "one dashboard page on one sheet" — the user asked
+                # for it, so there is no legibility bail-out; we shrink as far as
+                # needed and add an advisory. The full-data layouts keep the old
+                # behaviour: fit when it stays readable, otherwise paginate.
+                min_fit = _PDF_SCALE_MIN if not _is_full_data(job) else _MIN_FIT
+                fit = _fit_scale(page, height, min_fit)
                 if fit and fit < 1:
-                    logger.info("job=%s page=%s scaled to %.2f to fit one sheet", job.id, page_id or "-", fit)
+                    # ── The subtle part ──────────────────────────────────────
+                    # `page.pdf(scale=s)` does NOT photograph the current render:
+                    # Chromium re-lays the page out at width/s and then shrinks the
+                    # result. Anything fluid (our tile cards) therefore grows to the
+                    # wider layout, while a chart SVG whose pixel width was baked in
+                    # by JS at the old, narrower viewport does not — which is exactly
+                    # the "chart thu bé tí mà viền vẫn rộng" the DA reported, and the
+                    # same trap the earlier CSS-transform version fell into.
+                    #
+                    # Fix: render at the width the print layout will actually use, so
+                    # every chart measures itself at its final size BEFORE we print.
+                    page.set_viewport_size({
+                        "width": int(round(width / fit)),
+                        "height": int(round(height / fit)),
+                    })
+                    # Let the charts re-measure and settle at the new width.
+                    page.wait_for_timeout(900)
+                    # The taller/wider layout can change the content height a little
+                    # (wrapped labels, legends), so re-check once and keep the more
+                    # conservative scale rather than spilling onto a second sheet.
+                    refit = _fit_scale(page, height, min_fit)
+                    if refit and refit < fit:
+                        fit = refit
+                        page.set_viewport_size({
+                            "width": int(round(width / fit)),
+                            "height": int(round(height / fit)),
+                        })
+                        page.wait_for_timeout(500)
+                    logger.info(
+                        "job=%s page=%s printed at scale %.2f (layout %dpx) to fit one sheet",
+                        job.id, page_id or "-", fit, int(round(width / fit)),
+                    )
+                if not _is_full_data(job) and 0 < fit < 0.62:
+                    warnings.append({
+                        "page": page_name or page_id or "(trang mặc định)",
+                        "chart": "(toàn trang)",
+                        "reason": f"Trang bị thu nhỏ còn {round(fit * 100)}% để vừa một tờ — chọn khổ A3 hoặc hướng ngang để dễ đọc hơn.",
+                        # Advisory, not a hole in the data: see finish_job.
+                        "severity": "info",
+                    })
                 sections.append(
                     page.pdf(
                         print_background=True,
@@ -272,6 +351,9 @@ def _render_job(browser, db, job: DashboardExportJob) -> None:
                         display_header_footer=True,
                         header_template=_header_template(title, page_name),
                         footer_template=_footer_template(subtitle),
+                        # fit == 0 means "too tall to shrink legibly" → print at
+                        # 1:1 and let the section paginate.
+                        scale=fit if fit else 1.0,
                     )
                 )
             finally:

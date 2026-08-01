@@ -31,7 +31,13 @@ import { DashboardHtmlImportModal } from '@/components/dashboards/DashboardHtmlI
 import { ConfirmDialog } from '@/components/common/ConfirmDialog';
 import { useDashboardPresence } from '@/hooks/use-dashboard-presence';
 import { useCurrentUser } from '@/hooks/use-current-user';
-import { ExportModeContext, PDF_PREVIEW_TAB_ENABLED, openPdfPreviewTab, safePdfFilename } from '@/lib/export-mode';
+import {
+  ExportModeContext,
+  PDF_PREVIEW_TAB_ENABLED,
+  openPdfPreviewTab,
+  safePdfFilename,
+  type ExportRenderMode,
+} from '@/lib/export-mode';
 import { ExportPdfDialog, type ExportPdfChoices } from '@/components/dashboards/ExportPdfDialog';
 import type { PdfProgress } from '@/lib/export-pdf';
 import { ShareDialog } from '@/components/common/ShareDialog';
@@ -269,6 +275,9 @@ export default function DashboardDetailPage() {
   const [editingPageId, setEditingPageId] = useState<string | null>(null);
   const [editedPageName, setEditedPageName] = useState('');
   const [isExportingPdf, setIsExportingPdf] = useState(false);
+  // Which export is running — see ExportRenderMode. Snapshot (default) renders
+  // lazy tiles only; full also expands every table.
+  const [exportRenderMode, setExportRenderMode] = useState<ExportRenderMode>(false);
   const [isExportDialogOpen, setIsExportDialogOpen] = useState(false);
   const [exportProgress, setExportProgress] = useState<PdfProgress | null>(null);
   const dashboardContentRef = React.useRef<HTMLDivElement>(null);
@@ -2417,6 +2426,7 @@ export default function DashboardDetailPage() {
     // Open the preview tab synchronously inside the click (see openPdfPreviewTab).
     const previewWindow = openPdfPreviewTab();
     setIsExportingPdf(true);
+    setExportRenderMode(choices.layout === 'snapshot' ? 'snapshot' : 'full');
     setExportProgress({ phase: 'prepare', ratio: 0, message: t('dashboards.detail.exportPreparing') });
     const originalPageId = activePageId;
     try {
@@ -2466,6 +2476,7 @@ export default function DashboardDetailPage() {
     } finally {
       setCurrentPageId(originalPageId);
       setIsExportingPdf(false);
+      setExportRenderMode(false);
       setExportProgress(null);
     }
   }, [dashboard, dashboardPages, activePageId, summarizeAppliedFilters]);
@@ -3267,7 +3278,7 @@ export default function DashboardDetailPage() {
             ))}
           </div>
         )}
-        <ExportModeContext.Provider value={isExportingPdf}>
+        <ExportModeContext.Provider value={exportRenderMode}>
         {(dashboard?.layout_mode ?? 'grid') === 'canvas' ? (
           <DashboardCanvas
             dashboardId={dashboardId}

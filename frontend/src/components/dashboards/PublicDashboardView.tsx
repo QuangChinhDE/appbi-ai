@@ -21,7 +21,13 @@ import { DashboardThemeProvider, getDashboardGridMargin } from '@/components/das
 import { ReadonlyChartTile } from '@/components/dashboards/ReadonlyChartTile';
 import { ExportPdfDialog, type ExportPdfChoices } from '@/components/dashboards/ExportPdfDialog';
 import type { PdfExportWarning, PdfProgress } from '@/lib/export-pdf';
-import { ExportModeContext, PDF_PREVIEW_TAB_ENABLED, openPdfPreviewTab, safePdfFilename } from '@/lib/export-mode';
+import {
+  ExportModeContext,
+  PDF_PREVIEW_TAB_ENABLED,
+  openPdfPreviewTab,
+  safePdfFilename,
+  type ExportRenderMode,
+} from '@/lib/export-mode';
 import { parsePrintRenderOptions, type PrintRenderOptions } from '@/lib/print-render';
 import { toast } from '@/lib/toast';
 import { DashboardFilterBar } from '@/components/dashboards/DashboardFilterBar';
@@ -38,6 +44,7 @@ import {
 } from '@/lib/api/public';
 import {
   ensureDashboardPageId,
+  getDashboardChartPageId,
   getDashboardChartsForPage,
   normalizeDashboardPages,
   deriveStackedLayout,
@@ -402,6 +409,11 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
   const [authError, setAuthError] = useState<string | null>(null);
   const [authSubmitting, setAuthSubmitting] = useState(false);
   const [isExportingPdf, setIsExportingPdf] = useState(false);
+  // WHICH export is running. 'snapshot' (the default) only needs lazy tiles
+  // rendered; 'full' additionally expands every table to all its rows. Kept
+  // separate from `isExportingPdf` so the render mode is explicit at the
+  // provider rather than inferred from a boolean.
+  const [exportRenderMode, setExportRenderMode] = useState<ExportRenderMode>(false);
   // PRINT MODE — the surface the server-side render worker loads
   // (`/d/<token>?print=1&page=<id>&filters=<base64>`). It strips every piece of
   // chrome (masthead, tabs, slicer bar, AI bot, export button), forces export
@@ -412,6 +424,11 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
   // and the page-scope filter rules have exactly one implementation.
   const [printOptions, setPrintOptions] = useState<PrintRenderOptions | null>(null);
   const printMode = printOptions !== null;
+  // The worker renders this page for a job; the job's layout decides whether
+  // tables must expand. Snapshot is the default, matching the dialog.
+  const printRenderMode: ExportRenderMode = printMode
+    ? (printOptions?.layout === 'full' ? 'full' : 'snapshot')
+    : false;
   const printFiltersAppliedRef = useRef(false);
   const printReadyRef = useRef(false);
   const [isExportDialogOpen, setIsExportDialogOpen] = useState(false);
@@ -1070,6 +1087,11 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
     previewWindow: Window | null,
   ): Promise<boolean> => {
     if (!dashboard) return false;
+    // The arranged layout is rendered in the browser in P1: the worker prints the
+    // report's own print route, which knows nothing about a hand-made plan. Sending
+    // it there would quietly produce the ordinary layout instead of the one the
+    // user just arranged — worse than being a little slower.
+    if (choices.layout === 'custom') return false;
     const session = getPublicSession(token) ?? undefined;
     const pageNameById = new Map(dashboardPages.map((p) => [p.id, p.name]));
     const chosen = choices.pageIds.length ? choices.pageIds : [activePageId];
@@ -1157,6 +1179,7 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
     const previewWindow = openPdfPreviewTab();
     exportInProgressRef.current = true;
     setIsExportingPdf(true);
+    setExportRenderMode(choices.layout === 'snapshot' ? 'snapshot' : 'full');
     setExportProgress({ phase: 'prepare', ratio: 0, message: 'Đang chuẩn bị…' });
 
     // Preferred path: let the server render it. Falls through to the in-browser
@@ -1218,12 +1241,16 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
         let pending = targetCharts
           .map((dc) => dc.chart_id)
           .filter((id) => !chartDataRef.current[id]);
-        for (let attempt = 0; pending.length > 0 && attempt < EXPORT_FETCH_ATTEMPTS; attempt++) {
+        // The snapshot export exists to be fast: it takes ONE shot at a failed
+        // chart and lists what is missing, rather than spending seconds of
+        // backoff per tile. The full-data export keeps retrying.
+        const attempts = choices.layout === 'snapshot' ? 1 : EXPORT_FETCH_ATTEMPTS;
+        for (let attempt = 0; pending.length > 0 && attempt < attempts; attempt++) {
           if (attempt > 0) {
             setExportProgress({
               phase: 'page',
               ratio: 0.05,
-              message: `Đang tải lại ${pending.length} biểu đồ lỗi (lần ${attempt + 1}/${EXPORT_FETCH_ATTEMPTS})…`,
+              message: `Đang tải lại ${pending.length} biểu đồ lỗi (lần ${attempt + 1}/${attempts})…`,
             });
             await new Promise((resolve) => setTimeout(resolve, 800 * attempt));
           }
@@ -1277,6 +1304,7 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
         orientation: choices.orientation,
         format: choices.format,
         layout: choices.layout,
+        plan: choices.plan,
         onProgress: setExportProgress,
         pages: pageSources,
         previewWindow,
@@ -1307,6 +1335,7 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
       exportInProgressRef.current = false;
       setCurrentPageId(originalPageId);
       setIsExportingPdf(false);
+      setExportRenderMode(false);
       setForceVisibleAll(false);
       setIsExportDialogOpen(false);
       setExportProgress(null);
@@ -1355,6 +1384,64 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
     })();
     return () => { cancelled = true; };
   }, [printMode, pageState, chartsLoading]);
+
+  /** Every chart on the report, for the "arrange it yourself" export. Pooled
+   *  across pages on purpose: combining charts that live on different pages onto
+   *  one handout sheet is exactly what this layout is for. */
+  const planCandidates = useMemo(() => {
+    const pageNameById = new Map(dashboardPages.map((pg) => [pg.id, pg.name]));
+    return (dashboard?.dashboard_charts ?? [])
+      .filter((dc) => (!dc.widget_type || dc.widget_type === 'chart') && dc.chart_id)
+      .map((dc) => ({
+        chartId: dc.chart_id,
+        title: dc.chart?.name || `Biểu đồ #${dc.chart_id}`,
+        chartType: (dc.chart as { chart_type?: string } | undefined)?.chart_type,
+        pageId: getDashboardChartPageId(dc.layout),
+        pageName: pageNameById.get(getDashboardChartPageId(dc.layout)) || undefined,
+        layout: {
+          x: Number(dc.layout?.x ?? 0),
+          y: Number(dc.layout?.y ?? 0),
+          w: Number(dc.layout?.w ?? 12),
+          h: Number(dc.layout?.h ?? 6),
+        },
+      }));
+  }, [dashboard?.dashboard_charts, dashboardPages]);
+
+  /**
+   * Load one page's chart data for the export arranger's previews.
+   *
+   * Deliberately does NOT switch the report to that page: the batch endpoint
+   * answers for any page, so the arranger can show every chart without the
+   * page-by-page walk that made it take minutes. Silent + single attempt — a
+   * preview that fails to load simply shows the chart's name.
+   */
+  const ensurePageDataForArranger = useCallback(async (pageId: string) => {
+    if (!dashboard) return;
+    const targets = getDashboardChartsForPage(dashboard.dashboard_charts, pageId)
+      .filter((dc) => (!dc.widget_type || dc.widget_type === 'chart') && dc.chart_id)
+      .map((dc) => dc.chart_id)
+      .filter((id) => !chartDataRef.current[id]);
+    if (!targets.length) return;
+    const { controlSeed, hiddenFilters } = resolvePublicPageFilterContext(
+      dashboard as unknown as Record<string, unknown>, dashboardPages, pageId,
+    );
+    await fetchChartsForPage(pageId, getPublicSession(token) ?? undefined, null, {
+      chartIds: targets,
+      viewerFilters: mergeSeedWithViewerSelections(controlSeed, appliedViewerFiltersRef.current),
+      hiddenFilters,
+      silent: true,
+    });
+  }, [dashboard, dashboardPages, fetchChartsForPage, token]);
+
+  /** Rows per chart, for the arranger's live previews. */
+  const chartRowsForArranger = useMemo(() => {
+    const out: Record<number, unknown[] | undefined> = {};
+    for (const [id, resp] of Object.entries(chartData)) {
+      const rows = (resp as { data?: unknown[] } | undefined)?.data;
+      if (Array.isArray(rows)) out[Number(id)] = rows;
+    }
+    return out;
+  }, [chartData]);
 
   const filterRuntime = useMemo(
     () => buildPublicDashboardFilterRuntime(visibleDashboardCharts, chartData),
@@ -1988,7 +2075,7 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
   const printTileRows = printMode ? groupTilesIntoRows(visibleDashboardCharts) : [];
 
   const gridSectionEl = (
-    <ExportModeContext.Provider value={isExportingPdf || printMode}>
+    <ExportModeContext.Provider value={exportRenderMode || (printMode ? printRenderMode : false)}>
       <section
         ref={gridSectionRef}
         className={`px-1 pb-1 pt-0 transition-opacity duration-200 sm:px-1.5 ${pendingPageId ? 'opacity-70' : 'opacity-100'} ${slicerClusterPositionLeft ? 'min-w-0 flex-1' : 'w-full'}`}
@@ -2038,7 +2125,7 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
         className="min-h-[200px] bg-white text-text-primary"
         style={publicTheme.pageStyle}
       >
-        <ExportModeContext.Provider value>
+        <ExportModeContext.Provider value={printRenderMode}>
           <main className="w-full px-3 py-2" data-pdf-root="1">
             <section ref={gridSectionRef}>
               {printTileRows.map((row, rowIndex) => (
@@ -2449,7 +2536,7 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
         {/* Phase-B7 — FLUSH canvas (no card frame): tiles sit directly on the
             page background like a PBI report canvas, not inside a second
             bordered panel. */}
-        <ExportModeContext.Provider value={isExportingPdf}>
+        <ExportModeContext.Provider value={exportRenderMode}>
         <section
           ref={gridSectionRef}
           className={`px-1 pb-1 pt-0 transition-opacity duration-200 sm:px-1.5 ${pendingPageId ? 'opacity-70' : 'opacity-100'} ${slicerClusterPositionLeft ? 'min-w-0 flex-1' : 'w-full'}`}
@@ -2544,6 +2631,11 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
         pages={dashboardPages.map((p) => ({ id: p.id, name: p.name }))}
         isExporting={isExportingPdf}
         progress={exportProgress}
+        planCandidates={planCandidates}
+        defaultPageId={activePageId}
+        planPages={dashboardPages.map((pg) => ({ id: pg.id, name: pg.name }))}
+        chartRows={chartRowsForArranger}
+        onEnsurePageData={ensurePageDataForArranger}
         onExport={doExportPdf}
       />
 

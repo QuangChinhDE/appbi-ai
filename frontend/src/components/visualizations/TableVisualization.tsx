@@ -2,7 +2,7 @@
 
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import clsx from 'clsx';
-import { useExportMode } from '@/lib/export-mode';
+import { useExportMode, useFullDataExportMode } from '@/lib/export-mode';
 import {
   ArrowUp, ArrowDown, ArrowUpDown,
   Minus, Check, X as XIcon, AlertTriangle, Flag, Star, Circle,
@@ -367,9 +367,10 @@ export function TableVisualization({
     return arr;
   }, [filteredRows, effectiveSorts]);
 
-  // Phase-B22 — during PDF export, render EVERY row (drop the 200-cap) so the
-  // exporter captures the full table.
-  const exporting = useExportMode();
+  // Only the FULL-DATA export drops the 200-row cap. The default snapshot export
+  // prints the page as it looks on screen, so expanding to every row there would
+  // cost seconds of layout for rows nobody asked to see.
+  const exporting = useFullDataExportMode();
   const displayRows = exporting ? sortedRows : sortedRows.slice(0, maxRows);
 
   useEffect(() => {
