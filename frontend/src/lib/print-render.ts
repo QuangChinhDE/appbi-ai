@@ -5,7 +5,7 @@ import type { BaseFilter } from './filters';
  *
  * The worker (headless Chromium, `backend/app/scripts/pdf_worker.py`) opens
  *
- *     /d/<token>?print=1&page=<pageId>&filters=<base64 JSON>
+ *     /d/<token>?print=1&page=<pageId>&filters=<base64 JSON>&layout=<snapshot|full>
  *
  * once per dashboard page and prints it. Keeping the contract in one tiny module
  * means the query-string shape is defined in exactly one place instead of being
@@ -20,6 +20,15 @@ export interface PrintRenderOptions {
   pageId: string | null;
   /** Viewer slicer/filter selections to re-apply before printing. */
   filters: BaseFilter[];
+  /**
+   * Which export this render belongs to.
+   *   'snapshot' (default) — the page is scaled onto ONE sheet, so tables print
+   *      the rows they show on screen. Nothing has to expand, which is what
+   *      makes it the fast path.
+   *   'full' — tables expand to every row and the section paginates.
+   * Unknown/absent → snapshot, matching the dialog's default.
+   */
+  layout: 'snapshot' | 'full';
 }
 
 function decodeFilters(raw: string | null): BaseFilter[] {
@@ -42,6 +51,7 @@ export function parsePrintRenderOptions(search: string): PrintRenderOptions | nu
   return {
     pageId: params.get('page') || null,
     filters: decodeFilters(params.get('filters')),
+    layout: params.get('layout') === 'full' ? 'full' : 'snapshot',
   };
 }
 

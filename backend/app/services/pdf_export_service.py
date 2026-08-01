@@ -268,6 +268,12 @@ def complete_job(
     warnings: list[dict[str, Any]] | None = None,
 ) -> None:
     warn = warnings or []
+    # 'partial' must mean "content is MISSING", because that is what the viewer is
+    # warned about and what makes them re-run the export. Advisory notes (e.g. "the
+    # page was scaled to 31% to fit one sheet") are still carried in `warnings` so
+    # they reach the report, but they do not degrade the status — otherwise every
+    # snapshot of a tall dashboard would report itself as broken.
+    blocking = [w for w in warn if str((w or {}).get("severity") or "warn") != "info"]
     size = 0
     try:
         size = os.path.getsize(file_path)
@@ -277,14 +283,14 @@ def complete_job(
         {
             # A file with holes is still delivered — but it is labelled, so the
             # reader never mistakes a missing chart for a zero.
-            "status": ExportJobStatus.partial.value if warn else ExportJobStatus.succeeded.value,
+            "status": ExportJobStatus.partial.value if blocking else ExportJobStatus.succeeded.value,
             "file_path": file_path,
             "file_size": size,
             "page_count": page_count,
             "warnings": warn,
             "progress": 100,
             "progress_message": (
-                f"Hoàn tất — thiếu {len(warn)} biểu đồ." if warn else "Hoàn tất."
+                f"Hoàn tất — thiếu {len(blocking)} biểu đồ." if blocking else "Hoàn tất."
             ),
             "finished_at": _now(),
             "heartbeat_at": _now(),

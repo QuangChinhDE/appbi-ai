@@ -3065,7 +3065,15 @@ def create_public_export_job(
         "pages": [str(p) for p in (body.pages or [])],
         "orientation": "portrait" if str(body.orientation or "").lower() == "portrait" else "landscape",
         "format": (body.page_format or "a4").lower() if (body.page_format or "a4").lower() in {"a4", "a3", "letter"} else "a4",
-        "layout": "single" if str(body.layout or "").lower() == "single" else "tiled",
+        # Whitelist, don't collapse: this line used to map anything that wasn't
+        # "single" onto "tiled", which silently turned every snapshot request into
+        # a full-data render — the export came back paginated and slow while the
+        # dialog said "Ảnh trang". Unknown/absent → snapshot, the dialog's default.
+        "layout": (
+            str(body.layout or "").lower()
+            if str(body.layout or "").lower() in {"snapshot", "tiled", "single"}
+            else "snapshot"
+        ),
         "filters": [f for f in (body.filters or []) if isinstance(f, dict)],
         "surface": "public",
         "session": body.session or x_public_session or None,
