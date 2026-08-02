@@ -544,6 +544,8 @@ class GovernanceAIService:
         created: dict[str, Any] | None = None
         if approve:
             created = GovernanceAIService._dispatch_approval(db, item, resolved_by)
+        elif item.entity_type == "memory":
+            GovernanceAIService.reject_memory(db, item)
         item.status = "approved" if approve else "rejected"
         item.resolved_by = resolved_by
         item.resolved_at = datetime.utcnow()
@@ -555,6 +557,70 @@ class GovernanceAIService:
         if created:
             out["created_entity"] = created
         return out
+
+    @staticmethod
+    def _approve_memory(db: Session, item: GovernReviewItem, by: str | None) -> dict[str, Any] | None:
+        """Promote a candidate AI memory to validated (P0-01).
+
+        The bot's institutional memory lives in ai_bot_knowledge, not in a
+        govern_* table, so approval here flips that row's status and applies the
+        supersede the anonymous author asked for — which we deliberately did NOT
+        apply at capture time (retiring an existing belief on an unverified
+        claim is the most damaging thing an anonymous viewer could do).
+        """
+        from app.models.ai_bot_knowledge import AiBotKnowledge
+
+        if not item.entity_id:
+            raise GovernanceError(400, "Mục ghi nhớ thiếu tham chiếu tri thức")
+        row = (
+            db.query(AiBotKnowledge).filter(AiBotKnowledge.id == item.entity_id).first()
+        )
+        if row is None:
+            raise GovernanceError(404, "Tri thức đã bị xoá, không thể duyệt")
+        row.status = "validated"
+        row.confidence = max(float(row.confidence or 0.0), 0.9)
+        row.source = "user_taught"
+
+        payload = item.payload if isinstance(item.payload, dict) else {}
+        supersedes_id = payload.get("supersedes_id")
+        if isinstance(supersedes_id, int) and supersedes_id != row.id:
+            old = (
+                db.query(AiBotKnowledge)
+                .filter(
+                    AiBotKnowledge.id == supersedes_id,
+                    AiBotKnowledge.dashboard_id == row.dashboard_id,
+                )
+                .first()
+            )
+            if old is not None:
+                old.status = "retired"
+                old.superseded_by = row.id
+        db.flush()
+        GovernanceAIService._log(
+            db, "memory", str(row.id), "approve",
+            f"Duyệt tri thức AI: {(row.content or '')[:120]}", by,
+        )
+        return {"id": row.id, "status": row.status, "kind": row.kind}
+
+    @staticmethod
+    def reject_memory(db: Session, item: GovernReviewItem) -> None:
+        """Rejecting a memory proposal retires the candidate FOR GOOD.
+
+        The ``review_rejected`` marker matters: plain retirement can be undone by
+        re-observation (that is how decay works), so without it a rejected claim
+        could simply be re-taught a few times and be promoted again by the daily
+        consolidate pass. store_learning reads this marker and refuses to mint a
+        new candidate for the same content.
+        """
+        from app.models.ai_bot_knowledge import AiBotKnowledge
+
+        if not item.entity_id:
+            return
+        row = db.query(AiBotKnowledge).filter(AiBotKnowledge.id == item.entity_id).first()
+        if row is not None and row.status != "validated":
+            row.status = "retired"
+            row.evidence = {**(row.evidence or {}), "review_rejected": True}
+            db.flush()
 
     @staticmethod
     def _dispatch_approval(db: Session, item: GovernReviewItem, by: str | None) -> dict[str, Any] | None:
@@ -572,6 +638,8 @@ class GovernanceAIService:
                     return GovernanceAIService.upsert_qa(db, payload, changed_by=by)
                 if item.entity_type == "caveat":
                     return GovernanceAIService.upsert_caveat(db, payload, changed_by=by)
+                if item.entity_type == "memory":
+                    return GovernanceAIService._approve_memory(db, item, by)
                 if item.entity_type == "metric":
                     from app.services.governance_service import GovernanceService
                     created = GovernanceService.upsert_managed_metric(db, payload, changed_by=by)

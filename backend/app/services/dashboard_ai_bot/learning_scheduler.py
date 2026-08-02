@@ -18,6 +18,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 from app.core.database import SessionLocal
+from app.core.scheduler_lock import single_run
 from app.models.ai_bot_knowledge import AiBotKnowledge
 from app.services.dashboard_ai_bot import knowledge as kb
 
@@ -26,8 +27,15 @@ logger = logging.getLogger(__name__)
 _scheduler: Optional[BackgroundScheduler] = None
 
 
+@single_run("ai_bot_daily_reflection")
 def run_daily_reflection() -> dict:
-    """Consolidate knowledge for every dashboard that has any. Returns totals."""
+    """Consolidate knowledge for every dashboard that has any. Returns totals.
+
+    Advisory-locked: every uvicorn worker starts this scheduler, so without the
+    lock four copies would consolidate the same rows at 18:30 UTC — and
+    consolidation is NOT idempotent (it decays confidence and promotes on
+    support count, so a fourfold run skews both).
+    """
     db = SessionLocal()
     totals = {"dashboards": 0, "reviewed": 0, "promoted": 0, "decayed": 0, "retired": 0}
     try:

@@ -121,11 +121,37 @@ def store_learning(
     key = _dedupe_key(kind, clean)
     now = _now()
 
-    authoritative = source in ("user_taught", "user_feedback")
+    # An EXPLICIT status="candidate" is a hard ceiling, not a starting point:
+    # it is how an anonymous caller's teaching enters the system. Without this
+    # clamp the reinforce path below would still promote it (source
+    # "user_taught" counts as authoritative), so re-posting the same fabricated
+    # fact twice would validate it — exactly the poisoning route P0-01 closes.
+    forced_candidate = status is not None and status != "validated"
+    authoritative = (not forced_candidate) and source in ("user_taught", "user_feedback")
     base_conf = confidence if confidence is not None else (
-        TAUGHT_CONF if source == "user_taught" else CANDIDATE_CONF
+        TAUGHT_CONF if (source == "user_taught" and not forced_candidate) else CANDIDATE_CONF
     )
     base_status = status or ("validated" if authoritative else "candidate")
+
+    # A claim a human has REJECTED in the review inbox is settled. Re-teaching
+    # it must not mint a fresh candidate: that candidate would accrue support
+    # on each retelling and the daily consolidate pass would eventually promote
+    # it, quietly undoing the rejection. Retirement from decay/contradiction is
+    # different — that one may legitimately be resurrected by new evidence — so
+    # only the review-rejected marker is treated as final.
+    rejected = (
+        db.query(AiBotKnowledge)
+        .filter(
+            AiBotKnowledge.dashboard_id == dashboard_id,
+            AiBotKnowledge.dedupe_key == key,
+            AiBotKnowledge.status == "retired",
+        )
+        .first()
+    )
+    if rejected is not None and (rejected.evidence or {}).get("review_rejected"):
+        rejected.last_seen_at = now
+        db.flush()
+        return rejected
 
     row = (
         db.query(AiBotKnowledge)
@@ -143,8 +169,14 @@ def store_learning(
         row.last_seen_at = now
         if evidence:
             row.evidence = {**(row.evidence or {}), **evidence}
-        # Recurrence (or an authoritative source) promotes a candidate.
-        if row.status == "candidate" and (authoritative or row.support_count >= PROMOTE_SUPPORT):
+        # Recurrence (or an authoritative source) promotes a candidate — but
+        # never when the caller forced candidate status (anonymous teaching):
+        # that path is only promoted by a human approving the review item.
+        if (
+            not forced_candidate
+            and row.status == "candidate"
+            and (authoritative or row.support_count >= PROMOTE_SUPPORT)
+        ):
             row.status = "validated"
         if authoritative:
             row.confidence = max(row.confidence, base_conf)
@@ -230,9 +262,16 @@ def record_correction(
     content: str,
     supersedes_id: int | None = None,
     evidence: dict | None = None,
+    status: str = "validated",
 ) -> AiBotKnowledge | None:
-    """Store a user/self correction as validated truth and retire the belief it
-    replaces (if given)."""
+    """Store a user/self correction and retire the belief it replaces (if given).
+
+    ``status`` defaults to validated for AUTHENTICATED authors. An anonymous
+    public viewer must pass ``status="candidate"`` — a correction is the most
+    dangerous kind of learning to take on trust, because it also RETIRES an
+    existing belief. When it is only a candidate we therefore leave the old row
+    alone until a human approves the replacement.
+    """
     row = store_learning(
         db,
         dashboard_id=dashboard_id,
@@ -240,9 +279,11 @@ def record_correction(
         content=content,
         source="user_taught",
         evidence=evidence,
-        confidence=TAUGHT_CONF,
-        status="validated",
+        confidence=TAUGHT_CONF if status == "validated" else CANDIDATE_CONF,
+        status=status,
     )
+    if status != "validated":
+        return row
     if supersedes_id and row is not None:
         old = db.query(AiBotKnowledge).filter(
             AiBotKnowledge.id == supersedes_id,
@@ -420,9 +461,75 @@ def consolidate(db: Session, *, dashboard_id: int) -> dict:
 # registered in normal/tools.py and thinking/tools.py.
 
 
+def submit_memory_for_review(
+    db: Session,
+    *,
+    row: AiBotKnowledge,
+    dashboard_id: int,
+    supersedes_id: int | None = None,
+) -> int | None:
+    """Queue a candidate learning in the SINGLE review ledger (govern_review_items).
+
+    Deliberately reuses the existing ledger rather than adding a second
+    proposals table: "what is pending and who approved what" must keep having
+    exactly one answer. Returns the review item id, or None when the ledger is
+    unavailable (the learning still exists as a harmless candidate).
+    """
+    try:
+        from app.models.governance import GovernReviewItem
+
+        existing = (
+            db.query(GovernReviewItem)
+            .filter(
+                GovernReviewItem.entity_type == "memory",
+                GovernReviewItem.entity_id == row.id,
+                GovernReviewItem.status == "pending",
+            )
+            .first()
+        )
+        if existing is not None:
+            return existing.id
+
+        item = GovernReviewItem(
+            entity_type="memory",
+            entity_id=row.id,
+            action="suggest",
+            title=(row.content or "")[:512],
+            payload={
+                "dashboard_id": dashboard_id,
+                "kind": row.kind,
+                "content": row.content,
+                "supersedes_id": supersedes_id,
+            },
+            evidence=(
+                "Người xem ẩn danh dạy AI qua chat công khai — cần duyệt trước "
+                "khi áp dụng cho mọi người xem."
+            ),
+            confidence=float(row.confidence or 0.0),
+            source="ai",
+            status="pending",
+            created_by="public_session",
+        )
+        db.add(item)
+        db.flush()
+        return item.id
+    except Exception:  # noqa: BLE001
+        logger.warning("[ai_bot_knowledge] review-item enqueue failed", exc_info=True)
+        return None
+
+
 def tool_remember_fact(ctx, args: dict) -> dict:
-    """Persist a learning the user TAUGHT (or a self-correction). Commits
-    immediately so it survives across sessions even if the turn later errors."""
+    """Persist a learning the user TAUGHT (or a self-correction).
+
+    Trust depends on WHO is teaching (P0-01):
+      • authenticated in-app user → written as validated truth immediately
+        (identified, audited, already inside the permission model);
+      • anonymous public-link viewer → written as a CANDIDATE plus a pending
+        row in govern_review_items. It is not injected into any later turn
+        until somebody with ai_inbox:edit approves it.
+
+    Commits immediately so the record survives even if the turn later errors.
+    """
     from app.services.dashboard_ai_bot.tool_context import _ok, _err
 
     kind = str(args.get("kind") or "fact").strip().lower()
@@ -438,16 +545,26 @@ def tool_remember_fact(ctx, args: dict) -> dict:
     supersedes = int(raw_sup) if isinstance(raw_sup, (int, float)) or (
         isinstance(raw_sup, str) and raw_sup.isdigit()
     ) else None
+
+    needs_review = getattr(ctx, "actor_type", "public_session") != "user"
+    target_status = "candidate" if needs_review else "validated"
+
     try:
         if kind == "correction":
             row = record_correction(
                 ctx.db, dashboard_id=dash_id, content=content,
-                supersedes_id=supersedes, evidence=ev,
+                supersedes_id=supersedes, evidence=ev, status=target_status,
             )
         else:
             row = store_learning(
                 ctx.db, dashboard_id=dash_id, kind=kind, content=content,
-                source="user_taught", evidence=ev, status="validated",
+                source="user_taught", evidence=ev, status=target_status,
+            )
+        review_id = None
+        already_rejected = row is not None and row.status == "retired"
+        if row is not None and needs_review and not already_rejected:
+            review_id = submit_memory_for_review(
+                ctx.db, row=row, dashboard_id=dash_id, supersedes_id=supersedes,
             )
         ctx.db.commit()
     except Exception as exc:  # noqa: BLE001
@@ -456,6 +573,25 @@ def tool_remember_fact(ctx, args: dict) -> dict:
         return _err(f"không lưu được: {type(exc).__name__}")
     if row is None:
         return _err("nội dung quá ngắn để ghi nhớ.")
+    if already_rejected:
+        return _ok({
+            "stored": False, "id": row.id, "status": row.status,
+            "note": (
+                "Nội dung này đã được người phụ trách xem xét và từ chối trước đó, "
+                "nên không được ghi nhớ lại. Hãy nói với người dùng rằng thông tin "
+                "này cần trao đổi với người quản trị báo cáo."
+            ),
+        })
+    if needs_review:
+        return _ok({
+            "stored": True, "id": row.id, "kind": row.kind, "status": row.status,
+            "review_item_id": review_id,
+            "note": (
+                "Đã ghi nhận và gửi cho người phụ trách duyệt. Hãy nói với người "
+                "dùng rằng thông tin sẽ được áp dụng sau khi được duyệt — KHÔNG "
+                "khẳng định là đã ghi nhớ vĩnh viễn."
+            ),
+        })
     return _ok({
         "stored": True, "id": row.id, "kind": row.kind, "status": row.status,
         "note": "Đã ghi nhớ lâu dài — các phiên sau sẽ tự biết điều này.",

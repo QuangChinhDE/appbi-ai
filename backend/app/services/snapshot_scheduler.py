@@ -22,6 +22,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 from app.core.database import SessionLocal
+from app.core.scheduler_lock import job_lock
 from app.models.dataset import Dataset
 from app.services import dataset_snapshot_config as snapcfg
 
@@ -56,7 +57,21 @@ def _trigger_for(schedule: dict) -> Optional[CronTrigger]:
 def _run_scheduled_refresh(dataset_id: int) -> None:
     """APScheduler worker body: kick a Sync & Publish for the dataset. Only for
     datasets already in the publish lifecycle (publish_state set); skips manual/
-    legacy. Never raises."""
+    legacy. Never raises.
+
+    Advisory-locked PER DATASET: every uvicorn worker schedules this job, so
+    without the lock the same dataset would be rebuilt WEB_CONCURRENCY times
+    concurrently — wasted warehouse spend and a genuine race on the snapshot
+    staging table. The key carries the dataset id so unrelated datasets are
+    never serialised behind each other.
+    """
+    with job_lock(f"snapshot_refresh:{dataset_id}") as _owned:
+        if not _owned:
+            return
+        _run_scheduled_refresh_locked(dataset_id)
+
+
+def _run_scheduled_refresh_locked(dataset_id: int) -> None:
     db = SessionLocal()
     try:
         ds = db.query(Dataset).filter(Dataset.id == dataset_id).first()

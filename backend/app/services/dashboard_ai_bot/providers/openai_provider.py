@@ -240,14 +240,20 @@ async def stream_openai(
                             yield AgentEvent(
                                 type="error",
                                 text="OpenAI 429: vượt quota / bị rate-limit. Đợi vài chục giây rồi thử lại, hoặc chuyển sang gpt-4o-mini.",
+                                extra={"http_status": 429},
                             )
                         elif resp.status_code in (401, 403):
                             yield AgentEvent(
                                 type="error",
                                 text="OpenAI từ chối API key (401/403). Kiểm tra key hoặc model permission.",
+                                extra={"http_status": resp.status_code},
                             )
                         else:
-                            yield AgentEvent(type="error", text=f"OpenAI {resp.status_code}: {detail}")
+                            yield AgentEvent(
+                                type="error",
+                                text=f"OpenAI {resp.status_code}: {detail}",
+                                extra={"http_status": resp.status_code},
+                            )
                         return
                     async for line in resp.aiter_lines():
                         if not line.startswith("data:"):
@@ -326,10 +332,10 @@ async def stream_openai(
                     return
     except httpx.TimeoutException:
         logger.warning("dashboard_ai_bot openai_timeout model=%s", model)
-        yield AgentEvent(type="error", text="OpenAI request timed out.")
+        yield AgentEvent(type="error", text="OpenAI request timed out.", extra={"http_status": 408})
     except Exception as exc:
         logger.exception("OpenAI stream error")
-        yield AgentEvent(type="error", text=f"OpenAI transport error: {type(exc).__name__}")
+        yield AgentEvent(type="error", text=f"OpenAI transport error: {type(exc).__name__}", extra={"http_status": 503})
 
 
 def _extract_error_detail(body: bytes) -> str:

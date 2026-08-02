@@ -27,8 +27,10 @@ import asyncio
 import logging
 import re
 import time
+import uuid
 from typing import AsyncGenerator
 
+from app.core.config import settings
 from app.services.dashboard_ai_bot.cost import CostMeter
 from app.services.dashboard_ai_bot.events import AgentEvent
 from app.services.dashboard_ai_bot.normal.critique import critique_and_stream
@@ -39,6 +41,7 @@ from app.services.dashboard_ai_bot.normal.tools import (
     tool_get_chart_summary,
     tool_list_charts,
 )
+from app.services.dashboard_ai_bot.providers.guarded import guarded_stream
 from app.services.dashboard_ai_bot.providers import (
     stream_anthropic,
     stream_gemini_singleshot,
@@ -75,14 +78,34 @@ def _status_text(tool_name: str, args: dict) -> str:
         return _TOOL_STATUS_VI.get(tool_name) or f"Đang chạy {tool_name}…"
 
 
+def _hash_public_filters(filters) -> str:
+    from app.services.dashboard_ai_bot.evidence import hash_filters
+    return hash_filters(filters)
+
+
+def _record_evidence(**kwargs) -> None:
+    """Lazy, best-effort evidence write — identical contract to the Thinking
+    variant so a turn's traceability does not depend on which depth ran."""
+    try:
+        from app.services.dashboard_ai_bot.evidence import record_tool_evidence
+        record_tool_evidence(**kwargs)
+    except Exception:  # noqa: BLE001
+        logger.debug("evidence record failed", exc_info=True)
+
+
 def _streamer_for(provider: str):
+    """Resolve the provider adapter, wrapped in the breaker/retry guard.
+
+    Same guard the Thinking variant uses — a rate-limited customer key must cut
+    out only that key, and both depths share one retry policy.
+    """
     p = (provider or "").strip().lower()
     if p == "anthropic":
-        return stream_anthropic, True
+        return guarded_stream(stream_anthropic, provider="anthropic"), True
     if p == "openai":
-        return stream_openai, True
+        return guarded_stream(stream_openai, provider="openai"), True
     if p == "gemini":
-        return stream_gemini_singleshot, False
+        return guarded_stream(stream_gemini_singleshot, provider="gemini"), False
     return None, False
 
 
@@ -153,14 +176,23 @@ async def run_agent_stream(
     max_tool_calls: int = MAX_TOOL_CALLS_PER_TURN,
     report_context_note: str = "",
     learned_knowledge_block: str = "",
+    run_ref: str | None = None,
 ) -> AsyncGenerator[AgentEvent, None]:
-    """Run one chat turn end-to-end and yield AgentEvent objects."""
+    """Run one chat turn end-to-end and yield AgentEvent objects.
+
+    ``run_ref`` correlates this turn's evidence rows. Both depths must accept it:
+    the auto-router decides Normal vs Thinking per question, so a caller cannot
+    know in advance which one it is handing arguments to.
+    """
     if not user_messages or not isinstance(user_messages, list):
         yield AgentEvent(type="error", text="No messages provided.")
         yield AgentEvent(type="done")
         return
 
     turn_started_at = time.monotonic()
+    if run_ref is None and settings.INTELLIGENCE_EVIDENCE_ENABLED:
+        run_ref = uuid.uuid4().hex
+    _filter_hash = _hash_public_filters(ctx.public_filters)
 
     streamer, supports_tools = _streamer_for(provider)
     if streamer is None:
@@ -346,6 +378,16 @@ async def run_agent_stream(
                 result = await asyncio.to_thread(
                     execute_tool, ctx, tc.tool_name, tc.tool_args
                 )
+                if run_ref:
+                    await asyncio.to_thread(
+                        _record_evidence,
+                        run_ref=run_ref,
+                        dashboard_id=getattr(ctx.dashboard, "id", 0) or 0,
+                        tool_name=tc.tool_name,
+                        args=tc.tool_args,
+                        result=result,
+                        filter_hash=_filter_hash,
+                    )
                 tool_calls_made += 1
 
                 running.append({

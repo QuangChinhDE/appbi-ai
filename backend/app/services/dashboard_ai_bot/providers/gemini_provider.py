@@ -79,7 +79,7 @@ async def stream_gemini_singleshot(
                         resp.status_code,
                         detail,
                     )
-                    yield AgentEvent(type="error", text=f"Gemini {resp.status_code}: {detail}")
+                    yield AgentEvent(type="error", text=f"Gemini {resp.status_code}: {detail}", extra={"http_status": resp.status_code})
                     return
                 latest_usage: dict | None = None
                 async for line in resp.aiter_lines():
@@ -117,10 +117,10 @@ async def stream_gemini_singleshot(
                     yield AgentEvent(type="usage", extra=latest_usage)
     except httpx.TimeoutException:
         logger.warning("dashboard_ai_bot gemini_timeout model=%s", model)
-        yield AgentEvent(type="error", text="Gemini request timed out.")
+        yield AgentEvent(type="error", text="Gemini request timed out.", extra={"http_status": 408})
     except Exception as exc:
         logger.exception("Gemini stream error")
-        yield AgentEvent(type="error", text=f"Gemini transport error: {type(exc).__name__}")
+        yield AgentEvent(type="error", text=f"Gemini transport error: {type(exc).__name__}", extra={"http_status": 503})
 
 
 def _extract_error_detail(body: bytes) -> str:

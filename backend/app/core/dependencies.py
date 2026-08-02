@@ -56,12 +56,16 @@ MODULE_KEYS = (
     "ai_inbox",
     "semantics",
     "ai_guidance",
+    "ai_flows",
 )
 
 # The 4 Intelligence AI modules share the backend catalog domain with 'govern'
 # (Documents). When a user has no explicit level for one of these, it INHERITS the
 # legacy 'govern' level — so existing govern:X users keep full Intelligence access
 # and NOBODY is locked out when the single key is split into five.
+# ai_flows is deliberately NOT in the inherit list: a legacy govern:edit user
+# must not silently gain the ability to publish AI flows onto live reports. It
+# has to be granted explicitly in the permission matrix.
 INTELLIGENCE_INHERIT = ("intelligence", "ai_inbox", "semantics", "ai_guidance")
 
 

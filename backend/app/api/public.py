@@ -3549,31 +3549,22 @@ async def save_ai_chat_session(
 
     db.commit()
 
-    # ── Learning capture (institutional memory) ─────────────────────────────
-    # Distil THIS turn's high-confidence findings into the company knowledge
-    # base and fold in any thumbs up/down. Best-effort — never break a save.
+    # ── Feedback signals only (P0-02) ───────────────────────────────────────
+    # Thumbs up/down IS a legitimate signal from the person reading the answer:
+    # it rates text the SERVER produced, so it can't be used to smuggle in a
+    # fabricated claim.
+    #
+    # What used to live here — mining `body.conv_state["findings"]` into the
+    # knowledge base — has been REMOVED. That payload is client-supplied on a
+    # public, unauthenticated endpoint, so anyone could POST invented "findings"
+    # and (with PROMOTE_SUPPORT=2) have them promoted to validated truth that
+    # every later viewer's prompt is grounded on. Findings are now distilled
+    # server-side from the turn's own tool_log in the chat endpoint, where the
+    # data provably came from real tool calls.
     try:
         from app.services.dashboard_ai_bot import knowledge as _kb
         dash_id = getattr(_dash_for_kb, "id", None)
         if isinstance(dash_id, int):
-            cs = body.conv_state if isinstance(body.conv_state, dict) else {}
-            all_findings = cs.get("findings") if isinstance(cs.get("findings"), list) else []
-            cur_turn = cs.get("turn_index")
-            # Only THIS turn's findings, so cumulative state doesn't re-inflate
-            # support_count on every save.
-            findings = [
-                f for f in all_findings
-                if not isinstance(cur_turn, int) or f.get("turn_index") == cur_turn
-            ]
-            last_rating = None
-            for m in reversed(safe_messages):
-                if m.get("role") == "assistant":
-                    last_rating = m.get("rating")
-                    break
-            _kb.capture_findings(
-                db, dashboard_id=dash_id, findings=findings,
-                rated_down=(last_rating == "down"),
-            )
             for m in safe_messages:
                 if m.get("role") == "assistant" and m.get("rating") in ("up", "down"):
                     _kb.apply_feedback(
@@ -3583,7 +3574,7 @@ async def save_ai_chat_session(
                     )
             db.commit()
     except Exception:
-        logger.warning("ai knowledge capture failed", exc_info=True)
+        logger.warning("ai feedback apply failed", exc_info=True)
         db.rollback()
 
     return {"ok": True}
@@ -3727,6 +3718,59 @@ async def chat_dashboard_ai_agent(
     if not safe_messages:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No valid messages.")
 
+    # ── P0-06 Budget ceiling (denial-of-wallet) ─────────────────────────────
+    # Checked BEFORE the guard and before any model call: the point is to stop
+    # spending, so it has to be the cheapest gate that runs first. Only binds on
+    # cost when the ORG's key pays; a viewer on their own key is metered but
+    # never blocked for spend.
+    from app.services.dashboard_ai_bot.budget import check_budget as _check_budget
+    _budget = _check_budget(
+        db,
+        token=token,
+        appearance_config=appearance_config,
+        viewer_supplied_key=bool((x_user_ai_key or "").strip()),
+    )
+    if not _budget.allowed:
+        logger.warning("ai_bot budget block token=%s %s", token, _budget.to_log())
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=_budget.message,
+        )
+
+    # ── P0-03 Input guardrail ───────────────────────────────────────────────
+    # Deterministic, zero LLM calls. In "log" mode nothing is rejected — the
+    # codes are recorded so the false-positive rate can be measured on real
+    # traffic before the deployment flips to "block".
+    from app.services.dashboard_ai_bot.guard import check_input as _check_input
+    _last_user_msg = ""
+    for _m in reversed(safe_messages):
+        if _m.get("role") == "user":
+            _last_user_msg = str(_m.get("content") or "")
+            break
+    _guard = _check_input(_last_user_msg, mode=settings.INTELLIGENCE_GUARD_MODE)
+    if _guard.codes:
+        logger.warning(
+            "ai_bot guard token=%s %s question=%r",
+            token, _guard.to_log(), _last_user_msg[:160],
+        )
+    if not _guard.allowed:
+        async def _blocked_stream():
+            yield "data: " + _json.dumps(
+                {"type": "text", "text": _guard.message}, ensure_ascii=False
+            ) + "\n\n"
+            yield "data: " + _json.dumps({"type": "done"}) + "\n\n"
+
+        return StreamingResponse(
+            _blocked_stream(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+    # Feed the normalized text (invisibles stripped, length-capped) to the agent.
+    if _guard.normalized_question and _guard.normalized_question != _last_user_msg:
+        for _m in reversed(safe_messages):
+            if _m.get("role") == "user":
+                _m["content"] = _guard.normalized_question
+                break
+
     captured_key = effective_key
     # Merge link-level public filters with viewer-applied slicer filters
     # from the dashboard UI through the shared layered-merge helper.
@@ -3784,8 +3828,7 @@ async def chat_dashboard_ai_agent(
         except Exception:
             logger.warning("ai knowledge context build failed", exc_info=True)
 
-        agen = run_agent_stream(
-            mode=effective_mode,
+        _agent_kwargs = dict(
             ctx=ctx,
             user_messages=safe_messages,
             api_key=captured_key,
@@ -3798,7 +3841,26 @@ async def chat_dashboard_ai_agent(
             guide_mode=(x_user_ai_intent or "").strip().lower() == "guide",
             report_context_note=report_note,
             learned_knowledge_block=learned_block,
-        ).__aiter__()
+        )
+
+        # Flow runtime (P2). OFF by default: with the flag down this is the
+        # pre-v2 call, unchanged. With it up and NO assistant bound to this
+        # link, the engine runs builtin_thinking_v1 — a graph whose only
+        # working node wraps this very agent — so answers stay identical while
+        # trace/evidence/budget start being recorded. Rollback is the flag.
+        if settings.INTELLIGENCE_RUNTIME_ENABLED:
+            from app.services.intelligence.runtime import run_turn as _run_turn
+            agen = _run_turn(
+                db=db,
+                dashboard_id=dash.id,
+                link_token=token,
+                session_key=(body.session_key or None),
+                question=_last_user_msg,
+                agent_kwargs={"mode": effective_mode, **_agent_kwargs},
+                actor_type="public_session",
+            ).__aiter__()
+        else:
+            agen = run_agent_stream(mode=effective_mode, **_agent_kwargs).__aiter__()
         timed_out = False
         # Per-turn telemetry accumulators (written to ai_chat_turn_logs at end).
         m_tools: list[str] = []
@@ -3808,6 +3870,12 @@ async def chat_dashboard_ai_agent(
         m_usd: float | None = None
         m_answer = False
         m_error = False
+        # P0-02 — the ONLY findings we ever learn from: the ones the agent
+        # itself derived from this turn's tool_log, captured off the SSE
+        # `state` event. Never anything a client posted back to us.
+        m_server_state: dict | None = None
+        m_verif_cov: float | None = None
+        m_verif_unmatched: int | None = None
         try:
             while True:
                 try:
@@ -3837,6 +3905,14 @@ async def chat_dashboard_ai_agent(
                     m_answer = True
                 elif _et == "error":
                     m_error = True
+                elif _et == "state":
+                    _st = (ev.extra or {}).get("state")
+                    if isinstance(_st, dict):
+                        m_server_state = _st
+                elif _et == "verification":
+                    _v = (ev.extra or {}).get("verification") or {}
+                    m_verif_cov = _v.get("coverage")
+                    m_verif_unmatched = len(_v.get("unmatched") or [])
                 envelope = _event_to_envelope(ev)
                 if envelope is not None:
                     yield f"data: {_json.dumps(envelope, ensure_ascii=False, default=str)}\n\n"
@@ -3850,6 +3926,34 @@ async def chat_dashboard_ai_agent(
                 await agen.aclose()
             except Exception:
                 pass
+            # P0-02 — learn from SERVER-computed findings for this turn only.
+            # `m_server_state` comes from the agent's own `_evolve_state`, which
+            # derives findings from the executed tool_log; a client cannot
+            # influence it. Filtering on turn_index keeps cumulative state from
+            # re-inflating support_count on every turn.
+            try:
+                if isinstance(m_server_state, dict):
+                    from app.core.database import SessionLocal as _SL2
+                    from app.services.dashboard_ai_bot import knowledge as _kb2
+                    _all = m_server_state.get("findings")
+                    _cur = m_server_state.get("turn_index")
+                    _this_turn = [
+                        f for f in (_all if isinstance(_all, list) else [])
+                        if isinstance(f, dict)
+                        and (not isinstance(_cur, int) or f.get("turn_index") == _cur)
+                    ]
+                    if _this_turn:
+                        _kb_db = _SL2()
+                        try:
+                            _kb2.capture_findings(
+                                _kb_db, dashboard_id=dash.id, findings=_this_turn,
+                                rated_down=False,
+                            )
+                            _kb_db.commit()
+                        finally:
+                            _kb_db.close()
+            except Exception:
+                logger.warning("ai server-side finding capture failed", exc_info=True)
             # Write per-turn telemetry (best-effort, never breaks the stream).
             try:
                 from app.core.database import SessionLocal as _SL
@@ -3878,6 +3982,8 @@ async def chat_dashboard_ai_agent(
                         had_answer=m_answer,
                         errored=(m_error or timed_out),
                         latency_ms=int((loop.time() - started) * 1000),
+                        verification_coverage=m_verif_cov,
+                        verification_unmatched=m_verif_unmatched,
                     ))
                     _log_db.commit()
                 finally:
@@ -4147,6 +4253,19 @@ def _event_to_envelope(ev) -> dict | None:
     if et == "exploration_step":
         # Phase 16 — exploration progress tick (stage + question metadata).
         return {"type": "exploration_step", **(ev.extra or {})}
+    if et == "verification":
+        # P1-02 — how many of the answer's figures trace back to evidence.
+        # Coverage only; the unmatched VALUES stay server-side (they are the
+        # model's own invention, and echoing them to the viewer would present
+        # unsupported numbers a second time).
+        v = (ev.extra or {}).get("verification") or {}
+        return {
+            "type": "verification",
+            "coverage": v.get("coverage"),
+            "total_numbers": v.get("total_numbers"),
+            "matched": v.get("matched"),
+            "checked": bool(v.get("checked")),
+        }
     if et == "error":
         return {"type": "error", "text": ev.text}
     if et == "state":

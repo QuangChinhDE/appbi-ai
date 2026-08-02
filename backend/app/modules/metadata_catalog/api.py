@@ -40,7 +40,8 @@ logger = logging.getLogger("app.metadata_catalog.api")
 _READ_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 _CATALOG_CHECKERS = {
     m: {"view": require_permission(m, "view"), "edit": require_permission(m, "edit")}
-    for m in ("intelligence", "ai_inbox", "semantics", "ai_guidance", "govern", "observability")
+    for m in ("intelligence", "ai_inbox", "semantics", "ai_guidance", "govern",
+              "observability", "ai_flows")
 }
 
 
@@ -51,6 +52,10 @@ def _catalog_module_for(path: str) -> str:
     anything new) fall to 'intelligence' (the group cockpit key, which inherits
     govern → legacy users pass)."""
     sub = path.split("/catalog/", 1)[-1] if "/catalog/" in path else path
+    if sub.startswith("ai/"):
+        # Flow Studio — its own module: publishing a flow changes AI behaviour
+        # on a live report, so it must not ride on a knowledge-authoring key.
+        return "ai_flows"
     if sub.startswith("observability/"):
         return "observability"
     if sub.startswith("govern/"):
@@ -1098,3 +1103,12 @@ def govern_intel_ai_draft(body: AiDraftReq, db: Session = Depends(get_db), _: Us
     """AI-compose an Intelligence entity from a natural-language prompt.
     Returns a draft the create modal fills in for the user to review/edit."""
     return _run(lambda: GovernanceAIService.ai_draft(db, body.entity_type, body.prompt, body.dataset_id))
+
+
+# ── Flow Studio ─────────────────────────────────────────────────────────────
+# Mounted last so /catalog/ai/* inherits this router's module gate. The Studio
+# lets a non-engineer compose the AI's analysis flow; see
+# docs/Intelligence/appbi_intelligence_flow_map.md §2.
+from app.modules.metadata_catalog.ai_flows_api import router as _ai_flows_router  # noqa: E402
+
+router.include_router(_ai_flows_router)

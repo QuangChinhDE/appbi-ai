@@ -113,6 +113,34 @@ class Settings(BaseSettings):
     GOVERN_ENABLED: bool = True
     OBSERVABILITY_ENABLED: bool = True
 
+    # ── AI Intelligence (docs/Intelligence/appbi_intelligence_backend_redesign_v2.md) ──
+    # Every switch below defaults to the pre-v2 behaviour, so a deployment that
+    # sets none of them behaves exactly as it does today. Turn them on one at a
+    # time and compare against the baseline captured before rollout.
+    #
+    # Input guardrail on the public chat. "log" measures the false-positive rate
+    # on real traffic without ever rejecting a viewer; flip to "block" once the
+    # log is clean. "off" disables it entirely.
+    INTELLIGENCE_GUARD_MODE: str = "log"          # off | log | block
+    # Spend ceilings for the PUBLIC chat, enforced per shared link per rolling
+    # 24h / 1h. Only bind when the ORG's key pays (appearance_config.ai_bot_key);
+    # a viewer using their own key is metered but never blocked on cost.
+    # 0 = unlimited (the pre-v2 behaviour).
+    AI_DEFAULT_BUDGET_USD_PER_DAY: float = 5.0
+    AI_DEFAULT_TURNS_PER_HOUR: int = 120
+    # Evidence ledger: persist one row per tool call so every number in an
+    # answer can be traced back to the call that produced it.
+    INTELLIGENCE_EVIDENCE_ENABLED: bool = False
+    INTELLIGENCE_EVIDENCE_TTL_DAYS: int = 30
+    # Deterministic answer verification. "log" records coverage only; "repair"
+    # additionally asks the model to fix unsupported numbers. Needs the
+    # evidence ledger to be on to do anything.
+    INTELLIGENCE_VERIFIER_MODE: str = "off"       # off | log | repair
+    # Flow runtime: route turns through the versioned flow engine instead of
+    # calling the legacy agent directly. With no assistant bound to a link, the
+    # engine runs builtin_thinking_v1, which wraps that same legacy agent.
+    INTELLIGENCE_RUNTIME_ENABLED: bool = False
+
     # ── Filter-system migration toggles (PBI-parity migration) ──────────
     # Default OFF — legacy code path unchanged. Phase 0/1 ship the foundations;
     # callers begin opting-in once golden-harness + production smoke-tests pass.

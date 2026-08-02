@@ -29,6 +29,7 @@ const baseEn: MessageCatalog = {
   'sidebar.nav.intelligence': 'AI Readiness',
   'sidebar.nav.semantics': 'Metrics & Terms',
   'sidebar.nav.aiGuidance': 'AI Guidance',
+  'sidebar.nav.aiFlows': 'AI Flow Studio',
   'sidebar.nav.aiInbox': 'AI Suggestions',
   'sidebar.nav.observability': 'Observability',
   'sidebar.nav.explore': 'Explore',
@@ -191,6 +192,7 @@ const baseVi: MessageCatalog = {
   'sidebar.nav.intelligence': 'Sẵn sàng AI',
   'sidebar.nav.semantics': 'Chỉ số & Thuật ngữ',
   'sidebar.nav.aiGuidance': 'Hướng dẫn AI',
+  'sidebar.nav.aiFlows': 'Xưởng AI',
   'sidebar.nav.aiInbox': 'Đề xuất AI',
   'sidebar.nav.observability': 'Observability',
   'sidebar.nav.explore': 'Khám phá',
@@ -341,6 +343,7 @@ import { dashboardsAiBotCatalog } from './catalog/dashboards-aibot';
 import { dashboardsThemeCatalog } from './catalog/dashboards-theme';
 import { datasetsCatalog } from './catalog/datasets';
 import { exploreCatalog } from './catalog/explore';
+import { aiFlowsCatalog } from './catalog/aiFlows';
 import { governCatalog } from './catalog/govern';
 import { workboardsCatalog } from './catalog/workboards';
 import { datasourcesCatalog } from './catalog/datasources';
@@ -358,6 +361,7 @@ const moduleCatalogs: ModuleCatalog[] = [
   datasetsCatalog,
   exploreCatalog,
   governCatalog,
+  aiFlowsCatalog,
   workboardsCatalog,
   datasourcesCatalog,
   observabilityCatalog,

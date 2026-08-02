@@ -32,6 +32,7 @@ import {
   Info,
   Trash2,
   X,
+  Workflow,
 } from 'lucide-react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
@@ -92,6 +93,7 @@ const NAV_GROUPS: NavGroup[] = [
       { labelKey: 'sidebar.nav.aiInbox', href: '/ai-inbox', icon: <Inbox className="h-4 w-4" />, module: 'ai_inbox' },
       { labelKey: 'sidebar.nav.semantics', href: '/semantics', icon: <LineChart className="h-4 w-4" />, module: 'semantics' },
       { labelKey: 'sidebar.nav.aiGuidance', href: '/ai-guidance', icon: <Compass className="h-4 w-4" />, module: 'ai_guidance' },
+      { labelKey: 'sidebar.nav.aiFlows', href: '/ai-flows', icon: <Workflow className="h-4 w-4" />, module: 'ai_flows' },
       { labelKey: 'sidebar.nav.govern', href: '/govern', icon: <Landmark className="h-4 w-4" />, module: 'govern' },
     ],
   },

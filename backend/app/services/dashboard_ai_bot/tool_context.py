@@ -28,6 +28,7 @@ from __future__ import annotations
 import logging
 import math
 import re
+import unicodedata
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -223,11 +224,29 @@ class ToolContext:
     # {id, name, chart_ids}. Charts repeat across pages, so a flat chart list
     # loses this structure — surface it so the bot reads/overviews by flow.
     pages: list[dict[str, Any]] = field(default_factory=list)
+    # WHO is driving this turn. "public_session" = anonymous viewer of a shared
+    # link (the default and by far the common case); "user" = an authenticated
+    # in-app user. Governs whether a learning the bot is told may be written as
+    # truth directly or must go through the review ledger — an anonymous viewer
+    # must never be able to poison the memory every later viewer reads.
+    actor_type: str = "public_session"
+    actor_ref: str | None = None
+    # Columns the business excluded from AI via GovernAIScope, folded (no
+    # diacritics, lowercase). Enforced in _fetch_chart_data so an excluded
+    # column never reaches ANY tool — filtering only the prompt's field list
+    # (the pre-P0-05 behaviour) left the raw values readable via get_chart_data.
+    excluded_columns: set[str] = field(default_factory=set)
     _chart_data_cache: dict[tuple, dict] = field(default_factory=dict)
 
     @classmethod
     def from_dashboard(
-        cls, db: Session, dashboard: Dashboard, public_filters: list[dict] | None
+        cls,
+        db: Session,
+        dashboard: Dashboard,
+        public_filters: list[dict] | None,
+        *,
+        actor_type: str = "public_session",
+        actor_ref: str | None = None,
     ) -> "ToolContext":
         allowed: set[int] = set()
         meta: dict[int, dict[str, Any]] = {}
@@ -290,11 +309,69 @@ class ToolContext:
             allowed_chart_ids=allowed,
             chart_meta=meta,
             pages=pages,
+            actor_type=actor_type,
+            actor_ref=actor_ref,
+            excluded_columns=_resolve_excluded_columns(db, dashboard),
         )
 
     def assert_chart_in_scope(self, chart_id: int) -> None:
         if chart_id not in self.allowed_chart_ids:
             raise ToolError(f"chart_id {chart_id} is not part of this dashboard.")
+
+
+def fold_column(name: Any) -> str:
+    """Diacritic-insensitive, case-insensitive key for column matching.
+
+    Mirrors GovernanceAIService._fold so a scope authored as "Khách hàng" also
+    matches a column physically named "khach_hang".
+    """
+    s = unicodedata.normalize("NFKD", str(name or ""))
+    s = "".join(ch for ch in s if not unicodedata.combining(ch))
+    return re.sub(r"\s+", " ", s).strip().lower()
+
+
+def _resolve_excluded_columns(db: Session, dashboard: Dashboard) -> set[str]:
+    """Columns GovernAIScope hides from the AI, for the datasets behind this
+    dashboard's charts. Best-effort: a resolve failure must never break a turn,
+    but it MUST fail OPEN-with-a-log rather than silently pretend nothing is
+    excluded on a partial read — so we log loudly.
+    """
+    if db is None or getattr(dashboard, "id", None) is None:
+        # Unit-test / synthetic context with no metadata store to consult.
+        return set()
+    try:
+        from app.models.dataset import DatasetTable
+        from app.models.models import Chart, DashboardChart
+        from app.services.governance_ai_service import GovernanceAIService
+
+        table_ids = [
+            r[0]
+            for r in db.query(Chart.dataset_table_id)
+            .join(DashboardChart, DashboardChart.chart_id == Chart.id)
+            .filter(DashboardChart.dashboard_id == dashboard.id)
+            .distinct()
+            .all()
+            if r[0] is not None
+        ]
+        if not table_ids:
+            return set()
+        dataset_ids = {
+            t.dataset_id
+            for t in db.query(DatasetTable).filter(DatasetTable.id.in_(table_ids)).all()
+            if t.dataset_id
+        }
+        if not dataset_ids:
+            return set()
+        cols, _measures = GovernanceAIService.scope_exclusions(db, dataset_ids)
+        return {fold_column(c) for c in cols}
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "dashboard_ai_bot: AI-scope resolve failed dashboard_id=%s — "
+            "no column exclusion applied this turn",
+            getattr(dashboard, "id", None),
+            exc_info=True,
+        )
+        return set()
 
 
 def _ok(data: Any) -> dict:
@@ -341,7 +418,13 @@ def _fetch_chart_data(
         if isinstance(f, dict):
             merged.append(dict(f))
 
-    cache_key = (chart_id, _hash_filters(merged))
+    # The AI-scope exclusion set is part of the cache identity: flipping a
+    # column's visibility must not be served a pre-exclusion payload.
+    cache_key = (
+        chart_id,
+        _hash_filters(merged),
+        ",".join(sorted(ctx.excluded_columns)) if ctx.excluded_columns else "",
+    )
     cached = ctx._chart_data_cache.get(cache_key)
     if cached is not None:
         return cached
@@ -391,10 +474,36 @@ def _fetch_chart_data(
 
     rows = [[_norm(v) for v in r] for r in rows]
 
+    # ── AI data scope (GovernAIScope) ──────────────────────────────────────
+    # Drop excluded columns from BOTH the header and every row, here at the
+    # single fetch boundary, so no tool downstream can ever see the values.
+    dropped: list[str] = []
+    if ctx.excluded_columns and columns:
+        keep_idx = [
+            i for i, c in enumerate(columns) if fold_column(c) not in ctx.excluded_columns
+        ]
+        if len(keep_idx) != len(columns):
+            dropped = [c for i, c in enumerate(columns) if i not in set(keep_idx)]
+            if not keep_idx:
+                # Everything this chart renders is out of the AI's scope. Fail
+                # LOUD — returning an empty grid would read as "no data", and
+                # the bot would happily conclude the metric is zero.
+                raise ToolError(
+                    f"chart {chart_id}: toàn bộ cột của biểu đồ này đã bị loại khỏi "
+                    "phạm vi dữ liệu AI (Phạm vi dữ liệu AI trong Govern). "
+                    "Không thể phân tích biểu đồ này."
+                )
+            columns = [columns[i] for i in keep_idx]
+            rows = [[r[i] if i < len(r) else None for i in keep_idx] for r in rows]
+
     payload = {
         "columns": columns,
         "rows": rows,
         "filters_applied": merged,
     }
+    if dropped:
+        # Tell the caller (and through it the LLM) that something was withheld,
+        # so it says "không được phép xem" instead of inventing a reason.
+        payload["excluded_columns"] = dropped
     ctx._chart_data_cache[cache_key] = payload
     return payload
