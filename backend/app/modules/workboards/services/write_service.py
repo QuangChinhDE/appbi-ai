@@ -182,23 +182,38 @@ def _resolve_dialect(ds_type: str) -> str:
     )
 
 
-def _table_columns(table: DatasetTable) -> List[str]:
+def _column_cache_entries(table: DatasetTable) -> List[Any]:
+    """Return the raw column-entry list from the polymorphic ``columns_cache``.
+
+    ``DatasetTable.columns_cache`` is declared ``Union[List[Any], Dict[str, Any]]``
+    (see ``schemas.dataset``): legacy tables store a bare list of entries, while
+    the modern dataset-publish path stores ``{"columns": [...], ...}``. Every
+    reader MUST normalise both shapes — otherwise a dict-shaped cache reads back
+    as "no columns". Anything unrecognised yields ``[]``.
+    """
     cache = table.columns_cache or []
+    if isinstance(cache, dict):
+        cache = cache.get("columns") or []
+    return cache if isinstance(cache, list) else []
+
+
+def _table_columns(table: DatasetTable) -> List[str]:
+    """Column names for the target table, tolerant of BOTH ``columns_cache``
+    shapes. Previously this only walked the bare-list shape, so a dict-shaped
+    cache returned ``[]`` and every write bounced with a false
+    "primary key columns are missing" error even though the column existed.
+    """
     cols: List[str] = []
-    if isinstance(cache, list):
-        for entry in cache:
-            if isinstance(entry, dict) and entry.get("name"):
-                cols.append(str(entry["name"]))
-            elif isinstance(entry, str):
-                cols.append(entry)
+    for entry in _column_cache_entries(table):
+        if isinstance(entry, dict) and entry.get("name"):
+            cols.append(str(entry["name"]))
+        elif isinstance(entry, str):
+            cols.append(entry)
     return cols
 
 
 def _table_primary_key_columns(table: DatasetTable) -> List[str]:
-    cache = table.columns_cache
-    if isinstance(cache, dict):
-        cache = cache.get("columns")
-    columns = [item for item in (cache or []) if isinstance(item, dict)]
+    columns = [item for item in _column_cache_entries(table) if isinstance(item, dict)]
     flagged = [
         str(item.get("name"))
         for item in columns
@@ -311,10 +326,20 @@ def _build_context(
         raise WorkboardWriteError(
             "Target primary_key_columns is empty; configure it in the builder before writing."
         )
-    missing_pk = [column for column in pk_cols if column not in allowed]
+    # Only enforce PK-presence when we actually know the table's columns. An
+    # empty ``allowed`` means the metadata could not be read (never that the
+    # table has zero columns), so skipping the check there avoids a false
+    # "missing" verdict — the same defensive stance _filter_to_allowed_columns
+    # already takes.
+    missing_pk = (
+        [column for column in pk_cols if column not in allowed] if allowed else []
+    )
     if missing_pk:
         raise WorkboardWriteError(
-            f"Target primary key columns are missing: {', '.join(missing_pk)}."
+            "Unable to save: primary key column(s) "
+            f"{', '.join(missing_pk)} were not found in the target table "
+            "metadata. Sync the table schema, or review the screen's primary "
+            "key configuration."
         )
 
     rules = (
