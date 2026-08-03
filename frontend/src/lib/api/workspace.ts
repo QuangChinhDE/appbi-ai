@@ -389,6 +389,14 @@ export interface TableScreenResponse {
       icon?: string | null;
       label?: string | null;
     }>;
+    /** Per-row edit lock. A row matching `lock_if` is read-only + non-deletable
+     *  unless the viewer's role is in `editable_by_roles` (owner always bypasses). */
+    row_lock?: {
+      lock_if: string;
+      editable_by_roles?: string[];
+      lock_delete?: boolean;
+      message?: string | null;
+    } | null;
     totals?: Record<string, 'sum' | 'avg' | 'min' | 'max' | 'count'>;
     column_groups?: Array<{ label: string; columns: string[] }>;
     group_by?: string[];

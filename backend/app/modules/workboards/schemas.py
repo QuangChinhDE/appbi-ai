@@ -1579,6 +1579,59 @@ class BulkAction(BaseModel):
         return self
 
 
+class RowLockConfig(BaseModel):
+    """Per-row edit lock for a Table screen.
+
+    Complements the column-level ``editable_columns`` (which cells are editable
+    at all) and per-role RLS (``can_update``/``writable_columns``): this locks
+    INDIVIDUAL ROWS from being edited/deleted based on the row's own data.
+
+    * ``lock_if`` — a wb-expr over the row's values (same grammar as
+      ``FormatRule.when`` / ``FormField.readonly_if``). When it evaluates
+      truthy for a row, that row is LOCKED. Use ``"true"`` to lock the whole
+      table (e.g. "only admins may edit anything here").
+    * ``editable_by_roles`` — roles that may STILL edit/delete a locked row.
+      Empty = nobody but ``owner``. ``owner`` (the app builder) always bypasses,
+      matching every other write gate in the system — so a locked record can
+      never become permanently un-fixable.
+    * ``lock_delete`` — a locked row also cannot be deleted (default True).
+
+    Enforcement is SERVER-SIDE on write: the lock is re-evaluated against the
+    row's CURRENT stored values (not the incoming payload), so a user cannot
+    unlock a row by editing the lock column in the same request. The FE gate is
+    advisory (renders the lock + disables inputs) and is re-checked here.
+    """
+
+    lock_if: str = Field(
+        default="",
+        max_length=1000,
+        description=(
+            "wb-expr over row values; truthy = row locked. Use \"true\" to lock "
+            "the whole table. e.g. \"[trang_thai]=='Đã duyệt'\" or \"[locked]==true\". "
+            "Empty = inert (no rows locked) — lets the builder autosave a "
+            "half-configured rule without failing validation."
+        ),
+    )
+    editable_by_roles: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Roles that may still edit/delete a locked row (owner always may). "
+            "Empty = only owner."
+        ),
+    )
+    lock_delete: bool = Field(
+        default=True,
+        description="When True, a locked row cannot be deleted either.",
+    )
+    message: Optional[str] = Field(
+        default=None,
+        max_length=300,
+        description="Optional custom message shown when a locked-row write is blocked.",
+    )
+
+    model_config = ConfigDict(extra="forbid")
+
+
 class TableScreenSpec(BaseModel):
     """A spreadsheet-style screen bound to one dataset table.
 
@@ -1705,6 +1758,14 @@ class TableScreenSpec(BaseModel):
     format_rules: List[FormatRule] = Field(
         default_factory=list,
         description="Conditional formatting: tint rows/cells when a row-local expression is truthy.",
+    )
+    row_lock: Optional[RowLockConfig] = Field(
+        default=None,
+        description=(
+            "Per-row edit lock. Locks rows matching an expression (or the whole "
+            "table via lock_if='true') so only allow-listed roles / owner may "
+            "edit or delete them. None = no row locking (today's behaviour)."
+        ),
     )
     pos_cart: Optional[PosCartConfig] = Field(
         default=None,

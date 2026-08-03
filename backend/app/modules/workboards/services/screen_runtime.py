@@ -1532,6 +1532,55 @@ def _enforce_status_rules(
                     )
 
 
+def _enforce_row_lock(
+    cfg: Any,
+    previous_row: Optional[Dict[str, Any]],
+    identity: CallerIdentity,
+    *,
+    op: str = "update",
+) -> None:
+    """Server-side per-row edit/delete lock for table screens.
+
+    Re-evaluates ``row_lock.lock_if`` against the row's CURRENT stored values
+    (``previous_row``) — NOT the incoming payload — so a user cannot unlock a
+    row by editing the lock column in the same request. When the row is locked
+    and the caller's role is not in ``editable_by_roles``, block with 403.
+    AppBI staff and the ``owner`` role always bypass (same contract as RLS and
+    the status guard, so a locked record is never permanently un-fixable). For
+    a delete, only enforce when ``lock_delete`` is set.
+    """
+    if cfg is None or previous_row is None:
+        return
+    if op == "delete" and not bool(getattr(cfg, "lock_delete", True)):
+        return
+    if not identity.is_app_user or is_owner_role(identity.role):
+        return
+    lock_if = (getattr(cfg, "lock_if", None) or "").strip()
+    if not lock_if:
+        return
+    from app.modules.workboards.services.expr_eval import evaluate_truthy
+
+    ctx = {
+        "row": dict(previous_row),
+        "app_user": dict(identity.app_user or {}),
+        "shared": {},
+    }
+    # default=False → a malformed expression fails OPEN (row not locked), same
+    # fail-soft stance as FormField.readonly_if. The builder dry-run validates
+    # the expression, so this only bites on hand-crafted bad layouts.
+    if not evaluate_truthy(lock_if, ctx, default=False):
+        return  # row not locked for this row's data
+    role = (identity.role or "").strip().lower()
+    allowed = [r.strip().lower() for r in (getattr(cfg, "editable_by_roles", None) or [])]
+    if role in allowed:
+        return  # role explicitly allowed to edit/delete locked rows
+    msg = (getattr(cfg, "message", None) or "").strip() or (
+        "Dòng này đã bị khóa — bạn không có quyền "
+        + ("xóa." if op == "delete" else "chỉnh sửa.")
+    )
+    raise HTTPException(status_code=403, detail=msg)
+
+
 def _resolve_initial_values(
     initial: Dict[str, Any],
     *,
@@ -1919,7 +1968,10 @@ def update_screen_rows(
     rls_filters, allowed = build_rls_filter(screen.rls, screen.rls_default, identity)
     if not allowed:
         raise HTTPException(status_code=403, detail="You don't have access to those rows.")
-    if rls_filters:
+    # A row_lock needs each row's current values evaluated individually, so take
+    # the per-row path (which fetches + gates each row) rather than the batch
+    # fast-path — same reason RLS filters force it.
+    if rls_filters or getattr(screen.table, "row_lock", None) is not None:
         results = [
             update_screen_row(
                 db,
@@ -2047,6 +2099,16 @@ def update_screen_row(
         if _sf:
             _prev = _fetch_current_row(db, workboard, screen, pk)
             _enforce_status_rules(_sf, cleaned, identity, previous_row=_prev)
+    if (
+        screen.kind == "table"
+        and screen.table is not None
+        and getattr(screen.table, "row_lock", None) is not None
+    ):
+        # Per-row edit lock: block updates to a LOCKED row unless the caller's
+        # role is allow-listed (owner/staff bypass). Evaluated on the row's
+        # current stored values so the lock column can't be self-unlocked.
+        _lock_prev = _fetch_current_row(db, workboard, screen, pk)
+        _enforce_row_lock(screen.table.row_lock, _lock_prev, identity, op="update")
 
     # Make sure the targeted row passes RLS before touching it.
     rls_filters, allowed = build_rls_filter(
@@ -2377,6 +2439,10 @@ def delete_screen_row(
         raise HTTPException(
             status_code=403, detail="You don't have access to that row."
         )
+    # Per-row lock: block deleting a locked row (unless lock_delete is off or the
+    # caller's role is allow-listed / owner). Reuses the row just fetched above.
+    if getattr(screen.table, "row_lock", None) is not None:
+        _enforce_row_lock(screen.table.row_lock, parent_rows[0], identity, op="delete")
     layout = parse_layout(workboard)
     root_key = (
         int(screen.table_id),

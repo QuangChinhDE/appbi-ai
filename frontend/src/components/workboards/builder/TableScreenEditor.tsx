@@ -970,6 +970,158 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
               </span>
             </label>
           </div>
+
+          {/* ── Row lock (per-row edit/delete lock) ─────────────────────── */}
+          {(() => {
+            const rl = tableSpec.row_lock || null;
+            const mode: 'off' | 'whole' | 'condition' = !rl
+              ? 'off'
+              : rl.lock_if === 'true'
+                ? 'whole'
+                : 'condition';
+            const roles = (rl?.editable_by_roles || []).map((r) => r.toLowerCase());
+            const setLock = (patch: Partial<NonNullable<typeof rl>>) =>
+              updateTable({
+                row_lock: {
+                  lock_if: '',
+                  editable_by_roles: [],
+                  lock_delete: true,
+                  ...(rl || {}),
+                  ...patch,
+                },
+              });
+            const changeMode = (next: 'off' | 'whole' | 'condition') => {
+              if (next === 'off') return updateTable({ row_lock: null });
+              if (next === 'whole')
+                return updateTable({
+                  row_lock: {
+                    lock_if: 'true',
+                    editable_by_roles: rl?.editable_by_roles ?? ['admin'],
+                    lock_delete: rl?.lock_delete !== false,
+                    message: rl?.message ?? null,
+                  },
+                });
+              return updateTable({
+                row_lock: {
+                  lock_if: rl && rl.lock_if !== 'true' ? rl.lock_if : '',
+                  editable_by_roles: rl?.editable_by_roles ?? [],
+                  lock_delete: rl?.lock_delete !== false,
+                  message: rl?.message ?? null,
+                },
+              });
+            };
+            const toggleRole = (role: string) => {
+              const has = roles.includes(role);
+              setLock({
+                editable_by_roles: has
+                  ? (rl?.editable_by_roles || []).filter((r) => r.toLowerCase() !== role)
+                  : [...(rl?.editable_by_roles || []), role],
+              });
+            };
+            return (
+              <div className="mt-5 border-t border-[rgb(var(--border-line))] pt-4">
+                <div className="mb-1 text-caption font-emphasis text-text-primary">
+                  {t('workboards.table.rowLockTitle')}
+                </div>
+                <p className="mb-2 text-tiny text-text-tertiary">
+                  {t('workboards.table.rowLockSubtitle')}
+                </p>
+                <select
+                  value={mode}
+                  onChange={(e) => changeMode(e.target.value as 'off' | 'whole' | 'condition')}
+                  className={INPUT}
+                >
+                  <option value="off">{t('workboards.table.rowLockOff')}</option>
+                  <option value="whole">{t('workboards.table.rowLockWhole')}</option>
+                  <option value="condition">{t('workboards.table.rowLockCondition')}</option>
+                </select>
+
+                {mode !== 'off' ? (
+                  <div className="mt-3 space-y-3">
+                    {mode === 'condition' ? (
+                      <div className="space-y-2">
+                        <div className="text-tiny font-medium text-text-secondary">
+                          {t('workboards.table.rowLockColumn')}
+                        </div>
+                        <select
+                          value=""
+                          onChange={(e) => {
+                            if (e.target.value) setLock({ lock_if: `[${e.target.value}]` });
+                          }}
+                          className={INPUT}
+                        >
+                          <option value="">—</option>
+                          {columnNames.map((c) => (
+                            <option key={c} value={c}>
+                              {c}
+                            </option>
+                          ))}
+                        </select>
+                        <input
+                          value={rl?.lock_if || ''}
+                          onChange={(e) => setLock({ lock_if: e.target.value })}
+                          placeholder="[trang_thai]=='Đã duyệt'"
+                          className={`${INPUT} font-mono`}
+                        />
+                        <p className="text-tiny text-text-tertiary">
+                          {t('workboards.table.rowLockExprHint')}
+                        </p>
+                      </div>
+                    ) : (
+                      <p className="text-tiny text-text-tertiary">
+                        {t('workboards.table.rowLockWholeHint')}
+                      </p>
+                    )}
+
+                    <div>
+                      <div className="mb-1 text-tiny font-medium text-text-secondary">
+                        {t('workboards.table.rowLockRoles')}
+                      </div>
+                      <div className="flex flex-wrap gap-1.5">
+                        {['admin', 'user'].map((role) => {
+                          const on = roles.includes(role);
+                          return (
+                            <button
+                              key={role}
+                              type="button"
+                              onClick={() => toggleRole(role)}
+                              className={`rounded-full border px-2 py-0.5 text-tiny ${
+                                on
+                                  ? 'border-brand-500 bg-brand-50 text-brand-700'
+                                  : 'border-[rgb(var(--border-line))] text-text-secondary hover:bg-surface-2'
+                              }`}
+                            >
+                              {role}
+                            </button>
+                          );
+                        })}
+                      </div>
+                      <p className="mt-1 text-tiny text-text-tertiary">
+                        {t('workboards.table.rowLockRolesHint')}
+                      </p>
+                    </div>
+
+                    <label className="flex items-center gap-2 text-tiny text-text-secondary">
+                      <input
+                        type="checkbox"
+                        checked={rl?.lock_delete !== false}
+                        onChange={(e) => setLock({ lock_delete: e.target.checked })}
+                        className="h-3.5 w-3.5"
+                      />
+                      {t('workboards.table.rowLockDelete')}
+                    </label>
+
+                    <input
+                      value={rl?.message || ''}
+                      onChange={(e) => setLock({ message: e.target.value || null })}
+                      placeholder={t('workboards.table.rowLockMessage')}
+                      className={INPUT}
+                    />
+                  </div>
+                ) : null}
+              </div>
+            );
+          })()}
         </BuilderInspectorPanel>
       );
     }

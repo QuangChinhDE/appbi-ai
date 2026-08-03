@@ -300,6 +300,15 @@ export interface PosCartConfigSpec {
   empty_hint?: string | null;
 }
 
+export interface RowLockConfigSpec {
+  /** wb-expr over row values; truthy = row locked. "true" locks the whole table. */
+  lock_if: string;
+  /** Roles that may still edit/delete a locked row (owner always may). Empty = only owner. */
+  editable_by_roles?: string[];
+  lock_delete?: boolean;
+  message?: string | null;
+}
+
 export interface TableScreenSpecBuilt {
   columns: string[];
   editable_columns?: string[];
@@ -316,6 +325,7 @@ export interface TableScreenSpecBuilt {
   lookup_columns?: TableLookupColumnSpec[];
   rollup_columns?: TableRollupColumnSpec[];
   format_rules?: FormatRuleSpec[];
+  row_lock?: RowLockConfigSpec | null;
   totals?: Record<string, TableTotalsKind>;
   column_groups?: TableColumnGroupSpec[];
   group_by?: string[];

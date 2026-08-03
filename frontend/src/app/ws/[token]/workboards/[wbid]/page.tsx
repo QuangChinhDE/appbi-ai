@@ -35,6 +35,7 @@ import {
   Download,
   Factory,
   Loader2,
+  Lock,
   LogOut,
   MapPin,
   Menu,
@@ -7559,6 +7560,38 @@ function TableScreen({
     },
     [formatRules],
   );
+  // Per-row edit lock (row_lock). A row is "locked" when `lock_if` is truthy
+  // for its values; a locked row is read-only + non-deletable UNLESS the
+  // viewer's role is allow-listed (owner always bypasses). This is advisory —
+  // the server re-checks in screen_runtime._enforce_row_lock — but it drives
+  // the UX (disable inputs, hide delete, show a lock hint).
+  const rowLock = tv.row_lock || null;
+  const lockBypass = useMemo(() => {
+    const role = (viewerRole || '').toLowerCase();
+    if (role === 'owner') return true;
+    return (rowLock?.editable_by_roles || []).map((r) => r.toLowerCase()).includes(role);
+  }, [viewerRole, rowLock]);
+  const isRowLocked = useCallback(
+    (row: Record<string, unknown>): boolean => {
+      if (!rowLock?.lock_if || lockBypass) return false;
+      try {
+        return evaluateTruthy(
+          rowLock.lock_if,
+          { row, app_user: { role: viewerRole || '' }, shared: {} },
+          false,
+        );
+      } catch {
+        return false;
+      }
+    },
+    [rowLock, lockBypass, viewerRole],
+  );
+  const lockDelete = rowLock?.lock_delete !== false;
+  // Detail panel edits target one existing row; lock it too (create mode = new
+  // row, never locked). Server re-checks on save regardless.
+  const panelLocked =
+    panelMode === 'edit' && panelDetail ? isRowLocked(panelDetail.row) : false;
+
   const detailPanel = tv.detail_panel;
   const panelEnabled = !(detailPanel && detailPanel.enabled === false);
 
@@ -8693,6 +8726,7 @@ function TableScreen({
               const rowKey = tableRowKey(row, pkCols);
               const status = rowStatus[rowKey];
               const fmt = rowFormat(row);
+              const locked = isRowLocked(row);
               // Whole-row tint only when the rule targets no specific columns.
               const rowTint = fmt && !fmt.columns ? fmt.tone : null;
               return (
@@ -8725,7 +8759,7 @@ function TableScreen({
                     if (mergeHiddenCells.has(`${c}:${idx}`)) return null;
                     const rowspan = mergeByColRow.get(`${c}:${idx}`);
                     const derived = derivedCols.has(c);
-                    const editable = editableCols.has(c) && !derived;
+                    const editable = editableCols.has(c) && !derived && !locked;
                     const cellValue = row[c];
                     const format = formatByCol[c] ?? null;
                     // Cell-scoped conditional format (rule named this column).
@@ -8772,6 +8806,11 @@ function TableScreen({
                             !
                           </span>
                         ) : null}
+                        {locked ? (
+                          <span title="Dòng đã khóa" className="inline-flex text-slate-400">
+                            <Lock className="h-3.5 w-3.5" aria-label="Dòng đã khóa" />
+                          </span>
+                        ) : null}
                         {rowActions.map((a) => {
                           const style = a.style || 'primary';
                           const cls =
@@ -8799,7 +8838,7 @@ function TableScreen({
                             </button>
                           );
                         })}
-                        {allowDelete && pkCols.length > 0 ? (
+                        {allowDelete && pkCols.length > 0 && !(locked && lockDelete) ? (
                           <button
                             type="button"
                             onClick={() => void deleteRow(row)}
@@ -9060,7 +9099,14 @@ function TableScreen({
                     detail={panelDetail}
                     draft={panelDraft}
                     setDraft={setPanelDraft}
+                    locked={panelLocked}
                   />
+                  {panelLocked ? (
+                    <div className="mt-3 flex items-center gap-2 rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-500">
+                      <Lock className="h-3.5 w-3.5 shrink-0" />
+                      <span>{rowLock?.message?.trim() || 'Dòng này đã bị khóa, không thể chỉnh sửa.'}</span>
+                    </div>
+                  ) : null}
                   {panelMode === 'edit' && rowActions.length > 0 ? (
                     <div className="mt-5 border-t border-slate-200 pt-4">
                       <div className="mb-2 text-xs font-semibold uppercase text-slate-500">
@@ -9107,7 +9153,7 @@ function TableScreen({
                 </>
               ) : null}
             </div>
-            {panelDetail && (panelDetail.editable_columns || []).length > 0 && (
+            {panelDetail && (panelDetail.editable_columns || []).length > 0 && !panelLocked && (
               <div className="flex flex-col-reverse gap-2 border-t border-slate-200 px-5 py-3 sm:flex-row sm:items-center sm:justify-end">
                 <button
                   type="button"
@@ -9139,12 +9185,14 @@ function DetailPanelBody({
   detail,
   draft,
   setDraft,
+  locked = false,
 }: {
   detail: TableRowDetailResponse;
   draft: Record<string, unknown>;
   setDraft: React.Dispatch<React.SetStateAction<Record<string, unknown>>>;
+  locked?: boolean;
 }) {
-  const editableSet = new Set(detail.editable_columns || []);
+  const editableSet = locked ? new Set<string>() : new Set(detail.editable_columns || []);
   const computedNames = new Set(
     (detail.computed_columns || []).map((c) => String((c as Record<string, unknown>).name || '')),
   );
