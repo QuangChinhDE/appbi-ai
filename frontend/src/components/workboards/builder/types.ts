@@ -114,6 +114,9 @@ export interface FormFieldSpec {
   max_select?: number | null;
   enum_list_style?: 'chips' | 'dropdown' | 'checkboxes' | null;
   searchable?: 'auto' | 'always' | 'never' | null;
+  /** enum_list only: on submit, explode each selected value into its own row
+   *  (fan-out) instead of storing a JSON array in one cell. */
+  split_to_rows?: boolean;
   // QR display (widget='qr').
   qr_source_column?: string | null;
   qr_value_template?: string | null;

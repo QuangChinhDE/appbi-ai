@@ -1704,6 +1704,83 @@ def render_form_screen(
     }
 
 
+def _form_split_field(screen: Screen) -> Optional[Any]:
+    """The form's fan-out field (widget='enum_list' with split_to_rows), if any.
+
+    The schema validator guarantees at most one, so return the first match.
+    """
+    if screen.kind != "form" or screen.form is None:
+        return None
+    for f in screen.form.fields:
+        if getattr(f, "split_to_rows", False) and getattr(f, "widget", None) == "enum_list":
+            return f
+    return None
+
+
+def _parse_split_values(raw: Any) -> List[Any]:
+    """Normalise an enum_list submit value into a list of non-empty scalars.
+
+    The FE sends enum_list as a JSON-array STRING (``'["A","B"]'``); tolerate a
+    raw Python list or a bare scalar too. Blank/None entries are dropped.
+    """
+    if raw is None:
+        return []
+    if isinstance(raw, list):
+        vals = raw
+    elif isinstance(raw, str):
+        s = raw.strip()
+        if not s:
+            return []
+        if s.startswith("["):
+            try:
+                parsed = json.loads(s)
+                vals = parsed if isinstance(parsed, list) else [s]
+            except (ValueError, TypeError):
+                vals = [s]
+        else:
+            vals = [s]
+    else:
+        vals = [raw]
+    out: List[Any] = []
+    for v in vals:
+        if v is None:
+            continue
+        if isinstance(v, str) and v.strip() == "":
+            continue
+        out.append(v)
+    return out
+
+
+def _plan_split_submit(
+    values: Dict[str, Any],
+    split_field: Any,
+    client_op_id: Optional[str],
+) -> Tuple[str, Any]:
+    """Plan a multi-select fan-out. Pure (no DB) so it can be unit-tested.
+
+    Returns one of:
+      * ``("fanout", [(child_values, child_op_id), ...])`` — >1 selected values;
+        each child copies every field and overrides the split column with one
+        scalar value, with a deterministic ``"{op}:{i}"`` op-id.
+      * ``("single", scalar)`` — exactly one value; caller stores the scalar.
+      * ``("none", None)`` — nothing selected; caller inserts as-is.
+    """
+    vals = _parse_split_values((values or {}).get(split_field.column))
+    if len(vals) > 1:
+        base = dict(values or {})
+        children = [
+            (
+                {**base, split_field.column: v},
+                (f"{client_op_id}:{i}" if client_op_id else None),
+            )
+            for i, v in enumerate(vals)
+        ]
+        return ("fanout", children)
+    if len(vals) == 1:
+        return ("single", vals[0])
+    return ("none", None)
+
+
 def insert_screen_row(
     db: Session,
     workboard: Workboard,
@@ -1737,6 +1814,41 @@ def insert_screen_row(
                     "to editable_columns before turning on allow_add_row."
                 ),
             )
+
+    # ── Multi-select fan-out: one submit → one row per selected value ──────
+    # A form field flagged split_to_rows explodes into N rows here (before any
+    # op-log / write), recursing once per value. Each child carries a scalar
+    # for the split column (so it won't re-expand) and a deterministic child
+    # op-id so offline replay stays idempotent. Every other field is copied.
+    if screen.kind == "form":
+        _split_field = _form_split_field(screen)
+        if _split_field is not None:
+            _mode, _payload = _plan_split_submit(values, _split_field, client_op_id)
+            if _mode == "fanout":
+                _results = [
+                    insert_screen_row(
+                        db,
+                        workboard,
+                        screen,
+                        _child_values,
+                        identity=identity,
+                        client_op_id=_child_op,
+                        relation_context=relation_context,
+                    )
+                    for _child_values, _child_op in _payload
+                ]
+                return {
+                    "action": "insert_split",
+                    "affected_rows": len(_results),
+                    "results": _results,
+                    # Keep row/pk for after_submit compatibility (first child).
+                    "row": _results[0].get("row", {}) if _results else {},
+                    "pk": _results[0].get("pk", {}) if _results else {},
+                }
+            if _mode == "single":
+                # Single pick → store the scalar (not a 1-element JSON array), so
+                # the column holds one value per row consistently.
+                values = {**(values or {}), _split_field.column: _payload}
 
     op_entry: Optional[WorkboardOpLog] = None
     if client_op_id is not None:

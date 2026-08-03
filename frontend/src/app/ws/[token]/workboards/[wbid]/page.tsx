@@ -3548,6 +3548,12 @@ function Field({
       {widget !== 'checkbox' && help && (
         <p className="text-xs text-slate-500">{help}</p>
       )}
+      {widget === 'enum_list' && !!field.split_to_rows && (
+        <p className="flex items-center gap-1 text-xs text-teal-600">
+          <ScanLine className="h-3 w-3 shrink-0" />
+          Mỗi lựa chọn sẽ được lưu thành một dòng riêng khi bấm lưu.
+        </p>
+      )}
       {computedFromDataset && (
         <p className="text-xs text-slate-500 italic">
           {rt('workboards.runtime.datasetComputedValue', { column: computedFromDataset })}

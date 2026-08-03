@@ -270,6 +270,16 @@ class FormField(BaseModel):
         default="chips",
         description="widget=enum_list: render as chips, dropdown, or checkbox list.",
     )
+    split_to_rows: bool = Field(
+        default=False,
+        description=(
+            "widget=enum_list only: on submit, EXPLODE each selected value into "
+            "its OWN row (fan-out) instead of storing a JSON array in one cell. "
+            "Every other field is copied identically onto each row; the primary "
+            "key must be server-generated (auto-number). At most one field per "
+            "form may set this."
+        ),
+    )
     searchable: Optional[Literal["auto", "always", "never"]] = Field(
         default="auto",
         description=(
@@ -869,6 +879,27 @@ class FormScreenSpec(BaseModel):
     )
 
     model_config = ConfigDict(extra="forbid")
+
+    @model_validator(mode="after")
+    def _check_split_to_rows(self) -> "FormScreenSpec":
+        """At most ONE field may fan-out to rows, and only ``enum_list`` can.
+
+        Two split fields would mean a cartesian product of rows on submit —
+        almost never intended — so reject it early with a clear message.
+        """
+        split = [f for f in (self.fields or []) if getattr(f, "split_to_rows", False)]
+        if len(split) > 1:
+            cols = ", ".join(f.column for f in split)
+            raise ValueError(
+                f"Only one field may use 'split_to_rows'; found {len(split)}: {cols}."
+            )
+        for f in split:
+            if getattr(f, "widget", None) != "enum_list":
+                raise ValueError(
+                    f"Field '{f.column}' uses split_to_rows but is not a multi-select "
+                    "(widget must be 'enum_list')."
+                )
+        return self
 
 
 class TableComputedColumn(BaseModel):

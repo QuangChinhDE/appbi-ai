@@ -1910,6 +1910,26 @@ function FieldInspector({
               </select>
             </Lbl>
           )}
+          {field.widget === 'enum_list' && (
+            <div>
+              <label className="flex items-start gap-2">
+                <input
+                  type="checkbox"
+                  checked={!!field.split_to_rows}
+                  onChange={(event) => onChange({ split_to_rows: event.target.checked })}
+                  className="mt-0.5"
+                />
+                <span className="text-caption text-text-secondary">
+                  <span className="font-emphasis text-text-primary">
+                    {t('workboards.form.splitToRows')}
+                  </span>
+                  <span className="ml-1 text-text-tertiary">
+                    {t('workboards.form.splitToRowsHint')}
+                  </span>
+                </span>
+              </label>
+            </div>
+          )}
           {(field.widget === 'select' ||
             field.widget === 'lookup' ||
             field.widget === 'enum_list') && (
