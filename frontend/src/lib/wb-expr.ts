@@ -220,6 +220,23 @@ function coerceNumber(v: unknown): number | null {
 }
 
 /**
+ * Parse a date to UTC epoch-ms (midnight) for DATE_DIFF. Handles ISO
+ * ``YYYY-MM-DD`` (with/without time) and vi-VN ``DD/MM/YYYY`` / ``DD-MM-YYYY``.
+ * Mirrors ``expr_eval._to_date`` so FE/BE day-diffs agree. Returns null for
+ * anything unrecognised.
+ */
+function toDate(v: unknown): number | null {
+  if (v === null || v === undefined) return null;
+  const s = String(v).trim();
+  if (!s) return null;
+  let m = /^(\d{4})-(\d{1,2})-(\d{1,2})/.exec(s);
+  if (m) return Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  m = /^(\d{1,2})[/-](\d{1,2})[/-](\d{4})/.exec(s);
+  if (m) return Date.UTC(Number(m[3]), Number(m[2]) - 1, Number(m[1]));
+  return null;
+}
+
+/**
  * Sum a delimited numeric string ("20;31;25" -> 76). Generic — knows nothing
  * about weight/qty. Empty segments skipped; null/"" -> 0. A non-numeric
  * segment throws in ``strict`` mode (persisted computed fields) and returns
@@ -417,6 +434,13 @@ function evalNode(node: Node, ctx: EvalContext): unknown {
         const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(args[0] == null ? '' : String(args[0]));
         if (!m) return null;
         return Number(m[{ YEAR: 1, MONTH: 2, DAY: 3 }[N] as 1 | 2 | 3]);
+      }
+      if (N === 'DATE_DIFF') {
+        // DATE_DIFF(a, b) → whole days a - b. Mirrors expr_eval._to_date.
+        const a = toDate(args[0]);
+        const b = toDate(args[1]);
+        if (a === null || b === null) return null;
+        return Math.round((a - b) / 86400000);
       }
       return null;
     }

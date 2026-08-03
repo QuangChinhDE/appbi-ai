@@ -142,3 +142,53 @@ def test_tablescreenspec_accepts_row_lock():
 
 def test_row_lock_defaults_none():
     assert TableScreenSpec(columns=["a"]).row_lock is None
+
+
+# ── Time-based lock via DATE_DIFF (auto-lock after N days) ─────────────────
+# The user scenario: "Ngày đánh giá" older than 3 days auto-locks for users,
+# admins still edit. No scheduled job — re-evaluated on every write relative
+# to today. Uses the new DATE_DIFF({{today}}, [col]) engine function.
+
+from datetime import datetime, timezone, timedelta  # noqa: E402
+from app.modules.workboards.services.expr_eval import evaluate  # noqa: E402
+
+
+def _days_ago(n):
+    return (datetime.now(timezone.utc).date() - timedelta(days=n)).isoformat()
+
+
+@pytest.mark.parametrize("a,b,expected", [
+    ("2026-08-03", "2026-07-27", 7),
+    ("03/08/2026", "27/07/2026", 7),          # vi-VN
+    ("2026-07-27", "2026-08-03", -7),
+    ("2026-08-03T10:00:00", "2026-08-01", 2),  # datetime part ignored
+])
+def test_date_diff(a, b, expected):
+    assert evaluate(f"DATE_DIFF('{a}', '{b}')", {"row": {}}) == expected
+
+
+def test_date_diff_unparseable_is_none():
+    assert evaluate("DATE_DIFF('abc', '2026-08-03')", {"row": {}}) is None
+
+
+_TIME_LOCK = RowLockConfig(
+    lock_if="DATE_DIFF({{today}}, [ngay_danh_gia]) > 3",
+    editable_by_roles=["admin"],
+)
+
+
+def test_time_lock_old_row_blocks_user_allows_admin():
+    old = {"ngay_danh_gia": _days_ago(5)}
+    assert _enforce(_TIME_LOCK, old, _user("user")) is False
+    assert _enforce(_TIME_LOCK, old, _user("admin")) is True
+    assert _enforce(_TIME_LOCK, old, _user("owner")) is True
+
+
+def test_time_lock_recent_row_editable_by_all():
+    assert _enforce(_TIME_LOCK, {"ngay_danh_gia": _days_ago(1)}, _user("user")) is True
+
+
+def test_time_lock_boundary_exactly_3_days_not_locked():
+    # ">3" — day 3 is still open, day 4 locks.
+    assert _enforce(_TIME_LOCK, {"ngay_danh_gia": _days_ago(3)}, _user("user")) is True
+    assert _enforce(_TIME_LOCK, {"ngay_danh_gia": _days_ago(4)}, _user("user")) is False
