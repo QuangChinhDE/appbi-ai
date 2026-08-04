@@ -10,6 +10,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 from app.core.database import SessionLocal
+from app.core.scheduler_lock import single_run
 from app.services.anomaly_detection import AnomalyDetectionService
 
 logger = logging.getLogger(__name__)
@@ -17,9 +18,14 @@ logger = logging.getLogger(__name__)
 _scheduler: BackgroundScheduler | None = None
 
 
+@single_run("anomaly_daily_scan")
 def _run_anomaly_scan():
     """Scheduled job: run anomaly detection, then the observability scan
-    (freshness/volume/schema monitors + fold quality+anomaly into incidents)."""
+    (freshness/volume/schema monitors + fold quality+anomaly into incidents).
+
+    Guarded by an advisory lock: every uvicorn worker starts this scheduler, so
+    without it the scan would run WEB_CONCURRENCY times concurrently.
+    """
     db = SessionLocal()
     try:
         result = AnomalyDetectionService.run_all_checks(db)

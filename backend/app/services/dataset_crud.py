@@ -278,6 +278,9 @@ class DatasetCRUDService:
             ) or None,
             dictionary_updated_at=datetime.utcnow() if getattr(dataset_in, "dictionary", None) else None,
             owner_id=owner_id,
+            # BI/analytics by default; a Workboard-created dataset passes
+            # 'operational' so it is never materialized to BigQuery.
+            purpose=(getattr(dataset_in, "purpose", None) or "reporting"),
         )
         db.add(db_dataset)
         db.flush()

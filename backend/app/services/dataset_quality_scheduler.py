@@ -26,6 +26,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 from app.core.database import SessionLocal
+from app.core.scheduler_lock import job_lock
 from app.models.dataset import (
     Dataset,
     DatasetQualityRule,
@@ -83,7 +84,19 @@ def _execute_scheduled_run(dataset_id: int, schedule_id: int) -> None:
     Full scheduled run body: create run -> execute -> email PDF -> update
     schedule bookkeeping. Runs inside the APScheduler worker thread with its
     own DB session (like anomaly_scheduler / FastAPI background tasks).
+
+    Advisory-locked PER DATASET: every uvicorn worker schedules this job, so
+    without the lock one dataset would be quality-checked (and emailed)
+    WEB_CONCURRENCY times. The key carries the dataset id so two different
+    datasets firing in the same minute never block each other.
     """
+    with job_lock(f"dataset_quality:{dataset_id}") as _owned:
+        if not _owned:
+            return
+        _execute_scheduled_run_locked(dataset_id, schedule_id)
+
+
+def _execute_scheduled_run_locked(dataset_id: int, schedule_id: int) -> None:
     db = SessionLocal()
     try:
         schedule = (

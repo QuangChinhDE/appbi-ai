@@ -83,6 +83,15 @@ export interface FormFieldSpec {
     // Cascading select — narrow options by another field's value.
     filter_by_field?: string | null;
     filter_column?: string | null;
+    // Multi-column copy — pull extra columns from the picked row onto the form.
+    // mode='fill' writes into form field `target_field`; mode='view' shows
+    // read-only under `label`.
+    copy_columns?: Array<{
+      source_column: string;
+      mode?: 'fill' | 'view';
+      target_field?: string | null;
+      label?: string | null;
+    }> | null;
   } | null;
   section?: string | null;
   page?: number | null;
@@ -114,6 +123,9 @@ export interface FormFieldSpec {
   max_select?: number | null;
   enum_list_style?: 'chips' | 'dropdown' | 'checkboxes' | null;
   searchable?: 'auto' | 'always' | 'never' | null;
+  /** enum_list only: on submit, explode each selected value into its own row
+   *  (fan-out) instead of storing a JSON array in one cell. */
+  split_to_rows?: boolean;
   // QR display (widget='qr').
   qr_source_column?: string | null;
   qr_value_template?: string | null;
@@ -300,6 +312,15 @@ export interface PosCartConfigSpec {
   empty_hint?: string | null;
 }
 
+export interface RowLockConfigSpec {
+  /** wb-expr over row values; truthy = row locked. "true" locks the whole table. */
+  lock_if: string;
+  /** Roles that may still edit/delete a locked row (owner always may). Empty = only owner. */
+  editable_by_roles?: string[];
+  lock_delete?: boolean;
+  message?: string | null;
+}
+
 export interface TableScreenSpecBuilt {
   columns: string[];
   editable_columns?: string[];
@@ -316,6 +337,7 @@ export interface TableScreenSpecBuilt {
   lookup_columns?: TableLookupColumnSpec[];
   rollup_columns?: TableRollupColumnSpec[];
   format_rules?: FormatRuleSpec[];
+  row_lock?: RowLockConfigSpec | null;
   totals?: Record<string, TableTotalsKind>;
   column_groups?: TableColumnGroupSpec[];
   group_by?: string[];

@@ -39,7 +39,7 @@ from app.core.logging import get_logger
 from app.models.dataset import DatasetTable
 from app.models.models import DataSource
 from app.modules.workboards.models import Workboard, WorkboardOpLog
-from app.modules.workboards.roles import is_owner_role
+from app.modules.workboards.roles import is_privileged_role
 from app.modules.workboards.services.geocode_service import (
     build_address,
     geocode_address,
@@ -594,6 +594,16 @@ def _resolve_lookup_options(
             # only the options whose `filter_column` == the parent field's value.
             if cfg.filter_column:
                 opt["filter"] = row.get(cfg.filter_column)
+            # Multi-column copy: carry the extra source columns from the picked
+            # row so the FE can fill sibling fields / show a reference panel on
+            # select. Ignored by widgets that don't declare copy_columns.
+            if cfg.copy_columns:
+                copied: Dict[str, Any] = {}
+                for cc in cfg.copy_columns:
+                    if cc.source_column:
+                        copied[cc.source_column] = row.get(cc.source_column)
+                if copied:
+                    opt["copy"] = copied
             return opt
 
         if cfg.relationship_path:
@@ -669,7 +679,7 @@ def get_screen(layout: LayoutJson, screen_id: str) -> Screen:
 def is_screen_visible_for(screen: Screen, identity: CallerIdentity) -> bool:
     if not identity.is_app_user:
         return True
-    if is_owner_role(identity.role):
+    if is_privileged_role(identity.role):
         return True
     if not screen.visible_for_roles:
         return True
@@ -698,7 +708,7 @@ def is_group_visible_for(group: ScreenGroup, identity: CallerIdentity) -> bool:
     """
     if not identity.is_app_user:
         return True
-    if is_owner_role(identity.role):
+    if is_privileged_role(identity.role):
         return True
     if not group.visible_for_roles:
         return True
@@ -817,7 +827,11 @@ def _resolve_pos_catalog(db: Session, pos_cart: Any) -> Dict[str, Any]:
 # a documented app ceiling; Google Sheets caps a single CELL at ~50,000 chars
 # (base64 inflates 4/3 → ~35 KB safe). The effective cap is chosen per screen
 # by :func:`media_cap_kb` from the datasource kind — NOT hardcoded per widget.
-WORKBOARD_MEDIA_MAX_KB = 1024
+# 10 MB default (was 1 MB — too small vs market apps). base64 inflates ~4/3 →
+# ~13 MB in JSONB, which Postgres/BigQuery TOAST handles fine; it also lines up
+# with the 10 MB media-store guard and the per-field ``max_file_kb`` le=10240
+# builder bound. Google Sheets stays tiny (a cell caps at ~50k chars).
+WORKBOARD_MEDIA_MAX_KB = 10240
 WORKBOARD_MEDIA_MAX_KB_SHEETS = 35
 # Every widget whose value is a base64 data-URI (or a JSON array of them) and
 # must be size-capped. Previously only {file, image} were capped, so images/
@@ -1287,7 +1301,7 @@ def open_related_records_context(
     )
     if action is None or action.action_type != "open_related_records":
         raise HTTPException(status_code=404, detail="Open Related Records action was not found.")
-    if identity.is_app_user and not is_owner_role(identity.role) and action.visible_for_roles:
+    if identity.is_app_user and not is_privileged_role(identity.role) and action.visible_for_roles:
         role = (identity.role or "").strip().lower()
         if not any(item.strip().lower() == role for item in action.visible_for_roles):
             raise HTTPException(status_code=403, detail="You don't have access to that action.")
@@ -1497,7 +1511,7 @@ def _enforce_status_rules(
     """
     if not status_fields:
         return
-    if not identity.is_app_user or is_owner_role(identity.role):
+    if not identity.is_app_user or is_privileged_role(identity.role):
         return
     role = (identity.role or "").strip().lower()
     for field in status_fields:
@@ -1530,6 +1544,55 @@ def _enforce_status_rules(
                             f"sang '{new_s}'. Cho phép: {nice}."
                         ),
                     )
+
+
+def _enforce_row_lock(
+    cfg: Any,
+    previous_row: Optional[Dict[str, Any]],
+    identity: CallerIdentity,
+    *,
+    op: str = "update",
+) -> None:
+    """Server-side per-row edit/delete lock for table screens.
+
+    Re-evaluates ``row_lock.lock_if`` against the row's CURRENT stored values
+    (``previous_row``) — NOT the incoming payload — so a user cannot unlock a
+    row by editing the lock column in the same request. When the row is locked
+    and the caller's role is not in ``editable_by_roles``, block with 403.
+    AppBI staff and the ``owner`` role always bypass (same contract as RLS and
+    the status guard, so a locked record is never permanently un-fixable). For
+    a delete, only enforce when ``lock_delete`` is set.
+    """
+    if cfg is None or previous_row is None:
+        return
+    if op == "delete" and not bool(getattr(cfg, "lock_delete", True)):
+        return
+    if not identity.is_app_user or is_privileged_role(identity.role):
+        return
+    lock_if = (getattr(cfg, "lock_if", None) or "").strip()
+    if not lock_if:
+        return
+    from app.modules.workboards.services.expr_eval import evaluate_truthy
+
+    ctx = {
+        "row": dict(previous_row),
+        "app_user": dict(identity.app_user or {}),
+        "shared": {},
+    }
+    # default=False → a malformed expression fails OPEN (row not locked), same
+    # fail-soft stance as FormField.readonly_if. The builder dry-run validates
+    # the expression, so this only bites on hand-crafted bad layouts.
+    if not evaluate_truthy(lock_if, ctx, default=False):
+        return  # row not locked for this row's data
+    role = (identity.role or "").strip().lower()
+    allowed = [r.strip().lower() for r in (getattr(cfg, "editable_by_roles", None) or [])]
+    if role in allowed:
+        return  # role explicitly allowed to edit/delete locked rows
+    msg = (getattr(cfg, "message", None) or "").strip() or (
+        "Dòng này đã bị khóa — bạn không có quyền "
+        + ("xóa." if op == "delete" else "chỉnh sửa.")
+    )
+    raise HTTPException(status_code=403, detail=msg)
 
 
 def _resolve_initial_values(
@@ -1602,6 +1665,19 @@ def render_form_screen(
         shared_context=shared_context,
     )
 
+    # Per-field `default` values support the same {{app_user.x}} / {{today}} /
+    # {{shared.x}} placeholders as `initial_values`, but were shipped verbatim
+    # (model_dump) so the FE showed the literal "{{app_user.username}}". Resolve
+    # each field default through the same substituter before emitting.
+    def _emit_field(field: Any) -> Dict[str, Any]:
+        fd = field.model_dump()
+        raw = fd.get("default")
+        if isinstance(raw, str) and "{{" in raw:
+            fd["default"] = _resolve_initial_values(
+                {"_": raw}, identity=identity, shared_context=shared_context
+            ).get("_")
+        return fd
+
     layout = parse_layout(workboard)
     auto_number_columns = [
         cfg.column for cfg in (layout.auto_number_columns or []) if cfg.column
@@ -1628,7 +1704,7 @@ def render_form_screen(
         "table_id": screen.table_id,
         "primary_key_columns": list(screen.primary_key_columns or []),
         "submit_label": screen.form.submit_label,
-        "fields": [field.model_dump() for field in screen.form.fields],
+        "fields": [_emit_field(field) for field in screen.form.fields],
         "lookups": lookups,
         "initial_values": initial,
         "after_submit": (
@@ -1653,6 +1729,83 @@ def render_form_screen(
         # into this column (anti-fraud geo-audit).
         "geo_stamp_column": screen.form.geo_stamp_column,
     }
+
+
+def _form_split_field(screen: Screen) -> Optional[Any]:
+    """The form's fan-out field (widget='enum_list' with split_to_rows), if any.
+
+    The schema validator guarantees at most one, so return the first match.
+    """
+    if screen.kind != "form" or screen.form is None:
+        return None
+    for f in screen.form.fields:
+        if getattr(f, "split_to_rows", False) and getattr(f, "widget", None) == "enum_list":
+            return f
+    return None
+
+
+def _parse_split_values(raw: Any) -> List[Any]:
+    """Normalise an enum_list submit value into a list of non-empty scalars.
+
+    The FE sends enum_list as a JSON-array STRING (``'["A","B"]'``); tolerate a
+    raw Python list or a bare scalar too. Blank/None entries are dropped.
+    """
+    if raw is None:
+        return []
+    if isinstance(raw, list):
+        vals = raw
+    elif isinstance(raw, str):
+        s = raw.strip()
+        if not s:
+            return []
+        if s.startswith("["):
+            try:
+                parsed = json.loads(s)
+                vals = parsed if isinstance(parsed, list) else [s]
+            except (ValueError, TypeError):
+                vals = [s]
+        else:
+            vals = [s]
+    else:
+        vals = [raw]
+    out: List[Any] = []
+    for v in vals:
+        if v is None:
+            continue
+        if isinstance(v, str) and v.strip() == "":
+            continue
+        out.append(v)
+    return out
+
+
+def _plan_split_submit(
+    values: Dict[str, Any],
+    split_field: Any,
+    client_op_id: Optional[str],
+) -> Tuple[str, Any]:
+    """Plan a multi-select fan-out. Pure (no DB) so it can be unit-tested.
+
+    Returns one of:
+      * ``("fanout", [(child_values, child_op_id), ...])`` — >1 selected values;
+        each child copies every field and overrides the split column with one
+        scalar value, with a deterministic ``"{op}:{i}"`` op-id.
+      * ``("single", scalar)`` — exactly one value; caller stores the scalar.
+      * ``("none", None)`` — nothing selected; caller inserts as-is.
+    """
+    vals = _parse_split_values((values or {}).get(split_field.column))
+    if len(vals) > 1:
+        base = dict(values or {})
+        children = [
+            (
+                {**base, split_field.column: v},
+                (f"{client_op_id}:{i}" if client_op_id else None),
+            )
+            for i, v in enumerate(vals)
+        ]
+        return ("fanout", children)
+    if len(vals) == 1:
+        return ("single", vals[0])
+    return ("none", None)
 
 
 def insert_screen_row(
@@ -1688,6 +1841,41 @@ def insert_screen_row(
                     "to editable_columns before turning on allow_add_row."
                 ),
             )
+
+    # ── Multi-select fan-out: one submit → one row per selected value ──────
+    # A form field flagged split_to_rows explodes into N rows here (before any
+    # op-log / write), recursing once per value. Each child carries a scalar
+    # for the split column (so it won't re-expand) and a deterministic child
+    # op-id so offline replay stays idempotent. Every other field is copied.
+    if screen.kind == "form":
+        _split_field = _form_split_field(screen)
+        if _split_field is not None:
+            _mode, _payload = _plan_split_submit(values, _split_field, client_op_id)
+            if _mode == "fanout":
+                _results = [
+                    insert_screen_row(
+                        db,
+                        workboard,
+                        screen,
+                        _child_values,
+                        identity=identity,
+                        client_op_id=_child_op,
+                        relation_context=relation_context,
+                    )
+                    for _child_values, _child_op in _payload
+                ]
+                return {
+                    "action": "insert_split",
+                    "affected_rows": len(_results),
+                    "results": _results,
+                    # Keep row/pk for after_submit compatibility (first child).
+                    "row": _results[0].get("row", {}) if _results else {},
+                    "pk": _results[0].get("pk", {}) if _results else {},
+                }
+            if _mode == "single":
+                # Single pick → store the scalar (not a 1-element JSON array), so
+                # the column holds one value per row consistently.
+                values = {**(values or {}), _split_field.column: _payload}
 
     op_entry: Optional[WorkboardOpLog] = None
     if client_op_id is not None:
@@ -1919,7 +2107,10 @@ def update_screen_rows(
     rls_filters, allowed = build_rls_filter(screen.rls, screen.rls_default, identity)
     if not allowed:
         raise HTTPException(status_code=403, detail="You don't have access to those rows.")
-    if rls_filters:
+    # A row_lock needs each row's current values evaluated individually, so take
+    # the per-row path (which fetches + gates each row) rather than the batch
+    # fast-path — same reason RLS filters force it.
+    if rls_filters or getattr(screen.table, "row_lock", None) is not None:
         results = [
             update_screen_row(
                 db,
@@ -2047,6 +2238,16 @@ def update_screen_row(
         if _sf:
             _prev = _fetch_current_row(db, workboard, screen, pk)
             _enforce_status_rules(_sf, cleaned, identity, previous_row=_prev)
+    if (
+        screen.kind == "table"
+        and screen.table is not None
+        and getattr(screen.table, "row_lock", None) is not None
+    ):
+        # Per-row edit lock: block updates to a LOCKED row unless the caller's
+        # role is allow-listed (owner/staff bypass). Evaluated on the row's
+        # current stored values so the lock column can't be self-unlocked.
+        _lock_prev = _fetch_current_row(db, workboard, screen, pk)
+        _enforce_row_lock(screen.table.row_lock, _lock_prev, identity, op="update")
 
     # Make sure the targeted row passes RLS before touching it.
     rls_filters, allowed = build_rls_filter(
@@ -2377,6 +2578,10 @@ def delete_screen_row(
         raise HTTPException(
             status_code=403, detail="You don't have access to that row."
         )
+    # Per-row lock: block deleting a locked row (unless lock_delete is off or the
+    # caller's role is allow-listed / owner). Reuses the row just fetched above.
+    if getattr(screen.table, "row_lock", None) is not None:
+        _enforce_row_lock(screen.table.row_lock, parent_rows[0], identity, op="delete")
     layout = parse_layout(workboard)
     root_key = (
         int(screen.table_id),
@@ -3796,9 +4001,18 @@ def render_app_shell(
     nav_items = list(layout.mini_app_nav.items)
     if not nav_items:
         nav_items = [s.id for s in visible_screens if s.show_in_nav]
-    # Filter nav items to those actually visible to this identity.
+    # Filter nav items to those actually visible to this identity, AND honor the
+    # per-screen "Show in navigation" toggle (show_in_nav=False). The toggle used
+    # to appear inert because a non-empty mini_app_nav.items list was used
+    # verbatim (only intersected with role visibility) and never re-checked
+    # show_in_nav — so hidden screens kept showing. The screen stays reachable
+    # via row-action/deep-link (access is gated separately); this only removes it
+    # from the nav.
     visible_ids = {s.id for s in visible_screens}
-    nav_items = [sid for sid in nav_items if sid in visible_ids]
+    hidden_from_nav = {s.id for s in layout.screens if not s.show_in_nav}
+    nav_items = [
+        sid for sid in nav_items if sid in visible_ids and sid not in hidden_from_nav
+    ]
 
     # Screen-groups (UI: "Workspaces"). Additive: empty => flat nav above.
     # Drop groups hidden by role, members that are RLS-hidden or deleted

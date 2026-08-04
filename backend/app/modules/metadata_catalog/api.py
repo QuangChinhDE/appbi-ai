@@ -40,36 +40,75 @@ logger = logging.getLogger("app.metadata_catalog.api")
 _READ_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 _CATALOG_CHECKERS = {
     m: {"view": require_permission(m, "view"), "edit": require_permission(m, "edit")}
-    for m in ("intelligence", "ai_inbox", "semantics", "ai_guidance", "govern", "observability")
+    for m in ("govern", "datasets", "observability")
 }
+
+#: Paths whose UI has been deleted.
+#:
+#: AI Readiness, AI Suggestions and AI Guidance were four sidebar entries carved
+#: out of one Knowledge Hub for permission reasons (see 80f5074, then 2b1beb7).
+#: The screens are gone; these routes are not, because deleting sixty-odd handlers
+#: is a separate change from removing the navigation.
+#:
+#: They answer 404 rather than being reassigned to `govern`. Mapping an orphaned
+#: endpoint onto a surviving module's key silently WIDENS that key: a Documents
+#: editor would gain write access to rules, playbooks and the review ledger they
+#: were never granted. 404 says what is true — the feature is not here.
+_DELETED_PREFIXES = (
+    "rules", "playbooks", "qa", "instructions", "ai-scope",
+    "review-items", "review", "intelligence", "certify", "ai-draft",
+)
+# `caveats` was in this list for one build and it was wrong: a data caveat is a
+# warning attached to a metric, authored on the Metrics & Terms screen, not part
+# of AI Guidance. The 404 showed up in the browser console on a page that still
+# works — the kind of half-break a route test would have passed.
+
+#: Metrics & Terms follows the dataset it describes, so it is granted by
+#: `datasets` — one module, one key, the rule the rest of the matrix already
+#: follows. Everything a metric or a glossary term means is a statement ABOUT a
+#: dataset, which is why it moves there rather than keeping a key of its own.
+_DATASET_PREFIXES = (
+    "managed-metric", "metrics", "metric-", "metric", "vocab-",
+    "glossary", "glossaries", "term", "classification", "classifications", "tag", "tags",
+    "caveats",
+)
+
+#: Documents — the one catalog module that is still its own destination.
+_GOVERN_PREFIXES = ("knowledge", "search", "graph", "asset-docs", "change-log")
 
 
 def _catalog_module_for(path: str) -> str:
-    """Map a /catalog/* request path to its owning sidebar module. The catalog is
-    ONE backend domain presented as 5 modules, so each path is assigned to the
-    module that owns it; cross-cutting/aggregate paths (overview, ai-draft, status,
-    anything new) fall to 'intelligence' (the group cockpit key, which inherits
-    govern → legacy users pass)."""
+    """Map a /catalog/* request path to the module that grants it.
+
+    Returns "" for a path belonging to a deleted feature; the gate turns that into
+    a 404. An unknown path also returns "" — fail closed, because a new endpoint
+    that nobody assigned a key should not inherit one by accident.
+    """
     sub = path.split("/catalog/", 1)[-1] if "/catalog/" in path else path
     if sub.startswith("observability/"):
         return "observability"
     if sub.startswith("govern/"):
         rest = sub[len("govern/"):]
-        if rest.startswith(("rules", "playbooks", "qa", "instructions", "ai-scope", "certify")):
-            return "ai_guidance"
-        if rest.startswith(("managed-metric", "metrics", "metric-", "vocab-", "glossary", "term", "classification", "tag", "caveats")):
-            return "semantics"
-        if rest.startswith(("review-items", "review")):
-            return "ai_inbox"
-        if rest.startswith(("knowledge", "search", "graph", "asset-docs", "change-log")):
+        if rest.startswith(_DELETED_PREFIXES):
+            return ""
+        if rest.startswith(_DATASET_PREFIXES):
+            return "datasets"
+        if rest.startswith(_GOVERN_PREFIXES):
             return "govern"
-    return "intelligence"
+    return ""
 
 
 async def govern_module_gate(request: Request, user: User = Depends(get_current_user)) -> User:
     """Per-module floor for the whole /catalog router: reads → <module>:view,
-    writes → <module>:edit. One gate, no per-endpoint drift."""
+    writes → <module>:edit. One gate, no per-endpoint drift.
+
+    An unmapped path 404s. It used to fall through to the group's cockpit key,
+    which meant a new endpoint was reachable by anyone with that key before
+    anybody decided it should be — the convenient default, and the wrong one.
+    """
     module = _catalog_module_for(request.url.path)
+    if not module:
+        raise HTTPException(status_code=404, detail="Not Found")
     level = "view" if request.method in _READ_METHODS else "edit"
     return await _CATALOG_CHECKERS[module][level](user=user)
 
@@ -1098,3 +1137,10 @@ def govern_intel_ai_draft(body: AiDraftReq, db: Session = Depends(get_db), _: Us
     """AI-compose an Intelligence entity from a natural-language prompt.
     Returns a draft the create modal fills in for the user to review/edit."""
     return _run(lambda: GovernanceAIService.ai_draft(db, body.entity_type, body.prompt, body.dataset_id))
+
+
+# ── Flow Studio ─────────────────────────────────────────────────────────────
+# Mounted last so /catalog/ai/* inherits this router's module gate. The Studio
+# lets a non-engineer compose the AI's analysis flow; see
+# docs/Intelligence/appbi_intelligence_flow_map.md §2.
+

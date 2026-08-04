@@ -182,23 +182,38 @@ def _resolve_dialect(ds_type: str) -> str:
     )
 
 
-def _table_columns(table: DatasetTable) -> List[str]:
+def _column_cache_entries(table: DatasetTable) -> List[Any]:
+    """Return the raw column-entry list from the polymorphic ``columns_cache``.
+
+    ``DatasetTable.columns_cache`` is declared ``Union[List[Any], Dict[str, Any]]``
+    (see ``schemas.dataset``): legacy tables store a bare list of entries, while
+    the modern dataset-publish path stores ``{"columns": [...], ...}``. Every
+    reader MUST normalise both shapes — otherwise a dict-shaped cache reads back
+    as "no columns". Anything unrecognised yields ``[]``.
+    """
     cache = table.columns_cache or []
+    if isinstance(cache, dict):
+        cache = cache.get("columns") or []
+    return cache if isinstance(cache, list) else []
+
+
+def _table_columns(table: DatasetTable) -> List[str]:
+    """Column names for the target table, tolerant of BOTH ``columns_cache``
+    shapes. Previously this only walked the bare-list shape, so a dict-shaped
+    cache returned ``[]`` and every write bounced with a false
+    "primary key columns are missing" error even though the column existed.
+    """
     cols: List[str] = []
-    if isinstance(cache, list):
-        for entry in cache:
-            if isinstance(entry, dict) and entry.get("name"):
-                cols.append(str(entry["name"]))
-            elif isinstance(entry, str):
-                cols.append(entry)
+    for entry in _column_cache_entries(table):
+        if isinstance(entry, dict) and entry.get("name"):
+            cols.append(str(entry["name"]))
+        elif isinstance(entry, str):
+            cols.append(entry)
     return cols
 
 
 def _table_primary_key_columns(table: DatasetTable) -> List[str]:
-    cache = table.columns_cache
-    if isinstance(cache, dict):
-        cache = cache.get("columns")
-    columns = [item for item in (cache or []) if isinstance(item, dict)]
+    columns = [item for item in _column_cache_entries(table) if isinstance(item, dict)]
     flagged = [
         str(item.get("name"))
         for item in columns
@@ -311,10 +326,20 @@ def _build_context(
         raise WorkboardWriteError(
             "Target primary_key_columns is empty; configure it in the builder before writing."
         )
-    missing_pk = [column for column in pk_cols if column not in allowed]
+    # Only enforce PK-presence when we actually know the table's columns. An
+    # empty ``allowed`` means the metadata could not be read (never that the
+    # table has zero columns), so skipping the check there avoids a false
+    # "missing" verdict — the same defensive stance _filter_to_allowed_columns
+    # already takes.
+    missing_pk = (
+        [column for column in pk_cols if column not in allowed] if allowed else []
+    )
     if missing_pk:
         raise WorkboardWriteError(
-            f"Target primary key columns are missing: {', '.join(missing_pk)}."
+            "Unable to save: primary key column(s) "
+            f"{', '.join(missing_pk)} were not found in the target table "
+            "metadata. Sync the table schema, or review the screen's primary "
+            "key configuration."
         )
 
     rules = (
@@ -642,6 +667,82 @@ def _apply_audit_on_update(
     return out
 
 
+def _resolve_dim_row(
+    db: Session, dim_table_id: int, match_column: str, key_value: Any
+) -> Optional[Dict[str, Any]]:
+    """Fetch a single dimension row where ``match_column == key_value``, using
+    the same store-agnostic read path as the render-side lookup (works for
+    Google Sheets and SQL alike). Returns the row dict or None."""
+    from app.modules.workboards.services import screen_runtime as _sr
+    from app.services.live_query_service import LiveQueryService
+
+    linked_table = _sr._load_table(db, dim_table_id)
+    if not linked_table:
+        return None
+    linked_ds = _sr._load_datasource(db, linked_table)
+    if not linked_ds:
+        return None
+    result = LiveQueryService.execute_preview_query(
+        linked_ds,
+        linked_table,
+        limit=1,
+        offset=0,
+        filters=[{"field": match_column, "operator": "in", "value": [key_value]}],
+    )
+    rows = result.get("rows") or []
+    return rows[0] if rows else None
+
+
+def _apply_lookup_writeback(
+    db: Session,
+    values: Dict[str, Any],
+    layout: LayoutJson,
+    *,
+    target_table_id: Optional[int],
+    is_update: bool,
+) -> Dict[str, Any]:
+    """Denormalise dim columns into the row and persist them (Sheet/SQL alike).
+
+    For each configured write-back whose ``key_column`` is present in this
+    write, resolve the dim row by that key and copy the ``fill`` columns into
+    the row payload — so they land in the store, unlike a render-time lookup.
+    On update, only re-resolved when ``overwrite_on_update`` is True. Best-effort
+    per config: an unknown key leaves existing values untouched; a resolution
+    error is logged and skipped so a lookup never blocks a write."""
+    configs = list(getattr(layout, "lookup_writeback", None) or [])
+    if not configs:
+        return values
+    out = dict(values)
+    for cfg in configs:
+        if cfg.table_id and target_table_id and cfg.table_id != target_table_id:
+            continue
+        if is_update and not cfg.overwrite_on_update:
+            continue
+        # Only act when the key participates in THIS write (present in payload).
+        if cfg.key_column not in out:
+            continue
+        key_value = out.get(cfg.key_column)
+        if key_value in (None, ""):
+            # Key cleared → clear the denormalised columns too, keep consistent.
+            for m in cfg.fill:
+                out[m.into_column] = None
+            continue
+        try:
+            dim_row = _resolve_dim_row(db, cfg.dim_table_id, cfg.match_column, key_value)
+        except Exception:  # noqa: BLE001 — a lookup must never break the write
+            logger.exception(
+                "lookup write-back resolve failed (dim_table=%s key=%r)",
+                cfg.dim_table_id, key_value,
+            )
+            continue
+        if dim_row is None:
+            continue  # unknown key → don't wipe existing values
+        for m in cfg.fill:
+            if m.from_column in dim_row:
+                out[m.into_column] = dim_row.get(m.from_column)
+    return out
+
+
 def _enforce_validation(
     rules: List[DatasetQualityRule], row: Dict[str, Any]
 ) -> List[Dict[str, Any]]:
@@ -759,6 +860,9 @@ class WorkboardWriteService:
             now,
             target_table_id=ctx.dataset_table.id,
         )
+        clean = _apply_lookup_writeback(
+            db, clean, ctx.layout, target_table_id=ctx.dataset_table.id, is_update=False
+        )
         clean = _apply_audit_on_insert(clean, ctx.layout, user, now)
         warnings = _enforce_validation(ctx.rules, clean)
 
@@ -875,6 +979,9 @@ class WorkboardWriteService:
                 now,
                 target_table_id=ctx.dataset_table.id,
             )
+            clean = _apply_lookup_writeback(
+                db, clean, ctx.layout, target_table_id=ctx.dataset_table.id, is_update=False
+            )
             clean = _apply_audit_on_insert(clean, ctx.layout, user, now)
             warnings_by_row.append(_enforce_validation(ctx.rules, clean))
             prepared.append(clean)
@@ -946,6 +1053,9 @@ class WorkboardWriteService:
         for pk_col in ctx.primary_key_columns:
             clean.pop(pk_col, None)
         now = datetime.now(timezone.utc)
+        clean = _apply_lookup_writeback(
+            db, clean, ctx.layout, target_table_id=ctx.dataset_table.id, is_update=True
+        )
         clean = _apply_audit_on_update(clean, ctx.layout, user, now)
         # Validate the merged row (incoming values; cannot validate untouched cols).
         warnings = _enforce_validation(ctx.rules, clean)

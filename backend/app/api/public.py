@@ -12,7 +12,7 @@ Send them via the X-Public-Session request header.
 import json
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response, status
+from fastapi import APIRouter, Depends, File, Header, HTTPException, Query, Request, Response, UploadFile, status
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 from pydantic import BaseModel
@@ -2102,6 +2102,62 @@ if settings.WORKBOARDS_ENABLED:
         return {"action": "insert", **result}
 
 
+    @router.post("/workspaces/{token}/workboards/{workboard_id}/media")
+    async def workspace_upload_media(
+        token: str,
+        workboard_id: int,
+        request: Request,
+        file: UploadFile = File(...),
+        db: Session = Depends(get_db),
+    ):
+        """Upload an image/file from a mini-app form. Stored in the app DB;
+        returns a short URL to write into the field (so a Google Sheets cell
+        holds the link, never a base64 blob). Auth = the workspace app-user."""
+        from app.modules.workboards.services import media_service
+
+        ws = _load_workspace_or_404(db, token)
+        app_user = _require_workspace_app_user(request, ws, db=db)
+        wb = _resolve_workboard_for_workspace(
+            db, ws, workboard_id, request=request, app_user=app_user
+        )
+        data = await file.read()
+        try:
+            media = media_service.store_media(
+                db,
+                workboard_id=wb.id,
+                filename=file.filename,
+                content_type=file.content_type,
+                data=data,
+                created_by=None,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {
+            "id": str(media.id),
+            "url": media_service.media_url(media.id),
+            "content_type": media.content_type,
+            "byte_size": media.byte_size,
+            "filename": media.filename,
+        }
+
+
+    @router.get("/media/{media_id}")
+    def public_get_media(media_id: str, db: Session = Depends(get_db)):
+        """Stream a stored media binary by opaque id. Public by design — a
+        mini-app (which may itself be public) renders these via <img src>. The
+        id is an unguessable UUID; nothing sensitive should be uploaded as media."""
+        from app.modules.workboards.services import media_service
+
+        media = media_service.get_media(db, media_id)
+        if media is None:
+            raise HTTPException(status_code=404, detail="Media not found")
+        return Response(
+            content=bytes(media.data),
+            media_type=media.content_type or "application/octet-stream",
+            headers={"Cache-Control": "public, max-age=31536000, immutable"},
+        )
+
+
     @router.get("/workspaces/{token}/workboards/{workboard_id}/related-records")
     def workspace_related_records(
         token: str,
@@ -3549,31 +3605,22 @@ async def save_ai_chat_session(
 
     db.commit()
 
-    # ── Learning capture (institutional memory) ─────────────────────────────
-    # Distil THIS turn's high-confidence findings into the company knowledge
-    # base and fold in any thumbs up/down. Best-effort — never break a save.
+    # ── Feedback signals only (P0-02) ───────────────────────────────────────
+    # Thumbs up/down IS a legitimate signal from the person reading the answer:
+    # it rates text the SERVER produced, so it can't be used to smuggle in a
+    # fabricated claim.
+    #
+    # What used to live here — mining `body.conv_state["findings"]` into the
+    # knowledge base — has been REMOVED. That payload is client-supplied on a
+    # public, unauthenticated endpoint, so anyone could POST invented "findings"
+    # and (with PROMOTE_SUPPORT=2) have them promoted to validated truth that
+    # every later viewer's prompt is grounded on. Findings are now distilled
+    # server-side from the turn's own tool_log in the chat endpoint, where the
+    # data provably came from real tool calls.
     try:
         from app.services.dashboard_ai_bot import knowledge as _kb
         dash_id = getattr(_dash_for_kb, "id", None)
         if isinstance(dash_id, int):
-            cs = body.conv_state if isinstance(body.conv_state, dict) else {}
-            all_findings = cs.get("findings") if isinstance(cs.get("findings"), list) else []
-            cur_turn = cs.get("turn_index")
-            # Only THIS turn's findings, so cumulative state doesn't re-inflate
-            # support_count on every save.
-            findings = [
-                f for f in all_findings
-                if not isinstance(cur_turn, int) or f.get("turn_index") == cur_turn
-            ]
-            last_rating = None
-            for m in reversed(safe_messages):
-                if m.get("role") == "assistant":
-                    last_rating = m.get("rating")
-                    break
-            _kb.capture_findings(
-                db, dashboard_id=dash_id, findings=findings,
-                rated_down=(last_rating == "down"),
-            )
             for m in safe_messages:
                 if m.get("role") == "assistant" and m.get("rating") in ("up", "down"):
                     _kb.apply_feedback(
@@ -3583,7 +3630,7 @@ async def save_ai_chat_session(
                     )
             db.commit()
     except Exception:
-        logger.warning("ai knowledge capture failed", exc_info=True)
+        logger.warning("ai feedback apply failed", exc_info=True)
         db.rollback()
 
     return {"ok": True}
@@ -3662,16 +3709,20 @@ async def chat_dashboard_ai_agent(
         x_user_ai_model=x_user_ai_model,
         missing_key_detail="X-User-Ai-Key header is required for AI chat.",
     )
-    critique_enabled_flag = resolve_public_ai_critique_enabled(appearance_config)
-    effective_mode = resolve_public_ai_mode(appearance_config, x_user_ai_mode=x_user_ai_mode)
     web_search_flag = web_search_enabled(appearance_config)
+    # Depth is no longer a link setting. It is a property of the way of thinking
+    # the link chose: a one-step lookup flow and a five-step analysis flow ARE the
+    # two modes, expressed as flows instead of as a dropdown that silently
+    # reconfigured a monolithic bot. Recorded as a constant so trace rows stay
+    # comparable across the change.
+    effective_mode = "thinking"
 
     # Guide mode ("Hướng dẫn xem báo cáo") — teach a NEW viewer how to READ this
-    # report, step by step, in plain language. Appended to the report system
-    # prompt only for this intent so the bot acts like a patient instructor.
-    report_note = sanitize_report_context_note(
-        (appearance_config or {}).get("ai_bot_report_context_note"),
-    )
+    # report, step by step, in plain language. This is a per-turn INTENT the chat
+    # UI sends, not link configuration, so it survives the rework; the link's
+    # free-text note does not (a flow's prompts are where that belongs, and
+    # migration 0038 moved every existing note into one).
+    report_note = ""
     if (x_user_ai_intent or "").strip().lower() == "guide":
         report_note = (
             report_note
@@ -3727,6 +3778,59 @@ async def chat_dashboard_ai_agent(
     if not safe_messages:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No valid messages.")
 
+    # ── P0-06 Budget ceiling (denial-of-wallet) ─────────────────────────────
+    # Checked BEFORE the guard and before any model call: the point is to stop
+    # spending, so it has to be the cheapest gate that runs first. Only binds on
+    # cost when the ORG's key pays; a viewer on their own key is metered but
+    # never blocked for spend.
+    from app.services.dashboard_ai_bot.budget import check_budget as _check_budget
+    _budget = _check_budget(
+        db,
+        token=token,
+        appearance_config=appearance_config,
+        viewer_supplied_key=bool((x_user_ai_key or "").strip()),
+    )
+    if not _budget.allowed:
+        logger.warning("ai_bot budget block token=%s %s", token, _budget.to_log())
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=_budget.message,
+        )
+
+    # ── P0-03 Input guardrail ───────────────────────────────────────────────
+    # Deterministic, zero LLM calls. In "log" mode nothing is rejected — the
+    # codes are recorded so the false-positive rate can be measured on real
+    # traffic before the deployment flips to "block".
+    from app.services.dashboard_ai_bot.guard import check_input as _check_input
+    _last_user_msg = ""
+    for _m in reversed(safe_messages):
+        if _m.get("role") == "user":
+            _last_user_msg = str(_m.get("content") or "")
+            break
+    _guard = _check_input(_last_user_msg, mode=settings.INTELLIGENCE_GUARD_MODE)
+    if _guard.codes:
+        logger.warning(
+            "ai_bot guard token=%s %s question=%r",
+            token, _guard.to_log(), _last_user_msg[:160],
+        )
+    if not _guard.allowed:
+        async def _blocked_stream():
+            yield "data: " + _json.dumps(
+                {"type": "text", "text": _guard.message}, ensure_ascii=False
+            ) + "\n\n"
+            yield "data: " + _json.dumps({"type": "done"}) + "\n\n"
+
+        return StreamingResponse(
+            _blocked_stream(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+    # Feed the normalized text (invisibles stripped, length-capped) to the agent.
+    if _guard.normalized_question and _guard.normalized_question != _last_user_msg:
+        for _m in reversed(safe_messages):
+            if _m.get("role") == "user":
+                _m["content"] = _guard.normalized_question
+                break
+
     captured_key = effective_key
     # Merge link-level public filters with viewer-applied slicer filters
     # from the dashboard UI through the shared layered-merge helper.
@@ -3764,28 +3868,17 @@ async def chat_dashboard_ai_agent(
         HARD_TIMEOUT = 240.0
         loop = asyncio.get_event_loop()
         started = loop.time()
-        # Knowledge grounding — GENERIC, data-driven. Assembles whatever a
-        # business has AUTHORED for this dashboard's datasets (Govern glossary,
-        # data dictionary, semantic descriptions, aliases) PLUS institutional
-        # memory, and injects it so the bot reasons from authored definitions
-        # instead of guessing from column names. Zero per-report logic; empty
-        # (ungrounded fallback) when nothing is authored. Best-effort.
-        learned_block = ""
-        try:
-            from app.services.dashboard_ai_bot import knowledge_context as _kc
-            _last_q = ""
-            for _m in reversed(safe_messages):
-                if _m.get("role") == "user":
-                    _last_q = str(_m.get("content") or "")
-                    break
-            learned_block = _kc.build_knowledge_context_block(
-                db, dashboard_id=dash.id, question=_last_q,
-            )
-        except Exception:
-            logger.warning("ai knowledge context build failed", exc_info=True)
-
-        agen = run_agent_stream(
-            mode=effective_mode,
+        # Knowledge is NOT assembled here.
+        #
+        # This used to call build_knowledge_context_block with no `sources`
+        # argument — every authored source, on every question — and hand the
+        # result to every step. That made "the flow decides what the bot may
+        # read" untrue in the only direction that matters: the FLOOR was
+        # everything, so an author who deliberately left the knowledge step out
+        # still got the full block. The flow's frame owns this now (compile.py's
+        # context node, steering sources only), and documents and metric
+        # definitions are reached by tool when a step is granted them.
+        _agent_kwargs = dict(
             ctx=ctx,
             user_messages=safe_messages,
             api_key=captured_key,
@@ -3793,12 +3886,43 @@ async def chat_dashboard_ai_agent(
             model=model,
             briefing=briefing_obj,
             state=state_obj,
-            enable_critique=critique_enabled_flag,
+            # The frame's verify step owns fact-checking. A second, weaker
+            # self-critique inside each step would spend model calls arguing with
+            # text no viewer reads.
+            enable_critique=False,
+            # A capability grants a step permission to ASK for the web; this flag
+            # is the deployment still having to allow it.
             web_search_enabled=web_search_flag,
             guide_mode=(x_user_ai_intent or "").strip().lower() == "guide",
+            # Empty unless this turn is guide mode. Never link configuration.
             report_context_note=report_note,
-            learned_knowledge_block=learned_block,
-        ).__aiter__()
+            learned_knowledge_block="",
+        )
+
+        # THE AI FLOW MODULE HAS BEEN REMOVED.
+        #
+        # This is where a public link's chatbot used to get its brain: the flow
+        # engine resolved which graph the link ran and streamed the turn. The whole
+        # module was deleted to be rebuilt from scratch, so there is nothing to
+        # call here yet.
+        #
+        # Answering with an explicit message rather than leaving the old import in
+        # place: a call into a deleted package raises ImportError deep inside a
+        # streaming response, which reaches the viewer as a dead connection and
+        # reaches the log as a traceback that says nothing about why. A viewer who
+        # asks a question deserves to be told the feature is not there.
+        async def _no_flow_module():
+            from app.services.dashboard_ai_bot.events import AgentEvent
+
+            yield AgentEvent(
+                type="text",
+                text=(
+                    "Trợ lý của báo cáo này hiện chưa được cấu hình. "
+                    "Quản trị viên cần thiết lập lại luồng xử lý AI trước khi dùng."
+                ),
+            )
+
+        agen = _no_flow_module().__aiter__()
         timed_out = False
         # Per-turn telemetry accumulators (written to ai_chat_turn_logs at end).
         m_tools: list[str] = []
@@ -3808,6 +3932,12 @@ async def chat_dashboard_ai_agent(
         m_usd: float | None = None
         m_answer = False
         m_error = False
+        # P0-02 — the ONLY findings we ever learn from: the ones the agent
+        # itself derived from this turn's tool_log, captured off the SSE
+        # `state` event. Never anything a client posted back to us.
+        m_server_state: dict | None = None
+        m_verif_cov: float | None = None
+        m_verif_unmatched: int | None = None
         try:
             while True:
                 try:
@@ -3837,6 +3967,14 @@ async def chat_dashboard_ai_agent(
                     m_answer = True
                 elif _et == "error":
                     m_error = True
+                elif _et == "state":
+                    _st = (ev.extra or {}).get("state")
+                    if isinstance(_st, dict):
+                        m_server_state = _st
+                elif _et == "verification":
+                    _v = (ev.extra or {}).get("verification") or {}
+                    m_verif_cov = _v.get("coverage")
+                    m_verif_unmatched = len(_v.get("unmatched") or [])
                 envelope = _event_to_envelope(ev)
                 if envelope is not None:
                     yield f"data: {_json.dumps(envelope, ensure_ascii=False, default=str)}\n\n"
@@ -3850,6 +3988,34 @@ async def chat_dashboard_ai_agent(
                 await agen.aclose()
             except Exception:
                 pass
+            # P0-02 — learn from SERVER-computed findings for this turn only.
+            # `m_server_state` comes from the agent's own `_evolve_state`, which
+            # derives findings from the executed tool_log; a client cannot
+            # influence it. Filtering on turn_index keeps cumulative state from
+            # re-inflating support_count on every turn.
+            try:
+                if isinstance(m_server_state, dict):
+                    from app.core.database import SessionLocal as _SL2
+                    from app.services.dashboard_ai_bot import knowledge as _kb2
+                    _all = m_server_state.get("findings")
+                    _cur = m_server_state.get("turn_index")
+                    _this_turn = [
+                        f for f in (_all if isinstance(_all, list) else [])
+                        if isinstance(f, dict)
+                        and (not isinstance(_cur, int) or f.get("turn_index") == _cur)
+                    ]
+                    if _this_turn:
+                        _kb_db = _SL2()
+                        try:
+                            _kb2.capture_findings(
+                                _kb_db, dashboard_id=dash.id, findings=_this_turn,
+                                rated_down=False,
+                            )
+                            _kb_db.commit()
+                        finally:
+                            _kb_db.close()
+            except Exception:
+                logger.warning("ai server-side finding capture failed", exc_info=True)
             # Write per-turn telemetry (best-effort, never breaks the stream).
             try:
                 from app.core.database import SessionLocal as _SL
@@ -3878,6 +4044,8 @@ async def chat_dashboard_ai_agent(
                         had_answer=m_answer,
                         errored=(m_error or timed_out),
                         latency_ms=int((loop.time() - started) * 1000),
+                        verification_coverage=m_verif_cov,
+                        verification_unmatched=m_verif_unmatched,
                     ))
                     _log_db.commit()
                 finally:
@@ -4147,6 +4315,19 @@ def _event_to_envelope(ev) -> dict | None:
     if et == "exploration_step":
         # Phase 16 — exploration progress tick (stage + question metadata).
         return {"type": "exploration_step", **(ev.extra or {})}
+    if et == "verification":
+        # P1-02 — how many of the answer's figures trace back to evidence.
+        # Coverage only; the unmatched VALUES stay server-side (they are the
+        # model's own invention, and echoing them to the viewer would present
+        # unsupported numbers a second time).
+        v = (ev.extra or {}).get("verification") or {}
+        return {
+            "type": "verification",
+            "coverage": v.get("coverage"),
+            "total_numbers": v.get("total_numbers"),
+            "matched": v.get("matched"),
+            "checked": bool(v.get("checked")),
+        }
     if et == "error":
         return {"type": "error", "text": ev.text}
     if et == "state":

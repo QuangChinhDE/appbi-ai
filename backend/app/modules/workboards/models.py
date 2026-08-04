@@ -17,6 +17,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Integer,
+    LargeBinary,
     String,
     Text,
     UniqueConstraint,
@@ -521,6 +522,33 @@ class WorkboardOpLog(Base):
     actor_key = Column(String(255), nullable=True)
     request_fingerprint = Column(String(64), nullable=True)
     result_payload = Column(JSONB, nullable=True)
+    created_at = Column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class WorkboardMedia(Base):
+    """Binary attachment (image / file / signature / audio) uploaded from a
+    mini-app form.
+
+    The BUSINESS store only ever holds a short URL to this row — a Google Sheets
+    cell caps at 50,000 chars so it cannot hold a base64 image (the legacy
+    base64-into-the-cell approach is incompatible with a Sheets store). The
+    binary lives here in the app DB; the cell references it by opaque id. Works
+    uniformly for any store kind (Sheets today, Postgres/MySQL later).
+    """
+
+    __tablename__ = "workboard_media"
+
+    id = Column(UUID(as_uuid=True), primary_key=True)
+    workboard_id = Column(
+        Integer, ForeignKey("workboards.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    content_type = Column(String(120), nullable=False, default="application/octet-stream")
+    filename = Column(String(255), nullable=True)
+    byte_size = Column(Integer, nullable=False, default=0)
+    data = Column(LargeBinary, nullable=False)
+    created_by = Column(UUID(as_uuid=True), nullable=True)
     created_at = Column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

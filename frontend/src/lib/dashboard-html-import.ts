@@ -136,6 +136,28 @@ function extractEmbeddedAppbiMetadata(html: string): Record<string, any> | null 
   }
 }
 
+/**
+ * Detect an AppBI dashboard snapshot (exported via "Export HTML"). These files
+ * embed a verbatim `appbi-snapshot/v1` payload and can be re-imported in one
+ * click, bypassing the fuzzy HTML analyzer entirely.
+ */
+export function detectDashboardSnapshotHtml(html: string): {
+  isSnapshot: boolean;
+  name: string | null;
+  chartCount: number;
+} {
+  const embedded = extractEmbeddedAppbiMetadata(html);
+  if (!embedded || String(embedded.version ?? '').trim().toLowerCase() !== 'appbi-snapshot/v1') {
+    return { isSnapshot: false, name: null, chartCount: 0 };
+  }
+  const dashboard = embedded.dashboard && typeof embedded.dashboard === 'object'
+    ? (embedded.dashboard as Record<string, unknown>)
+    : {};
+  const charts = Array.isArray(embedded.charts) ? embedded.charts : [];
+  const name = typeof dashboard.name === 'string' && dashboard.name.trim() ? dashboard.name.trim() : null;
+  return { isSnapshot: true, name, chartCount: charts.length };
+}
+
 export function detectEmbeddedMultiPageImportHtml(html: string): {
   isMultiPage: boolean;
   pageCount: number;

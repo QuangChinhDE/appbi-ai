@@ -8,6 +8,8 @@ import { getBrowserTimezone } from '@/lib/timezones';
 
 // ===== Types =====
 
+export type DatasetPurpose = 'reporting' | 'operational';
+
 export interface Dataset {
   id: number;
   name: string;
@@ -19,6 +21,9 @@ export interface Dataset {
   owner_email?: string;
   user_permission?: 'none' | 'view' | 'edit' | 'full';
   datasource_ids?: number[];
+  /** 'reporting' → may materialize to BigQuery for dashboards; 'operational' →
+   *  live DB for a Workboard, never materialized. Absent → treat as reporting. */
+  purpose?: DatasetPurpose | null;
   created_at: string;
   updated_at: string;
 }
@@ -144,12 +149,14 @@ export interface CreateDatasetInput {
   name: string;
   description?: string;
   settings?: DatasetSettings;
+  purpose?: DatasetPurpose;
 }
 
 export interface UpdateDatasetInput {
   name?: string;
   description?: string;
   settings?: DatasetSettings;
+  purpose?: DatasetPurpose;
 }
 
 export interface AddTableInput {
@@ -793,6 +800,76 @@ export function useStopRefreshRun() {
     },
     onSuccess: (_d, { datasetId }) => {
       queryClient.invalidateQueries({ queryKey: [...datasetKeys.detail(datasetId), 'refresh-runs'] });
+    },
+  });
+}
+
+// --- Operational (Workboard) dataset OLTP Destination -----------------------
+export interface DatasetDestination {
+  kind: 'google_sheets';
+  datasource_id: number;
+  spreadsheet_id: string;
+  spreadsheet_url?: string | null;
+  managed: boolean;
+}
+
+export interface OperationalColumnSpec {
+  name: string;
+  type?: string;
+}
+
+export interface OperationalTableSpec {
+  name: string;
+  columns: OperationalColumnSpec[];
+}
+
+export interface ProvisionDestinationInput {
+  datasetId: number;
+  kind?: 'google_sheets';
+  credential_datasource_id: number;
+  mode: 'create' | 'bind';
+  title?: string;
+  spreadsheet_id?: string;
+  tables?: OperationalTableSpec[];
+}
+
+/** Read an operational dataset's OLTP Destination config (null if unset). */
+export function useDatasetDestination(datasetId: number | null, enabled = true) {
+  return useQuery({
+    queryKey: [...datasetKeys.detail(datasetId!), 'destination'],
+    queryFn: async () => {
+      const r = await api.get<{ dataset_id: number; destination: DatasetDestination | null }>(
+        `/datasets/${datasetId}/destination`,
+      );
+      return r.data.destination;
+    },
+    enabled: datasetId !== null && enabled,
+  });
+}
+
+/** Provision (create-new) or bind the OLTP store for an operational dataset. */
+export function useProvisionDestination() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ datasetId, ...body }: ProvisionDestinationInput) => {
+      const r = await api.post(`/datasets/${datasetId}/destination`, {
+        kind: 'google_sheets',
+        ...body,
+      });
+      return r.data as {
+        dataset_id: number;
+        mode: string;
+        destination_datasource_id: number;
+        spreadsheet_id: string;
+        spreadsheet_url?: string;
+        managed: boolean;
+        tables: number[];
+      };
+    },
+    onSuccess: (_d, { datasetId }) => {
+      queryClient.invalidateQueries({ queryKey: [...datasetKeys.detail(datasetId), 'destination'] });
+      queryClient.invalidateQueries({ queryKey: datasetKeys.tables(datasetId) });
+      queryClient.invalidateQueries({ queryKey: datasetKeys.detail(datasetId) });
     },
   });
 }

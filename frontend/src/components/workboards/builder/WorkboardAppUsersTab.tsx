@@ -44,6 +44,8 @@ import {
   normalizeAppUserRole,
 } from './appUserRoles';
 import { MultiColumnPicker, SingleColumnPicker } from './BuilderValueControls';
+import { ensureLayout } from './types';
+import { isPrivilegedAppRole, reachableScreenCount } from './roleScreenAccess';
 import { useI18n } from '@/providers/LanguageProvider';
 
 interface Props {
@@ -634,6 +636,25 @@ export default function WorkboardAppUsersTab({ workboard }: Props) {
     return next;
   }, [users]);
 
+  // Advisory pre-publish check: which defined app-user roles can reach ZERO
+  // screens (a screen that is both nav-visible AND RLS-granted). owner/admin are
+  // privileged (see everything) so only user/custom roles can lock out. Live
+  // Preview bypasses the access gate, so the author never notices — surface it.
+  const roleLockouts = useMemo(() => {
+    const layout = ensureLayout(workboard.layout_json);
+    if ((layout.screens || []).length === 0) return [] as string[];
+    const seen = new Map<string, string>(); // lowered role -> representative label
+    for (const u of users) {
+      const norm = normalizeAppUserRole(u.role);
+      if (!norm || isPrivilegedAppRole(norm)) continue;
+      const key = norm.toLowerCase();
+      if (!seen.has(key)) seen.set(key, u.role || norm);
+    }
+    return Array.from(seen.entries())
+      .filter(([key]) => reachableScreenCount(layout, key) === 0)
+      .map(([, raw]) => raw);
+  }, [users, workboard.layout_json]);
+
   return (
     <div className="flex h-full flex-col bg-surface-0">
       <div className="flex items-center gap-3 border-b border-[rgb(var(--border-line))] bg-surface-1 px-4 py-2.5">
@@ -676,6 +697,24 @@ export default function WorkboardAppUsersTab({ workboard }: Props) {
             datasetId={workboard.dataset_id}
             issues={accessIssues}
           />
+        )}
+
+        {roleLockouts.length > 0 && (
+          <div className="mb-4 rounded-md border border-warning/40 bg-warning/5 p-3 text-caption text-text-secondary">
+            <div className="flex items-start gap-2">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-warning" />
+              <div>
+                <div className="font-medium text-text-primary">
+                  {t('workboards.users.roleLockout.title')}
+                </div>
+                <p className="mt-1">
+                  {t('workboards.users.roleLockout.description', {
+                    roles: roleLockouts.map((r) => formatAppUserRoleLabel(r, t)).join(', '),
+                  })}
+                </p>
+              </div>
+            </div>
+          </div>
         )}
 
         {ownersUsingDefaultPin.length > 0 && (

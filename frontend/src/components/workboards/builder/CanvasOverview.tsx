@@ -23,6 +23,8 @@ import {
   Check,
   ClipboardEdit,
   Database,
+  Eye,
+  EyeOff,
   FileText,
   FolderInput,
   FolderPlus,
@@ -84,6 +86,8 @@ interface Props {
   /** Reorder by ABSOLUTE indices into the flat ``screens`` array. */
   onReorderScreens: (fromIdx: number, toIdx: number) => void;
   onDeleteScreen: (id: string) => void;
+  /** Toggle a screen's ``show_in_nav`` (hide/show it in the app sidebar). */
+  onToggleNav?: (id: string) => void;
   onCreateGroup: (label: string) => void;
   onRenameGroup: (id: string, label: string) => void;
   onDeleteGroup: (id: string) => void;
@@ -192,6 +196,7 @@ export default function CanvasOverview({
   onAddScreen,
   onReorderScreens,
   onDeleteScreen,
+  onToggleNav,
   onCreateGroup,
   onRenameGroup,
   onDeleteGroup,
@@ -821,6 +826,31 @@ export default function CanvasOverview({
                   >
                     <ArrowDown className="h-3.5 w-3.5" />
                   </button>
+                  {canEdit && onToggleNav && (
+                    <button
+                      type="button"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        onToggleNav(s.id);
+                      }}
+                      className={`rounded p-1 hover:bg-surface-2 ${
+                        s.show_in_nav === false
+                          ? 'text-warning hover:text-warning'
+                          : 'text-text-tertiary hover:text-text-primary'
+                      }`}
+                      title={
+                        s.show_in_nav === false
+                          ? t('workboards.canvas.showInSidebar')
+                          : t('workboards.canvas.hideFromSidebar')
+                      }
+                    >
+                      {s.show_in_nav === false ? (
+                        <EyeOff className="h-3.5 w-3.5" />
+                      ) : (
+                        <Eye className="h-3.5 w-3.5" />
+                      )}
+                    </button>
+                  )}
                   {canEdit && (
                   <button
                     type="button"

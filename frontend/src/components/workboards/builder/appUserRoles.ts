@@ -18,7 +18,7 @@ function builtInRoleOptions(t?: Translate) {
       label: label('workboards.roles.admin', 'Admin'),
       description: label(
         'workboards.roles.adminDescription',
-        'Operations admin; data scope is controlled by mini-app RLS and user hierarchy.',
+        'App manager; sees every screen and every row, bypassing role/RLS limits (like Owner).',
       ),
     },
     {

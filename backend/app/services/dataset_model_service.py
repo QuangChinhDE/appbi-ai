@@ -1708,6 +1708,16 @@ def _sync_dataset_model_structure(
     if not dataset_obj:
         raise ValueError(f"Dataset {dataset_id} not found")
 
+    # OLTP branch: an OPERATIONAL (Workboard) dataset runs LIVE and does NOT use a
+    # BI semantic model — runtime reads/writes/RLS go through LiveQueryService +
+    # rls_service, never the SemanticExplore graph. So skip model generation/sync
+    # for it (this is the single chokepoint → covers /generate-model, the drift
+    # self-heal, and any direct caller). Keeps the operational branch independent
+    # of the reporting (OLAP) machinery.
+    if str(getattr(dataset_obj, "purpose", None) or "reporting").strip().lower() == "operational":
+        logger.info("[model] skip semantic-model sync for dataset %s (operational — OLTP/live branch)", dataset_id)
+        return {"skipped": True, "reason": "operational", "views_created": 0, "views_updated": 0, "explores_created": 0}
+
     tables: List[DatasetTable] = (
         db.query(DatasetTable)
         .filter(DatasetTable.dataset_id == dataset_id)

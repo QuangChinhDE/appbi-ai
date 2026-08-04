@@ -1679,9 +1679,26 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
     </div>
   ) : null;
 
+  /**
+   * Does this surface offer PDF export?
+   *
+   * OFF for the EMBED surface (2026-08-04, DA report: export is broken there).
+   * An embed link — the `/embed/emb_…` URL that POST
+   * /integrations/embed/resolve mints, plus any manual iframe of
+   * `/embed/<token>` — is a report living inside somebody else's app, where a
+   * half-working button is worse than none: the host has its own chrome and its
+   * viewers cannot be told "use the public link instead".
+   *
+   * The public `/d/<token>` surface keeps its Export button.
+   *
+   * Set this back to `true` once export works when embedded — the feature is
+   * still wired underneath, only the entry point is hidden.
+   */
+  const exportEnabledOnThisSurface = !isEmbed;
+
   // ── Shared masthead pieces (used by BOTH the TOP and LEFT layouts) ──
   // Extracted so the LEFT app-shell can reuse them without divergence.
-  const exportButtonEl = (
+  const exportButtonEl = !exportEnabledOnThisSurface ? null : (
     <Button
       variant="secondary"
       size="sm"
@@ -2251,6 +2268,7 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
                 </p>
               )}
             </div>
+            {exportEnabledOnThisSurface && (
             <div className="ml-auto shrink-0">
               <Button
                 variant="secondary"
@@ -2271,6 +2289,7 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
                 </span>
               </Button>
             </div>
+            )}
           </div>
 
           {/* Row 2 — page tabs (own row), rendered as a segmented set of
@@ -2625,8 +2644,10 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
         )}
       </main>
 
+      {/* Belt and braces: with export hidden on this surface the dialog must not
+          be reachable at all, not even by a stale state flag. */}
       <ExportPdfDialog
-        isOpen={isExportDialogOpen}
+        isOpen={isExportDialogOpen && exportEnabledOnThisSurface}
         onClose={() => { if (!isExportingPdf) setIsExportDialogOpen(false); }}
         pages={dashboardPages.map((p) => ({ id: p.id, name: p.name }))}
         isExporting={isExportingPdf}

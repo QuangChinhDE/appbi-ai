@@ -37,9 +37,10 @@ import {
   usePrepareDashboardHtmlImportDraft,
   usePreviewDashboardHtmlImportSource,
   useValidateDashboardHtmlImportPlans,
+  useImportDashboardSnapshot,
 } from '@/hooks/use-dashboards';
 import { useDatasets, useDatasetTables, useTablePreview } from '@/hooks/use-datasets';
-import { detectEmbeddedMultiPageImportHtml, summarizeImportedDashboardHtml } from '@/lib/dashboard-html-import';
+import { detectDashboardSnapshotHtml, detectEmbeddedMultiPageImportHtml, summarizeImportedDashboardHtml } from '@/lib/dashboard-html-import';
 import { toast } from '@/lib/toast';
 import { useI18n } from '@/providers/LanguageProvider';
 import type {
@@ -145,6 +146,13 @@ export function DashboardHtmlImportModal({
   const [datasetPrepError, setDatasetPrepError] = useState<string | null>(null);
   const [validationFailed, setValidationFailed] = useState(false);
 
+  /** One-click verbatim import path. Set when a loaded HTML file is an AppBI
+   * snapshot (exported via "Export HTML"). Bypasses the whole analyze/validate
+   * wizard — the embedded spec is rebuilt row-for-row on the server. */
+  const [snapshotFile, setSnapshotFile] = useState<File | null>(null);
+  const [snapshotInfo, setSnapshotInfo] = useState<{ name: string | null; chartCount: number } | null>(null);
+  const importSnapshotMutation = useImportDashboardSnapshot();
+
   const effectiveDatasetId = draftDatasetId ?? selectedDatasetId;
 
   const { data: datasets = [] } = useDatasets(0, 200);
@@ -195,6 +203,8 @@ export function DashboardHtmlImportModal({
       setPreparingDraft(false);
       setDatasetPrepError(null);
       setValidationFailed(false);
+      setSnapshotFile(null);
+      setSnapshotInfo(null);
       pendingFocusRevalidationRef.current = false;
       analyzeMutation.reset();
       analyzeBatchMutation.reset();
@@ -264,9 +274,20 @@ export function DashboardHtmlImportModal({
         setHtmlDocuments([]);
         setBatchAnalysis(null);
         setActiveBatchDocumentId('');
+        // One-click path: an AppBI-exported snapshot rebuilds verbatim, no wizard.
+        const snapshot = detectDashboardSnapshotHtml(text);
+        if (snapshot.isSnapshot) {
+          setSnapshotFile(file);
+          setSnapshotInfo({ name: snapshot.name, chartCount: snapshot.chartCount });
+        } else {
+          setSnapshotFile(null);
+          setSnapshotInfo(null);
+        }
         toast.success(t('dashboards.htmlImport.loadedHtmlFrom', { name: file.name }));
         return;
       }
+      setSnapshotFile(null);
+      setSnapshotInfo(null);
 
       const loadedDocuments = await Promise.all(files.map(async (file, index) => ({
         documentId: `html-${Date.now()}-${index + 1}`,
@@ -1124,6 +1145,22 @@ export function DashboardHtmlImportModal({
     }
   };
 
+  const handleImportSnapshot = async () => {
+    if (!snapshotFile) return;
+    try {
+      const created = await importSnapshotMutation.mutateAsync({
+        file: snapshotFile,
+        dashboardName: buildName.trim() || undefined,
+      });
+      toast.success(t('dashboards.htmlImport.snapshotImported', { name: created.name }));
+      onBuilt?.({ dashboard_id: created.id } as DashboardHtmlImportBuiltResult);
+      onClose();
+      router.push(`/dashboards/${created.id}`);
+    } catch (error) {
+      toast.error(getApiErrorMessage(error, t('dashboards.htmlImport.snapshotImportError')));
+    }
+  };
+
   const togglePlan = (blockId: string) => {
     setIncludedBlockIds((current) => (
       current.includes(blockId)
@@ -1209,6 +1246,50 @@ export function DashboardHtmlImportModal({
               </div>
             </div>
           </div>
+
+          {snapshotInfo && snapshotFile && (
+            <div className="rounded-xl border border-success/40 bg-success/10 p-4">
+              <div className="flex items-start gap-3">
+                <div className="rounded-lg bg-success/20 p-2 text-success">
+                  <CheckCircle2 className="h-4 w-4" />
+                </div>
+                <div className="min-w-0 flex-1 space-y-2">
+                  <p className="text-sm font-semibold text-text-primary">
+                    {t('dashboards.htmlImport.snapshotDetectedTitle')}
+                  </p>
+                  <p className="text-caption text-text-tertiary">
+                    {t('dashboards.htmlImport.snapshotDetectedDescription', {
+                      name: snapshotInfo.name || t('dashboards.htmlImport.snapshotUntitled'),
+                      count: snapshotInfo.chartCount,
+                    })}
+                  </p>
+                  <div className="flex flex-wrap items-center gap-2 pt-1">
+                    <Button
+                      variant="primary"
+                      size="sm"
+                      leadingIcon={<Wand2 className="h-3.5 w-3.5" />}
+                      onClick={() => void handleImportSnapshot()}
+                      loading={importSnapshotMutation.isPending}
+                      disabled={importSnapshotMutation.isPending}
+                    >
+                      {t('dashboards.htmlImport.snapshotImportButton')}
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => {
+                        setSnapshotFile(null);
+                        setSnapshotInfo(null);
+                      }}
+                      disabled={importSnapshotMutation.isPending}
+                    >
+                      {t('dashboards.htmlImport.snapshotUseGuided')}
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
 
           <FieldGroup
             label={t('dashboards.htmlImport.dashboardHtmlLabel')}

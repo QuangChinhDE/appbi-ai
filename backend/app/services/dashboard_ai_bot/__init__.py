@@ -35,6 +35,18 @@ from app.services.dashboard_ai_bot.insight_pack import (
 from app.services.dashboard_ai_bot.tool_context import ToolContext
 
 
+# Kwargs the Thinking variant takes that Normal does not. The dispatcher strips
+# these so callers need not branch on depth.
+#
+# Module-level (not a local) on purpose: this is the CONTRACT between the
+# dispatcher and the two implementations, and a test asserts that everything
+# Thinking accepts minus this list also exists on Normal. Keeping it local is
+# how `run_ref` shipped to only one depth and crashed the first real lookup.
+_NORMAL_DROP: tuple[str, ...] = (
+    "briefing", "state", "web_search_enabled", "guide_mode",
+)
+
+
 def _normalize_mode(mode: str | None) -> str:
     """Coerce an explicit mode. Unknown/empty → "auto" (let the router decide)."""
     m = (mode or "").strip().lower()
@@ -101,7 +113,6 @@ async def run_agent_stream(
     # Default: normal mode. Strip kwargs the normal implementation doesn't
     # accept so the FE doesn't have to special-case based on mode.
     # web_search is a Thinking-only (domain-research) capability.
-    _NORMAL_DROP = ("briefing", "state", "web_search_enabled", "guide_mode")
     normal_kwargs = {k: v for k, v in kwargs.items() if k not in _NORMAL_DROP}
     from app.services.dashboard_ai_bot.normal.agent import (
         run_agent_stream as _normal_run,

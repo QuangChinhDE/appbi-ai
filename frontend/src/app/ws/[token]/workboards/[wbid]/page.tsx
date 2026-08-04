@@ -35,6 +35,7 @@ import {
   Download,
   Factory,
   Loader2,
+  Lock,
   LogOut,
   MapPin,
   Menu,
@@ -260,6 +261,8 @@ interface LookupOption {
   lat?: unknown;
   lng?: unknown;
   filter?: unknown;
+  // Multi-column copy: extra columns pulled from this row (source_column → value).
+  copy?: Record<string, unknown>;
 }
 
 interface RuntimeFormSpecExtras {
@@ -449,7 +452,9 @@ export default function WorkspaceWorkboardPage() {
         if (!alive) return;
         const apiError = err as ApiErrorLike;
         if (apiError.response?.status === 401) {
-          router.push(`/ws/${token}`);
+          // Keep the app context so re-login returns HERE, not this workspace's
+          // menu (a multi-app Cổng would otherwise drop the user on another app).
+          router.push(`/ws/${token}?next=${workboardId}`);
           return;
         }
         setError(
@@ -569,13 +574,25 @@ export default function WorkspaceWorkboardPage() {
   }, [activeScreenId, shell]);
 
   if (error) {
+    // "Not published yet" is an expected state (the public link serves the
+    // PUBLISHED snapshot, while the builder's Live Preview serves the draft) —
+    // not a crash. Show it as a calm, actionable notice instead of a red error.
+    const notReady = /chưa\s+(?:được\s+)?xuất bản|not\s+.*publish/i.test(error);
     return (
       <div className="flex min-h-screen items-center justify-center bg-slate-50 p-6">
-        <div className="max-w-md rounded-xl border border-rose-200 bg-white p-6 shadow-sm">
-          <h1 className="text-base font-semibold text-rose-600">
-            {rt('workboards.runtime.errorTitle')}
+        <div
+          className={`max-w-md rounded-xl border bg-white p-6 shadow-sm ${
+            notReady ? 'border-amber-200' : 'border-rose-200'
+          }`}
+        >
+          <h1 className={`text-base font-semibold ${notReady ? 'text-amber-600' : 'text-rose-600'}`}>
+            {notReady ? 'Ứng dụng chưa sẵn sàng' : rt('workboards.runtime.errorTitle')}
           </h1>
-          <p className="mt-2 text-sm text-slate-700">{error}</p>
+          <p className="mt-2 text-sm text-slate-700">
+            {notReady
+              ? 'Ứng dụng này chưa được xuất bản nên chưa thể mở bằng link công khai. Người tạo app cần bấm “Xuất bản” trong trình chỉnh sửa; sau đó tải lại trang.'
+              : error}
+          </p>
           <button
             onClick={() => router.push(`/ws/${token}`)}
             className="mt-4 text-sm text-blue-600 hover:underline"
@@ -591,6 +608,38 @@ export default function WorkspaceWorkboardPage() {
     return (
       <div className="flex min-h-screen items-center justify-center bg-slate-50">
         <Loader2 className="h-7 w-7 animate-spin text-slate-400" />
+      </div>
+    );
+  }
+
+  // The app loaded but this app-user's role can see NO screen (RLS/visibility
+  // grants none). Show a clear notice instead of a blank app + silent 403s —
+  // the confusing "public opens but is empty/broken" state.
+  if (shell.screens.length === 0) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-slate-50 p-6">
+        <div className="max-w-md rounded-xl border border-amber-200 bg-white p-6 text-center shadow-sm">
+          <Lock className="mx-auto h-8 w-8 text-amber-400" />
+          <h1 className="mt-3 text-base font-semibold text-slate-800">
+            Chưa có màn hình nào cho bạn
+          </h1>
+          <p className="mt-2 text-sm text-slate-600">
+            Tài khoản của bạn chưa được cấp quyền xem màn hình nào trong ứng dụng
+            này. Vui lòng liên hệ quản trị viên của app.
+          </p>
+          <button
+            onClick={async () => {
+              try {
+                await workspaceApi.logout(token);
+              } finally {
+                router.push(`/ws/${token}`);
+              }
+            }}
+            className="mt-4 text-sm text-blue-600 hover:underline"
+          >
+            {rt('workboards.runtime.logout')}
+          </button>
+        </div>
       </div>
     );
   }
@@ -613,11 +662,15 @@ export default function WorkspaceWorkboardPage() {
   setRuntimeMediaCap(shell.media_max_kb);
   const rootThemeStyle = {
     ...experienceThemeVars(exp, theme, mode),
-    ...backgroundStyle(theme.background, 'var(--wb-bg)'),
     // Semantic tokens from the resolved experience — additive CSS vars that
     // components can adopt incrementally; `accent` already reads primary above.
   } as React.CSSProperties;
-  if (exp?.explicit && exp.overrides?.shell?.background) {
+  if (exp?.explicit) {
+    // An explicit Experience theme OWNS the whole app background. Never apply the
+    // legacy branding background (a gradient/image from the old ThemeSection) on
+    // a v1 board — it would paint OVER --wb-bg and fight the chosen theme (the
+    // "green gradient bleeding through a dark theme" bug). The Experience's own
+    // shell.background controls it; default to the theme background color.
     const shellBackground = exp.shell.background;
     rootThemeStyle.background =
       shellBackground === 'custom'
@@ -628,6 +681,9 @@ export default function WorkspaceWorkboardPage() {
             ? 'var(--wb-surface)'
             : 'var(--wb-bg)';
     rootThemeStyle.backgroundImage = 'none';
+  } else {
+    // Legacy boards (no Experience) keep their branding background verbatim.
+    Object.assign(rootThemeStyle, backgroundStyle(theme.background, 'var(--wb-bg)'));
   }
 
   // ── Layout decision ───────────────────────────────────────────────────
@@ -734,7 +790,9 @@ export default function WorkspaceWorkboardPage() {
           try {
             await workspaceApi.logout(token);
           } finally {
-            router.push(`/ws/${token}`);
+            // Return to THIS app's login (via ?next), not the workspace menu —
+            // otherwise a multi-app Cổng lands the user on a different mini-app.
+            router.push(`/ws/${token}?next=${workboardId}`);
           }
         }}
         onBackToMenu={() => router.push(`/ws/${token}`)}
@@ -1153,7 +1211,10 @@ function PushToggle({
       disabled={state === 'busy' || state === 'on'}
       title={state === 'on' ? rt('workboards.runtime.notificationsOnTitle') : rt('workboards.runtime.enableNotificationsTitle')}
       className="flex items-center gap-1 rounded-md border px-2 py-1 text-xs font-medium hover:bg-slate-50 disabled:opacity-70"
-      style={{ borderColor: state === 'on' ? accent : '#e2e8f0', color: state === 'on' ? accent : '#475569' }}
+      style={{
+        borderColor: state === 'on' ? accent : 'var(--wb-border)',
+        color: state === 'on' ? accent : 'var(--wb-text-muted)',
+      }}
     >
       {state === 'busy' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Bell className="h-3.5 w-3.5" />}
       <span className="hidden sm:inline">
@@ -1734,8 +1795,13 @@ function ScreenContainer({
       </div>
     );
   }
-  const presentation =
-    presentationOverride === undefined ? data.presentation : presentationOverride;
+  // One shared system concept: per-screen presentation overrides are disabled —
+  // every screen renders from the single global Experience Studio
+  // (layout.experience). Any legacy per-screen `data.presentation` (and the
+  // builder-preview bridge's presentationOverride) is intentionally ignored so
+  // the whole mini-app stays visually consistent.
+  void presentationOverride;
+  const presentation: ScreenPresentation | null = null;
   const handleTableAction = async (
     action: ScreenAction,
     row: Record<string, unknown>,
@@ -2922,6 +2988,9 @@ function FormScreen({
                             return n;
                           });
                       }}
+                      onCopyFill={(patch) =>
+                        setValues((curr) => ({ ...curr, ...patch }))
+                      }
                     />
                   </div>
                 );
@@ -3240,6 +3309,7 @@ function Field({
   lookups,
   value,
   onChange,
+  onCopyFill,
   evalCtx,
   autoNumberSet,
   autoNumberMeta,
@@ -3250,6 +3320,9 @@ function Field({
   lookups: Record<string, LookupOption[]>;
   value: unknown;
   onChange: (v: unknown) => void;
+  /** Merge several sibling field values at once — used when a lookup selection
+   * auto-fills other form fields (copy_columns mode='fill'). */
+  onCopyFill?: (patch: Record<string, unknown>) => void;
   evalCtx?: RuntimeEvalCtx;
   autoNumberSet?: Set<string>;
   autoNumberMeta?: Record<string, { scope_columns?: string[]; date_column?: string | null; missing_scope_behavior?: string }>;
@@ -3301,6 +3374,32 @@ function Field({
       : (lookupOpts as LookupOption[]).filter((o) => String(o.filter) === String(parentVal))
     : (lookupOpts as LookupOption[]);
 
+  // Multi-column copy (lookup/select): on select, fill sibling fields (mode
+  // 'fill') and/or surface a read-only reference panel (mode 'view') from the
+  // picked row's carried `copy` values.
+  const copyCols =
+    (((field.lookup as Record<string, unknown> | undefined)?.copy_columns as
+      | Array<{ source_column: string; mode?: string; target_field?: string | null; label?: string | null }>
+      | undefined) ?? []).filter((c) => c && c.source_column);
+  const selectedOpt =
+    copyCols.length > 0
+      ? (effectiveOpts as LookupOption[]).find((o) => String(o.value) === stringValue)
+      : undefined;
+  const applyCopyFill = (picked: string) => {
+    if (!copyCols.length || !onCopyFill) return;
+    const opt = (effectiveOpts as LookupOption[]).find((o) => String(o.value) === String(picked));
+    const copied = opt?.copy;
+    if (!copied) return;
+    const patch: Record<string, unknown> = {};
+    for (const cc of copyCols) {
+      if ((cc.mode || 'fill') === 'fill' && cc.target_field) {
+        patch[cc.target_field] = copied[cc.source_column];
+      }
+    }
+    if (Object.keys(patch).length) onCopyFill(patch);
+  };
+  const viewCopies = copyCols.filter((cc) => cc.mode === 'view');
+
   const unit = field.unit ? String(field.unit) : '';
   const stringValue = value == null ? '' : String(value);
   const baseInput =
@@ -3335,39 +3434,62 @@ function Field({
           {help || rt('workboards.runtime.agree')}
         </label>
       ) : widget === 'select' || widget === 'lookup' ? (
-        shouldShowSearch(field.searchable, effectiveOpts.length) ? (
-          <SearchableSelect
-            value={stringValue}
-            onChange={(v) => onChange(v)}
-            options={effectiveOpts as LookupOption[]}
-            disabled={readonly}
-            placeholder={
-              filterByField && (parentVal == null || parentVal === '')
-                ? rt('workboards.runtime.selectParentFirst')
-                : rt('workboards.runtime.selectPlaceholder')
-            }
-            allowSearch
-          />
-        ) : (
-          <select
-            value={stringValue}
-            onChange={(e) => onChange(e.target.value)}
-            disabled={readonly}
-            required={required}
-            className={baseInput}
-          >
-            <option value="">
-              {filterByField && (parentVal == null || parentVal === '')
-                ? rt('workboards.runtime.selectParentFirst')
-                : rt('workboards.runtime.selectPlaceholder')}
-            </option>
-            {effectiveOpts.map((opt) => (
-              <option key={String(opt.value)} value={String(opt.value)}>
-                {opt.label}
+        <>
+          {shouldShowSearch(field.searchable, effectiveOpts.length) ? (
+            <SearchableSelect
+              value={stringValue}
+              onChange={(v) => {
+                onChange(v);
+                applyCopyFill(v);
+              }}
+              options={effectiveOpts as LookupOption[]}
+              disabled={readonly}
+              placeholder={
+                filterByField && (parentVal == null || parentVal === '')
+                  ? rt('workboards.runtime.selectParentFirst')
+                  : rt('workboards.runtime.selectPlaceholder')
+              }
+              allowSearch
+            />
+          ) : (
+            <select
+              value={stringValue}
+              onChange={(e) => {
+                onChange(e.target.value);
+                applyCopyFill(e.target.value);
+              }}
+              disabled={readonly}
+              required={required}
+              className={baseInput}
+            >
+              <option value="">
+                {filterByField && (parentVal == null || parentVal === '')
+                  ? rt('workboards.runtime.selectParentFirst')
+                  : rt('workboards.runtime.selectPlaceholder')}
               </option>
-            ))}
-          </select>
-        )
+              {effectiveOpts.map((opt) => (
+                <option key={String(opt.value)} value={String(opt.value)}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+          )}
+          {viewCopies.length > 0 && selectedOpt?.copy && (
+            <div className="mt-1.5 rounded-md border border-slate-200 bg-slate-50/70 p-2">
+              {viewCopies.map((cc) => (
+                <div key={cc.source_column} className="flex justify-between gap-3 py-0.5 text-xs">
+                  <span className="shrink-0 text-slate-500">{cc.label || cc.source_column}</span>
+                  <span className="min-w-0 truncate text-right font-medium text-slate-700">
+                    {selectedOpt.copy?.[cc.source_column] == null ||
+                    selectedOpt.copy?.[cc.source_column] === ''
+                      ? '—'
+                      : String(selectedOpt.copy[cc.source_column])}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </>
       ) : widget === 'date' ? (
         <input
           type="date"
@@ -3546,6 +3668,12 @@ function Field({
 
       {widget !== 'checkbox' && help && (
         <p className="text-xs text-slate-500">{help}</p>
+      )}
+      {widget === 'enum_list' && !!field.split_to_rows && (
+        <p className="flex items-center gap-1 text-xs text-teal-600">
+          <ScanLine className="h-3 w-3 shrink-0" />
+          Mỗi lựa chọn sẽ được lưu thành một dòng riêng khi bấm lưu.
+        </p>
       )}
       {computedFromDataset && (
         <p className="text-xs text-slate-500 italic">
@@ -4243,7 +4371,7 @@ function VideoField({
 // app cap; the shell overrides it (storage-aware — 35KB for Sheets) via
 // setRuntimeMediaCap() so the picker rejects oversize before the round-trip.
 // The BE remains the authoritative enforcer.
-let FILE_HARD_CAP_KB = 1024;
+let FILE_HARD_CAP_KB = 10240;
 function setRuntimeMediaCap(kb?: number) {
   if (typeof kb === 'number' && kb > 0) FILE_HARD_CAP_KB = kb;
 }
@@ -7559,6 +7687,38 @@ function TableScreen({
     },
     [formatRules],
   );
+  // Per-row edit lock (row_lock). A row is "locked" when `lock_if` is truthy
+  // for its values; a locked row is read-only + non-deletable UNLESS the
+  // viewer's role is allow-listed (owner always bypasses). This is advisory —
+  // the server re-checks in screen_runtime._enforce_row_lock — but it drives
+  // the UX (disable inputs, hide delete, show a lock hint).
+  const rowLock = tv.row_lock || null;
+  const lockBypass = useMemo(() => {
+    const role = (viewerRole || '').toLowerCase();
+    if (role === 'owner') return true;
+    return (rowLock?.editable_by_roles || []).map((r) => r.toLowerCase()).includes(role);
+  }, [viewerRole, rowLock]);
+  const isRowLocked = useCallback(
+    (row: Record<string, unknown>): boolean => {
+      if (!rowLock?.lock_if || lockBypass) return false;
+      try {
+        return evaluateTruthy(
+          rowLock.lock_if,
+          { row, app_user: { role: viewerRole || '' }, shared: {} },
+          false,
+        );
+      } catch {
+        return false;
+      }
+    },
+    [rowLock, lockBypass, viewerRole],
+  );
+  const lockDelete = rowLock?.lock_delete !== false;
+  // Detail panel edits target one existing row; lock it too (create mode = new
+  // row, never locked). Server re-checks on save regardless.
+  const panelLocked =
+    panelMode === 'edit' && panelDetail ? isRowLocked(panelDetail.row) : false;
+
   const detailPanel = tv.detail_panel;
   const panelEnabled = !(detailPanel && detailPanel.enabled === false);
 
@@ -8693,6 +8853,7 @@ function TableScreen({
               const rowKey = tableRowKey(row, pkCols);
               const status = rowStatus[rowKey];
               const fmt = rowFormat(row);
+              const locked = isRowLocked(row);
               // Whole-row tint only when the rule targets no specific columns.
               const rowTint = fmt && !fmt.columns ? fmt.tone : null;
               return (
@@ -8725,7 +8886,7 @@ function TableScreen({
                     if (mergeHiddenCells.has(`${c}:${idx}`)) return null;
                     const rowspan = mergeByColRow.get(`${c}:${idx}`);
                     const derived = derivedCols.has(c);
-                    const editable = editableCols.has(c) && !derived;
+                    const editable = editableCols.has(c) && !derived && !locked;
                     const cellValue = row[c];
                     const format = formatByCol[c] ?? null;
                     // Cell-scoped conditional format (rule named this column).
@@ -8772,6 +8933,11 @@ function TableScreen({
                             !
                           </span>
                         ) : null}
+                        {locked ? (
+                          <span title="Dòng đã khóa" className="inline-flex text-slate-400">
+                            <Lock className="h-3.5 w-3.5" aria-label="Dòng đã khóa" />
+                          </span>
+                        ) : null}
                         {rowActions.map((a) => {
                           const style = a.style || 'primary';
                           const cls =
@@ -8799,7 +8965,7 @@ function TableScreen({
                             </button>
                           );
                         })}
-                        {allowDelete && pkCols.length > 0 ? (
+                        {allowDelete && pkCols.length > 0 && !(locked && lockDelete) ? (
                           <button
                             type="button"
                             onClick={() => void deleteRow(row)}
@@ -9060,7 +9226,14 @@ function TableScreen({
                     detail={panelDetail}
                     draft={panelDraft}
                     setDraft={setPanelDraft}
+                    locked={panelLocked}
                   />
+                  {panelLocked ? (
+                    <div className="mt-3 flex items-center gap-2 rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-500">
+                      <Lock className="h-3.5 w-3.5 shrink-0" />
+                      <span>{rowLock?.message?.trim() || 'Dòng này đã bị khóa, không thể chỉnh sửa.'}</span>
+                    </div>
+                  ) : null}
                   {panelMode === 'edit' && rowActions.length > 0 ? (
                     <div className="mt-5 border-t border-slate-200 pt-4">
                       <div className="mb-2 text-xs font-semibold uppercase text-slate-500">
@@ -9107,7 +9280,7 @@ function TableScreen({
                 </>
               ) : null}
             </div>
-            {panelDetail && (panelDetail.editable_columns || []).length > 0 && (
+            {panelDetail && (panelDetail.editable_columns || []).length > 0 && !panelLocked && (
               <div className="flex flex-col-reverse gap-2 border-t border-slate-200 px-5 py-3 sm:flex-row sm:items-center sm:justify-end">
                 <button
                   type="button"
@@ -9139,12 +9312,14 @@ function DetailPanelBody({
   detail,
   draft,
   setDraft,
+  locked = false,
 }: {
   detail: TableRowDetailResponse;
   draft: Record<string, unknown>;
   setDraft: React.Dispatch<React.SetStateAction<Record<string, unknown>>>;
+  locked?: boolean;
 }) {
-  const editableSet = new Set(detail.editable_columns || []);
+  const editableSet = locked ? new Set<string>() : new Set(detail.editable_columns || []);
   const computedNames = new Set(
     (detail.computed_columns || []).map((c) => String((c as Record<string, unknown>).name || '')),
   );

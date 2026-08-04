@@ -36,6 +36,15 @@ EventType = Literal[
     # the exploration tree live.
     "insight",
     "exploration_step",
+    # P1-02 — deterministic verification of the figures in the final answer:
+    # {coverage, total_numbers, matched, unmatched}. Emitted after the answer
+    # has streamed; it reports on the answer, it does not gate it.
+    "verification",
+    # Flow runtime (GĐ2/GĐ6): node lifecycle for the trace view, and the
+    # preview terminator carrying the run id + totals for the Studio panel.
+    "node_started",
+    "node_completed",
+    "preview_done",
 ]
 
 

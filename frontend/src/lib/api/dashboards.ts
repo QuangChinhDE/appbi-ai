@@ -67,6 +67,33 @@ export const dashboardApi = {
     await apiClient.delete(`/dashboards/${id}`);
   },
 
+  // Deep-clone a dashboard into an independent copy (own chart rows).
+  duplicate: async (id: number): Promise<Dashboard> => {
+    const response = await apiClient.post(`/dashboards/${id}/duplicate`);
+    return response.data;
+  },
+
+  // Download a re-importable HTML export (embedded verbatim snapshot).
+  exportHtml: async (id: number): Promise<Blob> => {
+    const response = await apiClient.get(`/dashboards/${id}/export-html`, {
+      responseType: 'blob',
+    });
+    return response.data;
+  },
+
+  // One-click import of an AppBI-exported HTML file (verbatim snapshot).
+  importSnapshot: async (file: File, dashboardName?: string): Promise<Dashboard> => {
+    const formData = new FormData();
+    formData.append('file', file);
+    if (dashboardName?.trim()) {
+      formData.append('dashboard_name', dashboardName.trim());
+    }
+    const response = await apiClient.post('/dashboards/import-snapshot', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    });
+    return response.data;
+  },
+
   // Dashboard perf #5 — force-rebuild the materialized snapshots for every
   // dataset this dashboard reads. Returns { as_of } for the "Số tính đến" label.
   // Async now: kicks a BACKGROUND rebuild and returns immediately with

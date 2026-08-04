@@ -10,6 +10,7 @@ that surface.
 from __future__ import annotations
 
 import csv as csv_module
+import html as html_module
 import io
 import json
 import re
@@ -30,6 +31,7 @@ from app.models.dataset import Dataset, DatasetTable
 from app.models.models import (
     Chart,
     ChartMetadata,
+    ChartParameter,
     ChartType,
     DashboardChart,
     DataSource,
@@ -4456,3 +4458,367 @@ def ai_fix_chart_plan(
         fields.append(col)
     fixed["source_fields_used"] = list(dict.fromkeys(fields))
     return fixed
+
+
+# ---------------------------------------------------------------------------
+# Verbatim dashboard snapshot (Duplicate + Export/Import round-trip)
+#
+# Unlike the fuzzy HTML analyzer above, a "dashboard snapshot" captures the
+# LIVE dashboard structure exactly — each chart's chart_type + config +
+# dataset_table_id and each tile's layout — and rebuilds it row-for-row with
+# NO column matching and NO AI. This single core powers three features:
+#   * Duplicate   = serialize_dashboard_snapshot -> rebuild_dashboard_from_snapshot (in-process)
+#   * Export HTML = serialize_dashboard_snapshot -> export_dashboard_html
+#   * Import HTML = _extract_embedded_metadata -> rebuild_dashboard_from_snapshot
+# Scope is same-instance: the embedded dataset_table_ids must still resolve.
+# Cross-instance imports get a clear 422 rather than a silent mis-binding.
+# ---------------------------------------------------------------------------
+
+APPBI_SNAPSHOT_VERSION = "appbi-snapshot/v1"
+
+
+def is_dashboard_snapshot(embedded: Optional[Dict[str, Any]]) -> bool:
+    """True when an extracted embedded-metadata payload is an appbi snapshot."""
+    return (
+        isinstance(embedded, dict)
+        and str(embedded.get("version") or "").strip().lower() == APPBI_SNAPSHOT_VERSION
+    )
+
+
+def _serialize_chart_for_snapshot(chart: Chart) -> Dict[str, Any]:
+    """Capture a Chart definition verbatim (rendering + semantic surface)."""
+    chart_type = chart.chart_type.value if isinstance(chart.chart_type, ChartType) else str(chart.chart_type)
+    payload: Dict[str, Any] = {
+        "name": chart.name,
+        "description": chart.description,
+        "chart_type": chart_type,
+        "dataset_table_id": chart.dataset_table_id,
+        "config": chart.config or {},
+    }
+
+    meta = getattr(chart, "chart_meta", None)
+    if meta is not None:
+        payload["meta"] = {
+            "domain": meta.domain,
+            "intent": meta.intent,
+            "metrics": meta.metrics or [],
+            "dimensions": meta.dimensions or [],
+            "tags": meta.tags or [],
+        }
+
+    params = getattr(chart, "parameters", None) or []
+    if params:
+        payload["parameters"] = [
+            {
+                "parameter_name": p.parameter_name,
+                "parameter_type": p.parameter_type,
+                "column_mapping": p.column_mapping,
+                "default_value": p.default_value,
+                "description": p.description,
+            }
+            for p in params
+        ]
+    return payload
+
+
+def serialize_dashboard_snapshot(dashboard: Dashboard) -> Dict[str, Any]:
+    """Serialize a live dashboard into a portable, verbatim snapshot dict.
+
+    The dashboard must be loaded with its ``dashboard_charts`` (and each
+    tile's ``chart``) — ``DashboardService.get_by_id`` already eager-loads
+    that graph. No DB access happens here.
+    """
+    tiles: List[Dict[str, Any]] = []
+    for dc in dashboard.dashboard_charts or []:
+        widget_type = str(dc.widget_type or "chart").strip().lower() or "chart"
+        tile: Dict[str, Any] = {
+            "dashboard_chart_id": dc.id,
+            "widget_type": widget_type,
+            "widget_config": dc.widget_config or {},
+            "parameters": dc.parameters or {},
+            "layout": dc.layout or {},
+        }
+        if widget_type == "chart" and dc.chart is not None:
+            tile["chart"] = _serialize_chart_for_snapshot(dc.chart)
+        else:
+            tile["chart"] = None
+        tiles.append(tile)
+
+    return {
+        "version": APPBI_SNAPSHOT_VERSION,
+        "kind": "dashboard-snapshot",
+        "source_dashboard_id": dashboard.id,
+        "dashboard": {
+            "name": dashboard.name,
+            "description": dashboard.description,
+            "pages_config": dashboard.pages_config or [DEFAULT_DASHBOARD_PAGE],
+            "layout_mode": dashboard.layout_mode or "grid",
+            "canvas_config": dashboard.canvas_config or None,
+            "theme_config": dashboard.theme_config or None,
+            "filters_config": dashboard.filters_config or [],
+            "slicers_config": dashboard.slicers_config or [],
+            "slicer_cluster_layout": dashboard.slicer_cluster_layout or None,
+            "public_filters_config": dashboard.public_filters_config or [],
+        },
+        "charts": tiles,
+    }
+
+
+def export_dashboard_html(dashboard: Dashboard) -> str:
+    """Render a self-contained, re-importable HTML document for a dashboard.
+
+    The machine-readable snapshot lives in a
+    ``<script type="application/appbi-dashboard">`` tag (the same tag the
+    importer scans). The visible body is a lightweight, readable outline of
+    the pages and tiles — this is a round-trip carrier, not a pixel render.
+    """
+    snapshot = serialize_dashboard_snapshot(dashboard)
+    snapshot_json = json.dumps(snapshot, ensure_ascii=False, indent=2)
+
+    def esc(value: Any) -> str:
+        return html_module.escape(str(value if value is not None else ""))
+
+    pages = snapshot["dashboard"]["pages_config"] or [DEFAULT_DASHBOARD_PAGE]
+    tiles = snapshot["charts"]
+    tiles_by_page: Dict[str, List[Dict[str, Any]]] = {}
+    for tile in tiles:
+        layout = tile.get("layout") or {}
+        page_id = str(layout.get("pageId") or (pages[0].get("id") if pages else "page-1"))
+        tiles_by_page.setdefault(page_id, []).append(tile)
+
+    body_sections: List[str] = []
+    for page in pages:
+        page_id = str(page.get("id") or "page-1")
+        page_name = esc(page.get("name") or page_id)
+        rows: List[str] = []
+        for tile in tiles_by_page.get(page_id, []):
+            layout = tile.get("layout") or {}
+            chart = tile.get("chart")
+            if chart:
+                title = esc((layout.get("custom_title")) or chart.get("name") or "Chart")
+                kind = esc(chart.get("chart_type") or "CHART")
+                binding = f"dataset_table #{esc(chart.get('dataset_table_id'))}"
+            else:
+                title = esc((tile.get("widget_config") or {}).get("title") or tile.get("widget_type") or "Widget")
+                kind = esc(str(tile.get("widget_type") or "widget").upper())
+                binding = "—"
+            pos = (
+                f"x{esc(layout.get('x', 0))} y{esc(layout.get('y', 0))} "
+                f"w{esc(layout.get('w', 0))} h{esc(layout.get('h', 0))}"
+            )
+            rows.append(
+                "<tr>"
+                f"<td>{title}</td><td><code>{kind}</code></td>"
+                f"<td>{binding}</td><td class='pos'>{pos}</td>"
+                "</tr>"
+            )
+        table = (
+            "<table><thead><tr><th>Tile</th><th>Type</th>"
+            "<th>Data binding</th><th>Position</th></tr></thead>"
+            f"<tbody>{''.join(rows) or '<tr><td colspan=4>(empty)</td></tr>'}</tbody></table>"
+        )
+        body_sections.append(f"<section><h2>{page_name}</h2>{table}</section>")
+
+    name = esc(snapshot["dashboard"]["name"])
+    description = esc(snapshot["dashboard"]["description"])
+    return (
+        "<!DOCTYPE html>\n"
+        '<html lang="en">\n<head>\n<meta charset="utf-8" />\n'
+        f"<title>{name} — AppBI dashboard</title>\n"
+        "<style>"
+        "body{font-family:system-ui,-apple-system,'Segoe UI',sans-serif;margin:2rem;color:#1e293b;background:#f8fafc}"
+        "h1{margin:0 0 .25rem}p.desc{color:#64748b;margin:.25rem 0 1.5rem}"
+        ".note{background:#eef2ff;border:1px solid #c7d2fe;border-radius:8px;padding:.75rem 1rem;color:#3730a3;font-size:.9rem;margin-bottom:1.5rem}"
+        "section{margin-bottom:1.5rem}h2{font-size:1.05rem;border-bottom:2px solid #e2e8f0;padding-bottom:.35rem}"
+        "table{border-collapse:collapse;width:100%;font-size:.9rem}"
+        "th,td{border:1px solid #e2e8f0;padding:.4rem .6rem;text-align:left}"
+        "th{background:#f1f5f9}code{background:#f1f5f9;padding:.1rem .35rem;border-radius:4px}"
+        "td.pos{font-variant-numeric:tabular-nums;color:#64748b}"
+        "</style>\n</head>\n<body>\n"
+        f"<h1>{name}</h1>\n"
+        f"<p class='desc'>{description}</p>\n"
+        "<div class='note'>This file was exported from AppBI and can be re-imported to create a new "
+        "dashboard. The full definition is stored in the embedded snapshot below — you may edit "
+        "values inside that script tag, but keep it valid JSON.</div>\n"
+        f"{''.join(body_sections)}\n"
+        f'<script type="application/appbi-dashboard">\n{snapshot_json}\n</script>\n'
+        "</body>\n</html>\n"
+    )
+
+
+def rebuild_dashboard_from_snapshot(
+    db: Session,
+    *,
+    snapshot: Dict[str, Any],
+    current_user: User,
+    name_override: Optional[str] = None,
+) -> Dashboard:
+    """Rebuild a dashboard row-for-row from a verbatim snapshot.
+
+    No analyzer, no column matching: charts are recreated from the embedded
+    ``chart_type`` + ``config`` + ``dataset_table_id``. Each referenced
+    dataset table must exist in this instance and be viewable by the caller;
+    otherwise a ValueError (surfaced as 422) lists the unresolved ids.
+    """
+    if not is_dashboard_snapshot(snapshot):
+        raise ValueError("Not an AppBI dashboard snapshot (missing appbi-snapshot/v1 version).")
+
+    dash_meta = snapshot.get("dashboard") if isinstance(snapshot.get("dashboard"), dict) else {}
+    tiles = snapshot.get("charts") if isinstance(snapshot.get("charts"), list) else []
+
+    # --- Validate every referenced dataset table up-front (fail closed). ---
+    referenced_ids: Set[int] = set()
+    for tile in tiles:
+        chart = tile.get("chart") if isinstance(tile, dict) else None
+        if isinstance(chart, dict) and isinstance(chart.get("dataset_table_id"), int):
+            referenced_ids.add(int(chart["dataset_table_id"]))
+
+    missing_ids: List[int] = []
+    forbidden_ids: List[int] = []
+    for table_id in sorted(referenced_ids):
+        table = db.query(DatasetTable).filter(DatasetTable.id == table_id).first()
+        if table is None:
+            missing_ids.append(table_id)
+            continue
+        dataset = db.query(Dataset).filter(Dataset.id == table.dataset_id).first()
+        if dataset is None:
+            missing_ids.append(table_id)
+            continue
+        try:
+            require_view_access(db, current_user, dataset, "datasets")
+        except Exception:
+            forbidden_ids.append(table_id)
+
+    if missing_ids or forbidden_ids:
+        parts: List[str] = []
+        if missing_ids:
+            parts.append(f"not found in this instance: {missing_ids}")
+        if forbidden_ids:
+            parts.append(f"not accessible to you: {forbidden_ids}")
+        raise ValueError(
+            "Cannot import snapshot — referenced dataset tables " + "; ".join(parts) + "."
+        )
+
+    # --- Create the dashboard shell. ---
+    requested_name = _normalize_text(name_override or dash_meta.get("name"), max_len=200) or "Imported Dashboard"
+    resolved_name = _unique_dashboard_name(db, requested_name)
+
+    layout_mode = str(dash_meta.get("layout_mode") or "grid").strip().lower()
+    if layout_mode not in {"grid", "canvas"}:
+        layout_mode = "grid"
+
+    pages_config = dash_meta.get("pages_config") if isinstance(dash_meta.get("pages_config"), list) else None
+    if not pages_config:
+        pages_config = [dict(DEFAULT_DASHBOARD_PAGE)]
+
+    dashboard_kwargs: Dict[str, Any] = {
+        "name": resolved_name,
+        "description": _normalize_text(dash_meta.get("description"), max_len=1024) or None,
+        "owner_id": current_user.id,
+        "pages_config": pages_config,
+        "layout_mode": layout_mode,
+        "filters_config": dash_meta.get("filters_config") if isinstance(dash_meta.get("filters_config"), list) else [],
+        "slicers_config": dash_meta.get("slicers_config") if isinstance(dash_meta.get("slicers_config"), list) else [],
+        "public_filters_config": dash_meta.get("public_filters_config") if isinstance(dash_meta.get("public_filters_config"), list) else [],
+    }
+    if isinstance(dash_meta.get("slicer_cluster_layout"), dict):
+        dashboard_kwargs["slicer_cluster_layout"] = dash_meta["slicer_cluster_layout"]
+    if isinstance(dash_meta.get("canvas_config"), dict):
+        dashboard_kwargs["canvas_config"] = dash_meta["canvas_config"]
+    theme_config = normalize_dashboard_theme_config(
+        dash_meta.get("theme_config") if isinstance(dash_meta.get("theme_config"), dict) else None
+    )
+    if theme_config is not None:
+        dashboard_kwargs["theme_config"] = theme_config
+
+    dashboard_obj = Dashboard(**dashboard_kwargs)
+    db.add(dashboard_obj)
+    db.flush()
+
+    # --- Recreate each tile verbatim. ---
+    for tile in tiles:
+        if not isinstance(tile, dict):
+            continue
+        widget_type = str(tile.get("widget_type") or "chart").strip().lower() or "chart"
+        layout = tile.get("layout") if isinstance(tile.get("layout"), dict) else {}
+        chart_spec = tile.get("chart") if isinstance(tile.get("chart"), dict) else None
+
+        if widget_type == "chart" and chart_spec is not None:
+            try:
+                chart_type = ChartType(str(chart_spec.get("chart_type") or "TABLE").upper())
+            except ValueError:
+                chart_type = ChartType.TABLE
+            chart_name = _unique_chart_name(
+                db,
+                current_user.id,
+                _normalize_text(chart_spec.get("name"), max_len=255) or "Imported Chart",
+            )
+            new_chart = Chart(
+                name=chart_name,
+                description=_normalize_text(chart_spec.get("description"), max_len=1024) or None,
+                dataset_table_id=chart_spec.get("dataset_table_id"),
+                chart_type=chart_type,
+                config=chart_spec.get("config") or {},
+                owner_id=current_user.id,
+            )
+            db.add(new_chart)
+            db.flush()
+
+            meta = chart_spec.get("meta") if isinstance(chart_spec.get("meta"), dict) else None
+            if meta:
+                db.add(
+                    ChartMetadata(
+                        chart_id=new_chart.id,
+                        domain=meta.get("domain"),
+                        intent=meta.get("intent"),
+                        metrics=meta.get("metrics") or [],
+                        dimensions=meta.get("dimensions") or [],
+                        tags=meta.get("tags") or [],
+                    )
+                )
+            for p in chart_spec.get("parameters") or []:
+                if not isinstance(p, dict) or not p.get("parameter_name") or not p.get("parameter_type"):
+                    continue
+                db.add(
+                    ChartParameter(
+                        chart_id=new_chart.id,
+                        parameter_name=str(p["parameter_name"]),
+                        parameter_type=str(p["parameter_type"]),
+                        column_mapping=p.get("column_mapping"),
+                        default_value=p.get("default_value"),
+                        description=p.get("description"),
+                    )
+                )
+
+            db.add(
+                DashboardChart(
+                    dashboard_id=dashboard_obj.id,
+                    chart_id=new_chart.id,
+                    widget_type="chart",
+                    widget_config=tile.get("widget_config") if isinstance(tile.get("widget_config"), dict) else None,
+                    layout=layout,
+                    parameters=tile.get("parameters") if isinstance(tile.get("parameters"), dict) else {},
+                )
+            )
+        else:
+            # Non-chart widget (text/image/shape/countdown/parameter_switcher).
+            db.add(
+                DashboardChart(
+                    dashboard_id=dashboard_obj.id,
+                    chart_id=None,
+                    widget_type=widget_type,
+                    widget_config=normalize_dashboard_widget_config(
+                        widget_type,
+                        tile.get("widget_config") if isinstance(tile.get("widget_config"), dict) else {},
+                    ),
+                    layout=layout,
+                    parameters={},
+                )
+            )
+
+    db.commit()
+    db.refresh(dashboard_obj)
+
+    from app.services.dashboard_service import DashboardService
+
+    return DashboardService.get_by_id(db, dashboard_obj.id)

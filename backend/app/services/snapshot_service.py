@@ -143,6 +143,13 @@ def is_federated_materializable(table: DatasetTable) -> bool:
     return kind == "physical_table"
 
 
+def is_operational_dataset(dataset_obj) -> bool:
+    """True when a dataset is OPERATIONAL — the live DB behind a Workboard, which
+    must NEVER be materialized/published to BigQuery. NULL/absent purpose is
+    treated as 'reporting' (legacy default) so existing datasets keep working."""
+    return str(getattr(dataset_obj, "purpose", None) or "reporting").strip().lower() == "operational"
+
+
 def resolve_host(db: Session, dataset_id: int) -> Optional[DataSource]:
     """The BigQuery datasource that HOSTS this dataset's snapshots. For a
     single-source BQ dataset this is just that datasource; for a MIXED dataset
@@ -1012,6 +1019,13 @@ def refresh_all_for_dataset(db: Session, dataset_id: int, *, force: bool = True)
     dataset_obj = db.query(Dataset).filter(Dataset.id == dataset_id).first()
     if dataset_obj is None:
         return {"built": [], "skipped": [], "as_of": None}
+    # HARD GATE — an OPERATIONAL (Workboard) dataset is the live app DB and is
+    # NEVER materialized to BigQuery. This is the single builder chokepoint, so
+    # gating here covers every caller (Sync & Publish, scheduler, manual refresh,
+    # background warm). Belt-and-suspenders alongside the entry-point gates.
+    if is_operational_dataset(dataset_obj):
+        logger.info("[snapshot] skip refresh dataset=%s (operational — live, never materialized)", dataset_id)
+        return {"built": [], "skipped": [], "as_of": None, "operational": True}
     tables = db.query(DatasetTable).filter(DatasetTable.dataset_id == dataset_id).all()
     ds_ids = {t.datasource_id for t in tables if t.datasource_id}
     datasource_by_id = {

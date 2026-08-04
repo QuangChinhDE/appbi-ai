@@ -47,6 +47,11 @@ class AiChatTurnLog(Base):
     errored = Column(Boolean, nullable=False, default=False)
     latency_ms = Column(Integer, nullable=True)
 
+    # P1-02 — share of the answer's figures that trace back to an evidence row
+    # (NULL = nothing to check: no figures, or the turn called no tools).
+    verification_coverage = Column(Float, nullable=True)
+    verification_unmatched = Column(Integer, nullable=True)
+
     created_at = Column(
         DateTime(timezone=True), nullable=False, server_default=func.now(),
     )

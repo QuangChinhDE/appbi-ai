@@ -49,20 +49,16 @@ MODULE_KEYS = (
     "dashboards",
     "workboards",
     "settings",
-    # Intelligence group — split out of 'govern' so each sidebar module has its
-    # own permission (AI Readiness / AI Suggestions / Metrics & Terms / AI Guidance;
-    # 'govern' itself now = Documents).
-    "intelligence",
-    "ai_inbox",
-    "semantics",
-    "ai_guidance",
 )
 
-# The 4 Intelligence AI modules share the backend catalog domain with 'govern'
-# (Documents). When a user has no explicit level for one of these, it INHERITS the
-# legacy 'govern' level — so existing govern:X users keep full Intelligence access
-# and NOBODY is locked out when the single key is split into five.
-INTELLIGENCE_INHERIT = ("intelligence", "ai_inbox", "semantics", "ai_guidance")
+# Nothing inherits any more. The four Intelligence keys existed because one
+# Knowledge Hub was presented as five sidebar modules, and inheritance from the
+# legacy 'govern' level was what kept users working through that split. The
+# modules are gone: AI Readiness, AI Suggestions and AI Guidance were deleted, and
+# Metrics & Terms became a tab inside Datasets, granted by `datasets`. A module
+# each user can point at, and one key per module — which is what the rest of the
+# matrix always did.
+INTELLIGENCE_INHERIT: tuple[str, ...] = ()
 
 
 def _extract_token(

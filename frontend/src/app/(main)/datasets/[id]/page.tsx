@@ -5,7 +5,7 @@
 
 import React, { useState, useMemo, useCallback, useRef, startTransition } from 'react';
 import { useParams, useRouter, useSearchParams } from 'next/navigation';
-import {
+import { LineChart,
   Plus,
   Search,
   Calendar,
@@ -43,6 +43,9 @@ import { ManageColumnsDrawer } from '@/components/datasets/ManageColumnsDrawer';
 import { AddColumnModal, buildFNS, type LookupTableOption } from '@/components/datasets/AddColumnModal';
 import { getResourcePermissions } from '@/hooks/use-resource-permission';
 import { DataModelCanvas } from '@/components/datasets/DataModelCanvas';
+import { DatasetMetricsPanel } from '@/components/datasets/DatasetMetricsPanel';
+import { OperationalDestinationBanner } from '@/components/datasets/OperationalDestinationBanner';
+import { DatasetCaveatsPanel } from '@/components/datasets/DatasetCaveatsPanel';
 import { DatasetMeasuresPanel } from '@/components/datasets/DatasetMeasuresPanel';
 import { DatasetPublishControls, DatasetPublishBanner } from '@/components/datasets/DatasetPublishBar';
 import type { ModelViewEditPanelHandle } from '@/components/datasets/ModelViewEditPanel';
@@ -215,7 +218,7 @@ function isCalculatedTable(table: Pick<DatasetTable, 'source_kind'> | null | und
 }
 
 type TableGroupKey = 'source' | 'calculated' | 'measures' | 'calendar';
-type DatasetDetailTab = 'tables' | 'model';
+type DatasetDetailTab = 'tables' | 'model' | 'metrics' | 'caveats';
 type TablesWorkspace = 'preview' | 'measures';
 
 function getTableGroupKey(table: Pick<DatasetTable, 'source_kind'> | null | undefined): TableGroupKey {
@@ -249,6 +252,15 @@ function getTableBadgeLabel(table: Pick<DatasetTable, 'source_kind'> | null | un
 
 function resolveDatasetDetailTab(tab: string | null): DatasetDetailTab {
   if (tab === 'model') return 'model';
+  // Metrics & Terms used to be its own sidebar module. It sits here because a
+  // managed metric and a glossary term are statements ABOUT a dataset — you
+  // define them while setting the dataset up, not on a separate screen you have
+  // to remember to visit.
+  if (tab === 'metrics') return 'metrics';
+  // Caveats are their own tab, not a section under Metrics: what a number MEANS
+  // and what must be SAID about it every time are different statements, and the
+  // two only shared a screen because both used to live on one global page.
+  if (tab === 'caveats') return 'caveats';
   // 'quality'/'catalog' deep-links are legacy — quality moved to Observability.
   return 'tables';
 }
@@ -1375,13 +1387,47 @@ export default function DatasetDetailPage() {
             <Sigma className="h-3.5 w-3.5" />
             {t('datasets.detail.tabModel')}
           </button>
+          <button
+            onClick={() => requestLeaveMeasures(() => setActiveTab('metrics'))}
+            className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1 text-xs font-medium transition-colors ${
+              activeTab === 'metrics'
+                ? 'bg-surface-1 text-brand shadow-linear-sm'
+                : 'text-text-tertiary hover:bg-surface-1'
+            }`}
+          >
+            <LineChart className="h-3.5 w-3.5" />
+            {t('datasets.detail.tabMetrics')}
+          </button>
+          <button
+            onClick={() => requestLeaveMeasures(() => setActiveTab('caveats'))}
+            className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1 text-xs font-medium transition-colors ${
+              activeTab === 'caveats'
+                ? 'bg-surface-1 text-brand shadow-linear-sm'
+                : 'text-text-tertiary hover:bg-surface-1'
+            }`}
+          >
+            <AlertTriangle className="h-3.5 w-3.5" />
+            {t('datasets.detail.tabCaveats')}
+          </button>
         </div>
 
         {/* Spacer */}
         <div className="flex-1" />
 
-        {/* Publish lifecycle: status badge + Sync&Publish + Grants (Import-mode) */}
-        <DatasetPublishControls datasetId={datasetId!} canEditFallback={resPerms.canEdit} />
+        {/* Publish lifecycle: status badge + Sync&Publish + Grants (Import-mode).
+            An OPERATIONAL (Workboard) dataset is live-only and never published to
+            BigQuery, so the publish controls are replaced by a read-only badge. */}
+        {dataset?.purpose === 'operational' ? (
+          <span
+            title={t('datasets.detail.operationalHint')}
+            className="inline-flex items-center gap-1.5 rounded-full border border-[rgb(var(--border-line))] bg-surface-2 px-2.5 py-1 text-[11px] font-medium text-text-tertiary"
+          >
+            <Database className="h-3.5 w-3.5 text-text-quaternary" />
+            {t('datasets.detail.operationalBadge')}
+          </span>
+        ) : (
+          <DatasetPublishControls datasetId={datasetId!} canEditFallback={resPerms.canEdit} />
+        )}
 
         {activeTab === 'tables' && tablesWorkspace === 'preview' && selectedTable && (
           <div className="w-px h-5 bg-surface-3 mx-1" />
@@ -1439,7 +1485,18 @@ export default function DatasetDetailPage() {
       </div>
 
       {/* Changes-pending / sync-failed / draft banner (Import-mode lifecycle) */}
-      <DatasetPublishBanner datasetId={datasetId!} canEditFallback={resPerms.canEdit} />
+      {dataset?.purpose !== 'operational' && (
+        <DatasetPublishBanner datasetId={datasetId!} canEditFallback={resPerms.canEdit} />
+      )}
+
+      {/* Operational (Workboard) dataset → OLTP Destination store setup / status */}
+      {dataset?.purpose === 'operational' && datasetId && (
+        <OperationalDestinationBanner
+          datasetId={datasetId}
+          datasetName={dataset?.name}
+          canEdit={resPerms.canEdit}
+        />
+      )}
 
       {/* ── Body: sidebar + content (sidebar chỉ khi tab=tables) ── */}
       <div className="flex flex-1 overflow-hidden">
@@ -1779,7 +1836,18 @@ export default function DatasetDetailPage() {
 
         {/* ── Main Content ── */}
         <div className="flex-1 flex flex-col bg-surface-2 overflow-hidden">
-          {activeTab === 'model' ? (
+          {activeTab === 'caveats' ? (
+            <div className="flex-1 overflow-auto">
+              <DatasetCaveatsPanel datasetId={datasetId!} canEdit={resPerms.canEdit} />
+            </div>
+          ) : activeTab === 'metrics' ? (
+            // Scoped to THIS dataset: the panel used to list every managed metric
+            // in the deployment because it was a standalone screen. Here the
+            // dataset is the context, so it shows and creates metrics for this one.
+            <div className="flex-1 overflow-auto">
+              <DatasetMetricsPanel datasetId={datasetId!} canEdit={resPerms.canEdit} />
+            </div>
+          ) : activeTab === 'model' ? (
             <div className="flex-1 overflow-hidden flex flex-row">
               <div className="flex-1 overflow-hidden min-w-0">
                 <DataModelCanvas

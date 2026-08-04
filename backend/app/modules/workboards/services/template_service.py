@@ -1417,9 +1417,18 @@ def rebuild_dataset_from_bundle(
     # Create the dataset shell (name auto-suffixed on collision by the service),
     # then stamp settings/dictionary straight onto the row (raw JSONB — already
     # normalised by the source export, so we skip strict schema coercion).
+    # A bundle-imported dataset always backs a Workboard → operational (a live
+    # OLTP store, never materialised to BigQuery). Create it operational FROM THE
+    # START so the semantic-model chokepoint (dataset_model_service) no-ops for
+    # every model-gen triggered during the rebuild below — the operational branch
+    # runs pure OLTP with no BI semantic model.
     dataset = DatasetCRUDService.create_dataset(
         db,
-        DatasetCreate(name=f"{base_name} (import)", description=ds_bundle.get("description")),
+        DatasetCreate(
+            name=f"{base_name} (import)",
+            description=ds_bundle.get("description"),
+            purpose="operational",
+        ),
         owner_id=owner_id,
     )
     if ds_bundle.get("settings") is not None:
@@ -1533,26 +1542,35 @@ def rebuild_dataset_from_bundle(
     # (older v1 bundle) or if the faithful rebuild errors — so the dataset
     # ALWAYS ends up with a working model. Only ever creates rows for THIS new
     # dataset; never touches existing datasets/dashboards.
+    # Operational datasets run pure OLTP — they have NO BI semantic model. Skip
+    # the whole model block (bundle replay AND auto-generate); the Workboard
+    # runtime reads/writes the store live and does not need semantic views. (The
+    # model-gen chokepoint already no-ops for operational, but skipping here
+    # avoids the wasted work and any bundle-model rows entirely.)
+    is_operational = str(getattr(dataset, "purpose", None) or "").strip().lower() == "operational"
     semantic = bundle.get("semantic")
     built = False
-    try:
-        if semantic and semantic.get("views"):
-            built = _rebuild_semantic_from_bundle(db, dataset.id, id_map, semantic)
-    except Exception as exc:
-        logger.warning("rebuild: faithful model rebuild failed for ds %s: %s", dataset.id, exc)
+    if not is_operational:
         try:
-            db.rollback()
-        except Exception:
-            pass
-        built = False
-    if not built:
-        try:
-            generate_dataset_model(db, dataset.id, force=True)
+            if semantic and semantic.get("views"):
+                built = _rebuild_semantic_from_bundle(db, dataset.id, id_map, semantic)
         except Exception as exc:
-            logger.warning("rebuild: model generation failed for ds %s: %s", dataset.id, exc)
+            logger.warning("rebuild: faithful model rebuild failed for ds %s: %s", dataset.id, exc)
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            built = False
+        if not built:
+            try:
+                generate_dataset_model(db, dataset.id, force=True)
+            except Exception as exc:
+                logger.warning("rebuild: model generation failed for ds %s: %s", dataset.id, exc)
 
     report["id_map"] = {str(k): v for k, v in id_map.items()}
-    report["model_source"] = "bundle" if built else "generated"
+    report["model_source"] = (
+        "operational_oltp" if is_operational else ("bundle" if built else "generated")
+    )
     return dataset, report
 
 
@@ -1693,6 +1711,13 @@ def import_from_source(
             owner_id=owner_id,
             table_source_overrides=table_source_overrides,
         )
+        # This dataset backs the imported Workboard → operational (live DB, never
+        # materialized to BigQuery).
+        try:
+            dataset.purpose = "operational"
+            db.commit()
+        except Exception:  # noqa: BLE001 — purpose is best-effort, never block import
+            db.rollback()
         target_dataset_id = dataset.id
 
     try:

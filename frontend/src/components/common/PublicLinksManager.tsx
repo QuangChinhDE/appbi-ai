@@ -838,7 +838,7 @@ export function PublicLinksManager({
       ai_bot_enabled: link.appearance_config?.ai_bot_enabled,
       ai_bot_provider: link.appearance_config?.ai_bot_provider,
       ai_bot_model: link.appearance_config?.ai_bot_model,
-      ai_bot_default_mode: link.appearance_config?.ai_bot_default_mode,
+      ai_bot_flow_key: link.appearance_config?.ai_bot_flow_key,
       ai_bot_web_search_enabled: link.appearance_config?.ai_bot_web_search_enabled,
       ai_bot_report_context_note: link.appearance_config?.ai_bot_report_context_note,
       // ai_bot_key is stripped by backend response (security). Use

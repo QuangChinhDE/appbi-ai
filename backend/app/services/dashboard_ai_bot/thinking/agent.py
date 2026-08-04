@@ -20,7 +20,10 @@ import asyncio
 import logging
 import re
 import time
+import uuid
 from typing import AsyncGenerator
+
+from app.core.config import settings
 
 from app.services.dashboard_ai_bot.thinking.briefing import (
     Briefing,
@@ -39,6 +42,7 @@ from app.services.dashboard_ai_bot.thinking.conversation_state import (
 from app.services.dashboard_ai_bot.thinking.critique import critique_and_stream
 from app.services.dashboard_ai_bot.events import AgentEvent
 from app.services.dashboard_ai_bot.thinking.prompts import build_agent_system_prompt
+from app.services.dashboard_ai_bot.providers.guarded import guarded_stream
 from app.services.dashboard_ai_bot.providers import (
     stream_anthropic,
     stream_gemini_singleshot,
@@ -112,6 +116,36 @@ def _has_web_intent(question: str) -> bool:
     return bool(_WEB_INTENT_RE.search(question or ""))
 
 
+def _hash_public_filters(filters) -> str:
+    from app.services.dashboard_ai_bot.evidence import hash_filters
+    return hash_filters(filters)
+
+
+def _verify_turn(run_ref: str, answer: str) -> dict | None:
+    """Compare the answer's figures against this turn's evidence rows."""
+    from app.core.database import SessionLocal
+    from app.services.dashboard_ai_bot.evidence import load_run_numbers
+    from app.services.dashboard_ai_bot.verifier import verify_answer
+
+    db = SessionLocal()
+    try:
+        numbers = load_run_numbers(db, run_ref)
+    finally:
+        db.close()
+    result = verify_answer(answer, numbers)
+    return result.to_dict()
+
+
+def _record_evidence(**kwargs) -> None:
+    """Thin wrapper so the ledger import stays lazy and a missing/disabled
+    evidence module can never break a turn."""
+    try:
+        from app.services.dashboard_ai_bot.evidence import record_tool_evidence
+        record_tool_evidence(**kwargs)
+    except Exception:  # noqa: BLE001
+        logger.debug("evidence record failed", exc_info=True)
+
+
 def _status_text(tool_name: str, args: dict) -> str:
     template = _TOOL_STATUS_VI.get(tool_name) or f"Đang chạy {tool_name}…"
     try:
@@ -121,13 +155,19 @@ def _status_text(tool_name: str, args: dict) -> str:
 
 
 def _streamer_for(provider: str):
+    """Resolve the provider adapter, wrapped in the breaker/retry guard.
+
+    The guard is applied HERE rather than inside each adapter so all three
+    vendors share one retry policy, and so a rate-limited customer key cuts out
+    only that key (see providers/breaker.py) instead of the whole process.
+    """
     p = (provider or "").strip().lower()
     if p == "anthropic":
-        return stream_anthropic, True   # supports tools
+        return guarded_stream(stream_anthropic, provider="anthropic"), True
     if p == "openai":
-        return stream_openai, True
+        return guarded_stream(stream_openai, provider="openai"), True
     if p == "gemini":
-        return stream_gemini_singleshot, False
+        return guarded_stream(stream_gemini_singleshot, provider="gemini"), False
     return None, False
 
 
@@ -513,6 +553,10 @@ async def run_agent_stream(
     guide_mode: bool = False,
     report_context_note: str = "",
     learned_knowledge_block: str = "",
+    run_ref: str | None = None,
+    role_prompt: str = "",
+    tool_allowlist: set[str] | None = None,
+    owns_verification: bool = True,
 ) -> AsyncGenerator[AgentEvent, None]:
     """Run one chat turn end-to-end and yield AgentEvent objects.
 
@@ -520,6 +564,21 @@ async def run_agent_stream(
     user's latest question. Each entry is a dict with at minimum `role` and
     `content`. Assistant turns from previous rounds may also include
     ``tool_calls`` (see providers/anthropic_provider.py for the shape).
+
+    ``role_prompt`` and ``tool_allowlist`` are how a FLOW STEP narrows this same
+    loop into one specialist, instead of the flow forking its own copy.
+
+    `role_prompt` is APPENDED to the engine's system prompt, never a
+    replacement. That is deliberate: the base prompt carries the analysis
+    guardrails, the insight ladder, the citation/confidence contract and the
+    "answer in the language of the question" rule. A flow author writes what
+    this STEP is for; they do not get to delete the rules that keep answers
+    honest — and a pipeline built from replacement prompts would silently lose
+    every one of them.
+
+    `tool_allowlist` restricts which tools this step may call. A composer given
+    no tools cannot invent a number, because it has no way to fetch one; that
+    property is the point of splitting analysis from writing.
     """
     if not user_messages or not isinstance(user_messages, list):
         yield AgentEvent(type="error", text="No messages provided.")
@@ -527,6 +586,12 @@ async def run_agent_stream(
         return
 
     turn_started_at = time.monotonic()
+    # Evidence correlation id for this turn. Callers that already own a run id
+    # (the flow runtime) pass theirs; otherwise we mint one so the ledger works
+    # on the legacy path too.
+    if run_ref is None and settings.INTELLIGENCE_EVIDENCE_ENABLED:
+        run_ref = uuid.uuid4().hex
+    _filter_hash = _hash_public_filters(ctx.public_filters)
 
     streamer, supports_tools = _streamer_for(provider)
     if streamer is None:
@@ -568,6 +633,13 @@ async def run_agent_stream(
     # cross-surface TTL cache (warmed by /ai/recon on bot open) make the
     # common case instant.
     system_with_context = base_system
+    # A flow step's authored role, appended so the engine's rules stay above it.
+    if role_prompt.strip():
+        system_with_context += (
+            "\n\n═══ VAI TRÒ CỦA BƯỚC NÀY (do người dựng luồng viết) ═══\n"
+            + role_prompt.strip()
+            + "\n\nCác quy tắc phía trên vẫn có hiệu lực và không được bỏ qua."
+        )
     # Institutional memory: what the bot has LEARNED about this company across
     # prior sessions (validated concepts/facts/insights). Injected before recon
     # so domain understanding frames the fresh data read.
@@ -628,6 +700,16 @@ async def run_agent_stream(
     active_tools = (
         [*TOOL_DEFINITIONS, *EXTERNAL_TOOL_DEFS] if web_search_enabled else TOOL_DEFINITIONS
     )
+    if tool_allowlist is not None:
+        # A flow step declares its own toolset. An EMPTY allowlist is a real
+        # instruction — "this step may not fetch anything" — so it must yield an
+        # empty list, not fall back to everything. `is not None` rather than a
+        # truthiness test is doing that work.
+        active_tools = [t for t in active_tools if t.get("name") in tool_allowlist]
+        logger.info(
+            "[flow] step toolset narrowed to %d of %d tools",
+            len(active_tools), len(TOOL_DEFINITIONS),
+        )
 
     last_user_question = ""
     for msg in reversed(user_messages):
@@ -721,7 +803,10 @@ async def run_agent_stream(
                 messages=running,
                 # Disable tools once the budget is spent → the model must
                 # answer with what it has instead of looping on tool calls.
-                tools=None if force_no_tools else active_tools,
+                # `or None` covers a step whose allowlist filtered everything
+                # out: providers reject an empty tools array, and "no tools" is
+                # exactly what an empty allowlist means anyway.
+                tools=None if force_no_tools else (active_tools or None),
                 model=selected_model or None,
             )
             async for ev in gen:
@@ -910,6 +995,20 @@ async def run_agent_stream(
                     "tool_call_id": tc.tool_call_id,
                     "result": result,
                 })
+
+                # Evidence ledger (P1-01): one row per executed tool, so every
+                # figure in the final answer can be traced back to the call that
+                # produced it. Own session, best-effort, off by default.
+                if run_ref:
+                    await asyncio.to_thread(
+                        _record_evidence,
+                        run_ref=run_ref,
+                        dashboard_id=getattr(ctx.dashboard, "id", 0) or 0,
+                        tool_name=tc.tool_name,
+                        args=tc.tool_args,
+                        result=result,
+                        filter_hash=_filter_hash,
+                    )
 
                 # Sanitised copy for the tool log (no PNG, no fluff)
                 tool_log.append({
@@ -1131,6 +1230,36 @@ async def run_agent_stream(
     final_answer_text = (
         _sanitize_answer(buffered_text) if run_critique else draft_answer
     )
+
+    # ── Deterministic verification (P1-02) ─────────────────────────────────
+    # Runs AFTER the answer has been streamed. In "log" mode that is the whole
+    # point: measure how often the assistant states a figure the evidence does
+    # not support, on real traffic, before anything is allowed to act on it.
+    # The event is emitted for the FE/telemetry; it does not alter the answer.
+    # A flow step must NOT verify: it produced part of a pipeline, not the
+    # answer. Each step running this block emitted its own verification event
+    # for a partial text, so a three-step flow reported three verdicts and the
+    # viewer's client kept the last one. The flow's Verify node is the single
+    # authority, and it is the only one that can still change the answer.
+    if owns_verification and run_ref and settings.INTELLIGENCE_VERIFIER_MODE != "off":
+        try:
+            verification = await asyncio.to_thread(
+                _verify_turn, run_ref, final_answer_text,
+            )
+            if verification is not None:
+                yield AgentEvent(
+                    type="verification", extra={"verification": verification},
+                )
+                if verification.get("unmatched"):
+                    logger.warning(
+                        "dashboard_ai_bot unsupported figures run=%s coverage=%s "
+                        "unmatched=%s question=%r",
+                        run_ref, verification.get("coverage"),
+                        verification.get("unmatched"), last_user_question[:120],
+                    )
+        except Exception:
+            logger.debug("verification failed", exc_info=True)
+
     try:
         telemetry = _telemetry_summary(
             answer=final_answer_text,

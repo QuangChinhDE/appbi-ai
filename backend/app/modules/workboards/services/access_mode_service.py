@@ -207,6 +207,24 @@ def _classify_single_table(db: Session, table: DatasetTable) -> dict:
             "reason": f"Has the {MINIAPP_USER_COLUMN} column.",
         }
 
+    # OLTP branch: an OPERATIONAL dataset has no BI semantic model by design, so
+    # don't advise "generate the dataset model" (that's the reporting path). Its
+    # RLS is column-based (miniapp_user, handled above) + per-screen rules; a
+    # table with neither is genuinely un-scoped → tell the operator the OLTP fix.
+    from app.models.dataset import Dataset as _Dataset
+    _ds = db.query(_Dataset).filter(_Dataset.id == table.dataset_id).first()
+    if _ds is not None and str(getattr(_ds, "purpose", None) or "reporting").strip().lower() == "operational":
+        return {
+            "table_id": table.id,
+            "table_name": table.display_name or table.source_table_name,
+            "mode": "unknown",
+            "reason": (
+                f"Bảng chưa có cột {MINIAPP_USER_COLUMN} và chưa đánh dấu shared — "
+                "thêm cột miniapp_user (lọc theo người dùng) hoặc bật 'shared' nếu là "
+                "dữ liệu dùng chung."
+            ),
+        }
+
     # Look for a chain to a per_user table via the semantic model.
     model = (
         db.query(SemanticModel)

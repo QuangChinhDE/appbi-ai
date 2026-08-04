@@ -40,6 +40,21 @@ class LookupHop(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class LookupCopy(BaseModel):
+    """One column pulled from the picked lookup row onto the form.
+
+    ``mode="fill"`` writes the row's ``source_column`` value into the form field
+    named ``target_field`` (editable by the user, persisted with the record).
+    ``mode="view"`` shows it read-only under ``label`` (a reference panel; NOT
+    written to this record). Author chooses per column ("Both" mode)."""
+
+    source_column: str
+    mode: Literal["fill", "view"] = "fill"
+    target_field: Optional[str] = None
+    label: Optional[str] = None
+    model_config = ConfigDict(extra="ignore")
+
+
 class LookupConfig(BaseModel):
     """Lookup data source for select / lookup / map form widgets."""
 
@@ -85,6 +100,16 @@ class LookupConfig(BaseModel):
     filter_column: Optional[str] = Field(
         default=None,
         description="Remote column on the lookup table matched against filter_by_field's value.",
+    )
+
+    # ── Multi-column copy (widget=select/lookup) ─────────────────────────────
+    # Pull EXTRA columns from the picked row onto the form. Each entry either
+    # fills a form field (persisted) or shows read-only (reference). Projected
+    # into every option dict by `_resolve_lookup_options` as `copy: {source: v}`
+    # so the FE applies them on select without another round-trip.
+    copy_columns: Optional[List[LookupCopy]] = Field(
+        default=None,
+        description="Extra columns from the picked row: mode=fill writes a form field, mode=view shows read-only.",
     )
 
     model_config = ConfigDict(extra="forbid")
@@ -269,6 +294,16 @@ class FormField(BaseModel):
     enum_list_style: Optional[Literal["chips", "dropdown", "checkboxes"]] = Field(
         default="chips",
         description="widget=enum_list: render as chips, dropdown, or checkbox list.",
+    )
+    split_to_rows: bool = Field(
+        default=False,
+        description=(
+            "widget=enum_list only: on submit, EXPLODE each selected value into "
+            "its OWN row (fan-out) instead of storing a JSON array in one cell. "
+            "Every other field is copied identically onto each row; the primary "
+            "key must be server-generated (auto-number). At most one field per "
+            "form may set this."
+        ),
     )
     searchable: Optional[Literal["auto", "always", "never"]] = Field(
         default="auto",
@@ -869,6 +904,27 @@ class FormScreenSpec(BaseModel):
     )
 
     model_config = ConfigDict(extra="forbid")
+
+    @model_validator(mode="after")
+    def _check_split_to_rows(self) -> "FormScreenSpec":
+        """At most ONE field may fan-out to rows, and only ``enum_list`` can.
+
+        Two split fields would mean a cartesian product of rows on submit —
+        almost never intended — so reject it early with a clear message.
+        """
+        split = [f for f in (self.fields or []) if getattr(f, "split_to_rows", False)]
+        if len(split) > 1:
+            cols = ", ".join(f.column for f in split)
+            raise ValueError(
+                f"Only one field may use 'split_to_rows'; found {len(split)}: {cols}."
+            )
+        for f in split:
+            if getattr(f, "widget", None) != "enum_list":
+                raise ValueError(
+                    f"Field '{f.column}' uses split_to_rows but is not a multi-select "
+                    "(widget must be 'enum_list')."
+                )
+        return self
 
 
 class TableComputedColumn(BaseModel):
@@ -1579,6 +1635,59 @@ class BulkAction(BaseModel):
         return self
 
 
+class RowLockConfig(BaseModel):
+    """Per-row edit lock for a Table screen.
+
+    Complements the column-level ``editable_columns`` (which cells are editable
+    at all) and per-role RLS (``can_update``/``writable_columns``): this locks
+    INDIVIDUAL ROWS from being edited/deleted based on the row's own data.
+
+    * ``lock_if`` — a wb-expr over the row's values (same grammar as
+      ``FormatRule.when`` / ``FormField.readonly_if``). When it evaluates
+      truthy for a row, that row is LOCKED. Use ``"true"`` to lock the whole
+      table (e.g. "only admins may edit anything here").
+    * ``editable_by_roles`` — roles that may STILL edit/delete a locked row.
+      Empty = nobody but ``owner``. ``owner`` (the app builder) always bypasses,
+      matching every other write gate in the system — so a locked record can
+      never become permanently un-fixable.
+    * ``lock_delete`` — a locked row also cannot be deleted (default True).
+
+    Enforcement is SERVER-SIDE on write: the lock is re-evaluated against the
+    row's CURRENT stored values (not the incoming payload), so a user cannot
+    unlock a row by editing the lock column in the same request. The FE gate is
+    advisory (renders the lock + disables inputs) and is re-checked here.
+    """
+
+    lock_if: str = Field(
+        default="",
+        max_length=1000,
+        description=(
+            "wb-expr over row values; truthy = row locked. Use \"true\" to lock "
+            "the whole table. e.g. \"[trang_thai]=='Đã duyệt'\" or \"[locked]==true\". "
+            "Empty = inert (no rows locked) — lets the builder autosave a "
+            "half-configured rule without failing validation."
+        ),
+    )
+    editable_by_roles: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Roles that may still edit/delete a locked row (owner always may). "
+            "Empty = only owner."
+        ),
+    )
+    lock_delete: bool = Field(
+        default=True,
+        description="When True, a locked row cannot be deleted either.",
+    )
+    message: Optional[str] = Field(
+        default=None,
+        max_length=300,
+        description="Optional custom message shown when a locked-row write is blocked.",
+    )
+
+    model_config = ConfigDict(extra="forbid")
+
+
 class TableScreenSpec(BaseModel):
     """A spreadsheet-style screen bound to one dataset table.
 
@@ -1705,6 +1814,14 @@ class TableScreenSpec(BaseModel):
     format_rules: List[FormatRule] = Field(
         default_factory=list,
         description="Conditional formatting: tint rows/cells when a row-local expression is truthy.",
+    )
+    row_lock: Optional[RowLockConfig] = Field(
+        default=None,
+        description=(
+            "Per-row edit lock. Locks rows matching an expression (or the whole "
+            "table via lock_if='true') so only allow-listed roles / owner may "
+            "edit or delete them. None = no row locking (today's behaviour)."
+        ),
     )
     pos_cart: Optional[PosCartConfig] = Field(
         default=None,
@@ -2377,6 +2494,48 @@ class PrintTemplate(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
 
+class LookupFillMap(BaseModel):
+    """One dim→local column copy for a lookup write-back."""
+
+    from_column: str = Field(..., min_length=1, description="Column in the dimension table to read.")
+    into_column: str = Field(..., min_length=1, description="Local column the value is written into.")
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class LookupWritebackConfig(BaseModel):
+    """Materialise (denormalise) columns from a dimension/reference table INTO
+    the row at write time, and PERSIST them to the store.
+
+    Unlike a display-time lookup — which resolves the dim columns only when
+    rendering and never stores them — this writes the resolved values into real
+    columns of the row on submit, so they land in the store (e.g. the Google
+    Sheet cells) alongside the key. Example: a fault-note form stores an error
+    code in ``key_column``; on submit the server resolves the error dimension
+    (``dim_table_id``) by that code (``match_column``) and writes ten_loi /
+    nhom_loi / … into the local columns named in ``fill``.
+
+    Applied on insert AND update (re-resolved when the key changes) in the write
+    service, right after auto-number.
+    """
+
+    table_id: Optional[int] = Field(
+        default=None,
+        gt=0,
+        description="Only apply when the write targets this dataset table (None = the workboard's primary table).",
+    )
+    key_column: str = Field(..., min_length=1, description="Local column holding the picked key (e.g. ma_loi).")
+    dim_table_id: int = Field(..., gt=0, description="Dataset table id of the dimension/reference to resolve against.")
+    match_column: str = Field(..., min_length=1, description="Column in the dim table matched against key_column's value.")
+    fill: List[LookupFillMap] = Field(default_factory=_builtins.list, description="Dim→local column copies to persist.")
+    overwrite_on_update: bool = Field(
+        default=True,
+        description="Re-resolve and overwrite the fill columns on update (e.g. the key changed). False = fill once on insert only.",
+    )
+
+    model_config = ConfigDict(extra="ignore")
+
+
 class LayoutJson(BaseModel):
     """Top-level workboard layout payload.
 
@@ -2390,6 +2549,10 @@ class LayoutJson(BaseModel):
     branding: BrandingConfig = Field(default_factory=BrandingConfig)
     audit: AuditConfig = Field(default_factory=AuditConfig)
     auto_number_columns: List[AutoNumberConfig] = Field(default_factory=_builtins.list)
+    # Lookup write-back: denormalise dim columns into the row on submit and
+    # persist them to the store (so a Sheets-backed store gets the values, not
+    # just a render-time lookup). Applied by the write service.
+    lookup_writeback: List[LookupWritebackConfig] = Field(default_factory=_builtins.list)
     # Named groups of screens (UI: "Workspace"). Empty = flat nav (today's
     # behaviour). Additive + backward-compatible; see ScreenGroup.
     screen_groups: List[ScreenGroup] = Field(default_factory=_builtins.list)

@@ -2,6 +2,7 @@
 API router for dashboard endpoints.
 """
 import json
+import re
 import secrets
 from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Response, UploadFile, status
@@ -73,6 +74,11 @@ from app.services.dashboard_html_import_service import (
     parse_uploaded_source_sheets,
     purge_stale_import_drafts,
     validate_chart_plans,
+    _extract_embedded_metadata,
+    is_dashboard_snapshot,
+    serialize_dashboard_snapshot,
+    export_dashboard_html,
+    rebuild_dashboard_from_snapshot,
 )
 from app.core.logging import get_logger
 
@@ -1667,6 +1673,85 @@ def create_dashboard(
         return _serialize_dashboard_with_draft(db, created, current_user)
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+
+@router.post("/{dashboard_id}/duplicate", response_model=DashboardResponse, status_code=status.HTTP_201_CREATED)
+def duplicate_dashboard(
+    dashboard_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("dashboards", "edit")),
+):
+    """Deep-clone a dashboard into an independent copy.
+
+    Uses the verbatim snapshot core (serialize -> rebuild), so every chart
+    gets its OWN new Chart row — editing the copy never touches the original.
+    """
+    dash = DashboardService.get_by_id(db, dashboard_id)
+    if not dash:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Dashboard with ID {dashboard_id} not found")
+    require_view_access(db, current_user, dash, "dashboards")
+    try:
+        snapshot = serialize_dashboard_snapshot(dash)
+        copy_name = f"{dash.name} (Copy)"
+        created = rebuild_dashboard_from_snapshot(
+            db, snapshot=snapshot, current_user=current_user, name_override=copy_name
+        )
+        return _serialize_dashboard_with_draft(db, created, current_user)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+
+@router.get("/{dashboard_id}/export-html")
+def export_dashboard_html_route(
+    dashboard_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Export a dashboard as a re-importable HTML file (embedded snapshot)."""
+    dash = DashboardService.get_by_id(db, dashboard_id)
+    if not dash:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Dashboard with ID {dashboard_id} not found")
+    require_view_access(db, current_user, dash, "dashboards")
+    html_text = export_dashboard_html(dash)
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "-", (dash.name or "dashboard")).strip("-") or "dashboard"
+    return Response(
+        content=html_text,
+        media_type="text/html",
+        headers={"Content-Disposition": f'attachment; filename="{slug}.html"'},
+    )
+
+
+@router.post("/import-snapshot", response_model=DashboardResponse, status_code=status.HTTP_201_CREATED)
+async def import_dashboard_snapshot_route(
+    file: UploadFile = File(...),
+    dashboard_name: Optional[str] = Form(None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("dashboards", "edit")),
+):
+    """One-click import for AppBI-exported HTML (verbatim snapshot, no analyzer)."""
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+    if len(raw) > MAX_HTML_IMPORT_SIZE:
+        raise HTTPException(status_code=400, detail="HTML file is too large (max 2 MB).")
+    try:
+        html_text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        html_text = raw.decode("utf-8", errors="replace")
+
+    embedded = _extract_embedded_metadata(html_text)
+    if not is_dashboard_snapshot(embedded):
+        raise HTTPException(
+            status_code=422,
+            detail="This HTML does not contain an AppBI dashboard snapshot. Use the guided HTML import instead.",
+        )
+    try:
+        created = rebuild_dashboard_from_snapshot(
+            db, snapshot=embedded, current_user=current_user, name_override=dashboard_name
+        )
+        return _serialize_dashboard_with_draft(db, created, current_user)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
 
 
 @router.put("/{dashboard_id}", response_model=DashboardResponse)

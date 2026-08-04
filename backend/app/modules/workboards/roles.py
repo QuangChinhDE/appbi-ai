@@ -29,5 +29,16 @@ def is_owner_role(value: Any) -> bool:
     return str(value or "").strip().lower() == APP_USER_ROLE_OWNER
 
 
+# Roles that act as app MANAGERS: they bypass per-screen visibility/access and
+# RLS (see every screen + every row, may write anything, like the app builder).
+# owner + admin. Use ONLY at access-gate bypass sites — never for owner-specific
+# concerns (e.g. default-PIN warnings, which stay on is_owner_role).
+PRIVILEGED_APP_USER_ROLES = (APP_USER_ROLE_ADMIN, APP_USER_ROLE_OWNER)
+
+
+def is_privileged_role(value: Any) -> bool:
+    return str(value or "").strip().lower() in PRIVILEGED_APP_USER_ROLES
+
+
 def build_default_owner_username(workboard_id: Any) -> str:
     return f"owner_{int(workboard_id)}"

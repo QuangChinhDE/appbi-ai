@@ -45,6 +45,7 @@ from app.models.team import Team, TeamMembership
 from app.models.governance import Glossary, GlossaryTerm, Classification, ClassificationTag
 from app.models.ai_chat_session import AiChatSession
 from app.models.ai_chat_turn_log import AiChatTurnLog
+from app.models.agent_brain import AgentBrainVersion
 # Workboard models live under app.modules.workboards but are re-exported here
 # so SQLAlchemy metadata + alembic autogenerate always see them, regardless of
 # whether the workboards module router is enabled at runtime.
@@ -63,6 +64,7 @@ __all__ = [
     "AuthProvider",
     "ResourceShare",
     "ResourceType",
+    "AgentBrainVersion",
     "SharePermission",
     "DataSource",
     "DataSourceType",

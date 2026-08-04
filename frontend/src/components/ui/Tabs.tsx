@@ -9,6 +9,11 @@ export interface TabItem<T extends string = string> {
   icon?: React.ReactNode;
   badge?: React.ReactNode;
   disabled?: boolean;
+  /** A non-selectable heading that separates the tabs after it.
+   *
+   *  Rendered as a label, never as a tab: a "group" that could be clicked would
+   *  read as a tab with no panel, which is worse than no grouping at all. */
+  group?: boolean;
 }
 
 export interface TabsProps<T extends string = string> {
@@ -38,6 +43,17 @@ export function Tabs<T extends string = string>({
         )}
       >
         {items.map((item) => {
+          if (item.group) {
+            return (
+              <span
+                key={item.key}
+                aria-hidden
+                className="select-none pl-2 pr-1 text-[10px] font-strong uppercase tracking-[0.12em] text-text-quaternary first:pl-1"
+              >
+                {item.label}
+              </span>
+            );
+          }
           const active = item.key === value;
           return (
             <button
@@ -75,6 +91,17 @@ export function Tabs<T extends string = string>({
       )}
     >
       {items.map((item) => {
+        if (item.group) {
+          return (
+            <span
+              key={item.key}
+              aria-hidden
+              className="select-none self-center pl-3 pr-1 text-[10px] font-strong uppercase tracking-[0.12em] text-text-quaternary first:pl-0"
+            >
+              {item.label}
+            </span>
+          );
+        }
         const active = item.key === value;
         return (
           <button

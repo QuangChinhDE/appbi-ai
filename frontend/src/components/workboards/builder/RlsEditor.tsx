@@ -23,7 +23,7 @@ import {
   BuilderIconButton,
   BuilderSubsection,
 } from './BuilderChrome';
-import { FixedExpressionInput, type SelectOption } from './BuilderValueControls';
+import { FixedExpressionInput, TokenChipsInput, type SelectOption } from './BuilderValueControls';
 import type { ScreenRlsRuleSpec, ScreenSpec } from './types';
 import { INPUT, Lbl } from './ScreenEditor';
 import {
@@ -331,18 +331,11 @@ function RuleCard({
 
       <div className="mt-2">
         <Lbl label={t('workboards.rls.readonlyColumns')}>
-          <input
-            value={(rule.readonly_columns || []).join(', ')}
-            onChange={(e) =>
-              onChange({
-                readonly_columns: e.target.value
-                  .split(',')
-                  .map((s) => s.trim())
-                  .filter(Boolean),
-              })
-            }
-            className={INPUT}
+          <TokenChipsInput
+            value={rule.readonly_columns || []}
+            onChange={(next) => onChange({ readonly_columns: next })}
             placeholder={t('workboards.rls.readonlyPlaceholder')}
+            ariaLabel={t('workboards.rls.readonlyColumns')}
           />
         </Lbl>
       </div>

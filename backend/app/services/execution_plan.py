@@ -213,6 +213,10 @@ def plan_chart_execution(
         # allowed to run live — that's design-time, not a Dashboard.
         from app.models.dataset import Dataset as _Dataset
         dataset_obj = db.query(_Dataset).filter(_Dataset.id == dataset_id).first()
+        # OPERATIONAL (Workboard live DB) → NEVER materialized: always run live,
+        # no host resolution, no background snapshot warm.
+        if dataset_obj is not None and snapshot_service.is_operational_dataset(dataset_obj):
+            return live("operational dataset — live only (never materialized)", dataset_id=dataset_id)
         if dataset_obj is not None and getattr(dataset_obj, "publish_state", None) is not None:
             return _plan_published(db, dataset_obj, base_view_name, is_preview=is_preview)
 

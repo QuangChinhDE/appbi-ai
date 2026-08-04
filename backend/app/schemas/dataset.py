@@ -1,7 +1,7 @@
 """Schemas for Datasets (Table-based Datasets)"""
 from datetime import date, datetime
 from typing import Literal, Optional, List, Dict, Any, Union
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from uuid import UUID
 
 
@@ -87,12 +87,28 @@ class DatasetDictionaryResponse(BaseModel):
     compiled_context: str = ""
 
 
+DATASET_PURPOSES = {"reporting", "operational"}
+
+
 class DatasetBase(BaseModel):
     """Base dataset schema"""
     name: str = Field(..., min_length=1, max_length=200)
     description: Optional[str] = None
     settings: Optional[DatasetSettings] = None
     dictionary: Optional[DatasetDictionary] = None
+    # 'reporting' (may materialize to BigQuery for dashboards) | 'operational'
+    # (live DB for a Workboard — NEVER materialized). None → 'reporting' default.
+    purpose: Optional[str] = Field(default=None)
+
+    @field_validator("purpose")
+    @classmethod
+    def _valid_purpose(cls, v):
+        if v is None:
+            return v
+        v = str(v).strip().lower()
+        if v not in DATASET_PURPOSES:
+            raise ValueError(f"purpose must be one of {sorted(DATASET_PURPOSES)}")
+        return v
 
 
 class DatasetCreate(DatasetBase):
@@ -105,6 +121,17 @@ class DatasetUpdate(BaseModel):
     name: Optional[str] = Field(None, min_length=1, max_length=200)
     description: Optional[str] = None
     settings: Optional[DatasetSettings] = None
+    purpose: Optional[str] = Field(default=None)
+
+    @field_validator("purpose")
+    @classmethod
+    def _valid_purpose_update(cls, v):
+        if v is None:
+            return v
+        v = str(v).strip().lower()
+        if v not in DATASET_PURPOSES:
+            raise ValueError(f"purpose must be one of {sorted(DATASET_PURPOSES)}")
+        return v
 
 
 class DatasetResponse(DatasetBase):

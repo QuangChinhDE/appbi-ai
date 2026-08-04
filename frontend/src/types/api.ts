@@ -673,11 +673,19 @@ export interface PublicLinkAppearanceConfig {
    */
   ai_bot_report_context_note?: string | null;
   /**
-   * Analysis-depth policy. "auto" (default) lets the heuristic router pick
-   * Normal (lookup) vs Thinking (analysis) per question; "normal"/"thinking"
-   * force a depth. Admin config — viewers don't choose.
+   * WHICH WAY OF THINKING this link's bot uses — the key of a published AI Flow
+   * (a chain of AI Agents built in AI Flow Studio).
+   *
+   * Empty or absent means "use the system default flow", resolved server-side.
+   * Deliberately not defaulted to the built-in key on save: writing it would
+   * freeze the link onto today's default, so a later change of default would
+   * skip every link that had merely been left alone.
+   *
+   * This replaced `ai_bot_default_mode`. Depth is now a property of the chosen
+   * flow — a one-step lookup chain and a five-step analysis chain ARE the two
+   * modes — rather than a dropdown that reconfigured one monolithic bot.
    */
-  ai_bot_default_mode?: 'auto' | 'normal' | 'thinking' | null;
+  ai_bot_flow_key?: string | null;
   /**
    * Allow the Thinking bot to search the public web for domain/market
    * know-how (off by default; needs TAVILY_API_KEY server-side).

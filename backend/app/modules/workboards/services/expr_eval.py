@@ -25,7 +25,7 @@ behaves as if the rule weren't set.
 from __future__ import annotations
 
 import re
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.modules.workboards.services.number_parser import (
@@ -182,6 +182,35 @@ class _Parser:
 
 
 # ── Evaluator ─────────────────────────────────────────────────────────────
+
+
+def _to_date(v: Any) -> Optional[date]:
+    """Best-effort date parse for DATE_DIFF. Handles ISO ``YYYY-MM-DD`` (with or
+    without a time part) and vi-VN ``DD/MM/YYYY`` / ``DD-MM-YYYY``. Returns
+    ``None`` for anything unrecognised (so the caller yields None, not a crash).
+    """
+    if v is None:
+        return None
+    if isinstance(v, datetime):
+        return v.date()
+    if isinstance(v, date):
+        return v
+    s = str(v).strip()
+    if not s:
+        return None
+    m = re.match(r"^(\d{4})-(\d{1,2})-(\d{1,2})", s)
+    if m:
+        try:
+            return date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+        except ValueError:
+            return None
+    m = re.match(r"^(\d{1,2})[/-](\d{1,2})[/-](\d{4})", s)
+    if m:
+        try:
+            return date(int(m.group(3)), int(m.group(2)), int(m.group(1)))
+        except ValueError:
+            return None
+    return None
 
 
 def _coerce_number(v: Any) -> Optional[float]:
@@ -392,6 +421,16 @@ def _eval(node: Any, ctx: Dict[str, Any]) -> Any:
             if not m:
                 return None
             return int(m.group({"YEAR": 1, "MONTH": 2, "DAY": 3}[name]))
+        if name == "DATE_DIFF":
+            # DATE_DIFF(a, b) → whole days from b to a (a - b). Parses ISO
+            # (YYYY-MM-DD[...]) and vi-VN (DD/MM/YYYY). Powers time-based rules
+            # like row-lock "older than N days":
+            #   DATE_DIFF({{today}}, [ngay_danh_gia]) > 3
+            a = _to_date(evaluated[0]) if evaluated else None
+            b = _to_date(evaluated[1]) if len(evaluated) > 1 else None
+            if a is None or b is None:
+                return None
+            return (a - b).days
         # Unknown function — fail soft.
         return None
     return None
