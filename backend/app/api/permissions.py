@@ -36,15 +36,11 @@ _OPTIONAL_MODULES = {
     # backend deployed (METADATA_CATALOG_ENABLED) — so a stray module flag can't
     # produce dead-nav pointing at an unregistered router.
     "govern": settings.METADATA_CATALOG_ENABLED and settings.GOVERN_ENABLED,
+    "agent_flows": settings.METADATA_CATALOG_ENABLED and settings.GOVERN_ENABLED,
     # Intelligence group — same enablement as govern (same catalog backend).
-    "intelligence": settings.METADATA_CATALOG_ENABLED and settings.GOVERN_ENABLED,
-    "ai_inbox": settings.METADATA_CATALOG_ENABLED and settings.GOVERN_ENABLED,
-    "semantics": settings.METADATA_CATALOG_ENABLED and settings.GOVERN_ENABLED,
-    "ai_guidance": settings.METADATA_CATALOG_ENABLED and settings.GOVERN_ENABLED,
     # Flow Studio — same catalog backend, but its OWN key: publishing a flow
     # changes AI behaviour on a live published report (deploy-sized blast
     # radius), so it must not inherit an authoring-level grant.
-    "ai_flows": settings.METADATA_CATALOG_ENABLED and settings.GOVERN_ENABLED,
     "observability": settings.METADATA_CATALOG_ENABLED and settings.OBSERVABILITY_ENABLED,
 }
 
@@ -57,12 +53,8 @@ _ALL_MODULES = [
     "data_sources",
     "datasets",
     # Intelligence sidebar group (was one 'govern' key; now one per module).
-    "intelligence",     # AI Readiness (cockpit)
-    "ai_inbox",         # AI Suggestions (review ledger)
-    "semantics",        # Metrics & Terms
-    "ai_guidance",      # AI Guidance
-    "ai_flows",         # AI Flow Studio (agents + flows + assistants)
     "govern",           # Documents (knowledge hub) — keeps the legacy key
+    "agent_flows",   # reserved: the module is not built yet
     "observability",
     "explore_charts",
     "dashboards",
@@ -76,12 +68,8 @@ MODULES = [m for m in _ALL_MODULES if _module_enabled(m)]
 _ALL_MODULE_ALLOWED_LEVELS: Dict[str, List[str]] = {
     "data_sources":      ["none", "view", "edit", "full"],
     "datasets":          ["none", "view", "edit", "full"],
-    "intelligence":      ["none", "view", "edit", "full"],
-    "ai_inbox":          ["none", "view", "edit", "full"],
-    "semantics":         ["none", "view", "edit", "full"],
-    "ai_guidance":       ["none", "view", "edit", "full"],
-    "ai_flows":          ["none", "view", "edit", "full"],
     "govern":            ["none", "view", "edit", "full"],
+    "agent_flows":            ["none", "view", "edit", "full"],
     "observability":     ["none", "view", "edit", "full"],
     "explore_charts":    ["none", "view", "edit", "full"],
     "dashboards":        ["none", "view", "edit", "full"],
@@ -102,11 +90,7 @@ PRESETS: Dict[str, Dict[str, str]] = {
         "data_sources": "full",
         "datasets": "full",
         "govern": "full",
-        "intelligence": "full",
-        "ai_inbox": "full",
-        "semantics": "full",
-        "ai_guidance": "full",
-        "ai_flows": "full",
+        "agent_flows": "full",
         "observability": "full",
         "explore_charts": "full",
         "dashboards": "full",
@@ -117,11 +101,7 @@ PRESETS: Dict[str, Dict[str, str]] = {
         "data_sources": "view",
         "datasets": "edit",
         "govern": "edit",
-        "intelligence": "edit",
-        "ai_inbox": "edit",
-        "semantics": "edit",
-        "ai_guidance": "edit",
-        "ai_flows": "view",
+        "agent_flows": "edit",
         "observability": "edit",
         "explore_charts": "edit",
         "dashboards": "edit",
@@ -132,11 +112,7 @@ PRESETS: Dict[str, Dict[str, str]] = {
         "data_sources": "view",
         "datasets": "view",
         "govern": "view",
-        "intelligence": "view",
-        "ai_inbox": "view",
-        "semantics": "view",
-        "ai_guidance": "view",
-        "ai_flows": "view",
+        "agent_flows": "view",
         "observability": "view",
         "explore_charts": "view",
         "dashboards": "view",
@@ -147,11 +123,7 @@ PRESETS: Dict[str, Dict[str, str]] = {
         "data_sources": "none",
         "datasets": "none",
         "govern": "none",
-        "intelligence": "none",
-        "ai_inbox": "none",
-        "semantics": "none",
-        "ai_guidance": "none",
-        "ai_flows": "none",
+        "agent_flows": "none",
         "observability": "none",
         "explore_charts": "none",
         "dashboards": "view",

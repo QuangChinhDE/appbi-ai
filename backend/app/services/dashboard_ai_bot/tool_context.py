@@ -236,6 +236,14 @@ class ToolContext:
     # column never reaches ANY tool — filtering only the prompt's field list
     # (the pre-P0-05 behaviour) left the raw values readable via get_chart_data.
     excluded_columns: set[str] = field(default_factory=set)
+    #: The CURRENT step's knowledge scope, set per step by the flow engine:
+    #: ``{"doc_ids": [...], "metric_names": [...]}``. Empty/absent means the step
+    #: may reach everything the report is entitled to.
+    #:
+    #: A NARROWING only. `govern_tools` computes the security scope first and then
+    #: intersects, so an author listing an id they are not entitled to gains
+    #: nothing — the ceiling is not theirs to raise.
+    knowledge_scope: dict[str, Any] = field(default_factory=dict)
     _chart_data_cache: dict[tuple, dict] = field(default_factory=dict)
 
     @classmethod

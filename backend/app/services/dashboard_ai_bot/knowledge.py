@@ -547,7 +547,25 @@ def tool_remember_fact(ctx, args: dict) -> dict:
     ) else None
 
     needs_review = getattr(ctx, "actor_type", "public_session") != "user"
-    target_status = "candidate" if needs_review else "validated"
+
+    # THE APPROVAL SURFACE IS GONE.
+    #
+    # A fact taught by a public viewer became a `candidate` and waited for somebody
+    # to approve it on the AI Suggestions screen. That screen has been deleted, so
+    # nothing can ever approve one: the row would sit unread forever while the bot
+    # answered as if it had learned nothing, and the queue would grow where no one
+    # can see it. Silence that nobody can diagnose is worse than a refusal.
+    #
+    # So refuse, and say why. Somebody signed in still teaches the bot directly —
+    # that path never needed review, because the actor is known.
+    if needs_review:
+        return _err(
+            "Chưa ghi nhớ được: điều học từ người xem ẩn danh cần có người duyệt, "
+            "mà màn hình duyệt hiện chưa có. Người dùng đã đăng nhập vẫn dạy được "
+            "trực tiếp."
+        )
+
+    target_status = "validated"
 
     try:
         if kind == "correction":

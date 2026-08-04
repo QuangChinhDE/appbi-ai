@@ -177,12 +177,21 @@ async def run_agent_stream(
     report_context_note: str = "",
     learned_knowledge_block: str = "",
     run_ref: str | None = None,
+    role_prompt: str = "",
+    tool_allowlist: set[str] | None = None,
+    owns_verification: bool = True,
 ) -> AsyncGenerator[AgentEvent, None]:
     """Run one chat turn end-to-end and yield AgentEvent objects.
 
     ``run_ref`` correlates this turn's evidence rows. Both depths must accept it:
     the auto-router decides Normal vs Thinking per question, so a caller cannot
     know in advance which one it is handing arguments to.
+
+    ``role_prompt`` and ``tool_allowlist`` carry a flow step's authored role and
+    its permitted toolset. They exist here for the same reason as ``run_ref``:
+    the router can send any turn down this path, so a signature the Thinking
+    depth accepts and this one does not is a live TypeError, not a style
+    difference. See thinking/agent.py for what they mean.
     """
     if not user_messages or not isinstance(user_messages, list):
         yield AgentEvent(type="error", text="No messages provided.")
@@ -246,10 +255,28 @@ async def run_agent_stream(
         recon = {"manifest": {}, "summaries": []}
     recon_block = _format_recon_for_prompt(recon)
     system_with_context = base_system
+    # A flow step's authored role, appended so the engine's rules stay above it.
+    if role_prompt.strip():
+        system_with_context += (
+            "\n\n═══ VAI TRÒ CỦA BƯỚC NÀY (do người dựng luồng viết) ═══\n"
+            + role_prompt.strip()
+            + "\n\nCác quy tắc phía trên vẫn có hiệu lực và không được bỏ qua."
+        )
     # Institutional memory (validated learnings about this company).
     if learned_knowledge_block:
         system_with_context += "\n\n" + learned_knowledge_block
     system_with_context += "\n\n" + recon_block
+
+    # A flow step declares its own toolset. An EMPTY allowlist is a real
+    # instruction — "this step may not fetch anything" — so it must stay empty
+    # rather than falling back to the full set.
+    _active_tools = list(TOOL_DEFINITIONS)
+    if tool_allowlist is not None:
+        _active_tools = [t for t in _active_tools if t.get("name") in tool_allowlist]
+        logger.info(
+            "[flow] step toolset narrowed to %d of %d tools",
+            len(_active_tools), len(TOOL_DEFINITIONS),
+        )
 
     # ── Gemini fallback path: single-shot (no tools) ────────────────────────
     if not supports_tools:
@@ -307,7 +334,7 @@ async def run_agent_stream(
                 api_key=api_key,
                 system_prompt=system_with_context,
                 messages=running,
-                tools=None if force_no_tools else TOOL_DEFINITIONS,
+                tools=None if force_no_tools else (_active_tools or None),
                 model=selected_model or None,
             )
             async for ev in gen:

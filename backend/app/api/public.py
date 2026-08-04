@@ -3653,16 +3653,20 @@ async def chat_dashboard_ai_agent(
         x_user_ai_model=x_user_ai_model,
         missing_key_detail="X-User-Ai-Key header is required for AI chat.",
     )
-    critique_enabled_flag = resolve_public_ai_critique_enabled(appearance_config)
-    effective_mode = resolve_public_ai_mode(appearance_config, x_user_ai_mode=x_user_ai_mode)
     web_search_flag = web_search_enabled(appearance_config)
+    # Depth is no longer a link setting. It is a property of the way of thinking
+    # the link chose: a one-step lookup flow and a five-step analysis flow ARE the
+    # two modes, expressed as flows instead of as a dropdown that silently
+    # reconfigured a monolithic bot. Recorded as a constant so trace rows stay
+    # comparable across the change.
+    effective_mode = "thinking"
 
     # Guide mode ("Hướng dẫn xem báo cáo") — teach a NEW viewer how to READ this
-    # report, step by step, in plain language. Appended to the report system
-    # prompt only for this intent so the bot acts like a patient instructor.
-    report_note = sanitize_report_context_note(
-        (appearance_config or {}).get("ai_bot_report_context_note"),
-    )
+    # report, step by step, in plain language. This is a per-turn INTENT the chat
+    # UI sends, not link configuration, so it survives the rework; the link's
+    # free-text note does not (a flow's prompts are where that belongs, and
+    # migration 0038 moved every existing note into one).
+    report_note = ""
     if (x_user_ai_intent or "").strip().lower() == "guide":
         report_note = (
             report_note
@@ -3808,26 +3812,16 @@ async def chat_dashboard_ai_agent(
         HARD_TIMEOUT = 240.0
         loop = asyncio.get_event_loop()
         started = loop.time()
-        # Knowledge grounding — GENERIC, data-driven. Assembles whatever a
-        # business has AUTHORED for this dashboard's datasets (Govern glossary,
-        # data dictionary, semantic descriptions, aliases) PLUS institutional
-        # memory, and injects it so the bot reasons from authored definitions
-        # instead of guessing from column names. Zero per-report logic; empty
-        # (ungrounded fallback) when nothing is authored. Best-effort.
-        learned_block = ""
-        try:
-            from app.services.dashboard_ai_bot import knowledge_context as _kc
-            _last_q = ""
-            for _m in reversed(safe_messages):
-                if _m.get("role") == "user":
-                    _last_q = str(_m.get("content") or "")
-                    break
-            learned_block = _kc.build_knowledge_context_block(
-                db, dashboard_id=dash.id, question=_last_q,
-            )
-        except Exception:
-            logger.warning("ai knowledge context build failed", exc_info=True)
-
+        # Knowledge is NOT assembled here.
+        #
+        # This used to call build_knowledge_context_block with no `sources`
+        # argument — every authored source, on every question — and hand the
+        # result to every step. That made "the flow decides what the bot may
+        # read" untrue in the only direction that matters: the FLOOR was
+        # everything, so an author who deliberately left the knowledge step out
+        # still got the full block. The flow's frame owns this now (compile.py's
+        # context node, steering sources only), and documents and metric
+        # definitions are reached by tool when a step is granted them.
         _agent_kwargs = dict(
             ctx=ctx,
             user_messages=safe_messages,
@@ -3836,31 +3830,43 @@ async def chat_dashboard_ai_agent(
             model=model,
             briefing=briefing_obj,
             state=state_obj,
-            enable_critique=critique_enabled_flag,
+            # The frame's verify step owns fact-checking. A second, weaker
+            # self-critique inside each step would spend model calls arguing with
+            # text no viewer reads.
+            enable_critique=False,
+            # A capability grants a step permission to ASK for the web; this flag
+            # is the deployment still having to allow it.
             web_search_enabled=web_search_flag,
             guide_mode=(x_user_ai_intent or "").strip().lower() == "guide",
+            # Empty unless this turn is guide mode. Never link configuration.
             report_context_note=report_note,
-            learned_knowledge_block=learned_block,
+            learned_knowledge_block="",
         )
 
-        # Flow runtime (P2). OFF by default: with the flag down this is the
-        # pre-v2 call, unchanged. With it up and NO assistant bound to this
-        # link, the engine runs builtin_thinking_v1 — a graph whose only
-        # working node wraps this very agent — so answers stay identical while
-        # trace/evidence/budget start being recorded. Rollback is the flag.
-        if settings.INTELLIGENCE_RUNTIME_ENABLED:
-            from app.services.intelligence.runtime import run_turn as _run_turn
-            agen = _run_turn(
-                db=db,
-                dashboard_id=dash.id,
-                link_token=token,
-                session_key=(body.session_key or None),
-                question=_last_user_msg,
-                agent_kwargs={"mode": effective_mode, **_agent_kwargs},
-                actor_type="public_session",
-            ).__aiter__()
-        else:
-            agen = run_agent_stream(mode=effective_mode, **_agent_kwargs).__aiter__()
+        # THE AI FLOW MODULE HAS BEEN REMOVED.
+        #
+        # This is where a public link's chatbot used to get its brain: the flow
+        # engine resolved which graph the link ran and streamed the turn. The whole
+        # module was deleted to be rebuilt from scratch, so there is nothing to
+        # call here yet.
+        #
+        # Answering with an explicit message rather than leaving the old import in
+        # place: a call into a deleted package raises ImportError deep inside a
+        # streaming response, which reaches the viewer as a dead connection and
+        # reaches the log as a traceback that says nothing about why. A viewer who
+        # asks a question deserves to be told the feature is not there.
+        async def _no_flow_module():
+            from app.services.dashboard_ai_bot.events import AgentEvent
+
+            yield AgentEvent(
+                type="text",
+                text=(
+                    "Trợ lý của báo cáo này hiện chưa được cấu hình. "
+                    "Quản trị viên cần thiết lập lại luồng xử lý AI trước khi dùng."
+                ),
+            )
+
+        agen = _no_flow_module().__aiter__()
         timed_out = False
         # Per-turn telemetry accumulators (written to ai_chat_turn_logs at end).
         m_tools: list[str] = []

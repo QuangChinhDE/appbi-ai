@@ -464,45 +464,95 @@ def _intelligence_blocks(db: Session, dashboard_id: int, question: str = "") -> 
     return parts, refs
 
 
-def build_knowledge_context_block(db: Session, *, dashboard_id: int, question: str = "") -> str:
+#: Which builder each context source key comes from. A flow's Context step picks
+#: keys; this is the map that makes the picking mean something.
+#:
+#: `caveat` and `verified_qa` are deliberately absent from the optional set —
+#: they are force-added by the caller. A data caveat that a link can switch off
+#: is not a caveat.
+_SOURCE_GROUPS: dict[str, str] = {
+    "instruction": "intelligence",
+    "verified_qa": "intelligence",
+    "rule": "intelligence",
+    "playbook": "intelligence",
+    "caveat": "intelligence",
+    "metric": "govern",
+    "doc": "govern",
+    "term": "semantic",
+    "chart_fields": "semantic",
+    "memory": "memory",
+    "recon": "recon",
+}
+
+
+def build_knowledge_context_block(
+    db: Session,
+    *,
+    dashboard_id: int,
+    question: str = "",
+    sources: set[str] | None = None,
+) -> str:
     """The full grounding block injected each turn = AUTHORED knowledge (Govern +
     dictionary + semantic) + INSTITUTIONAL MEMORY (learned/taught). Generic;
-    graceful. This unifies the platform's knowledge sources for the bot."""
+    graceful. This unifies the platform's knowledge sources for the bot.
+
+    ``sources`` narrows it to the keys a flow's Context step selected. None means
+    "everything", which is the pre-flow behaviour and stays the default so the
+    legacy path is untouched.
+
+    This parameter is the whole point of the Context step. Before it existed the
+    step computed a source list and then called this function without it, so
+    every bot on every link read exactly the same everything — and "each public
+    link is a different bot" could not be true no matter what anyone ticked.
+    """
+    want = None if sources is None else set(sources)
+
+    def enabled(group: str) -> bool:
+        if want is None:
+            return True
+        return any(_SOURCE_GROUPS.get(k) == group for k in want)
+
     parts: list[str] = []
     prov_refs: list[dict] = []
     # Intelligence steering (instructions / verified Q&A / rules / playbooks /
     # caveats) FIRST — configuration + certified answers outrank everything.
-    try:
-        intel_parts, intel_refs = _intelligence_blocks(db, dashboard_id, question)
-        parts.extend(intel_parts)
-        prov_refs.extend(intel_refs)
-    except Exception:  # noqa: BLE001
-        logger.warning("knowledge_context: intelligence blocks failed", exc_info=True)
+    if enabled("intelligence"):
+        try:
+            intel_parts, intel_refs = _intelligence_blocks(db, dashboard_id, question)
+            parts.extend(intel_parts)
+            prov_refs.extend(intel_refs)
+        except Exception:  # noqa: BLE001
+            logger.warning("knowledge_context: intelligence blocks failed", exc_info=True)
     # Govern-authored knowledge (managed KPIs + knowledge docs) — the
     # authoritative, human-curated layer the AI should reuse before anything.
-    try:
-        govern, govern_refs = _govern_managed_block(db, dashboard_id, question)
-        if govern:
-            parts.append(govern)
-        prov_refs.extend(govern_refs)
-    except Exception:  # noqa: BLE001
-        logger.warning("knowledge_context: govern block failed", exc_info=True)
-    try:
-        tids = dashboard_table_ids(db, dashboard_id)
-        assembled = assemble(db, dataset_table_ids=tids, question=question)
-        authored = format_block(assembled)
-        if authored:
-            parts.append(authored)
-    except Exception:  # noqa: BLE001
-        logger.warning("knowledge_context: authored assembly failed", exc_info=True)
+    if enabled("govern"):
+        try:
+            govern, govern_refs = _govern_managed_block(db, dashboard_id, question)
+            if govern:
+                parts.append(govern)
+            prov_refs.extend(govern_refs)
+        except Exception:  # noqa: BLE001
+            logger.warning("knowledge_context: govern block failed", exc_info=True)
+    if enabled("semantic"):
+        try:
+            tids = dashboard_table_ids(db, dashboard_id)
+            assembled = assemble(db, dataset_table_ids=tids, question=question)
+            authored = format_block(assembled)
+            if authored:
+                parts.append(authored)
+        except Exception:  # noqa: BLE001
+            logger.warning("knowledge_context: authored assembly failed", exc_info=True)
     # Institutional memory (Phase-17) — learned + user-taught, dashboard-scoped.
-    try:
-        from app.services.dashboard_ai_bot import knowledge as _kb
-        mem = _kb.build_knowledge_prompt_block(db, dashboard_id=dashboard_id, question=question)
-        if mem:
-            parts.append(mem)
-    except Exception:  # noqa: BLE001
-        logger.warning("knowledge_context: memory block failed", exc_info=True)
+    if enabled("memory"):
+        try:
+            from app.services.dashboard_ai_bot import knowledge as _kb
+            mem = _kb.build_knowledge_prompt_block(
+                db, dashboard_id=dashboard_id, question=question,
+            )
+            if mem:
+                parts.append(mem)
+        except Exception:  # noqa: BLE001
+            logger.warning("knowledge_context: memory block failed", exc_info=True)
     # Provenance — record what grounded this turn (best-effort, own session).
     try:
         if question:

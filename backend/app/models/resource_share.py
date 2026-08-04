@@ -19,6 +19,10 @@ class ResourceType(str, enum.Enum):
     CHAT_SESSION = "chat_session"
     WORKBOARD = "workboard"
     KNOWLEDGE_DOC = "knowledge_doc"
+    #: An AI Agent brain. Shared like every other first-class resource, because
+    #: sharing one DELEGATES its author's reading rights — and a bespoke mechanism
+    #: for that would be a second answer to "who may use this".
+    AGENT_BRAIN = "agent_brain"
 
 
 class SharePermission(str, enum.Enum):

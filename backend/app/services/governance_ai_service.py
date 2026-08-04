@@ -893,7 +893,19 @@ class GovernanceAIService:
             .filter(GovernDataCaveat.always_inject.is_(True), GovernDataCaveat.status != "Deprecated")
             .all()
         )
-        return [c for c in rows if c.dataset_id is None or c.dataset_id in dataset_ids][:8]
+        # A caveat MUST name its dataset. The clause used to be
+        # `c.dataset_id is None or c.dataset_id in dataset_ids`, so an unscoped row
+        # was injected into every report on the deployment — which is how "Dataset
+        # Olist kết thúc 2018-10" ended up being told to reports built on other
+        # data. Scoping it only in the builder would have left that path open: the
+        # UI stops creating nulls, but a null arriving from an import, an older
+        # environment or a direct write would still reach every answer.
+        #
+        # Dropping the escape means an unscoped caveat is now silently ignored
+        # rather than silently universal. Of the two silences that is the safe one:
+        # a warning that fails to appear is visible in the answer, a warning
+        # attached to data it does not describe is not.
+        return [c for c in rows if c.dataset_id is not None and c.dataset_id in dataset_ids][:8]
 
     @staticmethod
     def scope_exclusions(db: Session, dataset_ids: set[int]) -> tuple[set[str], set[str]]:

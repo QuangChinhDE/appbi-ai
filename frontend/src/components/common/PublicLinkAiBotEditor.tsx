@@ -1,18 +1,23 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { Bot, ChevronDown, Sparkles, Loader2 } from 'lucide-react';
+import { Bot, ChevronDown, ChevronRight, ExternalLink, Loader2, Workflow } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { PublicLinkAppearanceConfig } from '@/types/api';
 import { Input, Textarea } from '@/components/ui/Input';
 import { AiButton } from '@/components/ui/AiButton';
 import { dashboardApi } from '@/lib/api/dashboards';
 
-// Dedicated AI-analyst setup for a public link. Split out of the appearance
-// editor (2026-06-23) so the AI bot is configured on its own modal tab:
-// provider + model + key + a report-specific System Prompt that steers how
-// the bot reads THIS report (analysis flow + domain logic). No cost cap —
-// the per-question ceiling was removed; max-tool-calls bounds runaway.
+// The AI setup for one public link.
+//
+// This panel used to be where you WROTE how the bot behaves: an analysis-depth
+// dropdown and a 4000-character system prompt, per link, with no way to reuse
+// either and no way to see what the bot would actually do with them. Now it is
+// where you CHOOSE — the ways of thinking live in AI Flow Studio as chains of AI
+// Agents, and a link points at one. Same report, two links, two different bots.
+//
+// What stays here is what genuinely belongs to the LINK rather than to the way
+// of thinking: whether the bot appears at all, and the credentials it runs on.
 
 const AI_PROVIDERS = [
   { value: 'openai', label: 'OpenAI' },
@@ -57,6 +62,8 @@ export function PublicLinkAiBotEditor({ value, onChange, dashboardId }: PublicLi
   const systemPrompt = value.ai_bot_report_context_note || '';
   const [generating, setGenerating] = useState(false);
   const [genError, setGenError] = useState<string | null>(null);
+  const [notesOpen, setNotesOpen] = useState(false);
+
 
   const handleGenerate = async () => {
     setGenError(null);
@@ -84,17 +91,19 @@ export function PublicLinkAiBotEditor({ value, onChange, dashboardId }: PublicLi
     next: PublicLinkAppearanceConfig[K],
   ) => onChange({ ...value, [key]: next });
 
-  // Self-heal: the provider/mode selects render a fallback default (OpenAI /
-  // Auto) even when nothing is stored. Without this, an admin who opens an
-  // enabled link, sees "OpenAI", and saves would persist NO provider (onChange
-  // never fired) — so the bot silently defaults to the wrong provider. Write
-  // the shown defaults once so what you see is what gets saved.
+  // Self-heal: the provider select renders a fallback default (OpenAI) even when
+  // nothing is stored. Without this, an admin who opens an enabled link, sees
+  // "OpenAI", and saves would persist NO provider (onChange never fired) — so
+  // the bot silently defaults to the wrong provider. Write the shown default
+  // once so what you see is what gets saved.
+  //
+  // The FLOW is deliberately not self-healed. An empty value means "use the
+  // default", the BE resolves it that way, and writing the built-in key here
+  // would freeze this link onto today's default — a later change of default
+  // would then skip every link that had merely been left alone.
   useEffect(() => {
     if (!enabled) return;
-    const patches: Partial<PublicLinkAppearanceConfig> = {};
-    if (!value.ai_bot_provider) patches.ai_bot_provider = 'openai';
-    if (!value.ai_bot_default_mode) patches.ai_bot_default_mode = 'auto';
-    if (Object.keys(patches).length > 0) onChange({ ...value, ...patches });
+    if (!value.ai_bot_provider) onChange({ ...value, ai_bot_provider: 'openai' });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [enabled]);
 
@@ -106,8 +115,9 @@ export function PublicLinkAiBotEditor({ value, onChange, dashboardId }: PublicLi
           <h3 className="text-small font-strong">AI analyst</h3>
         </div>
         <p className="mb-4 text-caption leading-6 text-text-tertiary">
-          Bật trợ lý AI nổi trên trang công khai / embed của link này, chọn nhà cung cấp &amp; model,
-          và viết system prompt điều hướng AI đọc báo cáo đúng flow và logic của bạn.
+          Bật trợ lý AI nổi trên trang công khai / embed của link này, rồi <b>chọn cách con bot
+          suy nghĩ</b>. Cách suy nghĩ là một chuỗi AI Agent bạn thiết kế trong Xưởng AI — cùng một
+          báo cáo, mỗi link có thể dùng một con bot khác nhau.
         </p>
 
         <button
@@ -118,7 +128,6 @@ export function PublicLinkAiBotEditor({ value, onChange, dashboardId }: PublicLi
                 ...value,
                 ai_bot_enabled: true,
                 ai_bot_provider: value.ai_bot_provider || 'openai',
-                ai_bot_default_mode: value.ai_bot_default_mode || 'auto',
               });
             } else {
               patch('ai_bot_enabled', false);
@@ -154,94 +163,27 @@ export function PublicLinkAiBotEditor({ value, onChange, dashboardId }: PublicLi
 
         {enabled && (
           <div className="mt-4 space-y-4 rounded-lg border border-brand/20 bg-brand/5 p-4">
-            <p className="text-tiny leading-5 text-text-tertiary">
-              API key được lưu phía server và không bao giờ lộ cho người xem. Mỗi câu hỏi bị giới hạn
-              bởi số bước công cụ (không còn trần chi phí USD).
-            </p>
-
-            <div className="grid gap-4 md:grid-cols-2">
-              <div>
-                <label className="mb-1 block text-tiny font-strong text-text-secondary">Nhà cung cấp</label>
-                <div className="relative">
-                  <select
-                    value={provider}
-                    onChange={(e) => onChange({ ...value, ai_bot_provider: e.target.value, ai_bot_model: '' })}
-                    className="w-full appearance-none rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 py-1.5 pl-3 pr-8 text-caption text-text-primary focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand"
-                  >
-                    {AI_PROVIDERS.map((p) => (
-                      <option key={p.value} value={p.value}>{p.label}</option>
-                    ))}
-                  </select>
-                  <ChevronDown className="pointer-events-none absolute right-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-text-tertiary" />
-                </div>
-              </div>
-
-              <div>
-                <label className="mb-1 block text-tiny font-strong text-text-secondary">Model</label>
-                <div className="relative">
-                  <select
-                    value={value.ai_bot_model || ''}
-                    onChange={(e) => patch('ai_bot_model', e.target.value)}
-                    className="w-full appearance-none rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 py-1.5 pl-3 pr-8 text-caption text-text-primary focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand"
-                  >
-                    <option value="">Dùng model mặc định của nhà cung cấp</option>
-                    {(AI_MODEL_OPTIONS[provider] ?? []).map((m) => (
-                      <option key={m.value} value={m.value}>{m.label}</option>
-                    ))}
-                  </select>
-                  <ChevronDown className="pointer-events-none absolute right-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-text-tertiary" />
-                </div>
-              </div>
+            {/* WHERE THE FLOW PICKER WAS.
+                The AI Flow module was deleted to be rebuilt, so there is no list
+                of ways-of-thinking to choose from. Saying that plainly beats
+                leaving a dropdown that cannot be filled, and beats hiding the
+                section — an operator who switched the bot on needs to know why it
+                will not answer. `ai_bot_flow_key` is left untouched on the link:
+                whatever was chosen before is still recorded, and the rebuilt
+                module can read it. */}
+            <div>
+              <label className="mb-1 flex items-center gap-1.5 text-tiny font-strong text-text-secondary">
+                <Workflow className="h-3.5 w-3.5 text-brand" />
+                Cách suy nghĩ của bot
+              </label>
+              <p className="rounded-lg border border-warning/30 bg-warning/5 px-3 py-2 text-tiny leading-5 text-text-secondary">
+                Module AI Flow đang được dựng lại, nên chưa có luồng nào để chọn và
+                bot trên link này sẽ chưa trả lời được.
+                {value.ai_bot_flow_key ? (
+                  <> Lựa chọn cũ vẫn được giữ: <code className="text-tiny">{value.ai_bot_flow_key}</code>.</>
+                ) : null}
+              </p>
             </div>
-
-            <div className="grid gap-4 md:grid-cols-2">
-              <div>
-                <label className="mb-1 block text-tiny font-strong text-text-secondary">Chế độ phân tích</label>
-                <div className="relative">
-                  <select
-                    value={value.ai_bot_default_mode || 'auto'}
-                    onChange={(e) => patch('ai_bot_default_mode', e.target.value as 'auto' | 'normal' | 'thinking')}
-                    className="w-full appearance-none rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 py-1.5 pl-3 pr-8 text-caption text-text-primary focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand"
-                  >
-                    <option value="auto">Tự động (router chọn theo câu hỏi)</option>
-                    <option value="normal">Luôn Normal (trả lời nhanh)</option>
-                    <option value="thinking">Luôn Thinking (phân tích sâu)</option>
-                  </select>
-                  <ChevronDown className="pointer-events-none absolute right-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-text-tertiary" />
-                </div>
-                <p className="mt-1 text-tiny text-text-quaternary">
-                  Tự động: câu "cho xem/bao nhiêu" → nhanh; câu "tại sao/so sánh/xu hướng" → sâu. Người xem không phải chọn.
-                </p>
-              </div>
-
-              <div>
-                <label className="mb-1 block text-tiny font-strong text-text-secondary">Tra cứu web (domain)</label>
-                <button
-                  type="button"
-                  onClick={() => patch('ai_bot_web_search_enabled', !(value.ai_bot_web_search_enabled === true))}
-                  className={cn(
-                    'flex w-full items-center justify-between gap-2 rounded-lg border px-3 py-1.5 text-caption transition-colors',
-                    value.ai_bot_web_search_enabled === true
-                      ? 'border-brand bg-brand/10 text-text-primary'
-                      : 'border-[rgb(var(--border-line))] bg-surface-2 text-text-secondary hover:border-[rgb(var(--border-strong))]',
-                  )}
-                >
-                  <span>{value.ai_bot_web_search_enabled === true ? 'Bật' : 'Tắt'}</span>
-                  <span
-                    className={cn(
-                      'inline-flex h-5 w-9 rounded-full border p-0.5 transition',
-                      value.ai_bot_web_search_enabled === true ? 'border-brand/30 bg-brand/20' : 'border-[rgb(var(--border-strong))] bg-surface-1',
-                    )}
-                  >
-                    <span className={cn('h-3.5 w-3.5 rounded-full bg-white transition-transform', value.ai_bot_web_search_enabled === true ? 'translate-x-4' : 'translate-x-0')} />
-                  </span>
-                </button>
-                <p className="mt-1 text-tiny text-text-quaternary">
-                  Cho phép chế độ sâu tra know-how thị trường/ngành trên web (cần cấu hình API key phía server).
-                </p>
-              </div>
-            </div>
-
             <div>
               <label className="mb-1 block text-tiny font-strong text-text-secondary">API key</label>
               {value.ai_bot_key_configured && !value.ai_bot_key && (
@@ -267,16 +209,43 @@ export function PublicLinkAiBotEditor({ value, onChange, dashboardId }: PublicLi
               </p>
             </div>
 
-            <div>
-              <div className="mb-1 flex items-center justify-between gap-2">
-                <label className="block text-tiny font-strong text-text-secondary">
-                  System prompt — điều hướng AI đọc báo cáo
-                </label>
+            {/* Kept, and relabelled to what it now actually drives.
+                Chat stopped reading this — how the bot thinks is the chosen
+                flow's prompts. But the executive Brief and Explore features
+                still read it, so deleting the field would have quietly emptied
+                their context while reworking something else. Collapsed by
+                default so it stops competing with the choice above. */}
+            <div className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-2">
+              <button
+                type="button"
+                onClick={() => setNotesOpen((o) => !o)}
+                className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left"
+              >
+                <span className="text-tiny font-strong text-text-secondary">
+                  Ghi chú ngữ cảnh cho Brief &amp; Khám phá
+                  {systemPrompt ? (
+                    <span className="ml-1.5 text-tiny font-normal text-text-quaternary tabular-nums">
+                      ({systemPrompt.length} ký tự)
+                    </span>
+                  ) : null}
+                </span>
+                {notesOpen
+                  ? <ChevronDown className="h-3.5 w-3.5 flex-shrink-0 text-text-tertiary" />
+                  : <ChevronRight className="h-3.5 w-3.5 flex-shrink-0 text-text-tertiary" />}
+              </button>
+
+              {notesOpen && (
+            <div className="border-t border-[rgb(var(--border-line))] p-3">
+              <p className="mb-2 text-tiny leading-5 text-text-tertiary">
+                Chat <b>không</b> dùng ô này nữa — cách trả lời do luồng bạn chọn ở trên quyết định.
+                Hai tính năng còn đọc nó là <b>Brief điều hành</b> và <b>Khám phá</b>.
+              </p>
+              <div className="mb-1 flex items-center justify-end gap-2">
                 <AiButton
                   size="xs"
                   onClick={handleGenerate}
                   loading={generating}
-                  title="Để AI đọc báo cáo và viết nháp system prompt (bạn có thể sửa lại)"
+                  title="Để AI đọc báo cáo và viết nháp ghi chú (bạn có thể sửa lại)"
                 >
                   AI đọc &amp; viết giúp
                 </AiButton>
@@ -296,12 +265,14 @@ export function PublicLinkAiBotEditor({ value, onChange, dashboardId }: PublicLi
               />
               <div className="mt-1 flex items-center justify-between">
                 <p className="text-tiny text-text-quaternary">
-                  Được nạp vào prompt hệ thống của bot để bám đúng logic báo cáo. Không hiển thị cho người xem.
+                  Không hiển thị cho người xem.
                 </p>
                 <p className="text-tiny text-text-quaternary tabular-nums">
                   {systemPrompt.length}/{MAX_SYSTEM_PROMPT_CHARS}
                 </p>
               </div>
+            </div>
+              )}
             </div>
           </div>
         )}

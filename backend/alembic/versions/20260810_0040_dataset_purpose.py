@@ -6,16 +6,18 @@ default): a dataset that any Workboard is bound to → 'operational'; every othe
 dataset → 'reporting' (backward-compatible — no change to existing dashboards).
 
 Revision ID: 20260810_0040
-Revises: 20260807_0036
+Revises: 20260810_0039
 """
 from alembic import op
 import sqlalchemy as sa
 
 
 revision = "20260810_0040"
-# Chain from the COMMITTED head (0036). The 0037–0039 migrations are a concurrent
-# session's uncommitted WIP; chaining from them would break the committed tree.
-down_revision = "20260807_0036"
+# Chained AFTER 0039 (agent-flows refactor) so the history stays linear with a
+# single alembic head. Both 0037-0039 and 0040 landed in the same push; since
+# dataset_purpose is independent of the flow tables, ordering it after them does
+# not affect correctness and avoids a two-head `upgrade head` failure.
+down_revision = "20260810_0039"
 branch_labels = None
 depends_on = None
 

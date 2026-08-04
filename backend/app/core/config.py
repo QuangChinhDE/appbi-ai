@@ -130,16 +130,15 @@ class Settings(BaseSettings):
     AI_DEFAULT_TURNS_PER_HOUR: int = 120
     # Evidence ledger: persist one row per tool call so every number in an
     # answer can be traced back to the call that produced it.
-    INTELLIGENCE_EVIDENCE_ENABLED: bool = False
+    # ON by default. Verification is fail-closed, so an empty ledger would mean
+    # every figure is unverifiable — the ledger is no longer optional telemetry,
+    # it is the thing answers are checked against.
+    INTELLIGENCE_EVIDENCE_ENABLED: bool = True
     INTELLIGENCE_EVIDENCE_TTL_DAYS: int = 30
     # Deterministic answer verification. "log" records coverage only; "repair"
     # additionally asks the model to fix unsupported numbers. Needs the
     # evidence ledger to be on to do anything.
     INTELLIGENCE_VERIFIER_MODE: str = "off"       # off | log | repair
-    # Flow runtime: route turns through the versioned flow engine instead of
-    # calling the legacy agent directly. With no assistant bound to a link, the
-    # engine runs builtin_thinking_v1, which wraps that same legacy agent.
-    INTELLIGENCE_RUNTIME_ENABLED: bool = False
 
     # ── Filter-system migration toggles (PBI-parity migration) ──────────
     # Default OFF — legacy code path unchanged. Phase 0/1 ship the foundations;

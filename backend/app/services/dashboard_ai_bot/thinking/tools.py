@@ -1207,3 +1207,16 @@ from app.services.dashboard_ai_bot.knowledge import (  # noqa: E402
 
 TOOLS.update(KNOWLEDGE_TOOLS)
 TOOL_DEFINITIONS.extend(KNOWLEDGE_TOOL_DEFS)
+
+# ── Company knowledge (Govern) ──────────────────────────────────────────────
+# search_knowledge / read_document. Registered here for the same reason the
+# learning tools are: dispatch and the offered-tool list must see one registry.
+# Unlike the learning tools these are NOT always offered — they reach real
+# documents, so a step only gets them when its capabilities say so.
+from app.services.dashboard_ai_bot.govern_tools import (  # noqa: E402
+    GOVERN_TOOL_DEFS,
+    GOVERN_TOOLS,
+)
+
+TOOLS.update(GOVERN_TOOLS)
+TOOL_DEFINITIONS.extend(GOVERN_TOOL_DEFS)

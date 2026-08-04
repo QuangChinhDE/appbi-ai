@@ -40,7 +40,6 @@ import { cn } from '@/lib/utils';
 import { useCurrentUser } from '@/hooks/use-current-user';
 import { usePermissions, hasPermission } from '@/hooks/use-permissions';
 import { authApi } from '@/lib/api-client';
-import { reviewCount } from '@/lib/catalog';
 import { extractApiError } from '@/lib/api-errors';
 import { useNotifications, type AppNotification, type AppNotificationLevel } from '@/lib/notifications';
 import { useI18n } from '@/providers/LanguageProvider';
@@ -89,12 +88,8 @@ const NAV_GROUPS: NavGroup[] = [
     // one job each; all gated by the existing 'govern' permission key.
     labelKey: 'sidebar.group.intelligence',
     items: [
-      { labelKey: 'sidebar.nav.intelligence', href: '/intelligence', icon: <Gauge className="h-4 w-4" />, module: 'intelligence' },
-      { labelKey: 'sidebar.nav.aiInbox', href: '/ai-inbox', icon: <Inbox className="h-4 w-4" />, module: 'ai_inbox' },
-      { labelKey: 'sidebar.nav.semantics', href: '/semantics', icon: <LineChart className="h-4 w-4" />, module: 'semantics' },
-      { labelKey: 'sidebar.nav.aiGuidance', href: '/ai-guidance', icon: <Compass className="h-4 w-4" />, module: 'ai_guidance' },
-      { labelKey: 'sidebar.nav.aiFlows', href: '/ai-flows', icon: <Workflow className="h-4 w-4" />, module: 'ai_flows' },
-      { labelKey: 'sidebar.nav.govern', href: '/govern', icon: <Landmark className="h-4 w-4" />, module: 'govern' },
+      { labelKey: 'sidebar.nav.knowledgeHub', href: '/govern', icon: <Landmark className="h-4 w-4" />, module: 'govern' },
+      { labelKey: 'sidebar.nav.agentFlows', href: '/agent-flows', icon: <Workflow className="h-4 w-4" />, module: 'agent_flows' },
     ],
   },
   {
@@ -165,14 +160,6 @@ export function Sidebar({ isCollapsed, onToggleCollapse }: SidebarProps) {
   const perms = permData?.permissions;
   const canSee = (item: NavItem) => (item.module ? hasPermission(perms, item.module, 'view') : true);
 
-  // Pending count for the single review ledger (Đề xuất AI) — light poll.
-  const { data: reviewPending = 0 } = useQuery({
-    queryKey: ['govern-review-count'],
-    queryFn: reviewCount,
-    enabled: Boolean(perms) && hasPermission(perms, 'ai_inbox', 'view'),
-    refetchInterval: 90_000,
-    staleTime: 60_000,
-  });
   const visibleGroups = NAV_GROUPS
     .map((group) => ({ ...group, items: group.items.filter(canSee) }))
     .filter((group) => group.items.length > 0);
@@ -260,11 +247,6 @@ export function Sidebar({ isCollapsed, onToggleCollapse }: SidebarProps) {
                       </span>
                       {!isCollapsed && (
                         <span className="text-caption font-emphasis truncate">{label}</span>
-                      )}
-                      {!isCollapsed && item.href === '/ai-inbox' && reviewPending > 0 && (
-                        <span className="ml-auto flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-brand px-1 text-[10px] font-strong text-text-inverse">
-                          {reviewPending > 99 ? '99+' : reviewPending}
-                        </span>
                       )}
                     </Link>
                   </li>

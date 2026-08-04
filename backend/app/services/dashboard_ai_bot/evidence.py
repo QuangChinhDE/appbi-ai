@@ -131,6 +131,28 @@ def _source_ref(tool_name: str, args: dict | None, result: Any) -> dict:
     return ref
 
 
+#: Tools whose output must NEVER become verifier evidence.
+#:
+#: Evidence answers one question: "did this run actually measure that number?"
+#: A figure inside a document — a target, an example, last quarter quoted in a
+#: memo — was written by a person, not measured from the data on screen. Record
+#: it and the verifier will happily "confirm" a claim by matching it against
+#: prose, which is exactly the mistake it exists to catch.
+#: `web_search` / `fetch_url` are deliberately NOT here. By the same argument
+#: they should be — a figure on a web page is not a measurement either — but they
+#: record evidence today, and taking that away in this change would start
+#: stripping legitimately web-sourced figures (an industry benchmark, say) from
+#: answers, silently altering a feature this rework is not about. Their status is
+#: a verifier-policy question: the verifier needs a way to attribute a claim to a
+#: non-measured source rather than a binary matched/unmatched.
+NON_EVIDENTIAL_TOOLS: frozenset[str] = frozenset({
+    "search_knowledge",
+    "read_document",
+    "recall_knowledge",
+    "remember_fact",
+})
+
+
 def record_tool_evidence(
     *,
     run_ref: str,
@@ -150,6 +172,8 @@ def record_tool_evidence(
     the transaction the viewer's answer depends on.
     """
     if not settings.INTELLIGENCE_EVIDENCE_ENABLED:
+        return None
+    if tool_name in NON_EVIDENTIAL_TOOLS:
         return None
     try:
         from app.core.database import SessionLocal

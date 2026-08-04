@@ -38,8 +38,17 @@ const STATUS_TONE: Record<string, string> = {
 function errDetail(e: unknown): string | undefined {
   return (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
 }
-function emptyForm(homeDocId?: number | null): ManagedMetricWrite {
-  return { name: '', direction: 'neutral', status: 'Draft', synonyms: [], home_doc_id: homeDocId ?? null };
+function emptyForm(homeDocId?: number | null, datasetId?: number | null): ManagedMetricWrite {
+  // `dataset_id` is seeded, not left to the author. Every metric in this
+  // deployment was created unbound because the only place to make one was a global
+  // screen that never asked which dataset it described — nine rows that belonged
+  // to nothing, and had to be deleted. A metric created from inside a dataset
+  // belongs to that dataset from the first keystroke.
+  return {
+    name: '', direction: 'neutral', status: 'Draft', synonyms: [],
+    home_doc_id: homeDocId ?? null,
+    dataset_id: datasetId ?? null,
+  };
 }
 function grainLabel(grain: string | null | undefined, t: (key: string) => string): string {
   return t(`govern.metric.grain.${grain ?? ''}`);
@@ -64,9 +73,18 @@ function Field({ label, children, hint }: { label: string; children: ReactNode; 
  * Reusable managed-metric modal. `machineName === null` → create mode
  * (optionally bound to `defaultHomeDocId`). Otherwise edit/view an existing KPI.
  */
-export function MetricFormModal({ machineName, defaultHomeDocId, onClose, onChanged, onCreated, onOpenDoc }: {
+export function MetricFormModal({ machineName, defaultHomeDocId, defaultDatasetId, views = [], docs = [], onClose, onChanged, onCreated, onOpenDoc }: {
   machineName: string | null;                 // null = create
   defaultHomeDocId?: number | null;           // pre-bound SSOT doc for create-from-doc
+  defaultDatasetId?: number | null;           // the dataset this metric describes
+  /** This dataset's views, so Data link becomes two dropdowns instead of a
+   *  string somebody has to spell exactly right. */
+  views?: {
+    id: number; name: string; dataset_table_id?: number;
+    table_display_name?: string; measures: { name: string }[];
+  }[];
+  /** Knowledge docs, so Home doc stops asking for a numeric id. */
+  docs?: { id: number; title: string }[];
   onClose: () => void;
   onChanged?: () => Promise<void> | void;
   onCreated?: (machineName: string, name: string) => void;
@@ -76,7 +94,12 @@ export function MetricFormModal({ machineName, defaultHomeDocId, onClose, onChan
   const [detail, setDetail] = useState<ManagedMetricDetail | null>(null);
   const [loading, setLoading] = useState(!!machineName);
   const [mode, setMode] = useState<'view' | 'edit'>(machineName ? 'view' : 'edit');
-  const [form, setForm] = useState<ManagedMetricWrite>(() => emptyForm(defaultHomeDocId));
+  const [form, setForm] = useState<ManagedMetricWrite>(() => emptyForm(defaultHomeDocId, defaultDatasetId));
+  // Which view the Data link points at. Kept separately because `measure_ref` is a
+  // single string; derived from it on load so opening an existing metric shows the
+  // table already selected rather than blank.
+  const [linkViewId, setLinkViewId] = useState<number | null>(null);
+  const linkView = views.find((v) => v.id === linkViewId) ?? null;
   const [synText, setSynText] = useState('');
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -94,7 +117,14 @@ export function MetricFormModal({ machineName, defaultHomeDocId, onClose, onChan
     let on = true;
     setLoading(true);
     getManagedMetric(machineName)
-      .then((m) => { if (on) { setDetail(m); setForm(toForm(m)); setSynText((m.synonyms ?? []).join(', ')); } })
+      .then((m) => {
+        if (!on) return;
+        setDetail(m); setForm(toForm(m)); setSynText((m.synonyms ?? []).join(', '));
+        // Preselect the table the stored measure_ref names, so the dropdown opens
+        // on the right row instead of looking unset on an existing metric.
+        const tid = Number((/^dataset_table_(\d+)\./.exec(m.measure_ref || '') || [])[1] || 0);
+        if (tid) setLinkViewId(views.find((v) => (v.dataset_table_id ?? v.id) === tid)?.id ?? null);
+      })
       .catch(() => { if (on) toast.error(t('govern.metric.loadFailed')); })
       .finally(() => { if (on) setLoading(false); });
     return () => { on = false; };
@@ -168,7 +198,15 @@ export function MetricFormModal({ machineName, defaultHomeDocId, onClose, onChan
           <Field label={t('govern.metric.definition')} hint={t('govern.metric.definitionHint')}><Textarea rows={2} value={form.definition ?? ''} onChange={(e) => upd({ definition: e.target.value })} /></Field>
           <Field label={t('govern.metric.formula')} hint={t('govern.metric.formulaHint')}><Textarea rows={2} value={form.formula ?? ''} onChange={(e) => upd({ formula: e.target.value })} /></Field>
           <div className="grid grid-cols-3 gap-3">
-            <Field label={t('govern.metric.unit')}><Input value={form.unit ?? ''} onChange={(e) => upd({ unit: e.target.value })} placeholder={t('govern.metric.unitPlaceholder')} /></Field>
+            <Field label={t('govern.metric.unit')}>
+              {/* datalist, not a Select: these cover almost every metric but the list
+                  cannot be exhaustive, so typing something else must stay possible.
+                  A closed dropdown here would block a legitimate unit. */}
+              <Input list="metric-units" value={form.unit ?? ''} onChange={(e) => upd({ unit: e.target.value })} placeholder={t('govern.metric.unitPlaceholder')} />
+              <datalist id="metric-units">
+                {['VND', 'USD', '%', 'don', 'ngay', 'gio', 'khach', 'san pham', 'diem'].map((u) => <option key={u} value={u} />)}
+              </datalist>
+            </Field>
             <Field label={t('govern.metric.grain')}><Select value={form.grain ?? ''} onChange={(e) => upd({ grain: e.target.value })}>{GRAINS.map((g) => <option key={g} value={g}>{grainLabel(g, t)}</option>)}</Select></Field>
             <Field label={t('govern.metric.direction')}><Select value={form.direction ?? 'neutral'} onChange={(e) => upd({ direction: e.target.value as ManagedMetric['direction'] })}>{DIRECTIONS.map((d) => <option key={d} value={d}>{directionLabel(d, t)}</option>)}</Select></Field>
           </div>
@@ -181,9 +219,59 @@ export function MetricFormModal({ machineName, defaultHomeDocId, onClose, onChan
             <Field label={t('govern.metric.owner')}><Input value={form.owner ?? ''} onChange={(e) => upd({ owner: e.target.value })} placeholder={t('govern.metric.ownerPlaceholder')} /></Field>
           </div>
           <div className="grid grid-cols-3 gap-3">
-            <Field label={t('govern.metric.measureRef')} hint={t('govern.metric.measureRefHint')}><Input value={form.measure_ref ?? ''} onChange={(e) => upd({ measure_ref: e.target.value })} /></Field>
-            <Field label={t('govern.metric.relatedTerm')} hint={t('govern.metric.relatedTermHint')}><Input value={form.related_term_fqn ?? ''} onChange={(e) => upd({ related_term_fqn: e.target.value })} /></Field>
-            <Field label={t('govern.metric.homeDoc')} hint={t('govern.metric.homeDocHint')}><Input type="number" value={form.home_doc_id ?? ''} onChange={(e) => upd({ home_doc_id: e.target.value === '' ? null : Number(e.target.value) })} /></Field>
+            {/* Data link was one text box holding "dataset_table_437.on_time_rate" —
+                a string with a database id in it, typed from memory. Two dropdowns
+                off the dataset's own model produce the same value and cannot be
+                misspelled. Falls back to the text box when no views loaded, so a
+                metric authored outside a dataset is still editable. */}
+            {views.length > 0 ? (
+              <>
+                <Field label={t('govern.metric.linkTable')}>
+                  <Select
+                    value={linkView?.id != null ? String(linkView.id) : ''}
+                    onChange={(e) => setLinkViewId(e.target.value ? Number(e.target.value) : null)}
+                  >
+                    <option value="">{t('common.none')}</option>
+                    {/* display name, not `name` — that one is the physical view ("dataset_table_440")
+     and nobody can tell which table it is from the id. */}
+                    {views.map((v) => (
+                      <option key={v.id} value={v.id}>{v.table_display_name || v.name}</option>
+                    ))}
+                  </Select>
+                </Field>
+                <Field label={t('govern.metric.linkMeasure')} hint={t('govern.metric.measureRefHint')}>
+                  <Select
+                    value={form.measure_ref ?? ''}
+                    disabled={!linkView}
+                    onChange={(e) => upd({ measure_ref: e.target.value })}
+                  >
+                    <option value="">{t('common.none')}</option>
+                    {(linkView?.measures ?? []).map((m) => {
+                      const ref = `dataset_table_${linkView?.dataset_table_id ?? linkView?.id}.${m.name}`;
+                      return <option key={m.name} value={ref}>{m.name}</option>;
+                    })}
+                  </Select>
+                </Field>
+              </>
+            ) : (
+              <Field label={t('govern.metric.measureRef')} hint={t('govern.metric.measureRefHint')}><Input value={form.measure_ref ?? ''} onChange={(e) => upd({ measure_ref: e.target.value })} /></Field>
+            )}
+            <Field label={t('govern.metric.relatedTerm')} hint={t('govern.metric.relatedTermHint')}>
+              <Input value={form.related_term_fqn ?? ''} onChange={(e) => upd({ related_term_fqn: e.target.value })} />
+            </Field>
+            <Field label={t('govern.metric.homeDoc')} hint={t('govern.metric.homeDocHint')}>
+              {docs.length > 0 ? (
+                <Select
+                  value={form.home_doc_id != null ? String(form.home_doc_id) : ''}
+                  onChange={(e) => upd({ home_doc_id: e.target.value ? Number(e.target.value) : null })}
+                >
+                  <option value="">{t('common.none')}</option>
+                  {docs.map((d) => <option key={d.id} value={d.id}>{d.title}</option>)}
+                </Select>
+              ) : (
+                <Input type="number" value={form.home_doc_id ?? ''} onChange={(e) => upd({ home_doc_id: e.target.value === '' ? null : Number(e.target.value) })} />
+              )}
+            </Field>
           </div>
           <div className="grid grid-cols-2 gap-3">
             <Field label={t('govern.metric.synonyms')} hint={t('govern.metric.synonymsHint')}><Input value={synText} onChange={(e) => setSynText(e.target.value)} /></Field>

@@ -554,6 +554,9 @@ async def run_agent_stream(
     report_context_note: str = "",
     learned_knowledge_block: str = "",
     run_ref: str | None = None,
+    role_prompt: str = "",
+    tool_allowlist: set[str] | None = None,
+    owns_verification: bool = True,
 ) -> AsyncGenerator[AgentEvent, None]:
     """Run one chat turn end-to-end and yield AgentEvent objects.
 
@@ -561,6 +564,21 @@ async def run_agent_stream(
     user's latest question. Each entry is a dict with at minimum `role` and
     `content`. Assistant turns from previous rounds may also include
     ``tool_calls`` (see providers/anthropic_provider.py for the shape).
+
+    ``role_prompt`` and ``tool_allowlist`` are how a FLOW STEP narrows this same
+    loop into one specialist, instead of the flow forking its own copy.
+
+    `role_prompt` is APPENDED to the engine's system prompt, never a
+    replacement. That is deliberate: the base prompt carries the analysis
+    guardrails, the insight ladder, the citation/confidence contract and the
+    "answer in the language of the question" rule. A flow author writes what
+    this STEP is for; they do not get to delete the rules that keep answers
+    honest — and a pipeline built from replacement prompts would silently lose
+    every one of them.
+
+    `tool_allowlist` restricts which tools this step may call. A composer given
+    no tools cannot invent a number, because it has no way to fetch one; that
+    property is the point of splitting analysis from writing.
     """
     if not user_messages or not isinstance(user_messages, list):
         yield AgentEvent(type="error", text="No messages provided.")
@@ -615,6 +633,13 @@ async def run_agent_stream(
     # cross-surface TTL cache (warmed by /ai/recon on bot open) make the
     # common case instant.
     system_with_context = base_system
+    # A flow step's authored role, appended so the engine's rules stay above it.
+    if role_prompt.strip():
+        system_with_context += (
+            "\n\n═══ VAI TRÒ CỦA BƯỚC NÀY (do người dựng luồng viết) ═══\n"
+            + role_prompt.strip()
+            + "\n\nCác quy tắc phía trên vẫn có hiệu lực và không được bỏ qua."
+        )
     # Institutional memory: what the bot has LEARNED about this company across
     # prior sessions (validated concepts/facts/insights). Injected before recon
     # so domain understanding frames the fresh data read.
@@ -675,6 +700,16 @@ async def run_agent_stream(
     active_tools = (
         [*TOOL_DEFINITIONS, *EXTERNAL_TOOL_DEFS] if web_search_enabled else TOOL_DEFINITIONS
     )
+    if tool_allowlist is not None:
+        # A flow step declares its own toolset. An EMPTY allowlist is a real
+        # instruction — "this step may not fetch anything" — so it must yield an
+        # empty list, not fall back to everything. `is not None` rather than a
+        # truthiness test is doing that work.
+        active_tools = [t for t in active_tools if t.get("name") in tool_allowlist]
+        logger.info(
+            "[flow] step toolset narrowed to %d of %d tools",
+            len(active_tools), len(TOOL_DEFINITIONS),
+        )
 
     last_user_question = ""
     for msg in reversed(user_messages):
@@ -768,7 +803,10 @@ async def run_agent_stream(
                 messages=running,
                 # Disable tools once the budget is spent → the model must
                 # answer with what it has instead of looping on tool calls.
-                tools=None if force_no_tools else active_tools,
+                # `or None` covers a step whose allowlist filtered everything
+                # out: providers reject an empty tools array, and "no tools" is
+                # exactly what an empty allowlist means anyway.
+                tools=None if force_no_tools else (active_tools or None),
                 model=selected_model or None,
             )
             async for ev in gen:
@@ -1198,7 +1236,12 @@ async def run_agent_stream(
     # point: measure how often the assistant states a figure the evidence does
     # not support, on real traffic, before anything is allowed to act on it.
     # The event is emitted for the FE/telemetry; it does not alter the answer.
-    if run_ref and settings.INTELLIGENCE_VERIFIER_MODE != "off":
+    # A flow step must NOT verify: it produced part of a pipeline, not the
+    # answer. Each step running this block emitted its own verification event
+    # for a partial text, so a three-step flow reported three verdicts and the
+    # viewer's client kept the last one. The flow's Verify node is the single
+    # authority, and it is the only one that can still change the answer.
+    if owns_verification and run_ref and settings.INTELLIGENCE_VERIFIER_MODE != "off":
         try:
             verification = await asyncio.to_thread(
                 _verify_turn, run_ref, final_answer_text,
