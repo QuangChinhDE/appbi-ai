@@ -167,15 +167,19 @@ class GoogleSheetsConnector:
     def get_sheet_data(
         self,
         spreadsheet_id: str,
-        range_name: str = 'A:Z',
+        range_name: str = 'A:ZZ',
         sheet_name: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Get data from a Google Sheet.
-        
+
         Args:
             spreadsheet_id: The ID of the spreadsheet
-            range_name: The A1 notation range (default: 'A:Z')
+            range_name: The A1 notation range (default: 'A:ZZ' — up to 702
+                columns, matching the write path. The previous 'A:Z' cap
+                silently dropped every column past the 26th on read, so a
+                Sheet-backed table wider than 26 columns lost its tail
+                columns — while writes still touched them via 'A:ZZ'.)
             sheet_name: Optional sheet name (default: first sheet)
             
         Returns:
@@ -225,7 +229,7 @@ class GoogleSheetsConnector:
         self,
         spreadsheet_id: str,
         sheet_names: List[str],
-        range_name: str = 'A:Z',
+        range_name: str = 'A:ZZ',
     ) -> Dict[str, Dict[str, Any]]:
         """Fetch MANY tabs in ONE ``values.batchGet`` call → {sheet_name: {columns,
         rows, row_count}}. Replaces N sequential ``get_sheet_data`` calls: cuts a

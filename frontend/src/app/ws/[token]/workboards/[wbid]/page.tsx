@@ -3374,6 +3374,11 @@ function Field({
       : (lookupOpts as LookupOption[]).filter((o) => String(o.filter) === String(parentVal))
     : (lookupOpts as LookupOption[]);
 
+  // Declared here (before copy_columns / selectedOpt use it) — a lookup field
+  // with copy_columns reads stringValue in selectedOpt below; a later `const`
+  // would be a temporal-dead-zone crash ("Cannot access before initialization").
+  const stringValue = value == null ? '' : String(value);
+
   // Multi-column copy (lookup/select): on select, fill sibling fields (mode
   // 'fill') and/or surface a read-only reference panel (mode 'view') from the
   // picked row's carried `copy` values.
@@ -3401,7 +3406,6 @@ function Field({
   const viewCopies = copyCols.filter((cc) => cc.mode === 'view');
 
   const unit = field.unit ? String(field.unit) : '';
-  const stringValue = value == null ? '' : String(value);
   const baseInput =
     'w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-slate-500 focus:outline-none disabled:bg-slate-100 disabled:text-slate-500';
 
