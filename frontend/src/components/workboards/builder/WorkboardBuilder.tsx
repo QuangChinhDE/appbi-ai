@@ -739,8 +739,6 @@ export default function WorkboardBuilder({ workboard }: Props) {
                 <ExperienceStudioSection
                   layout={layout}
                   onChange={setLayout}
-                  screen={activeScreen}
-                  onScreenChange={updateScreen}
                   disabled={!canWrite}
                 />
               </div>

@@ -1783,8 +1783,13 @@ function ScreenContainer({
       </div>
     );
   }
-  const presentation =
-    presentationOverride === undefined ? data.presentation : presentationOverride;
+  // One shared system concept: per-screen presentation overrides are disabled —
+  // every screen renders from the single global Experience Studio
+  // (layout.experience). Any legacy per-screen `data.presentation` (and the
+  // builder-preview bridge's presentationOverride) is intentionally ignored so
+  // the whole mini-app stays visually consistent.
+  void presentationOverride;
+  const presentation: ScreenPresentation | null = null;
   const handleTableAction = async (
     action: ScreenAction,
     row: Record<string, unknown>,

@@ -29,8 +29,6 @@ import type {
   BrandingSpec,
   ExperienceSpec,
   PrintTemplateSpec,
-  ScreenPresentationSpec,
-  ScreenSpec,
   ThemeBackgroundSpec,
   ThemeMode,
   ThemeFont,
@@ -945,7 +943,6 @@ export function AutoNumberSection({
 // Edits layout.experience — the app-wide presentation contract. Additive +
 // cosmetic; never touches fields/columns/RLS/actions. Resolved server-side so
 // old boards (no experience block) render identically via the legacy adapter.
-type StudioCategory = 'theme' | 'shell' | 'navigation' | 'screen' | 'feedback';
 type ExperienceTheme = NonNullable<ExperienceSpec['theme']>;
 type ExperienceShell = NonNullable<ExperienceSpec['shell']>;
 type ExperienceNavigation = NonNullable<ExperienceSpec['navigation']>;
@@ -1026,28 +1023,18 @@ function TriStateSelect({
 export function ExperienceStudioSection({
   layout,
   onChange,
-  screen,
-  onScreenChange,
   disabled = false,
 }: {
   layout: MiniAppLayoutSpec;
   onChange: (next: MiniAppLayoutSpec) => void;
-  screen?: ScreenSpec | null;
-  onScreenChange?: (next: ScreenSpec) => void;
   disabled?: boolean;
 }) {
   const { t } = useI18n();
-  const [category, setCategory] = useState<StudioCategory>('theme');
   const exp: ExperienceSpec = layout.experience || {};
   const theme = exp.theme || {};
   const shell = exp.shell || {};
   const nav = exp.navigation || {};
   const feedback = exp.feedback || {};
-  const presentation = screen?.presentation || {};
-
-  useEffect(() => {
-    if (category === 'screen' && !screen) setCategory('theme');
-  }, [category, screen]);
 
   const writeExperience = (next: ExperienceSpec) => {
     const cleaned: ExperienceSpec = { ...next };
@@ -1088,53 +1075,11 @@ export function ExperienceStudioSection({
       ...exp,
       feedback: withoutUndefined({ ...feedback, ...patch }) as ExperienceFeedback,
     });
-  const resetCategory = () => {
-    if (category === 'screen') {
-      if (screen && onScreenChange) onScreenChange({ ...screen, presentation: null });
-      return;
-    }
+  const resetSection = (key: 'theme' | 'shell' | 'navigation' | 'feedback') => {
     const next = { ...exp };
-    delete next[category];
+    delete next[key];
     writeExperience(next);
   };
-  const setPresentation = (patch: Partial<ScreenPresentationSpec>) => {
-    if (!screen || !onScreenChange) return;
-    const next = withoutUndefined({ ...presentation, ...patch }) as ScreenPresentationSpec;
-    onScreenChange({ ...screen, presentation: Object.keys(next).length ? next : null });
-  };
-  const setFormPresentation = (
-    patch: Partial<NonNullable<ScreenPresentationSpec['form']>>,
-  ) => {
-    const next = withoutUndefined({ ...(presentation.form || {}), ...patch });
-    setPresentation({
-      form: Object.keys(next).length
-        ? (next as NonNullable<ScreenPresentationSpec['form']>)
-        : undefined,
-    });
-  };
-  const setTablePresentation = (
-    patch: Partial<NonNullable<ScreenPresentationSpec['table']>>,
-  ) => {
-    const next = withoutUndefined({ ...(presentation.table || {}), ...patch });
-    setPresentation({
-      table: Object.keys(next).length
-        ? (next as NonNullable<ScreenPresentationSpec['table']>)
-        : undefined,
-    });
-  };
-
-  const categories: Array<{
-    id: StudioCategory;
-    label: string;
-    icon: React.ElementType;
-    hidden?: boolean;
-  }> = [
-    { id: 'theme', label: t('workboards.settings.experience.theme'), icon: Palette },
-    { id: 'shell', label: t('workboards.settings.experience.shell'), icon: PanelLeft },
-    { id: 'navigation', label: t('workboards.settings.experience.navigation'), icon: Navigation },
-    { id: 'screen', label: t('workboards.settings.experience.screen'), icon: Monitor, hidden: !screen },
-    { id: 'feedback', label: t('workboards.settings.experience.feedback'), icon: MessageSquare },
-  ];
 
   const COLOR_TOKENS: Array<[keyof ExperienceTheme, string]> = [
     ['primary', t('workboards.settings.color.primary')],
@@ -1149,55 +1094,17 @@ export function ExperienceStudioSection({
     ['text', t('workboards.settings.color.text')],
   ];
 
+  // Flattened, single-pass editor: theme + shell + navigation + feedback all on
+  // one page (no internal tab switching). This is the ONE shared system concept
+  // for the whole mini-app; there is no per-screen style/color override anymore.
   return (
-    <div className="flex min-h-[560px] flex-col overflow-hidden rounded-lg border border-[rgb(var(--border-line))] bg-surface-0 md:flex-row">
-      <nav className="flex shrink-0 gap-1 overflow-x-auto border-b border-[rgb(var(--border-line))] bg-surface-1 p-2 md:w-40 md:flex-col md:border-b-0 md:border-r">
-        {categories.filter((item) => !item.hidden).map((item) => {
-          const Icon = item.icon;
-          const active = category === item.id;
-          return (
-            <button
-              key={item.id}
-              type="button"
-              onClick={() => setCategory(item.id)}
-              className={`flex min-h-10 shrink-0 items-center gap-2 rounded-md px-3 py-2 text-left text-caption font-medium transition-colors ${
-                active
-                  ? 'bg-brand/10 text-brand'
-                  : 'text-text-secondary hover:bg-surface-2 hover:text-text-primary'
-              }`}
-            >
-              <Icon className="h-4 w-4 shrink-0" />
-              {item.label}
-            </button>
-          );
-        })}
-      </nav>
-
-      <fieldset disabled={disabled} className="min-w-0 flex-1">
-        <div className="sticky top-0 z-10 flex min-h-12 items-center justify-between border-b border-[rgb(var(--border-line))] bg-surface-0/95 px-4 backdrop-blur">
-          <div className="min-w-0">
-            <h3 className="truncate text-caption font-emphasis text-text-primary">
-              {category === 'screen'
-                ? screen?.title || t('workboards.settings.experience.currentScreen')
-                : categories.find((item) => item.id === category)?.label}
-            </h3>
-            {category === 'screen' && (
-              <span className="text-tiny uppercase text-text-quaternary">{screen?.kind}</span>
-            )}
-          </div>
-          <button
-            type="button"
-            onClick={resetCategory}
-            className="inline-flex items-center gap-1.5 rounded-md px-2 py-1.5 text-tiny font-medium text-text-tertiary hover:bg-surface-2 hover:text-text-primary"
-          >
-            <RotateCcw className="h-3.5 w-3.5" />
-            {t('workboards.settings.inherit')}
-          </button>
-        </div>
-
-        <div className="space-y-6 p-4">
-          {category === 'theme' && (
-            <>
+    <fieldset disabled={disabled} className="min-w-0 space-y-5">
+      <StudioSection
+        icon={Palette}
+        title={t('workboards.settings.experience.theme')}
+        onReset={() => resetSection('theme')}
+      >
+        <div className="space-y-6">
               <section>
                 <h4 className={SECTION_H}>{t('workboards.settings.themePresets')}</h4>
                 <p className="mb-2 text-tiny text-text-tertiary">
@@ -1362,10 +1269,14 @@ export function ExperienceStudioSection({
                   </select>
                 </Lbl>
               </section>
-            </>
-          )}
+        </div>
+      </StudioSection>
 
-          {category === 'shell' && (
+      <StudioSection
+        icon={PanelLeft}
+        title={t('workboards.settings.experience.shell')}
+        onReset={() => resetSection('shell')}
+      >
             <section className="grid gap-3 sm:grid-cols-2">
               <Lbl label={t('workboards.settings.contentWidth')}>
                 <select
@@ -1439,9 +1350,13 @@ export function ExperienceStudioSection({
                 />
               </Lbl>
             </section>
-          )}
+      </StudioSection>
 
-          {category === 'navigation' && (
+      <StudioSection
+        icon={Navigation}
+        title={t('workboards.settings.experience.navigation')}
+        onReset={() => resetSection('navigation')}
+      >
             <section className="grid gap-3 sm:grid-cols-2">
               <Lbl label={t('workboards.settings.desktop')}>
                 <select
@@ -1518,9 +1433,13 @@ export function ExperienceStudioSection({
                 />
               </Lbl>
             </section>
-          )}
+      </StudioSection>
 
-          {category === 'feedback' && (
+      <StudioSection
+        icon={MessageSquare}
+        title={t('workboards.settings.experience.feedback')}
+        onReset={() => resetSection('feedback')}
+      >
             <section className="grid gap-3 sm:grid-cols-2">
               <Lbl label={t('workboards.settings.loadingState')}>
                 <select
@@ -1586,196 +1505,40 @@ export function ExperienceStudioSection({
                 />
               </Lbl>
             </section>
-          )}
+      </StudioSection>
+    </fieldset>
+  );
+}
 
-          {category === 'screen' && screen && (
-            <>
-              <section className="grid gap-3 sm:grid-cols-2">
-                <Lbl label={t('workboards.settings.contentWidth')}>
-                  <select
-                    value={presentation.content_width || ''}
-                    onChange={(event) =>
-                      setPresentation({
-                        content_width: (event.target.value || undefined) as ScreenPresentationSpec['content_width'],
-                      })
-                    }
-                    className={INPUT}
-                  >
-                    <option value="">{t('workboards.settings.followApp')}</option>
-                    <option value="narrow">{t('workboards.settings.option.narrow')}</option>
-                    <option value="standard">{t('workboards.settings.option.standard')}</option>
-                    <option value="wide">{t('workboards.settings.option.wide')}</option>
-                  </select>
-                </Lbl>
-                <Lbl label={t('workboards.settings.density')}>
-                  <select
-                    value={presentation.density || ''}
-                    onChange={(event) =>
-                      setPresentation({
-                        density: (event.target.value || undefined) as ScreenPresentationSpec['density'],
-                      })
-                    }
-                    className={INPUT}
-                  >
-                    <option value="">{t('workboards.settings.followApp')}</option>
-                    <option value="compact">{t('workboards.settings.option.compact')}</option>
-                    <option value="cozy">{t('workboards.settings.option.cozy')}</option>
-                    <option value="comfortable">{t('workboards.settings.option.comfortable')}</option>
-                  </select>
-                </Lbl>
-                <Lbl label={t('workboards.settings.paddingPx')}>
-                  <input
-                    type="number"
-                    min={0}
-                    max={64}
-                    value={presentation.page_padding ?? ''}
-                    onChange={(event) =>
-                      setPresentation({
-                        page_padding: event.target.value ? Number(event.target.value) : undefined,
-                      })
-                    }
-                    className={INPUT}
-                    placeholder={t('workboards.settings.followApp')}
-                  />
-                </Lbl>
-                <Lbl label={t('workboards.settings.cardRadiusPx')}>
-                  <input
-                    type="number"
-                    min={0}
-                    max={32}
-                    value={presentation.card_radius ?? ''}
-                    onChange={(event) =>
-                      setPresentation({
-                        card_radius: event.target.value ? Number(event.target.value) : undefined,
-                      })
-                    }
-                    className={INPUT}
-                    placeholder={t('workboards.settings.followApp')}
-                  />
-                </Lbl>
-                <Lbl label={t('workboards.settings.elevation')}>
-                  <select
-                    value={presentation.shadow || ''}
-                    onChange={(event) =>
-                      setPresentation({
-                        shadow: (event.target.value || undefined) as ScreenPresentationSpec['shadow'],
-                      })
-                    }
-                    className={INPUT}
-                  >
-                    <option value="">{t('workboards.settings.followApp')}</option>
-                    <option value="none">{t('workboards.settings.option.none')}</option>
-                    <option value="small">{t('workboards.settings.option.small')}</option>
-                    <option value="medium">{t('workboards.settings.option.medium')}</option>
-                    <option value="large">{t('workboards.settings.option.large')}</option>
-                  </select>
-                </Lbl>
-                <Lbl label={t('workboards.settings.motion')}>
-                  <select
-                    value={presentation.motion || ''}
-                    onChange={(event) =>
-                      setPresentation({
-                        motion: (event.target.value || undefined) as ScreenPresentationSpec['motion'],
-                      })
-                    }
-                    className={INPUT}
-                  >
-                    <option value="">{t('workboards.settings.followApp')}</option>
-                    <option value="instant">{t('workboards.settings.option.instant')}</option>
-                    <option value="standard">{t('workboards.settings.option.standard')}</option>
-                    <option value="expressive">{t('workboards.settings.option.expressive')}</option>
-                  </select>
-                </Lbl>
-              </section>
-
-              {screen.kind === 'form' && (
-                <section className="grid gap-3 border-t border-[rgb(var(--border-line))] pt-5 sm:grid-cols-2">
-                  <Lbl label={t('workboards.settings.columnCountLabel')}>
-                    <select
-                      value={presentation.form?.columns || ''}
-                      onChange={(event) =>
-                        setFormPresentation({
-                          columns: event.target.value
-                            ? (Number(event.target.value) as 1 | 2 | 3)
-                            : undefined,
-                        })
-                      }
-                      className={INPUT}
-                    >
-                      <option value="">{t('workboards.settings.auto')}</option>
-                      <option value="1">{t('workboards.settings.oneColumn')}</option>
-                      <option value="2">{t('workboards.settings.twoColumns')}</option>
-                      <option value="3">{t('workboards.settings.threeColumns')}</option>
-                    </select>
-                  </Lbl>
-                  <Lbl label={t('workboards.settings.sectionStyle')}>
-                    <select
-                      value={presentation.form?.section_style || ''}
-                      onChange={(event) =>
-                        setFormPresentation({
-                          section_style: (event.target.value || undefined) as NonNullable<ScreenPresentationSpec['form']>['section_style'],
-                        })
-                      }
-                      className={INPUT}
-                    >
-                      <option value="">{t('workboards.settings.option.plain')}</option>
-                      <option value="divided">{t('workboards.settings.option.divided')}</option>
-                      <option value="surface">{t('workboards.settings.option.surface')}</option>
-                    </select>
-                  </Lbl>
-                  <Lbl label={t('workboards.settings.stickyActionBar')}>
-                    <TriStateSelect
-                      value={presentation.sticky_action_bar}
-                      onChange={(sticky_action_bar) => setPresentation({ sticky_action_bar })}
-                    />
-                  </Lbl>
-                </section>
-              )}
-
-              {screen.kind === 'table' && (
-                <section className="grid gap-3 border-t border-[rgb(var(--border-line))] pt-5 sm:grid-cols-2">
-                  <Lbl label={t('workboards.settings.stickyTableHeader')}>
-                    <TriStateSelect
-                      value={presentation.table?.sticky_header}
-                      onChange={(sticky_header) => setTablePresentation({ sticky_header })}
-                    />
-                  </Lbl>
-                  <Lbl label={t('workboards.settings.rowHeight')}>
-                    <select
-                      value={presentation.table?.row_height || ''}
-                      onChange={(event) =>
-                        setTablePresentation({
-                          row_height: (event.target.value || undefined) as NonNullable<ScreenPresentationSpec['table']>['row_height'],
-                        })
-                      }
-                      className={INPUT}
-                    >
-                      <option value="">{t('workboards.settings.followApp')}</option>
-                      <option value="compact">{t('workboards.settings.option.compact')}</option>
-                      <option value="cozy">{t('workboards.settings.option.cozy')}</option>
-                      <option value="comfortable">{t('workboards.settings.option.comfortable')}</option>
-                    </select>
-                  </Lbl>
-                  <Lbl label={t('workboards.settings.filterPosition')}>
-                    <select
-                      value={presentation.table?.filter_position || ''}
-                      onChange={(event) =>
-                        setTablePresentation({
-                          filter_position: (event.target.value || undefined) as NonNullable<ScreenPresentationSpec['table']>['filter_position'],
-                        })
-                      }
-                      className={INPUT}
-                    >
-                      <option value="">{t('workboards.settings.option.top')}</option>
-                      <option value="sticky">{t('workboards.settings.option.stickyTop')}</option>
-                    </select>
-                  </Lbl>
-                </section>
-              )}
-            </>
-          )}
-        </div>
-      </fieldset>
-    </div>
+function StudioSection({
+  icon: Icon,
+  title,
+  onReset,
+  children,
+}: {
+  icon: React.ElementType;
+  title: string;
+  onReset: () => void;
+  children: React.ReactNode;
+}) {
+  const { t } = useI18n();
+  return (
+    <section className="overflow-hidden rounded-lg border border-[rgb(var(--border-line))] bg-surface-0">
+      <div className="flex min-h-11 items-center justify-between gap-2 border-b border-[rgb(var(--border-line))] bg-surface-1 px-4">
+        <h3 className="flex items-center gap-2 text-caption font-emphasis text-text-primary">
+          <Icon className="h-4 w-4 text-text-tertiary" />
+          {title}
+        </h3>
+        <button
+          type="button"
+          onClick={onReset}
+          className="inline-flex items-center gap-1.5 rounded-md px-2 py-1.5 text-tiny font-medium text-text-tertiary hover:bg-surface-2 hover:text-text-primary"
+        >
+          <RotateCcw className="h-3.5 w-3.5" />
+          {t('workboards.settings.inherit')}
+        </button>
+      </div>
+      <div className="space-y-5 p-4">{children}</div>
+    </section>
   );
 }
