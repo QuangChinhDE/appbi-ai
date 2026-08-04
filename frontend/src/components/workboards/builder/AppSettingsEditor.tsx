@@ -14,6 +14,7 @@
 
 import React, { useEffect, useState } from 'react';
 import {
+  Check,
   MessageSquare,
   Monitor,
   Navigation,
@@ -37,6 +38,7 @@ import type {
 } from './types';
 import { INPUT, Lbl } from './ScreenEditor';
 import { GRADIENT_PRESETS } from '@/lib/wb-theme';
+import { THEME_PRESETS } from './themePresets';
 import type { Dataset } from '@/hooks/use-datasets';
 import { useI18n } from '@/providers/LanguageProvider';
 
@@ -1196,6 +1198,65 @@ export function ExperienceStudioSection({
         <div className="space-y-6 p-4">
           {category === 'theme' && (
             <>
+              <section>
+                <h4 className={SECTION_H}>{t('workboards.settings.themePresets')}</h4>
+                <p className="mb-2 text-tiny text-text-tertiary">
+                  {t('workboards.settings.themePresetsHint')}
+                </p>
+                <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+                  {THEME_PRESETS.map((preset) => {
+                    const active = exp.preset === preset.id;
+                    const p = preset.theme;
+                    return (
+                      <button
+                        key={preset.id}
+                        type="button"
+                        onClick={() =>
+                          writeExperience({ ...exp, preset: preset.id, theme: { ...p } })
+                        }
+                        className={`rounded-lg border p-2 text-left transition-colors ${
+                          active
+                            ? 'border-brand ring-1 ring-brand'
+                            : 'border-[rgb(var(--border-line))] hover:bg-surface-2'
+                        }`}
+                      >
+                        {/* Mini app-preview: background frame → surface card with
+                            a primary dot, a text line and accent chips. */}
+                        <div
+                          className="mb-1.5 rounded-md p-1.5"
+                          style={{ background: p.background }}
+                        >
+                          <div
+                            className="flex items-center gap-1 rounded p-1.5"
+                            style={{ background: p.surface, border: `1px solid ${p.border}` }}
+                          >
+                            <span
+                              className="h-3 w-3 shrink-0 rounded-full"
+                              style={{ background: p.primary }}
+                            />
+                            <span
+                              className="h-1.5 flex-1 rounded"
+                              style={{ background: p.text, opacity: 0.7 }}
+                            />
+                            <span className="h-2.5 w-2.5 rounded-sm" style={{ background: p.info }} />
+                            <span className="h-2.5 w-2.5 rounded-sm" style={{ background: p.success }} />
+                            <span className="h-2.5 w-2.5 rounded-sm" style={{ background: p.danger }} />
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-1">
+                          <span className="text-caption font-emphasis text-text-primary">
+                            {preset.name}
+                          </span>
+                          {active && <Check className="h-3.5 w-3.5 text-brand" />}
+                        </div>
+                        <span className="mt-0.5 block text-tiny leading-snug text-text-tertiary">
+                          {preset.hint}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </section>
               <section>
                 <h4 className={SECTION_H}>{t('workboards.settings.semanticColors')}</h4>
                 <div className="grid gap-2 lg:grid-cols-2">
