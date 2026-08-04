@@ -2273,6 +2273,20 @@ function FormScreen({
   >;
   const fieldLabels: Record<string, string> = {};
   for (const f of allFields) fieldLabels[String(f.column)] = String(f.label || f.column);
+  // Carried-context banner: values passed in from a row action (shared context)
+  // that are NOT editable fields — surfaced read-only so the user sees WHICH
+  // record they're acting on (e.g. the violation being explained), not just an
+  // opaque id. The author opts a column in by adding it to the screen's
+  // ``column_labels`` (which also supplies the display label).
+  const ctxLabels =
+    ((spec as unknown as { column_labels?: Record<string, string> }).column_labels) || {};
+  const ctxFieldCols = new Set(allFields.map((f) => String(f.column)));
+  const contextEntries = Object.entries(shared || {}).filter(([k, v]) => {
+    if (k.startsWith('__')) return false;
+    if (ctxFieldCols.has(k)) return false;
+    if (!(k in ctxLabels)) return false;
+    return v !== undefined && v !== null && String(v).trim() !== '';
+  });
   // Distribute fields per page when multi-page; default page=1 for unassigned fields.
   const fieldsByPage: Record<number, RuntimeField[]> = {};
   for (const f of allFields) {
@@ -2803,19 +2817,57 @@ function FormScreen({
       ...derivedSections,
     ]),
   );
-  const formColumns = presentation?.form?.columns;
+  // Default to a responsive 2-column grid + carded sections so a form fills its
+  // frame instead of a sparse single column of full-width inputs on desktop.
+  // A tiny form (≤2 fields, no named sections) stays single-column so it isn't
+  // awkwardly split. The author can still override via presentation.form.
+  const _fieldCount = (spec.fields as unknown[] | undefined)?.length || 0;
+  const _hasSections = sectionOrder.some((s) => s !== '_default');
+  const formColumns =
+    presentation?.form?.columns ?? (_fieldCount > 2 || _hasSections ? 2 : 1);
   const formGridClass =
     formColumns === 3
-      ? 'grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3'
+      ? 'grid grid-cols-1 gap-x-5 gap-y-4 md:grid-cols-2 xl:grid-cols-3'
       : formColumns === 2
-        ? 'grid grid-cols-1 gap-3 sm:grid-cols-2'
-        : 'space-y-3';
-  const sectionStyle = presentation?.form?.section_style || 'plain';
+        ? 'grid grid-cols-1 gap-x-5 gap-y-4 sm:grid-cols-2'
+        : 'space-y-4';
+  const sectionStyle =
+    presentation?.form?.section_style || (_hasSections ? 'surface' : 'plain');
+  // Widgets that need the full row width even inside a multi-column grid.
+  const WIDE_WIDGETS = new Set([
+    'textarea', 'rich_text', 'images', 'image', 'file', 'signature',
+    'map', 'video', 'audio', 'geopoint', 'qr', 'enum_list',
+  ]);
+  const wideSpanClass =
+    formColumns === 3 ? 'md:col-span-2 xl:col-span-3'
+      : formColumns === 2 ? 'sm:col-span-2' : '';
 
   return (
-    <div className="mx-auto w-full max-w-3xl rounded-xl bg-white p-5 shadow-sm sm:p-6 xl:max-w-5xl 2xl:max-w-6xl">
+    <div className="mx-auto w-full max-w-4xl rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm ring-1 ring-black/[0.02] sm:p-7">
       {spec.description && (
         <p className="mb-4 text-sm text-slate-500">{spec.description}</p>
+      )}
+
+      {contextEntries.length > 0 && (
+        <div className="mb-5 rounded-xl border border-slate-200/80 bg-slate-50/70 p-4 sm:p-5">
+          <dl className="grid grid-cols-1 gap-x-6 gap-y-3 sm:grid-cols-2">
+            {contextEntries.map(([k, v]) => (
+              <div key={k} className="flex items-start gap-2">
+                <span
+                  className="mt-1 h-3.5 w-1 shrink-0 rounded-full"
+                  style={{ backgroundColor: accent }}
+                  aria-hidden
+                />
+                <div className="min-w-0">
+                  <dt className="text-[11px] font-medium uppercase tracking-wide text-slate-400">
+                    {ctxLabels[k] || k}
+                  </dt>
+                  <dd className="break-words text-sm font-medium text-slate-800">{String(v)}</dd>
+                </div>
+              </div>
+            ))}
+          </dl>
+        </div>
       )}
 
       {relationContext && (
@@ -2934,7 +2986,7 @@ function FormScreen({
               key={sec}
               className={`${formGridClass} ${
                 sectionStyle === 'surface'
-                  ? 'rounded-lg border border-slate-200 bg-slate-50 p-4'
+                  ? 'rounded-xl border border-slate-200/80 bg-slate-50/60 p-4 sm:p-5'
                   : sectionStyle === 'divided'
                     ? 'border-b border-slate-200 pb-5'
                     : ''
@@ -2942,7 +2994,7 @@ function FormScreen({
             >
               {sec !== '_default' && (
                 <h3
-                  className={`border-b border-slate-200 pb-1 text-sm font-semibold text-slate-800 ${
+                  className={`flex items-center gap-2 text-sm font-semibold tracking-tight text-slate-800 ${
                     formColumns === 3
                       ? 'md:col-span-2 xl:col-span-3'
                       : formColumns === 2
@@ -2950,20 +3002,23 @@ function FormScreen({
                         : ''
                   }`}
                 >
+                  <span className="h-4 w-1 rounded-full" style={{ backgroundColor: accent }} />
                   {sec}
                 </h3>
               )}
               {list.map((field) => {
                 const col = String(field.column || '');
                 const isOcr = ocrFilled.has(col);
+                const spanCls = WIDE_WIDGETS.has(String(field.widget || 'text'))
+                  ? wideSpanClass
+                  : '';
                 return (
                   <div
                     key={col}
-                    className={
-                      isOcr
-                        ? 'relative rounded-lg bg-amber-50 p-2 ring-1 ring-amber-300'
-                        : undefined
-                    }
+                    className={[
+                      spanCls,
+                      isOcr ? 'relative rounded-lg bg-amber-50 p-2 ring-1 ring-amber-300' : '',
+                    ].filter(Boolean).join(' ') || undefined}
                   >
                     {isOcr && (
                       <span className="absolute right-2 top-2 z-10 rounded bg-amber-500 px-1.5 py-0.5 text-[9px] font-bold text-white">
@@ -8506,11 +8561,21 @@ function TableScreen({
       )}
 
       {Array.isArray(current.stat_tiles) && current.stat_tiles.length > 0 && (
-        <div className="grid min-w-0 gap-2 px-2 py-2 sm:grid-cols-2 lg:grid-cols-4">
+        <div className="grid min-w-0 gap-3 px-1 py-3 sm:grid-cols-2 lg:grid-cols-4">
           {current.stat_tiles.map((tile, i) => (
-            <div key={i} className="rounded-lg border border-slate-200 bg-white px-3 py-2">
-              <div className="truncate text-xs text-slate-500">{tile.label}</div>
-              <div className="mt-0.5 text-lg font-semibold text-slate-800">
+            <div
+              key={i}
+              className="relative overflow-hidden rounded-xl border border-slate-200/80 bg-gradient-to-br from-white to-slate-50/80 px-4 py-3 shadow-sm"
+            >
+              <span
+                className="absolute inset-y-0 left-0 w-1"
+                style={{ backgroundColor: accent }}
+                aria-hidden
+              />
+              <div className="truncate text-[11px] font-medium uppercase tracking-wide text-slate-500">
+                {tile.label}
+              </div>
+              <div className="mt-1 text-2xl font-bold tracking-tight text-slate-900">
                 {tile.value == null || tile.value === '' ? (
                   '—'
                 ) : (
@@ -8789,7 +8854,7 @@ function TableScreen({
                   <th
                     key={c}
                     style={colWidthStyle(c)}
-                    className={`px-3 py-2 text-xs font-semibold text-slate-600 ${alignByCol[c] || 'text-left'}`}
+                    className={`whitespace-nowrap px-3 py-2.5 text-[11px] font-semibold uppercase tracking-wide text-slate-500 ${alignByCol[c] || 'text-left'}`}
                   >
                     {headerLabel}
                     {requiredCols.has(c) ? <span className="ml-0.5 text-red-500">*</span> : null}

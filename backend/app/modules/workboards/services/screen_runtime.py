@@ -1703,6 +1703,11 @@ def render_form_screen(
         "description": screen.description,
         "table_id": screen.table_id,
         "primary_key_columns": list(screen.primary_key_columns or []),
+        # Friendly labels for BOTH form fields and any carried-context columns
+        # (values passed in from a row action that aren't editable fields). The
+        # FE renders the latter as a read-only context banner above the form so
+        # the user sees which record they're acting on.
+        "column_labels": dict(screen.column_labels or {}),
         "submit_label": screen.form.submit_label,
         "fields": [_emit_field(field) for field in screen.form.fields],
         "lookups": lookups,
