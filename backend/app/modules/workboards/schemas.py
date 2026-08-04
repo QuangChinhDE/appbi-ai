@@ -2469,6 +2469,48 @@ class PrintTemplate(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
 
+class LookupFillMap(BaseModel):
+    """One dim→local column copy for a lookup write-back."""
+
+    from_column: str = Field(..., min_length=1, description="Column in the dimension table to read.")
+    into_column: str = Field(..., min_length=1, description="Local column the value is written into.")
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class LookupWritebackConfig(BaseModel):
+    """Materialise (denormalise) columns from a dimension/reference table INTO
+    the row at write time, and PERSIST them to the store.
+
+    Unlike a display-time lookup — which resolves the dim columns only when
+    rendering and never stores them — this writes the resolved values into real
+    columns of the row on submit, so they land in the store (e.g. the Google
+    Sheet cells) alongside the key. Example: a fault-note form stores an error
+    code in ``key_column``; on submit the server resolves the error dimension
+    (``dim_table_id``) by that code (``match_column``) and writes ten_loi /
+    nhom_loi / … into the local columns named in ``fill``.
+
+    Applied on insert AND update (re-resolved when the key changes) in the write
+    service, right after auto-number.
+    """
+
+    table_id: Optional[int] = Field(
+        default=None,
+        gt=0,
+        description="Only apply when the write targets this dataset table (None = the workboard's primary table).",
+    )
+    key_column: str = Field(..., min_length=1, description="Local column holding the picked key (e.g. ma_loi).")
+    dim_table_id: int = Field(..., gt=0, description="Dataset table id of the dimension/reference to resolve against.")
+    match_column: str = Field(..., min_length=1, description="Column in the dim table matched against key_column's value.")
+    fill: List[LookupFillMap] = Field(default_factory=_builtins.list, description="Dim→local column copies to persist.")
+    overwrite_on_update: bool = Field(
+        default=True,
+        description="Re-resolve and overwrite the fill columns on update (e.g. the key changed). False = fill once on insert only.",
+    )
+
+    model_config = ConfigDict(extra="ignore")
+
+
 class LayoutJson(BaseModel):
     """Top-level workboard layout payload.
 
@@ -2482,6 +2524,10 @@ class LayoutJson(BaseModel):
     branding: BrandingConfig = Field(default_factory=BrandingConfig)
     audit: AuditConfig = Field(default_factory=AuditConfig)
     auto_number_columns: List[AutoNumberConfig] = Field(default_factory=_builtins.list)
+    # Lookup write-back: denormalise dim columns into the row on submit and
+    # persist them to the store (so a Sheets-backed store gets the values, not
+    # just a render-time lookup). Applied by the write service.
+    lookup_writeback: List[LookupWritebackConfig] = Field(default_factory=_builtins.list)
     # Named groups of screens (UI: "Workspace"). Empty = flat nav (today's
     # behaviour). Additive + backward-compatible; see ScreenGroup.
     screen_groups: List[ScreenGroup] = Field(default_factory=_builtins.list)
