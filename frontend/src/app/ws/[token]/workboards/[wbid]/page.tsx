@@ -261,6 +261,8 @@ interface LookupOption {
   lat?: unknown;
   lng?: unknown;
   filter?: unknown;
+  // Multi-column copy: extra columns pulled from this row (source_column → value).
+  copy?: Record<string, unknown>;
 }
 
 interface RuntimeFormSpecExtras {
@@ -2986,6 +2988,9 @@ function FormScreen({
                             return n;
                           });
                       }}
+                      onCopyFill={(patch) =>
+                        setValues((curr) => ({ ...curr, ...patch }))
+                      }
                     />
                   </div>
                 );
@@ -3304,6 +3309,7 @@ function Field({
   lookups,
   value,
   onChange,
+  onCopyFill,
   evalCtx,
   autoNumberSet,
   autoNumberMeta,
@@ -3314,6 +3320,9 @@ function Field({
   lookups: Record<string, LookupOption[]>;
   value: unknown;
   onChange: (v: unknown) => void;
+  /** Merge several sibling field values at once — used when a lookup selection
+   * auto-fills other form fields (copy_columns mode='fill'). */
+  onCopyFill?: (patch: Record<string, unknown>) => void;
   evalCtx?: RuntimeEvalCtx;
   autoNumberSet?: Set<string>;
   autoNumberMeta?: Record<string, { scope_columns?: string[]; date_column?: string | null; missing_scope_behavior?: string }>;
@@ -3365,6 +3374,32 @@ function Field({
       : (lookupOpts as LookupOption[]).filter((o) => String(o.filter) === String(parentVal))
     : (lookupOpts as LookupOption[]);
 
+  // Multi-column copy (lookup/select): on select, fill sibling fields (mode
+  // 'fill') and/or surface a read-only reference panel (mode 'view') from the
+  // picked row's carried `copy` values.
+  const copyCols =
+    (((field.lookup as Record<string, unknown> | undefined)?.copy_columns as
+      | Array<{ source_column: string; mode?: string; target_field?: string | null; label?: string | null }>
+      | undefined) ?? []).filter((c) => c && c.source_column);
+  const selectedOpt =
+    copyCols.length > 0
+      ? (effectiveOpts as LookupOption[]).find((o) => String(o.value) === stringValue)
+      : undefined;
+  const applyCopyFill = (picked: string) => {
+    if (!copyCols.length || !onCopyFill) return;
+    const opt = (effectiveOpts as LookupOption[]).find((o) => String(o.value) === String(picked));
+    const copied = opt?.copy;
+    if (!copied) return;
+    const patch: Record<string, unknown> = {};
+    for (const cc of copyCols) {
+      if ((cc.mode || 'fill') === 'fill' && cc.target_field) {
+        patch[cc.target_field] = copied[cc.source_column];
+      }
+    }
+    if (Object.keys(patch).length) onCopyFill(patch);
+  };
+  const viewCopies = copyCols.filter((cc) => cc.mode === 'view');
+
   const unit = field.unit ? String(field.unit) : '';
   const stringValue = value == null ? '' : String(value);
   const baseInput =
@@ -3399,39 +3434,62 @@ function Field({
           {help || rt('workboards.runtime.agree')}
         </label>
       ) : widget === 'select' || widget === 'lookup' ? (
-        shouldShowSearch(field.searchable, effectiveOpts.length) ? (
-          <SearchableSelect
-            value={stringValue}
-            onChange={(v) => onChange(v)}
-            options={effectiveOpts as LookupOption[]}
-            disabled={readonly}
-            placeholder={
-              filterByField && (parentVal == null || parentVal === '')
-                ? rt('workboards.runtime.selectParentFirst')
-                : rt('workboards.runtime.selectPlaceholder')
-            }
-            allowSearch
-          />
-        ) : (
-          <select
-            value={stringValue}
-            onChange={(e) => onChange(e.target.value)}
-            disabled={readonly}
-            required={required}
-            className={baseInput}
-          >
-            <option value="">
-              {filterByField && (parentVal == null || parentVal === '')
-                ? rt('workboards.runtime.selectParentFirst')
-                : rt('workboards.runtime.selectPlaceholder')}
-            </option>
-            {effectiveOpts.map((opt) => (
-              <option key={String(opt.value)} value={String(opt.value)}>
-                {opt.label}
+        <>
+          {shouldShowSearch(field.searchable, effectiveOpts.length) ? (
+            <SearchableSelect
+              value={stringValue}
+              onChange={(v) => {
+                onChange(v);
+                applyCopyFill(v);
+              }}
+              options={effectiveOpts as LookupOption[]}
+              disabled={readonly}
+              placeholder={
+                filterByField && (parentVal == null || parentVal === '')
+                  ? rt('workboards.runtime.selectParentFirst')
+                  : rt('workboards.runtime.selectPlaceholder')
+              }
+              allowSearch
+            />
+          ) : (
+            <select
+              value={stringValue}
+              onChange={(e) => {
+                onChange(e.target.value);
+                applyCopyFill(e.target.value);
+              }}
+              disabled={readonly}
+              required={required}
+              className={baseInput}
+            >
+              <option value="">
+                {filterByField && (parentVal == null || parentVal === '')
+                  ? rt('workboards.runtime.selectParentFirst')
+                  : rt('workboards.runtime.selectPlaceholder')}
               </option>
-            ))}
-          </select>
-        )
+              {effectiveOpts.map((opt) => (
+                <option key={String(opt.value)} value={String(opt.value)}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+          )}
+          {viewCopies.length > 0 && selectedOpt?.copy && (
+            <div className="mt-1.5 rounded-md border border-slate-200 bg-slate-50/70 p-2">
+              {viewCopies.map((cc) => (
+                <div key={cc.source_column} className="flex justify-between gap-3 py-0.5 text-xs">
+                  <span className="shrink-0 text-slate-500">{cc.label || cc.source_column}</span>
+                  <span className="min-w-0 truncate text-right font-medium text-slate-700">
+                    {selectedOpt.copy?.[cc.source_column] == null ||
+                    selectedOpt.copy?.[cc.source_column] === ''
+                      ? '—'
+                      : String(selectedOpt.copy[cc.source_column])}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </>
       ) : widget === 'date' ? (
         <input
           type="date"
@@ -4313,7 +4371,7 @@ function VideoField({
 // app cap; the shell overrides it (storage-aware — 35KB for Sheets) via
 // setRuntimeMediaCap() so the picker rejects oversize before the round-trip.
 // The BE remains the authoritative enforcer.
-let FILE_HARD_CAP_KB = 1024;
+let FILE_HARD_CAP_KB = 10240;
 function setRuntimeMediaCap(kb?: number) {
   if (typeof kb === 'number' && kb > 0) FILE_HARD_CAP_KB = kb;
 }

@@ -17,9 +17,9 @@ from sqlalchemy.orm import Session
 
 from app.modules.workboards.models import WorkboardMedia
 
-# Hard ceiling per upload. Generous for field photos, bounded so the app DB
-# doesn't take arbitrarily large blobs.
-MAX_MEDIA_BYTES = 10 * 1024 * 1024  # 10 MB
+# Hard ceiling per upload. Generous for field photos/attachments, bounded so the
+# app DB doesn't take arbitrarily large blobs.
+MAX_MEDIA_BYTES = 25 * 1024 * 1024  # 25 MB
 
 
 def store_media(

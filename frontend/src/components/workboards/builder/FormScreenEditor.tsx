@@ -29,6 +29,7 @@ import {
   FixedExpressionInput,
   MultiColumnPicker,
   SingleColumnPicker,
+  TokenChipsInput,
   type SelectOption,
 } from './BuilderValueControls';
 import {
@@ -376,12 +377,14 @@ function AddFieldMenu({
   t,
   onAddColumn,
   onAddCustom,
+  onAddLookup,
 }: {
   columns: { name: string; type?: string }[];
   usedColumns: Set<string>;
   t: Translate;
   onAddColumn: (col: { name: string; type?: string }) => void;
   onAddCustom: () => void;
+  onAddLookup: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState('');
@@ -459,6 +462,17 @@ function AddFieldMenu({
             )}
           </div>
           <div className="border-t border-[rgb(var(--border-line))] p-1">
+            <button
+              type="button"
+              onClick={() => {
+                onAddLookup();
+                setOpen(false);
+                setQ('');
+              }}
+              className="block w-full rounded px-2 py-1.5 text-left text-caption font-medium text-brand hover:bg-brand/10"
+            >
+              {t('workboards.form.addLookupField')}
+            </button>
             <button
               type="button"
               onClick={() => {
@@ -613,6 +627,27 @@ export default function FormScreenEditor({
     const column = `field_${fields.length + 1}`;
     updateForm({
       fields: [...fields, { column, widget: 'text', label: column, required: false }],
+    });
+    setActiveItem(`field:${fields.length}`);
+  };
+
+  // Shortcut: a field that looks up / pulls columns from ANOTHER table — a
+  // "from table" select pre-configured, so the author lands directly in the
+  // lookup config (source table + value/label + "Pull columns" auto-fill)
+  // instead of having to discover it by flipping a normal field to Select.
+  const addLookupField = () => {
+    const column = `lookup_${fields.length + 1}`;
+    updateForm({
+      fields: [
+        ...fields,
+        {
+          column,
+          widget: 'lookup',
+          label: column,
+          required: false,
+          lookup: { kind: 'dataset_table' },
+        },
+      ],
     });
     setActiveItem(`field:${fields.length}`);
   };
@@ -925,6 +960,7 @@ export default function FormScreenEditor({
                 t={t}
                 onAddColumn={addFieldForColumn}
                 onAddCustom={addCustomField}
+                onAddLookup={addLookupField}
               />
             }
           >
@@ -1055,18 +1091,11 @@ function FormLayoutInspector({
     <div className="space-y-5">
       <div className={BUILDER_GRID_2}>
         <Lbl label={t('workboards.form.groupNames')}>
-          <input
-            value={sections.join(', ')}
-            onChange={(event) =>
-              onSectionsChange(
-                event.target.value
-                  .split(',')
-                  .map((item) => item.trim())
-                  .filter(Boolean),
-              )
-            }
-            className={INPUT}
+          <TokenChipsInput
+            value={sections}
+            onChange={onSectionsChange}
             placeholder={t('workboards.form.groupNamesPlaceholder')}
+            ariaLabel={t('workboards.form.groupNames')}
           />
         </Lbl>
         <Lbl label={t('workboards.form.formFlow')}>
@@ -2493,6 +2522,103 @@ function LookupEditor({
           )}
       </div>
 
+      {lookup.kind === 'dataset_table' &&
+        (field.widget === 'select' || field.widget === 'lookup') && (
+          <div className="rounded-lg border border-[rgb(var(--border-line))] p-2.5">
+            <div className="mb-1 flex items-center justify-between gap-2">
+              <span className="text-caption font-emphasis text-text-secondary">
+                {t('workboards.form.copyColumnsTitle')}
+              </span>
+              <BuilderActionButton
+                onClick={() =>
+                  onChange({
+                    lookup: {
+                      ...lookup,
+                      copy_columns: [
+                        ...(lookup.copy_columns || []),
+                        { source_column: '', mode: 'fill', target_field: '' },
+                      ],
+                    },
+                  })
+                }
+              >
+                <Plus className="h-3.5 w-3.5" />
+                {t('workboards.form.copyColumnsAdd')}
+              </BuilderActionButton>
+            </div>
+            <p className="mb-2 text-tiny text-text-tertiary">{t('workboards.form.copyColumnsHint')}</p>
+            {(lookup.copy_columns || []).length === 0 ? (
+              <BuilderEmptyHint>{t('workboards.form.copyColumnsEmpty')}</BuilderEmptyHint>
+            ) : (
+              <div className="space-y-2">
+                {(lookup.copy_columns || []).map((cc, i) => {
+                  const update = (patch: Partial<NonNullable<LookupRuntime['copy_columns']>[number]>) =>
+                    onChange({
+                      lookup: {
+                        ...lookup,
+                        copy_columns: (lookup.copy_columns || []).map((x, idx) =>
+                          idx === i ? { ...x, ...patch } : x,
+                        ),
+                      },
+                    });
+                  const removeRow = () =>
+                    onChange({
+                      lookup: {
+                        ...lookup,
+                        copy_columns: (lookup.copy_columns || []).filter((_, idx) => idx !== i),
+                      },
+                    });
+                  const mode = cc.mode || 'fill';
+                  return (
+                    <div key={i} className="grid grid-cols-[minmax(0,1fr)_7rem_minmax(0,1fr)_auto] items-center gap-1.5">
+                      <SingleColumnPicker
+                        sourceColumns={lookupCols.map((column) => column.name)}
+                        value={cc.source_column || null}
+                        onChange={(next) => update({ source_column: next || '' })}
+                        placeholder={t('workboards.form.copyColumnsSource')}
+                      />
+                      <select
+                        value={mode}
+                        onChange={(event) =>
+                          update({ mode: event.target.value as 'fill' | 'view' })
+                        }
+                        className={INPUT}
+                      >
+                        <option value="fill">{t('workboards.form.copyModeFill')}</option>
+                        <option value="view">{t('workboards.form.copyModeView')}</option>
+                      </select>
+                      <input
+                        value={(mode === 'view' ? cc.label : cc.target_field) || ''}
+                        onChange={(event) =>
+                          update(
+                            mode === 'view'
+                              ? { label: event.target.value }
+                              : { target_field: event.target.value },
+                          )
+                        }
+                        className={INPUT}
+                        placeholder={
+                          mode === 'view'
+                            ? t('workboards.form.copyViewLabel')
+                            : t('workboards.form.copyFillTarget')
+                        }
+                      />
+                      <button
+                        type="button"
+                        onClick={removeRow}
+                        className="flex h-8 w-8 items-center justify-center rounded-md text-text-tertiary hover:bg-surface-2 hover:text-danger"
+                        title={t('workboards.form.copyColumnsRemove')}
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
+
       {lookup.kind === 'static' ? (
         <StaticValuesEditor
           t={t}
@@ -2830,18 +2956,12 @@ function StatusStatesEditor({
         {t('workboards.form.addStatusState')}
       </BuilderActionButton>
       <Lbl label={t('workboards.form.statusEditableRoles')}>
-        <input
-          value={(cfg.editable_by_roles || []).join(', ')}
-          onChange={(event) =>
-            setCfg({
-              editable_by_roles: event.target.value
-                .split(',')
-                .map((r) => r.trim())
-                .filter(Boolean),
-            })
-          }
-          className={INPUT}
+        <TokenChipsInput
+          value={cfg.editable_by_roles || []}
+          onChange={(next) => setCfg({ editable_by_roles: next })}
+          suggestions={['user', 'admin', 'owner']}
           placeholder={t('workboards.form.statusRolesPlaceholder')}
+          ariaLabel={t('workboards.form.statusEditableRoles')}
         />
       </Lbl>
       {states.length > 0 && (
@@ -2857,22 +2977,20 @@ function StatusStatesEditor({
                 <span className="w-28 shrink-0 truncate text-xs text-text-secondary" title={from}>
                   {s.label || from || t('workboards.form.emptyDash')} →
                 </span>
-                <input
-                  value={nexts.join(', ')}
-                  onChange={(event) => {
-                    const list = event.target.value
-                      .split(',')
-                      .map((v) => v.trim())
-                      .filter(Boolean);
-                    const map = { ...(cfg.allowed_transitions || {}) };
-                    if (list.length) map[from] = list;
-                    else delete map[from];
-                    setCfg({ allowed_transitions: map });
-                  }}
-                  className={INPUT}
-                  placeholder={t('workboards.form.statusTransitionsPlaceholder')}
-                  disabled={!from}
-                />
+                <div className="min-w-0 flex-1">
+                  <TokenChipsInput
+                    value={nexts}
+                    onChange={(list) => {
+                      const map = { ...(cfg.allowed_transitions || {}) };
+                      if (list.length) map[from] = list;
+                      else delete map[from];
+                      setCfg({ allowed_transitions: map });
+                    }}
+                    suggestions={states.map((st) => st.value).filter(Boolean)}
+                    placeholder={t('workboards.form.statusTransitionsPlaceholder')}
+                    ariaLabel={t('workboards.form.statusTransitions')}
+                  />
+                </div>
               </div>
             );
           })}

@@ -83,6 +83,15 @@ export interface FormFieldSpec {
     // Cascading select — narrow options by another field's value.
     filter_by_field?: string | null;
     filter_column?: string | null;
+    // Multi-column copy — pull extra columns from the picked row onto the form.
+    // mode='fill' writes into form field `target_field`; mode='view' shows
+    // read-only under `label`.
+    copy_columns?: Array<{
+      source_column: string;
+      mode?: 'fill' | 'view';
+      target_field?: string | null;
+      label?: string | null;
+    }> | null;
   } | null;
   section?: string | null;
   page?: number | null;

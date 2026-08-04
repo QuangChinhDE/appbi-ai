@@ -514,3 +514,126 @@ export function FixedExpressionInput({
     </div>
   );
 }
+
+/**
+ * TokenChipsInput — chip/pill editor for a string[] value that used to be typed
+ * as raw comma-separated text. Each value is a removable chip; add more by
+ * typing + Enter/comma, or by picking from optional `suggestions`. This is the
+ * "scientific" replacement for the `value={arr.join(', ')}` inputs so chosen
+ * values read clearly instead of a comma blob. Works for both known-option
+ * multi-selects (pass `suggestions`) and free-form token lists (omit it).
+ */
+export function TokenChipsInput({
+  value,
+  onChange,
+  placeholder,
+  suggestions,
+  ariaLabel,
+}: {
+  value: string[];
+  onChange: (next: string[]) => void;
+  placeholder?: string;
+  suggestions?: string[];
+  ariaLabel?: string;
+}) {
+  const { t } = useI18n();
+  const [draft, setDraft] = React.useState('');
+  const [open, setOpen] = React.useState(false);
+  const wrapRef = React.useRef<HTMLDivElement | null>(null);
+
+  const values = Array.isArray(value) ? value : [];
+  const add = (raw: string) => {
+    const tok = raw.trim();
+    if (!tok) return;
+    if (values.some((v) => v.toLowerCase() === tok.toLowerCase())) {
+      setDraft('');
+      return;
+    }
+    onChange([...values, tok]);
+    setDraft('');
+  };
+  const remove = (tok: string) => onChange(values.filter((v) => v !== tok));
+
+  const candidates = (suggestions || []).filter(
+    (s) => !values.some((v) => v.toLowerCase() === s.toLowerCase()),
+  );
+  const filtered = draft
+    ? candidates.filter((s) => s.toLowerCase().includes(draft.toLowerCase()))
+    : candidates;
+
+  React.useEffect(() => {
+    if (!open) return;
+    const onDoc = (event: MouseEvent) => {
+      if (wrapRef.current && !wrapRef.current.contains(event.target as Node)) setOpen(false);
+    };
+    document.addEventListener('mousedown', onDoc);
+    return () => document.removeEventListener('mousedown', onDoc);
+  }, [open]);
+
+  return (
+    <div ref={wrapRef} className="relative">
+      <div
+        className="flex min-h-9 flex-wrap items-center gap-1 rounded-md border border-[rgb(var(--border-line))] bg-surface-0 px-2 py-1.5 text-caption focus-within:border-brand/40"
+        onClick={() => setOpen(true)}
+      >
+        {values.map((tok) => (
+          <span
+            key={tok}
+            className="inline-flex items-center gap-1 rounded bg-brand/10 px-1.5 py-0.5 text-caption text-brand"
+          >
+            {tok}
+            <span
+              role="button"
+              tabIndex={-1}
+              onClick={(event) => {
+                event.stopPropagation();
+                remove(tok);
+              }}
+              className="flex cursor-pointer items-center justify-center rounded hover:bg-brand/20"
+              title={t('workboards.builder.value.remove')}
+            >
+              <X className="h-3 w-3" />
+            </span>
+          </span>
+        ))}
+        <input
+          aria-label={ariaLabel}
+          value={draft}
+          onChange={(event) => {
+            setDraft(event.target.value);
+            setOpen(true);
+          }}
+          onFocus={() => setOpen(true)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter' || event.key === ',') {
+              event.preventDefault();
+              add(draft);
+            } else if (event.key === 'Backspace' && !draft && values.length) {
+              remove(values[values.length - 1]);
+            }
+          }}
+          onBlur={() => {
+            if (draft) add(draft);
+          }}
+          placeholder={values.length === 0 ? placeholder ?? '' : ''}
+          className="min-w-[6rem] flex-1 bg-transparent px-1 py-0.5 text-caption text-text-primary outline-none placeholder:text-text-tertiary"
+        />
+      </div>
+      {open && filtered.length > 0 && (
+        <div className="absolute left-0 right-0 top-full z-20 mt-1 max-h-60 overflow-y-auto rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 p-1 shadow-linear-md">
+          {filtered.map((s) => (
+            <button
+              key={s}
+              type="button"
+              onClick={() => add(s)}
+              className="flex w-full items-center gap-2 rounded px-2 py-1 text-left text-caption text-text-secondary hover:bg-surface-2 hover:text-text-primary"
+            >
+              <Plus className="h-3 w-3 text-text-tertiary" />
+              {s}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}

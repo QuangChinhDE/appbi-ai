@@ -182,7 +182,10 @@ export function BuilderObjectEditor({
   return (
     <div
       className={cx(
-        'grid gap-4 lg:grid-cols-[220px_minmax(0,1fr)]',
+        // items-start lets the field-list rail be shorter than the (usually
+        // much taller) inspector instead of being stretched to its height —
+        // required for the rail's sticky positioning to work.
+        'grid items-start gap-4 lg:grid-cols-[220px_minmax(0,1fr)]',
         className,
       )}
     >
@@ -203,7 +206,19 @@ export function BuilderNavigator({
   className?: string;
 }) {
   return (
-    <aside className={cx(BUILDER_PANEL, 'p-3', className)}>
+    // Pin the field/column list while the (taller) inspector scrolls in the
+    // single editor scroller, so ticking a control deep in the inspector never
+    // scrolls the list away. IMPORTANT: no overflow/max-h here — the "+ Add
+    // field" popover renders INSIDE this aside, and an overflow-y-auto container
+    // clips it (the popover got crammed + cut off at the bottom of the rail).
+    // Sticky positioning alone pins the list without clipping descendants.
+    <aside
+      className={cx(
+        BUILDER_PANEL,
+        'p-3 lg:sticky lg:top-0 lg:self-start',
+        className,
+      )}
+    >
       <div className="mb-3">
         <h2 className="text-caption font-emphasis text-text-primary">{title}</h2>
         {description ? <p className="mt-0.5 text-caption text-text-tertiary">{description}</p> : null}
@@ -299,7 +314,10 @@ export function BuilderInspectorPanel({
 }) {
   return (
     <section className={cx(BUILDER_PANEL, 'p-4', className)}>
-      <header className="mb-4 flex items-start justify-between gap-3 border-b border-[rgb(var(--border-line))] pb-3">
+      {/* Sticky inspector header: the field name + delete/action stay visible
+          while the long inspector body scrolls. Negative margins + surface bg
+          make it span the panel padding and hide scrolling content behind it. */}
+      <header className="sticky top-0 z-10 -mx-4 -mt-4 mb-4 flex items-start justify-between gap-3 rounded-t-xl border-b border-[rgb(var(--border-line))] bg-surface-1 px-4 pb-3 pt-4">
         <div className="flex min-w-0 items-start gap-2">
           {icon ? <span className="mt-0.5 shrink-0 text-text-tertiary">{icon}</span> : null}
           <div className="min-w-0">

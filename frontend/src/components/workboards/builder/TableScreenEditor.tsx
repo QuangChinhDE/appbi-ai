@@ -53,7 +53,7 @@ import {
   BuilderTableMissingBanner,
   DataSourcePicker,
 } from './BuilderChrome';
-import { MultiColumnPicker, SingleColumnPicker } from './BuilderValueControls';
+import { MultiColumnPicker, SingleColumnPicker, TokenChipsInput } from './BuilderValueControls';
 import JsFormulaEditor from './JsFormulaEditor';
 import type {
   CellFormat,
@@ -1498,18 +1498,12 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
                         </Lbl>
                       )}
                       <Lbl label={t('workboards.table.visibleForRolesOptional')}>
-                        <input
-                          value={(action.visible_for_roles || []).join(', ')}
-                          onChange={(e) =>
-                            updateRowAction(index, {
-                              visible_for_roles: e.target.value
-                                .split(',')
-                                .map((s) => s.trim())
-                                .filter(Boolean),
-                            })
-                          }
-                          className={INPUT}
+                        <TokenChipsInput
+                          value={action.visible_for_roles || []}
+                          onChange={(next) => updateRowAction(index, { visible_for_roles: next })}
+                          suggestions={['user', 'admin', 'owner']}
                           placeholder={t('workboards.table.allRolesPlaceholder')}
+                          ariaLabel={t('workboards.table.visibleForRolesOptional')}
                         />
                       </Lbl>
                     </div>
@@ -1728,7 +1722,7 @@ export default function TableScreenEditor({ screen, allScreens, tables, onChange
                         )}
 
                         <Lbl label={t('workboards.table.visibleForRolesOptional')}>
-                          <input value={(action.visible_for_roles || []).join(', ')} onChange={(e) => updateBulk(index, { visible_for_roles: e.target.value.split(',').map((s) => s.trim()).filter(Boolean) })} className={INPUT} placeholder={t('workboards.table.allRolesPlaceholder')} />
+                          <TokenChipsInput value={action.visible_for_roles || []} onChange={(next) => updateBulk(index, { visible_for_roles: next })} suggestions={['user', 'admin', 'owner']} placeholder={t('workboards.table.allRolesPlaceholder')} ariaLabel={t('workboards.table.visibleForRolesOptional')} />
                         </Lbl>
                       </div>
                     </div>

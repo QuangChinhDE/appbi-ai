@@ -479,6 +479,23 @@ export default function WorkboardBuilder({ workboard }: Props) {
     if (activeScreenId === id) setActiveScreenId(null);
   };
 
+  // Hide/show a screen in the app sidebar (the "Show in navigation" toggle,
+  // surfaced right on the canvas card so it's discoverable). Flips show_in_nav
+  // AND keeps mini_app_nav.items in sync so the runtime nav updates immediately
+  // (the backend also filters by show_in_nav as a safety net).
+  const toggleScreenNav = (id: string) => {
+    if (!canEdit) return;
+    setLayout((curr) => {
+      const screens = curr.screens.map((s) =>
+        s.id === id ? { ...s, show_in_nav: !(s.show_in_nav !== false) } : s,
+      );
+      const visible = screens.find((s) => s.id === id)?.show_in_nav !== false;
+      let items = curr.mini_app_nav.items.filter((x) => x !== id);
+      if (visible) items = [...items, id];
+      return { ...curr, screens, mini_app_nav: { ...curr.mini_app_nav, items } };
+    });
+  };
+
   // ── Workspaces (screen groups) ───────────────────────────────────────
   // A workspace is a named, ordered subset of screens surfaced to the
   // end-user as a nav section. Membership is additive: a screen not in
@@ -730,6 +747,7 @@ export default function WorkboardBuilder({ workboard }: Props) {
                 onAddScreen={addScreen}
                 onReorderScreens={reorderScreens}
                 onDeleteScreen={deleteScreen}
+                onToggleNav={toggleScreenNav}
                 onCreateGroup={createGroup}
                 onRenameGroup={renameGroup}
                 onDeleteGroup={deleteGroup}

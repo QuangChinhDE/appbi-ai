@@ -40,6 +40,21 @@ class LookupHop(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class LookupCopy(BaseModel):
+    """One column pulled from the picked lookup row onto the form.
+
+    ``mode="fill"`` writes the row's ``source_column`` value into the form field
+    named ``target_field`` (editable by the user, persisted with the record).
+    ``mode="view"`` shows it read-only under ``label`` (a reference panel; NOT
+    written to this record). Author chooses per column ("Both" mode)."""
+
+    source_column: str
+    mode: Literal["fill", "view"] = "fill"
+    target_field: Optional[str] = None
+    label: Optional[str] = None
+    model_config = ConfigDict(extra="ignore")
+
+
 class LookupConfig(BaseModel):
     """Lookup data source for select / lookup / map form widgets."""
 
@@ -85,6 +100,16 @@ class LookupConfig(BaseModel):
     filter_column: Optional[str] = Field(
         default=None,
         description="Remote column on the lookup table matched against filter_by_field's value.",
+    )
+
+    # ── Multi-column copy (widget=select/lookup) ─────────────────────────────
+    # Pull EXTRA columns from the picked row onto the form. Each entry either
+    # fills a form field (persisted) or shows read-only (reference). Projected
+    # into every option dict by `_resolve_lookup_options` as `copy: {source: v}`
+    # so the FE applies them on select without another round-trip.
+    copy_columns: Optional[List[LookupCopy]] = Field(
+        default=None,
+        description="Extra columns from the picked row: mode=fill writes a form field, mode=view shows read-only.",
     )
 
     model_config = ConfigDict(extra="forbid")

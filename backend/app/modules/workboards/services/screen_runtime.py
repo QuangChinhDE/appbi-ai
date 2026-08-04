@@ -594,6 +594,16 @@ def _resolve_lookup_options(
             # only the options whose `filter_column` == the parent field's value.
             if cfg.filter_column:
                 opt["filter"] = row.get(cfg.filter_column)
+            # Multi-column copy: carry the extra source columns from the picked
+            # row so the FE can fill sibling fields / show a reference panel on
+            # select. Ignored by widgets that don't declare copy_columns.
+            if cfg.copy_columns:
+                copied: Dict[str, Any] = {}
+                for cc in cfg.copy_columns:
+                    if cc.source_column:
+                        copied[cc.source_column] = row.get(cc.source_column)
+                if copied:
+                    opt["copy"] = copied
             return opt
 
         if cfg.relationship_path:
@@ -817,7 +827,11 @@ def _resolve_pos_catalog(db: Session, pos_cart: Any) -> Dict[str, Any]:
 # a documented app ceiling; Google Sheets caps a single CELL at ~50,000 chars
 # (base64 inflates 4/3 → ~35 KB safe). The effective cap is chosen per screen
 # by :func:`media_cap_kb` from the datasource kind — NOT hardcoded per widget.
-WORKBOARD_MEDIA_MAX_KB = 1024
+# 10 MB default (was 1 MB — too small vs market apps). base64 inflates ~4/3 →
+# ~13 MB in JSONB, which Postgres/BigQuery TOAST handles fine; it also lines up
+# with the 10 MB media-store guard and the per-field ``max_file_kb`` le=10240
+# builder bound. Google Sheets stays tiny (a cell caps at ~50k chars).
+WORKBOARD_MEDIA_MAX_KB = 10240
 WORKBOARD_MEDIA_MAX_KB_SHEETS = 35
 # Every widget whose value is a base64 data-URI (or a JSON array of them) and
 # must be size-capped. Previously only {file, image} were capped, so images/
@@ -3987,9 +4001,18 @@ def render_app_shell(
     nav_items = list(layout.mini_app_nav.items)
     if not nav_items:
         nav_items = [s.id for s in visible_screens if s.show_in_nav]
-    # Filter nav items to those actually visible to this identity.
+    # Filter nav items to those actually visible to this identity, AND honor the
+    # per-screen "Show in navigation" toggle (show_in_nav=False). The toggle used
+    # to appear inert because a non-empty mini_app_nav.items list was used
+    # verbatim (only intersected with role visibility) and never re-checked
+    # show_in_nav — so hidden screens kept showing. The screen stays reachable
+    # via row-action/deep-link (access is gated separately); this only removes it
+    # from the nav.
     visible_ids = {s.id for s in visible_screens}
-    nav_items = [sid for sid in nav_items if sid in visible_ids]
+    hidden_from_nav = {s.id for s in layout.screens if not s.show_in_nav}
+    nav_items = [
+        sid for sid in nav_items if sid in visible_ids and sid not in hidden_from_nav
+    ]
 
     # Screen-groups (UI: "Workspaces"). Additive: empty => flat nav above.
     # Drop groups hidden by role, members that are RLS-hidden or deleted
