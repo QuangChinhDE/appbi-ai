@@ -84,7 +84,18 @@ def _normalize_columns(columns: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     ``columns_cache`` shape used across the app
     (``{"name","type","nullable","source_type"}``)."""
     out: List[Dict[str, Any]] = [
-        {"name": PK_COLUMN, "type": "string", "nullable": False, "source_type": None}
+        {
+            "name": PK_COLUMN,
+            "type": "string",
+            "nullable": False,
+            "source_type": None,
+            # Explicit PK flag so the Workboard write path (write_service.
+            # _table_primary_key_columns) treats `id` as the primary key
+            # unambiguously — and so an insert auto-generates its UUID
+            # (execute_write_op auto_pk_columns) instead of relying on the
+            # name-"id" fallback.
+            "is_primary_key": True,
+        }
     ]
     seen = {PK_COLUMN}
     for col in columns or []:
