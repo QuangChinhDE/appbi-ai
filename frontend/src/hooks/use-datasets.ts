@@ -8,6 +8,8 @@ import { getBrowserTimezone } from '@/lib/timezones';
 
 // ===== Types =====
 
+export type DatasetPurpose = 'reporting' | 'operational';
+
 export interface Dataset {
   id: number;
   name: string;
@@ -19,6 +21,9 @@ export interface Dataset {
   owner_email?: string;
   user_permission?: 'none' | 'view' | 'edit' | 'full';
   datasource_ids?: number[];
+  /** 'reporting' → may materialize to BigQuery for dashboards; 'operational' →
+   *  live DB for a Workboard, never materialized. Absent → treat as reporting. */
+  purpose?: DatasetPurpose | null;
   created_at: string;
   updated_at: string;
 }
@@ -144,12 +149,14 @@ export interface CreateDatasetInput {
   name: string;
   description?: string;
   settings?: DatasetSettings;
+  purpose?: DatasetPurpose;
 }
 
 export interface UpdateDatasetInput {
   name?: string;
   description?: string;
   settings?: DatasetSettings;
+  purpose?: DatasetPurpose;
 }
 
 export interface AddTableInput {

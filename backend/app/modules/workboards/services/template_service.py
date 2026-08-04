@@ -1693,6 +1693,13 @@ def import_from_source(
             owner_id=owner_id,
             table_source_overrides=table_source_overrides,
         )
+        # This dataset backs the imported Workboard → operational (live DB, never
+        # materialized to BigQuery).
+        try:
+            dataset.purpose = "operational"
+            db.commit()
+        except Exception:  # noqa: BLE001 — purpose is best-effort, never block import
+            db.rollback()
         target_dataset_id = dataset.id
 
     try:

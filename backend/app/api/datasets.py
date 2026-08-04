@@ -2469,6 +2469,17 @@ def sync_and_publish_dataset(
     if not ds:
         raise HTTPException(status_code=404, detail="Dataset not found")
     dataset_grants_service.require_capability(db, current_user, ds, "manage")
+    # HARD GATE — an operational (Workboard) dataset is a live DB and is never
+    # published/materialized to BigQuery.
+    if str(getattr(ds, "purpose", None) or "reporting").lower() == "operational":
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Dataset này thuộc loại Operational (DB cho Workboard) — chạy trực tiếp "
+                "(live), không đồng bộ/publish về BigQuery. Đổi loại sang Reporting trong "
+                "Cài đặt dataset nếu bạn muốn dùng cho Dashboard."
+            ),
+        )
     # A dataset entering the lifecycle for the first time starts as draft.
     if ds.publish_state is None:
         ds.publish_state = "draft"

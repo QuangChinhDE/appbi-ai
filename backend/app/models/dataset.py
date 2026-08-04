@@ -28,6 +28,18 @@ class Dataset(Base):
     # from normal listings and deleted if the wizard is cancelled.
     is_draft = Column(Boolean, nullable=False, default=False, server_default="false", index=True)
     owner_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    # ── Dataset PURPOSE — separates the two flows so a dataset never syncs to
+    #    BigQuery by accident ────────────────────────────────────────────────
+    #   'reporting'    → BI/analytics: MAY be materialized to a BigQuery snapshot
+    #                    (opt-in host / Sync & Publish / scheduler) for dashboards.
+    #   'operational'  → the live DB behind a Workboard app: reads/writes go
+    #                    straight to the source (LiveQueryService); it is NEVER
+    #                    materialized/published to BigQuery (hard gate — Sync &
+    #                    Publish is refused, the planner always runs live).
+    #   NULL = legacy (pre-this-column) → treated as 'reporting' so existing
+    #   dashboards are unaffected. Chosen at creation; a Workboard-created dataset
+    #   defaults to 'operational'.
+    purpose = Column(String(20), nullable=True, index=True)
     # ── Publish lifecycle (Import-mode: design on source → Sync & Publish →
     #    Dashboards read ONLY the published snapshot generation). See
     #    dataset_publish_service. NULL publish_state = LEGACY dataset (pre-Phase-1):

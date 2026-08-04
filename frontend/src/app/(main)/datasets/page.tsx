@@ -40,6 +40,7 @@ import {
   useCreateDataset,
   useDeleteDataset,
   type CreateDatasetInput,
+  type DatasetPurpose,
 } from '@/hooks/use-datasets';
 import {
   buildCatalogRelationIndex,
@@ -667,6 +668,7 @@ interface CreateDatasetModalProps {
 function CreateDatasetModal({ onClose, onCreate, isLoading }: CreateDatasetModalProps) {
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
+  const [purpose, setPurpose] = useState<DatasetPurpose>('reporting');
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -674,6 +676,7 @@ function CreateDatasetModal({ onClose, onCreate, isLoading }: CreateDatasetModal
       onCreate({
         name: name.trim(),
         description: description.trim() || undefined,
+        purpose,
       });
     }
   };
@@ -721,6 +724,46 @@ function CreateDatasetModal({ onClose, onCreate, isLoading }: CreateDatasetModal
             autoFocus
             disabled={isLoading}
           />
+        </FieldGroup>
+
+        <FieldGroup>
+          <Label>
+            Type <span className="text-danger">*</span>
+          </Label>
+          <div className="grid grid-cols-1 gap-2">
+            {([
+              {
+                value: 'reporting' as DatasetPurpose,
+                title: 'Reporting / Analytics',
+                desc: 'For dashboards & charts. May be synced (materialized) to BigQuery snapshots.',
+              },
+              {
+                value: 'operational' as DatasetPurpose,
+                title: 'Operational / Workboard',
+                desc: 'Live database for a Workboard app. Reads/writes stay on the source — NEVER synced to BigQuery.',
+              },
+            ]).map((opt) => (
+              <button
+                key={opt.value}
+                type="button"
+                onClick={() => setPurpose(opt.value)}
+                disabled={isLoading}
+                className={`rounded-lg border px-3 py-2.5 text-left transition-colors ${
+                  purpose === opt.value
+                    ? 'border-brand/50 bg-brand/10'
+                    : 'border-[rgb(var(--border-line))] bg-surface-1 hover:bg-surface-2'
+                }`}
+              >
+                <div className="flex items-center gap-2">
+                  <span className={`flex h-3.5 w-3.5 items-center justify-center rounded-full border ${purpose === opt.value ? 'border-brand' : 'border-text-quaternary'}`}>
+                    {purpose === opt.value && <span className="h-1.5 w-1.5 rounded-full bg-brand" />}
+                  </span>
+                  <span className="text-sm font-medium text-text-primary">{opt.title}</span>
+                </div>
+                <p className="mt-0.5 pl-5 text-caption text-text-tertiary">{opt.desc}</p>
+              </button>
+            ))}
+          </div>
         </FieldGroup>
 
         <FieldGroup>
