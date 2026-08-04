@@ -45,6 +45,11 @@ if settings.METADATA_CATALOG_ENABLED:
     from app.modules.metadata_catalog.api import router as metadata_catalog_router
     api_router.include_router(metadata_catalog_router)
 
+    # Agent Flows: its own router with its own key. Publishing a brain changes what
+    # a live report says, so it must not ride on a knowledge-authoring grant.
+    from app.modules.agent_flows.api import router as agent_flows_router
+    api_router.include_router(agent_flows_router)
+
 # Observability — dataset health (incidents + semantic lineage + usage + alert channels)
 api_router.include_router(observability.router)
 

@@ -12,7 +12,7 @@ Send them via the X-Public-Session request header.
 import json
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response, status
+from fastapi import APIRouter, Depends, File, Header, HTTPException, Query, Request, Response, UploadFile, status
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 from pydantic import BaseModel
@@ -2100,6 +2100,62 @@ if settings.WORKBOARDS_ENABLED:
         except WorkboardWriteError as exc:
             raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
         return {"action": "insert", **result}
+
+
+    @router.post("/workspaces/{token}/workboards/{workboard_id}/media")
+    async def workspace_upload_media(
+        token: str,
+        workboard_id: int,
+        request: Request,
+        file: UploadFile = File(...),
+        db: Session = Depends(get_db),
+    ):
+        """Upload an image/file from a mini-app form. Stored in the app DB;
+        returns a short URL to write into the field (so a Google Sheets cell
+        holds the link, never a base64 blob). Auth = the workspace app-user."""
+        from app.modules.workboards.services import media_service
+
+        ws = _load_workspace_or_404(db, token)
+        app_user = _require_workspace_app_user(request, ws, db=db)
+        wb = _resolve_workboard_for_workspace(
+            db, ws, workboard_id, request=request, app_user=app_user
+        )
+        data = await file.read()
+        try:
+            media = media_service.store_media(
+                db,
+                workboard_id=wb.id,
+                filename=file.filename,
+                content_type=file.content_type,
+                data=data,
+                created_by=None,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {
+            "id": str(media.id),
+            "url": media_service.media_url(media.id),
+            "content_type": media.content_type,
+            "byte_size": media.byte_size,
+            "filename": media.filename,
+        }
+
+
+    @router.get("/media/{media_id}")
+    def public_get_media(media_id: str, db: Session = Depends(get_db)):
+        """Stream a stored media binary by opaque id. Public by design — a
+        mini-app (which may itself be public) renders these via <img src>. The
+        id is an unguessable UUID; nothing sensitive should be uploaded as media."""
+        from app.modules.workboards.services import media_service
+
+        media = media_service.get_media(db, media_id)
+        if media is None:
+            raise HTTPException(status_code=404, detail="Media not found")
+        return Response(
+            content=bytes(media.data),
+            media_type=media.content_type or "application/octet-stream",
+            headers={"Cache-Control": "public, max-age=31536000, immutable"},
+        )
 
 
     @router.get("/workspaces/{token}/workboards/{workboard_id}/related-records")

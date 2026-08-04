@@ -10,7 +10,7 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Response, UploadFile, status
 from pydantic import BaseModel as PydanticBaseModel, ValidationError
 from sqlalchemy.orm import Session
 
@@ -210,6 +210,42 @@ def get_workboard(
     if isinstance(wb.layout_json, dict):
         wb.layout_json = mask_layout_ocr_keys(wb.layout_json)
     return wb
+
+
+@router.post("/{workboard_id}/media")
+async def upload_workboard_media(
+    workboard_id: int,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Authed (builder-preview) counterpart of the public mini-app media upload.
+    Stores the binary in the app DB and returns a short URL to write into the
+    field — so a Google Sheets store cell holds only the link, never a base64
+    blob. Requires VIEW on the workboard."""
+    from app.modules.workboards.services import media_service
+
+    wb = _get_or_404(db, workboard_id)
+    require_view_access(db, current_user, wb, "workboards")
+    data = await file.read()
+    try:
+        media = media_service.store_media(
+            db,
+            workboard_id=wb.id,
+            filename=file.filename,
+            content_type=file.content_type,
+            data=data,
+            created_by=getattr(current_user, "id", None),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {
+        "id": str(media.id),
+        "url": media_service.media_url(media.id),
+        "content_type": media.content_type,
+        "byte_size": media.byte_size,
+        "filename": media.filename,
+    }
 
 
 @router.get("/{workboard_id}/ocr-key")
