@@ -1651,6 +1651,19 @@ def render_form_screen(
         shared_context=shared_context,
     )
 
+    # Per-field `default` values support the same {{app_user.x}} / {{today}} /
+    # {{shared.x}} placeholders as `initial_values`, but were shipped verbatim
+    # (model_dump) so the FE showed the literal "{{app_user.username}}". Resolve
+    # each field default through the same substituter before emitting.
+    def _emit_field(field: Any) -> Dict[str, Any]:
+        fd = field.model_dump()
+        raw = fd.get("default")
+        if isinstance(raw, str) and "{{" in raw:
+            fd["default"] = _resolve_initial_values(
+                {"_": raw}, identity=identity, shared_context=shared_context
+            ).get("_")
+        return fd
+
     layout = parse_layout(workboard)
     auto_number_columns = [
         cfg.column for cfg in (layout.auto_number_columns or []) if cfg.column
@@ -1677,7 +1690,7 @@ def render_form_screen(
         "table_id": screen.table_id,
         "primary_key_columns": list(screen.primary_key_columns or []),
         "submit_label": screen.form.submit_label,
-        "fields": [field.model_dump() for field in screen.form.fields],
+        "fields": [_emit_field(field) for field in screen.form.fields],
         "lookups": lookups,
         "initial_values": initial,
         "after_submit": (

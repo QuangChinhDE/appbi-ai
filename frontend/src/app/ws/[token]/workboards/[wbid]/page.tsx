@@ -450,7 +450,9 @@ export default function WorkspaceWorkboardPage() {
         if (!alive) return;
         const apiError = err as ApiErrorLike;
         if (apiError.response?.status === 401) {
-          router.push(`/ws/${token}`);
+          // Keep the app context so re-login returns HERE, not this workspace's
+          // menu (a multi-app Cổng would otherwise drop the user on another app).
+          router.push(`/ws/${token}?next=${workboardId}`);
           return;
         }
         setError(
@@ -570,13 +572,25 @@ export default function WorkspaceWorkboardPage() {
   }, [activeScreenId, shell]);
 
   if (error) {
+    // "Not published yet" is an expected state (the public link serves the
+    // PUBLISHED snapshot, while the builder's Live Preview serves the draft) —
+    // not a crash. Show it as a calm, actionable notice instead of a red error.
+    const notReady = /chưa\s+(?:được\s+)?xuất bản|not\s+.*publish/i.test(error);
     return (
       <div className="flex min-h-screen items-center justify-center bg-slate-50 p-6">
-        <div className="max-w-md rounded-xl border border-rose-200 bg-white p-6 shadow-sm">
-          <h1 className="text-base font-semibold text-rose-600">
-            {rt('workboards.runtime.errorTitle')}
+        <div
+          className={`max-w-md rounded-xl border bg-white p-6 shadow-sm ${
+            notReady ? 'border-amber-200' : 'border-rose-200'
+          }`}
+        >
+          <h1 className={`text-base font-semibold ${notReady ? 'text-amber-600' : 'text-rose-600'}`}>
+            {notReady ? 'Ứng dụng chưa sẵn sàng' : rt('workboards.runtime.errorTitle')}
           </h1>
-          <p className="mt-2 text-sm text-slate-700">{error}</p>
+          <p className="mt-2 text-sm text-slate-700">
+            {notReady
+              ? 'Ứng dụng này chưa được xuất bản nên chưa thể mở bằng link công khai. Người tạo app cần bấm “Xuất bản” trong trình chỉnh sửa; sau đó tải lại trang.'
+              : error}
+          </p>
           <button
             onClick={() => router.push(`/ws/${token}`)}
             className="mt-4 text-sm text-blue-600 hover:underline"
@@ -735,7 +749,9 @@ export default function WorkspaceWorkboardPage() {
           try {
             await workspaceApi.logout(token);
           } finally {
-            router.push(`/ws/${token}`);
+            // Return to THIS app's login (via ?next), not the workspace menu —
+            // otherwise a multi-app Cổng lands the user on a different mini-app.
+            router.push(`/ws/${token}?next=${workboardId}`);
           }
         }}
         onBackToMenu={() => router.push(`/ws/${token}`)}

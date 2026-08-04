@@ -63,19 +63,36 @@ export default function WorkspacePage() {
     if (!token) return;
     let alive = true;
     let redirecting = false;
+    // ?next=<workboard_id> — set by a specific app's logout / 401 so the user
+    // returns to the SAME app after re-login, instead of landing on this
+    // workspace's menu (which, for a multi-app Cổng, is a different mini-app).
+    const nextWb =
+      typeof window !== 'undefined'
+        ? new URLSearchParams(window.location.search).get('next')
+        : null;
+    const redirectTo = (m: Awaited<ReturnType<typeof workspaceApi.getMenu>>): boolean => {
+      // Prefer the requested app (only if the role-filtered menu allows it).
+      if (nextWb && m.menu.some((x) => String(x.workboard_id) === nextWb)) {
+        redirecting = true;
+        router.replace(`/ws/${token}/workboards/${nextWb}`);
+        return true;
+      }
+      // Single mini-app workspace → the one-card launcher is pointless.
+      if (m.menu.length === 1) {
+        redirecting = true;
+        router.replace(`/ws/${token}/workboards/${m.menu[0].workboard_id}`);
+        return true;
+      }
+      return false;
+    };
     (async () => {
       try {
         // 1. Try menu first — if cookie is valid, we skip login entirely.
         const m = await workspaceApi.getMenu(token);
         if (!alive) return;
-        // Single mini-app workspace → the one-card launcher is pointless;
-        // drop the user straight into the app. Keep the spinner up (don't
-        // setMenu / clear loading) so the launcher never flashes.
-        if (m.menu.length === 1) {
-          redirecting = true;
-          router.replace(`/ws/${token}/workboards/${m.menu[0].workboard_id}`);
-          return;
-        }
+        // Keep the spinner up (don't setMenu / clear loading) so the launcher
+        // never flashes before a redirect.
+        if (redirectTo(m)) return;
         setMenu(m);
         setMeta(m.workspace);
       } catch (err: any) {
@@ -144,6 +161,16 @@ export default function WorkspacePage() {
       const m = await workspaceApi.getMenu(token);
       setUsername('');
       setPin('');
+      // Return to the app the user came from (?next=<wbid>) if the role-filtered
+      // menu allows it — otherwise fall back to single-app / menu.
+      const nextWb =
+        typeof window !== 'undefined'
+          ? new URLSearchParams(window.location.search).get('next')
+          : null;
+      if (nextWb && m.menu.some((x) => String(x.workboard_id) === nextWb)) {
+        router.replace(`/ws/${token}/workboards/${nextWb}`);
+        return;
+      }
       // Single mini-app → go straight in instead of showing a 1-card menu.
       if (m.menu.length === 1) {
         router.replace(`/ws/${token}/workboards/${m.menu[0].workboard_id}`);
