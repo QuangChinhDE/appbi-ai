@@ -44,6 +44,7 @@ import { AddColumnModal, buildFNS, type LookupTableOption } from '@/components/d
 import { getResourcePermissions } from '@/hooks/use-resource-permission';
 import { DataModelCanvas } from '@/components/datasets/DataModelCanvas';
 import { DatasetMetricsPanel } from '@/components/datasets/DatasetMetricsPanel';
+import { OperationalDestinationBanner } from '@/components/datasets/OperationalDestinationBanner';
 import { DatasetCaveatsPanel } from '@/components/datasets/DatasetCaveatsPanel';
 import { DatasetMeasuresPanel } from '@/components/datasets/DatasetMeasuresPanel';
 import { DatasetPublishControls, DatasetPublishBanner } from '@/components/datasets/DatasetPublishBar';
@@ -1486,6 +1487,15 @@ export default function DatasetDetailPage() {
       {/* Changes-pending / sync-failed / draft banner (Import-mode lifecycle) */}
       {dataset?.purpose !== 'operational' && (
         <DatasetPublishBanner datasetId={datasetId!} canEditFallback={resPerms.canEdit} />
+      )}
+
+      {/* Operational (Workboard) dataset → OLTP Destination store setup / status */}
+      {dataset?.purpose === 'operational' && datasetId && (
+        <OperationalDestinationBanner
+          datasetId={datasetId}
+          datasetName={dataset?.name}
+          canEdit={resPerms.canEdit}
+        />
       )}
 
       {/* ── Body: sidebar + content (sidebar chỉ khi tab=tables) ── */}

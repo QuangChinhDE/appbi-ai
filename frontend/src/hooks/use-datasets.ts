@@ -804,6 +804,76 @@ export function useStopRefreshRun() {
   });
 }
 
+// --- Operational (Workboard) dataset OLTP Destination -----------------------
+export interface DatasetDestination {
+  kind: 'google_sheets';
+  datasource_id: number;
+  spreadsheet_id: string;
+  spreadsheet_url?: string | null;
+  managed: boolean;
+}
+
+export interface OperationalColumnSpec {
+  name: string;
+  type?: string;
+}
+
+export interface OperationalTableSpec {
+  name: string;
+  columns: OperationalColumnSpec[];
+}
+
+export interface ProvisionDestinationInput {
+  datasetId: number;
+  kind?: 'google_sheets';
+  credential_datasource_id: number;
+  mode: 'create' | 'bind';
+  title?: string;
+  spreadsheet_id?: string;
+  tables?: OperationalTableSpec[];
+}
+
+/** Read an operational dataset's OLTP Destination config (null if unset). */
+export function useDatasetDestination(datasetId: number | null, enabled = true) {
+  return useQuery({
+    queryKey: [...datasetKeys.detail(datasetId!), 'destination'],
+    queryFn: async () => {
+      const r = await api.get<{ dataset_id: number; destination: DatasetDestination | null }>(
+        `/datasets/${datasetId}/destination`,
+      );
+      return r.data.destination;
+    },
+    enabled: datasetId !== null && enabled,
+  });
+}
+
+/** Provision (create-new) or bind the OLTP store for an operational dataset. */
+export function useProvisionDestination() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ datasetId, ...body }: ProvisionDestinationInput) => {
+      const r = await api.post(`/datasets/${datasetId}/destination`, {
+        kind: 'google_sheets',
+        ...body,
+      });
+      return r.data as {
+        dataset_id: number;
+        mode: string;
+        destination_datasource_id: number;
+        spreadsheet_id: string;
+        spreadsheet_url?: string;
+        managed: boolean;
+        tables: number[];
+      };
+    },
+    onSuccess: (_d, { datasetId }) => {
+      queryClient.invalidateQueries({ queryKey: [...datasetKeys.detail(datasetId), 'destination'] });
+      queryClient.invalidateQueries({ queryKey: datasetKeys.tables(datasetId) });
+      queryClient.invalidateQueries({ queryKey: datasetKeys.detail(datasetId) });
+    },
+  });
+}
+
 export function useRevokeDatasetGrant() {
   const queryClient = useQueryClient();
   return useMutation({
