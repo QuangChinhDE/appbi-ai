@@ -761,6 +761,42 @@ class GoogleSheetsConnector:
         except Exception as e:
             raise ValueError(f"Failed to list sheets: {str(e)}")
 
+    def create_spreadsheet(
+        self,
+        title: str,
+        tab_names: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """Create a NEW Google Spreadsheet owned by THIS credential — the
+        app-owned OLTP store behind a Workboard (Destination = Google Sheets,
+        managed). Optionally seed initial tabs. Returns
+        ``{spreadsheet_id, spreadsheet_url, tabs}``.
+
+        NB: a service-account credential creates a spreadsheet owned by the SA
+        (not in a human's Drive); that is intended for an app-managed store. To
+        let a person open it, share it separately (needs Drive scope) or use an
+        OAuth credential. Only the ``spreadsheets`` scope is required to create."""
+        body: Dict[str, Any] = {"properties": {"title": title}}
+        if tab_names:
+            body["sheets"] = [{"properties": {"title": t}} for t in tab_names if str(t or "").strip()]
+        try:
+            result = self._execute(
+                self.service.spreadsheets().create(
+                    body=body,
+                    fields="spreadsheetId,spreadsheetUrl,sheets.properties.title",
+                ),
+                f"create spreadsheet {title}",
+            )
+        except HttpError as e:
+            raise ValueError(f"Google Sheets create spreadsheet error: {str(e)}")
+        return {
+            "spreadsheet_id": result.get("spreadsheetId"),
+            "spreadsheet_url": result.get("spreadsheetUrl"),
+            "tabs": [
+                s.get("properties", {}).get("title")
+                for s in (result.get("sheets") or [])
+            ],
+        }
+
     def create_sheet(
         self,
         spreadsheet_id: str,
@@ -837,6 +873,40 @@ class GoogleSheetsConnector:
             "sheet_id": sheet_id,
             "headers": headers or [],
         }
+
+    def write_header_row(
+        self,
+        spreadsheet_id: str,
+        sheet_name: str,
+        headers: List[str],
+    ) -> Dict[str, Any]:
+        """Write (overwrite) the header row (row 1) of an EXISTING tab.
+
+        Used to lay out the schema of tabs seeded by ``create_spreadsheet`` when
+        provisioning an operational (Workboard) dataset's OLTP store. Refreshes
+        the header cache so subsequent reads see the columns immediately."""
+        if not headers:
+            raise ValueError("headers must be a non-empty list")
+        try:
+            self._execute(
+                self.service.spreadsheets().values().update(
+                    spreadsheetId=spreadsheet_id,
+                    range=f"{sheet_name}!A1",
+                    valueInputOption="RAW",
+                    body={"values": [list(headers)]},
+                ),
+                f"write headers {sheet_name}",
+            )
+        except HttpError as e:
+            raise ValueError(f"Google Sheets write header error: {str(e)}")
+        with _HEADER_CACHE_LOCK:
+            _HEADER_CACHE[(spreadsheet_id, sheet_name)] = (time.time(), list(headers))
+        return {"sheet_name": sheet_name, "headers": list(headers)}
+
+    def get_header_row(self, spreadsheet_id: str, sheet_name: str) -> List[str]:
+        """Public read of a tab's header row (row 1). Used when BINDING an
+        existing spreadsheet as an operational Destination to discover columns."""
+        return self._read_headers(spreadsheet_id, sheet_name)
 
     def rename_column(
         self,
