@@ -5,7 +5,8 @@ import { useRouter } from 'next/navigation';
 import { Plus, LayoutDashboard, Clock, Eye, Trash2, Search, Globe, Share2 } from 'lucide-react';
 import { toast } from '@/lib/toast';
 
-import { useDashboards, useCreateDashboard, useDeleteDashboard } from '@/hooks/use-dashboards';
+import { useDashboards, useCreateDashboard, useDeleteDashboard, useDuplicateDashboard } from '@/hooks/use-dashboards';
+import { dashboardApi } from '@/lib/api/dashboards';
 import { usePermissions, hasPermission } from '@/hooks/use-permissions';
 import { getResourcePermissions } from '@/hooks/use-resource-permission';
 import { DashboardList } from '@/components/dashboards/DashboardList';
@@ -69,6 +70,9 @@ export default function DashboardsPage() {
   const canEdit = hasPermission(permData?.permissions, 'dashboards', 'edit');
   const createMutation = useCreateDashboard();
   const deleteMutation = useDeleteDashboard();
+  const duplicateMutation = useDuplicateDashboard();
+  const [duplicatingId, setDuplicatingId] = useState<number | undefined>(undefined);
+  const [exportingId, setExportingId] = useState<number | undefined>(undefined);
   const dashboardItems = dashboards ?? [];
   const relationIndex = useMemo(
     () => buildCatalogRelationIndex({
@@ -143,6 +147,39 @@ export default function DashboardsPage() {
       }
     } finally {
       setIsDeletingDashboard(false);
+    }
+  };
+
+  const handleDuplicate = async (dashboard: Dashboard) => {
+    setDuplicatingId(dashboard.id);
+    try {
+      const copy = await duplicateMutation.mutateAsync(dashboard.id);
+      toast.success(`Duplicated "${dashboard.name}"`);
+      router.push(`/dashboards/${copy.id}`);
+    } catch (error: any) {
+      toast.error(`Could not duplicate: ${error.response?.data?.detail || error.message}`);
+    } finally {
+      setDuplicatingId(undefined);
+    }
+  };
+
+  const handleExport = async (dashboard: Dashboard) => {
+    setExportingId(dashboard.id);
+    try {
+      const blob = await dashboardApi.exportHtml(dashboard.id);
+      const url = window.URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      const slug = (dashboard.name || 'dashboard').replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'dashboard';
+      anchor.href = url;
+      anchor.download = `${slug}.html`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (error: any) {
+      toast.error(`Could not export: ${error.response?.data?.detail || error.message}`);
+    } finally {
+      setExportingId(undefined);
     }
   };
 
@@ -427,7 +464,11 @@ export default function DashboardsPage() {
                       dashboards={pageItems}
                       onDelete={canEdit ? handleDelete : undefined}
                       onShare={(dashboard) => setShareDash(dashboard)}
+                      onDuplicate={canEdit ? handleDuplicate : undefined}
+                      onExport={handleExport}
                       deletingId={isDeletingDashboard ? dashboardToDelete?.id : undefined}
+                      duplicatingId={duplicatingId}
+                      exportingId={exportingId}
                       activeFilters={listFilters}
                       onFilterClick={(key, value) => toggleListFilter(key as keyof DashboardListFilters, value)}
                       selectedIds={canEdit ? selectedIds : undefined}

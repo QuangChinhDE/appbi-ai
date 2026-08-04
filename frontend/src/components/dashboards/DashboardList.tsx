@@ -2,7 +2,7 @@
 
 import React from 'react';
 import { useRouter } from 'next/navigation';
-import { Trash2, Share2, LayoutDashboard, Loader2 } from 'lucide-react';
+import { Trash2, Share2, LayoutDashboard, Loader2, Copy, Download } from 'lucide-react';
 import { Dashboard } from '@/types/api';
 import { getResourcePermissions } from '@/hooks/use-resource-permission';
 import { OwnerBadge } from '@/components/common/OwnerBadge';
@@ -14,7 +14,11 @@ interface DashboardListProps {
   dashboards: Dashboard[];
   onDelete?: (id: number) => void;
   onShare?: (dashboard: Dashboard) => void;
+  onDuplicate?: (dashboard: Dashboard) => void;
+  onExport?: (dashboard: Dashboard) => void;
   deletingId?: number;
+  duplicatingId?: number;
+  exportingId?: number;
   activeFilters?: Record<string, string | undefined>;
   onFilterClick?: (key: string, value: string) => void;
   selectedIds?: Set<number>;
@@ -28,7 +32,11 @@ export function DashboardList({
   dashboards,
   onDelete,
   onShare,
+  onDuplicate,
+  onExport,
   deletingId,
+  duplicatingId,
+  exportingId,
   activeFilters,
   onFilterClick,
   selectedIds,
@@ -104,7 +112,7 @@ export function DashboardList({
             <th className="app-list-header w-[12%]">
               Updated
             </th>
-            <th className="app-list-header w-[96px] text-right">
+            <th className="app-list-header w-[160px] text-right">
               Actions
             </th>
           </tr>
@@ -177,6 +185,38 @@ export function DashboardList({
                 </td>
                 <td className="app-list-cell-tight text-right">
                   <div className="flex items-center justify-end gap-1">
+                    {onExport && (
+                      <IconButton
+                        aria-label="Export dashboard to HTML"
+                        variant="ghost"
+                        size="xs"
+                        onClick={() => onExport(dashboard)}
+                        disabled={exportingId === dashboard.id}
+                        title="Export to HTML"
+                      >
+                        {exportingId === dashboard.id ? (
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        ) : (
+                          <Download className="h-3.5 w-3.5" />
+                        )}
+                      </IconButton>
+                    )}
+                    {onDuplicate && perms.canEdit && (
+                      <IconButton
+                        aria-label="Duplicate dashboard"
+                        variant="ghost"
+                        size="xs"
+                        onClick={() => onDuplicate(dashboard)}
+                        disabled={duplicatingId === dashboard.id}
+                        title="Duplicate"
+                      >
+                        {duplicatingId === dashboard.id ? (
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        ) : (
+                          <Copy className="h-3.5 w-3.5" />
+                        )}
+                      </IconButton>
+                    )}
                     {onShare && perms.canShare && (
                       <IconButton
                         aria-label="Share dashboard"

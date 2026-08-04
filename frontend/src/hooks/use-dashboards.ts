@@ -62,9 +62,32 @@ export const useUpdateDashboard = () => {
 
 export const useDeleteDashboard = () => {
   const queryClient = useQueryClient();
-  
+
   return useMutation({
     mutationFn: (id: number) => dashboardApi.delete(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['dashboards'] });
+    },
+  });
+};
+
+export const useDuplicateDashboard = () => {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (id: number) => dashboardApi.duplicate(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['dashboards'] });
+    },
+  });
+};
+
+export const useImportDashboardSnapshot = () => {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({ file, dashboardName }: { file: File; dashboardName?: string }) =>
+      dashboardApi.importSnapshot(file, dashboardName),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['dashboards'] });
     },
