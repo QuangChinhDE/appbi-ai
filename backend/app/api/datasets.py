@@ -2570,6 +2570,96 @@ def stop_dataset_refresh_run(
     return dataset_publish_service.stop_refresh_run(db, dataset_id, run_id)
 
 
+@router.get("/{dataset_id}/destination")
+def get_dataset_destination(
+    dataset_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Return the operational dataset's OLTP Destination config (or null).
+    Reporting datasets never have one. Requires VIEW on the dataset."""
+    from app.models.dataset import Dataset
+    from app.services import dataset_grants_service
+    from app.services import operational_destination_service as ods
+
+    ds = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if not ds:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    dataset_grants_service.require_capability(db, current_user, ds, "view")
+    return {"dataset_id": dataset_id, "destination": ods.get_destination(ds)}
+
+
+@router.post("/{dataset_id}/destination")
+def provision_dataset_destination(
+    dataset_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    payload: dict = Body(...),
+):
+    """Provision (or bind) the OLTP Destination store for an OPERATIONAL dataset.
+
+    Body::
+
+        {
+          "kind": "google_sheets",            # only kind for now
+          "credential_datasource_id": <int>,  # a Google Sheets connection
+          "mode": "create" | "bind",          # default "create"
+          "title": "<spreadsheet title>",     # create: optional (defaults to name)
+          "spreadsheet_id": "<id>",           # bind: optional override
+          "tables": [                          # schema (required for create)
+            {"name": "Customers",
+             "columns": [{"name": "email", "type": "string"}, ...]}
+          ]
+        }
+
+    create → the app makes & owns a new Google Spreadsheet; bind → adopt an
+    existing one (tabs auto-discovered when ``tables`` is omitted). Requires
+    MANAGE on the dataset. Reporting datasets are rejected."""
+    from app.models.dataset import Dataset
+    from app.services import dataset_grants_service
+    from app.services import operational_destination_service as ods
+
+    ds = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if not ds:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    dataset_grants_service.require_capability(db, current_user, ds, "manage")
+
+    if str(getattr(ds, "purpose", None) or "reporting").strip().lower() != "operational":
+        raise HTTPException(
+            status_code=400,
+            detail="Only operational (Workboard) datasets have an OLTP Destination. "
+                   "Set the dataset type to Operational first.",
+        )
+
+    kind = str(payload.get("kind") or "google_sheets").strip().lower()
+    if kind != "google_sheets":
+        raise HTTPException(status_code=400, detail=f"Unsupported destination kind: {kind}")
+
+    credential_datasource_id = payload.get("credential_datasource_id")
+    if not credential_datasource_id:
+        raise HTTPException(status_code=400, detail="credential_datasource_id is required")
+
+    mode = str(payload.get("mode") or "create").strip().lower()
+    if mode not in ("create", "bind"):
+        raise HTTPException(status_code=400, detail=f"mode must be 'create' or 'bind', got {mode!r}")
+
+    try:
+        result = ods.provision_google_sheets_destination(
+            db,
+            dataset_id=dataset_id,
+            credential_datasource_id=int(credential_datasource_id),
+            mode=mode,
+            tables=payload.get("tables"),
+            spreadsheet_id=payload.get("spreadsheet_id"),
+            title=payload.get("title"),
+            owner_id=getattr(current_user, "id", None),
+        )
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc))
+    return result
+
+
 @router.get("/{dataset_id}/publish-status")
 def dataset_publish_status(
     dataset_id: int,
