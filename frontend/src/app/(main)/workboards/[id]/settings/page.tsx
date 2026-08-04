@@ -1,25 +1,25 @@
 /**
  * Workboard › Settings — the real, full-page settings home.
  *
- * A two-pane settings layout (left section nav + content) that fills the tab —
- * NOT a narrow centered column. Owns everything that used to live in the Build
- * canvas's "App settings" modal, reorganised into the product IA:
+ * A two-pane settings layout (left section nav + content) that fills the tab.
+ * Owns everything that used to live in the Build canvas's "App settings" modal,
+ * reorganised into a small, product-shaped IA:
  *
  *   General      — App name · Description · Identity (+ App health)
- *   Data         — Dataset · Data binding · Rebind / mapping
- *   Appearance   — Branding · Theme · Login appearance
- *   Navigation   — Mobile · Desktop
- *   Documents    — Print template
- *   Advanced     — Auto-number · Export · Technical settings
+ *   Data         — Dataset · Data binding
+ *   Appearance   — Experience Studio (theme/shell) · Navigation · Legacy branding
+ *   Advanced     — Auto-number · Print template · Import/Export · Technical
  *
- * Layout-driven sections (Appearance/Navigation/Documents/Auto-number) edit the
- * mini-app layout and AUTOSAVE (same hook as the builder). Board-DB fields
- * (name/description/icon, optimistic-lock column) save explicitly. Changing the
- * dataset runs the two-phase rebind (preview impact → apply to the draft).
+ * ONE explicit save model (no silent autosave): every edit — layout-driven
+ * (Appearance/Navigation/Documents/Auto-number) AND board-DB fields
+ * (name/description/icon, optimistic-lock column) — is held in local state and
+ * applied together only when the author clicks the single Save button in the
+ * sticky footer. Discard reverts to the last saved state. Nothing takes effect
+ * until Save. Changing the dataset runs the two-phase rebind (preview → apply).
  */
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useParams } from 'next/navigation';
 import {
   AlertTriangle,
@@ -52,10 +52,11 @@ import {
   workboardApi,
   type Workboard,
   type WorkboardAuditIssue,
+  type WorkboardUpdateInput,
+  type WorkboardLayoutJson,
   type RebindPreview,
 } from '@/lib/api/workboards';
 import { ensureLayout, type MiniAppLayoutSpec } from '@/components/workboards/builder/types';
-import { useDebouncedAutosave } from '@/components/workboards/builder/useDebouncedAutosave';
 import {
   DatasetSection,
   NavigationSection,
@@ -69,7 +70,7 @@ import WorkboardImportExportModal from '@/components/workboards/builder/Workboar
 import { registerAutosaveFlush } from '@/components/workboards/builder/autosaveFlushRegistry';
 import { useI18n } from '@/providers/LanguageProvider';
 
-type SectionKey = 'general' | 'data' | 'appearance' | 'navigation' | 'documents' | 'advanced';
+type SectionKey = 'general' | 'data' | 'appearance' | 'advanced';
 
 interface DatasetTableInfo {
   id: number;
@@ -105,8 +106,6 @@ function getSections(t: Translate): Array<{ key: SectionKey; label: string; icon
     { key: 'general', label: t('workboards.settings.sections.general'), icon: <Info className="h-4 w-4" />, hint: t('workboards.settings.sections.generalHint') },
     { key: 'data', label: t('workboards.settings.sections.data'), icon: <Database className="h-4 w-4" />, hint: t('workboards.settings.sections.dataHint') },
     { key: 'appearance', label: t('workboards.settings.sections.appearance'), icon: <Palette className="h-4 w-4" />, hint: t('workboards.settings.sections.appearanceHint') },
-    { key: 'navigation', label: t('workboards.settings.sections.navigation'), icon: <Compass className="h-4 w-4" />, hint: t('workboards.settings.sections.navigationHint') },
-    { key: 'documents', label: t('workboards.settings.sections.documents'), icon: <FileText className="h-4 w-4" />, hint: t('workboards.settings.sections.documentsHint') },
     { key: 'advanced', label: t('workboards.settings.sections.advanced'), icon: <SlidersHorizontal className="h-4 w-4" />, hint: t('workboards.settings.sections.advancedHint') },
   ];
 }
@@ -122,7 +121,7 @@ export default function WorkboardSettingsPage() {
       </div>
     );
   }
-  // Keyed on id so a different board remounts (fresh lazy-init of layout state).
+  // Keyed on id so a different board remounts (fresh lazy-init of local state).
   return <SettingsInner key={workboard.id} workboard={workboard} />;
 }
 
@@ -136,57 +135,106 @@ function SettingsInner({ workboard }: { workboard: Workboard }) {
   const [section, setSection] = useState<SectionKey>('general');
   const sections = getSections(t);
 
-  // ── Layout state + autosave (Appearance / Navigation / Documents / Auto-number).
-  // Lazy-init from the loaded board (like the builder) so there's no
-  // default→real flip that would trigger a spurious save on open.
+  // ── Local DRAFT state (nothing is persisted until Save). ──────────────────
+  // Layout (Appearance / Navigation / Documents / Auto-number). Lazy-init from
+  // the loaded board so there's no default→real flip.
   const [layout, setLayoutRaw] = useState<MiniAppLayoutSpec>(() => ensureLayout(workboard.layout_json));
   const setLayout = canEdit ? setLayoutRaw : () => {};
-  const autosave = useDebouncedAutosave(id, layout, canEdit);
-
-  // Let the topbar Publish button drain THIS page's pending autosave before it
-  // snapshots the draft (same registry the builder uses; only one tab mounts at
-  // a time so there's no clash).
-  useEffect(() => {
-    registerAutosaveFlush(autosave.flush);
-    return () => registerAutosaveFlush(null);
-  }, [autosave.flush]);
-
-  // ── Board-DB fields (General identity + Advanced technical) — explicit save.
+  // Board-DB fields (General identity + Advanced technical).
   const [name, setName] = useState(workboard.name || '');
   const [description, setDescription] = useState(workboard.description || '');
   const [icon, setIcon] = useState(workboard.icon || '');
   const [lockColumn, setLockColumn] = useState(workboard.optimistic_lock_column || '');
 
-  // ── Dataset rebind (two-phase) + import/export.
-  const [rebindPlan, setRebindPlan] = useState<(RebindPreview & { targetDatasetId: number }) | null>(null);
-  const [showExport, setShowExport] = useState(false);
-  const [tables, setTables] = useState<DatasetTableInfo[]>([]);
-
+  // Baseline of the last SAVED layout — dirty is measured against this (and
+  // advanced after a successful save / rebind).
+  const [savedLayoutJson, setSavedLayoutJson] = useState(() =>
+    JSON.stringify(ensureLayout(workboard.layout_json)),
+  );
+  const layoutJson = useMemo(() => JSON.stringify(layout), [layout]);
+  const layoutDirty = layoutJson !== savedLayoutJson;
   const identityDirty =
     name.trim() !== (workboard.name || '') ||
     (description.trim() || '') !== (workboard.description || '') ||
     (icon.trim() || '') !== (workboard.icon || '');
   const lockDirty = (lockColumn.trim() || '') !== (workboard.optimistic_lock_column || '');
+  const dirty = canEdit && (layoutDirty || identityDirty || lockDirty);
 
-  const saveBoard = async (patch: Record<string, unknown>, okMsg: string) => {
+  // ── Dataset rebind (two-phase) + import/export. ───────────────────────────
+  const [rebindPlan, setRebindPlan] = useState<(RebindPreview & { targetDatasetId: number }) | null>(null);
+  const [showExport, setShowExport] = useState(false);
+  const [tables, setTables] = useState<DatasetTableInfo[]>([]);
+
+  // ── The one explicit save: apply every dirty field in a single atomic PATCH.
+  const persist = useCallback(async () => {
+    if (!canEdit) return;
+    const data: WorkboardUpdateInput = {};
+    if (layoutDirty) {
+      data.layout_json = layout as unknown as Partial<WorkboardLayoutJson>;
+      // Optimistic-concurrency guard only for the whole-board layout write.
+      if (typeof workboard.version === 'number') data.expected_version = workboard.version;
+    }
+    if (identityDirty) {
+      data.name = name.trim();
+      data.description = description.trim();
+      data.icon = icon.trim() || undefined;
+    }
+    if (lockDirty) data.optimistic_lock_column = lockColumn.trim();
+    if (Object.keys(data).length === 0) return;
+    await update.mutateAsync({ id, data });
+    setSavedLayoutJson(JSON.stringify(layout));
+  }, [
+    canEdit, layoutDirty, identityDirty, lockDirty, layout, name, description, icon,
+    lockColumn, workboard.version, id, update,
+  ]);
+
+  const handleSave = async () => {
+    if (!dirty) return;
     try {
-      await update.mutateAsync({ id, data: patch });
-      toast.success(okMsg);
-    } catch {
-      toast.error(t('workboards.settings.saveFailed'));
+      await persist();
+      toast.success(t('workboards.settings.allSaved'));
+    } catch (err) {
+      const httpStatus = (err as { response?: { status?: number } })?.response?.status;
+      toast.error(
+        httpStatus === 409 ? t('workboards.autosave.conflict') : t('workboards.settings.saveFailed'),
+      );
     }
   };
+
+  const handleDiscard = () => {
+    setLayoutRaw(ensureLayout(JSON.parse(savedLayoutJson)));
+    setName(workboard.name || '');
+    setDescription(workboard.description || '');
+    setIcon(workboard.icon || '');
+    setLockColumn(workboard.optimistic_lock_column || '');
+  };
+
+  // Let the topbar Publish button drain THIS page's unsaved edits before it
+  // snapshots the draft (same registry the builder uses; only one tab mounts a
+  // time so there's no clash). Publishing implies saving pending settings.
+  useEffect(() => {
+    registerAutosaveFlush(async () => {
+      if (dirty) await persist();
+    });
+    return () => registerAutosaveFlush(null);
+  }, [dirty, persist]);
+
+  // Guard against losing unsaved edits on a hard reload / tab close.
+  useEffect(() => {
+    if (!dirty) return;
+    const handler = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = '';
+    };
+    window.addEventListener('beforeunload', handler);
+    return () => window.removeEventListener('beforeunload', handler);
+  }, [dirty]);
 
   const handleDatasetChange = async (nextDatasetId: number) => {
     if (!canEdit || !nextDatasetId || nextDatasetId === workboard.dataset_id) return;
     try {
-      // Persist pending draft edits so the preview reflects them — but ONLY when
-      // something is actually pending. flush() force-saves unconditionally, so
-      // calling it while clean would bump the draft version and spuriously flip
-      // the board to "unpublished changes".
-      if (autosave.status === 'pending' || autosave.status === 'saving') {
-        await autosave.flush();
-      }
+      // Persist any pending draft edits first so the impact preview reflects them.
+      if (dirty) await persist();
       const plan = await workboardApi.previewRebind(id, nextDatasetId);
       setRebindPlan({ ...plan, targetDatasetId: nextDatasetId });
     } catch {
@@ -201,7 +249,9 @@ function SettingsInner({ workboard }: { workboard: Workboard }) {
         id,
         data: { dataset_id: rebindPlan.targetDatasetId },
       });
-      setLayoutRaw(ensureLayout(updated.layout_json)); // reflect the rebound draft
+      const nextLayout = ensureLayout(updated.layout_json);
+      setLayoutRaw(nextLayout); // reflect the rebound draft
+      setSavedLayoutJson(JSON.stringify(nextLayout));
       toast.success(t('workboards.settings.datasetChangedToast'));
       setRebindPlan(null);
     } catch {
@@ -258,144 +308,134 @@ function SettingsInner({ workboard }: { workboard: Workboard }) {
             </span>
           </button>
         ))}
-        <div className="mt-auto px-2 pt-3">
-          <AutosaveBadge status={autosave.status} savedAt={autosave.savedAt} error={autosave.errorMessage} />
-        </div>
       </nav>
 
-      {/* Content */}
-      <div className="min-w-0 flex-1 overflow-y-auto">
-        <div className="max-w-4xl space-y-5 p-6">
-          {section === 'general' && (
-            <>
-              <AppHealthCard workboardId={id} />
-              <SettingsPanel title={t('workboards.settings.appInfo')} icon={<Info className="h-4 w-4" />}>
-                <div className="space-y-4">
-                  <Field label={t('workboards.settings.appName')}>
-                    <Input value={name} onChange={(e) => setName(e.target.value)} disabled={!canEdit} placeholder={t('workboards.settings.appNamePlaceholder')} />
-                  </Field>
-                  <Field label={t('workboards.settings.description')}>
-                    <Textarea value={description} onChange={(e) => setDescription(e.target.value)} disabled={!canEdit} rows={3} placeholder={t('workboards.settings.descriptionPlaceholder')} />
-                  </Field>
-                </div>
-              </SettingsPanel>
-
-              <SettingsPanel title={t('workboards.settings.identity')} icon={<Info className="h-4 w-4" />}>
-                <div className="grid gap-4 sm:grid-cols-2">
-                  <Field label={t('workboards.settings.iconEmoji')}>
-                    <Input value={icon} onChange={(e) => setIcon(e.target.value)} disabled={!canEdit} placeholder={t('workboards.settings.iconEmojiPlaceholder')} maxLength={8} />
-                  </Field>
-                  <Field label={t('workboards.settings.slugReadonly')}>
-                    <Input value={workboard.slug || ''} readOnly disabled />
-                  </Field>
-                </div>
-                <p className="mt-2 text-tiny text-text-tertiary">
-                  {t('workboards.settings.slugHint')}
-                </p>
-              </SettingsPanel>
-
-              {canEdit && (
-                <SaveBar
-                  dirty={identityDirty}
-                  loading={update.isPending}
-                  onSave={() =>
-                    saveBoard(
-                      { name: name.trim(), description: description.trim(), icon: icon.trim() || undefined },
-                      t('workboards.settings.appInfoSaved'),
-                    )
-                  }
-                />
-              )}
-            </>
-          )}
-
-          {section === 'data' && (
-            <>
-              <SettingsPanel title="Dataset" icon={<Database className="h-4 w-4" />}>
-                <DatasetSection
-                  datasets={datasets}
-                  currentDatasetId={workboard.dataset_id}
-                  datasetChangePending={update.isPending}
-                  onDatasetChange={handleDatasetChange}
-                />
-              </SettingsPanel>
-              <SettingsPanel title={t('workboards.settings.dataBindingReadonly')} icon={<Database className="h-4 w-4" />}>
-                <div className="grid gap-3 sm:grid-cols-2 text-caption">
-                  <ReadonlyRow label={t('workboards.settings.primaryTableId')} value={String(workboard.primary_table_id ?? '—')} />
-                  <ReadonlyRow label={t('workboards.settings.primaryKey')} value={(workboard.primary_key_columns || []).join(', ') || '—'} />
-                </div>
-                <p className="mt-2 text-tiny text-text-tertiary">
-                  {t('workboards.settings.dataBindingHint')}
-                </p>
-              </SettingsPanel>
-            </>
-          )}
-
-          {section === 'appearance' && (
-            <>
-              <SettingsPanel title={t('workboards.settings.experienceStudio')} icon={<Palette className="h-4 w-4" />}>
-                <ExperienceStudioSection
-                  layout={layout}
-                  onChange={setLayout}
-                  disabled={!canEdit}
-                />
-              </SettingsPanel>
-              <SettingsPanel title={t('workboards.settings.legacyBranding')} icon={<Palette className="h-4 w-4" />}>
-                <ThemeSection layout={layout} onChange={setLayout} />
-              </SettingsPanel>
-            </>
-          )}
-
-          {section === 'navigation' && (
-            <SettingsPanel title={t('workboards.settings.navigation')} icon={<Compass className="h-4 w-4" />}>
-              <NavigationSection layout={layout} onChange={setLayout} />
-            </SettingsPanel>
-          )}
-
-          {section === 'documents' && (
-            <SettingsPanel title={t('workboards.settings.printTemplate')} icon={<FileText className="h-4 w-4" />}>
-              <PrintTemplateSection layout={layout} onChange={setLayout} />
-            </SettingsPanel>
-          )}
-
-          {section === 'advanced' && (
-            <>
-              <SettingsPanel title={t('workboards.settings.autoNumber')} icon={<SlidersHorizontal className="h-4 w-4" />}>
-                <AutoNumberSection layout={layout} tables={tables} onChange={setLayout} />
-              </SettingsPanel>
-
-              <SettingsPanel title={t('workboards.settings.importExport')} icon={<Download className="h-4 w-4" />}>
-                <p className="mb-3 text-caption text-text-tertiary">
-                  {t('workboards.settings.importExportDescription')}
-                </p>
-                <Button variant="secondary" size="sm" leadingIcon={<Download className="h-3.5 w-3.5" />} onClick={() => setShowExport(true)}>
-                  {t('workboards.settings.exportApp')}
-                </Button>
-              </SettingsPanel>
-
-              <SettingsPanel title={t('workboards.settings.technical')} icon={<Wrench className="h-4 w-4" />}>
-                <div className="grid gap-4 sm:grid-cols-2">
-                  <ReadonlyRow label={t('workboards.settings.writeMode')} value={workboard.write_mode || '—'} />
-                  <Field label={t('workboards.settings.optimisticLockColumn')}>
-                    <Input value={lockColumn} onChange={(e) => setLockColumn(e.target.value)} disabled={!canEdit} placeholder={t('workboards.settings.optimisticLockPlaceholder')} />
-                  </Field>
-                </div>
-                <p className="mt-2 text-tiny text-text-tertiary">
-                  {t('workboards.settings.optimisticLockHint')}
-                </p>
-                {canEdit && (
-                  <div className="mt-3">
-                    <SaveBar
-                      dirty={lockDirty}
-                      loading={update.isPending}
-                      onSave={() => saveBoard({ optimistic_lock_column: lockColumn.trim() }, t('workboards.settings.technicalSaved'))}
-                    />
+      {/* Content column: scrollable body + a single sticky Save footer */}
+      <div className="flex min-w-0 flex-1 flex-col">
+        <div className="flex-1 overflow-y-auto">
+          <div className="max-w-4xl space-y-5 p-6">
+            {section === 'general' && (
+              <>
+                <AppHealthCard workboardId={id} />
+                <SettingsPanel title={t('workboards.settings.appInfo')} icon={<Info className="h-4 w-4" />}>
+                  <div className="space-y-4">
+                    <Field label={t('workboards.settings.appName')}>
+                      <Input value={name} onChange={(e) => setName(e.target.value)} disabled={!canEdit} placeholder={t('workboards.settings.appNamePlaceholder')} />
+                    </Field>
+                    <Field label={t('workboards.settings.description')}>
+                      <Textarea value={description} onChange={(e) => setDescription(e.target.value)} disabled={!canEdit} rows={3} placeholder={t('workboards.settings.descriptionPlaceholder')} />
+                    </Field>
+                    <div className="grid gap-4 sm:grid-cols-2">
+                      <Field label={t('workboards.settings.iconEmoji')}>
+                        <Input value={icon} onChange={(e) => setIcon(e.target.value)} disabled={!canEdit} placeholder={t('workboards.settings.iconEmojiPlaceholder')} maxLength={8} />
+                      </Field>
+                      <Field label={t('workboards.settings.slugReadonly')}>
+                        <Input value={workboard.slug || ''} readOnly disabled />
+                      </Field>
+                    </div>
+                    <p className="text-tiny text-text-tertiary">{t('workboards.settings.slugHint')}</p>
                   </div>
-                )}
-              </SettingsPanel>
-            </>
-          )}
+                </SettingsPanel>
+              </>
+            )}
+
+            {section === 'data' && (
+              <>
+                <SettingsPanel title="Dataset" icon={<Database className="h-4 w-4" />}>
+                  <DatasetSection
+                    datasets={datasets}
+                    currentDatasetId={workboard.dataset_id}
+                    datasetChangePending={update.isPending}
+                    onDatasetChange={handleDatasetChange}
+                  />
+                </SettingsPanel>
+                <SettingsPanel title={t('workboards.settings.dataBindingReadonly')} icon={<Database className="h-4 w-4" />}>
+                  <div className="grid gap-3 sm:grid-cols-2 text-caption">
+                    <ReadonlyRow label={t('workboards.settings.primaryTableId')} value={String(workboard.primary_table_id ?? '—')} />
+                    <ReadonlyRow label={t('workboards.settings.primaryKey')} value={(workboard.primary_key_columns || []).join(', ') || '—'} />
+                  </div>
+                  <p className="mt-2 text-tiny text-text-tertiary">
+                    {t('workboards.settings.dataBindingHint')}
+                  </p>
+                </SettingsPanel>
+              </>
+            )}
+
+            {section === 'appearance' && (
+              <>
+                <SettingsPanel title={t('workboards.settings.experienceStudio')} icon={<Palette className="h-4 w-4" />}>
+                  <ExperienceStudioSection layout={layout} onChange={setLayout} disabled={!canEdit} />
+                </SettingsPanel>
+                <SettingsPanel title={t('workboards.settings.navigation')} icon={<Compass className="h-4 w-4" />}>
+                  <NavigationSection layout={layout} onChange={setLayout} />
+                </SettingsPanel>
+                <Collapsible summary={t('workboards.settings.legacyBranding')} icon={<Palette className="h-4 w-4" />}>
+                  <ThemeSection layout={layout} onChange={setLayout} />
+                </Collapsible>
+              </>
+            )}
+
+            {section === 'advanced' && (
+              <>
+                <SettingsPanel title={t('workboards.settings.autoNumber')} icon={<SlidersHorizontal className="h-4 w-4" />}>
+                  <AutoNumberSection layout={layout} tables={tables} onChange={setLayout} />
+                </SettingsPanel>
+
+                <SettingsPanel title={t('workboards.settings.printTemplate')} icon={<FileText className="h-4 w-4" />}>
+                  <PrintTemplateSection layout={layout} onChange={setLayout} />
+                </SettingsPanel>
+
+                <SettingsPanel title={t('workboards.settings.importExport')} icon={<Download className="h-4 w-4" />}>
+                  <p className="mb-3 text-caption text-text-tertiary">
+                    {t('workboards.settings.importExportDescription')}
+                  </p>
+                  <Button variant="secondary" size="sm" leadingIcon={<Download className="h-3.5 w-3.5" />} onClick={() => setShowExport(true)}>
+                    {t('workboards.settings.exportApp')}
+                  </Button>
+                </SettingsPanel>
+
+                <SettingsPanel title={t('workboards.settings.technical')} icon={<Wrench className="h-4 w-4" />}>
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    <ReadonlyRow label={t('workboards.settings.writeMode')} value={workboard.write_mode || '—'} />
+                    <Field label={t('workboards.settings.optimisticLockColumn')}>
+                      <Input value={lockColumn} onChange={(e) => setLockColumn(e.target.value)} disabled={!canEdit} placeholder={t('workboards.settings.optimisticLockPlaceholder')} />
+                    </Field>
+                  </div>
+                  <p className="mt-2 text-tiny text-text-tertiary">
+                    {t('workboards.settings.optimisticLockHint')}
+                  </p>
+                </SettingsPanel>
+              </>
+            )}
+          </div>
         </div>
+
+        {canEdit && (
+          <footer className="flex shrink-0 items-center justify-between gap-3 border-t border-[rgb(var(--border-line))] bg-surface-1 px-6 py-3">
+            <span className="flex min-w-0 items-center gap-2 text-caption">
+              {dirty ? (
+                <>
+                  <span className="h-2 w-2 shrink-0 rounded-full bg-warning" />
+                  <span className="font-medium text-text-primary">{t('workboards.settings.unsavedChanges')}</span>
+                  <span className="hidden truncate text-tiny text-text-tertiary sm:inline">· {t('workboards.settings.saveHint')}</span>
+                </>
+              ) : (
+                <>
+                  <CheckCircle2 className="h-4 w-4 shrink-0 text-success" />
+                  <span className="text-text-tertiary">{t('workboards.settings.allSaved')}</span>
+                </>
+              )}
+            </span>
+            <div className="flex shrink-0 gap-2">
+              <Button variant="ghost" size="sm" disabled={!dirty || update.isPending} onClick={handleDiscard}>
+                {t('workboards.settings.discard')}
+              </Button>
+              <Button variant="primary" size="sm" disabled={!dirty} loading={update.isPending} onClick={handleSave}>
+                {t('workboards.settings.saveChanges')}
+              </Button>
+            </div>
+          </footer>
+        )}
       </div>
 
       {rebindPlan && (
@@ -417,8 +457,8 @@ function SettingsInner({ workboard }: { workboard: Workboard }) {
         >
           <p className="mb-3 text-caption text-text-secondary">
             {t('workboards.settings.rebindSummary', {
-              remap: rebindPlan.remap_count,
-              clear: rebindPlan.clear_count,
+              remapped: rebindPlan.remap_count,
+              cleared: rebindPlan.clear_count,
             })}
           </p>
           {rebindPlan.remapped.length > 0 && (
@@ -477,50 +517,19 @@ function ReadonlyRow({ label, value }: { label: string; value: string }) {
   );
 }
 
-function SaveBar({ dirty, loading, onSave }: { dirty: boolean; loading: boolean; onSave: () => void }) {
-  const { t } = useI18n();
+/** A panel that starts collapsed — for rarely-touched / legacy controls so the
+ * default view stays uncluttered. */
+function Collapsible({ summary, icon, children }: { summary: string; icon?: React.ReactNode; children: React.ReactNode }) {
   return (
-    <div className="flex items-center justify-end gap-2">
-      {dirty && <span className="text-tiny text-text-tertiary">{t('workboards.settings.unsavedChanges')}</span>}
-      <Button variant="primary" size="sm" onClick={onSave} loading={loading} disabled={!dirty}>
-        {t('workboards.settings.saveChanges')}
-      </Button>
-    </div>
+    <details className="group overflow-hidden rounded-xl border border-[rgb(var(--border-line))] bg-surface-1">
+      <summary className="flex cursor-pointer list-none items-center gap-2 px-4 py-3 text-caption font-medium text-text-secondary hover:text-text-primary [&::-webkit-details-marker]:hidden">
+        {icon && <span className="shrink-0 text-text-tertiary">{icon}</span>}
+        <span className="flex-1">{summary}</span>
+        <SlidersHorizontal className="h-3.5 w-3.5 text-text-quaternary transition-transform group-open:rotate-90" />
+      </summary>
+      <div className="border-t border-[rgb(var(--border-line))] p-4">{children}</div>
+    </details>
   );
-}
-
-function AutosaveBadge({
-  status,
-  savedAt,
-  error,
-}: {
-  status: 'idle' | 'pending' | 'saving' | 'saved' | 'error';
-  savedAt: Date | null;
-  error: string | null;
-}) {
-  const { t } = useI18n();
-  if (status === 'saving' || status === 'pending') {
-    return (
-      <span className="flex items-center gap-1.5 text-tiny text-text-tertiary">
-        <Loader2 className="h-3 w-3 animate-spin" /> {t('workboards.settings.saving')}
-      </span>
-    );
-  }
-  if (status === 'error') {
-    return (
-      <span className="flex items-center gap-1.5 text-tiny text-danger" title={error || ''}>
-        <AlertTriangle className="h-3 w-3" /> {t('workboards.settings.saveError')}
-      </span>
-    );
-  }
-  if (status === 'saved' && savedAt) {
-    return (
-      <span className="flex items-center gap-1.5 text-tiny text-success">
-        <CheckCircle2 className="h-3 w-3" /> {t('workboards.settings.autoSaved')}
-      </span>
-    );
-  }
-  return <span className="text-tiny text-text-quaternary">{t('workboards.settings.autosave')}</span>;
 }
 
 function AppHealthCard({ workboardId }: { workboardId: number }) {
