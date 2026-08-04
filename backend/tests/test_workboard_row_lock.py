@@ -77,9 +77,12 @@ def test_whole_table_lock_blocks_user_allows_admin():
     assert _enforce(wt, {"x": 1}, _user("admin")) is True
 
 
-def test_hard_lock_empty_roles_blocks_admin_only_owner():
+def test_hard_lock_empty_roles_blocks_user_privileged_bypass():
+    # editable_by_roles=[] blocks the `user` role; owner AND admin are
+    # privileged app-managers and always bypass (admin == owner now).
     hard = RowLockConfig(lock_if="true", editable_by_roles=[])
-    assert _enforce(hard, {"x": 1}, _user("admin")) is False
+    assert _enforce(hard, {"x": 1}, _user("user")) is False
+    assert _enforce(hard, {"x": 1}, _user("admin")) is True
     assert _enforce(hard, {"x": 1}, _user("owner")) is True
 
 

@@ -610,6 +610,38 @@ export default function WorkspaceWorkboardPage() {
     );
   }
 
+  // The app loaded but this app-user's role can see NO screen (RLS/visibility
+  // grants none). Show a clear notice instead of a blank app + silent 403s —
+  // the confusing "public opens but is empty/broken" state.
+  if (shell.screens.length === 0) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-slate-50 p-6">
+        <div className="max-w-md rounded-xl border border-amber-200 bg-white p-6 text-center shadow-sm">
+          <Lock className="mx-auto h-8 w-8 text-amber-400" />
+          <h1 className="mt-3 text-base font-semibold text-slate-800">
+            Chưa có màn hình nào cho bạn
+          </h1>
+          <p className="mt-2 text-sm text-slate-600">
+            Tài khoản của bạn chưa được cấp quyền xem màn hình nào trong ứng dụng
+            này. Vui lòng liên hệ quản trị viên của app.
+          </p>
+          <button
+            onClick={async () => {
+              try {
+                await workspaceApi.logout(token);
+              } finally {
+                router.push(`/ws/${token}`);
+              }
+            }}
+            className="mt-4 text-sm text-blue-600 hover:underline"
+          >
+            {rt('workboards.runtime.logout')}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   // ── Experience contract (Experience Studio) ──────────────────────────
   // Resolved server-side (defaults ← legacy branding/nav ← explicit experience),
   // so for legacy boards these values equal the old branding → identical render.

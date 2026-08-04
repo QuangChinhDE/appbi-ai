@@ -10,9 +10,11 @@ AppBI logged-in users (admins opening the workboard inside the AppBI shell
 for preview / debugging) bypass RLS entirely — object-level permission
 checks in the API layer still apply.
 
-App-user RLS is fail-closed. Owner roles bypass row filters. Admin/user
-roles need either a matching screen rule or an explicit ``rls_default``;
-without one list queries return zero rows and writes are denied.
+App-user RLS is fail-closed. PRIVILEGED roles (owner + admin) bypass row
+filters + access gates entirely — they are app managers who see every screen
+and every row. The ``user`` role needs either a matching screen rule or an
+explicit ``rls_default``; without one list queries return zero rows and writes
+are denied.
 """
 from __future__ import annotations
 
@@ -22,7 +24,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from fastapi import HTTPException, status
 
 from app.core.logging import get_logger
-from app.modules.workboards.roles import is_owner_role
+from app.modules.workboards.roles import is_privileged_role
 from app.modules.workboards.schemas import ScreenRlsRule
 
 logger = get_logger(__name__)
@@ -145,7 +147,7 @@ def build_rls_filter(
     if not identity.is_app_user:
         return [], True
 
-    if is_owner_role(identity.role):
+    if is_privileged_role(identity.role):
         return [], True
 
     if not rules and default is None:
@@ -208,8 +210,9 @@ def role_has_screen_grant(
     This is the access gate — distinct from :func:`build_rls_filter`'s
     read-scope ``allowed`` (which is False for a granted role whose row-scope
     placeholder resolves to an empty value). A role is granted when it is
-    internal/owner, or an RLS rule (or the default) matches it. Fail-closed:
-    an app user with no rules and no default is NOT granted.
+    internal/privileged (owner + admin), or an RLS rule (or the default)
+    matches it. Fail-closed: a ``user`` app user with no rules and no default
+    is NOT granted.
 
     Used so a screen hidden from the nav (``visible_for_roles``) can still be
     opened when reached via an explicit row-action / after_submit navigation,
@@ -218,7 +221,7 @@ def role_has_screen_grant(
     """
     if not identity.is_app_user:
         return True
-    if is_owner_role(identity.role):
+    if is_privileged_role(identity.role):
         return True
     if not rules and default is None:
         return False
@@ -244,7 +247,7 @@ def enforce_write_access(
     if not identity.is_app_user:
         return dict(row_values or {})
 
-    if is_owner_role(identity.role):
+    if is_privileged_role(identity.role):
         return dict(row_values or {})
 
     if not rules and default is None:

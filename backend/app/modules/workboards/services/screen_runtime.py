@@ -39,7 +39,7 @@ from app.core.logging import get_logger
 from app.models.dataset import DatasetTable
 from app.models.models import DataSource
 from app.modules.workboards.models import Workboard, WorkboardOpLog
-from app.modules.workboards.roles import is_owner_role
+from app.modules.workboards.roles import is_privileged_role
 from app.modules.workboards.services.geocode_service import (
     build_address,
     geocode_address,
@@ -669,7 +669,7 @@ def get_screen(layout: LayoutJson, screen_id: str) -> Screen:
 def is_screen_visible_for(screen: Screen, identity: CallerIdentity) -> bool:
     if not identity.is_app_user:
         return True
-    if is_owner_role(identity.role):
+    if is_privileged_role(identity.role):
         return True
     if not screen.visible_for_roles:
         return True
@@ -698,7 +698,7 @@ def is_group_visible_for(group: ScreenGroup, identity: CallerIdentity) -> bool:
     """
     if not identity.is_app_user:
         return True
-    if is_owner_role(identity.role):
+    if is_privileged_role(identity.role):
         return True
     if not group.visible_for_roles:
         return True
@@ -1287,7 +1287,7 @@ def open_related_records_context(
     )
     if action is None or action.action_type != "open_related_records":
         raise HTTPException(status_code=404, detail="Open Related Records action was not found.")
-    if identity.is_app_user and not is_owner_role(identity.role) and action.visible_for_roles:
+    if identity.is_app_user and not is_privileged_role(identity.role) and action.visible_for_roles:
         role = (identity.role or "").strip().lower()
         if not any(item.strip().lower() == role for item in action.visible_for_roles):
             raise HTTPException(status_code=403, detail="You don't have access to that action.")
@@ -1497,7 +1497,7 @@ def _enforce_status_rules(
     """
     if not status_fields:
         return
-    if not identity.is_app_user or is_owner_role(identity.role):
+    if not identity.is_app_user or is_privileged_role(identity.role):
         return
     role = (identity.role or "").strip().lower()
     for field in status_fields:
@@ -1553,7 +1553,7 @@ def _enforce_row_lock(
         return
     if op == "delete" and not bool(getattr(cfg, "lock_delete", True)):
         return
-    if not identity.is_app_user or is_owner_role(identity.role):
+    if not identity.is_app_user or is_privileged_role(identity.role):
         return
     lock_if = (getattr(cfg, "lock_if", None) or "").strip()
     if not lock_if:
