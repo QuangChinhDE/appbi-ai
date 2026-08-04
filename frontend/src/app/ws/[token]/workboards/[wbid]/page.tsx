@@ -660,11 +660,15 @@ export default function WorkspaceWorkboardPage() {
   setRuntimeMediaCap(shell.media_max_kb);
   const rootThemeStyle = {
     ...experienceThemeVars(exp, theme, mode),
-    ...backgroundStyle(theme.background, 'var(--wb-bg)'),
     // Semantic tokens from the resolved experience — additive CSS vars that
     // components can adopt incrementally; `accent` already reads primary above.
   } as React.CSSProperties;
-  if (exp?.explicit && exp.overrides?.shell?.background) {
+  if (exp?.explicit) {
+    // An explicit Experience theme OWNS the whole app background. Never apply the
+    // legacy branding background (a gradient/image from the old ThemeSection) on
+    // a v1 board — it would paint OVER --wb-bg and fight the chosen theme (the
+    // "green gradient bleeding through a dark theme" bug). The Experience's own
+    // shell.background controls it; default to the theme background color.
     const shellBackground = exp.shell.background;
     rootThemeStyle.background =
       shellBackground === 'custom'
@@ -675,6 +679,9 @@ export default function WorkspaceWorkboardPage() {
             ? 'var(--wb-surface)'
             : 'var(--wb-bg)';
     rootThemeStyle.backgroundImage = 'none';
+  } else {
+    // Legacy boards (no Experience) keep their branding background verbatim.
+    Object.assign(rootThemeStyle, backgroundStyle(theme.background, 'var(--wb-bg)'));
   }
 
   // ── Layout decision ───────────────────────────────────────────────────
@@ -1202,7 +1209,10 @@ function PushToggle({
       disabled={state === 'busy' || state === 'on'}
       title={state === 'on' ? rt('workboards.runtime.notificationsOnTitle') : rt('workboards.runtime.enableNotificationsTitle')}
       className="flex items-center gap-1 rounded-md border px-2 py-1 text-xs font-medium hover:bg-slate-50 disabled:opacity-70"
-      style={{ borderColor: state === 'on' ? accent : '#e2e8f0', color: state === 'on' ? accent : '#475569' }}
+      style={{
+        borderColor: state === 'on' ? accent : 'var(--wb-border)',
+        color: state === 'on' ? accent : 'var(--wb-text-muted)',
+      }}
     >
       {state === 'busy' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Bell className="h-3.5 w-3.5" />}
       <span className="hidden sm:inline">

@@ -348,14 +348,23 @@ export function experienceThemeVars(
  */
 export function experienceCss(): string {
   const s = '.wb-app[data-experience="v1"]';
+  // Attribute selectors ([class~=] exact token + [class*="…/"] opacity variants)
+  // so EVERY Tailwind opacity shade (bg-slate-50/70, bg-white/95, …) is remapped
+  // — an enumerated list silently missed variants, leaving light bands on dark
+  // themes. gray-* aliases cover renderers that emit gray instead of slate.
   return `
 ${s}{background-color:var(--wb-bg)!important;color:var(--wb-text);}
-${s} .bg-white,${s} .bg-white\\/90,${s} .bg-white\\/95{background-color:var(--wb-surface)!important;}
-${s} .bg-slate-50,${s} .bg-slate-50\\/30,${s} .bg-slate-50\\/40,${s} .bg-slate-50\\/60,
-${s} .bg-slate-100,${s} .bg-slate-100\\/80{background-color:var(--wb-surface-2)!important;}
-${s} .text-slate-950,${s} .text-slate-900,${s} .text-slate-800,${s} .text-slate-700{color:var(--wb-text)!important;}
-${s} .text-slate-600,${s} .text-slate-500,${s} .text-slate-400,${s} .text-slate-300{color:var(--wb-text-muted)!important;}
-${s} .border-slate-100,${s} .border-slate-200,${s} .border-slate-300,${s} .border-slate-400{border-color:var(--wb-border)!important;}
+${s}[data-theme="dark"]{color-scheme:dark;}
+${s}[data-theme="light"]{color-scheme:light;}
+${s} [class~="bg-white"],${s} [class*="bg-white/"]{background-color:var(--wb-surface)!important;}
+${s} [class~="bg-slate-50"],${s} [class*="bg-slate-50/"],${s} [class~="bg-slate-100"],${s} [class*="bg-slate-100/"],
+${s} [class~="bg-gray-50"],${s} [class*="bg-gray-50/"],${s} [class~="bg-gray-100"],${s} [class*="bg-gray-100/"]{background-color:var(--wb-surface-2)!important;}
+${s} [class~="text-slate-950"],${s} [class~="text-slate-900"],${s} [class~="text-slate-800"],${s} [class~="text-slate-700"],
+${s} [class~="text-gray-900"],${s} [class~="text-gray-800"],${s} [class~="text-gray-700"]{color:var(--wb-text)!important;}
+${s} [class~="text-slate-600"],${s} [class~="text-slate-500"],${s} [class~="text-slate-400"],${s} [class~="text-slate-300"],
+${s} [class~="text-gray-600"],${s} [class~="text-gray-500"],${s} [class~="text-gray-400"]{color:var(--wb-text-muted)!important;}
+${s} [class~="border-slate-100"],${s} [class*="border-slate-100/"],${s} [class~="border-slate-200"],${s} [class*="border-slate-200/"],
+${s} [class~="border-slate-300"],${s} [class~="border-slate-400"],${s} [class~="border-gray-100"],${s} [class~="border-gray-200"],${s} [class~="border-gray-300"]{border-color:var(--wb-border)!important;}
 ${s} .bg-emerald-50,${s} .bg-green-50{background-color:color-mix(in srgb,var(--wb-success) 12%,var(--wb-surface))!important;}
 ${s} .text-emerald-600,${s} .text-emerald-700,${s} .text-emerald-800,${s} .text-green-600,${s} .text-green-700{color:var(--wb-success)!important;}
 ${s} .border-emerald-200,${s} .border-green-200{border-color:color-mix(in srgb,var(--wb-success) 35%,var(--wb-border))!important;}
