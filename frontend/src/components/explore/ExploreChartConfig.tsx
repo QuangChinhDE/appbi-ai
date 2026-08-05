@@ -395,6 +395,12 @@ export interface ChartStyleConfig {
   dualYAxis?: boolean;
   yAxisRightLabel?: string;
   yAxisRightSeriesKey?: string;
+  // Right (Y2) axis scale bounds — mirror yAxisMin/yAxisMax for the left axis.
+  // '' / undefined = auto-scale.
+  yAxisRightMin?: number | '';
+  yAxisRightMax?: number | '';
+  // Show value labels at the lowest & highest points of the right-axis (Y2) series.
+  showRightAxisMinMaxLabels?: boolean;
   // AREA: fill opacity (0–1)
   areaOpacity?: number;
   // LINE/AREA/TIME_SERIES: stroke width in px
@@ -464,6 +470,9 @@ export const DEFAULT_STYLE_CONFIG: ChartStyleConfig = {
   dualYAxis: false,
   yAxisRightLabel: '',
   yAxisRightSeriesKey: '',
+  yAxisRightMin: '',
+  yAxisRightMax: '',
+  showRightAxisMinMaxLabels: false,
   areaOpacity: 0.6,
   lineWidth: 2,
   barSize: '',
@@ -6821,6 +6830,25 @@ export function ExploreChartConfig({
                   className="w-full px-2 py-1.5 text-xs border border-[rgb(var(--border-strong))] rounded-md bg-surface-1"
                 />
               </div>
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="text-xs font-semibold text-text-secondary mb-1 block">Right Y Min</label>
+                  <input type="number" value={styleConfig.yAxisRightMin ?? ''} placeholder="auto"
+                    onChange={e => updStyle({ yAxisRightMin: e.target.value === '' ? '' : Number(e.target.value) })}
+                    className="w-full px-2 py-1.5 text-xs border border-[rgb(var(--border-strong))] rounded-md bg-surface-1" />
+                </div>
+                <div>
+                  <label className="text-xs font-semibold text-text-secondary mb-1 block">Right Y Max</label>
+                  <input type="number" value={styleConfig.yAxisRightMax ?? ''} placeholder="auto"
+                    onChange={e => updStyle({ yAxisRightMax: e.target.value === '' ? '' : Number(e.target.value) })}
+                    className="w-full px-2 py-1.5 text-xs border border-[rgb(var(--border-strong))] rounded-md bg-surface-1" />
+                </div>
+              </div>
+              <Toggle
+                label="Show min/max value labels (right axis)"
+                checked={styleConfig.showRightAxisMinMaxLabels ?? false}
+                onChange={v => updStyle({ showRightAxisMinMaxLabels: v })}
+              />
             </div>
           )}
         </Disclosure>

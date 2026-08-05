@@ -2096,6 +2096,45 @@ function ExploreChartInner({
   const yAxisClamp = (style.yAxisMin !== '' && style.yAxisMin != null)
     || (style.yAxisMax !== '' && style.yAxisMax != null);
 
+  // Right (Y2) axis scale — mirror the left axis. '' / null ⇒ auto-scale.
+  const yRightDomain: [any, any] = [
+    style.yAxisRightMin !== '' && style.yAxisRightMin != null ? Number(style.yAxisRightMin) : 'auto',
+    style.yAxisRightMax !== '' && style.yAxisRightMax != null ? Number(style.yAxisRightMax) : 'auto',
+  ];
+  const yRightClamp = (style.yAxisRightMin !== '' && style.yAxisRightMin != null)
+    || (style.yAxisRightMax !== '' && style.yAxisRightMax != null);
+
+  // Min/max value labels for the right-axis (Y2) series: returns a LabelList
+  // `content` renderer that draws a label ONLY at the series' lowest & highest
+  // points (by index, so float equality never mis-fires). null when the toggle
+  // is off or the series has no finite values.
+  const rightAxisMinMaxLabelContent = (seriesKey: string, rows: any[]) => {
+    if (!style.showRightAxisMinMaxLabels || !seriesKey || !Array.isArray(rows) || rows.length === 0) return undefined;
+    let minIdx = -1, maxIdx = -1, mn = Infinity, mx = -Infinity;
+    rows.forEach((r, i) => {
+      const v = Number(r?.[seriesKey]);
+      if (!Number.isFinite(v)) return;
+      if (v < mn) { mn = v; minIdx = i; }
+      if (v > mx) { mx = v; maxIdx = i; }
+    });
+    if (minIdx < 0) return undefined;
+    return (props: any) => {
+      const i = props.index;
+      if (i !== minIdx && i !== maxIdx) return null;
+      const v = Number(props.value);
+      if (!Number.isFinite(v)) return null;
+      const isMax = i === maxIdx;
+      const cx = Number(props.x);
+      const cy = Number(props.y) + (isMax ? -8 : 14);
+      const text = formatAxisValue(v, style, seriesKey);
+      return (
+        <text x={cx} y={cy} textAnchor="middle" fontSize={fontSize} fontWeight={600} fill={axisTickFill}>
+          {text}
+        </text>
+      );
+    };
+  };
+
   // Size the Y-axis gutter to fit the WIDEST formatted tick so labels never
   // clip — regardless of the chosen Display units (a user picking "None" gets
   // a wide enough gutter for "$10,500,000"; Auto/compact stays narrow). Power
@@ -3427,6 +3466,7 @@ function ExploreChartInner({
                   tick={{ fontSize, fill: rightAxisColor }}
                   tickFormatter={(value: any) => formatAxisValue(value, style, rightAxisSeries.key)}
                   width={rightAxisWidth}
+                  domain={yRightDomain} allowDataOverflow={yRightClamp}
                   axisLine={{ stroke: rightAxisColor }}
                   tickLine={{ stroke: rightAxisColor }}
                 />
@@ -3452,6 +3492,9 @@ function ExploreChartInner({
                       yAxisId={rightAxisSeries?.key === series.key ? 'right' : 0}>
                       {showDataLabels && !isHighlight && (
                         <LabelList dataKey={series.key} content={dataLabelContent(series.key, series.label, 'point')} />
+                      )}
+                      {rightAxisSeries?.key === series.key && !isHighlight && rightAxisMinMaxLabelContent(series.key, displayData) && (
+                        <LabelList dataKey={series.key} content={rightAxisMinMaxLabelContent(series.key, displayData)} />
                       )}
                     </Line>
                     {isHighlight && (
@@ -3638,6 +3681,7 @@ function ExploreChartInner({
               {dualYAxis && (
                 <YAxis yAxisId="right" orientation="right" tick={{ fontSize, fill: axisTickFill }}
                   tickFormatter={yAxisTickFormatter(style)}
+                  domain={yRightDomain} allowDataOverflow={yRightClamp}
                   label={yAxisRightLabel ? { value: yAxisRightLabel, angle: 90, position: 'insideRight', fontSize, dx: 15 } : undefined} />
               )}
               <Tooltip
@@ -3744,6 +3788,9 @@ function ExploreChartInner({
                         // but not on the lineMetric. Now both follow the
                         // same `dataLabelContent` resolver.
                         <LabelList dataKey={lineSeries.key} content={dataLabelContent(lineSeries.key, lineSeries.label, 'point')} />
+                      )}
+                      {!isHighlight && rightAxisMinMaxLabelContent(lineSeries.key, displayData) && (
+                        <LabelList dataKey={lineSeries.key} content={rightAxisMinMaxLabelContent(lineSeries.key, displayData)} />
                       )}
                     </Line>
                   </>
