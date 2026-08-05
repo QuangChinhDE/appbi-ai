@@ -600,6 +600,7 @@ _FE_STYLE_CONFIG_KEYS: set[str] = {
     "numberFormat", "currencySymbol", "decimalPlaces",
     # Axis
     "xAxisLabel", "yAxisLabel", "yAxisMin", "yAxisMax", "yAxisRightLabel",
+    "yAxisRightMin", "yAxisRightMax", "showRightAxisMinMaxLabels",
     # Legend / grid
     "legendPosition", "showGrid",
     # Palette

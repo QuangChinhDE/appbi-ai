@@ -132,12 +132,32 @@ def packs() -> list[ToolPack]:
     return list(_PACKS.values())
 
 
+#: What a gated pack's condition MEANS to somebody authoring a brain. Keyed by the
+#: setting name so the note cannot drift from the gate it describes.
+GATE_NOTES_VI: dict[str, str] = {
+    "web_search_enabled": (
+        "Chỉ chạy trên link công khai đã bật “Tìm kiếm web”. "
+        "Vẫn cấp được ở đây — link nào tắt thì bước bỏ qua công cụ này."
+    ),
+}
+
+
 def catalogue(*, web_enabled: bool = False) -> list[dict[str, Any]]:
     """What the builder's tool picker shows, grouped by pack.
 
     Withheld packs are returned WITH a flag rather than omitted: an author who
     cannot find `web_search` should learn that the deployment has web research
     off, not conclude the feature does not exist.
+
+    `available` answers "would THIS deployment dispatch it", which is what a run
+    needs. A BUILDER needs a different question answered, and conflating the two
+    made web tools unreachable: the picker read `available=False` and disabled the
+    checkbox, so nobody could ever grant `web_search` — even though the gate is
+    PER LINK (`ai_bot_web_search_enabled` on the link's appearance config) and a
+    granted web tool would have worked the moment it ran on a link with the box
+    ticked. `gated_by_link` is therefore reported separately: the builder offers
+    the pack and states the condition, and the run-time gate stays exactly where
+    it was.
     """
     _load_packs()
     out: list[dict[str, Any]] = []
@@ -149,6 +169,10 @@ def catalogue(*, web_enabled: bool = False) -> list[dict[str, Any]]:
             "label_en": p.label_en,
             "available": available,
             "requires_setting": p.requires_setting,
+            #: Grantable at authoring time, decided per run. Distinct from
+            #: `available`, which is this deployment's answer for this call.
+            "gated_by_link": p.requires_setting is not None,
+            "gate_note_vi": GATE_NOTES_VI.get(p.requires_setting or "", ""),
             "tools": [t.to_dict() for t in p.tools],
         })
     return out

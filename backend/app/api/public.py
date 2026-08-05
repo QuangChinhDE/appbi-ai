@@ -1131,7 +1131,28 @@ def get_public_dashboard(
     # Strip the admin-only ai_bot_key before sending to public viewers.
     # Replace it with a safe boolean so the AI bot UI can skip key entry.
     safe_appearance: dict = dict(appearance_config or {})
-    if safe_appearance.pop("ai_bot_key", None):
+    _link_key_present = bool(safe_appearance.pop("ai_bot_key", None))
+    # A BRAIN CAN SUPPLY THE CREDENTIAL TOO.
+    #
+    # This used to test only the link's own key, so a link whose brain carried a
+    # token on every step still showed the viewer "paste your API key to start" —
+    # the per-step token was authored, encrypted, honoured by the runtime, and
+    # unreachable, because the panel never let the viewer past the gate. The flag
+    # means "the viewer does not need to bring a key", so it has to account for
+    # every place a key can come from.
+    _brain_supplies_key = False
+    _cfg_flow_key = (safe_appearance.get("ai_bot_flow_key") or "").strip()
+    if not _link_key_present and _cfg_flow_key:
+        try:
+            from app.services.agent_flows.registry import resolve_published as _rp
+
+            _r = _rp(db, _cfg_flow_key)
+            _brain_supplies_key = bool(_r and not _r[1].steps_missing_credentials())
+        except Exception:  # noqa: BLE001
+            # Fails CLOSED: the viewer is asked for a key rather than dropped into a
+            # chat that cannot call anything.
+            _brain_supplies_key = False
+    if _link_key_present or _brain_supplies_key:
         safe_appearance["ai_bot_key_configured"] = True
     else:
         safe_appearance.pop("ai_bot_key_configured", None)
@@ -3702,13 +3723,32 @@ async def chat_dashboard_ai_agent(
             detail="AI bot is not enabled for this shared link.",
         )
 
-    effective_key, provider, model = resolve_public_ai_credentials(
-        appearance_config,
-        x_user_ai_key=x_user_ai_key,
-        x_user_ai_provider=x_user_ai_provider,
-        x_user_ai_model=x_user_ai_model,
-        missing_key_detail="X-User-Ai-Key header is required for AI chat.",
-    )
+    # The brain is resolved BEFORE the credential, because whether a credential is
+    # required at all is a property of the brain: one whose every step carries its own
+    # token needs nothing from the link. Resolving credentials first made that
+    # impossible — the link 400'd on "no key" before anyone looked at what the brain
+    # already had.
+    from app.services.agent_flows.registry import resolve_published as _resolve_brain
+
+    _flow_key = ((appearance_config or {}).get("ai_bot_flow_key") or "").strip()
+    _resolved = _resolve_brain(db, _flow_key) if _flow_key else None
+    _brain_self_sufficient = bool(_resolved and not _resolved[1].steps_missing_credentials())
+
+    try:
+        effective_key, provider, model = resolve_public_ai_credentials(
+            appearance_config,
+            x_user_ai_key=x_user_ai_key,
+            x_user_ai_provider=x_user_ai_provider,
+            x_user_ai_model=x_user_ai_model,
+            missing_key_detail="X-User-Ai-Key header is required for AI chat.",
+        )
+    except HTTPException:
+        if not _brain_self_sufficient:
+            raise
+        # Every step brings its own token and names its own vendor, so there is
+        # nothing for a step to inherit and no key to demand from the viewer.
+        effective_key, provider, model = "", "", None
+
     web_search_flag = web_search_enabled(appearance_config)
     # Depth is no longer a link setting. It is a property of the way of thinking
     # the link chose: a one-step lookup flow and a five-step analysis flow ARE the
@@ -3872,57 +3912,82 @@ async def chat_dashboard_ai_agent(
         #
         # This used to call build_knowledge_context_block with no `sources`
         # argument — every authored source, on every question — and hand the
-        # result to every step. That made "the flow decides what the bot may
+        # result to every step. That made "the brain decides what the bot may
         # read" untrue in the only direction that matters: the FLOOR was
-        # everything, so an author who deliberately left the knowledge step out
-        # still got the full block. The flow's frame owns this now (compile.py's
-        # context node, steering sources only), and documents and metric
-        # definitions are reached by tool when a step is granted them.
-        _agent_kwargs = dict(
-            ctx=ctx,
-            user_messages=safe_messages,
-            api_key=captured_key,
-            provider=provider,
-            model=model,
-            briefing=briefing_obj,
-            state=state_obj,
-            # The frame's verify step owns fact-checking. A second, weaker
-            # self-critique inside each step would spend model calls arguing with
-            # text no viewer reads.
-            enable_critique=False,
-            # A capability grants a step permission to ASK for the web; this flag
-            # is the deployment still having to allow it.
-            web_search_enabled=web_search_flag,
-            guide_mode=(x_user_ai_intent or "").strip().lower() == "guide",
-            # Empty unless this turn is guide mode. Never link configuration.
-            report_context_note=report_note,
-            learned_knowledge_block="",
-        )
+        # everything, so an author who deliberately left knowledge off a step
+        # still got the full block. Each step's own attachments own this now
+        # (`run_scope` below), and documents and metric definitions are reached by
+        # tool only when a step is granted them.
 
-        # THE AI FLOW MODULE HAS BEEN REMOVED.
+        # WHERE A PUBLIC LINK'S CHATBOT GETS ITS BRAIN.
         #
-        # This is where a public link's chatbot used to get its brain: the flow
-        # engine resolved which graph the link ran and streamed the turn. The whole
-        # module was deleted to be rebuilt from scratch, so there is nothing to
-        # call here yet.
+        # The previous module was deleted and this was a stub that told every viewer
+        # "Trợ lý chưa được cấu hình" — which meant a brain could be authored,
+        # published and pointed at by a link, and still never run. `run_brain` had no
+        # caller anywhere in the app; `ai_bot_flow_key` was read only by the code that
+        # counts which links use a brain. This connects them.
         #
-        # Answering with an explicit message rather than leaving the old import in
-        # place: a call into a deleted package raises ImportError deep inside a
-        # streaming response, which reaches the viewer as a dead connection and
-        # reaches the log as a traceback that says nothing about why. A viewer who
-        # asks a question deserves to be told the feature is not there.
-        async def _no_flow_module():
-            from app.services.dashboard_ai_bot.events import AgentEvent
+        # `resolve_published` deliberately does not fall back to a draft, so a link
+        # naming an unpublished brain is TOLD, not quietly served something nobody
+        # approved.
+        from app.services.agent_flows.permissions import run_scope
+        from app.services.agent_flows.runtime.loop import run_brain
 
-            yield AgentEvent(
-                type="text",
-                text=(
-                    "Trợ lý của báo cáo này hiện chưa được cấu hình. "
-                    "Quản trị viên cần thiết lập lại luồng xử lý AI trước khi dùng."
-                ),
+        # `_resolved` / `_flow_key` come from the credential block above — resolved
+        # once per turn, because a second `resolve_published` here could disagree with
+        # the one that decided whether a key was required.
+        if _resolved is None:
+            async def _no_brain():
+                from app.services.dashboard_ai_bot.events import AgentEvent
+
+                yield AgentEvent(
+                    type="text",
+                    text=(
+                        "Link này chưa chọn bộ não nào đã phát hành. "
+                        "Vào Agent Flows, phát hành một bộ não rồi chọn nó trong phần "
+                        "ChatBot của link."
+                        if not _flow_key else
+                        f"Bộ não “{_flow_key}” của link này chưa có bản phát hành nào. "
+                        "Mở nó trong Agent Flows và bấm Phát hành."
+                    ),
+                )
+
+            agen = _no_brain().__aiter__()
+        else:
+            _brain_row, _brain = _resolved
+            # The run's reading scope comes from the brain's OWNER's current rights,
+            # re-derived per turn — not from what was true when it was published.
+            ctx.knowledge_scope = run_scope(db, _brain_row, _brain)
+            # The SHARED base prompt, not a new one. It carries the citation
+            # contract, the answer-in-the-viewer's-language rule and the report's
+            # own identity + active filters; each step's authored instructions are
+            # appended to it rather than replacing it.
+            from app.services.dashboard_ai_bot.thinking.prompts import (
+                build_agent_system_prompt as _build_base_prompt,
             )
 
-        agen = _no_flow_module().__aiter__()
+            _base_prompt = _build_base_prompt(
+                dashboard_name=dash.name or "Dashboard",
+                dashboard_description=getattr(dash, "description", None),
+                chart_count=len(getattr(ctx, "charts", []) or []),
+                filters_applied=combined_filters or [],
+                # The per-step ceiling is enforced by the runtime; this only tells
+                # the model roughly how much reaching it may plan for.
+                max_tool_calls=max((s.max_tool_calls for s in _brain.steps), default=8),
+                report_context_note=report_note,
+            )
+            agen = run_brain(
+                brain=_brain,
+                ctx=ctx,
+                # Fallback only. A step carrying its own token ignores this.
+                api_key=captured_key,
+                link_provider=provider,
+                link_model=model,
+                question=_guard.normalized_question or _last_user_msg,
+                history=safe_messages[:-1] if safe_messages else [],
+                web_enabled=web_search_flag,
+                base_system_prompt=_base_prompt,
+            ).__aiter__()
         timed_out = False
         # Per-turn telemetry accumulators (written to ai_chat_turn_logs at end).
         m_tools: list[str] = []
