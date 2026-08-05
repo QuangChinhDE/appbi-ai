@@ -1071,7 +1071,7 @@ class TableColumnMeta(BaseModel):
     # ── Typed inline editor (editable columns only) ──────────────────────
     input_type: Optional[Literal[
         "text", "number", "currency", "percent", "date", "datetime", "time",
-        "checkbox", "select", "enum_list", "rating", "color", "slider",
+        "checkbox", "select", "enum_list", "rating", "color", "slider", "image",
     ]] = Field(
         default=None,
         description="Control used to edit this cell inline. None = plain text.",
@@ -1084,6 +1084,10 @@ class TableColumnMeta(BaseModel):
     min_value: Optional[float] = None
     max_value: Optional[float] = None
     step: Optional[float] = Field(default=None, gt=0)
+    max_file_kb: Optional[int] = Field(
+        default=None, ge=1,
+        description="Upload size cap for input_type=image (clamped by the storage-aware server cap).",
+    )
 
     model_config = ConfigDict(extra="forbid")
 

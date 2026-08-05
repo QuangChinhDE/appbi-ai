@@ -9603,6 +9603,7 @@ function DetailPanelBody({
                     value={draftValue}
                     onCommit={(next) => setDraft((prev) => ({ ...prev, [col]: next }))}
                     meta={detail.column_metadata?.[col] as CellMeta}
+                    variant="panel"
                   />
                 ) : isImageCellValue(detail.row[col]) ? (
                   // eslint-disable-next-line @next/next/no-img-element
@@ -9644,20 +9645,33 @@ type CellMeta = {
   min_value?: number | null;
   max_value?: number | null;
   step?: number | null;
+  max_file_kb?: number | null;
 } | null | undefined;
+
+// Shared control styling. 'cell' = compact borderless-until-hover for inline
+// table cells; 'panel' = a proper always-bordered form field for the detail
+// panel (taller, white bg) so selects and text inputs look consistent and are
+// not cramped.
+const CELL_CTRL_CLS =
+  'h-8 w-full rounded border border-transparent bg-transparent px-2 text-sm outline-none hover:border-slate-200 focus:border-slate-400 focus:bg-white';
+const PANEL_CTRL_CLS =
+  'h-9 w-full rounded-md border border-slate-300 bg-white px-2.5 text-sm text-slate-800 outline-none focus:border-slate-400 focus:ring-1 focus:ring-slate-200';
 
 function TableCellInput({
   value,
   onCommit,
   placeholder,
   meta,
+  variant = 'cell',
 }: {
   value: unknown;
   onCommit: (next: unknown) => void;
   placeholder?: string;
   meta?: CellMeta;
+  variant?: 'cell' | 'panel';
 }) {
   const it = meta?.input_type || 'text';
+  const ctrlCls = variant === 'panel' ? PANEL_CTRL_CLS : CELL_CTRL_CLS;
 
   // ── Typed controls that commit immediately ──────────────────────────
   if (it === 'checkbox') {
@@ -9718,12 +9732,24 @@ function TableCellInput({
       />
     );
   }
+  if (it === 'image') {
+    return (
+      <FileUploadField
+        field={{ column: 'image', label: '', max_file_kb: meta?.max_file_kb ?? undefined } as unknown as RuntimeField}
+        value={value}
+        onChange={onCommit}
+        readonly={false}
+        required={false}
+        isImage
+      />
+    );
+  }
   if (it === 'select') {
     return (
       <select
         value={value == null ? '' : String(value)}
         onChange={(e) => onCommit(e.target.value === '' ? null : e.target.value)}
-        className="h-8 w-full rounded border border-transparent bg-transparent px-2 text-sm outline-none hover:border-slate-200 focus:border-slate-400 focus:bg-white"
+        className={ctrlCls}
       >
         <option value="">—</option>
         {(meta?.options || []).map((o) => (
@@ -9749,6 +9775,7 @@ function TableCellInput({
       onCommit={onCommit}
       htmlType={htmlType}
       numeric={numeric}
+      className={ctrlCls}
       placeholder={placeholder || (meta?.currency_code ? String(meta.currency_code) : undefined)}
     />
   );
@@ -9762,12 +9789,14 @@ function TextCellInput({
   htmlType,
   numeric,
   placeholder,
+  className,
 }: {
   value: unknown;
   onCommit: (next: unknown) => void;
   htmlType: string;
   numeric: boolean;
   placeholder?: string;
+  className?: string;
 }) {
   const initial = value == null ? '' : String(value);
   const [draft, setDraft] = useState(initial);
@@ -9806,7 +9835,7 @@ function TextCellInput({
         }
       }}
       placeholder={placeholder}
-      className="h-8 w-full rounded border border-transparent bg-transparent px-2 text-sm outline-none hover:border-slate-200 focus:border-slate-400 focus:bg-white"
+      className={className || CELL_CTRL_CLS}
     />
   );
 }
