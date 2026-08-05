@@ -3959,6 +3959,19 @@ def resolve_experience(layout: LayoutJson) -> Dict[str, Any]:
             eff["theme"]["mode"] = b.theme
         if getattr(b, "font_family", None):
             eff["theme"]["font_family"] = b.font_family
+        # Page background chosen in Settings (solid colour) → the app background.
+        _bg = getattr(b, "background", None)
+        if _bg is not None and getattr(_bg, "kind", None) == "color" and getattr(_bg, "color", None):
+            eff["theme"]["app_background"] = _bg.color
+            eff["shell"]["background"] = "custom"
+        # Card corner radius chosen in Settings → the theme shape scale, so the
+        # whole app (not just cards) picks up the rounding on the public link.
+        _cs = getattr(b, "card_style", None)
+        if _cs is not None and getattr(_cs, "radius", None):
+            _rmap = {"none": "none", "sm": "small", "md": "medium", "lg": "large", "xl": "large"}
+            _r = _rmap.get(_cs.radius)
+            if _r:
+                eff["theme"]["radius"] = _r
     nav = getattr(layout, "mini_app_nav", None)
     if nav is not None:
         if getattr(nav, "desktop_kind", None):
