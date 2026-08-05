@@ -77,9 +77,16 @@ def list_attachable(
 
     Server-side, and the only source the picker uses. The list never contains what
     they may not attach, so the UI is not the thing enforcing the rule.
+
+    All THREE knowledge kinds the contract accepts are listed, metrics included.
+    They were missing, so the builder had no choice but to offer a free-text box for
+    a metric ref — and a metric ref is matched at run time against
+    `govern_metrics.name` / `.display_name`, which means a typo produced a step that
+    silently consulted nothing. A ref you can only pick is a ref that cannot be
+    mistyped.
     """
     from app.models.dataset import Dataset
-    from app.models.governance import GovernKnowledgeDoc
+    from app.models.governance import GovernKnowledgeDoc, GovernMetric
 
     doc_ids = perms.attachable_documents(db, user)
     ds_ids = perms.attachable_datasets(db, user)
@@ -91,9 +98,23 @@ def list_attachable(
     datasets = (
         db.query(Dataset.id, Dataset.name).filter(Dataset.id.in_(ds_ids or [-1])).all()
     )
+    # Metrics carry no separate grant — they are readable by anyone who may read the
+    # report — so this is the governed catalogue minus what nobody should newly
+    # attach. A deprecated definition is still honoured if a stored brain names it;
+    # it simply is not offered for a new attachment.
+    metrics = (
+        db.query(GovernMetric.name, GovernMetric.display_name, GovernMetric.category)
+        .filter(GovernMetric.status != "Deprecated")
+        .order_by(GovernMetric.display_name)
+        .all()
+    )
     return {
         "documents": [{"ref": str(i), "name": t} for i, t in docs],
         "datasets": [{"ref": str(i), "name": n} for i, n in datasets],
+        "metrics": [
+            {"ref": name, "name": display or name, "group": category or ""}
+            for name, display, category in metrics
+        ],
     }
 
 

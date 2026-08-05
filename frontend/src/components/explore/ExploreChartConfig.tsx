@@ -395,6 +395,12 @@ export interface ChartStyleConfig {
   dualYAxis?: boolean;
   yAxisRightLabel?: string;
   yAxisRightSeriesKey?: string;
+  // Right (Y2) axis scale bounds — mirror yAxisMin/yAxisMax for the left axis.
+  // '' / undefined = auto-scale.
+  yAxisRightMin?: number | '';
+  yAxisRightMax?: number | '';
+  // Show value labels at the lowest & highest points of the right-axis (Y2) series.
+  showRightAxisMinMaxLabels?: boolean;
   // AREA: fill opacity (0–1)
   areaOpacity?: number;
   // LINE/AREA/TIME_SERIES: stroke width in px
@@ -464,6 +470,9 @@ export const DEFAULT_STYLE_CONFIG: ChartStyleConfig = {
   dualYAxis: false,
   yAxisRightLabel: '',
   yAxisRightSeriesKey: '',
+  yAxisRightMin: '',
+  yAxisRightMax: '',
+  showRightAxisMinMaxLabels: false,
   areaOpacity: 0.6,
   lineWidth: 2,
   barSize: '',
@@ -3079,39 +3088,32 @@ function TimeGrainSlot({
   onChange: (next: TimeGrain | undefined) => void;
 }) {
   if (!fieldName) return null;
-  // Phase-15.20: shrink the config slot to a single Date-hierarchy toggle
-  // (PowerBI-style). Picking the actual drill level (Year / Quarter /
-  // Month / Week / Day) moved to the chart preview header where DA can
-  // ↑↓ between levels at view time — that's where the action belongs in
-  // a BI tool. Config just says "is the hierarchy enabled on this chart
-  // or not?". Default level on enable = 'month'.
-  const enabled = value !== undefined;
+  // Phase-16.x — explicit "Default group by" level picker (was a bare on/off
+  // toggle that always defaulted to Month). This is the grain the chart OPENS
+  // at for everyone, including public viewers — server-honored via
+  // role_config.timeGrains. Viewers can still switch to another level from the
+  // chart's Group-by control at view time. "Off" keeps raw timestamps.
   return (
-    <div className="flex items-center justify-between rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-3 py-2">
+    <div className="flex items-center justify-between gap-2 rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-3 py-2">
       <div className="flex items-center gap-1.5 min-w-0">
         <span className="truncate text-xs font-semibold text-text-secondary">
-          Date hierarchy
+          Default group by
         </span>
-        <HelpTooltip text="Enable date hierarchy to bucket this chart by Year, Quarter, Month, Week, or Day. Drill controls appear in the chart preview header. Disable it to keep raw timestamps. New date hierarchies default to Month, similar to Power BI auto-bucketing when a date field is added." />
+        <HelpTooltip text="The default time bucket this chart opens at — Day / Week / Month / Quarter / Year — applied for everyone including public viewers. Viewers can switch to another level from the chart's Group-by control at view time. 'Off (raw)' keeps ungrouped raw timestamps." />
       </div>
-      <button
-        type="button"
-        role="switch"
-        aria-checked={enabled}
-        onClick={() => onChange(enabled ? undefined : 'month')}
-        className={`relative inline-flex h-4 w-7 shrink-0 items-center rounded-full border transition-colors ${
-          enabled
-            ? 'border-brand bg-brand/80'
-            : 'border-[rgb(var(--border-line))] bg-surface-2'
-        }`}
-        title={enabled ? 'Date hierarchy on: the chart is bucketed by the level selected in the preview header.' : 'Date hierarchy off: render raw timestamps.'}
+      <select
+        value={value ?? ''}
+        onChange={(e) => onChange((e.target.value || undefined) as TimeGrain | undefined)}
+        className="w-28 shrink-0 rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 px-2 py-1 text-xs"
+        title="Default time grain viewers open this chart at (they can change it)."
       >
-        <span
-          className={`inline-block h-3 w-3 rounded-full bg-surface-1 shadow-linear-sm transition-transform ${
-            enabled ? 'translate-x-3.5' : 'translate-x-0.5'
-          }`}
-        />
-      </button>
+        <option value="">Off (raw)</option>
+        <option value="day">Day</option>
+        <option value="week">Week</option>
+        <option value="month">Month</option>
+        <option value="quarter">Quarter</option>
+        <option value="year">Year</option>
+      </select>
     </div>
   );
 }
@@ -6828,6 +6830,25 @@ export function ExploreChartConfig({
                   className="w-full px-2 py-1.5 text-xs border border-[rgb(var(--border-strong))] rounded-md bg-surface-1"
                 />
               </div>
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="text-xs font-semibold text-text-secondary mb-1 block">Right Y Min</label>
+                  <input type="number" value={styleConfig.yAxisRightMin ?? ''} placeholder="auto"
+                    onChange={e => updStyle({ yAxisRightMin: e.target.value === '' ? '' : Number(e.target.value) })}
+                    className="w-full px-2 py-1.5 text-xs border border-[rgb(var(--border-strong))] rounded-md bg-surface-1" />
+                </div>
+                <div>
+                  <label className="text-xs font-semibold text-text-secondary mb-1 block">Right Y Max</label>
+                  <input type="number" value={styleConfig.yAxisRightMax ?? ''} placeholder="auto"
+                    onChange={e => updStyle({ yAxisRightMax: e.target.value === '' ? '' : Number(e.target.value) })}
+                    className="w-full px-2 py-1.5 text-xs border border-[rgb(var(--border-strong))] rounded-md bg-surface-1" />
+                </div>
+              </div>
+              <Toggle
+                label="Show min/max value labels (right axis)"
+                checked={styleConfig.showRightAxisMinMaxLabels ?? false}
+                onChange={v => updStyle({ showRightAxisMinMaxLabels: v })}
+              />
             </div>
           )}
         </Disclosure>

@@ -1311,6 +1311,10 @@ class StatTile(BaseModel):
         description="Optional cell format key (number|integer|currency|percent|...).",
     )
     unit: Optional[str] = Field(default=None, max_length=16, description="Suffix after the value.")
+    icon: Optional[str] = Field(
+        default=None, max_length=40,
+        description="Optional lucide icon name shown in the KPI card (e.g. 'file-text', 'check-circle').",
+    )
 
     model_config = ConfigDict(extra="forbid")
 

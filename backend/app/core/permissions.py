@@ -36,6 +36,11 @@ _RESOURCE_TO_MODULE: Dict[str, str] = {
     "datasource": "data_sources",
     "workboard": "workboards",
     "knowledge_doc": "govern",
+    # Agent brains are gated by their own module key: publishing one changes what a
+    # live report says to viewers, so it must not ride on a knowledge-authoring
+    # grant. Missing from this map, `_owned_or_shared` returns nothing at all — the
+    # brain list came back empty right after a brain was saved and published.
+    "agent_brain": "agent_flows",
 }
 
 

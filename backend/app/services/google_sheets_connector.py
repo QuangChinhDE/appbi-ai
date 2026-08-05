@@ -6,6 +6,7 @@ import random
 import threading
 import time
 import uuid as _uuid
+import httplib2
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
@@ -147,6 +148,19 @@ class GoogleSheetsConnector:
                 if delay is None:
                     delay = min(max_delay, base_delay * (2 ** attempt))
                     delay += random.uniform(0, min(0.5, delay / 2))
+                time.sleep(delay)
+            except (OSError, httplib2.HttpLib2Error):
+                # Transient network / TLS / timeout — the Sheets API occasionally
+                # stalls and the socket read times out. Previously these escaped
+                # the HttpError-only retry above and failed the user's save
+                # outright ("TimeoutError: The read operation timed out"). Retry
+                # with the same backoff so a slow moment is survivable.
+                # TimeoutError / ConnectionError / BrokenPipeError / ssl.SSLError
+                # are all OSError subclasses; ServerNotFoundError is HttpLib2Error.
+                if attempt >= attempts - 1:
+                    raise
+                delay = min(max_delay, base_delay * (2 ** attempt))
+                delay += random.uniform(0, min(0.5, delay / 2))
                 time.sleep(delay)
         raise RuntimeError(f"Google Sheets request failed after retry: {operation}")
     

@@ -1830,48 +1830,51 @@ function ExploreChartInner({
   const canDrill = hasDateAxis && hasTimeField && (
     Boolean(onStyleConfigChange) || Boolean(onViewerDrill) || (embedded && !preAggregated)
   );
-  // Active grain to highlight: a viewer drill (BE re-query) tracks `viewerGrain`;
-  // otherwise the saved / ephemeral dateDrillLevel.
-  const effectiveDrillLevel = onViewerDrill ? viewerGrain : style.dateDrillLevel;
-  const drillActive = Boolean(effectiveDrillLevel);
-  // Only offer grains that make sense for THIS data's time span. Quarter/Year
-  // over a ~6-month range just yields 1-2 near-empty buckets, so gate the coarse
-  // grains on a minimum span. The currently-active grain is never hidden (so the
-  // selection stays visible even if the span later shrinks under the threshold).
-  const dateSpanDays = (() => {
-    const field = normalizedRoleConfig.timeField || xField;
-    if (!hasDateAxis || !field || !Array.isArray(data)) return null;
-    let min = Infinity;
-    let max = -Infinity;
-    for (const row of data) {
-      const raw = (row as any)?.[field];
-      if (raw == null || raw === '') continue;
-      const t = new Date(raw).getTime();
-      if (Number.isFinite(t)) { if (t < min) min = t; if (t > max) max = t; }
+  // The chart's configured DEFAULT time grain — the server-honored bucketing a
+  // DA sets in the builder (role_config.timeGrains). This is what the chart
+  // opens at for EVERYONE, including public viewers. timeGrains keys may be
+  // bare (`order_date`) or qualified (`view.order_date`), so match either. The
+  // field is the timeField (TIME_SERIES) or the plain date dimension (LINE/BAR).
+  const drillTimeField = normalizedRoleConfig.timeField || normalizedRoleConfig.dimension || xField;
+  const configuredGrain: TimeGranularity | undefined = (() => {
+    const grains = normalizedRoleConfig.timeGrains as Record<string, TimeGranularity> | undefined;
+    if (!grains || !drillTimeField) return undefined;
+    if (grains[drillTimeField]) return grains[drillTimeField];
+    const suffix = `.${drillTimeField}`;
+    for (const [k, v] of Object.entries(grains)) {
+      if (k === drillTimeField || k.endsWith(suffix)) return v;
     }
-    if (!Number.isFinite(min) || !Number.isFinite(max)) return null;
-    return (max - min) / 86_400_000;
+    return undefined;
   })();
-  const MIN_SPAN_DAYS: Partial<Record<TimeGranularity, number>> = {
-    week: 14, month: 60, quarter: 270, year: 550,
-  };
-  const availableDrillLevels = DRILL_LEVELS.filter((opt) => {
-    if (opt.value === effectiveDrillLevel) return true; // never hide the active grain
-    const min = MIN_SPAN_DAYS[opt.value];
-    if (min == null || dateSpanDays == null) return true; // 'day' always; unknown span → show all
-    return dateSpanDays >= min;
-  });
+  // Active grain to highlight in the Group-by control:
+  //   • Viewer (dashboard/public): the viewer's own drill choice if they made
+  //     one, otherwise the configured default — so a public chart opens with the
+  //     DA-set grain shown as active, NOT a ghost button that then guesses
+  //     'month'. `viewerGrain === 'raw'` means the viewer explicitly turned
+  //     bucketing OFF (distinct from "not touched" → falls back to the default).
+  //   • Editor / embedded: the saved / ephemeral dateDrillLevel.
+  const effectiveDrillLevel: TimeGranularity | undefined = onViewerDrill
+    ? (viewerGrain === undefined
+        ? configuredGrain
+        : (viewerGrain === 'raw' ? undefined : (viewerGrain as TimeGranularity)))
+    : style.dateDrillLevel;
+  const drillActive = Boolean(effectiveDrillLevel);
+  // Offer the full hierarchy (Day/Week/Month/Quarter/Year) so viewers can always
+  // switch up or down. (Earlier builds span-gated Quarter/Year for short ranges;
+  // DAs asked for the full set.)
+  const availableDrillLevels = DRILL_LEVELS;
   const handleDrillChange = (level: TimeGranularity | 'raw') => {
-    const next = level === 'raw' ? undefined : level;
     if (onStyleConfigChange) {
-      onStyleConfigChange({ ...style, dateDrillLevel: next });
+      onStyleConfigChange({ ...style, dateDrillLevel: level === 'raw' ? undefined : level });
       return;
     }
     if (onViewerDrill) {
-      onViewerDrill(next);   // viewer: BE re-query at the new grain
+      // Pass 'raw' THROUGH (not undefined) so the viewer can explicitly strip
+      // bucketing — undefined would fall back to the configured default grain.
+      onViewerDrill(level === 'raw' ? ('raw' as TimeGranularity) : level);
       return;
     }
-    setEphemeralDrill(next);
+    setEphemeralDrill(level === 'raw' ? undefined : level);
   };
   // Phase-16.x — date-drill control moved to the chart's TOP-RIGHT as a proper
   // chip (was a faint underlined "Enable date drill…" text line at top-left
@@ -1909,11 +1912,12 @@ function ExploreChartInner({
         <button
           type="button"
           onClick={() => {
-            // Seed from the Style tab's granularity, else 'month' (a sensible
-            // default — 'raw' would look identical to disabled).
-            const seed = (style.timeGranularity && style.timeGranularity !== 'raw')
-              ? (style.timeGranularity as TimeGranularity)
-              : 'month';
+            // Re-enable at the chart's configured default grain if the DA set
+            // one; otherwise the Style-tab granularity, else 'month'.
+            const seed = configuredGrain
+              ?? ((style.timeGranularity && style.timeGranularity !== 'raw')
+                ? (style.timeGranularity as TimeGranularity)
+                : 'month');
             handleDrillChange(seed);
           }}
           className="inline-flex items-center gap-1 rounded-md border border-[rgb(var(--border-line))] bg-surface-2 px-2 py-0.5 text-[10px] font-medium text-text-tertiary hover:border-[rgb(var(--border-strong))] hover:text-text-secondary"
@@ -2091,6 +2095,45 @@ function ExploreChartInner({
   // bound is actually set so auto-scaling is unaffected.
   const yAxisClamp = (style.yAxisMin !== '' && style.yAxisMin != null)
     || (style.yAxisMax !== '' && style.yAxisMax != null);
+
+  // Right (Y2) axis scale — mirror the left axis. '' / null ⇒ auto-scale.
+  const yRightDomain: [any, any] = [
+    style.yAxisRightMin !== '' && style.yAxisRightMin != null ? Number(style.yAxisRightMin) : 'auto',
+    style.yAxisRightMax !== '' && style.yAxisRightMax != null ? Number(style.yAxisRightMax) : 'auto',
+  ];
+  const yRightClamp = (style.yAxisRightMin !== '' && style.yAxisRightMin != null)
+    || (style.yAxisRightMax !== '' && style.yAxisRightMax != null);
+
+  // Min/max value labels for the right-axis (Y2) series: returns a LabelList
+  // `content` renderer that draws a label ONLY at the series' lowest & highest
+  // points (by index, so float equality never mis-fires). null when the toggle
+  // is off or the series has no finite values.
+  const rightAxisMinMaxLabelContent = (seriesKey: string, rows: any[]) => {
+    if (!style.showRightAxisMinMaxLabels || !seriesKey || !Array.isArray(rows) || rows.length === 0) return undefined;
+    let minIdx = -1, maxIdx = -1, mn = Infinity, mx = -Infinity;
+    rows.forEach((r, i) => {
+      const v = Number(r?.[seriesKey]);
+      if (!Number.isFinite(v)) return;
+      if (v < mn) { mn = v; minIdx = i; }
+      if (v > mx) { mx = v; maxIdx = i; }
+    });
+    if (minIdx < 0) return undefined;
+    return (props: any) => {
+      const i = props.index;
+      if (i !== minIdx && i !== maxIdx) return null;
+      const v = Number(props.value);
+      if (!Number.isFinite(v)) return null;
+      const isMax = i === maxIdx;
+      const cx = Number(props.x);
+      const cy = Number(props.y) + (isMax ? -8 : 14);
+      const text = formatAxisValue(v, style, seriesKey);
+      return (
+        <text x={cx} y={cy} textAnchor="middle" fontSize={fontSize} fontWeight={600} fill={axisTickFill}>
+          {text}
+        </text>
+      );
+    };
+  };
 
   // Size the Y-axis gutter to fit the WIDEST formatted tick so labels never
   // clip — regardless of the chosen Display units (a user picking "None" gets
@@ -3423,6 +3466,7 @@ function ExploreChartInner({
                   tick={{ fontSize, fill: rightAxisColor }}
                   tickFormatter={(value: any) => formatAxisValue(value, style, rightAxisSeries.key)}
                   width={rightAxisWidth}
+                  domain={yRightDomain} allowDataOverflow={yRightClamp}
                   axisLine={{ stroke: rightAxisColor }}
                   tickLine={{ stroke: rightAxisColor }}
                 />
@@ -3448,6 +3492,9 @@ function ExploreChartInner({
                       yAxisId={rightAxisSeries?.key === series.key ? 'right' : 0}>
                       {showDataLabels && !isHighlight && (
                         <LabelList dataKey={series.key} content={dataLabelContent(series.key, series.label, 'point')} />
+                      )}
+                      {rightAxisSeries?.key === series.key && !isHighlight && rightAxisMinMaxLabelContent(series.key, displayData) && (
+                        <LabelList dataKey={series.key} content={rightAxisMinMaxLabelContent(series.key, displayData)} />
                       )}
                     </Line>
                     {isHighlight && (
@@ -3634,6 +3681,7 @@ function ExploreChartInner({
               {dualYAxis && (
                 <YAxis yAxisId="right" orientation="right" tick={{ fontSize, fill: axisTickFill }}
                   tickFormatter={yAxisTickFormatter(style)}
+                  domain={yRightDomain} allowDataOverflow={yRightClamp}
                   label={yAxisRightLabel ? { value: yAxisRightLabel, angle: 90, position: 'insideRight', fontSize, dx: 15 } : undefined} />
               )}
               <Tooltip
@@ -3740,6 +3788,9 @@ function ExploreChartInner({
                         // but not on the lineMetric. Now both follow the
                         // same `dataLabelContent` resolver.
                         <LabelList dataKey={lineSeries.key} content={dataLabelContent(lineSeries.key, lineSeries.label, 'point')} />
+                      )}
+                      {!isHighlight && rightAxisMinMaxLabelContent(lineSeries.key, displayData) && (
+                        <LabelList dataKey={lineSeries.key} content={rightAxisMinMaxLabelContent(lineSeries.key, displayData)} />
                       )}
                     </Line>
                   </>

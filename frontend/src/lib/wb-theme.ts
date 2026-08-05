@@ -300,6 +300,13 @@ export function experienceThemeVars(
         info: '#2563eb',
         neutral: '#64748b',
       };
+  // Use the RESOLVED theme (defaults ← branding ← explicit overrides, already
+  // merged by resolve_experience) as the source of truth, not just the explicit
+  // ``overrides`` — otherwise settings that arrive via branding (background,
+  // card radius, colors) never reach the public runtime CSS vars.
+  const t = experience.theme;
+  const HEADING_WEIGHTS: Record<string, string> = { regular: '400', medium: '500', semibold: '600', bold: '700' };
+  const BODY_WEIGHTS: Record<string, string> = { regular: '400', medium: '500' };
   const font = FONT_STACKS[rawTheme.font_family || experience.theme.font_family] || base['--wb-font'];
   const rawFeedback = experience.overrides?.feedback || {};
   const motionMs =
@@ -315,30 +322,34 @@ export function experienceThemeVars(
 
   return {
     ...base,
-    ['--wb-primary' as string]: experience.theme.primary,
-    ['--wb-accent' as string]: experience.theme.primary,
-    ['--wb-success' as string]: rawTheme.success || statusDefaults.success,
-    ['--wb-warning' as string]: rawTheme.warning || statusDefaults.warning,
-    ['--wb-danger' as string]: rawTheme.danger || statusDefaults.danger,
-    ['--wb-info' as string]: rawTheme.info || statusDefaults.info,
-    ['--wb-neutral' as string]: rawTheme.neutral || statusDefaults.neutral,
-    ['--wb-bg' as string]: rawTheme.background || base['--wb-bg'],
-    ['--wb-surface' as string]: rawTheme.surface || base['--wb-surface'],
-    ['--wb-surface-2' as string]:
-      rawTheme.background || base['--wb-surface-2'],
-    ['--wb-text' as string]: rawTheme.text || base['--wb-text'],
-    ['--wb-text-muted' as string]: rawTheme.neutral || base['--wb-text-muted'],
-    ['--wb-border' as string]: rawTheme.border || base['--wb-border'],
-    ['--wb-radius' as string]:
-      rawTheme.radius ? EXPERIENCE_RADII[experience.theme.radius] : base['--wb-radius'],
-    ['--wb-shadow' as string]:
-      rawTheme.elevation
-        ? EXPERIENCE_SHADOWS[experience.theme.elevation]
-        : base['--wb-shadow'],
+    ['--wb-primary' as string]: t.primary,
+    ['--wb-accent' as string]: t.primary,
+    ['--wb-success' as string]: t.success || statusDefaults.success,
+    ['--wb-warning' as string]: t.warning || statusDefaults.warning,
+    ['--wb-danger' as string]: t.danger || statusDefaults.danger,
+    ['--wb-info' as string]: t.info || statusDefaults.info,
+    ['--wb-neutral' as string]: t.neutral || statusDefaults.neutral,
+    // Page background follows app_background (the "app background" knob) first,
+    // then a plain background, then the legacy base.
+    ['--wb-bg' as string]: t.app_background || t.background || base['--wb-bg'],
+    ['--wb-surface' as string]: t.surface || base['--wb-surface'],
+    ['--wb-surface-2' as string]: t.background || base['--wb-surface-2'],
+    ['--wb-text' as string]: t.text || base['--wb-text'],
+    ['--wb-text-muted' as string]: t.neutral || base['--wb-text-muted'],
+    ['--wb-border' as string]: t.border || base['--wb-border'],
+    // Shape/elevation from the resolved theme (always present after merge), not
+    // gated on explicit overrides — so a radius/elevation chosen in Settings applies.
+    ['--wb-radius' as string]: EXPERIENCE_RADII[t.radius] || base['--wb-radius'],
+    ['--wb-shadow' as string]: EXPERIENCE_SHADOWS[t.elevation] || base['--wb-shadow'],
     ['--wb-font' as string]: font,
     ['--wb-motion-ms' as string]: `${motionMs}ms`,
+    // Typography weights + scale (previously unmapped → inert in Settings).
+    ['--wb-heading-weight' as string]: HEADING_WEIGHTS[t.heading_weight || 'semibold'] || '600',
+    ['--wb-body-weight' as string]: BODY_WEIGHTS[t.body_weight || 'regular'] || '400',
+    ['--wb-type-scale' as string]: String((t.type_scale || 100) / 100),
     fontFamily: font,
-    color: rawTheme.text || base['--wb-text'],
+    fontWeight: BODY_WEIGHTS[t.body_weight || 'regular'] || '400',
+    color: t.text || base['--wb-text'],
   } as CSSProperties;
 }
 
@@ -425,6 +436,10 @@ ${s}[data-density="comfortable"] th,${s}[data-density="comfortable"] td{padding-
    inputs, buttons, tables and cards read like a production SaaS app. Uses the
    theme tokens (--wb-primary/border/surface/text) so it re-skins with the theme. */
 ${s}{--wb-ring:color-mix(in srgb, var(--wb-primary) 16%, transparent);}
+/* Typography weights + scale from the theme (heading_weight / body_weight /
+   type_scale) — previously defined in Settings but with no CSS effect. */
+${s}{font-weight:var(--wb-body-weight, 400);font-size:calc(var(--wb-type-scale, 1) * 1rem);}
+${s} h1,${s} h2,${s} h3,${s} h4{font-weight:var(--wb-heading-weight, 600);}
 /* Inputs */
 ${s} input:not([type=checkbox]):not([type=radio]):not([type=file]),
 ${s} select,${s} textarea{padding:.55rem .8rem;font-size:.875rem;box-shadow:inset 0 1px 1.5px rgb(15 23 42 / .025);}
@@ -433,6 +448,12 @@ ${s} input:focus,${s} select:focus,${s} textarea:focus{outline:none;border-color
 ${s} input::placeholder,${s} textarea::placeholder{color:color-mix(in srgb, var(--wb-text-muted) 62%, transparent);}
 /* Native select chevron so it doesn't look like a bare box after appearance:none */
 ${s} select{appearance:none;-webkit-appearance:none;background-image:linear-gradient(45deg,transparent 50%,var(--wb-text-muted) 50%),linear-gradient(135deg,var(--wb-text-muted) 50%,transparent 50%);background-position:calc(100% - 18px) 52%,calc(100% - 13px) 52%;background-size:5px 5px,5px 5px;background-repeat:no-repeat;padding-right:2rem;}
+/* Inline table-cell editors must stay COMPACT — the full input styling above
+   cramps a narrow cell (over-tall select, chevron overlapping the value). */
+${s} td select,${s} td input,${s} td textarea{padding-top:.25rem;padding-bottom:.25rem;box-shadow:none;font-size:.8125rem;min-height:1.9rem;}
+${s} td input:not([type=checkbox]):not([type=radio]),${s} td textarea{padding-left:.5rem;}
+${s} td select{padding-right:1.35rem;padding-left:.5rem;background-position:calc(100% - 9px) 54%,calc(100% - 5px) 54%;background-size:4px 4px,4px 4px;}
+${s} td select:focus,${s} td input:focus,${s} td textarea:focus{box-shadow:0 0 0 2px var(--wb-ring)!important;}
 /* Buttons: depth + motion; primary buttons carry an inline bg + white text */
 ${s} button{transition:filter .15s ease, box-shadow .15s ease, transform .07s ease, background-color .15s ease;}
 ${s} button:not(:disabled):active{transform:translateY(.5px);}

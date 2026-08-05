@@ -40,7 +40,9 @@ async def run_brain(
     *,
     brain: Brain,
     ctx: Any,
-    api_key: str,
+    #: The FALLBACK credential — used by any step that does not carry its own.
+    #: Empty is legitimate when every step has a token of its own.
+    api_key: str = "",
     link_provider: str,
     link_model: str | None = None,
     question: str,
@@ -131,6 +133,16 @@ async def _run_step(
 ) -> AsyncGenerator[AgentEvent, None]:
     """One step: rounds of (ask the model → run the tools it asked for)."""
     provider, model = _resolve_model(step, link_provider, link_model)
+    step_key = _resolve_key(step, api_key)
+    if not step_key:
+        # Said as an error event rather than raised: the chain continues, and a later
+        # step with its own token can still produce an answer.
+        yield AgentEvent(
+            type="error",
+            text=f"Bước “{step.name or step.key}” chưa có token để gọi {provider}.",
+            extra={"step": step.key},
+        )
+        return
     allowed = set(step.tool_names())
     schemas = tool_registry.definitions_for(allowed, web_enabled=web_enabled)
 
@@ -155,7 +167,7 @@ async def _run_step(
             assistant_text = ""
 
             async for ev in _stream(
-                provider=provider, api_key=api_key, model=model,
+                provider=provider, api_key=step_key, model=model,
                 system_prompt=system, messages=messages, tools=schemas,
             ):
                 if ev.type == "tool_call":
@@ -241,6 +253,17 @@ def _resolve_model(step: AgentStep, link_provider: str, link_model: str | None) 
     if step.provider != INHERIT and step.model:
         return step.provider, step.model
     return link_provider, link_model or ""
+
+
+def _resolve_key(step: AgentStep, link_key: str) -> str:
+    """The step's own token, or the link's.
+
+    A step-level token wins because that is the point of having one: a chain whose
+    cheap classification step runs on one account and whose writing step runs on
+    another. The contract refuses a step token without an explicit provider, so a key
+    reaching here is already paired with the vendor it belongs to.
+    """
+    return step.resolved_api_key() or link_key
 
 
 def _system_prompt(base: str, step: AgentStep, carried: str) -> str:
