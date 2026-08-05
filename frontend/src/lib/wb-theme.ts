@@ -448,6 +448,12 @@ ${s} input:focus,${s} select:focus,${s} textarea:focus{outline:none;border-color
 ${s} input::placeholder,${s} textarea::placeholder{color:color-mix(in srgb, var(--wb-text-muted) 62%, transparent);}
 /* Native select chevron so it doesn't look like a bare box after appearance:none */
 ${s} select{appearance:none;-webkit-appearance:none;background-image:linear-gradient(45deg,transparent 50%,var(--wb-text-muted) 50%),linear-gradient(135deg,var(--wb-text-muted) 50%,transparent 50%);background-position:calc(100% - 18px) 52%,calc(100% - 13px) 52%;background-size:5px 5px,5px 5px;background-repeat:no-repeat;padding-right:2rem;}
+/* Inline table-cell editors must stay COMPACT — the full input styling above
+   cramps a narrow cell (over-tall select, chevron overlapping the value). */
+${s} td select,${s} td input,${s} td textarea{padding-top:.25rem;padding-bottom:.25rem;box-shadow:none;font-size:.8125rem;min-height:1.9rem;}
+${s} td input:not([type=checkbox]):not([type=radio]),${s} td textarea{padding-left:.5rem;}
+${s} td select{padding-right:1.35rem;padding-left:.5rem;background-position:calc(100% - 9px) 54%,calc(100% - 5px) 54%;background-size:4px 4px,4px 4px;}
+${s} td select:focus,${s} td input:focus,${s} td textarea:focus{box-shadow:0 0 0 2px var(--wb-ring)!important;}
 /* Buttons: depth + motion; primary buttons carry an inline bg + white text */
 ${s} button{transition:filter .15s ease, box-shadow .15s ease, transform .07s ease, background-color .15s ease;}
 ${s} button:not(:disabled):active{transform:translateY(.5px);}

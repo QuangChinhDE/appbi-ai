@@ -719,7 +719,7 @@ export default function WorkspaceWorkboardPage() {
 
   return (
     <div
-      className="wb-app flex min-h-screen flex-col bg-slate-50"
+      className="wb-app flex h-[100dvh] flex-col overflow-hidden bg-slate-50"
       data-theme={mode}
       data-experience={exp?.explicit ? 'v1' : 'legacy'}
       data-density={exp?.theme.density || 'cozy'}
@@ -811,7 +811,7 @@ export default function WorkspaceWorkboardPage() {
         />
       )}
 
-      <div className="flex min-w-0 flex-1">
+      <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden">
         {isSidebar && (
           <Sidebar
             items={navItems}
@@ -828,7 +828,7 @@ export default function WorkspaceWorkboardPage() {
           />
         )}
         <main
-          className={`min-w-0 flex-1 ${isBottomNav ? 'pb-20' : 'pb-6'} ${pagePaddingClass}`}
+          className={`min-w-0 flex-1 overflow-y-auto overflow-x-hidden ${isBottomNav ? 'pb-20' : 'pb-6'} ${pagePaddingClass}`}
           style={{ maxWidth: contentMaxWidth, marginInline: contentMaxWidth ? 'auto' : undefined }}
         >
           {exp?.navigation.breadcrumbs && activeScreenId && (
@@ -1048,7 +1048,7 @@ function Header({
     : [];
   return (
     <header
-      className={`${sticky ? 'sticky top-0' : 'relative'} z-30 border-b border-slate-200 bg-white/95 backdrop-blur`}
+      className={`${sticky ? 'sticky top-0' : 'relative'} z-30 shrink-0 border-b border-slate-200 bg-white/95 backdrop-blur`}
       style={{ borderTopColor: accent, borderTopWidth: 3 }}
     >
       <div className="flex items-center gap-3 px-4 py-3 sm:px-6">
@@ -2843,7 +2843,7 @@ function FormScreen({
       : formColumns === 2 ? 'sm:col-span-2' : '';
 
   return (
-    <div className="mx-auto w-full max-w-4xl rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm ring-1 ring-black/[0.02] sm:p-7">
+    <div className="mx-auto w-full max-w-[1400px] rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm ring-1 ring-black/[0.02] sm:p-7">
       {spec.description && (
         <p className="mb-4 text-sm text-slate-500">{spec.description}</p>
       )}
@@ -8560,35 +8560,75 @@ function TableScreen({
         </form>
       )}
 
-      {Array.isArray(current.stat_tiles) && current.stat_tiles.length > 0 && (
-        <div className="grid min-w-0 gap-3 px-1 py-3 sm:grid-cols-2 lg:grid-cols-4">
-          {current.stat_tiles.map((tile, i) => (
-            <div
-              key={i}
-              className="relative overflow-hidden rounded-xl border border-slate-200/80 bg-gradient-to-br from-white to-slate-50/80 px-4 py-3 shadow-sm"
-            >
-              <span
-                className="absolute inset-y-0 left-0 w-1"
-                style={{ backgroundColor: accent }}
-                aria-hidden
-              />
-              <div className="truncate text-[11px] font-medium uppercase tracking-wide text-slate-500">
-                {tile.label}
-              </div>
-              <div className="mt-1 text-2xl font-bold tracking-tight text-slate-900">
-                {tile.value == null || tile.value === '' ? (
-                  '—'
-                ) : (
-                  <>
-                    <FormattedCell value={tile.value} format={tile.format ?? null} />
-                    {tile.unit ? ` ${tile.unit}` : ''}
-                  </>
-                )}
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
+      {Array.isArray(current.stat_tiles) && current.stat_tiles.length > 0 && (() => {
+        const tiles = current.stat_tiles as Array<{
+          label: string; value: unknown; format?: string | null; unit?: string | null;
+          icon?: string | null; agg?: string;
+        }>;
+        // Reference total = the first count tile (e.g. "Tổng số phiếu"); other
+        // count/number tiles show their share of it (a simple, honest KPI ratio —
+        // a true period delta needs a comparison window the runtime doesn't have).
+        const totalTile = tiles.find((x) => x.agg === 'count' && typeof x.value === 'number');
+        const total = totalTile && typeof totalTile.value === 'number' ? totalTile.value : 0;
+        return (
+          <div className="grid min-w-0 gap-3 px-1 py-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+            {tiles.map((tile, i) => {
+              const Icon = tile.icon ? pickIcon(tile.icon) : null;
+              const numeric = typeof tile.value === 'number' ? tile.value : null;
+              const showProp =
+                total > 0 && numeric != null && tile !== totalTile && tile.format !== 'currency';
+              const pct = showProp ? Math.min(100, Math.round((numeric! / total) * 100)) : null;
+              return (
+                <div
+                  key={i}
+                  className="relative overflow-hidden rounded-2xl border border-slate-200/80 bg-white px-4 py-3.5 shadow-sm"
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="truncate text-[11px] font-medium uppercase tracking-wide text-slate-500">
+                        {tile.label}
+                      </div>
+                      <div className="mt-1 text-[26px] font-bold leading-tight tracking-tight text-slate-900">
+                        {tile.value == null || tile.value === '' ? (
+                          '—'
+                        ) : (
+                          <>
+                            <FormattedCell value={tile.value} format={tile.format ?? null} />
+                            {tile.unit ? ` ${tile.unit}` : ''}
+                          </>
+                        )}
+                      </div>
+                    </div>
+                    {Icon && (
+                      <span
+                        className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl"
+                        style={{
+                          backgroundColor: `color-mix(in srgb, ${accent} 12%, transparent)`,
+                          color: accent,
+                        }}
+                        aria-hidden
+                      >
+                        <Icon className="h-[18px] w-[18px]" />
+                      </span>
+                    )}
+                  </div>
+                  {pct != null && (
+                    <div className="mt-2.5">
+                      <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-100">
+                        <div
+                          className="h-full rounded-full"
+                          style={{ width: `${pct}%`, backgroundColor: accent }}
+                        />
+                      </div>
+                      <div className="mt-1 text-[10px] font-medium text-slate-400">{pct}% tổng số phiếu</div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        );
+      })()}
 
       {tv.display_mode === 'gallery' && tv.gallery_config ? (
         <GalleryView

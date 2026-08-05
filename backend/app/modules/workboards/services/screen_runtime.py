@@ -3014,6 +3014,8 @@ def _compute_stat_tiles(
             "value": value,
             "format": getattr(tile, "format", None),
             "unit": getattr(tile, "unit", None),
+            "icon": getattr(tile, "icon", None),
+            "agg": agg,
         })
     return out
 
