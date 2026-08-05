@@ -6559,6 +6559,17 @@ function formatCellValue(
   return s;
 }
 
+// A cell value that should render as an image rather than text — an inline
+// base64 data-URI, an app media URL, or an image URL. Lets grids show a small
+// thumbnail and the detail panel a full picture instead of leaking a giant
+// base64 string to the user.
+function isImageCellValue(v: unknown): v is string {
+  if (typeof v !== 'string' || !v) return false;
+  if (v.startsWith('data:image')) return true;
+  if (/\/(?:api\/v1\/public\/)?media\/[\w-]+/.test(v)) return true;
+  return /^https?:\/\/\S+\.(?:png|jpe?g|gif|webp|bmp|svg)(?:\?\S*)?$/i.test(v);
+}
+
 function CellDisplay({ value }: { value: unknown }) {
   const { t: rt, locale } = useI18n();
   if (typeof value === 'boolean') {
@@ -6570,6 +6581,17 @@ function CellDisplay({ value }: { value: unknown }) {
       >
         {value ? '✓' : '✕'}
       </span>
+    );
+  }
+  if (isImageCellValue(value)) {
+    // eslint-disable-next-line @next/next/no-img-element
+    return (
+      <img
+        src={value}
+        alt=""
+        loading="lazy"
+        className="h-9 w-9 rounded border border-slate-200 object-cover"
+      />
     );
   }
   const s = formatCellValue(value, locale, rt('workboards.runtime.yes'), rt('workboards.runtime.no'));
@@ -9581,6 +9603,13 @@ function DetailPanelBody({
                     value={draftValue}
                     onCommit={(next) => setDraft((prev) => ({ ...prev, [col]: next }))}
                     meta={detail.column_metadata?.[col] as CellMeta}
+                  />
+                ) : isImageCellValue(detail.row[col]) ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    src={String(detail.row[col])}
+                    alt={String(label)}
+                    className="max-h-72 max-w-full rounded-md border border-slate-200 object-contain"
                   />
                 ) : (
                   <FormattedCell value={detail.row[col]} format={null} />
