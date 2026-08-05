@@ -32,6 +32,7 @@ import {
   ChevronRight,
   CheckCircle2,
   ClipboardList,
+  ClipboardPaste,
   Download,
   Factory,
   Loader2,
@@ -4435,6 +4436,59 @@ function setRuntimeMediaCap(kb?: number) {
   if (typeof kb === 'number' && kb > 0) FILE_HARD_CAP_KB = kb;
 }
 
+// Downscale/re-encode an image file so its base64 payload fits within `maxKb`.
+// Storage is base64-in-cell and a Google-Sheets cell caps ≈35 KB, so a real
+// phone photo (2–5 MB) would otherwise be rejected outright (HTTP 422) and the
+// evidence never gets attached. We resize + step JPEG quality down until it
+// fits (with a small safety margin so the server-side cap check also passes).
+// Returns a `data:image/jpeg;base64,…` string. Throws if it can't get under the
+// cap even at the floor resolution.
+async function compressImageToFit(file: File, maxKb: number): Promise<string> {
+  const targetBytes = Math.floor(maxKb * 1024 * 0.88); // margin under the hard cap
+  const img: HTMLImageElement = await new Promise((resolve, reject) => {
+    const el = new Image();
+    const url = URL.createObjectURL(file);
+    el.onload = () => {
+      URL.revokeObjectURL(url);
+      resolve(el);
+    };
+    el.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error('image decode failed'));
+    };
+    el.src = url;
+  });
+  const canvas = document.createElement('canvas');
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('canvas unavailable');
+  const dataUrlBytes = (url: string) => {
+    const comma = url.indexOf(',');
+    return comma < 0 ? url.length : Math.floor((url.length - comma - 1) * 0.75);
+  };
+  // Start no larger than 1600px on the long edge, then shrink 15% per outer pass.
+  let longEdge = Math.min(1600, Math.max(img.naturalWidth, img.naturalHeight) || 1600);
+  for (let pass = 0; pass < 12; pass++) {
+    const scale = longEdge / (Math.max(img.naturalWidth, img.naturalHeight) || longEdge);
+    const w = Math.max(1, Math.round(img.naturalWidth * Math.min(1, scale)));
+    const h = Math.max(1, Math.round(img.naturalHeight * Math.min(1, scale)));
+    canvas.width = w;
+    canvas.height = h;
+    ctx.clearRect(0, 0, w, h);
+    ctx.drawImage(img, 0, 0, w, h);
+    for (let q = 0.82; q >= 0.4; q -= 0.12) {
+      const url = canvas.toDataURL('image/jpeg', q);
+      if (dataUrlBytes(url) <= targetBytes) return url;
+    }
+    longEdge = Math.round(longEdge * 0.85);
+    if (longEdge < 240) {
+      const url = canvas.toDataURL('image/jpeg', 0.4);
+      if (dataUrlBytes(url) <= maxKb * 1024) return url;
+      throw new Error('cannot fit under cap');
+    }
+  }
+  throw new Error('cannot fit under cap');
+}
+
 function FileUploadField({
   field,
   value,
@@ -4468,6 +4522,17 @@ function FileUploadField({
       return;
     }
     const sizeKb = Math.round(file.size / 1024);
+    // Images over the cap are auto-downscaled to fit rather than rejected — a
+    // real phone photo would otherwise blow past the ~35 KB Sheets-cell limit
+    // and the evidence never gets attached.
+    if (isImage && sizeKb > maxKb) {
+      void compressImageToFit(file, maxKb)
+        .then((url) => onChange(url))
+        .catch(() =>
+          setError(rt('workboards.runtime.fileTooLarge', { size: sizeKb, max: maxKb })),
+        );
+      return;
+    }
     if (sizeKb > maxKb) {
       setError(rt('workboards.runtime.fileTooLarge', { size: sizeKb, max: maxKb }));
       return;
@@ -4587,9 +4652,15 @@ function MultiImageField({
     const readers = chosen.map(
       (file) =>
         new Promise<string | null>((resolve) => {
+          // Oversize photos are auto-downscaled to fit (base64-in-cell / Sheets
+          // ~35 KB) instead of being dropped.
           if (Math.round(file.size / 1024) > maxKb) {
-            setError(rt('workboards.runtime.imageTooLarge', { max: maxKb }));
-            resolve(null);
+            void compressImageToFit(file, maxKb)
+              .then((url) => resolve(url))
+              .catch(() => {
+                setError(rt('workboards.runtime.imageTooLarge', { max: maxKb }));
+                resolve(null);
+              });
             return;
           }
           const r = new FileReader();
@@ -8230,6 +8301,36 @@ function TableScreen({
     errors: Array<{ index: number; error: string }>;
   }>(null);
   const [bulkSubmitting, setBulkSubmitting] = useState(false);
+
+  // Bound the grid's own scroll box to the remaining viewport height so it
+  // scrolls internally (both axes) with a sticky header — this keeps the
+  // horizontal scrollbar near the bottom of the screen instead of only being
+  // reachable after scrolling all the way down to the end of a long table.
+  // The cap is MEASURED (viewport − the box's top offset) so it adapts to any
+  // header/description/filter height rather than a brittle fixed offset.
+  const hScrollRef = useRef<HTMLDivElement | null>(null);
+  const [gridMaxH, setGridMaxH] = useState<number | null>(null);
+  useEffect(() => {
+    const el = hScrollRef.current;
+    if (!el) return;
+    const measure = () => {
+      const top = el.getBoundingClientRect().top;
+      const avail = window.innerHeight - top - 16; // 16px breathing room
+      // Only bound when the box would otherwise run past the viewport; keep a
+      // sane floor so a tiny viewport doesn't collapse the grid.
+      setGridMaxH(avail > 220 ? Math.round(avail) : null);
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    if (el.parentElement) ro.observe(el.parentElement);
+    window.addEventListener('resize', measure);
+    return () => {
+      ro.disconnect();
+      window.removeEventListener('resize', measure);
+    };
+  });
+
   const bulkColumns = useMemo(() => {
     const editableArr = cols.filter((c) => editableCols.has(c));
     return editableArr.length > 0 ? editableArr : cols;
@@ -8787,12 +8888,16 @@ function TableScreen({
           onRun={(resources) => void runServerBulkAction(bulkModal, resources)}
         />
       ) : null}
-      <div>
-      <div className="max-w-full min-w-0 overflow-x-auto overscroll-x-contain">
+      <div className="relative">
+      <div
+        ref={hScrollRef}
+        className="max-w-full min-w-0 overflow-auto overscroll-contain"
+        style={gridMaxH ? { maxHeight: gridMaxH } : undefined}
+      >
         <table className="min-w-max w-full text-sm">
           <thead
             className={
-              presentation?.table?.sticky_header
+              gridMaxH || presentation?.table?.sticky_header
                 ? 'sticky top-0 z-10 bg-white shadow-sm'
                 : undefined
             }
@@ -9122,7 +9227,8 @@ function TableScreen({
                       type="button"
                       onClick={() => void submitGhost()}
                       disabled={adding || ghostMissingRequired.length > 0}
-                      className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-white disabled:opacity-50"
+                      aria-label={rt('workboards.runtime.addRow')}
+                      className="inline-flex h-7 w-7 items-center justify-center rounded-md text-white disabled:opacity-50"
                       style={{ backgroundColor: accent }}
                       title={
                         ghostMissingRequired.length > 0
@@ -9130,8 +9236,7 @@ function TableScreen({
                           : rt('workboards.runtime.addRow')
                       }
                     >
-                      {adding ? <Loader2 className="h-3 w-3 animate-spin" /> : <Plus className="h-3 w-3" />}
-                      {rt('workboards.runtime.add')}
+                      {adding ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Plus className="h-3.5 w-3.5" />}
                     </button>
                     <button
                       type="button"
@@ -9139,10 +9244,11 @@ function TableScreen({
                         setBulkResult(null);
                         setBulkOpen(true);
                       }}
-                      className="inline-flex items-center gap-1 rounded-md border border-slate-300 px-2 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50"
+                      aria-label={rt('workboards.runtime.pasteRowsTitle')}
+                      className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-slate-300 text-slate-600 hover:bg-slate-50"
                       title={rt('workboards.runtime.pasteRowsTitle')}
                     >
-                      📋 {rt('workboards.runtime.pasteRows')}
+                      <ClipboardPaste className="h-3.5 w-3.5" />
                     </button>
                   </div>
                 </td>
@@ -9448,14 +9554,19 @@ function DetailPanelBody({
           {title}
         </div>
       ) : null}
-      <dl className="space-y-2">
+      <dl className="space-y-3">
         {columnsInGroup.map((col) => {
           const isEditable = editableSet.has(col);
           const isDerived = computedNames.has(col) || lookupNames.has(col);
           const draftValue = col in draft ? draft[col] : detail.row[col];
           const label = detail.column_labels?.[col] || col;
           return (
-            <div key={col} className="grid grid-cols-1 gap-1 sm:grid-cols-3 sm:gap-3">
+            <div
+              key={col}
+              className={`grid grid-cols-1 gap-1 sm:grid-cols-3 sm:items-center sm:gap-3${
+                isEditable && !isDerived ? ' min-h-[2.5rem]' : ''
+              }`}
+            >
               <dt className="text-xs font-medium text-slate-600">
                 {label}
                 {isDerived ? (
