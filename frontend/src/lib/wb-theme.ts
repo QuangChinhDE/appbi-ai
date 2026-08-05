@@ -265,9 +265,11 @@ const EXPERIENCE_RADII: Record<ExperienceResolved['theme']['radius'], string> = 
 
 const EXPERIENCE_SHADOWS: Record<ExperienceResolved['theme']['elevation'], string> = {
   none: 'none',
-  small: '0 1px 2px rgb(15 23 42 / 0.08)',
-  medium: '0 6px 18px rgb(15 23 42 / 0.12)',
-  large: '0 18px 42px rgb(15 23 42 / 0.18)',
+  // Layered, soft shadows read as a premium product surface rather than a flat
+  // single-offset box.
+  small: '0 1px 2px rgb(15 23 42 / 0.05), 0 1px 3px rgb(15 23 42 / 0.05)',
+  medium: '0 1px 2px rgb(15 23 42 / 0.04), 0 6px 16px -4px rgb(15 23 42 / 0.10)',
+  large: '0 4px 8px -2px rgb(15 23 42 / 0.06), 0 20px 40px -8px rgb(15 23 42 / 0.16)',
 };
 
 /** CSS variables for an explicit experience contract. Unset color/shape fields
@@ -417,5 +419,40 @@ ${s}[data-density="comfortable"] th,${s}[data-density="comfortable"] td{padding-
 .wb-app .wb-screen[data-motion="expressive"] input,
 .wb-app .wb-screen[data-motion="expressive"] select,
 .wb-app .wb-screen[data-motion="expressive"] textarea{transition-duration:280ms!important;}
+
+/* ── Packaged "real-app" polish (v1 boards) ──────────────────────────────
+   A cohesive interaction/typography layer on top of the token remaps above so
+   inputs, buttons, tables and cards read like a production SaaS app. Uses the
+   theme tokens (--wb-primary/border/surface/text) so it re-skins with the theme. */
+${s}{--wb-ring:color-mix(in srgb, var(--wb-primary) 16%, transparent);}
+/* Inputs */
+${s} input:not([type=checkbox]):not([type=radio]):not([type=file]),
+${s} select,${s} textarea{padding:.55rem .8rem;font-size:.875rem;box-shadow:inset 0 1px 1.5px rgb(15 23 42 / .025);}
+${s} input:not(:disabled):hover:not(:focus),${s} select:not(:disabled):hover:not(:focus),${s} textarea:not(:disabled):hover:not(:focus){border-color:color-mix(in srgb, var(--wb-primary) 26%, var(--wb-border));}
+${s} input:focus,${s} select:focus,${s} textarea:focus{outline:none;border-color:var(--wb-primary)!important;box-shadow:0 0 0 3px var(--wb-ring)!important;}
+${s} input::placeholder,${s} textarea::placeholder{color:color-mix(in srgb, var(--wb-text-muted) 62%, transparent);}
+/* Native select chevron so it doesn't look like a bare box after appearance:none */
+${s} select{appearance:none;-webkit-appearance:none;background-image:linear-gradient(45deg,transparent 50%,var(--wb-text-muted) 50%),linear-gradient(135deg,var(--wb-text-muted) 50%,transparent 50%);background-position:calc(100% - 18px) 52%,calc(100% - 13px) 52%;background-size:5px 5px,5px 5px;background-repeat:no-repeat;padding-right:2rem;}
+/* Buttons: depth + motion; primary buttons carry an inline bg + white text */
+${s} button{transition:filter .15s ease, box-shadow .15s ease, transform .07s ease, background-color .15s ease;}
+${s} button:not(:disabled):active{transform:translateY(.5px);}
+${s} button:focus-visible{outline:2px solid color-mix(in srgb, var(--wb-primary) 55%, transparent);outline-offset:2px;}
+${s} button[style*="background"]{box-shadow:0 1px 2px rgb(15 23 42 / .10), 0 2px 5px -1px rgb(15 23 42 / .10);font-weight:600;letter-spacing:.01em;}
+${s} button[style*="background"]:not(:disabled):hover{filter:brightness(1.07) saturate(1.02);box-shadow:0 3px 9px -1px rgb(15 23 42 / .18);}
+/* Tables: crisp header + zebra + row hover */
+${s} table thead th{background:color-mix(in srgb, var(--wb-surface-2) 55%, var(--wb-surface));border-bottom:1px solid var(--wb-border);}
+${s} table tbody tr{transition:background-color .12s ease;}
+${s} table tbody tr:nth-child(even){background:color-mix(in srgb, var(--wb-surface-2) 40%, transparent);}
+${s} table tbody tr:hover{background:color-mix(in srgb, var(--wb-primary) 5%, var(--wb-surface))!important;}
+${s} table tbody td{border-bottom:1px solid color-mix(in srgb, var(--wb-border) 55%, transparent);}
+/* Scrollbars */
+${s} *{scrollbar-width:thin;scrollbar-color:color-mix(in srgb, var(--wb-text-muted) 33%, transparent) transparent;}
+${s} ::-webkit-scrollbar{height:10px;width:10px;}
+${s} ::-webkit-scrollbar-track{background:transparent;}
+${s} ::-webkit-scrollbar-thumb{background:color-mix(in srgb, var(--wb-text-muted) 30%, transparent);border-radius:99px;border:2px solid transparent;background-clip:content-box;}
+${s} ::-webkit-scrollbar-thumb:hover{background:color-mix(in srgb, var(--wb-text-muted) 52%, transparent);background-clip:content-box;}
+/* Selection + hairline card ring for crispness */
+${s} ::selection{background:color-mix(in srgb, var(--wb-primary) 22%, transparent);}
+${s} [class~="shadow-sm"],${s} [class~="shadow-md"]{box-shadow:var(--wb-shadow), 0 0 0 1px rgb(15 23 42 / .03)!important;}
 `.trim();
 }
