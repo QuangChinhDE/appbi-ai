@@ -6559,6 +6559,17 @@ function formatCellValue(
   return s;
 }
 
+// A cell value that should render as an image rather than text — an inline
+// base64 data-URI, an app media URL, or an image URL. Lets grids show a small
+// thumbnail and the detail panel a full picture instead of leaking a giant
+// base64 string to the user.
+function isImageCellValue(v: unknown): v is string {
+  if (typeof v !== 'string' || !v) return false;
+  if (v.startsWith('data:image')) return true;
+  if (/\/(?:api\/v1\/public\/)?media\/[\w-]+/.test(v)) return true;
+  return /^https?:\/\/\S+\.(?:png|jpe?g|gif|webp|bmp|svg)(?:\?\S*)?$/i.test(v);
+}
+
 function CellDisplay({ value }: { value: unknown }) {
   const { t: rt, locale } = useI18n();
   if (typeof value === 'boolean') {
@@ -6570,6 +6581,17 @@ function CellDisplay({ value }: { value: unknown }) {
       >
         {value ? '✓' : '✕'}
       </span>
+    );
+  }
+  if (isImageCellValue(value)) {
+    // eslint-disable-next-line @next/next/no-img-element
+    return (
+      <img
+        src={value}
+        alt=""
+        loading="lazy"
+        className="h-9 w-9 rounded border border-slate-200 object-cover"
+      />
     );
   }
   const s = formatCellValue(value, locale, rt('workboards.runtime.yes'), rt('workboards.runtime.no'));
@@ -9581,6 +9603,14 @@ function DetailPanelBody({
                     value={draftValue}
                     onCommit={(next) => setDraft((prev) => ({ ...prev, [col]: next }))}
                     meta={detail.column_metadata?.[col] as CellMeta}
+                    variant="panel"
+                  />
+                ) : isImageCellValue(detail.row[col]) ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    src={String(detail.row[col])}
+                    alt={String(label)}
+                    className="max-h-72 max-w-full rounded-md border border-slate-200 object-contain"
                   />
                 ) : (
                   <FormattedCell value={detail.row[col]} format={null} />
@@ -9615,20 +9645,33 @@ type CellMeta = {
   min_value?: number | null;
   max_value?: number | null;
   step?: number | null;
+  max_file_kb?: number | null;
 } | null | undefined;
+
+// Shared control styling. 'cell' = compact borderless-until-hover for inline
+// table cells; 'panel' = a proper always-bordered form field for the detail
+// panel (taller, white bg) so selects and text inputs look consistent and are
+// not cramped.
+const CELL_CTRL_CLS =
+  'h-8 w-full rounded border border-transparent bg-transparent px-2 text-sm outline-none hover:border-slate-200 focus:border-slate-400 focus:bg-white';
+const PANEL_CTRL_CLS =
+  'h-9 w-full rounded-md border border-slate-300 bg-white px-2.5 text-sm text-slate-800 outline-none focus:border-slate-400 focus:ring-1 focus:ring-slate-200';
 
 function TableCellInput({
   value,
   onCommit,
   placeholder,
   meta,
+  variant = 'cell',
 }: {
   value: unknown;
   onCommit: (next: unknown) => void;
   placeholder?: string;
   meta?: CellMeta;
+  variant?: 'cell' | 'panel';
 }) {
   const it = meta?.input_type || 'text';
+  const ctrlCls = variant === 'panel' ? PANEL_CTRL_CLS : CELL_CTRL_CLS;
 
   // ── Typed controls that commit immediately ──────────────────────────
   if (it === 'checkbox') {
@@ -9689,12 +9732,24 @@ function TableCellInput({
       />
     );
   }
+  if (it === 'image') {
+    return (
+      <FileUploadField
+        field={{ column: 'image', label: '', max_file_kb: meta?.max_file_kb ?? undefined } as unknown as RuntimeField}
+        value={value}
+        onChange={onCommit}
+        readonly={false}
+        required={false}
+        isImage
+      />
+    );
+  }
   if (it === 'select') {
     return (
       <select
         value={value == null ? '' : String(value)}
         onChange={(e) => onCommit(e.target.value === '' ? null : e.target.value)}
-        className="h-8 w-full rounded border border-transparent bg-transparent px-2 text-sm outline-none hover:border-slate-200 focus:border-slate-400 focus:bg-white"
+        className={ctrlCls}
       >
         <option value="">—</option>
         {(meta?.options || []).map((o) => (
@@ -9720,6 +9775,7 @@ function TableCellInput({
       onCommit={onCommit}
       htmlType={htmlType}
       numeric={numeric}
+      className={ctrlCls}
       placeholder={placeholder || (meta?.currency_code ? String(meta.currency_code) : undefined)}
     />
   );
@@ -9733,12 +9789,14 @@ function TextCellInput({
   htmlType,
   numeric,
   placeholder,
+  className,
 }: {
   value: unknown;
   onCommit: (next: unknown) => void;
   htmlType: string;
   numeric: boolean;
   placeholder?: string;
+  className?: string;
 }) {
   const initial = value == null ? '' : String(value);
   const [draft, setDraft] = useState(initial);
@@ -9777,7 +9835,7 @@ function TextCellInput({
         }
       }}
       placeholder={placeholder}
-      className="h-8 w-full rounded border border-transparent bg-transparent px-2 text-sm outline-none hover:border-slate-200 focus:border-slate-400 focus:bg-white"
+      className={className || CELL_CTRL_CLS}
     />
   );
 }

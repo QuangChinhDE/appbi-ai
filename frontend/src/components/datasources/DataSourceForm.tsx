@@ -18,6 +18,11 @@ type GoogleDataAccessStatus = {
   connected: boolean;
   email: string | null;
   scopes: string[];
+  /** App scopes this token was never granted (consent predates them). */
+  missing_scopes?: string[];
+  /** Connected, but missing a scope — must re-consent or that feature 403s. */
+  needs_reconnect?: boolean;
+  capabilities?: Record<string, boolean>;
   redirect_uri?: string | null;
 };
 
@@ -131,8 +136,21 @@ export default function DataSourceForm({
   // Platform-level GCP service account info
   const [platformGcp, setPlatformGcp] = useState<{ available: boolean; email: string | null } | null>(null);
   const [googleDataAccess, setGoogleDataAccess] = useState<GoogleDataAccessStatus | null>(null);
+  // Google account just granted in the popup for THIS source, not yet saved.
+  const [pendingGoogle, setPendingGoogle] = useState<{ id: string; email: string } | null>(null);
+  // "Connected" alone is not enough: a token only works for a capability whose
+  // scope was granted at consent time, so a pre-existing connection can look
+  // ready here and still 403 at query time.
+  const googleCan = (cap: 'bigquery' | 'sheets' | 'docs') =>
+    !!googleDataAccess?.connected && googleDataAccess?.capabilities?.[cap] !== false;
   const googleAuthMode = config.auth_mode === 'google_oauth' ? 'google_oauth' : 'service_account';
-  const isGoogleCloudType = type === DataSourceType.BIGQUERY || type === DataSourceType.GOOGLE_SHEETS;
+  const isGoogleCloudType = type === DataSourceType.BIGQUERY || type === DataSourceType.GOOGLE_SHEETS || type === DataSourceType.GOOGLE_DOCS;
+  // Google Docs has no service-account path — it is always an OAuth connection.
+  useEffect(() => {
+    if (type === DataSourceType.GOOGLE_DOCS) {
+      setConfig((prev) => (prev?.auth_mode === 'google_oauth' ? prev : { ...prev, auth_mode: 'google_oauth' }));
+    }
+  }, [type]);
   const currentGoogleDatasourceEmail = typeof config.google_oauth_email === 'string' ? config.google_oauth_email : '';
 
   const loadGoogleDataAccessStatus = useCallback(async () => {
@@ -162,6 +180,11 @@ export default function DataSourceForm({
       if (event.data?.status === 'error') {
         setTestState('fail');
         setTestMessage(extractErrorMessage(event.data?.message, 'Google access connection failed.'));
+      } else if (event.data?.pending_id) {
+        // Hold the granted credential against THIS form until it is saved.
+        setPendingGoogle({ id: String(event.data.pending_id), email: String(event.data.email || '') });
+        setConfig((prev) => ({ ...prev, google_pending_id: String(event.data.pending_id), google_oauth_email: String(event.data.email || '') }));
+        setConfigModified(true);
       }
       void loadGoogleDataAccessStatus();
     };
@@ -239,10 +262,14 @@ export default function DataSourceForm({
     setConfigModified(true);
   }, [googleDataAccess?.email]);
 
+  // Connect a Google account to THIS data source. The consent popup finishes
+  // before a new source has an id, so it returns a short-lived pending id that
+  // is claimed when the source is saved — that is what makes each source carry
+  // its own account instead of silently inheriting a previous connection.
   const handleConnectGoogleDataAccess = useCallback(() => {
     if (typeof window === 'undefined') return;
     const returnTo = `${window.location.pathname}${window.location.search}`;
-    const url = `${API_BASE}/auth/google/data-access/start?popup=1&return_to=${encodeURIComponent(returnTo)}`;
+    const url = `${API_BASE}/auth/google/data-access/start?popup=1&scope=datasource&return_to=${encodeURIComponent(returnTo)}`;
     const popup = window.open(url, 'google-data-access', 'popup=yes,width=560,height=720');
     if (!popup) {
       window.location.assign(url.replace('popup=1', 'popup=0'));
@@ -399,13 +426,17 @@ export default function DataSourceForm({
               </div>
             </div>
 
-            <div className={`rounded-lg border px-4 py-3 text-sm ${googleDataAccess?.connected ? 'border-success/30 bg-success/10 text-success' : 'border-warning/30 bg-warning/10 text-warning'}`}>
+            <div className={`rounded-lg border px-4 py-3 text-sm ${googleCan('bigquery') ? 'border-success/30 bg-success/10 text-success' : 'border-warning/30 bg-warning/10 text-warning'}`}>
               <div className="font-medium">
-                {googleDataAccess?.connected ? 'Google data access connected.' : 'Google data access not connected yet.'}
+                {googleCan('bigquery')
+                  ? 'Google data access connected.'
+                  : googleDataAccess?.connected
+                    ? 'Connected — but this Google connection has not approved BigQuery access yet.'
+                    : 'Google data access not connected yet.'}
               </div>
               <p className="mt-1">
                 {googleDataAccess?.connected
-                  ? <>Your AppBI account is connected to <span className="font-mono">{googleDataAccess.email}</span>.</>
+                  ? <>Your AppBI account is connected to <span className="font-mono">{googleDataAccess.email}</span>{googleCan('bigquery') ? '.' : ' — it was connected before this permission existed, so press Reconnect to approve it.'}</>
                   : googleDataAccess?.configured
                     ? 'Connect your Google account once, then this datasource can use BigQuery directly without a service-account JSON key.'
                     : 'Admin still needs to set AUTH_GOOGLE_CLIENT_SECRET and AUTH_GOOGLE_DATA_REDIRECT_URI on the server.'}
@@ -597,13 +628,17 @@ export default function DataSourceForm({
               </div>
             </div>
 
-            <div className={`rounded-lg border px-4 py-3 text-sm ${googleDataAccess?.connected ? 'border-success/30 bg-success/10 text-success' : 'border-warning/30 bg-warning/10 text-warning'}`}>
+            <div className={`rounded-lg border px-4 py-3 text-sm ${googleCan('sheets') ? 'border-success/30 bg-success/10 text-success' : 'border-warning/30 bg-warning/10 text-warning'}`}>
               <div className="font-medium">
-                {googleDataAccess?.connected ? 'Google data access connected.' : 'Google data access not connected yet.'}
+                {googleCan('sheets')
+                  ? 'Google data access connected.'
+                  : googleDataAccess?.connected
+                    ? 'Connected — but this Google connection has not approved Google Sheets access yet.'
+                    : 'Google data access not connected yet.'}
               </div>
               <p className="mt-1">
                 {googleDataAccess?.connected
-                  ? <>Your AppBI account is connected to <span className="font-mono">{googleDataAccess.email}</span>.</>
+                  ? <>Your AppBI account is connected to <span className="font-mono">{googleDataAccess.email}</span>{googleCan('sheets') ? '.' : ' — it was connected before this permission existed, so press Reconnect to approve it.'}</>
                   : googleDataAccess?.configured
                     ? 'Connect your Google account once, then this datasource can read Google Sheets directly without a service-account JSON key.'
                     : 'Admin still needs to set AUTH_GOOGLE_CLIENT_SECRET and AUTH_GOOGLE_DATA_REDIRECT_URI on the server.'}
@@ -769,6 +804,48 @@ export default function DataSourceForm({
             />
           </div>
         </>
+      );
+    } else if (type === DataSourceType.GOOGLE_DOCS) {
+      // A Google Docs source is JUST a named Google connection — it carries no
+      // tables. Documents pick one of these and supply their own doc URL, so
+      // several documents can share one connection, and different connections
+      // can point at different Google accounts.
+      const g = (config as Record<string, any>)?.google as
+        | { connected?: boolean; email?: string | null; per_source?: boolean; capabilities?: Record<string, boolean> | null }
+        | undefined;
+      const connectedEmail = pendingGoogle?.email || g?.email || null;
+      const canDocs = pendingGoogle ? true : !!g?.capabilities?.docs;
+      const isConnected = !!pendingGoogle || !!g?.connected;
+      return (
+        <div className="space-y-4">
+          <div className={`rounded-lg border px-4 py-3 text-sm ${canDocs ? 'border-success/30 bg-success/10 text-success' : isConnected ? 'border-warning/30 bg-warning/10 text-warning' : 'border-[rgb(var(--border-strong))] bg-surface-2 text-text-secondary'}`}>
+            <div className="font-medium">
+              {canDocs
+                ? 'Google Docs access is ready.'
+                : isConnected
+                  ? 'Connected — but this account has not approved Google Docs access.'
+                  : 'No Google account connected to this source yet.'}
+            </div>
+            <p className="mt-1">
+              {connectedEmail
+                ? <>This source reads Google Docs as <span className="font-mono">{connectedEmail}</span>{pendingGoogle ? ' (save to apply).' : canDocs ? '.' : ' — press Connect again and approve Docs access.'}</>
+                : 'Each source connects its own Google account, so different sources can use different accounts.'}
+            </p>
+            {!readOnly && (
+              <button
+                type="button"
+                onClick={handleConnectGoogleDataAccess}
+                className="mt-3 inline-flex items-center rounded-md border border-brand/30 bg-surface-1 px-3 py-1.5 text-sm font-medium text-brand hover:bg-brand/15"
+              >
+                {isConnected ? 'Connect a different Google account' : 'Connect Google'}
+              </button>
+            )}
+          </div>
+          <p className="text-xs text-text-tertiary">
+            This source holds no tables. Use it in Govern → Documents: create a document from “Google Docs”,
+            pick this source, and paste the document URL.
+          </p>
+        </div>
       );
     } else if (type === DataSourceType.MANUAL) {
       return (
@@ -952,6 +1029,7 @@ export default function DataSourceForm({
           <option value={DataSourceType.MYSQL}>MySQL</option>
           <option value={DataSourceType.BIGQUERY}>BigQuery</option>
           <option value={DataSourceType.GOOGLE_SHEETS}>Google Sheets</option>
+          <option value={DataSourceType.GOOGLE_DOCS}>Google Docs</option>
           <option value={DataSourceType.MANUAL}>Manual Table</option>
         </select>
       </div>

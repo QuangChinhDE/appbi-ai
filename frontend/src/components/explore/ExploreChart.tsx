@@ -613,6 +613,10 @@ function formatAxisValue(value: any, style?: ChartStyleConfig, seriesKey?: strin
     case 'billions':
       body = n === 0 ? '0' : `${trim(n / 1_000_000_000)}B`;
       break;
+    case 'percent':
+      // Render each tick as a percentage (value × 100 + "%"), matching the
+      // numberFormat='percent' convention above. No currency prefix.
+      return `${trim(n * 100)}%`;
     default: { // 'auto' — pick the unit per value
       const abs = Math.abs(n);
       if (abs >= 1_000_000_000) body = `${trim(n / 1_000_000_000)}B`;

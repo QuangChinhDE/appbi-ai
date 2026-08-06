@@ -18,13 +18,13 @@ logger = logging.getLogger(__name__)
 OPENAI_BASE_URL = "https://api.openai.com/v1"
 
 
-def _openai_embed(content: str) -> Optional[List[float]]:
+def _openai_embed(content: str, model: Optional[str] = None) -> Optional[List[float]]:
     api_key = settings.OPENAI_API_KEY.strip()
     if not api_key:
         return None
 
     payload: Dict[str, Any] = {
-        "model": settings.active_embedding_model,
+        "model": (model or "").strip() or settings.active_embedding_model,
         "input": content,
         "encoding_format": "float",
     }
@@ -65,22 +65,27 @@ def _extract_col_names(columns_cache) -> List[str]:
 
 class EmbeddingService:
     @staticmethod
-    def generate_embedding(content: str) -> Optional[List[float]]:
-        """Generate a document embedding via OpenAI."""
+    def generate_embedding(content: str, model: Optional[str] = None) -> Optional[List[float]]:
+        """Generate a document embedding via OpenAI. `model` overrides
+        settings.active_embedding_model (used by per-doc embedding_model
+        overrides, e.g. Govern Knowledge Docs) — an incompatible/unknown model
+        id simply fails the OpenAI call and returns None like any other
+        embedding-unavailable case, it never corrupts the fixed-width vector
+        column."""
         if not settings.OPENAI_API_KEY.strip():
             logger.debug("EmbeddingService: OPENAI_API_KEY not set, skipping")
             return None
-        result = _openai_embed(content[:8000])
+        result = _openai_embed(content[:8000], model=model)
         if result is None:
             logger.warning("EmbeddingService: generate failed - returned None")
         return result
 
     @staticmethod
-    def generate_query_embedding(query: str) -> Optional[List[float]]:
+    def generate_query_embedding(query: str, model: Optional[str] = None) -> Optional[List[float]]:
         """Generate a query embedding via OpenAI."""
         if not settings.OPENAI_API_KEY.strip():
             return None
-        result = _openai_embed(query[:2000])
+        result = _openai_embed(query[:2000], model=model)
         if result is None:
             logger.warning("EmbeddingService: query embed failed - returned None")
         return result

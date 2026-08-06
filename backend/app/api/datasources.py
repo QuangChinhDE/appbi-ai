@@ -112,20 +112,53 @@ def _normalize_google_oauth_config(
     *,
     current_user: User,
     existing_config: dict[str, Any] | None = None,
+    db: Session | None = None,
 ) -> dict[str, Any]:
+    """Resolve the Google credential this DATA SOURCE will use.
+
+    A Google connection belongs to the source, not to the AppBI user, so each
+    source carries its own token and two sources can use two different Google
+    accounts. `google_pending_id` is the handle the consent popup handed back;
+    claiming it moves the credential into this source's config.
+    """
     normalized = dict(config or {})
     if normalized.get("auth_mode") != "google_oauth":
-        normalized.pop("google_oauth_user_id", None)
-        normalized.pop("google_oauth_email", None)
+        for k in ("google_oauth_user_id", "google_oauth_email", "google_oauth_credentials", "google_oauth_scopes", "google_pending_id"):
+            normalized.pop(k, None)
         return normalized
 
     from app.core.crypto import decrypt_config
+    from app.services.google_data_access_service import consume_pending_connection
 
     existing = decrypt_config(existing_config or {})
+    pending_id = str(normalized.pop("google_pending_id", "") or "").strip()
+
+    if pending_id and db is not None:
+        claimed = consume_pending_connection(db, pending_id, current_user)
+        if claimed is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="That Google connection expired. Press Connect Google again.",
+            )
+        normalized["google_oauth_credentials"] = claimed["credentials"]
+        normalized["google_oauth_email"] = claimed["email"]
+        normalized["google_oauth_scopes"] = claimed["scopes"]
+        normalized["google_oauth_user_id"] = str(current_user.id)  # who attached it
+        return normalized
+
+    # No new consent in this save — keep whatever this source already had.
+    if existing.get("google_oauth_credentials"):
+        normalized["google_oauth_credentials"] = existing["google_oauth_credentials"]
+        normalized["google_oauth_email"] = existing.get("google_oauth_email")
+        normalized["google_oauth_scopes"] = existing.get("google_oauth_scopes") or []
+        normalized["google_oauth_user_id"] = existing.get("google_oauth_user_id") or str(current_user.id)
+        return normalized
+
     existing_user_id = str(existing.get("google_oauth_user_id") or "").strip()
     existing_email = str(existing.get("google_oauth_email") or "").strip().lower()
     desired_email = str(normalized.get("google_oauth_email") or "").strip().lower()
 
+    # Legacy source (credential still lives on the AppBI user) — leave as is.
     if existing_user_id and existing_email and (not desired_email or desired_email == existing_email):
         normalized["google_oauth_user_id"] = existing_user_id
         normalized["google_oauth_email"] = existing_email
@@ -140,18 +173,18 @@ def _normalize_google_oauth_config(
                 "AUTH_GOOGLE_CLIENT_SECRET and AUTH_GOOGLE_DATA_REDIRECT_URI."
             ),
         )
-    if not status_payload["connected"] or not status_payload["email"]:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=(
-                "Connect your Google account inside AppBI before using Google OAuth "
-                "for BigQuery or Google Sheets."
-            ),
-        )
 
-    normalized["google_oauth_user_id"] = str(current_user.id)
-    normalized["google_oauth_email"] = str(status_payload["email"]).strip().lower()
-    return normalized
+    # A source with no connection of its own must get one EXPLICITLY. It used to
+    # fall back to whatever Google account the current user had connected
+    # elsewhere, so a brand-new source showed up already "connected" — and then
+    # used an account nobody chose for it.
+    raise HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail=(
+            "Press \"Connect Google\" on this data source to choose the Google "
+            "account it should use."
+        ),
+    )
 
 
 # ── Platform GCP credential info ──────────────────────────────────────────────
@@ -337,6 +370,7 @@ def create_data_source(
         data_source.config = _normalize_google_oauth_config(
             data_source.config,
             current_user=current_user,
+            db=db,
         )
         _validate_datasource_connection_or_raise(data_source.type.value, data_source.config)
         created = DataSourceCRUDService.create(db, data_source, owner_id=current_user.id)
@@ -373,6 +407,7 @@ def update_data_source(
             data_source_update.config = _normalize_google_oauth_config(
                 restored_config,
                 current_user=current_user,
+                db=db,
                 existing_config=ds.config,
             )
             _validate_datasource_connection_or_raise(next_type, data_source_update.config)

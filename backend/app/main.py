@@ -46,6 +46,11 @@ async def lifespan(app: FastAPI):
     from app.services.snapshot_scheduler import startup as snapshot_scheduler_startup
     snapshot_scheduler_startup()
 
+    # Govern Knowledge Doc source-sync scheduler — scheduled re-fetch for docs
+    # connected to a Google Doc / web page source
+    from app.services.govern_doc_sync_scheduler import startup as govern_doc_sync_startup
+    govern_doc_sync_startup()
+
     # Reap datasets left in 'syncing' by a crash/restart mid-publish — otherwise
     # they show "Syncing…" forever + block new syncs until the 1h lease expires.
     try:
@@ -82,6 +87,9 @@ async def lifespan(app: FastAPI):
 
     from app.services.snapshot_scheduler import shutdown as snapshot_scheduler_shutdown
     snapshot_scheduler_shutdown()
+
+    from app.services.govern_doc_sync_scheduler import shutdown as govern_doc_sync_shutdown
+    govern_doc_sync_shutdown()
 
     from app.services.dataset_quality_scheduler import shutdown as quality_scheduler_shutdown
     quality_scheduler_shutdown()

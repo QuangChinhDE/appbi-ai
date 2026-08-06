@@ -42,6 +42,7 @@ from app.services.google_data_access_service import (
     assert_google_data_access_matches_user,
     build_google_data_access_authorization_url,
     build_google_data_access_state,
+    create_pending_connection,
     decode_google_data_access_state,
     exchange_google_data_access_code,
     get_google_data_access_status,
@@ -304,7 +305,8 @@ def _append_query_params(url: str, **params: str) -> str:
     return urlunparse(parsed._replace(query=urlencode(merged)))
 
 
-def _popup_close_response(status_value: str, message: str | None = None) -> HTMLResponse:
+def _popup_close_response(status_value: str, message: str | None = None,
+                          pending_id: str | None = None, email: str | None = None) -> HTMLResponse:
     html = f"""<!doctype html>
 <html>
   <body>
@@ -313,7 +315,9 @@ def _popup_close_response(status_value: str, message: str | None = None) -> HTML
         var payload = {{
           type: "google-data-access",
           status: {json.dumps(status_value)},
-          message: {json.dumps(message or "")}
+          message: {json.dumps(message or "")},
+          pending_id: {json.dumps(pending_id or "")},
+          email: {json.dumps(email or "")}
         }};
         if (window.opener) {{
           window.opener.postMessage(payload, window.location.origin);
@@ -500,14 +504,22 @@ def google_data_access_status(current_user: User = Depends(get_current_user)):
 def start_google_data_access(
     return_to: str | None = None,
     popup: bool = False,
+    scope: str = "user",
     current_user: User = Depends(get_current_user),
 ):
-    """Start the Google OAuth flow used for BigQuery and Google Sheets access."""
+    """Start the Google OAuth flow.
+
+    `scope="datasource"` connects a Google account to ONE data source: the
+    granted credential is parked as a pending connection instead of being
+    written to the AppBI user, and it may be ANY Google account (a data source
+    can legitimately read a partner's Sheet or another team's Docs).
+    """
     safe_return_to = _sanitize_return_to(return_to)
     state = build_google_data_access_state(
         user=current_user,
         return_to=safe_return_to,
         popup=popup,
+        scope=scope,
     )
     return RedirectResponse(
         build_google_data_access_authorization_url(state),
@@ -565,13 +577,20 @@ def google_data_access_callback(
             )
 
         credentials, identity = exchange_google_data_access_code(code)
-        assert_google_data_access_matches_user(user, identity)
-        store_google_data_access_credentials(
-            db,
-            user=user,
-            credentials=credentials,
-            identity=identity,
-        )
+        connect_scope = str(state_payload.get("scope") or "user")
+        pending_id = None
+        if connect_scope == "datasource":
+            # Per-source connection: any Google account is allowed, and the
+            # credential is staged until the data source is saved.
+            pending_id = create_pending_connection(user, credentials, identity)
+        else:
+            assert_google_data_access_matches_user(user, identity)
+            store_google_data_access_credentials(
+                db,
+                user=user,
+                credentials=credentials,
+                identity=identity,
+            )
         audit(
             db,
             AuditAction.DATASOURCE_CONNECTED,
@@ -598,7 +617,10 @@ def google_data_access_callback(
         )
 
     if popup:
-        return _popup_close_response("connected", f"Connected {identity['email']}")
+        return _popup_close_response(
+            "connected", f"Connected {identity['email']}",
+            pending_id=pending_id, email=identity["email"],
+        )
     return RedirectResponse(
         _append_query_params(
             return_to,

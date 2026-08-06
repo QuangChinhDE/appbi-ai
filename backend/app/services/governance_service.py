@@ -21,6 +21,8 @@ from app.models.governance import (
     GovernChangeLog,
     GovernDocAssetLink,
     GovernDocLink,
+    GovernDocRun,
+    GovernDocSourceFile,
     GovernKnowledgeDoc,
     GovernKnowledgeDocVersion,
     GovernMetric,
@@ -613,6 +615,26 @@ class GovernanceService:
             db.rollback()
 
     @staticmethod
+    def log_doc_run(
+        db: Session, doc_id: int, run_type: str, *, trigger: str = "manual",
+        status: str, detail: str | None = None, stats: Any = None,
+        changed_by: str | None = None, finished_at: Any = None,
+    ) -> None:
+        """Persist one Knowledge Doc sync/embed run — the History tab's data
+        source. Mirrors log_change()'s try/commit/except-rollback idiom: a
+        logging failure must never break the sync/embed run it's recording."""
+        try:
+            from datetime import datetime as _dt
+            db.add(GovernDocRun(
+                doc_id=doc_id, run_type=run_type, trigger=trigger, status=status,
+                detail=(detail or "")[:512] or None, stats=stats,
+                triggered_by=changed_by, finished_at=finished_at or _dt.utcnow(),
+            ))
+            db.commit()
+        except Exception:  # noqa: BLE001 — logging must never break the run
+            db.rollback()
+
+    @staticmethod
     def list_change_log(
         db: Session, entity_type: str | None = None, entity_fqn: str | None = None, limit: int = 100,
     ) -> list[dict[str, Any]]:
@@ -629,6 +651,17 @@ class GovernanceService:
         } for r in rows]
 
     # ── Knowledge Hub (Cẩm nang tri thức) ────────────────────────────────────
+    @staticmethod
+    def _source_url(d: GovernKnowledgeDoc) -> str | None:
+        """Where this doc's content actually lives, when it isn't hand-typed."""
+        cfg = d.source_config or {}
+        if d.source_type == "google_doc":
+            gid = str(cfg.get("google_doc_id") or "").strip()
+            return f"https://docs.google.com/document/d/{gid}/edit" if gid else None
+        if d.source_type == "web":
+            return str(cfg.get("url") or "").strip() or None
+        return None
+
     @staticmethod
     def _doc_dict(d: GovernKnowledgeDoc, *, include_body: bool = True) -> dict[str, Any]:
         out = {
@@ -651,6 +684,19 @@ class GovernanceService:
             "retrieval_count": int(d.retrieval_count or 0),
             "published_version": d.published_version,
             "owner_id": str(d.owner_id) if d.owner_id else None,
+            # External source (Source & Sync tab) + embedding config (Embedding tab)
+            "source_type": d.source_type,
+            "source_config": d.source_config or {},
+            # Deep link back to the ORIGINAL (Google Doc / crawled page) so a
+            # read-only source can always be opened where it's actually edited.
+            "source_url": GovernanceService._source_url(d),
+            "sync_schedule": d.sync_schedule,
+            "last_synced_at": d.last_synced_at.isoformat() if d.last_synced_at else None,
+            "last_sync_status": d.last_sync_status,
+            "chunk_strategy": d.chunk_strategy or "paragraph",
+            "chunk_size": d.chunk_size or 850,
+            "chunk_overlap": d.chunk_overlap or 0,
+            "embedding_model": d.embedding_model,
         }
         if include_body:
             out["body"] = d.body or ""
@@ -693,17 +739,20 @@ class GovernanceService:
 
         body = d.body or ""
         checks: list[tuple[str, int, bool]] = [
-            ("summary", 15, bool((d.summary or "").strip() or (d.ai_summary or "").strip())),
-            ("tags", 10, bool(d.tags)),
-            ("owner", 10, bool((d.owner or "").strip())),
-            ("headings", 15, len(_re.findall(r"^#{1,3}\s", body, _re.M)) >= 2),
-            ("links", 15, bool(_re.search(r"\{\{(metric|dashboard|dataset|term):[^}]+\}\}", body))),
-            ("context", 10, bool((d.business_domain or "").strip() or (d.process_ref or "").strip())),
-            ("review", 10, bool(
+            ("summary", 14, bool((d.summary or "").strip() or (d.ai_summary or "").strip())),
+            ("tags", 9, bool(d.tags)),
+            ("owner", 9, bool((d.owner or "").strip())),
+            ("headings", 13, len(_re.findall(r"^#{1,3}\s", body, _re.M)) >= 2),
+            ("links", 13, bool(_re.search(r"\{\{(metric|dashboard|dataset|term):[^}]+\}\}", body))),
+            ("context", 9, bool((d.business_domain or "").strip() or (d.process_ref or "").strip())),
+            ("review", 9, bool(
                 (d.review_date and d.review_date >= date.today())
                 or (d.last_verified_at and d.last_verified_at >= datetime.utcnow() - timedelta(days=90))
             )),
-            ("embedded", 15, has_chunks),
+            ("embedded", 14, has_chunks),
+            # Optional nice-to-have signal, not as load-bearing as embedded/headings —
+            # a doc can be perfectly AI-ready while still hand-typed.
+            ("source_connected", 10, bool(getattr(d, "source_type", None))),
         ]
         score = sum(w for _, w, ok in checks if ok)
         return {"score": score, "missing": [k for k, _, ok in checks if not ok]}
@@ -933,6 +982,12 @@ class GovernanceService:
             if current_user is not None:
                 GovernanceService._require_doc(db, current_user, d, "edit")
             d.title = title
+            # Google Doc / crawled web sources OWN their content: the body is
+            # whatever the last sync pulled, so a save must never overwrite it
+            # (the FE also renders those read-only). Everything else on the
+            # page — title, summary, tags, owner, metadata — stays ours to edit.
+            if (d.source_type or "") in ("google_doc", "web"):
+                fields.pop("body", None)
             for k, v in fields.items():
                 setattr(d, k, v)
             d.version = (d.version or 1) + 1
@@ -974,7 +1029,11 @@ class GovernanceService:
         # embedding calls). Best-effort: never block a save on embedding.
         try:
             from app.services.dashboard_ai_bot.govern_doc_embeddings import embed_doc
-            embed_doc(db, d)
+            result = embed_doc(db, d)
+            GovernanceService.log_doc_run(
+                db, d.id, "embed", trigger="save", status=result.get("status", "error"),
+                detail=result.get("detail"), stats=result, changed_by=changed_by,
+            )
         except Exception:  # noqa: BLE001
             db.rollback()
         # AI summary + keywords (hash-gated the same way; user-editable output).
@@ -1087,7 +1146,11 @@ class GovernanceService:
         # Re-embed the live body (published version) for RAG. Best-effort.
         try:
             from app.services.dashboard_ai_bot.govern_doc_embeddings import embed_doc
-            embed_doc(db, d)
+            result = embed_doc(db, d)
+            GovernanceService.log_doc_run(
+                db, d.id, "embed", trigger="publish", status=result.get("status", "error"),
+                detail=result.get("detail"), stats=result, changed_by=changed_by,
+            )
         except Exception:  # noqa: BLE001
             db.rollback()
         return {"ok": True, "published_version": version}
