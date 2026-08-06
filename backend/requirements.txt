@@ -39,8 +39,10 @@ cachetools>=5.3.0
 # SQL validation
 sqlglot==26.16.2
 
-# File parsing (Manual Table: CSV / Excel import)
+# File parsing (Manual Table: CSV / Excel import; Govern Knowledge Doc file sources)
 openpyxl==3.1.5
+pypdf==5.1.0
+python-docx==1.1.2
 
 # JS sandbox for Phase-14 computed columns (engine='js'). QuickJS-based,
 # enforces per-row timeout + isolated globals (no require / fetch / fs).

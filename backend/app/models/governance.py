@@ -14,6 +14,7 @@ from sqlalchemy import (
     ForeignKey,
     Integer,
     JSON,
+    LargeBinary,
     String,
     Text,
     UniqueConstraint,
@@ -196,6 +197,17 @@ class GovernKnowledgeDoc(Base):
     view_count = Column(Integer, nullable=False, default=0)
     last_viewed_at = Column(DateTime, nullable=True)
     retrieval_count = Column(Integer, nullable=False, default=0)
+    # ── External source (Source & Sync tab) — None = hand-typed (today's only path) ─
+    source_type = Column(String(24), nullable=True)   # google_doc | file | web | null
+    source_config = Column(JSON, nullable=False, default=dict)  # {datasource_id, google_doc_id} | {} | {url}
+    sync_schedule = Column(JSON, nullable=True)        # {mode, at, cron, timezone} — same shape as dataset snapshot schedule
+    last_synced_at = Column(DateTime, nullable=True)
+    last_sync_status = Column(String(16), nullable=True)  # ok | error | running
+    # ── Embedding configuration (Embedding tab) — was hardcoded in govern_doc_embeddings.py ─
+    chunk_strategy = Column(String(16), nullable=False, default="paragraph")  # paragraph | heading | fixed
+    chunk_size = Column(Integer, nullable=False, default=850)
+    chunk_overlap = Column(Integer, nullable=False, default=0)
+    embedding_model = Column(String(100), nullable=True)  # null = settings.active_embedding_model
     created_at = Column(DateTime, default=func.now())
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
 
@@ -238,6 +250,45 @@ class GovernChangeLog(Base):
     changed_by = Column(String(128), nullable=True)               # user email / id when known
     snapshot = Column(JSON, nullable=True)                        # post-change state (for metric: full dict)
     created_at = Column(DateTime, default=func.now(), index=True)
+
+
+class GovernDocSourceFile(Base):
+    """The CURRENT uploaded file (PDF/DOCX/XLSX) backing a doc whose
+    source_type == 'file'. doc_id is the PRIMARY KEY (not a surrogate id) —
+    content history is already fully covered by GovernKnowledgeDocVersion (a
+    re-upload produces a new extracted body -> new doc save -> new version,
+    same as a hand edit), so this table only ever needs to answer "what is
+    the current file," making it a plain upsert-by-doc_id."""
+    __tablename__ = "govern_doc_source_files"
+
+    doc_id = Column(Integer, ForeignKey("govern_knowledge_docs.id", ondelete="CASCADE"), primary_key=True)
+    filename = Column(String(255), nullable=False)
+    content_type = Column(String(120), nullable=False, default="application/octet-stream")
+    byte_size = Column(Integer, nullable=False, default=0)
+    data = Column(LargeBinary, nullable=False)
+    extracted_text_hash = Column(String(64), nullable=True)  # sha256 of last extracted text; skip re-extraction on identical re-upload
+    uploaded_by = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    uploaded_at = Column(DateTime, default=func.now())
+
+
+class GovernDocRun(Base):
+    """Unified sync + embed run history for a Knowledge Doc — the History tab's
+    data source. Previously the result of every embed_doc() call was computed
+    then thrown away; this table is what makes that transparent. One table
+    (not two) with a run_type discriminator so History renders a single
+    time-sorted timeline instead of a UNION of two tables."""
+    __tablename__ = "govern_doc_runs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    doc_id = Column(Integer, ForeignKey("govern_knowledge_docs.id", ondelete="CASCADE"), nullable=False, index=True)
+    run_type = Column(String(16), nullable=False)      # sync | embed
+    trigger = Column(String(16), nullable=False, default="manual")  # manual | scheduled | save | publish
+    status = Column(String(16), nullable=False)        # ok | error | skipped
+    detail = Column(String(512), nullable=True)         # short human message
+    stats = Column(JSON, nullable=True)                 # {chunks, new_chunks, chars, ...}
+    started_at = Column(DateTime, default=func.now())
+    finished_at = Column(DateTime, nullable=True)
+    triggered_by = Column(String(128), nullable=True)   # user email, or 'scheduler'
 
 
 # ═══════════════════════════════════════════════════════════════════════════

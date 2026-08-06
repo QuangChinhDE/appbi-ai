@@ -113,6 +113,27 @@ class BigQueryConfig(BaseModel):
         return value
 
 
+class GoogleDocsConfig(BaseModel):
+    """Google Docs connection configuration.
+
+    Holds NO tabular settings — this source exists only to carry the Google
+    account a Knowledge Doc reads documents through. The credential itself is
+    stored (encrypted) under google_oauth_credentials once the consent popup's
+    pending handle is claimed on save.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    auth_mode: Literal["google_oauth"] = "google_oauth"
+    google_pending_id: Optional[str] = Field(
+        None, description="Single-use handle from the consent popup, claimed on save",
+    )
+    google_oauth_email: Optional[str] = Field(None, description="Google account this source reads as")
+    google_oauth_credentials: Optional[str] = Field(None, description="Encrypted authorized-user token")
+    google_oauth_scopes: Optional[list] = Field(None, description="Scopes granted at consent time")
+    google_oauth_user_id: Optional[str] = Field(None, description="AppBI user who attached the connection")
+
+
 class GoogleSheetsConfig(BaseModel):
     """Google Sheets connection configuration.
 
@@ -199,6 +220,8 @@ def validate_datasource_config(ds_type: str, config: dict) -> dict:
             validated = BigQueryConfig(**config)
         elif ds_type_lower == "google_sheets":
             validated = GoogleSheetsConfig(**config)
+        elif ds_type_lower == "google_docs":
+            validated = GoogleDocsConfig(**config)
         elif ds_type_lower == "manual":
             validated = ManualConfig(**config)
         else:

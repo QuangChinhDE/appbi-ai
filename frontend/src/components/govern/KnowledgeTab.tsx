@@ -16,7 +16,7 @@ import Link from 'next/link';
 import {
   BookOpen, Compass, Boxes, Workflow, HelpCircle, FileText, Sigma, LayoutDashboard, Database,
   Tag as TagIcon, History, Plus, Pencil, Trash2, Save, X, Pin, ChevronLeft, ChevronRight, ChevronDown,
-  ExternalLink, AlertTriangle, Loader2, Library, Search, Upload, Sparkles,
+  ExternalLink, AlertTriangle, Loader2, Library, Search, Upload, Sparkles, RefreshCw,
   Bold, Italic, Strikethrough, Heading1, Heading2, Heading3, List, ListOrdered, Quote, Code, Link2, Table, Eye,
   GitBranch, ShieldCheck, Clock3, BookCheck, MessageCircleQuestion, Share2, Info, Network,
 } from 'lucide-react';
@@ -37,8 +37,13 @@ import {
   listKnowledge, getKnowledgeDoc, upsertKnowledgeDoc, deleteKnowledgeDoc, listManagedMetrics,
   listDocVersions, getDocVersion, aiDraftKnowledge, listDatasetsLite, governSearch, regenAiSummary, verifyDoc,
   publishVersion, aiChangeNote, governGraph,
+  getDocSource, putDocSource, uploadDocSourceFile, syncDocSource, listGoogleDocsSources,
+  getEmbeddingConfig, putEmbeddingConfig, previewChunks, reembedDoc,
+  getDocHistory, getDocUsage, getDocSnapshot, isSourceOwned,
+  type DocSourceKind, type DocSnapshot, type GoogleDocsSource,
   type KnowledgeDoc, type KnowledgeSpace, type KnowledgeDocWrite, type KnowledgeAsset, type ManagedMetric,
   type KnowledgeDocVersion, type DatasetLite, type GovernSearchResult, type RelatedDoc, type KnowledgeGraph, type GraphNode,
+  type DocSourceInfo, type DocSyncSchedule, type EmbeddingConfig, type ChunkPreviewResult, type DocHistory, type DocUsage,
 } from '@/lib/catalog';
 import { AppModalShell } from '@/components/common/AppModalShell';
 import { ShareDialog } from '@/components/common/ShareDialog';
@@ -95,7 +100,7 @@ function readyTone(score: number): string {
 const READY_HINT_KEY: Record<string, string> = {
   summary: 'govern.ready.summary', tags: 'govern.ready.tags', owner: 'govern.ready.owner',
   headings: 'govern.ready.headings', links: 'govern.ready.links', context: 'govern.ready.context',
-  review: 'govern.ready.review', embedded: 'govern.ready.embedded',
+  review: 'govern.ready.review', embedded: 'govern.ready.embedded', source_connected: 'govern.ready.sourceConnected',
 };
 /** ~200 wpm reading time from a markdown body. */
 function readingMinutes(body: string | undefined | null): number {
@@ -142,6 +147,7 @@ export function KnowledgeTab({ nav, onOpenVocab }: { nav: ReturnType<typeof useU
   const [managed, setManaged] = useState<ManagedMetric[]>([]);
   const [metricModal, setMetricModal] = useState<MetricModalState | null>(null);
   const [aiOpen, setAiOpen] = useState(false);
+  const [wizardOpen, setWizardOpen] = useState(false);
   const [seed, setSeed] = useState<KnowledgeDocWrite | null>(null);  // AI-draft prefill for a new doc
   const [shareTarget, setShareTarget] = useState<{ id: number; title: string } | null>(null);
   const onShare = (id: number, title: string) => setShareTarget({ id, title });
@@ -161,7 +167,9 @@ export function KnowledgeTab({ nav, onOpenVocab }: { nav: ReturnType<typeof useU
 
   const openDoc = (id: number) => { setSeed(null); nav.set({ doc: String(id), m: null, dt: null }); };
   const openList = () => { setSeed(null); nav.set({ doc: null, m: null, dt: null }); };
-  const startNew = () => { setSeed(null); nav.set({ doc: null, m: 'new' }); };
+  // "New document" now starts with the source picker (hand-typed / Google Doc /
+  // uploaded file / web page); only the hand-typed path opens the blank editor.
+  const startNew = () => { setSeed(null); setWizardOpen(true); };
   const startEdit = () => nav.set({ m: 'edit' });
 
   const openMetric = (s: MetricModalState) => setMetricModal(s);
@@ -205,6 +213,14 @@ export function KnowledgeTab({ nav, onOpenVocab }: { nav: ReturnType<typeof useU
         <ShareDialog resourceType="knowledge_doc" resourceId={shareTarget.id} resourceName={shareTarget.title} onClose={() => setShareTarget(null)} />
       )}
       {aiOpen && <AiWriteModal onClose={() => setAiOpen(false)} onDrafted={onAiDrafted} />}
+      {wizardOpen && (
+        <CreateDocWizard
+          spaces={spaces}
+          onClose={() => setWizardOpen(false)}
+          onManual={(sp) => { setWizardOpen(false); setSeed(newDoc(sp)); nav.set({ doc: null, m: 'new' }); }}
+          onCreated={(id) => { setWizardOpen(false); void loadList(); openDoc(id); }}
+        />
+      )}
       {metricModal && (
         <MetricFormModal
           machineName={metricModal.machineName}
@@ -609,6 +625,10 @@ const DETAIL_TABS = [
   { key: 'chiso', labelKey: 'govern.detail.tab.metrics', icon: <Sigma className="h-4 w-4" /> },
   { key: 'lienket', labelKey: 'govern.detail.tab.links', icon: <LayoutDashboard className="h-4 w-4" /> },
   { key: 'dothi', labelKey: 'govern.detail.tab.graph', icon: <GitBranch className="h-4 w-4" /> },
+  { key: 'nguon', labelKey: 'govern.detail.tab.source', icon: <Database className="h-4 w-4" /> },
+  { key: 'nhung', labelKey: 'govern.detail.tab.embedding', icon: <Boxes className="h-4 w-4" /> },
+  { key: 'lichsu', labelKey: 'govern.detail.tab.history', icon: <Clock3 className="h-4 w-4" /> },
+  { key: 'sudung', labelKey: 'govern.detail.tab.usage', icon: <Network className="h-4 w-4" /> },
 ] as const;
 type DetailTab = (typeof DETAIL_TABS)[number]['key'];
 
@@ -739,8 +759,16 @@ function DetailScreen({ docId, nav, onBack, onEdit, onDeleted, onOpenMetric, onL
           onExitView={() => setViewingVersion(null)}
           onPublished={() => { setViewingVersion(null); setRefresh((v) => v + 1); onListChanged(); }}
         />
+        {/* Google Doc / crawled page: content lives at the source, so open it
+            there instead of offering an edit that would be overwritten. */}
+        {doc.source_url && (
+          <Button size="sm" variant="secondary" leadingIcon={<ExternalLink className="h-3.5 w-3.5" />}
+            onClick={() => window.open(doc.source_url!, '_blank', 'noopener,noreferrer')}>
+            {t(doc.source_type === 'google_doc' ? 'govern.detail.openInGoogleDocs' : 'govern.detail.openOriginalPage')}
+          </Button>
+        )}
         {perms.canShare && <Button size="sm" variant="secondary" leadingIcon={<Share2 className="h-3.5 w-3.5" />} onClick={() => onShare(doc.id, doc.title)}>{t('shared.share.shareButton')}</Button>}
-        {perms.canEdit && <Button size="sm" variant="secondary" leadingIcon={<Pencil className="h-3.5 w-3.5" />} onClick={onEdit}>{t('govern.action.edit')}</Button>}
+        {perms.canEdit && !isSourceOwned(doc.source_type) && <Button size="sm" variant="secondary" leadingIcon={<Pencil className="h-3.5 w-3.5" />} onClick={onEdit}>{t('govern.action.edit')}</Button>}
         {perms.canDelete && <Button size="sm" variant="ghost" leadingIcon={<Trash2 className="h-3.5 w-3.5" />} onClick={remove}>{t('govern.action.delete')}</Button>}
       </div>
 
@@ -750,13 +778,15 @@ function DetailScreen({ docId, nav, onBack, onEdit, onDeleted, onOpenMetric, onL
           tabs go full-width. */}
       <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto px-4 pb-10 pt-6 sm:px-6 xl:px-8 [scrollbar-gutter:stable]">
         {tab === 'noidung' ? (
-          <div className="flex items-start gap-6 xl:gap-8">
+          // `relative` anchors the rail flyouts, which float OVER the document
+          // instead of holding permanent columns — the page keeps the full width.
+          <div className="relative flex items-start gap-3">
             <OnPageOutline toc={toc} activeHeading={activeHeading} onJump={jumpTo} />
             {/* The document sits on a distinct white "page" (like Google Docs) so
-                its bounds read clearly against the canvas; it fills the center
-                column on normal screens (not a floating narrow block). */}
+                its bounds read clearly against the canvas, and now spans the
+                whole available width. */}
             <article ref={articleRef} className="min-w-0 flex-1">
-              <div className="mx-auto w-full max-w-[54rem] rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 px-6 py-7 shadow-linear sm:px-10 sm:py-9">
+              <div className="w-full rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 px-6 py-7 shadow-linear sm:px-10 sm:py-9">
                 <DocHeader doc={doc} />
                 {viewingVersion
                   ? <VersionViewer doc={doc} version={viewingVersion} onClose={() => setViewingVersion(null)} />
@@ -771,6 +801,10 @@ function DetailScreen({ docId, nav, onBack, onEdit, onDeleted, onOpenMetric, onL
             {tab === 'chiso' && <MetricsTab doc={doc} onDefine={defineMetric} onEdit={editMetric} />}
             {tab === 'lienket' && <LinksTab doc={doc} />}
             {tab === 'dothi' && <GraphTab doc={doc} onOpenDoc={onOpenDoc} onEditMetric={editMetric} />}
+            {tab === 'nguon' && <SourceTab doc={doc} onRefresh={() => setRefresh((v) => v + 1)} />}
+            {tab === 'nhung' && <EmbeddingTab doc={doc} onRefresh={() => setRefresh((v) => v + 1)} />}
+            {tab === 'lichsu' && <HistoryTab doc={doc} />}
+            {tab === 'sudung' && <UsageTab doc={doc} />}
           </div>
         )}
       </div>
@@ -895,6 +929,209 @@ function GraphTab({ doc, onOpenDoc, onEditMetric }: {
 // spans several data sources, so this is a multi-select + an optional focus that
 // steers what the document should be about. The backend reads each source's real
 // model + sample + metrics and drafts a doc the user reviews before saving.
+// ── Google Docs source picker ────────────────────────────────────────────────
+// A document reads Google through a "Google Docs" DATA SOURCE (created in the
+// Data Sources module, where each source connects its own Google account). The
+// document just picks which connection to read through — the same shape as
+// pointing a chart at a BigQuery source.
+function GoogleDocsSourcePicker({ sources, value, onChange }: {
+  sources: GoogleDocsSource[]; value: string; onChange: (v: string) => void;
+}) {
+  const { t } = useI18n();
+  const picked = sources.find((x) => String(x.id) === String(value));
+  return (
+    <>
+      <Select value={value} onChange={(e) => onChange(e.target.value)}>
+        <option value="">{t('govern.gdocs.pickSource')}</option>
+        {sources.map((x) => (
+          <option key={x.id} value={x.id}>{x.name}{x.email ? ` — ${x.email}` : ''}</option>
+        ))}
+      </Select>
+      {sources.length === 0 ? (
+        <p className="mt-1 text-tiny text-warning">{t('govern.gdocs.noSources')}</p>
+      ) : picked && !picked.can_read_docs ? (
+        // Connected, but that account never approved Docs — say so here rather
+        // than letting the sync fail later.
+        <p className="mt-1 text-tiny text-warning">{t('govern.gdocs.sourceNeedsReconnect', { name: picked.name })}</p>
+      ) : picked ? (
+        <p className="mt-1 text-tiny text-text-quaternary">{t('govern.gdocs.readsAs', { email: picked.email || '—' })}</p>
+      ) : null}
+    </>
+  );
+}
+
+// ── Create wizard — a document can come from four places. They differ ONLY in
+// how content gets in; once inside, all four follow the same concept (body →
+// versions → embedding → RAG). Google Doc / Web are owned by their source and
+// stay read-only here; hand-typed and uploaded files are edited normally. ────
+const SOURCE_KINDS: { kind: DocSourceKind; icon: ReactNode; tone: string }[] = [
+  { kind: 'manual', icon: <Pencil className="h-5 w-5" />, tone: 'bg-surface-2 text-text-secondary' },
+  { kind: 'google_doc', icon: <FileText className="h-5 w-5" />, tone: 'bg-info/10 text-info' },
+  { kind: 'file', icon: <Upload className="h-5 w-5" />, tone: 'bg-success/10 text-success' },
+  { kind: 'web', icon: <Network className="h-5 w-5" />, tone: 'bg-brand/10 text-brand' },
+];
+
+function CreateDocWizard({ spaces, onClose, onManual, onCreated }: {
+  spaces: KnowledgeSpace[];
+  onClose: () => void;
+  onManual: (space: string) => void;
+  onCreated: (docId: number) => void;
+}) {
+  const { t } = useI18n();
+  const [step, setStep] = useState(1);
+  const [kind, setKind] = useState<DocSourceKind>('manual');
+  const [title, setTitle] = useState('');
+  const [space, setSpace] = useState(spaces[0]?.space || 'Chung');
+  const [gsources, setGsources] = useState<GoogleDocsSource[]>([]);
+  const [datasourceId, setDatasourceId] = useState('');
+  const [googleDocRef, setGoogleDocRef] = useState('');
+  const [webUrl, setWebUrl] = useState('');
+  const [schedule, setSchedule] = useState<DocSyncSchedule>({ mode: 'manual' });
+  const [file, setFile] = useState<File | null>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => { if (kind === 'google_doc') listGoogleDocsSources().then(setGsources).catch(() => {}); }, [kind]);
+
+  const canSubmit = (() => {
+    if (!title.trim()) return false;
+    if (kind === 'google_doc') return !!datasourceId && !!googleDocRef.trim();
+    if (kind === 'web') return /^https?:\/\//.test(webUrl.trim());
+    if (kind === 'file') return !!file;
+    return true;
+  })();
+
+  const submit = async () => {
+    if (kind === 'manual') { onManual(space); return; }
+    setBusy(true);
+    try {
+      // 1. Create the shell document, 2. attach its source, 3. pull content once.
+      // Same three steps for every connected kind — only the payload differs.
+      const created = await upsertKnowledgeDoc({
+        title: title.trim(), space, doc_type: 'article', status: 'Draft',
+        tags: [], related_metrics: [], related_terms: [],
+      });
+      if (kind === 'file') {
+        await uploadDocSourceFile(created.id, file!);
+      } else {
+        const source_config = kind === 'google_doc'
+          ? { datasource_id: Number(datasourceId), google_doc_id: googleDocRef.trim() }
+          : { url: webUrl.trim() };
+        await putDocSource(created.id, { source_type: kind, source_config, sync_schedule: schedule });
+        await syncDocSource(created.id);
+      }
+      toast.success(t('govern.create.created'));
+      onCreated(created.id);
+    } catch (e) {
+      toast.error(errDetail(e) || t('govern.create.failed'));
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <AppModalShell
+      onClose={onClose} title={t('govern.create.title')} icon={<Plus className="h-4 w-4" />} maxWidthClass="max-w-2xl"
+      footer={(
+        <>
+          <Button variant="ghost" onClick={onClose} disabled={busy}>{t('govern.action.cancel')}</Button>
+          {step === 2 && <Button variant="secondary" onClick={() => setStep(1)} disabled={busy}>{t('govern.create.back')}</Button>}
+          {step === 1
+            ? <Button variant="primary" onClick={() => setStep(2)}>{t('govern.create.continue')}</Button>
+            : <Button variant="primary" onClick={submit} loading={busy} disabled={!canSubmit}>
+                {kind === 'manual' ? t('govern.create.startWriting') : t('govern.create.submit')}
+              </Button>}
+        </>
+      )}
+    >
+      {step === 1 ? (
+        <div className="space-y-3">
+          <p className="text-caption text-text-secondary">{t('govern.create.chooseSource')}</p>
+          <div className="grid gap-2.5 sm:grid-cols-2">
+            {SOURCE_KINDS.map((s) => (
+              <button key={s.kind} onClick={() => setKind(s.kind)}
+                className={cn(
+                  'rounded-xl border p-3.5 text-left transition-colors',
+                  kind === s.kind
+                    ? 'border-brand bg-brand/[0.06] ring-1 ring-brand'
+                    : 'border-[rgb(var(--border-line))] hover:bg-surface-2',
+                )}>
+                <span className={cn('mb-2 flex h-9 w-9 items-center justify-center rounded-lg', s.tone)}>{s.icon}</span>
+                <span className="block text-caption font-emphasis text-text-primary">{t(`govern.create.kind.${s.kind}`)}</span>
+                <span className="mt-0.5 block text-tiny leading-relaxed text-text-tertiary">{t(`govern.create.kindDesc.${s.kind}`)}</span>
+                <span className="mt-1.5 inline-block rounded-full bg-surface-2 px-2 py-0.5 text-tiny text-text-tertiary">
+                  {t(`govern.create.kindTag.${s.kind}`)}
+                </span>
+              </button>
+            ))}
+          </div>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div>
+              <Label required>{t('govern.editor.title')}</Label>
+              <Input value={title} onChange={(e) => setTitle(e.target.value)} placeholder={t('govern.create.titlePlaceholder')} />
+            </div>
+            <div>
+              <Label>{t('govern.editor.space')}</Label>
+              <Input value={space} onChange={(e) => setSpace(e.target.value)} list="wizard-spaces" />
+              <datalist id="wizard-spaces">{spaces.map((s) => <option key={s.space} value={s.space} />)}</datalist>
+            </div>
+          </div>
+
+          {kind === 'google_doc' && (
+            <>
+              <div>
+                <Label required>{t('govern.gdocs.source')}</Label>
+                <GoogleDocsSourcePicker sources={gsources} value={datasourceId} onChange={setDatasourceId} />
+              </div>
+              <div>
+                <Label required>{t('govern.source.googleDocUrl')}</Label>
+                <Input value={googleDocRef} onChange={(e) => setGoogleDocRef(e.target.value)} placeholder="https://docs.google.com/document/d/..." />
+              </div>
+            </>
+          )}
+
+          {kind === 'web' && (
+            <div>
+              <Label required>{t('govern.source.webUrl')}</Label>
+              <Input value={webUrl} onChange={(e) => setWebUrl(e.target.value)} placeholder="https://example.com/article" />
+            </div>
+          )}
+
+          {kind === 'file' && (
+            <div>
+              <Label required>{t('govern.source.uploadFile')}</Label>
+              <input ref={fileRef} type="file" accept=".pdf,.docx,.xlsx" className="hidden"
+                onChange={(e) => { setFile(e.target.files?.[0] ?? null); e.target.value = ''; }} />
+              <div className="flex items-center gap-2">
+                <Button size="sm" variant="secondary" leadingIcon={<Upload className="h-3.5 w-3.5" />} onClick={() => fileRef.current?.click()}>
+                  {t('govern.create.chooseFile')}
+                </Button>
+                <span className="min-w-0 truncate text-tiny text-text-tertiary">{file ? file.name : t('govern.create.noFile')}</span>
+              </div>
+            </div>
+          )}
+
+          {(kind === 'google_doc' || kind === 'web') && (
+            <div>
+              <Label>{t('govern.source.schedule')}</Label>
+              <Select value={schedule.mode} onChange={(e) => setSchedule({ ...schedule, mode: e.target.value as DocSyncSchedule['mode'] })}>
+                <option value="manual">{t('govern.source.scheduleManual')}</option>
+                <option value="hourly">{t('govern.source.scheduleHourly')}</option>
+                <option value="daily">{t('govern.source.scheduleDaily')}</option>
+              </Select>
+            </div>
+          )}
+
+          <div className="rounded-lg bg-surface-2 px-3 py-2.5">
+            <p className="text-tiny leading-relaxed text-text-tertiary">{t(`govern.create.note.${kind}`)}</p>
+          </div>
+        </div>
+      )}
+    </AppModalShell>
+  );
+}
+
 function AiWriteModal({ onClose, onDrafted }: { onClose: () => void; onDrafted: (draft: KnowledgeDocWrite) => void }) {
   const { t } = useI18n();
   const [datasets, setDatasets] = useState<DatasetLite[]>([]);
@@ -1036,8 +1273,32 @@ function RailCard({ title, icon, children, collapsible = false, defaultOpen = tr
     </div>
   );
 }
+// 4-step readiness strip (Source → Content → Embedded → Available to AI) — a
+// compressed, visual grouping of the machine ai_ready checks. No shared
+// stepper component exists elsewhere in the codebase to reuse, so this is a
+// small bespoke flex row of segments.
+function ReadinessStrip({ doc, missing }: { doc: KnowledgeDoc; missing: string[] }) {
+  const { t } = useI18n();
+  const steps: { key: string; label: string; done: boolean }[] = [
+    { key: 'source', label: t('govern.ready.step.source'), done: !missing.includes('source_connected') },
+    { key: 'content', label: t('govern.ready.step.content'), done: (doc.body || '').trim().length > 0 },
+    { key: 'embedded', label: t('govern.ready.step.embedded'), done: !missing.includes('embedded') },
+    { key: 'available', label: t('govern.ready.step.available'), done: doc.status === 'Published' && !missing.includes('embedded') },
+  ];
+  return (
+    <div className="mb-2.5 flex items-center gap-1">
+      {steps.map((s, i) => (
+        <div key={s.key} className="flex flex-1 items-center gap-1" title={s.label}>
+          <span className={cn('h-1.5 flex-1 rounded-full', s.done ? 'bg-success' : 'bg-surface-3')} />
+          {i < steps.length - 1 && <ChevronRight className="h-3 w-3 flex-shrink-0 text-text-quaternary" />}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 // AI-context card — readiness score + what's missing + AI summary/keywords.
-function AiContextCard({ doc, onRefresh }: { doc: KnowledgeDoc; onRefresh: () => void }) {
+function AiContextCard({ doc, onRefresh, bare = false }: { doc: KnowledgeDoc; onRefresh: () => void; bare?: boolean }) {
   const { t } = useI18n();
   const [regenBusy, setRegenBusy] = useState(false);
   const ready = doc.ai_ready ?? { score: 0, missing: [] };
@@ -1047,12 +1308,19 @@ function AiContextCard({ doc, onRefresh }: { doc: KnowledgeDoc; onRefresh: () =>
     catch (e) { toast.error(errDetail(e) || t('govern.aiCard.regenFailed')); }
     finally { setRegenBusy(false); }
   };
+  // `bare` drops the card chrome when the caller already provides it (rail flyout).
+  const Shell = bare
+    ? ({ children }: { children: ReactNode }) => <>{children}</>
+    : ({ children }: { children: ReactNode }) => (
+        <RailCard title={t('govern.aiCard.title')} icon={<Sparkles className="h-3.5 w-3.5" />}>{children}</RailCard>
+      );
   return (
-    <RailCard title={t('govern.aiCard.title')} icon={<Sparkles className="h-3.5 w-3.5" />}>
+    <Shell>
       <div className="mb-2.5 flex items-center justify-between gap-2">
         <span className={cn('rounded-full px-2.5 py-0.5 text-caption font-emphasis', readyTone(ready.score))}>{ready.score}%</span>
         <span className="text-tiny text-text-quaternary">{t('govern.aiCard.readingTime', { min: readingMinutes(doc.body) })}</span>
       </div>
+      <ReadinessStrip doc={doc} missing={ready.missing} />
       {ready.missing.length > 0 && (
         <div className="mb-2.5 rounded-lg bg-surface-2 px-2.5 py-2">
           <p className="mb-1 text-tiny font-emphasis text-text-tertiary">{t('govern.aiCard.missingTitle')}</p>
@@ -1079,60 +1347,89 @@ function AiContextCard({ doc, onRefresh }: { doc: KnowledgeDoc; onRefresh: () =>
           ))}
         </div>
       )}
-    </RailCard>
+    </Shell>
   );
 }
 
 // Left rail — on-page outline (TOC) with scroll-spy. Docs-site style: a thin
 // vertical rule with the section you're reading highlighted. Its own column so
 // it never competes with the right context rail for vertical space.
+// ── Icon rails ───────────────────────────────────────────────────────────────
+// The reading surface gets the whole width; the outline and the context panels
+// collapse to slim icon strips and open as flyouts ON TOP of the content, so
+// nothing permanently competes with the document for horizontal space.
+function RailIcon({ icon, label, active, badge, onClick }: {
+  icon: ReactNode; label: string; active?: boolean; badge?: ReactNode; onClick: () => void;
+}) {
+  return (
+    <button onClick={onClick} title={label} aria-label={label} aria-pressed={active}
+      className={cn(
+        'relative flex h-9 w-9 items-center justify-center rounded-lg border transition-colors',
+        active
+          ? 'border-brand/40 bg-brand/10 text-brand'
+          : 'border-[rgb(var(--border-line))] text-text-tertiary hover:bg-surface-2 hover:text-text-primary',
+      )}>
+      {icon}
+      {badge != null && (
+        <span className="absolute -right-1 -top-1 min-w-[1rem] rounded-full bg-surface-3 px-1 text-[10px] font-emphasis leading-4 text-text-secondary">
+          {badge}
+        </span>
+      )}
+    </button>
+  );
+}
+
+/** Flyout panel anchored to a rail; floats over the document. */
+function RailFlyout({ side, title, icon, onClose, children }: {
+  side: 'left' | 'right'; title: string; icon?: ReactNode; onClose: () => void; children: ReactNode;
+}) {
+  return (
+    <div className={cn(
+      'absolute top-0 z-30 w-[min(20rem,calc(100vw-6.5rem))] overflow-hidden rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 shadow-linear-lg xl:w-[22rem]',
+      side === 'left' ? 'left-11' : 'right-11',
+    )}>
+      <div className="flex items-center justify-between gap-2 border-b border-[rgb(var(--border-line))] bg-surface-2/50 px-3 py-2">
+        <p className="flex items-center gap-1.5 text-tiny font-emphasis uppercase tracking-[0.08em] text-text-quaternary">
+          {icon}{title}
+        </p>
+        <button onClick={onClose} aria-label="Đóng" className="text-text-quaternary transition-colors hover:text-text-primary">
+          <X className="h-3.5 w-3.5" />
+        </button>
+      </div>
+      <div className="max-h-[calc(100vh-9rem)] overflow-y-auto p-3">{children}</div>
+    </div>
+  );
+}
+
 function OnPageOutline({ toc, activeHeading, onJump }: {
   toc: { level: number; text: string }[]; activeHeading: string; onJump: (text: string) => void;
 }) {
-  // Collapsible like the Google-Docs outline — folds to a slim icon so the
-  // reader can reclaim the width whenever they want (remembered per browser).
-  const [open, setOpen] = useState<boolean>(() => {
-    if (typeof window === 'undefined') return true;
-    return window.localStorage.getItem('appbi.govern.outline') !== '0';
-  });
-  const toggle = () => setOpen((o) => { try { window.localStorage.setItem('appbi.govern.outline', o ? '0' : '1'); } catch { /* ignore */ } return !o; });
+  const { t } = useI18n();
+  const [open, setOpen] = useState(false);
   if (toc.length <= 1) return null;
-  if (!open) {
-    return (
-      <div className="sticky top-0 hidden shrink-0 self-start pt-0.5 lg:block">
-        <button onClick={toggle} title="Mục trên trang"
-          className="flex h-8 w-8 items-center justify-center rounded-md border border-[rgb(var(--border-line))] text-text-tertiary transition-colors hover:bg-surface-2 hover:text-brand">
-          <List className="h-4 w-4" />
-        </button>
-      </div>
-    );
-  }
   return (
-    <aside className="sticky top-0 hidden max-h-[calc(100vh-4.5rem)] w-52 shrink-0 self-start overflow-y-auto py-1 lg:block [scrollbar-gutter:stable]">
-      <div className="mb-2 flex items-center justify-between gap-1 px-2">
-        <p className="flex items-center gap-1.5 text-tiny font-emphasis uppercase tracking-[0.08em] text-text-quaternary">
-          <List className="h-3.5 w-3.5" />Mục trên trang
-        </p>
-        <button onClick={toggle} title="Thu gọn" className="text-text-quaternary transition-colors hover:text-text-primary">
-          <ChevronLeft className="h-3.5 w-3.5" />
-        </button>
-      </div>
-      <nav className="border-l border-[rgb(var(--border-line))]">
-        {toc.map((h, i) => {
-          const active = !!activeHeading && h.text === activeHeading;
-          return (
-            <button key={i} onClick={() => onJump(h.text)} aria-current={active ? 'true' : undefined}
-              className={cn(
-                '-ml-px block w-full truncate border-l-2 px-2.5 py-1 text-left text-caption transition-colors',
-                active ? 'border-brand font-emphasis text-brand' : 'border-transparent text-text-tertiary hover:border-[rgb(var(--border-strong))] hover:text-text-primary',
-                h.level === 3 && 'pl-5 text-tiny',
-              )}>
-              {h.text}
-            </button>
-          );
-        })}
-      </nav>
-    </aside>
+    <div className="sticky top-0 z-30 hidden shrink-0 self-start pt-0.5 sm:block">
+      <RailIcon icon={<List className="h-4 w-4" />} label={t('govern.rail.outline')} active={open} onClick={() => setOpen((o) => !o)} />
+      {open && (
+        <RailFlyout side="left" title={t('govern.rail.outline')} icon={<List className="h-3.5 w-3.5" />} onClose={() => setOpen(false)}>
+          <nav className="border-l border-[rgb(var(--border-line))]">
+            {toc.map((h, i) => {
+              const active = !!activeHeading && h.text === activeHeading;
+              return (
+                <button key={i} onClick={() => { onJump(h.text); setOpen(false); }} aria-current={active ? 'true' : undefined}
+                  className={cn(
+                    '-ml-px block w-full truncate border-l-2 px-2.5 py-1 text-left text-caption transition-colors',
+                    active ? 'border-brand font-emphasis text-brand' : 'border-transparent text-text-tertiary hover:border-[rgb(var(--border-strong))] hover:text-text-primary',
+                    h.level === 3 && 'pl-5 text-tiny',
+                  )}>
+                  {h.text}
+                </button>
+              );
+            })}
+          </nav>
+        </RailFlyout>
+      )}
+    </div>
   );
 }
 
@@ -1152,15 +1449,36 @@ function DetailRail({ doc, related, metrics, assets, onTab, onOpenDoc, onRefresh
     catch (e) { toast.error(errDetail(e) || t('govern.detail.verifyFailed')); }
     finally { setVerifyBusy(false); }
   };
-  // Sticky + independently scrollable so context stays in view as the article
-  // scrolls. The on-page outline lives in its own LEFT column, so this rail is
-  // free for AI readiness / info / links / related without clipping.
-  return (
-    <aside className="sticky top-0 hidden max-h-[calc(100vh-4.5rem)] w-72 shrink-0 flex-col gap-4 self-start overflow-y-auto pb-2 lg:flex xl:w-80 [scrollbar-gutter:stable]">
-      <AiContextCard doc={doc} onRefresh={onRefresh} />
+  // Slim icon strip: each panel opens as a flyout OVER the document, so the
+  // reading surface keeps the full width instead of permanently giving ~20rem
+  // to context that is only read occasionally.
+  const [panel, setPanel] = useState<null | 'ai' | 'info' | 'jump' | 'related' | 'backlinks'>(null);
+  const toggle = (p: NonNullable<typeof panel>) => setPanel((cur) => (cur === p ? null : p));
+  const backlinks = doc.backlinks ?? [];
 
-      <RailCard title="Thông tin" collapsible defaultOpen={false}>
-        <dl className="space-y-2.5">
+  return (
+    <div className="sticky top-0 z-30 hidden shrink-0 self-start pt-0.5 sm:block">
+      <div className="flex flex-col gap-1.5">
+        <RailIcon icon={<Sparkles className="h-4 w-4" />} label={t('govern.aiCard.title')} active={panel === 'ai'} onClick={() => toggle('ai')} />
+        <RailIcon icon={<Info className="h-4 w-4" />} label={t('govern.rail.info')} active={panel === 'info'} onClick={() => toggle('info')} />
+        <RailIcon icon={<Compass className="h-4 w-4" />} label={t('govern.rail.jump')} active={panel === 'jump'} onClick={() => toggle('jump')} />
+        {related.length > 0 && (
+          <RailIcon icon={<BookOpen className="h-4 w-4" />} label={t('govern.detail.relatedDocs')} badge={related.length} active={panel === 'related'} onClick={() => toggle('related')} />
+        )}
+        {backlinks.length > 0 && (
+          <RailIcon icon={<Link2 className="h-4 w-4" />} label={t('govern.backlinks.title')} badge={backlinks.length} active={panel === 'backlinks'} onClick={() => toggle('backlinks')} />
+        )}
+      </div>
+
+      {panel === 'ai' && (
+        <RailFlyout side="right" title={t('govern.aiCard.title')} icon={<Sparkles className="h-3.5 w-3.5" />} onClose={() => setPanel(null)}>
+          <AiContextCard doc={doc} onRefresh={onRefresh} bare />
+        </RailFlyout>
+      )}
+
+      {panel === 'info' && (
+        <RailFlyout side="right" title={t('govern.rail.info')} icon={<Info className="h-3.5 w-3.5" />} onClose={() => setPanel(null)}>
+          <dl className="space-y-2.5">
           <RailRow label="Không gian" value={doc.space} />
           <RailRow label="Loại" value={docTypeLabel(doc.doc_type, t)} />
           <RailRow label="Trạng thái" value={<span className={cn('rounded-full px-2 py-0.5 text-tiny', STATUS_TONE[doc.status] || 'bg-surface-2 text-text-tertiary')}>{statusLabel(doc.status, t)}</span>} />
@@ -1173,61 +1491,139 @@ function DetailRail({ doc, related, metrics, assets, onTab, onOpenDoc, onRefresh
           <RailRow label={t('govern.detail.lastVerified')} value={doc.last_verified_at ? relTime(doc.last_verified_at, language) : '—'} />
           <RailRow label={t('govern.detail.views')} value={doc.view_count ?? 0} />
           <RailRow label={t('govern.detail.aiRetrievals')} value={doc.retrieval_count ?? 0} />
-          {doc.updated_at && <RailRow label="Cập nhật" value={new Date(doc.updated_at).toLocaleDateString('vi-VN')} />}
-        </dl>
-        <Button size="sm" variant="secondary" className="mt-3 w-full" leadingIcon={<ShieldCheck className="h-3.5 w-3.5" />} loading={verifyBusy} onClick={doVerify}>
-          {t('govern.detail.verify')}
-        </Button>
-      </RailCard>
-
-      {(metrics.length > 0 || assets.length > 0) && (
-        <div className="space-y-1 rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-2">
-          <button onClick={() => onTab('chiso')} className="flex w-full items-center justify-between rounded-lg px-2 py-2 text-caption text-text-secondary hover:bg-surface-2">
-            <span className="flex items-center gap-2"><Sigma className="h-4 w-4 text-text-quaternary" />{t('govern.detail.tab.metrics')}</span>
-            <span className="font-emphasis text-text-primary">{metrics.length}</span>
-          </button>
-          <button onClick={() => onTab('lienket')} className="flex w-full items-center justify-between rounded-lg px-2 py-2 text-caption text-text-secondary hover:bg-surface-2">
-            <span className="flex items-center gap-2"><LayoutDashboard className="h-4 w-4 text-text-quaternary" />{t('govern.detail.tab.links')}</span>
-            <span className="font-emphasis text-text-primary">{assets.length}</span>
-          </button>
-        </div>
+            {doc.updated_at && <RailRow label="Cập nhật" value={new Date(doc.updated_at).toLocaleDateString('vi-VN')} />}
+          </dl>
+          <Button size="sm" variant="secondary" className="mt-3 w-full" leadingIcon={<ShieldCheck className="h-3.5 w-3.5" />} loading={verifyBusy} onClick={doVerify}>
+            {t('govern.detail.verify')}
+          </Button>
+        </RailFlyout>
       )}
 
-      {related.length > 0 && (
-        <RailCard title={t('govern.detail.relatedDocs')} icon={<BookOpen className="h-3.5 w-3.5" />} collapsible defaultOpen={false}>
+      {panel === 'jump' && (
+        <RailFlyout side="right" title={t('govern.rail.jump')} icon={<Compass className="h-3.5 w-3.5" />} onClose={() => setPanel(null)}>
+          <div className="space-y-1">
+            {(metrics.length > 0 || assets.length > 0) && (
+              <>
+                <button onClick={() => { onTab('chiso'); setPanel(null); }} className="flex w-full items-center justify-between rounded-lg px-2 py-2 text-caption text-text-secondary hover:bg-surface-2">
+                  <span className="flex items-center gap-2"><Sigma className="h-4 w-4 text-text-quaternary" />{t('govern.detail.tab.metrics')}</span>
+                  <span className="font-emphasis text-text-primary">{metrics.length}</span>
+                </button>
+                <button onClick={() => { onTab('lienket'); setPanel(null); }} className="flex w-full items-center justify-between rounded-lg px-2 py-2 text-caption text-text-secondary hover:bg-surface-2">
+                  <span className="flex items-center gap-2"><LayoutDashboard className="h-4 w-4 text-text-quaternary" />{t('govern.detail.tab.links')}</span>
+                  <span className="font-emphasis text-text-primary">{assets.length}</span>
+                </button>
+              </>
+            )}
+            <button onClick={() => { onTab('nguon'); setPanel(null); }} className="flex w-full items-center justify-between rounded-lg px-2 py-2 text-caption text-text-secondary hover:bg-surface-2">
+              <span className="flex items-center gap-2"><Database className="h-4 w-4 text-text-quaternary" />{t('govern.detail.tab.source')}</span>
+              <span className="text-tiny text-text-quaternary">{doc.source_type ? t(`govern.source.typeShort.${doc.source_type}`) : t('govern.source.typeManual')}</span>
+            </button>
+            <button onClick={() => { onTab('nhung'); setPanel(null); }} className="flex w-full items-center justify-between rounded-lg px-2 py-2 text-caption text-text-secondary hover:bg-surface-2">
+              <span className="flex items-center gap-2"><Boxes className="h-4 w-4 text-text-quaternary" />{t('govern.detail.tab.embedding')}</span>
+            </button>
+            <button onClick={() => { onTab('lichsu'); setPanel(null); }} className="flex w-full items-center justify-between rounded-lg px-2 py-2 text-caption text-text-secondary hover:bg-surface-2">
+              <span className="flex items-center gap-2"><Clock3 className="h-4 w-4 text-text-quaternary" />{t('govern.detail.tab.history')}</span>
+            </button>
+            <button onClick={() => { onTab('sudung'); setPanel(null); }} className="flex w-full items-center justify-between rounded-lg px-2 py-2 text-caption text-text-secondary hover:bg-surface-2">
+              <span className="flex items-center gap-2"><Network className="h-4 w-4 text-text-quaternary" />{t('govern.detail.tab.usage')}</span>
+              <span className="font-emphasis text-text-primary">{doc.retrieval_count ?? 0}</span>
+            </button>
+          </div>
+        </RailFlyout>
+      )}
+
+      {panel === 'related' && (
+        <RailFlyout side="right" title={t('govern.detail.relatedDocs')} icon={<BookOpen className="h-3.5 w-3.5" />} onClose={() => setPanel(null)}>
           <div className="space-y-1">
             {related.map((r) => (
-              <button key={r.id} onClick={() => onOpenDoc(r.id)} className="block w-full rounded-lg px-2 py-1.5 text-left hover:bg-surface-2" title={relatedReason(r, t)}>
+              <button key={r.id} onClick={() => { onOpenDoc(r.id); setPanel(null); }} className="block w-full rounded-lg px-2 py-1.5 text-left hover:bg-surface-2" title={relatedReason(r, t)}>
                 <span className="block truncate text-caption font-emphasis text-text-secondary">{r.title}</span>
                 <span className="block truncate text-tiny text-text-quaternary">{relatedReason(r, t)}</span>
               </button>
             ))}
           </div>
-        </RailCard>
+        </RailFlyout>
       )}
 
-      {(doc.backlinks ?? []).length > 0 && (
-        <RailCard title={t('govern.backlinks.title')} icon={<Link2 className="h-3.5 w-3.5" />} collapsible defaultOpen={false}>
+      {panel === 'backlinks' && (
+        <RailFlyout side="right" title={t('govern.backlinks.title')} icon={<Link2 className="h-3.5 w-3.5" />} onClose={() => setPanel(null)}>
           <div className="space-y-1">
-            {(doc.backlinks ?? []).map((b) => (
-              <button key={b.id} onClick={() => onOpenDoc(b.id)} className="block w-full rounded-lg px-2 py-1.5 text-left hover:bg-surface-2">
+            {backlinks.map((b) => (
+              <button key={b.id} onClick={() => { onOpenDoc(b.id); setPanel(null); }} className="block w-full rounded-lg px-2 py-1.5 text-left hover:bg-surface-2">
                 <span className="block truncate text-caption font-emphasis text-text-secondary">{b.title}</span>
                 <span className="block truncate text-tiny text-text-quaternary">{b.space}</span>
               </button>
             ))}
           </div>
-        </RailCard>
+        </RailFlyout>
       )}
-    </aside>
+    </div>
+  );
+}
+
+// Snapshot of a crawled page, shown as the ORIGINAL page. Rendered inside a
+// sandboxed iframe with NO allow-scripts and NO allow-same-origin: third-party
+// html we crawled is never trusted markup, so it can neither run script nor
+// reach this origin. srcdoc (not a src URL) keeps it fully offline/frozen.
+function WebSnapshotView({ docId }: { docId: number }) {
+  const { t } = useI18n();
+  const [snap, setSnap] = useState<DocSnapshot | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    let on = true;
+    setLoading(true); setFailed(false);
+    getDocSnapshot(docId)
+      .then((s) => { if (on) setSnap(s); })
+      .catch(() => { if (on) setFailed(true); })
+      .finally(() => { if (on) setLoading(false); });
+    return () => { on = false; };
+  }, [docId]);
+
+  if (loading) return <div className="flex justify-center py-14"><Loader2 className="h-5 w-5 animate-spin text-brand" /></div>;
+  if (failed || !snap) {
+    return (
+      <p className="rounded-xl border border-dashed border-[rgb(var(--border-strong))] bg-surface-1 px-4 py-10 text-center text-caption text-text-tertiary">
+        {t('govern.snapshot.none')}
+      </p>
+    );
+  }
+  return (
+    <div className="overflow-hidden rounded-xl border border-[rgb(var(--border-line))] bg-white">
+      <iframe
+        title={t('govern.snapshot.title')}
+        srcDoc={snap.html}
+        sandbox=""
+        referrerPolicy="no-referrer"
+        className="h-[70vh] w-full border-0"
+      />
+    </div>
   );
 }
 
 function ContentTab({ doc, onDocLink }: { doc: KnowledgeDoc; onDocLink?: (id: number) => void }) {
   const { t } = useI18n();
   const missing = doc.missing_metric_tokens ?? [];
+  const hasSnapshot = doc.source_type === 'web';
+  const [view, setView] = useState<'text' | 'snapshot'>('text');
   return (
     <div className="min-w-0">
-      {doc.body
+      {hasSnapshot && (
+        <div className="mb-3 inline-flex rounded-lg border border-[rgb(var(--border-line))] p-0.5">
+          {(['text', 'snapshot'] as const).map((v) => (
+            <button key={v} onClick={() => setView(v)}
+              className={cn('rounded-md px-2.5 py-1 text-tiny font-emphasis transition-colors',
+                view === v ? 'bg-brand text-white' : 'text-text-tertiary hover:text-text-primary')}>
+              {t(v === 'text' ? 'govern.snapshot.viewText' : 'govern.snapshot.viewOriginal')}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {hasSnapshot && view === 'snapshot'
+        ? <WebSnapshotView docId={doc.id} />
+        : doc.body
         ? <Markdown source={resolveBody(doc)} onDocLink={onDocLink} />
         : <p className="rounded-xl border border-dashed border-[rgb(var(--border-strong))] bg-surface-1 px-4 py-10 text-center text-caption text-text-tertiary">{t('govern.content.empty')}</p>}
 
@@ -1342,6 +1738,385 @@ function LinksTab({ doc }: { doc: KnowledgeDoc }) {
           </tbody>
         </table>
       </div>
+    </div>
+  );
+}
+
+// ── Source & Sync — connect this doc to a Google Doc / uploaded file / web
+// page instead of only hand-typing, with a "Sync now" action and (for
+// google_doc/web) a recurring schedule. ──────────────────────────────────────
+function SourceTab({ doc, onRefresh }: { doc: KnowledgeDoc; onRefresh: () => void }) {
+  const { t, language } = useI18n();
+  const [info, setInfo] = useState<DocSourceInfo | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  const [sourceType, setSourceType] = useState('');
+  const [datasourceId, setDatasourceId] = useState('');
+  const [googleDocRef, setGoogleDocRef] = useState('');
+  const [webUrl, setWebUrl] = useState('');
+  const [schedule, setSchedule] = useState<DocSyncSchedule>({ mode: 'manual' });
+
+  // Re-fetchable: reconnecting Google must refresh the connection state in place.
+  const reload = useCallback(() => {
+    setLoading(true);
+    getDocSource(doc.id)
+      .then((d) => {
+        setInfo(d);
+        setSourceType(d.source_type || '');
+        setDatasourceId(typeof d.source_config?.datasource_id === 'number' ? String(d.source_config.datasource_id) : '');
+        setGoogleDocRef(typeof d.source_config?.google_doc_id === 'string' ? d.source_config.google_doc_id : '');
+        setWebUrl(typeof d.source_config?.url === 'string' ? d.source_config.url : '');
+        setSchedule(d.sync_schedule || { mode: 'manual' });
+      })
+      .catch(() => toast.error(t('govern.source.loadFailed')))
+      .finally(() => setLoading(false));
+  }, [doc.id, t]);
+  useEffect(() => { reload(); }, [reload]);
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      const source_config: Record<string, unknown> =
+        sourceType === 'google_doc' ? { datasource_id: Number(datasourceId) || null, google_doc_id: googleDocRef }
+        : sourceType === 'web' ? { url: webUrl }
+        : {};
+      await putDocSource(doc.id, {
+        source_type: sourceType || null, source_config,
+        sync_schedule: sourceType === 'google_doc' || sourceType === 'web' ? schedule : null,
+      });
+      toast.success(t('govern.source.saved'));
+      onRefresh();
+    } catch (e) { toast.error(errDetail(e) || t('govern.source.saveFailed')); }
+    finally { setSaving(false); }
+  };
+
+  const syncNow = async () => {
+    setSyncing(true);
+    try {
+      const res = await syncDocSource(doc.id);
+      toast.success(res.detail || t('govern.source.syncOk'));
+      onRefresh();
+    } catch (e) { toast.error(errDetail(e) || t('govern.source.syncFailed')); }
+    finally { setSyncing(false); }
+  };
+
+  const onFile = async (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    setUploading(true);
+    try {
+      const res = await uploadDocSourceFile(doc.id, file);
+      toast.success(t('govern.source.uploadOk', { chars: res.extracted_chars }));
+      onRefresh();
+    } catch (err) { toast.error(errDetail(err) || t('govern.source.uploadFailed')); }
+    finally { setUploading(false); }
+  };
+
+  if (loading) return <div className="flex justify-center py-14"><Loader2 className="h-5 w-5 animate-spin text-brand" /></div>;
+
+  return (
+    <div className="grid gap-4 xl:grid-cols-2">
+      <RailCard title={t('govern.source.title')} icon={<Database className="h-3.5 w-3.5" />}>
+        <div className="space-y-3">
+          <div>
+            <Label>{t('govern.source.type')}</Label>
+            <Select value={sourceType} onChange={(e) => setSourceType(e.target.value)}>
+              <option value="">{t('govern.source.typeManual')}</option>
+              <option value="google_doc">{t('govern.source.typeGoogleDoc')}</option>
+              <option value="file">{t('govern.source.typeFile')}</option>
+              <option value="web">{t('govern.source.typeWeb')}</option>
+            </Select>
+          </div>
+
+          {sourceType === 'google_doc' && (
+            <>
+              <div>
+                <Label>{t('govern.gdocs.source')}</Label>
+                <GoogleDocsSourcePicker sources={info?.google_sources ?? []} value={datasourceId} onChange={setDatasourceId} />
+              </div>
+              <div>
+                <Label>{t('govern.source.googleDocUrl')}</Label>
+                <Input value={googleDocRef} onChange={(e) => setGoogleDocRef(e.target.value)} placeholder="https://docs.google.com/document/d/..." />
+              </div>
+            </>
+          )}
+
+          {sourceType === 'web' && (
+            <div>
+              <Label>{t('govern.source.webUrl')}</Label>
+              <Input value={webUrl} onChange={(e) => setWebUrl(e.target.value)} placeholder="https://example.com/article" />
+            </div>
+          )}
+
+          {sourceType === 'file' && (
+            <div>
+              <input ref={fileRef} type="file" accept=".pdf,.docx,.xlsx" className="hidden" onChange={onFile} />
+              <Button size="sm" variant="secondary" leadingIcon={<Upload className="h-3.5 w-3.5" />} loading={uploading} onClick={() => fileRef.current?.click()}>
+                {t('govern.source.uploadFile')}
+              </Button>
+              {info?.file && (
+                <p className="mt-2 text-tiny text-text-tertiary">{info.file.filename} · {(info.file.byte_size / 1024).toFixed(0)} KB</p>
+              )}
+            </div>
+          )}
+
+          {(sourceType === 'google_doc' || sourceType === 'web') && (
+            <div>
+              <Label>{t('govern.source.schedule')}</Label>
+              <Select value={schedule.mode} onChange={(e) => setSchedule({ ...schedule, mode: e.target.value as DocSyncSchedule['mode'] })}>
+                <option value="manual">{t('govern.source.scheduleManual')}</option>
+                <option value="hourly">{t('govern.source.scheduleHourly')}</option>
+                <option value="daily">{t('govern.source.scheduleDaily')}</option>
+                <option value="cron">{t('govern.source.scheduleCron')}</option>
+              </Select>
+              {schedule.mode === 'daily' && (
+                <Input className="mt-2" type="time" value={schedule.at || '02:00'} onChange={(e) => setSchedule({ ...schedule, at: e.target.value })} />
+              )}
+              {schedule.mode === 'cron' && (
+                <Input className="mt-2" value={schedule.cron || ''} placeholder="0 2 * * *" onChange={(e) => setSchedule({ ...schedule, cron: e.target.value })} />
+              )}
+            </div>
+          )}
+
+          <div className="flex justify-end gap-2 pt-1">
+            <Button size="sm" variant="secondary" leadingIcon={<Save className="h-3.5 w-3.5" />} loading={saving} onClick={save}>{t('govern.action.save')}</Button>
+            {(sourceType === 'google_doc' || sourceType === 'web') && (
+              <Button size="sm" variant="primary" leadingIcon={<RefreshCw className="h-3.5 w-3.5" />} loading={syncing} onClick={syncNow}>{t('govern.source.syncNow')}</Button>
+            )}
+          </div>
+        </div>
+      </RailCard>
+
+      <RailCard title={t('govern.source.status')}>
+        <dl className="space-y-2.5">
+          <RailRow label={t('govern.source.lastSynced')} value={info?.last_synced_at ? relTime(info.last_synced_at, language) : '—'} />
+          <RailRow label={t('govern.source.statusLabel')} value={info?.last_sync_status ? t(`govern.source.status.${info.last_sync_status}`) : '—'} />
+        </dl>
+        {info?.last_sync_status === 'error' && (
+          <div className="mt-2.5 rounded-lg bg-danger/10 px-2.5 py-2 text-tiny text-danger">{t('govern.source.errorHint')}</div>
+        )}
+      </RailCard>
+    </div>
+  );
+}
+
+// ── Embedding — configurable chunk strategy/size/overlap/model with a real
+// preview (same code path as the actual embed) before committing. ───────────
+function EmbeddingTab({ doc, onRefresh }: { doc: KnowledgeDoc; onRefresh: () => void }) {
+  const { t } = useI18n();
+  const [cfg, setCfg] = useState<EmbeddingConfig | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [strategy, setStrategy] = useState('paragraph');
+  const [size, setSize] = useState(850);
+  const [overlap, setOverlap] = useState(0);
+  const [model, setModel] = useState('');
+  const [previewing, setPreviewing] = useState(false);
+  const [preview, setPreview] = useState<ChunkPreviewResult | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    let on = true;
+    setLoading(true);
+    getEmbeddingConfig(doc.id)
+      .then((c) => {
+        if (!on) return;
+        setCfg(c); setStrategy(c.chunk_strategy); setSize(c.chunk_size); setOverlap(c.chunk_overlap); setModel(c.embedding_model || '');
+      })
+      .catch(() => toast.error(t('govern.embedding.loadFailed')))
+      .finally(() => { if (on) setLoading(false); });
+    return () => { on = false; };
+  }, [doc.id, t]);
+
+  const doPreview = async () => {
+    setPreviewing(true);
+    try { setPreview(await previewChunks(doc.id, { chunk_strategy: strategy, chunk_size: size, chunk_overlap: overlap })); }
+    catch (e) { toast.error(errDetail(e) || t('govern.embedding.previewFailed')); }
+    finally { setPreviewing(false); }
+  };
+
+  const saveAndReembed = async () => {
+    setSaving(true);
+    try {
+      const res = await reembedDoc(doc.id, { chunk_strategy: strategy, chunk_size: size, chunk_overlap: overlap, embedding_model: model.trim() || null });
+      toast.success(t('govern.embedding.reembedOk', { chunks: res.chunks }));
+      onRefresh();
+    } catch (e) { toast.error(errDetail(e) || t('govern.embedding.reembedFailed')); }
+    finally { setSaving(false); }
+  };
+
+  if (loading) return <div className="flex justify-center py-14"><Loader2 className="h-5 w-5 animate-spin text-brand" /></div>;
+
+  return (
+    <div className="grid gap-4 xl:grid-cols-2">
+      <RailCard title={t('govern.embedding.title')} icon={<Boxes className="h-3.5 w-3.5" />}>
+        <div className="space-y-3">
+          <div>
+            <Label>{t('govern.embedding.strategy')}</Label>
+            <Select value={strategy} onChange={(e) => setStrategy(e.target.value)}>
+              <option value="paragraph">{t('govern.embedding.strategyParagraph')}</option>
+              <option value="heading">{t('govern.embedding.strategyHeading')}</option>
+              <option value="fixed">{t('govern.embedding.strategyFixed')}</option>
+            </Select>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <Label>{t('govern.embedding.chunkSize')}</Label>
+              <Input type="number" min={100} max={1400} value={size} onChange={(e) => setSize(Number(e.target.value) || 850)} />
+            </div>
+            <div>
+              <Label>{t('govern.embedding.overlap')}</Label>
+              <Input type="number" min={0} value={overlap} onChange={(e) => setOverlap(Number(e.target.value) || 0)} />
+            </div>
+          </div>
+          <div>
+            <Label>{t('govern.embedding.model')}</Label>
+            <Input value={model} onChange={(e) => setModel(e.target.value)} placeholder={t('govern.embedding.modelPlaceholder')} />
+            <p className="mt-1 text-tiny text-text-quaternary">{t('govern.embedding.modelHint')}</p>
+          </div>
+          <div className="flex justify-end gap-2 pt-1">
+            <Button size="sm" variant="secondary" loading={previewing} onClick={doPreview}>{t('govern.embedding.preview')}</Button>
+            <Button size="sm" variant="primary" leadingIcon={<RefreshCw className="h-3.5 w-3.5" />} loading={saving} onClick={saveAndReembed}>{t('govern.embedding.saveReembed')}</Button>
+          </div>
+          {cfg && <p className="text-tiny text-text-quaternary">{t('govern.embedding.currentChunks', { count: cfg.chunk_count })}</p>}
+        </div>
+      </RailCard>
+
+      <RailCard title={t('govern.embedding.previewTitle')}>
+        {!preview ? (
+          <p className="text-tiny text-text-quaternary">{t('govern.embedding.previewEmpty')}</p>
+        ) : preview.chunks.length === 0 ? (
+          <p className="text-tiny text-text-quaternary">{t('govern.embedding.previewNoChunks')}</p>
+        ) : (
+          <div className="max-h-[28rem] space-y-2 overflow-y-auto">
+            {preview.chunks.map((c) => (
+              <div key={c.index} className="rounded-lg bg-surface-2 p-2.5">
+                <div className="mb-1 flex items-center justify-between text-tiny text-text-quaternary">
+                  <span>{t('govern.embedding.chunkN', { n: c.index + 1 })}</span>
+                  <span>{t('govern.embedding.chars', { n: c.char_count })}</span>
+                </div>
+                <p className="line-clamp-4 text-tiny text-text-secondary">{c.text}</p>
+              </div>
+            ))}
+          </div>
+        )}
+      </RailCard>
+    </div>
+  );
+}
+
+// ── History — unified sync + embed run timeline, merged with the existing
+// content-version history so there's one place to see everything that
+// happened to this doc. ──────────────────────────────────────────────────────
+function HistoryTab({ doc }: { doc: KnowledgeDoc }) {
+  const { t, language } = useI18n();
+  const [loading, setLoading] = useState(true);
+  const [history, setHistory] = useState<DocHistory | null>(null);
+
+  useEffect(() => {
+    let on = true;
+    setLoading(true);
+    getDocHistory(doc.id)
+      .then((h) => { if (on) setHistory(h); })
+      .catch(() => toast.error(t('govern.history.loadFailed')))
+      .finally(() => { if (on) setLoading(false); });
+    return () => { on = false; };
+  }, [doc.id, t]);
+
+  if (loading) return <div className="flex justify-center py-14"><Loader2 className="h-5 w-5 animate-spin text-brand" /></div>;
+
+  type Row = { key: string; kind: 'sync' | 'embed' | 'version'; at: string; title: string; detail?: string | null; status?: string };
+  const rows: Row[] = [
+    ...(history?.runs ?? []).map((r): Row => ({
+      key: `run-${r.id}`, kind: r.run_type, at: r.started_at,
+      title: r.run_type === 'sync' ? t('govern.history.syncRun') : t('govern.history.embedRun'),
+      detail: r.detail, status: r.status,
+    })),
+    ...(history?.versions ?? []).map((v): Row => ({
+      key: `v-${v.version}`, kind: 'version', at: v.created_at || '',
+      title: t('govern.history.versionRow', { n: v.version }), detail: v.change_note, status: v.is_published ? 'published' : undefined,
+    })),
+  ].sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime());
+
+  if (rows.length === 0) {
+    return (
+      <div className="rounded-xl border border-dashed border-[rgb(var(--border-strong))] bg-surface-1 px-4 py-10 text-center">
+        <Clock3 className="mx-auto mb-2 h-8 w-8 text-text-quaternary" />
+        <p className="text-caption text-text-tertiary">{t('govern.history.tabEmpty')}</p>
+      </div>
+    );
+  }
+
+  const KIND_ICON: Record<Row['kind'], ReactNode> = {
+    sync: <RefreshCw className="h-3.5 w-3.5" />, embed: <Boxes className="h-3.5 w-3.5" />, version: <History className="h-3.5 w-3.5" />,
+  };
+  return (
+    <div className="overflow-hidden rounded-xl border border-[rgb(var(--border-line))] bg-surface-1">
+      <ul className="divide-y divide-[rgb(var(--border-line))]">
+        {rows.map((r) => (
+          <li key={r.key} className="flex items-start gap-3 px-4 py-3">
+            <span className="mt-0.5 flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-md bg-surface-2 text-text-tertiary">{KIND_ICON[r.kind]}</span>
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-caption font-emphasis text-text-primary">{r.title}</span>
+                <span className="text-tiny text-text-quaternary">{relTime(r.at, language)}</span>
+              </div>
+              {r.detail && <p className="mt-0.5 truncate text-tiny text-text-tertiary">{r.detail}</p>}
+            </div>
+            {r.status && (
+              <span className={cn('rounded-full px-2 py-0.5 text-tiny', r.status === 'error' ? 'bg-danger/10 text-danger' : r.status === 'published' ? 'bg-success/10 text-success' : 'bg-surface-2 text-text-tertiary')}>
+                {r.status}
+              </span>
+            )}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+// ── Usage — which dashboards/AI bots use this doc + retrieval_count. The rail
+// keeps its at-a-glance retrieval_count number; this tab is the detailed view. ─
+function UsageTab({ doc }: { doc: KnowledgeDoc }) {
+  const { t } = useI18n();
+  const [loading, setLoading] = useState(true);
+  const [usage, setUsage] = useState<DocUsage | null>(null);
+
+  useEffect(() => {
+    let on = true;
+    setLoading(true);
+    getDocUsage(doc.id)
+      .then((u) => { if (on) setUsage(u); })
+      .catch(() => toast.error(t('govern.usage.loadFailed')))
+      .finally(() => { if (on) setLoading(false); });
+    return () => { on = false; };
+  }, [doc.id, t]);
+
+  if (loading) return <div className="flex justify-center py-14"><Loader2 className="h-5 w-5 animate-spin text-brand" /></div>;
+
+  return (
+    <div className="grid gap-4 xl:grid-cols-2">
+      <RailCard title={t('govern.usage.dashboards')} icon={<Network className="h-3.5 w-3.5" />}>
+        {!usage || usage.dashboards.length === 0 ? (
+          <p className="text-tiny text-text-quaternary">{t('govern.usage.noDashboards')}</p>
+        ) : (
+          <div className="space-y-1">
+            {usage.dashboards.map((d) => (
+              <Link key={d.id} href={`/dashboards/${d.id}`} className="flex items-center justify-between rounded-lg px-2 py-1.5 text-caption text-text-secondary hover:bg-surface-2">
+                <span className="truncate">{d.name}</span>
+                <ExternalLink className="h-3.5 w-3.5 text-text-quaternary" />
+              </Link>
+            ))}
+          </div>
+        )}
+      </RailCard>
+      <RailCard title={t('govern.usage.stats')}>
+        <RailRow label={t('govern.detail.aiRetrievals')} value={usage?.retrieval_count ?? 0} />
+      </RailCard>
     </div>
   );
 }

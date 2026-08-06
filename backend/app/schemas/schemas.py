@@ -18,6 +18,7 @@ class DataSourceTypeSchema(str, Enum):
     MYSQL = "mysql"
     BIGQUERY = "bigquery"
     GOOGLE_SHEETS = "google_sheets"
+    GOOGLE_DOCS = "google_docs"
     MANUAL = "manual"
 
 
@@ -105,9 +106,30 @@ class DataSourceResponse(DataSourceBase):
 
     @field_serializer('config')
     def mask_config(self, config: Dict[str, Any]) -> Dict[str, Any]:
-        """Mask sensitive credential fields before returning in API response."""
-        from app.core.crypto import mask_config_for_response
-        return mask_config_for_response(config)
+        """Mask sensitive credential fields before returning in API response.
+
+        The Google connection's non-secret facts (which account, which Google
+        APIs it may call) are surfaced under `google` so the form can show
+        "connected as X" / "needs reconnect" per SOURCE without ever shipping
+        the token itself.
+        """
+        from app.core.crypto import mask_config_for_response, decrypt_config
+        masked = mask_config_for_response(config)
+        try:
+            if str((config or {}).get("auth_mode") or "").lower() == "google_oauth":
+                from app.services.google_data_access_service import source_google_capabilities
+                plain = decrypt_config(config or {})
+                has_own = bool(plain.get("google_oauth_credentials"))
+                caps = source_google_capabilities(plain)
+                masked["google"] = {
+                    "connected": has_own or bool(plain.get("google_oauth_user_id")),
+                    "email": plain.get("google_oauth_email"),
+                    "per_source": has_own,
+                    "capabilities": caps if has_own else None,
+                }
+        except Exception:  # noqa: BLE001 — status is cosmetic, never break the read
+            pass
+        return masked
 
 
 class DataSourceTestRequest(BaseModel):

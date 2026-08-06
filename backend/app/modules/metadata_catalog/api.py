@@ -13,7 +13,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -74,7 +74,7 @@ _DATASET_PREFIXES = (
 )
 
 #: Documents — the one catalog module that is still its own destination.
-_GOVERN_PREFIXES = ("knowledge", "search", "graph", "asset-docs", "change-log")
+_GOVERN_PREFIXES = ("knowledge", "search", "graph", "asset-docs", "change-log", "google-connection")
 
 
 def _catalog_module_for(path: str) -> str:
@@ -501,6 +501,263 @@ def govern_knowledge_change_note_ai(doc_id: int, version: int, db: Session = Dep
     """AI drafts a short 'what changed' note by diffing this version against the
     previously-published/previous one (diff only — never the whole document)."""
     return _run(lambda: (GovernanceService.require_doc_access(db, doc_id, user, "edit"), GovernanceService.version_change_note_ai(db, doc_id, version))[1])
+
+
+# ── GOVERN: KNOWLEDGE DOC — external sources + configurable/transparent embedding ──
+# Source & Sync tab: connect a doc to a Google Doc (reuses the same per-user
+# Google OAuth already used for BigQuery/Sheets datasources), an uploaded
+# file (PDF/DOCX/XLSX), or a crawled web page, instead of only hand-typing.
+# Embedding tab: chunk strategy/size/overlap/model become user-configurable
+# with a real preview, instead of the previous hardcoded black box.
+class DocSourceWrite(BaseModel):
+    source_type: str | None = None          # google_doc | file | web | null (disconnect)
+    source_config: dict[str, Any] = {}      # {datasource_id, google_doc_id} | {} | {url}
+    sync_schedule: dict[str, Any] | None = None  # {mode, at, cron, timezone}
+
+
+def _google_docs_sources(db: Session, user: User) -> list[dict[str, Any]]:
+    """Google Docs data sources this user may use. A Knowledge Doc picks one of
+    these (the same way a chart picks a BigQuery source) — the source carries
+    the Google account, so different docs can read through different accounts."""
+    from app.models.models import DataSource, DataSourceType
+    from app.core.permissions import _owned_or_shared
+    from app.models.resource_share import ResourceType
+    from app.core.crypto import decrypt_config
+    from app.services.google_data_access_service import source_google_capabilities
+
+    rows = (
+        _owned_or_shared(db, DataSource, ResourceType.DATASOURCE, user)
+        .filter(DataSource.type == DataSourceType.GOOGLE_DOCS)
+        .all()
+    )
+    out = []
+    for ds in rows:
+        cfg = decrypt_config(ds.config or {})
+        has_own = bool(cfg.get("google_oauth_credentials"))
+        caps = source_google_capabilities(cfg)
+        out.append({
+            "id": ds.id,
+            "name": ds.name,
+            "email": cfg.get("google_oauth_email"),
+            # A source connected before Docs access existed reports False here
+            # instead of looking ready and then failing at sync time.
+            "can_read_docs": bool(caps.get("docs")) if has_own else False,
+        })
+    return out
+
+
+@router.get("/govern/google-connection")
+def govern_google_sources(db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    """Google Docs sources available to a NEW doc (create wizard needs this
+    before any doc exists)."""
+    return {"sources": _google_docs_sources(db, user)}
+
+
+@router.get("/govern/knowledge/{doc_id}/source")
+def govern_doc_source_get(doc_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    d = _run(lambda: GovernanceService.require_doc_access(db, doc_id, user, "view"))
+    from app.models.governance import GovernDocSourceFile
+
+    file_info = None
+    f = db.query(GovernDocSourceFile).filter(GovernDocSourceFile.doc_id == doc_id).first()
+    if f is not None:
+        file_info = {"filename": f.filename, "content_type": f.content_type, "byte_size": f.byte_size, "uploaded_at": f.uploaded_at}
+    return {
+        "source_type": d.source_type,
+        "source_config": d.source_config or {},
+        "sync_schedule": d.sync_schedule,
+        "last_synced_at": d.last_synced_at,
+        "last_sync_status": d.last_sync_status,
+        "file": file_info,
+        "google_sources": _google_docs_sources(db, user),
+    }
+
+
+@router.put("/govern/knowledge/{doc_id}/source")
+def govern_doc_source_put(doc_id: int, body: DocSourceWrite, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    """Set/change the source connector + schedule. Does NOT sync — call
+    /sync (or /source/upload for a file) explicitly afterward."""
+    d = _run(lambda: GovernanceService.require_doc_access(db, doc_id, user, "edit"))
+    source_type = (body.source_type or "").strip().lower() or None
+    if source_type not in (None, "google_doc", "file", "web"):
+        raise HTTPException(status_code=422, detail="source_type must be google_doc, file, web, or null.")
+    d.source_type = source_type
+    d.source_config = dict(body.source_config or {})
+    d.sync_schedule = body.sync_schedule
+    db.commit()
+    from app.services.govern_doc_sync_scheduler import sync_doc_job
+    sync_doc_job(doc_id)  # hot re-register the scheduled job (or remove it) without a restart
+    return {"ok": True}
+
+
+@router.post("/govern/knowledge/{doc_id}/source/upload")
+async def govern_doc_source_upload(doc_id: int, file: UploadFile = File(...), db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    """Upload a PDF/DOCX/XLSX as the doc's source — extracts text immediately
+    and writes it into doc.body (a file's "sync" IS the upload)."""
+    d = _run(lambda: GovernanceService.require_doc_access(db, doc_id, user, "edit"))
+    data = await file.read()
+    if len(data) > 25 * 1024 * 1024:  # mirrors WorkboardMedia's MAX_MEDIA_BYTES
+        raise HTTPException(status_code=400, detail="File too large (max 25 MB).")
+    from app.services.govern_doc_sync_service import save_uploaded_file
+    d.source_type = "file"
+    db.commit()
+    result = save_uploaded_file(
+        db, d, filename=file.filename or "upload", content_type=file.content_type or "application/octet-stream",
+        data=data, changed_by=getattr(user, "email", None),
+    )
+    if not result.get("ok"):
+        raise HTTPException(status_code=422, detail=result.get("detail") or "Failed to process the uploaded file.")
+    return result
+
+
+@router.get("/govern/knowledge/{doc_id}/source/snapshot")
+def govern_doc_source_snapshot(doc_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    """The stored snapshot of a crawled web page, so the reader can see the
+    ORIGINAL page (not just the extracted prose). Returned as a raw string for
+    the FE to render inside a script-less sandboxed iframe — never treated as
+    trusted markup anywhere."""
+    d = _run(lambda: GovernanceService.require_doc_access(db, doc_id, user, "view"))
+    from app.models.governance import GovernDocSourceFile
+    row = db.query(GovernDocSourceFile).filter(GovernDocSourceFile.doc_id == doc_id).first()
+    if row is None or (row.content_type or "") != "text/html":
+        raise HTTPException(status_code=404, detail="This document has no stored page snapshot.")
+    return {
+        "html": bytes(row.data or b"").decode("utf-8", errors="replace"),
+        "url": (d.source_config or {}).get("url"),
+        "byte_size": row.byte_size,
+        "fetched_at": row.uploaded_at,
+    }
+
+
+@router.post("/govern/knowledge/{doc_id}/sync")
+def govern_doc_sync_now(doc_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    """Manual sync for google_doc/web sources (file sources re-sync via
+    /source/upload — there's nothing external to re-fetch for a file)."""
+    d = _run(lambda: GovernanceService.require_doc_access(db, doc_id, user, "edit"))
+    from app.services.govern_doc_sync_service import sync_doc
+    result = sync_doc(db, d, trigger="manual", changed_by=getattr(user, "email", None))
+    if not result.get("ok"):
+        raise HTTPException(status_code=422, detail=result.get("detail") or "Sync failed.")
+    return result
+
+
+class EmbeddingConfigWrite(BaseModel):
+    chunk_strategy: str = "paragraph"   # paragraph | heading | fixed
+    chunk_size: int = 850
+    chunk_overlap: int = 0
+    embedding_model: str | None = None  # null = settings.active_embedding_model
+
+
+@router.get("/govern/knowledge/{doc_id}/embedding-config")
+def govern_doc_embedding_config_get(doc_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    d = _run(lambda: GovernanceService.require_doc_access(db, doc_id, user, "view"))
+    from sqlalchemy import text as _t
+    chunk_count = db.execute(_t("SELECT COUNT(*) FROM govern_doc_chunk WHERE doc_id = :d"), {"d": doc_id}).scalar() or 0
+    return {
+        "chunk_strategy": d.chunk_strategy, "chunk_size": d.chunk_size, "chunk_overlap": d.chunk_overlap,
+        "embedding_model": d.embedding_model, "embedded_hash": d.embedded_hash, "chunk_count": int(chunk_count),
+    }
+
+
+@router.put("/govern/knowledge/{doc_id}/embedding-config")
+def govern_doc_embedding_config_put(doc_id: int, body: EmbeddingConfigWrite, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    """Save chunk/embedding settings. Does not re-embed by itself — call /embed."""
+    d = _run(lambda: GovernanceService.require_doc_access(db, doc_id, user, "edit"))
+    if body.chunk_strategy not in ("paragraph", "heading", "fixed"):
+        raise HTTPException(status_code=422, detail="chunk_strategy must be paragraph, heading, or fixed.")
+    d.chunk_strategy = body.chunk_strategy
+    d.chunk_size = body.chunk_size
+    d.chunk_overlap = body.chunk_overlap
+    d.embedding_model = (body.embedding_model or "").strip() or None
+    db.commit()
+    return {"ok": True}
+
+
+class EmbeddingPreviewReq(BaseModel):
+    chunk_strategy: str = "paragraph"
+    chunk_size: int = 850
+    chunk_overlap: int = 0
+
+
+@router.post("/govern/knowledge/{doc_id}/embedding-preview")
+def govern_doc_embedding_preview(doc_id: int, body: EmbeddingPreviewReq, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    """Preview chunking with the given (possibly unsaved) settings against the
+    live body — zero DB writes, zero embedding-API calls."""
+    d = _run(lambda: GovernanceService.require_doc_access(db, doc_id, user, "view"))
+    from app.services.dashboard_ai_bot.govern_doc_embeddings import preview_chunks
+    live_body = GovernanceService.published_body(db, d)
+    chunks = preview_chunks(live_body, strategy=body.chunk_strategy, size=body.chunk_size, overlap=body.chunk_overlap)
+    return {
+        "chunks": [{"index": i, "text": c, "char_count": len(c)} for i, c in enumerate(chunks)],
+        "total_chunks": len(chunks),
+    }
+
+
+@router.post("/govern/knowledge/{doc_id}/embed")
+def govern_doc_embed_now(doc_id: int, body: EmbeddingConfigWrite | None = None, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    """"Save & Re-embed" — optionally persists embedding config, then force
+    re-embeds now (independent of the auto-embed-on-save/publish flow)."""
+    d = _run(lambda: GovernanceService.require_doc_access(db, doc_id, user, "edit"))
+    if body is not None:
+        if body.chunk_strategy not in ("paragraph", "heading", "fixed"):
+            raise HTTPException(status_code=422, detail="chunk_strategy must be paragraph, heading, or fixed.")
+        d.chunk_strategy = body.chunk_strategy
+        d.chunk_size = body.chunk_size
+        d.chunk_overlap = body.chunk_overlap
+        d.embedding_model = (body.embedding_model or "").strip() or None
+        db.commit()
+    from app.services.dashboard_ai_bot.govern_doc_embeddings import embed_doc
+    result = embed_doc(db, d)
+    GovernanceService.log_doc_run(
+        db, doc_id, "embed", trigger="manual", status=result.get("status", "error"),
+        detail=result.get("detail"), stats=result, changed_by=getattr(user, "email", None),
+    )
+    return result
+
+
+@router.get("/govern/knowledge/{doc_id}/history")
+def govern_doc_history(doc_id: int, limit: int = Query(default=100), db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    """Unified sync+embed run timeline, alongside the existing content-version
+    list, so the History tab can render one merged timeline."""
+    _run(lambda: GovernanceService.require_doc_access(db, doc_id, user, "view"))
+    from app.models.governance import GovernDocRun
+    runs = (
+        db.query(GovernDocRun)
+        .filter(GovernDocRun.doc_id == doc_id)
+        .order_by(GovernDocRun.started_at.desc())
+        .limit(limit)
+        .all()
+    )
+    return {
+        "runs": [
+            {
+                "id": r.id, "run_type": r.run_type, "trigger": r.trigger, "status": r.status,
+                "detail": r.detail, "stats": r.stats, "started_at": r.started_at,
+                "finished_at": r.finished_at, "triggered_by": r.triggered_by,
+            }
+            for r in runs
+        ],
+        "versions": GovernanceService.list_doc_versions(db, doc_id),
+    }
+
+
+@router.get("/govern/knowledge/{doc_id}/usage")
+def govern_doc_usage(doc_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    """Which dashboards use this doc (via GovernDocAssetLink) + retrieval_count
+    — the Usage tab's data source."""
+    d = _run(lambda: GovernanceService.require_doc_access(db, doc_id, user, "view"))
+    from app.models.governance import GovernDocAssetLink
+    links = (
+        db.query(GovernDocAssetLink)
+        .filter(GovernDocAssetLink.doc_id == doc_id, GovernDocAssetLink.asset_type == "dashboard")
+        .all()
+    )
+    dashboard_ids = [int(l.asset_ref) for l in links if str(l.asset_ref).isdigit()]
+    dashboards = []
+    if dashboard_ids:
+        rows = db.query(Dashboard).filter(Dashboard.id.in_(dashboard_ids)).all()
+        dashboards = [{"id": r.id, "name": r.name} for r in rows]
+    return {"dashboards": dashboards, "retrieval_count": d.retrieval_count or 0}
 
 
 # ════════════════════════ GOVERN: METRICS (AppBI-native) ════════════════════

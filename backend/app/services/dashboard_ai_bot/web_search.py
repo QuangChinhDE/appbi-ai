@@ -99,7 +99,7 @@ _WS_RE = re.compile(r"[ \t\r\f\v]+")
 _MULTINL_RE = re.compile(r"\n{3,}")
 
 
-def fetch_url(url: str, *, max_chars: int = 4000) -> dict:
+def fetch_url(url: str, *, max_chars: int = 4000, include_html: bool = False) -> dict:
     """Fetch ONE specific page and return its cleaned text.
 
     Unlike ``search_web`` (which *finds* pages), this *reads* a page the DA
@@ -107,6 +107,11 @@ def fetch_url(url: str, *, max_chars: int = 4000) -> dict:
     Returns ``{ok, url, title, text, truncated}``. Pure function, sync httpx,
     safe from a worker thread. External content — the model must label it as
     such and never treat it as the report's own data.
+
+    ``include_html`` additionally returns the RAW page html under "html" — used
+    by Govern Knowledge Docs to keep a viewable snapshot of a crawled page. It
+    is never rendered as trusted markup: the FE shows it in a script-less
+    sandboxed iframe.
     """
     url = (url or "").strip()
     if not url.startswith(("http://", "https://")):
@@ -137,13 +142,16 @@ def fetch_url(url: str, *, max_chars: int = 4000) -> dict:
     body = _WS_RE.sub(" ", body)
     body = _MULTINL_RE.sub("\n\n", body).strip()
     truncated = len(body) > max_chars
-    return {
+    out = {
         "ok": True,
         "url": str(resp.url)[:500],
         "title": title,
         "text": body[:max_chars],
         "truncated": truncated,
     }
+    if include_html:
+        out["html"] = html
+    return out
 
 
 _DDG_LINK_RE = re.compile(r'class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)</a>', re.S)

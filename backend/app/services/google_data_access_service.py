@@ -33,6 +33,12 @@ GOOGLE_DATA_ACCESS_SCOPES = [
     # Read+write scope so workboard mini-apps can append/update/delete rows
     # in Google Sheets, not just read them.
     "https://www.googleapis.com/auth/spreadsheets",
+    # Read-only — lets a Govern Knowledge Doc pull its body from a Google Doc
+    # (govern_doc_sources/google_doc_fetcher.py). Added after spreadsheets, so
+    # accounts connected before this scope existed will 403 on a Docs call
+    # until the user reconnects ("Connect Google" again re-consents with the
+    # full current scope list and persists the refreshed token).
+    "https://www.googleapis.com/auth/documents.readonly",
 ]
 
 _GOOGLE_AUTH_URI = "https://accounts.google.com/o/oauth2/auth"
@@ -100,12 +106,14 @@ def build_google_data_access_state(
     user: User,
     return_to: str,
     popup: bool,
+    scope: str = "user",
 ) -> str:
     now = datetime.now(timezone.utc)
     payload = {
         "sub": str(user.id),
         "email": _normalize_email(user.email),
         "purpose": "google_data_access",
+        "scope": scope if scope in ("user", "datasource") else "user",
         "return_to": return_to,
         "popup": popup,
         "iat": now,
@@ -229,13 +237,43 @@ def store_google_data_access_credentials(
     db.refresh(user)
 
 
+#: What each capability needs from Google. A token is only usable for a
+#: capability if its scope was granted AT CONSENT TIME — Google never adds one
+#: retroactively, so a connection made before a scope existed keeps working for
+#: everything else while silently failing that one feature.
+GOOGLE_CAPABILITY_SCOPES = {
+    "bigquery": "https://www.googleapis.com/auth/bigquery",
+    "sheets": "https://www.googleapis.com/auth/spreadsheets",
+    "docs": "https://www.googleapis.com/auth/documents.readonly",
+}
+
+
+def google_missing_scopes(user: User) -> list[str]:
+    """Scopes this app needs that the user's stored token was never granted."""
+    granted = set(user.google_oauth_scopes if isinstance(user.google_oauth_scopes, list) else [])
+    if not granted:
+        return []
+    return [s for s in GOOGLE_DATA_ACCESS_SCOPES if s not in granted]
+
+
 def get_google_data_access_status(user: User) -> dict[str, Any]:
     scopes = user.google_oauth_scopes if isinstance(user.google_oauth_scopes, list) else []
+    connected = bool(user.google_oauth_credentials and user.google_oauth_email)
+    missing = google_missing_scopes(user) if connected else []
     return {
         "configured": google_data_access_is_configured(),
-        "connected": bool(user.google_oauth_credentials and user.google_oauth_email),
+        "connected": connected,
         "email": user.google_oauth_email,
         "scopes": scopes,
+        # Connected-but-incomplete is its own state. Reporting only `connected`
+        # made every new data source look ready while the capability it needed
+        # had never been consented to.
+        "missing_scopes": missing,
+        "needs_reconnect": bool(missing),
+        "capabilities": {
+            name: (connected and scope in set(scopes))
+            for name, scope in GOOGLE_CAPABILITY_SCOPES.items()
+        },
         "redirect_uri": settings.AUTH_GOOGLE_DATA_REDIRECT_URI.strip() or None,
     }
 
@@ -288,3 +326,82 @@ def get_google_credentials_for_user_id(user_id: str) -> google_user_credentials.
             db.commit()
 
         return credentials
+
+
+# ── Per-DATA-SOURCE Google connections ──────────────────────────────────────
+# A data source owns its own Google credential, so two sources can use two
+# different Google accounts. The consent popup completes before a NEW source
+# has an id, so the granted credential is parked in `google_oauth_pending` and
+# claimed when the source is saved.
+
+def create_pending_connection(user: User, credentials, identity: dict[str, Any]) -> str:
+    """Park a freshly granted credential; returns the single-use pending id."""
+    import uuid as _uuid
+    from app.core.database import SessionLocal
+    from app.models.models import GoogleOAuthPending
+
+    pending_id = str(_uuid.uuid4())
+    with SessionLocal() as db:
+        db.add(GoogleOAuthPending(
+            id=pending_id,
+            user_id=user.id,
+            email=_normalize_email(str(identity.get("email") or "")),
+            credentials=encrypt_value(credentials.to_json()),
+            scopes=list(identity.get("scopes") or GOOGLE_DATA_ACCESS_SCOPES),
+        ))
+        db.commit()
+    return pending_id
+
+
+def peek_pending_connection(db: Session, pending_id: str, user: User) -> dict[str, Any] | None:
+    """Read a pending connection without consuming it (for showing the email)."""
+    from app.models.models import GoogleOAuthPending
+    try:
+        row = (
+            db.query(GoogleOAuthPending)
+            .filter(GoogleOAuthPending.id == pending_id, GoogleOAuthPending.user_id == user.id)
+            .first()
+        )
+    except Exception:  # noqa: BLE001 — bad uuid etc.
+        return None
+    if row is None:
+        return None
+    return {"email": row.email, "scopes": list(row.scopes or []), "credentials": decrypt_value(row.credentials)}
+
+
+def consume_pending_connection(db: Session, pending_id: str, user: User) -> dict[str, Any] | None:
+    """Claim a pending connection (single use) and delete the staging row."""
+    from app.models.models import GoogleOAuthPending
+    data = peek_pending_connection(db, pending_id, user)
+    if data is None:
+        return None
+    try:
+        db.query(GoogleOAuthPending).filter(GoogleOAuthPending.id == pending_id).delete()
+        db.commit()
+    except Exception:  # noqa: BLE001
+        db.rollback()
+    return data
+
+
+def source_google_capabilities(config: dict[str, Any]) -> dict[str, bool]:
+    """Which Google APIs this SOURCE's credential may call. A scope is only
+    usable if it was granted at consent time, so a connection made before a
+    capability existed reports False here instead of failing later."""
+    granted = set(config.get("google_oauth_scopes") or [])
+    return {name: (scope in granted) for name, scope in GOOGLE_CAPABILITY_SCOPES.items()}
+
+
+def credentials_from_source_config(config: dict[str, Any]):
+    """Build Google credentials from a data source's OWN stored token.
+    Returns None when the source has no per-source credential (legacy sources
+    still resolve through the connecting AppBI user)."""
+    raw = (config or {}).get("google_oauth_credentials")
+    if not raw:
+        return None
+    payload = json.loads(decrypt_value(raw) if str(raw).startswith("_enc:") else raw)
+    creds = google_user_credentials.Credentials.from_authorized_user_info(
+        payload, scopes=payload.get("scopes") or GOOGLE_DATA_ACCESS_SCOPES
+    )
+    if creds.expired and creds.refresh_token:
+        creds.refresh(GoogleRequest())
+    return creds

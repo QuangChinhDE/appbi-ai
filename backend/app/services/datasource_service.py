@@ -256,10 +256,17 @@ def _build_gcp_credentials(config: Dict[str, Any]):
     config = decrypt_config(config)
     auth_mode = str(config.get("auth_mode") or "service_account").strip().lower()
     if auth_mode == "google_oauth":
+        # A data source owns its Google credential, so two sources can read
+        # through two different Google accounts. Sources connected before that
+        # (no per-source token) still resolve via the AppBI user who connected.
+        from app.services.google_data_access_service import credentials_from_source_config
+        own = credentials_from_source_config(config)
+        if own is not None:
+            return own
         google_oauth_user_id = str(config.get("google_oauth_user_id") or "").strip()
         if not google_oauth_user_id:
             raise ValueError(
-                "Google OAuth datasource is missing its connected AppBI user. Reconnect Google access and save again."
+                "This data source has no Google account connected. Open it and press Connect Google."
             )
         return get_google_credentials_for_user_id(google_oauth_user_id)
 
@@ -575,6 +582,8 @@ class DataSourceConnectionService:
                 return DataSourceConnectionService._test_bigquery(config)
             elif ds_type == DataSourceType.GOOGLE_SHEETS.value:
                 return DataSourceConnectionService._test_google_sheets(config)
+            elif ds_type == DataSourceType.GOOGLE_DOCS.value:
+                return DataSourceConnectionService._test_google_docs(config)
             elif ds_type == DataSourceType.MANUAL.value:
                 return DataSourceConnectionService._test_manual(config)
             else:
@@ -583,6 +592,34 @@ class DataSourceConnectionService:
             logger.error(f"Connection test failed: {str(e)}")
             return False, f"Connection failed: {str(e)}"
     
+    @staticmethod
+    def _test_google_docs(config: Dict[str, Any]) -> Tuple[bool, str]:
+        """A Google Docs source holds no tabular data — it names WHICH Google
+        account a Knowledge Doc reads documents through. So "test" verifies the
+        stored credential is usable and carries the Docs scope."""
+        from app.services.google_data_access_service import source_google_capabilities
+        if str(config.get("auth_mode") or "").strip().lower() != "google_oauth":
+            return False, "A Google Docs source must be connected with a Google account."
+        if not config.get("google_oauth_credentials") and not config.get("google_oauth_user_id"):
+            return False, "Press \"Connect Google\" to choose the Google account this source uses."
+        caps = source_google_capabilities(config)
+        if config.get("google_oauth_credentials") and not caps.get("docs"):
+            return False, (
+                "This Google account was connected without permission to read Docs. "
+                "Press Connect Google again and approve Google Docs access."
+            )
+        try:
+            # There is no document to read at source level, and the granted
+            # scope is Docs-only (no Drive listing), so the honest check is
+            # that the stored token still exchanges/refreshes successfully.
+            creds = _build_gcp_credentials(config)
+            if getattr(creds, "expired", False) and not getattr(creds, "refresh_token", None):
+                return False, "The stored Google token has expired. Press Connect Google again."
+            email = config.get("google_oauth_email") or "the connected account"
+            return True, f"Google account connected ({email}) with permission to read Docs."
+        except Exception as exc:  # noqa: BLE001
+            return False, f"Google Docs connection failed: {exc}"
+
     @staticmethod
     def _test_postgresql(config: Dict[str, Any]) -> Tuple[bool, str]:
         """Test PostgreSQL connection."""

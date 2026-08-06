@@ -82,7 +82,7 @@ export type NumberFormat = 'auto' | 'number' | 'compact' | 'percent' | 'currency
 export type TableCellFormat = NumberFormat | DateFormatKind;
 export type { DateFormatKind };
 /** Power-BI-style value-axis "Display units". */
-export type AxisDisplayUnits = 'auto' | 'none' | 'thousands' | 'millions' | 'billions';
+export type AxisDisplayUnits = 'auto' | 'none' | 'thousands' | 'millions' | 'billions' | 'percent';
 export type LegendPosition = 'top' | 'bottom' | 'left' | 'right' | 'none';
 export const TABLE_PIVOT_COLUMN_LIMIT = 50;
 
@@ -6576,8 +6576,9 @@ export function ExploreChartConfig({
               <option value="thousands">Thousands (K)</option>
               <option value="millions">Millions (M)</option>
               <option value="billions">Billions (B)</option>
+              <option value="percent">Percent (%)</option>
             </select>
-            <p className="mt-1 text-[10px] text-text-tertiary">Abbreviates the value-axis ticks only; data labels keep their own format.</p>
+            <p className="mt-1 text-[10px] text-text-tertiary">Abbreviates the value-axis ticks only; data labels keep their own format. Percent (%) renders each tick as a percentage (value × 100).</p>
           </div>
           <div>
             <label className="text-xs font-semibold text-text-secondary mb-1 block">Font Size: {styleConfig.fontSize || 12}px</label>

@@ -171,6 +171,9 @@ export enum DataSourceType {
   MYSQL = 'mysql',
   BIGQUERY = 'bigquery',
   GOOGLE_SHEETS = 'google_sheets',
+  /** A named Google Docs connection — carries the Google account a Knowledge
+   *  Doc reads documents through. Holds no tabular data. */
+  GOOGLE_DOCS = 'google_docs',
   MANUAL = 'manual',
 }
 

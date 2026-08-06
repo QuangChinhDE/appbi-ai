@@ -266,6 +266,138 @@ export interface KnowledgeDoc {
   owner_email?: string | null;
   /** Caller's effective permission on this doc: none|view|edit|full. */
   user_permission?: string | null;
+  // ── External source (Source & Sync tab) — null = hand-typed ──
+  source_type?: 'google_doc' | 'file' | 'web' | null;
+  source_config?: Record<string, unknown>;
+  /** Deep link to the original (Google Doc / crawled page); null when hand-typed. */
+  source_url?: string | null;
+  sync_schedule?: DocSyncSchedule | null;
+  last_synced_at?: string | null;
+  last_sync_status?: 'ok' | 'error' | 'running' | null;
+  // ── Embedding configuration (Embedding tab) ──
+  chunk_strategy?: 'paragraph' | 'heading' | 'fixed';
+  chunk_size?: number;
+  chunk_overlap?: number;
+  embedding_model?: string | null;
+}
+
+// ── Source & Sync ────────────────────────────────────────────────────────────
+export interface DocSyncSchedule { mode: 'manual' | 'hourly' | 'daily' | 'cron'; at?: string; cron?: string; timezone?: string }
+export interface DocSourceInfo {
+  source_type: 'google_doc' | 'file' | 'web' | null;
+  source_config: Record<string, unknown>;
+  sync_schedule: DocSyncSchedule | null;
+  last_synced_at: string | null;
+  last_sync_status: string | null;
+  file: { filename: string; content_type: string; byte_size: number; uploaded_at: string } | null;
+  google_sources: GoogleDocsSource[];
+}
+
+/** A "Google Docs" data source — a named Google connection a doc reads through. */
+export interface GoogleDocsSource {
+  id: number;
+  name: string;
+  email: string | null;
+  /** The source's account actually granted documents.readonly. */
+  can_read_docs: boolean;
+}
+export interface DocSourceWrite { source_type: string | null; source_config: Record<string, unknown>; sync_schedule: DocSyncSchedule | null }
+
+/** Google Docs sources available (create wizard needs them before a doc exists). */
+export async function listGoogleDocsSources(): Promise<GoogleDocsSource[]> {
+  const { data } = await apiClient.get<{ sources: GoogleDocsSource[] }>('/catalog/govern/google-connection');
+  return data.sources ?? [];
+}
+
+export async function getDocSource(docId: number): Promise<DocSourceInfo> {
+  const { data } = await apiClient.get<DocSourceInfo>(`/catalog/govern/knowledge/${docId}/source`);
+  return data;
+}
+export async function putDocSource(docId: number, body: DocSourceWrite): Promise<{ ok: boolean }> {
+  const { data } = await apiClient.put(`/catalog/govern/knowledge/${docId}/source`, body);
+  return data;
+}
+export async function uploadDocSourceFile(docId: number, file: File): Promise<{ ok: boolean; filename: string; extracted_chars: number }> {
+  const form = new FormData();
+  form.append('file', file);
+  const { data } = await apiClient.post(`/catalog/govern/knowledge/${docId}/source/upload`, form, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  });
+  return data;
+}
+export async function syncDocSource(docId: number): Promise<{ ok: boolean; status: string; detail?: string }> {
+  const { data } = await apiClient.post(`/catalog/govern/knowledge/${docId}/sync`);
+  return data;
+}
+
+/** Stored snapshot of a crawled page. Render ONLY in a script-less sandboxed iframe. */
+export interface DocSnapshot { html: string; url: string | null; byte_size: number; fetched_at: string }
+export async function getDocSnapshot(docId: number): Promise<DocSnapshot> {
+  const { data } = await apiClient.get<DocSnapshot>(`/catalog/govern/knowledge/${docId}/source/snapshot`);
+  return data;
+}
+
+/** Source types a document can be created from. `null` = hand-typed. */
+export type DocSourceKind = 'manual' | 'google_doc' | 'file' | 'web';
+/** Google Doc + crawled web content is owned by the source — read-only here. */
+export function isSourceOwned(sourceType?: string | null): boolean {
+  return sourceType === 'google_doc' || sourceType === 'web';
+}
+
+// ── Embedding ────────────────────────────────────────────────────────────────
+export interface EmbeddingConfig {
+  chunk_strategy: 'paragraph' | 'heading' | 'fixed';
+  chunk_size: number;
+  chunk_overlap: number;
+  embedding_model: string | null;
+  embedded_hash: string | null;
+  chunk_count: number;
+}
+export interface EmbeddingConfigWrite { chunk_strategy: string; chunk_size: number; chunk_overlap: number; embedding_model: string | null }
+export interface ChunkPreviewResult { chunks: { index: number; text: string; char_count: number }[]; total_chunks: number }
+
+export async function getEmbeddingConfig(docId: number): Promise<EmbeddingConfig> {
+  const { data } = await apiClient.get<EmbeddingConfig>(`/catalog/govern/knowledge/${docId}/embedding-config`);
+  return data;
+}
+export async function putEmbeddingConfig(docId: number, body: EmbeddingConfigWrite): Promise<{ ok: boolean }> {
+  const { data } = await apiClient.put(`/catalog/govern/knowledge/${docId}/embedding-config`, body);
+  return data;
+}
+export async function previewChunks(docId: number, body: { chunk_strategy: string; chunk_size: number; chunk_overlap: number }): Promise<ChunkPreviewResult> {
+  const { data } = await apiClient.post<ChunkPreviewResult>(`/catalog/govern/knowledge/${docId}/embedding-preview`, body);
+  return data;
+}
+export async function reembedDoc(docId: number, body?: EmbeddingConfigWrite): Promise<{ status: string; chunks: number; new_chunks: number }> {
+  const { data } = await apiClient.post(`/catalog/govern/knowledge/${docId}/embed`, body ?? undefined);
+  return data;
+}
+
+// ── History (unified sync + embed runs, alongside content versions) ────────
+export interface DocRun {
+  id: number;
+  run_type: 'sync' | 'embed';
+  trigger: 'manual' | 'scheduled' | 'save' | 'publish';
+  status: string;
+  detail?: string | null;
+  stats?: Record<string, unknown> | null;
+  started_at: string;
+  finished_at?: string | null;
+  triggered_by?: string | null;
+}
+export interface DocHistory { runs: DocRun[]; versions: KnowledgeDocVersion[] }
+
+export async function getDocHistory(docId: number, limit = 100): Promise<DocHistory> {
+  const { data } = await apiClient.get<DocHistory>(`/catalog/govern/knowledge/${docId}/history`, { params: { limit } });
+  return data;
+}
+
+// ── Usage ────────────────────────────────────────────────────────────────────
+export interface DocUsage { dashboards: { id: number; name: string }[]; retrieval_count: number }
+
+export async function getDocUsage(docId: number): Promise<DocUsage> {
+  const { data } = await apiClient.get<DocUsage>(`/catalog/govern/knowledge/${docId}/usage`);
+  return data;
 }
 
 export interface RelatedDoc {
