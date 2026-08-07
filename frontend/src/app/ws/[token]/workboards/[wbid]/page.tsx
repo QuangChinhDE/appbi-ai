@@ -4550,7 +4550,7 @@ function FileUploadField({
 
   return (
     <div className="space-y-2">
-      {hasValue && isImage && stringValue.startsWith('data:image') && (
+      {hasValue && isImage && isImageCellValue(stringValue) && (
         // eslint-disable-next-line @next/next/no-img-element
         <img
           src={stringValue}
@@ -4606,17 +4606,17 @@ function FileUploadField({
 // Stores an array of data:image base64 strings in the JSONB cell. capture_only
 // forces the device camera (field-work: photograph tree + cup + slip in one go).
 function asImageArray(value: unknown): string[] {
-  if (Array.isArray(value)) return value.filter((v): v is string => typeof v === 'string');
+  if (Array.isArray(value)) return value.filter(isImageCellValue);
   if (typeof value === 'string' && value) {
     if (value.startsWith('[')) {
       try {
         const p = JSON.parse(value);
-        return Array.isArray(p) ? p.filter((v): v is string => typeof v === 'string') : [];
+        return Array.isArray(p) ? p.filter(isImageCellValue) : [];
       } catch {
-        return value.startsWith('data:') ? [value] : [];
+        return isImageCellValue(value) ? [value] : [];
       }
     }
-    return value.startsWith('data:') ? [value] : [];
+    return isImageCellValue(value) ? [value] : [];
   }
   return [];
 }
@@ -6570,6 +6570,23 @@ function isImageCellValue(v: unknown): v is string {
   return /^https?:\/\/\S+\.(?:png|jpe?g|gif|webp|bmp|svg)(?:\?\S*)?$/i.test(v);
 }
 
+function imageCellValues(value: unknown): string[] {
+  if (Array.isArray(value)) return value.filter(isImageCellValue);
+  if (typeof value !== 'string' || !value) return [];
+  const s = value;
+  const singleImage: boolean = isImageCellValue(s);
+  if (singleImage) return [s];
+  if (s.trim().startsWith('[')) {
+    try {
+      const parsed = JSON.parse(s);
+      return Array.isArray(parsed) ? parsed.filter(isImageCellValue) : [];
+    } catch {
+      return [];
+    }
+  }
+  return [];
+}
+
 function CellDisplay({ value }: { value: unknown }) {
   const { t: rt, locale } = useI18n();
   if (typeof value === 'boolean') {
@@ -6583,15 +6600,26 @@ function CellDisplay({ value }: { value: unknown }) {
       </span>
     );
   }
-  if (isImageCellValue(value)) {
-    // eslint-disable-next-line @next/next/no-img-element
+  const images = imageCellValues(value);
+  if (images.length) {
     return (
-      <img
-        src={value}
-        alt=""
-        loading="lazy"
-        className="h-9 w-9 rounded border border-slate-200 object-cover"
-      />
+      <div className="flex max-w-[128px] items-center gap-1">
+        {images.slice(0, 3).map((src, index) => (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            key={`${src}-${index}`}
+            src={src}
+            alt=""
+            loading="lazy"
+            className="h-9 w-9 rounded border border-slate-200 object-cover"
+          />
+        ))}
+        {images.length > 3 && (
+          <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[11px] text-slate-600">
+            +{images.length - 3}
+          </span>
+        )}
+      </div>
     );
   }
   const s = formatCellValue(value, locale, rt('workboards.runtime.yes'), rt('workboards.runtime.no'));
@@ -7926,6 +7954,15 @@ function TableScreen({
     const target = viewerRole.toLowerCase();
     return allow.some((r) => r.toLowerCase() === target);
   });
+  const visibleRowActions = useCallback(
+    (row: Record<string, unknown>) =>
+      rowActions.filter((action) => {
+        const expr = typeof action.show_if === 'string' ? action.show_if.trim() : '';
+        if (!expr) return true;
+        return evaluateTruthy(expr, { row, app_user: {}, shared }, true);
+      }),
+    [rowActions, shared],
+  );
   const empty = tv.empty_state_message || rt('workboards.runtime.noDataYet');
 
   // Bulk "gom" actions (select many → combine into one parent). Role-filtered
@@ -9174,7 +9211,7 @@ function TableScreen({
                             <Lock className="h-3.5 w-3.5" aria-label="Dòng đã khóa" />
                           </span>
                         ) : null}
-                        {rowActions.map((a) => {
+                        {visibleRowActions(row).map((a) => {
                           const style = a.style || 'primary';
                           const cls =
                             style === 'danger'
@@ -9471,13 +9508,13 @@ function TableScreen({
                       <span>{rowLock?.message?.trim() || 'Dòng này đã bị khóa, không thể chỉnh sửa.'}</span>
                     </div>
                   ) : null}
-                  {panelMode === 'edit' && rowActions.length > 0 ? (
+                  {panelMode === 'edit' && visibleRowActions(panelDetail.row).length > 0 ? (
                     <div className="mt-5 border-t border-slate-200 pt-4">
                       <div className="mb-2 text-xs font-semibold uppercase text-slate-500">
                         {rt('workboards.runtime.actions')}
                       </div>
                       <div className="flex flex-wrap gap-2">
-                        {rowActions.map((action) => {
+                        {visibleRowActions(panelDetail.row).map((action) => {
                           const style = action.style || 'primary';
                           const className =
                             style === 'danger'

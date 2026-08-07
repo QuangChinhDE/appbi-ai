@@ -365,7 +365,7 @@ class GoogleSheetsConnector:
             row_values: list[Any] = []
             for h in headers:
                 v = filled.get(h)
-                row_values.append("" if v is None else v)
+                row_values.append(_sheet_cell_value(v))
 
             body = {"values": [row_values]}
             try:
@@ -413,7 +413,7 @@ class GoogleSheetsConnector:
                 for pk_col in (auto_pk_columns or []):
                     if pk_col in headers and not str(filled.get(pk_col, "")).strip():
                         filled[pk_col] = str(_uuid.uuid4())
-                row_values = ["" if filled.get(h) is None else filled.get(h) for h in headers]
+                row_values = [_sheet_cell_value(filled.get(h)) for h in headers]
                 all_row_arrays.append(row_values)
                 result_rows.append({h: row_values[i] for i, h in enumerate(headers)})
 
@@ -1049,6 +1049,17 @@ def _col_index_to_letter(index: int) -> str:
         n, remainder = divmod(n - 1, 26)
         letters = chr(65 + remainder) + letters
     return letters
+
+
+def _sheet_cell_value(value: Any) -> Any:
+    """Coerce one Python value into one scalar Google Sheets cell value."""
+    if value is None:
+        return ""
+    if isinstance(value, (list, tuple, dict)):
+        return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    if isinstance(value, (str, int, float, bool)):
+        return value
+    return str(value)
 
 
 def create_google_sheets_connector(config: Dict[str, Any]) -> GoogleSheetsConnector:

@@ -140,4 +140,4 @@ def save_uploaded_file(db, doc, *, filename: str, content_type: str, data: bytes
         db, doc.id, "sync", trigger="manual", status="ok", detail=detail,
         stats={"chars": len(result["text"]), "filename": filename}, changed_by=changed_by,
     )
-    return {"ok": True, "status": "ok", "detail": detail, "extracted_chars": len(result["text"])}
+    return {"ok": True, "status": "ok", "detail": detail, "filename": filename, "extracted_chars": len(result["text"])}

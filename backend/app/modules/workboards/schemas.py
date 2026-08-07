@@ -727,6 +727,10 @@ class ScreenAction(BaseModel):
     parent_screen_id: Optional[str] = Field(default=None, max_length=64)
     confirm_message: Optional[str] = None
     visible_for_roles: List[str] = Field(default_factory=list)
+    show_if: Optional[str] = Field(
+        default=None,
+        description="Optional row-local expression that controls whether the action is shown.",
+    )
 
     model_config = ConfigDict(extra="forbid")
 
@@ -864,6 +868,39 @@ class RelatedRecordConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class WriteEffect(BaseModel):
+    """Server-side value patch applied after a screen write is authorised.
+
+    Use this for workflow automation that must not be user-editable in the UI:
+    status hand-offs, SLA stamps, lightweight audit markers, etc. The caller
+    still needs permission to write the screen row; the effect's declared
+    columns are system-authored by the workboard.
+    """
+
+    on: Literal["insert", "update", "any"] = "update"
+    when: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional wb-expr evaluated against previous row merged with incoming "
+            "values. Empty = always apply for the matching operation."
+        ),
+    )
+    trigger_columns: List[str] = Field(
+        default_factory=list,
+        description="When non-empty, apply only if at least one listed column is in the write payload.",
+    )
+    set_values: Dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Columns to set. Exact placeholders {{now}}, {{today}}, "
+            "{{app_user.username}}, {{app_user.role}} and {{app_user.<context>}} "
+            "are resolved server-side."
+        ),
+    )
+
+    model_config = ConfigDict(extra="forbid")
+
+
 class FormScreenSpec(BaseModel):
     """A data-entry screen bound to one dataset table.
 
@@ -901,6 +938,10 @@ class FormScreenSpec(BaseModel):
     geocode: Optional[GeocodeConfig] = Field(
         default=None,
         description="Auto-fill latitude/longitude from an address column/template on submit.",
+    )
+    write_effects: List[WriteEffect] = Field(
+        default_factory=list,
+        description="Server-side column patches applied after insert/update authorisation.",
     )
 
     model_config = ConfigDict(extra="forbid")
@@ -1843,6 +1884,10 @@ class TableScreenSpec(BaseModel):
     geocode: Optional[GeocodeConfig] = Field(
         default=None,
         description="Auto-fill latitude/longitude from an address column/template on insert/update.",
+    )
+    write_effects: List[WriteEffect] = Field(
+        default_factory=list,
+        description="Server-side column patches applied after insert/update authorisation.",
     )
     bulk_actions: List[BulkAction] = Field(
         default_factory=list,

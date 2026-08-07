@@ -11,7 +11,7 @@
  * cross-links. Metrics (KPIs) are authored INSIDE documents (SSOT); master
  * vocabulary lives in the "Từ điển & Nhãn" modal (owned by the parent page).
  */
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject, type ChangeEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type ChangeEvent } from 'react';
 import Link from 'next/link';
 import {
   BookOpen, Compass, Boxes, Workflow, HelpCircle, FileText, Sigma, LayoutDashboard, Database,
@@ -38,7 +38,7 @@ import {
   listDocVersions, getDocVersion, aiDraftKnowledge, listDatasetsLite, governSearch, regenAiSummary, verifyDoc,
   publishVersion, aiChangeNote, governGraph,
   getDocSource, putDocSource, uploadDocSourceFile, syncDocSource, listGoogleDocsSources,
-  getEmbeddingConfig, putEmbeddingConfig, previewChunks, reembedDoc,
+  getEmbeddingConfig, previewChunks, reembedDoc,
   getDocHistory, getDocUsage, getDocSnapshot, isSourceOwned,
   type DocSourceKind, type DocSnapshot, type GoogleDocsSource,
   type KnowledgeDoc, type KnowledgeSpace, type KnowledgeDocWrite, type KnowledgeAsset, type ManagedMetric,
@@ -631,6 +631,8 @@ const DETAIL_TABS = [
   { key: 'sudung', labelKey: 'govern.detail.tab.usage', icon: <Network className="h-4 w-4" /> },
 ] as const;
 type DetailTab = (typeof DETAIL_TABS)[number]['key'];
+const PRIMARY_DETAIL_TABS = DETAIL_TABS.filter((item) => item.key === 'noidung' || item.key === 'dothi');
+const SECONDARY_DETAIL_TABS = DETAIL_TABS.filter((item) => item.key !== 'noidung' && item.key !== 'dothi');
 
 function DetailScreen({ docId, nav, onBack, onEdit, onDeleted, onOpenMetric, onListChanged, onOpenDoc, onShare }: {
   docId: number; nav: ReturnType<typeof useUrlNav>; managed: ManagedMetric[];
@@ -718,13 +720,14 @@ function DetailScreen({ docId, nav, onBack, onEdit, onDeleted, onOpenMetric, onL
   const assets = doc.assets_on_page ?? [];
   const related = doc.related_docs ?? [];
   const perms = getResourcePermissions(doc.user_permission ?? undefined);
-  const items = DETAIL_TABS.map((tabItem) => ({
+  const primaryItems = PRIMARY_DETAIL_TABS.map((tabItem) => ({
     key: tabItem.key, icon: tabItem.icon,
-    label: tabItem.key === 'chiso' && metrics.length ? `${t('govern.detail.tab.metrics')} · ${metrics.length}`
-      : tabItem.key === 'lienket' && assets.length ? `${t('govern.detail.tab.links')} · ${assets.length}` : t(tabItem.labelKey),
+    label: t(tabItem.labelKey),
   }));
 
   // On-this-page outline (## / ### headings) → wayfinding in the context rail.
+  const secondaryKeys = new Set<string>(SECONDARY_DETAIL_TABS.map((item) => item.key));
+
   const toc = (doc.body || '').split('\n').reduce<{ level: number; text: string }[]>((acc, raw) => {
     const m = raw.match(/^(#{1,3})\s+(.*)$/);
     if (m) acc.push({ level: m[1].length, text: m[2].replace(/\{\{[^}]+\}\}/g, '').replace(/[*`]/g, '').trim() });
@@ -748,7 +751,22 @@ function DetailScreen({ docId, nav, onBack, onEdit, onDeleted, onOpenMetric, onL
         <span className="text-text-quaternary">/</span>
         <span className="max-w-[220px] truncate text-sm font-medium text-text-primary xl:max-w-[360px]">{doc.title}</span>
         <div className="mx-1 h-5 w-px bg-surface-3" />
-        <Tabs<DetailTab> size="sm" value={tab} onChange={setTab} items={items} />
+        <Tabs<DetailTab> size="sm" value={PRIMARY_DETAIL_TABS.some((item) => item.key === tab) ? tab : 'noidung'} onChange={setTab} items={primaryItems} />
+        <Select
+          value={secondaryKeys.has(tab) ? tab : ''}
+          onChange={(e) => { if (e.target.value) setTab(e.target.value); }}
+          className="h-7 w-[9.5rem] py-0 text-label"
+          aria-label={t('govern.detail.more')}
+        >
+          <option value="">{t('govern.detail.more')}</option>
+          {SECONDARY_DETAIL_TABS.map((tabItem) => (
+            <option key={tabItem.key} value={tabItem.key}>
+              {tabItem.key === 'chiso' && metrics.length ? `${t('govern.detail.tab.metrics')} (${metrics.length})`
+                : tabItem.key === 'lienket' && assets.length ? `${t('govern.detail.tab.links')} (${assets.length})`
+                : t(tabItem.labelKey)}
+            </option>
+          ))}
+        </Select>
         <div className="flex-1" />
         {/* Compact versions control — expands a dropdown to view/publish a
             version (no inline list cluttering the reading surface). */}
@@ -768,7 +786,7 @@ function DetailScreen({ docId, nav, onBack, onEdit, onDeleted, onOpenMetric, onL
           </Button>
         )}
         {perms.canShare && <Button size="sm" variant="secondary" leadingIcon={<Share2 className="h-3.5 w-3.5" />} onClick={() => onShare(doc.id, doc.title)}>{t('shared.share.shareButton')}</Button>}
-        {perms.canEdit && !isSourceOwned(doc.source_type) && <Button size="sm" variant="secondary" leadingIcon={<Pencil className="h-3.5 w-3.5" />} onClick={onEdit}>{t('govern.action.edit')}</Button>}
+        {perms.canEdit && <Button size="sm" variant="secondary" leadingIcon={<Pencil className="h-3.5 w-3.5" />} onClick={onEdit}>{t('govern.action.edit')}</Button>}
         {perms.canDelete && <Button size="sm" variant="ghost" leadingIcon={<Trash2 className="h-3.5 w-3.5" />} onClick={remove}>{t('govern.action.delete')}</Button>}
       </div>
 
@@ -787,9 +805,8 @@ function DetailScreen({ docId, nav, onBack, onEdit, onDeleted, onOpenMetric, onL
                 whole available width. */}
             <article ref={articleRef} className="min-w-0 flex-1">
               <div className="w-full rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 px-6 py-7 shadow-linear sm:px-10 sm:py-9">
-                <DocHeader doc={doc} />
                 {viewingVersion
-                  ? <VersionViewer doc={doc} version={viewingVersion} onClose={() => setViewingVersion(null)} />
+                  ? <><DocHeader doc={doc} /><VersionViewer version={viewingVersion} onClose={() => setViewingVersion(null)} /></>
                   : <ContentTab doc={doc} onDocLink={onOpenDoc} />}
               </div>
             </article>
@@ -1141,7 +1158,12 @@ function AiWriteModal({ onClose, onDrafted }: { onClose: () => void; onDrafted: 
   const [busy, setBusy] = useState(false);
   useEffect(() => { listDatasetsLite().then(setDatasets).catch(() => toast.error(t('govern.ai.loadDatasetsFailed'))); }, [t]);
 
-  const toggle = (id: number) => setSelected((prev) => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const toggle = (id: number) => setSelected((prev) => {
+    const n = new Set(prev);
+    if (n.has(id)) n.delete(id);
+    else n.add(id);
+    return n;
+  });
   const filtered = datasets.filter((d) => !q.trim() || d.name.toLowerCase().includes(q.trim().toLowerCase()));
 
   const run = async () => {
@@ -1610,7 +1632,8 @@ function ContentTab({ doc, onDocLink }: { doc: KnowledgeDoc; onDocLink?: (id: nu
   return (
     <div className="min-w-0">
       {hasSnapshot && (
-        <div className="mb-3 inline-flex rounded-lg border border-[rgb(var(--border-line))] p-0.5">
+        <div className="mb-3 flex justify-end">
+          <div className="inline-flex rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 p-0.5 shadow-linear-sm">
           {(['text', 'snapshot'] as const).map((v) => (
             <button key={v} onClick={() => setView(v)}
               className={cn('rounded-md px-2.5 py-1 text-tiny font-emphasis transition-colors',
@@ -1618,14 +1641,20 @@ function ContentTab({ doc, onDocLink }: { doc: KnowledgeDoc; onDocLink?: (id: nu
               {t(v === 'text' ? 'govern.snapshot.viewText' : 'govern.snapshot.viewOriginal')}
             </button>
           ))}
+          </div>
         </div>
       )}
 
       {hasSnapshot && view === 'snapshot'
         ? <WebSnapshotView docId={doc.id} />
-        : doc.body
-        ? <Markdown source={resolveBody(doc)} onDocLink={onDocLink} />
-        : <p className="rounded-xl border border-dashed border-[rgb(var(--border-strong))] bg-surface-1 px-4 py-10 text-center text-caption text-text-tertiary">{t('govern.content.empty')}</p>}
+        : (
+          <>
+            <DocHeader doc={doc} />
+            {doc.body
+              ? <Markdown source={resolveBody(doc)} onDocLink={onDocLink} />
+              : <p className="rounded-xl border border-dashed border-[rgb(var(--border-strong))] bg-surface-1 px-4 py-10 text-center text-caption text-text-tertiary">{t('govern.content.empty')}</p>}
+          </>
+        )}
 
       {missing.length > 0 && (
         <div className="mt-4 flex items-start gap-2 rounded-lg border border-warning/30 bg-warning/10 px-3 py-2 text-caption text-warning">
@@ -2123,7 +2152,7 @@ function UsageTab({ doc }: { doc: KnowledgeDoc }) {
 
 // Read-only banner + body when the reader is showing a PAST version instead of
 // the current working content.
-function VersionViewer({ doc, version, onClose }: { doc: KnowledgeDoc; version: KnowledgeDocVersion; onClose: () => void }) {
+function VersionViewer({ version, onClose }: { version: KnowledgeDocVersion; onClose: () => void }) {
   const { t } = useI18n();
   return (
     <div className="min-w-0">
@@ -2311,6 +2340,7 @@ function EditorScreen({ docId, seed, managed, allDocs, onCancel, onSaved, onOpen
   const { t } = useI18n();
   const [wikiQuery, setWikiQuery] = useState<string | null>(null);  // open [[…]] autocomplete
   const [editing, setEditing] = useState<KnowledgeDocWrite | null>(docId ? null : (seed ?? newDoc()));
+  const [sourceOwned, setSourceOwned] = useState(false);
   const [tagsText, setTagsText] = useState((seed?.tags ?? []).join(', '));
   const [changeNote, setChangeNote] = useState('');
   const [loading, setLoading] = useState(!!docId);
@@ -2322,6 +2352,10 @@ function EditorScreen({ docId, seed, managed, allDocs, onCancel, onSaved, onOpen
     const f = e.target.files?.[0];
     e.target.value = '';
     if (!f) return;
+    if (sourceOwned) {
+      toast.error(t('govern.editor.sourceOwnedReadOnly'));
+      return;
+    }
     try {
       const raw = await f.text();
       const text = /\.html?$/i.test(f.name) ? htmlToText(raw) : raw;
@@ -2334,7 +2368,7 @@ function EditorScreen({ docId, seed, managed, allDocs, onCancel, onSaved, onOpen
     if (!docId) return;
     let on = true; setLoading(true);
     getKnowledgeDoc(docId)
-      .then((d) => { if (!on) return; setEditing(docToWrite(d)); setTagsText((d.tags ?? []).join(', ')); })
+      .then((d) => { if (!on) return; setEditing(docToWrite(d)); setTagsText((d.tags ?? []).join(', ')); setSourceOwned(isSourceOwned(d.source_type)); })
       .catch(() => { if (on) toast.error(t('govern.detail.openFailed')); })
       .finally(() => { if (on) setLoading(false); });
     return () => { on = false; };
@@ -2346,12 +2380,16 @@ function EditorScreen({ docId, seed, managed, allDocs, onCancel, onSaved, onOpen
   // skeleton (KPI/domain, SOP, report, AI know-how) — structure without forms.
   const changeType = (type: string) => setEditing((p) => {
     if (!p) return p;
-    const empty = !(p.body || '').trim();
+    const empty = !sourceOwned && !(p.body || '').trim();
     const tpl = docTemplate(type);
     return { ...p, doc_type: type, body: empty && tpl ? tpl : p.body };
   });
 
   const insertToken = (token: string) => {
+    if (sourceOwned) {
+      toast.error(t('govern.editor.sourceOwnedReadOnly'));
+      return;
+    }
     const el = bodyRef.current;
     setEditing((p) => {
       if (!p) return p;
@@ -2459,19 +2497,25 @@ function EditorScreen({ docId, seed, managed, allDocs, onCancel, onSaved, onOpen
             <div className="space-y-1.5"><Label required>{t('govern.editor.title')}</Label><Input value={editing.title} onChange={(e) => upd({ title: e.target.value })} placeholder={t('govern.editor.titlePlaceholder')} /></div>
             <div className="space-y-1.5"><Label>{t('govern.editor.summary')}</Label><Input value={editing.summary ?? ''} onChange={(e) => upd({ summary: e.target.value })} placeholder={t('govern.editor.summaryPlaceholder')} /></div>
 
-            {/* insert-token + import toolbar */}
-            <div className="space-y-2 rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 p-3">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <p className="text-tiny font-emphasis uppercase tracking-[0.08em] text-text-quaternary">{t('govern.editor.insertIntoContent')}</p>
-                <div className="flex items-center gap-2">
-                  <Button variant="secondary" size="xs" leadingIcon={<Upload className="h-3.5 w-3.5" />} onClick={() => fileRef.current?.click()}>{t('govern.action.importFile')}</Button>
-                  <Button variant="primary" size="xs" leadingIcon={<Plus className="h-3.5 w-3.5" />} onClick={defineMetric}>{t('govern.action.defineMetric')}</Button>
+            {sourceOwned ? (
+              <div className="flex items-start gap-2 rounded-lg border border-info/25 bg-info/[0.07] px-3 py-2 text-caption text-text-secondary">
+                <Database className="mt-0.5 h-4 w-4 flex-shrink-0 text-info" />
+                <span>{t('govern.editor.sourceOwnedReadOnly')}</span>
+              </div>
+            ) : (
+              <div className="space-y-2 rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 p-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <p className="text-tiny font-emphasis uppercase tracking-[0.08em] text-text-quaternary">{t('govern.editor.insertIntoContent')}</p>
+                  <div className="flex items-center gap-2">
+                    <Button variant="secondary" size="xs" leadingIcon={<Upload className="h-3.5 w-3.5" />} onClick={() => fileRef.current?.click()}>{t('govern.action.importFile')}</Button>
+                    <Button variant="primary" size="xs" leadingIcon={<Plus className="h-3.5 w-3.5" />} onClick={defineMetric}>{t('govern.action.defineMetric')}</Button>
+                  </div>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <TokenInserter managed={managed} insertToken={insertToken} />
                 </div>
               </div>
-              <div className="flex flex-wrap items-center gap-2">
-                <TokenInserter managed={managed} insertToken={insertToken} />
-              </div>
-            </div>
+            )}
 
             <div className="space-y-1.5">
               <div className="flex items-center justify-between">
@@ -2487,8 +2531,8 @@ function EditorScreen({ docId, seed, managed, allDocs, onCancel, onSaved, onOpen
                 </div>
               ) : (
                 <>
-                  <MarkdownToolbar wrap={wrapFmt} prefix={prefixFmt} block={blockFmt} onWikilink={insertWikilink} onCallout={insertCallout} />
-                  {wikiQuery !== null && (
+                  {!sourceOwned && <MarkdownToolbar wrap={wrapFmt} prefix={prefixFmt} block={blockFmt} onWikilink={insertWikilink} onCallout={insertCallout} />}
+                  {!sourceOwned && wikiQuery !== null && (
                     <div className="flex flex-wrap items-center gap-1.5 rounded-md border border-brand/30 bg-brand/[0.06] px-2.5 py-1.5">
                       <span className="text-tiny font-emphasis text-brand">{t('govern.editor.wikilinkPick')}</span>
                       {wikiMatches.length === 0
@@ -2502,7 +2546,7 @@ function EditorScreen({ docId, seed, managed, allDocs, onCancel, onSaved, onOpen
                       <button type="button" onClick={() => setWikiQuery(null)} className="ml-auto text-tiny text-text-quaternary hover:text-text-primary">✕</button>
                     </div>
                   )}
-                  <Textarea ref={bodyRef} rows={24} className="font-mono text-[13px]" value={editing.body ?? ''} onChange={onBodyChange}
+                  <Textarea ref={bodyRef} rows={24} readOnly={sourceOwned} className={cn('font-mono text-[13px]', sourceOwned && 'bg-surface-2 text-text-tertiary')} value={editing.body ?? ''} onChange={sourceOwned ? undefined : onBodyChange}
                     onKeyDown={(e) => { if (e.key === 'Escape' && wikiQuery !== null) setWikiQuery(null); }}
                     placeholder={t('govern.editor.bodyPlaceholder')} />
                 </>
