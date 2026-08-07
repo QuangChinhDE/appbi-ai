@@ -2374,6 +2374,7 @@ if settings.WORKBOARDS_ENABLED:
                 outcome = screen_runtime.insert_screen_row(
                     db, wb, screen, row, identity=identity
                 )
+                db.flush()
                 success_count += 1
                 results.append({
                     "index": index,
@@ -2410,6 +2411,8 @@ if settings.WORKBOARDS_ENABLED:
                         detail.get("violations") if isinstance(detail, dict) else None
                     ),
                 })
+        if success_count:
+            db.commit()
         return {
             "action": "bulk_insert",
             "total": len(rows),
@@ -2495,6 +2498,7 @@ if settings.WORKBOARDS_ENABLED:
             result = screen_runtime.update_screen_row(
                 db, wb, screen, pk or {}, values, identity=identity
             )
+            db.commit()
         except WorkboardValidationError as exc:
             raise HTTPException(
                 status_code=422,

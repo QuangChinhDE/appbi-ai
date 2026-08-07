@@ -185,6 +185,7 @@ export interface ScreenAction {
   parent_screen_id?: string | null;
   confirm_message?: string | null;
   visible_for_roles?: string[];
+  show_if?: string | null;
 }
 
 export interface ScreenPresentation {
@@ -352,6 +353,7 @@ export interface TableScreenResponse {
       parent_screen_id?: string | null;
       confirm_message?: string | null;
       visible_for_roles?: string[];
+      show_if?: string | null;
     }>;
     allow_add_row?: boolean;
     allow_delete_row?: boolean;

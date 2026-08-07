@@ -64,6 +64,102 @@ def _flatten(doc: dict) -> str:
     return "\n\n".join(lines).strip()
 
 
+def _image_markdown(doc: dict, inline_object_id: str, index: int) -> str:
+    obj = (doc.get("inlineObjects") or {}).get(inline_object_id) or {}
+    embedded = ((obj.get("inlineObjectProperties") or {}).get("embeddedObject") or {})
+    image = embedded.get("imageProperties") or {}
+    url = image.get("sourceUri") or image.get("contentUri")
+    if not url:
+        return f"[Image {index}: {inline_object_id}]"
+    alt = embedded.get("title") or embedded.get("description") or f"Google Docs image {index}"
+    return f"![{str(alt).strip()}]({url})"
+
+
+def _styled_text(raw: str, style: dict) -> str:
+    text = raw.replace("\v", "\n").rstrip("\n")
+    if not text:
+        return ""
+    link = (style.get("link") or {}).get("url")
+    if link and text.strip():
+        text = f"[{text.strip()}]({link})"
+    if style.get("bold") and text.strip():
+        text = f"**{text}**"
+    if style.get("italic") and text.strip():
+        text = f"*{text}*"
+    return text
+
+
+def _paragraph_markdown(doc: dict, para: dict, image_counter: list[int]) -> str:
+    parts: list[str] = []
+    for run in para.get("elements", []):
+        if run.get("textRun"):
+            tr = run.get("textRun") or {}
+            parts.append(_styled_text(tr.get("content") or "", tr.get("textStyle") or {}))
+        elif run.get("inlineObjectElement"):
+            image_counter[0] += 1
+            parts.append(_image_markdown(doc, (run.get("inlineObjectElement") or {}).get("inlineObjectId") or "", image_counter[0]))
+    text = "".join(parts).strip()
+    if not text:
+        return ""
+    style = (para.get("paragraphStyle") or {}).get("namedStyleType", "")
+    if style.startswith("HEADING_"):
+        try:
+            level = max(1, min(6, int(style.rsplit("_", 1)[1])))
+        except Exception:  # noqa: BLE001
+            level = 2
+        return f"{'#' * level} {text}"
+    if para.get("bullet"):
+        return f"- {text}"
+    return text
+
+
+def _cell_markdown(doc: dict, cell: dict, image_counter: list[int]) -> str:
+    chunks: list[str] = []
+    for content in cell.get("content", []):
+        if content.get("paragraph"):
+            part = _paragraph_markdown(doc, content["paragraph"], image_counter)
+        elif content.get("table"):
+            part = _table_markdown(doc, content["table"], image_counter)
+        else:
+            part = ""
+        if part:
+            chunks.append(part)
+    return "<br>".join(chunks).replace("|", "\\|")
+
+
+def _table_markdown(doc: dict, table: dict, image_counter: list[int]) -> str:
+    rows: list[list[str]] = []
+    for row in table.get("tableRows", []):
+        cells = [_cell_markdown(doc, cell, image_counter) for cell in row.get("tableCells", [])]
+        if any(c.strip() for c in cells):
+            rows.append(cells)
+    if not rows:
+        return ""
+    width = max(len(r) for r in rows)
+    rows = [r + [""] * (width - len(r)) for r in rows]
+    out = [
+        "| " + " | ".join(rows[0]) + " |",
+        "| " + " | ".join(["---"] * width) + " |",
+    ]
+    out.extend("| " + " | ".join(r) + " |" for r in rows[1:])
+    return "\n".join(out)
+
+
+def _flatten_rich(doc: dict) -> str:
+    blocks: list[str] = []
+    image_counter = [0]
+    for el in (doc.get("body") or {}).get("content", []):
+        if el.get("paragraph"):
+            block = _paragraph_markdown(doc, el["paragraph"], image_counter)
+        elif el.get("table"):
+            block = _table_markdown(doc, el["table"], image_counter)
+        else:
+            block = ""
+        if block.strip():
+            blocks.append(block.strip())
+    return "\n\n".join(blocks).strip()
+
+
 def fetch_google_doc(doc_ref: str, *, google_oauth_user_id: str | None = None,
                      datasource_id: int | None = None) -> dict:
     """Returns {ok, title, text, error}. Never raises.
@@ -132,7 +228,7 @@ def fetch_google_doc(doc_ref: str, *, google_oauth_user_id: str | None = None,
         logger.warning("google_doc_fetcher: failed fetching doc %s", doc_ref, exc_info=True)
         return {"ok": False, "error": f"Failed to fetch Google Doc: {exc}"}
 
-    text = _flatten(doc)
+    text = _flatten_rich(doc)
     if not text:
         return {"ok": False, "error": "Google Doc has no readable text content."}
     return {"ok": True, "title": doc.get("title") or "", "text": text}

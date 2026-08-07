@@ -30,6 +30,7 @@ def store_media(
     content_type: Optional[str],
     data: bytes,
     created_by=None,
+    commit: bool = True,
 ) -> WorkboardMedia:
     if not data:
         raise ValueError("Empty file.")
@@ -45,8 +46,11 @@ def store_media(
         created_by=created_by,
     )
     db.add(media)
-    db.commit()
-    db.refresh(media)
+    if commit:
+        db.commit()
+        db.refresh(media)
+    else:
+        db.flush()
     return media
 
 

@@ -28,8 +28,10 @@ import itertools
 import json
 import numbers
 import re
+import base64
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set
+from urllib.parse import unquote_to_bytes
 
 from fastapi import HTTPException, status
 from sqlalchemy.exc import IntegrityError
@@ -832,7 +834,7 @@ def _resolve_pos_catalog(db: Session, pos_cart: Any) -> Dict[str, Any]:
 # with the 10 MB media-store guard and the per-field ``max_file_kb`` le=10240
 # builder bound. Google Sheets stays tiny (a cell caps at ~50k chars).
 WORKBOARD_MEDIA_MAX_KB = 10240
-WORKBOARD_MEDIA_MAX_KB_SHEETS = 35
+WORKBOARD_MEDIA_MAX_KB_SHEETS = WORKBOARD_MEDIA_MAX_KB
 # Every widget whose value is a base64 data-URI (or a JSON array of them) and
 # must be size-capped. Previously only {file, image} were capped, so images/
 # signature/audio silently bypassed the ceiling.
@@ -852,6 +854,110 @@ def media_cap_kb(db: Session, workboard: Workboard, screen: Optional["Screen"] =
     except Exception:  # pragma: no cover - defensive; fall back to safe default
         pass
     return WORKBOARD_MEDIA_MAX_KB
+
+
+def _data_url_to_media_url(
+    db: Session,
+    workboard: Workboard,
+    *,
+    column: str,
+    value: str,
+    identity: CallerIdentity,
+) -> str:
+    if not value.startswith("data:") or "," not in value:
+        return value
+    header, payload = value.split(",", 1)
+    content_type = (header[5:].split(";", 1)[0] or "application/octet-stream")[:120]
+    try:
+        if ";base64" in header.lower():
+            data = base64.b64decode(payload, validate=False)
+        else:
+            data = unquote_to_bytes(payload)
+    except Exception:
+        return value
+    ext = "jpg" if content_type == "image/jpeg" else (content_type.split("/")[-1] or "bin")
+    ext = re.sub(r"[^a-zA-Z0-9]+", "", ext.split("+", 1)[0])[:8] or "bin"
+    safe_col = re.sub(r"[^a-zA-Z0-9_-]+", "-", str(column)).strip("-") or "media"
+
+    from app.modules.workboards.services import media_service
+
+    media = media_service.store_media(
+        db,
+        workboard_id=workboard.id,
+        filename=f"{safe_col}.{ext}",
+        content_type=content_type,
+        data=data,
+        created_by=None,
+        commit=False,
+    )
+    return media_service.media_url(media.id)
+
+
+def _normalise_media_cell_value(
+    db: Session,
+    workboard: Workboard,
+    *,
+    column: str,
+    value: Any,
+    identity: CallerIdentity,
+) -> Any:
+    if isinstance(value, str):
+        stripped = value.strip()
+        if stripped.startswith("["):
+            try:
+                decoded = json.loads(stripped)
+            except (TypeError, ValueError):
+                decoded = None
+            if isinstance(decoded, list):
+                return json.dumps(
+                    [
+                        _normalise_media_cell_value(
+                            db, workboard, column=column, value=item, identity=identity
+                        )
+                        for item in decoded
+                    ],
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+        if stripped.startswith("data:"):
+            return _data_url_to_media_url(
+                db, workboard, column=column, value=stripped, identity=identity
+            )
+        return value
+    if isinstance(value, list):
+        return json.dumps(
+            [
+                _normalise_media_cell_value(
+                    db, workboard, column=column, value=item, identity=identity
+                )
+                for item in value
+            ],
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+    if isinstance(value, tuple):
+        return _normalise_media_cell_value(
+            db, workboard, column=column, value=list(value), identity=identity
+        )
+    return value
+
+
+def _normalise_media_values(
+    db: Session,
+    workboard: Workboard,
+    values: Dict[str, Any],
+    identity: CallerIdentity,
+) -> Dict[str, Any]:
+    out = dict(values or {})
+    for col, value in list(out.items()):
+        out[col] = _normalise_media_cell_value(
+            db,
+            workboard,
+            column=str(col),
+            value=value,
+            identity=identity,
+        )
+    return out
 
 
 def _apply_field_conditions(
@@ -876,6 +982,7 @@ def _apply_field_conditions(
         "app_user": dict(identity.app_user or {}),
         "shared": {},
     }
+    ctx_base_row = dict(values or {})
     cleaned = dict(values or {})
     violations: List[str] = []
     # widget='computed' fields are DERIVED — recomputed server-side after the
@@ -1008,7 +1115,7 @@ def _apply_field_conditions(
             value = cleaned.get(col)
             if value is None or (isinstance(value, str) and value.strip() == ""):
                 continue
-            ctx["row"] = dict(cleaned)
+            ctx["row"] = {**ctx_base_row, **cleaned}
             if not evaluate_truthy(valid_if_expr, ctx, default=True):
                 custom_msg = getattr(field, "valid_if_error", None)
                 label = field.label or col
@@ -1082,6 +1189,82 @@ def _geocode_config_for_screen(screen: Screen) -> Any:
     if screen.kind == "table" and screen.table is not None:
         return getattr(screen.table, "geocode", None)
     return None
+
+
+def _write_effects_for_screen(screen: Screen) -> List[Any]:
+    if screen.kind == "form" and screen.form is not None:
+        return list(getattr(screen.form, "write_effects", None) or [])
+    if screen.kind == "table" and screen.table is not None:
+        return list(getattr(screen.table, "write_effects", None) or [])
+    return []
+
+
+def _resolve_write_effect_value(raw: Any, identity: CallerIdentity) -> Any:
+    if not isinstance(raw, str):
+        return raw
+    token = raw.strip()
+    if token == "{{now}}":
+        return datetime.now(timezone.utc).isoformat()
+    if token == "{{today}}":
+        return datetime.now(timezone.utc).date().isoformat()
+    if token.startswith("{{app_user.") and token.endswith("}}"):
+        key = token[len("{{app_user.") : -2].strip()
+        app_user = dict(identity.app_user or {})
+        if key == "role":
+            return identity.role
+        if key == "username":
+            return app_user.get("username")
+        return app_user.get(key)
+    return raw
+
+
+def _apply_write_effects(
+    screen: Screen,
+    values: Dict[str, Any],
+    identity: CallerIdentity,
+    *,
+    op: str,
+    previous_row: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Apply declarative system-authored patches for a screen write.
+
+    Effects run after the caller's own payload has passed RLS/editability
+    checks, so they can update workflow columns the caller should not control
+    directly (for example a status hand-off after a user submits a reason).
+    """
+    effects = _write_effects_for_screen(screen)
+    if not effects:
+        return values
+    from app.modules.workboards.services.expr_eval import evaluate_truthy
+
+    out = dict(values or {})
+    base_row = {**(previous_row or {}), **out}
+    ctx = {
+        "row": base_row,
+        "app_user": dict(identity.app_user or {}),
+        "shared": {},
+    }
+    payload_cols = set(out.keys())
+    for effect in effects:
+        applies_to = getattr(effect, "on", "update") or "update"
+        if applies_to not in ("any", op):
+            continue
+        triggers = [str(c) for c in (getattr(effect, "trigger_columns", None) or []) if str(c)]
+        if triggers and payload_cols.isdisjoint(triggers):
+            continue
+        when_expr = (getattr(effect, "when", None) or "").strip()
+        if when_expr and not evaluate_truthy(when_expr, ctx, default=False):
+            continue
+        patch = getattr(effect, "set_values", None) or {}
+        if not isinstance(patch, dict):
+            continue
+        for col, raw in patch.items():
+            if not col:
+                continue
+            out[str(col)] = _resolve_write_effect_value(raw, identity)
+        base_row = {**base_row, **out}
+        ctx["row"] = base_row
+    return out
 
 
 def _apply_geocode(
@@ -1957,6 +2140,7 @@ def insert_screen_row(
     cleaned = enforce_write_access(
         screen.rls, screen.rls_default, identity, op="insert", row_values=cleaned_pre
     )
+    cleaned = _normalise_media_values(db, workboard, cleaned, identity)
     relation_bound = _resolve_relation_bound_values(
         db,
         workboard,
@@ -1974,6 +2158,13 @@ def insert_screen_row(
     if screen.kind == "form":
         # Value-level status guard on top of RLS column masking (insert = no prev).
         _enforce_status_rules(_status_fields(screen), cleaned, identity, previous_row=None)
+    cleaned = _apply_write_effects(
+        screen,
+        cleaned,
+        identity,
+        op="insert",
+        previous_row=None,
+    )
     result = WorkboardWriteService.insert_row(
         db,
         workboard,
@@ -2005,7 +2196,7 @@ def insert_screen_rows(
     """
     if not rows:
         return {"action": "insert_many", "affected_rows": 0, "results": []}
-    if screen.kind != "table":
+    if screen.kind != "table" or _write_effects_for_screen(screen):
         results = [
             insert_screen_row(db, workboard, screen, row, identity=identity)
             for row in rows
@@ -2050,15 +2241,14 @@ def insert_screen_rows(
                     "violations": [{"column": c, "rule": "required"} for c in missing],
                 },
             )
-        prepared.append(
-            enforce_write_access(
-                screen.rls,
-                screen.rls_default,
-                identity,
-                op="insert",
-                row_values=merged,
-            )
+        allowed_values = enforce_write_access(
+            screen.rls,
+            screen.rls_default,
+            identity,
+            op="insert",
+            row_values=merged,
         )
+        prepared.append(_normalise_media_values(db, workboard, allowed_values, identity))
 
     return WorkboardWriteService.insert_rows(
         db,
@@ -2115,7 +2305,11 @@ def update_screen_rows(
     # A row_lock needs each row's current values evaluated individually, so take
     # the per-row path (which fetches + gates each row) rather than the batch
     # fast-path — same reason RLS filters force it.
-    if rls_filters or getattr(screen.table, "row_lock", None) is not None:
+    if (
+        rls_filters
+        or getattr(screen.table, "row_lock", None) is not None
+        or _write_effects_for_screen(screen)
+    ):
         results = [
             update_screen_row(
                 db,
@@ -2161,6 +2355,7 @@ def update_screen_rows(
             op="update",
             row_values=cleaned_pre,
         )
+        cleaned = _normalise_media_values(db, workboard, cleaned, identity)
         prepared.append({
             "pk": pk,
             "values": cleaned,
@@ -2197,10 +2392,40 @@ def update_screen_row(
     if screen.kind == "table" and screen.table is None:
         raise HTTPException(status_code=400, detail="Table screen has no spec.")
 
+    _previous_row: Optional[Dict[str, Any]] = None
+
+    def _previous() -> Optional[Dict[str, Any]]:
+        nonlocal _previous_row
+        if _previous_row is None:
+            _previous_row = _fetch_current_row(db, workboard, screen, pk)
+        return _previous_row
+
     if screen.kind == "form":
+        # Form update conditions often depend on stored row context that the
+        # browser may display as read-only fields (status, created_at, SLA
+        # anchors). Evaluate conditions against current+incoming values, then
+        # keep only the fields the caller actually submitted.
+        condition_values = dict(values or {})
+        previous = _previous()
+        if previous:
+            condition_values = {**previous, **condition_values}
+        submitted_keys = set((values or {}).keys())
         cleaned_pre = _apply_field_conditions(
-            screen, values, identity, media_max_kb=media_cap_kb(db, workboard, screen)
+            screen,
+            condition_values,
+            identity,
+            media_max_kb=media_cap_kb(db, workboard, screen),
         )
+        cleaned_pre = {
+            key: value
+            for key, value in cleaned_pre.items()
+            if key in submitted_keys
+        }
+        if not cleaned_pre:
+            raise HTTPException(
+                status_code=400,
+                detail="No editable columns in payload.",
+            )
     else:
         # Table: a column must be flagged in either the inline grid
         # ``editable_columns`` OR the detail panel's ``editable_columns``.
@@ -2230,19 +2455,18 @@ def update_screen_row(
     cleaned = enforce_write_access(
         screen.rls, screen.rls_default, identity, op="update", row_values=cleaned_pre
     )
+
     # Server-side geocode enrichment. Only fetch the previous row when the
     # screen opts into geocoding, and pass it so existing coordinates are not
     # re-resolved (overwrite_existing=False).
     if _geocode_config_for_screen(screen) is not None:
-        _geo_prev = _fetch_current_row(db, workboard, screen, pk)
-        cleaned = _apply_geocode(screen, cleaned, previous_row=_geo_prev)
+        cleaned = _apply_geocode(screen, cleaned, previous_row=_previous())
     if screen.kind == "form":
         # Value-level status guard: compare the previous row's status to the new
         # value so allowed_transitions + editable_by_roles are enforced server-side.
         _sf = _status_fields(screen)
         if _sf:
-            _prev = _fetch_current_row(db, workboard, screen, pk)
-            _enforce_status_rules(_sf, cleaned, identity, previous_row=_prev)
+            _enforce_status_rules(_sf, cleaned, identity, previous_row=_previous())
     if (
         screen.kind == "table"
         and screen.table is not None
@@ -2251,8 +2475,16 @@ def update_screen_row(
         # Per-row edit lock: block updates to a LOCKED row unless the caller's
         # role is allow-listed (owner/staff bypass). Evaluated on the row's
         # current stored values so the lock column can't be self-unlocked.
-        _lock_prev = _fetch_current_row(db, workboard, screen, pk)
-        _enforce_row_lock(screen.table.row_lock, _lock_prev, identity, op="update")
+        _enforce_row_lock(screen.table.row_lock, _previous(), identity, op="update")
+    if _write_effects_for_screen(screen):
+        cleaned = _apply_write_effects(
+            screen,
+            cleaned,
+            identity,
+            op="update",
+            previous_row=_previous(),
+        )
+    cleaned = _normalise_media_values(db, workboard, cleaned, identity)
 
     # Make sure the targeted row passes RLS before touching it.
     rls_filters, allowed = build_rls_filter(
@@ -2612,6 +2844,67 @@ def delete_screen_row(
     )
 
 
+def _effective_write_columns(
+    screen: Screen,
+    identity: CallerIdentity,
+    *,
+    op: str,
+    columns: List[str],
+) -> List[str]:
+    if not columns:
+        return []
+    probe = {str(col): "__wb_permission_probe__" for col in columns}
+    try:
+        allowed = enforce_write_access(
+            screen.rls,
+            screen.rls_default,
+            identity,
+            op=op,
+            row_values=probe,
+        )
+    except HTTPException:
+        return []
+    return [str(col) for col in columns if str(col) in allowed]
+
+
+def _can_write_op(screen: Screen, identity: CallerIdentity, *, op: str) -> bool:
+    try:
+        enforce_write_access(
+            screen.rls,
+            screen.rls_default,
+            identity,
+            op=op,
+            row_values={},
+        )
+    except HTTPException:
+        return False
+    return True
+
+
+def _table_view_for_identity(screen: Screen, identity: CallerIdentity) -> Dict[str, Any]:
+    if screen.table is None:
+        return {}
+    table_view = screen.table.model_dump()
+    editable = [str(col) for col in (screen.table.editable_columns or [])]
+    create_columns = _effective_write_columns(screen, identity, op="insert", columns=editable)
+    update_columns = _effective_write_columns(screen, identity, op="update", columns=editable)
+    table_view["editable_columns"] = update_columns
+    table_view["allow_add_row"] = bool(screen.table.allow_add_row and create_columns)
+    table_view["allow_delete_row"] = bool(
+        screen.table.allow_delete_row and _can_write_op(screen, identity, op="delete")
+    )
+    panel = table_view.get("detail_panel")
+    if isinstance(panel, dict):
+        panel_editable = [str(col) for col in (panel.get("editable_columns") or [])]
+        panel["editable_columns"] = _effective_write_columns(
+            screen,
+            identity,
+            op="update",
+            columns=panel_editable,
+        )
+    return table_view
+
+
 def fetch_table_row_for_panel(
     db: Session,
     workboard: Workboard,
@@ -2710,7 +3003,12 @@ def fetch_table_row_for_panel(
         "row": row,
         "primary_key_columns": list(screen.primary_key_columns or []),
         "columns": panel_columns,
-        "editable_columns": list(panel.editable_columns or []),
+        "editable_columns": _effective_write_columns(
+            screen,
+            identity,
+            op="update",
+            columns=list(panel.editable_columns or []),
+        ),
         "sections": dict(panel.sections or {}),
         "title": panel.title or screen.title,
         "column_labels": dict(screen.column_labels or {}),
@@ -3246,7 +3544,7 @@ def render_table_screen(
         "page_size": page_size,
         "total_count": total_count,
         "totals_partial": totals_partial,
-        "table_view": table_spec.model_dump(),
+        "table_view": _table_view_for_identity(screen, identity),
         "totals_row": totals_row,
         "stat_tiles": stat_tiles,
         "filter_options": filter_options,
