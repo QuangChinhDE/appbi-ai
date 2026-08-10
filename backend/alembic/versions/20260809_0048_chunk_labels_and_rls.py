@@ -138,9 +138,19 @@ def upgrade():
     op.execute("CREATE POLICY govern_doc_chunk_update ON govern_doc_chunk FOR UPDATE USING (true) WITH CHECK (true)")
     op.execute("CREATE POLICY govern_doc_chunk_delete ON govern_doc_chunk FOR DELETE USING (true)")
 
-    # The role the policy is meant for. Created but not switched to — connecting
-    # as it is a deployment decision, and doing it here would lock out a running
-    # stack mid-migration.
+    # The role the policy is meant for. Created + granted here, but not switched
+    # to — connecting as it is a deployment decision, and doing it here would lock
+    # out a running stack mid-migration.
+    #
+    # On a managed / restricted Postgres the connecting account often lacks the
+    # CREATEROLE attribute (and may not own every table). Provisioning appbi_app
+    # is defence-in-depth and INERT until DATABASE_URL points at it, so if we
+    # cannot create the role we SKIP the whole block with a NOTICE rather than
+    # failing the entire migration (which would crash-loop the backend on boot).
+    # A DBA can create appbi_app + grants later; vector_store_health() reports
+    # whether the protection is actually in force. App-level permission checks are
+    # unaffected either way. Everything is inside ONE DO block so a mid-way
+    # insufficient_privilege rolls the block back cleanly (no half-granted state).
     op.execute(
         """
         DO $$
@@ -148,18 +158,18 @@ def upgrade():
             IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'appbi_app') THEN
                 CREATE ROLE appbi_app NOLOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE;
             END IF;
+            GRANT USAGE ON SCHEMA public TO appbi_app;
+            GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO appbi_app;
+            GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO appbi_app;
+            ALTER DEFAULT PRIVILEGES IN SCHEMA public
+                GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO appbi_app;
+            ALTER DEFAULT PRIVILEGES IN SCHEMA public
+                GRANT USAGE, SELECT ON SEQUENCES TO appbi_app;
+        EXCEPTION
+            WHEN insufficient_privilege THEN
+                RAISE NOTICE 'appbi_app not provisioned (account lacks CREATEROLE/grant). RLS stays inert; a DBA can create the role + grants and point DATABASE_URL at it. App-level permission enforcement is unaffected.';
         END $$
         """
-    )
-    op.execute("GRANT USAGE ON SCHEMA public TO appbi_app")
-    op.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO appbi_app")
-    op.execute("GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO appbi_app")
-    op.execute(
-        "ALTER DEFAULT PRIVILEGES IN SCHEMA public "
-        "GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO appbi_app"
-    )
-    op.execute(
-        "ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE, SELECT ON SEQUENCES TO appbi_app"
     )
 
 
