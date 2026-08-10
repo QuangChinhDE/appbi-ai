@@ -1,6 +1,6 @@
 'use client';
 
-import React from 'react';
+import React, { useEffect } from 'react';
 import { X } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { IconButton } from '@/components/ui/Button';
@@ -32,6 +32,16 @@ export function AppModalShell({
   closeDisabled = false,
   variant = 'modal',
 }: AppModalShellProps) {
+  // Esc closes the dialog — every other popover/menu in the app already does,
+  // and a modal that only closes via its X button traps keyboard users.
+  // `closeDisabled` (e.g. a job in flight) still wins.
+  useEffect(() => {
+    if (variant !== 'modal' || closeDisabled) return undefined;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [variant, closeDisabled, onClose]);
+
   const headerInner = (
     <div className="flex items-start justify-between gap-4">
       <div className="flex min-w-0 items-start gap-3">

@@ -179,6 +179,12 @@ class GovernKnowledgeDoc(Base):
     # sha256(body)+embedding-model of the last body embedded into govern_doc_chunk;
     # lets a re-save with unchanged body skip embedding entirely (no wasted tokens).
     embedded_hash = Column(String(80), nullable=True)
+    # ── External-embedding control (what may leave for a third party) ──────
+    # Embedding sends the document's full text to an external provider. This is
+    # the veto for documents that must not go, and the honest cost of using it
+    # is that the doc becomes unreachable by AI — stated, never silent.
+    allow_external_embedding = Column(Boolean, nullable=False, default=True)
+    sensitivity = Column(String(16), nullable=False, default="internal")  # internal|confidential|restricted
     # ── Knowledge Hub metadata (AI-readable node, review workflow) ─────────
     business_domain = Column(String(120), nullable=True)   # e.g. "Bán hàng", "Vận hành"
     process_ref = Column(String(160), nullable=True)       # business process this doc serves
@@ -485,3 +491,27 @@ class ClassificationTag(Base):
     classification = relationship("Classification", back_populates="tags")
 
     __table_args__ = (UniqueConstraint("classification_id", "name", name="uq_classification_tag_name"),)
+
+
+class GovernDocEgressLog(Base):
+    """One row per transfer of document text to an external embedding provider.
+
+    Written per RUN, not per chunk: an audit asks "did this document leave, when,
+    to whom, how much of it" — a row per chunk would bury that answer in volume.
+    A refusal is logged too (`outcome='blocked'`); proving something did NOT leave
+    is half the value of keeping the record.
+    """
+    __tablename__ = "govern_doc_egress_log"
+
+    id = Column(Integer, primary_key=True, index=True)
+    doc_id = Column(Integer, nullable=False, index=True)
+    doc_title = Column(String(300), nullable=True)
+    sensitivity = Column(String(16), nullable=True)
+    purpose = Column(String(24), nullable=False, default="embedding")
+    provider = Column(String(64), nullable=True)
+    model = Column(String(100), nullable=True)
+    chunks_sent = Column(Integer, nullable=False, default=0)
+    chars_sent = Column(Integer, nullable=False, default=0)
+    outcome = Column(String(16), nullable=False, default="sent")  # sent | blocked | failed
+    triggered_by = Column(String(128), nullable=True)
+    occurred_at = Column(DateTime, default=func.now())

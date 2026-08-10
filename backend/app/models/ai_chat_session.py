@@ -44,7 +44,21 @@ class AiChatSession(Base):
     briefing = Column(JSON, nullable=True)
 
     # Latest ConversationState snapshot (findings / hypotheses / …)
+    #
+    # CLIENT-SUPPLIED: the public session endpoint assigns this straight from the
+    # request body, so nothing trusted may be kept here. See `flow_state` below.
     conv_state = Column(JSON, nullable=True)
+
+    # WHAT AN AGENT FLOW ESTABLISHED IN THIS CONVERSATION — written ONLY by the
+    # runtime, never from a request body. That separation is the whole reason it is
+    # a second column instead of a key inside `conv_state`: a flow variable a viewer
+    # could set would flow into prompts, branch conditions and tool arguments.
+    #
+    # Declared here as well as in the migration. It existed in the database and not
+    # on this class, so `row.flow_state = {...}` set a plain Python attribute that
+    # SQLAlchemy never persisted — no error, no write, and every turn re-read the
+    # whole report while the code looked correct.
+    flow_state = Column(JSON, nullable=True)
 
     # Running totals for analytics / cost tracking
     turn_count = Column(Integer, nullable=False, default=0)

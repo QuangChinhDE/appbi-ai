@@ -26,6 +26,30 @@ _STICKY_TTL = 45.0
 _FALLBACK_MODEL = "gpt-4o-mini"
 
 
+def _tool_payload(msg: dict) -> str:
+    """The tool's output, whichever key the caller used.
+
+    The documented contract is `result`; the flow engine sent `content`, and this
+    translation read only `result` — so every tool result an Agent Flow node
+    produced arrived at the model as `{}`. The model then answered a question about
+    a report it had effectively never been shown, and nothing anywhere said so.
+
+    Accepting both keys is not tolerance for sloppiness: it is a boundary that
+    cannot silently drop the one thing it exists to carry. A payload that is
+    genuinely absent is reported as such, so it fails loudly instead of looking
+    like an empty result set.
+    """
+    import json as _json
+
+    for key in ("result", "content"):
+        if key in msg and msg[key] is not None:
+            value = msg[key]
+            if isinstance(value, str):
+                return value
+            return _json.dumps(value, default=str)
+    return _json.dumps({"ok": False, "error": "tool result missing from the message"})
+
+
 def _to_openai_messages(system_prompt: str, messages: list[dict]) -> list[dict]:
     out: list[dict] = [{"role": "system", "content": system_prompt}]
     for msg in messages:
@@ -57,7 +81,16 @@ def _to_openai_messages(system_prompt: str, messages: list[dict]) -> list[dict]:
         elif role == "assistant":
             entry: dict[str, Any] = {"role": "assistant"}
             text = msg.get("content")
-            entry["content"] = str(text) if text else None
+            # ALWAYS A STRING, NEVER null.
+            #
+            # `None` is only legal on an assistant message that carries tool_calls.
+            # Emitting it for a plain empty turn made OpenAI reject the whole
+            # request — "expected a string, got null" — and an empty assistant turn
+            # is ordinary: a flow whose final step produced nothing, a cancelled
+            # answer, a client replaying its own transcript. One such turn in the
+            # history then poisoned EVERY later question in that conversation,
+            # because the history is resent each time.
+            entry["content"] = str(text) if text else ""
             tcs = msg.get("tool_calls") or []
             if tcs:
                 entry["tool_calls"] = [
@@ -76,7 +109,7 @@ def _to_openai_messages(system_prompt: str, messages: list[dict]) -> list[dict]:
             out.append({
                 "role": "tool",
                 "tool_call_id": msg["tool_call_id"],
-                "content": json.dumps(msg.get("result") or {}, default=str),
+                "content": _tool_payload(msg),
             })
     return out
 

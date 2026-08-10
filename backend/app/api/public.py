@@ -1132,6 +1132,18 @@ def get_public_dashboard(
     # Replace it with a safe boolean so the AI bot UI can skip key entry.
     safe_appearance: dict = dict(appearance_config or {})
     _link_key_present = bool(safe_appearance.pop("ai_bot_key", None))
+    if not _link_key_present:
+        # THE DEPLOYMENT'S OWN KEY COUNTS TOO.
+        #
+        # This flag is what decides whether the viewer is shown "paste your API
+        # key". It knew about two sources and the runtime now honours three, so a
+        # deployment with a key in its environment still stopped every viewer at a
+        # gate the server could have walked straight through.
+        from app.services.dashboard_ai_bot.public_link_config import deployment_key
+
+        _link_key_present = bool(
+            deployment_key(str((appearance_config or {}).get("ai_bot_provider") or ""))[0]
+        )
     # A BRAIN CAN SUPPLY THE CREDENTIAL TOO.
     #
     # This used to test only the link's own key, so a link whose brain carried a
@@ -1141,17 +1153,13 @@ def get_public_dashboard(
     # means "the viewer does not need to bring a key", so it has to account for
     # every place a key can come from.
     _brain_supplies_key = False
-    _cfg_flow_key = (safe_appearance.get("ai_bot_flow_key") or "").strip()
-    if not _link_key_present and _cfg_flow_key:
-        try:
-            from app.services.agent_flows.registry import resolve_published as _rp
+    if not _link_key_present:
+        # Same helper the chat endpoint uses. Two answers to "does the viewer need a
+        # key" is how a working per-node token ended up behind a gate that never
+        # opened.
+        from app.services.agent_flows.dispatch import flow_supplies_credentials
 
-            _r = _rp(db, _cfg_flow_key)
-            _brain_supplies_key = bool(_r and not _r[1].steps_missing_credentials())
-        except Exception:  # noqa: BLE001
-            # Fails CLOSED: the viewer is asked for a key rather than dropped into a
-            # chat that cannot call anything.
-            _brain_supplies_key = False
+        _brain_supplies_key = flow_supplies_credentials(db, token=token)
     if _link_key_present or _brain_supplies_key:
         safe_appearance["ai_bot_key_configured"] = True
     else:
@@ -3519,7 +3527,8 @@ async def post_dashboard_ai_briefing_brief(
     return StreamingResponse(
         sse_stream(),
         media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        headers={"Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no",
+                     "Content-Encoding": "identity"},
     )
 
 
@@ -3715,7 +3724,10 @@ async def chat_dashboard_ai_agent(
     """
     import json as _json
     from fastapi.responses import StreamingResponse
-    from app.services.dashboard_ai_bot import run_agent_stream
+    # `run_agent_stream` — the first-generation bot — used to be imported here and
+    # is now dead: this endpoint dispatches only through `agent_flows.dispatch`.
+    # Left in place it read as a live second engine, which is exactly the confusion
+    # to avoid when asking "what actually answers a viewer".
     from app.services.dashboard_ai_bot.tool_context import ToolContext
 
     dash, public_filters, _, appearance_config = _get_dashboard_by_token(
@@ -3732,11 +3744,11 @@ async def chat_dashboard_ai_agent(
     # token needs nothing from the link. Resolving credentials first made that
     # impossible — the link 400'd on "no key" before anyone looked at what the brain
     # already had.
-    from app.services.agent_flows.registry import resolve_published as _resolve_brain
+    from app.services.agent_flows.dispatch import flow_supplies_credentials
 
-    _flow_key = ((appearance_config or {}).get("ai_bot_flow_key") or "").strip()
-    _resolved = _resolve_brain(db, _flow_key) if _flow_key else None
-    _brain_self_sufficient = bool(_resolved and not _resolved[1].steps_missing_credentials())
+    # Resolved through the BINDING, so a link pinned to an older version is judged on
+    # the version it actually runs rather than on whatever is published.
+    _brain_self_sufficient = flow_supplies_credentials(db, token=token)
 
     try:
         effective_key, provider, model = resolve_public_ai_credentials(
@@ -3866,7 +3878,8 @@ async def chat_dashboard_ai_agent(
         return StreamingResponse(
             _blocked_stream(),
             media_type="text/event-stream",
-            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+            headers={"Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no",
+                     "Content-Encoding": "identity"},
         )
     # Feed the normalized text (invisibles stripped, length-capped) to the agent.
     if _guard.normalized_question and _guard.normalized_question != _last_user_msg:
@@ -3923,73 +3936,66 @@ async def chat_dashboard_ai_agent(
         # (`run_scope` below), and documents and metric definitions are reached by
         # tool only when a step is granted them.
 
-        # WHERE A PUBLIC LINK'S CHATBOT GETS ITS BRAIN.
+        # WHERE A PUBLIC LINK'S CHATBOT GETS ITS FLOW.
         #
-        # The previous module was deleted and this was a stub that told every viewer
-        # "Trợ lý chưa được cấu hình" — which meant a brain could be authored,
-        # published and pointed at by a link, and still never run. `run_brain` had no
-        # caller anywhere in the app; `ai_bot_flow_key` was read only by the code that
-        # counts which links use a brain. This connects them.
+        # Everything about resolving the flow, checking the link's data contract,
+        # narrowing the tool context to what that contract allows, loading session
+        # memory and recording the run now lives in `agent_flows.dispatch`. Three
+        # callers need that path — this endpoint, the Studio's Test button and
+        # replay — and a path that lives inside an HTTP handler can only have one.
         #
-        # `resolve_published` deliberately does not fall back to a draft, so a link
-        # naming an unpublished brain is TOLD, not quietly served something nobody
-        # approved.
-        from app.services.agent_flows.permissions import run_scope
-        from app.services.agent_flows.runtime.loop import run_brain
+        # FAIL CLOSED. No binding, a binding whose dashboard has changed under it, or
+        # nothing published: the viewer is told and no answer is produced. There is
+        # deliberately no "read whatever is on the dashboard" fallback — that
+        # fallback is what "define the data before assigning the flow" removes.
+        from app.services.agent_flows.dispatch import run_for_link
+        from app.services.dashboard_ai_bot.thinking.prompts import (
+            build_agent_system_prompt as _build_base_prompt,
+        )
 
-        # `_resolved` / `_flow_key` come from the credential block above — resolved
-        # once per turn, because a second `resolve_published` here could disagree with
-        # the one that decided whether a key was required.
-        if _resolved is None:
-            async def _no_brain():
+        _link_row = db.query(DashboardPublicLink).filter(
+            DashboardPublicLink.token == token,
+            DashboardPublicLink.is_active.is_(True),
+        ).first()
+
+        # The SHARED base prompt, not a new one. It carries the citation contract,
+        # the answer-in-the-viewer's-language rule and the report's own identity +
+        # active filters; each node's authored instructions are appended to it
+        # rather than replacing it.
+        _base_prompt = _build_base_prompt(
+            dashboard_name=dash.name or "Dashboard",
+            dashboard_description=getattr(dash, "description", None),
+            chart_count=len(getattr(ctx, "charts", []) or []),
+            filters_applied=combined_filters or [],
+            max_tool_calls=8,
+            report_context_note=report_note,
+        )
+
+        if _link_row is None:
+            async def _no_link():
                 from app.services.dashboard_ai_bot.events import AgentEvent
 
                 yield AgentEvent(
                     type="text",
-                    text=(
-                        "Link này chưa chọn bộ não nào đã phát hành. "
-                        "Vào Agent Flows, phát hành một bộ não rồi chọn nó trong phần "
-                        "ChatBot của link."
-                        if not _flow_key else
-                        f"Bộ não “{_flow_key}” của link này chưa có bản phát hành nào. "
-                        "Mở nó trong Agent Flows và bấm Phát hành."
-                    ),
+                    text="Không xác định được link công khai của báo cáo này.",
                 )
+                yield AgentEvent(type="done")
 
-            agen = _no_brain().__aiter__()
+            agen = _no_link().__aiter__()
         else:
-            _brain_row, _brain = _resolved
-            # The run's reading scope comes from the brain's OWNER's current rights,
-            # re-derived per turn — not from what was true when it was published.
-            ctx.knowledge_scope = run_scope(db, _brain_row, _brain)
-            # The SHARED base prompt, not a new one. It carries the citation
-            # contract, the answer-in-the-viewer's-language rule and the report's
-            # own identity + active filters; each step's authored instructions are
-            # appended to it rather than replacing it.
-            from app.services.dashboard_ai_bot.thinking.prompts import (
-                build_agent_system_prompt as _build_base_prompt,
-            )
-
-            _base_prompt = _build_base_prompt(
-                dashboard_name=dash.name or "Dashboard",
-                dashboard_description=getattr(dash, "description", None),
-                chart_count=len(getattr(ctx, "charts", []) or []),
-                filters_applied=combined_filters or [],
-                # The per-step ceiling is enforced by the runtime; this only tells
-                # the model roughly how much reaching it may plan for.
-                max_tool_calls=max((s.max_tool_calls for s in _brain.steps), default=8),
-                report_context_note=report_note,
-            )
-            agen = run_brain(
-                brain=_brain,
+            agen = run_for_link(
+                db,
+                link=_link_row,
+                dashboard=dash,
                 ctx=ctx,
-                # Fallback only. A step carrying its own token ignores this.
-                api_key=captured_key,
-                link_provider=provider,
-                link_model=model,
                 question=_guard.normalized_question or _last_user_msg,
                 history=safe_messages[:-1] if safe_messages else [],
-                web_enabled=web_search_flag,
+                session_key=(x_public_session or ""),
+                filters=combined_filters or [],
+                # Fallback only. A node carrying its own token ignores this.
+                api_key=captured_key,
+                provider=provider,
+                model=model,
                 base_system_prompt=_base_prompt,
             ).__aiter__()
         timed_out = False
@@ -4007,15 +4013,46 @@ async def chat_dashboard_ai_agent(
         m_server_state: dict | None = None
         m_verif_cov: float | None = None
         m_verif_unmatched: int | None = None
+        # Idle is measured from the LAST REAL EVENT, not from the start of the
+        # turn: a long but healthy run must not be cut off just for being long.
+        _last_event = loop.time()
         try:
+            _pending: asyncio.Future | None = None
             while True:
+                # `asyncio.wait_for` CANCELS what it is waiting on when it times
+                # out. Using it for the keepalive tick therefore killed the very
+                # model call the keepalive existed to wait for — the turn died
+                # mid-node and was recorded as abandoned. `asyncio.wait` leaves the
+                # pending task alone, which is the whole point: tick, breathe, keep
+                # waiting on the SAME call.
+                if _pending is None:
+                    _pending = asyncio.ensure_future(agen.__anext__())
+                _finished, _ = await asyncio.wait({_pending}, timeout=8.0)
                 try:
-                    ev = await asyncio.wait_for(agen.__anext__(), timeout=IDLE_TIMEOUT)
+                    if not _finished:
+                        raise asyncio.TimeoutError
+                    ev = _pending.result()
+                    _pending = None
                 except StopAsyncIteration:
+                    _pending = None
                     break
                 except asyncio.TimeoutError:
-                    timed_out = True
-                    break
+                    # SSE KEEPALIVE, not a failure.
+                    #
+                    # A flow node can be silent for a long time — one call to a
+                    # reasoning model is tens of seconds with nothing to stream —
+                    # and every layer between here and the browser (Next's rewrite
+                    # proxy, nginx, the client's own watchdog) reads silence as a
+                    # dead connection. A real turn on gpt-5 took 91s and the chat
+                    # gave up at 29s having received a perfectly healthy stream.
+                    # So the stream breathes: a comment frame, which SSE ignores
+                    # and every proxy counts as traffic.
+                    if loop.time() - _last_event > IDLE_TIMEOUT:
+                        timed_out = True
+                        break
+                    yield ": keepalive\n\n"
+                    continue
+                _last_event = loop.time()
                 # Tally telemetry from the raw event.
                 _et = getattr(ev, "type", None)
                 if _et == "route":
@@ -4137,8 +4174,17 @@ async def chat_dashboard_ai_agent(
         sse_stream(),
         media_type="text/event-stream",
         headers={
-            "Cache-Control": "no-cache",
+            "Cache-Control": "no-cache, no-transform",
             "X-Accel-Buffering": "no",
+            # SSE MUST NOT BE COMPRESSED OR TRANSFORMED.
+            #
+            # A browser negotiates gzip; a compressor holds small frames back until
+            # it has enough bytes to be worth emitting, so the keepalive comments
+            # that keep this stream alive never reached the client and its watchdog
+            # fired at exactly its idle limit — while `curl`, which asked for no
+            # compression, saw every frame. `identity` + `no-transform` is the pair
+            # that tells the app server AND any proxy in between to leave it alone.
+            "Content-Encoding": "identity",
         },
     )
 
@@ -4314,7 +4360,7 @@ async def explore_dashboard_ai_agent(
         sse_stream(),
         media_type="text/event-stream",
         headers={
-            "Cache-Control": "no-cache",
+            "Cache-Control": "no-cache, no-transform",
             "X-Accel-Buffering": "no",
         },
     )
@@ -4396,6 +4442,11 @@ def _event_to_envelope(ev) -> dict | None:
             "total_numbers": v.get("total_numbers"),
             "matched": v.get("matched"),
             "checked": bool(v.get("checked")),
+            # Entity names the answer used that the run never read. Unlike the
+            # unmatched VALUES (which stay server-side — echoing an invented figure
+            # shows it to the viewer twice), a name the evidence lacks is safe to
+            # surface and is the part a reader can act on.
+            "unknown_labels": v.get("unknown_labels") or [],
         }
     if et == "error":
         return {"type": "error", "text": ev.text}
@@ -4408,6 +4459,25 @@ def _event_to_envelope(ev) -> dict | None:
     if et == "usage":
         # Per-round token counts (informational; FE may ignore).
         return {"type": "usage", **(ev.extra or {})}
+    if et in ("node_started", "node_completed", "branch_taken", "loop_iteration"):
+        # Agent Flow lifecycle. The builder's canvas lights up the path a run is
+        # actually taking, and the chat shows "đang chạy bước X" instead of a spinner
+        # with nothing behind it.
+        #
+        # `type` is written AFTER the spread on purpose: the payload carries the
+        # NODE's type, and spreading it last overwrote the EVENT's type — the wire
+        # then announced events called "report_read" and "if", which no client
+        # handles.
+        return {**(ev.extra or {}), "type": et}
+    if et == "result":
+        # THE TERMINATOR: the complete `FlowOutput` envelope.
+        #
+        # Without this branch the whole structured answer — typed blocks, citations,
+        # notices, execution path — was built, recorded, and then dropped on the way
+        # out, because this function only forwards types it knows and silently
+        # returns None for the rest. The bot would have kept rendering the streamed
+        # prose and nobody would have seen a block.
+        return {"type": "result", "envelope": (ev.extra or {}).get("envelope") or {}}
     if et == "done":
         return {"type": "done"}
     # tool_call (and the explorer-internal _answer) never reach the FE

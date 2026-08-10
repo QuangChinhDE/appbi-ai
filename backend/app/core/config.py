@@ -211,6 +211,15 @@ class Settings(BaseSettings):
     GEMINI_API_KEY: str = ""
     ANTHROPIC_API_KEY: str = ""
 
+    # May a PUBLIC link's assistant spend the deployment's own API key?
+    #
+    # Default on, because an operator who configures a key expects the assistant to
+    # work without every viewer pasting one. It is still not implicit: the bot must
+    # be enabled on that link, a flow must be bound to it with a data contract, and
+    # every turn is bounded by that binding's budget. Set false to require a
+    # per-link or per-viewer key instead.
+    PUBLIC_BOT_USE_DEPLOYMENT_KEY: bool = True
+
     # Large data thresholds — tables exceeding these are auto-set to query_mode="live"
     LARGE_TABLE_ROW_THRESHOLD: int = 50_000_000         # 50M rows
     LARGE_TABLE_SIZE_THRESHOLD_GB: float = 5.0          # 5 GB

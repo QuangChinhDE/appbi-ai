@@ -45,6 +45,15 @@ EventType = Literal[
     "node_started",
     "node_completed",
     "preview_done",
+    # Agent Flow v2 — branch/loop lifecycle, so the canvas can light up the path
+    # a run actually took instead of guessing it from node order.
+    "branch_taken",
+    "loop_iteration",
+    # THE TERMINATOR. Carries the complete `FlowOutput` envelope in
+    # `extra["envelope"]`. Everything before it is progressive output for the
+    # person waiting; this is the structured answer the bot renders, the Runs
+    # table stores, and a replay re-runs.
+    "result",
 ]
 
 

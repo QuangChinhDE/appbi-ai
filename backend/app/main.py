@@ -51,6 +51,12 @@ async def lifespan(app: FastAPI):
     from app.services.govern_doc_sync_scheduler import startup as govern_doc_sync_startup
     govern_doc_sync_startup()
 
+    # Agent Flow run-history retention. The three run tables were designed with
+    # three lifetimes; without this job that design only existed in a docstring
+    # while the per-node trace grew by roughly a million rows per flow per year.
+    from app.services.agent_flows.retention_scheduler import startup as flow_retention_startup
+    flow_retention_startup()
+
     # Reap datasets left in 'syncing' by a crash/restart mid-publish — otherwise
     # they show "Syncing…" forever + block new syncs until the 1h lease expires.
     try:

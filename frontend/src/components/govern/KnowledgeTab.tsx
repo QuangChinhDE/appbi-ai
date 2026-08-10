@@ -16,7 +16,7 @@ import Link from 'next/link';
 import {
   BookOpen, Compass, Boxes, Workflow, HelpCircle, FileText, Sigma, LayoutDashboard, Database,
   Tag as TagIcon, History, Plus, Pencil, Trash2, Save, X, Pin, ChevronLeft, ChevronRight, ChevronDown,
-  ExternalLink, AlertTriangle, Loader2, Library, Search, Upload, Sparkles, RefreshCw,
+  ExternalLink, AlertTriangle, Check, Loader2, Library, Search, Upload, Sparkles, RefreshCw,
   Bold, Italic, Strikethrough, Heading1, Heading2, Heading3, List, ListOrdered, Quote, Code, Link2, Table, Eye,
   GitBranch, ShieldCheck, Clock3, BookCheck, MessageCircleQuestion, Share2, Info, Network,
 } from 'lucide-react';
@@ -39,11 +39,11 @@ import {
   publishVersion, aiChangeNote, governGraph,
   getDocSource, putDocSource, uploadDocSourceFile, syncDocSource, listGoogleDocsSources,
   getEmbeddingConfig, previewChunks, reembedDoc,
-  getDocHistory, getDocUsage, getDocSnapshot, isSourceOwned,
+  getDocHistory, getDocUsage, getDocVectors, queryDocVectors, getDocSnapshot, isSourceOwned,
   type DocSourceKind, type DocSnapshot, type GoogleDocsSource,
   type KnowledgeDoc, type KnowledgeSpace, type KnowledgeDocWrite, type KnowledgeAsset, type ManagedMetric,
   type KnowledgeDocVersion, type DatasetLite, type GovernSearchResult, type RelatedDoc, type KnowledgeGraph, type GraphNode,
-  type DocSourceInfo, type DocSyncSchedule, type EmbeddingConfig, type ChunkPreviewResult, type DocHistory, type DocUsage,
+  type DocSourceInfo, type DocSyncSchedule, type EmbeddingConfig, type ChunkPreviewResult, type DocHistory, type DocUsage, type DocVector, type VectorMatch,
 } from '@/lib/catalog';
 import { AppModalShell } from '@/components/common/AppModalShell';
 import { ShareDialog } from '@/components/common/ShareDialog';
@@ -217,7 +217,7 @@ export function KnowledgeTab({ nav, onOpenVocab }: { nav: ReturnType<typeof useU
         <CreateDocWizard
           spaces={spaces}
           onClose={() => setWizardOpen(false)}
-          onManual={(sp) => { setWizardOpen(false); setSeed(newDoc(sp)); nav.set({ doc: null, m: 'new' }); }}
+          onManual={(sp, docTitle) => { setWizardOpen(false); setSeed({ ...newDoc(sp), title: docTitle }); nav.set({ doc: null, m: 'new' }); }}
           onCreated={(id) => { setWizardOpen(false); void loadList(); openDoc(id); }}
         />
       )}
@@ -620,19 +620,210 @@ function DetailShell({ children }: { children: ReactNode }) {
 }
 
 // ═══════════════════════════════ Detail ═════════════════════════════════════
-const DETAIL_TABS = [
-  { key: 'noidung', labelKey: 'govern.detail.tab.content', icon: <FileText className="h-4 w-4" /> },
-  { key: 'chiso', labelKey: 'govern.detail.tab.metrics', icon: <Sigma className="h-4 w-4" /> },
-  { key: 'lienket', labelKey: 'govern.detail.tab.links', icon: <LayoutDashboard className="h-4 w-4" /> },
-  { key: 'dothi', labelKey: 'govern.detail.tab.graph', icon: <GitBranch className="h-4 w-4" /> },
-  { key: 'nguon', labelKey: 'govern.detail.tab.source', icon: <Database className="h-4 w-4" /> },
-  { key: 'nhung', labelKey: 'govern.detail.tab.embedding', icon: <Boxes className="h-4 w-4" /> },
-  { key: 'lichsu', labelKey: 'govern.detail.tab.history', icon: <Clock3 className="h-4 w-4" /> },
-  { key: 'sudung', labelKey: 'govern.detail.tab.usage', icon: <Network className="h-4 w-4" /> },
-] as const;
-type DetailTab = (typeof DETAIL_TABS)[number]['key'];
-const PRIMARY_DETAIL_TABS = DETAIL_TABS.filter((item) => item.key === 'noidung' || item.key === 'dothi');
-const SECONDARY_DETAIL_TABS = DETAIL_TABS.filter((item) => item.key !== 'noidung' && item.key !== 'dothi');
+// The document IS the page — there is no tab bar. Everything else is a utility
+// surface opened on demand: two drawers (Liên kết / Lịch sử) and three rail
+// flyouts (AI readiness / Information / Linked mentions). Configuration that
+// used to own a whole tab (source settings, embedding settings) lives behind
+// the ••• menu, so nothing was removed — only demoted out of the reading path.
+type DetailPanel = null | 'relations' | 'history';
+type DetailModal = null | 'source' | 'embedding' | 'graph';
+
+/** Right-hand drawer (Liên kết / Lịch sử) floating over the reading surface. */
+function DetailDrawer({ title, icon, width = 'w-[26rem]', onClose, children }: {
+  title: string; icon?: ReactNode; width?: string; onClose: () => void; children: ReactNode;
+}) {
+  return (
+    <div className={cn(
+      'absolute right-0 top-0 z-40 max-h-full overflow-y-auto rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 shadow-linear-lg',
+      width,
+    )}>
+      <div className="sticky top-0 z-10 flex h-11 items-center gap-2 border-b border-[rgb(var(--border-line))] bg-surface-1 px-3">
+        <span className="flex items-center gap-1.5 text-caption font-emphasis text-text-primary">{icon}{title}</span>
+        <div className="flex-1" />
+        <button onClick={onClose} aria-label="Đóng" className="text-text-quaternary transition-colors hover:text-text-primary">
+          <X className="h-3.5 w-3.5" />
+        </button>
+      </div>
+      {children}
+    </div>
+  );
+}
+
+function DrawerSection({ title, count, children }: { title: string; count?: ReactNode; children: ReactNode }) {
+  return (
+    <div className="border-t border-[rgb(var(--border-line))] px-3 py-3 first-of-type:border-t-0">
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <span className="text-tiny font-emphasis uppercase tracking-[0.11em] text-text-quaternary">{title}</span>
+        {count != null && <span className="text-tiny text-text-tertiary">{count}</span>}
+      </div>
+      {children}
+    </div>
+  );
+}
+
+/** One clickable connection row (KPI / dashboard / dataset / doc). */
+function ConnectionItem({ icon, name, sub, side, onClick }: {
+  icon: ReactNode; name: string; sub?: string; side?: string; onClick?: () => void;
+}) {
+  const Tag = onClick ? 'button' : 'div';
+  return (
+    <Tag
+      {...(onClick ? { onClick, type: 'button' as const } : {})}
+      className={cn('flex w-full items-start gap-2.5 rounded-lg px-1.5 py-2 text-left', onClick && 'hover:bg-surface-2')}
+    >
+      <span className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-md bg-brand/10 text-brand">{icon}</span>
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-caption font-emphasis text-text-primary">{name}</span>
+        {sub && <span className="mt-0.5 block truncate text-tiny text-text-quaternary">{sub}</span>}
+      </span>
+      {side && <span className="mt-0.5 whitespace-nowrap text-tiny text-text-tertiary">{side}</span>}
+    </Tag>
+  );
+}
+
+/** ⌁ Liên kết — what this doc USES, where it IS USED, and what relates to it.
+ *  Replaces the old Chỉ số / Liên kết / Đồ thị tabs with one contextual view. */
+function RelationsDrawer({ doc, metrics, assets, related, usage, onClose, onOpenDoc, onEditMetric, onOpenGraph }: {
+  doc: KnowledgeDoc;
+  metrics: NonNullable<KnowledgeDoc['metrics_on_page']>;
+  assets: NonNullable<KnowledgeDoc['assets_on_page']>;
+  related: NonNullable<KnowledgeDoc['related_docs']>;
+  usage: DocUsage | null;
+  onClose: () => void; onOpenDoc: (id: number) => void; onEditMetric: (mn: string) => void; onOpenGraph: () => void;
+}) {
+  const { t } = useI18n();
+  const uses = metrics.length + assets.length;
+  const dashboards = usage?.dashboards ?? [];
+  return (
+    <DetailDrawer title={t('govern.relations.title')} icon={<Network className="h-3.5 w-3.5" />} onClose={onClose}>
+      <p className="border-b border-[rgb(var(--border-line))] bg-surface-2 px-3 py-2 text-tiny text-text-tertiary">
+        {t('govern.relations.summary', { count: uses + dashboards.length + related.length })}
+      </p>
+
+      <DrawerSection title={t('govern.relations.uses')} count={uses}>
+        {uses === 0 ? (
+          <p className="px-1.5 text-tiny text-text-quaternary">{t('govern.relations.usesEmpty')}</p>
+        ) : (
+          <>
+            {metrics.map((m) => (
+              <ConnectionItem key={m.machine_name} icon={<Sigma className="h-3.5 w-3.5" />} name={m.name}
+                sub={m.is_source ? t('govern.metrics.sourceRole') : t('govern.metrics.reusedRole')}
+                side={t('govern.detail.tab.metrics')} onClick={() => onEditMetric(m.machine_name)} />
+            ))}
+            {assets.map((a) => (
+              <ConnectionItem key={`${a.type}:${a.ref}`} icon={ASSET_ICON[a.type]} name={a.name || a.ref}
+                sub={a.exists ? undefined : t('govern.links.missing')} side={t(`govern.asset.${a.type}`)}
+                onClick={a.exists && a.open_path ? () => window.open(a.open_path!, '_blank', 'noopener,noreferrer') : undefined} />
+            ))}
+          </>
+        )}
+      </DrawerSection>
+
+      <DrawerSection title={t('govern.relations.usedIn')} count={t('govern.relations.dashboardCount', { count: dashboards.length })}>
+        {dashboards.length === 0 ? (
+          <p className="px-1.5 text-tiny text-text-quaternary">{t('govern.relations.usedInEmpty')}</p>
+        ) : dashboards.map((d) => (
+          <ConnectionItem key={d.id} icon={<LayoutDashboard className="h-3.5 w-3.5" />} name={d.name}
+            sub={t('govern.relations.readsThisDoc')}
+            onClick={() => window.open(`/dashboards/${d.id}`, '_blank', 'noopener,noreferrer')} />
+        ))}
+        <div className="mt-1.5 flex items-center justify-between gap-2 rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 px-2.5 py-2 text-tiny text-text-secondary">
+          <span><b className="font-emphasis text-text-primary">{dashboards.length}</b> {t('govern.relations.dashboardsWord')}</span>
+          <span><b className="font-emphasis text-text-primary">{usage?.retrieval_count ?? doc.retrieval_count ?? 0}</b> {t('govern.relations.aiUses')}</span>
+        </div>
+      </DrawerSection>
+
+      <DrawerSection title={t('govern.detail.relatedDocs')} count={related.length}>
+        {related.length === 0 ? (
+          <p className="px-1.5 text-tiny text-text-quaternary">{t('govern.relations.relatedEmpty')}</p>
+        ) : related.map((r) => (
+          <ConnectionItem key={r.id} icon={<BookOpen className="h-3.5 w-3.5" />} name={r.title}
+            sub={relatedReason(r, t)} onClick={() => onOpenDoc(r.id)} />
+        ))}
+        <button onClick={onOpenGraph} className="mt-1 flex w-full items-center gap-1.5 rounded-lg px-1.5 py-2 text-left text-caption font-emphasis text-brand hover:bg-surface-2">
+          <GitBranch className="h-3.5 w-3.5" />{t('govern.relations.openGraph')}
+        </button>
+      </DrawerSection>
+    </DetailDrawer>
+  );
+}
+
+/** ◷ Lịch sử — one timeline of versions + source syncs + embedding runs. */
+function HistoryDrawer({ doc, onClose, onViewVersion }: {
+  doc: KnowledgeDoc; onClose: () => void; onViewVersion: (v: number) => void;
+}) {
+  const { t, language } = useI18n();
+  const [loading, setLoading] = useState(true);
+  const [history, setHistory] = useState<DocHistory | null>(null);
+
+  useEffect(() => {
+    let on = true;
+    setLoading(true);
+    getDocHistory(doc.id)
+      .then((h) => { if (on) setHistory(h); })
+      .catch(() => toast.error(t('govern.history.loadFailed')))
+      .finally(() => { if (on) setLoading(false); });
+    return () => { on = false; };
+  }, [doc.id, t]);
+
+  type Row = { key: string; kind: 'sync' | 'embed' | 'version'; at: string; title: string; detail?: string | null; status?: string; version?: number };
+  const rows: Row[] = [
+    ...(history?.runs ?? []).map((r): Row => ({
+      key: `run-${r.id}`, kind: r.run_type, at: r.started_at,
+      title: r.run_type === 'sync' ? t('govern.history.syncRun') : t('govern.history.embedRun'),
+      detail: r.detail, status: r.status,
+    })),
+    ...(history?.versions ?? []).map((v): Row => ({
+      key: `v-${v.version}`, kind: 'version', at: v.created_at || '', version: v.version,
+      title: t('govern.history.versionRow', { n: v.version }), detail: v.change_note,
+      status: v.is_published ? 'published' : undefined,
+    })),
+  ].sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime());
+
+  return (
+    <DetailDrawer title={t('govern.history.drawerTitle')} icon={<Clock3 className="h-3.5 w-3.5" />} onClose={onClose}>
+      {loading ? (
+        <div className="flex justify-center py-10"><Loader2 className="h-5 w-5 animate-spin text-brand" /></div>
+      ) : rows.length === 0 ? (
+        <p className="px-3 py-8 text-center text-caption text-text-tertiary">{t('govern.history.tabEmpty')}</p>
+      ) : (
+        <ul>
+          {rows.map((r) => (
+            <li key={r.key} className="flex gap-3 border-t border-[rgb(var(--border-line))] px-3 py-3 first:border-t-0">
+              <span className={cn(
+                'flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full text-tiny font-emphasis',
+                r.kind === 'version' ? 'bg-brand/10 text-brand' : 'bg-surface-2 text-text-tertiary',
+              )}>
+                {r.kind === 'version' ? `v${r.version}` : r.kind === 'sync' ? <RefreshCw className="h-3.5 w-3.5" /> : <Boxes className="h-3.5 w-3.5" />}
+              </span>
+              <div className="min-w-0 flex-1">
+                <div className="flex items-start justify-between gap-2">
+                  <span className="text-caption font-emphasis text-text-primary">{r.title}</span>
+                  <span className="whitespace-nowrap text-tiny text-text-quaternary">{relTime(r.at, language)}</span>
+                </div>
+                {r.detail && <p className="mt-0.5 text-tiny leading-relaxed text-text-tertiary">{r.detail}</p>}
+                <div className="mt-1.5 flex items-center gap-1.5">
+                  {r.status && (
+                    <span className={cn('rounded-full px-2 py-0.5 text-tiny',
+                      r.status === 'error' ? 'bg-danger/10 text-danger'
+                      : r.status === 'published' ? 'bg-success/10 text-success' : 'bg-surface-2 text-text-tertiary')}>
+                      {r.status}
+                    </span>
+                  )}
+                  {r.kind === 'version' && r.version != null && (
+                    <button onClick={() => onViewVersion(r.version!)} className="text-tiny font-emphasis text-brand hover:underline">
+                      {t('govern.action.view')}
+                    </button>
+                  )}
+                </div>
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+    </DetailDrawer>
+  );
+}
 
 function DetailScreen({ docId, nav, onBack, onEdit, onDeleted, onOpenMetric, onListChanged, onOpenDoc, onShare }: {
   docId: number; nav: ReturnType<typeof useUrlNav>; managed: ManagedMetric[];
@@ -648,8 +839,22 @@ function DetailScreen({ docId, nav, onBack, onEdit, onDeleted, onOpenMetric, onL
   const scrollRef = useRef<HTMLDivElement>(null);
   const [activeHeading, setActiveHeading] = useState<string>('');
   const [viewingVersion, setViewingVersion] = useState<KnowledgeDocVersion | null>(null);
-  const tab = (nav.get('dt') as DetailTab) || 'noidung';
-  const setTab = (t: string) => nav.set({ dt: t });
+  // URL-backed so a drawer survives a refresh / can be linked to.
+  const panel = (nav.get('dp') as DetailPanel) || null;
+  const setPanel = (p: DetailPanel) => nav.set({ dp: p || undefined });
+  const [modal, setModal] = useState<DetailModal>(null);
+  const [moreOpen, setMoreOpen] = useState(false);
+  const [embedTab, setEmbedTab] = useState<'config' | 'vectors'>('config');
+  const [usage, setUsage] = useState<DocUsage | null>(null);
+  const [syncing, setSyncing] = useState(false);
+
+  // Usage feeds the header's connection count, the relations drawer and the
+  // info flyout — fetched once per doc instead of per surface.
+  useEffect(() => {
+    let on = true;
+    getDocUsage(docId).then((u) => { if (on) setUsage(u); }).catch(() => {});
+    return () => { on = false; };
+  }, [docId, refresh]);
 
   useEffect(() => {
     let on = true;
@@ -664,7 +869,6 @@ function DetailScreen({ docId, nav, onBack, onEdit, onDeleted, onOpenMetric, onL
   // Scroll-spy: highlight the section currently being read in the on-this-page
   // outline. Observes the article's headings against the scroll container.
   useEffect(() => {
-    if (tab !== 'noidung') return;
     const scroller = scrollRef.current;
     const article = articleRef.current;
     if (!scroller || !article) return;
@@ -680,7 +884,7 @@ function DetailScreen({ docId, nav, onBack, onEdit, onDeleted, onOpenMetric, onL
     );
     heads.forEach((h) => io.observe(h));
     return () => io.disconnect();
-  }, [tab, doc?.id, doc?.body]);
+  }, [doc?.id, doc?.body]);
 
   const remove = async () => {
     if (!doc || !window.confirm(t('govern.detail.deleteConfirm', { name: doc.title }))) return;
@@ -706,6 +910,17 @@ function DetailScreen({ docId, nav, onBack, onEdit, onDeleted, onOpenMetric, onL
     machineName, homeDocId: null, onCreated: undefined,
   });
 
+  // Sync straight from the header: a synced doc's most common action.
+  const syncNow = async () => {
+    setSyncing(true);
+    try {
+      const res = await syncDocSource(docId);
+      toast.success(res.detail || t('govern.source.syncOk'));
+      setRefresh((v) => v + 1);
+    } catch (e) { toast.error(errDetail(e) || t('govern.source.syncFailed')); }
+    finally { setSyncing(false); }
+  };
+
   if (loading) return <div className="flex h-full items-center justify-center"><Loader2 className="h-6 w-6 animate-spin text-brand" /></div>;
   if (!doc) return (
     <div className="flex h-full flex-col px-4 pt-6 sm:px-6 xl:px-8">
@@ -720,14 +935,9 @@ function DetailScreen({ docId, nav, onBack, onEdit, onDeleted, onOpenMetric, onL
   const assets = doc.assets_on_page ?? [];
   const related = doc.related_docs ?? [];
   const perms = getResourcePermissions(doc.user_permission ?? undefined);
-  const primaryItems = PRIMARY_DETAIL_TABS.map((tabItem) => ({
-    key: tabItem.key, icon: tabItem.icon,
-    label: t(tabItem.labelKey),
-  }));
+  const connectionCount = metrics.length + assets.length + (usage?.dashboards.length ?? 0) + related.length;
 
-  // On-this-page outline (## / ### headings) → wayfinding in the context rail.
-  const secondaryKeys = new Set<string>(SECONDARY_DETAIL_TABS.map((item) => item.key));
-
+  // On-this-page outline (## / ### headings) → wayfinding in the left rail.
   const toc = (doc.body || '').split('\n').reduce<{ level: number; text: string }[]>((acc, raw) => {
     const m = raw.match(/^(#{1,3})\s+(.*)$/);
     if (m) acc.push({ level: m[1].length, text: m[2].replace(/\{\{[^}]+\}\}/g, '').replace(/[*`]/g, '').trim() });
@@ -741,91 +951,150 @@ function DetailScreen({ docId, nav, onBack, onEdit, onDeleted, onOpenMetric, onL
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
-      {/* ── Standard detail header bar — SAME chrome as Dataset/Explore detail:
-             h-11 strip, border-b, bg-surface-1: breadcrumb / tabs / actions ── */}
-      <div className="flex h-11 shrink-0 items-center gap-3 border-b border-[rgb(var(--border-line))] bg-surface-1 px-4">
-        <button onClick={onBack} className="flex items-center gap-1 text-sm text-text-tertiary transition-colors hover:text-text-primary">
+      {/* Header — the document IS the page, so the bar carries identity on the
+          left and utilities on the right; no tab strip competes with it. */}
+      <div className="flex h-11 shrink-0 items-center gap-2.5 border-b border-[rgb(var(--border-line))] bg-surface-1 px-4">
+        <button onClick={onBack} className="flex items-center gap-1 whitespace-nowrap text-sm text-text-tertiary transition-colors hover:text-text-primary">
           <ChevronLeft className="h-4 w-4" />
           {t('govern.detail.back')}
         </button>
         <span className="text-text-quaternary">/</span>
-        <span className="max-w-[220px] truncate text-sm font-medium text-text-primary xl:max-w-[360px]">{doc.title}</span>
-        <div className="mx-1 h-5 w-px bg-surface-3" />
-        <Tabs<DetailTab> size="sm" value={PRIMARY_DETAIL_TABS.some((item) => item.key === tab) ? tab : 'noidung'} onChange={setTab} items={primaryItems} />
-        <Select
-          value={secondaryKeys.has(tab) ? tab : ''}
-          onChange={(e) => { if (e.target.value) setTab(e.target.value); }}
-          className="h-7 w-[9.5rem] py-0 text-label"
-          aria-label={t('govern.detail.more')}
-        >
-          <option value="">{t('govern.detail.more')}</option>
-          {SECONDARY_DETAIL_TABS.map((tabItem) => (
-            <option key={tabItem.key} value={tabItem.key}>
-              {tabItem.key === 'chiso' && metrics.length ? `${t('govern.detail.tab.metrics')} (${metrics.length})`
-                : tabItem.key === 'lienket' && assets.length ? `${t('govern.detail.tab.links')} (${assets.length})`
-                : t(tabItem.labelKey)}
-            </option>
-          ))}
-        </Select>
+        <span className="max-w-[180px] truncate text-sm font-medium text-text-primary xl:max-w-[300px]">{doc.title}</span>
+        {doc.source_type && (
+          <span className={cn('inline-flex items-center gap-1 whitespace-nowrap rounded-full border px-2 py-0.5 text-tiny font-emphasis',
+            doc.source_type === 'google_doc' ? 'border-info/20 bg-info/10 text-info'
+            : doc.source_type === 'web' ? 'border-success/20 bg-success/10 text-success'
+            : 'border-warning/20 bg-warning/10 text-warning')}>
+            {t('govern.source.typeShort.' + doc.source_type)}
+          </span>
+        )}
+        <span className={cn('whitespace-nowrap rounded-full px-2 py-0.5 text-tiny', STATUS_TONE[doc.status] || 'bg-surface-2 text-text-tertiary')}>
+          {statusLabel(doc.status, t)}
+        </span>
+        <span className="hidden whitespace-nowrap text-tiny text-text-quaternary lg:inline">v{doc.version} · {doc.space}</span>
+
         <div className="flex-1" />
-        {/* Compact versions control — expands a dropdown to view/publish a
-            version (no inline list cluttering the reading surface). */}
-        <VersionsDropdown
-          docId={doc.id} publishedVersion={doc.published_version ?? null} latestVersion={doc.version}
-          refreshKey={refresh} viewingVersion={viewingVersion?.version ?? null}
-          onView={async (n) => { try { setViewingVersion(await getDocVersion(doc.id, n)); scrollRef.current?.scrollTo({ top: 0 }); } catch { toast.error(t('govern.history.loadVersionFailed')); } }}
-          onExitView={() => setViewingVersion(null)}
-          onPublished={() => { setViewingVersion(null); setRefresh((v) => v + 1); onListChanged(); }}
-        />
-        {/* Google Doc / crawled page: content lives at the source, so open it
-            there instead of offering an edit that would be overwritten. */}
+
+        <Button size="sm" variant={panel === 'relations' ? 'primary' : 'secondary'}
+          leadingIcon={<Network className="h-3.5 w-3.5" />}
+          onClick={() => setPanel(panel === 'relations' ? null : 'relations')}>
+          {t('govern.relations.title')}
+          {connectionCount > 0 && <span className="ml-1 rounded-full bg-brand/15 px-1.5 text-tiny text-brand">{connectionCount}</span>}
+        </Button>
+        <Button size="sm" variant={panel === 'history' ? 'primary' : 'secondary'}
+          leadingIcon={<Clock3 className="h-3.5 w-3.5" />}
+          onClick={() => setPanel(panel === 'history' ? null : 'history')}>
+          {t('govern.detail.tab.history')}
+        </Button>
+        {/* Source-backed docs sync/open right here — the two actions a reader of
+            a synced doc actually needs, without opening settings. */}
+        {isSourceOwned(doc.source_type) && (
+          <Button size="sm" variant="secondary" leadingIcon={<RefreshCw className={cn('h-3.5 w-3.5', syncing && 'animate-spin')} />}
+            disabled={syncing} onClick={syncNow}>
+            {t('govern.source.syncNow')}
+          </Button>
+        )}
         {doc.source_url && (
           <Button size="sm" variant="secondary" leadingIcon={<ExternalLink className="h-3.5 w-3.5" />}
             onClick={() => window.open(doc.source_url!, '_blank', 'noopener,noreferrer')}>
             {t(doc.source_type === 'google_doc' ? 'govern.detail.openInGoogleDocs' : 'govern.detail.openOriginalPage')}
           </Button>
         )}
-        {perms.canShare && <Button size="sm" variant="secondary" leadingIcon={<Share2 className="h-3.5 w-3.5" />} onClick={() => onShare(doc.id, doc.title)}>{t('shared.share.shareButton')}</Button>}
-        {perms.canEdit && <Button size="sm" variant="secondary" leadingIcon={<Pencil className="h-3.5 w-3.5" />} onClick={onEdit}>{t('govern.action.edit')}</Button>}
-        {perms.canDelete && <Button size="sm" variant="ghost" leadingIcon={<Trash2 className="h-3.5 w-3.5" />} onClick={remove}>{t('govern.action.delete')}</Button>}
+        {perms.canEdit && (
+          <Button size="sm" variant="secondary" leadingIcon={<Pencil className="h-3.5 w-3.5" />} onClick={onEdit}>
+            {isSourceOwned(doc.source_type) ? t('govern.detail.editMetadata') : t('govern.action.edit')}
+          </Button>
+        )}
+
+        {/* ••• — what used to be a tab but is configuration, not reading. */}
+        <div className="relative">
+          <Button size="sm" variant="ghost" onClick={() => setMoreOpen((o) => !o)} aria-label={t('govern.detail.more')}>•••</Button>
+          {moreOpen && (
+            <>
+              <div className="fixed inset-0 z-40" onClick={() => setMoreOpen(false)} />
+              <div className="absolute right-0 top-9 z-50 w-56 rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-1 shadow-linear-lg">
+                <MenuItem icon={<Database className="h-3.5 w-3.5" />} label={t('govern.menu.sourceSettings')}
+                  onClick={() => { setMoreOpen(false); setModal('source'); }} />
+                <MenuItem icon={<Boxes className="h-3.5 w-3.5" />} label={t('govern.menu.aiIndexSettings')}
+                  onClick={() => { setMoreOpen(false); setModal('embedding'); }} />
+                <MenuItem icon={<GitBranch className="h-3.5 w-3.5" />} label={t('govern.relations.openGraph')}
+                  onClick={() => { setMoreOpen(false); setModal('graph'); }} />
+                {perms.canShare && <MenuItem icon={<Share2 className="h-3.5 w-3.5" />} label={t('shared.share.shareButton')}
+                  onClick={() => { setMoreOpen(false); onShare(doc.id, doc.title); }} />}
+                {perms.canDelete && <MenuItem icon={<Trash2 className="h-3.5 w-3.5" />} label={t('govern.action.delete')} danger
+                  onClick={() => { setMoreOpen(false); remove(); }} />}
+              </div>
+            </>
+          )}
+        </div>
       </div>
 
-      {/* content — docs-site 3-column reading surface: on-page outline (left) ·
-          content (center) · context rail (right). Fills the width edge-to-edge
-          (no side margins, no middle band); each panel gets its own room. Data
-          tabs go full-width. */}
       <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto px-4 pb-10 pt-6 sm:px-6 xl:px-8 [scrollbar-gutter:stable]">
-        {tab === 'noidung' ? (
-          // `relative` anchors the rail flyouts, which float OVER the document
-          // instead of holding permanent columns — the page keeps the full width.
-          <div className="relative flex items-start gap-3">
-            <OnPageOutline toc={toc} activeHeading={activeHeading} onJump={jumpTo} />
-            {/* The document sits on a distinct white "page" (like Google Docs) so
-                its bounds read clearly against the canvas, and now spans the
-                whole available width. */}
-            <article ref={articleRef} className="min-w-0 flex-1">
-              <div className="w-full rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 px-6 py-7 shadow-linear sm:px-10 sm:py-9">
-                {viewingVersion
-                  ? <><DocHeader doc={doc} /><VersionViewer version={viewingVersion} onClose={() => setViewingVersion(null)} /></>
-                  : <ContentTab doc={doc} onDocLink={onOpenDoc} />}
-              </div>
-            </article>
-            <DetailRail doc={doc} related={related} metrics={metrics} assets={assets} onTab={setTab} onOpenDoc={onOpenDoc} onRefresh={() => setRefresh((v) => v + 1)} />
-          </div>
-        ) : (
-          <div className="w-full">
-            <DocHeader doc={doc} />
-            {tab === 'chiso' && <MetricsTab doc={doc} onDefine={defineMetric} onEdit={editMetric} />}
-            {tab === 'lienket' && <LinksTab doc={doc} />}
-            {tab === 'dothi' && <GraphTab doc={doc} onOpenDoc={onOpenDoc} onEditMetric={editMetric} />}
-            {tab === 'nguon' && <SourceTab doc={doc} onRefresh={() => setRefresh((v) => v + 1)} />}
-            {tab === 'nhung' && <EmbeddingTab doc={doc} onRefresh={() => setRefresh((v) => v + 1)} />}
-            {tab === 'lichsu' && <HistoryTab doc={doc} />}
-            {tab === 'sudung' && <UsageTab doc={doc} />}
-          </div>
-        )}
+        {/* `relative` anchors both the rail flyouts and the drawers, which float
+            OVER the document so the reading surface keeps the full width. */}
+        <div className="relative flex items-start gap-3">
+          <OnPageOutline toc={toc} activeHeading={activeHeading} onJump={jumpTo} />
+          <article ref={articleRef} className="min-w-0 flex-1">
+            <div className="w-full rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 px-6 py-7 shadow-linear sm:px-10 sm:py-9">
+              {viewingVersion
+                ? <><DocHeader doc={doc} /><VersionViewer version={viewingVersion} onClose={() => setViewingVersion(null)} /></>
+                : <ContentTab doc={doc} onDocLink={onOpenDoc} />}
+            </div>
+          </article>
+          <DetailRail doc={doc} usage={usage} onOpenDoc={onOpenDoc}
+            onRefresh={() => setRefresh((v) => v + 1)} onOpenEmbedding={() => setModal('embedding')}
+            onOpenSource={() => setModal('source')} onSyncNow={syncNow} syncing={syncing} />
+
+          {panel === 'relations' && (
+            <RelationsDrawer doc={doc} metrics={metrics} assets={assets} related={related} usage={usage}
+              onClose={() => setPanel(null)} onOpenDoc={onOpenDoc} onEditMetric={editMetric}
+              onOpenGraph={() => { setPanel(null); setModal('graph'); }} />
+          )}
+          {panel === 'history' && (
+            <HistoryDrawer doc={doc} onClose={() => setPanel(null)}
+              onViewVersion={async (n) => {
+                try { setViewingVersion(await getDocVersion(doc.id, n)); setPanel(null); scrollRef.current?.scrollTo({ top: 0 }); }
+                catch { toast.error(t('govern.history.loadVersionFailed')); }
+              }} />
+          )}
+        </div>
       </div>
+
+      {/* Configuration surfaces — the full former tabs, opened on demand. */}
+      {modal === 'source' && (
+        <AppModalShell title={t('govern.menu.sourceSettings')} onClose={() => setModal(null)} maxWidthClass="max-w-5xl">
+          <SourceTab doc={doc} onRefresh={() => setRefresh((v) => v + 1)} />
+        </AppModalShell>
+      )}
+      {modal === 'embedding' && (
+        <AppModalShell title={t('govern.menu.aiIndexSettings')} onClose={() => setModal(null)} maxWidthClass="max-w-5xl">
+          <Tabs<'config' | 'vectors'> size="sm" value={embedTab} onChange={(v) => setEmbedTab(v)} items={[
+            { key: 'config', label: t('govern.aiHealth.settings'), icon: <Boxes className="h-4 w-4" /> },
+            { key: 'vectors', label: t('govern.vectors.title'), icon: <Database className="h-4 w-4" /> },
+          ]} />
+          <div className="mt-3">
+            {embedTab === 'config'
+              ? <EmbeddingTab doc={doc} onRefresh={() => setRefresh((v) => v + 1)} />
+              : <VectorBrowser doc={doc} />}
+          </div>
+        </AppModalShell>
+      )}
+      {modal === 'graph' && (
+        <AppModalShell title={t('govern.detail.tab.graph')} onClose={() => setModal(null)} maxWidthClass="max-w-5xl">
+          <GraphTab doc={doc} onOpenDoc={(id) => { setModal(null); onOpenDoc(id); }} onEditMetric={editMetric} />
+        </AppModalShell>
+      )}
     </div>
+  );
+}
+
+function MenuItem({ icon, label, danger, onClick }: { icon: ReactNode; label: string; danger?: boolean; onClick: () => void }) {
+  return (
+    <button onClick={onClick}
+      className={cn('flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-caption hover:bg-surface-2',
+        danger ? 'text-danger' : 'text-text-secondary')}>
+      {icon}{label}
+    </button>
   );
 }
 
@@ -991,7 +1260,7 @@ const SOURCE_KINDS: { kind: DocSourceKind; icon: ReactNode; tone: string }[] = [
 function CreateDocWizard({ spaces, onClose, onManual, onCreated }: {
   spaces: KnowledgeSpace[];
   onClose: () => void;
-  onManual: (space: string) => void;
+  onManual: (space: string, title: string) => void;
   onCreated: (docId: number) => void;
 }) {
   const { t } = useI18n();
@@ -1019,7 +1288,8 @@ function CreateDocWizard({ spaces, onClose, onManual, onCreated }: {
   })();
 
   const submit = async () => {
-    if (kind === 'manual') { onManual(space); return; }
+    // Carry the title across — retyping it in the editor is pure friction.
+    if (kind === 'manual') { onManual(space, title.trim()); return; }
     setBusy(true);
     try {
       // 1. Create the shell document, 2. attach its source, 3. pull content once.
@@ -1455,115 +1725,207 @@ function OnPageOutline({ toc, activeHeading, onJump }: {
   );
 }
 
-function DetailRail({ doc, related, metrics, assets, onTab, onOpenDoc, onRefresh }: {
+function DetailRail({ doc, usage, onOpenDoc, onRefresh, onOpenEmbedding, onOpenSource, onSyncNow, syncing }: {
   doc: KnowledgeDoc;
-  related: NonNullable<KnowledgeDoc['related_docs']>;
-  metrics: NonNullable<KnowledgeDoc['metrics_on_page']>;
-  assets: NonNullable<KnowledgeDoc['assets_on_page']>;
-  onTab: (tab: string) => void; onOpenDoc: (id: number) => void;
-  onRefresh: () => void;
+  usage: DocUsage | null;
+  onOpenDoc: (id: number) => void; onRefresh: () => void;
+  onOpenEmbedding: () => void; onOpenSource: () => void; onSyncNow: () => void; syncing: boolean;
 }) {
   const { t, language } = useI18n();
   const [verifyBusy, setVerifyBusy] = useState(false);
+  const [reindexBusy, setReindexBusy] = useState(false);
+  const [embed, setEmbed] = useState<EmbeddingConfig | null>(null);
+  // Three utilities, mirroring the mockup: AI readiness · Information ·
+  // Linked mentions. Everything heavier is a drawer or a settings modal.
+  const [panel, setPanel] = useState<null | 'ai' | 'info' | 'backlinks'>(null);
+  const toggle = (p: NonNullable<typeof panel>) => setPanel((cur) => (cur === p ? null : p));
+  const backlinks = doc.backlinks ?? [];
+  const ready = doc.ai_ready ?? { score: 0, missing: [] };
+  const missing = new Set(ready.missing);
+
+  useEffect(() => {
+    let on = true;
+    getEmbeddingConfig(doc.id).then((c) => { if (on) setEmbed(c); }).catch(() => {});
+    return () => { on = false; };
+  }, [doc.id]);
+
   const doVerify = async () => {
     setVerifyBusy(true);
     try { await verifyDoc(doc.id); toast.success(t('govern.detail.verifyOk')); onRefresh(); }
     catch (e) { toast.error(errDetail(e) || t('govern.detail.verifyFailed')); }
     finally { setVerifyBusy(false); }
   };
-  // Slim icon strip: each panel opens as a flyout OVER the document, so the
-  // reading surface keeps the full width instead of permanently giving ~20rem
-  // to context that is only read occasionally.
-  const [panel, setPanel] = useState<null | 'ai' | 'info' | 'jump' | 'related' | 'backlinks'>(null);
-  const toggle = (p: NonNullable<typeof panel>) => setPanel((cur) => (cur === p ? null : p));
-  const backlinks = doc.backlinks ?? [];
+  const doReindex = async () => {
+    setReindexBusy(true);
+    try {
+      const res = await reembedDoc(doc.id);
+      toast.success(t('govern.embedding.reembedOk', { chunks: res.chunks }));
+      // Truncation is a correctness problem, not a detail: part of the document
+      // is simply not in the index. Warn separately so it is not read as noise
+      // attached to the success line.
+      if (res.truncated) toast.error(t('govern.embedding.truncatedToast', { chars: (res.dropped_chars ?? 0).toLocaleString() }));
+      setEmbed(await getEmbeddingConfig(doc.id).catch(() => embed!));
+      onRefresh();
+    } catch (e) { toast.error(errDetail(e) || t('govern.embedding.reembedFailed')); }
+    finally { setReindexBusy(false); }
+  };
+
+  const Health = ({ label, ok, value }: { label: string; ok?: boolean; value?: ReactNode }) => (
+    <div className="flex items-center justify-between gap-2 py-1 text-tiny text-text-secondary">
+      <span>{label}</span>
+      {value != null ? <span className="text-text-tertiary">{value}</span>
+        : ok ? <Check className="h-3.5 w-3.5 text-success" /> : <AlertTriangle className="h-3.5 w-3.5 text-warning" />}
+    </div>
+  );
+  const Section = ({ title, children }: { title: string; children: ReactNode }) => (
+    <div className="border-t border-[rgb(var(--border-line))] py-2.5 first-of-type:border-t-0 first-of-type:pt-0">
+      <p className="mb-1.5 text-tiny font-emphasis uppercase tracking-[0.11em] text-text-quaternary">{title}</p>
+      {children}
+    </div>
+  );
 
   return (
     <div className="sticky top-0 z-30 hidden shrink-0 self-start pt-0.5 sm:block">
       <div className="flex flex-col gap-1.5">
         <RailIcon icon={<Sparkles className="h-4 w-4" />} label={t('govern.aiCard.title')} active={panel === 'ai'} onClick={() => toggle('ai')} />
         <RailIcon icon={<Info className="h-4 w-4" />} label={t('govern.rail.info')} active={panel === 'info'} onClick={() => toggle('info')} />
-        <RailIcon icon={<Compass className="h-4 w-4" />} label={t('govern.rail.jump')} active={panel === 'jump'} onClick={() => toggle('jump')} />
-        {related.length > 0 && (
-          <RailIcon icon={<BookOpen className="h-4 w-4" />} label={t('govern.detail.relatedDocs')} badge={related.length} active={panel === 'related'} onClick={() => toggle('related')} />
-        )}
         {backlinks.length > 0 && (
-          <RailIcon icon={<Link2 className="h-4 w-4" />} label={t('govern.backlinks.title')} badge={backlinks.length} active={panel === 'backlinks'} onClick={() => toggle('backlinks')} />
+          <RailIcon icon={<Link2 className="h-4 w-4" />} label={t('govern.backlinks.title')} badge={backlinks.length}
+            active={panel === 'backlinks'} onClick={() => toggle('backlinks')} />
         )}
       </div>
 
       {panel === 'ai' && (
         <RailFlyout side="right" title={t('govern.aiCard.title')} icon={<Sparkles className="h-3.5 w-3.5" />} onClose={() => setPanel(null)}>
-          <AiContextCard doc={doc} onRefresh={onRefresh} bare />
+          <div className="mb-2 flex items-center justify-between gap-2">
+            <span className={cn('rounded-full px-2.5 py-0.5 text-caption font-emphasis', readyTone(ready.score))}>{ready.score}%</span>
+            <span className="text-tiny text-text-quaternary">{t('govern.aiCard.readingTime', { min: readingMinutes(doc.body) })}</span>
+          </div>
+          <div className="mb-3 h-1.5 overflow-hidden rounded-full bg-surface-3">
+            <span className="block h-full rounded-full bg-success" style={{ width: `${ready.score}%` }} />
+          </div>
+
+          {/* Reachability first: a 100% quality score means nothing if the bot
+              can never see the document. This is the one thing on the panel
+              that says "the AI will not use this at all". */}
+          {doc.ai_retrievable && !doc.ai_retrievable.ok && (
+            <div className="mb-3 rounded-lg border border-warning/40 bg-warning/10 p-2.5">
+              <p className="flex items-center gap-1.5 text-tiny font-emphasis text-warning">
+                <AlertTriangle className="h-3.5 w-3.5 shrink-0" />{t('govern.aiReach.title')}
+              </p>
+              <ul className="mt-1 space-y-0.5 pl-5 text-tiny text-text-secondary">
+                {doc.ai_retrievable.reasons.map((r) => (
+                  <li key={r} className="list-disc">{t(`govern.aiReach.${r}`)}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          <Section title={t('govern.aiHealth.content')}>
+            <Health label={t('govern.aiHealth.hasSummary')} ok={!missing.has('summary')} />
+            <Health label={t('govern.aiHealth.hasOwner')} ok={!missing.has('owner')} />
+            <Health label={t('govern.aiHealth.hasHeadings')} ok={!missing.has('headings')} />
+            <Health label={t('govern.aiHealth.hasContext')} ok={!missing.has('context')} />
+          </Section>
+
+          <Section title={t('govern.aiHealth.index')}>
+            <Health label={t('govern.aiHealth.indexed')} value={
+              embed ? t('govern.embedding.currentChunks', { count: embed.chunk_count }) : '—'} />
+            <Health label={t('govern.aiHealth.strategy')} value={
+              embed ? t(`govern.embedding.strategy${embed.chunk_strategy === 'heading' ? 'Heading' : embed.chunk_strategy === 'fixed' ? 'Fixed' : 'Paragraph'}`) : '—'} />
+            {embed?.index_stale && (
+              <p className="mt-1 flex items-start gap-1.5 rounded-md bg-warning/10 p-1.5 text-tiny text-warning">
+                <AlertTriangle className="mt-px h-3 w-3 shrink-0" />
+                {t('govern.embedding.staleHint')}
+              </p>
+            )}
+            {embed?.truncated && (
+              <p className="mt-1 flex items-start gap-1.5 rounded-md bg-warning/10 p-1.5 text-tiny text-warning">
+                <AlertTriangle className="mt-px h-3 w-3 shrink-0" />
+                {t('govern.embedding.truncatedHint', {
+                  chunks: embed.dropped_chunks ?? 0,
+                  chars: (embed.dropped_chars ?? 0).toLocaleString(),
+                  max: embed.max_chunks ?? 0,
+                })}
+              </p>
+            )}
+            <div className="mt-1.5 flex gap-1.5">
+              <Button size="xs" variant="secondary" loading={reindexBusy} leadingIcon={<RefreshCw className="h-3 w-3" />} onClick={doReindex}>
+                {t('govern.aiHealth.reindex')}
+              </Button>
+              <Button size="xs" variant="ghost" onClick={onOpenEmbedding}>{t('govern.aiHealth.settings')}</Button>
+            </div>
+          </Section>
+
+          <Section title={t('govern.aiHealth.governance')}>
+            <Health label={statusLabel(doc.status, t) + (doc.published_version ? ` v${doc.published_version}` : '')} ok={doc.status === 'Published'} />
+            <Health label={t('govern.detail.reviewDate')} value={doc.review_date || '—'} />
+            <Health label={t('govern.aiHealth.isIndexed')} ok={!missing.has('embedded')} />
+          </Section>
         </RailFlyout>
       )}
 
       {panel === 'info' && (
         <RailFlyout side="right" title={t('govern.rail.info')} icon={<Info className="h-3.5 w-3.5" />} onClose={() => setPanel(null)}>
           <dl className="space-y-2.5">
-          <RailRow label="Không gian" value={doc.space} />
-          <RailRow label="Loại" value={docTypeLabel(doc.doc_type, t)} />
-          <RailRow label="Trạng thái" value={<span className={cn('rounded-full px-2 py-0.5 text-tiny', STATUS_TONE[doc.status] || 'bg-surface-2 text-text-tertiary')}>{statusLabel(doc.status, t)}</span>} />
-          <RailRow label="Phiên bản" value={`v${doc.version}`} />
-          <RailRow label="Chủ sở hữu" value={doc.owner || '—'} />
-          {doc.business_domain && <RailRow label={t('govern.detail.businessDomain')} value={doc.business_domain} />}
-          {doc.process_ref && <RailRow label={t('govern.detail.processRef')} value={doc.process_ref} />}
-          <RailRow label={t('govern.detail.importance')} value={t(`govern.importance.${doc.importance || 'normal'}`)} />
-          {doc.review_date && <RailRow label={t('govern.detail.reviewDate')} value={doc.review_date} />}
-          <RailRow label={t('govern.detail.lastVerified')} value={doc.last_verified_at ? relTime(doc.last_verified_at, language) : '—'} />
-          <RailRow label={t('govern.detail.views')} value={doc.view_count ?? 0} />
-          <RailRow label={t('govern.detail.aiRetrievals')} value={doc.retrieval_count ?? 0} />
-            {doc.updated_at && <RailRow label="Cập nhật" value={new Date(doc.updated_at).toLocaleDateString('vi-VN')} />}
+            <RailRow label={t('govern.editor.space')} value={doc.space} />
+            <RailRow label={t('govern.list.header.type')} value={docTypeLabel(doc.doc_type, t)} />
+            <RailRow label={t('govern.list.header.status')} value={<span className={cn('rounded-full px-2 py-0.5 text-tiny', STATUS_TONE[doc.status] || 'bg-surface-2 text-text-tertiary')}>{statusLabel(doc.status, t)}</span>} />
+            <RailRow label={t('govern.info.version')} value={`v${doc.version}`} />
+            <RailRow label={t('govern.editor.owner')} value={doc.owner || '—'} />
+            {doc.business_domain && <RailRow label={t('govern.detail.businessDomain')} value={doc.business_domain} />}
+            {doc.process_ref && <RailRow label={t('govern.detail.processRef')} value={doc.process_ref} />}
+            <RailRow label={t('govern.detail.importance')} value={t(`govern.importance.${doc.importance || 'normal'}`)} />
+            {doc.review_date && <RailRow label={t('govern.detail.reviewDate')} value={doc.review_date} />}
+            <RailRow label={t('govern.detail.lastVerified')} value={doc.last_verified_at ? relTime(doc.last_verified_at, language) : '—'} />
+            {doc.updated_at && <RailRow label={t('govern.list.header.updated')} value={relTime(doc.updated_at, language)} />}
           </dl>
+
+          {/* Source lives here — reading a doc, "where does this come from" is
+              information, not a workspace of its own. */}
+          <div className="mt-3 border-t border-[rgb(var(--border-line))] pt-3">
+            <p className="mb-1.5 text-tiny font-emphasis uppercase tracking-[0.11em] text-text-quaternary">{t('govern.info.source')}</p>
+            <div className="flex items-center justify-between gap-2 rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 px-2.5 py-2">
+              <div className="min-w-0">
+                <p className="truncate text-tiny font-emphasis text-text-primary">
+                  {doc.source_type ? t(`govern.source.typeShort.${doc.source_type}`) : t('govern.source.typeManual')}
+                </p>
+                {doc.source_url && <p className="truncate text-tiny text-text-quaternary">{doc.source_url}</p>}
+              </div>
+              {doc.source_type && doc.last_sync_status && (
+                <span className={cn('shrink-0 rounded-full px-2 py-0.5 text-tiny',
+                  doc.last_sync_status === 'error' ? 'bg-danger/10 text-danger' : 'bg-success/10 text-success')}>
+                  {t(`govern.source.status.${doc.last_sync_status}`)}
+                </span>
+              )}
+            </div>
+            <div className="mt-1.5 flex gap-1.5">
+              {isSourceOwned(doc.source_type) && (
+                <Button size="xs" variant="secondary" loading={syncing} leadingIcon={<RefreshCw className="h-3 w-3" />} onClick={onSyncNow}>
+                  {t('govern.source.syncNow')}
+                </Button>
+              )}
+              <Button size="xs" variant="ghost" onClick={onOpenSource}>{t('govern.aiHealth.settings')}</Button>
+            </div>
+          </div>
+
+          <div className="mt-3 border-t border-[rgb(var(--border-line))] pt-3">
+            <p className="mb-1.5 text-tiny font-emphasis uppercase tracking-[0.11em] text-text-quaternary">{t('govern.info.usage')}</p>
+            <div className="grid grid-cols-2 gap-2">
+              <div className="rounded-lg border border-[rgb(var(--border-line))] px-2.5 py-2">
+                <b className="block text-body font-emphasis text-text-primary">{doc.view_count ?? 0}</b>
+                <span className="text-tiny uppercase tracking-[0.08em] text-text-quaternary">{t('govern.detail.views')}</span>
+              </div>
+              <div className="rounded-lg border border-[rgb(var(--border-line))] px-2.5 py-2">
+                <b className="block text-body font-emphasis text-text-primary">{usage?.retrieval_count ?? doc.retrieval_count ?? 0}</b>
+                <span className="text-tiny uppercase tracking-[0.08em] text-text-quaternary">{t('govern.info.aiUses')}</span>
+              </div>
+            </div>
+          </div>
+
           <Button size="sm" variant="secondary" className="mt-3 w-full" leadingIcon={<ShieldCheck className="h-3.5 w-3.5" />} loading={verifyBusy} onClick={doVerify}>
             {t('govern.detail.verify')}
           </Button>
-        </RailFlyout>
-      )}
-
-      {panel === 'jump' && (
-        <RailFlyout side="right" title={t('govern.rail.jump')} icon={<Compass className="h-3.5 w-3.5" />} onClose={() => setPanel(null)}>
-          <div className="space-y-1">
-            {(metrics.length > 0 || assets.length > 0) && (
-              <>
-                <button onClick={() => { onTab('chiso'); setPanel(null); }} className="flex w-full items-center justify-between rounded-lg px-2 py-2 text-caption text-text-secondary hover:bg-surface-2">
-                  <span className="flex items-center gap-2"><Sigma className="h-4 w-4 text-text-quaternary" />{t('govern.detail.tab.metrics')}</span>
-                  <span className="font-emphasis text-text-primary">{metrics.length}</span>
-                </button>
-                <button onClick={() => { onTab('lienket'); setPanel(null); }} className="flex w-full items-center justify-between rounded-lg px-2 py-2 text-caption text-text-secondary hover:bg-surface-2">
-                  <span className="flex items-center gap-2"><LayoutDashboard className="h-4 w-4 text-text-quaternary" />{t('govern.detail.tab.links')}</span>
-                  <span className="font-emphasis text-text-primary">{assets.length}</span>
-                </button>
-              </>
-            )}
-            <button onClick={() => { onTab('nguon'); setPanel(null); }} className="flex w-full items-center justify-between rounded-lg px-2 py-2 text-caption text-text-secondary hover:bg-surface-2">
-              <span className="flex items-center gap-2"><Database className="h-4 w-4 text-text-quaternary" />{t('govern.detail.tab.source')}</span>
-              <span className="text-tiny text-text-quaternary">{doc.source_type ? t(`govern.source.typeShort.${doc.source_type}`) : t('govern.source.typeManual')}</span>
-            </button>
-            <button onClick={() => { onTab('nhung'); setPanel(null); }} className="flex w-full items-center justify-between rounded-lg px-2 py-2 text-caption text-text-secondary hover:bg-surface-2">
-              <span className="flex items-center gap-2"><Boxes className="h-4 w-4 text-text-quaternary" />{t('govern.detail.tab.embedding')}</span>
-            </button>
-            <button onClick={() => { onTab('lichsu'); setPanel(null); }} className="flex w-full items-center justify-between rounded-lg px-2 py-2 text-caption text-text-secondary hover:bg-surface-2">
-              <span className="flex items-center gap-2"><Clock3 className="h-4 w-4 text-text-quaternary" />{t('govern.detail.tab.history')}</span>
-            </button>
-            <button onClick={() => { onTab('sudung'); setPanel(null); }} className="flex w-full items-center justify-between rounded-lg px-2 py-2 text-caption text-text-secondary hover:bg-surface-2">
-              <span className="flex items-center gap-2"><Network className="h-4 w-4 text-text-quaternary" />{t('govern.detail.tab.usage')}</span>
-              <span className="font-emphasis text-text-primary">{doc.retrieval_count ?? 0}</span>
-            </button>
-          </div>
-        </RailFlyout>
-      )}
-
-      {panel === 'related' && (
-        <RailFlyout side="right" title={t('govern.detail.relatedDocs')} icon={<BookOpen className="h-3.5 w-3.5" />} onClose={() => setPanel(null)}>
-          <div className="space-y-1">
-            {related.map((r) => (
-              <button key={r.id} onClick={() => { onOpenDoc(r.id); setPanel(null); }} className="block w-full rounded-lg px-2 py-1.5 text-left hover:bg-surface-2" title={relatedReason(r, t)}>
-                <span className="block truncate text-caption font-emphasis text-text-secondary">{r.title}</span>
-                <span className="block truncate text-tiny text-text-quaternary">{relatedReason(r, t)}</span>
-              </button>
-            ))}
-          </div>
         </RailFlyout>
       )}
 
@@ -1583,10 +1945,6 @@ function DetailRail({ doc, related, metrics, assets, onTab, onOpenDoc, onRefresh
   );
 }
 
-// Snapshot of a crawled page, shown as the ORIGINAL page. Rendered inside a
-// sandboxed iframe with NO allow-scripts and NO allow-same-origin: third-party
-// html we crawled is never trusted markup, so it can neither run script nor
-// reach this origin. srcdoc (not a src URL) keeps it fully offline/frozen.
 function WebSnapshotView({ docId }: { docId: number }) {
   const { t } = useI18n();
   const [snap, setSnap] = useState<DocSnapshot | null>(null);
@@ -1936,6 +2294,153 @@ function SourceTab({ doc, onRefresh }: { doc: KnowledgeDoc; onRefresh: () => voi
 
 // ── Embedding — configurable chunk strategy/size/overlap/model with a real
 // preview (same code path as the actual embed) before committing. ───────────
+// ── Vector store browser — what actually lives in the index for this doc.
+// Mirrors a Pinecone console: one row per vector (id, the text it encodes,
+// model, dimensions, a peek at raw values) plus a query box to see which
+// chunk the AI would actually retrieve, and how strongly it matched.
+function VectorBrowser({ doc }: { doc: KnowledgeDoc }) {
+  const { t, language } = useI18n();
+  const [loading, setLoading] = useState(true);
+  const [data, setData] = useState<{ vectors: DocVector[]; total: number; dims: number | null; model: string | null } | null>(null);
+  const [open, setOpen] = useState<number | null>(null);
+  const [q, setQ] = useState('');
+  const [querying, setQuerying] = useState(false);
+  const [matches, setMatches] = useState<VectorMatch[] | null>(null);
+
+  const load = useCallback(() => {
+    setLoading(true);
+    getDocVectors(doc.id)
+      .then(setData)
+      .catch((e) => toast.error(errDetail(e) || t('govern.vectors.loadFailed')))
+      .finally(() => setLoading(false));
+  }, [doc.id, t]);
+  useEffect(() => { load(); }, [load]);
+
+  const runQuery = async () => {
+    if (!q.trim()) return;
+    setQuerying(true);
+    try { setMatches(await queryDocVectors(doc.id, q.trim())); }
+    catch (e) { toast.error(errDetail(e) || t('govern.vectors.queryFailed')); }
+    finally { setQuerying(false); }
+  };
+
+  if (loading) return <div className="flex justify-center py-14"><Loader2 className="h-5 w-5 animate-spin text-brand" /></div>;
+
+  const vectors = data?.vectors ?? [];
+  if (vectors.length === 0) {
+    return (
+      <div className="rounded-xl border border-dashed border-[rgb(var(--border-strong))] bg-surface-1 px-4 py-10 text-center">
+        <Boxes className="mx-auto mb-2 h-8 w-8 text-text-quaternary" />
+        <p className="text-caption text-text-tertiary">{t('govern.vectors.empty')}</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      {/* index-level facts, the way a vector DB console leads with them */}
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+        {[
+          { label: t('govern.vectors.count'), value: data?.total ?? 0 },
+          { label: t('govern.vectors.dims'), value: data?.dims ?? '—' },
+          { label: t('govern.vectors.model'), value: data?.model || '—' },
+          { label: t('govern.vectors.metric'), value: 'cosine' },
+        ].map((c) => (
+          <div key={c.label} className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 px-3 py-2">
+            <p className="truncate text-caption font-emphasis text-text-primary" title={String(c.value)}>{c.value}</p>
+            <p className="mt-0.5 text-tiny uppercase tracking-[0.08em] text-text-quaternary">{c.label}</p>
+          </div>
+        ))}
+      </div>
+
+      {/* query box — prove retrieval works for a real question */}
+      <div className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 p-2.5">
+        <div className="flex gap-2">
+          <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder={t('govern.vectors.queryPlaceholder')}
+            onKeyDown={(e) => { if (e.key === 'Enter') runQuery(); }} />
+          <Button size="sm" variant="primary" loading={querying} leadingIcon={<Search className="h-3.5 w-3.5" />} onClick={runQuery}>
+            {t('govern.vectors.query')}
+          </Button>
+        </div>
+        {matches && (
+          <div className="mt-2 space-y-1.5">
+            {matches.length === 0 ? (
+              <p className="text-tiny text-text-quaternary">{t('govern.vectors.noMatches')}</p>
+            ) : matches.map((m) => (
+              <div key={m.chunk_index} className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 p-2">
+                <div className="mb-1 flex items-center justify-between gap-2">
+                  <span className="flex items-center gap-1.5 text-tiny font-emphasis text-text-secondary">
+                    #{m.chunk_index}
+                    {m.trust === 'external' && (
+                      <span className="rounded-full bg-warning/15 px-1.5 py-0.5 text-tiny font-normal text-warning" title={t('govern.trust.hint')}>
+                        {t('govern.trust.external')}
+                      </span>
+                    )}
+                    {m.matched_by && (
+                      <span className="rounded-full bg-surface-2 px-1.5 py-0.5 text-tiny font-normal text-text-tertiary"
+                        title={t('govern.vectors.matchedByHint')}>
+                        {t(`govern.vectors.matchedBy.${m.matched_by}`)}
+                      </span>
+                    )}
+                  </span>
+                  <span className={cn('rounded-full px-2 py-0.5 text-tiny font-emphasis',
+                    m.score >= 0.5 ? 'bg-success/10 text-success' : m.score >= 0.3 ? 'bg-warning/10 text-warning' : 'bg-surface-2 text-text-tertiary')}>
+                    {m.score.toFixed(3)}
+                  </span>
+                </div>
+                <p className="line-clamp-3 text-tiny leading-relaxed text-text-tertiary">{m.content}</p>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* the vectors themselves */}
+      <div className="overflow-hidden rounded-lg border border-[rgb(var(--border-line))]">
+        {vectors.map((v) => (
+          <div key={v.id} className="border-t border-[rgb(var(--border-line))] first:border-t-0">
+            <button onClick={() => setOpen(open === v.id ? null : v.id)}
+              className="flex w-full items-start gap-2.5 px-3 py-2.5 text-left hover:bg-surface-2">
+              <span className="mt-0.5 flex shrink-0 items-center gap-1">
+                <span className="rounded bg-surface-2 px-1.5 py-0.5 font-mono text-tiny text-text-tertiary">#{v.chunk_index}</span>
+                {v.trust && v.trust !== 'authored' && (
+                  <span className={cn('rounded-full px-1.5 py-0.5 text-tiny',
+                    v.trust === 'external' ? 'bg-warning/15 text-warning' : 'bg-surface-2 text-text-tertiary')}
+                    title={t('govern.trust.hint')}>
+                    {t(`govern.trust.${v.trust}`)}
+                  </span>
+                )}
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="line-clamp-2 block text-tiny leading-relaxed text-text-secondary">{v.content}</span>
+                <span className="mt-1 block font-mono text-tiny text-text-quaternary">
+                  {v.has_vector
+                    ? `[${v.preview.map((n) => n.toFixed(4)).join(', ')}${v.dims ? `, … ${v.dims}d` : ''}]`
+                    : t('govern.vectors.noVector')}
+                </span>
+              </span>
+              <span className="whitespace-nowrap text-tiny text-text-quaternary">{t('govern.embedding.chars', { n: v.char_count })}</span>
+              <ChevronDown className={cn('mt-0.5 h-3.5 w-3.5 flex-shrink-0 text-text-quaternary transition-transform', open === v.id && 'rotate-180')} />
+            </button>
+            {open === v.id && (
+              <div className="border-t border-[rgb(var(--border-line))] bg-surface-2 px-3 py-2.5">
+                <dl className="mb-2 grid grid-cols-2 gap-x-4 gap-y-1 text-tiny">
+                  <div className="flex justify-between gap-2"><dt className="text-text-quaternary">ID</dt><dd className="font-mono text-text-secondary">{v.id}</dd></div>
+                  <div className="flex justify-between gap-2"><dt className="text-text-quaternary">{t('govern.vectors.dims')}</dt><dd className="font-mono text-text-secondary">{v.dims ?? '—'}</dd></div>
+                  <div className="flex justify-between gap-2"><dt className="text-text-quaternary">{t('govern.vectors.model')}</dt><dd className="truncate font-mono text-text-secondary">{v.model || '—'}</dd></div>
+                  <div className="flex justify-between gap-2"><dt className="text-text-quaternary">{t('govern.vectors.created')}</dt><dd className="text-text-secondary">{relTime(v.created_at, language)}</dd></div>
+                  <div className="col-span-2 flex justify-between gap-2"><dt className="text-text-quaternary">{t('govern.vectors.hash')}</dt><dd className="truncate font-mono text-text-secondary">{v.content_hash.slice(0, 24)}…</dd></div>
+                </dl>
+                <p className="whitespace-pre-wrap text-tiny leading-relaxed text-text-secondary">{v.content}</p>
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function EmbeddingTab({ doc, onRefresh }: { doc: KnowledgeDoc; onRefresh: () => void }) {
   const { t } = useI18n();
   const [cfg, setCfg] = useState<EmbeddingConfig | null>(null);
@@ -1944,6 +2449,7 @@ function EmbeddingTab({ doc, onRefresh }: { doc: KnowledgeDoc; onRefresh: () => 
   const [size, setSize] = useState(850);
   const [overlap, setOverlap] = useState(0);
   const [model, setModel] = useState('');
+  const [allowEgress, setAllowEgress] = useState(true);
   const [previewing, setPreviewing] = useState(false);
   const [preview, setPreview] = useState<ChunkPreviewResult | null>(null);
   const [saving, setSaving] = useState(false);
@@ -1955,6 +2461,7 @@ function EmbeddingTab({ doc, onRefresh }: { doc: KnowledgeDoc; onRefresh: () => 
       .then((c) => {
         if (!on) return;
         setCfg(c); setStrategy(c.chunk_strategy); setSize(c.chunk_size); setOverlap(c.chunk_overlap); setModel(c.embedding_model || '');
+        setAllowEgress(c.allow_external_embedding !== false);
       })
       .catch(() => toast.error(t('govern.embedding.loadFailed')))
       .finally(() => { if (on) setLoading(false); });
@@ -1971,6 +2478,12 @@ function EmbeddingTab({ doc, onRefresh }: { doc: KnowledgeDoc; onRefresh: () => 
   const saveAndReembed = async () => {
     setSaving(true);
     try {
+      // The egress veto is a property of the DOCUMENT, so it is saved through
+      // the document before re-indexing — otherwise re-indexing would run under
+      // the old permission and send text the user just forbade.
+      if (allowEgress !== (cfg?.allow_external_embedding !== false)) {
+        await upsertKnowledgeDoc(docToWrite(doc, { allow_external_embedding: allowEgress }));
+      }
       const res = await reembedDoc(doc.id, { chunk_strategy: strategy, chunk_size: size, chunk_overlap: overlap, embedding_model: model.trim() || null });
       toast.success(t('govern.embedding.reembedOk', { chunks: res.chunks }));
       onRefresh();
@@ -2006,6 +2519,21 @@ function EmbeddingTab({ doc, onRefresh }: { doc: KnowledgeDoc; onRefresh: () => 
             <Label>{t('govern.embedding.model')}</Label>
             <Input value={model} onChange={(e) => setModel(e.target.value)} placeholder={t('govern.embedding.modelPlaceholder')} />
             <p className="mt-1 text-tiny text-text-quaternary">{t('govern.embedding.modelHint')}</p>
+          </div>
+          <div className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 p-2.5">
+            <label className="flex cursor-pointer items-start gap-2">
+              <input type="checkbox" className="mt-0.5" checked={!allowEgress}
+                onChange={(e) => setAllowEgress(!e.target.checked)} />
+              <span className="min-w-0">
+                <span className="block text-tiny font-emphasis text-text-secondary">{t('govern.egress.blockLabel')}</span>
+                <span className="mt-0.5 block text-tiny text-text-quaternary">{t('govern.egress.blockHint')}</span>
+              </span>
+            </label>
+            {!allowEgress && (
+              <p className="mt-1.5 flex items-start gap-1.5 text-tiny text-warning">
+                <AlertTriangle className="mt-px h-3 w-3 shrink-0" />{t('govern.egress.blockedConsequence')}
+              </p>
+            )}
           </div>
           <div className="flex justify-end gap-2 pt-1">
             <Button size="sm" variant="secondary" loading={previewing} onClick={doPreview}>{t('govern.embedding.preview')}</Button>

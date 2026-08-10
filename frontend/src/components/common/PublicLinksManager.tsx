@@ -1583,6 +1583,7 @@ export function PublicLinksManager({
                     value={formAppearance}
                     onChange={setFormAppearance}
                     dashboardId={dashboardId}
+                    linkId={editingLink?.id ?? null}
                   />
                 )}
 

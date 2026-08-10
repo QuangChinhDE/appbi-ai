@@ -40,6 +40,16 @@ class AuditAction(str, enum.Enum):
     WORKBOARD_ROW_INSERTED = "workboard_row_inserted"
     WORKBOARD_ROW_UPDATED = "workboard_row_updated"
     WORKBOARD_ROW_DELETED = "workboard_row_deleted"
+    # Agent Flow. Publishing one changes what live public reports say to viewers,
+    # and assigning one decides what data a bot may read — both belong in the same
+    # trail as a permission change, not in a module-local log.
+    AGENT_FLOW_SAVED = "agent_flow_saved"
+    AGENT_FLOW_PUBLISHED = "agent_flow_published"
+    AGENT_FLOW_ROLLED_BACK = "agent_flow_rolled_back"
+    AGENT_FLOW_RESTORED = "agent_flow_restored"
+    AGENT_FLOW_DELETED = "agent_flow_deleted"
+    AGENT_FLOW_ASSIGNED = "agent_flow_assigned"
+    AGENT_FLOW_UNASSIGNED = "agent_flow_unassigned"
 
 
 class AuditSeverity(str, enum.Enum):
