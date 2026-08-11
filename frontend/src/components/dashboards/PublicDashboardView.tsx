@@ -329,6 +329,20 @@ async function runWithConcurrency<T, R>(
   return results;
 }
 
+/** Format the snapshot "data as of" timestamp for the public / embed header.
+ *  Mirrors the BUILD view's format (dd/mm/yyyy hh:mm, locale-aware, no seconds
+ *  / AM-PM noise) so the embedded report shows the update time the SAME way it
+ *  looks in the builder — instead of the bare `toLocaleString()` US default.
+ *  Returns '' for a missing/invalid value so the label never shows "Invalid Date". */
+function formatSnapshotAsOf(value: string | null | undefined): string {
+  if (!value) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  return date.toLocaleString([], {
+    day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit',
+  });
+}
+
 export function PublicDashboardView({ variant = 'public' }: { variant?: 'public' | 'embed' }) {
   const params = useParams();
   const token = params.token as string;
@@ -1756,9 +1770,9 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
       {snapshotAsOf && (
         <p
           className="mt-0.5 text-[11px] text-text-tertiary"
-          title={`Số liệu tính đến ${new Date(snapshotAsOf).toLocaleString()}`}
+          title={`Số liệu tính đến ${formatSnapshotAsOf(snapshotAsOf)}`}
         >
-          Số liệu tính đến {new Date(snapshotAsOf).toLocaleString()}
+          Số liệu tính đến {formatSnapshotAsOf(snapshotAsOf)}
           {snapshotStale && (
             <span className="ml-1 text-text-quaternary">· đang làm mới…</span>
           )}
@@ -2260,9 +2274,9 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
               {snapshotAsOf && (
                 <p
                   className="mt-0.5 truncate text-[11px] text-text-tertiary"
-                  title={`Số liệu tính đến ${new Date(snapshotAsOf).toLocaleString()}`}
+                  title={`Số liệu tính đến ${formatSnapshotAsOf(snapshotAsOf)}`}
                 >
-                  Số liệu tính đến {new Date(snapshotAsOf).toLocaleString()}
+                  Số liệu tính đến {formatSnapshotAsOf(snapshotAsOf)}
                   {snapshotStale && (
                     <span className="ml-1 text-text-quaternary">· đang làm mới…</span>
                   )}
