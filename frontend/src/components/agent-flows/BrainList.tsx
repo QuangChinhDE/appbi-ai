@@ -35,8 +35,9 @@ import { FilterTag } from '@/components/ui/FilterTag';
 import { FieldGroup, Input, Textarea } from '@/components/ui/Input';
 import { toast } from '@/lib/toast';
 import {
-  blankStep, deleteBrainVersion, getBrain, listBrains, saveBrain, slugifyBrainKey,
+  blankNode, deleteBrainVersion, getBrain, listBrains, saveBrain, slugifyBrainKey,
   type BrainSummary,
+  type FlowNode,
 } from '@/lib/agentFlows';
 
 import { MetaChip, StatusBadge, formatWhen } from './shared';
@@ -122,19 +123,27 @@ export function BrainList({
 
   const create = async (name: string, description: string) => {
     const key = slugifyBrainKey(name);
-    // Seeded with one step that already says something true, so a new brain is
-    // openable and publishable rather than a form with a required empty field.
-    const first = blankStep([]);
+    // Seeded with a flow that already runs: read the report, then answer. Two
+    // nodes rather than one, because "read the open report" is now a node of its
+    // own and costs nothing — a new flow should demonstrate that, not start with
+    // an agent doing everything.
+    const reader = blankNode('report_read', []);
+    const writer = blankNode('agent', [reader]);
     await saveBrain({
       brain_key: key,
       name: name.trim(),
       description: description.trim(),
       body: {
-        steps: [{
-          ...first,
-          name: 'Trả lời người xem',
-          prompt: 'Bạn đọc báo cáo đang mở và trả lời câu hỏi của người xem.',
-        }],
+        nodes: [
+          { ...reader, name: 'Đọc báo cáo' } as FlowNode,
+          {
+            ...writer,
+            name: 'Trả lời người xem',
+            prompt: 'Dùng dữ liệu vừa đọc để trả lời câu hỏi của người xem. '
+              + 'Không tự tạo thêm số ngoài những gì đã đọc được.',
+          } as FlowNode,
+        ],
+        answer_node: writer.key,
       },
     });
     setCreating(false);
@@ -393,7 +402,7 @@ function BrainCard({
         <div className="flex flex-wrap items-center gap-3 text-tiny text-text-quaternary">
           <span className="inline-flex items-center gap-1">
             <Layers className="h-3 w-3" />
-            {b.step_count ?? 0} bước
+            {b.node_count ?? 0} bước
           </span>
           <span className={`inline-flex items-center gap-1 ${links > 0 ? 'text-brand' : ''}`}>
             <Link2 className="h-3 w-3" />
@@ -473,7 +482,7 @@ function BrainTableRow({
           )}
         </div>
       </td>
-      <td className="app-list-cell text-caption tabular-nums text-text-secondary">{b.step_count ?? 0}</td>
+      <td className="app-list-cell text-caption tabular-nums text-text-secondary">{b.node_count ?? 0}</td>
       <td className="app-list-cell">
         {links > 0 ? (
           <span className="inline-flex items-center gap-1 text-caption font-emphasis tabular-nums text-brand">

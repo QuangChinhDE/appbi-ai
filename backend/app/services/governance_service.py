@@ -679,6 +679,8 @@ class GovernanceService:
             "review_date": d.review_date.isoformat() if d.review_date else None,
             "last_verified_at": d.last_verified_at.isoformat() if d.last_verified_at else None,
             "importance": d.importance or "normal",
+            "allow_external_embedding": bool(getattr(d, "allow_external_embedding", True)),
+            "sensitivity": getattr(d, "sensitivity", None) or "internal",
             "ai_summary": d.ai_summary, "ai_keywords": d.ai_keywords or [],
             "view_count": int(d.view_count or 0),
             "retrieval_count": int(d.retrieval_count or 0),
@@ -757,12 +759,154 @@ class GovernanceService:
         score = sum(w for _, w, ok in checks if ok)
         return {"score": score, "missing": [k for k, _, ok in checks if not ok]}
 
+
+    @staticmethod
+    def ai_retrievable(db: Session, d: GovernKnowledgeDoc) -> dict[str, Any]:
+        """Can the dashboard AI bot actually retrieve this document?
+
+        Three conditions must ALL hold (see govern_doc_embeddings.retrieve_doc_chunks):
+        the doc is Published, it is linked to at least one dashboard, and it has
+        embedded chunks. Miss any one and the doc is invisible to the bot — which
+        previously showed nothing at all on screen, so people assumed the AI had
+        read a document it could never reach.
+        """
+        reasons: list[str] = []
+        from app.services.dashboard_ai_bot.govern_doc_embeddings import egress_allowed
+
+        if not egress_allowed(d):
+            # Deliberate, not a defect — but the consequence must be visible, or
+            # someone will wonder for a week why the AI never cites this document.
+            return {"ok": False, "reasons": ["egress_blocked"]}
+        if (d.status or "") != "Published":
+            reasons.append("not_published")
+        try:
+            linked = (
+                db.query(GovernDocAssetLink)
+                .filter(GovernDocAssetLink.doc_id == d.id, GovernDocAssetLink.asset_type == "dashboard")
+                .first()
+            )
+        except Exception:  # noqa: BLE001
+            linked = None
+        if linked is None:
+            reasons.append("no_dashboard")
+        if d.id not in GovernanceService._chunked_doc_ids(db, [d.id]):
+            reasons.append("not_indexed")
+        elif GovernanceService._model_mismatched(db, d):
+            # Indexed, but with a DIFFERENT embedding model than the read path
+            # trusts. The read path skips these on purpose (comparing vectors
+            # across models produces a number that sorts but means nothing), so
+            # without this the document would look fully indexed and be unusable.
+            reasons.append("model_mismatch")
+        return {"ok": not reasons, "reasons": reasons}
+
+    @staticmethod
+    def vector_store_health(db: Session) -> dict[str, Any]:
+        """State of the chunk store's guarantees, as facts rather than intentions.
+
+        Row-level security is skipped entirely for a SUPERUSER or BYPASSRLS role,
+        so a policy can be perfectly written and enforce nothing. Anything that
+        claims to protect data has to be able to say whether it currently does —
+        a protection assumed to be on is worse than one known to be off.
+        """
+        out: dict[str, Any] = {}
+        try:
+            row = db.execute(
+                sa_text(
+                    """
+                    SELECT current_user,
+                           (SELECT rolsuper FROM pg_roles WHERE rolname = current_user),
+                           (SELECT rolbypassrls FROM pg_roles WHERE rolname = current_user),
+                           (SELECT relrowsecurity FROM pg_class WHERE relname = 'govern_doc_chunk'),
+                           (SELECT relforcerowsecurity FROM pg_class WHERE relname = 'govern_doc_chunk'),
+                           (SELECT count(*) FROM pg_policies WHERE tablename = 'govern_doc_chunk')
+                    """
+                )
+            ).first()
+            role, is_super, bypass, enabled, forced, policies = row
+            out.update(
+                db_role=role, rls_enabled=bool(enabled), rls_forced=bool(forced),
+                policy_count=int(policies or 0),
+                role_bypasses_rls=bool(is_super or bypass),
+            )
+            # The only combination under which the policy actually filters rows.
+            out["rls_in_force"] = bool(enabled and forced and policies and not (is_super or bypass))
+            if not out["rls_in_force"] and out["role_bypasses_rls"]:
+                out["reason"] = (
+                    f"DB role '{role}' is SUPERUSER/BYPASSRLS, so Postgres skips row-level "
+                    "security. Point the application at the least-privilege role "
+                    "'appbi_app' to activate it."
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("vector_store_health: inspection failed", exc_info=True)
+            out["error"] = str(exc)[:200]
+
+        try:
+            from app.services.dashboard_ai_bot.govern_doc_embeddings import (
+                active_embedding_model, authoring_scope,
+            )
+
+            authoring_scope(db)
+            out["active_model"] = active_embedding_model()
+            out["models_in_store"] = [
+                r[0] for r in db.execute(
+                    sa_text("SELECT DISTINCT model_version FROM govern_doc_chunk ORDER BY 1")
+                ).fetchall()
+            ]
+            out["unpublished_chunks"] = int(
+                db.execute(
+                    sa_text("SELECT count(*) FROM govern_doc_chunk WHERE doc_status <> 'Published'")
+                ).scalar() or 0
+            )
+            from app.services.dashboard_ai_bot.govern_doc_embeddings import index_is_stale
+
+            docs = db.query(GovernKnowledgeDoc).filter(GovernKnowledgeDoc.status == "Published").all()
+            stale = [d.id for d in docs if index_is_stale(db, d)]
+            out["published_docs"] = len(docs)
+            out["stale_index_docs"] = stale
+            out["index_method"] = db.execute(
+                sa_text(
+                    "SELECT amname FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid "
+                    "JOIN pg_am am ON am.oid = c.relam WHERE c.relname = 'idx_govern_doc_chunk_hnsw'"
+                )
+            ).scalar()
+        except Exception:  # noqa: BLE001
+            logger.warning("vector_store_health: store inspection failed", exc_info=True)
+        return out
+
+    @staticmethod
+    def _model_mismatched(db: Session, d: GovernKnowledgeDoc) -> bool:
+        """True when this doc's chunks were embedded with a model the read path
+        no longer uses. Best-effort: a failure here must not make a healthy doc
+        look broken, so it reports 'fine' when it cannot tell."""
+        try:
+            from app.services.dashboard_ai_bot.govern_doc_embeddings import (
+                active_embedding_model, authoring_scope,
+            )
+
+            authoring_scope(db)  # an author must see their own draft's index
+            active = active_embedding_model()
+            rows = db.execute(
+                sa_text(
+                    "SELECT DISTINCT model_version FROM govern_doc_chunk "
+                    "WHERE doc_id = :d AND embedding IS NOT NULL"
+                ),
+                {"d": d.id},
+            ).fetchall()
+            models = {(r[0] or "").strip() for r in rows}
+            return bool(models) and active not in models
+        except Exception:  # noqa: BLE001
+            logger.warning("ai_retrievable: model check failed for doc %s", d.id, exc_info=True)
+            return False
+
     @staticmethod
     def _chunked_doc_ids(db: Session, doc_ids: list[int]) -> set[int]:
         """Doc ids that have RAG chunk embeddings (raw table; best-effort)."""
         if not doc_ids:
             return set()
         try:
+            from app.services.dashboard_ai_bot.govern_doc_embeddings import authoring_scope
+
+            authoring_scope(db)  # the list view reports on drafts too
             rows = db.execute(
                 sa_text("SELECT DISTINCT doc_id FROM govern_doc_chunk WHERE doc_id = ANY(:ids) AND embedding IS NOT NULL"),
                 {"ids": doc_ids},
@@ -937,6 +1081,7 @@ class GovernanceService:
             out["backlinks"] = []
         # AI-ready score for this doc (single chunk-existence check)
         out["ai_ready"] = GovernanceService._ai_ready(d, d.id in GovernanceService._chunked_doc_ids(db, [d.id]))
+        out["ai_retrievable"] = GovernanceService.ai_retrievable(db, d)
         return out
 
     @staticmethod
@@ -975,6 +1120,18 @@ class GovernanceService:
             review_date=GovernanceService._parse_date(payload.get("review_date")),
             importance=(payload.get("importance") or "normal"),
         )
+        # Egress control is only written when the caller actually says so. A
+        # metadata-only save that omits the key must not read as "block this",
+        # which is what bool(None) would have meant — one careless save would
+        # have silently un-indexed the whole knowledge base.
+        # `is not None`, NOT `in payload`: the API layer builds this dict from a
+        # Pydantic model, so every optional key is PRESENT with a value of None.
+        # Keying on presence therefore read every ordinary save as "block this".
+        if payload.get("allow_external_embedding") is not None:
+            fields["allow_external_embedding"] = bool(payload["allow_external_embedding"])
+        if payload.get("sensitivity"):
+            fields["sensitivity"] = str(payload["sensitivity"]).strip().lower()
+
         if doc_id:  # EDIT — bump version
             d = db.query(GovernKnowledgeDoc).filter(GovernKnowledgeDoc.id == int(doc_id)).first()
             if d is None:
@@ -987,6 +1144,11 @@ class GovernanceService:
             # (the FE also renders those read-only). Everything else on the
             # page — title, summary, tags, owner, metadata — stays ours to edit.
             if (d.source_type or "") in ("google_doc", "web"):
+                fields.pop("body", None)
+            # A FILE doc stays editable, but its body was machine-extracted from
+            # the upload — a metadata-only save (no body in the payload) must not
+            # silently erase it. An explicit non-empty edit still applies.
+            elif (d.source_type or "") == "file" and not (fields.get("body") or "").strip():
                 fields.pop("body", None)
             for k, v in fields.items():
                 setattr(d, k, v)
@@ -1235,6 +1397,14 @@ class GovernanceService:
                 from app.services.embedding_service import EmbeddingService
                 qvec = EmbeddingService.generate_query_embedding(q) if EmbeddingService else None
                 if qvec is not None:
+                    # Author-facing search over their own space, already narrowed
+                    # by `visible_ids` below — drafts belong in these results.
+                    from app.services.dashboard_ai_bot.govern_doc_embeddings import (
+                        _tune_vector_scan, authoring_scope,
+                    )
+
+                    authoring_scope(db)
+                    _tune_vector_scan(db)
                     rows = db.execute(
                         sa_text(
                             "SELECT c.doc_id, d.title, d.space FROM govern_doc_chunk c "

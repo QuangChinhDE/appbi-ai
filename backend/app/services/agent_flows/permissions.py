@@ -96,16 +96,28 @@ def usable_brains(db: Session, user: Any):
     return _owned_or_shared(db, AgentBrainVersion, ResourceType.AGENT_BRAIN, user)
 
 
-def run_scope(db: Session, brain_row: AgentBrainVersion, brain: Brain) -> dict[str, list]:
+def run_scope(
+    db: Session,
+    brain_row: AgentBrainVersion,
+    brain: Brain,
+    binding_scope: dict[str, list] | None = None,
+) -> dict[str, list]:
     """The knowledge scope a RUN of this brain may reach.
 
-    Re-derived from the owner's CURRENT rights, not from what was stored when the
-    brain was published. A brain outlives the session that authored it, and freezing
-    the scope at save time means an owner who loses access to a document keeps
-    answering from it — the kind of stale grant nobody goes looking for.
+    THE CEILING, IN ONE EXPRESSION:
 
-    Fails CLOSED: an owner who cannot be resolved yields an empty scope, so the
-    brain runs with no attached knowledge rather than with all of it.
+        owner's CURRENT rights  ∩  what the flow attached  ∩  what the LINK declared
+
+    Re-derived per turn, not frozen at publish: a flow outlives the session that
+    authored it, and an owner who loses access to a document must stop answering
+    from it on the next question rather than at the next publish.
+
+    `binding_scope` is the third term and it can only NARROW. A link cannot grant a
+    document the flow never attached — that would let whoever manages a public link
+    borrow the author's reading rights for something the author never chose.
+
+    Fails CLOSED: an owner who cannot be resolved yields an empty scope, so the flow
+    runs with no attached knowledge rather than with all of it.
     """
     owner = _resolve_owner(db, brain_row)
     if owner is None:
@@ -125,6 +137,14 @@ def run_scope(db: Session, brain_row: AgentBrainVersion, brain: Brain) -> dict[s
             scope["dataset_ids"].append(int(src.ref))
         elif src.source == "metric":
             scope["metric_names"].append(src.ref)
+
+    if binding_scope is not None:
+        # Intersection, never union. Written as an explicit loop rather than a set
+        # operation so the direction is impossible to reverse by accident in a later
+        # edit — this line is the whole per-link guarantee.
+        for field in ("doc_ids", "dataset_ids", "metric_names"):
+            allowed = set(binding_scope.get(field) or [])
+            scope[field] = [x for x in scope[field] if x in allowed]
     return scope
 
 

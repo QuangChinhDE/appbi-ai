@@ -244,6 +244,16 @@ class ToolContext:
     #: intersects, so an author listing an id they are not entitled to gains
     #: nothing — the ceiling is not theirs to raise.
     knowledge_scope: dict[str, Any] = field(default_factory=dict)
+    #: The most rows a single read may return, set per run from the binding's
+    #: `capabilities.max_rows_per_call`. None means fall back to `MAX_TOP_N`.
+    #:
+    #: It exists because the binding's declaration was not being honoured: a link
+    #: could grant 500 rows per call and `tool_get_chart_data` would hand back 50
+    #: without a word, so an operator raising the ceiling to fix a truncated
+    #: answer changed nothing and had no way to find out why. A limit that is
+    #: configurable in one place and enforced from another is not a limit, it is
+    #: two limits, and the stricter one wins silently.
+    max_rows_per_call: int | None = None
     _chart_data_cache: dict[tuple, dict] = field(default_factory=dict)
 
     @classmethod

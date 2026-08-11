@@ -4,13 +4,11 @@
 and records the outcome via GovernanceService.log_doc_run() so the History
 tab has something real to show.
 
-Deliberately does NOT create a GovernKnowledgeDocVersion snapshot or call
-embed_doc() — sync and embed are two separate, explicit actions (matching the
-Source tab's "Sync now" vs the Embedding tab's "Save & Re-embed"), and keeping
-sync lightweight avoids bloating version history on periodic scheduled syncs.
-A doc with no published_version yet (the common case) is retrieved from its
-live `body` directly (see GovernanceService.published_body), so a synced body
-is already what RAG would embed once the user hits "Save & Re-embed".
+Deliberately does NOT create a GovernKnowledgeDocVersion snapshot — that would
+bloat version history on every scheduled sync. It DOES re-index after a
+successful ingest (see _reindex_after_ingest): content the user never typed is
+useless until it is searchable, and a doc sitting at zero vectors is invisible
+to the AI with nothing on screen to say so.
 """
 from __future__ import annotations
 
@@ -41,6 +39,27 @@ def _store_source_payload(db, doc_id: int, *, filename: str, content_type: str, 
     row.uploaded_at = datetime.utcnow()
     if uploaded_by is not None:
         row.uploaded_by = uploaded_by
+
+
+def _reindex_after_ingest(db, doc, *, changed_by: str | None = None) -> None:
+    """Index freshly ingested content right away.
+
+    Sync and embed stay separate *actions*, but content the user never typed is
+    useless until it is searchable — leaving a synced doc at zero vectors makes
+    the AI silently blind to it. Hash-gated, so an unchanged re-sync costs
+    nothing. Best-effort: ingestion must not fail because indexing did.
+    """
+    try:
+        from app.services.dashboard_ai_bot.govern_doc_embeddings import embed_doc
+        from app.services.governance_service import GovernanceService
+        result = embed_doc(db, doc)
+        GovernanceService.log_doc_run(
+            db, doc.id, "embed", trigger="sync", status=result.get("status", "error"),
+            detail=result.get("detail"), stats=result, changed_by=changed_by,
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning("govern_doc_sync_service: post-ingest reindex failed (doc %s)", getattr(doc, "id", None), exc_info=True)
+        db.rollback()
 
 
 def sync_doc(db, doc, *, trigger: str = "manual", changed_by: str | None = None) -> dict:
@@ -98,6 +117,7 @@ def sync_doc(db, doc, *, trigger: str = "manual", changed_by: str | None = None)
 
     status = "skipped" if unchanged else "ok"
     detail = "No content changes" if unchanged else f"Fetched {len(new_body):,} characters"
+    _reindex_after_ingest(db, doc, changed_by=changed_by)
     GovernanceService.log_doc_run(
         db, doc.id, "sync", trigger=trigger, status=status, detail=detail,
         stats={"chars": len(new_body)}, changed_by=changed_by,
@@ -136,6 +156,7 @@ def save_uploaded_file(db, doc, *, filename: str, content_type: str, data: bytes
     db.commit()
 
     detail = f"Uploaded {filename} — extracted {len(result['text']):,} characters"
+    _reindex_after_ingest(db, doc, changed_by=changed_by)
     GovernanceService.log_doc_run(
         db, doc.id, "sync", trigger="manual", status="ok", detail=detail,
         stats={"chars": len(result["text"]), "filename": filename}, changed_by=changed_by,

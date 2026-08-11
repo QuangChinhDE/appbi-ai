@@ -74,7 +74,7 @@ _DATASET_PREFIXES = (
 )
 
 #: Documents — the one catalog module that is still its own destination.
-_GOVERN_PREFIXES = ("knowledge", "search", "graph", "asset-docs", "change-log", "google-connection")
+_GOVERN_PREFIXES = ("knowledge", "search", "graph", "asset-docs", "change-log", "google-connection", "vector-store-health")
 
 
 def _catalog_module_for(path: str) -> str:
@@ -339,6 +339,10 @@ class KnowledgeDocWrite(BaseModel):
     process_ref: str | None = None
     review_date: str | None = None        # "YYYY-MM-DD"
     importance: str | None = None         # low|normal|high
+    # External-embedding control. `None` means "leave as it is" — the service
+    # only writes these when the key is actually present in the payload.
+    allow_external_embedding: bool | None = None
+    sensitivity: str | None = None        # internal|confidential|restricted
 
 
 @router.get("/govern/knowledge")
@@ -652,10 +656,30 @@ class EmbeddingConfigWrite(BaseModel):
 def govern_doc_embedding_config_get(doc_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
     d = _run(lambda: GovernanceService.require_doc_access(db, doc_id, user, "view"))
     from sqlalchemy import text as _t
+    from app.services.dashboard_ai_bot.govern_doc_embeddings import authoring_scope
+    authoring_scope(db)  # the author is inspecting their own doc, draft or not
     chunk_count = db.execute(_t("SELECT COUNT(*) FROM govern_doc_chunk WHERE doc_id = :d"), {"d": doc_id}).scalar() or 0
+
+    # Whether THIS document would hit the runaway chunk cap, recomputed from the
+    # body rather than remembered from the last run — so the warning is still
+    # right after an edit and survives a page reload. Pure string work, no I/O.
+    from app.services.dashboard_ai_bot.govern_doc_embeddings import (
+        chunk_doc_detailed, egress_allowed, index_is_stale,
+    )
+    _stale = index_is_stale(db, d)
+    _, stats = chunk_doc_detailed(
+        GovernanceService.published_body(db, d) or "",
+        strategy=d.chunk_strategy or "paragraph",
+        size=d.chunk_size or 850,
+        overlap=d.chunk_overlap or 0,
+    )
     return {
         "chunk_strategy": d.chunk_strategy, "chunk_size": d.chunk_size, "chunk_overlap": d.chunk_overlap,
         "embedding_model": d.embedding_model, "embedded_hash": d.embedded_hash, "chunk_count": int(chunk_count),
+        "index_stale": _stale, "allow_external_embedding": egress_allowed(d),
+        "sensitivity": getattr(d, "sensitivity", None) or "internal",
+        "truncated": bool(stats.get("truncated")), "dropped_chunks": int(stats.get("dropped_chunks") or 0),
+        "dropped_chars": int(stats.get("dropped_chars") or 0), "max_chunks": int(stats.get("max_chunks") or 0),
     }
 
 
@@ -713,6 +737,144 @@ def govern_doc_embed_now(doc_id: int, body: EmbeddingConfigWrite | None = None, 
         detail=result.get("detail"), stats=result, changed_by=getattr(user, "email", None),
     )
     return result
+
+
+class VectorQueryReq(BaseModel):
+    query: str
+    k: int = 5
+
+
+@router.get("/govern/knowledge/{doc_id}/egress-log")
+def govern_doc_egress_log(doc_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    """Every time this document's text was sent to an external embedding
+    provider — including the times it was refused."""
+    _run(lambda: GovernanceService.require_doc_access(db, doc_id, user, "view"))
+    from sqlalchemy import text as _t
+    rows = db.execute(
+        _t(
+            """
+            SELECT occurred_at, purpose, provider, model, chunks_sent, chars_sent,
+                   outcome, sensitivity, triggered_by
+            FROM govern_doc_egress_log WHERE doc_id = :d
+            ORDER BY occurred_at DESC LIMIT 100
+            """
+        ),
+        {"d": doc_id},
+    ).fetchall()
+    return {"entries": [
+        {"occurred_at": r[0].isoformat() if r[0] else None, "purpose": r[1], "provider": r[2],
+         "model": r[3], "chunks_sent": r[4], "chars_sent": r[5], "outcome": r[6],
+         "sensitivity": r[7], "triggered_by": r[8]}
+        for r in rows
+    ]}
+
+
+@router.get("/govern/vector-store-health")
+def govern_vector_store_health(db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    """What the chunk store actually guarantees right now — not what it intends.
+
+    Deliberately reachable by any user who can view Govern: a row-level-security
+    policy that is silently inert is exactly the failure this endpoint exists to
+    make impossible to miss.
+    """
+    return GovernanceService.vector_store_health(db)
+
+
+@router.get("/govern/knowledge/{doc_id}/vectors")
+def govern_doc_vectors(doc_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    """Inspect what actually landed in the vector store for this document —
+    the same thing a Pinecone console shows: one row per vector with its id,
+    the text it encodes, the model, dimensions and a peek at the raw values.
+    Read-only; the full 768-float vector is never shipped (only a preview)."""
+    _run(lambda: GovernanceService.require_doc_access(db, doc_id, user, "view"))
+    from sqlalchemy import text as _t
+    from app.services.dashboard_ai_bot.govern_doc_embeddings import authoring_scope
+    authoring_scope(db)  # the vector browser exists to inspect drafts too
+    rows = db.execute(
+        _t(
+            """
+            SELECT id, chunk_index, content, content_hash, model_version, created_at, trust, doc_status,
+                   (embedding IS NOT NULL) AS has_vector,
+                   CASE WHEN embedding IS NOT NULL
+                        THEN array_length(embedding::real[], 1) END AS dims,
+                   CASE WHEN embedding IS NOT NULL
+                        THEN (embedding::real[])[1:6] END AS preview
+            FROM govern_doc_chunk
+            WHERE doc_id = :d
+            ORDER BY chunk_index
+            """
+        ),
+        {"d": doc_id},
+    ).fetchall()
+    vectors = [
+        {
+            "id": r[0], "chunk_index": r[1], "content": r[2], "content_hash": r[3],
+            "model": r[4], "created_at": r[5],
+            "trust": r[6], "doc_status": r[7],
+            "has_vector": bool(r[8]),
+            "dims": r[9], "preview": [float(x) for x in (r[10] or [])],
+            "char_count": len(r[2] or ""),
+        }
+        for r in rows
+    ]
+    return {
+        "vectors": vectors,
+        "total": len(vectors),
+        "dims": next((v["dims"] for v in vectors if v["dims"]), None),
+        "model": next((v["model"] for v in vectors if v["model"]), None),
+    }
+
+
+@router.post("/govern/knowledge/{doc_id}/vectors/query")
+def govern_doc_vectors_query(doc_id: int, body: VectorQueryReq, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    """Run a similarity search against THIS document's vectors — the Pinecone
+    "query" box. Shows exactly which chunk the AI would retrieve for a question
+    and how close it scored, so retrieval can be sanity-checked per document."""
+    _run(lambda: GovernanceService.require_doc_access(db, doc_id, user, "view"))
+    from app.models.governance import GovernKnowledgeDoc
+    from app.services.embedding_service import EmbeddingService
+    from sqlalchemy import text as _t
+
+    q = (body.query or "").strip()
+    if not q:
+        raise HTTPException(status_code=422, detail="Enter a question to test retrieval.")
+    doc = db.query(GovernKnowledgeDoc).filter(GovernKnowledgeDoc.id == doc_id).first()
+    qvec = EmbeddingService.generate_query_embedding(q, model=(doc.embedding_model or None) if doc else None)
+    if qvec is None:
+        raise HTTPException(status_code=503, detail="Embeddings are unavailable — check the AI key configuration.")
+    lit = str(qvec)  # floats only — same inlining the retrieval path uses
+    k = max(1, min(int(body.k or 5), 20))
+
+    # Mirrors the bot's own hybrid recall so this console tells the truth about
+    # what retrieval will do — a vector-only preview would quietly disagree with
+    # production for exactly the queries hybrid search exists to fix.
+    from app.services.dashboard_ai_bot.govern_doc_embeddings import (
+        _fuse_rrf, _keyword_ranked_ids, _vector_ranked_ids, active_embedding_model, authoring_scope,
+    )
+    authoring_scope(db)
+    scope = " WHERE c.doc_id = :d AND c.embedding IS NOT NULL AND c.model_version = :emb_model "
+    scope_params = {"d": doc_id, "emb_model": active_embedding_model()}
+    pool = max(k * 4, 20)
+    vec_ids = _vector_ranked_ids(db, scope, scope_params, lit, pool)
+    kw_ids = _keyword_ranked_ids(db, scope, scope_params, q, pool)
+    fused = _fuse_rrf(vec_ids, kw_ids)
+    if not fused:
+        return {"matches": []}
+    top = sorted(fused, key=lambda i: -fused[i])[:k]
+    rows = db.execute(
+        _t(f"""
+            SELECT c.id, c.chunk_index, c.content, 1 - (c.embedding <=> '{lit}'::vector) AS score, c.trust
+            FROM govern_doc_chunk c WHERE c.id = ANY(:ids)
+        """),
+        {"ids": top},
+    ).fetchall()
+    by_id = {r[0]: r for r in rows}
+    return {"matches": [
+        {"chunk_index": by_id[i][1], "content": by_id[i][2], "score": float(by_id[i][3]),
+         "trust": by_id[i][4],
+         "matched_by": ("both" if i in vec_ids and i in kw_ids else "keyword" if i in kw_ids else "vector")}
+        for i in top if i in by_id
+    ]}
 
 
 @router.get("/govern/knowledge/{doc_id}/history")

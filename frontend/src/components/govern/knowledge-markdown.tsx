@@ -6,8 +6,8 @@
  * doc-type / status metadata. Kept design-system clean (token classes only)
  * and reused by the Govern Knowledge Hub tab.
  */
-import { type ReactNode } from 'react';
-import { Info, AlertTriangle, Lightbulb, CheckCircle2, ShieldCheck, Sigma, HelpCircle, Quote, ArrowUpRight } from 'lucide-react';
+import { useState, type ReactNode } from 'react';
+import { Info, AlertTriangle, Lightbulb, CheckCircle2, ShieldCheck, Sigma, HelpCircle, Quote, ArrowUpRight, ImageOff } from 'lucide-react';
 
 // ── Obsidian-style callouts: > [!type] Title / > body ────────────────────────
 // tone = left-border + tint; icon + default title (VI-first, custom title wins).
@@ -28,7 +28,9 @@ const CALLOUT_ALIAS: Record<string, string> = { error: 'danger', bug: 'danger', 
 // onDocLink handles internal wikilinks (href scheme "govern:doc:<id>").
 function renderInline(text: string, key: string, onDocLink?: (id: number) => void): ReactNode {
   const parts: ReactNode[] = [];
-  const linkRe = /\[([^\]]+)\]\(([^)]+)\)/g;
+  // `!` prefix distinguishes an image from a link — captured in group 1 so a
+  // single pass handles both and an image is never mis-read as a link.
+  const linkRe = /(!?)\[([^\]]*)\]\(([^)]+)\)/g;
   let last = 0; let m: RegExpExecArray | null; let i = 0;
   const pushText = (s: string, k: string) => {
     const re = /(\*\*([^*]+)\*\*|\*([^*]+)\*|`([^`]+)`)/g;
@@ -44,8 +46,14 @@ function renderInline(text: string, key: string, onDocLink?: (id: number) => voi
   };
   while ((m = linkRe.exec(text))) {
     if (m.index > last) pushText(text.slice(last, m.index), `${key}t${i}`);
-    const label = m[1]; const url = m[2];
-    if (url.startsWith('govern:doc:')) {
+    const isImage = m[1] === '!';
+    const label = m[2]; const url = m[3];
+    if (isImage) {
+      // Pictures imported from a source (e.g. Google Docs) render inline. If
+      // the remote URL ever stops resolving, fall back to the caption instead
+      // of a broken-image icon.
+      parts.push(<DocImage key={`${key}img${i}`} src={url} alt={label} />);
+    } else if (url.startsWith('govern:doc:')) {
       // Internal [[wikilink]] → clickable in-app navigation (no page reload).
       const id = parseInt(url.slice('govern:doc:'.length), 10);
       parts.push(
@@ -64,6 +72,21 @@ function renderInline(text: string, key: string, onDocLink?: (id: number) => voi
   }
   if (last < text.length) pushText(text.slice(last), `${key}t${i}`);
   return parts;
+}
+
+function DocImage({ src, alt }: { src: string; alt: string }) {
+  const [failed, setFailed] = useState(false);
+  if (failed) {
+    return (
+      <span className="my-1 inline-flex items-center gap-1.5 rounded-md border border-dashed border-[rgb(var(--border-strong))] px-2 py-1 text-caption text-text-quaternary">
+        <ImageOff className="h-3.5 w-3.5" />{alt || 'Image'}
+      </span>
+    );
+  }
+  return (
+    <img src={src} alt={alt} loading="lazy" onError={() => setFailed(true)}
+      className="my-2 block max-w-full rounded-lg border border-[rgb(var(--border-line))]" />
+  );
 }
 
 export function Markdown({ source, onDocLink }: { source: string; onDocLink?: (id: number) => void }) {

@@ -131,18 +131,25 @@ a hunch about next month is not [PRED].
 2b. LADDER TAG every finding bullet: open it with exactly one of
     [DESC] [DIAG] [PRED] [PRESC], before the text, kept verbatim.
 
-3. NO SPECULATION. Don't write "có thể là / có thể do / likely /
-   might be / seems to indicate" when guessing at cause. State the
+3. NO SPECULATION. Never hedge a cause you did not measure — no
+   "may be / might be / could be due to / seems to indicate", and no
+   equivalent in whatever language you are answering in. State the
    observation and stop. Claim a cross-chart correlation only when
    both summaries are read or `correlate_charts` was called.
 
 4. EMPTY DATA. If a chart genuinely has 0 rows, say so. If rows
-   exist but the dimension is NULL, say "có N bản ghi nhưng chưa
-   được gán <dim>", not "không có X nào".
+   exist but the dimension is NULL, these are different facts and
+   must read differently: "N records with no <dim> assigned", never
+   "there is no X". Phrase it in the answer's language.
 
-5. LANGUAGE. Reply in the SAME language as the user's most recent
-   message — detect it from that message, never from the dashboard's or
-   the app's UI language. Vietnamese question → Vietnamese answer;
+5. LANGUAGE. Detect the language of the LAST user message and reply in
+   THAT language. Only that message decides — not the earlier turns, not
+   the dashboard, not the app's UI. A conversation that ran in Vietnamese
+   and then receives an English question gets an ENGLISH answer, and the
+   reverse likewise; do not carry the previous turn's language forward.
+   This prompt, the tool schemas and every tool result are written in
+   English because they are a machine contract between the system and
+   you — none of that is a hint about which language to answer in. Vietnamese question → Vietnamese answer;
    English question → English answer. Keep `[chart:N]`, `[HIGH]`,
    `[MED]`, `[LOW]`, `[DESC]`, `[DIAG]`, `[PRED]`, `[PRESC]` verbatim.
 
@@ -153,12 +160,15 @@ a hunch about next month is not [PRED].
 - 1-3 supporting bullets, each ladder-tagged and with at least one
   relative reference (% of total, vs avg, vs another segment). For
   drill-down questions, bullets can be breakdown rows (cap 10).
-- ▸ Đề xuất hành động — when (and only when) your [DIAG]/[PRED]
-  findings imply one: 1-3 `[PRESC]` lines. Each names a concrete
-  object from the data (segment, category, entity, period — real
-  labels, not "các bộ phận liên quan") and traces to a cited finding
-  above. NEVER generic advice ("cần tối ưu quy trình"), never a
-  number that isn't already cited. Pure lookups need no action block.
+- An action block, opened with `▸ ` followed by a short heading of
+  your own words IN THE ANSWER'S LANGUAGE ("Đề xuất hành động",
+  "Recommended actions"). Include it when (and only when) your
+  [DIAG]/[PRED] findings imply one: 1-3 `[PRESC]` lines. Each names a
+  concrete object from the data (segment, category, entity, period —
+  real labels, never a vague group like "the teams involved") and
+  traces to a cited finding above. NEVER generic advice ("optimise the
+  process"), never a number that isn't already cited. Pure lookups
+  need no action block.
 - End with EXACTLY 2-3 follow-up lines, each prefixed `[FOLLOWUP]`
   and ending `?` — plain text only.
 
@@ -202,8 +212,9 @@ corrected draft that:
      supported rung.
  13. ACTION ITEMS: `[PRESC]` lines must name a concrete entity from
      the tool results and follow from a cited [DIAG]/[PRED] finding.
-     Delete generic advice ("tối ưu quy trình", "theo dõi thêm") and
-     any action referencing data not in the tool results.
+     Delete generic advice ("optimise the process", "keep monitoring",
+     or the same in any language) and any action referencing data not
+     in the tool results.
 
 Output ONLY the corrected answer — no commentary, no headers. If the
 draft was already correct, return it unchanged.
@@ -234,7 +245,22 @@ def build_agent_system_prompt(
     report_context_note: str = "",
     briefing_block: str = "",
     conversation_state_block: str = "",
+    include_tools: bool = True,
 ) -> str:
+    """The analyst's system prompt.
+
+    `include_tools=False` drops the TOOLS narration — half this prompt, ~1,160
+    tokens — and is what an Agent Flow node wants. Two reasons, both structural:
+
+      * The tool SCHEMAS already go to the model through the API's own `tools`
+        field, so narrating them in prose is the same list sent twice.
+      * A flow grants tools PER NODE. The narration lists every tool the product
+        has, so a node granted two of them was being told about twenty and would
+        try to call ones it does not have.
+
+    The planning guidance goes with it: in a flow the plan is the graph, decided by
+    the author, not something the model should be improvising each turn.
+    """
     desc = (dashboard_description or "").strip()
     description_block = f"Description: {desc}" if desc else ""
 
@@ -257,7 +283,7 @@ def build_agent_system_prompt(
     if conv_state_block_render:
         conv_state_block_render = "\n" + conv_state_block_render + "\n"
 
-    return AGENT_SYSTEM_PROMPT_TEMPLATE.format(
+    rendered = AGENT_SYSTEM_PROMPT_TEMPLATE.format(
         dashboard_name=dashboard_name or "Dashboard",
         description_block=description_block,
         chart_count=chart_count,
@@ -267,6 +293,24 @@ def build_agent_system_prompt(
         briefing_block=briefing_block_render,
         conversation_state_block=conv_state_block_render,
     )
+    if not include_tools:
+        rendered = _without_section(rendered, "TOOLS")
+    return rendered
+
+
+def _without_section(prompt: str, name: str) -> str:
+    """Remove one `═══ NAME ═══` section, up to the next section marker.
+
+    Done HERE, in the module that owns the template, so an edit to the template and
+    the excision that depends on it stay in the same file. If the marker ever
+    disappears the prompt is returned unchanged — a slightly larger prompt is a far
+    better failure than a mangled one.
+    """
+    start = prompt.find(f"═══ {name} ═══")
+    if start < 0:
+        return prompt
+    nxt = prompt.find("═══ ", start + len(name) + 8)
+    return prompt[:start] + (prompt[nxt:] if nxt > 0 else "")
 
 
 def build_critique_user_prompt(

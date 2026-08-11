@@ -1451,6 +1451,10 @@ export interface ExploreChartProps {
   /** #2 — the grain currently requested by the viewer drill (for active-state
    *  highlight). undefined ⇒ chart's saved grain. */
   viewerGrain?: string;
+  /** Lock the date group-by for VIEWERS: when true, the Group-by switcher is
+   *  hidden on dashboard/public/embed views (the chart stays on its configured
+   *  default grain). Has no effect in the editor (onStyleConfigChange). */
+  lockDateGrain?: boolean;
   /** #KPI-header — the host tile renders the KPI metric label in its header
    *  row (level with the toolbar), so KpiCard hides its own label. */
   kpiLabelInHeader?: boolean;
@@ -1471,6 +1475,7 @@ function ExploreChartInner({
   embedded = false,
   onViewerDrill,
   viewerGrain,
+  lockDateGrain = false,
   kpiLabelInHeader = false,
 }: ExploreChartProps) {
   const { t } = useI18n();
@@ -1831,7 +1836,12 @@ function ExploreChartInner({
   // re-query the BE at a new grain (viewer: onViewerDrill — works even on
   // pre-aggregated dashboard/public charts, all measure types), or re-bucket
   // client-side (embedded raw-row charts: ephemeral, no round-trip).
-  const canDrill = hasDateAxis && hasTimeField && (
+  // `lockDateGrain` (per-tile, viewer-facing) hides the switcher for VIEWERS on
+  // dashboard/public/embed — the chart still opens at its configured default
+  // grain, viewers just can't change it. The EDITOR (onStyleConfigChange) is
+  // never locked so the DA can still configure the grain.
+  const grainLockedForViewer = lockDateGrain && !onStyleConfigChange;
+  const canDrill = hasDateAxis && hasTimeField && !grainLockedForViewer && (
     Boolean(onStyleConfigChange) || Boolean(onViewerDrill) || (embedded && !preAggregated)
   );
   // The chart's configured DEFAULT time grain — the server-honored bucketing a
@@ -3341,6 +3351,7 @@ function ExploreChartInner({
               {renderAnnotations()}
             </BarChart>,
             displayData.length,
+            xAxisIsDateLike, // long time axis → compress to fit; categorical bars keep the scroll path
           ))}
         </div>
       </div>
@@ -3804,6 +3815,7 @@ function ExploreChartInner({
               {renderAnnotations()}
             </ComposedChart>,
             displayData.length,
+            xAxisIsDateLike, // long time axis → compress bar+line to fit; categorical keeps scroll
           ))}
         </div>
       </div>
@@ -3876,6 +3888,7 @@ function ExploreChartInner({
             {renderAnnotations()}
           </BarChart>,
           barChartData.length,
+          xAxisIsDateLike, // long time axis → compress bars to fit; categorical bars keep scroll
         ))}
       </div>
     </div>

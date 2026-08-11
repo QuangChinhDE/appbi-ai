@@ -34,7 +34,73 @@ def _markdown_table(rows: list[list[str]]) -> str:
     return "\n".join(out)
 
 
+def _pdf_pages_with_tables(data: bytes) -> list[str]:
+    """Page markdown with tables preserved as tables.
+
+    pypdf returns a flat stream of words, so a financial table collapses into
+    "Doanh thu / 100 ty / 92 ty" with no way to tell which number is the target
+    and which is actual — the exact mistake that matters most in a BI product.
+    pdfplumber knows where the table cells are, so we render those as markdown
+    and take the remaining prose from outside the table areas.
+    """
+    import pdfplumber
+
+    pages: list[str] = []
+    with pdfplumber.open(io.BytesIO(data)) as pdf:
+        for index, page in enumerate(pdf.pages, start=1):
+            parts: list[str] = []
+            try:
+                found = page.find_tables()
+            except Exception:  # noqa: BLE001
+                found = []
+
+            # Prose = words that do NOT sit inside a detected table, so table
+            # cells are not duplicated once as text and once as a table.
+            try:
+                if found:
+                    boxes = [t.bbox for t in found]
+
+                    def outside(obj):
+                        cx = (obj["x0"] + obj["x1"]) / 2
+                        cy = (obj["top"] + obj["bottom"]) / 2
+                        return not any(b[0] <= cx <= b[2] and b[1] <= cy <= b[3] for b in boxes)
+
+                    prose = (page.filter(outside).extract_text() or "").strip()
+                else:
+                    prose = (page.extract_text() or "").strip()
+            except Exception:  # noqa: BLE001
+                prose = (page.extract_text() or "").strip()
+            if prose:
+                parts.append(prose)
+
+            for table in found:
+                try:
+                    rows = table.extract()
+                except Exception:  # noqa: BLE001
+                    continue
+                md = _markdown_table([[_md_cell(c) for c in (row or [])] for row in (rows or [])])
+                if md:
+                    parts.append(md)
+
+            if parts:
+                pages.append(f"## Page {index}\n\n" + "\n\n".join(parts))
+    return pages
+
+
 def _extract_pdf(data: bytes) -> str:
+    """Prefer layout-aware extraction; fall back to a plain text read.
+
+    pdfplumber is slower and can choke on unusual PDFs, so pypdf remains the
+    safety net — a document that yields flat text is still far better than an
+    upload that fails outright.
+    """
+    try:
+        pages = _pdf_pages_with_tables(data)
+        if pages:
+            return "\n\n".join(pages)
+    except Exception:  # noqa: BLE001
+        logger.warning("file_text_extractor: pdfplumber failed, falling back to pypdf", exc_info=True)
+
     from pypdf import PdfReader
 
     reader = PdfReader(io.BytesIO(data), strict=False)
@@ -44,7 +110,7 @@ def _extract_pdf(data: bytes) -> str:
         except Exception:  # noqa: BLE001
             logger.info("file_text_extractor: encrypted PDF could not be opened with an empty password")
 
-    pages: list[str] = []
+    pages = []
     for index, page in enumerate(reader.pages, start=1):
         try:
             text = (page.extract_text() or "").strip()

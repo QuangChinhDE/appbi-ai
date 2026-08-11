@@ -7,6 +7,7 @@ import type { PublicLinkAppearanceConfig } from '@/types/api';
 import { Input, Textarea } from '@/components/ui/Input';
 import { AiButton } from '@/components/ui/AiButton';
 import { dashboardApi } from '@/lib/api/dashboards';
+import { FlowBindingEditor } from '@/components/common/FlowBindingEditor';
 
 // The AI setup for one public link.
 //
@@ -54,9 +55,14 @@ interface PublicLinkAiBotEditorProps {
   value: PublicLinkAppearanceConfig;
   onChange: (value: PublicLinkAppearanceConfig) => void;
   dashboardId: number;
+  /** Null while the link is still being created. The data contract is attached to a
+   *  LINK, so there is nothing to define until one exists. */
+  linkId: number | null;
 }
 
-export function PublicLinkAiBotEditor({ value, onChange, dashboardId }: PublicLinkAiBotEditorProps) {
+export function PublicLinkAiBotEditor({
+  value, onChange, dashboardId, linkId,
+}: PublicLinkAiBotEditorProps) {
   const enabled = value.ai_bot_enabled === true;
   const provider = value.ai_bot_provider || 'openai';
   const systemPrompt = value.ai_bot_report_context_note || '';
@@ -163,27 +169,22 @@ export function PublicLinkAiBotEditor({ value, onChange, dashboardId }: PublicLi
 
         {enabled && (
           <div className="mt-4 space-y-4 rounded-lg border border-brand/20 bg-brand/5 p-4">
-            {/* WHERE THE FLOW PICKER WAS.
-                The AI Flow module was deleted to be rebuilt, so there is no list
-                of ways-of-thinking to choose from. Saying that plainly beats
-                leaving a dropdown that cannot be filled, and beats hiding the
-                section — an operator who switched the bot on needs to know why it
-                will not answer. `ai_bot_flow_key` is left untouched on the link:
-                whatever was chosen before is still recorded, and the rebuilt
-                module can read it. */}
+            {/* THE FLOW PICKER, AND THE DATA DEFINITION THAT MUST COME WITH IT.
+                Choosing a flow used to be the whole act, and the runtime then
+                worked out what the bot could read: every chart on the dashboard,
+                every document the flow's author could see. Nobody ever declared
+                anything, so nobody could answer "what does this bot read".
+
+                Now the scope is declared HERE, before the flow is assigned, and a
+                link with no valid declaration does not answer at all. */}
             <div>
               <label className="mb-1 flex items-center gap-1.5 text-tiny font-strong text-text-secondary">
                 <Workflow className="h-3.5 w-3.5 text-brand" />
-                Cách suy nghĩ của bot
+                Agent Flow &amp; phạm vi dữ liệu
               </label>
-              <p className="rounded-lg border border-warning/30 bg-warning/5 px-3 py-2 text-tiny leading-5 text-text-secondary">
-                Module AI Flow đang được dựng lại, nên chưa có luồng nào để chọn và
-                bot trên link này sẽ chưa trả lời được.
-                {value.ai_bot_flow_key ? (
-                  <> Lựa chọn cũ vẫn được giữ: <code className="text-tiny">{value.ai_bot_flow_key}</code>.</>
-                ) : null}
-              </p>
+              <FlowBindingEditor linkId={linkId} />
             </div>
+
             <div>
               <label className="mb-1 block text-tiny font-strong text-text-secondary">API key</label>
               {value.ai_bot_key_configured && !value.ai_bot_key && (

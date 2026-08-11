@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import {
   Plug, Database, Search, LayoutDashboard, Radar, Gauge, Inbox,
-  LineChart, Compass, Landmark, ClipboardList, Shield,
+  LineChart, Compass, Landmark, ClipboardList, Shield, Workflow,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 
@@ -80,6 +80,7 @@ export const MODULE_LABEL_KEYS: Record<string, string> = {
   semantics: 'settings.module.semantics',
   ai_guidance: 'settings.module.ai_guidance',
   govern: 'settings.module.govern',
+  agent_flows: 'settings.module.agent_flows',
   observability: 'settings.module.observability',
   explore_charts: 'settings.module.explore_charts',
   dashboards: 'settings.module.dashboards',
@@ -98,6 +99,7 @@ export const MODULE_ICONS: Record<string, LucideIcon> = {
   semantics: LineChart,
   ai_guidance: Compass,
   govern: Landmark,
+  agent_flows: Workflow,
   workboards: ClipboardList,
   settings: Shield,
 };
@@ -106,7 +108,7 @@ export const MODULE_ICONS: Record<string, LucideIcon> = {
 export const MODULE_GROUPS: { key: string; labelKey: string; modules: string[] }[] = [
   { key: 'data', labelKey: 'settings.area.data', modules: ['data_sources', 'datasets'] },
   { key: 'analyze', labelKey: 'settings.area.analyze', modules: ['explore_charts', 'dashboards', 'observability'] },
-  { key: 'intelligence', labelKey: 'settings.area.intelligence', modules: ['intelligence', 'ai_inbox', 'semantics', 'ai_guidance', 'govern'] },
+  { key: 'intelligence', labelKey: 'settings.area.intelligence', modules: ['intelligence', 'ai_inbox', 'semantics', 'ai_guidance', 'govern', 'agent_flows'] },
   { key: 'operate', labelKey: 'settings.area.operate', modules: ['workboards'] },
   { key: 'admin', labelKey: 'settings.area.admin', modules: ['settings'] },
 ];

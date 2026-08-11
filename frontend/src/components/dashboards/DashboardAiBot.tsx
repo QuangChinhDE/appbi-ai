@@ -20,6 +20,8 @@ import {
   type AiRecon,
 } from '@/lib/api/public';
 import { BriefingWizard, type BriefingWizardResult } from './BriefingWizard';
+import type { AnswerBlock, FlowOutputEnvelope } from '@/lib/agentFlows';
+import { AnswerBlocks } from './AnswerBlocks';
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -219,6 +221,18 @@ function clearStoredSessionKey(token: string): void {
 // ── Types ────────────────────────────────────────────────────────────────────
 
 interface ChatMessage extends AiChatMessage {
+  /** The flow's STRUCTURED answer, from the terminal `result` event.
+   *
+   *  When present it replaces the streamed prose: the same answer arrived twice,
+   *  once as tokens for the wait and once as typed blocks for the render, and the
+   *  blocks are the version that can carry a KPI tile or point at a chart. A flow
+   *  that answers in plain prose still arrives here as one `text` block, so there
+   *  is a single rendering path rather than two. */
+  blocks?: AnswerBlock[];
+  /** Things the viewer should be told about the ANSWER — "bộ lọc đã đổi nên tôi
+   *  tính lại từ đầu". Silently showing a different number from the one given two
+   *  minutes ago is how a bot loses trust it cannot win back. */
+  notices?: { code: string; text: string }[];
   /** Tool status notes accumulated while this assistant message was streaming. */
   statusLog?: { tool: string; text: string; ok?: boolean; error?: string | null }[];
   /** User rating for this assistant message. */
@@ -697,6 +711,22 @@ export function DashboardAiBot({
             setMessages(latestMessages);
           },
           setStatus: (s) => setActiveStatus(s),
+          onResult: (envelope) => {
+            const lastIdx = latestMessages.length - 1;
+            if (lastIdx < 0 || latestMessages[lastIdx].role !== 'assistant') return;
+            latestMessages = [
+              ...latestMessages.slice(0, lastIdx),
+              {
+                ...latestMessages[lastIdx],
+                blocks: envelope.answer?.blocks || [],
+                notices: envelope.notices || [],
+                // Keep the prose too: it is what gets persisted to the session and
+                // what a rating is matched against server-side.
+                content: answerSoFar || blocksToText(envelope.answer?.blocks || []),
+              },
+            ];
+            setMessages(latestMessages);
+          },
           appendStatusLog: (entry) => {
             const lastIdx = latestMessages.length - 1;
             if (lastIdx >= 0 && latestMessages[lastIdx].role === 'assistant') {
@@ -1315,6 +1345,8 @@ function applyEvent(
     updateState: (s: AiConversationState) => void;
     onRoute: (mode: 'normal' | 'thinking') => void;
     setSources: (sources: { title?: string | null; url?: string | null }[]) => void;
+    /** The terminal envelope: typed answer blocks + notices. */
+    onResult?: (envelope: FlowOutputEnvelope) => void;
     /** Phase 16 — exploration-only events (chat turns never emit these). */
     addInsight?: (insight: AiExplorationInsight) => void;
     onExplorationStep?: (step: {
@@ -1792,7 +1824,23 @@ function MessageBubble({
         {!isUser && message.insights && message.insights.length > 0 && (
           <InsightLadderPanel insights={message.insights} />
         )}
-        <RichMarkdown text={body} />
+        {!isUser && !!message.notices?.length && (
+          <div className="mb-2 space-y-1">
+            {message.notices.map((n, i) => (
+              <p key={i} className="rounded-md border border-warning/25 bg-warning/5 px-2 py-1 text-tiny leading-5 text-warning">
+                {n.text}
+              </p>
+            ))}
+          </div>
+        )}
+        {!isUser && message.blocks && message.blocks.length > 0 ? (
+          <AnswerBlocks
+            blocks={message.blocks}
+            renderMarkdown={(md: string) => <RichMarkdown text={md} />}
+          />
+        ) : (
+          <RichMarkdown text={body} />
+        )}
         {!isUser && message.isWelcome && onWelcomeAction && (
           <div className="mt-2 flex flex-col gap-1.5">
             <button
@@ -2670,4 +2718,14 @@ function ExplorationProgress({
       )}
     </div>
   );
+}
+
+
+/** Flatten typed blocks to prose, for persistence and for the rating match.
+ *  Only the parts that ARE prose — a table rendered as text is noise in a log. */
+function blocksToText(blocks: AnswerBlock[]): string {
+  return blocks
+    .map((b) => (b.type === 'text' ? b.markdown : b.type === 'callout' ? b.text : ''))
+    .filter(Boolean)
+    .join('\n\n');
 }

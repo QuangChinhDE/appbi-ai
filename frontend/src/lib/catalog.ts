@@ -255,6 +255,17 @@ export interface KnowledgeDoc {
   retrieval_count?: number;
   /** Deterministic AI-readiness score + machine keys of what's missing. */
   ai_ready?: { score: number; missing: string[] };
+  /**
+   * Whether the dashboard AI bot can actually retrieve this doc. Distinct from
+   * ai_ready: a doc can score 100% on quality and still be invisible to the bot
+   * because it is unpublished or linked to no dashboard.
+   * reasons: 'not_published' | 'no_dashboard' | 'not_indexed'
+   */
+  ai_retrievable?: { ok: boolean; reasons: string[] };
+  /** False = this document is never sent to the external embedding provider,
+   *  and is therefore deliberately unreachable by AI. */
+  allow_external_embedding?: boolean;
+  sensitivity?: string;
   /** Which version is live (RAG/public read it); may differ from the latest. */
   published_version?: number | null;
   /** [[wikilinks]] this doc points at, resolved for the reader. */
@@ -352,6 +363,15 @@ export interface EmbeddingConfig {
   embedding_model: string | null;
   embedded_hash: string | null;
   chunk_count: number;
+  /** True when the body exceeds the runaway chunk cap and its tail is dropped. */
+  truncated?: boolean;
+  dropped_chunks?: number;
+  dropped_chars?: number;
+  max_chunks?: number;
+  /** Published content has moved on since the last successful embed. */
+  index_stale?: boolean;
+  allow_external_embedding?: boolean;
+  sensitivity?: string;
 }
 export interface EmbeddingConfigWrite { chunk_strategy: string; chunk_size: number; chunk_overlap: number; embedding_model: string | null }
 export interface ChunkPreviewResult { chunks: { index: number; text: string; char_count: number }[]; total_chunks: number }
@@ -368,9 +388,56 @@ export async function previewChunks(docId: number, body: { chunk_strategy: strin
   const { data } = await apiClient.post<ChunkPreviewResult>(`/catalog/govern/knowledge/${docId}/embedding-preview`, body);
   return data;
 }
-export async function reembedDoc(docId: number, body?: EmbeddingConfigWrite): Promise<{ status: string; chunks: number; new_chunks: number }> {
+export interface EgressEntry {
+  occurred_at: string | null; purpose: string; provider: string | null; model: string | null;
+  chunks_sent: number; chars_sent: number; outcome: string; sensitivity: string | null;
+  triggered_by: string | null;
+}
+export async function getDocEgressLog(docId: number): Promise<EgressEntry[]> {
+  const { data } = await apiClient.get<{ entries: EgressEntry[] }>(`/catalog/govern/knowledge/${docId}/egress-log`);
+  return data.entries || [];
+}
+
+export async function reembedDoc(docId: number, body?: EmbeddingConfigWrite): Promise<{ status: string; chunks: number; new_chunks: number; truncated?: boolean; dropped_chunks?: number; dropped_chars?: number }> {
   const { data } = await apiClient.post(`/catalog/govern/knowledge/${docId}/embed`, body ?? undefined);
   return data;
+}
+
+// ── Vector store inspection (Pinecone-style browser) ───────────────────────
+export interface DocVector {
+  id: number;
+  chunk_index: number;
+  content: string;
+  content_hash: string;
+  model: string | null;
+  created_at: string | null;
+  has_vector: boolean;
+  dims: number | null;
+  /** First few raw values — enough to eyeball, never the whole vector. */
+  preview: number[];
+  char_count: number;
+  trust?: string;
+  doc_status?: string;
+}
+export interface DocVectors { vectors: DocVector[]; total: number; dims: number | null; model: string | null }
+export interface VectorMatch {
+  chunk_index: number;
+  content: string;
+  score: number;
+  /** Which half of hybrid retrieval surfaced this chunk. Score stays cosine-only,
+   *  so a keyword-only hit can legitimately show a low score. */
+  matched_by?: 'both' | 'vector' | 'keyword';
+  /** Where the passage came from: authored | uploaded | linked | external. */
+  trust?: string;
+}
+
+export async function getDocVectors(docId: number): Promise<DocVectors> {
+  const { data } = await apiClient.get<DocVectors>(`/catalog/govern/knowledge/${docId}/vectors`);
+  return data;
+}
+export async function queryDocVectors(docId: number, query: string, k = 5): Promise<VectorMatch[]> {
+  const { data } = await apiClient.post<{ matches: VectorMatch[] }>(`/catalog/govern/knowledge/${docId}/vectors/query`, { query, k });
+  return data.matches ?? [];
 }
 
 // ── History (unified sync + embed runs, alongside content versions) ────────
@@ -444,6 +511,9 @@ export interface KnowledgeDocWrite {
   process_ref?: string;
   review_date?: string | null;  // YYYY-MM-DD
   importance?: string;          // low|normal|high
+  /** Omit to leave unchanged — the backend only writes it when non-null. */
+  allow_external_embedding?: boolean;
+  sensitivity?: string;
 }
 
 export async function listKnowledge(params?: { space?: string; status?: string }): Promise<{ docs: KnowledgeDoc[]; spaces: KnowledgeSpace[] }> {

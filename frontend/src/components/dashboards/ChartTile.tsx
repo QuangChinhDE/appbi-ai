@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useMemo, useState, useRef, useEffect, useCallback } from 'react';
-import { X, Loader2, Pencil, Check, SlidersHorizontal, Eye, Palette, MoreHorizontal, ArrowRightLeft, ExternalLink, AlertTriangle, RefreshCw, Sparkles, Lock } from 'lucide-react';
+import { X, Loader2, Pencil, Check, SlidersHorizontal, Eye, Palette, MoreHorizontal, ArrowRightLeft, ExternalLink, AlertTriangle, RefreshCw, Sparkles, Lock, CalendarClock } from 'lucide-react';
 import { useChart, useChartData } from '@/hooks/use-charts';
 import { useDatasetModel } from '@/hooks/use-dataset-model';
 import { buildSemanticLabelMap, buildSemanticFormatMap } from '@/lib/chart-semantic-maps';
@@ -645,6 +645,25 @@ function ChartTileBase({
       queryClient.invalidateQueries({ queryKey: ['dashboards', dashboardId] });
     }).catch(() => { /* layout save is best-effort */ });
   }, [canEdit, dashboardId, dashboardChartId, currentLayout, positionLocked, queryClient]);
+
+  // Lock date grouping: when on, VIEWERS (dashboard/public/embed) can't change
+  // the chart's group-by time grain — the switcher is hidden and the chart
+  // stays on its configured default grain. Same optimistic-flip + updateLayout
+  // pattern as the lock/highlight toggles above.
+  const [grainLockOverride, setGrainLockOverride] = useState<boolean | null>(null);
+  useEffect(() => { setGrainLockOverride(null); }, [currentLayout?.lockDateGrain]);
+  const dateGrainLocked = grainLockOverride ?? (currentLayout?.lockDateGrain === true);
+  const toggleDateGrainLocked = useCallback(() => {
+    if (!canEdit) return;
+    const next = !dateGrainLocked;
+    setGrainLockOverride(next);
+    dashboardApi.updateLayout(dashboardId, [{
+      id: dashboardChartId,
+      layout: { ...currentLayout, lockDateGrain: next },
+    }]).then(() => {
+      queryClient.invalidateQueries({ queryKey: ['dashboards', dashboardId] });
+    }).catch(() => { /* layout save is best-effort */ });
+  }, [canEdit, dashboardId, dashboardChartId, currentLayout, dateGrainLocked, queryClient]);
 
   const effectiveStyleConfig = useMemo(
     () => getEffectiveDashboardChartStyleConfig(chart, currentLayout),
@@ -1353,6 +1372,33 @@ function ChartTileBase({
                         </span>
                       </button>
                     )}
+                    {canEdit && (
+                      <button
+                        type="button"
+                        role="switch"
+                        aria-checked={dateGrainLocked}
+                        /* Lock date grouping: when on, viewers on dashboard/public/
+                           embed can't change the group-by time grain (the switcher
+                           hides); the chart stays on its configured default grain. */
+                        onClick={(e) => { e.stopPropagation(); toggleDateGrainLocked(); }}
+                        className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(0,0,0,0.04)] hover:text-text-primary"
+                        title={t('dashboards.tile.lockDateGrainHint')}
+                      >
+                        <CalendarClock className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
+                        <span className="flex-1 text-left">{t('dashboards.tile.lockDateGrain')}</span>
+                        <span
+                          className={`relative inline-flex h-[16px] w-[28px] shrink-0 items-center rounded-full transition-colors duration-150 ${
+                            dateGrainLocked ? 'bg-brand' : 'bg-[rgb(var(--border-strong))]'
+                          }`}
+                        >
+                          <span
+                            className={`inline-block h-[12px] w-[12px] transform rounded-full bg-white shadow-sm transition-transform duration-150 ${
+                              dateGrainLocked ? 'translate-x-[14px]' : 'translate-x-[2px]'
+                            }`}
+                          />
+                        </span>
+                      </button>
+                    )}
                     {canEdit && availablePages.length > 1 && onMoveToPage && (
                       <>
                         <div className="my-1 border-t border-[rgb(var(--border-line))]" />
@@ -1608,6 +1654,7 @@ function ChartTileBase({
               kpiLabelInHeader={isKpiCard}
               onViewerDrill={setViewerGrain}
               viewerGrain={viewerGrain}
+              lockDateGrain={dateGrainLocked}
               highlightData={highlightData}
               onSelectDataPoint={onSelectCrossFilter && chartSemanticBinding?.datasetId != null
                 ? handleCrossFilterSelection

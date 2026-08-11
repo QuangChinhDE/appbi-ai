@@ -16,6 +16,30 @@ ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
 ANTHROPIC_MODEL = "claude-haiku-4-5"
 
 
+def _tool_payload(msg: dict) -> str:
+    """The tool's output, whichever key the caller used.
+
+    The documented contract is `result`; the flow engine sent `content`, and this
+    translation read only `result` — so every tool result an Agent Flow node
+    produced arrived at the model as `{}`. The model then answered a question about
+    a report it had effectively never been shown, and nothing anywhere said so.
+
+    Accepting both keys is not tolerance for sloppiness: it is a boundary that
+    cannot silently drop the one thing it exists to carry. A payload that is
+    genuinely absent is reported as such, so it fails loudly instead of looking
+    like an empty result set.
+    """
+    import json as _json
+
+    for key in ("result", "content"):
+        if key in msg and msg[key] is not None:
+            value = msg[key]
+            if isinstance(value, str):
+                return value
+            return _json.dumps(value, default=str)
+    return _json.dumps({"ok": False, "error": "tool result missing from the message"})
+
+
 def _to_anthropic_messages(messages: list[dict]) -> list[dict]:
     """Translate our internal message log to Anthropic's wire format.
 
@@ -76,7 +100,7 @@ def _to_anthropic_messages(messages: list[dict]) -> list[dict]:
             pending_tool_results.append({
                 "type": "tool_result",
                 "tool_use_id": msg["tool_call_id"],
-                "content": json.dumps(msg.get("result") or {}, default=str),
+                "content": _tool_payload(msg),
             })
     _flush_tool_results()
     return out

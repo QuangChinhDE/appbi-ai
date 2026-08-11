@@ -302,8 +302,9 @@ def tool_search_knowledge(ctx: ToolContext, args: dict) -> dict:
         # Said explicitly because the model must not treat a definition's target
         # or an example figure as a measurement of this report.
         "note": (
-            "Đây là ĐỊNH NGHĨA/TÀI LIỆU do người viết, KHÔNG phải số đo từ dữ "
-            "liệu báo cáo. Muốn con số thực tế thì phải đọc dữ liệu biểu đồ."
+            "This is a written DEFINITION or DOCUMENT, NOT a measurement from "
+            "the report's data. A target or an example figure here is not this "
+            "report's number — read the chart data for that."
         ),
     })
 
@@ -403,8 +404,8 @@ def tool_describe_semantic_model(ctx: ToolContext, args: dict) -> dict:
         "total": len(fields),
         "fields": fields[:60],
         "note": (
-            "Đây là ĐỊNH NGHĨA trường dữ liệu do người khai báo trong Semantic "
-            "Layer, KHÔNG phải số đo. Muốn số thì phải đọc dữ liệu biểu đồ."
+            "These are field DEFINITIONS declared in the Semantic Layer, NOT "
+            "measurements. Read the chart data to get an actual figure."
         ),
     })
 
@@ -412,17 +413,20 @@ def tool_describe_semantic_model(ctx: ToolContext, args: dict) -> dict:
 DESCRIBE_SEMANTIC_TOOL_DEF: dict = {
     "name": "describe_semantic_model",
     "description": (
-        "Xem ý nghĩa nghiệp vụ của các trường dữ liệu (measure/dimension) đằng sau "
-        "báo cáo: tên hiển thị, mô tả, đơn vị, bút danh. Dùng khi cần biết một "
-        "trường THỰC SỰ là gì trước khi kết luận, thay vì suy từ tên cột. Không "
-        "trả về số đo."
+        "The business meaning of the measures and dimensions behind this report: "
+        "display name, description, aliases. Use it when the QUESTION is about "
+        "what a field means, not when you are about to quote a figure — the "
+        "measuring tools (total_measure, rank_values, share_of) already return "
+        "the aggregation and the unit alongside every number they produce, so "
+        "calling this first to learn them costs an extra model round for "
+        "nothing. Returns definitions, never measurements."
     ),
     "input_schema": {
         "type": "object",
         "properties": {
             "query": {
                 "type": "string",
-                "description": "Từ khoá để lọc trường (để trống = liệt kê tất cả).",
+                "description": "Keyword to filter fields. Omit to list them all.",
             },
         },
     },
@@ -432,22 +436,22 @@ DESCRIBE_SEMANTIC_TOOL_DEF: dict = {
 SEARCH_KNOWLEDGE_TOOL_DEF: dict = {
     "name": "search_knowledge",
     "description": (
-        "Tìm trong tri thức doanh nghiệp: tài liệu nghiệp vụ (Cẩm nang tri thức) và "
-        "định nghĩa/công thức các chỉ số quản trị (KPI). Dùng khi câu hỏi liên quan "
-        "tới một khái niệm, quy trình, hoặc cần biết một chỉ số được ĐỊNH NGHĨA và "
-        "TÍNH thế nào. Trả về danh sách kết quả kèm id; muốn đọc trọn tài liệu thì "
-        "gọi tiếp read_document với id đó. KHÔNG trả về số đo thực tế của báo cáo."
+        "Search the company's own knowledge: business documents and the "
+        "definitions and formulas of governed KPIs. Use it when the question is "
+        "about a concept or a process, or when you need to know how a metric is "
+        "DEFINED and CALCULATED. Returns matches with ids; call read_document "
+        "with an id to read one in full. Returns no measurements from the report."
     ),
     "input_schema": {
         "type": "object",
         "properties": {
             "query": {
                 "type": "string",
-                "description": "Từ khoá hoặc câu hỏi cần tra, ví dụ 'GMV tính thế nào'.",
+                "description": "What to look up, e.g. 'how is GMV calculated'.",
             },
             "limit": {
                 "type": "integer",
-                "description": f"Số kết quả tối đa (1-{MAX_HITS}, mặc định 6).",
+                "description": f"Maximum matches (1-{MAX_HITS}, default 6).",
             },
         },
         "required": ["query"],
@@ -457,14 +461,15 @@ SEARCH_KNOWLEDGE_TOOL_DEF: dict = {
 READ_DOCUMENT_TOOL_DEF: dict = {
     "name": "read_document",
     "description": (
-        "Đọc trọn nội dung một tài liệu nghiệp vụ theo id lấy từ search_knowledge. "
-        "Chỉ đọc được tài liệu đã Published và được gắn vào báo cáo này hoặc bộ dữ "
-        "liệu của nó. Dùng khi đoạn tóm tắt trong kết quả tìm kiếm chưa đủ để trả lời."
+        "Read one business document in full, by an id from search_knowledge. "
+        "Only Published documents attached to this report or its dataset can be "
+        "read. Use it when the search snippet is not enough to answer."
     ),
     "input_schema": {
         "type": "object",
         "properties": {
-            "doc_id": {"type": "integer", "description": "id tài liệu từ search_knowledge."},
+            "doc_id": {"type": "integer",
+                       "description": "Document id from search_knowledge."},
         },
         "required": ["doc_id"],
     },

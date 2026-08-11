@@ -1,15 +1,20 @@
-"""Store, read, publish and roll back brains. No execution, no HTTP.
+"""Store, read, publish and roll back flows. No execution, no HTTP.
 
-DRAFT / PUBLISHED, NOT EDIT-IN-PLACE
-------------------------------------
-A brain answers live public links, and one brain can be the head of many. So
-saving never changes what is running: it writes a new draft. Publishing is the
-only act that changes what a viewer gets, and it demotes the previous version in
-the same transaction so there is never a moment with two published rows or none.
+ONE OPEN DRAFT, NOT ONE VERSION PER SAVE
+----------------------------------------
+This used to write a NEW VERSION on every save. Editing a prompt twenty times left
+twenty rows, the version list became unreadable, and the number in the builder's
+title bar changed while the author was still typing. A draft is now UPSERTED: saving
+an open draft edits it, and a new version is cut only when the newest version is
+already published. Publishing is still the only act that changes what viewers get.
 
-`impact()` exists because reuse makes it necessary. Editing a brain used by five
-links changes five links, and "who is affected" has to be answerable before the
-author presses Publish, not discovered afterwards.
+PUBLISHING IS NOW CHECKED AGAINST EVERY LINK
+--------------------------------------------
+A flow serves many links, and once flows declare REQUIREMENTS a new version can be
+incompatible with a link that has not been re-mapped. So `publish` runs the binding
+preflight for each active binding and, rather than breaking them, PINS the ones that
+would break to the version they are already running. The author is told which and
+why. Without that, nobody would dare edit a flow that anything depends on.
 """
 from __future__ import annotations
 
@@ -21,7 +26,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.models.agent_brain import AgentBrainVersion
-from app.services.agent_flows.contract import Brain
+from app.services.agent_flows.contract import Flow, upgrade_body
 from app.services.agent_flows.permissions import check_attachments, share_disclosure
 
 logger = logging.getLogger(__name__)
@@ -44,6 +49,16 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def parse_flow(row: AgentBrainVersion) -> Flow | None:
+    """The stored body as a Flow, upgrading a v1 body on the way through."""
+    try:
+        body = upgrade_body(row.body or {}, key=row.brain_key, name=row.name)
+        return Flow.model_validate(body)
+    except Exception:  # noqa: BLE001
+        logger.warning("[flow] %s v%s will not parse", row.brain_key, row.version)
+        return None
+
+
 def _row_dict(row: AgentBrainVersion, *, include_body: bool = True) -> dict[str, Any]:
     out: dict[str, Any] = {
         "brain_key": row.brain_key,
@@ -53,74 +68,88 @@ def _row_dict(row: AgentBrainVersion, *, include_body: bool = True) -> dict[str,
         "description": row.description or "",
         "owner_email": row.owner_email,
         "created_by": row.created_by,
-        "is_builtin": bool(row.is_builtin),
         "created_at": row.created_at.isoformat() if row.created_at else None,
+        "updated_at": row.updated_at.isoformat() if row.updated_at else None,
         "published_at": row.published_at.isoformat() if row.published_at else None,
     }
     if include_body:
-        out["body"] = _redact_credentials(row.body or {})
-        try:
-            brain = Brain.model_validate(row.body or {})
-        except Exception:  # noqa: BLE001
-            # A stored brain too broken to parse is still one an author must be able
-            # to open and repair; refusing to list it would make it unreachable.
-            out["warnings"] = ["Không đọc được cấu hình bộ não này."]
+        upgraded = upgrade_body(row.body or {}, key=row.brain_key, name=row.name)
+        out["body"] = _redact_credentials(upgraded)
+        flow = parse_flow(row)
+        if flow is None:
+            # A stored flow too broken to parse is still one an author must be able
+            # to open and repair; refusing to return it would make it unreachable.
+            out["warnings"] = ["Không đọc được cấu hình flow này."]
             out["reads"] = []
-            out["step_count"] = 0
+            out["node_count"] = 0
+            out["requirements"] = {"items": [], "capabilities": []}
         else:
-            out["warnings"] = brain.warnings()
-            out["reads"] = share_disclosure(brain)
-            out["step_count"] = len(brain.steps)
+            out["warnings"] = flow.warnings()
+            out["reads"] = share_disclosure(flow)
+            out["node_count"] = len(flow.all_nodes())
+            out["requirements"] = flow.requirements.model_dump(mode="json")
+            out["answer_node"] = flow.answering_key()
     return out
 
 
 def _redact_credentials(body: dict[str, Any]) -> dict[str, Any]:
-    """The body as the API is allowed to emit it: no key material, in any form.
+    """The body as the API may emit it: no key material, in any form.
 
-    Ciphertext is not the secret, but shipping it makes the brain's JSON a thing
-    worth stealing and it would ride along in an export file. So each step reports
-    `has_api_key` and nothing else, and the builder renders that as "đã lưu".
+    Ciphertext is not the secret, but shipping it makes the flow's JSON worth
+    stealing and it would ride along in an export file. Each agent node reports
+    `has_api_key` instead, and the builder renders that as "đã lưu".
 
-    Copied, not mutated: `row.body` is the live SQLAlchemy attribute, and stripping
-    fields off it in place would write the redaction back to the database on the next
-    flush.
+    Walks the TREE, not a flat list — a credential on an agent inside a loop inside
+    a branch is exactly as sensitive as one at the top level, and the old flat pass
+    would have emitted it.
     """
     if not isinstance(body, dict):
         return {}
-    out = dict(body)
-    steps = out.get("steps")
-    if not isinstance(steps, list):
+
+    def clean_nodes(nodes: Any) -> Any:
+        if not isinstance(nodes, list):
+            return nodes
+        out: list[Any] = []
+        for node in nodes:
+            if not isinstance(node, dict):
+                out.append(node)
+                continue
+            n = dict(node)
+            if n.get("type", "agent") == "agent":
+                n["has_api_key"] = bool(n.get("api_key_enc"))
+            n.pop("api_key_enc", None)
+            n.pop("api_key", None)
+            n.pop("api_key_clear", None)
+            if isinstance(n.get("body"), list):
+                n["body"] = clean_nodes(n["body"])
+            if isinstance(n.get("fallback"), list):
+                n["fallback"] = clean_nodes(n["fallback"])
+            for group in ("paths", "cases"):
+                if isinstance(n.get(group), list):
+                    n[group] = [
+                        {**p, "body": clean_nodes(p.get("body"))}
+                        if isinstance(p, dict) else p
+                        for p in n[group]
+                    ]
+            out.append(n)
         return out
-    clean: list[Any] = []
-    for step in steps:
-        if not isinstance(step, dict):
-            clean.append(step)
-            continue
-        s = dict(step)
-        s["has_api_key"] = bool(s.get("api_key_enc"))
-        s.pop("api_key_enc", None)
-        s.pop("api_key", None)
-        s.pop("api_key_clear", None)
-        clean.append(s)
-    out["steps"] = clean
+
+    out = dict(body)
+    out["nodes"] = clean_nodes(out.get("nodes"))
     return out
 
 
 def _carry_credentials(db: Session, brain_key: str, body: dict[str, Any]) -> dict[str, Any]:
-    """Fold each step's credential into the shape that gets stored.
+    """Fold each agent node's credential into the shape that gets stored.
 
-    Three inputs, one output, and the order matters:
+      api_key_clear → drop it
+      api_key (new) → encrypt it
+      neither       → CARRY FORWARD what the same node key had before
 
-      api_key_clear   → drop the key
-      api_key (new)   → encrypt it
-      neither         → CARRY FORWARD the key the same step key had in the previous
-                        version
-
-    The carry-forward is the whole reason this function exists. The builder is never
-    sent the stored key, so it cannot send it back; without carrying, every ordinary
-    save — renaming a step, editing a prompt — would wipe every step's credential and
-    the brain would start failing on the next question with nothing in the diff to
-    explain it.
+    The carry-forward is the whole reason this exists. The builder is never sent the
+    stored key, so it cannot send it back; without carrying, every ordinary save —
+    renaming a node, editing a prompt — would wipe every credential and the flow
+    would start failing with nothing in the diff to explain it.
     """
     from app.core.crypto import encrypt_value
 
@@ -132,48 +161,68 @@ def _carry_credentials(db: Session, brain_key: str, body: dict[str, Any]) -> dic
         .first()
     )
     if prior is not None and isinstance(prior.body, dict):
-        for step in prior.body.get("steps") or []:
-            if isinstance(step, dict) and step.get("api_key_enc"):
-                previous[str(step.get("key"))] = str(step["api_key_enc"])
+        for node in _walk_raw(upgrade_body(prior.body).get("nodes") or []):
+            if node.get("api_key_enc"):
+                previous[str(node.get("key"))] = str(node["api_key_enc"])
 
-    out = dict(body)
-    steps = out.get("steps")
-    if not isinstance(steps, list):
+    def fold(nodes: Any) -> Any:
+        if not isinstance(nodes, list):
+            return nodes
+        out: list[Any] = []
+        for node in nodes:
+            if not isinstance(node, dict):
+                out.append(node)
+                continue
+            n = dict(node)
+            n.pop("has_api_key", None)
+            fresh = str(n.pop("api_key", "") or "").strip()
+            clear = bool(n.pop("api_key_clear", False))
+            if n.get("type", "agent") == "agent":
+                if clear:
+                    n["api_key_enc"] = ""
+                elif fresh:
+                    n["api_key_enc"] = encrypt_value(fresh)
+                elif not n.get("api_key_enc"):
+                    n["api_key_enc"] = previous.get(str(n.get("key")), "")
+            if isinstance(n.get("body"), list):
+                n["body"] = fold(n["body"])
+            if isinstance(n.get("fallback"), list):
+                n["fallback"] = fold(n["fallback"])
+            for group in ("paths", "cases"):
+                if isinstance(n.get(group), list):
+                    n[group] = [
+                        {**p, "body": fold(p.get("body"))} if isinstance(p, dict) else p
+                        for p in n[group]
+                    ]
+            out.append(n)
         return out
 
-    folded: list[Any] = []
-    for step in steps:
-        if not isinstance(step, dict):
-            folded.append(step)
-            continue
-        s = dict(step)
-        s.pop("has_api_key", None)
-        fresh = str(s.pop("api_key", "") or "").strip()
-        clear = bool(s.pop("api_key_clear", False))
-        if clear:
-            s["api_key_enc"] = ""
-        elif fresh:
-            s["api_key_enc"] = encrypt_value(fresh)
-        elif not s.get("api_key_enc"):
-            s["api_key_enc"] = previous.get(str(s.get("key")), "")
-        folded.append(s)
-    out["steps"] = folded
+    out = dict(body)
+    out["nodes"] = fold(out.get("nodes"))
     return out
 
 
+def _walk_raw(nodes: Any) -> list[dict]:
+    """Every node dict in a raw (unvalidated) tree."""
+    found: list[dict] = []
+    if not isinstance(nodes, list):
+        return found
+    for n in nodes:
+        if not isinstance(n, dict):
+            continue
+        found.append(n)
+        found.extend(_walk_raw(n.get("body")))
+        found.extend(_walk_raw(n.get("fallback")))
+        for group in ("paths", "cases"):
+            for p in n.get(group) or []:
+                if isinstance(p, dict):
+                    found.extend(_walk_raw(p.get("body")))
+    return found
+
+
+# ═══ Reading ══════════════════════════════════════════════════════════════════
 def list_brains(db: Session, user: Any) -> list[dict[str, Any]]:
-    """Every brain this user may use, newest version of each first.
-
-    Filtered through the share mechanism, so the list is exactly what they may put
-    on a link — the same set `usable_brains` returns, because two notions of
-    "which brains are mine" would eventually disagree.
-
-    Carries `step_count` and `link_count` because a list row that shows only a name
-    and a status makes every brain look alike: the two things an author actually
-    scans for are how big it is and whether anything is running it. Both are cheap —
-    the step count reads the body already loaded, and the link counts are ONE pass
-    over active links for the whole list rather than a per-row `impact()` call.
-    """
+    """Every flow this user may use, newest version of each first."""
     from app.services.agent_flows.permissions import usable_brains
 
     rows = usable_brains(db, user).order_by(
@@ -183,74 +232,79 @@ def list_brains(db: Session, user: Any) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for r in rows:
         item = _row_dict(r, include_body=False)
-        item["step_count"] = _shallow_step_count(r)
+        item["node_count"] = _shallow_node_count(r)
         item["link_count"] = counts.get(r.brain_key, 0)
         out.append(item)
     return out
 
 
-def _shallow_step_count(row: AgentBrainVersion) -> int:
-    """How many steps, without validating the body.
-
-    Deliberately not `Brain.model_validate(...)` — this runs once per row, and a
-    brain too broken to parse must still show a plausible size rather than 0, or
-    the list makes a repairable brain look empty.
-    """
-    body = row.body if isinstance(row.body, dict) else {}
-    steps = body.get("steps")
-    return len(steps) if isinstance(steps, list) else 0
+def _shallow_node_count(row: AgentBrainVersion) -> int:
+    """How many nodes, without validating the body — a flow too broken to parse must
+    still show a plausible size rather than 0."""
+    body = upgrade_body(row.body if isinstance(row.body, dict) else {})
+    return len(_walk_raw(body.get("nodes")))
 
 
 def _link_counts(db: Session) -> dict[str, int]:
-    """brain_key → how many active public links point at it.
+    """brain_key → how many links are bound to it.
 
-    One query for the whole list. `impact()` answers the same question for a single
-    brain and returns the links themselves; this returns only the tally, because a
-    list row needs the number and loading every link's detail per row would make
-    opening the list O(brains × links).
+    One grouped query. This used to load EVERY active public link and parse its
+    appearance JSON, for every row of the list.
     """
-    from app.models.models import DashboardPublicLink
+    from app.models.agent_flow_binding import AgentFlowBinding
 
-    tally: dict[str, int] = {}
     try:
-        rows = db.query(DashboardPublicLink).filter(
-            DashboardPublicLink.is_active.is_(True)
-        ).all()
+        rows = (
+            db.query(AgentFlowBinding.brain_key, func.count(AgentFlowBinding.id))
+            .group_by(AgentFlowBinding.brain_key)
+            .all()
+        )
+        return {k: int(c) for k, c in rows}
     except Exception:  # noqa: BLE001
-        logger.exception("[brain] link tally failed")
-        return tally
-    for link in rows:
-        cfg = link.appearance_config or {}
-        if not isinstance(cfg, dict):
-            continue
-        key = (cfg.get("ai_bot_flow_key") or "").strip()
-        if key:
-            tally[key] = tally.get(key, 0) + 1
-    return tally
+        logger.exception("[flow] link tally failed")
+        return {}
 
 
 def get_brain(db: Session, brain_key: str, version: int | None = None) -> dict[str, Any]:
-    """One version. `version=None` means the published one, or the latest draft."""
+    """One version. `version=None` means the open draft, else the published one."""
     q = db.query(AgentBrainVersion).filter(AgentBrainVersion.brain_key == brain_key)
     if version is not None:
         row = q.filter(AgentBrainVersion.version == version).first()
     else:
+        # The DRAFT first, because opening a flow means opening what you are editing.
+        # Falling back to published matched the old save-every-time model, where a
+        # draft was whatever you saved last.
         row = (
-            q.filter(AgentBrainVersion.status == PUBLISHED).first()
+            q.filter(AgentBrainVersion.status == DRAFT)
+            .order_by(AgentBrainVersion.version.desc())
+            .first()
+            or q.filter(AgentBrainVersion.status == PUBLISHED).first()
             or q.order_by(AgentBrainVersion.version.desc()).first()
         )
     if row is None:
-        raise BrainError(404, "Không tìm thấy bộ não")
-    return _row_dict(row)
+        raise BrainError(404, "Không tìm thấy flow")
+    out = _row_dict(row)
+    published = (
+        db.query(AgentBrainVersion)
+        .filter(
+            AgentBrainVersion.brain_key == brain_key,
+            AgentBrainVersion.status == PUBLISHED,
+        )
+        .first()
+    )
+    # The title bar says "Nháp v6 · Published v5 · 3 links" — three facts that used
+    # to need three round trips.
+    out["published_version"] = published.version if published else None
+    out["link_count"] = _link_counts(db).get(brain_key, 0)
+    return out
 
 
-def resolve_published(db: Session, brain_key: str) -> tuple[AgentBrainVersion, Brain] | None:
+def resolve_published(db: Session, brain_key: str) -> tuple[AgentBrainVersion, Flow] | None:
     """What a live link runs. Returns None rather than falling back to a draft.
 
-    Deliberately no fallback. The previous module answered with a system default
-    when a link's flow was missing, so an operator saw a configured link that was
-    quietly running logic nobody had approved. A link pointing at an unpublished
-    brain must be told, not covered for.
+    Deliberately no fallback. The previous module answered with a system default when
+    a link's flow was missing, so an operator saw a configured link quietly running
+    logic nobody had approved.
     """
     row = (
         db.query(AgentBrainVersion)
@@ -262,13 +316,31 @@ def resolve_published(db: Session, brain_key: str) -> tuple[AgentBrainVersion, B
     )
     if row is None:
         return None
-    try:
-        return row, Brain.model_validate(row.body or {})
-    except Exception:  # noqa: BLE001
-        logger.exception("[brain] published '%s' will not parse", brain_key)
+    flow = parse_flow(row)
+    return (row, flow) if flow else None
+
+
+def resolve_version(
+    db: Session, brain_key: str, version: int | None
+) -> tuple[AgentBrainVersion, Flow] | None:
+    """A pinned version if the binding names one, otherwise the published one."""
+    if version is None:
+        return resolve_published(db, brain_key)
+    row = (
+        db.query(AgentBrainVersion)
+        .filter(
+            AgentBrainVersion.brain_key == brain_key,
+            AgentBrainVersion.version == version,
+        )
+        .first()
+    )
+    if row is None:
         return None
+    flow = parse_flow(row)
+    return (row, flow) if flow else None
 
 
+# ═══ Writing ══════════════════════════════════════════════════════════════════
 def save_draft(
     db: Session,
     user: Any,
@@ -279,60 +351,81 @@ def save_draft(
     body: dict,
     actor_email: str,
 ) -> dict[str, Any]:
-    """Validate, check what it may attach, then write a NEW draft version.
-
-    Two checks, in this order: the shape (does this describe a runnable brain) and
-    the reach (may THIS person point at those sources). Shape first because a
-    permission message about a step that could never run is noise.
-    """
-    # Credentials are folded BEFORE validation, so the contract validates the step
-    # that will actually be stored — including its `_credential_is_usable` rule,
-    # which must see a carried-forward key the request did not mention.
+    """Validate, check what it may attach, then UPSERT the open draft."""
+    body = upgrade_body(body, key=brain_key, name=name)
+    # Credentials are folded BEFORE validation, so the contract validates the node
+    # that will actually be stored — including `_credential_is_usable`, which must
+    # see a carried-forward key the request never mentioned.
     body = _carry_credentials(db, brain_key, body)
 
     try:
-        brain = Brain.model_validate({**body, "key": brain_key, "name": name})
+        flow = Flow.model_validate({**body, "key": brain_key, "name": name})
     except Exception as exc:  # noqa: BLE001
         raise BrainError(422, _first_message(exc))
 
-    problems = check_attachments(db, user, brain)
+    problems = check_attachments(db, user, flow)
     if problems:
         raise BrainError(403, " ".join(problems))
 
     latest = (
-        db.query(func.max(AgentBrainVersion.version))
+        db.query(AgentBrainVersion)
         .filter(AgentBrainVersion.brain_key == brain_key)
-        .scalar()
+        .order_by(AgentBrainVersion.version.desc())
+        .first()
     )
-    existing_owner = (
-        db.query(AgentBrainVersion.owner_email)
-        .filter(AgentBrainVersion.brain_key == brain_key)
-        .limit(1)
-        .scalar()
-    )
+    existing_owner = latest.owner_email if latest is not None else None
+    # Captured BEFORE the row is mutated: the activity summary diffs against what
+    # was there a moment ago, and once `row.body` is reassigned the "before" is gone.
+    # The base is the previous version whether this save edits the open draft or cuts
+    # a new one — reading None for a new version made every post-publish edit report
+    # itself as "flow created".
+    previous_body = latest.body if latest is not None else None
 
-    row = AgentBrainVersion(
-        brain_key=brain_key,
-        version=int(latest or 0) + 1,
-        status=DRAFT,
-        name=name,
-        description=description or "",
-        body=brain.to_dict(),
-        # The owner is set ONCE, on the first version, and later edits do not move
-        # it. Ownership is whose reading rights every run carries, so letting a
-        # co-editor's save silently re-point it would change what the brain can
-        # read without anybody choosing that.
-        owner_email=existing_owner or actor_email,
-        created_by=actor_email,
-    )
-    db.add(row)
+    if latest is not None and latest.status == DRAFT:
+        # Editing the version already open. This is the ordinary case, and making it
+        # an UPDATE is what stopped the version list growing by one per keystroke.
+        row = latest
+        row.name = name
+        row.description = description or ""
+        row.body = flow.to_dict()
+        row.created_by = actor_email
+        action = "updated"
+    else:
+        row = AgentBrainVersion(
+            brain_key=brain_key,
+            version=(latest.version if latest else 0) + 1,
+            status=DRAFT,
+            name=name,
+            description=description or "",
+            body=flow.to_dict(),
+            # Set ONCE, on the first version. Ownership is whose reading rights every
+            # run carries, so letting a co-editor's save re-point it would change what
+            # the flow can read without anybody choosing that.
+            owner_email=existing_owner or actor_email,
+            created_by=actor_email,
+        )
+        db.add(row)
+        action = "created"
+
     db.commit()
     db.refresh(row)
+    _audit(
+        db, "AGENT_FLOW_SAVED", brain_key, actor_email,
+        {"version": row.version, "action": action,
+         "summary": _summarise(previous_body, flow.to_dict())},
+    )
     return _row_dict(row)
 
 
-def publish(db: Session, brain_key: str, version: int, actor_email: str) -> dict[str, Any]:
-    """Make one version the live one. Demotes the previous in the same transaction."""
+def publish(
+    db: Session, brain_key: str, version: int, actor_email: str, *, pin_incompatible: bool = True
+) -> dict[str, Any]:
+    """Make one version live, pinning the links it would break.
+
+    Validated again here rather than trusting the save: this is the moment it starts
+    answering viewers, and the contract may have gained a rule since the draft was
+    written.
+    """
     row = (
         db.query(AgentBrainVersion)
         .filter(
@@ -344,13 +437,19 @@ def publish(db: Session, brain_key: str, version: int, actor_email: str) -> dict
     if row is None:
         raise BrainError(404, "Không tìm thấy phiên bản này")
 
-    try:
-        Brain.model_validate(row.body or {})
-    except Exception as exc:  # noqa: BLE001
-        # Publishing is the moment it starts answering viewers. Validating again
-        # here rather than trusting the save: the contract may have gained a rule
-        # since this draft was written.
-        raise BrainError(422, f"Không phát hành được: {_first_message(exc)}")
+    flow = parse_flow(row)
+    if flow is None:
+        raise BrainError(422, "Không phát hành được: cấu hình flow không hợp lệ")
+
+    previous = (
+        db.query(AgentBrainVersion)
+        .filter(
+            AgentBrainVersion.brain_key == brain_key,
+            AgentBrainVersion.status == PUBLISHED,
+        )
+        .first()
+    )
+    pinned = _pin_incompatible(db, flow, previous, enabled=pin_incompatible)
 
     db.query(AgentBrainVersion).filter(
         AgentBrainVersion.brain_key == brain_key,
@@ -362,8 +461,71 @@ def publish(db: Session, brain_key: str, version: int, actor_email: str) -> dict
     row.published_at = _now()
     db.commit()
     db.refresh(row)
-    logger.info("[brain] %s v%s published by %s", brain_key, version, actor_email)
-    return _row_dict(row)
+    logger.info("[flow] %s v%s published by %s", brain_key, version, actor_email)
+    _audit(
+        db, "AGENT_FLOW_PUBLISHED", brain_key, actor_email,
+        {"version": version, "pinned_links": pinned},
+    )
+    out = _row_dict(row)
+    out["pinned_links"] = pinned
+    return out
+
+
+def _pin_incompatible(
+    db: Session, flow: Flow, previous: AgentBrainVersion | None, *, enabled: bool
+) -> list[dict[str, Any]]:
+    """Freeze links the new version would break, at the version they already run.
+
+    This is what makes publishing safe when one flow serves many dashboards. Without
+    it a new requirement takes down every link that has not been re-mapped, so the
+    rational move is never to edit a flow anyone uses — and then the module is a
+    museum.
+    """
+    if not enabled or previous is None:
+        return []
+    from app.models.agent_flow_binding import AgentFlowBinding
+    from app.models.models import Dashboard
+    from app.models.models import DashboardPublicLink
+    from app.services.agent_flows import binding as binding_service
+
+    pinned: list[dict[str, Any]] = []
+    rows = (
+        db.query(AgentFlowBinding, DashboardPublicLink)
+        .join(DashboardPublicLink, DashboardPublicLink.id == AgentFlowBinding.link_id)
+        .filter(
+            AgentFlowBinding.brain_key == flow.key,
+            AgentFlowBinding.pinned_version.is_(None),
+        )
+        .all()
+    )
+    for bind, link in rows:
+        dashboard = db.query(Dashboard).filter(Dashboard.id == link.dashboard_id).first()
+        if dashboard is None:
+            continue
+        reasons: list[str] = []
+        if bind.status == "needs_review":
+            # A migrated binding has never had its scope declared. Handing it a NEW
+            # version is exactly what the review is for.
+            reasons.append("link chưa được review phạm vi dữ liệu")
+        else:
+            result = binding_service.preflight(
+                db,
+                flow=flow,
+                contract=binding_service.contract_of(bind),
+                dashboard=dashboard,
+                link=link,
+            )
+            reasons = [e["message"] for e in result["errors"]]
+        if reasons:
+            bind.pinned_version = previous.version
+            pinned.append({
+                "binding_id": bind.id,
+                "link_id": link.id,
+                "link_name": link.name,
+                "pinned_to": previous.version,
+                "reasons": reasons,
+            })
+    return pinned
 
 
 def rollback(db: Session, brain_key: str, actor_email: str) -> dict[str, Any]:
@@ -380,10 +542,66 @@ def rollback(db: Session, brain_key: str, actor_email: str) -> dict[str, Any]:
     )
     if prev is None:
         raise BrainError(409, "Chưa có phiên bản nào từng phát hành để quay lại")
-    return publish(db, brain_key, prev.version, actor_email)
+    out = publish(db, brain_key, prev.version, actor_email, pin_incompatible=False)
+    _audit(db, "AGENT_FLOW_ROLLED_BACK", brain_key, actor_email, {"version": prev.version})
+    return out
 
 
-def delete_version(db: Session, brain_key: str, version: int) -> None:
+def restore_to_draft(
+    db: Session, brain_key: str, version: int, actor_email: str
+) -> dict[str, Any]:
+    """Load an old version's body into the OPEN DRAFT.
+
+    Different from `rollback`, and the difference matters: rollback re-publishes an
+    old version to viewers; this puts it back on the author's canvas to work from,
+    changing nothing that is live. The version list's "Nạp lại" button is this one.
+    """
+    source = (
+        db.query(AgentBrainVersion)
+        .filter(
+            AgentBrainVersion.brain_key == brain_key,
+            AgentBrainVersion.version == version,
+        )
+        .first()
+    )
+    if source is None:
+        raise BrainError(404, "Không tìm thấy phiên bản này")
+
+    latest = (
+        db.query(AgentBrainVersion)
+        .filter(AgentBrainVersion.brain_key == brain_key)
+        .order_by(AgentBrainVersion.version.desc())
+        .first()
+    )
+    body = upgrade_body(source.body or {}, key=brain_key, name=source.name)
+    if latest is not None and latest.status == DRAFT:
+        row = latest
+        row.body = body
+        row.name = source.name
+        row.description = source.description or ""
+        row.created_by = actor_email
+    else:
+        row = AgentBrainVersion(
+            brain_key=brain_key,
+            version=(latest.version if latest else 0) + 1,
+            status=DRAFT,
+            name=source.name,
+            description=source.description or "",
+            body=body,
+            owner_email=latest.owner_email if latest else actor_email,
+            created_by=actor_email,
+        )
+        db.add(row)
+    db.commit()
+    db.refresh(row)
+    _audit(
+        db, "AGENT_FLOW_RESTORED", brain_key, actor_email,
+        {"from_version": version, "into_version": row.version},
+    )
+    return _row_dict(row)
+
+
+def delete_version(db: Session, brain_key: str, version: int, actor_email: str = "") -> None:
     """Remove a draft. A published version is refused — deleting what is answering
     viewers right now should be an explicit unpublish, not a delete."""
     row = (
@@ -400,44 +618,98 @@ def delete_version(db: Session, brain_key: str, version: int) -> None:
         raise BrainError(409, "Phiên bản đang phát hành — hãy phát hành bản khác trước")
     db.delete(row)
     db.commit()
+    _audit(db, "AGENT_FLOW_DELETED", brain_key, actor_email, {"version": version})
 
 
 def impact(db: Session, brain_key: str) -> dict[str, Any]:
-    """Which live links this brain is the head of.
+    """Which links this flow serves, and whether each one is healthy.
 
-    Reuse is what makes this necessary: one edit changes every link pointing here,
-    and the author has to see that before Publish rather than after.
+    Read before Publish, because one edit changes every link pointing here.
     """
-    from app.models.models import DashboardPublicLink
+    from app.services.agent_flows import binding as binding_service
 
-    links: list[dict[str, Any]] = []
-    # Read off `dashboard_public_links.appearance_config`, which is where a link's
-    # bot settings actually live. The first draft of this read
-    # `Dashboard.public_appearance_config` — a column that does not exist, guessed
-    # from the shape of the surrounding code. It would have returned an empty impact
-    # list forever and told every author their brain served nobody.
+    links = binding_service.list_for_flow(db, brain_key)
+    return {
+        "links": links,
+        "count": len(links),
+        "broken": sum(1 for x in links if x["status"] == "broken"),
+        "needs_review": sum(1 for x in links if x["status"] == "needs_review"),
+    }
+
+
+# ═══ Activity ═════════════════════════════════════════════════════════════════
+def _audit(
+    db: Session, action_name: str, brain_key: str, actor_email: str, details: dict
+) -> None:
+    """Best-effort trail. Never fails the operation it is describing."""
     try:
-        rows = db.query(DashboardPublicLink).filter(
-            DashboardPublicLink.is_active.is_(True)
-        ).all()
-    except Exception:  # noqa: BLE001
-        logger.exception("[brain] impact query failed for %s", brain_key)
-        return {"links": [], "count": 0}
+        from app.models.audit_log import AuditAction
+        from app.services.audit_service import audit as write_audit
 
-    for link in rows:
-        cfg = link.appearance_config or {}
-        if not isinstance(cfg, dict):
-            continue
-        if (cfg.get("ai_bot_flow_key") or "").strip() != brain_key:
-            continue
-        links.append({
-            "link_id": link.id,
-            "link_name": link.name,
-            "dashboard_id": link.dashboard_id,
-            "token": link.token,
-            "bot_enabled": bool(cfg.get("ai_bot_enabled")),
-        })
-    return {"links": links, "count": len(links)}
+        write_audit(
+            db,
+            getattr(AuditAction, action_name),
+            resource_type="agent_flow",
+            resource_id=brain_key,
+            details={**details, "actor": actor_email},
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning("[flow] audit write failed for %s", brain_key, exc_info=True)
+
+
+def activity(db: Session, brain_key: str, limit: int = 100) -> dict[str, Any]:
+    """Who changed what, in the order it happened."""
+    from app.models.audit_log import AuditLog
+
+    rows = (
+        db.query(AuditLog)
+        .filter(AuditLog.resource_type == "agent_flow", AuditLog.resource_id == brain_key)
+        .order_by(AuditLog.timestamp.desc())
+        .limit(limit)
+        .all()
+    )
+    return {
+        "events": [
+            {
+                "at": r.timestamp.isoformat() if r.timestamp else None,
+                "action": r.action.value if hasattr(r.action, "value") else str(r.action),
+                "actor": (r.details or {}).get("actor"),
+                "version": (r.details or {}).get("version"),
+                "summary": (r.details or {}).get("summary") or "",
+                "details": r.details or {},
+            }
+            for r in rows
+        ]
+    }
+
+
+def _summarise(old_body: Any, new_body: dict) -> str:
+    """A human sentence describing what changed between two bodies.
+
+    Generated by diffing the node trees, because "Flow changed" on every row of an
+    activity feed is the same as no activity feed.
+    """
+    def keys(body: Any) -> dict[str, str]:
+        if not isinstance(body, dict):
+            return {}
+        return {
+            str(n.get("key")): str(n.get("type") or "agent")
+            for n in _walk_raw(upgrade_body(body).get("nodes"))
+        }
+
+    before, after = keys(old_body), keys(new_body)
+    if not before:
+        return f"Tạo flow với {len(after)} bước."
+    added = [k for k in after if k not in before]
+    removed = [k for k in before if k not in after]
+    parts: list[str] = []
+    if added:
+        parts.append(f"thêm {len(added)} bước ({', '.join(added[:3])})")
+    if removed:
+        parts.append(f"bỏ {len(removed)} bước ({', '.join(removed[:3])})")
+    if not parts:
+        return "Chỉnh sửa cấu hình các bước."
+    return "Đã " + " và ".join(parts) + "."
 
 
 def _first_message(exc: Exception) -> str:

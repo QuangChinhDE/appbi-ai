@@ -39,6 +39,49 @@ def sanitize_report_context_note(raw_value) -> str:
     return str(raw_value or "").strip()[:4000]
 
 
+def deployment_key(preferred_provider: str = "") -> tuple[str, str]:
+    """The API key this DEPLOYMENT holds, as `(key, provider)` — or `("", "")`.
+
+    WHY THIS EXISTS
+    ---------------
+    An operator who puts `OPENAI_API_KEY` in the environment reasonably expects the
+    assistant to work. It did not: credentials were resolved from exactly two places
+    — the key a viewer pastes, and a key stored on the link — so a configured
+    deployment answered every public viewer with "paste your API key", and a flow
+    that was authored, published, bound and correct never ran a single turn.
+
+    THE BLAST RADIUS, STATED
+    ------------------------
+    This lets an anonymous viewer spend the deployment's key. Three things already
+    gate that, and none of them are implicit: the bot must be switched ON for that
+    link, the link must have a flow BOUND to it with a data contract, and every turn
+    is bounded by that binding's budget. An operator who wants none of it sets
+    `PUBLIC_BOT_USE_DEPLOYMENT_KEY=false`.
+    """
+    from app.core.config import settings
+
+    if not getattr(settings, "PUBLIC_BOT_USE_DEPLOYMENT_KEY", True):
+        return "", ""
+
+    available = [
+        ("openai", (settings.OPENAI_API_KEY or "").strip()),
+        ("anthropic", (settings.ANTHROPIC_API_KEY or "").strip()),
+        ("gemini", (settings.GEMINI_API_KEY or "").strip()),
+    ]
+    wanted = (preferred_provider or "").strip().lower()
+    # The link's own provider first: a link configured for Anthropic must not be
+    # answered on an OpenAI key just because that one is also present.
+    for name, key in available:
+        if key and name == wanted:
+            return key, name
+    if wanted:
+        return "", ""
+    for name, key in available:
+        if key:
+            return key, name
+    return "", ""
+
+
 def _infer_provider_from_key(key: str) -> str | None:
     """Best-effort provider from an API key prefix.
 
@@ -68,6 +111,16 @@ def resolve_public_ai_credentials(
     stored_key = config.get("ai_bot_key") or ""
     viewer_key = (x_user_ai_key or "").strip()
     effective_key = (viewer_key or stored_key).strip()
+
+    # Third source, and the one an operator expects to just work: the deployment's
+    # own key. Last in precedence — a viewer's key and a link's key both still win —
+    # so this only ever fills the gap that used to be a hard 400.
+    deployment_provider = ""
+    if not effective_key:
+        effective_key, deployment_provider = deployment_key(
+            str(config.get("ai_bot_provider") or "").strip().lower()
+        )
+
     if not effective_key:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -79,11 +132,18 @@ def resolve_public_ai_credentials(
     # header (e.g. the FE's "gemini" default) would mismatch an OpenAI key and
     # 400. So ignore viewer provider/model in that case, and fall back to
     # inferring the provider from the key prefix when the admin left it blank.
+    # A key the VIEWER did not supply — the admin's, or the deployment's — must not
+    # be paired with the viewer's provider/model headers: the browser's default
+    # provider would mismatch the key and 400, which is the same failure this
+    # function exists to prevent.
     using_stored_key = not viewer_key and bool(stored_key)
+    using_deployment_key = bool(deployment_provider)
     stored_provider = (config.get("ai_bot_provider") or "").strip().lower()
     inferred = _infer_provider_from_key(effective_key)
 
-    if using_stored_key:
+    if using_deployment_key:
+        provider = deployment_provider
+    elif using_stored_key:
         provider = stored_provider or inferred or "openai"
     else:
         provider = (x_user_ai_provider or "").strip().lower() or stored_provider or inferred or "gemini"
@@ -95,7 +155,11 @@ def resolve_public_ai_credentials(
         )
 
     stored_model = (config.get("ai_bot_model") or "").strip()
-    if using_stored_key:
+    if using_stored_key or using_deployment_key:
+        # The link's configured model, or the provider adapter's default — NOT the
+        # viewer's. A browser that remembers "gpt-5" from a previous session was
+        # overriding the model an operator chose for the link, turning a 16-second
+        # turn into a 91-second one on a key the operator pays for.
         model = stored_model or None
     else:
         model = ((x_user_ai_model or stored_model).strip()) or None
