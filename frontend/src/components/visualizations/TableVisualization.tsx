@@ -131,6 +131,26 @@ function lookupColumnLabel(
 }
 
 const MIN_COLUMN_WIDTH = 96;
+// Floor when compressing columns to fit a narrow tile — smaller than the natural
+// MIN so more columns can actually fit the dragged size, but still wide enough
+// that a header wraps to 1-2 readable lines (with the word-part <wbr> breaks
+// below) rather than collapsing into 1-char-per-line vertical text. If even
+// these floored widths overflow (very many columns), it falls back to h-scroll.
+const MIN_FIT_COLUMN_WIDTH = 80;
+
+/** Insert <wbr> break opportunities into a header label so long snake_case /
+ *  camelCase / dotted names wrap at word PARTS ("revenue_" / "band") instead of
+ *  breaking mid-token character-by-character when the column is squeezed. */
+function renderWrappableHeaderLabel(label: string): React.ReactNode {
+  const parts = String(label).split(/(?<=[_\-.])|(?<=[a-z0-9])(?=[A-Z])/);
+  if (parts.length <= 1) return label;
+  return parts.map((part, index) => (
+    <React.Fragment key={index}>
+      {part}
+      {index < parts.length - 1 && <wbr />}
+    </React.Fragment>
+  ));
+}
 
 function sanitizeColumnWidths(
   widths: Record<string, number> | null | undefined,
@@ -297,6 +317,11 @@ export function TableVisualization({
   const headerCellRefs = useRef<Record<string, HTMLTableCellElement | null>>({});
   const liveColumnWidthsRef = useRef<Record<string, number>>(liveColumnWidths);
   const resizeStateRef = useRef<{ column: string; startX: number; startWidth: number } | null>(null);
+  // Fit-to-tile: track the scroll container's width so that when the tile is
+  // dragged NARROWER than the table's natural width, columns shrink to fit and
+  // their headers/cells wrap — instead of forcing a horizontal scroll.
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const [containerWidth, setContainerWidth] = useState(0);
 
   // BI-standard sortable grid (Power BI / Excel): clicking a header sorts the
   // grid instantly. When the parent supplies `onSortChange` the component is
@@ -376,6 +401,19 @@ export function TableVisualization({
   useEffect(() => {
     liveColumnWidthsRef.current = liveColumnWidths;
   }, [liveColumnWidths]);
+
+  // Observe the scroll container's width (react to dashboard tile resize).
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver((entries) => {
+      const width = entries[0]?.contentRect?.width ?? el.clientWidth;
+      setContainerWidth((prev) => (Math.abs(prev - width) > 1 ? width : prev));
+    });
+    observer.observe(el);
+    setContainerWidth(el.clientWidth);
+    return () => observer.disconnect();
+  }, []);
 
   useEffect(() => {
     setLiveColumnWidths((current) => {
@@ -645,6 +683,51 @@ export function TableVisualization({
   };
 
   const allColumnWidthsResolved = cols.every((col) => typeof liveColumnWidths[col] === 'number' && liveColumnWidths[col] > 0);
+
+  // Fit-to-tile shrink: when the columns' natural total exceeds the tile width,
+  // scale every column DOWN proportionally so the table fits — headers and cells
+  // then wrap to fill the shorter columns. Each column has a smaller floor than
+  // the natural MIN so we can compress a fair bit before giving up; if even the
+  // floored widths overshoot (too many columns for the tile), the table still
+  // horizontal-scrolls as before. Never shrink in export mode (prints full).
+  const naturalTotalWidth = allColumnWidthsResolved
+    ? cols.reduce((total, col) => total + liveColumnWidths[col], 0)
+    : 0;
+  const shouldFitToContainer = !exporting
+    && allColumnWidthsResolved
+    && containerWidth > 0
+    && naturalTotalWidth > containerWidth;
+  const renderColumnWidths = useMemo(() => {
+    if (!shouldFitToContainer) return liveColumnWidths;
+    // Water-fill so the total lands ON the container width even with a floor:
+    // repeatedly freeze the columns that would drop below MIN_FIT at the current
+    // scale (pin them to the floor), then re-distribute the remaining width to
+    // the still-free (wider) columns. Wide columns absorb most of the shrink;
+    // already-narrow columns stay readable. If every column bottoms out at the
+    // floor and they still don't fit, the table falls back to horizontal scroll.
+    const out: Record<string, number> = {};
+    const frozen = new Set<string>();
+    for (let pass = 0; pass <= cols.length; pass++) {
+      const free = cols.filter((col) => !frozen.has(col));
+      const frozenWidth = (cols.length - free.length) * MIN_FIT_COLUMN_WIDTH;
+      const freeNatural = free.reduce((sum, col) => sum + liveColumnWidths[col], 0);
+      if (freeNatural <= 0) break;
+      const scale = (containerWidth - frozenWidth) / freeNatural;
+      const toFreeze = free.filter((col) => liveColumnWidths[col] * scale < MIN_FIT_COLUMN_WIDTH);
+      if (toFreeze.length === 0) {
+        for (const col of free) out[col] = Math.floor(liveColumnWidths[col] * scale);
+        break;
+      }
+      toFreeze.forEach((col) => frozen.add(col));
+    }
+    for (const col of cols) {
+      if (out[col] == null) out[col] = MIN_FIT_COLUMN_WIDTH;
+    }
+    return out;
+    // colsKey captures the column set; liveColumnWidths/containerWidth drive the scale.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [shouldFitToContainer, containerWidth, colsKey, liveColumnWidths]);
+
   const tableWidth = allColumnWidthsResolved
     // Each measured width is Math.ceil'd (see the measure effect), so the raw sum
     // overshoots the true total by up to `cols.length`px. Combined with
@@ -653,11 +736,12 @@ export function TableVisualization({
     // budget cancels it: `min-w-full` still stretches the table to fill the
     // container, while a genuinely too-wide table overshoots by far more than
     // `cols.length` and therefore still scrolls.
-    ? Math.max(0, cols.reduce((total, col) => total + liveColumnWidths[col], 0) - cols.length)
+    ? Math.max(0, cols.reduce((total, col) => total + renderColumnWidths[col], 0) - cols.length)
     : undefined;
 
   return (
     <div
+      ref={containerRef}
       className={clsx(exporting ? "w-full" : "h-full overflow-auto", className)}
       // Reserve the vertical scrollbar's width permanently so that when rows
       // overflow and it appears, it doesn't shrink the content box and push the
@@ -682,7 +766,7 @@ export function TableVisualization({
                 // hairline horizontal scrollbar even when the columns fit. min-w-full
                 // redistributes the ≤1px/col slack back so nothing clips; a genuinely
                 // too-wide table still overshoots by far more and keeps scrolling.
-                style={liveColumnWidths[col] ? { width: Math.max(1, liveColumnWidths[col] - 1) } : undefined}
+                style={renderColumnWidths[col] ? { width: Math.max(1, renderColumnWidths[col] - 1) } : undefined}
               />
             ))}
           </colgroup>
@@ -704,40 +788,48 @@ export function TableVisualization({
                     style={{ textAlign: alignment }}
                     onClick={() => handleHeaderClick(col)}
                   >
-                    <div className={clsx("flex min-w-0 items-center gap-1.5", getHeaderJustifyClass(alignment))}>
+                    <div className={clsx("flex min-w-0 items-start gap-1.5", getHeaderJustifyClass(alignment))}>
                       {/* Phase-15.13: render the friendly label, not the raw
                           qualified SQL key. Title attribute keeps the raw
-                          ref available on hover for engineering debug. */}
+                          ref available on hover for engineering debug.
+                          The label WRAPS (break-words) so a column squeezed
+                          narrower than its name on a small tile shows the full
+                          name over multiple lines instead of truncating. */}
                       <span
-                        className="truncate whitespace-nowrap"
+                        className="min-w-0 flex-1 whitespace-normal break-words"
                         title={col}
                       >
-                        {lookupColumnLabel(col, columnLabels)}
+                        {renderWrappableHeaderLabel(lookupColumnLabel(col, columnLabels))}
                       </span>
-                      {getSortIndicator(col)}
-                      {enableColumnFilters && (
-                        <button
-                          type="button"
-                          aria-label={`Filter ${lookupColumnLabel(col, columnLabels)}`}
-                          title="Filter column"
-                          className={clsx(
-                            "ml-0.5 shrink-0 rounded p-0.5 transition-colors",
-                            isTableColumnFilterActive(columnFilters[col])
-                              ? "text-brand"
-                              : "text-text-quaternary opacity-0 group-hover/table-header:opacity-100 hover:text-text-secondary",
-                            openFilterCol === col && "text-brand opacity-100",
-                          )}
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            openColumnFilter(col, event.currentTarget);
-                          }}
-                        >
-                          <FilterIcon
-                            className={clsx("h-3 w-3", isTableColumnFilterActive(columnFilters[col]) && "fill-current")}
-                          />
-                        </button>
-                      )}
+                      <span className="shrink-0">{getSortIndicator(col)}</span>
                     </div>
+
+                    {/* Column filter is ABSOLUTELY positioned (not in the label
+                        flex row) so it never steals horizontal space from the
+                        header text — critical when a column is squeezed narrow
+                        and the label needs the full width to wrap readably. */}
+                    {enableColumnFilters && (
+                      <button
+                        type="button"
+                        aria-label={`Filter ${lookupColumnLabel(col, columnLabels)}`}
+                        title="Filter column"
+                        className={clsx(
+                          "absolute right-3.5 top-2 z-10 rounded p-0.5 transition-colors",
+                          isTableColumnFilterActive(columnFilters[col])
+                            ? "text-brand"
+                            : "text-text-quaternary opacity-0 group-hover/table-header:opacity-100 hover:text-text-secondary",
+                          openFilterCol === col && "text-brand opacity-100",
+                        )}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          openColumnFilter(col, event.currentTarget);
+                        }}
+                      >
+                        <FilterIcon
+                          className={clsx("h-3 w-3", isTableColumnFilterActive(columnFilters[col]) && "fill-current")}
+                        />
+                      </button>
+                    )}
 
                     {enableColumnResize && (
                       <button

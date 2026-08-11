@@ -329,6 +329,20 @@ async function runWithConcurrency<T, R>(
   return results;
 }
 
+/** Format the snapshot "data as of" timestamp for the public / embed header.
+ *  Mirrors the BUILD view's format (dd/mm/yyyy hh:mm, locale-aware, no seconds
+ *  / AM-PM noise) so the embedded report shows the update time the SAME way it
+ *  looks in the builder — instead of the bare `toLocaleString()` US default.
+ *  Returns '' for a missing/invalid value so the label never shows "Invalid Date". */
+function formatSnapshotAsOf(value: string | null | undefined): string {
+  if (!value) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  return date.toLocaleString([], {
+    day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit',
+  });
+}
+
 export function PublicDashboardView({ variant = 'public' }: { variant?: 'public' | 'embed' }) {
   const params = useParams();
   const token = params.token as string;
@@ -341,10 +355,9 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
   const [mounted, setMounted] = useState(false);
   const [dashboard, setDashboard] = useState<Dashboard | null>(null);
   // Perf #5 — report-level "data as of" so the viewer sees when the snapshot
-  // numbers were last refreshed. `snapshotStale` → a background rebuild was
-  // triggered (link past its TTL); show a subtle "đang làm mới…" hint.
+  // numbers were last refreshed. (The "đang làm mới…" staleness hint was
+  // removed from the public/embed header per product; we no longer track it.)
   const [snapshotAsOf, setSnapshotAsOf] = useState<string | null>(null);
-  const [snapshotStale, setSnapshotStale] = useState(false);
   const [chartData, setChartData] = useState<Record<number, ChartDataResponse>>({});
   const [chartErrors, setChartErrors] = useState<Record<number, string>>({});
   // Mirrors of the two maps above. PDF export walks pages in a loop and must see
@@ -516,7 +529,7 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
       // "data as of" label (never blocks the dashboard render).
       publicDashboardApi
         .getSnapshotInfo(token, sessionToken)
-        .then((info) => { setSnapshotAsOf(info?.as_of ?? null); setSnapshotStale(!!info?.stale); })
+        .then((info) => { setSnapshotAsOf(info?.as_of ?? null); })
         .catch(() => { /* live / not materialized → no label */ });
       if (sessionToken) {
         scheduleSessionExpiry(token);
@@ -1756,12 +1769,9 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
       {snapshotAsOf && (
         <p
           className="mt-0.5 text-[11px] text-text-tertiary"
-          title={`Số liệu tính đến ${new Date(snapshotAsOf).toLocaleString()}`}
+          title={`Số liệu tính đến ${formatSnapshotAsOf(snapshotAsOf)}`}
         >
-          Số liệu tính đến {new Date(snapshotAsOf).toLocaleString()}
-          {snapshotStale && (
-            <span className="ml-1 text-text-quaternary">· đang làm mới…</span>
-          )}
+          Số liệu tính đến {formatSnapshotAsOf(snapshotAsOf)}
         </p>
       )}
     </div>
@@ -2260,12 +2270,9 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
               {snapshotAsOf && (
                 <p
                   className="mt-0.5 truncate text-[11px] text-text-tertiary"
-                  title={`Số liệu tính đến ${new Date(snapshotAsOf).toLocaleString()}`}
+                  title={`Số liệu tính đến ${formatSnapshotAsOf(snapshotAsOf)}`}
                 >
-                  Số liệu tính đến {new Date(snapshotAsOf).toLocaleString()}
-                  {snapshotStale && (
-                    <span className="ml-1 text-text-quaternary">· đang làm mới…</span>
-                  )}
+                  Số liệu tính đến {formatSnapshotAsOf(snapshotAsOf)}
                 </p>
               )}
             </div>
