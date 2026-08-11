@@ -9,9 +9,68 @@ from __future__ import annotations
 
 import logging
 from copy import deepcopy
+from datetime import date, datetime, timedelta
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+
+def _month_last_day(year: int, month: int) -> date:
+    """Last calendar day of a 1-based month."""
+    if month == 12:
+        return date(year, 12, 31)
+    return date(year, month + 1, 1) - timedelta(days=1)
+
+
+def compute_date_preset_range(preset: str) -> tuple[str, str]:
+    """Resolve a relative date preset to a concrete [start, end] YYYY-MM-DD pair
+    using the SERVER'S CURRENT date. Python port of the frontend
+    ``computeDatePresetRange`` (lib/filters.ts) — the two MUST stay in sync.
+
+    This is what makes a relative filter like "last 30 days" truly relative on
+    EVERY consumer (public link, embed, AI bot, PDF worker): the range is
+    recomputed at request time instead of being frozen to the build-time window.
+    Returns ('', '') for 'custom'/unknown. Weeks are Monday-start (matches FE).
+    """
+    p = str(preset or "").strip().lower()
+    today = datetime.now().date()
+    fmt = lambda d: d.isoformat()
+    if p == "today":
+        return fmt(today), fmt(today)
+    if p == "yesterday":
+        d = today - timedelta(days=1)
+        return fmt(d), fmt(d)
+    if p == "this_week":
+        start = today - timedelta(days=today.weekday())
+        return fmt(start), fmt(start + timedelta(days=6))
+    if p == "last_week":
+        start = today - timedelta(days=today.weekday() + 7)
+        return fmt(start), fmt(start + timedelta(days=6))
+    if p == "this_month":
+        return fmt(date(today.year, today.month, 1)), fmt(_month_last_day(today.year, today.month))
+    if p == "last_month":
+        y = today.year if today.month > 1 else today.year - 1
+        m = today.month - 1 if today.month > 1 else 12
+        return fmt(date(y, m, 1)), fmt(_month_last_day(y, m))
+    if p == "this_quarter":
+        q = (today.month - 1) // 3
+        return fmt(date(today.year, q * 3 + 1, 1)), fmt(_month_last_day(today.year, q * 3 + 3))
+    if p == "last_quarter":
+        q = (today.month - 1) // 3 - 1
+        y = today.year - 1 if q < 0 else today.year
+        qn = (q % 4 + 4) % 4
+        return fmt(date(y, qn * 3 + 1, 1)), fmt(_month_last_day(y, qn * 3 + 3))
+    if p == "this_year":
+        return fmt(date(today.year, 1, 1)), fmt(date(today.year, 12, 31))
+    if p == "last_year":
+        return fmt(date(today.year - 1, 1, 1)), fmt(date(today.year - 1, 12, 31))
+    if p == "last_7_days":
+        return fmt(today - timedelta(days=6)), fmt(today)
+    if p == "last_30_days":
+        return fmt(today - timedelta(days=29)), fmt(today)
+    if p == "last_90_days":
+        return fmt(today - timedelta(days=89)), fmt(today)
+    return "", ""
 
 
 def _summarize_filter(filt: dict[str, Any] | None) -> dict[str, Any]:
@@ -353,8 +412,20 @@ def normalize_filter_conditions(
         if not field:
             _record_dropped_filter(diagnostics, filt, "no_field")
             continue
+        # Relative date presets ("last_30_days", "this_month", …) are resolved to
+        # a concrete [start,end] HERE, at request time, using the server's current
+        # date — NOT frozen at build/save. This is the single chokepoint every
+        # surface goes through (authed chart-data, public link, embed, AI bot,
+        # PDF worker), so all of them see a truly-relative window. The stored
+        # `datePreset` token is authoritative; its frozen `value` is ignored.
+        raw_value = filt.get("value")
+        preset_token = str(filt.get("datePreset") or filt.get("date_preset") or "").strip().lower()
+        if preset_token and preset_token != "custom":
+            start, end = compute_date_preset_range(preset_token)
+            if start or end:
+                raw_value = [start, end]
         operator = normalize_filter_operator(filt.get("operator"))
-        value = normalize_filter_value(operator, filt.get("value"))
+        value = normalize_filter_value(operator, raw_value)
         candidate = {
             **filt,
             "field": field,

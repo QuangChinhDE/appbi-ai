@@ -2069,6 +2069,7 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
             publicDatasetModels={(dashboard as any)?.public_dataset_models ?? null}
             viewerGrain={chartGrains[dashboardChart.chart_id]}
             onViewerDrill={(g) => handleChartDrill(dashboardChart.chart_id, g)}
+            lockDateGrain={(dashboardChart.layout as any)?.lockDateGrain === true}
             onVisible={() => {
               setVisibleChartIds((current) => {
                 if (current.has(dashboardChart.chart_id)) return current;
@@ -2620,6 +2621,7 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
                           publicDatasetModels={(dashboard as any)?.public_dataset_models ?? null}
                           viewerGrain={chartGrains[dashboardChart.chart_id]}
                           onViewerDrill={(g) => handleChartDrill(dashboardChart.chart_id, g)}
+                          lockDateGrain={(dashboardChart.layout as any)?.lockDateGrain === true}
                           onVisible={() => {
                             setVisibleChartIds((current) => {
                               if (current.has(dashboardChart.chart_id)) return current;
