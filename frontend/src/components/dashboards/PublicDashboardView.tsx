@@ -355,10 +355,9 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
   const [mounted, setMounted] = useState(false);
   const [dashboard, setDashboard] = useState<Dashboard | null>(null);
   // Perf #5 — report-level "data as of" so the viewer sees when the snapshot
-  // numbers were last refreshed. `snapshotStale` → a background rebuild was
-  // triggered (link past its TTL); show a subtle "đang làm mới…" hint.
+  // numbers were last refreshed. (The "đang làm mới…" staleness hint was
+  // removed from the public/embed header per product; we no longer track it.)
   const [snapshotAsOf, setSnapshotAsOf] = useState<string | null>(null);
-  const [snapshotStale, setSnapshotStale] = useState(false);
   const [chartData, setChartData] = useState<Record<number, ChartDataResponse>>({});
   const [chartErrors, setChartErrors] = useState<Record<number, string>>({});
   // Mirrors of the two maps above. PDF export walks pages in a loop and must see
@@ -530,7 +529,7 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
       // "data as of" label (never blocks the dashboard render).
       publicDashboardApi
         .getSnapshotInfo(token, sessionToken)
-        .then((info) => { setSnapshotAsOf(info?.as_of ?? null); setSnapshotStale(!!info?.stale); })
+        .then((info) => { setSnapshotAsOf(info?.as_of ?? null); })
         .catch(() => { /* live / not materialized → no label */ });
       if (sessionToken) {
         scheduleSessionExpiry(token);
@@ -1773,9 +1772,6 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
           title={`Số liệu tính đến ${formatSnapshotAsOf(snapshotAsOf)}`}
         >
           Số liệu tính đến {formatSnapshotAsOf(snapshotAsOf)}
-          {snapshotStale && (
-            <span className="ml-1 text-text-quaternary">· đang làm mới…</span>
-          )}
         </p>
       )}
     </div>
@@ -2277,9 +2273,6 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
                   title={`Số liệu tính đến ${formatSnapshotAsOf(snapshotAsOf)}`}
                 >
                   Số liệu tính đến {formatSnapshotAsOf(snapshotAsOf)}
-                  {snapshotStale && (
-                    <span className="ml-1 text-text-quaternary">· đang làm mới…</span>
-                  )}
                 </p>
               )}
             </div>
