@@ -11,20 +11,27 @@ into a query, resolving the semantic layer, choosing snapshot or live, coercing
 column types. That path is where dozens of hard-won corrections live, and
 rewriting it from a clean sheet means finding those failures again in production.
 
-So the packs declare WHAT a tool is here and now — its name, label, cost, whether
-it leaves AppBI — while the body is still imported from the old location. When the
-files are physically relocated, one import block in this module changes and no pack
-changes at all.
+So the packs declare WHAT a tool is here and now — its name, label, cost, what it
+returns, whether it leaves AppBI — while the body is still imported from the old
+location. When the files are physically relocated, one import block in this module
+changes and no pack changes at all.
 
-Schemas are LOOKED UP rather than transcribed. Copying twenty-three JSON schemas
+Schemas are LOOKED UP rather than transcribed. Copying twenty-four JSON schemas
 into pack files would create a second definition of every tool's arguments, and a
 second definition is the thing this whole registry exists to remove.
+
+`local` is the other constructor here: a tool whose body lives in this package
+because it was written against the contract rather than adapted to it. New tools
+use it, and every tool will once the seam closes.
 """
 from __future__ import annotations
 
 from typing import Any
 
-from app.services.agent_flows.tools.registry import CostClass, ToolSpec
+from app.services.agent_flows.tools.registry import (
+    CostClass, PayloadSize, ToolFn, ToolSpec,
+)
+from app.services.agent_flows.tools.result import ResultKind
 
 
 def _sources() -> tuple[dict[str, Any], dict[str, dict]]:
@@ -50,14 +57,26 @@ def spec(
     label_vi: str,
     label_en: str,
     description_vi: str,
+    result_kind: ResultKind,
+    returns: dict[str, str],
     cost_class: CostClass = "cheap",
+    payload: PayloadSize = "small",
     reaches_outside: bool = False,
+    deterministic: bool = True,
+    cacheable: bool | None = None,
+    self_sufficient: bool = False,
+    answers_vi: tuple[str, ...] = (),
 ) -> ToolSpec:
-    """Build one ToolSpec, failing loudly if the tool or its schema is missing.
+    """Declare a tool whose body still lives in the old package.
 
-    Loudly on purpose. A pack naming a tool that no longer exists would otherwise
-    register a picker entry the model can never call — the same silent gap as a
-    node type with no runtime handler.
+    Fails loudly if the tool or its schema is missing — on purpose. A pack naming
+    a tool that no longer exists would otherwise register a picker entry the model
+    can never call: the same silent gap as a node type with no runtime handler.
+
+    `result_kind` and `returns` are REQUIRED. They are the half of the contract
+    that lets a flow node use a result without a model reading it for them, and
+    making them optional would mean the tools nobody got around to describing are
+    exactly the ones no node can use.
     """
     fns, defs = _sources()
     fn = fns.get(name)
@@ -66,6 +85,8 @@ def spec(
     definition = defs.get(name)
     if definition is None:
         raise LookupError(f"tool '{name}' has no LLM schema; the model could not call it")
+    if not returns:
+        raise ValueError(f"tool '{name}' must declare what it returns")
     return ToolSpec(
         name=name,
         fn=fn,
@@ -74,5 +95,55 @@ def spec(
         label_en=label_en,
         description_vi=description_vi,
         cost_class=cost_class,
+        payload=payload,
         reaches_outside=reaches_outside,
+        result_kind=result_kind,
+        returns=returns,
+        deterministic=deterministic,
+        cacheable=(deterministic and not reaches_outside) if cacheable is None else cacheable,
+        self_sufficient=self_sufficient,
+        answers_vi=answers_vi,
+    )
+
+
+def local(
+    name: str,
+    fn: ToolFn,
+    definition: dict,
+    *,
+    label_vi: str,
+    label_en: str,
+    description_vi: str,
+    result_kind: ResultKind,
+    returns: dict[str, str],
+    cost_class: CostClass = "cheap",
+    payload: PayloadSize = "small",
+    deterministic: bool = True,
+    self_sufficient: bool = False,
+    answers_vi: tuple[str, ...] = (),
+) -> ToolSpec:
+    """Declare a tool written against the contract, body and schema supplied here.
+
+    The schema is written beside the body rather than looked up, because there is
+    no second copy to look it up from — which is the point of the arrangement this
+    seam is working towards.
+    """
+    if not returns:
+        raise ValueError(f"tool '{name}' must declare what it returns")
+    return ToolSpec(
+        name=name,
+        fn=fn,
+        definition=definition,
+        label_vi=label_vi,
+        label_en=label_en,
+        description_vi=description_vi,
+        cost_class=cost_class,
+        payload=payload,
+        reaches_outside=False,
+        result_kind=result_kind,
+        returns=returns,
+        deterministic=deterministic,
+        cacheable=deterministic,
+        self_sufficient=self_sufficient,
+        answers_vi=answers_vi,
     )

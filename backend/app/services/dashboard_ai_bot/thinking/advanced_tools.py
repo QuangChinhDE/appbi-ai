@@ -1187,8 +1187,8 @@ def tool_aggregate_chart_data(ctx: ToolContext, args: dict) -> dict:
 
     # Sort + top_n
     sort_by = args.get("sort_by")
+    order = str(args.get("order") or "desc").lower()
     if isinstance(sort_by, str) and sort_by:
-        order = str(args.get("order") or "desc").lower()
         rev = order != "asc"
         out_rows.sort(
             key=lambda d: (d.get(sort_by) is None, d.get(sort_by) if d.get(sort_by) is not None else 0),
@@ -1196,9 +1196,23 @@ def tool_aggregate_chart_data(ctx: ToolContext, args: dict) -> dict:
         )
 
     n_groups = len(out_rows)
-    top_n = args.get("top_n")
-    if isinstance(top_n, int) and top_n > 0:
-        out_rows = out_rows[: min(top_n, MAX_TOP_N)]
+
+    # BOUND BY DEFAULT.
+    #
+    # MEASURED across every dashboard in this deployment: with `top_n` omitted
+    # this returned every group it found — up to 99,441 of them, ~2,979,000
+    # tokens in a single call. Grouping by a high-cardinality column (an order
+    # id, a customer id) is a perfectly ordinary thing for a model to try, and
+    # the result cannot fit in any prompt, any budget, or comfortably in memory.
+    #
+    # `top_n` existed and was OPTIONAL, which made the safe path the one the
+    # caller had to remember. Now the cap applies unless a caller asks for more,
+    # and `coverage` says how much was left behind — the same contract the
+    # measuring tools already meet.
+    asked_for = args.get("top_n")
+    ceiling = getattr(ctx, "max_rows_per_call", None) or MAX_TOP_N
+    limit = min(asked_for, ceiling) if isinstance(asked_for, int) and asked_for > 0 else ceiling
+    out_rows = out_rows[:limit]
 
     # Population-level totals so the agent can express "group X covers Y% of all"
     totals: dict[str, Any] = {"n_rows": len(rows)}
@@ -1209,6 +1223,55 @@ def tool_aggregate_chart_data(ctx: ToolContext, args: dict) -> dict:
             v = _round(v)
         totals[agg["out"]] = v
 
+    # WOULD THIS SUM MEAN ANYTHING?
+    #
+    # This tool lets the CALLER choose the operation, so `op="sum"` can land on a
+    # percentage or an average — the same defect `total_measure` was fixed for,
+    # and fixing it there did not fix it here. Caught live: `sum` over `pct_kh`
+    # (an avg measure) across five groups.
+    #
+    # REFUSED, not warned — and the first attempt at this got it wrong.
+    #
+    # The case for warning was that this tool takes an explicit `op`, so a caller
+    # asking to sum a percentage has decided to. But the caller is a model,
+    # "deciding" here means "not knowing", and the argument against warning is
+    # already written into `total_measure`: a caveat sitting beside a number
+    # still puts the number in front of something that will quote it and drop
+    # the caveat. Two tools guarding the same mistake to two different standards
+    # is a gap with a rationale attached.
+    from app.services.agent_flows.tools.packs import measure_meta
+
+    warnings_out: list[str] = []
+    for a in parsed_aggs:
+        if a["op"] != "sum":
+            continue
+        info = measure_meta.describe_measure(ctx, chart_id, a["src"])
+        if not info["additive"] and n_groups > 1:
+            return _err(
+                f"cannot sum '{a['src']}': it is "
+                f"{info['agg'] or info['format_kind'] or 'non-additive'}, and a "
+                f"total of that across {n_groups} groups is arithmetically valid "
+                "and semantically meaningless. Use op='avg' for the average, or "
+                "sum the underlying additive measure instead."
+            )
+
+    coverage: dict[str, Any] = {
+        "returned": len(out_rows),
+        "total": n_groups,
+        "truncated": len(out_rows) < n_groups,
+    }
+    if sort_by:
+        coverage["ordered_by"] = f"{sort_by} {order}"
+    if coverage["truncated"]:
+        coverage["note"] = (
+            f"ONLY {len(out_rows)}/{n_groups} groups, ordered by "
+            f"{coverage.get('ordered_by') or 'the grouping order'}. `totals` below "
+            "covers ALL rows — use it for population figures, not the sum of what "
+            "is listed here."
+        )
+    if warnings_out:
+        coverage["warnings"] = warnings_out
+
     return _ok({
         "chart_id": chart_id,
         "group_by": group_by,
@@ -1218,6 +1281,7 @@ def tool_aggregate_chart_data(ctx: ToolContext, args: dict) -> dict:
         "n_rows_total": len(rows),
         "rows": out_rows,
         "totals": totals,
+        "coverage": coverage,
     })
 
 
@@ -1680,7 +1744,21 @@ def tool_get_chart_glossary(ctx: ToolContext, args: dict) -> dict:
     query_aliases = (
         list(table.query_aliases) if isinstance(table.query_aliases, list) else []
     )
-    columns_meta = table.columns_cache if isinstance(table.columns_cache, list) else []
+    # `columns_cache` is polymorphic: older rows hold a bare list, current ones
+    # hold `{"columns": [...], "source_columns": [...], "source_signature": …}`.
+    # The list-only test below used to be `isinstance(..., list)`, which is False
+    # for every table written by the current dataset pipeline — so this tool, the
+    # one named "field dictionary", returned ZERO fields for every chart on every
+    # modern dataset. It reported `ok`, so nothing surfaced it; the agent simply
+    # learned nothing and carried on inferring meanings from column names.
+    #
+    # `govern_ai_draft._columns` in this same package already reads both shapes.
+    raw_cache = table.columns_cache
+    columns_meta = (
+        raw_cache.get("columns") if isinstance(raw_cache, dict) else raw_cache
+    ) or []
+    if not isinstance(columns_meta, list):
+        columns_meta = []
 
     columns_out: list[dict] = []
     for col in columns_meta or []:

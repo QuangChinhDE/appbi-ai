@@ -22,6 +22,15 @@ from app.services.dashboard_ai_bot.events import AgentEvent
 
 logger = logging.getLogger(__name__)
 
+#: What an INTERMEDIATE node keeps of the base prompt: the two rules that must
+#: survive everywhere, and nothing else. The full analyst prompt is for the step
+#: whose words a person reads.
+_COMPACT_BASE = (
+    "Trả lời bằng đúng ngôn ngữ của câu hỏi. "
+    "Chỉ dùng số liệu có trong dữ liệu được cung cấp — không tự tạo, không ước lượng, "
+    "không lấy từ kiến thức có sẵn. Nếu dữ liệu không có, nói rõ là không có."
+)
+
 #: Hard ceiling on rounds within ONE node, on top of the run-wide budget. A model
 #: looping on a failing tool would otherwise spend the whole turn here and leave
 #: nothing for the node that writes the answer.
@@ -137,6 +146,12 @@ async def run(
                 result = tool_registry.execute(
                     rctx.ctx, call.tool_name, call.tool_args, allowed=allowed
                 )
+                # Named in the run history, success or not. A refused call is the
+                # most interesting row in an audit and the easiest one to lose.
+                state.tool_log.append(
+                    call.tool_name if result.get("ok")
+                    else f"{call.tool_name}({result.get('error_code') or 'failed'})"
+                )
                 state.add_evidence(result)
                 _collect_citation(state, call.tool_name, call.tool_args, result)
                 yield AgentEvent(
@@ -233,8 +248,21 @@ def _system_prompt(node: AgentNode, state: RunState, rctx: Any) -> str:
     replacement prompts would drop all of them with nothing to show it happened.
     """
     parts: list[str] = []
+    # THE FULL BASE PROMPT GOES TO THE NODE THAT TALKS TO THE VIEWER. NOT EVERY NODE.
+    #
+    # It is ~2,300 tokens of citation contract, language rule and analysis
+    # guardrails — written for the step that produces the answer. Pasting it into
+    # every node meant a five-node flow paid for it five times: 11,700 tokens
+    # before a single word about the actual report. A node whose whole job is
+    # "write one sentence about {{segment}}" does not need the citation contract;
+    # it needs the two rules that must never be dropped, which is what the compact
+    # form carries.
     if rctx.base_system_prompt.strip():
-        parts.append(rctx.base_system_prompt.strip())
+        parts.append(
+            rctx.base_system_prompt.strip()
+            if node.key == rctx.answer_key
+            else _COMPACT_BASE
+        )
     parts.append(state.resolve_text(node.prompt).strip())
 
     notes = [f"- {g.tool}: {g.note.strip()}" for g in node.tools if g.note.strip()]

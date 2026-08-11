@@ -598,6 +598,11 @@ export interface DashboardChartLayout {
   /** Position lock: when true the grid renders this tile `static` — it can't be
    *  dragged, resized, or displaced by a neighbour. */
   locked?: boolean;
+  /** Lock the date group-by (time grain) switcher for VIEWERS. When true the
+   *  chart still opens at its configured default grain, but the Group-by
+   *  control is hidden on dashboard/public/embed views so viewers can't change
+   *  it. The editor still shows it. Default (absent/false) = viewers can switch. */
+  lockDateGrain?: boolean;
 }
 
 export interface DashboardPageConfig {

@@ -65,8 +65,46 @@ def tool_list_charts(ctx: ToolContext, args: dict) -> dict:
     # was empty when in fact we just hadn't checked yet. recon backfills
     # the real count from each parallel summary fetch when those succeed.
     light = bool(args.get("light"))
+
+    # WHICH charts, and HOW MUCH about each.
+    #
+    # MEASURED: on a 70-chart dashboard this tool returned ~15,600 tokens while
+    # declaring itself `cheap`. It is cheap in warehouse terms — it queries
+    # nothing — and ruinous in the currency an agent actually spends, because the
+    # whole listing is pasted into a prompt. Cost class only ever described one of
+    # the two axes, and this was the tool where the other one mattered most.
+    #
+    # So the listing is now scopeable to one page (a report's own unit of
+    # narrative) and compact by default. `full` restores the previous payload for
+    # a caller that genuinely wants every manifest.
+    detail = str(args.get("detail") or "compact").lower()
+    if detail not in ("compact", "full"):
+        return _err("detail must be 'compact' or 'full'")
+    page_arg = args.get("page")
+    if page_arg is not None and not isinstance(page_arg, (str, int)):
+        return _err("page must be a page id or name")
+
+    every = sorted(ctx.allowed_chart_ids)
+    wanted = every
+    page_used = None
+    if page_arg is not None:
+        needle = str(page_arg).strip().lower()
+        for page in ctx.pages or []:
+            pid = str(page.get("id") or "").lower()
+            pname = str(page.get("name") or "").lower()
+            if needle in (pid, pname) or (needle and needle in pname):
+                allowed = set(page.get("chart_ids") or [])
+                wanted = [c for c in every if c in allowed]
+                page_used = page.get("name") or page.get("id")
+                break
+        else:
+            return _err(
+                f"page '{page_arg}' not found. Available: "
+                + ", ".join(str(p.get("name") or p.get("id")) for p in (ctx.pages or []))
+            )
+
     items = []
-    for chart_id in sorted(ctx.allowed_chart_ids):
+    for chart_id in wanted:
         meta = ctx.chart_meta.get(chart_id, {})
         columns: list[str] = []
         total_rows: int | None = None
@@ -98,20 +136,72 @@ def tool_list_charts(ctx: ToolContext, args: dict) -> dict:
         # viewer sees them — not by raw column names.
         manifest["fields"] = _fields_block(meta)
         items.append(manifest)
-    # Related charts (sharing a measure) per chart — powers the guide flow's
-    # "biểu đồ liên quan" chips so users jump between linked charts.
-    related_map = _compute_related_charts(ctx.chart_meta)
-    for it in items:
-        it["related"] = related_map.get(it.get("chart_id"), [])
-    return _ok({
+    if detail == "full":
+        # Related charts (sharing a measure) per chart — powers the guide flow's
+        # "biểu đồ liên quan" chips so users jump between linked charts. Dropped
+        # from `compact`: it is a cross-reference for a UI, and it grows with the
+        # square of the chart count in the payload an agent pays for.
+        related_map = _compute_related_charts(ctx.chart_meta)
+        for it in items:
+            it["related"] = related_map.get(it.get("chart_id"), [])
+    else:
+        items = [_compact_manifest(it) for it in items]
+
+    out = {
         "dashboard_name": ctx.dashboard.name or "",
         "dashboard_description": getattr(ctx.dashboard, "description", "") or "",
         "filters_applied": ctx.public_filters,
         # The report's page flow (DA's narrative). Read/overview FOLLOWING this
-        # order, page by page — not as a flat chart dump.
-        "pages": ctx.pages,
+        # order, page by page — not as a flat chart dump. Names and ids only in
+        # compact mode: the per-page chart lists repeat what `charts` already says.
+        "pages": (ctx.pages if detail == "full" else
+                  [{"id": p.get("id"), "name": p.get("name"),
+                    "chart_count": len(p.get("chart_ids") or [])}
+                   for p in (ctx.pages or [])]),
         "charts": items,
-    })
+        "coverage": {
+            "returned": len(items),
+            "total": len(every),
+            "truncated": len(items) < len(every),
+            "detail": detail,
+        },
+    }
+    if page_used:
+        out["coverage"]["page"] = page_used
+        out["coverage"]["note"] = (
+            f"Listing only {len(items)}/{len(every)} charts — those on page "
+            f"\"{page_used}\". Omit `page` to see the whole report."
+        )
+    elif detail == "compact":
+        out["coverage"]["note"] = (
+            "Compact listing: name, type, measures and dimensions only — enough "
+            "to choose a chart_id. Call get_chart_glossary for one chart's detail."
+        )
+    return _ok(out)
+
+
+#: The fields a manifest keeps in compact mode: enough to choose a chart, not
+#: enough to answer from. Choosing is the job; answering is what the measuring
+#: tools are for, and they are given a `chart_id` from exactly this list.
+_COMPACT_KEEP = ("chart_id", "chart_name", "name", "chart_type", "description",
+                 "total_rows")
+
+
+def _compact_manifest(item: dict) -> dict:
+    """One chart, described in what it takes to pick it out of a list."""
+    out = {k: item[k] for k in _COMPACT_KEEP if item.get(k) not in (None, "")}
+    fields = item.get("fields") or {}
+    if isinstance(fields, dict):
+        # Labels, not the full field blocks: the label is what a viewer says and
+        # therefore what a question has to be matched against.
+        for key in ("measures", "dimensions"):
+            vals = [
+                (f.get("label") or f.get("field"))
+                for f in (fields.get(key) or []) if isinstance(f, dict)
+            ]
+            if vals:
+                out[key] = [v for v in vals if v][:6]
+    return out
 
 
 # Tool: get_chart_summary ─────────────────────────────────────────────────────
@@ -170,7 +260,14 @@ def tool_get_chart_summary(ctx: ToolContext, args: dict) -> dict:
         data = _fetch_chart_data(ctx, chart_id)
     except Exception as exc:
         logger.exception("dashboard_ai_bot get_chart_summary failed chart_id=%s", chart_id)
-        return _err(f"failed to load chart {chart_id}: {type(exc).__name__}: {exc}")
+        # The exception TEXT is not repeated: it comes from the shared chart
+        # service, which speaks the UI's language (Vietnamese here) because a
+        # person reads it in the app. Pasting it into a tool result puts a
+        # second language inside a machine contract that is otherwise English —
+        # found by the group-2 audit. The type is enough to act on; the full
+        # text is in the server log for whoever is debugging.
+        logger.warning("chart %s failed: %s", chart_id, exc)
+        return _err(f"failed to load chart {chart_id}: {type(exc).__name__}")
 
     try:
         pack = build_insight_pack(
@@ -185,12 +282,19 @@ def tool_get_chart_summary(ctx: ToolContext, args: dict) -> dict:
         )
     except Exception as exc:
         logger.exception("dashboard_ai_bot build_insight_pack failed chart_id=%s", chart_id)
-        return _err(f"failed to summarize chart {chart_id}: {type(exc).__name__}: {exc}")
+        logger.warning("chart %s summary failed: %s", chart_id, exc)
+        return _err(f"failed to summarize chart {chart_id}: {type(exc).__name__}")
     pack_dict = pack.to_dict()
     if isinstance(dashboard_id, int):
         # Cache the raw SQL-stats pack; vocabulary is layered on at read time.
         put_cached_pack(dashboard_id, ctx.public_filters, chart_id, pack_dict)
     return _ok(_enrich(pack_dict))
+
+
+#: What "no sort" means, spelled out. A named constant because it lives inside
+#: an f-string and an apostrophe there is a syntax error before Python 3.12 —
+#: the kind of breakage that only shows up at import time in the container.
+_UNORDERED = "the chart's own order (NOT a ranking)"
 
 
 # Tool: get_chart_data ────────────────────────────────────────────────────────
@@ -205,11 +309,23 @@ def tool_get_chart_data(ctx: ToolContext, args: dict) -> dict:
     except ToolError as exc:
         return _err(str(exc))
 
+    # The run's ceiling, not this module's. A binding that grants more rows is
+    # honoured; one that grants none falls back to the historical default.
+    ceiling = getattr(ctx, "max_rows_per_call", None) or MAX_TOP_N
+
     top_n = args.get("top_n")
     if top_n is not None and (not isinstance(top_n, int) or top_n <= 0):
         return _err("top_n must be a positive integer")
-    if isinstance(top_n, int):
-        top_n = min(top_n, MAX_TOP_N)
+    asked_for = top_n if isinstance(top_n, int) else None
+    # THE CEILING APPLIES WHETHER OR NOT THE CALLER REMEMBERED IT.
+    #
+    # MEASURED: with `top_n` omitted this returned every row of the chart — up to
+    # ~1,444,000 tokens in one call. `top_n` was optional, so the bounded path
+    # was the one a caller had to think of, and a model that simply did not pass
+    # it got an unbounded read. The cap is the run's ceiling
+    # (`capabilities.max_rows_per_call`, default 50); an explicit smaller ask
+    # still wins.
+    top_n = min(top_n, ceiling) if isinstance(top_n, int) else ceiling
 
     sort = args.get("sort")  # "asc" | "desc" | None
     sort_by = args.get("sort_by")  # column name
@@ -218,7 +334,14 @@ def tool_get_chart_data(ctx: ToolContext, args: dict) -> dict:
         data = _fetch_chart_data(ctx, chart_id)
     except Exception as exc:
         logger.exception("dashboard_ai_bot get_chart_data failed chart_id=%s", chart_id)
-        return _err(f"failed to load chart {chart_id}: {type(exc).__name__}: {exc}")
+        # The exception TEXT is not repeated: it comes from the shared chart
+        # service, which speaks the UI's language (Vietnamese here) because a
+        # person reads it in the app. Pasting it into a tool result puts a
+        # second language inside a machine contract that is otherwise English —
+        # found by the group-2 audit. The type is enough to act on; the full
+        # text is in the server log for whoever is debugging.
+        logger.warning("chart %s failed: %s", chart_id, exc)
+        return _err(f"failed to load chart {chart_id}: {type(exc).__name__}")
 
     columns: list[str] = data["columns"]
     rows: list[list] = data["rows"]
@@ -245,14 +368,52 @@ def tool_get_chart_data(ctx: ToolContext, args: dict) -> dict:
                 reverse=rev,
             )
 
+    # How many there ACTUALLY are, captured before the cut. Reporting only the
+    # post-truncation count is what let a fifty-row fragment of a seventy-two-row
+    # chart pass for the whole thing: `row_count: 50` is true of the payload and
+    # says nothing about the data, and a reader with no other signal treats it as
+    # both. See `agent_flows/tools/result.py` for the contract this feeds.
+    total_rows = len(rows)
+
     if isinstance(top_n, int):
         rows = rows[:top_n]
+
+    # ALWAYS say how the rows were ordered, including when nothing sorted them.
+    # The audit found a truncated result whose note named no order at all, so
+    # "the first 5 rows" described a slice of nothing in particular — exactly the
+    # silence the coverage contract exists to break.
+    ordered_by = f"{sort_by} {sort}" if (sort and sort_by) else _UNORDERED
+    truncated = len(rows) < total_rows
+    coverage: dict[str, Any] = {
+        "returned": len(rows),
+        "total": total_rows,
+        "truncated": truncated,
+    }
+    coverage["ordered_by"] = ordered_by
+    if asked_for is not None and asked_for > ceiling:
+        # The caller asked for more than the run permits. Said out loud, because
+        # the alternative is an operator raising a limit and watching nothing
+        # change.
+        coverage["capped_by_policy"] = {"asked_for": asked_for, "allowed": ceiling}
+    if truncated:
+        # Spelled out in words as well as flags. A model reading a boolean deep
+        # in a nested object does not reliably act on it, and the entire cost of
+        # this defect was a model not acting on the fact that it held a fragment.
+        coverage["note"] = (
+            f"ONLY {len(rows)}/{total_rows} rows, ordered by "
+            f"{ordered_by}. "
+            "Do not state a highest/lowest/total from this fragment — call "
+            "rank_values or total_measure, which compute over every row."
+        )
 
     return _ok({
         "chart_id": chart_id,
         "columns": columns,
         "rows": rows,
+        # Kept for readers that already depend on it; `coverage` is what a new
+        # reader should use, because this one cannot express partiality.
         "row_count": len(rows),
+        "coverage": coverage,
         "filters_applied": data["filters_applied"],
     })
 
@@ -431,11 +592,20 @@ def tool_compute(ctx: ToolContext, args: dict) -> dict:
         tree = ast.parse(expression, mode="eval")
         result = _safe_eval(tree, clean_vars)
     except ToolError as exc:
-        return _err(str(exc))
+        # Refused by the AST allowlist: an unsupported node, an unknown variable,
+        # a disallowed operator. The caller wrote something this tool will not
+        # evaluate — a bad argument, not a failure of anything downstream.
+        return _err(f"expression not allowed: {exc}")
     except SyntaxError as exc:
         return _err(f"invalid expression syntax: {exc.msg}")
     except ZeroDivisionError:
-        return _err("division by zero")
+        return _err("bad argument: division by zero")
+    except OverflowError:
+        # Every constant is coerced to float before evaluation, so an enormous
+        # power overflows immediately instead of exploding into a big integer —
+        # the reason `**` can stay allowed without a CPU bomb. It is still the
+        # caller asking for something unrepresentable.
+        return _err("bad argument: result is too large to represent")
     except Exception as exc:
         return _err(f"evaluation failed: {type(exc).__name__}")
 
@@ -543,7 +713,7 @@ def tool_benchmark_compare(ctx: ToolContext, args: dict) -> dict:
     if not isinstance(chart_id, int):
         return _err("chart_id (int) is required — the chart holding our own number")
     if not isinstance(metric, str) or not metric.strip():
-        return _err("metric (what we're benchmarking, e.g. 'tỷ suất lợi nhuận gộp') is required")
+        return _err("metric (what we're benchmarking, e.g. 'gross margin') is required")
     if not isinstance(query, str) or not query.strip():
         return _err("query (benchmark search terms, e.g. 'gross margin benchmark retail Vietnam 2025') is required")
     try:
@@ -716,13 +886,32 @@ TOOL_DEFINITIONS: list[dict] = [
     {
         "name": "list_charts",
         "description": (
-            "List all charts in the dashboard with their columns, row counts "
-            "and currently-applied filters. Returns no row data — call "
-            "get_chart_summary or get_chart_data to drill into a specific chart."
+            "List the dashboard's charts — name, type, and the measures and "
+            "dimensions each one shows — so you can pick the right chart_id. "
+            "Returns no row data; call a measuring tool with the chart_id you "
+            "chose. On a large report, pass `page` to list one page at a time: "
+            "the full listing of a 70-chart report is several thousand tokens."
         ),
         "input_schema": {
             "type": "object",
-            "properties": {},
+            "properties": {
+                "page": {
+                    "type": "string",
+                    "description": (
+                        "Only charts on this page, by page name or id. Omit for "
+                        "the whole report."
+                    ),
+                },
+                "detail": {
+                    "type": "string",
+                    "enum": ["compact", "full"],
+                    "description": (
+                        "compact (default) = name, type, measures, dimensions — "
+                        "enough to choose. full = every column and related-chart "
+                        "cross-reference; much larger."
+                    ),
+                },
+            },
         },
     },
     {
@@ -835,8 +1024,8 @@ TOOL_DEFINITIONS: list[dict] = [
             "P95, mean, std, skewness, Gini coefficient, top-10% / top-20% "
             "share of total, and the % of segments needed to reach 80% (Pareto "
             "threshold). Use when the question is about CONCENTRATION ("
-            "'tập trung vào nhóm nào', 'phân phối có đều không', 'có long tail "
-            "không')."
+            "'which groups is it concentrated in', 'is the distribution even', "
+            "'is there a long tail')."
         ),
         "input_schema": {
             "type": "object",
@@ -852,8 +1041,8 @@ TOOL_DEFINITIONS: list[dict] = [
             "Correlate two charts that share a common DIMENSION column (same "
             "name in both). Pass chart_a, chart_b, and 'on' = column name. "
             "Returns Pearson and Spearman coefficients on the values that "
-            "appear in BOTH. Use when the user asks 'liệu A có liên quan tới "
-            "B không' or for cross-chart hypothesis testing."
+            "appear in BOTH. Use when the user asks 'is A related to "
+            "B' or for cross-chart hypothesis testing."
         ),
         "input_schema": {
             "type": "object",
@@ -871,7 +1060,7 @@ TOOL_DEFINITIONS: list[dict] = [
             "Find outlier rows / points. method='zscore' (|z|≥threshold, default "
             "2), 'iqr' (Tukey fences), 'rolling' (rolling z over a time series, "
             "window=3), or 'changepoint' (find a meaningful shift in level over "
-            "time). Use when the user asks 'có gì bất thường', 'spike', "
+            "time). Use when the user asks 'is anything unusual', 'spike', "
             "'breakout'."
         ),
         "input_schema": {
@@ -890,8 +1079,8 @@ TOOL_DEFINITIONS: list[dict] = [
         "description": (
             "Filter the rows of one chart by a named column = value, then "
             "rank by the chart's primary measure. Use when the user asks "
-            "for a specific segment ('chỉ phòng IT', 'khách hàng VIP', "
-            "'task của user X'). Ops: eq, neq, contains, startswith, gt, "
+            "for a specific segment (one department, one customer tier, "
+            "one owner). Ops: eq, neq, contains, startswith, gt, "
             "lt, gte, lte. Returns matching rows + totals on the measure."
         ),
         "input_schema": {
@@ -914,8 +1103,8 @@ TOOL_DEFINITIONS: list[dict] = [
             "aggregations (count, count_truthy, count_distinct, sum, avg, "
             "min, max, ratio_truthy, ratio_truthy_pct). Use this whenever "
             "the user asks for a derived breakdown that the chart does NOT "
-            "already display directly — e.g. 'top phòng ban có tỷ lệ task "
-            "quá hạn cao nhất' on a Priority Task List that has one row per "
+            "already display directly — e.g. 'which department has the highest "
+            "overdue rate' on a task list with one row per "
             "task carrying both `department_name` and `is_overdue`. Pass "
             "`group_by` (1-3 columns), `aggregations` (each with `column` "
             "and `op`; column='*' allowed only with op='count'), optional "
@@ -989,8 +1178,8 @@ TOOL_DEFINITIONS: list[dict] = [
             "column (e.g. department, product) AND a SPLIT column with two "
             "states (two periods, or 'Actual' vs 'Plan'). Returns each "
             "segment's before/after/delta and its % share of the TOTAL change, "
-            "ranked by impact. Use for 'tại sao doanh thu giảm', 'nhóm nào kéo "
-            "tăng/giảm', 'thực tế vs kế hoạch chênh ở đâu'. One deterministic "
+            "ranked by impact. Use for 'why did revenue fall', 'which group "
+            "drove it', 'where does actual differ from plan'. One deterministic "
             "call instead of aggregate+compute by hand."
         ),
         "input_schema": {
@@ -1011,8 +1200,9 @@ TOOL_DEFINITIONS: list[dict] = [
             "Project a time-series chart's measure forward N periods. "
             "method='linear' (least-squares trend) or 'cagr' (compound growth). "
             "Returns the projected points + trend rate + an explicit caveat. "
-            "Use for 'dự báo', 'đà này tới cuối năm ~bao nhiêu', 'xu hướng tiếp "
-            "theo'. NOT a real forecast model — always present as an indicative "
+            "Use for 'forecast', 'where does this trend land by year end', "
+            "or 'what is the trend from here'. NOT a real forecast model — "
+            "always present it as an indicative "
             "projection. Requires a time axis."
         ),
         "input_schema": {
@@ -1049,8 +1239,8 @@ TOOL_DEFINITIONS: list[dict] = [
             "dimension and a target value (e.g. chart 'AOV by state' + value "
             "'SP'), returns that segment's metric PLUS rank, percentile, "
             "share-of-total, and the cross-segment distribution (min/median/"
-            "mean/max) + % vs the mean. Use for 'X so với toàn quốc / so với "
-            "các nhóm khác', or to split a metric by a condition. Prevents "
+            "mean/max) + % vs the mean. Use for 'X versus the whole / versus "
+            "the other groups', or to split a metric by a condition. Prevents "
             "reporting the overall number as if it were the segment's."
         ),
         "input_schema": {
@@ -1080,11 +1270,11 @@ TOOL_DEFINITIONS: list[dict] = [
         "description": (
             "Return business-glossary metadata for the dataset behind a "
             "chart: column descriptions, dataset description, common "
-            "user questions, and Vietnamese aliases captured by the "
-            "Knowledge System. Use when the user asks 'what does GP "
-            "Margin mean?' / 'which column is doanh thu?' / 'có chart "
-            "nào về khách VIP không' — translate alias → real column → "
-            "right chart. No row data exposed."
+            "user questions, and the local-language aliases captured by the "
+            "Knowledge System. Use when the user asks what a metric means, "
+            "which column a business term maps to, or which chart covers a "
+            "given entity — translate alias → real column → right chart. "
+            "No row data exposed."
         ),
         "input_schema": {
             "type": "object",
@@ -1147,15 +1337,16 @@ BENCHMARK_COMPARE_TOOL_DEF: dict = {
         "industry benchmark in a single structured call. Pass the chart that "
         "holds our number, what the metric is, and a benchmark search query. "
         "Returns our anchored value + external findings + a framing instruction "
-        "(above/below/in-line + cite sources). Use when the user wants 'so với "
-        "ngành / thị trường / đối thủ', 'mình đang đứng đâu so với bên ngoài'. "
+        "(above/below/in-line + cite sources). Use when the user wants to "
+        "compare against the industry, the market or competitors — "
+        "'where do we stand against the outside'. "
         "Our report data stays the source of truth; web figures are indicative."
     ),
     "input_schema": {
         "type": "object",
         "properties": {
             "chart_id": {"type": "integer", "description": "Chart holding our own number."},
-            "metric": {"type": "string", "description": "What we're benchmarking, e.g. 'tỷ suất lợi nhuận gộp'."},
+            "metric": {"type": "string", "description": "What we're benchmarking, e.g. 'gross margin'."},
             "query": {"type": "string", "description": "Benchmark search terms, e.g. 'gross margin benchmark retail Vietnam 2025'."},
         },
         "required": ["chart_id", "metric", "query"],

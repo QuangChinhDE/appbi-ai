@@ -124,6 +124,15 @@ class RunState:
     #: were not in the chart at all, with values that happened to exist elsewhere
     #: in the payload, and the number check passed it at 100%.
     evidence_labels: set[str] = field(default_factory=set)
+    #: Every tool call this run has made, in order, as `name` or `name(failed)`.
+    #:
+    #: `TraceStep.tool_calls` has been in the envelope since the first version and
+    #: was never written to, so a run's history recorded that a step spent four
+    #: tool calls without recording WHICH — and "which tools ran" is the only
+    #: question an operator reviewing an agent's reach actually has. The executor
+    #: slices this list per node, so every node type is covered by one append at
+    #: each call site rather than by each handler remembering to report.
+    tool_log: list[str] = field(default_factory=list)
 
     def add_evidence(self, payload: Any, *, depth: int = 0) -> None:
         """Harvest numbers from a tool result.

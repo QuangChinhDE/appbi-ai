@@ -358,6 +358,26 @@ class ReportReadNode(BaseNode):
     include_data: bool = True
     include_filters: bool = True
     max_rows: int = Field(default=200, ge=1, le=5000)
+    #: How much of each chart to carry forward.
+    #:
+    #: `index` carries only what a chart IS — id, name, type, what it measures and
+    #: how it is grouped, plus the value when the chart is a single figure. No rows
+    #: and no per-column statistics. It is the right level when the answering step
+    #: has computing tools (`rank_values`, `total_measure`, `share_of`): those
+    #: reach exact figures over every row on demand, so pasting a sample of the
+    #: data into the prompt buys nothing and is paid for on every model round. The
+    #: step reads the index, picks the chart, calls the tool.
+    #:
+    #: `compact` keeps what a question is normally answered from — the columns, the
+    #: row count, and each numeric column's total/min/max/avg — and drops the parts
+    #: that are long without being informative (a per-value frequency list of every
+    #: category, repeated in full inside every prompt that references this node).
+    #: On a three-chart read that is ~4,300 tokens down to a few hundred, paid once
+    #: per node that quotes it. Right when the step has NO tools and must answer
+    #: from what it was handed.
+    #:
+    #: `full` is the old behaviour, for a flow that really does need every row.
+    detail: Literal["index", "compact", "full"] = "compact"
     run_policy: RunPolicy = "when_stale"
 
 

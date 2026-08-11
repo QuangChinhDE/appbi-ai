@@ -159,7 +159,18 @@ async def run_flow(
         )
     if not answer.blocks:
         status = "failed" if status == "ok" else status
-        answer = text_answer("Chưa tạo được câu trả lời cho câu hỏi này.")
+        # Say WHICH way it failed. "Chưa tạo được câu trả lời" was true of a run
+        # that timed out, one that hit its call ceiling, and one whose model
+        # rejected the key — three different things for whoever is meant to fix
+        # it, and the run already knows which happened. A viewer reading a
+        # generic sentence retries the same question and gets the same sentence.
+        reason = next(
+            (n.text for n in state.notices if n.code == "budget_exhausted"), ""
+        )
+        answer = text_answer(
+            f"Chưa trả lời được: {reason}." if reason
+            else "Chưa tạo được câu trả lời cho câu hỏi này."
+        )
     if any(s.status == "error" for s in state.trace) and status == "ok":
         status = "partial"
 
@@ -276,6 +287,8 @@ async def _run_node(
         type="node_started", extra={"step": node.key, "name": label, "type": node.type}
     )
     began = time.monotonic()
+    tokens_before = (state.prompt_tokens, state.completion_tokens)
+    tools_before = len(state.tool_log)
     attempts = node.retry.max_attempts if node.retry else 1
     last_error = ""
 
@@ -320,7 +333,29 @@ async def _run_node(
                 extra={"step": node.key, "name": label, "status": "skipped"},
             )
             raise
-        except BudgetExhausted:
+        except BudgetExhausted as exc:
+            # Same reasoning as BranchStopped above, and the same failure when it
+            # was missing: raising straight through left the trace EMPTY, so a run
+            # that spent its whole budget on one node reported "no answer" with
+            # nothing to say where the budget went. The node that consumed it is
+            # the single most useful fact about such a run, and it was the one
+            # fact being discarded.
+            state.record(
+                TraceStep(
+                    key=node.key, type=node.type, name=label, status="error",
+                    ms=int((time.monotonic() - began) * 1000),
+                    error=str(exc),
+                    output_preview=(
+                        f"đã dùng {state.budget.tool_calls}/{state.budget.max_tool_calls} "
+                        f"lượt công cụ và {state.budget.llm_calls}/"
+                        f"{state.budget.max_llm_calls} lượt mô hình khi tới bước này"
+                    ),
+                )
+            )
+            yield AgentEvent(
+                type="node_completed",
+                extra={"step": node.key, "name": label, "status": "error"},
+            )
             raise
         except Exception as exc:  # noqa: BLE001
             last_error = str(exc)[:300]
@@ -338,6 +373,7 @@ async def _run_node(
             TraceStep(
                 key=node.key, type=node.type, name=label,
                 status="error", ms=ms, error=last_error,
+                tool_calls=state.tool_log[tools_before:],
             )
         )
         yield AgentEvent(
@@ -353,7 +389,10 @@ async def _run_node(
     state.record(
         TraceStep(
             key=node.key, type=node.type, name=label, status="ok", ms=ms,
+            tool_calls=state.tool_log[tools_before:],
             output_preview=_preview(state.outputs.get(node.key)),
+            prompt_tokens=state.prompt_tokens - tokens_before[0],
+            completion_tokens=state.completion_tokens - tokens_before[1],
         )
     )
     yield AgentEvent(

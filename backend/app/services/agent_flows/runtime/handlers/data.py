@@ -37,6 +37,10 @@ def _call(rctx: Any, state: RunState, tool: str, args: dict) -> Any:
     """
     state.budget.spend_tool()
     result = tool_registry.execute(rctx.ctx, tool, args, allowed=None)
+    state.tool_log.append(
+        tool if result.get("ok")
+        else f"{tool}({result.get('error_code') or 'failed'})"
+    )
     # Everything the run READ, so the answer's figures can be checked against it.
     state.add_evidence(result)
     return result
@@ -74,14 +78,43 @@ async def run_report_read(
         if meta:
             entry["title"] = meta.title
             entry["chart_type"] = meta.chart_type
+        if node.detail == "index":
+            # An INDEX, not a reading. What the chart is and what it holds, so a
+            # step with computing tools can pick the right one and call for an
+            # exact figure — instead of being handed a sample of every chart and
+            # asked to reason over it in a prompt that is re-sent every round.
+            _index(entry, meta, rctx, state, node)
+            out["charts"].append(entry)
+            if not any(c.ref == str(chart_id) for c in state.citations):
+                state.citations.append(
+                    Citation(kind="chart", ref=str(chart_id), label=entry.get("title", ""))
+                )
+            continue
         if node.include_summary:
             entry["summary"] = _call(rctx, state, "get_chart_summary", {"chart_id": chart_id})
         if node.include_data and rctx.inp.binding.capabilities.read_rows:
-            entry["data"] = _call(
-                rctx, state, "get_chart_data",
-                {"chart_id": chart_id, "top_n": min(node.max_rows, rctx.inp.binding.capabilities.max_rows_per_call)},
-            )
+            # ASK FOR THE TOP ROWS, NOT THE FIRST ROWS.
+            #
+            # `get_chart_data` caps at 50 rows, so WHICH 50 decides whether a
+            # ranking question can be answered at all. Unsorted, a 72-category
+            # chart returned the first 50 alphabetically and the assistant
+            # answered "highest revenue: agro_industry_and_commerce" — the first
+            # row, not the largest, and wrong by a factor of seventeen. Sorted by
+            # the chart's own measure, the slice you get is the ranking a viewer
+            # sees on screen.
+            args: dict[str, Any] = {
+                "chart_id": chart_id,
+                "top_n": min(node.max_rows, rctx.inp.binding.capabilities.max_rows_per_call),
+            }
+            measure = meta.measures[0].field if (meta and meta.measures) else ""
+            if measure:
+                args["sort"] = "desc"
+                args["sort_by"] = measure
+            entry["data"] = _call(rctx, state, "get_chart_data", args)
+            entry["rows_ordered_by"] = measure or "(thứ tự của biểu đồ)"
             _flag_partial(entry, state, node)
+        if node.detail == "compact":
+            _compact(entry)
         out["charts"].append(entry)
         if not any(c.ref == str(chart_id) for c in state.citations):
             state.citations.append(
@@ -123,12 +156,103 @@ async def run_report_read(
 
 
 def _entry_has_data(entry: dict) -> bool:
-    """Did this chart yield anything usable?"""
+    """Did this chart yield anything usable?
+
+    "Usable" depends on what was ASKED for. An index entry describes a chart
+    without reading it, so it has no `summary` and no `data` and is nonetheless
+    complete — the guard below only knew the reading shape, so switching a node to
+    `index` made every chart look unreadable and the node raised "could not read
+    any chart" on a run where nothing had gone wrong. A completeness check that
+    does not know what completeness means for the mode it is checking will fail
+    the healthy case, which is worse than not checking.
+    """
+    if entry.get("indexed"):
+        return True
     for key in ("summary", "data"):
         payload = entry.get(key)
         if isinstance(payload, dict) and payload.get("ok"):
             return True
     return False
+
+
+def _index(
+    entry: dict, meta: Any, rctx: Any, state: RunState, node: ReportReadNode
+) -> None:
+    """Describe one chart without reading its rows.
+
+    The measures and dimensions come from the chart's own configuration, which the
+    run already has — so the whole index costs no warehouse query at all, except
+    for single-figure charts where the figure IS the chart and omitting it would
+    force a tool call to learn something one number long.
+
+    Why this exists: with `compact`, a twelve-chart read produced ~5,000 tokens of
+    column statistics and sample values, pasted into every prompt that referenced
+    the node — twice for a step that calls a tool, since the question is re-asked
+    with the tool result. And a step holding `rank_values` does not need any of it:
+    it needs to know that chart 686 is revenue by category, then ask for the exact
+    ranking. Handing it a sample of the data is paying, per round, for a worse
+    version of what the tool returns for free.
+    """
+    # Marks this entry as complete-by-design for `_entry_has_data`: an index has
+    # no rows and no summary, and that is the whole point of it.
+    entry["indexed"] = True
+    fields = getattr(meta, "measures", None) or []
+    entry["measures"] = [
+        {"field": m.field, "label": m.label} for m in fields
+    ] if fields else []
+    dims = getattr(meta, "dimensions", None) or []
+    entry["dimensions"] = [
+        {"field": d.field, "label": d.label} for d in dims
+    ] if dims else []
+
+    # A KPI tile holds exactly one number and no grouping. Reading it here costs
+    # one cheap query and saves the answering step a tool round for questions the
+    # dashboard already answers on its face ("how many orders?").
+    if str(entry.get("chart_type", "")).upper() in {"KPI", "NUMBER", "SINGLE_VALUE"}:
+        got = _call(rctx, state, "get_chart_data", {"chart_id": entry["chart_id"], "top_n": 1})
+        rows = ((got or {}).get("data") or {}).get("rows") or []
+        cols = ((got or {}).get("data") or {}).get("columns") or []
+        if rows and rows[0]:
+            entry["value"] = rows[0][-1]
+            entry["value_of"] = cols[-1] if cols else ""
+    entry["how_to_read"] = (
+        "Dùng rank_values / total_measure / share_of với chart_id này để lấy số chính xác."
+    )
+
+
+def _compact(entry: dict) -> None:
+    """Keep what a question is answered from; drop what is merely long.
+
+    MEASURED, NOT GUESSED. A three-chart read carried ~4,300 tokens, and most of it
+    was each column's per-value frequency list — every category name and its count,
+    for a question like "which category earns most". That payload is then pasted
+    into EVERY prompt that references the node, so a four-iteration loop paid for it
+    four times over.
+
+    What survives is the shape of the chart and each numeric column's totals, which
+    is what an answer actually cites; the rows themselves stay, because they are the
+    evidence the figure check verifies against.
+    """
+    summary = (entry.get("summary") or {}).get("data") if isinstance(entry.get("summary"), dict) else None
+    if not isinstance(summary, dict):
+        return
+    columns = []
+    for col in summary.get("columns") or []:
+        if not isinstance(col, dict):
+            continue
+        kept = {k: col.get(k) for k in ("name", "kind", "total", "min", "max", "avg", "distinct")
+                if col.get(k) is not None}
+        # A handful of examples is orientation; seventy is a data dump.
+        top = col.get("top_values") or []
+        if isinstance(top, list) and top:
+            kept["examples"] = [v[0] if isinstance(v, (list, tuple)) else v for v in top[:5]]
+        columns.append(kept)
+    entry["summary"] = {
+        "chart_name": summary.get("chart_name"),
+        "chart_type": summary.get("chart_type"),
+        "total_rows": summary.get("total_rows"),
+        "columns": columns,
+    }
 
 
 def _flag_partial(entry: dict, state: RunState, node: ReportReadNode) -> None:
@@ -154,9 +278,10 @@ def _flag_partial(entry: dict, state: RunState, node: ReportReadNode) -> None:
         "rows_total": total,
         "complete": False,
         "note": (
-            f"CHỈ ĐỌC ĐƯỢC {got}/{total} DÒNG của biểu đồ này, theo thứ tự biểu đồ trả "
-            "về — KHÔNG phải xếp hạng đầy đủ. Không được suy ra thứ hạng, tổng, hay "
-            "tên hạng mục nằm ngoài số dòng này."
+            f"CHỈ ĐỌC ĐƯỢC {got}/{total} DÒNG — đây là {got} dòng ĐỨNG ĐẦU theo "
+            f"{entry.get('rows_ordered_by') or 'thứ tự của biểu đồ'}. Xếp hạng trong "
+            "phạm vi này là đúng; không được suy ra tổng, hay tên hạng mục nằm ngoài "
+            "số dòng này."
         ),
     }
     state.notices.append(

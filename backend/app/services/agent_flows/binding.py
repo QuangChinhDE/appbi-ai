@@ -281,7 +281,7 @@ def preflight(
     # five-call flow on one of them is a minute and a half, and a viewer — or the
     # chat client's own patience — gives up long before that. Measured, not
     # theoretical: this flow ran in 16s on a fast model and 91s on gpt-5.
-    estimate = estimate_cost(flow)
+    estimate = estimate_cost(flow, chart_count=len(contract.charts.ids))
     link_model = str((cfg or {}).get("ai_bot_model") or "").strip().lower()
     seconds_each = next(
         (s for prefix, s in SECONDS_PER_CALL.items() if link_model.startswith(prefix)), 4
@@ -298,7 +298,53 @@ def preflight(
             ),
         })
 
-    # 7 — authoring warnings travel with the assignment, so whoever assigns sees
+    # 7 — DOES THE BUDGET FIT THE FLOW AT ALL?
+    #
+    # Two ways it can be too small, and they read very differently to whoever has
+    # to fix them:
+    #
+    #   * the whole flow needs more than the link permits — the obvious case;
+    #   * the FIXED reads alone eat the ceiling, so the answering step is refused
+    #     even though the flow as designed is affordable. This one is the trap. A
+    #     twelve-chart binding with a twelve-call ceiling spends everything inside
+    #     the reading node, and the viewer gets "chưa tạo được câu trả lời" for a
+    #     question the flow would have answered — with nothing on screen
+    #     connecting that to a number typed on the binding form.
+    fixed_tools = _fixed_read_cost(flow, per_read=(len(contract.charts.ids) + 2)
+                                   if contract.charts.ids else 3)
+    if estimate["max_tool_calls"] > contract.budget.max_tool_calls:
+        warnings.append({
+            "code": "budget_tight",
+            "key": "budget",
+            "message": (
+                f"Flow có thể cần tới {estimate['max_tool_calls']} lượt công cụ "
+                f"nhưng link chỉ cho {contract.budget.max_tool_calls}. "
+                "Câu hỏi phức tạp sẽ bị cắt giữa chừng."
+            ),
+        })
+    if fixed_tools >= contract.budget.max_tool_calls:
+        warnings.append({
+            "code": "budget_starves_answer",
+            "key": "budget",
+            "message": (
+                f"Riêng các bước đọc báo cáo đã tốn ~{fixed_tools} lượt công cụ, "
+                f"bằng hoặc hơn hạn mức {contract.budget.max_tool_calls} của link — "
+                "bước trả lời sẽ không còn lượt nào và người xem sẽ không nhận được "
+                f"câu trả lời. Hãy nâng hạn mức lên ít nhất "
+                f"{fixed_tools + 4}, hoặc giảm số biểu đồ được cấp."
+            ),
+        })
+    if estimate["max_llm_calls"] > contract.budget.max_llm_calls:
+        warnings.append({
+            "code": "budget_tight",
+            "key": "budget",
+            "message": (
+                f"Flow có thể cần {estimate['max_llm_calls']} lượt gọi model "
+                f"nhưng link chỉ cho {contract.budget.max_llm_calls}."
+            ),
+        })
+
+    # 8 — authoring warnings travel with the assignment, so whoever assigns sees
     #     what the flow gives up rather than only what it needs.
     for w in flow.warnings():
         warnings.append({"code": "flow_warning", "key": "", "message": w})
@@ -315,13 +361,42 @@ def preflight(
     }
 
 
-def estimate_cost(flow: Flow) -> dict[str, int]:
+def _fixed_read_cost(flow: Flow, *, per_read: int) -> int:
+    """What the flow spends before any question-specific work.
+
+    Only the reading nodes at the TOP level: those run on (almost) every turn
+    regardless of what was asked, so their cost is the floor an answering step
+    has to fit above. Nodes inside a branch are excluded — they are conditional
+    by construction, and counting them would make every branching flow look
+    starved.
+    """
+    return sum(
+        per_read for n in flow.nodes
+        if getattr(n, "type", "") in {"report_read", "knowledge"}
+    )
+
+
+def estimate_cost(flow: Flow, *, chart_count: int = 0) -> dict[str, int]:
     """Worst case for ONE question, walking the tree.
 
     A loop multiplies its body; a branch takes the most expensive path, because that
     is the one that can happen. Shown at assign time — on a public link the person
     approving this is committing to it for an unbounded audience.
+
+    `chart_count` is how many charts the BINDING allows, because that is what
+    decides a `report_read`'s cost: it reads the report chart by chart, so a
+    binding of twelve charts is twelve calls, not the flat three this used to
+    assume. That undercount had teeth — a flow bound to twelve charts was
+    estimated at 3 tool calls, given a ceiling of 12, and spent all twelve inside
+    the reading node; the answering step then had nothing left and the viewer got
+    "chưa tạo được câu trả lời" for a question the flow could answer perfectly.
+    Zero keeps the old flat assumption, for callers validating a flow that is not
+    bound to anything yet.
     """
+    #: A read costs one call per chart, plus a couple for filters and the chart
+    #: list. Falls back to the historical flat figure when nothing says how many
+    #: charts are in play — wrong, but wrong in the direction it always was.
+    per_read = (chart_count + 2) if chart_count else 3
 
     def cost(nodes: list[Any]) -> tuple[int, int]:
         llm = tools = 0
@@ -337,7 +412,9 @@ def estimate_cost(flow: Flow) -> dict[str, int]:
                 rounds = 1 + (n.max_tool_calls if n.tools else 0)
                 llm += rounds
                 tools += n.max_tool_calls if n.tools else 0
-            elif n.type in {"report_read", "knowledge", "web"}:
+            elif n.type == "report_read":
+                tools += per_read
+            elif n.type in {"knowledge", "web"}:
                 tools += 3
             if isinstance(n, LoopNode):
                 bl, bt = cost(list(n.body))

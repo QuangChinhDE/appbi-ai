@@ -50,6 +50,9 @@ interface ReadonlyChartTileProps {
    *  chosen grain (BE re-query). */
   viewerGrain?: string;
   onViewerDrill?: (grain: TimeGranularity | undefined) => void;
+  /** Per-tile lock: hide the group-by grain switcher for this public/embed
+   *  viewer (the chart stays on its configured default grain). */
+  lockDateGrain?: boolean;
 }
 
 export function ReadonlyChartTile({
@@ -70,6 +73,7 @@ export function ReadonlyChartTile({
   publicDatasetModels = null,
   viewerGrain,
   onViewerDrill,
+  lockDateGrain = false,
 }: ReadonlyChartTileProps) {
   const { t } = useI18n();
   // Track first viewport entry. Sticky once seen so scrolling away doesn't
@@ -567,6 +571,7 @@ export function ReadonlyChartTile({
               kpiLabelInHeader={isKpiCard}
               viewerGrain={viewerGrain}
               onViewerDrill={onViewerDrill}
+              lockDateGrain={lockDateGrain}
               highlightData={effectiveHighlightData}
               onSelectDataPoint={onSelectCrossFilter && chartSemanticBinding?.datasetId != null
                 ? handleCrossFilterSelection

@@ -48,19 +48,46 @@ export type NodeType =
   | 'set_var' | 'transform' | 'stop' | 'delay';
 
 // ── Tools & models ──────────────────────────────────────────────────────────
+
+/** What shape a tool's result has. Mirrors `ResultKind` in
+ *  `agent_flows/tools/result.py`; an author reads it to know whether the next
+ *  node can use the result directly or needs a model to interpret it. */
+export type ResultKind =
+  | 'value' | 'ranking' | 'table' | 'series' | 'comparison'
+  | 'diagnosis' | 'projection' | 'documents' | 'narrative' | 'catalogue';
+
 export interface ToolSpec {
   name: string;
   label_vi: string;
   label_en: string;
   description_vi: string;
+  /** What the call costs the WAREHOUSE. */
   cost_class: 'cheap' | 'data_query' | 'expensive' | 'external';
+  /** How big the RESULT is — the other cost axis, and the one that used to be
+   *  invisible. `list_charts` queries nothing (so: cheap) and returned ~15,600
+   *  tokens on a 70-chart report, which is what an agent actually spends. */
+  payload?: 'small' | 'medium' | 'large' | 'scales_with_report';
   reaches_outside: boolean;
+  /** The output half of the contract — what comes back, and how it may be used.
+   *  Optional so a frontend deployed ahead of the backend degrades to the old
+   *  picker rather than rendering `undefined`. */
+  result_kind?: ResultKind;
+  /** `{field: what it holds}`, for wiring a result into the next node. */
+  returns?: Record<string, string>;
+  deterministic?: boolean;
+  cacheable?: boolean;
+  /** Answers a question on its own — no model needed to read the result. These
+   *  are the cheap ones, and the reason the catalogue can keep growing. */
+  self_sufficient?: boolean;
+  answers_vi?: string[];
 }
 
 export interface ToolPack {
   key: string;
   label_vi: string;
   label_en: string;
+  /** One line on when to reach into this pack. */
+  purpose_vi?: string;
   available: boolean;
   requires_setting: string | null;
   gated_by_link: boolean;

@@ -27,7 +27,7 @@ import {
   type Condition, type ConditionOp, type FlowNode, type FlowPath,
   type NodeSpec, type ProviderGroup, type SwitchCase, type ToolPack,
 } from '@/lib/agentFlows';
-import { SectionTitle, HintText } from './shared';
+import { SectionTitle, HintText, CostChip } from './shared';
 
 const OPS: { value: ConditionOp; label: string }[] = [
   { value: 'contains', label: 'chứa' },
@@ -644,42 +644,145 @@ function NodeForm(props: InspectorProps & { node: FlowNode }) {
   );
 }
 
+/** How large a result is, in the words an author sizing a flow needs. `small` is
+ *  intentionally absent: it is the default and labelling it would put a chip on
+ *  almost every row to say "nothing to worry about here". */
+const PAYLOAD_LABEL: Record<string, string> = {
+  medium: 'kết quả vừa',
+  large: 'kết quả lớn',
+  scales_with_report: 'to theo báo cáo',
+};
+
+const PAYLOAD_HINT: Record<string, string> = {
+  medium: 'Kết quả cỡ vừa — vài trăm đến hơn nghìn token mỗi lần gọi.',
+  large: 'Kết quả lớn. Gọi nhiều lần trong một lượt sẽ đội chi phí nhanh.',
+  scales_with_report:
+    'Kích thước phụ thuộc BÁO CÁO, không phải công cụ: rẻ trên báo cáo demo, '
+    + 'rất đắt trên báo cáo thật. Ví dụ đo được: danh sách 70 biểu đồ ≈ 15.600 token. '
+    + 'Hãy thu hẹp phạm vi (theo trang, theo biểu đồ) trước khi cấp.',
+};
+
+/** The tool picker.
+ *
+ *  Grouped by pack, because a pack is now a KIND of question rather than a file
+ *  the bodies happened to share: understand the report, get a figure, compare,
+ *  diagnose, project, look something up, leave the app. An author scanning for a
+ *  comparison tool reads three, not eleven.
+ *
+ *  Three things are surfaced per tool that were not before, each because an
+ *  author cannot make a good grant without it:
+ *
+ *  `CostChip`      — the picker was the one place a cost class was never shown,
+ *                    so a step could be granted five `expensive` tools without
+ *                    anything on screen saying so.
+ *  "không cần AI"  — the tool answers on its own. Wiring one of these to a node
+ *                    costs no tokens at all, and that is invisible from a name.
+ *  `answers_vi`    — a real question it settles. Two tools whose names both sound
+ *                    right are told apart by their examples far faster than by
+ *                    their descriptions.
+ *
+ *  `returns` goes in the title attribute rather than on screen: it matters when
+ *  wiring a result into the next node, which is a different moment from choosing
+ *  what to grant, and putting it inline turned a scannable list into a datasheet.
+ */
 function ToolPicker({
   packs, granted, onToggle,
 }: { packs: ToolPack[]; granted: string[]; onToggle: (name: string, on: boolean) => void }) {
   return (
     <div className="space-y-2">
-      {packs.map((pack) => (
-        <div key={pack.key} className="rounded-lg border border-[rgb(var(--border-line))]">
-          <div className="flex items-center gap-1.5 border-b border-[rgb(var(--border-line))] bg-surface-2/40 px-2 py-1.5">
-            <b className="text-tiny font-strong">{pack.label_vi}</b>
-            {pack.gated_by_link && (
-              <span title={pack.gate_note_vi}
-                className="rounded border border-warning/25 bg-warning/5 px-1 text-tiny text-warning">
-                theo link
-              </span>
-            )}
-          </div>
-          <div className="p-1.5">
-            {pack.tools.map((t) => {
-              const on = granted.includes(t.name);
-              return (
-                <label key={t.name}
-                  className="flex cursor-pointer items-start gap-2 rounded-md px-1.5 py-1 hover:bg-surface-2">
-                  <input type="checkbox" checked={on} className="mt-0.5"
-                    onChange={(e) => onToggle(t.name, e.target.checked)} />
-                  <span className="min-w-0">
-                    <b className="block text-tiny font-medium">{t.label_vi}</b>
-                    <span className="block text-tiny leading-snug text-text-tertiary">
-                      {t.description_vi}
-                    </span>
+      {packs.map((pack) => {
+        const names = pack.tools.map((t) => t.name);
+        const onCount = names.filter((n) => granted.includes(n)).length;
+        const allOn = onCount === names.length && names.length > 0;
+        return (
+          <div key={pack.key} className="rounded-lg border border-[rgb(var(--border-line))]">
+            <div className="border-b border-[rgb(var(--border-line))] bg-surface-2/40 px-2 py-1.5">
+              <div className="flex items-center gap-1.5">
+                <b className="text-tiny font-strong">{pack.label_vi}</b>
+                {onCount > 0 && (
+                  <span className="rounded bg-accent/10 px-1 text-tiny text-accent">
+                    {onCount}/{names.length}
                   </span>
-                </label>
-              );
-            })}
+                )}
+                {pack.gated_by_link && (
+                  <span title={pack.gate_note_vi}
+                    className="rounded border border-warning/25 bg-warning/5 px-1 text-tiny text-warning">
+                    theo link
+                  </span>
+                )}
+                <button type="button"
+                  className="ml-auto text-tiny text-text-tertiary underline-offset-2 hover:underline"
+                  onClick={() => names.forEach((n) => onToggle(n, !allOn))}>
+                  {allOn ? 'bỏ hết' : 'chọn hết'}
+                </button>
+              </div>
+              {pack.purpose_vi && (
+                <p className="mt-0.5 text-tiny leading-snug text-text-tertiary">{pack.purpose_vi}</p>
+              )}
+            </div>
+            <div className="p-1.5">
+              {pack.tools.map((t) => {
+                const on = granted.includes(t.name);
+                const example = t.answers_vi?.[0];
+                const returns = t.returns
+                  ? Object.entries(t.returns).map(([k, v]) => `${k}: ${v}`).join('\n')
+                  : '';
+                return (
+                  <label key={t.name}
+                    title={returns ? `Trả về —\n${returns}` : undefined}
+                    className="flex cursor-pointer items-start gap-2 rounded-md px-1.5 py-1 hover:bg-surface-2">
+                    <input type="checkbox" checked={on} className="mt-0.5"
+                      onChange={(e) => onToggle(t.name, e.target.checked)} />
+                    <span className="min-w-0 flex-1">
+                      <span className="flex flex-wrap items-center gap-1">
+                        <b className="text-tiny font-medium">{t.label_vi}</b>
+                        <CostChip cost={t.cost_class} />
+                        {/* The payload axis, shown only when it is worth acting
+                            on. A `small` result is the norm and a chip on every
+                            row would be noise; a result that grows with the
+                            report is the one an author has to size a flow
+                            around, and it had no representation at all. */}
+                        {t.payload && t.payload !== 'small' && (
+                          <span
+                            title={PAYLOAD_HINT[t.payload]}
+                            className={cn(
+                              'rounded border px-1 text-tiny',
+                              t.payload === 'scales_with_report'
+                                ? 'border-warning/25 bg-warning/5 text-warning'
+                                : 'border-[rgb(var(--border-line))] text-text-tertiary',
+                            )}>
+                            {PAYLOAD_LABEL[t.payload]}
+                          </span>
+                        )}
+                        {t.self_sufficient && (
+                          <span
+                            title={
+                              'Kết quả là số đã tính xong — không cần model diễn giải mới hiểu.\n\n'
+                              + 'Lưu ý: trong một bước AI, model VẪN chọn công cụ và VẪN viết câu '
+                              + 'trả lời. Chỉ khi flow gọi công cụ này với tham số cố định thì mới '
+                              + 'thực sự không tốn lượt model nào.'
+                            }
+                            className="rounded border border-success/25 bg-success/5 px-1 text-tiny text-success">
+                            trả số dùng ngay
+                          </span>
+                        )}
+                      </span>
+                      <span className="block text-tiny leading-snug text-text-tertiary">
+                        {t.description_vi}
+                      </span>
+                      {example && (
+                        <span className="block text-tiny leading-snug text-text-tertiary/70">
+                          vd: “{example}”
+                        </span>
+                      )}
+                    </span>
+                  </label>
+                );
+              })}
+            </div>
           </div>
-        </div>
-      ))}
+        );
+      })}
     </div>
   );
 }

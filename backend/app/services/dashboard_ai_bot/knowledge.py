@@ -671,14 +671,16 @@ REMEMBER_FACT_TOOL_DEF: dict = {
 RECALL_KNOWLEDGE_TOOL_DEF: dict = {
     "name": "recall_knowledge",
     "description": (
-        "Tra cứu kho kiến thức đã tích luỹ về công ty này (khái niệm, sự thật, đính "
-        "chính, nhận định đã xác nhận). Dùng khi cần xem lại điều đã học ngoài phần đã "
-        "tóm tắt sẵn ở đầu prompt, ví dụ để kiểm tra một concept trước khi trả lời."
+        "Look up what has already been learned and approved about this company: "
+        "concepts, facts, corrections, confirmed judgements. Use it to check a "
+        "concept before answering, beyond what is already summarised at the top "
+        "of the prompt."
     ),
     "input_schema": {
         "type": "object",
         "properties": {
-            "query": {"type": "string", "description": "Từ khoá/câu hỏi để lọc (để trống = lấy tất cả)."},
+            "query": {"type": "string",
+                      "description": "Keyword or question to filter by. Omit for all."},
         },
     },
 }

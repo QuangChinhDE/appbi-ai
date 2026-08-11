@@ -362,6 +362,11 @@ async def run_for_link(
     # the intersection that turns it from "everything on the dashboard" into "what
     # this link declared".
     ctx.allowed_chart_ids = set(ctx.allowed_chart_ids or set()) & set(binding_info.allowed_chart_ids)
+    # The row ceiling is part of the same declaration and was previously
+    # unenforced: the binding said 500, the reading tool clamped to 50, and the
+    # gap was invisible from both ends. Carried on the context because a tool
+    # body cannot see the binding and should not learn to.
+    ctx.max_rows_per_call = binding_info.capabilities.max_rows_per_call
     from app.services.agent_flows.permissions import run_scope
 
     ctx.knowledge_scope = run_scope(

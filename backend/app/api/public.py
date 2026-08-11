@@ -3969,6 +3969,13 @@ async def chat_dashboard_ai_agent(
             filters_applied=combined_filters or [],
             max_tool_calls=8,
             report_context_note=report_note,
+            # A FLOW DOES NOT NEED THE TOOL NARRATION.
+            #
+            # Schemas reach the model through the API's `tools` field, and a flow
+            # grants tools per NODE — so the prose list was both a duplicate and
+            # wrong for every node that holds fewer tools than the product has.
+            # Half the base prompt, ~1,160 tokens, on every model call in the run.
+            include_tools=False,
         )
 
         if _link_row is None:
@@ -3990,7 +3997,15 @@ async def chat_dashboard_ai_agent(
                 ctx=ctx,
                 question=_guard.normalized_question or _last_user_msg,
                 history=safe_messages[:-1] if safe_messages else [],
-                session_key=(x_public_session or ""),
+                # THE CONVERSATION's key, not the LINK's.
+                #
+                # `X-Public-Session` identifies a public-link access session
+                # (password/expiry). The chat's own identity arrives in the BODY as
+                # `session_key`, and keying memory off the header meant every real
+                # browser turn looked like a brand-new conversation: the report was
+                # re-read every question and `when_stale` never once fired. It
+                # passed in testing only because a script sets the header by hand.
+                session_key=(body.session_key or x_public_session or ""),
                 filters=combined_filters or [],
                 # Fallback only. A node carrying its own token ignores this.
                 api_key=captured_key,

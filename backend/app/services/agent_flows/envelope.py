@@ -409,6 +409,11 @@ class TraceStep(_Model):
     tool_calls: list[str] = Field(default_factory=list)
     output_preview: str = ""
     error: str = ""
+    #: What this node cost. Recorded per node because a turn's total says a flow is
+    #: expensive without saying WHICH step made it so — and the answer is usually
+    #: one node pasting a large context it did not need.
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
 
 
 class Trace(_Model):
