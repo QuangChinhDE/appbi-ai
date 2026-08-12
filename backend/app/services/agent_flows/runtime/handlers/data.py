@@ -278,10 +278,10 @@ def _flag_partial(entry: dict, state: RunState, node: ReportReadNode) -> None:
         "rows_total": total,
         "complete": False,
         "note": (
-            f"CHỈ ĐỌC ĐƯỢC {got}/{total} DÒNG — đây là {got} dòng ĐỨNG ĐẦU theo "
-            f"{entry.get('rows_ordered_by') or 'thứ tự của biểu đồ'}. Xếp hạng trong "
-            "phạm vi này là đúng; không được suy ra tổng, hay tên hạng mục nằm ngoài "
-            "số dòng này."
+            f"ONLY {got}/{total} ROWS WERE READ — these are the TOP {got} by "
+            f"{entry.get('rows_ordered_by') or 'the chart’s own order'}. A ranking "
+            "within them is correct; do NOT infer a total, and do not name a "
+            "category that is not among these rows."
         ),
     }
     state.notices.append(

@@ -240,7 +240,9 @@ def tool_compare_periods(ctx: ToolContext, args: dict) -> dict:
                 "Pick period_a/period_b from this exact list, or if none are "
                 "time periods this chart has no time axis — stop and tell the user."
             )
-        return _ok(_compare_pair(a_val, b_val, period_a, period_b, columns[measure_idx]))
+        return _ok(_attach_delta_unit(
+            ctx, chart_id, columns[measure_idx],
+            _compare_pair(a_val, b_val, period_a, period_b, columns[measure_idx])))
 
     # AUTO / MoM / QoQ / YoY all reduce to "compare last with N steps back".
     if mode in ("auto", "mom"):
@@ -270,7 +272,7 @@ def tool_compare_periods(ctx: ToolContext, args: dict) -> dict:
     recent_avg = statistics.fmean(y for _, y in points[-recent_n:])
     base_payload["recent_avg_last_3"] = _round(recent_avg)
     base_payload["points_used"] = len(points)
-    return _ok(base_payload)
+    return _ok(_attach_delta_unit(ctx, chart_id, columns[measure_idx], base_payload))
 
 
 def _compare_pair(a_val: float, b_val: float, a_label: str, b_label: str, measure: str) -> dict:
@@ -292,6 +294,26 @@ def _compare_pair(a_val: float, b_val: float, a_label: str, b_label: str, measur
         "pct_change": _round(pct),
         "verdict": verdict,
     }
+
+
+def _attach_delta_unit(ctx, chart_id: int, measure: str, payload: dict) -> dict:
+    """Say what a difference between two of these values is measured in.
+
+    A rate compared against a rate produces two correct numbers with different
+    units — `delta` in percentage points, `pct_change` in percent — and a result
+    that names neither invites "up 4%", which is neither of them. Measured live:
+    `pct_five_star` 55.56 vs 47.58 returned delta 7.971 and pct_change 16.75.
+    """
+    from app.services.agent_flows.tools.packs import measure_meta
+
+    info = measure_meta.describe_measure(ctx, chart_id, measure)
+    note = measure_meta.delta_note(info)
+    if note:
+        payload["delta_unit"] = "percentage points"
+        payload["delta_note"] = note
+    if info.get("unit"):
+        payload["unit"] = info["unit"]
+    return payload
 
 
 # ── Tool: describe_distribution ─────────────────────────────────────────────
@@ -383,6 +405,35 @@ def tool_describe_distribution(ctx: ToolContext, args: dict) -> dict:
     elif gini < 0.2:
         verdict = "very_balanced"
 
+    # WHAT THIS VERDICT STANDS ON.
+    #
+    # Gini, the top-decile share and the Pareto threshold all divide a part by a
+    # TOTAL, so every one of them assumes the measure adds up. Measured live:
+    # `pct_kh`, an average, returned gini 0.2103 and top10_share 26.05% with
+    # nothing marking them meaningless — the fourth variant of the same failure
+    # this review keeps finding.
+    #
+    # And a Gini over four groups computes cleanly and says nothing. The verdict
+    # was being stated at n=4 with no caveat at all.
+    from app.services.agent_flows.tools.packs import measure_meta
+
+    caveats: list[str] = []
+    info = measure_meta.describe_measure(ctx, chart_id, columns[measure_idx])
+    if not info["additive"]:
+        caveats.append(
+            f"'{columns[measure_idx]}' is "
+            f"{info['agg'] or info['format_kind'] or 'non-additive'}: gini, "
+            "top10_share_pct, top20_share_pct and the Pareto threshold are all "
+            "shares OF A TOTAL, and a rate has no total. Read the quantiles and "
+            "the spread; ignore the concentration figures."
+        )
+    if n < 8:
+        caveats.append(
+            f"Only {n} groups. Concentration statistics over so few are noise — "
+            f"report '{verdict}' as an observation about {n} values, not as a "
+            "property of the business."
+        )
+
     return _ok({
         "chart_id": chart_id,
         "measure": columns[measure_idx],
@@ -400,6 +451,7 @@ def tool_describe_distribution(ctx: ToolContext, args: dict) -> dict:
         "top20_share_pct": _round(top20_share),
         "pareto_segments_for_80pct": pareto_threshold_pct,
         "verdict": verdict,
+        **({"caveats": caveats} if caveats else {}),
     })
 
 
@@ -507,7 +559,14 @@ def tool_correlate_charts(ctx: ToolContext, args: dict) -> dict:
 
     common = sorted(set(map_a.keys()) & set(map_b.keys()))
     if len(common) < 3:
-        return _err(f"need ≥3 common values of '{on}', found {len(common)}")
+        # `not_applicable`, not a failure: the query ran and the two charts
+        # simply do not overlap on this column. A flow branching on
+        # `query_failed` would retry something that already worked.
+        return _err(
+            f"not applicable: the two charts share only {len(common)} values of "
+            f"'{on}' and a correlation needs at least 3. Pick a column both "
+            "charts group by, or two charts over the same entity."
+        )
 
     xs = [map_a[k] for k in common]
     ys = [map_b[k] for k in common]
@@ -529,6 +588,26 @@ def tool_correlate_charts(ctx: ToolContext, args: dict) -> dict:
         elif pearson < -0.1:
             direction = "negative"
 
+    # A COEFFICIENT OVER THREE POINTS IS NOT EVIDENCE.
+    #
+    # The floor is 3 common values, which is the minimum arithmetic needs and far
+    # below what a claim needs: Pearson over 3 points is almost always near ±1
+    # whatever the underlying relationship. Measured live at n=3 and n=4, where
+    # the result reported `strength: "strong"` with nothing to qualify it.
+    #
+    # The coefficient is still returned — it is what was asked for — but a caller
+    # is told the sample cannot carry a conclusion, because "strong" is the word
+    # a reader will repeat.
+    sample_caveat = None
+    if len(common) < 10:
+        sample_caveat = (
+            f"Only {len(common)} common values. A correlation over so few points "
+            f"is not evidence — '{strength}' describes these {len(common)} pairs "
+            "and nothing beyond them. Do not report a relationship from this; find "
+            "a column the two charts share at a coarser grain, or say the sample "
+            "is too small."
+        )
+
     sample = [
         {"key": k, "value_a": _round(map_a[k]), "value_b": _round(map_b[k])}
         for k in common[:10]
@@ -543,6 +622,13 @@ def tool_correlate_charts(ctx: ToolContext, args: dict) -> dict:
         "measure_b": cols_b[measure_b],
         "pearson": _round(pearson),
         "spearman": _round(spearman),
+        **({"sample_caveat": sample_caveat} if sample_caveat else {}),
+        "interpretation_limit": (
+            "This is an ASSOCIATION between two series, not a mechanism. It does "
+            "not show that one drives the other; both may follow a third thing, or "
+            "the ordering may be coincidental. Report it as 'moves together with', "
+            "never as 'causes' or 'is driven by'."
+        ),
         "direction": direction,
         "strength": strength,
         "sample": sample,
@@ -716,10 +802,31 @@ def tool_detect_anomaly(ctx: ToolContext, args: dict) -> dict:
             "suspect_low": suspect_low[:10],
             "n_high_value_outliers": n_high,
         },
+        # HOW MANY IS TOO MANY TO BE AN EXCEPTION.
+        #
+        # Measured on a real chart: 3,115 anomalies out of 98,666 rows. Every one
+        # of those z-scores is correct, and calling 3% of a fact table "anomalies"
+        # describes a skewed distribution rather than finding exceptions. A reader
+        # told "3,115 anomalies found" will act on a framing the number does not
+        # support, so the result says when it has stopped being a list of
+        # exceptions.
+        **(
+            {"rate_caveat": (
+                f"{len(flagged):,} of {len(indexed):,} points "
+                f"({len(flagged) / len(indexed) * 100:.1f}%) exceed the threshold. "
+                "At this rate the method is describing a skewed distribution, not "
+                "finding exceptions — treat these as the shape of the data, raise "
+                "the threshold, or use describe_distribution instead."
+            )}
+            if len(indexed) and (len(flagged) / len(indexed)) > 0.05
+            and len(flagged) > 20 else {}
+        ),
         "note": (
-            "Phân biệt: outlier 'high' thường là hạng mục lớn HỢP LỆ (vd danh mục/đơn lớn nhất) — "
-            "đừng gọi là bất thường nếu không có lý do nghiệp vụ. 'suspect_low' (giá trị ≪ trung vị) "
-            "mới là nghi ngờ CHẤT LƯỢNG DỮ LIỆU: kỳ/dòng khuyết, giao dịch test, gần 0."
+            "Tell the two apart: a 'high' outlier is usually a legitimately large "
+            "item (the biggest category, the biggest order) — do not call it an "
+            "anomaly without a business reason. 'suspect_low' (values far below "
+            "the median) is the DATA-QUALITY signal: a partial period, a test "
+            "transaction, a near-zero row."
         ),
     })
 
@@ -1382,6 +1489,26 @@ def tool_explain_change(ctx: ToolContext, args: dict) -> dict:
         "total_delta": _round(total_delta),
         "pct_change": _round((total_delta / abs(total_b) * 100.0) if total_b else None),
         "top_contributors": contributors[:15],
+        # HOW MANY OF HOW MANY.
+        #
+        # `top_contributors` is a top-N by construction, and the result said
+        # nothing about N — so two contributors read identically whether they
+        # were the only two segments or the largest two of two hundred. Verified
+        # live that the listed deltas reconcile with `total_delta` exactly; what
+        # was missing was the reader's ability to know whether the list is the
+        # whole story.
+        "coverage": {
+            "returned": len(contributors[:15]),
+            "total": len(contributors),
+            "truncated": len(contributors) > 15,
+            "ordered_by": "absolute contribution to the change",
+            **({"note": (
+                f"Listing the {len(contributors[:15])} largest of "
+                f"{len(contributors)} segments. The listed deltas do NOT sum to "
+                "`total_delta` — the remainder is spread across the segments not "
+                "shown."
+            )} if len(contributors) > 15 else {}),
+        },
         "note": (
             "contribution_pct = each segment's share of the TOTAL change. "
             "Positive delta pushed the total up, negative pulled it down."
@@ -1485,10 +1612,23 @@ def tool_forecast_measure(ctx: ToolContext, args: dict) -> dict:
         "excluded_periods": excluded_periods,
         "trend": trend,
         "projection": projections,
+        # The same short-history rule `analyze_trend` applies, applied here too.
+        # It was fixed in one of the two and not the other, which is worse than
+        # missing from both: an author granting the pair gets a caveat on the
+        # description and none on the extrapolation, where it matters more.
+        **(
+            {"history_caveat": (
+                f"Only {n} periods of history. A projection from so few is a line "
+                "through noise carried forward — give the range, not a figure, and "
+                "say the history is too short to project from."
+            )}
+            if n < 6 else {}
+        ),
         "caveat": (
-            "Đây là phép CHIẾU xu hướng đơn giản (linear/CAGR), KHÔNG phải mô hình dự "
-            "báo thống kê. Không tính mùa vụ, sự kiện hay thay đổi cấu trúc. Dùng để "
-            "tham khảo đà, không cam kết con số."
+            "This is a simple trend PROJECTION (linear/CAGR), not a statistical "
+            "forecast. It models no seasonality, no events and no structural "
+            "change. Present it as momentum, never as a commitment to a number, "
+            "and never say a figure 'will be' anything."
         ),
     })
 
@@ -1548,8 +1688,22 @@ def tool_analyze_trend(ctx: ToolContext, args: dict) -> dict:
     last_third = ys[max(0, n - max(1, n // 3)):]
     plateau = abs(norm) <= 1.0 and statistics.fmean(last_third) >= 0.7 * peak[1]
     caveats = []
-    if pf: caveats.append("Kỳ đầu KHUYẾT — đã loại.")
-    if pl: caveats.append("Kỳ cuối KHUYẾT (có thể dữ liệu bị cắt) — đã loại.")
+    # HOW MUCH HISTORY IS TOO LITTLE.
+    #
+    # Measured: charts with FOUR usable periods returned a direction, a slope, an
+    # r-squared and a CAGR with no qualification at all. Four points will always
+    # produce a slope; whether it means anything is a different question, and the
+    # reader cannot tell the two apart from the output.
+    if n < 6:
+        caveats.append(
+            f"Only {n} usable periods. A direction over so few is a line "
+            "through noise — report it as what these periods did, not as a trend, "
+            "and do not extrapolate from it."
+        )
+    if pf: caveats.append("First period is PARTIAL — excluded.")
+    if pl: caveats.append(
+        "Last period is PARTIAL (the data may simply be cut off there) — excluded."
+    )
 
     return _ok({
         "chart_id": chart_id, "measure": columns[measure_idx], "time_dimension": columns[dim_idx],
@@ -1561,7 +1715,11 @@ def tool_analyze_trend(ctx: ToolContext, args: dict) -> dict:
         "plateau": bool(plateau),
         "excluded_periods": excluded, "partial_first": pf, "partial_last": pl,
         "caveats": caveats,
-        "note": "Hướng lấy từ slope hồi quy trên chuỗi đã loại kỳ khuyết — KHÔNG dùng tỷ lệ điểm cuối/điểm đầu.",
+        "note": (
+            "Direction comes from the regression slope over the series with "
+            "partial periods removed — NOT from the ratio of the last point to "
+            "the first, which a single outlier can flip."
+        ),
     })
 
 
@@ -1626,7 +1784,7 @@ def tool_segment_compare(ctx: ToolContext, args: dict) -> dict:
     mean = statistics.fmean([y for _, y in pairs])
     median = statistics.median([y for _, y in pairs])
     diff_vs_mean = _round((seg - mean) / abs(mean) * 100.0) if mean else None
-    return _ok({
+    return _ok(_attach_delta_unit(ctx, chart_id, columns[measure_idx], {
         "chart_id": chart_id, "dimension": columns[dim_idx], "measure": columns[measure_idx],
         "segment": {"value": target, "metric": _round(seg),
                     "rank": rank, "of": n, "percentile": pctile,
@@ -1635,12 +1793,14 @@ def tool_segment_compare(ctx: ToolContext, args: dict) -> dict:
                             "mean": _round(mean), "max": _round(vals[0]), "count": n},
         "segment_vs_mean_pct": diff_vs_mean,
         "note": (
-            f"{target} = {_round(seg)} cho '{columns[measure_idx]}'; xếp hạng {rank}/{n} "
-            f"(percentile {pctile}). So với TRUNG BÌNH các phân khúc lệch {diff_vs_mean}%. "
-            "Baseline là phân phối chéo các phân khúc — không phải tổng gộp toàn cục. "
-            "Với measure cộng được (sum/count), share_of_total_pct là tỷ trọng đóng góp."
+            f"{target} = {_round(seg)} for '{columns[measure_idx]}'; ranks {rank}/{n} "
+            f"(percentile {pctile}). It sits {diff_vs_mean}% from the MEAN of the "
+            "segments. The baseline is the spread ACROSS segments, not a global "
+            "total. `share_of_total_pct` is a contribution share only when the "
+            "measure is additive (sum/count); for an average or a rate it is "
+            "meaningless — compare the values instead."
         ),
-    })
+    }))
 
 
 # ── Phase 15.73 — Diagnostic & lookup tools ───────────────────────────────────

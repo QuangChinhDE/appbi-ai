@@ -367,6 +367,9 @@ async def run_for_link(
     # gap was invisible from both ends. Carried on the context because a tool
     # body cannot see the binding and should not learn to.
     ctx.max_rows_per_call = binding_info.capabilities.max_rows_per_call
+    # The payload ceiling travels the same way, for the same reason: a tool
+    # body cannot see the binding and should not learn to.
+    ctx.max_result_tokens = binding_info.capabilities.max_result_tokens
     from app.services.agent_flows.permissions import run_scope
 
     ctx.knowledge_scope = run_scope(

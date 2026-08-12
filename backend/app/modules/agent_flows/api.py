@@ -19,7 +19,11 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
-from app.core.dependencies import get_current_user, require_permission
+from app.core.dependencies import (
+    get_current_user,
+    require_permission,
+    require_view_access,
+)
 from app.models.user import User
 from app.services.agent_flows import binding as binding_service
 from app.services.agent_flows import permissions as perms
@@ -100,9 +104,27 @@ def list_attachable(
         .all()
     )
     datasets = db.query(Dataset.id, Dataset.name).filter(Dataset.id.in_(ds_ids or [-1])).all()
+    # A METRIC FOLLOWS ITS DATASET.
+    #
+    # Documents and datasets were filtered by what is shared with this author;
+    # metrics were not, so the picker offered every metric in the deployment to
+    # everyone. A metric carries `dataset_id`, and pointing a step at one is how
+    # a run reaches that dataset's numbers — so an unfiltered metric list is a
+    # way around the sharing rule the other two obey.
+    #
+    # A metric with NO dataset is a definition and nothing else: attaching it
+    # yields a name, a formula and a unit, with no query behind it. Those stay
+    # visible, because withholding a shared vocabulary teaches authors to
+    # redefine terms locally, which is the problem the metric catalogue exists
+    # to solve.
     metrics = (
-        db.query(GovernMetric.name, GovernMetric.display_name, GovernMetric.category)
+        db.query(GovernMetric.name, GovernMetric.display_name,
+                 GovernMetric.category, GovernMetric.dataset_id)
         .filter(GovernMetric.status != "Deprecated")
+        .filter(
+            (GovernMetric.dataset_id.is_(None))
+            | (GovernMetric.dataset_id.in_(ds_ids or [-1]))
+        )
         .order_by(GovernMetric.display_name)
         .all()
     )
@@ -110,8 +132,12 @@ def list_attachable(
         "documents": [{"ref": str(i), "name": t} for i, t in docs],
         "datasets": [{"ref": str(i), "name": n} for i, n in datasets],
         "metrics": [
-            {"ref": name, "name": display or name, "group": category or ""}
-            for name, display, category in metrics
+            {"ref": name, "name": display or name, "group": category or "",
+             # Stated so the builder can show which metrics carry a query and
+             # which are vocabulary only — the author is choosing reach here,
+             # and reach they cannot see is reach they cannot judge.
+             "reads_data": ds_id is not None}
+            for name, display, category, ds_id in metrics
         ],
     }
 
@@ -334,9 +360,23 @@ class BindingWrite(BaseModel):
     store_question_content: bool = True
 
 
-def _link_and_dashboard(db: Session, link_id: int):
-    from app.models.models import Dashboard
-    from app.models.models import DashboardPublicLink
+def _link_and_dashboard(db: Session, link_id: int, user: User):
+    """The link and its report — only if the caller may see that report.
+
+    THE REPORT IS CHECKED, NOT JUST THE MODULE. A link id is an integer chosen
+    by the caller, and every endpoint here takes one from the request body.
+    Without this, `agent_flows:edit` was enough to run a flow against ANY
+    published link: the dashboards module refuses `GET /dashboards/44` to a user
+    with no rights on it, and this path walked straight past that refusal to the
+    same data. Measured, not theorised — a user holding only `agent_flows:edit`
+    reached the flow layer on dashboard 44 and was stopped by a missing binding
+    rather than by permission.
+
+    `require_view_access` is the same ownership + share + module check the
+    dashboards module itself applies, so a flow can never reach further than the
+    person running it.
+    """
+    from app.models.models import Dashboard, DashboardPublicLink
 
     link = db.query(DashboardPublicLink).filter(DashboardPublicLink.id == link_id).first()
     if link is None:
@@ -344,6 +384,7 @@ def _link_and_dashboard(db: Session, link_id: int):
     dashboard = db.query(Dashboard).filter(Dashboard.id == link.dashboard_id).first()
     if dashboard is None:
         raise HTTPException(status_code=404, detail="Không tìm thấy báo cáo của link")
+    require_view_access(db, user, dashboard, "dashboards")
     return link, dashboard
 
 
@@ -397,7 +438,7 @@ def binding_candidates(
     Server-side so the picker cannot offer a field the dashboard does not have —
     which is the whole failure mode "define before assign" exists to prevent.
     """
-    link, dashboard = _link_and_dashboard(db, link_id)
+    link, dashboard = _link_and_dashboard(db, link_id, user)
     flow = _usable_flow(db, user, brain_key)
     from app.services.dashboard_ai_bot.tool_context import ToolContext
 
@@ -432,7 +473,7 @@ def preflight_binding(
     The estimate is not decoration: this is a public link with an unbounded
     audience, and one Loop multiplies a single question by up to 25 model calls.
     """
-    link, dashboard = _link_and_dashboard(db, body.link_id)
+    link, dashboard = _link_and_dashboard(db, body.link_id, user)
     flow = _usable_flow(db, user, body.brain_key)
     contract = binding_service.DataContract.model_validate(body.data_contract or {})
     return binding_service.preflight(
@@ -445,7 +486,7 @@ def save_binding(
     body: BindingWrite, db: Session = Depends(get_db), user: User = Depends(can_assign)
 ) -> dict[str, Any]:
     """Assign. Refused while anything required is unresolved."""
-    link, dashboard = _link_and_dashboard(db, body.link_id)
+    link, dashboard = _link_and_dashboard(db, body.link_id, user)
     flow = _usable_flow(db, user, body.brain_key)
     contract = binding_service.DataContract.model_validate(body.data_contract or {})
 
@@ -473,7 +514,7 @@ def delete_binding(
         raise HTTPException(status_code=404, detail="Link này chưa gán flow nào")
     brain_key = binding.brain_key
     db.delete(binding)
-    link, _dash = _link_and_dashboard(db, link_id)
+    link, _dash = _link_and_dashboard(db, link_id, user)
     cfg = dict(link.appearance_config or {})
     cfg.pop("ai_bot_flow_key", None)
     link.appearance_config = cfg
@@ -503,7 +544,7 @@ async def test_flow(
     a completed execution path and answer, and a second streaming protocol would be a
     second thing to keep in step with the first.
     """
-    link, dashboard = _link_and_dashboard(db, body.link_id)
+    link, dashboard = _link_and_dashboard(db, body.link_id, user)
     binding = binding_service.get_for_link(db, link.id)
     if binding is None:
         raise HTTPException(

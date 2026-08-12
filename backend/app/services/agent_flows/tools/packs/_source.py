@@ -118,6 +118,7 @@ def local(
     returns: dict[str, str],
     cost_class: CostClass = "cheap",
     payload: PayloadSize = "small",
+    reaches_outside: bool = False,
     deterministic: bool = True,
     self_sufficient: bool = False,
     answers_vi: tuple[str, ...] = (),
@@ -139,11 +140,13 @@ def local(
         description_vi=description_vi,
         cost_class=cost_class,
         payload=payload,
-        reaches_outside=False,
+        reaches_outside=reaches_outside,
         result_kind=result_kind,
         returns=returns,
         deterministic=deterministic,
-        cacheable=deterministic,
+        # Same rule the registry enforces: a tool that leaves AppBI is never
+        # cacheable, whatever it claims about determinism.
+        cacheable=deterministic and not reaches_outside,
         self_sufficient=self_sufficient,
         answers_vi=answers_vi,
     )

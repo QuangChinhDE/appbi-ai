@@ -234,7 +234,7 @@ def _metric_text(metric: Any) -> str:
 def tool_search_knowledge(ctx: ToolContext, args: dict) -> dict:
     query = str((args or {}).get("query") or "").strip()
     if not query:
-        return _err("cần 'query' — từ khoá hoặc câu hỏi cần tra")
+        return _err("'query' is required — a keyword or the question to look up")
     try:
         limit = int((args or {}).get("limit") or 6)
     except (TypeError, ValueError):
@@ -243,6 +243,89 @@ def tool_search_knowledge(ctx: ToolContext, args: dict) -> dict:
 
     needles = _tokens(query)
     hits: list[dict] = []
+
+    # ── embeddings first, keyword as the floor ───────────────────────────────
+    #
+    # THIS WAS NOT WIRED UP. The deployment has pgvector installed, an embedding
+    # service, and 48 embedded chunks sitting in `govern_doc_chunk` — and this
+    # tool never touched any of it. It scored whole documents by token overlap,
+    # so a question phrased differently from the document's wording found
+    # nothing, and there was no way to tell from the outside that retrieval was
+    # keyword-only. That is why the system looked "not connected to embeddings":
+    # it was connected everywhere except at the one place a flow reads.
+    #
+    # `retrieve_doc_chunks` is reused rather than reimplemented. It already does
+    # hybrid recall (cosine OR full-text, fused — vector alone misses exact
+    # identifiers like a quarter code), and it already restricts to Published
+    # docs linked to THIS dashboard, which is the same boundary
+    # `_visible_doc_ids` enforces. A second retrieval path would be a second
+    # place for that boundary to drift.
+    #
+    # Keyword scoring still runs underneath: embeddings can be unavailable, a
+    # doc can be unembedded, and a chunk store that returns nothing must not
+    # turn a working search into an empty one.
+    retrieval = "keyword"
+    chunk_hits: list[dict] = []
+    # `ToolContext` carries the Dashboard object, not a bare id.
+    dash_id = getattr(getattr(ctx, "dashboard", None), "id", None)
+    if dash_id:
+        try:
+            from app.services.dashboard_ai_bot.govern_doc_embeddings import (
+                retrieve_doc_chunks,
+            )
+
+            for ch in retrieve_doc_chunks(ctx.db, int(dash_id), query, k=limit) or []:
+                if not isinstance(ch, dict):
+                    continue
+                chunk_hits.append({
+                    "kind": "document_chunk",
+                    "id": ch.get("doc_id"),
+                    "title": ch.get("title") or "",
+                    "snippet": _plain(ch.get("content"), MAX_SNIPPET_CHARS),
+                    # The chunk store's own similarity, kept under its own name so
+                    # it is never compared with the keyword score below — the two
+                    # are different scales and averaging them would be arithmetic
+                    # that runs and means nothing.
+                    "similarity": ch.get("similarity"),
+                    # The store fuses vector and full-text recall and says which
+                    # one found each row. Passed through: "vector" and "keyword"
+                    # answer differently badly, and a reader debugging a poor
+                    # result needs to know which one produced it.
+                    "retrieved_by": ch.get("matched_by") or "embedding",
+                    "trust": ch.get("trust"),
+                })
+            if chunk_hits:
+                retrieval = "embedding+keyword"
+                # WHEN was this written — carried onto chunks too.
+                #
+                # The keyword path already attached `updated_at`/`version`, and
+                # the chunk path did not, so wiring embeddings in dropped the
+                # date from the hits that now rank FIRST. A passage retrieved by
+                # meaning is exactly the one whose age is hardest to judge from
+                # the text, and the group-6 audit caught it: the same "2019
+                # policy quoted as current" failure this field was added to
+                # prevent, reintroduced by the retrieval upgrade.
+                from app.models.governance import GovernKnowledgeDoc as _GKD
+
+                ids = {c["id"] for c in chunk_hits if c.get("id") is not None}
+                if ids:
+                    meta = {
+                        d.id: d for d in ctx.db.query(_GKD)
+                        .filter(_GKD.id.in_(ids)).all()
+                    }
+                    for c in chunk_hits:
+                        doc = meta.get(c.get("id"))
+                        if doc is None:
+                            continue
+                        when = (getattr(doc, "updated_at", None)
+                                or getattr(doc, "created_at", None))
+                        c["updated_at"] = when.isoformat() if when else None
+                        c["version"] = getattr(doc, "version", None)
+                        c["doc_type"] = getattr(doc, "doc_type", None)
+                        if not c.get("title"):
+                            c["title"] = doc.title
+        except Exception:  # noqa: BLE001 — retrieval must never break a search
+            logger.warning("search_knowledge: chunk retrieval failed", exc_info=True)
 
     try:
         from app.models.governance import GovernKnowledgeDoc
@@ -260,12 +343,23 @@ def tool_search_knowledge(ctx: ToolContext, args: dict) -> dict:
                 score = _score(haystack, needles)
                 if score <= 0:
                     continue
+                # WHEN was this written.
+                #
+                # The hit carried id, title, snippet and score — everything except
+                # the one field that decides whether a reader should still trust
+                # it. A process document from 2019 quoted as current is the same
+                # failure as a forecast anchored to data that stopped in 2018, and
+                # the date was sitting on the row all along.
+                updated = getattr(doc, "updated_at", None) or getattr(doc, "created_at", None)
                 hits.append({
                     "kind": "document",
                     "id": doc.id,
                     "title": doc.title,
                     "snippet": _plain(doc.summary or doc.body, MAX_SNIPPET_CHARS),
                     "score": round(score, 3),
+                    "updated_at": updated.isoformat() if updated else None,
+                    "version": getattr(doc, "version", None),
+                    "doc_type": getattr(doc, "doc_type", None),
                 })
     except Exception:  # noqa: BLE001
         logger.warning("search_knowledge: document scan failed", exc_info=True)
@@ -293,12 +387,30 @@ def tool_search_knowledge(ctx: ToolContext, args: dict) -> dict:
         logger.warning("search_knowledge: metric scan failed", exc_info=True)
 
     hits.sort(key=lambda h: h["score"], reverse=True)
-    top = hits[:limit]
+    # Chunks first: a passage retrieved by meaning answers a question the
+    # document's title never mentions, which is the whole reason to embed. Then
+    # de-duplicated — the same document can arrive down both paths, and paying
+    # twice for it in the payload is a cost with no answer attached.
+    seen_docs = {c["id"] for c in chunk_hits if c.get("id") is not None}
+    merged = chunk_hits + [h for h in hits if h.get("id") not in seen_docs]
+    top = merged[:limit]
     return _ok({
         "query": query,
-        "total_matches": len(hits),
+        "total_matches": len(merged),
         "returned": len(top),
         "results": top,
+        # HOW these were found, said out loud. Without it there is no way to see
+        # from a result whether the vector store was consulted, which is exactly
+        # why a fully-embedded deployment could look unconnected.
+        "retrieval": retrieval,
+        "retrieval_note": (
+            "Passages were retrieved by MEANING (embeddings) and by keyword, "
+            "then merged."
+            if retrieval != "keyword" else
+            "Keyword matching only — no embedded passages were available for "
+            "this report. Documents attached here may not be embedded yet, or "
+            "the embedding service is not configured."
+        ),
         # Said explicitly because the model must not treat a definition's target
         # or an example figure as a measurement of this report.
         "note": (
@@ -314,37 +426,114 @@ def tool_read_document(ctx: ToolContext, args: dict) -> dict:
     try:
         doc_id = int(raw_id)
     except (TypeError, ValueError):
-        return _err("cần 'doc_id' dạng số — lấy từ kết quả search_knowledge")
+        return _err("'doc_id' must be a number — take it from a search_knowledge result")
 
     if doc_id not in _visible_doc_ids(ctx):
         # Deliberately the same message for "does not exist", "is a draft" and
         # "belongs to another report": an anonymous viewer must not be able to
         # probe which document ids exist by reading the error.
         return _err(
-            "không có tài liệu này trong phạm vi báo cáo (chỉ đọc được tài liệu "
-            "đã Published và được gắn vào báo cáo/bộ dữ liệu của báo cáo)"
+            "no such document within this report's scope. Only Published "
+            "documents attached to this report or its dataset can be read."
         )
 
     from app.models.governance import GovernKnowledgeDoc
 
     doc = ctx.db.query(GovernKnowledgeDoc).filter(GovernKnowledgeDoc.id == doc_id).first()
     if doc is None:
-        return _err("không có tài liệu này trong phạm vi báo cáo")
+        return _err("no such document within this report's scope")
 
+    full_len = len(str(doc.body or ""))
     body = _plain(doc.body, MAX_BODY_CHARS)
+    reading = "whole document"
+    passages: list[dict] = []
+
+    # A LONG DOCUMENT, READ AT THE RIGHT PLACE.
+    #
+    # Truncation took the first N characters, which is the correct passage only
+    # when the answer happens to be at the top. On a long policy the reader gets
+    # the preamble and the tool reports `truncated: true` — technically honest
+    # and practically useless, because the paragraph that answered the question
+    # was at the bottom.
+    #
+    # The chunks are already embedded. When the caller says what it is looking
+    # for, rank them and return those instead of the opening. Without a
+    # `question` the old behaviour stands: "show me this document" is a
+    # different request from "what does this document say about X".
+    question = str((args or {}).get("question") or "").strip()
+    if question and full_len > MAX_BODY_CHARS:
+        try:
+            passages = _rank_doc_chunks(ctx, doc_id, question, k=6)
+        except Exception:  # noqa: BLE001 — never fail a read over ranking
+            logger.warning("read_document: chunk ranking failed", exc_info=True)
+        if passages:
+            reading = "passages most relevant to the question"
+            body = "\n\n".join(p["text"] for p in passages)[:MAX_BODY_CHARS]
+
     return _ok({
         "id": doc.id,
         "title": doc.title,
         "doc_type": doc.doc_type,
         "summary": _plain(doc.summary, MAX_SNIPPET_CHARS) or None,
         "body": body,
-        "truncated": len(str(doc.body or "")) > MAX_BODY_CHARS,
+        "truncated": full_len > MAX_BODY_CHARS and not passages,
+        # WHICH PART was read, and how it was chosen. Without this a model
+        # cannot tell the opening of a document from the passages that answer
+        # the question, and would summarise one as though it were the other.
+        "reading": reading,
+        **({"passages": passages,
+            "reading_note": (
+                f"The document is {full_len:,} characters. These are the "
+                f"{len(passages)} passages closest in meaning to the question, "
+                "not the document in order — do not describe them as its "
+                "structure or its conclusion."
+            )} if passages else {}),
         "owner": doc.owner or None,
         "note": (
-            "Nội dung tài liệu do người viết. Số trong tài liệu KHÔNG phải số đo "
-            "từ dữ liệu báo cáo."
+            "This is prose somebody WROTE. Any figure inside it is a claim from "
+            "the document, not a measurement from the report's data — attribute "
+            "it to the document, and read the actual number from a chart."
         ),
     })
+
+
+def _rank_doc_chunks(ctx: ToolContext, doc_id: int, question: str,
+                     k: int = 6) -> list[dict]:
+    """This document's own chunks, ranked by closeness to the question.
+
+    Scoped to ONE doc_id that the caller has already been cleared for by
+    `_visible_doc_ids`, so this adds no reach — it chooses where to read inside
+    a document, not which document.
+    """
+    from sqlalchemy import text as _sql
+
+    from app.services.dashboard_ai_bot.govern_doc_embeddings import (
+        active_embedding_model,
+    )
+    from app.services.embedding_service import EmbeddingService
+
+    qvec = EmbeddingService.generate_query_embedding(question)
+    if qvec is None:
+        return []
+    rows = ctx.db.execute(
+        _sql(
+            """
+            SELECT chunk_index, content,
+                   1 - (embedding <=> CAST(:qv AS vector)) AS similarity
+            FROM govern_doc_chunk
+            WHERE doc_id = :did AND embedding IS NOT NULL
+              AND model_version = :mv
+            ORDER BY embedding <=> CAST(:qv AS vector)
+            LIMIT :k
+            """
+        ),
+        {"qv": str(qvec), "did": doc_id, "mv": active_embedding_model(), "k": k},
+    ).all()
+    return [
+        {"chunk_index": r[0], "text": _plain(r[1], MAX_SNIPPET_CHARS * 2),
+         "similarity": round(float(r[2]), 4)}
+        for r in rows
+    ]
 
 
 def _granted_dataset_ids(ctx: ToolContext) -> set[int] | None:
@@ -382,7 +571,9 @@ def tool_describe_semantic_model(ctx: ToolContext, args: dict) -> dict:
         return _ok({
             "datasets": [],
             "fields": [],
-            "note": "Báo cáo này chưa gắn bộ dữ liệu nào có mô tả nghiệp vụ.",
+            "note": ("No dataset attached to this report carries business descriptions, so "
+             "there is no semantic meaning to report. Say the field meanings are "
+             "not documented rather than guessing them from column names."),
         })
 
     try:

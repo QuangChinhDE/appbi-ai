@@ -126,7 +126,11 @@ async def run(
                 # it has, rather than cutting it off mid-thought.
                 messages.append({
                     "role": "user",
-                    "content": "Hết lượt gọi công cụ. Hãy trả lời bằng những gì đã có.",
+                    "content": (
+                        "No tool calls remain for this step. Answer with what "
+                        "you already have, and say plainly what you could not "
+                        "check. Reply in the language of the user's question."
+                    ),
                 })
                 schemas = []
                 continue
@@ -235,7 +239,7 @@ def _messages(node: AgentNode, state: RunState, rctx: Any) -> list[dict]:
     if isinstance(previous, str) and previous.strip():
         out.append({
             "role": "user",
-            "content": f"Kết quả của bước trước:\n\n{previous.strip()[:8000]}",
+            "content": f"Result of the previous step:\n\n{previous.strip()[:8000]}",
         })
     return out
 
@@ -281,11 +285,21 @@ def _system_prompt(node: AgentNode, state: RunState, rctx: Any) -> str:
 
 #: What a `json` node must return. Deliberately terse and example-led: a long JSON
 #: schema in a prompt buys compliance on the shape and loses it on the content.
-_BLOCK_INSTRUCTIONS = """ĐỊNH DẠNG TRẢ VỀ
-Chỉ trả về MỘT object JSON, không có chữ nào ngoài JSON:
+#:
+#: English, like the rest of the machine contract. This block was written in
+#: Vietnamese and survived the language cleanup because it is assembled HERE, in
+#: the handler, rather than in `prompts.py` — so a sweep that went file by file
+#: through the prompt module never saw it. The lesson is in the scanner now: read
+#: the ASSEMBLED prompt, not the files it is thought to come from.
+#:
+#: The block VALUES stay language-neutral; what the model writes inside
+#: `markdown`, `label` and `items` follows the viewer's question, as rule 5 of
+#: the base prompt says.
+_BLOCK_INSTRUCTIONS = """OUTPUT FORMAT
+Return ONE JSON object and nothing else — no prose before or after:
 {"blocks":[ ... ]}
 
-Các loại block dùng được:
+Block types available:
 {"type":"text","markdown":"..."}
 {"type":"metric","label":"...","value":123,"format":"currency|percent|number",
  "delta":{"value":-0.084,"format":"percent","direction":"down"},"source":{"chart_id":41}}
@@ -294,9 +308,11 @@ Các loại block dùng được:
 {"type":"chart_ref","chart_id":41,"highlight":{"field":"segment","values":["Enterprise"]},
  "caption":"..."}
 {"type":"callout","level":"info|warning|danger","text":"..."}
-{"type":"followups","items":["câu hỏi tiếp theo","..."]}
+{"type":"followups","items":["next question","..."]}
 
-Chỉ dùng chart_id có thật trong báo cáo. Luôn mở đầu bằng một block "text"."""
+Use only chart_id values that exist in this report. Always open with a "text"
+block. Write the TEXT inside the blocks in the language of the viewer's
+question — this instruction being English says nothing about that."""
 
 
 def _parse_blocks(text: str, state: RunState, node: AgentNode) -> dict:

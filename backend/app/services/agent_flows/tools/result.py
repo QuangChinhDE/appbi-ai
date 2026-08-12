@@ -205,6 +205,11 @@ _CODE_HINTS: tuple[tuple[str, ErrorCode], ...] = (
     ("not in scope", "chart_out_of_scope"),
     ("không thuộc", "chart_out_of_scope"),
     ("không được cấp", "not_granted"),
+    # A document outside the report's scope is a permission boundary, not a
+    # warehouse failure. `query_failed` told a flow to retry a query that never
+    # ran — and told an operator to look at the database.
+    ("no such document within", "not_granted"),
+    ("only published documents", "not_granted"),
     ("unknown tool", "unknown_tool"),
     ("not found", "chart_not_found"),
     ("is required", "bad_argument"),

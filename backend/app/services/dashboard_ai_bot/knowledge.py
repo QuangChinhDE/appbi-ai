@@ -50,6 +50,12 @@ VALID_KINDS = {"concept", "fact", "insight", "preference", "correction"}
 # softer signals. Used to order the injected block.
 _KIND_RANK = {"concept": 0, "correction": 1, "fact": 2, "insight": 3, "preference": 4}
 
+#: Row type used in the shared `resource_embeddings` table for learned facts.
+#: That table is generic — `(resource_type, resource_id, embedding, source_text)`
+#: — so memory rides in it without a migration and without a second vector store
+#: to keep in step with the first.
+_KNOWLEDGE_RESOURCE_TYPE = "ai_bot_knowledge"
+
 # Decoration the bot adds to prose — stripped before storing a clean claim.
 _LADDER_RE = re.compile(r"\[(?:DESC|DIAG|PRED|PRESC|HIGH|MED|LOW|WEB)\]", re.IGNORECASE)
 _CHART_TOKEN_RE = re.compile(r"\[chart:\d+\]", re.IGNORECASE)
@@ -200,7 +206,64 @@ def store_learning(
     )
     db.add(row)
     db.flush()
+    _embed_knowledge_row(db, row)
     return row
+
+
+def _embed_knowledge_row(db, row) -> None:
+    """Embed one learned fact so it can be recalled by meaning, not just words.
+
+    Done at WRITE time, once per fact, rather than lazily on read: teaching is
+    rare and reading is every turn, so paying here keeps the cost off the path
+    that runs constantly. Failure is swallowed — a fact that could not be
+    embedded is still stored and still recalled by token overlap, and losing a
+    taught fact because an embedding endpoint was down would be a far worse
+    trade than losing synonym matching on it.
+    """
+    try:
+        from app.services.embedding_service import EmbeddingService
+
+        EmbeddingService.upsert_embedding(
+            db, _KNOWLEDGE_RESOURCE_TYPE, int(row.id), str(row.content or ""),
+        )
+    except Exception:  # noqa: BLE001
+        logger.debug("knowledge: embedding a learned fact failed", exc_info=True)
+
+
+def backfill_knowledge_embeddings(db, *, dashboard_id: int | None = None,
+                                  limit: int = 200) -> dict:
+    """Embed learned facts stored before embedding existed. Idempotent.
+
+    Needed because the facts already in this deployment were written by the old
+    path. Without it, semantic recall would work only for what gets taught from
+    now on — the feature would look broken to anyone whose knowledge base is
+    already full.
+    """
+    from sqlalchemy import text as _sql
+
+    q = db.query(AiBotKnowledge).filter(AiBotKnowledge.status == "validated")
+    if dashboard_id is not None:
+        q = q.filter(AiBotKnowledge.dashboard_id == dashboard_id)
+    done = skipped = failed = 0
+    have = {r[0] for r in db.execute(
+        _sql("SELECT resource_id FROM resource_embeddings WHERE resource_type = :rt"),
+        {"rt": _KNOWLEDGE_RESOURCE_TYPE},
+    ).all()}
+    for row in q.limit(limit).all():
+        if int(row.id) in have:
+            skipped += 1
+            continue
+        try:
+            from app.services.embedding_service import EmbeddingService
+
+            ok = EmbeddingService.upsert_embedding(
+                db, _KNOWLEDGE_RESOURCE_TYPE, int(row.id), str(row.content or ""))
+            done += 1 if ok else 0
+            failed += 0 if ok else 1
+        except Exception:  # noqa: BLE001
+            failed += 1
+    db.commit()
+    return {"embedded": done, "already": skipped, "failed": failed}
 
 
 _CONF_MAP = {"HIGH": 0.6, "MED": 0.45, "LOW": 0.3}
@@ -352,11 +415,43 @@ def retrieve(
         return []
     q_tokens = _tokens(question)
 
+    # SEMANTIC RECALL, on top of token overlap.
+    #
+    # A learned fact is one or two sentences. Token overlap on text that short
+    # is brittle in a specific way: someone teaches "GMV excludes cancelled
+    # orders", later asks "does the total include orders that were called off?"
+    # — no shared token, nothing recalled, and the bot answers as if it had never
+    # been taught. That is the whole promise of institutional memory failing on a
+    # synonym.
+    #
+    # Stored in the shared `resource_embeddings` table under its own
+    # resource_type, so no migration and no second embedding store to keep in
+    # step. Cosine is a BONUS on the existing ranking rather than a replacement:
+    # kind-priority, confidence and recency are still what a correction
+    # outranking a stale fact depends on.
+    sims: dict[int, float] = {}
+    if question.strip():
+        try:
+            from app.services.embedding_service import EmbeddingService
+
+            hits = EmbeddingService.search_similar(
+                db, question, resource_type=_KNOWLEDGE_RESOURCE_TYPE,
+                limit=max(limit * 3, 15),
+            )
+            sims = {int(h["resource_id"]): float(h.get("similarity") or 0.0)
+                    for h in hits if h.get("resource_id") is not None}
+        except Exception:  # noqa: BLE001 — recall must survive a missing store
+            logger.debug("knowledge.retrieve: semantic recall unavailable",
+                         exc_info=True)
+
     def score(r: AiBotKnowledge) -> tuple:
         overlap = 0.0
         if q_tokens:
             overlap = len(q_tokens & _tokens(r.content)) / len(q_tokens)
-        rel = (float(r.confidence or 0.5) * _recency_factor(r.last_seen_at)) * (1.0 + overlap)
+        # Whichever signal is stronger wins. Adding them would let a weak match
+        # on both beat a strong match on one, which is not what either measures.
+        affinity = max(overlap, sims.get(int(r.id), 0.0))
+        rel = (float(r.confidence or 0.5) * _recency_factor(r.last_seen_at)) * (1.0 + affinity)
         # Sort: lower kind-rank first, then higher relevance.
         return (_KIND_RANK.get(r.kind, 5), -rel)
 
@@ -535,7 +630,7 @@ def tool_remember_fact(ctx, args: dict) -> dict:
     kind = str(args.get("kind") or "fact").strip().lower()
     content = str(args.get("content") or "").strip()
     if not content:
-        return _err("remember_fact cần 'content' không rỗng.")
+        return _err("remember_fact requires a non-empty 'content'.")
     dash_id = getattr(ctx.dashboard, "id", None)
     if not isinstance(dash_id, int):
         return _err("no dashboard scope for knowledge.")
@@ -560,9 +655,10 @@ def tool_remember_fact(ctx, args: dict) -> dict:
     # that path never needed review, because the actor is known.
     if needs_review:
         return _err(
-            "Chưa ghi nhớ được: điều học từ người xem ẩn danh cần có người duyệt, "
-            "mà màn hình duyệt hiện chưa có. Người dùng đã đăng nhập vẫn dạy được "
-            "trực tiếp."
+            "Not stored: something taught by an anonymous viewer needs a "
+            "reviewer, and the review screen no longer exists. A signed-in user "
+            "can still teach this directly. Tell the viewer their point was not "
+            "saved and who to raise it with — do not imply it was remembered."
         )
 
     target_status = "validated"
@@ -588,16 +684,16 @@ def tool_remember_fact(ctx, args: dict) -> dict:
     except Exception as exc:  # noqa: BLE001
         ctx.db.rollback()
         logger.warning("[ai_bot_knowledge] remember_fact failed: %s", exc)
-        return _err(f"không lưu được: {type(exc).__name__}")
+        return _err(f"could not store this: {type(exc).__name__}")
     if row is None:
-        return _err("nội dung quá ngắn để ghi nhớ.")
+        return _err("content is too short to be worth remembering.")
     if already_rejected:
         return _ok({
             "stored": False, "id": row.id, "status": row.status,
             "note": (
-                "Nội dung này đã được người phụ trách xem xét và từ chối trước đó, "
-                "nên không được ghi nhớ lại. Hãy nói với người dùng rằng thông tin "
-                "này cần trao đổi với người quản trị báo cáo."
+                "This was reviewed and REJECTED before, so it is not stored "
+                "again. Tell the user it needs to be taken up with whoever owns "
+                "this report — do not simply retry."
             ),
         })
     if needs_review:
@@ -605,14 +701,15 @@ def tool_remember_fact(ctx, args: dict) -> dict:
             "stored": True, "id": row.id, "kind": row.kind, "status": row.status,
             "review_item_id": review_id,
             "note": (
-                "Đã ghi nhận và gửi cho người phụ trách duyệt. Hãy nói với người "
-                "dùng rằng thông tin sẽ được áp dụng sau khi được duyệt — KHÔNG "
-                "khẳng định là đã ghi nhớ vĩnh viễn."
+                "Recorded and sent for review. Tell the user it will apply "
+                "ONCE APPROVED — do not claim it has been remembered "
+                "permanently, because it has not been yet."
             ),
         })
     return _ok({
         "stored": True, "id": row.id, "kind": row.kind, "status": row.status,
-        "note": "Đã ghi nhớ lâu dài — các phiên sau sẽ tự biết điều này.",
+        "note": ("Stored for the long term — later sessions will know this "
+                 "without being told again."),
     })
 
 
@@ -642,26 +739,34 @@ def tool_recall_knowledge(ctx, args: dict) -> dict:
 REMEMBER_FACT_TOOL_DEF: dict = {
     "name": "remember_fact",
     "description": (
-        "Ghi nhớ LÂU DÀI một điều về công ty/báo cáo này để CÁC PHIÊN SAU tự biết. "
-        "GỌI khi người dùng DẠY bạn: một khái niệm/quy ước/cách tính chỉ số "
-        "(kind='concept'), một sự thật bền vững về công ty (kind='fact'), cách họ "
-        "muốn được trả lời (kind='preference'); hoặc khi bạn nhận ra một điều đã học "
-        "trước đây là SAI và cần đính chính (kind='correction', kèm supersedes_id nếu "
-        "biết id cũ từ recall_knowledge). TUYỆT ĐỐI KHÔNG dùng cho số liệu một-lần, "
-        "suy đoán chưa chắc, hay lời khuyên — chỉ ghi tri thức bền vững về doanh nghiệp."
+        "Remember something about this company/report FOR LATER SESSIONS. Call "
+        "it when the user TEACHES you: a concept, convention or how a metric is "
+        "calculated (kind='concept'); a durable fact about the business "
+        "(kind='fact'); how they want to be answered (kind='preference'); or when "
+        "you realise something learned earlier is WRONG and must be corrected "
+        "(kind='correction', with supersedes_id when recall_knowledge gave you the "
+        "old id). NEVER use it for a one-off figure, an unconfirmed guess or "
+        "advice — only durable knowledge about the business."
     ),
     "input_schema": {
         "type": "object",
         "properties": {
             "kind": {"type": "string", "enum": ["concept", "fact", "preference", "correction"]},
-            "content": {"type": "string", "description": "Điều cần nhớ, 1-2 câu rõ ràng bằng tiếng Việt."},
+            "content": {"type": "string", "description": (
+                "What to remember, as 1-2 clear sentences. Write it in the "
+                "language the user taught it in — this text is read back to "
+                "them later, so translating it changes their own words."
+            )},
             "chart_ids": {
                 "type": "array", "items": {"type": "integer"},
-                "description": "Biểu đồ làm bằng chứng, nếu có.",
+                "description": "Charts that evidence this, if any.",
             },
             "supersedes_id": {
                 "type": "integer",
-                "description": "Chỉ với kind='correction': id kiến thức cũ bị thay thế (lấy từ recall_knowledge).",
+                "description": (
+                    "Only with kind='correction': the id of the older learning this "
+                    "replaces, as returned by recall_knowledge."
+                ),
             },
         },
         "required": ["kind", "content"],

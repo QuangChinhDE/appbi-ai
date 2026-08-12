@@ -3340,6 +3340,43 @@ class _AiBriefingGuessQuery(BaseModel):
     pass  # currently no body, just GET
 
 
+def _guard_viewer_text(token: str, *, briefing: dict | None = None,
+                       extra: str = "") -> None:
+    """Run the injection guard over every free-text field a VIEWER supplied.
+
+    The guard existed and was wired into exactly one endpoint — the chat stream.
+    Two others take viewer prose and hand it to a model: `briefing/brief` and
+    `agent/explore`, both of which accept a `briefing` dict whose `custom_note`
+    and `smart_goal` are typed by the anonymous viewer. `explore` is the worse
+    of the two, because it runs a MULTI-TURN exploration: an instruction
+    smuggled in there is repeated into every round of the run.
+
+    Guarding the chat box alone is guarding the front door of a building with
+    three doors. So the check lives in one function and every door calls it.
+
+    Raises 400 in block mode; in log mode it records and lets the turn through,
+    which is what `INTELLIGENCE_GUARD_MODE` is for.
+    """
+    from app.services.dashboard_ai_bot.guard import check_input as _check_input
+
+    parts: list[str] = [extra] if extra else []
+    if isinstance(briefing, dict):
+        for key in ("custom_note", "smart_goal", "domain_label", "domain",
+                    "role", "focus", "timeframe"):
+            val = briefing.get(key)
+            if isinstance(val, str) and val.strip():
+                parts.append(val)
+    text = "\n".join(parts).strip()
+    if not text:
+        return
+    result = _check_input(text, mode=settings.INTELLIGENCE_GUARD_MODE)
+    if result.codes:
+        logger.warning("ai_bot guard token=%s %s text=%r",
+                       token, result.to_log(), text[:160])
+    if not result.allowed:
+        raise HTTPException(status_code=400, detail=result.message)
+
+
 class _AiBriefingBriefBody(BaseModel):
     """Confirmed briefing â€” backend uses it (+ recon) to call BYOK LLM and
     produce an Executive Brief paragraph.
@@ -3476,6 +3513,7 @@ async def post_dashboard_ai_briefing_brief(
         missing_key_detail="X-User-Ai-Key header is required.",
     )
 
+    _guard_viewer_text(token, briefing=body.briefing or {})
     briefing = Briefing.from_dict(body.briefing or {})
     briefing.confirmed = True
 
@@ -3863,6 +3901,26 @@ async def chat_dashboard_ai_agent(
             _last_user_msg = str(_m.get("content") or "")
             break
     _guard = _check_input(_last_user_msg, mode=settings.INTELLIGENCE_GUARD_MODE)
+    # The BRIEFING is viewer text too, and it was not being checked. Only the
+    # chat box was, so an instruction typed into "custom_note" or "smart_goal"
+    # walked past the guard into the same prompt.
+    #
+    # Checked SEPARATELY, not concatenated onto the question: `_guard`
+    # carries `normalized_question`, and a few lines below that value REPLACES
+    # the user's message. Feeding it the briefing as well would have rewritten
+    # the viewer's question to question-plus-briefing — a guard that corrupts
+    # the thing it protects.
+    _brief_text = "\n".join(
+        str((body.briefing or {}).get(k) or "")
+        for k in ("custom_note", "smart_goal", "domain_label")
+    ).strip() if isinstance(body.briefing, dict) else ""
+    if _brief_text:
+        _bguard = _check_input(_brief_text, mode=settings.INTELLIGENCE_GUARD_MODE)
+        if _bguard.codes:
+            logger.warning("ai_bot guard(briefing) token=%s %s text=%r",
+                           token, _bguard.to_log(), _brief_text[:160])
+        if not _bguard.allowed:
+            _guard = _bguard
     if _guard.codes:
         logger.warning(
             "ai_bot guard token=%s %s question=%r",
@@ -4269,6 +4327,10 @@ async def explore_dashboard_ai_agent(
         context_for_log=f"ai_bot_explore:{token}",
     )
     ctx = ToolContext.from_dashboard(db=db, dashboard=dash, public_filters=combined_filters)
+    # Guarded BEFORE the run starts. This endpoint fans one briefing out into a
+    # multi-round exploration, so an instruction smuggled into `smart_goal` is
+    # not read once — it is carried into every question the run generates.
+    _guard_viewer_text(token, briefing=body.briefing or {})
     briefing_obj = _Briefing.from_dict(body.briefing or {}) if body.briefing else None
 
     captured_key = effective_key
