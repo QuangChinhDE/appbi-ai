@@ -142,8 +142,54 @@ export function FlowBindingEditor({ linkId }: { linkId: number | null }) {
     } finally { setBusy(false); }
   };
 
+  const chosenFlow = flows.find((f) => f.brain_key === brainKey);
+  const chartCount = contract.charts.ids.length;
+  const totalCharts = candidates?.charts.length ?? 0;
+
   return (
     <div className="space-y-4">
+      {/* 0 — IS THIS LINK CONNECTED?
+          Measured before this existed: the assign button sat 438px BELOW the fold
+          of a 1,423px nested scroller, and nothing above it said whether the link
+          already had a flow. So the question "is my bot wired up?" could only be
+          answered by scrolling to the bottom of a long form — which reads, to
+          anyone who does not know the form is that long, as the feature not being
+          there at all. The answer belongs at the top, before the controls that
+          change it. */}
+      <div
+        className={cn(
+          'flex flex-wrap items-center gap-2 rounded-lg border px-3 py-2',
+          binding
+            ? 'border-success/30 bg-success/5'
+            : 'border-[rgb(var(--border-line))] bg-surface-2',
+        )}
+      >
+        <Workflow className={cn('h-4 w-4 flex-shrink-0',
+          binding ? 'text-success' : 'text-text-tertiary')} />
+        {binding ? (
+          <>
+            <span className="text-caption font-medium">
+              Đã đấu nối: {chosenFlow?.name || binding.brain_key}
+            </span>
+            <Badge variant="neutral">
+              {chartCount}/{totalCharts || '?'} biểu đồ
+            </Badge>
+            {/* Web access is the one capability that sends a viewer's question
+                OUT of the deployment, so it is called out rather than listed
+                neutrally when it is on. */}
+            <Badge variant={contract.capabilities.web_search ? 'warning' : 'neutral'}>
+              {contract.capabilities.web_search ? 'có tra web' : 'không tra web'}
+            </Badge>
+          </>
+        ) : (
+          <span className="text-caption text-text-secondary">
+            {brainKey
+              ? 'Chưa đấu nối — hoàn tất 3 bước dưới rồi bấm “Gán flow vào link”.'
+              : 'Chưa đấu nối. Chọn một Agent Flow ở bước 1 để bắt đầu.'}
+          </span>
+        )}
+      </div>
+
       {/* 1 — pick */}
       <Step n={1} title="Chọn Agent Flow">
         <select
@@ -307,19 +353,36 @@ export function FlowBindingEditor({ linkId }: { linkId: number | null }) {
                 )}
               </p>
 
-              <div className="mt-3 flex gap-2">
-                <Button size="sm" onClick={assign} loading={busy} disabled={!check.ok}>
-                  {binding ? 'Cập nhật gán' : 'Gán flow vào link'}
-                </Button>
-                {binding && (
-                  <Button variant="secondary" size="sm" onClick={unassign} loading={busy}>
-                    Gỡ
-                  </Button>
-                )}
-              </div>
             </>
           )}
         </Step>
+      )}
+
+      {/* THE ACTION, OUTSIDE THE STEPS AND STUCK TO THE BOTTOM.
+          It lived inside step 3, which made two things true at once: it sat at
+          the very end of a 1,423px scroll, and how far down it sat depended on
+          how many warnings the preflight happened to raise. A `sticky` inside
+          step 3 would not have fixed that either — a sticky element only floats
+          while ITS OWN box is on screen, and step 3 was the part that was off
+          screen. Lifted out to the editor's own footer, it stays reachable for
+          the whole scroll, which is what "reachable" has to mean for the one
+          control that performs the operation. */}
+      {brainKey && check && (
+        <div className="sticky bottom-0 z-10 -mx-1 flex flex-wrap items-center gap-2 border-t border-[rgb(var(--border-line))] bg-surface-1/95 px-1 py-2.5 backdrop-blur">
+          <Button size="sm" onClick={assign} loading={busy} disabled={!check.ok}>
+            {binding ? 'Cập nhật gán' : 'Gán flow vào link'}
+          </Button>
+          {binding && (
+            <Button variant="secondary" size="sm" onClick={unassign} loading={busy}>
+              Gỡ
+            </Button>
+          )}
+          <span className="text-tiny text-text-tertiary">
+            {check.ok
+              ? `${chartCount} biểu đồ · ${check.estimate.max_llm_calls} lần gọi model tối đa`
+              : 'Chưa đủ điều kiện — xem bước 3'}
+          </span>
+        </div>
       )}
     </div>
   );
