@@ -19,7 +19,8 @@
  * screen before.
  */
 import {
-  AlertTriangle, Brain, Calendar, ChevronRight, Copy, Layers, Link2, Plus, Trash2,
+  AlertTriangle, Brain, Calendar, Check, ChevronRight, Copy, Layers, Link2, Loader2,
+  Plus, Trash2,
 } from 'lucide-react';
 import React from 'react';
 
@@ -34,11 +35,16 @@ import { EmptyState } from '@/components/ui/EmptyState';
 import { FilterTag } from '@/components/ui/FilterTag';
 import { FieldGroup, Input, Textarea } from '@/components/ui/Input';
 import { toast } from '@/lib/toast';
+import { cn } from '@/lib/utils';
 import { useI18n } from '@/providers/LanguageProvider';
 import {
-  blankNode, deleteBrainVersion, getBrain, listBrains, saveBrain, slugifyBrainKey,
+  blankNode, deleteBrainVersion, getAuthoringPrompt, getBrain, importDraft, listBrains,
+  saveBrain, slugifyBrainKey,
+  type AuthoringPrompt,
   type BrainSummary,
+  type FlowBody,
   type FlowNode,
+  type ImportedDraft,
 } from '@/lib/agentFlows';
 
 import { MetaChip, StatusBadge, formatWhen } from './shared';
@@ -146,6 +152,27 @@ export function BrainList({
         ],
         answer_node: writer.key,
       },
+    });
+    setCreating(false);
+    onOpen(key);
+  };
+
+  /** Save a draft an outside assistant wrote, then open it in the builder.
+   *
+   *  Saved through the SAME `saveBrain` the blank path uses — the import
+   *  endpoint only reads and reports, so there is no second way for a flow to
+   *  enter the system. What arrives here has already passed the real contract. */
+  const createFromDraft = async (d: ImportedDraft) => {
+    const flowName = (d.name || '').trim() || 'Flow từ bản nháp';
+    const key = slugifyBrainKey(flowName);
+    await saveBrain({
+      brain_key: key,
+      name: flowName,
+      description: (d.description || '').trim(),
+      // The server returns the body it already validated through the real `Flow`
+      // contract, so `nodes` is present by construction — the cast says that
+      // rather than widening the client type and losing the check everywhere else.
+      body: (d.body || { nodes: [] }) as unknown as FlowBody,
     });
     setCreating(false);
     onOpen(key);
@@ -325,7 +352,13 @@ export function BrainList({
         }}
       </PageListLayout>
 
-      {creating && <CreateBrainModal onClose={() => setCreating(false)} onCreate={create} />}
+      {creating && (
+        <CreateBrainModal
+          onClose={() => setCreating(false)}
+          onCreate={create}
+          onCreateFromDraft={createFromDraft}
+        />
+      )}
 
       <ConfirmDialog
         isOpen={confirmDelete !== null}
@@ -534,16 +567,32 @@ function BrainTableRow({
  * unreadable forever after, and there was no delete on the list to clean it up.
  */
 function CreateBrainModal({
-  onClose, onCreate,
+  onClose, onCreate, onCreateFromDraft,
 }: {
   onClose: () => void;
   onCreate: (name: string, description: string) => Promise<void>;
+  onCreateFromDraft: (d: ImportedDraft) => Promise<void>;
 }) {
   const { t } = useI18n();
+  const [mode, setMode] = React.useState<'blank' | 'ai'>('blank');
   const [name, setName] = React.useState('');
   const [description, setDescription] = React.useState('');
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
+
+  // ── the "have an assistant draft it" path ────────────────────────────────
+  const [brief, setBrief] = React.useState<AuthoringPrompt | null>(null);
+  const [copied, setCopied] = React.useState(false);
+  const [pasted, setPasted] = React.useState('');
+  const [draft, setDraft] = React.useState<ImportedDraft | null>(null);
+  const [checking, setChecking] = React.useState(false);
+
+  React.useEffect(() => {
+    // Fetched only when the author opens that tab — it is a 11KB string and most
+    // flows are still made blank.
+    if (mode !== 'ai' || brief) return;
+    getAuthoringPrompt().then(setBrief).catch(() => setBrief(null));
+  }, [mode, brief]);
 
   const submit = async () => {
     if (!name.trim()) { setError(t('agentFlows.list.create.nameRequired')); return; }
@@ -557,43 +606,209 @@ function CreateBrainModal({
     }
   };
 
+  const checkDraft = async () => {
+    setChecking(true);
+    setError(null);
+    setDraft(null);
+    try {
+      setDraft(await importDraft(pasted, name.trim() || undefined));
+    } catch (e) {
+      setError(detailMsg(e) || 'Không đọc được bản nháp');
+    } finally { setChecking(false); }
+  };
+
+  const createFromDraft = async () => {
+    if (!draft?.ok) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await onCreateFromDraft(draft);
+    } catch (e) {
+      setError(detailMsg(e) || t('agentFlows.list.create.failed'));
+      setBusy(false);
+    }
+  };
+
+  const copyBrief = async () => {
+    if (!brief) return;
+    try {
+      await navigator.clipboard.writeText(brief.prompt);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2500);
+    } catch {
+      setError('Trình duyệt chặn copy — bôi đen ô bên dưới rồi Ctrl+C.');
+    }
+  };
+
   return (
     <AppModalShell
       onClose={onClose}
       title={t('agentFlows.list.create.title')}
       description={t('agentFlows.list.create.description')}
       icon={<Brain className="h-4 w-4" />}
-      maxWidthClass="max-w-lg"
+      maxWidthClass={mode === 'ai' ? 'max-w-2xl' : 'max-w-lg'}
       closeDisabled={busy}
       footer={(
         <div className="flex items-center justify-end gap-2">
-          <Button variant="secondary" size="sm" disabled={busy} onClick={onClose}>{t('agentFlows.list.create.cancel')}</Button>
-          <Button size="sm" loading={busy} onClick={() => void submit()}>{t('agentFlows.list.create.submit')}</Button>
+          <Button variant="secondary" size="sm" disabled={busy} onClick={onClose}>
+            {t('agentFlows.list.create.cancel')}
+          </Button>
+          {mode === 'blank' ? (
+            <Button size="sm" loading={busy} onClick={() => void submit()}>
+              {t('agentFlows.list.create.submit')}
+            </Button>
+          ) : (
+            <Button size="sm" loading={busy} disabled={!draft?.ok}
+                    onClick={() => void createFromDraft()}>
+              Tạo flow từ bản nháp
+            </Button>
+          )}
         </div>
       )}
     >
       <div className="space-y-3.5">
-        <FieldGroup label={t('agentFlows.list.create.name')} required>
+        {/* Two ways in. The AI path is not a different product — it produces the
+            same flow the builder would, then hands it to the same editor. */}
+        <div className="flex gap-1 rounded-lg bg-surface-2 p-1">
+          {([
+            ['blank', 'Tự dựng'],
+            ['ai', 'Nhờ AI viết giúp'],
+          ] as const).map(([m, label]) => (
+            <button
+              key={m}
+              type="button"
+              onClick={() => { setMode(m); setError(null); }}
+              className={cn(
+                'flex-1 rounded-md px-2 py-1.5 text-caption transition',
+                mode === m ? 'bg-surface-1 font-medium shadow-sm' : 'text-text-tertiary',
+              )}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+
+        <FieldGroup label={t('agentFlows.list.create.name')} required={mode === 'blank'}>
           <Input
             autoFocus
             value={name}
             onChange={(e) => { setName(e.target.value); setError(null); }}
-            onKeyDown={(e) => { if (e.key === 'Enter') void submit(); }}
+            onKeyDown={(e) => { if (e.key === 'Enter' && mode === 'blank') void submit(); }}
             placeholder={t('agentFlows.list.create.namePlaceholder')}
-            invalid={Boolean(error) && !name.trim()}
+            invalid={Boolean(error) && mode === 'blank' && !name.trim()}
           />
         </FieldGroup>
-        <FieldGroup
-          label={t('agentFlows.list.create.descriptionLabel')}
-          description={t('agentFlows.list.create.descriptionHint')}
-        >
-          <Textarea
-            rows={3}
-            value={description}
-            onChange={(e) => setDescription(e.target.value)}
-            placeholder={t('agentFlows.list.create.descriptionPlaceholder')}
-          />
-        </FieldGroup>
+
+        {mode === 'blank' && (
+          <FieldGroup
+            label={t('agentFlows.list.create.descriptionLabel')}
+            description={t('agentFlows.list.create.descriptionHint')}
+          >
+            <Textarea
+              rows={3}
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              placeholder={t('agentFlows.list.create.descriptionPlaceholder')}
+            />
+          </FieldGroup>
+        )}
+
+        {mode === 'ai' && (
+          <div className="space-y-3">
+            <ol className="space-y-3">
+              <li>
+                <div className="mb-1.5 flex items-center gap-2">
+                  <StepDot n={1} />
+                  <b className="text-caption font-strong">Copy bản mô tả hệ thống</b>
+                  {brief && (
+                    <span className="text-tiny text-text-tertiary">
+                      {brief.stats.node_types} loại bước · {brief.stats.tools} công cụ
+                    </span>
+                  )}
+                </div>
+                <p className="mb-1.5 text-tiny leading-5 text-text-tertiary">
+                  Dán vào ChatGPT hoặc Claude, rồi mô tả nhu cầu của bạn bằng lời
+                  thường. Bản mô tả này liệt kê đúng những gì hệ thống chạy được,
+                  nên thứ nó viết ra sẽ dùng được ngay.
+                </p>
+                <div className="flex gap-2">
+                  <Button size="sm" variant="secondary" disabled={!brief}
+                          onClick={() => void copyBrief()}>
+                    {copied ? '✓ Đã copy' : 'Copy bản mô tả'}
+                  </Button>
+                  {!brief && <Loader2 className="h-4 w-4 animate-spin text-text-tertiary" />}
+                </div>
+              </li>
+
+              <li>
+                <div className="mb-1.5 flex items-center gap-2">
+                  <StepDot n={2} />
+                  <b className="text-caption font-strong">Dán kết quả trợ lý trả về</b>
+                </div>
+                <Textarea
+                  rows={5}
+                  value={pasted}
+                  onChange={(e) => { setPasted(e.target.value); setDraft(null); }}
+                  placeholder='Dán cả đoạn trợ lý trả lời cũng được — hệ thống tự tìm khối ```json'
+                />
+                <Button size="sm" variant="secondary" className="mt-1.5"
+                        loading={checking} disabled={!pasted.trim()}
+                        onClick={() => void checkDraft()}>
+                  Kiểm tra bản nháp
+                </Button>
+              </li>
+            </ol>
+
+            {draft && !draft.ok && (
+              <div className="rounded-lg border border-danger/25 bg-danger/5 p-2.5">
+                <p className="mb-1 flex items-center gap-1.5 text-tiny font-medium text-danger">
+                  <AlertTriangle className="h-3.5 w-3.5" /> Bản nháp chưa dùng được
+                </p>
+                {draft.errors.map((e, i) => (
+                  <p key={i} className="text-tiny leading-5 text-danger">{e}</p>
+                ))}
+                <p className="mt-1.5 text-tiny text-text-tertiary">
+                  Gửi nguyên đoạn lỗi này lại cho trợ lý và bảo nó sửa, rồi dán lại.
+                </p>
+              </div>
+            )}
+
+            {draft?.ok && (
+              <div className="rounded-lg border border-success/30 bg-success/5 p-2.5">
+                <p className="mb-1.5 flex items-center gap-1.5 text-tiny font-medium text-success">
+                  <Check className="h-3.5 w-3.5" />
+                  Đọc được: {draft.node_count} bước · bước trả lời “{draft.answer_node}”
+                </p>
+                {/* WHAT IS STILL EMPTY, before creating rather than after.
+                    The brief tells the assistant to leave every id blank, so a
+                    good draft arrives incomplete BY DESIGN — saying which steps
+                    wait on an attachment is the difference between "here is a
+                    flow" and "here is a flow that reads nothing yet". */}
+                {(draft.needs_attachment?.length || draft.todo?.length) ? (
+                  <div className="mt-1.5 border-t border-success/20 pt-1.5">
+                    <p className="mb-1 text-tiny font-medium text-text-secondary">
+                      Sau khi tạo, bạn cần gắn thêm:
+                    </p>
+                    {draft.needs_attachment?.map((n) => (
+                      <p key={n.key} className="text-tiny leading-5 text-text-secondary">
+                        · <b>{n.name || n.key}</b> — {n.why}
+                      </p>
+                    ))}
+                    {draft.todo?.map((x, i) => (
+                      <p key={i} className="text-tiny leading-5 text-text-tertiary">· {x}</p>
+                    ))}
+                  </div>
+                ) : null}
+                {draft.warnings.map((w, i) => (
+                  <p key={i} className="mt-1.5 rounded border border-warning/25 bg-warning/5 p-1.5 text-tiny leading-5 text-warning">
+                    {w}
+                  </p>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
         {error && (
           <p className="flex gap-1.5 rounded-md border border-danger/25 bg-danger/10 px-2.5 py-2 text-tiny leading-snug text-danger">
             <AlertTriangle className="mt-0.5 h-3 w-3 flex-shrink-0" />
@@ -602,5 +817,13 @@ function CreateBrainModal({
         )}
       </div>
     </AppModalShell>
+  );
+}
+
+function StepDot({ n }: { n: number }) {
+  return (
+    <span className="flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-full bg-brand/10 text-tiny font-strong text-brand">
+      {n}
+    </span>
   );
 }

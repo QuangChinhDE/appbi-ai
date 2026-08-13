@@ -154,6 +154,184 @@ def list_models(_: User = Depends(can_view)) -> dict[str, Any]:
     return {"providers": model_catalogue()}
 
 
+@router.get("/authoring-prompt")
+def authoring_prompt(
+    web_enabled: bool = True, _: User = Depends(can_view)
+) -> dict[str, Any]:
+    """A brief the author pastes into ChatGPT/Claude to have a flow drafted.
+
+    GENERATED from the same registries the builder's palette reads, per request.
+    A hand-written copy would drift into naming node types the executor does not
+    have — and unlike a stale palette entry, that drift comes back laundered
+    through a competent outside model as confident, well-formed JSON.
+
+    Costs nothing and calls no model: this endpoint only describes the system.
+    """
+    from app.services.agent_flows.authoring_prompt import build_authoring_prompt
+
+    return build_authoring_prompt(web_enabled=web_enabled)
+
+
+def _iter_raw_nodes(nodes: Any):
+    """Every node dict in a RAW pasted body, including nested bodies.
+
+    Walks the payload before the contract has seen it, because the check it
+    feeds is about a field the contract deletes.
+    """
+    for n in nodes or []:
+        if not isinstance(n, dict):
+            continue
+        yield n
+        for p in (n.get("paths") or []) + (n.get("cases") or []):
+            if isinstance(p, dict):
+                yield from _iter_raw_nodes(p.get("body"))
+        yield from _iter_raw_nodes(n.get("body"))
+        yield from _iter_raw_nodes(n.get("fallback"))
+
+
+class ImportDraftBody(BaseModel):
+    """A flow drafted elsewhere, on its way in."""
+
+    brain_key: str = ""
+    name: str = ""
+    #: Accepted as TEXT, not as a parsed object. What an author has on their
+    #: clipboard is whatever the assistant printed — usually a ```json fence,
+    #: sometimes with a sentence before it. Making the UI strip that first would
+    #: put a second, quieter parser in the frontend; the paste arrives raw and is
+    #: understood in one place.
+    raw: str
+
+
+@router.post("/import-draft")
+def import_draft(
+    body: ImportDraftBody, _: User = Depends(can_edit)
+) -> dict[str, Any]:
+    """Parse a pasted draft and report what it is — WITHOUT saving anything.
+
+    Deliberately not "parse and create". A draft written by an outside model is
+    the least trusted input this module takes, and the author has not seen what
+    it contains yet. So this answers "would this work, and what does it want you
+    to attach", and creating remains the existing explicit save.
+
+    Validation is the SAME `Flow` contract the builder uses. A second, more
+    forgiving parser for imported drafts would be a way to get a flow into the
+    system that the builder itself would have refused.
+    """
+    import json as _json
+    import re as _re
+
+    text = (body.raw or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Chưa dán nội dung nào")
+
+    # A fenced block if there is one, otherwise the outermost {...}. Both shapes
+    # are what assistants actually return; neither is worth making a person edit
+    # by hand before pasting.
+    fence = _re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, _re.S)
+    if fence:
+        text = fence.group(1)
+    else:
+        first, last = text.find("{"), text.rfind("}")
+        if first >= 0 and last > first:
+            text = text[first:last + 1]
+
+    try:
+        data = _json.loads(text)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(
+            status_code=400,
+            detail=f"Không đọc được JSON: {type(exc).__name__}. Dán đúng khối "
+                   "```json mà trợ lý trả về.",
+        )
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=400, detail="Nội dung phải là một object JSON")
+
+    # `todo` is the model's note to the author about what to attach; it is not
+    # part of a Flow, so it is lifted out before validation rather than making
+    # the contract accept a field it has no use for.
+    todo = [str(x) for x in (data.pop("todo", None) or []) if str(x).strip()]
+    key = (body.brain_key or data.get("key") or "").strip()
+    name = (body.name or data.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Bản nháp thiếu 'name'")
+
+    try:
+        flow = Flow.model_validate(
+            {**upgrade_body(data, key=key or "draft", name=name),
+             "key": key or "draft", "name": name}
+        )
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "ok": False,
+            "errors": [reg._first_message(exc)],
+            "warnings": [],
+            "todo": todo,
+        }
+
+    # AN OUTSIDE MODEL THAT WIRED THE STEPS TOGETHER.
+    #
+    # A flow is an ORDERED LIST, not a graph — there is no `next` field, and node
+    # models are configured `extra: "ignore"`, so a draft carrying `next` arrays
+    # validates perfectly and the wiring is thrown away. Measured, not assumed: a
+    # two-step draft whose edges ran b→a was accepted and would have executed
+    # a→b, the list order.
+    #
+    # That is the worst failure shape available here — no error, and the flow
+    # runs in an order the author never chose. Every assistant reaches for edges
+    # unprompted, so the brief forbids it and this says so out loud when it
+    # happens anyway. Checked against the RAW payload, because by the time the
+    # contract has parsed it the evidence is already gone.
+    wired = sorted({
+        str(n.get("key") or "?")
+        for n in _iter_raw_nodes(data.get("nodes"))
+        if isinstance(n, dict) and n.get("next")
+    })
+    extra_warnings: list[str] = []
+    if wired:
+        extra_warnings.append(
+            "Bản nháp có trường `next` ở các bước: " + ", ".join(wired)
+            + ". Hệ thống KHÔNG dùng `next` — các bước chạy theo đúng thứ tự "
+            "trong danh sách. Hãy kiểm tra thứ tự trước khi lưu, hoặc bảo trợ lý "
+            "sắp xếp lại danh sách cho đúng ý và bỏ `next`."
+        )
+
+    from app.services.agent_flows.binding import estimate_cost
+
+    # WHICH STEPS ARE STILL EMPTY. The brief tells the outside model to leave
+    # every id blank, so a valid draft normally arrives incomplete BY DESIGN.
+    # Saying which steps are waiting on an attachment is the difference between
+    # "here is a flow" and "here is a flow, and these three steps read nothing
+    # until you point them at something".
+    needs: list[dict[str, Any]] = []
+    for node in flow.all_nodes():
+        # `knowledge` is the one attachment the contract actually carries, on the
+        # two node types that can hold it. A `knowledge` step with nothing
+        # attached retrieves from nothing — it will run, and find zero rows,
+        # which is the silent half-working state worth naming up front. On an
+        # `agent` step the same field is optional, so its absence is not a gap.
+        if node.type == "knowledge" and not (getattr(node, "knowledge", None) or []):
+            needs.append({
+                "key": node.key,
+                "name": node.name,
+                "missing": ["knowledge"],
+                "why": "Bước tra cứu chưa gắn tài liệu nào — sẽ không tìm thấy gì.",
+            })
+
+    return {
+        "ok": True,
+        "errors": [],
+        "warnings": extra_warnings + list(flow.warnings()),
+        "name": name,
+        "description": str(data.get("description") or "").strip(),
+        "body": flow.model_dump(mode="json", exclude={"key", "name"}),
+        "node_count": len(flow.all_nodes()),
+        "answer_node": flow.answering_key(),
+        "estimate": estimate_cost(flow),
+        "todo": todo,
+        "needs_attachment": needs,
+    }
+
+
 @router.get("/attachable")
 def list_attachable(
     db: Session = Depends(get_db), user: User = Depends(can_view)

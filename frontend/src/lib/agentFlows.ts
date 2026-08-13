@@ -552,6 +552,41 @@ export async function listAttachable(): Promise<Attachable> {
   };
 }
 
+// ── Drafting a flow with an outside assistant ───────────────────────────────
+export interface AuthoringPrompt {
+  prompt: string;
+  stats: { node_types: number; tool_packs: number; tools: number };
+  author_supplied_fields: string[];
+}
+
+export interface ImportedDraft {
+  ok: boolean;
+  errors: string[];
+  warnings: string[];
+  name?: string;
+  description?: string;
+  body?: Record<string, unknown>;
+  node_count?: number;
+  answer_node?: string;
+  todo?: string[];
+  needs_attachment?: { key: string; name: string; missing: string[]; why: string }[];
+}
+
+/** The brief to paste into ChatGPT/Claude. Generated server-side from the live
+ *  registries, so it can never describe a node type this deployment lacks. */
+export async function getAuthoringPrompt(): Promise<AuthoringPrompt> {
+  const { data } = await apiClient.get<AuthoringPrompt>(`${BASE}/authoring-prompt`);
+  return data;
+}
+
+/** Parse a pasted draft and report what it is. Saves NOTHING — creating stays
+ *  the explicit action, because a draft written elsewhere is the least trusted
+ *  input this module takes and the author has not read it yet. */
+export async function importDraft(raw: string, name?: string): Promise<ImportedDraft> {
+  const { data } = await apiClient.post<ImportedDraft>(`${BASE}/import-draft`, { raw, name });
+  return data;
+}
+
 // ── Flows ───────────────────────────────────────────────────────────────────
 export async function listBrains(): Promise<BrainSummary[]> {
   const { data } = await apiClient.get<{ brains: BrainSummary[] }>(`${BASE}/brains`);
