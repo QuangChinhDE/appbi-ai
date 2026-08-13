@@ -32,9 +32,24 @@ from __future__ import annotations
 
 from typing import Literal
 
-Provider = Literal["openai", "anthropic", "gemini"]
+Provider = Literal["openai"]
 
-#: Models this deployment will accept on a step, per provider.
+#: ONE VENDOR, DECIDED BY THE OPERATOR.
+#:
+#: The catalogue listed OpenAI, Anthropic and Gemini. The operator's decision is
+#: that this product runs on OpenAI and the deployment supplies the token from
+#: its own environment, so the other two are removed rather than left visible and
+#: unusable — a picker offering a vendor nobody will ever hold a key for is a
+#: 404 waiting for the first real question.
+#:
+#: This is NOT the same thing as hiding an option because today's server lacks a
+#: key; that would break brain portability and is why `has_key` exists below
+#: instead. This is the allowlist of what the product supports at all, which is
+#: what this table has always been.
+#:
+#: Restoring a vendor is: put its entry back here and give the deployment a key.
+#: Checked before removing — no stored flow pinned anything but `inherit`, so
+#: nothing existing had to be migrated.
 #:
 #: `label` is what the builder shows; `tier_hint` lets a picker group them without
 #: reintroducing the tier vocabulary as a stored value — the step stores the MODEL
@@ -44,15 +59,6 @@ MODELS: dict[str, list[dict[str, str]]] = {
         {"model": "gpt-4o-mini", "label": "GPT-4o mini", "tier_hint": "fast"},
         {"model": "gpt-4o", "label": "GPT-4o", "tier_hint": "balanced"},
         {"model": "gpt-5", "label": "GPT-5", "tier_hint": "deep"},
-    ],
-    "anthropic": [
-        {"model": "claude-haiku-4-5", "label": "Claude Haiku 4.5", "tier_hint": "fast"},
-        {"model": "claude-sonnet-4-5", "label": "Claude Sonnet 4.5", "tier_hint": "balanced"},
-        {"model": "claude-opus-4-5", "label": "Claude Opus 4.5", "tier_hint": "deep"},
-    ],
-    "gemini": [
-        {"model": "gemini-2.5-flash", "label": "Gemini 2.5 Flash", "tier_hint": "fast"},
-        {"model": "gemini-2.5-pro", "label": "Gemini 2.5 Pro", "tier_hint": "deep"},
     ],
 }
 
@@ -67,17 +73,54 @@ def known_model(provider: str, model: str) -> bool:
     return any(m["model"] == model for m in MODELS.get(provider, []))
 
 
+def _deployment_has_key(provider: str) -> bool:
+    """Does THIS deployment hold a credential for that vendor right now?
+
+    The token is the operator's, set in the server's environment — never on a
+    step and never on a brain, for the reason in this module's docstring. So this
+    is the single thing that decides whether any Agent step can run at all.
+    """
+    try:
+        from app.core.config import settings
+
+        attr = {"openai": "OPENAI_API_KEY"}.get(provider)
+        return bool(attr and (getattr(settings, attr, "") or "").strip())
+    except Exception:  # noqa: BLE001 — the picker must render without settings
+        return False
+
+
 def catalogue() -> list[dict]:
     """For the builder's model picker. Includes `inherit` as a first-class choice
     rather than an empty option, because "use the link's model" is a decision an
-    author makes on purpose, not the absence of one."""
+    author makes on purpose, not the absence of one.
+
+    WHAT `has_key` IS FOR, NOW THAT THERE IS ONE VENDOR
+    --------------------------------------------------
+    It no longer decides whether to offer a choice — there is only one. It
+    answers the question that replaced it: the deployment supplies the token, so
+    if `OPENAI_API_KEY` is unset, EVERY Agent step in every flow is dead, and the
+    author should learn that while building rather than from a viewer's blank
+    answer. One flag, stated where the model is chosen.
+    """
     out: list[dict] = [{
         "provider": INHERIT,
         "label": "Theo cấu hình của link",
         "models": [],
-        "note": "Giữ bộ não dùng lại được trên mọi link, kể cả link dùng nhà cung cấp khác.",
+        "has_key": True,
+        "note": "Dùng model đã cấu hình cho link. Token do máy chủ cung cấp.",
     }]
-    labels = {"openai": "OpenAI", "anthropic": "Anthropic (Claude)", "gemini": "Google (Gemini)"}
+    labels = {"openai": "OpenAI"}
     for prov, models in MODELS.items():
-        out.append({"provider": prov, "label": labels[prov], "models": list(models), "note": ""})
+        has_key = _deployment_has_key(prov)
+        out.append({
+            "provider": prov,
+            "label": labels.get(prov, prov),
+            "models": list(models),
+            "has_key": has_key,
+            "note": "Token lấy từ cấu hình máy chủ — không cần nhập ở đây."
+            if has_key else (
+                "Máy chủ CHƯA có OPENAI_API_KEY — mọi bước AI sẽ lỗi cho tới khi "
+                "khoá được đặt trong .env của máy chủ."
+            ),
+        })
     return out

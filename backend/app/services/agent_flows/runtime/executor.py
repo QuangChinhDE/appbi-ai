@@ -158,15 +158,40 @@ async def run_flow(
             )
         )
     if not answer.blocks:
-        status = "failed" if status == "ok" else status
+        # NOTHING REACHED THE VIEWER, SO THE RUN FAILED — whatever was decided
+        # above.
+        #
+        # This was `status = "failed" if status == "ok" else status`, and the
+        # branch above had already moved status to "partial" in exactly the case
+        # that produces no blocks: the answering node died, so the answer is a
+        # fallback AND there is nothing in it. The guard could therefore never
+        # fire, and a run the viewer got nothing from was filed as half-success.
+        #
+        # Measured in this deployment: runs #4, #36, #39 and #46 each lost their
+        # answering node — to a 401, to two timeouts, to a 400 — and all four are
+        # stored `partial`. The flow's own success statistics counted them as
+        # partly working. "Partial" has to mean the viewer got something.
+        status = "failed"
         # Say WHICH way it failed. "Chưa tạo được câu trả lời" was true of a run
         # that timed out, one that hit its call ceiling, and one whose model
         # rejected the key — three different things for whoever is meant to fix
         # it, and the run already knows which happened. A viewer reading a
         # generic sentence retries the same question and gets the same sentence.
+        #
+        # It read ONLY the budget notice, so every other cause fell through to the
+        # generic sentence the comment above exists to prevent. Across this
+        # deployment's history that is 21 error steps over five distinct causes —
+        # 401, model timeout, HTTP 400, no readable chart, 429 — none of which
+        # ever reached the person reading the answer. The step that actually
+        # failed already carries its message; use it.
         reason = next(
             (n.text for n in state.notices if n.code == "budget_exhausted"), ""
         )
+        if not reason:
+            failed_steps = [s for s in state.trace if s.status == "error" and s.error]
+            if failed_steps:
+                last = failed_steps[-1]
+                reason = f"bước “{last.name or last.key}” lỗi — {last.error}"
         answer = text_answer(
             f"Chưa trả lời được: {reason}." if reason
             else "Chưa tạo được câu trả lời cho câu hỏi này."

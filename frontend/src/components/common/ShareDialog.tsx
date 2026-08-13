@@ -95,7 +95,7 @@ export function ShareDialog({ resourceType, resourceId, resourceName, onClose }:
       try {
         const [sharesData, usersData, teamsData] = await Promise.all([
           sharesApi.getShares(resourceType, resourceId),
-          usersApi.getShareable(resourceType, resourceId),
+          usersApi.getShareable(resourceType, resourceId, ''),
           teamsApi.getShareable(resourceType, resourceId),
         ]);
         setShares(Array.isArray(sharesData) ? sharesData : []);
@@ -116,6 +116,24 @@ export function ShareDialog({ resourceType, resourceId, resourceName, onClose }:
     };
     load();
   }, [resourceType, resourceId, resourceName, t]);
+
+  // The people list is a SERVER-SIDE search, so what the user types has to reach
+  // the server. Filtering the first page client-side found nothing beyond the
+  // handful that page happened to contain — the picker looked broken for every
+  // name outside the caller's own team.
+  useEffect(() => {
+    const term = search.trim();
+    if (!term) return;
+    const timer = setTimeout(async () => {
+      try {
+        const found = await usersApi.getShareable(resourceType, resourceId, term);
+        setUsers(Array.isArray(found) ? found : []);
+      } catch {
+        // A failed lookup must not wipe the list the dialog opened with.
+      }
+    }, 250);
+    return () => clearTimeout(timer);
+  }, [search, resourceType, resourceId]);
 
   const directUserShareIds = new Set(
     shares

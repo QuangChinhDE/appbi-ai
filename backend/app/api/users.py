@@ -5,20 +5,27 @@ User management endpoints.
 import uuid
 from typing import Dict, List
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, ConfigDict
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.core.database import get_db
 from app.core.share_access import require_share_access
 from app.core.dependencies import get_current_user, require_permission
 from app.core.user_deletion import reassign_user_resources, summarize_owned_resources
+from app.models.audit_log import AuditAction
 from app.models.resource_share import ResourceType
 from app.models.team import Team, TeamMembership
 from app.models.user import AuthProvider, User, UserStatus
 from app.schemas.auth import UserCreate, UserResponse, UserUpdate
+from app.services.audit_service import audit
 
 router = APIRouter(prefix="/users", tags=["users"])
+
+#: Ceiling on one sharing-picker response. Enough to pick from, far short of a
+#: directory export.
+_SHAREABLE_RESULT_LIMIT = 25
 
 
 def _normalize_email(email: str) -> str:
@@ -80,17 +87,47 @@ def _replace_user_teams(db: Session, user: User, team_ids: list[uuid.UUID]) -> N
 def list_shareable_users(
     resource_type: ResourceType = Query(...),
     resource_id: str = Query(..., min_length=1),
+    q: str = Query("", max_length=120, description="Name or email fragment"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """List active users (id, email, full_name) for an authorized sharing dialog."""
+    """Users matching *q*, for an authorized sharing dialog.
+
+    SEARCH, NOT A DIRECTORY DUMP. This used to return every active user — email and
+    full name — to anyone who could share any one resource, which is to say to
+    anyone who had ever made a dashboard. That is a ready-made phishing list and an
+    account-enumeration oracle, handed out by a picker.
+
+    An empty query returns the people already reachable (teammates), so the dialog
+    still opens with something useful rather than a blank list.
+    """
     require_share_access(db, current_user, resource_type, resource_id)
-    return (
-        db.query(User)
-        .filter(User.status == UserStatus.ACTIVE)
-        .order_by(User.full_name)
-        .all()
-    )
+
+    base = db.query(User).filter(User.status == UserStatus.ACTIVE)
+    term = q.strip()
+
+    if term:
+        pattern = f"%{term.lower()}%"
+        base = base.filter(
+            or_(
+                func.lower(User.email).like(pattern),
+                func.lower(User.full_name).like(pattern),
+            )
+        )
+    else:
+        # No search term → teammates only.
+        my_team_ids = select(TeamMembership.team_id).where(
+            TeamMembership.user_id == current_user.id
+        )
+        base = base.filter(
+            User.id.in_(
+                select(TeamMembership.user_id).where(
+                    TeamMembership.team_id.in_(my_team_ids)
+                )
+            )
+        )
+
+    return base.order_by(User.full_name).limit(_SHAREABLE_RESULT_LIMIT).all()
 
 
 @router.get("/", response_model=List[UserResponse])
@@ -98,9 +135,13 @@ def list_users(
     skip: int = 0,
     limit: int = 100,
     db: Session = Depends(get_db),
-    _: User = Depends(require_permission("settings", "view")),
+    # `settings` only accepts none|full in the matrix (MODULE_ALLOWED_LEVELS), so
+    # "view" was a level no admin could actually grant — this read was
+    # admin-only in practice while the docstring promised otherwise. Stating the
+    # level that is real beats asking for one that cannot exist.
+    _: User = Depends(require_permission("settings", "full")),
 ):
-    """List all users (admin and editor)."""
+    """List all users (admin only)."""
     return _base_user_query(db).order_by(User.full_name.asc()).offset(skip).limit(limit).all()
 
 
@@ -117,6 +158,7 @@ def get_user(
 @router.post("/", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
 def create_user(
     body: UserCreate,
+    request: Request,
     db: Session = Depends(get_db),
     admin: User = Depends(require_permission("settings", "full")),
 ):
@@ -141,6 +183,15 @@ def create_user(
     db.flush()
     _replace_user_teams(db, user, body.team_ids)
     db.commit()
+    audit(
+        db,
+        AuditAction.USER_CREATED,
+        request=request,
+        user_id=admin.id,
+        resource_type="user",
+        resource_id=str(user.id),
+        details={"email": user.email, "auth_provider": user.auth_provider},
+    )
     return _load_user_or_404(db, user.id)
 
 
@@ -176,6 +227,7 @@ def update_user(
 @router.delete("/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
 def deactivate_user(
     user_id: uuid.UUID,
+    request: Request,
     db: Session = Depends(get_db),
     admin: User = Depends(require_permission("settings", "full")),
 ):
@@ -192,6 +244,15 @@ def deactivate_user(
 
     user.status = UserStatus.DEACTIVATED
     db.commit()
+    audit(
+        db,
+        AuditAction.USER_DEACTIVATED,
+        request=request,
+        user_id=admin.id,
+        resource_type="user",
+        resource_id=str(user.id),
+        details={"email": user.email},
+    )
 
 
 # Resource keys counted as "owned" (reassigned on delete). shares_given / api_tokens
@@ -221,6 +282,7 @@ def get_user_deletion_impact(
 @router.delete("/{user_id}/permanent", status_code=status.HTTP_204_NO_CONTENT)
 def delete_user_permanently(
     user_id: uuid.UUID,
+    request: Request,
     db: Session = Depends(get_db),
     admin: User = Depends(require_permission("settings", "full")),
 ):
@@ -240,6 +302,17 @@ def delete_user_permanently(
             detail="Deactivate the account before deleting it permanently",
         )
 
+    deleted_email = user.email
     reassign_user_resources(db, user.id, admin.id)
     db.delete(user)
     db.commit()
+    audit(
+        db,
+        AuditAction.USER_DEACTIVATED,
+        request=request,
+        user_id=admin.id,
+        resource_type="user",
+        resource_id=str(user_id),
+        details={"email": deleted_email, "permanent": True,
+                 "resources_reassigned_to": admin.email},
+    )

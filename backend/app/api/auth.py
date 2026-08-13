@@ -25,7 +25,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.database import get_db
-from app.core.dependencies import ALGORITHM, get_current_user
+from app.core.dependencies import ACCESS_TOKEN_TYPE, ALGORITHM, get_current_user
 from app.models.audit_log import AuditAction
 from app.models.revoked_token import RevokedToken
 from app.models.user import AuthProvider, User, UserStatus
@@ -133,6 +133,10 @@ def create_access_token(user: User) -> str:
         "sub": str(user.id),
         "jti": str(uuid.uuid4()),
         "iat": now,
+        # Stamped so get_current_user can tell an access token from the three other
+        # token kinds signed with the same key. Without it a refresh token was
+        # accepted here as an access token.
+        "type": ACCESS_TOKEN_TYPE,
         "exp": now + timedelta(hours=ACCESS_TOKEN_EXPIRE_HOURS),
     }
     return jwt.encode(payload, settings.SECRET_KEY, algorithm=ALGORITHM)
@@ -637,27 +641,34 @@ def logout(
     response: Response,
     db: Session = Depends(get_db),
 ):
-    """Clear authentication cookie and revoke the token server-side."""
-    token = request.cookies.get("access_token")
+    """Clear authentication cookies and revoke BOTH tokens server-side."""
     logout_user_id = None
 
-    if token:
+    def _revoke(raw: str | None) -> str | None:
+        """Blacklist one token's jti. Returns its `sub` for the audit entry."""
+        if not raw:
+            return None
         try:
-            payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[ALGORITHM])
-            jti = payload.get("jti")
-            exp = payload.get("exp")
-            logout_user_id = payload.get("sub")
-            if jti and exp:
-                expires_at = datetime.fromtimestamp(exp, tz=timezone.utc)
-                revoked = RevokedToken(
-                    jti=jti,
-                    user_id=logout_user_id,
-                    expires_at=expires_at,
-                )
-                db.merge(revoked)
-                db.commit()
+            payload = jwt.decode(raw, settings.SECRET_KEY, algorithms=[ALGORITHM])
         except Exception:
-            pass
+            return None
+        jti = payload.get("jti")
+        exp = payload.get("exp")
+        if jti and exp:
+            db.merge(
+                RevokedToken(
+                    jti=jti,
+                    user_id=payload.get("sub"),
+                    expires_at=datetime.fromtimestamp(exp, tz=timezone.utc),
+                )
+            )
+            db.commit()
+        return payload.get("sub")
+
+    # The refresh token was previously only dropped client-side, so anyone holding
+    # a copy kept a 7-day session that "log out" did not end.
+    logout_user_id = _revoke(request.cookies.get("access_token"))
+    logout_user_id = _revoke(request.cookies.get("refresh_token")) or logout_user_id
 
     response.delete_cookie(key="access_token", path="/")
     response.delete_cookie(key="refresh_token", path="/api/v1/auth/refresh")

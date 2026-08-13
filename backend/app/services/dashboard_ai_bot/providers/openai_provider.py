@@ -26,6 +26,49 @@ _STICKY_TTL = 45.0
 _FALLBACK_MODEL = "gpt-4o-mini"
 
 
+def _switchable_providers() -> str:
+    """Vendors an Agent step may actually be switched to on this product.
+
+    Read from the model catalogue, NOT from which keys happen to sit in the
+    environment. An earlier version of this message listed every vendor with a
+    key present and told the reader to switch to one — advice that stopped being
+    executable the moment the product narrowed to OpenAI, because the picker no
+    longer offers those vendors whatever keys exist.
+
+    That is the same defect this message was rewritten to remove: recommending a
+    remedy the reader cannot carry out. So the list comes from the one place that
+    decides what is choosable.
+    """
+    try:
+        from app.services.agent_flows.models_catalogue import MODELS
+
+        others = [p for p in MODELS if p != "openai"]
+        return ", ".join(others)
+    except Exception:  # noqa: BLE001 — a message must never break the stream
+        return ""
+
+
+def quota_exhausted_message() -> str:
+    """What to say when even the small model is out of budget.
+
+    A named function rather than an inline string, because this sentence is the
+    only thing the operator gets when the account runs dry and it has already
+    been wrong once — it used to recommend switching to `gpt-4o-mini`, which is
+    reachable ONLY by having just switched to mini and failed. Worth being able
+    to assert on directly instead of grepping the source for a fragment.
+    """
+    alts = _switchable_providers()
+    return (
+        "OpenAI 429 trên CẢ model nhỏ (đã tự chuyển sang "
+        f"{_FALLBACK_MODEL} và thử lại) — gần như chắc chắn là hết quota của "
+        "tài khoản OpenAI, không phải nghẽn tạm thời. Đổi sang model OpenAI "
+        "khác cũng không giúp được vì quota tính trên cả tài khoản."
+        + (f" Có thể chuyển bước này sang: {alts}." if alts else
+           " Hệ thống chỉ chạy trên OpenAI, nên cách duy nhất là nạp thêm quota "
+           "cho tài khoản của OPENAI_API_KEY trên máy chủ.")
+    )
+
+
 def _tool_payload(msg: dict) -> str:
     """The tool's output, whichever key the caller used.
 
@@ -270,11 +313,36 @@ async def stream_openai(
                             await _asyncio.sleep(wait_s)
                             continue
                         if resp.status_code == 429:
-                            yield AgentEvent(
-                                type="error",
-                                text="OpenAI 429: vượt quota / bị rate-limit. Đợi vài chục giây rồi thử lại, hoặc chuyển sang gpt-4o-mini.",
-                                extra={"http_status": 429},
-                            )
+                            # DO NOT RECOMMEND THE THING JUST TRIED.
+                            #
+                            # The message said "wait, or switch to gpt-4o-mini" in
+                            # every case — including the case reached only BY
+                            # having already switched to mini and retried it
+                            # twice. Whoever read it went and set the model to
+                            # mini by hand, which is what v2 of the operator's
+                            # flow did, and got the same 429 for the same reason.
+                            #
+                            # Reaching here after `downgraded` means the small
+                            # model's separate budget is gone too, and that is not
+                            # a per-model rate limit — it is the ACCOUNT. Say so,
+                            # and name what this deployment can actually fall back
+                            # to instead of a model that just failed.
+                            if downgraded:
+                                yield AgentEvent(
+                                    type="error",
+                                    text=quota_exhausted_message(),
+                                    extra={"http_status": 429, "exhausted": True},
+                                )
+                            else:
+                                yield AgentEvent(
+                                    type="error",
+                                    text=(
+                                        f"OpenAI 429 trên {model}: bị rate-limit. "
+                                        "Đợi vài chục giây rồi thử lại, hoặc dùng "
+                                        f"{_FALLBACK_MODEL}."
+                                    ),
+                                    extra={"http_status": 429},
+                                )
                         elif resp.status_code in (401, 403):
                             yield AgentEvent(
                                 type="error",

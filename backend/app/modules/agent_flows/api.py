@@ -21,6 +21,9 @@ from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.core.dependencies import (
     get_current_user,
+    get_effective_permission,
+    require_edit_access,
+    require_full_access,
     require_permission,
     require_view_access,
 )
@@ -41,8 +44,12 @@ router = APIRouter(prefix="/agent-flows", tags=["agent-flows"])
 can_view = require_permission("agent_flows", "view")
 can_edit = require_permission("agent_flows", "edit")
 #: Publishing changes AI behaviour on a live, published report — the same blast
-#: radius as a deploy, so it needs the top level rather than `edit`.
-can_publish = require_permission("agent_flows", "full")
+#: radius as a deploy. That risk is real, but pinning it to module-wide `full` was
+#: the wrong lever: `full` also means "see and manage every flow in the deployment",
+#: so an author could not ship their own flow without being handed everybody else's.
+#: The module floor is `edit`; the risk is carried by `_may_manage_flow`, which
+#: additionally requires the caller to OWN the flow (or administer the module).
+can_publish = require_permission("agent_flows", "edit")
 #: Assigning a flow to a link decides what data a bot may read on someone's
 #: dashboard. That is a DASHBOARD decision, so it is gated on dashboard rights and
 #: additionally on the flow being shared with the assigner.
@@ -60,6 +67,66 @@ def _run(fn):
         raise HTTPException(status_code=exc.status, detail=exc.detail)
     except binding_service.BindingError as exc:
         raise HTTPException(status_code=exc.status, detail=exc.detail)
+
+
+def _brain_row(db: Session, brain_key: str):
+    """Newest version row for `brain_key`, or None. Any version identifies the flow;
+    ownership and shares live on the flow, not on one revision of it."""
+    from app.models.agent_brain import AgentBrainVersion
+
+    return (
+        db.query(AgentBrainVersion)
+        .filter(AgentBrainVersion.brain_key == brain_key)
+        .order_by(AgentBrainVersion.version.desc())
+        .first()
+    )
+
+
+def _may_read_flow(db: Session, user: User, brain_key: str):
+    """404/403 unless this user may open `brain_key`.
+
+    THE MODULE KEY WAS THE ONLY GATE HERE. `agent_flows: view` let anyone GET any
+    brain_key — a flow body carries its author's prompts and the ids of every
+    document and dataset it reads — and `agent_flows: edit` let anyone overwrite or
+    delete somebody else's flow. Every other module checks the ROW as well as the
+    module; this one did not, so a flow was the one first-class resource with no
+    object-level boundary at all.
+
+    404 rather than 403 for a flow the caller may not see: "this key exists but is
+    not yours" is a directory of everybody else's flows.
+    """
+    row = _brain_row(db, brain_key)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Không tìm thấy flow")
+    if get_effective_permission(db, user, row, "agent_flows") == "none":
+        raise HTTPException(status_code=404, detail="Không tìm thấy flow")
+    return row
+
+
+def _may_edit_flow(db: Session, user: User, brain_key: str):
+    """403 unless this user may change `brain_key`. A key that does not exist yet is
+    allowed through — that is how a new flow gets created."""
+    row = _brain_row(db, brain_key)
+    if row is None:
+        return None
+    if get_effective_permission(db, user, row, "agent_flows") == "none":
+        raise HTTPException(status_code=404, detail="Không tìm thấy flow")
+    require_edit_access(db, user, row, "agent_flows")
+    return row
+
+
+def _may_manage_flow(db: Session, user: User, brain_key: str):
+    """403 unless this user may PUBLISH / roll back / delete `brain_key`.
+
+    Publishing is gated at the ROW (owner, or an agent_flows administrator) instead
+    of by demanding module-wide `full`. Module `full` means "see and manage every
+    flow in the deployment", so requiring it to publish meant an author could not
+    ship their own flow without also being handed everyone else's — the two are
+    different powers and only one of them was wanted.
+    """
+    row = _may_read_flow(db, user, brain_key)
+    require_full_access(db, user, row, "agent_flows")
+    return row
 
 
 # ═══ What a flow can be built from ════════════════════════════════════════════
@@ -199,19 +266,21 @@ def brains(db: Session = Depends(get_db), user: User = Depends(can_view)) -> dic
 # failure.
 @router.get("/brains/{brain_key}/impact")
 def brain_impact(
-    brain_key: str, db: Session = Depends(get_db), _: User = Depends(can_view)
+    brain_key: str, db: Session = Depends(get_db), user: User = Depends(can_view)
 ) -> dict[str, Any]:
     """Which live links this flow serves, and whether each is healthy. Read before
     Publish, because one edit changes every link pointing here."""
+    _may_read_flow(db, user, brain_key)
     return reg.impact(db, brain_key)
 
 
 @router.get("/brains/{brain_key}/versions")
 def brain_versions(
-    brain_key: str, db: Session = Depends(get_db), _: User = Depends(can_view)
+    brain_key: str, db: Session = Depends(get_db), user: User = Depends(can_view)
 ) -> dict[str, Any]:
     from app.models.agent_brain import AgentBrainVersion
 
+    _may_read_flow(db, user, brain_key)
     rows = (
         db.query(AgentBrainVersion)
         .filter(AgentBrainVersion.brain_key == brain_key)
@@ -234,8 +303,9 @@ def brain_versions(
 @router.get("/brains/{brain_key}/activity")
 def brain_activity(
     brain_key: str, limit: int = 100,
-    db: Session = Depends(get_db), _: User = Depends(can_view),
+    db: Session = Depends(get_db), user: User = Depends(can_view),
 ) -> dict[str, Any]:
+    _may_read_flow(db, user, brain_key)
     return reg.activity(db, brain_key, limit=limit)
 
 
@@ -250,8 +320,9 @@ def brain_runs(
     limit: int = 50,
     offset: int = 0,
     db: Session = Depends(get_db),
-    _: User = Depends(can_view),
+    user: User = Depends(can_view),
 ) -> dict[str, Any]:
+    _may_read_flow(db, user, brain_key)
     return runs_service.list_runs(
         db, brain_key=brain_key, status=status, binding_id=binding_id,
         since_hours=since_hours, search=search, include_tests=include_tests,
@@ -262,8 +333,9 @@ def brain_runs(
 @router.get("/brains/{brain_key}/runs/stats")
 def brain_run_stats(
     brain_key: str, since_hours: int = 24,
-    db: Session = Depends(get_db), _: User = Depends(can_view),
+    db: Session = Depends(get_db), user: User = Depends(can_view),
 ) -> dict[str, Any]:
+    _may_read_flow(db, user, brain_key)
     out = runs_service.stats(db, brain_key=brain_key, since_hours=since_hours)
     out["links"] = reg.impact(db, brain_key)["count"]
     return out
@@ -272,19 +344,21 @@ def brain_run_stats(
 @router.get("/brains/{brain_key}/runs/coverage")
 def brain_branch_coverage(
     brain_key: str, days: int = 30,
-    db: Session = Depends(get_db), _: User = Depends(can_view),
+    db: Session = Depends(get_db), user: User = Depends(can_view),
 ) -> dict[str, Any]:
     """How often each node actually ran. Drawn ON the canvas — a branch nobody
     reaches is a branch to delete, and no author finds that by re-reading their own
     diagram."""
+    _may_read_flow(db, user, brain_key)
     return runs_service.branch_coverage(db, brain_key=brain_key, days=days)
 
 
 @router.get("/brains/{brain_key}/runs/{run_id}")
 def brain_run_detail(
     brain_key: str, run_id: int,
-    db: Session = Depends(get_db), _: User = Depends(can_view),
+    db: Session = Depends(get_db), user: User = Depends(can_view),
 ) -> dict[str, Any]:
+    _may_read_flow(db, user, brain_key)
     out = runs_service.run_detail(db, brain_key=brain_key, run_id=run_id)
     if out is None:
         raise HTTPException(status_code=404, detail="Không tìm thấy run")
@@ -294,8 +368,9 @@ def brain_run_detail(
 @router.get("/brains/{brain_key}")
 def brain_detail(
     brain_key: str, version: int | None = None,
-    db: Session = Depends(get_db), _: User = Depends(can_view),
+    db: Session = Depends(get_db), user: User = Depends(can_view),
 ) -> dict[str, Any]:
+    _may_read_flow(db, user, brain_key)
     return _run(lambda: reg.get_brain(db, brain_key, version))
 
 
@@ -308,6 +383,10 @@ def save_brain(
     Upserts rather than minting a version per save — twenty prompt edits used to
     leave twenty rows and a version number that moved while the author typed.
     """
+    # `brain_key` comes from the request body, so without this an `agent_flows:edit`
+    # grant was a licence to overwrite anybody's flow by guessing its key. A key that
+    # does not exist yet passes through — that is how a new flow is created.
+    _may_edit_flow(db, user, body.brain_key)
     return _run(lambda: reg.save_draft(
         db, user, brain_key=body.brain_key, name=body.name,
         description=body.description, body=body.body, actor_email=_actor(user),
@@ -321,6 +400,7 @@ def publish_brain(
 ) -> dict[str, Any]:
     """Go live. Links this version would break are PINNED to what they run today
     rather than broken, and reported back so the author can fix them."""
+    _may_manage_flow(db, user, brain_key)
     return _run(lambda: reg.publish(db, brain_key, version, _actor(user)))
 
 
@@ -328,6 +408,7 @@ def publish_brain(
 def rollback_brain(
     brain_key: str, db: Session = Depends(get_db), user: User = Depends(can_publish)
 ) -> dict[str, Any]:
+    _may_manage_flow(db, user, brain_key)
     return _run(lambda: reg.rollback(db, brain_key, _actor(user)))
 
 
@@ -339,6 +420,7 @@ def restore_version(
     """Load an old version back onto the canvas. Changes nothing that is live —
     that is `rollback`, and conflating the two is how someone re-publishes a version
     they only meant to look at."""
+    _may_edit_flow(db, user, brain_key)
     return _run(lambda: reg.restore_to_draft(db, brain_key, version, _actor(user)))
 
 
@@ -347,6 +429,7 @@ def delete_brain_version(
     brain_key: str, version: int,
     db: Session = Depends(get_db), user: User = Depends(can_edit),
 ) -> dict[str, str]:
+    _may_manage_flow(db, user, brain_key)
     _run(lambda: reg.delete_version(db, brain_key, version, _actor(user)))
     return {"status": "deleted"}
 
@@ -544,6 +627,7 @@ async def test_flow(
     a completed execution path and answer, and a second streaming protocol would be a
     second thing to keep in step with the first.
     """
+    _may_edit_flow(db, user, brain_key)
     link, dashboard = _link_and_dashboard(db, body.link_id, user)
     binding = binding_service.get_for_link(db, link.id)
     if binding is None:
@@ -607,6 +691,7 @@ def test_node(
     which is exactly the node an author most often gets wrong and least wants to pay
     to check.
     """
+    _may_edit_flow(db, user, brain_key)
     detail = _run(lambda: reg.get_brain(db, brain_key, body.version))
     from app.models.agent_brain import AgentBrainVersion
 

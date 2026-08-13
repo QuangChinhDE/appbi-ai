@@ -8,10 +8,16 @@
  * question both need — what this user is allowed to do.
  *
  * PERMISSIONS ARE READ HERE, NOT DISCOVERED FROM A 403.
- * The module gates on three levels (`view` / `edit` / `full`) and publishing needs
- * the top one, because it changes what a live report tells viewers. The previous
- * build rendered Save and Publish to everybody and let the server refuse — a
- * read-only viewer got a button, pressed it, and was told "403" in a toast.
+ * The module gates on three levels (`view` / `edit` / `full`). An earlier build
+ * rendered Save and Publish to everybody and let the server refuse — a read-only
+ * viewer got a button, pressed it, and was told "403" in a toast.
+ *
+ * Publishing needs `edit`, not `full`. It DOES change what a live report tells
+ * viewers, but `full` on this module means "manage every flow in the deployment",
+ * so requiring it here meant an author could not ship their own flow without being
+ * handed everybody else's. The risk is carried at the ROW instead: the server
+ * additionally requires the caller to own the flow (or administer the module), so
+ * this button appearing never implies you may publish someone else's work.
  */
 import React from 'react';
 
@@ -27,7 +33,9 @@ export function AgentFlowsPage() {
   const [openKey, setOpenKey] = React.useState<string | null>(null);
 
   const canEdit = hasPermission(perms?.permissions, MODULE, 'edit');
-  const canPublish = hasPermission(perms?.permissions, MODULE, 'full');
+  // Matches the server: module floor `edit`, plus an ownership check on the flow
+  // itself (agent_flows/api.py::_may_manage_flow).
+  const canPublish = hasPermission(perms?.permissions, MODULE, 'edit');
 
   if (openKey !== null) {
     return (

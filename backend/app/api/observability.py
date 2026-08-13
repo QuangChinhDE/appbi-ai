@@ -17,13 +17,13 @@ Endpoints (all dataset-access scoped):
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.core import get_db
 from app.core.dependencies import get_current_user, require_permission
-from app.core.permissions import _owned_or_shared
+from app.core.permissions import LEVEL_ORDER, _owned_or_shared, get_user_module_permission
 from app.models.resource_share import ResourceType
 from app.models.dataset import Dataset, DatasetTable
 from app.models.user import User
@@ -33,7 +33,34 @@ from app.models.observability import (
 )
 from app.services.observability_service import ObservabilityService
 
-router = APIRouter(prefix="/observability", tags=["observability"])
+# ── Module floor for the ENTIRE router ────────────────────────────────────────
+# The `observability` key existed in the admin matrix and in the frontend sidebar,
+# but NOTHING here consulted it: reads scoped by `datasets` (via _owned_or_shared)
+# and writes asked for `datasets: edit`. So `observability: none` still answered
+# every read for anyone holding `datasets: view`, and `observability: full` with
+# `datasets: none` showed nothing — a switch in the matrix that controlled nothing,
+# while the sidebar told the user it did.
+#
+# Same shape as the /catalog gate: reads → view, writes → edit, one gate for the
+# whole router so no endpoint can drift. The per-dataset scoping below is unchanged
+# and still applies; the two layers answer different questions.
+_READ_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+_OBS_VIEW = require_permission("observability", "view")
+_OBS_EDIT = require_permission("observability", "edit")
+
+
+async def observability_module_gate(
+    request: Request, user: User = Depends(get_current_user)
+) -> User:
+    checker = _OBS_VIEW if request.method in _READ_METHODS else _OBS_EDIT
+    return await checker(user=user)
+
+
+router = APIRouter(
+    prefix="/observability",
+    tags=["observability"],
+    dependencies=[Depends(observability_module_gate)],
+)
 
 
 # ── access scoping ────────────────────────────────────────────────────────────
@@ -167,9 +194,32 @@ class AlertChannelUpdate(BaseModel):
     is_active: Optional[bool] = None
 
 
-def _channel_dict(c: ObservabilityAlertChannel) -> Dict[str, Any]:
+def _mask_target(kind: str, target: str | None) -> str:
+    """A display form of a channel target that is not the secret itself.
+
+    A webhook / Slack URL IS the credential — anyone holding it can post into the
+    channel. Emails are shown domain-only for the same reason a directory is not
+    handed out for free.
+    """
+    raw = (target or "").strip()
+    if not raw:
+        return ""
+    if kind == "email":
+        _, _, domain = raw.partition("@")
+        return f"•••@{domain}" if domain else "•••"
+    # slack / webhook: keep the host so an admin can still tell channels apart
+    without_scheme = raw.split("://", 1)[-1]
+    host = without_scheme.split("/", 1)[0]
+    return f"{host}/•••" if host else "•••"
+
+
+def _channel_dict(
+    c: ObservabilityAlertChannel, *, reveal_target: bool = True
+) -> Dict[str, Any]:
     return {
-        "id": c.id, "kind": c.kind, "name": c.name, "target": c.target,
+        "id": c.id, "kind": c.kind, "name": c.name,
+        "target": c.target if reveal_target else _mask_target(c.kind, c.target),
+        "targetMasked": not reveal_target,
         "minSeverity": c.min_severity, "isActive": c.is_active, "datasetId": c.dataset_id,
         "lastSentAt": c.last_sent_at.isoformat() if c.last_sent_at else None,
         "lastError": c.last_error,
@@ -183,15 +233,28 @@ def list_alert_channels(
 ) -> List[Dict[str, Any]]:
     ids = set(_accessible_dataset_ids(db, user))
     rows = db.query(ObservabilityAlertChannel).order_by(ObservabilityAlertChannel.id.desc()).all()
-    # global channels (dataset_id=None) + channels scoped to an accessible dataset
-    return [_channel_dict(c) for c in rows if c.dataset_id is None or c.dataset_id in ids]
+    # Global channels (dataset_id=None) are visible to everyone who may open this
+    # module, which is why their `target` is masked unless the caller could edit
+    # them anyway. It used to be returned in full to any logged-in user — a list of
+    # live webhook and Slack URLs behind a read-only screen.
+    reveal = LEVEL_ORDER.get(
+        get_user_module_permission(user, "observability"), 0
+    ) >= LEVEL_ORDER["edit"]
+    return [
+        _channel_dict(c, reveal_target=reveal)
+        for c in rows
+        if c.dataset_id is None or c.dataset_id in ids
+    ]
 
 
 @router.post("/alert-channels", status_code=201)
 def create_alert_channel(
     payload: AlertChannelCreate,
     db: Session = Depends(get_db),
-    user: User = Depends(require_permission("datasets", "edit")),
+    # Router gate already required observability:edit. Alert channels belong to
+    # THIS module, so they are granted by its own key rather than by `datasets`;
+    # the per-dataset check below still bounds a dataset-scoped channel.
+    user: User = Depends(get_current_user),
 ) -> Dict[str, Any]:
     if payload.kind not in ALERT_CHANNEL_KINDS:
         raise HTTPException(status_code=422, detail=f"kind must be one of {ALERT_CHANNEL_KINDS}")
@@ -211,7 +274,7 @@ def create_alert_channel(
 def update_alert_channel(
     channel_id: int, payload: AlertChannelUpdate,
     db: Session = Depends(get_db),
-    user: User = Depends(require_permission("datasets", "edit")),
+    user: User = Depends(get_current_user),
 ) -> Dict[str, Any]:
     ch = db.query(ObservabilityAlertChannel).filter(ObservabilityAlertChannel.id == channel_id).first()
     if not ch:
@@ -235,7 +298,7 @@ def update_alert_channel(
 def delete_alert_channel(
     channel_id: int,
     db: Session = Depends(get_db),
-    user: User = Depends(require_permission("datasets", "edit")),
+    user: User = Depends(get_current_user),
 ):
     ch = db.query(ObservabilityAlertChannel).filter(ObservabilityAlertChannel.id == channel_id).first()
     if not ch:
@@ -250,7 +313,7 @@ def delete_alert_channel(
 def test_alert_channel(
     channel_id: int,
     db: Session = Depends(get_db),
-    user: User = Depends(require_permission("datasets", "edit")),
+    user: User = Depends(get_current_user),
 ) -> Dict[str, Any]:
     ch = db.query(ObservabilityAlertChannel).filter(ObservabilityAlertChannel.id == channel_id).first()
     if not ch:

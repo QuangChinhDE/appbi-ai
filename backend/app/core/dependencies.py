@@ -36,14 +36,25 @@ _dep_logger = _logging.getLogger(__name__)
 _bearer = HTTPBearer(auto_error=False)
 
 ALGORITHM = "HS256"
+#: `type` claim carried by an access token. Refresh tokens use "refresh", public
+#: links and workspace sessions use their own values — all signed with the SAME
+#: key, so the claim is the only thing separating them.
+ACCESS_TOKEN_TYPE = "access"
 AUTH_TOKEN_KIND_ATTR = "_auth_token_kind"
 PERSONAL_ACCESS_TOKEN_ID_ATTR = "_personal_access_token_id"
 PERSONAL_ACCESS_TOKEN_NAME_ATTR = "_personal_access_token_name"
 TOKEN_PERMISSION_CAPS_ATTR = "_permission_caps"
+#: THE canonical module list. Every other module-key list in the codebase is
+#: derived from this one (see api/permissions.py::_ALL_MODULES), because keeping a
+#: second hand-maintained copy is what let `agent_flows` be added to the admin
+#: matrix while staying invisible to the personal-access-token cap below — a token
+#: scoped to `dashboards: view` could still publish an agent flow.
+#: Order is the order the admin matrix renders in.
 MODULE_KEYS = (
     "data_sources",
     "datasets",
     "govern",
+    "agent_flows",
     "observability",
     "explore_charts",
     "dashboards",
@@ -164,6 +175,16 @@ async def get_current_user(
         return _authenticate_personal_access_token(token, db)
     try:
         payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[ALGORITHM])
+        # One signing key mints four different tokens (access, refresh, public-link
+        # session, workspace session) and only the `type` claim tells them apart.
+        # Without this check a REFRESH token worked as an access token: 7 days of
+        # access instead of 2 hours, and it side-stepped the rotate-on-use flow that
+        # makes refresh tokens single-use. Absent claim = a legacy access token
+        # issued before access tokens were stamped; those stay valid until they
+        # expire on their own.
+        token_type = payload.get("type")
+        if token_type is not None and token_type != ACCESS_TOKEN_TYPE:
+            raise ValueError("wrong token type")
         user_id: str | None = payload.get("sub")
         if not user_id:
             raise ValueError("missing sub")
@@ -173,6 +194,9 @@ async def get_current_user(
             revoked = db.query(RevokedToken).filter(RevokedToken.jti == jti).first()
             if revoked:
                 raise ValueError("token revoked")
+        # Parsed inside the try: a token whose `sub` is not a UUID is an
+        # authentication failure (401), not an unhandled 500.
+        user_uuid = uuid.UUID(user_id)
     except (JWTError, ValueError):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -180,7 +204,7 @@ async def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    user = db.query(User).filter(User.id == uuid.UUID(user_id)).first()
+    user = db.query(User).filter(User.id == user_uuid).first()
     if not user or user.status != UserStatus.ACTIVE:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -194,12 +218,19 @@ LEVEL_ORDER = {"none": 0, "view": 1, "edit": 2, "full": 3}
 
 
 def _normalize_permissions(user: User) -> dict:
+    """The user's permissions with any token scope applied.
+
+    When the request is authenticated by a scoped personal access token, EVERY
+    module is capped — not just the ones in a hand-kept list. A module the token
+    did not name is capped to `none`, so adding a module to the matrix can never
+    again silently widen what existing tokens reach.
+    """
     perms: dict = user.permissions or {}
     normalized = dict(perms)
 
     caps = _get_permission_caps(user)
     if caps:
-        for module in MODULE_KEYS:
+        for module in set(MODULE_KEYS) | set(normalized):
             normalized[module] = _min_permission_level(
                 normalized.get(module, "none"),
                 caps.get(module, "none"),
@@ -289,6 +320,11 @@ _MODEL_TO_RESOURCE_TYPE = {
     "Dataset": ResourceType.DATASET,
     "Workboard": ResourceType.WORKBOARD,
     "GovernKnowledgeDoc": ResourceType.KNOWLEDGE_DOC,
+    # Was missing here while present in core.permissions._RESOURCE_TO_MODULE — the
+    # two maps are the same fact written twice, and they had drifted. Without this
+    # entry no share on a brain could ever be found, so object-level checks on a
+    # flow silently fell through to "not shared".
+    "AgentBrainVersion": ResourceType.AGENT_BRAIN,
 }
 
 _MODEL_TO_MODULE = {
@@ -298,7 +334,44 @@ _MODEL_TO_MODULE = {
     "Dataset": "datasets",
     "Workboard": "workboards",
     "GovernKnowledgeDoc": "govern",
+    "AgentBrainVersion": "agent_flows",
 }
+
+
+def _relation_level(db: Session, user: User, resource, module_level: str) -> str:
+    """How *user* is attached to THIS row, independent of their module ceiling.
+
+    Returns 'full' (owner, or a module-wide administrator), the share's level for a
+    shared row, or 'none'. Kept separate from the module level so the two questions
+    a permission check actually asks stay separate:
+
+        "how far may this user go in this module?"   → module_level
+        "what is this user to this particular row?"  → _relation_level
+
+    Module access alone is never enough for an object-level read; a row the user
+    neither owns nor was given returns 'none'.
+    """
+    if _sanitize_permission_level(module_level) == "full":
+        return "full"
+
+    owner_id = getattr(resource, "owner_id", None)
+    if owner_id is not None and str(owner_id) == str(user.id):
+        return "full"
+
+    # Some tables key ownership by email rather than by FK (agent_brain_versions).
+    owner_email = getattr(resource, "owner_email", None)
+    user_email = str(getattr(user, "email", "") or "").strip().lower()
+    if owner_email and user_email and str(owner_email).strip().lower() == user_email:
+        return "full"
+
+    class_name = type(resource).__name__
+    rt = _MODEL_TO_RESOURCE_TYPE.get(class_name)
+    if rt:
+        share = get_highest_share_for_resource(db, user, rt, str(resource.id))
+        if share:
+            return _sanitize_permission_level(share.permission.value)
+
+    return "none"
 
 
 def get_effective_permission(db: Session, user: User, resource, module: str) -> str:
@@ -307,42 +380,49 @@ def get_effective_permission(db: Session, user: User, resource, module: str) -> 
 
     Returns one of: 'none', 'view', 'edit', 'full'.
 
-    Logic:
-      module = none              → none
-      module = full              → full   (admin sees everything)
-      user is owner              → full   (owner has total control)
-      shared as 'edit' + module >= edit → edit
-      shared as 'view'          → view
-      else                       → none
+    THE RULE:
+
+        relation = 'full' if owner or module-administrator
+                 | the share's level if shared
+                 | 'none'
+
+        module none                    → none
+        no relation                    → none
+        relation full AND module ≥edit → full   (they manage THIS row outright)
+        otherwise                      → min(module_level, relation)
+
+    The module level is a CEILING on what the user may do ACROSS the module — it
+    decides which rows they can see at all. Within a row they own, an owner who is
+    allowed to change anything (module ≥ edit) manages that row completely, which
+    is why the third line returns `full` rather than `edit`.
+
+    What this is NOT is the old behaviour, where an owner got `full` regardless of
+    the module level. That made `view` indistinguishable from `edit` on anything a
+    user owned: demoting somebody to view-only left them still able to update,
+    delete, share and publish their own dashboards, and the module docstring
+    promised "read-only, no CRUD". The `module ≥ edit` condition is the fix.
+
+    This value is also what the API returns as `user_permission`, and the frontend
+    keys "may I delete / share this?" off it being `full` — so the rule here and
+    `require_full_access` below must stay in step, or the UI hides a button the API
+    would have honoured.
     """
     perms = _normalize_permissions(user)
-    module_level = perms.get(module, "none")
+    module_level = _sanitize_permission_level(perms.get(module, "none"))
 
     if module_level == "none":
         return "none"
-    if module_level == "full":
+
+    relation = _relation_level(db, user, resource, module_level)
+    if relation == "none":
+        return "none"
+
+    if relation == "full" and LEVEL_ORDER[module_level] >= LEVEL_ORDER["edit"]:
         return _cap_effective_permission(user, module, "full")
 
-    # Owner check
-    owner_id = getattr(resource, "owner_id", None)
-    if owner_id is not None and str(owner_id) == str(user.id):
-        return _cap_effective_permission(user, module, "full")
-
-    # Share check
-    class_name = type(resource).__name__
-    rt = _MODEL_TO_RESOURCE_TYPE.get(class_name)
-    if rt:
-        share = get_highest_share_for_resource(db, user, rt, str(resource.id))
-        if share:
-            share_level = share.permission.value  # "view" or "edit"
-            # Effective = min(module_level, share_level)
-            if LEVEL_ORDER.get(share_level, 0) <= LEVEL_ORDER.get(module_level, 0):
-                return _cap_effective_permission(user, module, share_level)
-            return _cap_effective_permission(user, module, module_level)
-
-    # Module access alone is not enough for object-level reads.
-    # List endpoints must opt into broader visibility explicitly.
-    return "none"
+    return _cap_effective_permission(
+        user, module, _min_permission_level(module_level, relation)
+    )
 
 
 def batch_effective_permissions(
@@ -354,9 +434,13 @@ def batch_effective_permissions(
     """
     Batch version of get_effective_permission for list endpoints.
     Returns {resource.id: permission_level} using a single DB query for shares.
+
+    Must agree with get_effective_permission() row for row — including the
+    min(module_level, relation) cap on owned rows, which is why the owner branch
+    here goes through _min_permission_level rather than returning "full".
     """
     perms = _normalize_permissions(user)
-    module_level = perms.get(module, "none")
+    module_level = _sanitize_permission_level(perms.get(module, "none"))
 
     result: dict[int, str] = {}
 
@@ -365,11 +449,8 @@ def batch_effective_permissions(
             result[r.id] = "none"
         return result
     if module_level == "full":
-        for r in resources:
-            result[r.id] = "full"
         return {
-            resource_id: _cap_effective_permission(user, module, level)
-            for resource_id, level in result.items()
+            r.id: _cap_effective_permission(user, module, "full") for r in resources
         }
 
     # Pre-fetch all shares for these resources in one query
@@ -384,21 +465,27 @@ def batch_effective_permissions(
         resource_ids = [str(r.id) for r in resources]
         share_lookup = get_highest_share_permissions(db, user, rt, resource_ids)
 
+    user_email = str(getattr(user, "email", "") or "").strip().lower()
+
     for r in resources:
         owner_id = getattr(r, "owner_id", None)
-        if owner_id is not None and str(owner_id) == str(user.id):
+        owner_email = getattr(r, "owner_email", None)
+        is_owner = (owner_id is not None and str(owner_id) == str(user.id)) or bool(
+            owner_email and user_email and str(owner_email).strip().lower() == user_email
+        )
+
+        relation = "full" if is_owner else share_lookup.get(str(r.id)) or "none"
+        if relation == "none":
+            result[r.id] = "none"
+            continue
+
+        if relation == "full" and LEVEL_ORDER[module_level] >= LEVEL_ORDER["edit"]:
             result[r.id] = _cap_effective_permission(user, module, "full")
             continue
 
-        share_level = share_lookup.get(str(r.id))
-        if share_level:
-            if LEVEL_ORDER.get(share_level, 0) <= LEVEL_ORDER.get(module_level, 0):
-                result[r.id] = _cap_effective_permission(user, module, share_level)
-            else:
-                result[r.id] = _cap_effective_permission(user, module, module_level)
-            continue
-
-        result[r.id] = "none"
+        result[r.id] = _cap_effective_permission(
+            user, module, _min_permission_level(module_level, relation)
+        )
 
     return result
 
@@ -425,7 +512,16 @@ def require_edit_access(db: Session, user: User, resource, module: str):
 
 
 def require_full_access(db: Session, user: User, resource, module: str):
-    """Raise 403 if user cannot delete/share the resource (effective < full)."""
+    """Raise 403 unless the user MANAGES this resource — delete, share, publish.
+
+    Deliberately just `effective == "full"`. `get_effective_permission` already
+    encodes what managing means (own the row, or administer the module, and hold at
+    least `edit` on it), and it is the same value the API hands the frontend as
+    `user_permission`. One rule, one place: if this check and that value ever
+    disagree, the UI hides a button the API would have allowed — which is exactly
+    what happened when an earlier version of this function answered a different
+    question from the one the response was reporting.
+    """
     eff = get_effective_permission(db, user, resource, module)
     if eff != "full":
         raise HTTPException(

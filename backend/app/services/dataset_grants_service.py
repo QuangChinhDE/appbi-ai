@@ -50,15 +50,49 @@ def _team_ids(db: Session, user: User) -> list:
         return []
 
 
+def _module_capability_ceiling(user: User) -> Set[str]:
+    """What the `datasets` module level alone permits, before any grant.
+
+    The verb model is deliberately not a ladder, but the MODULE level still is,
+    and it is a ceiling over every verb — a user the admin set to `datasets: none`
+    has no business holding capabilities on a dataset just because they created it
+    before being demoted. Without this the grants tier answered "manage" for an
+    owner whose module level was `none`, which is the same owner-outranks-the-
+    matrix bug the object-level tier had.
+    """
+    try:
+        from app.core.permissions import get_user_module_permission
+
+        level = get_user_module_permission(user, "datasets")
+    except Exception:  # noqa: BLE001 — never fail open on a lookup error
+        return set()
+
+    if level == "full":
+        return set(_CAPS["manage"])
+    if level == "edit":
+        # Everything an owner does day to day. `reshare` and `manage` stay with
+        # module-full, matching require_full_access on the object-level tier.
+        return {"view", "explore", "build", "edit", "reshare", "manage"}
+    if level == "view":
+        return {"view", "explore"}
+    return set()
+
+
 def dataset_capabilities(db: Session, user: User, dataset: Dataset) -> Set[str]:
-    """Union of every capability the user has on the dataset."""
+    """Union of every capability the user has on the dataset, capped by the
+    `datasets` module level."""
     caps: Set[str] = set()
     if user is None or dataset is None:
         return caps
 
-    # Owner → manage (all).
+    ceiling = _module_capability_ceiling(user)
+    if not ceiling:
+        # `datasets: none` — the module is hidden entirely, grants included.
+        return caps
+
+    # Owner → manage (all), bounded by the module ceiling.
     if dataset.owner_id is not None and dataset.owner_id == user.id:
-        return set(_CAPS["manage"])
+        return set(_CAPS["manage"]) & ceiling
 
     # Admin / module-full on datasets → manage.
     try:
@@ -102,7 +136,7 @@ def dataset_capabilities(db: Session, user: User, dataset: Dataset) -> Set[str]:
     except Exception:  # noqa: BLE001 — resource-share bridge is best-effort
         pass
 
-    return caps
+    return caps & ceiling
 
 
 def can(db: Session, user: User, dataset: Dataset, capability: str) -> bool:
