@@ -378,6 +378,7 @@ import { dashboardsThemeCatalog } from './catalog/dashboards-theme';
 import { datasetsCatalog } from './catalog/datasets';
 import { exploreCatalog } from './catalog/explore';
 import { governCatalog } from './catalog/govern';
+import { agentFlowsCatalog } from './catalog/agent-flows';
 import { workboardsCatalog } from './catalog/workboards';
 import { datasourcesCatalog } from './catalog/datasources';
 import { observabilityCatalog } from './catalog/observability';
@@ -394,6 +395,7 @@ const moduleCatalogs: ModuleCatalog[] = [
   datasetsCatalog,
   exploreCatalog,
   governCatalog,
+  agentFlowsCatalog,
   workboardsCatalog,
   datasourcesCatalog,
   observabilityCatalog,

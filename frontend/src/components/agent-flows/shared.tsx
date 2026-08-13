@@ -14,6 +14,7 @@ import React from 'react';
 import { Badge } from '@/components/ui/Badge';
 import { Input } from '@/components/ui/Input';
 import { cn } from '@/lib/utils';
+import { useI18n } from '@/providers/LanguageProvider';
 import type { AttachableItem, BrainStatus, ToolSpec } from '@/lib/agentFlows';
 
 /* ── status ───────────────────────────────────────────────────────────────── */
@@ -26,23 +27,24 @@ import type { AttachableItem, BrainStatus, ToolSpec } from '@/lib/agentFlows';
 export function StatusBadge({
   status, version, size = 'sm',
 }: { status: BrainStatus; version?: number; size?: 'xs' | 'sm' }) {
+  const { t } = useI18n();
   const suffix = version === undefined ? '' : ` v${version}`;
   if (status === 'published') {
-    return <Badge variant="success" size={size} dot>{`Đang chạy${suffix}`}</Badge>;
+    return <Badge variant="success" size={size} dot>{t('agentFlows.status.published', { suffix })}</Badge>;
   }
   if (status === 'archived') {
-    return <Badge variant="neutral" size={size}>{`Bản cũ${suffix}`}</Badge>;
+    return <Badge variant="neutral" size={size}>{t('agentFlows.status.archived', { suffix })}</Badge>;
   }
-  return <Badge variant="warning" size={size}>{`Nháp${suffix}`}</Badge>;
+  return <Badge variant="warning" size={size}>{t('agentFlows.status.draft', { suffix })}</Badge>;
 }
 
 /* ── tool cost ────────────────────────────────────────────────────────────── */
 
-const COST_LABEL: Record<ToolSpec['cost_class'], string> = {
-  cheap: 'nhẹ',
-  data_query: 'truy vấn',
-  expensive: 'nặng',
-  external: 'ra ngoài',
+const COST_LABEL_KEY: Record<ToolSpec['cost_class'], string> = {
+  cheap: 'agentFlows.cost.cheap',
+  data_query: 'agentFlows.cost.dataQuery',
+  expensive: 'agentFlows.cost.expensive',
+  external: 'agentFlows.cost.external',
 };
 
 const COST_TONE: Record<ToolSpec['cost_class'], string> = {
@@ -52,32 +54,33 @@ const COST_TONE: Record<ToolSpec['cost_class'], string> = {
   external: 'bg-danger/10 text-danger border-danger/25',
 };
 
-const COST_HINT: Record<ToolSpec['cost_class'], string> = {
-  cheap: 'Đọc thứ đã có sẵn trong phiên — gần như không tốn gì.',
-  data_query: 'Chạy một truy vấn xuống kho dữ liệu. Chậm hơn và có chi phí.',
-  expensive: 'Nhiều truy vấn cho một lần gọi. Dùng khi thật cần.',
-  external: 'Gọi ra ngoài AppBI. Dữ liệu câu hỏi có thể đi ra khỏi hệ thống.',
+const COST_HINT_KEY: Record<ToolSpec['cost_class'], string> = {
+  cheap: 'agentFlows.costHint.cheap',
+  data_query: 'agentFlows.costHint.dataQuery',
+  expensive: 'agentFlows.costHint.expensive',
+  external: 'agentFlows.costHint.external',
 };
 
 /** The cost class, named and explained. The previous build printed "rẻ" / "ngoài" /
  *  "truy vấn" with nothing to hover — three words that look like a category system
  *  without saying what any of them costs. */
 export function CostChip({ cost }: { cost: ToolSpec['cost_class'] }) {
+  const { t } = useI18n();
   return (
     <span
-      title={COST_HINT[cost]}
+      title={t(COST_HINT_KEY[cost])}
       className={cn(
         'inline-flex h-4 flex-shrink-0 cursor-help items-center rounded border px-1.5 text-tiny leading-none',
         COST_TONE[cost],
       )}
     >
-      {COST_LABEL[cost]}
+      {t(COST_LABEL_KEY[cost])}
     </span>
   );
 }
 
 export const COST_LEGEND: { cost: ToolSpec['cost_class']; hint: string }[] =
-  (Object.keys(COST_LABEL) as ToolSpec['cost_class'][]).map((cost) => ({ cost, hint: COST_HINT[cost] }));
+  (Object.keys(COST_LABEL_KEY) as ToolSpec['cost_class'][]).map((cost) => ({ cost, hint: COST_HINT_KEY[cost] }));
 
 /* ── small text bits ──────────────────────────────────────────────────────── */
 
@@ -172,6 +175,7 @@ export function SearchPicker({
   invalid?: boolean;
   className?: string;
 }) {
+  const { t } = useI18n();
   const [open, setOpen] = React.useState(false);
   const [query, setQuery] = React.useState('');
   const boxRef = React.useRef<HTMLDivElement>(null);
@@ -239,7 +243,7 @@ export function SearchPicker({
               size="sm"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="Tìm…"
+              placeholder={t('agentFlows.picker.searchPlaceholder')}
               leadingIcon={<Search />}
             />
           </div>
@@ -248,7 +252,7 @@ export function SearchPicker({
               <p className="px-2.5 py-3 text-tiny leading-snug text-text-tertiary">{emptyText}</p>
             )}
             {options.length > 0 && shown.length === 0 && (
-              <p className="px-2.5 py-3 text-tiny text-text-tertiary">Không có mục nào khớp.</p>
+              <p className="px-2.5 py-3 text-tiny text-text-tertiary">{t('agentFlows.picker.empty')}</p>
             )}
             {grouped.map(([group, items]) => (
               <div key={group || '_'}>

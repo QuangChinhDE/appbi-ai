@@ -17,16 +17,31 @@ import { Search, X } from 'lucide-react';
 
 import { Input } from '@/components/ui/Input';
 import { cn } from '@/lib/utils';
+import { useI18n } from '@/providers/LanguageProvider';
 import type { NodeSpec, NodeType } from '@/lib/agentFlows';
 
-const CATEGORIES: { key: string; label: string }[] = [
-  { key: 'all', label: 'Tất cả' },
-  { key: 'ai', label: 'AI' },
-  { key: 'data', label: 'Dữ liệu' },
-  { key: 'logic', label: 'Logic' },
-  { key: 'flow', label: 'Điều khiển' },
-  { key: 'utility', label: 'Xử lý' },
+const CATEGORIES: { key: string; labelKey: string }[] = [
+  { key: 'all', labelKey: 'agentFlows.library.category.all' },
+  { key: 'ai', labelKey: 'agentFlows.library.category.ai' },
+  { key: 'data', labelKey: 'agentFlows.library.category.data' },
+  { key: 'logic', labelKey: 'agentFlows.library.category.logic' },
+  { key: 'flow', labelKey: 'agentFlows.library.category.flow' },
+  { key: 'utility', labelKey: 'agentFlows.library.category.utility' },
 ];
+
+function specText(
+  spec: NodeSpec,
+  field: 'label' | 'description',
+  language: 'en' | 'vi',
+  t: (key: string) => string,
+) {
+  if (field === 'description') {
+    const key = `agentFlows.node.${spec.type}.description`;
+    const translated = t(key);
+    return translated === key ? (language === 'vi' ? spec.description_vi : '') : translated;
+  }
+  return (language === 'vi' ? spec.label_vi : spec.label_en) || spec.label_vi || spec.label_en;
+}
 
 export function NodeLibrary({
   specs, positionLabel, onPick, onClose,
@@ -36,6 +51,7 @@ export function NodeLibrary({
   onPick: (type: NodeType) => void;
   onClose: () => void;
 }) {
+  const { t, language } = useI18n();
   const [query, setQuery] = React.useState('');
   const [category, setCategory] = React.useState('all');
 
@@ -45,7 +61,7 @@ export function NodeLibrary({
     const match = !q
       || s.label_vi.toLowerCase().includes(q)
       || s.label_en.toLowerCase().includes(q)
-      || s.description_vi.toLowerCase().includes(q);
+      || specText(s, 'description', language, t).toLowerCase().includes(q);
     return inCat && match;
   });
 
@@ -58,13 +74,13 @@ export function NodeLibrary({
         <div className="border-b border-[rgb(var(--border-line))] p-3">
           <div className="flex items-center gap-2">
             <div>
-              <b className="text-body font-strong">Thêm bước</b>
+              <b className="text-body font-strong">{t('agentFlows.library.title')}</b>
               <span className="mt-px block text-tiny text-text-tertiary">
-                Chọn loại bước — AppBI nối vào đúng vị trí.
+                {t('agentFlows.library.description')}
               </span>
             </div>
             <div className="flex-1" />
-            <button type="button" onClick={onClose} aria-label="Đóng"
+            <button type="button" onClick={onClose} aria-label={t('agentFlows.common.close')}
               className="rounded-md p-1 text-text-tertiary hover:bg-surface-2 hover:text-text-primary">
               <X className="h-4 w-4" />
             </button>
@@ -75,12 +91,12 @@ export function NodeLibrary({
               autoFocus
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="Tìm AI Agent, IF, Loop, Delay…"
+              placeholder={t('agentFlows.library.searchPlaceholder')}
               className="pl-8"
             />
           </div>
           <div className="mt-2 flex items-center gap-1.5 text-tiny text-text-tertiary">
-            Chèn tại:
+            {t('agentFlows.library.insertAt')}
             <span className="rounded-full border border-brand/20 bg-brand/5 px-2 py-px text-brand">
               {positionLabel}
             </span>
@@ -101,7 +117,7 @@ export function NodeLibrary({
                     : 'text-text-tertiary hover:text-text-primary',
                 )}
               >
-                {c.label}
+                {t(c.labelKey)}
               </button>
             ))}
           </nav>
@@ -120,23 +136,23 @@ export function NodeLibrary({
                   </span>
                   <span className="min-w-0">
                     <b className="flex items-center gap-1 text-caption font-strong">
-                      {s.label_vi}
+                      {specText(s, 'label', language, t)}
                       {/* Nine of twelve node types cost nothing. Saying so here is
                           what stops an author reaching for an AI Agent to do
                           something the engine can simply do. */}
                       {s.costs_llm && (
                         <span className="rounded border border-brand/20 bg-brand/5 px-1 text-tiny text-brand">
-                          LLM
+                          {t('agentFlows.common.llm')}
                         </span>
                       )}
                       {s.reaches_outside && (
                         <span className="rounded border border-warning/25 bg-warning/5 px-1 text-tiny text-warning">
-                          ra ngoài
+                          {t('agentFlows.library.reachesOutside')}
                         </span>
                       )}
                     </b>
                     <span className="mt-0.5 block text-tiny leading-snug text-text-tertiary">
-                      {s.description_vi}
+                      {specText(s, 'description', language, t)}
                     </span>
                   </span>
                 </button>
@@ -144,7 +160,7 @@ export function NodeLibrary({
             </div>
             {!shown.length && (
               <p className="p-6 text-center text-caption text-text-tertiary">
-                Không có loại bước nào khớp.
+                {t('agentFlows.library.empty')}
               </p>
             )}
           </div>

@@ -22,6 +22,7 @@ import { Plus, Trash2 } from 'lucide-react';
 import { Input, Textarea } from '@/components/ui/Input';
 import { Button } from '@/components/ui/Button';
 import { cn } from '@/lib/utils';
+import { useI18n } from '@/providers/LanguageProvider';
 import {
   MAX_LOOP_ITERATIONS, MAX_TOOL_CALLS,
   type Condition, type ConditionOp, type FlowNode, type FlowPath,
@@ -29,33 +30,44 @@ import {
 } from '@/lib/agentFlows';
 import { SectionTitle, HintText, CostChip } from './shared';
 
-const OPS: { value: ConditionOp; label: string }[] = [
-  { value: 'contains', label: 'chứa' },
-  { value: 'not_contains', label: 'không chứa' },
-  { value: 'equals', label: 'bằng' },
-  { value: 'not_equals', label: 'khác' },
+const OPS: { value: ConditionOp; labelKey?: string; label?: string }[] = [
+  { value: 'contains', labelKey: 'agentFlows.inspector.op.contains' },
+  { value: 'not_contains', labelKey: 'agentFlows.inspector.op.notContains' },
+  { value: 'equals', labelKey: 'agentFlows.inspector.op.equals' },
+  { value: 'not_equals', labelKey: 'agentFlows.inspector.op.notEquals' },
   { value: 'gt', label: '>' },
   { value: 'gte', label: '≥' },
   { value: 'lt', label: '<' },
   { value: 'lte', label: '≤' },
-  { value: 'is_empty', label: 'rỗng' },
-  { value: 'is_not_empty', label: 'không rỗng' },
-  { value: 'matches', label: 'khớp regex' },
-  { value: 'in_list', label: 'nằm trong' },
+  { value: 'is_empty', labelKey: 'agentFlows.inspector.op.isEmpty' },
+  { value: 'is_not_empty', labelKey: 'agentFlows.inspector.op.isNotEmpty' },
+  { value: 'matches', labelKey: 'agentFlows.inspector.op.matches' },
+  { value: 'in_list', labelKey: 'agentFlows.inspector.op.inList' },
 ];
 
-const RUN_POLICY: { value: string; label: string; hint: string }[] = [
-  { value: 'every_turn', label: 'Mỗi lượt hỏi', hint: 'Chạy lại cho mọi câu hỏi.' },
-  { value: 'when_stale', label: 'Khi dữ liệu đổi', hint: 'Chỉ chạy lại khi filter/cấu hình đổi — rẻ nhất cho bước đọc báo cáo.' },
-  { value: 'once_per_session', label: 'Một lần mỗi phiên', hint: 'Chạy lần đầu, các lượt sau dùng lại kết quả.' },
+const RUN_POLICY: { value: string; labelKey: string; hintKey: string }[] = [
+  { value: 'every_turn', labelKey: 'agentFlows.inspector.runPolicy.everyTurn', hintKey: 'agentFlows.inspector.runPolicy.everyTurnHint' },
+  { value: 'when_stale', labelKey: 'agentFlows.inspector.runPolicy.whenStale', hintKey: 'agentFlows.inspector.runPolicy.whenStaleHint' },
+  { value: 'once_per_session', labelKey: 'agentFlows.inspector.runPolicy.oncePerSession', hintKey: 'agentFlows.inspector.runPolicy.oncePerSessionHint' },
 ];
 
-const CONTEXT_POLICY: { value: string; label: string }[] = [
-  { value: 'none', label: 'Không gửi hội thoại' },
-  { value: 'question', label: 'Chỉ câu hỏi hiện tại' },
-  { value: 'last_3', label: '3 lượt gần nhất' },
-  { value: 'full', label: 'Toàn bộ hội thoại' },
+const CONTEXT_POLICY: { value: string; labelKey: string }[] = [
+  { value: 'none', labelKey: 'agentFlows.inspector.context.none' },
+  { value: 'question', labelKey: 'agentFlows.inspector.context.question' },
+  { value: 'last_3', labelKey: 'agentFlows.inspector.context.last3' },
+  { value: 'full', labelKey: 'agentFlows.inspector.context.full' },
 ];
+
+type TFn = (key: string, values?: Record<string, string | number>) => string;
+
+function opOptions(t: TFn) {
+  return OPS.map((o) => ({ value: o.value, label: o.labelKey ? t(o.labelKey) : o.label || o.value }));
+}
+
+function specLabel(spec: NodeSpec | undefined, language: 'en' | 'vi') {
+  if (!spec) return '';
+  return (language === 'vi' ? spec.label_vi : spec.label_en) || spec.label_vi || spec.label_en;
+}
 
 function Field({
   label, hint, children,
@@ -122,6 +134,7 @@ function Toggle({
 function ConditionRows({
   conditions, onChange,
 }: { conditions: Condition[]; onChange: (next: Condition[]) => void }) {
+  const { t } = useI18n();
   const set = (i: number, patch: Partial<Condition>) =>
     onChange(conditions.map((c, idx) => (idx === i ? { ...c, ...patch } : c)));
   return (
@@ -132,19 +145,19 @@ function ConditionRows({
           <div key={i} className="mt-1.5 grid grid-cols-[1.2fr_0.8fr_1fr_28px] gap-1.5 first:mt-0">
             <Input value={c.left} onChange={(e) => set(i, { left: e.target.value })}
               placeholder="{{available_metrics}}" className="h-8 text-tiny" />
-            <Select value={c.op} onChange={(v) => set(i, { op: v as ConditionOp })} options={OPS} />
+            <Select value={c.op} onChange={(v) => set(i, { op: v as ConditionOp })} options={opOptions(t)} />
             <Input
               value={c.right || ''}
               disabled={unary}
               onChange={(e) => set(i, { right: e.target.value })}
-              placeholder={unary ? '—' : 'giá trị'}
+              placeholder={unary ? '-' : t('agentFlows.inspector.value')}
               className="h-8 text-tiny"
             />
             <button
               type="button"
               onClick={() => onChange(conditions.filter((_, idx) => idx !== i))}
               className="rounded-md text-text-tertiary hover:bg-surface-2 hover:text-danger"
-              aria-label="Xoá điều kiện"
+              aria-label={t('agentFlows.inspector.deleteCondition')}
             >
               <Trash2 className="mx-auto h-3.5 w-3.5" />
             </button>
@@ -155,12 +168,12 @@ function ConditionRows({
         variant="secondary" size="xs" className="mt-2"
         onClick={() => onChange([...conditions, { left: '', op: 'equals', right: '' }])}
       >
-        <Plus className="h-3 w-3" /> Thêm điều kiện
+        <Plus className="h-3 w-3" /> {t('agentFlows.inspector.addCondition')}
       </Button>
       <HintText>
-        Vế trái thường là một biến — gõ <code>{'{{tên_biến}}'}</code>. Với danh sách,
-        “chứa” khớp cả tên field đầy đủ (ví dụ <code>revenue</code> khớp{' '}
-        <code>bảng.total_revenue</code>).
+        {t('agentFlows.inspector.conditionHintPrefix')} <code>{t('agentFlows.inspector.conditionVariableExample')}</code>.{' '}
+        {t('agentFlows.inspector.conditionHintMiddle')} <code>revenue</code> {t('agentFlows.inspector.conditionHintMatch')}{' '}
+        <code>table.total_revenue</code>).
       </HintText>
     </div>
   );
@@ -185,6 +198,7 @@ export interface InspectorProps {
 }
 
 export function NodeInspector(props: InspectorProps) {
+  const { t } = useI18n();
   const { node, path, switchCase, isFallback } = props;
 
   if (path) return <PathForm path={path} onChange={props.onChangePath} />;
@@ -192,10 +206,9 @@ export function NodeInspector(props: InspectorProps) {
   if (isFallback) {
     return (
       <div className="p-3">
-        <SectionTitle>Nhánh dự phòng</SectionTitle>
+        <SectionTitle>{t('agentFlows.inspector.fallbackBranch')}</SectionTitle>
         <HintText>
-          Chạy khi không case nào khớp. Không có điều kiện để sửa — tắt nó ở phần
-          cấu hình của bước Switch.
+          {t('agentFlows.inspector.fallbackHint')}
         </HintText>
       </div>
     );
@@ -203,7 +216,7 @@ export function NodeInspector(props: InspectorProps) {
   if (!node) {
     return (
       <div className="p-6 text-center text-caption text-text-tertiary">
-        Chọn một bước trên canvas để cấu hình.
+        {t('agentFlows.inspector.noSelection')}
       </div>
     );
   }
@@ -211,36 +224,37 @@ export function NodeInspector(props: InspectorProps) {
 }
 
 function PathForm({ path, onChange }: { path: FlowPath; onChange: (p: FlowPath) => void }) {
+  const { t } = useI18n();
   return (
     <div className="p-3">
-      <Field label="Tên nhánh">
+      <Field label={t('agentFlows.inspector.branchName')}>
         <Input value={path.name || ''} onChange={(e) => onChange({ ...path, name: e.target.value })} />
       </Field>
       <Field
-        label="Loại nhánh"
-        hint="Fallback chỉ chạy khi không nhánh nào phía trên khớp. Mỗi IF chỉ được một."
+        label={t('agentFlows.inspector.branchType')}
+        hint={t('agentFlows.inspector.branchTypeHint')}
       >
         <Select
           value={path.kind}
           onChange={(v) => onChange({ ...path, kind: v as FlowPath['kind'] })}
           options={[
-            { value: 'rules', label: 'Theo điều kiện' },
-            { value: 'always', label: 'Luôn chạy' },
-            { value: 'fallback', label: 'Dự phòng' },
+            { value: 'rules', label: t('agentFlows.inspector.branchType.rules') },
+            { value: 'always', label: t('agentFlows.inspector.branchType.always') },
+            { value: 'fallback', label: t('agentFlows.inspector.branchType.fallback') },
           ]}
         />
       </Field>
       {path.kind === 'rules' && (
         <>
-          <Field label="Cách khớp">
+          <Field label={t('agentFlows.inspector.matchMode')}>
             <Select
               value={path.match || 'all'}
               onChange={(v) => onChange({ ...path, match: v as 'all' | 'any' })}
-              options={[{ value: 'all', label: 'Khớp TẤT CẢ điều kiện' }, { value: 'any', label: 'Khớp MỘT điều kiện' }]}
+              options={[{ value: 'all', label: t('agentFlows.inspector.matchAllConditions') }, { value: 'any', label: t('agentFlows.inspector.matchAnyCondition') }]}
             />
           </Field>
           <div className="mt-4 border-t border-[rgb(var(--border-line))] pt-3">
-            <SectionTitle>Điều kiện</SectionTitle>
+            <SectionTitle>{t('agentFlows.inspector.conditions')}</SectionTitle>
             <ConditionRows
               conditions={path.conditions || []}
               onChange={(conditions) => onChange({ ...path, conditions })}
@@ -253,66 +267,67 @@ function PathForm({ path, onChange }: { path: FlowPath; onChange: (p: FlowPath) 
 }
 
 function CaseForm({ item, onChange }: { item: SwitchCase; onChange: (c: SwitchCase) => void }) {
+  const { t } = useI18n();
   return (
     <div className="p-3">
-      <Field label="Nhãn case">
+      <Field label={t('agentFlows.inspector.caseLabel')}>
         <Input value={item.label || ''} onChange={(e) => onChange({ ...item, label: e.target.value })} />
       </Field>
-      <Field label="So sánh">
+      <Field label={t('agentFlows.inspector.compare')}>
         <div className="grid grid-cols-[0.9fr_1.1fr] gap-1.5">
           <Select
             value={item.op || 'equals'}
             onChange={(v) => onChange({ ...item, op: v as ConditionOp })}
-            options={OPS}
+            options={opOptions(t)}
           />
           <Input value={item.value || ''} onChange={(e) => onChange({ ...item, value: e.target.value })}
-            placeholder="giá trị" />
+            placeholder={t('agentFlows.inspector.value')} />
         </div>
       </Field>
-      <HintText>Giá trị được so với ô “Giá trị cần rẽ nhánh” của bước Switch.</HintText>
+      <HintText>{t('agentFlows.inspector.caseHint')}</HintText>
     </div>
   );
 }
 
 function NodeForm(props: InspectorProps & { node: FlowNode }) {
+  const { t, language } = useI18n();
   const { node, spec, toolPacks, providers, isAnswerNode, onChange, onMakeAnswer } = props;
   const set = (patch: Partial<FlowNode>) => onChange({ ...node, ...patch } as FlowNode);
 
   return (
     <div className="p-3">
-      <Field label="Tên bước">
+      <Field label={t('agentFlows.inspector.stepName')}>
         <Input value={node.name || ''} onChange={(e) => set({ name: e.target.value })}
-          placeholder={spec?.label_vi || node.type} />
+          placeholder={specLabel(spec, language) || node.type} />
       </Field>
 
       {/* ── per-type ─────────────────────────────────────────────────────── */}
       {node.type === 'agent' && (
         <>
-          <Field label="Hướng dẫn cho Agent"
-            hint="Được NỐI vào prompt nền của hệ thống, không thay thế nó. Dùng {{biến}} để chèn kết quả bước trước.">
+          <Field label={t('agentFlows.inspector.agentPrompt')}
+            hint={t('agentFlows.inspector.agentPromptHint')}>
             <Textarea rows={6} value={node.prompt}
               onChange={(e) => set({ prompt: e.target.value } as Partial<FlowNode>)} />
           </Field>
-          <Field label="Định dạng trả lời">
+          <Field label={t('agentFlows.inspector.outputFormat')}>
             <Select
               value={node.output_format || 'chat'}
               onChange={(v) => set({ output_format: v as 'chat' | 'json' } as Partial<FlowNode>)}
               options={[
-                { value: 'chat', label: 'Văn bản (chảy chữ theo thời gian thực)' },
-                { value: 'json', label: 'Khối có cấu trúc (KPI, bảng, trỏ biểu đồ)' },
+                { value: 'chat', label: t('agentFlows.inspector.output.chat') },
+                { value: 'json', label: t('agentFlows.inspector.output.json') },
               ]}
             />
             <HintText>
-              Khối có cấu trúc cho phép trả về KPI/bảng/trỏ vào biểu đồ, nhưng
-              không chảy chữ được — người xem chờ rồi thấy một lần.
+              {t('agentFlows.inspector.outputHint')}
             </HintText>
           </Field>
-          <Field label="Số lần gọi công cụ tối đa">
+          <Field label={t('agentFlows.inspector.maxToolCalls')}>
             <Input type="number" min={1} max={MAX_TOOL_CALLS} value={node.max_tool_calls ?? 8}
               onChange={(e) => set({ max_tool_calls: Number(e.target.value) } as Partial<FlowNode>)} />
           </Field>
           <div className="mt-4 border-t border-[rgb(var(--border-line))] pt-3">
-            <SectionTitle>Công cụ được cấp</SectionTitle>
+            <SectionTitle>{t('agentFlows.inspector.grantedTools')}</SectionTitle>
             <ToolPicker
               packs={toolPacks}
               granted={(node.tools || []).map((t) => t.tool)}
@@ -324,13 +339,12 @@ function NodeForm(props: InspectorProps & { node: FlowNode }) {
             />
             {isAnswerNode && (node.tools || []).length > 0 && (
               <p className="mt-2 rounded-md border border-warning/25 bg-warning/5 p-2 text-tiny text-warning">
-                Đây là bước viết câu trả lời mà vẫn có công cụ — dễ đưa ra số chưa
-                qua các bước trước.
+                {t('agentFlows.inspector.answerToolsWarning')}
               </p>
             )}
           </div>
           <div className="mt-4 border-t border-[rgb(var(--border-line))] pt-3">
-            <SectionTitle>Model</SectionTitle>
+            <SectionTitle>{t('agentFlows.inspector.model')}</SectionTitle>
             <Select
               value={node.provider || 'inherit'}
               onChange={(v) => set({ provider: v as never, model: v === 'inherit' ? '' : node.model } as Partial<FlowNode>)}
@@ -342,7 +356,7 @@ function NodeForm(props: InspectorProps & { node: FlowNode }) {
                   value={node.model || ''}
                   onChange={(v) => set({ model: v } as Partial<FlowNode>)}
                   options={[
-                    { value: '', label: '— chọn model —' },
+                    { value: '', label: t('agentFlows.inspector.chooseModel') },
                     ...(providers.find((p) => p.provider === node.provider)?.models || [])
                       .map((m) => ({ value: m.model, label: m.label })),
                   ]}
@@ -350,8 +364,7 @@ function NodeForm(props: InspectorProps & { node: FlowNode }) {
               </div>
             )}
             <HintText>
-              “Theo cấu hình của link” giữ flow dùng lại được trên mọi link, kể cả
-              link chạy nhà cung cấp khác.
+              {t('agentFlows.inspector.modelHint')}
             </HintText>
           </div>
         </>
@@ -359,37 +372,36 @@ function NodeForm(props: InspectorProps & { node: FlowNode }) {
 
       {node.type === 'report_read' && (
         <>
-          <Field label="Đọc gì">
+          <Field label={t('agentFlows.inspector.readWhat')}>
             <div className="rounded-lg border border-[rgb(var(--border-line))] px-2.5">
-              <Toggle on={node.include_summary !== false} title="Tóm tắt biểu đồ"
-                hint="Số tổng quát, không tải toàn bộ dữ liệu."
+              <Toggle on={node.include_summary !== false} title={t('agentFlows.inspector.read.summary')}
+                hint={t('agentFlows.inspector.read.summaryHint')}
                 onChange={(v) => set({ include_summary: v } as Partial<FlowNode>)} />
-              <Toggle on={node.include_data !== false} title="Dữ liệu biểu đồ"
-                hint="Đọc rows thật. Tốn hơn."
+              <Toggle on={node.include_data !== false} title={t('agentFlows.inspector.read.data')}
+                hint={t('agentFlows.inspector.read.dataHint')}
                 onChange={(v) => set({ include_data: v } as Partial<FlowNode>)} />
-              <Toggle on={node.include_filters !== false} title="Filter đang áp"
-                hint="Trả lời sai vì bỏ qua filter là lỗi hay gặp nhất."
+              <Toggle on={node.include_filters !== false} title={t('agentFlows.inspector.read.filters')}
+                hint={t('agentFlows.inspector.read.filtersHint')}
                 onChange={(v) => set({ include_filters: v } as Partial<FlowNode>)} />
             </div>
           </Field>
-          <Field label="Số dòng tối đa mỗi biểu đồ">
+          <Field label={t('agentFlows.inspector.maxRows')}>
             <Input type="number" min={1} max={5000} value={node.max_rows ?? 200}
               onChange={(e) => set({ max_rows: Number(e.target.value) } as Partial<FlowNode>)} />
           </Field>
           <HintText>
-            Bước này KHÔNG chọn báo cáo. Nó đọc đúng những biểu đồ mà link đã cho
-            phép khi gán flow.
+            {t('agentFlows.inspector.reportReadHint')}
           </HintText>
         </>
       )}
 
       {node.type === 'knowledge' && (
         <>
-          <Field label="Câu truy vấn" hint="Dùng {{biến}} để tra theo kết quả bước trước.">
+          <Field label={t('agentFlows.inspector.knowledgeQuery')} hint={t('agentFlows.inspector.queryHint')}>
             <Textarea rows={3} value={node.query || ''}
               onChange={(e) => set({ query: e.target.value } as Partial<FlowNode>)} />
           </Field>
-          <Field label="Số đoạn lấy về (top K)">
+          <Field label={t('agentFlows.inspector.topK')}>
             <Input type="number" min={1} max={20} value={node.top_k ?? 5}
               onChange={(e) => set({ top_k: Number(e.target.value) } as Partial<FlowNode>)} />
           </Field>
@@ -398,12 +410,12 @@ function NodeForm(props: InspectorProps & { node: FlowNode }) {
 
       {node.type === 'web' && (
         <>
-          <Field label="Câu tra cứu">
+          <Field label={t('agentFlows.inspector.webQuery')}>
             <Textarea rows={3} value={node.query || ''}
               onChange={(e) => set({ query: e.target.value } as Partial<FlowNode>)} />
           </Field>
-          <Field label="Chỉ cho phép các domain này"
-            hint="Để trống = không giới hạn. Server chặn thật, không chỉ nhắc mô hình.">
+          <Field label={t('agentFlows.inspector.allowedDomains')}
+            hint={t('agentFlows.inspector.allowedDomainsHint')}>
             <Input
               value={(node.allowed_domains || []).join(', ')}
               onChange={(e) => set({
@@ -413,40 +425,38 @@ function NodeForm(props: InspectorProps & { node: FlowNode }) {
             />
           </Field>
           <p className="mt-2 rounded-md border border-warning/25 bg-warning/5 p-2 text-tiny text-warning">
-            Bước này chỉ chạy trên link đã bật “Tìm kiếm web”. Link tắt thì bước bị
-            bỏ qua và flow vẫn chạy tiếp.
+            {t('agentFlows.inspector.webGateHint')}
           </p>
         </>
       )}
 
       {node.type === 'if' && (
         <HintText>
-          Chọn từng nhánh trên canvas để sửa điều kiện của nó. Nhánh đầu tiên khớp
-          sẽ chạy; nhánh Dự phòng chạy khi không nhánh nào khớp.
+          {t('agentFlows.inspector.ifHint')}
         </HintText>
       )}
 
       {node.type === 'switch' && (
         <>
-          <Field label="Giá trị cần rẽ nhánh">
+          <Field label={t('agentFlows.inspector.switchValue')}>
             <Input value={node.value} onChange={(e) => set({ value: e.target.value } as Partial<FlowNode>)}
               placeholder="{{severity}}" />
           </Field>
-          <Field label="Cách chạy">
+          <Field label={t('agentFlows.inspector.switchMode')}>
             <Select
               value={node.mode || 'first_match'}
               onChange={(v) => set({ mode: v as never } as Partial<FlowNode>)}
               options={[
-                { value: 'first_match', label: 'Chạy case đầu tiên khớp' },
-                { value: 'all_match', label: 'Chạy tất cả case khớp (tốn hơn)' },
+                { value: 'first_match', label: t('agentFlows.inspector.switch.first') },
+                { value: 'all_match', label: t('agentFlows.inspector.switch.all') },
               ]}
             />
           </Field>
           <div className="mt-3 rounded-lg border border-[rgb(var(--border-line))] px-2.5">
             <Toggle
               on={node.has_fallback !== false}
-              title="Có nhánh dự phòng"
-              hint="Chạy khi không case nào khớp — nếu tắt, flow đi thẳng xuống bước sau."
+              title={t('agentFlows.inspector.hasFallback')}
+              hint={t('agentFlows.inspector.hasFallbackHint')}
               onChange={(v) => set({ has_fallback: v } as Partial<FlowNode>)}
             />
           </div>
@@ -460,28 +470,28 @@ function NodeForm(props: InspectorProps & { node: FlowNode }) {
               }],
             } as Partial<FlowNode>)}
           >
-            <Plus className="h-3 w-3" /> Thêm case
+            <Plus className="h-3 w-3" /> {t('agentFlows.inspector.addCase')}
           </Button>
         </>
       )}
 
       {node.type === 'loop' && (
         <>
-          <Field label="Danh sách cần lặp" hint="Thường là một requirement đã map, ví dụ {{segments}}.">
+          <Field label={t('agentFlows.inspector.loopOver')} hint={t('agentFlows.inspector.loopOverHint')}>
             <Input value={node.over} onChange={(e) => set({ over: e.target.value } as Partial<FlowNode>)} />
           </Field>
-          <Field label="Tên biến cho từng phần tử">
+          <Field label={t('agentFlows.inspector.itemVar')}>
             <Input value={node.item_var || 'item'}
               onChange={(e) => set({ item_var: e.target.value } as Partial<FlowNode>)} />
           </Field>
           <Field
-            label="Số vòng tối đa"
-            hint="Bước tốn kém nhất trong flow: mỗi vòng chứa một AI Agent là một lần gọi mô hình."
+            label={t('agentFlows.inspector.maxIterations')}
+            hint={t('agentFlows.inspector.maxIterationsHint')}
           >
             <Input type="number" min={1} max={MAX_LOOP_ITERATIONS} value={node.max_iterations ?? 10}
               onChange={(e) => set({ max_iterations: Number(e.target.value) } as Partial<FlowNode>)} />
           </Field>
-          <Field label="Gom kết quả vào biến">
+          <Field label={t('agentFlows.inspector.collectInto')}>
             <Input value={node.collect_into || ''}
               onChange={(e) => set({ collect_into: e.target.value } as Partial<FlowNode>)}
               placeholder="all_findings" />
@@ -491,41 +501,41 @@ function NodeForm(props: InspectorProps & { node: FlowNode }) {
 
       {node.type === 'filter' && (
         <>
-          <Field label="Cách khớp">
+          <Field label={t('agentFlows.inspector.matchMode')}>
             <Select
               value={node.match || 'all'}
               onChange={(v) => set({ match: v as 'all' | 'any' } as Partial<FlowNode>)}
-              options={[{ value: 'all', label: 'Khớp TẤT CẢ' }, { value: 'any', label: 'Khớp MỘT' }]}
+              options={[{ value: 'all', label: t('agentFlows.inspector.matchAllConditions') }, { value: 'any', label: t('agentFlows.inspector.matchAnyCondition') }]}
             />
           </Field>
           <div className="mt-3">
-            <SectionTitle>Điều kiện đi tiếp</SectionTitle>
+            <SectionTitle>{t('agentFlows.inspector.continueConditions')}</SectionTitle>
             <ConditionRows
               conditions={node.conditions || []}
               onChange={(conditions) => set({ conditions } as Partial<FlowNode>)}
             />
           </div>
-          <HintText>Không khớp thì DỪNG NHÁNH này — các bước sau nhánh vẫn chạy.</HintText>
+          <HintText>{t('agentFlows.inspector.filterHint')}</HintText>
         </>
       )}
 
       {node.type === 'set_var' && (
         <>
-          <Field label="Tên biến">
+          <Field label={t('agentFlows.inspector.variableName')}>
             <Input value={node.var} onChange={(e) => set({ var: e.target.value } as Partial<FlowNode>)} />
           </Field>
-          <Field label="Giá trị">
+          <Field label={t('agentFlows.inspector.valueLabel')}>
             <Textarea rows={3} value={node.value || ''}
               onChange={(e) => set({ value: e.target.value } as Partial<FlowNode>)} />
           </Field>
-          <Field label="Kiểu dữ liệu">
+          <Field label={t('agentFlows.inspector.valueType')}>
             <Select
               value={node.value_type || 'text'}
               onChange={(v) => set({ value_type: v as never } as Partial<FlowNode>)}
               options={[
-                { value: 'text', label: 'Văn bản' }, { value: 'number', label: 'Số' },
-                { value: 'list', label: 'Danh sách' }, { value: 'object', label: 'Object' },
-                { value: 'bool', label: 'Đúng/Sai' },
+                { value: 'text', label: t('agentFlows.inspector.valueType.text') }, { value: 'number', label: t('agentFlows.inspector.valueType.number') },
+                { value: 'list', label: t('agentFlows.inspector.valueType.list') }, { value: 'object', label: 'Object' },
+                { value: 'bool', label: t('agentFlows.inspector.valueType.bool') },
               ]}
             />
           </Field>
@@ -534,24 +544,24 @@ function NodeForm(props: InspectorProps & { node: FlowNode }) {
 
       {node.type === 'transform' && (
         <>
-          <Field label="Thao tác">
+          <Field label={t('agentFlows.inspector.operation')}>
             <Select
               value={node.operation}
               onChange={(v) => set({ operation: v as never } as Partial<FlowNode>)}
               options={[
-                { value: 'append_to_list', label: 'Thêm vào danh sách' },
-                { value: 'map_fields', label: 'Map các trường' },
-                { value: 'format_object', label: 'Ghép thành chuỗi' },
-                { value: 'join_text', label: 'Nối danh sách thành văn bản' },
-                { value: 'pick', label: 'Chỉ giữ một số trường' },
+                { value: 'append_to_list', label: t('agentFlows.inspector.operation.append') },
+                { value: 'map_fields', label: t('agentFlows.inspector.operation.mapFields') },
+                { value: 'format_object', label: t('agentFlows.inspector.operation.formatObject') },
+                { value: 'join_text', label: t('agentFlows.inspector.operation.joinText') },
+                { value: 'pick', label: t('agentFlows.inspector.operation.pick') },
               ]}
             />
           </Field>
-          <Field label="Nguồn">
+          <Field label={t('agentFlows.inspector.source')}>
             <Input value={node.source || ''} onChange={(e) => set({ source: e.target.value } as Partial<FlowNode>)}
               placeholder="{{previous}}" />
           </Field>
-          <Field label="Ghi vào biến">
+          <Field label={t('agentFlows.inspector.writeToVariable')}>
             <Input value={node.target || ''} onChange={(e) => set({ target: e.target.value } as Partial<FlowNode>)} />
           </Field>
         </>
@@ -559,7 +569,7 @@ function NodeForm(props: InspectorProps & { node: FlowNode }) {
 
       {node.type === 'stop' && (
         <>
-          <Field label="Câu trả lời trả về" hint="Để trống thì flow dừng mà không nói gì.">
+          <Field label={t('agentFlows.inspector.returnAnswer')} hint={t('agentFlows.inspector.returnAnswerHint')}>
             <Textarea rows={4} value={node.message || ''}
               onChange={(e) => set({ message: e.target.value } as Partial<FlowNode>)} />
           </Field>
@@ -569,8 +579,8 @@ function NodeForm(props: InspectorProps & { node: FlowNode }) {
       {node.type === 'delay' && (
         <>
           <Field
-            label="Chờ (giây)"
-            hint="Tối đa 30 giây. Link công khai trả lời trong MỘT kết nối đang mở — chờ lâu hơn thì không còn chỗ nào để gửi câu trả lời tới."
+            label={t('agentFlows.inspector.delaySeconds')}
+            hint={t('agentFlows.inspector.delayHint')}
           >
             <Input type="number" min={0} max={30} value={node.seconds ?? 1}
               onChange={(e) => set({ seconds: Number(e.target.value) } as Partial<FlowNode>)} />
@@ -580,48 +590,48 @@ function NodeForm(props: InspectorProps & { node: FlowNode }) {
 
       {/* ── common ───────────────────────────────────────────────────────── */}
       <div className="mt-4 border-t border-[rgb(var(--border-line))] pt-3">
-        <SectionTitle>Kết quả & lặp lại</SectionTitle>
+        <SectionTitle>{t('agentFlows.inspector.resultSection')}</SectionTitle>
         {node.type !== 'set_var' && node.type !== 'if' && node.type !== 'switch' && (
-          <Field label="Output variable" hint="Các bước sau đọc kết quả này bằng {{tên}}.">
+          <Field label="Output variable" hint={t('agentFlows.inspector.outputVariableHint')}>
             <Input value={node.output_var || ''}
               onChange={(e) => set({ output_var: e.target.value })} />
           </Field>
         )}
-        <Field label="Chạy lại mỗi lượt?">
+        <Field label={t('agentFlows.inspector.rerunEveryTurn')}>
           <Select
             value={node.run_policy || 'every_turn'}
             onChange={(v) => set({ run_policy: v as never })}
-            options={RUN_POLICY.map((r) => ({ value: r.value, label: r.label }))}
+            options={RUN_POLICY.map((r) => ({ value: r.value, label: t(r.labelKey) }))}
           />
-          <HintText>{RUN_POLICY.find((r) => r.value === (node.run_policy || 'every_turn'))?.hint}</HintText>
+          <HintText>{t(RUN_POLICY.find((r) => r.value === (node.run_policy || 'every_turn'))?.hintKey || 'agentFlows.inspector.runPolicy.everyTurnHint')}</HintText>
         </Field>
         {node.type === 'agent' && (
-          <Field label="Gửi bao nhiêu hội thoại cho model?"
-            hint="Gửi ít hơn thì vừa rẻ hơn vừa chính xác hơn — bước phân loại không cần lời chào.">
+          <Field label={t('agentFlows.inspector.contextPolicy')}
+            hint={t('agentFlows.inspector.contextPolicyHint')}>
             <Select
               value={node.context_policy || 'question'}
               onChange={(v) => set({ context_policy: v as never })}
-              options={CONTEXT_POLICY}
+              options={CONTEXT_POLICY.map((r) => ({ value: r.value, label: t(r.labelKey) }))}
             />
           </Field>
         )}
       </div>
 
       <div className="mt-4 border-t border-[rgb(var(--border-line))] pt-3">
-        <SectionTitle>Khi bước này lỗi</SectionTitle>
+        <SectionTitle>{t('agentFlows.inspector.errorSection')}</SectionTitle>
         <Select
           value={node.on_error || 'continue'}
           onChange={(v) => set({ on_error: v as 'continue' | 'stop' })}
           options={[
-            { value: 'continue', label: 'Bỏ qua bước, chạy tiếp' },
-            { value: 'stop', label: 'Dừng flow' },
+            { value: 'continue', label: t('agentFlows.inspector.error.continue') },
+            { value: 'stop', label: t('agentFlows.inspector.error.stop') },
           ]}
         />
         <div className="mt-2 rounded-lg border border-[rgb(var(--border-line))] px-2.5">
           <Toggle
             on={!!node.retry}
-            title="Thử lại"
-            hint="Thử lại bước này trước khi coi là lỗi."
+            title={t('agentFlows.inspector.retry')}
+            hint={t('agentFlows.inspector.retryHint')}
             onChange={(v) => set({ retry: v ? { max_attempts: 2, backoff_seconds: 1, on: 'error' } : null })}
           />
         </div>
@@ -637,7 +647,7 @@ function NodeForm(props: InspectorProps & { node: FlowNode }) {
 
       {!isAnswerNode && node.type === 'agent' && (
         <Button variant="secondary" size="xs" className="mt-4" onClick={onMakeAnswer}>
-          Đặt làm bước trả lời
+          {t('agentFlows.inspector.makeAnswer')}
         </Button>
       )}
     </div>
@@ -647,20 +657,29 @@ function NodeForm(props: InspectorProps & { node: FlowNode }) {
 /** How large a result is, in the words an author sizing a flow needs. `small` is
  *  intentionally absent: it is the default and labelling it would put a chip on
  *  almost every row to say "nothing to worry about here". */
-const PAYLOAD_LABEL: Record<string, string> = {
-  medium: 'kết quả vừa',
-  large: 'kết quả lớn',
-  scales_with_report: 'to theo báo cáo',
+const PAYLOAD_LABEL_KEY: Record<string, string> = {
+  medium: 'agentFlows.payload.medium',
+  large: 'agentFlows.payload.large',
+  scales_with_report: 'agentFlows.payload.scalesWithReport',
 };
 
-const PAYLOAD_HINT: Record<string, string> = {
-  medium: 'Kết quả cỡ vừa — vài trăm đến hơn nghìn token mỗi lần gọi.',
-  large: 'Kết quả lớn. Gọi nhiều lần trong một lượt sẽ đội chi phí nhanh.',
-  scales_with_report:
-    'Kích thước phụ thuộc BÁO CÁO, không phải công cụ: rẻ trên báo cáo demo, '
-    + 'rất đắt trên báo cáo thật. Ví dụ đo được: danh sách 70 biểu đồ ≈ 15.600 token. '
-    + 'Hãy thu hẹp phạm vi (theo trang, theo biểu đồ) trước khi cấp.',
+const PAYLOAD_HINT_KEY: Record<string, string> = {
+  medium: 'agentFlows.payloadHint.medium',
+  large: 'agentFlows.payloadHint.large',
+  scales_with_report: 'agentFlows.payloadHint.scalesWithReport',
 };
+
+function toolPackLabel(pack: ToolPack, language: 'en' | 'vi') {
+  return (language === 'vi' ? pack.label_vi : pack.label_en) || pack.label_vi || pack.label_en;
+}
+
+function toolPackPurpose(pack: ToolPack, language: 'en' | 'vi') {
+  return language === 'vi' ? pack.purpose_vi : undefined;
+}
+
+function toolLabel(tool: ToolPack['tools'][number], language: 'en' | 'vi') {
+  return (language === 'vi' ? tool.label_vi : tool.label_en) || tool.label_vi || tool.label_en;
+}
 
 /** The tool picker.
  *
@@ -688,6 +707,7 @@ const PAYLOAD_HINT: Record<string, string> = {
 function ToolPicker({
   packs, granted, onToggle,
 }: { packs: ToolPack[]; granted: string[]; onToggle: (name: string, on: boolean) => void }) {
+  const { t, language } = useI18n();
   return (
     <div className="space-y-2">
       {packs.map((pack) => {
@@ -698,81 +718,81 @@ function ToolPicker({
           <div key={pack.key} className="rounded-lg border border-[rgb(var(--border-line))]">
             <div className="border-b border-[rgb(var(--border-line))] bg-surface-2/40 px-2 py-1.5">
               <div className="flex items-center gap-1.5">
-                <b className="text-tiny font-strong">{pack.label_vi}</b>
+                <b className="text-tiny font-strong">{toolPackLabel(pack, language)}</b>
                 {onCount > 0 && (
                   <span className="rounded bg-accent/10 px-1 text-tiny text-accent">
                     {onCount}/{names.length}
                   </span>
                 )}
                 {pack.gated_by_link && (
-                  <span title={pack.gate_note_vi}
+                  <span title={language === 'vi' ? pack.gate_note_vi : t('agentFlows.toolPicker.byLink')}
                     className="rounded border border-warning/25 bg-warning/5 px-1 text-tiny text-warning">
-                    theo link
+                    {t('agentFlows.toolPicker.byLink')}
                   </span>
                 )}
                 <button type="button"
                   className="ml-auto text-tiny text-text-tertiary underline-offset-2 hover:underline"
                   onClick={() => names.forEach((n) => onToggle(n, !allOn))}>
-                  {allOn ? 'bỏ hết' : 'chọn hết'}
+                  {allOn ? t('agentFlows.toolPicker.clearAll') : t('agentFlows.toolPicker.selectAll')}
                 </button>
               </div>
-              {pack.purpose_vi && (
-                <p className="mt-0.5 text-tiny leading-snug text-text-tertiary">{pack.purpose_vi}</p>
+              {toolPackPurpose(pack, language) && (
+                <p className="mt-0.5 text-tiny leading-snug text-text-tertiary">{toolPackPurpose(pack, language)}</p>
               )}
             </div>
             <div className="p-1.5">
-              {pack.tools.map((t) => {
-                const on = granted.includes(t.name);
-                const example = t.answers_vi?.[0];
-                const returns = t.returns
-                  ? Object.entries(t.returns).map(([k, v]) => `${k}: ${v}`).join('\n')
+              {pack.tools.map((tool) => {
+                const on = granted.includes(tool.name);
+                const description = language === 'vi' ? tool.description_vi : '';
+                const example = language === 'vi' ? tool.answers_vi?.[0] : undefined;
+                const returns = language === 'vi' && tool.returns
+                  ? Object.entries(tool.returns).map(([k, v]) => `${k}: ${v}`).join('\n')
                   : '';
                 return (
-                  <label key={t.name}
-                    title={returns ? `Trả về —\n${returns}` : undefined}
+                  <label key={tool.name}
+                    title={returns ? t('agentFlows.toolPicker.returnsTitle', { returns }) : undefined}
                     className="flex cursor-pointer items-start gap-2 rounded-md px-1.5 py-1 hover:bg-surface-2">
                     <input type="checkbox" checked={on} className="mt-0.5"
-                      onChange={(e) => onToggle(t.name, e.target.checked)} />
+                      onChange={(e) => onToggle(tool.name, e.target.checked)} />
                     <span className="min-w-0 flex-1">
                       <span className="flex flex-wrap items-center gap-1">
-                        <b className="text-tiny font-medium">{t.label_vi}</b>
-                        <CostChip cost={t.cost_class} />
+                        <b className="text-tiny font-medium">{toolLabel(tool, language)}</b>
+                        <CostChip cost={tool.cost_class} />
                         {/* The payload axis, shown only when it is worth acting
                             on. A `small` result is the norm and a chip on every
                             row would be noise; a result that grows with the
                             report is the one an author has to size a flow
                             around, and it had no representation at all. */}
-                        {t.payload && t.payload !== 'small' && (
+                        {tool.payload && tool.payload !== 'small' && (
                           <span
-                            title={PAYLOAD_HINT[t.payload]}
+                            title={t(PAYLOAD_HINT_KEY[tool.payload])}
                             className={cn(
                               'rounded border px-1 text-tiny',
-                              t.payload === 'scales_with_report'
+                              tool.payload === 'scales_with_report'
                                 ? 'border-warning/25 bg-warning/5 text-warning'
                                 : 'border-[rgb(var(--border-line))] text-text-tertiary',
                             )}>
-                            {PAYLOAD_LABEL[t.payload]}
+                            {t(PAYLOAD_LABEL_KEY[tool.payload])}
                           </span>
                         )}
-                        {t.self_sufficient && (
+                        {tool.self_sufficient && (
                           <span
                             title={
-                              'Kết quả là số đã tính xong — không cần model diễn giải mới hiểu.\n\n'
-                              + 'Lưu ý: trong một bước AI, model VẪN chọn công cụ và VẪN viết câu '
-                              + 'trả lời. Chỉ khi flow gọi công cụ này với tham số cố định thì mới '
-                              + 'thực sự không tốn lượt model nào.'
+                              t('agentFlows.toolPicker.selfSufficientTitle')
                             }
                             className="rounded border border-success/25 bg-success/5 px-1 text-tiny text-success">
-                            trả số dùng ngay
+                            {t('agentFlows.toolPicker.selfSufficient')}
                           </span>
                         )}
                       </span>
-                      <span className="block text-tiny leading-snug text-text-tertiary">
-                        {t.description_vi}
-                      </span>
+                      {description && (
+                        <span className="block text-tiny leading-snug text-text-tertiary">
+                          {description}
+                        </span>
+                      )}
                       {example && (
                         <span className="block text-tiny leading-snug text-text-tertiary/70">
-                          vd: “{example}”
+                          {t('agentFlows.toolPicker.example', { example })}
                         </span>
                       )}
                     </span>

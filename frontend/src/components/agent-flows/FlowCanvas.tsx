@@ -28,6 +28,7 @@ import React from 'react';
 import { GripVertical, Plus } from 'lucide-react';
 
 import { cn } from '@/lib/utils';
+import { useI18n } from '@/providers/LanguageProvider';
 import type { FlowNode, InsertTarget, NodeSpec } from '@/lib/agentFlows';
 import { idBox, idInsert, idNode, idRule, useFlowEdges } from './useFlowEdges';
 import type { MiniRect } from './Minimap';
@@ -55,6 +56,8 @@ type SharedProps = Omit<CanvasProps, 'nodes'> & {
   register: (id: string) => (el: HTMLElement | null) => void;
   drag: DragState;
   setDrag: (d: DragState) => void;
+  t: (key: string, values?: Record<string, string | number>) => string;
+  language: 'en' | 'vi';
 };
 
 interface DragState {
@@ -72,7 +75,13 @@ const TONE: Record<string, string> = {
   utility: 'bg-surface-2 text-text-secondary',
 };
 
+function specText(spec: NodeSpec, field: 'label' | 'description', language: 'en' | 'vi') {
+  if (field === 'description') return spec.description_vi;
+  return (language === 'vi' ? spec.label_vi : spec.label_en) || spec.label_vi || spec.label_en;
+}
+
 export function FlowCanvas(props: CanvasProps) {
+  const { t, language } = useI18n();
   const { nodes, onInsert, zoom = 1, onMove, canDropInto, onLayout, ...rest } = props;
   const [drag, setDrag] = React.useState<DragState>({ key: null, x: 0, y: 0, over: null });
 
@@ -115,7 +124,7 @@ export function FlowCanvas(props: CanvasProps) {
   React.useEffect(() => { remeasure(); }, [nodes, zoom, remeasure]);
   React.useEffect(() => { onLayout?.(rects); }, [rects, onLayout]);
 
-  const shared: SharedProps = { ...rest, onInsert, zoom, onMove, canDropInto, register, drag, setDrag };
+  const shared: SharedProps = { ...rest, onInsert, zoom, onMove, canDropInto, register, drag, setDrag, t, language };
 
   return (
     <div
@@ -156,15 +165,15 @@ export function FlowCanvas(props: CanvasProps) {
 
       <SystemBand
         id="input" register={register}
-        title="INPUT" hint="Câu hỏi người xem + dữ liệu link cho phép đọc"
+        title="INPUT" hint={t('agentFlows.canvas.inputHint')}
       />
       <Gap />
       <Body nodes={nodes} containerPath="" {...shared} />
-      <InsertPoint containerPath="" index={nodes.length} label="Thêm bước ở cuối" {...shared} />
+      <InsertPoint containerPath="" index={nodes.length} label={t('agentFlows.canvas.addEnd')} {...shared} />
       <Gap />
       <SystemBand
         id="output" register={register}
-        title="OUTPUT" hint="Câu trả lời ChatBot gửi cho người xem"
+        title="OUTPUT" hint={t('agentFlows.canvas.outputHint')}
       />
 
       {drag.key && (
@@ -172,7 +181,7 @@ export function FlowCanvas(props: CanvasProps) {
           className="pointer-events-none fixed z-[100] rounded-md border border-brand bg-surface-1 px-2 py-1 text-tiny shadow-linear-lg"
           style={{ left: drag.x + 12, top: drag.y + 12 }}
         >
-          {drag.over ? 'Thả để chuyển tới đây' : 'Kéo tới một dấu +'}
+          {drag.over ? t('agentFlows.canvas.dropHere') : t('agentFlows.canvas.dragToPlus')}
         </div>
       )}
     </div>
@@ -242,7 +251,9 @@ function NodeCard({
   register: SharedProps['register']; drag: DragState;
   setDrag: (d: DragState) => void; draggable: boolean;
 }) {
-  const title = node.name || spec?.label_vi || node.type;
+  const { t, language } = useI18n();
+  const specLabel = spec ? specText(spec, 'label', language) : '';
+  const title = node.name || specLabel || node.type;
   const never = coverage === 0;
   return (
     <div
@@ -262,7 +273,7 @@ function NodeCard({
       {draggable && (
         <button
           type="button"
-          aria-label="Kéo để đổi vị trí"
+          aria-label={t('agentFlows.canvas.dragHandle')}
           onPointerDown={(e) => {
             e.preventDefault();
             e.stopPropagation();
@@ -279,36 +290,38 @@ function NodeCard({
             'flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-md text-small',
             TONE[spec?.category || 'utility'],
           )}>
-            {spec?.icon || '•'}
+              {spec?.icon || '•'}
           </span>
           <span className="min-w-0 flex-1">
             <b className="block truncate text-caption font-strong">{title}</b>
             <span className="mt-px block text-tiny text-text-quaternary">
-              {spec?.label_vi || node.type}
+              {specLabel || node.type}
             </span>
           </span>
           {isAnswer && (
             <span className="rounded-full border border-success/20 bg-success/5 px-1.5 py-px text-tiny text-success">
-              Output
+              {t('agentFlows.common.output')}
             </span>
           )}
           {node.run_policy && node.run_policy !== 'every_turn' && (
             <span
-              title="Bước này dùng lại kết quả giữa các lượt hỏi trong cùng phiên."
+              title={t('agentFlows.canvas.runPolicyTitle')}
               className="rounded-full border border-info/20 bg-info/5 px-1.5 py-px text-tiny text-info"
             >
-              {node.run_policy === 'when_stale' ? 'khi đổi' : '1×/phiên'}
+              {node.run_policy === 'when_stale'
+                ? t('agentFlows.canvas.runPolicy.whenStale')
+                : t('agentFlows.canvas.runPolicy.oncePerSession')}
             </span>
           )}
           {spec?.costs_llm && (
-            <span title="Bước này gọi mô hình — tốn token."
+            <span title={t('agentFlows.canvas.llmTitle')}
               className="rounded-full border border-brand/20 bg-brand/5 px-1.5 py-px text-tiny text-brand">
               LLM
             </span>
           )}
         </div>
         <div className="px-2.5 py-2">
-          <p className="line-clamp-2 text-tiny leading-snug text-text-secondary">{describe(node)}</p>
+          <p className="line-clamp-2 text-tiny leading-snug text-text-secondary">{describe(node, t)}</p>
           {(never || node.output_var) && (
             <div className="mt-1.5 flex flex-wrap gap-1">
               {node.output_var && (
@@ -317,9 +330,9 @@ function NodeCard({
                 </span>
               )}
               {never && (
-                <span title="Trong 30 ngày qua chưa lần chạy nào đi vào bước này."
+                <span title={t('agentFlows.canvas.neverTitle')}
                   className="rounded border border-warning/25 bg-warning/5 px-1.5 py-px text-tiny text-warning">
-                  chưa từng chạy
+                  {t('agentFlows.canvas.neverLabel')}
                 </span>
               )}
             </div>
@@ -332,40 +345,50 @@ function NodeCard({
 
 /** One line saying what this node does, from its own configuration.
  *  Generated rather than authored so it cannot go stale when a setting changes. */
-function describe(node: FlowNode): string {
+function describe(node: FlowNode, t: (key: string, values?: Record<string, string | number>) => string): string {
   switch (node.type) {
     case 'agent':
-      return node.prompt?.slice(0, 140) || 'Chưa có hướng dẫn.';
+      return node.prompt?.slice(0, 140) || t('agentFlows.canvas.describe.noPrompt');
     case 'report_read': {
       const parts = [
-        node.include_summary && 'tóm tắt',
-        node.include_data && 'dữ liệu',
+        node.include_summary && t('agentFlows.canvas.describe.summary'),
+        node.include_data && t('agentFlows.canvas.describe.data'),
         node.include_filters && 'filter',
       ].filter(Boolean);
-      return `Đọc ${parts.join(', ') || 'báo cáo'} của báo cáo đang mở.`;
+      return t('agentFlows.canvas.describe.reportRead', {
+        parts: parts.join(', ') || t('agentFlows.canvas.describe.report'),
+      });
     }
     case 'knowledge':
-      return `Tra ${node.knowledge?.length || 0} nguồn · top ${node.top_k ?? 5}.`;
+      return t('agentFlows.canvas.describe.knowledge', { count: node.knowledge?.length || 0, top: node.top_k ?? 5 });
     case 'web':
       return node.allowed_domains?.length
-        ? `Tra web, giới hạn: ${node.allowed_domains.join(', ')}`
-        : 'Tra thông tin ngoài AppBI.';
+        ? t('agentFlows.canvas.describe.webLimited', { domains: node.allowed_domains.join(', ') })
+        : t('agentFlows.canvas.describe.web');
     case 'if':
-      return `${node.paths?.length || 0} nhánh · chạy nhánh đầu tiên khớp.`;
+      return t('agentFlows.canvas.describe.if', { count: node.paths?.length || 0 });
     case 'switch':
-      return `Rẽ theo ${node.value} · ${node.cases?.length || 0} case${node.has_fallback ? ' + dự phòng' : ''}.`;
+      return t('agentFlows.canvas.describe.switch', {
+        value: node.value,
+        count: node.cases?.length || 0,
+        fallback: node.has_fallback ? t('agentFlows.canvas.describe.fallbackSuffix') : '',
+      });
     case 'loop':
-      return `Lặp ${node.over} · tối đa ${node.max_iterations ?? 10} vòng · item {{${node.item_var || 'item'}}}.`;
+      return t('agentFlows.canvas.describe.loop', {
+        over: node.over,
+        max: node.max_iterations ?? 10,
+        item: `{{${node.item_var || 'item'}}}`,
+      });
     case 'filter':
-      return `Dừng nhánh nếu không khớp ${node.conditions?.length || 0} điều kiện.`;
+      return t('agentFlows.canvas.describe.filter', { count: node.conditions?.length || 0 });
     case 'set_var':
-      return `{{${node.var}}} = ${node.value || '(rỗng)'}`;
+      return `{{${node.var}}} = ${node.value || t('agentFlows.canvas.describe.empty')}`;
     case 'transform':
       return `${node.operation} → {{${node.target || node.output_var || '?'}}}`;
     case 'stop':
-      return node.message || 'Kết thúc sớm.';
+      return node.message || t('agentFlows.canvas.describe.stop');
     case 'delay':
-      return `Chờ ${node.seconds ?? 0}s.`;
+      return t('agentFlows.canvas.describe.delay', { seconds: node.seconds ?? 0 });
     default:
       return '';
   }
@@ -423,7 +446,7 @@ function Body({
             : 'border-[rgb(var(--border-strong))] text-text-tertiary hover:border-brand hover:text-brand',
         )}
       >
-        + Thêm bước vào nhánh này
+        {rest.t('agentFlows.canvas.addBranch')}
       </button>
     );
   }
@@ -432,7 +455,7 @@ function Body({
       {nodes.map((node, index) => (
         <React.Fragment key={node.key}>
           {index > 0 && (
-            <InsertPoint containerPath={containerPath} index={index} label="Chèn bước tại đây" {...rest} />
+            <InsertPoint containerPath={containerPath} index={index} label={rest.t('agentFlows.canvas.insertHere')} {...rest} />
           )}
           <NodeBlock node={node} containerPath={containerPath} {...rest} />
         </React.Fragment>
@@ -466,11 +489,14 @@ function NodeBlock({
     const lanes = node.type === 'if'
       ? node.paths.map((p) => ({
           key: p.key,
-          label: p.kind === 'fallback' ? 'Dự phòng' : 'Điều kiện',
+          label: p.kind === 'fallback' ? rest.t('agentFlows.canvas.lane.fallback') : rest.t('agentFlows.canvas.lane.condition'),
           title: p.name || p.key,
           sub: p.kind === 'fallback'
-            ? 'Chạy khi không nhánh nào trước đó khớp.'
-            : `${p.conditions?.length || 0} điều kiện · ${p.match === 'any' ? 'khớp 1' : 'khớp tất cả'}`,
+            ? rest.t('agentFlows.canvas.lane.fallbackIf')
+            : rest.t('agentFlows.canvas.lane.matchSummary', {
+                count: p.conditions?.length || 0,
+                match: p.match === 'any' ? rest.t('agentFlows.canvas.lane.matchOne') : rest.t('agentFlows.canvas.lane.matchAll'),
+              }),
           tone: (p.kind === 'fallback' ? 'neutral' : 'ok') as 'ok' | 'neutral',
           body: p.body || [],
           path: `${node.key}:path:${p.key}`,
@@ -484,8 +510,8 @@ function NodeBlock({
             path: `${node.key}:case:${c.key}`, selKey: `${node.key}:case:${c.key}`,
           })),
           ...(node.has_fallback !== false ? [{
-            key: 'fallback', label: 'Dự phòng', title: 'Dự phòng',
-            sub: 'Chạy khi không case nào khớp.',
+            key: 'fallback', label: rest.t('agentFlows.canvas.lane.fallback'), title: rest.t('agentFlows.canvas.lane.fallback'),
+            sub: rest.t('agentFlows.canvas.lane.fallbackSwitch'),
             tone: 'neutral' as const, body: node.fallback || [],
             path: `${node.key}:fallback:`, selKey: `${node.key}:fallback:`,
           }] : []),
@@ -515,7 +541,7 @@ function NodeBlock({
               <Body nodes={lane.body} containerPath={lane.path} {...rest} />
               <InsertPoint
                 containerPath={lane.path} index={lane.body.length}
-                label={`Thêm vào ${lane.title}`} {...rest}
+                label={rest.t('agentFlows.canvas.addToLane', { lane: lane.title })} {...rest}
               />
             </div>
           ))}
@@ -545,7 +571,7 @@ function NodeBlock({
             <Body nodes={node.body || []} containerPath={`${node.key}:body:`} {...rest} />
             <InsertPoint
               containerPath={`${node.key}:body:`} index={(node.body || []).length}
-              label="Thêm bước trong Loop" {...rest}
+              label={rest.t('agentFlows.canvas.addLoop')} {...rest}
             />
           </div>
         </div>
@@ -559,10 +585,11 @@ function NodeBlock({
 /** The lanes rejoin here. Labelled because "where do the branches go" is the first
  *  question anyone asks of a branching diagram, and a tree answers it silently. */
 function MergeLabel() {
+  const { t } = useI18n();
   return (
     <div className="relative z-10 flex h-11 w-full items-start justify-center pt-4">
       <span className="rounded-full border border-[rgb(var(--border-line))] bg-surface-0 px-2 py-px text-tiny text-text-quaternary">
-        các nhánh gộp lại
+        {t('agentFlows.canvas.merge')}
       </span>
     </div>
   );

@@ -930,12 +930,18 @@ export function uniqueKey(nodes: FlowNode[], base: string): string {
 
 /** A new node of `type`, with the defaults the server would apply anyway. Kept
  *  here so the canvas never inserts a node the contract would reject. */
-export function blankNode(type: NodeType, nodes: FlowNode[]): FlowNode {
+export interface BlankNodeLabels {
+  agentPrompt?: string;
+  pathA?: string;
+  pathB?: string;
+}
+
+export function blankNode(type: NodeType, nodes: FlowNode[], labels: BlankNodeLabels = {}): FlowNode {
   const key = uniqueKey(nodes, type);
   const base = { key, name: '' };
   switch (type) {
     case 'agent':
-      return { ...base, type, prompt: 'Mô tả bước này cần làm gì.', provider: 'inherit',
+      return { ...base, type, prompt: labels.agentPrompt || 'Describe what this step should do.', provider: 'inherit',
         max_tool_calls: 8, output_format: 'chat', context_policy: 'question', tools: [], knowledge: [] };
     case 'report_read':
       return { ...base, type, output_var: uniqueKey(nodes, 'dashboard_context'),
@@ -949,9 +955,9 @@ export function blankNode(type: NodeType, nodes: FlowNode[]): FlowNode {
         allowed_domains: [], output_var: uniqueKey(nodes, 'web_context') };
     case 'if':
       return { ...base, type, paths: [
-        { key: 'yes', name: 'Nhánh A', kind: 'rules', match: 'all',
+        { key: 'yes', name: labels.pathA || 'Branch A', kind: 'rules', match: 'all',
           conditions: [{ left: '{{question}}', op: 'contains', right: '' }], body: [] },
-        { key: 'no', name: 'Nhánh B', kind: 'fallback', body: [] },
+        { key: 'no', name: labels.pathB || 'Branch B', kind: 'fallback', body: [] },
       ] };
     case 'switch':
       return { ...base, type, value: '{{}}', mode: 'first_match', has_fallback: true,

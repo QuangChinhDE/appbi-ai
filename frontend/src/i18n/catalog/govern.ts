@@ -760,6 +760,101 @@ export const governCatalog: ModuleCatalog = {
     'intel.ai.drafted': 'AI drafted the fields',
     'intel.ai.failed': 'AI draft failed',
     'intel.ai.rulePromptPh': 'Describe the rule in plain words, e.g. "When on-time rate drops below 90% in a week, alert and break down by carrier and state"',
+    'govern.time.justNow': 'just now',
+    'govern.time.minutesAgo': '{{count}}m ago',
+    'govern.time.hoursAgo': '{{count}}h ago',
+    'govern.time.daysAgo': '{{count}}d ago',
+    'govern.markdown.callout.note': 'Note',
+    'govern.markdown.callout.info': 'Information',
+    'govern.markdown.callout.tip': 'Tip',
+    'govern.markdown.callout.success': 'Good',
+    'govern.markdown.callout.warning': 'Warning',
+    'govern.markdown.callout.danger': 'Danger',
+    'govern.markdown.callout.rule': 'Business rule',
+    'govern.markdown.callout.formula': 'Formula',
+    'govern.markdown.callout.question': 'Question',
+    'govern.markdown.missingDoc': 'Document does not exist yet',
+    'govern.markdown.imageFallback': 'Image',
+    'govern.docTemplate.domain': `## Business meaning
+What this area covers and why it matters.
+
+## Key metrics
+Insert governed metrics with the "Define metric" button or {{metric:slug}}, with meaning and calculation notes.
+
+## Data sources & refresh
+Where the data comes from ({{dataset:id}}) and how often it refreshes.
+
+## How to read & analyze
+Which numbers to read first, and what to compare.
+
+## Exceptions & notes
+Edge cases and traps when reading the numbers.
+`,
+    'govern.docTemplate.sop': `## Purpose
+Why this process exists.
+
+## Scope
+Which team or situation this applies to.
+
+## Roles
+Who does what (operator, reviewer, approver).
+
+## Inputs
+What is needed before starting.
+
+## Steps
+1. ...
+2. ...
+3. ...
+
+## Outputs
+What result is handed off.
+
+## Exceptions
+When the process can differ and how to handle it.
+
+## Related systems
+Related dashboards/data: {{dashboard:id}}, {{dataset:id}}.
+`,
+    'govern.docTemplate.report': `## Business goal
+Which question this report answers and which decision it supports.
+
+## Audience
+Who uses it and when.
+
+## Metrics on the report
+Insert {{metric:slug}} for each key metric, with threshold or target.
+
+## Data sources
+{{dataset:id}} - model and grain.
+
+## Report
+{{dashboard:id}} - key pages/charts.
+
+## Refresh cadence
+Data refresh schedule.
+
+## Data quality notes
+Limits, incomplete data, and conventions to know.
+`,
+    'govern.docTemplate.aiKnowhow': `## Question
+The business question this knowledge answers.
+
+## Answer
+The canonical answer: concise, correct, and using approved terms.
+
+## Reasoning
+Why this answer is correct: logic, formula, source numbers ({{metric:slug}}, {{dashboard:id}}).
+
+## Good example
+A situation where this applies.
+
+## Bad example / counterexample
+Cases that are easy to confuse and how to tell them apart.
+
+## Business rules
+Non-negotiable rules related to this answer.
+`,
   },
   vi: {
     'govern.loading': 'Đang tải...',
@@ -1520,5 +1615,100 @@ export const governCatalog: ModuleCatalog = {
     'intel.ai.drafted': 'AI đã soạn nháp các trường',
     'intel.ai.failed': 'AI soạn thất bại',
     'intel.ai.rulePromptPh': 'Mô tả quy tắc bằng lời, vd: "Khi tỷ lệ giao đúng hạn xuống dưới 90% trong tuần thì cảnh báo và phân rã theo hãng vận chuyển và theo bang"',
+    'govern.time.justNow': 'vừa xong',
+    'govern.time.minutesAgo': '{{count}} phút trước',
+    'govern.time.hoursAgo': '{{count}} giờ trước',
+    'govern.time.daysAgo': '{{count}} ngày trước',
+    'govern.markdown.callout.note': 'Ghi chú',
+    'govern.markdown.callout.info': 'Thông tin',
+    'govern.markdown.callout.tip': 'Mẹo',
+    'govern.markdown.callout.success': 'Tốt',
+    'govern.markdown.callout.warning': 'Cảnh báo',
+    'govern.markdown.callout.danger': 'Nguy hiểm',
+    'govern.markdown.callout.rule': 'Quy tắc nghiệp vụ',
+    'govern.markdown.callout.formula': 'Công thức',
+    'govern.markdown.callout.question': 'Câu hỏi',
+    'govern.markdown.missingDoc': 'Tài liệu chưa tồn tại',
+    'govern.markdown.imageFallback': 'Ảnh',
+    'govern.docTemplate.domain': `## Ý nghĩa nghiệp vụ
+Mảng này nói về điều gì, vì sao quan trọng.
+
+## Chỉ số chính
+Chèn chỉ số quản trị bằng nút "Định nghĩa chỉ số" hoặc {{metric:slug}} — kèm ý nghĩa + cách tính.
+
+## Nguồn dữ liệu & làm mới
+Dữ liệu lấy từ đâu ({{dataset:id}}), tần suất cập nhật.
+
+## Cách đọc & phân tích
+Đọc số theo thứ tự nào, đối chiếu gì với gì.
+
+## Ngoại lệ & lưu ý
+Trường hợp ngoại lệ, bẫy khi đọc số.
+`,
+    'govern.docTemplate.sop': `## Mục đích
+Quy trình này tồn tại để làm gì.
+
+## Phạm vi
+Áp dụng cho bộ phận/tình huống nào.
+
+## Vai trò tham gia
+Ai làm gì (người thực hiện, người duyệt).
+
+## Đầu vào
+Cần gì trước khi bắt đầu.
+
+## Các bước thực hiện
+1. ...
+2. ...
+3. ...
+
+## Đầu ra
+Kết quả bàn giao là gì.
+
+## Ngoại lệ
+Khi nào đi lệch quy trình và xử lý ra sao.
+
+## Hệ thống liên quan
+Báo cáo/dữ liệu liên quan: {{dashboard:id}}, {{dataset:id}}.
+`,
+    'govern.docTemplate.report': `## Mục tiêu kinh doanh
+Báo cáo này trả lời câu hỏi gì, phục vụ quyết định nào.
+
+## Đối tượng sử dụng
+Ai xem, xem khi nào.
+
+## Chỉ số trên báo cáo
+Chèn {{metric:slug}} cho từng chỉ số chính — kèm ngưỡng/mục tiêu.
+
+## Nguồn dữ liệu
+{{dataset:id}} — mô hình, cấp dữ liệu (grain).
+
+## Báo cáo
+{{dashboard:id}} — các trang/biểu đồ chính.
+
+## Tần suất cập nhật
+Lịch làm mới dữ liệu.
+
+## Lưu ý chất lượng dữ liệu
+Giới hạn, dữ liệu chưa đủ, quy ước cần biết.
+`,
+    'govern.docTemplate.aiKnowhow': `## Câu hỏi
+Câu hỏi nghiệp vụ mà tri thức này trả lời.
+
+## Trả lời
+Câu trả lời chuẩn, ngắn gọn, đúng thuật ngữ.
+
+## Suy luận
+Vì sao trả lời như vậy — logic, công thức, nguồn số ({{metric:slug}}, {{dashboard:id}}).
+
+## Ví dụ đúng
+Tình huống áp dụng đúng.
+
+## Ví dụ sai / phản ví dụ
+Tình huống dễ nhầm và cách phân biệt.
+
+## Quy tắc nghiệp vụ
+Các quy tắc bất biến liên quan.
+`,
   },
 };

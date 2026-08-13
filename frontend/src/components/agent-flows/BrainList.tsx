@@ -34,6 +34,7 @@ import { EmptyState } from '@/components/ui/EmptyState';
 import { FilterTag } from '@/components/ui/FilterTag';
 import { FieldGroup, Input, Textarea } from '@/components/ui/Input';
 import { toast } from '@/lib/toast';
+import { useI18n } from '@/providers/LanguageProvider';
 import {
   blankNode, deleteBrainVersion, getBrain, listBrains, saveBrain, slugifyBrainKey,
   type BrainSummary,
@@ -44,10 +45,10 @@ import { MetaChip, StatusBadge, formatWhen } from './shared';
 
 type StatusFilter = 'all' | 'published' | 'draft';
 
-const FILTERS: { key: StatusFilter; label: string }[] = [
-  { key: 'all', label: 'Tất cả' },
-  { key: 'published', label: 'Đang chạy' },
-  { key: 'draft', label: 'Chỉ có nháp' },
+const FILTERS: { key: StatusFilter; labelKey: string }[] = [
+  { key: 'all', labelKey: 'agentFlows.list.filter.all' },
+  { key: 'published', labelKey: 'agentFlows.list.filter.published' },
+  { key: 'draft', labelKey: 'agentFlows.list.filter.draft' },
 ];
 
 /** The newest version of each brain, plus what its published state actually is.
@@ -87,6 +88,7 @@ export function BrainList({
   onOpen: (key: string) => void;
   canEdit: boolean;
 }) {
+  const { t } = useI18n();
   const [rows, setRows] = React.useState<BrainSummary[] | null>(null);
   const [search, setSearch] = React.useState('');
   const [status, setStatus] = React.useState<StatusFilter>('all');
@@ -99,9 +101,9 @@ export function BrainList({
       setRows(await listBrains());
     } catch {
       setRows([]);
-      toast.error('Không tải được danh sách bộ não.');
+      toast.error(t('agentFlows.list.loadFailed'));
     }
-  }, []);
+  }, [t]);
   React.useEffect(() => { void reload(); }, [reload]);
 
   const brains = React.useMemo(() => collapse(rows || []), [rows]);
@@ -135,12 +137,11 @@ export function BrainList({
       description: description.trim(),
       body: {
         nodes: [
-          { ...reader, name: 'Đọc báo cáo' } as FlowNode,
+          { ...reader, name: t('agentFlows.list.seed.readerName') } as FlowNode,
           {
             ...writer,
-            name: 'Trả lời người xem',
-            prompt: 'Dùng dữ liệu vừa đọc để trả lời câu hỏi của người xem. '
-              + 'Không tự tạo thêm số ngoài những gì đã đọc được.',
+            name: t('agentFlows.list.seed.writerName'),
+            prompt: t('agentFlows.list.seed.writerPrompt'),
           } as FlowNode,
         ],
         answer_node: writer.key,
@@ -156,17 +157,17 @@ export function BrainList({
       // Copies the version the author is looking at, not "the published one":
       // duplicating a draft you are iterating on is the common case.
       const source = await getBrain(row.latest.brain_key, row.latest.version);
-      const name = `${source.name} (bản sao)`;
+      const name = `${source.name} (${t('agentFlows.list.duplicateSuffix')})`;
       await saveBrain({
         brain_key: slugifyBrainKey(name),
         name,
         description: source.description,
         body: source.body,
       });
-      toast.success('Đã nhân bản thành một bộ não mới (bản nháp).');
+      toast.success(t('agentFlows.list.duplicateSuccess'));
       await reload();
     } catch (e) {
-      toast.error(detailMsg(e) || 'Không nhân bản được.');
+      toast.error(detailMsg(e) || t('agentFlows.list.duplicateFailed'));
     } finally {
       setBusyKey(null);
     }
@@ -176,10 +177,10 @@ export function BrainList({
     setBusyKey(row.latest.brain_key);
     try {
       await deleteBrainVersion(row.latest.brain_key, row.latest.version);
-      toast.success(`Đã xoá bản nháp v${row.latest.version}.`);
+      toast.success(t('agentFlows.list.deleteSuccess', { version: row.latest.version }));
       await reload();
     } catch (e) {
-      toast.error(detailMsg(e) || 'Không xoá được bản nháp.');
+      toast.error(detailMsg(e) || t('agentFlows.list.deleteFailed'));
     } finally {
       setBusyKey(null);
     }
@@ -188,29 +189,29 @@ export function BrainList({
   return (
     <>
       <PageListLayout
-        title="Agent Flows"
-        description="Mỗi link công khai có ChatBot sẽ chọn một bộ não. Câu hỏi của người xem đi vào đó và được xử lý theo các bước bạn đặt sẵn."
+        title={t('agentFlows.title')}
+        description={t('agentFlows.list.description')}
         overview={(
           <ModuleOverview
             icon={Brain}
             title="Agent Flows"
             stats={[
-              { label: 'Bộ não', value: brains.length },
-              { label: 'Đang chạy', value: liveCount, helper: 'có một phiên bản đã phát hành' },
-              { label: 'Chỉ có nháp', value: brains.length - liveCount, helper: 'chưa phục vụ người xem nào' },
-              { label: 'Link đang dùng', value: servingCount, helper: 'tổng số link công khai trỏ vào các bộ não này' },
+              { label: t('agentFlows.list.stat.brains'), value: brains.length },
+              { label: t('agentFlows.list.stat.running'), value: liveCount, helper: t('agentFlows.list.stat.runningHelper') },
+              { label: t('agentFlows.list.stat.draftOnly'), value: brains.length - liveCount, helper: t('agentFlows.list.stat.draftOnlyHelper') },
+              { label: t('agentFlows.list.stat.linksUsing'), value: servingCount, helper: t('agentFlows.list.stat.linksUsingHelper') },
             ]}
             storageKey="agent-flows-overview"
           />
         )}
         action={canEdit ? (
           <Button size="sm" leadingIcon={<Plus className="h-3.5 w-3.5" />} onClick={() => setCreating(true)}>
-            Bộ não mới
+            {t('agentFlows.list.newBrain')}
           </Button>
         ) : undefined}
         isLoading={rows === null}
-        loadingText="Đang tải bộ não…"
-        searchPlaceholder="Tìm theo tên, mã hoặc mô tả…"
+        loadingText={t('agentFlows.list.loading')}
+        searchPlaceholder={t('agentFlows.list.searchPlaceholder')}
         searchValue={search}
         onSearchValueChange={setSearch}
         defaultView="list"
@@ -223,7 +224,7 @@ export function BrainList({
                 active={status === f.key}
                 onClick={() => setStatus(f.key)}
               >
-                {f.label}
+                {t(f.labelKey)}
               </FilterTag>
             ))}
           </div>
@@ -234,11 +235,11 @@ export function BrainList({
             return (
               <EmptyState
                 icon={<Brain className="h-6 w-6" />}
-                title="Chưa có bộ não nào"
-                description="Một bộ não gồm các bước nối tiếp nhau. Bước đầu thường đọc báo cáo và lấy số; bước cuối viết câu trả lời cho người xem."
+                title={t('agentFlows.list.emptyTitle')}
+                description={t('agentFlows.list.emptyDescription')}
                 action={canEdit ? (
                   <Button size="sm" leadingIcon={<Plus className="h-3.5 w-3.5" />} onClick={() => setCreating(true)}>
-                    Bộ não mới
+                    {t('agentFlows.list.newBrain')}
                   </Button>
                 ) : undefined}
               />
@@ -248,11 +249,11 @@ export function BrainList({
             return (
               <EmptyState
                 icon={<Brain className="h-6 w-6" />}
-                title="Không có bộ não nào khớp"
-                description="Thử từ khoá khác, hoặc bỏ bộ lọc trạng thái."
+                title={t('agentFlows.list.noMatchTitle')}
+                description={t('agentFlows.list.noMatchDescription')}
                 action={(
                   <Button size="sm" variant="secondary" onClick={() => { setSearch(''); setStatus('all'); }}>
-                    Xoá bộ lọc
+                    {t('agentFlows.list.clearFilters')}
                   </Button>
                 )}
               />
@@ -287,16 +288,16 @@ export function BrainList({
                         <table className="app-list-table divide-y divide-[rgb(var(--border-line))]">
                           <thead className="bg-surface-2">
                             <tr>
-                              <th className="app-list-header w-[34%]">Bộ não</th>
-                              <th className="app-list-header w-[14%]">Trạng thái</th>
-                              <th className="app-list-header w-[10%]">Bước</th>
-                              <th className="app-list-header w-[12%]">Link đang dùng</th>
-                              <th className="app-list-header w-[14%]">Chủ sở hữu</th>
-                              <th className="app-list-header w-[12%]">Cập nhật</th>
+                              <th className="app-list-header w-[34%]">{t('agentFlows.list.header.brain')}</th>
+                              <th className="app-list-header w-[14%]">{t('agentFlows.list.header.status')}</th>
+                              <th className="app-list-header w-[10%]">{t('agentFlows.list.header.steps')}</th>
+                              <th className="app-list-header w-[12%]">{t('agentFlows.list.header.links')}</th>
+                              <th className="app-list-header w-[14%]">{t('agentFlows.list.header.owner')}</th>
+                              <th className="app-list-header w-[12%]">{t('agentFlows.list.header.updated')}</th>
                               {/* Wide enough for the uppercase tracked label on one
                                   line; at 92px "HÀNH ĐỘNG" wrapped and pushed the
                                   header row to two lines. */}
-                              <th className="app-list-header w-[116px] text-right">Hành động</th>
+                              <th className="app-list-header w-[116px] text-right">{t('agentFlows.list.header.actions')}</th>
                             </tr>
                           </thead>
                           <tbody className="divide-y divide-[rgb(var(--border-line))] bg-surface-1">
@@ -328,13 +329,13 @@ export function BrainList({
 
       <ConfirmDialog
         isOpen={confirmDelete !== null}
-        title={`Xoá bản nháp v${confirmDelete?.latest.version ?? ''}?`}
+        title={t('agentFlows.list.deleteTitle', { version: confirmDelete?.latest.version ?? '' })}
         description={
           confirmDelete?.publishedVersion !== null && confirmDelete
-            ? `“${confirmDelete.latest.name}” vẫn còn phiên bản v${confirmDelete.publishedVersion} đang phục vụ người xem — bản đó không bị ảnh hưởng.`
-            : `“${confirmDelete?.latest.name}” sẽ bị xoá. Không có phiên bản nào khác của bộ não này đang chạy.`
+            ? t('agentFlows.list.deletePublishedDescription', { name: confirmDelete.latest.name, version: confirmDelete.publishedVersion })
+            : t('agentFlows.list.deleteOnlyDraftDescription', { name: confirmDelete?.latest.name ?? '' })
         }
-        confirmLabel="Xoá bản nháp"
+        confirmLabel={t('agentFlows.list.deleteConfirm')}
         variant="danger"
         onConfirm={() => { if (confirmDelete) void removeDraft(confirmDelete); }}
         onClose={() => setConfirmDelete(null)}
@@ -366,6 +367,7 @@ function BrainCard({
   onDuplicate: () => void;
   onDelete: () => void;
 }) {
+  const { t, locale } = useI18n();
   const b = row.latest;
   const links = b.link_count || 0;
   return (
@@ -387,7 +389,7 @@ function BrainCard({
                   size="xs"
                 />
                 {row.publishedVersion !== null && b.status === 'draft' && (
-                  <MetaChip tone="warning">nháp v{b.version} chưa phát hành</MetaChip>
+                  <MetaChip tone="warning">{t('agentFlows.list.draftUnpublished', { version: b.version })}</MetaChip>
                 )}
               </span>
             </span>
@@ -396,21 +398,21 @@ function BrainCard({
         </div>
 
         <p className="mb-3 line-clamp-2 min-h-[2.25rem] text-caption leading-relaxed text-text-secondary">
-          {b.description || <span className="text-text-quaternary">Chưa có mô tả — mở bộ não và viết một dòng ở tab Tổng quan.</span>}
+          {b.description || <span className="text-text-quaternary">{t('agentFlows.list.noDescriptionOpen')}</span>}
         </p>
 
         <div className="flex flex-wrap items-center gap-3 text-tiny text-text-quaternary">
           <span className="inline-flex items-center gap-1">
             <Layers className="h-3 w-3" />
-            {b.node_count ?? 0} bước
+            {t('agentFlows.list.stepCount', { count: b.node_count ?? 0 })}
           </span>
           <span className={`inline-flex items-center gap-1 ${links > 0 ? 'text-brand' : ''}`}>
             <Link2 className="h-3 w-3" />
-            {links > 0 ? `${links} link đang dùng` : 'chưa link nào dùng'}
+            {links > 0 ? t('agentFlows.list.linksUsingCount', { count: links }) : t('agentFlows.list.noLinksUsing')}
           </span>
           <span className="inline-flex items-center gap-1">
             <Calendar className="h-3 w-3" />
-            {formatWhen(b.published_at || b.created_at)}
+            {formatWhen(b.published_at || b.created_at, locale)}
           </span>
         </div>
       </button>
@@ -420,7 +422,7 @@ function BrainCard({
         <div className="flex items-center gap-0.5">
           {canEdit && (
             <IconButton
-              aria-label="Nhân bản bộ não" variant="ghost" size="sm" title="Nhân bản"
+              aria-label={t('agentFlows.list.duplicateAria')} variant="ghost" size="sm" title={t('agentFlows.list.duplicateTitle')}
               disabled={busy} onClick={onDuplicate}
             >
               <Copy className="h-3.5 w-3.5" />
@@ -428,7 +430,7 @@ function BrainCard({
           )}
           {canEdit && isDeletableDraft(row) && (
             <IconButton
-              aria-label="Xoá bản nháp" variant="ghost" size="sm" title="Xoá bản nháp"
+              aria-label={t('agentFlows.list.deleteDraftAria')} variant="ghost" size="sm" title={t('agentFlows.list.deleteConfirm')}
               className="hover:text-danger" disabled={busy} onClick={onDelete}
             >
               <Trash2 className="h-3.5 w-3.5" />
@@ -452,6 +454,7 @@ function BrainTableRow({
   onDuplicate: () => void;
   onDelete: () => void;
 }) {
+  const { t, locale } = useI18n();
   const b = row.latest;
   const links = b.link_count || 0;
   return (
@@ -466,7 +469,7 @@ function BrainTableRow({
               {b.name}
             </span>
             <span className="app-list-text-sub mt-0.5 block text-tiny text-text-tertiary">
-              {b.description || 'Chưa có mô tả'}
+              {b.description || t('agentFlows.list.noDescription')}
             </span>
           </span>
         </button>
@@ -478,7 +481,7 @@ function BrainTableRow({
             version={row.publishedVersion ?? b.version}
           />
           {row.publishedVersion !== null && b.status === 'draft' && (
-            <MetaChip tone="warning">nháp v{b.version}</MetaChip>
+            <MetaChip tone="warning">{t('agentFlows.list.draftVersion', { version: b.version })}</MetaChip>
           )}
         </div>
       </td>
@@ -490,18 +493,18 @@ function BrainTableRow({
             {links}
           </span>
         ) : (
-          <span className="text-caption text-text-quaternary">—</span>
+          <span className="text-caption text-text-quaternary">{t('agentFlows.common.none')}</span>
         )}
       </td>
       <td className="app-list-cell"><OwnerBadge email={b.owner_email} /></td>
       <td className="app-list-cell text-tiny text-text-tertiary">
-        {formatWhen(b.published_at || b.created_at)}
+        {formatWhen(b.published_at || b.created_at, locale)}
       </td>
       <td className="app-list-cell text-right">
         <div className="inline-flex items-center gap-0.5">
           {canEdit && (
             <IconButton
-              aria-label="Nhân bản bộ não" variant="ghost" size="sm" title="Nhân bản"
+              aria-label={t('agentFlows.list.duplicateAria')} variant="ghost" size="sm" title={t('agentFlows.list.duplicateTitle')}
               disabled={busy} onClick={onDuplicate}
             >
               <Copy className="h-3.5 w-3.5" />
@@ -509,7 +512,7 @@ function BrainTableRow({
           )}
           {canEdit && isDeletableDraft(row) && (
             <IconButton
-              aria-label="Xoá bản nháp" variant="ghost" size="sm" title="Xoá bản nháp"
+              aria-label={t('agentFlows.list.deleteDraftAria')} variant="ghost" size="sm" title={t('agentFlows.list.deleteConfirm')}
               className="hover:text-danger" disabled={busy} onClick={onDelete}
             >
               <Trash2 className="h-3.5 w-3.5" />
@@ -536,19 +539,20 @@ function CreateBrainModal({
   onClose: () => void;
   onCreate: (name: string, description: string) => Promise<void>;
 }) {
+  const { t } = useI18n();
   const [name, setName] = React.useState('');
   const [description, setDescription] = React.useState('');
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
 
   const submit = async () => {
-    if (!name.trim()) { setError('Cần một cái tên.'); return; }
+    if (!name.trim()) { setError(t('agentFlows.list.create.nameRequired')); return; }
     setBusy(true);
     setError(null);
     try {
       await onCreate(name, description);
     } catch (e) {
-      setError(detailMsg(e) || 'Không tạo được bộ não.');
+      setError(detailMsg(e) || t('agentFlows.list.create.failed'));
       setBusy(false);
     }
   };
@@ -556,38 +560,38 @@ function CreateBrainModal({
   return (
     <AppModalShell
       onClose={onClose}
-      title="Bộ não mới"
-      description="Bộ não dùng lại được trên nhiều link, nên hãy đặt tên theo việc nó làm, đừng theo tên một báo cáo."
+      title={t('agentFlows.list.create.title')}
+      description={t('agentFlows.list.create.description')}
       icon={<Brain className="h-4 w-4" />}
       maxWidthClass="max-w-lg"
       closeDisabled={busy}
       footer={(
         <div className="flex items-center justify-end gap-2">
-          <Button variant="secondary" size="sm" disabled={busy} onClick={onClose}>Huỷ</Button>
-          <Button size="sm" loading={busy} onClick={() => void submit()}>Tạo và mở</Button>
+          <Button variant="secondary" size="sm" disabled={busy} onClick={onClose}>{t('agentFlows.list.create.cancel')}</Button>
+          <Button size="sm" loading={busy} onClick={() => void submit()}>{t('agentFlows.list.create.submit')}</Button>
         </div>
       )}
     >
       <div className="space-y-3.5">
-        <FieldGroup label="Tên bộ não" required>
+        <FieldGroup label={t('agentFlows.list.create.name')} required>
           <Input
             autoFocus
             value={name}
             onChange={(e) => { setName(e.target.value); setError(null); }}
             onKeyDown={(e) => { if (e.key === 'Enter') void submit(); }}
-            placeholder="ví dụ: Phân tích doanh thu và giải thích thay đổi"
+            placeholder={t('agentFlows.list.create.namePlaceholder')}
             invalid={Boolean(error) && !name.trim()}
           />
         </FieldGroup>
         <FieldGroup
-          label="Mô tả"
-          description="Hiện trên danh sách và trong hộp chọn bộ não khi cấu hình link. Một dòng là đủ."
+          label={t('agentFlows.list.create.descriptionLabel')}
+          description={t('agentFlows.list.create.descriptionHint')}
         >
           <Textarea
             rows={3}
             value={description}
             onChange={(e) => setDescription(e.target.value)}
-            placeholder="Dùng cho báo cáo bán hàng: đọc số trên báo cáo, đối chiếu quy ước rồi trả lời."
+            placeholder={t('agentFlows.list.create.descriptionPlaceholder')}
           />
         </FieldGroup>
         {error && (

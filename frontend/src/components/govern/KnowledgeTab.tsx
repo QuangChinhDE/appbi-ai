@@ -107,18 +107,18 @@ function readingMinutes(body: string | undefined | null): number {
   const words = (body || '').trim().split(/\s+/).filter(Boolean).length;
   return Math.max(1, Math.round(words / 200));
 }
-function relTime(iso: string | null | undefined, locale: string): string {
-  if (!iso) return '—';
+function relTime(iso: string | null | undefined, locale: string, t: (key: string, values?: Record<string, string | number>) => string): string {
+  if (!iso) return '-';
   // Backend timestamps are naive UTC — anchor them so local offsets don't shift.
   const normalized = /Z$|[+-]\d{2}:\d{2}$/.test(iso) ? iso : `${iso}Z`;
   const dt = new Date(normalized).getTime();
   const mins = Math.floor((Date.now() - dt) / 60000);
-  if (mins < 1) return locale === 'vi' ? 'vừa xong' : 'just now';
-  if (mins < 60) return locale === 'vi' ? `${mins} phút trước` : `${mins}m ago`;
+  if (mins < 1) return t('govern.time.justNow');
+  if (mins < 60) return t('govern.time.minutesAgo', { count: mins });
   const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return locale === 'vi' ? `${hrs} giờ trước` : `${hrs}h ago`;
+  if (hrs < 24) return t('govern.time.hoursAgo', { count: hrs });
   const days = Math.floor(hrs / 24);
-  if (days < 30) return locale === 'vi' ? `${days} ngày trước` : `${days}d ago`;
+  if (days < 30) return t('govern.time.daysAgo', { count: days });
   return new Date(normalized).toLocaleDateString(locale === 'vi' ? 'vi-VN' : 'en-US');
 }
 /** Compose the human "why related" line from the shared-signal buckets. */
@@ -527,7 +527,7 @@ function ListScreen({ docs, spaces, loading, managed, onOpen, onNew, onOpenVocab
                                   <span className="text-tiny text-text-quaternary">v{d.version}</span>
                                 </span>
                               </td>
-                              <td className="app-list-cell text-tiny text-text-quaternary"><Clock3 className="mr-1 inline h-3 w-3" />{relTime(d.updated_at, language)}</td>
+                              <td className="app-list-cell text-tiny text-text-quaternary"><Clock3 className="mr-1 inline h-3 w-3" />{relTime(d.updated_at, language, t)}</td>
                               <td className="app-list-cell-tight">
                                 <span className="flex items-center justify-end gap-0.5 whitespace-nowrap">
                                   {getResourcePermissions(d.user_permission ?? undefined).canShare && (
@@ -632,6 +632,7 @@ type DetailModal = null | 'source' | 'embedding' | 'graph';
 function DetailDrawer({ title, icon, width = 'w-[26rem]', onClose, children }: {
   title: string; icon?: ReactNode; width?: string; onClose: () => void; children: ReactNode;
 }) {
+  const { t } = useI18n();
   return (
     <div className={cn(
       'absolute right-0 top-0 z-40 max-h-full overflow-y-auto rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 shadow-linear-lg',
@@ -640,7 +641,7 @@ function DetailDrawer({ title, icon, width = 'w-[26rem]', onClose, children }: {
       <div className="sticky top-0 z-10 flex h-11 items-center gap-2 border-b border-[rgb(var(--border-line))] bg-surface-1 px-3">
         <span className="flex items-center gap-1.5 text-caption font-emphasis text-text-primary">{icon}{title}</span>
         <div className="flex-1" />
-        <button onClick={onClose} aria-label="Đóng" className="text-text-quaternary transition-colors hover:text-text-primary">
+        <button onClick={onClose} aria-label={t('common.close')} className="text-text-quaternary transition-colors hover:text-text-primary">
           <X className="h-3.5 w-3.5" />
         </button>
       </div>
@@ -799,7 +800,7 @@ function HistoryDrawer({ doc, onClose, onViewVersion }: {
               <div className="min-w-0 flex-1">
                 <div className="flex items-start justify-between gap-2">
                   <span className="text-caption font-emphasis text-text-primary">{r.title}</span>
-                  <span className="whitespace-nowrap text-tiny text-text-quaternary">{relTime(r.at, language)}</span>
+                  <span className="whitespace-nowrap text-tiny text-text-quaternary">{relTime(r.at, language, t)}</span>
                 </div>
                 {r.detail && <p className="mt-0.5 text-tiny leading-relaxed text-text-tertiary">{r.detail}</p>}
                 <div className="mt-1.5 flex items-center gap-1.5">
@@ -965,7 +966,7 @@ function DetailScreen({ docId, nav, onBack, onEdit, onDeleted, onOpenMetric, onL
             doc.source_type === 'google_doc' ? 'border-info/20 bg-info/10 text-info'
             : doc.source_type === 'web' ? 'border-success/20 bg-success/10 text-success'
             : 'border-warning/20 bg-warning/10 text-warning')}>
-            {t('govern.source.typeShort.' + doc.source_type)}
+            {doc.source_type ? t(`govern.source.typeShort.${doc.source_type}`) : t('govern.source.typeManual')}
           </span>
         )}
         <span className={cn('whitespace-nowrap rounded-full px-2 py-0.5 text-tiny', STATUS_TONE[doc.status] || 'bg-surface-2 text-text-tertiary')}>
@@ -1675,6 +1676,7 @@ function RailIcon({ icon, label, active, badge, onClick }: {
 function RailFlyout({ side, title, icon, onClose, children }: {
   side: 'left' | 'right'; title: string; icon?: ReactNode; onClose: () => void; children: ReactNode;
 }) {
+  const { t } = useI18n();
   return (
     <div className={cn(
       'absolute top-0 z-30 w-[min(20rem,calc(100vw-6.5rem))] overflow-hidden rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 shadow-linear-lg xl:w-[22rem]',
@@ -1684,7 +1686,7 @@ function RailFlyout({ side, title, icon, onClose, children }: {
         <p className="flex items-center gap-1.5 text-tiny font-emphasis uppercase tracking-[0.08em] text-text-quaternary">
           {icon}{title}
         </p>
-        <button onClick={onClose} aria-label="Đóng" className="text-text-quaternary transition-colors hover:text-text-primary">
+        <button onClick={onClose} aria-label={t('common.close')} className="text-text-quaternary transition-colors hover:text-text-primary">
           <X className="h-3.5 w-3.5" />
         </button>
       </div>
@@ -1877,8 +1879,8 @@ function DetailRail({ doc, usage, onOpenDoc, onRefresh, onOpenEmbedding, onOpenS
             {doc.process_ref && <RailRow label={t('govern.detail.processRef')} value={doc.process_ref} />}
             <RailRow label={t('govern.detail.importance')} value={t(`govern.importance.${doc.importance || 'normal'}`)} />
             {doc.review_date && <RailRow label={t('govern.detail.reviewDate')} value={doc.review_date} />}
-            <RailRow label={t('govern.detail.lastVerified')} value={doc.last_verified_at ? relTime(doc.last_verified_at, language) : '—'} />
-            {doc.updated_at && <RailRow label={t('govern.list.header.updated')} value={relTime(doc.updated_at, language)} />}
+            <RailRow label={t('govern.detail.lastVerified')} value={doc.last_verified_at ? relTime(doc.last_verified_at, language, t) : '-'} />
+            {doc.updated_at && <RailRow label={t('govern.list.header.updated')} value={relTime(doc.updated_at, language, t)} />}
           </dl>
 
           {/* Source lives here — reading a doc, "where does this come from" is
@@ -2281,7 +2283,7 @@ function SourceTab({ doc, onRefresh }: { doc: KnowledgeDoc; onRefresh: () => voi
 
       <RailCard title={t('govern.source.status')}>
         <dl className="space-y-2.5">
-          <RailRow label={t('govern.source.lastSynced')} value={info?.last_synced_at ? relTime(info.last_synced_at, language) : '—'} />
+          <RailRow label={t('govern.source.lastSynced')} value={info?.last_synced_at ? relTime(info.last_synced_at, language, t) : '-'} />
           <RailRow label={t('govern.source.statusLabel')} value={info?.last_sync_status ? t(`govern.source.status.${info.last_sync_status}`) : '—'} />
         </dl>
         {info?.last_sync_status === 'error' && (
@@ -2428,7 +2430,7 @@ function VectorBrowser({ doc }: { doc: KnowledgeDoc }) {
                   <div className="flex justify-between gap-2"><dt className="text-text-quaternary">ID</dt><dd className="font-mono text-text-secondary">{v.id}</dd></div>
                   <div className="flex justify-between gap-2"><dt className="text-text-quaternary">{t('govern.vectors.dims')}</dt><dd className="font-mono text-text-secondary">{v.dims ?? '—'}</dd></div>
                   <div className="flex justify-between gap-2"><dt className="text-text-quaternary">{t('govern.vectors.model')}</dt><dd className="truncate font-mono text-text-secondary">{v.model || '—'}</dd></div>
-                  <div className="flex justify-between gap-2"><dt className="text-text-quaternary">{t('govern.vectors.created')}</dt><dd className="text-text-secondary">{relTime(v.created_at, language)}</dd></div>
+                  <div className="flex justify-between gap-2"><dt className="text-text-quaternary">{t('govern.vectors.created')}</dt><dd className="text-text-secondary">{relTime(v.created_at, language, t)}</dd></div>
                   <div className="col-span-2 flex justify-between gap-2"><dt className="text-text-quaternary">{t('govern.vectors.hash')}</dt><dd className="truncate font-mono text-text-secondary">{v.content_hash.slice(0, 24)}…</dd></div>
                 </dl>
                 <p className="whitespace-pre-wrap text-tiny leading-relaxed text-text-secondary">{v.content}</p>
@@ -2620,7 +2622,7 @@ function HistoryTab({ doc }: { doc: KnowledgeDoc }) {
             <div className="min-w-0 flex-1">
               <div className="flex items-center justify-between gap-2">
                 <span className="text-caption font-emphasis text-text-primary">{r.title}</span>
-                <span className="text-tiny text-text-quaternary">{relTime(r.at, language)}</span>
+                <span className="text-tiny text-text-quaternary">{relTime(r.at, language, t)}</span>
               </div>
               {r.detail && <p className="mt-0.5 truncate text-tiny text-text-tertiary">{r.detail}</p>}
             </div>
@@ -2752,7 +2754,7 @@ function VersionsDropdown({ docId, publishedVersion, latestVersion, refreshKey, 
                           {v.is_latest && <span className="rounded-full bg-surface-2 px-1.5 py-0.5 text-tiny text-text-tertiary">{t('govern.version.latest')}</span>}
                         </span>
                         {v.change_note && <span className="mt-0.5 block text-tiny text-text-secondary">{v.change_note}</span>}
-                        <span className="mt-0.5 block text-tiny text-text-quaternary">{v.changed_by || t('govern.history.system')} · {v.created_at ? relTime(v.created_at, locale) : ''}</span>
+                        <span className="mt-0.5 block text-tiny text-text-quaternary">{v.changed_by || t('govern.history.system')} · {v.created_at ? relTime(v.created_at, locale, t) : ''}</span>
                       </div>
                       <div className="flex flex-shrink-0 items-center gap-2">
                         {isViewing
@@ -2909,7 +2911,7 @@ function EditorScreen({ docId, seed, managed, allDocs, onCancel, onSaved, onOpen
   const changeType = (type: string) => setEditing((p) => {
     if (!p) return p;
     const empty = !sourceOwned && !(p.body || '').trim();
-    const tpl = docTemplate(type);
+    const tpl = docTemplate(type, t);
     return { ...p, doc_type: type, body: empty && tpl ? tpl : p.body };
   });
 

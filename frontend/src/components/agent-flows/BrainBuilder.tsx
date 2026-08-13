@@ -27,6 +27,7 @@ import { Textarea } from '@/components/ui/Input';
 import { Badge } from '@/components/ui/Badge';
 import { toast } from '@/lib/toast';
 import { cn } from '@/lib/utils';
+import { useI18n } from '@/providers/LanguageProvider';
 import {
   blankNode, branchCoverage, brainImpact, canDropInto, findNode, getBrain, insertNode,
   listNodeSpecs, listProviders, listToolPacks, moveNode, publishBrain, removeNode,
@@ -51,6 +52,7 @@ export function BrainBuilder({
 }: {
   brainKey: string; onBack: () => void; canEdit: boolean; canPublish: boolean;
 }) {
+  const { t, language } = useI18n();
   const [mode, setMode] = React.useState<Mode>('design');
   const [loading, setLoading] = React.useState(true);
   const [saving, setSaving] = React.useState(false);
@@ -113,11 +115,11 @@ export function BrainBuilder({
       brainImpact(brainKey).then((i) => setLinks(i.links)).catch(() => undefined);
       branchCoverage(brainKey).then(setCoverage).catch(() => undefined);
     } catch {
-      toast.error('Không mở được flow này');
+      toast.error(t('agentFlows.builder.loadFailed'));
     } finally {
       setLoading(false);
     }
-  }, [brainKey]);
+  }, [brainKey, t]);
 
   React.useEffect(() => { load(); }, [load]);
 
@@ -186,7 +188,11 @@ export function BrainBuilder({
 
   const addNode = (type: NodeType) => {
     if (!insertAt) return;
-    const node = blankNode(type, body.nodes);
+    const node = blankNode(type, body.nodes, {
+      agentPrompt: t('agentFlows.defaults.agentPrompt'),
+      pathA: t('agentFlows.defaults.pathA'),
+      pathB: t('agentFlows.defaults.pathB'),
+    });
     mutate(insertNode(body.nodes, insertAt, node));
     setInsertAt(null);
     setSelected(node.key);
@@ -279,10 +285,10 @@ export function BrainBuilder({
       setStatus(detail.status);
       setBody(detail.body);
       setDirty(false);
-      toast.success(`Đã lưu nháp v${detail.version}`);
+      toast.success(t('agentFlows.builder.savedDraft', { version: detail.version }));
     } catch (e: unknown) {
       const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-      toast.error(detail || 'Lưu thất bại');
+      toast.error(detail || t('agentFlows.builder.saveFailed'));
     } finally { setSaving(false); }
   };
 
@@ -298,15 +304,15 @@ export function BrainBuilder({
         // Not a failure. The links that would break are frozen at what they run
         // today, and saying which is the whole point of publishing being safe.
         toast.warning(
-          `Đã phát hành v${version}. ${pinned.length} link chưa tương thích đã được ghim ở bản cũ.`,
+          t('agentFlows.builder.publishedPinned', { version, count: pinned.length }),
         );
       } else {
-        toast.success(`Đã phát hành v${version}`);
+        toast.success(t('agentFlows.builder.published', { version }));
       }
       load();
     } catch (e: unknown) {
       const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-      toast.error(detail || 'Phát hành thất bại');
+      toast.error(detail || t('agentFlows.builder.publishFailed'));
     } finally { setSaving(false); }
   };
 
@@ -331,7 +337,7 @@ export function BrainBuilder({
       <div className="flex h-11 flex-shrink-0 items-center gap-2 border-b border-[rgb(var(--border-line))] bg-surface-1 px-4">
         <button type="button" onClick={onBack}
           className="flex items-center gap-1 text-caption text-text-tertiary hover:text-text-primary">
-          <ArrowLeft className="h-3.5 w-3.5" /> Agent Flows
+          <ArrowLeft className="h-3.5 w-3.5" /> {t('agentFlows.title')}
         </button>
         <span className="text-text-quaternary">/</span>
         <Input
@@ -342,36 +348,36 @@ export function BrainBuilder({
         />
         <StatusBadge status={status} version={version} size="xs" />
         {publishedVersion != null && publishedVersion !== version && (
-          <span className="text-tiny text-text-tertiary">· đang chạy v{publishedVersion}</span>
+          <span className="text-tiny text-text-tertiary">· {t('agentFlows.builder.runningVersion', { version: publishedVersion })}</span>
         )}
-        <span className="text-tiny text-text-tertiary">· {links.length} link</span>
+        <span className="text-tiny text-text-tertiary">· {links.length} {t(links.length === 1 ? 'agentFlows.common.link' : 'agentFlows.common.links')}</span>
         <div className="flex-1" />
         {dirty && (
           <span className="flex items-center gap-1.5 text-tiny font-medium text-warning">
-            <span className="h-1.5 w-1.5 rounded-full bg-warning" /> Chưa lưu
+            <span className="h-1.5 w-1.5 rounded-full bg-warning" /> {t('agentFlows.common.unsaved')}
           </span>
         )}
         {canEdit && (
           <div className="mr-1 flex items-center gap-0.5">
-            <IconBtn onClick={undo} label="Hoàn tác (Ctrl+Z)" disabled={!past.current.length}>
+            <IconBtn onClick={undo} label={t('agentFlows.builder.undo')} disabled={!past.current.length}>
               <Undo2 className="h-3.5 w-3.5" />
             </IconBtn>
-            <IconBtn onClick={redo} label="Làm lại (Ctrl+Shift+Z)" disabled={!future.current.length}>
+            <IconBtn onClick={redo} label={t('agentFlows.builder.redo')} disabled={!future.current.length}>
               <Redo2 className="h-3.5 w-3.5" />
             </IconBtn>
           </div>
         )}
         <Button variant="secondary" size="xs" onClick={() => setTestOpen(true)}>
-          <Play className="h-3 w-3" /> Test
+          <Play className="h-3 w-3" /> {t('agentFlows.builder.test')}
         </Button>
         {canEdit && (
           <Button variant="secondary" size="xs" onClick={save} loading={saving} disabled={!dirty}>
-            <Save className="h-3 w-3" /> Lưu nháp
+            <Save className="h-3 w-3" /> {t('agentFlows.builder.saveDraft')}
           </Button>
         )}
         {canPublish && (
           <Button size="xs" onClick={() => setPublishOpen(true)} disabled={dirty}>
-            <Send className="h-3 w-3" /> Phát hành
+            <Send className="h-3 w-3" /> {t('agentFlows.builder.publish')}
           </Button>
         )}
       </div>
@@ -379,39 +385,43 @@ export function BrainBuilder({
       {/* subbar */}
       <div className="flex h-10 flex-shrink-0 items-center gap-2.5 border-b border-[rgb(var(--border-line))] bg-surface-1 px-4">
         <div className="inline-flex items-center gap-0.5 rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 p-0.5">
-          {([['design', 'Thiết kế'], ['runs', 'Runs'], ['activity', 'Hoạt động']] as const).map(
-            ([key, label]) => (
+          {([
+            ['design', 'agentFlows.builder.tab.design'],
+            ['runs', 'agentFlows.builder.tab.runs'],
+            ['activity', 'agentFlows.builder.tab.activity'],
+          ] as const).map(
+            ([key, labelKey]) => (
               <button key={key} type="button" onClick={() => setMode(key as Mode)}
                 className={cn('h-7 rounded-md px-2.5 text-caption font-medium transition',
                   mode === key ? 'bg-surface-1 text-brand shadow-linear-sm' : 'text-text-tertiary')}>
-                {label}
+                {t(labelKey)}
               </button>
             ),
           )}
         </div>
-        <Badge size="xs" variant="neutral">{counts.nodes} bước</Badge>
-        {counts.branches > 0 && <Badge size="xs" variant="neutral">{counts.branches} rẽ nhánh</Badge>}
+        <Badge size="xs" variant="neutral">{counts.nodes} {t(counts.nodes === 1 ? 'agentFlows.common.step' : 'agentFlows.common.steps')}</Badge>
+        {counts.branches > 0 && <Badge size="xs" variant="neutral">{counts.branches} {t(counts.branches === 1 ? 'agentFlows.common.branch' : 'agentFlows.common.branches')}</Badge>}
         {counts.loops > 0 && <Badge size="xs" variant="neutral">{counts.loops} loop</Badge>}
         {validation?.estimate && (
           <span
-            title="Trường hợp xấu nhất cho MỘT câu hỏi. Link công khai không giới hạn người xem."
+            title={t('agentFlows.builder.estimateTitle')}
             className="cursor-help rounded-full border border-[rgb(var(--border-line))] bg-surface-2 px-2 py-px text-tiny text-text-tertiary"
           >
-            ≤ {validation.estimate.max_llm_calls} lần gọi model / câu hỏi
+            ≤ {validation.estimate.max_llm_calls} {t('agentFlows.common.modelCallPerQuestion')}
           </span>
         )}
         <div className="flex-1" />
         {validation && (
           validation.ok
-            ? <Badge size="xs" variant="success" dot>Flow hợp lệ</Badge>
-            : <Badge size="xs" variant="danger">{validation.errors[0] || 'Chưa hợp lệ'}</Badge>
+            ? <Badge size="xs" variant="success" dot>{t('agentFlows.builder.valid')}</Badge>
+            : <Badge size="xs" variant="danger">{validation.errors[0] || t('agentFlows.builder.invalid')}</Badge>
         )}
         {!!validation?.warnings.length && (
           <span
             title={validation.warnings.join('\n\n')}
             className="flex cursor-help items-center gap-1 rounded-full border border-warning/25 bg-warning/5 px-2 py-px text-tiny text-warning"
           >
-            <AlertTriangle className="h-3 w-3" /> {validation.warnings.length} lưu ý
+            <AlertTriangle className="h-3 w-3" /> {t('agentFlows.builder.warningCount', { count: validation.warnings.length })}
           </span>
         )}
       </div>
@@ -453,16 +463,16 @@ export function BrainBuilder({
               />
 
               <div className="absolute bottom-4 left-4 z-30 flex items-center gap-0.5 rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 p-0.5 shadow-linear-sm">
-                <IconBtn onClick={() => stepZoom(-0.1)} label="Thu nhỏ">
+                <IconBtn onClick={() => stepZoom(-0.1)} label={t('agentFlows.builder.zoomOut')}>
                   <Minus className="h-3.5 w-3.5" />
                 </IconBtn>
                 <span className="w-11 text-center text-tiny tabular-nums text-text-tertiary">
                   {Math.round(zoom * 100)}%
                 </span>
-                <IconBtn onClick={() => stepZoom(0.1)} label="Phóng to">
+                <IconBtn onClick={() => stepZoom(0.1)} label={t('agentFlows.builder.zoomIn')}>
                   <Plus className="h-3.5 w-3.5" />
                 </IconBtn>
-                <IconBtn onClick={() => setZoom(0.75)} label="Vừa khung">
+                <IconBtn onClick={() => setZoom(0.75)} label={t('agentFlows.builder.fit')}>
                   <Maximize2 className="h-3.5 w-3.5" />
                 </IconBtn>
               </div>
@@ -470,17 +480,20 @@ export function BrainBuilder({
             <aside className="flex w-[400px] flex-shrink-0 flex-col overflow-hidden border-l border-[rgb(var(--border-line))] bg-surface-1">
               <div className="flex h-11 flex-shrink-0 items-center gap-2 border-b border-[rgb(var(--border-line))] px-3">
                 <b className="truncate text-caption font-strong">
-                  {sel.path ? `Nhánh: ${sel.path.name || sel.path.key}`
-                    : sel.switchCase ? `Case: ${sel.switchCase.label || sel.switchCase.key}`
-                    : sel.isFallback ? 'Nhánh dự phòng'
-                    : sel.node ? (sel.node.name || specs[sel.node.type]?.label_vi || sel.node.key)
-                    : 'Chưa chọn bước'}
+                  {sel.path ? t('agentFlows.builder.selection.branch', { name: sel.path.name || sel.path.key })
+                    : sel.switchCase ? `${t('agentFlows.common.case')}: ${sel.switchCase.label || sel.switchCase.key}`
+                    : sel.isFallback ? t('agentFlows.builder.selection.fallback')
+                    : sel.node ? (sel.node.name
+                      || (language === 'vi' ? specs[sel.node.type]?.label_vi : specs[sel.node.type]?.label_en)
+                      || specs[sel.node.type]?.label_vi
+                      || sel.node.key)
+                    : t('agentFlows.builder.selection.none')}
                 </b>
                 <div className="flex-1" />
                 {sel.node && canEdit && (
                   <Button variant="ghost" size="xs" onClick={deleteSelected}
                     className="text-danger hover:bg-danger/5">
-                    Xoá bước
+                    {t('agentFlows.builder.deleteStep')}
                   </Button>
                 )}
               </div>
@@ -514,7 +527,9 @@ export function BrainBuilder({
         {insertAt && (
           <NodeLibrary
             specs={specList}
-            positionLabel={insertAt.containerPath ? `trong ${insertAt.containerPath.split(':')[0]}` : 'ở cấp ngoài cùng'}
+            positionLabel={insertAt.containerPath
+              ? t('agentFlows.builder.position.inside', { name: insertAt.containerPath.split(':')[0] })
+              : t('agentFlows.builder.position.root')}
             onPick={addNode}
             onClose={() => setInsertAt(null)}
           />
@@ -547,14 +562,15 @@ function PublishDialog({
   version: number; links: FlowLinkUsage[];
   onCancel: () => void; onConfirm: () => void; busy: boolean;
 }) {
+  const { t } = useI18n();
   const needsReview = links.filter((l) => l.status === 'needs_review');
   return (
     <div className="absolute inset-0 z-50 flex items-center justify-center bg-[rgb(0_0_0/0.22)]">
       <div className="w-[540px] rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 shadow-linear-lg">
         <div className="border-b border-[rgb(var(--border-line))] p-3.5">
-          <b className="text-body font-strong">Phát hành v{version}?</b>
+          <b className="text-body font-strong">{t('agentFlows.publish.title', { version })}</b>
           <span className="mt-0.5 block text-caption text-text-tertiary">
-            {links.length} link công khai đang dùng flow này.
+            {t('agentFlows.publish.description', { count: links.length })}
           </span>
         </div>
         <div className="max-h-[320px] overflow-auto p-3.5">
@@ -563,29 +579,33 @@ function PublishDialog({
               className="flex items-center gap-2 border-t border-[rgb(var(--border-line))] py-2 text-caption first:border-t-0">
               <span className="min-w-0 flex-1 truncate">{l.link_name}</span>
               {l.pinned_version != null && (
-                <Badge size="xs" variant="warning">ghim v{l.pinned_version}</Badge>
+                <Badge size="xs" variant="warning">{t('agentFlows.publish.pinned', { version: l.pinned_version })}</Badge>
               )}
               <Badge size="xs" variant={l.status === 'active' ? 'success' : l.status === 'broken' ? 'danger' : 'warning'}>
-                {l.status === 'active' ? 'sẵn sàng' : l.status === 'broken' ? 'lỗi' : 'chưa review'}
+                {l.status === 'active'
+                  ? t('agentFlows.publish.status.active')
+                  : l.status === 'broken'
+                    ? t('agentFlows.publish.status.broken')
+                    : t('agentFlows.publish.status.needsReview')}
               </Badge>
             </div>
           ))}
           {!links.length && (
             <p className="py-4 text-center text-caption text-text-tertiary">
-              Chưa link nào dùng flow này.
+              {t('agentFlows.publish.noLinks')}
             </p>
           )}
           {!!needsReview.length && (
             <p className="mt-3 rounded-lg border border-warning/25 bg-warning/5 p-2.5 text-caption leading-relaxed text-warning">
-              {needsReview.length} link chưa được định nghĩa phạm vi dữ liệu. Chúng sẽ
-              được <b>ghim ở phiên bản đang chạy</b> thay vì nhận bản mới — mở phần
-              ChatBot của link để review rồi gán lại.
+              {t('agentFlows.publish.needsReviewPrefix', { count: needsReview.length })}{' '}
+              <b>{t('agentFlows.publish.needsReviewPinned')}</b>{' '}
+              {t('agentFlows.publish.needsReviewSuffix')}
             </p>
           )}
         </div>
         <div className="flex justify-end gap-2 border-t border-[rgb(var(--border-line))] p-3">
-          <Button variant="secondary" size="sm" onClick={onCancel}>Chưa</Button>
-          <Button size="sm" onClick={onConfirm} loading={busy}>Phát hành</Button>
+          <Button variant="secondary" size="sm" onClick={onCancel}>{t('agentFlows.publish.cancel')}</Button>
+          <Button size="sm" onClick={onConfirm} loading={busy}>{t('agentFlows.builder.publish')}</Button>
         </div>
       </div>
     </div>
@@ -598,7 +618,8 @@ function PublishDialog({
 function TestDialog({
   brainKey, links, onClose,
 }: { brainKey: string; links: FlowLinkUsage[]; onClose: () => void }) {
-  const [question, setQuestion] = React.useState('Tại sao doanh thu tuần này giảm?');
+  const { t } = useI18n();
+  const [question, setQuestion] = React.useState(t('agentFlows.test.initialQuestion'));
   const [linkId, setLinkId] = React.useState<number | null>(links[0]?.link_id ?? null);
   const [busy, setBusy] = React.useState(false);
   const [result, setResult] = React.useState<Record<string, unknown> | null>(null);
@@ -611,7 +632,7 @@ function TestDialog({
       setResult(res.envelope as unknown as Record<string, unknown>);
     } catch (e: unknown) {
       const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-      toast.error(detail || 'Chạy thử thất bại');
+      toast.error(detail || t('agentFlows.test.failed'));
     } finally { setBusy(false); }
   };
 
@@ -624,7 +645,7 @@ function TestDialog({
     <div className="absolute inset-0 z-50 flex items-center justify-center bg-[rgb(0_0_0/0.22)]">
       <div className="flex max-h-[80vh] w-[560px] flex-col rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 shadow-linear-lg">
         <div className="flex items-center gap-2 border-b border-[rgb(var(--border-line))] p-3.5">
-          <b className="text-body font-strong">Chạy thử flow</b>
+          <b className="text-body font-strong">{t('agentFlows.test.title')}</b>
           <div className="flex-1" />
           <button type="button" onClick={onClose} className="rounded p-1 text-text-tertiary hover:bg-surface-2">
             <X className="h-4 w-4" />
@@ -633,13 +654,11 @@ function TestDialog({
         <div className="min-h-0 flex-1 overflow-auto p-3.5">
           {!links.length ? (
             <p className="rounded-lg border border-warning/25 bg-warning/5 p-3 text-caption leading-relaxed text-warning">
-              Flow này chưa được gán vào link nào. Chạy thử cần một link để biết
-              “doanh thu” và “phân khúc” trên báo cáo đó là cột nào — hãy gán flow ở
-              phần ChatBot của một public link trước.
+              {t('agentFlows.test.noLinks')}
             </p>
           ) : (
             <>
-              <label className="mb-1 block text-caption font-medium text-text-secondary">Chạy trên link</label>
+              <label className="mb-1 block text-caption font-medium text-text-secondary">{t('agentFlows.test.link')}</label>
               <select
                 value={linkId ?? ''}
                 onChange={(e) => setLinkId(Number(e.target.value))}
@@ -647,10 +666,10 @@ function TestDialog({
               >
                 {links.map((l) => <option key={l.link_id} value={l.link_id}>{l.link_name}</option>)}
               </select>
-              <label className="mb-1 mt-3 block text-caption font-medium text-text-secondary">Câu hỏi thử</label>
+              <label className="mb-1 mt-3 block text-caption font-medium text-text-secondary">{t('agentFlows.test.question')}</label>
               <Textarea rows={3} value={question} onChange={(e) => setQuestion(e.target.value)} />
               <Button className="mt-3 w-full" size="sm" onClick={run} loading={busy}>
-                <Play className="h-3.5 w-3.5" /> Chạy
+                <Play className="h-3.5 w-3.5" /> {t('agentFlows.test.run')}
               </Button>
 
               {env && (
