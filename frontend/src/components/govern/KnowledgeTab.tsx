@@ -46,6 +46,7 @@ import {
   type DocSourceInfo, type DocSyncSchedule, type EmbeddingConfig, type ChunkPreviewResult, type DocHistory, type DocUsage, type DocVector, type VectorMatch,
 } from '@/lib/catalog';
 import { AppModalShell } from '@/components/common/AppModalShell';
+import { OwnerBadge } from '@/components/common/OwnerBadge';
 import { ShareDialog } from '@/components/common/ShareDialog';
 import { getResourcePermissions } from '@/hooks/use-resource-permission';
 import { usePermissions, hasPermission } from '@/hooks/use-permissions';
@@ -477,14 +478,20 @@ function ListScreen({ docs, spaces, loading, managed, onOpen, onNew, onOpenVocab
                   <div className="app-list-table-wrap">
                     <table className="app-list-table divide-y divide-[rgb(var(--border-line))]">
                       <thead className="bg-surface-2"><tr>
-                        <th className="app-list-header w-[30%]">{t('govern.list.header.document')}</th>
-                        <th className="app-list-header w-[11%]">{t('govern.list.header.space')}</th>
-                        <th className="app-list-header w-[9%]">{t('govern.list.header.type')}</th>
-                        <th className="app-list-header w-[7%]">{t('govern.list.header.metrics')}</th>
-                        <th className="app-list-header w-[7%]">{t('govern.list.header.links')}</th>
-                        <th className="app-list-header w-[9%]">{t('govern.list.header.aiReady')}</th>
+                        <th className="app-list-header w-[26%]">{t('govern.list.header.document')}</th>
+                        <th className="app-list-header w-[10%]">{t('govern.list.header.space')}</th>
+                        <th className="app-list-header w-[8%]">{t('govern.list.header.type')}</th>
+                        <th className="app-list-header w-[6%]">{t('govern.list.header.metrics')}</th>
+                        <th className="app-list-header w-[6%]">{t('govern.list.header.links')}</th>
+                        <th className="app-list-header w-[8%]">{t('govern.list.header.aiReady')}</th>
                         <th className="app-list-header w-[10%]">{t('govern.list.header.status')}</th>
-                        <th className="app-list-header w-[10%]">{t('govern.list.header.updated')}</th>
+                        {/* WHO OWNS THIS. The list showed the free-text `owner`
+                            label in a filter chip and nothing else, so an admin
+                            could not tell which account a document belonged to —
+                            the two fields share a name but only `owner_email` is
+                            the account the permission system uses. */}
+                        <th className="app-list-header w-[11%]">{t('govern.list.header.owner')}</th>
+                        <th className="app-list-header w-[8%]">{t('govern.list.header.updated')}</th>
                         <th className="app-list-header w-[7%] text-right" />
                       </tr></thead>
                       <tbody className="divide-y divide-[rgb(var(--border-line))] bg-surface-1">
@@ -527,6 +534,7 @@ function ListScreen({ docs, spaces, loading, managed, onOpen, onNew, onOpenVocab
                                   <span className="text-tiny text-text-quaternary">v{d.version}</span>
                                 </span>
                               </td>
+                              <td className="app-list-cell"><OwnerBadge email={d.owner_email} /></td>
                               <td className="app-list-cell text-tiny text-text-quaternary"><Clock3 className="mr-1 inline h-3 w-3" />{relTime(d.updated_at, language, t)}</td>
                               <td className="app-list-cell-tight">
                                 <span className="flex items-center justify-end gap-0.5 whitespace-nowrap">
@@ -1874,6 +1882,7 @@ function DetailRail({ doc, usage, onOpenDoc, onRefresh, onOpenEmbedding, onOpenS
             <RailRow label={t('govern.list.header.type')} value={docTypeLabel(doc.doc_type, t)} />
             <RailRow label={t('govern.list.header.status')} value={<span className={cn('rounded-full px-2 py-0.5 text-tiny', STATUS_TONE[doc.status] || 'bg-surface-2 text-text-tertiary')}>{statusLabel(doc.status, t)}</span>} />
             <RailRow label={t('govern.info.version')} value={`v${doc.version}`} />
+            <RailRow label={t('govern.info.ownerAccount')} value={doc.owner_email || '—'} />
             <RailRow label={t('govern.editor.owner')} value={doc.owner || '—'} />
             {doc.business_domain && <RailRow label={t('govern.detail.businessDomain')} value={doc.business_domain} />}
             {doc.process_ref && <RailRow label={t('govern.detail.processRef')} value={doc.process_ref} />}

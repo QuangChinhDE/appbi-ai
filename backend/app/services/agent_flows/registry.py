@@ -59,9 +59,49 @@ def parse_flow(row: AgentBrainVersion) -> Flow | None:
         return None
 
 
+def _assign_flow_id(db: Session, row: AgentBrainVersion) -> None:
+    """Give a new version row its flow's number: the key's existing one, or its own id.
+
+    Called with the row added but not committed. The flush is what turns an id
+    into a real number — without it the first version of a brand-new flow would
+    be handed `None` and become unaddressable by link until its next save.
+    """
+    existing = (
+        db.query(AgentBrainVersion.flow_id)
+        .filter(
+            AgentBrainVersion.brain_key == row.brain_key,
+            AgentBrainVersion.flow_id.isnot(None),
+        )
+        .order_by(AgentBrainVersion.flow_id)
+        .first()
+    )
+    if existing and existing[0]:
+        row.flow_id = int(existing[0])
+        return
+    db.flush()
+    row.flow_id = row.id
+
+
+def flow_id_to_key(db: Session, flow_id: int) -> str | None:
+    """The `brain_key` a link's number refers to, or None.
+
+    Resolution happens here and nowhere else: every other function in this module
+    — and every permission check — still takes a key, so the number never becomes
+    a second identity the rest of the system has to agree about.
+    """
+    row = (
+        db.query(AgentBrainVersion.brain_key)
+        .filter(AgentBrainVersion.flow_id == flow_id)
+        .first()
+    )
+    return row[0] if row else None
+
+
 def _row_dict(row: AgentBrainVersion, *, include_body: bool = True) -> dict[str, Any]:
     out: dict[str, Any] = {
         "brain_key": row.brain_key,
+        # What a link carries. Callers keep using brain_key for every request.
+        "flow_id": row.flow_id,
         "version": row.version,
         "status": row.status,
         "name": row.name,
@@ -405,6 +445,7 @@ def save_draft(
             created_by=actor_email,
         )
         db.add(row)
+        _assign_flow_id(db, row)
         action = "created"
 
     db.commit()
@@ -592,6 +633,7 @@ def restore_to_draft(
             created_by=actor_email,
         )
         db.add(row)
+        _assign_flow_id(db, row)
     db.commit()
     db.refresh(row)
     _audit(

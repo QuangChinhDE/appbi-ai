@@ -52,6 +52,15 @@ class AgentBrainVersion(Base):
     brain_key = Column(String(64), nullable=False, index=True)
     version = Column(Integer, nullable=False, default=1)
 
+    #: The flow's number, as it appears in a link — SHARED by every version of a
+    #: brain_key, unlike `id`, which is this row's own and changes on every save.
+    #:
+    #: An alias, deliberately: `brain_key` remains what shares, bindings, runs and
+    #: permissions are keyed by, and this is resolved back to it at the edge. That
+    #: keeps the address bar short without giving the system a second identity to
+    #: keep consistent. NULL only on a row written before this column existed.
+    flow_id = Column(Integer, nullable=True, index=True)
+
     #: draft | published | archived. Exactly one `published` row per brain_key,
     #: enforced in the service rather than by a partial index, because publishing
     #: also has to demote the previous one and that belongs in one transaction.

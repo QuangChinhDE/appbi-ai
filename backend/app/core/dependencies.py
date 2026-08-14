@@ -338,6 +338,19 @@ _MODEL_TO_MODULE = {
 }
 
 
+def _share_key_for(resource) -> str:
+    """The id a ResourceShare row carries for *resource*.
+
+    Almost always the primary key. An agent flow is the exception: its shares are
+    keyed by `brain_key` so one share covers the flow across every version of it,
+    rather than pinning to the version row that happened to exist at the time.
+    """
+    brain_key = getattr(resource, "brain_key", None)
+    if brain_key:
+        return str(brain_key)
+    return str(getattr(resource, "id", ""))
+
+
 def _relation_level(db: Session, user: User, resource, module_level: str) -> str:
     """How *user* is attached to THIS row, independent of their module ceiling.
 
@@ -367,7 +380,7 @@ def _relation_level(db: Session, user: User, resource, module_level: str) -> str
     class_name = type(resource).__name__
     rt = _MODEL_TO_RESOURCE_TYPE.get(class_name)
     if rt:
-        share = get_highest_share_for_resource(db, user, rt, str(resource.id))
+        share = get_highest_share_for_resource(db, user, rt, _share_key_for(resource))
         if share:
             return _sanitize_permission_level(share.permission.value)
 
@@ -462,7 +475,7 @@ def batch_effective_permissions(
     share_lookup: dict[str, str] = {}
 
     if rt:
-        resource_ids = [str(r.id) for r in resources]
+        resource_ids = [_share_key_for(r) for r in resources]
         share_lookup = get_highest_share_permissions(db, user, rt, resource_ids)
 
     user_email = str(getattr(user, "email", "") or "").strip().lower()
@@ -474,7 +487,7 @@ def batch_effective_permissions(
             owner_email and user_email and str(owner_email).strip().lower() == user_email
         )
 
-        relation = "full" if is_owner else share_lookup.get(str(r.id)) or "none"
+        relation = "full" if is_owner else share_lookup.get(_share_key_for(r)) or "none"
         if relation == "none":
             result[r.id] = "none"
             continue

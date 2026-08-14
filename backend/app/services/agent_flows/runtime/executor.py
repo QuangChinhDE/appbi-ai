@@ -28,6 +28,7 @@ first.
 """
 from __future__ import annotations
 
+import json
 import logging
 import time
 from dataclasses import dataclass, field
@@ -299,8 +300,33 @@ async def _run_node(
     if reused is not None:
         # Recorded as `reused`, not as `ok`. A Runs table that reports a skipped node
         # as having run is lying about what the turn cost.
+        #
+        # BUT AN EMPTY ROW IS ITS OWN LIE. This wrote key/type/name/status and
+        # nothing else, so the first node of every follow-up turn appeared in the
+        # inspector as a step that did nothing — no input, no output, no reason —
+        # which reads exactly like a node being skipped in silence. It is not
+        # skipped: it HAS a value, the one it is reusing, and the reason it did
+        # not re-run is knowable. Both are recorded now, because "reused" is only
+        # trustworthy if you can see what was reused.
         state.record(
-            TraceStep(key=node.key, type=node.type, name=label, status="reused", ms=0)
+            TraceStep(
+                key=node.key, type=node.type, name=label, status="reused", ms=0,
+                # The REASON, then the same variable snapshot every other step
+                # gets. A reused step is still a step somebody debugs, and
+                # answering "why did it not run" while withholding "what did it
+                # have" only moves the blind spot — the value it inherited is
+                # exactly what the next step will be working from.
+                input_preview=_vars_preview(
+                    state,
+                    note=(
+                        f"Dùng lại kết quả lượt trước: bước này đặt run_policy="
+                        f"'{node.run_policy}', và dữ liệu vào chưa đổi nên không "
+                        f"chạy lại. Giá trị kế thừa nằm ở "
+                        f"{{{{{node.output_var}}}}} và ở tab OUTPUT."
+                    ),
+                ),
+                output_preview=_preview(reused),
+            )
         )
         yield AgentEvent(
             type="node_completed",
@@ -314,6 +340,10 @@ async def _run_node(
     began = time.monotonic()
     tokens_before = (state.prompt_tokens, state.completion_tokens)
     tools_before = len(state.tool_log)
+    # WHAT THIS STEP CAN SEE, captured BEFORE it runs. Taken here rather than
+    # after, because a node publishes into the same `vars` it reads from — read
+    # it afterwards and you get the output mixed into the input.
+    input_before = _vars_preview(state)
     attempts = node.retry.max_attempts if node.retry else 1
     last_error = ""
 
@@ -415,6 +445,7 @@ async def _run_node(
         TraceStep(
             key=node.key, type=node.type, name=label, status="ok", ms=ms,
             tool_calls=state.tool_log[tools_before:],
+            input_preview=input_before,
             output_preview=_preview(state.outputs.get(node.key)),
             prompt_tokens=state.prompt_tokens - tokens_before[0],
             completion_tokens=state.completion_tokens - tokens_before[1],
@@ -707,8 +738,107 @@ def _answer_is_fallback(state: RunState, rctx: RunContext) -> bool:
     return state.outputs.get(rctx.answer_key) is None
 
 
+#: Structural caps applied BEFORE serialising, never after.
+#:
+#: Cutting a JSON string at N characters produces something that is no longer
+#: JSON, so the reader gets a wall of broken syntax instead of a table. Trimming
+#: the VALUE instead — shorter strings, fewer rows, shallower nesting — keeps the
+#: result valid, which is what lets the panel render it as fields and tables and
+#: lets "download JSON" hand over a file that actually parses.
+_STR_CHARS = 600      # one text value
+_LIST_ITEMS = 25      # rows kept from a list
+_MAX_DEPTH = 6
+#: Per-variable and per-output caps in an input snapshot.
+_INPUT_VAR_CHARS = 600
+_INPUT_MAX_VARS = 12
+
+
+def _trim(value: Any, depth: int = 0) -> Any:
+    """A smaller value of the SAME SHAPE, with every cut declared in the data.
+
+    Trimming silently would be worse than not trimming: somebody would read 25
+    rows, conclude the step saw 25 rows, and debug the wrong thing. Every place
+    something was dropped leaves a marker saying how much.
+    """
+    if isinstance(value, str):
+        return (value[:_STR_CHARS] + f"… (+{len(value) - _STR_CHARS} ký tự)"
+                if len(value) > _STR_CHARS else value)
+    if isinstance(value, (int, float, bool)) or value is None:
+        return value
+    if depth >= _MAX_DEPTH:
+        return "… (lồng quá sâu, đã cắt)"
+    if isinstance(value, dict):
+        return {str(k): _trim(v, depth + 1) for k, v in list(value.items())[:40]}
+    if isinstance(value, (list, tuple)):
+        items = [_trim(v, depth + 1) for v in list(value)[:_LIST_ITEMS]]
+        if len(value) > _LIST_ITEMS:
+            items.append(f"… (+{len(value) - _LIST_ITEMS} mục nữa)")
+        return items
+    return _trim(str(value), depth)
+
+
+def _as_json(value: Any) -> str:
+    """JSON, not `repr`. The panel parses this to render fields and tables.
+
+    `repr` was unreadable twice over: `{'a': 1}` is not JSON so nothing could
+    parse it into a table, and the reader — who may not write code — was handed
+    Python syntax to interpret. JSON costs the same to store and is the only
+    form both a person and the screen can read.
+    """
+    try:
+        return json.dumps(_trim(value), ensure_ascii=False, default=str)
+    except Exception:  # noqa: BLE001 — a preview must never break a run
+        return json.dumps(str(value)[:_STR_CHARS], ensure_ascii=False)
+
+
 def _preview(value: Any) -> str:
     if value is None:
         return ""
-    text = value if isinstance(value, str) else repr(value)
-    return text[:200]
+    # A plain string is left as a string — an agent's answer is prose, and
+    # quoting it as JSON would only put quotes around something already readable.
+    if isinstance(value, str):
+        return value[:_STR_CHARS]
+    return _as_json(value)
+
+
+def _vars_preview(state: RunState, note: str = "") -> str:
+    """Everything a step could read, as a JSON snapshot.
+
+    READS BOTH DICTIONARIES. A node's result always lands in
+    `state.outputs[key]`; it lands in `state.vars` ONLY when the node was given
+    an `output_var`. Reading `vars` alone therefore showed nothing for any flow
+    whose steps are wired through `{{outputs.step_key}}` — the panel said "this
+    step read no variables" about a step that was handed everything. Worth being
+    precise about, because the wrong reading here does not look like a broken
+    panel: it looks like a broken FLOW, and it would send somebody rewiring
+    something that already worked.
+
+    STRUCTURED, NOT `name = <repr>` LINES. The panel renders each variable as a
+    labelled field — and a rows-and-columns value as an actual table — which it
+    can only do if the shape survives to the screen. The previous line format had
+    flattened everything to Python syntax, so the one screen a non-programmer
+    opens to ask "what did this step see" answered in a language they do not read.
+
+    `note` carries the human sentence (why a step was reused, for instance) so
+    adding an explanation no longer costs the machine-readability of the rest.
+    """
+    try:
+        payload: dict[str, Any] = {}
+        if note:
+            payload["note"] = note
+        # Named variables — what a prompt writes as {{name}}.
+        payload["vars"] = {
+            name: _trim(value)
+            for name, value in list((state.vars or {}).items())[:_INPUT_MAX_VARS]
+        }
+        # Earlier steps' results, which a prompt reads as {{outputs.key}}. Keyed
+        # with that exact spelling so what is shown is what an author would type.
+        payload["outputs"] = {
+            f"outputs.{key}": _trim(value)
+            for key, value in list((state.outputs or {}).items())[:_INPUT_MAX_VARS]
+        }
+        if not payload["vars"] and not payload["outputs"] and not note:
+            return ""
+        return json.dumps(payload, ensure_ascii=False, default=str)
+    except Exception:  # noqa: BLE001 — a preview must never break a run
+        return ""

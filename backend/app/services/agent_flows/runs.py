@@ -119,7 +119,13 @@ def record(
                     iteration=step.iteration,
                     latency_ms=step.ms,
                     tool_calls=step.tool_calls or None,
+                    input_preview=step.input_preview or None,
                     output_preview=step.output_preview or None,
+                    # The executor already measured these per node; they used to
+                    # be dropped here for want of a column, so a run could say it
+                    # spent 14,000 tokens and never say on what.
+                    prompt_tokens=step.prompt_tokens or None,
+                    completion_tokens=step.completion_tokens or None,
                     error=step.error or None,
                 )
             )
@@ -243,6 +249,8 @@ def run_detail(db: Session, *, brain_key: str, run_id: int) -> dict[str, Any] | 
         .order_by(AgentFlowRunStep.seq)
         .all()
     )
+    node_configs = _configs_for_version(db, brain_key=brain_key, version=row.version)
+    flow_warnings, unresolved = _version_diagnosis(db, brain_key=brain_key, version=row.version)
     return {
         "id": row.id,
         "run_key": row.run_key,
@@ -258,6 +266,9 @@ def run_detail(db: Session, *, brain_key: str, run_id: int) -> dict[str, Any] | 
             "tool_calls": row.tool_calls,
             "prompt_tokens": row.prompt_tokens,
             "completion_tokens": row.completion_tokens,
+            # Stored since this table was created and never returned, so the one
+            # number an operator is actually accountable for was invisible.
+            "usd": float(row.usd) if row.usd is not None else None,
         },
         "rating": row.rating,
         "question": content.question if content else None,
@@ -272,10 +283,256 @@ def run_detail(db: Session, *, brain_key: str, run_id: int) -> dict[str, Any] | 
                 "seq": s.seq, "key": s.node_key, "type": s.node_type, "name": s.node_name,
                 "status": s.status, "ms": s.latency_ms, "branch": s.branch,
                 "iteration": s.iteration, "preview": s.output_preview, "error": s.error,
+                # Everything below was already on the row (or measured and then
+                # discarded) and never reached the screen, which is why a run
+                # could only be read as a list of green and red dots.
+                "input": s.input_preview,
+                "tool_calls": s.tool_calls or [],
+                "prompt_tokens": s.prompt_tokens,
+                "completion_tokens": s.completion_tokens,
+                # CONFIG AS IT WAS, not as it is now. Read from the immutable
+                # version this run executed, so it cannot drift from what
+                # actually ran and costs no extra storage — the alternative was
+                # copying a whole flow body into every run.
+                "config": node_configs.get(s.node_key),
+                # WHICH {{name}} THIS STEP USED THAT NOTHING EVER PRODUCES.
+                #
+                # A reference with no producer resolves to empty at run time, and
+                # the step still runs: a Switch on `{{scenario}}` silently takes
+                # its fallback every single time, and an agent prompt quietly
+                # loses the sentence that was supposed to carry the data. The
+                # answer still comes out, which is exactly why this needs saying
+                # out loud on the RUN — the flow's design-time warning is on
+                # another screen from the one somebody opens when an answer looks
+                # wrong.
+                "unresolved_refs": unresolved.get(s.node_key, []),
             }
             for s in steps
         ],
+        # The version's own review notes, surfaced here too. Same source as the
+        # badge in the builder — one detector, two places that need it.
+        "flow_warnings": flow_warnings,
+        # NODES WITH NO ROW AT ALL, and which kind of absence it is.
+        #
+        # A trace lists what ran. It cannot, on its own, distinguish a node that
+        # sat on a branch nobody took from one the executor ran past — and that
+        # ambiguity is precisely what makes a run look like it is skipping steps
+        # in silence. Audited across 32 stored runs: every absence was a branch,
+        # none was on the spine. Saying so per run turns "why is this node
+        # missing" into an answered question instead of a suspicion.
+        "not_executed": _not_executed(db, brain_key=brain_key, version=row.version,
+                                      ran={s.node_key for s in steps}),
+        "config_source": (
+            f"v{row.version}" if node_configs else
+            "không đọc được bản flow của run này — có thể phiên bản đã bị xoá"
+        ),
     }
+
+
+#: Never shown when replaying a step's configuration. A node may carry an
+#: encrypted per-step key; a run inspector is a read surface for anyone with view
+#: rights on the flow, and "what did this step run with" must not become "here is
+#: the credential it ran with".
+_SECRET_CONFIG_FIELDS = frozenset({"api_key", "api_key_enc", "api_key_clear"})
+
+
+def _configs_for_version(
+    db: Session, *, brain_key: str, version: int | None
+) -> dict[str, dict[str, Any]]:
+    """`node key → its settings` in the version a run actually executed.
+
+    Read rather than stored. The run records which version it ran, and a version
+    body is immutable once written, so this is exact by construction and adds
+    nothing to the size of a run. Copying the config into each step row would
+    duplicate an entire flow body per run to record something already on disk —
+    and would then be able to disagree with it.
+
+    Empty when the version has been deleted, which the caller reports rather than
+    papering over with the CURRENT body: showing today's settings beside
+    yesterday's result is worse than showing none.
+    """
+    if version is None:
+        return {}
+    from app.models.agent_brain import AgentBrainVersion
+
+    row = (
+        db.query(AgentBrainVersion)
+        .filter(
+            AgentBrainVersion.brain_key == brain_key,
+            AgentBrainVersion.version == version,
+        )
+        .first()
+    )
+    body = getattr(row, "body", None) if row is not None else None
+    if not isinstance(body, dict):
+        return {}
+
+    out: dict[str, dict[str, Any]] = {}
+
+    def scrub(value: Any) -> Any:
+        """Strip credentials at EVERY depth, not just the top of a node.
+
+        Stripping only the outer keys left the secrets in place: an `if` node's
+        own entry carries its `paths`, each path carries a `body`, and those
+        child dicts were copied verbatim — so the credential of a nested agent
+        step was served to anyone with view rights on the flow. Caught by the
+        test that asserted the payload contains no `api_key_enc`, on a real run
+        with a branch in it.
+        """
+        if isinstance(value, dict):
+            return {
+                k: scrub(v) for k, v in value.items()
+                if k not in _SECRET_CONFIG_FIELDS
+            }
+        if isinstance(value, list):
+            return [scrub(v) for v in value]
+        return value
+
+    def walk(nodes: Any) -> None:
+        for n in nodes or []:
+            if not isinstance(n, dict) or not n.get("key"):
+                continue
+            out[str(n["key"])] = scrub(n)
+            for p in (n.get("paths") or []) + (n.get("cases") or []):
+                if isinstance(p, dict):
+                    walk(p.get("body"))
+            walk(n.get("body"))
+            walk(n.get("fallback"))
+
+    walk(body.get("nodes"))
+    return out
+
+
+#: `{{name}}` in any templated field.
+_REF_RE = re.compile(r"\{\{\s*([a-zA-Z0-9_.]+)\s*\}\}")
+
+#: Names the ENGINE seeds into every run, so they are never "unproduced" even
+#: though no node creates them. Kept here rather than inferred, because guessing
+#: would make this report a step as broken for using `{{question}}`.
+_ENGINE_VARS = frozenset({
+    "question", "previous", "report_ctx_name", "available_metrics",
+    "available_dimensions", "outputs", "item", "index",
+})
+
+
+def _version_diagnosis(
+    db: Session, *, brain_key: str, version: int | None
+) -> tuple[list[str], dict[str, list[str]]]:
+    """The version's review notes, and per node the refs nothing produces.
+
+    Uses the SAME `Flow` object the builder validates, so the detection cannot
+    disagree with the badge an author already saw — one detector, reported in the
+    second place that needs it. Anything the binding resolves (a requirement) or
+    the engine seeds counts as produced; otherwise a step would be flagged for
+    reading `{{question}}`.
+    """
+    if version is None:
+        return [], {}
+    from app.models.agent_brain import AgentBrainVersion
+
+    row = (
+        db.query(AgentBrainVersion)
+        .filter(
+            AgentBrainVersion.brain_key == brain_key,
+            AgentBrainVersion.version == version,
+        )
+        .first()
+    )
+    if row is None:
+        # SAY IT, rather than returning an empty diagnosis that reads as "nothing
+        # wrong". Run 100 executed on v12, v12 has since been deleted, and a
+        # silent empty list told the reader their flow was clean when in truth
+        # nothing had been checked.
+        return ([
+            f"Không còn bản v{version} mà run này đã chạy, nên không kiểm được "
+            "cấu hình hay biến của nó. Đây KHÔNG phải kết luận là flow sạch — là "
+            "chưa kiểm được."
+        ], {})
+    try:
+        from app.services.agent_flows import registry as reg
+
+        flow = reg.parse_flow(row)
+        if flow is None:
+            return ([
+                f"Bản v{version} của run này không đọc được, nên không kiểm được "
+                "biến hay cấu hình."
+            ], {})
+        warnings = list(flow.warnings())
+        known = (
+            set(flow.produced_vars())
+            | {r.key for r in flow.requirements.items}
+            | _ENGINE_VARS
+        )
+        out: dict[str, list[str]] = {}
+        for node in flow.all_nodes():
+            blob = " ".join(
+                str(getattr(node, f, "") or "")
+                for f in ("prompt", "query", "value", "over", "source", "target")
+            )
+            missing = sorted({
+                m.group(1) for m in _REF_RE.finditer(blob)
+                if m.group(1) not in known and m.group(1).split(".")[0] not in known
+            })
+            if missing:
+                out[node.key] = missing
+        return warnings, out
+    except Exception:  # noqa: BLE001 — a diagnosis must never break a read
+        logger.warning("[flow] could not diagnose %s v%s", brain_key, version,
+                       exc_info=True)
+        return [], {}
+
+
+def _not_executed(
+    db: Session, *, brain_key: str, version: int | None, ran: set[str]
+) -> list[dict[str, Any]]:
+    """Flow nodes with no trace row, each labelled by WHY it could be absent.
+
+    `on_branch` means the node lives inside an `if` path, a `switch` case or a
+    loop body, so not running it is the flow working. Anything else is on the
+    spine and its absence is a defect worth chasing.
+    """
+    if version is None:
+        return []
+    from app.models.agent_brain import AgentBrainVersion
+
+    row = (
+        db.query(AgentBrainVersion)
+        .filter(
+            AgentBrainVersion.brain_key == brain_key,
+            AgentBrainVersion.version == version,
+        )
+        .first()
+    )
+    if row is None:
+        return []
+    try:
+        from app.services.agent_flows import registry as reg
+
+        flow = reg.parse_flow(row)
+        if flow is None:
+            return []
+        out: list[dict[str, Any]] = []
+
+        def walk(nodes: Any, on_branch: bool) -> None:
+            for n in nodes or []:
+                if n.key not in ran:
+                    out.append({
+                        "key": n.key,
+                        "name": getattr(n, "name", "") or n.key,
+                        "type": n.type,
+                        "on_branch": on_branch,
+                    })
+                for p in (getattr(n, "paths", None) or []):
+                    walk(getattr(p, "body", None), True)
+                for c in (getattr(n, "cases", None) or []):
+                    walk(getattr(c, "body", None), True)
+                walk(getattr(n, "fallback", None), True)
+                walk(getattr(n, "body", None), True)
+
+        walk(flow.nodes, False)
+        return out
+    except Exception:  # noqa: BLE001 — never break a read over this
+        return []
 
 
 def stats(db: Session, *, brain_key: str, since_hours: int = 24) -> dict[str, Any]:

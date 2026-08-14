@@ -442,6 +442,27 @@ def brains(db: Session = Depends(get_db), user: User = Depends(can_view)) -> dic
 # Starlette matches `/brains/impact` as a flow named "impact" and answers 404 for
 # ever. It matches in registration order and does not fall through on a validation
 # failure.
+@router.get("/brains/resolve/{flow_id}")
+def resolve_flow_id(
+    flow_id: int, db: Session = Depends(get_db), user: User = Depends(can_view)
+) -> dict[str, Any]:
+    """The `brain_key` behind the number in a link.
+
+    The address bar carries a number; everything else here — permissions, runs,
+    bindings, shares — is keyed by `brain_key`. One lookup at the edge keeps it
+    that way, instead of a second identity threaded through every endpoint.
+
+    Permission-checked like any other read: a number is easy to guess, so
+    resolving one must not reveal the existence of a flow the caller may not
+    open. `_may_read_flow` raises the same 404 an unknown number gets.
+    """
+    key = reg.flow_id_to_key(db, flow_id)
+    if not key:
+        raise HTTPException(status_code=404, detail="Không tìm thấy flow này.")
+    _may_read_flow(db, user, key)
+    return {"flow_id": flow_id, "brain_key": key}
+
+
 @router.get("/brains/{brain_key}/impact")
 def brain_impact(
     brain_key: str, db: Session = Depends(get_db), user: User = Depends(can_view)

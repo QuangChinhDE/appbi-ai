@@ -422,6 +422,11 @@ class TraceStep(_Model):
     branch: str = ""
     iteration: int | None = None
     tool_calls: list[str] = Field(default_factory=list)
+    #: What this node was HANDED — the variables it could read when it started.
+    #: Kept beside the output because a step that answered badly and a step that
+    #: was given nothing to answer from are indistinguishable from the output
+    #: alone, and telling those apart is the whole point of opening a run.
+    input_preview: str = ""
     output_preview: str = ""
     error: str = ""
     #: What this node cost. Recorded per node because a turn's total says a flow is

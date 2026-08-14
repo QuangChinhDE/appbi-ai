@@ -20,7 +20,7 @@
  */
 import {
   AlertTriangle, Brain, Calendar, Check, ChevronRight, Copy, Layers, Link2, Loader2,
-  Plus, Trash2,
+  Plus, Share2, Trash2,
 } from 'lucide-react';
 import React from 'react';
 
@@ -30,6 +30,7 @@ import { ModuleOverview } from '@/components/common/ModuleOverview';
 import { OwnerBadge } from '@/components/common/OwnerBadge';
 import { PageListLayout } from '@/components/common/PageListLayout';
 import { PaginatedCollection } from '@/components/common/PaginatedCollection';
+import { ShareDialog } from '@/components/common/ShareDialog';
 import { Button, IconButton } from '@/components/ui/Button';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { FilterTag } from '@/components/ui/FilterTag';
@@ -91,7 +92,7 @@ function collapse(rows: BrainSummary[]): BrainRowModel[] {
 export function BrainList({
   onOpen, canEdit,
 }: {
-  onOpen: (key: string) => void;
+  onOpen: (idOrKey: string | number) => void;
   canEdit: boolean;
 }) {
   const { t } = useI18n();
@@ -99,6 +100,7 @@ export function BrainList({
   const [search, setSearch] = React.useState('');
   const [status, setStatus] = React.useState<StatusFilter>('all');
   const [creating, setCreating] = React.useState(false);
+  const [shareTarget, setShareTarget] = React.useState<BrainSummary | null>(null);
   const [busyKey, setBusyKey] = React.useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = React.useState<BrainRowModel | null>(null);
 
@@ -306,6 +308,7 @@ export function BrainList({
                           onOpen={onOpen}
                           onDuplicate={() => void duplicate(row)}
                           onDelete={() => setConfirmDelete(row)}
+                          onShare={() => setShareTarget(row.latest)}
                         />
                       ))}
                     </div>
@@ -337,6 +340,7 @@ export function BrainList({
                                 onOpen={onOpen}
                                 onDuplicate={() => void duplicate(row)}
                                 onDelete={() => setConfirmDelete(row)}
+                                onShare={() => setShareTarget(row.latest)}
                               />
                             ))}
                           </tbody>
@@ -373,6 +377,18 @@ export function BrainList({
         onConfirm={() => { if (confirmDelete) void removeDraft(confirmDelete); }}
         onClose={() => setConfirmDelete(null)}
       />
+
+      {/* Shares are keyed by `brain_key`, not by a version id — one share covers
+          the flow across every version of it, which is what "I shared this flow
+          with you" has to mean for a resource that gets re-saved. */}
+      {shareTarget && (
+        <ShareDialog
+          resourceType="agent_brain"
+          resourceId={shareTarget.brain_key}
+          resourceName={shareTarget.name}
+          onClose={() => setShareTarget(null)}
+        />
+      )}
     </>
   );
 }
@@ -391,21 +407,22 @@ function isDeletableDraft(row: BrainRowModel): boolean {
 /* ── grid card ────────────────────────────────────────────────────────────── */
 
 function BrainCard({
-  row, canEdit, busy, onOpen, onDuplicate, onDelete,
+  row, canEdit, busy, onOpen, onDuplicate, onDelete, onShare,
 }: {
   row: BrainRowModel;
   canEdit: boolean;
   busy: boolean;
-  onOpen: (key: string) => void;
+  onOpen: (idOrKey: string | number) => void;
   onDuplicate: () => void;
   onDelete: () => void;
+  onShare: () => void;
 }) {
   const { t, locale } = useI18n();
   const b = row.latest;
   const links = b.link_count || 0;
   return (
     <div className="group rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 transition-[box-shadow,border-color] hover:border-[rgb(var(--border-strong))] hover:shadow-linear">
-      <button type="button" onClick={() => onOpen(b.brain_key)} className="w-full p-4 text-left">
+      <button type="button" onClick={() => onOpen(b.flow_id ?? b.brain_key)} className="w-full p-4 text-left">
         <div className="mb-2.5 flex items-start justify-between gap-2">
           <div className="flex min-w-0 items-center gap-2.5">
             <span className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg bg-brand/10 text-brand">
@@ -453,6 +470,12 @@ function BrainCard({
       <div className="flex items-center justify-between gap-1 border-t border-[rgb(var(--border-line))] bg-surface-2 px-3 py-1.5">
         <OwnerBadge email={b.owner_email} />
         <div className="flex items-center gap-0.5">
+          <IconButton
+            aria-label={t('agentFlows.list.shareAria')} variant="ghost" size="sm"
+            title={t('agentFlows.list.shareTitle')} disabled={busy} onClick={onShare}
+          >
+            <Share2 className="h-3.5 w-3.5" />
+          </IconButton>
           {canEdit && (
             <IconButton
               aria-label={t('agentFlows.list.duplicateAria')} variant="ghost" size="sm" title={t('agentFlows.list.duplicateTitle')}
@@ -478,14 +501,15 @@ function BrainCard({
 /* ── table row ────────────────────────────────────────────────────────────── */
 
 function BrainTableRow({
-  row, canEdit, busy, onOpen, onDuplicate, onDelete,
+  row, canEdit, busy, onOpen, onDuplicate, onDelete, onShare,
 }: {
   row: BrainRowModel;
   canEdit: boolean;
   busy: boolean;
-  onOpen: (key: string) => void;
+  onOpen: (idOrKey: string | number) => void;
   onDuplicate: () => void;
   onDelete: () => void;
+  onShare: () => void;
 }) {
   const { t, locale } = useI18n();
   const b = row.latest;
@@ -493,7 +517,7 @@ function BrainTableRow({
   return (
     <tr className="hover:bg-surface-2">
       <td className="app-list-cell">
-        <button type="button" onClick={() => onOpen(b.brain_key)} className="flex w-full items-start gap-3 text-left">
+        <button type="button" onClick={() => onOpen(b.flow_id ?? b.brain_key)} className="flex w-full items-start gap-3 text-left">
           <span className="mt-0.5 flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-md bg-brand/10 text-brand">
             <Brain className="h-4 w-4" />
           </span>
@@ -535,6 +559,12 @@ function BrainTableRow({
       </td>
       <td className="app-list-cell text-right">
         <div className="inline-flex items-center gap-0.5">
+          <IconButton
+            aria-label={t('agentFlows.list.shareAria')} variant="ghost" size="sm"
+            title={t('agentFlows.list.shareTitle')} disabled={busy} onClick={onShare}
+          >
+            <Share2 className="h-3.5 w-3.5" />
+          </IconButton>
           {canEdit && (
             <IconButton
               aria-label={t('agentFlows.list.duplicateAria')} variant="ghost" size="sm" title={t('agentFlows.list.duplicateTitle')}

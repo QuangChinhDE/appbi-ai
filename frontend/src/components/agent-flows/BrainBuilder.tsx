@@ -19,6 +19,7 @@ import {
   AlertTriangle, ArrowLeft, Check, Loader2, Maximize2, Minus, Play, Plus,
   Redo2, Save, Send, Undo2, X,
 } from 'lucide-react';
+import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import React from 'react';
 
 import { Button } from '@/components/ui/Button';
@@ -53,7 +54,21 @@ export function BrainBuilder({
   brainKey: string; onBack: () => void; canEdit: boolean; canPublish: boolean;
 }) {
   const { t, language } = useI18n();
-  const [mode, setMode] = React.useState<Mode>('design');
+  // The open tab is addressable too, for the same reason the open flow is: a run
+  // worth showing somebody is on the Runs tab, and a link that lands on Design
+  // makes the reader hunt for it again. `replace` rather than `push` so flipping
+  // tabs does not fill the Back button with steps nobody wants to retrace —
+  // Back should leave the flow, which is what opening it pushed.
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const rawTab = searchParams?.get('tab');
+  const mode: Mode = (rawTab === 'runs' || rawTab === 'activity') ? rawTab : 'design';
+  const setMode = React.useCallback((next: Mode) => {
+    const q = new URLSearchParams(searchParams?.toString() || '');
+    if (next === 'design') q.delete('tab'); else q.set('tab', next);
+    router.replace(`${pathname}?${q.toString()}`);
+  }, [router, pathname, searchParams]);
   const [loading, setLoading] = React.useState(true);
   const [saving, setSaving] = React.useState(false);
   const [dirty, setDirty] = React.useState(false);
@@ -344,14 +359,65 @@ export function BrainBuilder({
           value={name}
           disabled={!canEdit}
           onChange={(e) => { setName(e.target.value); setDirty(true); }}
-          className="h-7 w-[300px] border-transparent bg-transparent px-1.5 text-caption font-medium hover:border-[rgb(var(--border-line))]"
+          // Narrower than it was: the row now carries the tabs too, and the name
+          // is the one element that can give up width without losing meaning.
+          className="h-7 w-[150px] flex-shrink border-transparent bg-transparent px-1.5 text-caption font-medium hover:border-[rgb(var(--border-line))] xl:w-[240px]"
         />
         <StatusBadge status={status} version={version} size="xs" />
         {publishedVersion != null && publishedVersion !== version && (
           <span className="text-tiny text-text-tertiary">· {t('agentFlows.builder.runningVersion', { version: publishedVersion })}</span>
         )}
-        <span className="text-tiny text-text-tertiary">· {links.length} {t(links.length === 1 ? 'agentFlows.common.link' : 'agentFlows.common.links')}</span>
+        <span className="hidden text-tiny text-text-tertiary lg:inline">· {links.length} {t(links.length === 1 ? 'agentFlows.common.link' : 'agentFlows.common.links')}</span>
+
+        {/* TABS AND CHIPS LIVE ON THE HEADER ROW, not a second bar below it.
+            Two stacked bars cost 40px of every screen beneath them, and the
+            screens beneath them — the canvas and the run inspector — are the
+            ones that need the height. The chips are the first thing dropped as
+            the window narrows: they are context, while the tabs are navigation
+            and the validation badge is a warning. */}
+        <div className="ml-2 inline-flex flex-shrink-0 items-center gap-0.5 rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 p-0.5">
+          {([
+            ['design', 'agentFlows.builder.tab.design'],
+            ['runs', 'agentFlows.builder.tab.runs'],
+            ['activity', 'agentFlows.builder.tab.activity'],
+          ] as const).map(([key, labelKey]) => (
+            <button key={key} type="button" onClick={() => setMode(key as Mode)}
+              className={cn('h-6 rounded-md px-2.5 text-caption font-medium transition',
+                mode === key ? 'bg-surface-1 text-brand shadow-linear-sm' : 'text-text-tertiary')}>
+              {t(labelKey)}
+            </button>
+          ))}
+        </div>
+
+        <div className="hidden items-center gap-1.5 xl:flex">
+          <Badge size="xs" variant="neutral">{counts.nodes} {t(counts.nodes === 1 ? 'agentFlows.common.step' : 'agentFlows.common.steps')}</Badge>
+          {counts.branches > 0 && <Badge size="xs" variant="neutral">{counts.branches} {t(counts.branches === 1 ? 'agentFlows.common.branch' : 'agentFlows.common.branches')}</Badge>}
+          {counts.loops > 0 && <Badge size="xs" variant="neutral">{counts.loops} loop</Badge>}
+          {validation?.estimate && (
+            <span
+              title={t('agentFlows.builder.estimateTitle')}
+              className="cursor-help rounded-full border border-[rgb(var(--border-line))] bg-surface-2 px-2 py-px text-tiny text-text-tertiary"
+            >
+              ≤ {validation.estimate.max_llm_calls} {t('agentFlows.common.modelCallPerQuestion')}
+            </span>
+          )}
+        </div>
+
         <div className="flex-1" />
+
+        {validation && (
+          validation.ok
+            ? <Badge size="xs" variant="success" dot>{t('agentFlows.builder.valid')}</Badge>
+            : <Badge size="xs" variant="danger">{validation.errors[0] || t('agentFlows.builder.invalid')}</Badge>
+        )}
+        {!!validation?.warnings.length && (
+          <span
+            title={validation.warnings.join('\n\n')}
+            className="flex cursor-help items-center gap-1 rounded-full border border-warning/25 bg-warning/5 px-2 py-px text-tiny text-warning"
+          >
+            <AlertTriangle className="h-3 w-3" /> {t('agentFlows.builder.warningCount', { count: validation.warnings.length })}
+          </span>
+        )}
         {dirty && (
           <span className="flex items-center gap-1.5 text-tiny font-medium text-warning">
             <span className="h-1.5 w-1.5 rounded-full bg-warning" /> {t('agentFlows.common.unsaved')}
@@ -379,50 +445,6 @@ export function BrainBuilder({
           <Button size="xs" onClick={() => setPublishOpen(true)} disabled={dirty}>
             <Send className="h-3 w-3" /> {t('agentFlows.builder.publish')}
           </Button>
-        )}
-      </div>
-
-      {/* subbar */}
-      <div className="flex h-10 flex-shrink-0 items-center gap-2.5 border-b border-[rgb(var(--border-line))] bg-surface-1 px-4">
-        <div className="inline-flex items-center gap-0.5 rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 p-0.5">
-          {([
-            ['design', 'agentFlows.builder.tab.design'],
-            ['runs', 'agentFlows.builder.tab.runs'],
-            ['activity', 'agentFlows.builder.tab.activity'],
-          ] as const).map(
-            ([key, labelKey]) => (
-              <button key={key} type="button" onClick={() => setMode(key as Mode)}
-                className={cn('h-7 rounded-md px-2.5 text-caption font-medium transition',
-                  mode === key ? 'bg-surface-1 text-brand shadow-linear-sm' : 'text-text-tertiary')}>
-                {t(labelKey)}
-              </button>
-            ),
-          )}
-        </div>
-        <Badge size="xs" variant="neutral">{counts.nodes} {t(counts.nodes === 1 ? 'agentFlows.common.step' : 'agentFlows.common.steps')}</Badge>
-        {counts.branches > 0 && <Badge size="xs" variant="neutral">{counts.branches} {t(counts.branches === 1 ? 'agentFlows.common.branch' : 'agentFlows.common.branches')}</Badge>}
-        {counts.loops > 0 && <Badge size="xs" variant="neutral">{counts.loops} loop</Badge>}
-        {validation?.estimate && (
-          <span
-            title={t('agentFlows.builder.estimateTitle')}
-            className="cursor-help rounded-full border border-[rgb(var(--border-line))] bg-surface-2 px-2 py-px text-tiny text-text-tertiary"
-          >
-            ≤ {validation.estimate.max_llm_calls} {t('agentFlows.common.modelCallPerQuestion')}
-          </span>
-        )}
-        <div className="flex-1" />
-        {validation && (
-          validation.ok
-            ? <Badge size="xs" variant="success" dot>{t('agentFlows.builder.valid')}</Badge>
-            : <Badge size="xs" variant="danger">{validation.errors[0] || t('agentFlows.builder.invalid')}</Badge>
-        )}
-        {!!validation?.warnings.length && (
-          <span
-            title={validation.warnings.join('\n\n')}
-            className="flex cursor-help items-center gap-1 rounded-full border border-warning/25 bg-warning/5 px-2 py-px text-tiny text-warning"
-          >
-            <AlertTriangle className="h-3 w-3" /> {t('agentFlows.builder.warningCount', { count: validation.warnings.length })}
-          </span>
         )}
       </div>
 

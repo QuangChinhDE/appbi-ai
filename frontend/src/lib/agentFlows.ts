@@ -285,6 +285,9 @@ export type BrainStatus = 'draft' | 'published' | 'archived';
 
 export interface BrainSummary {
   brain_key: string;
+  /** What a link carries. Shared by every version of this flow, unlike a version
+   *  row's own id. Every API call below still uses `brain_key`. */
+  flow_id: number | null;
   version: number;
   status: BrainStatus;
   name: string;
@@ -437,7 +440,27 @@ export interface RunStep {
   ms: number | null;
   branch: string | null;
   iteration: number | null;
+  /** What the step produced. */
   preview: string | null;
+  /** What the step was HANDED — the variables readable when it started. Kept
+   *  beside the output because "answered badly" and "was given nothing to answer
+   *  from" are indistinguishable from the output alone. */
+  input: string | null;
+  /** Tool names this step called, in order. */
+  tool_calls: string[];
+  /** What this step COST. `null` means the run predates per-step accounting —
+   *  distinct from `0`, which would claim the step was free. */
+  prompt_tokens: number | null;
+  completion_tokens: number | null;
+  /** The node's settings IN THE VERSION THAT RAN, read back from that immutable
+   *  version rather than stored per step. `null` when the version is gone. */
+  config: Record<string, unknown> | null;
+  /** `{{name}}` this step used that NOTHING in the flow produces. Each one
+   *  resolved to empty at run time — a Switch on an unproduced variable takes its
+   *  fallback every time, an agent prompt silently loses a sentence, and the
+   *  answer still comes out. The likeliest cause of a run that looks fine and is
+   *  not. */
+  unresolved_refs: string[];
   error: string | null;
 }
 
@@ -451,7 +474,28 @@ export interface RunDetail {
   binding_id: number | null;
   execution_path: string | null;
   latency_ms: number | null;
-  usage: { llm_calls: number; tool_calls: number; prompt_tokens: number; completion_tokens: number };
+  usage: {
+    llm_calls: number;
+    tool_calls: number;
+    prompt_tokens: number;
+    completion_tokens: number;
+    /** What the turn actually cost. Stored since this table existed and never
+     *  returned, so the one number an operator is accountable for was invisible.
+     *  `null` when the provider did not report a price. */
+    usd: number | null;
+  };
+  /** Which flow version the per-step `config` was read from, or why it could not
+   *  be. Shown so nobody mistakes it for the flow's CURRENT settings. */
+  config_source?: string;
+  /** The version's own review notes. Same detector as the builder's badge — the
+   *  Runs tab needs them too, because that is the screen somebody opens when an
+   *  answer looks wrong. */
+  flow_warnings?: string[];
+  /** Flow nodes with no trace row. `on_branch` distinguishes "sat on a branch
+   *  nobody took" (correct) from "absent off the spine" (a defect) — without it
+   *  a trace cannot tell the two apart, which is what makes a run look like it
+   *  is skipping steps in silence. */
+  not_executed?: { key: string; name: string; type: string; on_branch: boolean }[];
   rating: 'up' | 'down' | null;
   question: string | null;
   answer: string | null;
@@ -591,6 +635,13 @@ export async function importDraft(raw: string, name?: string): Promise<ImportedD
 export async function listBrains(): Promise<BrainSummary[]> {
   const { data } = await apiClient.get<{ brains: BrainSummary[] }>(`${BASE}/brains`);
   return data.brains || [];
+}
+
+/** The `brain_key` behind the number in a link. */
+export async function resolveFlowId(flowId: number): Promise<string> {
+  const { data } = await apiClient.get<{ brain_key: string }>(
+    `${BASE}/brains/resolve/${flowId}`);
+  return data.brain_key;
 }
 
 export async function getBrain(key: string, version?: number): Promise<BrainDetail> {
