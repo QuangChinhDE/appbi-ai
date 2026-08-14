@@ -796,10 +796,10 @@ def delete_binding(
         raise HTTPException(status_code=404, detail="Link này chưa gán flow nào")
     brain_key = binding.brain_key
     db.delete(binding)
-    link, _dash = _link_and_dashboard(db, link_id, user)
-    cfg = dict(link.appearance_config or {})
-    cfg.pop("ai_bot_flow_key", None)
-    link.appearance_config = cfg
+    # Deleting the binding IS unassigning the flow — there is no longer a copy of
+    # the flow key on the link to clear as well. Kept as a permission check on the
+    # link, which unassigning still requires.
+    _link_and_dashboard(db, link_id, user)
     db.commit()
     reg._audit(db, "AGENT_FLOW_UNASSIGNED", brain_key, _actor(user), {"link_id": link_id})
     return {"status": "deleted"}

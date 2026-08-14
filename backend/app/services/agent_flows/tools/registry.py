@@ -728,13 +728,18 @@ def execute(
     already speak the contract are left exactly as they are.
     """
     tools = all_tools()
+    # VIETNAMESE, like every other message in this module. These two strings land
+    # on a step's error line in the run inspector, which a flow author reads — and
+    # they were the only English ones there, left behind by a refactor that renamed
+    # them and did not update the test asserting the wording. Machine callers match
+    # `code`, never the text, so the wording is free to be for a person.
     if allowed is not None and name not in allowed:
         return R.err(
-            f"tool '{name}' is not granted to this step", code="not_granted"
+            f"công cụ '{name}' không được cấp cho bước này", code="not_granted"
         )
     spec = tools.get(name)
     if spec is None:
-        return R.err(f"unknown tool: {name}", code="unknown_tool")
+        return R.err(f"không có công cụ tên '{name}'", code="unknown_tool")
 
     args = args or {}
     key = None

@@ -158,9 +158,17 @@ async def run_flow(
                      "một bước trung gian.",
             )
         )
-    if not answer.blocks:
+    if not _has_visible_answer(answer):
         # NOTHING REACHED THE VIEWER, SO THE RUN FAILED — whatever was decided
         # above.
+        #
+        # The test is the CONTENT, not the container. This read `not
+        # answer.blocks`, and a model that streamed usage but no text produced
+        # exactly one block holding the empty string: a non-empty list of nothing.
+        # The guard passed, and a run in which the viewer was shown a blank reply
+        # was filed `ok` — counted as an answered question in the flow's success
+        # rate, which is the number an operator uses to decide the flow works.
+        # Same defect as the one described below, one level further in.
         #
         # This was `status = "failed" if status == "ok" else status`, and the
         # branch above had already moved status to "partial" in exactly the case
@@ -441,9 +449,13 @@ async def _run_node(
         return
 
     _publish(node, state)
+    # A handler that declined its work is not a handler that did it. Read from the
+    # state the handler wrote rather than inferred from its output shape.
+    declined = state.skipped.pop(node.key, "")
     state.record(
         TraceStep(
-            key=node.key, type=node.type, name=label, status="ok", ms=ms,
+            key=node.key, type=node.type, name=label,
+            status="skipped" if declined else "ok", ms=ms,
             tool_calls=state.tool_log[tools_before:],
             input_preview=input_before,
             output_preview=_preview(state.outputs.get(node.key)),
@@ -729,6 +741,21 @@ def _unknown_labels(state: RunState, answer: Answer) -> list[str]:
                     unknown.append(label)
                 break  # the row's first text cell is its identity
     return unknown[:12]
+
+
+def _has_visible_answer(answer: Any) -> bool:
+    """Did the viewer actually get something to read?
+
+    A block carrying only whitespace is not an answer, and counting it as one is
+    how a blank reply becomes a success statistic. Any non-text block (a table, a
+    chart) counts on sight — its content is not in `markdown`.
+    """
+    for block in getattr(answer, "blocks", None) or []:
+        if getattr(block, "type", "") != "text":
+            return True
+        if str(getattr(block, "markdown", "") or "").strip():
+            return True
+    return False
 
 
 def _answer_is_fallback(state: RunState, rctx: RunContext) -> bool:

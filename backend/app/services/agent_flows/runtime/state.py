@@ -109,6 +109,18 @@ class RunState:
     #: Variables to persist for the next turn. Written only by nodes whose
     #: `run_policy` says so, never by everything that happens to set a variable.
     memory_set: dict[str, Any] = field(default_factory=dict)
+    #: Nodes that DECLINED to do their work, keyed by node → why.
+    #:
+    #: A handler that returns normally is recorded `ok`, which is right for a node
+    #: that did its job and wrong for one that was gated. A Web node on a link with
+    #: web search off returns quietly — correct behaviour — and the trace then
+    #: showed a green tick against a step that never reached the internet. Anyone
+    #: auditing "did this flow go outside" read that tick as yes.
+    #:
+    #: Declared by the handler rather than inferred from its output, because
+    #: inferring means guessing which shapes mean "skipped", and a guess in the
+    #: trace is worse than no trace.
+    skipped: dict[str, str] = field(default_factory=dict)
     #: Set by a Stop node, or by the executor when the budget runs out.
     stopped: bool = False
     stop_message: str = ""

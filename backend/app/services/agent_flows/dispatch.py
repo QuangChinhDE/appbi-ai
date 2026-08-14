@@ -275,6 +275,27 @@ def resolve_for_link(
 
     resolved = reg.resolve_version(db, binding.brain_key, binding.pinned_version)
     if resolved is None:
+        # TWO VERY DIFFERENT REASONS, and only one of them is drift.
+        #
+        # Chart drift above is recorded on the binding; this branch recorded
+        # nothing, so a binding whose FLOW had ceased to exist went on reporting
+        # itself `active` while every question failed. The asymmetry is why one
+        # such binding sat unnoticed in this deployment: the screens that exist to
+        # show unhealthy links had no idea.
+        #
+        # Zero versions means the flow is gone for good — that is drift, and it is
+        # marked, so the link shows as broken wherever bindings are listed.
+        #
+        # Versions exist but none is published is RECOVERABLE: an author who
+        # unpublishes to fix something would otherwise have to re-activate every
+        # binding by hand after publishing again. Left alone deliberately.
+        if not reg.has_any_version(db, binding.brain_key):
+            binding_service.mark_broken(
+                db, binding,
+                f"Flow '{binding.brain_key}' không còn tồn tại — link này đang trỏ "
+                f"vào chỗ trống. Hãy gán lại flow khác cho link.",
+            )
+            return binding, None, None, "binding_broken"
         return binding, None, None, "not_published"
     row, flow = resolved
     return binding, row, flow, ""

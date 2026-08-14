@@ -365,7 +365,9 @@ export interface Binding {
   link_id: number;
   brain_key: string;
   pinned_version: number | null;
-  status: 'draft' | 'active' | 'broken' | 'needs_review';
+  /** `draft` was in this union and never in the data — the server declared it and
+   *  assigned it nowhere, so every branch written for it was unreachable. */
+  status: 'active' | 'broken' | 'needs_review';
   data_contract: DataContract;
   last_validation: { errors?: PreflightIssue[]; warnings?: PreflightIssue[] };
   store_question_content: boolean;

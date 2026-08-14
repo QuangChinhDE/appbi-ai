@@ -344,6 +344,9 @@ async def run_web(
             )
         )
         state.outputs[node.key] = {"ok": False, "skipped": "web_disabled", "results": []}
+        # Declared so the trace says "skipped", not "ok". Without this the step
+        # showed a green tick for work it deliberately did not do.
+        state.skipped[node.key] = "web_disabled"
         yield AgentEvent(type="status", text="Bỏ qua tra cứu web (link tắt).")
         return
 

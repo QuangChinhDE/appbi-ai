@@ -658,9 +658,67 @@ def delete_version(db: Session, brain_key: str, version: int, actor_email: str =
         raise BrainError(404, "Không tìm thấy phiên bản này")
     if row.status == PUBLISHED:
         raise BrainError(409, "Phiên bản đang phát hành — hãy phát hành bản khác trước")
+
+    # A DELETE MAY NOT LEAVE A LINK POINTING AT NOTHING.
+    #
+    # This checked only the row it was removing. Deleting the LAST version of a
+    # flow therefore made the flow cease to exist while every binding naming it
+    # stayed behind, and nothing anywhere said so: the link kept its bot, the
+    # dispatcher answered `not_published` on each question, and the author who
+    # deleted the version was never the person who found out. One such binding is
+    # in this deployment right now, pointing at a `brain_key` with zero versions.
+    #
+    # Refused rather than cascaded. Deleting somebody's binding as a side effect
+    # of tidying a draft is a bigger surprise than being told to unassign it
+    # first, and `impact()` already exists to show exactly who is affected.
+    from app.services.agent_flows import binding as binding_service
+
+    users = binding_service.list_for_flow(db, brain_key)
+    if users:
+        pinned = [u for u in users if u.get("pinned_version") == version]
+        if pinned:
+            names = ", ".join(str(u["link_name"] or u["link_id"]) for u in pinned[:3])
+            raise BrainError(
+                409,
+                f"{len(pinned)} link đang ghim đúng phiên bản v{version} ({names}"
+                f"{'…' if len(pinned) > 3 else ''}). Hãy đổi hoặc bỏ ghim trước khi xoá.",
+            )
+        remaining = (
+            db.query(AgentBrainVersion)
+            .filter(
+                AgentBrainVersion.brain_key == brain_key,
+                AgentBrainVersion.version != version,
+            )
+            .count()
+        )
+        if remaining == 0:
+            names = ", ".join(str(u["link_name"] or u["link_id"]) for u in users[:3])
+            raise BrainError(
+                409,
+                f"Đây là phiên bản cuối cùng của flow, mà {len(users)} link vẫn đang "
+                f"dùng nó ({names}{'…' if len(users) > 3 else ''}). Hãy gỡ flow khỏi "
+                f"các link đó trước — xoá bây giờ sẽ để lại link trỏ vào chỗ trống.",
+            )
+
     db.delete(row)
     db.commit()
     _audit(db, "AGENT_FLOW_DELETED", brain_key, actor_email, {"version": version})
+
+
+def has_any_version(db: Session, brain_key: str) -> bool:
+    """Does this flow exist at all?
+
+    Distinct from "is anything published". A flow with drafts but no published
+    version is between states; a flow with no rows has been deleted, and a binding
+    naming it can never resolve again. The two need opposite handling, so the
+    caller has to be able to tell them apart.
+    """
+    return (
+        db.query(AgentBrainVersion.id)
+        .filter(AgentBrainVersion.brain_key == brain_key)
+        .first()
+        is not None
+    )
 
 
 def impact(db: Session, brain_key: str) -> dict[str, Any]:

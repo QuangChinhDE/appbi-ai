@@ -138,7 +138,6 @@ export function PublicLinkAppearanceEditor({
     ai_bot_enabled: value.ai_bot_enabled,
     ai_bot_provider: value.ai_bot_provider,
     ai_bot_model: value.ai_bot_model,
-    ai_bot_flow_key: value.ai_bot_flow_key,
     ai_bot_web_search_enabled: value.ai_bot_web_search_enabled,
     ai_bot_report_context_note: value.ai_bot_report_context_note,
     ai_bot_key: value.ai_bot_key,

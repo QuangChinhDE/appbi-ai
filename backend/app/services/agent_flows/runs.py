@@ -403,9 +403,6 @@ def _configs_for_version(
     return out
 
 
-#: `{{name}}` in any templated field.
-_REF_RE = re.compile(r"\{\{\s*([a-zA-Z0-9_.]+)\s*\}\}")
-
 #: Names the ENGINE seeds into every run, so they are never "unproduced" even
 #: though no node creates them. Kept here rather than inferred, because guessing
 #: would make this report a step as broken for using `{{question}}`.
@@ -449,6 +446,7 @@ def _version_diagnosis(
             "chưa kiểm được."
         ], {})
     try:
+        from app.services.agent_flows import contract as reg_contract
         from app.services.agent_flows import registry as reg
 
         flow = reg.parse_flow(row)
@@ -465,14 +463,15 @@ def _version_diagnosis(
         )
         out: dict[str, list[str]] = {}
         for node in flow.all_nodes():
-            blob = " ".join(
-                str(getattr(node, f, "") or "")
-                for f in ("prompt", "query", "value", "over", "source", "target")
+            # SAME field list the validator uses, because it is the same function.
+            # The hand-rolled scan this replaces read six attributes off the node
+            # and so could not see a `{{name}}` living in an IF condition, a
+            # Switch case or a Transform mapping — the panel called those flows
+            # clean while the builder's own badge flagged them.
+            missing = sorted(
+                v for v in reg_contract.node_referenced_vars(node)
+                if v not in known
             )
-            missing = sorted({
-                m.group(1) for m in _REF_RE.finditer(blob)
-                if m.group(1) not in known and m.group(1).split(".")[0] not in known
-            })
             if missing:
                 out[node.key] = missing
         return warnings, out

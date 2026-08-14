@@ -44,7 +44,18 @@ from app.services.agent_flows.envelope import (
 
 logger = logging.getLogger(__name__)
 
-DRAFT, ACTIVE, BROKEN, NEEDS_REVIEW = "draft", "active", "broken", "needs_review"
+#: THE THREE STATES A BINDING CAN BE IN, and no more.
+#:
+#:   active        preflight passed; this link runs this flow
+#:   broken        drift was detected — a chart or a grant it depended on is gone
+#:   needs_review  created by migration `20260810_0052` from a pre-binding link,
+#:                 never confirmed by a person
+#:
+#: `draft` was declared here and assigned nowhere. A status that exists in the
+#: vocabulary but not in the data is worse than no status: the frontend carried a
+#: branch for it, a reader had to work out when it happens, and the answer was
+#: never. Removed rather than wired up — nothing wanted it.
+ACTIVE, BROKEN, NEEDS_REVIEW = "active", "broken", "needs_review"
 
 #: Rough seconds per model call, by model-name prefix. Measured on this deployment,
 #: not taken from a datasheet: the number that matters is how long a VIEWER waits.
@@ -474,13 +485,12 @@ def save_binding(
     binding.store_question_content = bool(store_question_content)
     binding.created_by = binding.created_by or actor_email
 
-    # The link keeps pointing at the flow by key so nothing else that reads
-    # `appearance_config` has to learn about bindings on day one. The binding is the
-    # authority; this is a mirror, and it is written here so the two cannot drift.
-    cfg = dict(link.appearance_config or {})
-    cfg["ai_bot_flow_key"] = flow.key
-    link.appearance_config = cfg
-
+    # NO MIRROR ON THE LINK. This used to also write
+    # `appearance_config.ai_bot_flow_key` so callers written before bindings kept
+    # working. There are none left: `dispatch.resolve_for_link` reads the binding
+    # and has no fallback, and migration `20260814_0046` removed the stale copies.
+    # Writing it again would recreate a second apparent source of truth that
+    # nothing consults — the kind of leftover that makes the next reader guess.
     db.commit()
     db.refresh(binding)
     return binding, result

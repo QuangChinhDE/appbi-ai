@@ -812,9 +812,7 @@ class Flow(_Model):
         threaded silently into a prompt."""
         found: set[str] = set()
         for n in self.all_nodes():
-            for text in _templated_strings(n):
-                for m in _TEMPLATE_RE.finditer(text or ""):
-                    found.add(m.group(1).split(".")[0].strip())
+            found |= node_referenced_vars(n)
         return found
 
     def produced_vars(self) -> set[str]:
@@ -932,6 +930,24 @@ _BUILTIN_VARS = {
     "question", "available_metrics", "available_dimensions",
     "previous", "outputs", "item", "index", "loop",
 }
+
+
+def node_referenced_vars(node: Any) -> set[str]:
+    """Every `{{name}}` ONE node reads, as the bare root name.
+
+    PUBLIC AND SHARED ON PURPOSE. This existed three times — here, in the
+    runtime, and again in the run inspector — each with its own copy of the regex
+    and its own idea of which fields are templated. The inspector's copy scanned
+    six attributes and missed `message`, IF/Switch conditions, Switch case values
+    and Transform mappings, so a flow whose only reference to a missing variable
+    sat in an IF condition was reported clean. One function, one field list: the
+    three cannot drift because there is no longer anything to drift from.
+    """
+    found: set[str] = set()
+    for text in _templated_strings(node):
+        for m in _TEMPLATE_RE.finditer(text or ""):
+            found.add(m.group(1).split(".")[0].strip())
+    return found
 
 
 def _templated_strings(node: Any) -> list[str]:
