@@ -21,6 +21,7 @@ from app.core.config import settings
 from app.core.database import get_db
 from app.core.dependencies import (
     MODULE_KEYS,
+    _normalize_permissions,
     get_current_user,
     require_permission,
     INTELLIGENCE_INHERIT,
@@ -212,27 +213,27 @@ def _default_permissions() -> Dict[str, str]:
 
 
 def _get_user_permissions(user: User) -> Dict[str, str]:
+    """What the Settings matrix shows for *user*.
+
+    Delegates the implicit rules to `_normalize_permissions` — the same function
+    the route gate and the data filter use — so the matrix can no longer display a
+    level the rest of the system disagrees with. It previously re-implemented the
+    admin back-fill locally and therefore showed "Full" on modules whose rows the
+    data layer was filtering away.
+    """
     base = _default_permissions()
     stored: dict = user.permissions or {}
-    base.update({k: v for k, v in stored.items() if k in MODULES})
+    effective = _normalize_permissions(user)
+
+    base.update({k: v for k, v in effective.items() if k in MODULES})
+
     # Intelligence group inherits the legacy 'govern' level when its own key is not
     # explicitly stored — so existing govern:X users keep full Intelligence access.
-    resolved = set(stored)
     _gv = stored.get("govern")
     if _gv is not None:
         for _m in INTELLIGENCE_INHERIT:
             if _m in MODULES and _m not in stored:
                 base[_m] = _gv
-                resolved.add(_m)
-    # Admin (settings=full) implicitly has any module added AFTER their
-    # permissions row was created — surface those (e.g. govern/observability
-    # enabled today) so the sidebar/matrix show them instead of hiding a new
-    # module behind a missing key. Mirrors require_permission()'s admin rule;
-    # an explicit stored level (even "none") is left untouched.
-    if str(stored.get("settings", "")).strip().lower() == "full":
-        for m in MODULES:
-            if m != "settings" and m not in resolved:
-                base[m] = "full"
     return base
 
 

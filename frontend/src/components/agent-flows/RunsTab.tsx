@@ -836,7 +836,28 @@ function ValueView({
   if (!text) {
     return <p className="rounded bg-surface-1 p-2 text-tiny italic text-text-quaternary">{empty}</p>;
   }
-  if (parsed === undefined) return <Pre empty={empty}>{text}</Pre>;
+  if (parsed === undefined) {
+    // A RUN RECORDED BEFORE THIS, SAID OUT LOUD.
+    //
+    // Older runs stored their input and output as Python `repr` text, which
+    // cannot be rendered as fields or tables and so falls back to plain text.
+    // Without a word of explanation that is indistinguishable from "the new
+    // screen never shipped" — which is exactly how it was read. The run is old,
+    // not the code, and only the record can say which.
+    const legacyRecord = text.startsWith("{'") || /^[a-zA-Z_][\w.]* = /m.test(text);
+    return (
+      <>
+        {legacyRecord && (
+          <p className="mb-1.5 rounded border border-[rgb(var(--border-line))] bg-surface-2 p-2 text-tiny leading-5 text-text-tertiary">
+            Run này được ghi trước khi hệ thống lưu dữ liệu bước theo dạng có cấu
+            trúc, nên chỉ hiển thị được nguyên văn. Các run mới hiện thành từng
+            trường và bảng — chạy lại một lượt để xem dạng đó.
+          </p>
+        )}
+        <Pre empty={empty}>{text}</Pre>
+      </>
+    );
+  }
 
   // The input snapshot has a known envelope: an optional human sentence, the
   // named variables, and earlier steps' results. Split so the reader sees WHY

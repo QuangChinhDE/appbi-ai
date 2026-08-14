@@ -25,7 +25,12 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.database import get_db
-from app.core.dependencies import ACCESS_TOKEN_TYPE, ALGORITHM, get_current_user
+from app.core.dependencies import (
+    ACCESS_TOKEN_TYPE,
+    ALGORITHM,
+    MODULE_KEYS,
+    get_current_user,
+)
 from app.models.audit_log import AuditAction
 from app.models.revoked_token import RevokedToken
 from app.models.user import AuthProvider, User, UserStatus
@@ -66,16 +71,11 @@ _limiter = Limiter(key_func=get_remote_address)
 ACCESS_TOKEN_EXPIRE_HOURS = 2
 REFRESH_TOKEN_EXPIRE_HOURS = 24 * 7
 _DUMMY_BCRYPT_HASH = "$2b$12$KIXBKl9Xv5iyYFiC.gEuQuT3s.d6OM2nqYbJt6n4PjNn2YGFQbZxO"
-_ADMIN_PERMISSIONS = {
-    "data_sources": "full",
-    "datasets": "full",
-    "govern": "full",
-    "observability": "full",
-    "explore_charts": "full",
-    "dashboards": "full",
-    "workboards": "full",
-    "settings": "full",
-}
+# DERIVED from MODULE_KEYS, never hand-listed. The hand-written version was
+# missing `agent_flows`, so every bootstrap administrator was created without it —
+# the same missing-key hole that made Agent Flows invisible to the admins who
+# already existed. A module added to the matrix now reaches new admins for free.
+_ADMIN_PERMISSIONS = {module: "full" for module in MODULE_KEYS}
 
 
 def _normalize_email(email: str) -> str:

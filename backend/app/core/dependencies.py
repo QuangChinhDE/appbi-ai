@@ -218,15 +218,38 @@ LEVEL_ORDER = {"none": 0, "view": 1, "edit": 2, "full": 3}
 
 
 def _normalize_permissions(user: User) -> dict:
-    """The user's permissions with any token scope applied.
+    """The user's permissions as every reader must see them.
 
-    When the request is authenticated by a scoped personal access token, EVERY
-    module is capped — not just the ones in a hand-kept list. A module the token
-    did not name is capped to `none`, so adding a module to the matrix can never
-    again silently widen what existing tokens reach.
+    THIS IS THE ONE PLACE THE TWO IMPLICIT RULES LIVE. Both used to be written out
+    again at each call site, and they had drifted apart:
+
+    * `require_permission` back-filled the admin rule, so an administrator whose
+      row predates a module PASSED the route gate.
+    * `api/permissions._get_user_permissions` back-filled it too, so the Settings
+      matrix DISPLAYED that module as "full".
+    * This function did not, so `get_user_module_permission` → `_owned_or_shared`
+      answered `none` and filtered every row away.
+
+    The result was a door that opened onto an empty room: an admin could reach
+    /govern and /agent-flows, was told they had full access, and saw nothing —
+    because `agent_flows` and `govern` were simply absent from their JSONB and
+    nothing had ever migrated them in.
+
+    ADMIN BACK-FILL — a user with `settings: full` implicitly holds any module key
+    that is ABSENT from their row. An explicitly stored level (including "none") is
+    always respected, so revoking a module still works.
+
+    TOKEN SCOPE — applied AFTER the back-fill, so a scoped personal access token is
+    still capped by what it actually asked for; an implicit `full` a token never
+    named is capped straight back to `none`.
     """
     perms: dict = user.permissions or {}
     normalized = dict(perms)
+
+    if _sanitize_permission_level(normalized.get("settings")) == "full":
+        for module in MODULE_KEYS:
+            if module != "settings" and module not in perms:
+                normalized[module] = "full"
 
     caps = _get_permission_caps(user)
     if caps:
@@ -281,6 +304,10 @@ def require_permission(module: str, min_level: str = "view"):
     Admins with settings=full always pass any non-settings check.
     """
     async def _check(user: User = Depends(get_current_user)) -> User:
+        # The admin back-fill and the token cap both live in
+        # `_normalize_permissions` now. This function used to re-implement the
+        # back-fill locally, which is how the route gate came to disagree with the
+        # data filter: the door opened, the room was empty.
         perms = _normalize_permissions(user)
         user_level = perms.get(module, "none")
         # Intelligence group inherits the legacy 'govern' level when its own key
@@ -288,17 +315,6 @@ def require_permission(module: str, min_level: str = "view"):
         raw_perms = user.permissions or {}
         if module in INTELLIGENCE_INHERIT and module not in raw_perms and "govern" in raw_perms:
             user_level = perms.get("govern", "none")
-        # Admin (settings=full) implicitly gets access to modules added AFTER
-        # their permissions row was created (no key stored yet), so newly enabled
-        # modules like govern/observability aren't invisible to existing admins.
-        # Explicit "none" is respected; scoped-token caps still apply.
-        if (
-            module != "settings"
-            and user_level == "none"
-            and module not in (user.permissions or {})
-            and _sanitize_permission_level(perms.get("settings")) == "full"
-        ):
-            user_level = _cap_effective_permission(user, module, "full")
         if LEVEL_ORDER.get(user_level, 0) < LEVEL_ORDER.get(min_level, 0):
             _dep_logger.warning(
                 "PERMISSION_DENIED user=%s module=%s required=%s actual=%s",
