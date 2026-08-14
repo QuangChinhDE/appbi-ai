@@ -32,7 +32,13 @@ import sqlalchemy as sa
 revision = "20260813_0043"
 down_revision = "20260812_0042"
 branch_labels = None
-depends_on = None
+# This migration ADDS COLUMNS to agent_flow_run_steps, a table CREATED by
+# 20260810_0052 on the other branch off 0042. down_revision keeps the branch
+# shape (the merge at 0044 rejoins them), but on a FRESH base->head alembic is
+# free to run this before 0052 and then get_columns('agent_flow_run_steps')
+# raises NoSuchTableError — crashing a brand-new deploy. depends_on forces alembic
+# to apply 0052 first, so the table always exists when these columns are added.
+depends_on = "20260810_0052"
 
 _COLUMNS = (
     # Nullable, and nullable is the honest shape: rows written before this
