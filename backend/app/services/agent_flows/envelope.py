@@ -382,7 +382,7 @@ Block = Annotated[
 
 
 class Citation(_Model):
-    kind: Literal["chart", "document", "metric", "dataset", "web"]
+    kind: Literal["chart", "document", "metric", "term", "dataset", "web"]
     ref: str
     label: str = ""
     used: list[str] = Field(default_factory=list)

@@ -280,6 +280,26 @@ def _system_prompt(node: AgentNode, state: RunState, rctx: Any) -> str:
         )
     if node.output_format == "json":
         parts.append(_BLOCK_INSTRUCTIONS)
+    elif node.key == rctx.answer_key:
+        # THE PLATFORM'S CONTRACT HAS TO OUTLIVE THE AUTHOR'S PROMPT.
+        #
+        # The base prompt already asks for 2-3 `[FOLLOWUP]` lines — the markers the
+        # chat UI turns into clickable suggestion chips. But it is appended BEFORE
+        # the author's own instructions, and an author who writes "answer in
+        # exactly one short sentence" wins: the model obeys the nearer, more
+        # specific rule and drops the follow-ups. Measured across this
+        # deployment's stored answers: ONE in twenty-five carried a marker, so the
+        # suggestion chips were effectively dead while looking implemented.
+        #
+        # Restated last, and only for the node that talks to the viewer, so a
+        # terse answer style and a working suggestion strip can coexist. Kept to
+        # two lines because a long reminder here would itself start competing with
+        # the author's prompt for the model's attention.
+        parts.append(
+            "Dù hướng dẫn ở trên yêu cầu ngắn gọn thế nào, LUÔN kết thúc câu trả "
+            "lời bằng 2-3 dòng gợi ý, mỗi dòng bắt đầu bằng [FOLLOWUP] và kết "
+            "thúc bằng dấu ?. Chúng không tính vào độ dài câu trả lời."
+        )
     return "\n\n".join(p for p in parts if p)
 
 

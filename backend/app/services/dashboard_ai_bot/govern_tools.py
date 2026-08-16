@@ -618,13 +618,34 @@ def tool_search_knowledge(ctx: ToolContext, args: dict) -> dict:
         logger.warning("search_knowledge: glossary scan failed", exc_info=True)
 
     hits.sort(key=lambda h: h["score"], reverse=True)
-    # Chunks first: a passage retrieved by meaning answers a question the
-    # document's title never mentions, which is the whole reason to embed. Then
-    # de-duplicated — the same document can arrive down both paths, and paying
-    # twice for it in the payload is a cost with no answer attached.
+    # De-duplicated first: the same document can arrive down both paths, and
+    # paying twice for it in the payload is a cost with no answer attached.
     seen_docs = {c["id"] for c in chunk_hits if c.get("id") is not None}
-    merged = chunk_hits + [h for h in hits if h.get("id") not in seen_docs]
-    top = merged[:limit]
+    vocabulary = [h for h in hits if h.get("id") not in seen_docs]
+
+    # DEFINITIONS GET RESERVED SLOTS; THEY DO NOT COMPETE WITH PASSAGES.
+    #
+    # This was `chunk_hits + vocabulary`, truncated to `limit`. Passages always
+    # won: a report with six embedded documents fills every slot with prose, so a
+    # metric definition or a glossary term could be found, counted in
+    # `total_matches`, and never once reach the model. Measured — asking "doanh
+    # thu thuần nghĩa là gì" on a report whose glossary defines exactly that
+    # returned eight document chunks and zero terms.
+    #
+    # They are not competing for the same job. A passage is evidence with context
+    # and costs hundreds of tokens; a definition is one authoritative line and
+    # costs a few dozen. Ranking them on one list means the cheap, exact answer
+    # loses to whatever prose happened to embed near the question.
+    reserved = min(len(vocabulary), max(1, limit // 3))
+    top = (chunk_hits[: max(0, limit - reserved)] + vocabulary[:reserved])[:limit]
+    # Anything either list still has, if the other left room.
+    if len(top) < limit:
+        for extra in chunk_hits[len(top):] + vocabulary[reserved:]:
+            if extra not in top:
+                top.append(extra)
+            if len(top) >= limit:
+                break
+    merged = chunk_hits + vocabulary
     return _ok({
         "query": query,
         "total_matches": len(merged),

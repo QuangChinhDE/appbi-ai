@@ -72,8 +72,22 @@ class Budget:
     tool_calls: int = 0
     started_at: float = field(default_factory=time.monotonic)
 
+    #: Tool calls kept back for the step that actually answers. A gathering step
+    #: reads a fixed cost per chart, so on a wide report it can spend the whole
+    #: turn's budget before the answering step asks its first question — and the
+    #: viewer gets "chưa trả lời được" from a run where every step said ok.
+    #: Gathering steps stop at the reserve; the answering step may spend it.
+    answer_reserve: int = 6
+
     def elapsed(self) -> float:
         return time.monotonic() - self.started_at
+
+    def tools_left(self, *, answering: bool = False) -> int:
+        """Tool calls still available to this kind of step."""
+        ceiling = self.max_tool_calls
+        if not answering:
+            ceiling -= min(self.answer_reserve, self.max_tool_calls // 3)
+        return max(0, ceiling - self.tool_calls)
 
     def check(self) -> None:
         if self.llm_calls >= self.max_llm_calls:

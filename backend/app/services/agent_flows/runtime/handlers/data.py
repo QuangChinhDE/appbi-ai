@@ -72,7 +72,27 @@ async def run_report_read(
     if node.include_filters:
         out["filters"] = _call(rctx, state, "inspect_filters", {})
 
-    for chart_id in wanted[:20]:
+    planned = wanted[:20]
+    read_count = 0
+    for chart_id in planned:
+        # LEAVE THE ANSWERING STEP SOMETHING TO SPEND.
+        #
+        # Each chart costs a summary plus a data read, so a wide report can drain
+        # the turn's whole tool budget here. When that happened the answering step
+        # died on its first tool call and the viewer saw "chưa trả lời được" — from
+        # a run whose every gathering step reported ok. Reading fewer charts and
+        # saying so beats reading all of them and having no one left to answer.
+        if state.budget.tools_left() < 2:
+            state.notices.append(
+                Notice(
+                    code="read_truncated",
+                    text=f"Chỉ đọc được {read_count}/{len(planned)} biểu đồ — phần lượt "
+                         "công cụ còn lại để dành cho bước trả lời. Hãy giới hạn danh "
+                         "sách biểu đồ của bước đọc, hoặc nâng ngân sách của link.",
+                )
+            )
+            break
+        read_count += 1
         entry: dict[str, Any] = {"chart_id": chart_id}
         meta = rctx.inp.report.chart(chart_id)
         if meta:
@@ -323,12 +343,56 @@ async def run_knowledge(
         if previous_scope is not None:
             rctx.ctx.knowledge_scope = previous_scope
 
-    for k in node.knowledge:
-        if k.source == "document" and not any(
-            c.kind == "document" and c.ref == k.ref for c in state.citations
-        ):
-            state.citations.append(Citation(kind="document", ref=k.ref, label=k.description[:80]))
+    _cite_knowledge(result, node, state)
     state.outputs[node.key] = result
+
+
+# A retrieval result kind → the citation kind the answer may write. A term is
+# vocabulary, not a governed number, so it keeps its own kind rather than
+# borrowing "metric" and claiming an authority it does not have.
+_CITE_KIND = {
+    "document": "document",
+    "document_chunk": "document",
+    "metric": "metric",
+    "term": "term",
+    "semantic": "dataset",
+    "dataset": "dataset",
+}
+
+
+def _cite_knowledge(result: Any, node: KnowledgeNode, state: RunState) -> None:
+    """Cite what the search actually RETURNED, under the source's real name.
+
+    Two things were wrong here, and both reached the viewer. The label was the
+    author's private "when should it read this?" note, so a reader saw routing
+    instructions where the document title belonged. And only documents were ever
+    cited — a definition the model took from a governed metric or a glossary term
+    had no legal citation token, so the model reached for `[WEB]` on a link with
+    web research switched off. Citing the results, not the attachment list, also
+    stops a source that matched nothing from appearing as if it backed the answer.
+    """
+    payload = result if isinstance(result, dict) else {}
+    data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+    hits = data.get("results") if isinstance(data.get("results"), list) else []
+
+    # The author's note is the last resort for a title, not the first choice.
+    described: dict[str, str] = {
+        f"{k.source}:{k.ref}": (k.description or "")[:80] for k in node.knowledge
+    }
+
+    for hit in hits:
+        if not isinstance(hit, dict):
+            continue
+        kind = _CITE_KIND.get(str(hit.get("kind") or ""))
+        ref = str(hit.get("id") or "").strip()
+        if not kind or not ref:
+            continue
+        if any(c.kind == kind and c.ref == ref for c in state.citations):
+            continue
+        label = str(hit.get("title") or "").strip()
+        if not label:
+            label = described.get(f"{kind}:{ref}", "")
+        state.citations.append(Citation(kind=kind, ref=ref, label=label[:120]))
 
 
 # ═══ Outside AppBI ════════════════════════════════════════════════════════════
