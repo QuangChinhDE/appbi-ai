@@ -26,9 +26,10 @@ import { useI18n } from '@/providers/LanguageProvider';
 import {
   MAX_LOOP_ITERATIONS, MAX_TOOL_CALLS,
   type Condition, type ConditionOp, type FlowNode, type FlowPath,
-  type NodeSpec, type ProviderGroup, type SwitchCase, type ToolPack,
+  type Attachable, type NodeSpec, type ProviderGroup, type SwitchCase,
+  type ToolPack,
 } from '@/lib/agentFlows';
-import { SectionTitle, HintText, CostChip } from './shared';
+import { SectionTitle, HintText, CostChip, KnowledgeAttachments } from './shared';
 
 const OPS: { value: ConditionOp; labelKey?: string; label?: string }[] = [
   { value: 'contains', labelKey: 'agentFlows.inspector.op.contains' },
@@ -189,6 +190,9 @@ export interface InspectorProps {
   specs: Record<string, NodeSpec>;
   toolPacks: ToolPack[];
   providers: ProviderGroup[];
+  /** Sources this author may point a step at. Server-supplied, so the picker is
+   *  not the thing enforcing the permission rule. Null while it loads. */
+  attachable: Attachable | null;
   isAnswerNode: boolean;
   onChange: (next: FlowNode) => void;
   onChangePath: (next: FlowPath) => void;
@@ -199,7 +203,7 @@ export interface InspectorProps {
 
 export function NodeInspector(props: InspectorProps) {
   const { t } = useI18n();
-  const { node, path, switchCase, isFallback } = props;
+  const { node, path, switchCase, isFallback, attachable } = props;
 
   if (path) return <PathForm path={path} onChange={props.onChangePath} />;
   if (switchCase) return <CaseForm item={switchCase} onChange={props.onChangeCase} />;
@@ -290,6 +294,7 @@ function CaseForm({ item, onChange }: { item: SwitchCase; onChange: (c: SwitchCa
 }
 
 function NodeForm(props: InspectorProps & { node: FlowNode }) {
+  const { attachable } = props;
   const { t, language } = useI18n();
   const { node, spec, toolPacks, providers, isAnswerNode, onChange, onMakeAnswer } = props;
   const set = (patch: Partial<FlowNode>) => onChange({ ...node, ...patch } as FlowNode);
@@ -342,6 +347,16 @@ function NodeForm(props: InspectorProps & { node: FlowNode }) {
                 {t('agentFlows.inspector.answerToolsWarning')}
               </p>
             )}
+          </div>
+
+          {/* An agent that may CALL tools may also LOOK THINGS UP. Both are reach,
+              so they sit together rather than in two different mental places. */}
+          <div className="mt-4 border-t border-[rgb(var(--border-line))] pt-3">
+            <KnowledgeAttachments
+              value={node.knowledge || []}
+              options={attachable}
+              onChange={(knowledge) => set({ knowledge } as Partial<FlowNode>)}
+            />
           </div>
           <div className="mt-4 border-t border-[rgb(var(--border-line))] pt-3">
             <SectionTitle>{t('agentFlows.inspector.model')}</SectionTitle>
@@ -405,6 +420,14 @@ function NodeForm(props: InspectorProps & { node: FlowNode }) {
             <Input type="number" min={1} max={20} value={node.top_k ?? 5}
               onChange={(e) => set({ top_k: Number(e.target.value) } as Partial<FlowNode>)} />
           </Field>
+          {/* Attaching nothing is a real choice — it means "whatever this report is
+              entitled to". The control sits under the query because an author picks
+              what to search before narrowing where. */}
+          <KnowledgeAttachments
+            value={node.knowledge || []}
+            options={attachable}
+            onChange={(knowledge) => set({ knowledge } as Partial<FlowNode>)}
+          />
         </>
       )}
 

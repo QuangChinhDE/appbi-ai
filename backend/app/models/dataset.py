@@ -12,8 +12,12 @@ from app.core.database import Base
 
 class Dataset(Base):
     """
-    Dataset - like NocoDB Base or Airtable Base
-    A dataset contains multiple tables from various datasources
+    Executable data product used by reports and operational apps.
+
+    A dataset owns tables, transformations, its data dictionary, and one semantic
+    model. It does NOT own the organization's glossary terms, governed KPIs, or
+    data caveats. Those records live in the Governance Registry and may reference
+    a dataset as an application scope or realization target.
     """
     __tablename__ = "datasets"
     

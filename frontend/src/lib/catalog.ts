@@ -125,7 +125,23 @@ export async function getMetrics(): Promise<MetricsLibrary> {
 }
 
 // ── Managed Metrics (metrics quản trị doanh nghiệp) — AUTHORED KPIs ──────────
+export interface MetricBinding {
+  dataset_id?: number | null;
+  /** Resolved server-side so a chip can name the dataset instead of numbering it. */
+  dataset_name?: string | null;
+  dataset_table_id?: number | null;
+  measure_ref?: string | null;
+  is_primary?: boolean;
+  status?: 'ok' | 'unbound' | 'unresolved' | null;
+  reason?: string | null;
+  table_name?: string | null;
+  measure_name?: string | null;
+  measure_label?: string | null;
+  canonical_ref?: string | null;
+}
+
 export interface ManagedMetric {
+  id: number;
   name: string;                 // display name
   machine_name: string;         // stable id
   fqn: string;
@@ -140,9 +156,16 @@ export interface ManagedMetric {
   target_value2?: number | null;
   owner?: string | null;
   related_term_fqn?: string | null;
+  /** The PRIMARY realization, mirrored from `bindings`. Kept because older
+   *  screens read it directly. */
   dataset_id?: number | null;
   dataset_table_id?: number | null;
   measure_ref?: string | null;
+  /** EVERY dataset that computes this definition. A metric is a statement the
+   *  business governs by; each binding is one place it is realized — which is why
+   *  the same metric can (and should) appear on several datasets' screens. */
+  bindings?: MetricBinding[];
+  binding_status?: 'ok' | 'unbound' | 'unresolved' | null;
   home_doc_id?: number | null;  // knowledge doc where this metric is DEFINED (home/SSOT)
   anchor?: string | null;
   synonyms: string[];
@@ -189,6 +212,10 @@ export interface ManagedMetricWrite {
   dataset_id?: number | null;
   dataset_table_id?: number | null;
   measure_ref?: string;
+  /** Omit to leave the metric's other realizations untouched; send the full list
+   *  to replace them. The dataset screens send it so editing "where GMV comes
+   *  from here" cannot unbind it everywhere else. */
+  bindings?: MetricBinding[];
   home_doc_id?: number | null;
   anchor?: string;
   synonyms?: string[];
@@ -356,6 +383,18 @@ export function isSourceOwned(sourceType?: string | null): boolean {
 }
 
 // ── Embedding ────────────────────────────────────────────────────────────────
+export interface EmbeddingProfile {
+  model: string;
+  provider: 'openai' | string;
+  dimensions: number;
+  distance_metric: 'cosine' | string;
+}
+
+export async function certifyManagedMetric(name: string): Promise<{ status: string; version: number }> {
+  const { data } = await apiClient.post(`/catalog/govern/managed-metric/${encodeURIComponent(name)}/certify`);
+  return data;
+}
+
 export interface EmbeddingConfig {
   chunk_strategy: 'paragraph' | 'heading' | 'fixed';
   chunk_size: number;
@@ -372,12 +411,18 @@ export interface EmbeddingConfig {
   index_stale?: boolean;
   allow_external_embedding?: boolean;
   sensitivity?: string;
+  model_locked: boolean;
+  available_models: EmbeddingProfile[];
 }
 export interface EmbeddingConfigWrite { chunk_strategy: string; chunk_size: number; chunk_overlap: number; embedding_model: string | null }
 export interface ChunkPreviewResult { chunks: { index: number; text: string; char_count: number }[]; total_chunks: number }
 
 export async function getEmbeddingConfig(docId: number): Promise<EmbeddingConfig> {
   const { data } = await apiClient.get<EmbeddingConfig>(`/catalog/govern/knowledge/${docId}/embedding-config`);
+  return data;
+}
+export async function getEmbeddingProfiles(): Promise<{ profiles: EmbeddingProfile[]; default_model: string }> {
+  const { data } = await apiClient.get<{ profiles: EmbeddingProfile[]; default_model: string }>('/catalog/govern/embedding-profiles');
   return data;
 }
 export async function putEmbeddingConfig(docId: number, body: EmbeddingConfigWrite): Promise<{ ok: boolean }> {
@@ -398,8 +443,22 @@ export async function getDocEgressLog(docId: number): Promise<EgressEntry[]> {
   return data.entries || [];
 }
 
-export async function reembedDoc(docId: number, body?: EmbeddingConfigWrite): Promise<{ status: string; chunks: number; new_chunks: number; truncated?: boolean; dropped_chunks?: number; dropped_chars?: number }> {
+export interface EmbeddingRunResult {
+  status: string;
+  chunks: number;
+  new_chunks: number;
+  detail?: string;
+  truncated?: boolean;
+  dropped_chunks?: number;
+  dropped_chars?: number;
+}
+
+export async function reembedDoc(docId: number, body?: EmbeddingConfigWrite): Promise<EmbeddingRunResult> {
   const { data } = await apiClient.post(`/catalog/govern/knowledge/${docId}/embed`, body ?? undefined);
+  return data;
+}
+export async function resetEmbeddingModel(docId: number, body: EmbeddingConfigWrite): Promise<EmbeddingRunResult> {
+  const { data } = await apiClient.post(`/catalog/govern/knowledge/${docId}/embedding-reset`, body);
   return data;
 }
 
@@ -429,6 +488,7 @@ export interface VectorMatch {
   matched_by?: 'both' | 'vector' | 'keyword';
   /** Where the passage came from: authored | uploaded | linked | external. */
   trust?: string;
+  embedding_model?: string;
 }
 
 export async function getDocVectors(docId: number): Promise<DocVectors> {
@@ -514,6 +574,7 @@ export interface KnowledgeDocWrite {
   /** Omit to leave unchanged — the backend only writes it when non-null. */
   allow_external_embedding?: boolean;
   sensitivity?: string;
+  embedding_model?: string;
 }
 
 export async function listKnowledge(params?: { space?: string; status?: string }): Promise<{ docs: KnowledgeDoc[]; spaces: KnowledgeSpace[] }> {
@@ -611,13 +672,63 @@ export async function regenAiSummary(docId: number): Promise<{ ai_summary: strin
   return { ai_summary: data.ai_summary ?? '', ai_keywords: data.ai_keywords ?? [] };
 }
 
-// Whole-hub knowledge graph (Obsidian-style): docs + [[wikilink]]/shared-KPI edges.
-export interface GraphNode { id: number; title: string; space: string; doc_type: string }
-export interface GraphEdge { from: number; to: number; type: 'link' | 'metric' }
-export interface KnowledgeGraph { nodes: GraphNode[]; edges: GraphEdge[] }
+// Cross-layer AppBI knowledge network. Ids are typed (`dataset:7`) because a
+// dataset 7 and a document 7 are different things.
+export type KnowledgeNodeKind = 'doc' | 'dataset' | 'dashboard' | 'measure' | 'metric' | 'term' | 'caveat';
+export interface KnowledgeGraphNode {
+  id: string;
+  kind: KnowledgeNodeKind;
+  ref: string;
+  label: string;
+  space?: string;
+  doc_type?: string;
+  category?: string | null;
+  group?: string;
+  status?: string | null;
+  owner?: string | null;
+  summary?: string | null;
+  dataset_id?: number | null;
+  dataset_table_id?: number | null;
+  binding_status?: 'ok' | 'unbound' | 'unresolved' | null;
+}
+export interface KnowledgeGraphEdge {
+  from: string;
+  to: string;
+  /** `reads` is physical lineage; every other relationship is knowledge. */
+  kind: 'reads' | 'explains' | 'defines' | 'defined_in' | 'realized_by' | 'means' | 'applies_to' | 'links' | 'references';
+}
+export interface CoverageRow {
+  id: number;
+  name: string;
+  docs: number;
+  metrics: number;
+  terms: number;
+  measures?: number;
+  caveats?: number;
+  charts?: number;
+  datasets?: number;
+}
+export interface KnowledgeGraph {
+  nodes: KnowledgeGraphNode[];
+  edges: KnowledgeGraphEdge[];
+  coverage: { dashboards: CoverageRow[]; datasets: CoverageRow[] };
+  totals: {
+    docs: number; metrics: number; measures: number; terms: number; caveats: number;
+    datasets: number; dashboards: number;
+    knowledge_edges: number; physical_edges: number;
+    dashboards_without_knowledge: number;
+    orphan_terms: number;
+  };
+}
+
 export async function governGraph(): Promise<KnowledgeGraph> {
   const { data } = await apiClient.get<KnowledgeGraph>('/catalog/govern/graph');
-  return { nodes: data.nodes ?? [], edges: data.edges ?? [] };
+  return {
+    ...data,
+    nodes: data.nodes ?? [],
+    edges: data.edges ?? [],
+    coverage: data.coverage ?? { dashboards: [], datasets: [] },
+  };
 }
 
 export async function verifyDoc(docId: number): Promise<{ last_verified_at: string }> {
@@ -701,10 +812,12 @@ export interface GovernInstruction {
 export interface GovernCaveat {
   id: number;
   dataset_id?: number | null;
+  dataset_name?: string | null;
+  scope?: 'global' | 'dataset';
   title: string;
   content: string;
   always_inject: boolean;
-  status: string;
+  status: 'Draft' | 'Approved' | 'Deprecated';
   owner?: string | null;
   updated_at?: string | null;
 }

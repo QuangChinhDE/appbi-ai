@@ -102,19 +102,29 @@ export interface ProviderGroup {
   note: string;
 }
 
-export interface AttachableItem { ref: string; name: string; group?: string }
+export interface AttachableItem {
+  ref: string;
+  name: string;
+  group?: string;
+  /** False for vocabulary — a definition with no query behind it. The builder
+   *  shows this so an author can see how far an attachment reaches. */
+  reads_data?: boolean;
+  hint?: string;
+}
 export interface Attachable {
   documents: AttachableItem[];
   datasets: AttachableItem[];
   /** A metric ref is matched at run time against its machine name, so it must be
    *  PICKED, never typed. */
   metrics: AttachableItem[];
+  /** Company vocabulary, addressed by FQN (`bộ-từ-điển.thuật-ngữ`). */
+  terms: AttachableItem[];
 }
 
 // ── The flow tree ───────────────────────────────────────────────────────────
 export interface ToolGrant { tool: string; note?: string }
 export interface KnowledgeAttachment {
-  source: 'document' | 'semantic' | 'metric';
+  source: 'document' | 'semantic' | 'metric' | 'term';
   ref: string;
   description: string;
 }
@@ -595,6 +605,7 @@ export async function listAttachable(): Promise<Attachable> {
     documents: data.documents || [],
     datasets: data.datasets || [],
     metrics: data.metrics || [],
+    terms: data.terms || [],
   };
 }
 

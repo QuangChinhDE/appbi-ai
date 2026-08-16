@@ -51,6 +51,14 @@ async def lifespan(app: FastAPI):
     from app.services.govern_doc_sync_scheduler import startup as govern_doc_sync_startup
     govern_doc_sync_startup()
 
+    # Rebuild document indexes the retriever refuses to trust. A migration or a
+    # model change invalidates them CORRECTLY, but the refusal is invisible — the
+    # library still lists the document and the assistant simply stops finding it.
+    from app.services.dashboard_ai_bot.index_repair_scheduler import (
+        startup as govern_index_repair_startup,
+    )
+    govern_index_repair_startup()
+
     # Agent Flow run-history retention. The three run tables were designed with
     # three lifetimes; without this job that design only existed in a docstring
     # while the per-node trace grew by roughly a million rows per flow per year.

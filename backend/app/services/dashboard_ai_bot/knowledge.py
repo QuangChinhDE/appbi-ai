@@ -225,6 +225,7 @@ def _embed_knowledge_row(db, row) -> None:
 
         EmbeddingService.upsert_embedding(
             db, _KNOWLEDGE_RESOURCE_TYPE, int(row.id), str(row.content or ""),
+            commit=False,
         )
     except Exception:  # noqa: BLE001
         logger.debug("knowledge: embedding a learned fact failed", exc_info=True)
@@ -257,7 +258,9 @@ def backfill_knowledge_embeddings(db, *, dashboard_id: int | None = None,
             from app.services.embedding_service import EmbeddingService
 
             ok = EmbeddingService.upsert_embedding(
-                db, _KNOWLEDGE_RESOURCE_TYPE, int(row.id), str(row.content or ""))
+                db, _KNOWLEDGE_RESOURCE_TYPE, int(row.id), str(row.content or ""),
+                commit=False,
+            )
             done += 1 if ok else 0
             failed += 0 if ok else 1
         except Exception:  # noqa: BLE001

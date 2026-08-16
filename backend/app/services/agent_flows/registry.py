@@ -705,6 +705,50 @@ def delete_version(db: Session, brain_key: str, version: int, actor_email: str =
     _audit(db, "AGENT_FLOW_DELETED", brain_key, actor_email, {"version": version})
 
 
+def unpublish_version(
+    db: Session,
+    brain_key: str,
+    version: int,
+    actor_email: str = "",
+) -> dict[str, Any]:
+    """Take the live version offline after every link has been unassigned.
+
+    Deletion already refuses a published version and tells callers to unpublish
+    first. This operation is that missing half of the lifecycle. It fails closed
+    while any binding still names the flow, so taking a version offline cannot
+    silently break a viewer's public link.
+    """
+    row = (
+        db.query(AgentBrainVersion)
+        .filter(
+            AgentBrainVersion.brain_key == brain_key,
+            AgentBrainVersion.version == version,
+        )
+        .first()
+    )
+    if row is None:
+        raise BrainError(404, "Không tìm thấy phiên bản này")
+    if row.status != PUBLISHED:
+        raise BrainError(409, "Chỉ phiên bản đang phát hành mới cần gỡ phát hành")
+
+    from app.services.agent_flows import binding as binding_service
+
+    users = binding_service.list_for_flow(db, brain_key)
+    if users:
+        names = ", ".join(str(item["link_name"] or item["link_id"]) for item in users[:3])
+        raise BrainError(
+            409,
+            f"{len(users)} link vẫn đang dùng flow này ({names}"
+            f"{'…' if len(users) > 3 else ''}). Hãy gỡ binding trước khi unpublish.",
+        )
+
+    row.status = ARCHIVED
+    db.commit()
+    db.refresh(row)
+    _audit(db, "AGENT_FLOW_UNPUBLISHED", brain_key, actor_email, {"version": version})
+    return _row_dict(row)
+
+
 def has_any_version(db: Session, brain_key: str) -> bool:
     """Does this flow exist at all?
 

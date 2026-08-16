@@ -191,32 +191,51 @@ def _entitled_doc_ids(ctx: ToolContext) -> set[int]:
     return visible
 
 
-def _metrics_in_scope(ctx: ToolContext) -> list[Any]:
+def _metrics_in_scope(ctx: ToolContext, question: str = "") -> list[Any]:
+    """Metrics this report may read.
+
+    `question` is used for one thing only: letting an UNBOUND metric in when the
+    question names it. Admission is by name, not by token overlap — a metric's
+    definition is prose, so overlap would readmit through the back door exactly
+    what removing the `not bound` escape was meant to shut.
+    """
     chosen = _authored_metric_names(ctx)
     from app.models.governance import GovernMetric
+    from app.services.governance_service import GovernanceService
 
     tids, dsids = _scope(ctx)
     out: list[Any] = []
     for metric in (
         ctx.db.query(GovernMetric).filter(GovernMetric.status != "Deprecated").all()
     ):
-        bound = metric.dataset_id is not None or metric.dataset_table_id is not None
-        matched = (metric.dataset_id in dsids) or (metric.dataset_table_id in tids)
-        if not matched and metric.measure_ref:
-            # Field metrics commonly bind through a "dataset_table_<id>.<measure>"
-            # string rather than the id columns, and in practice that id may be
-            # either a dataset_table id or a dataset id. Honour both — the
-            # sibling code path in knowledge_context does, and a definition that
-            # reaches the rules block but not the dictionary is worse than
-            # either outcome alone.
-            ref = re.match(r"dataset_table_(\d+)\.", str(metric.measure_ref))
-            if ref:
-                bound = True
-                ref_id = int(ref.group(1))
-                if ref_id in tids or ref_id in dsids:
-                    matched = True
-        if not (matched or not bound):
-            continue
+        # Every valid semantic realization counts. A stale string or a dataset-only
+        # Draft scope is not data reach and cannot place a KPI on a report.
+        details = GovernanceService.metric_binding_details(ctx.db, metric)
+        bound = bool(details)
+        matched = any(
+            row["status"] == "ok"
+            and (row.get("dataset_id") in dsids or row.get("dataset_table_id") in tids)
+            for row in details
+        )
+        # AN UNBOUND METRIC IS VOCABULARY, NOT A RESIDENT OF EVERY REPORT.
+        #
+        # This read `matched or not bound`, so a metric with no dataset appeared on
+        # EVERY dashboard in the deployment. Unbound is the normal state while a
+        # definition is being written, so the set that leaked was the newest and
+        # least reviewed — and a metric carries `target_value`, so an out-of-scope
+        # one does not merely add noise: it puts a NUMBER WITH A THRESHOLD into a
+        # prompt about someone else's report, where a model may quote it as if it
+        # had been measured.
+        #
+        # Unbound metrics still belong to the company's shared vocabulary, so they
+        # are not banned — they must be NAMED. The question (or the step's own
+        # attachment list) has to reach for them, exactly as an unwired glossary
+        # term does. Nothing arrives merely by existing.
+        if not matched:
+            if bound:
+                continue
+            if not _question_names(question, [metric.display_name or "", metric.name]):
+                continue
         # The step's own narrowing, applied AFTER entitlement — same rule as
         # documents, so a name that is not in scope cannot be added by listing it.
         if chosen and metric.name not in chosen and (metric.display_name or "") not in chosen:
@@ -229,6 +248,184 @@ def _metric_text(metric: Any) -> str:
     bits = [metric.display_name, metric.name, metric.definition, metric.formula,
             metric.category, metric.unit]
     return " ".join(str(b) for b in bits if b)
+
+
+def _authored_term_fqns(ctx: ToolContext) -> set[str] | None:
+    raw = (getattr(ctx, "knowledge_scope", None) or {}).get("term_fqns") or []
+    out = {str(x).strip() for x in raw if str(x).strip()}
+    return out or None
+
+
+def _measure_term_fqns(ctx: ToolContext, dsids: set[int]) -> set[str]:
+    """Glossary terms reached THROUGH the report's own measures.
+
+    A semantic measure can carry `glossary_terms` — the richest vocabulary link in
+    the product, and the only many-to-many one. Nothing read it: the assistant
+    reads `GovernMetric`, which carries a single `related_term_fqn`, so a term
+    curated onto a measure decorated an object the assistant never opened. The
+    Govern screen even counted "usage" from these links, which made the curation
+    look effective while it changed nothing.
+
+    This is the bridge, not a new store: dashboard → dataset → measure → term.
+    """
+    if not dsids:
+        return set()
+    out: set[str] = set()
+    try:
+        from app.models.dataset import DatasetTable
+        from app.models.semantic import SemanticView
+
+        table_ids = [
+            t.id for t in ctx.db.query(DatasetTable.id)
+            .filter(DatasetTable.dataset_id.in_(dsids)).all()
+        ]
+        if not table_ids:
+            return set()
+        for view in (
+            ctx.db.query(SemanticView)
+            .filter(SemanticView.dataset_table_id.in_(table_ids)).all()
+        ):
+            for coll in ("measures", "dimensions"):
+                for field in (getattr(view, coll, None) or []):
+                    if not isinstance(field, dict):
+                        continue
+                    for ref in (field.get("glossary_terms") or []):
+                        fqn = (ref or {}).get("fqn") if isinstance(ref, dict) else ref
+                        if fqn:
+                            out.add(str(fqn).strip())
+    except Exception:  # noqa: BLE001 — a bridge must never break a search
+        logger.warning("search_knowledge: measure→term bridge failed", exc_info=True)
+    return out
+
+
+def _question_names(question: str, phrases: list[str]) -> str | None:
+    """The phrase from `phrases` the question actually uses, or None.
+
+    PHRASE CONTAINMENT, NOT TOKEN OVERLAP, and the difference is not academic.
+    `_score` returns the fraction of question tokens present in a haystack, which
+    is a fair signal for a DOCUMENT — long prose, already entitled to this report,
+    where any overlap is weak evidence worth ranking. A glossary entry is two or
+    three words, so one shared common word is a coincidence, not a reference:
+    "khách hàng rời bỏ" scored a hit against the term "tổng giá trị hàng hoá" on
+    the word `hàng` alone. Caught by the test that asked for exactly that.
+
+    A vocabulary hit has to mean the question SAID the word. Matched on a word
+    boundary so `gmv` does not match inside another token.
+    """
+    # Separators folded to spaces on BOTH sides. A machine name is the FQN-safe
+    # spelling of the display name — `chi_phi_kho` for "Chi phí kho" — so matching
+    # it literally would only ever fire if somebody typed the underscores.
+    def flat(s: str) -> str:
+        return re.sub(r"\s+", " ", re.sub(r"[_\-.]+", " ", _fold(s or ""))).strip()
+
+    hay = flat(question)
+    if not hay:
+        return None
+    for phrase in phrases:
+        p = flat(phrase)
+        if len(p) < 2:
+            continue
+        if re.search(rf"(?<![a-z0-9]){re.escape(p)}(?![a-z0-9])", hay):
+            return phrase
+    return None
+
+
+def _terms_in_scope(ctx: ToolContext, metrics: list[Any], question: str) -> list[dict]:
+    """The glossary, reached the way a report actually relates to vocabulary.
+
+    WHY THIS DID NOT EXIST
+    ----------------------
+    `search_knowledge` read documents and managed metrics and never touched
+    `glossary_terms`, so the one store that answers "what do we mean by this word"
+    was unreachable from a flow. Four separate things blocked it — no query here,
+    no `term` source kind to attach one, the context block that used to carry the
+    glossary deliberately switched off for flows, and the measure-level links
+    dropped on read. Each had to go.
+
+    RELEVANCE IS REALIZATION, NOT OWNERSHIP
+    ---------------------------------------
+    A term is company vocabulary; it belongs to no dataset, and the schema says so
+    — `glossary_terms` has no asset column at all. So a report cannot "own" terms.
+    It can only REACH them, four ways, and each hit says which one was used:
+
+      attached   the step named this term explicitly — always included
+      measure    a measure on this report's data points at it
+      metric     a metric already in scope names it in `related_term_fqn`
+      vocabulary the question itself uses the term or one of its synonyms
+
+    The first three are structural and need no keyword luck. The fourth is the
+    honest fallback for a term nobody has wired up yet — and it is a MATCH, not a
+    dump: the alternative that was rejected is the one metrics still use, where
+    anything unattached is shown everywhere.
+    """
+    try:
+        from app.models.governance import Glossary, GlossaryTerm
+    except Exception:  # noqa: BLE001
+        return []
+
+    attached = _authored_term_fqns(ctx)
+    _tids, dsids = _scope(ctx)
+    granted = _granted_dataset_ids(ctx)
+    if granted:
+        dsids = granted
+
+    via_measure = _measure_term_fqns(ctx, dsids)
+    via_metric = {
+        str(m.related_term_fqn).strip()
+        for m in metrics
+        if getattr(m, "related_term_fqn", None)
+    }
+
+    out: list[dict] = []
+    try:
+        rows = (
+            ctx.db.query(GlossaryTerm, Glossary.name)
+            .join(Glossary, Glossary.id == GlossaryTerm.glossary_id)
+            .all()
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning("search_knowledge: glossary scan failed", exc_info=True)
+        return []
+
+    for term, set_name in rows:
+        if str(term.status or "").strip().lower() == "deprecated":
+            continue
+        fqn = f"{set_name}.{term.name}"
+        synonyms = [str(s) for s in (term.synonyms or []) if str(s).strip()]
+
+        if attached and fqn in attached:
+            reached, score = "attached", 100.0
+        elif fqn in via_measure:
+            reached, score = "measure", 60.0
+        elif fqn in via_metric:
+            reached, score = "metric", 55.0
+        else:
+            # Vocabulary reach: the question has to NAME the term — its display
+            # name, its machine name, or one of its synonyms — as a phrase.
+            said = _question_names(question, [term.display_name or "", term.name, *synonyms])
+            if not said:
+                continue
+            reached, score = "vocabulary", 40.0
+
+        # An EXPLICIT step attachment is a ceiling here exactly as it is for
+        # documents: once the author has named the terms this step may read,
+        # nothing else joins on a keyword.
+        if attached and reached != "attached":
+            continue
+
+        out.append({
+            "kind": "term",
+            "id": fqn,
+            "title": term.display_name or term.name,
+            "definition": _plain(term.description, MAX_SNIPPET_CHARS),
+            "synonyms": synonyms[:8],
+            # WHY this term is here. Without it a reader cannot tell a structural
+            # hit from a keyword coincidence, and those two deserve different
+            # trust — which is the whole complaint about the metric list.
+            "reached_by": reached,
+            "score": score,
+        })
+    return out
 
 
 def tool_search_knowledge(ctx: ToolContext, args: dict) -> dict:
@@ -266,6 +463,9 @@ def tool_search_knowledge(ctx: ToolContext, args: dict) -> dict:
     # turn a working search into an empty one.
     retrieval = "keyword"
     chunk_hits: list[dict] = []
+    # Computed ONCE and handed to both paths below. Two retrievers deriving the
+    # same boundary separately is how they came to disagree about it.
+    doc_scope = _visible_doc_ids(ctx)
     # `ToolContext` carries the Dashboard object, not a bare id.
     dash_id = getattr(getattr(ctx, "dashboard", None), "id", None)
     if dash_id:
@@ -274,7 +474,15 @@ def tool_search_knowledge(ctx: ToolContext, args: dict) -> dict:
                 retrieve_doc_chunks,
             )
 
-            for ch in retrieve_doc_chunks(ctx.db, int(dash_id), query, k=limit) or []:
+            # ONE boundary for both retrieval paths. `_visible_doc_ids` already
+            # applied this report's entitlement AND the step's own narrowing;
+            # passing it means vector recall can no longer reach a document the
+            # keyword scan is forbidden from — which it could, through three of
+            # the four ways a document gets attached, and past any grant the
+            # author set on the step.
+            for ch in retrieve_doc_chunks(
+                ctx.db, int(dash_id), query, k=limit, doc_ids=doc_scope,
+            ) or []:
                 if not isinstance(ch, dict):
                     continue
                 chunk_hits.append({
@@ -287,6 +495,8 @@ def tool_search_knowledge(ctx: ToolContext, args: dict) -> dict:
                     # are different scales and averaging them would be arithmetic
                     # that runs and means nothing.
                     "similarity": ch.get("similarity"),
+                    "rank_score": ch.get("rrf_score"),
+                    "embedding_model": ch.get("embedding_model"),
                     # The store fuses vector and full-text recall and says which
                     # one found each row. Passed through: "vector" and "keyword"
                     # answer differently badly, and a reader debugging a poor
@@ -295,7 +505,11 @@ def tool_search_knowledge(ctx: ToolContext, args: dict) -> dict:
                     "trust": ch.get("trust"),
                 })
             if chunk_hits:
-                retrieval = "embedding+keyword"
+                retrieval = (
+                    "embedding+keyword"
+                    if any(hit.get("retrieved_by") in ("vector", "both") for hit in chunk_hits)
+                    else "keyword"
+                )
                 # WHEN was this written — carried onto chunks too.
                 #
                 # The keyword path already attached `updated_at`/`version`, and
@@ -330,7 +544,7 @@ def tool_search_knowledge(ctx: ToolContext, args: dict) -> dict:
     try:
         from app.models.governance import GovernKnowledgeDoc
 
-        doc_ids = _visible_doc_ids(ctx)
+        doc_ids = doc_scope
         if doc_ids:
             for doc in (
                 ctx.db.query(GovernKnowledgeDoc)
@@ -364,8 +578,10 @@ def tool_search_knowledge(ctx: ToolContext, args: dict) -> dict:
     except Exception:  # noqa: BLE001
         logger.warning("search_knowledge: document scan failed", exc_info=True)
 
+    in_scope_metrics: list[Any] = []
     try:
-        for metric in _metrics_in_scope(ctx):
+        in_scope_metrics = _metrics_in_scope(ctx, query)
+        for metric in in_scope_metrics:
             score = _score(_metric_text(metric), needles)
             if score <= 0:
                 continue
@@ -381,10 +597,25 @@ def tool_search_knowledge(ctx: ToolContext, args: dict) -> dict:
                 "unit": metric.unit or None,
                 "target": target,
                 "owner": metric.owner or None,
+                # Same provenance field the terms carry, for the same reason: a
+                # definition bound to this report's data and one that merely
+                # shares a word deserve different trust, and only the record can
+                # tell them apart.
+                "reached_by": (
+                    "dataset"
+                    if (metric.dataset_id is not None or metric.dataset_table_id is not None)
+                    else "vocabulary"
+                ),
                 "score": round(score, 3),
             })
     except Exception:  # noqa: BLE001
         logger.warning("search_knowledge: metric scan failed", exc_info=True)
+
+    # ── the glossary, reached through this report rather than dumped ──────────
+    try:
+        hits.extend(_terms_in_scope(ctx, in_scope_metrics, query))
+    except Exception:  # noqa: BLE001
+        logger.warning("search_knowledge: glossary scan failed", exc_info=True)
 
     hits.sort(key=lambda h: h["score"], reverse=True)
     # Chunks first: a passage retrieved by meaning answers a question the
@@ -407,9 +638,8 @@ def tool_search_knowledge(ctx: ToolContext, args: dict) -> dict:
             "Passages were retrieved by MEANING (embeddings) and by keyword, "
             "then merged."
             if retrieval != "keyword" else
-            "Keyword matching only — no embedded passages were available for "
-            "this report. Documents attached here may not be embedded yet, or "
-            "the embedding service is not configured."
+            "Keyword ranking only — semantic query vectors were unavailable for "
+            "the matching documents, or those documents are not indexed yet."
         ),
         # Said explicitly because the model must not treat a definition's target
         # or an example figure as a measurement of this report.
@@ -505,34 +735,27 @@ def _rank_doc_chunks(ctx: ToolContext, doc_id: int, question: str,
     `_visible_doc_ids`, so this adds no reach — it chooses where to read inside
     a document, not which document.
     """
-    from sqlalchemy import text as _sql
-
     from app.services.dashboard_ai_bot.govern_doc_embeddings import (
-        active_embedding_model,
+        search_doc_chunks,
     )
-    from app.services.embedding_service import EmbeddingService
 
-    qvec = EmbeddingService.generate_query_embedding(question)
-    if qvec is None:
-        return []
-    rows = ctx.db.execute(
-        _sql(
-            """
-            SELECT chunk_index, content,
-                   1 - (embedding <=> CAST(:qv AS vector)) AS similarity
-            FROM govern_doc_chunk
-            WHERE doc_id = :did AND embedding IS NOT NULL
-              AND model_version = :mv
-            ORDER BY embedding <=> CAST(:qv AS vector)
-            LIMIT :k
-            """
-        ),
-        {"qv": str(qvec), "did": doc_id, "mv": active_embedding_model(), "k": k},
-    ).all()
+    rows = search_doc_chunks(
+        ctx.db,
+        question,
+        k=k,
+        doc_ids={doc_id},
+        published_only=True,
+        authoring=False,
+    )
     return [
-        {"chunk_index": r[0], "text": _plain(r[1], MAX_SNIPPET_CHARS * 2),
-         "similarity": round(float(r[2]), 4)}
-        for r in rows
+        {
+            "chunk_index": row["chunk_index"],
+            "text": _plain(row["content"], MAX_SNIPPET_CHARS * 2),
+            "similarity": round(float(row.get("similarity") or 0.0), 4),
+            "matched_by": row.get("matched_by"),
+            "embedding_model": row.get("embedding_model"),
+        }
+        for row in rows
     ]
 
 

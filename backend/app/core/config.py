@@ -35,8 +35,9 @@ def _find_project_root() -> pathlib.Path:
 _PROJECT_ROOT = _find_project_root()
 _ROOT_ENV = str(_PROJECT_ROOT / ".env")
 
-# Backend AI model choices are fixed in code (per owner decision):
-# text tasks → gpt-4o-mini; embeddings → text-embedding-3-small (768 dims).
+# Text generation keeps one application default. Knowledge documents may choose
+# one of the configured embedding models, while every profile emits the same
+# 768 dimensions required by the current pgvector columns.
 OPENAI_TEXT_MODEL = "gpt-4o-mini"
 OPENAI_EMBEDDING_MODEL = "text-embedding-3-small"
 OPENAI_EMBEDDING_DIMS = 768
@@ -205,11 +206,16 @@ class Settings(BaseSettings):
     GCP_SERVICE_ACCOUNT_EMAIL: str = ""
 
     # AI / Embedding
-    # Provider API keys (backend AI tasks + report AI bot). Models are fixed in
-    # code (see OPENAI_TEXT_MODEL / OPENAI_EMBEDDING_MODEL above).
+    # Provider API keys (backend AI tasks + report AI bot).
     OPENAI_API_KEY: str = ""
     GEMINI_API_KEY: str = ""
     ANTHROPIC_API_KEY: str = ""
+    # Comma-separated allowlist shown when a knowledge document is created.
+    # Only OpenAI text-embedding-3 models are compatible with the configurable
+    # `dimensions` request used by this deployment.
+    OPENAI_EMBEDDING_MODELS: str = (
+        "text-embedding-3-small,text-embedding-3-large"
+    )
 
     # May a PUBLIC link's assistant spend the deployment's own API key?
     #
@@ -371,6 +377,17 @@ class Settings(BaseSettings):
     @property
     def openai_embedding_dimensions(self) -> int:
         return OPENAI_EMBEDDING_DIMS
+
+    @property
+    def embedding_models(self) -> List[str]:
+        models = [
+            item.strip()
+            for item in self.OPENAI_EMBEDDING_MODELS.split(",")
+            if item.strip()
+        ]
+        if OPENAI_EMBEDDING_MODEL not in models:
+            models.insert(0, OPENAI_EMBEDDING_MODEL)
+        return list(dict.fromkeys(models))
 
     @property
     def active_api_keys(self) -> List[str]:

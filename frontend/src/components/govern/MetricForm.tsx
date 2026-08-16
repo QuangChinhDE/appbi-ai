@@ -10,9 +10,9 @@
  * View mode also shows the SSOT + reuse lineage panel. Wired to
  * upsert/deleteManagedMetric. Design-system tokens only (AppModalShell chrome).
  */
-import { useCallback, useEffect, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 import {
-  Pencil, Trash2, Save, Target, Sigma, BookText, ArrowUpRight, Loader2,
+  Pencil, Trash2, Save, Target, Sigma, BookText, ArrowUpRight, Loader2, ShieldCheck, X,
 } from 'lucide-react';
 
 import { AppModalShell } from '@/components/common/AppModalShell';
@@ -22,9 +22,10 @@ import { cn } from '@/lib/utils';
 import { toast } from '@/lib/toast';
 import { useI18n } from '@/providers/LanguageProvider';
 import {
-  getManagedMetric, upsertManagedMetric, deleteManagedMetric,
-  type ManagedMetric, type ManagedMetricWrite, type ManagedMetricDetail,
+  getManagedMetric, upsertManagedMetric, deleteManagedMetric, certifyManagedMetric, listDatasetsLite,
+  type ManagedMetric, type ManagedMetricWrite, type ManagedMetricDetail, type DatasetLite,
 } from '@/lib/catalog';
+import { fetchDatasetModel, type DatasetModelView } from '@/hooks/use-dataset-model';
 import { managedTargetLabel } from './knowledge-markdown';
 
 const GRAINS = ['', 'daily', 'weekly', 'monthly', 'quarterly', 'yearly', 'point_in_time'];
@@ -38,16 +39,10 @@ const STATUS_TONE: Record<string, string> = {
 function errDetail(e: unknown): string | undefined {
   return (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
 }
-function emptyForm(homeDocId?: number | null, datasetId?: number | null): ManagedMetricWrite {
-  // `dataset_id` is seeded, not left to the author. Every metric in this
-  // deployment was created unbound because the only place to make one was a global
-  // screen that never asked which dataset it described — nine rows that belonged
-  // to nothing, and had to be deleted. A metric created from inside a dataset
-  // belongs to that dataset from the first keystroke.
+function emptyForm(homeDocId?: number | null): ManagedMetricWrite {
   return {
     name: '', direction: 'neutral', status: 'Draft', synonyms: [],
     home_doc_id: homeDocId ?? null,
-    dataset_id: datasetId ?? null,
   };
 }
 function grainLabel(grain: string | null | undefined, t: (key: string) => string): string {
@@ -73,16 +68,11 @@ function Field({ label, children, hint }: { label: string; children: ReactNode; 
  * Reusable managed-metric modal. `machineName === null` → create mode
  * (optionally bound to `defaultHomeDocId`). Otherwise edit/view an existing KPI.
  */
-export function MetricFormModal({ machineName, defaultHomeDocId, defaultDatasetId, views = [], docs = [], onClose, onChanged, onCreated, onOpenDoc }: {
+export function MetricFormModal({ machineName, defaultHomeDocId, datasets = [], docs = [], onClose, onChanged, onCreated, onOpenDoc }: {
   machineName: string | null;                 // null = create
   defaultHomeDocId?: number | null;           // pre-bound SSOT doc for create-from-doc
-  defaultDatasetId?: number | null;           // the dataset this metric describes
-  /** This dataset's views, so Data link becomes two dropdowns instead of a
-   *  string somebody has to spell exactly right. */
-  views?: {
-    id: number; name: string; dataset_table_id?: number;
-    table_display_name?: string; measures: { name: string }[];
-  }[];
+  /** Available realization scopes when opened from the central Registry. */
+  datasets?: DatasetLite[];
   /** Knowledge docs, so Home doc stops asking for a numeric id. */
   docs?: { id: number; title: string }[];
   onClose: () => void;
@@ -94,22 +84,35 @@ export function MetricFormModal({ machineName, defaultHomeDocId, defaultDatasetI
   const [detail, setDetail] = useState<ManagedMetricDetail | null>(null);
   const [loading, setLoading] = useState(!!machineName);
   const [mode, setMode] = useState<'view' | 'edit'>(machineName ? 'view' : 'edit');
-  const [form, setForm] = useState<ManagedMetricWrite>(() => emptyForm(defaultHomeDocId, defaultDatasetId));
+  const [form, setForm] = useState<ManagedMetricWrite>(() => emptyForm(defaultHomeDocId));
+  const [datasetOptions, setDatasetOptions] = useState<DatasetLite[]>(datasets);
+  const [bindingDatasetId, setBindingDatasetId] = useState<number | null>(null);
+  const [centralViews, setCentralViews] = useState<DatasetModelView[]>([]);
+  const [loadingModel, setLoadingModel] = useState(false);
   // Which view the Data link points at. Kept separately because `measure_ref` is a
   // single string; derived from it on load so opening an existing metric shows the
   // table already selected rather than blank.
   const [linkViewId, setLinkViewId] = useState<number | null>(null);
-  const linkView = views.find((v) => v.id === linkViewId) ?? null;
+  const activeDatasetId = bindingDatasetId;
+  const effectiveViews = centralViews;
+  const linkView = effectiveViews.find((v) => v.id === linkViewId) ?? null;
   const [synText, setSynText] = useState('');
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [certifying, setCertifying] = useState(false);
 
   const toForm = useCallback((m: ManagedMetricDetail): ManagedMetricWrite => ({
     name: m.name, machine_name: m.machine_name, definition: m.definition ?? '', formula: m.formula ?? '',
     unit: m.unit ?? '', grain: m.grain ?? '', category: m.category ?? '', direction: m.direction,
     target_value: m.target_value ?? null, target_operator: m.target_operator ?? '', target_value2: m.target_value2 ?? null,
-    owner: m.owner ?? '', measure_ref: m.measure_ref ?? '', related_term_fqn: m.related_term_fqn ?? '',
+    owner: m.owner ?? '', dataset_id: m.dataset_id ?? null, dataset_table_id: m.dataset_table_id ?? null,
+    measure_ref: m.measure_ref ?? '', related_term_fqn: m.related_term_fqn ?? '',
     home_doc_id: m.home_doc_id ?? null, status: m.status, synonyms: m.synonyms ?? [],
+    // CARRIED THROUGH, NOT DROPPED. A metric may be computed in several datasets;
+    // this screen edits the binding for the dataset it was opened from, and the
+    // rest have to survive the round trip or editing here would quietly unbind the
+    // definition everywhere else.
+    bindings: m.bindings ?? [],
   }), []);
 
   useEffect(() => {
@@ -122,15 +125,88 @@ export function MetricFormModal({ machineName, defaultHomeDocId, defaultDatasetI
         setDetail(m); setForm(toForm(m)); setSynText((m.synonyms ?? []).join(', '));
         // Preselect the table the stored measure_ref names, so the dropdown opens
         // on the right row instead of looking unset on an existing metric.
-        const tid = Number((/^dataset_table_(\d+)\./.exec(m.measure_ref || '') || [])[1] || 0);
-        if (tid) setLinkViewId(views.find((v) => (v.dataset_table_id ?? v.id) === tid)?.id ?? null);
+        const primary = (m.bindings ?? []).find((binding) => binding.is_primary) ?? m.bindings?.[0];
+        setBindingDatasetId(primary?.dataset_id ?? m.dataset_id ?? null);
       })
       .catch(() => { if (on) toast.error(t('govern.metric.loadFailed')); })
       .finally(() => { if (on) setLoading(false); });
     return () => { on = false; };
   }, [machineName, t, toForm]);
 
+  useEffect(() => {
+    if (datasetOptions.length > 0) return;
+    listDatasetsLite().then(setDatasetOptions).catch(() => setDatasetOptions([]));
+  }, [datasetOptions.length]);
+
+  useEffect(() => {
+    if (bindingDatasetId == null) {
+      setCentralViews([]);
+      return;
+    }
+    let active = true;
+    setLoadingModel(true);
+    fetchDatasetModel(bindingDatasetId)
+      .then((model) => { if (active) setCentralViews(model.views ?? []); })
+      .catch(() => { if (active) setCentralViews([]); })
+      .finally(() => { if (active) setLoadingModel(false); });
+    return () => { active = false; };
+  }, [bindingDatasetId]);
+
+  const activeBinding = useMemo(
+    () => (form.bindings ?? []).find((binding) => binding.dataset_id === activeDatasetId) ?? null,
+    [activeDatasetId, form.bindings],
+  );
+
+  useEffect(() => {
+    const tableId = activeBinding?.dataset_table_id;
+    setLinkViewId(tableId == null
+      ? null
+      : effectiveViews.find((view) => (view.dataset_table_id ?? view.id) === tableId)?.id ?? null);
+  }, [activeBinding?.dataset_table_id, effectiveViews]);
+
   const upd = (patch: Partial<ManagedMetricWrite>) => setForm((p) => ({ ...p, ...patch }));
+
+  /** Rewrite the binding for the dataset this form was opened from, leaving every
+   *  other dataset's binding exactly as it was. Editing "where GMV comes from
+   *  here" must not touch where it comes from anywhere else. */
+  const setLocalBinding = (patch: { dataset_table_id?: number | null; measure_ref?: string | null }) =>
+    setForm((p) => {
+      const ds = activeDatasetId;
+      if (ds == null) return p;
+      const others = (p.bindings ?? []).filter((b) => b.dataset_id !== ds);
+      const mine = (p.bindings ?? []).find((b) => b.dataset_id === ds) ?? {
+        dataset_id: ds, is_primary: (p.bindings ?? []).length === 0,
+      };
+      const next = { ...mine, ...patch };
+      const keep = next.dataset_table_id != null || (next.measure_ref || '').trim() !== ''
+        || next.dataset_id != null;
+      return {
+        ...p,
+        bindings: keep ? [...others, next] : others,
+      };
+    });
+
+  /** Datasets OTHER than this one that compute the same definition. Shown so the
+   *  screen cannot be read as "this dataset owns this metric". */
+  const elsewhere = (form.bindings ?? []).filter(
+    (b) => b.dataset_id != null && b.dataset_id !== activeDatasetId,
+  );
+
+  const certify = async () => {
+    if (!detail) return;
+    setCertifying(true);
+    try {
+      await certifyManagedMetric(detail.machine_name);
+      const fresh = await getManagedMetric(detail.machine_name);
+      setDetail(fresh); setForm(toForm(fresh));
+      toast.success(t('govern.metric.certified'));
+      if (onChanged) await onChanged();
+    } catch (error) {
+      toast.error(errDetail(error) || t('govern.metric.certifyFailed'));
+    } finally {
+      setCertifying(false);
+    }
+  };
 
   const save = async () => {
     if (!form.name.trim()) { toast.error(t('govern.metric.nameRequired')); return; }
@@ -168,6 +244,9 @@ export function MetricFormModal({ machineName, defaultHomeDocId, defaultDatasetI
     <>
       <Button variant="ghost" onClick={remove} loading={deleting} leadingIcon={<Trash2 className="h-4 w-4" />}>{t('govern.action.delete')}</Button>
       <div className="flex-1" />
+      {detail.status !== 'Approved' && (
+        <Button variant="secondary" leadingIcon={<ShieldCheck className="h-4 w-4" />} onClick={certify} loading={certifying} disabled={detail.binding_status !== 'ok'}>{t('govern.metric.certify')}</Button>
+      )}
       <Button variant="secondary" onClick={onClose}>{t('govern.action.close')}</Button>
       <Button variant="primary" leadingIcon={<Pencil className="h-4 w-4" />} onClick={() => setMode('edit')}>{t('govern.action.edit')}</Button>
     </>
@@ -197,6 +276,23 @@ export function MetricFormModal({ machineName, defaultHomeDocId, defaultDatasetI
           </div>
           <Field label={t('govern.metric.definition')} hint={t('govern.metric.definitionHint')}><Textarea rows={2} value={form.definition ?? ''} onChange={(e) => upd({ definition: e.target.value })} /></Field>
           <Field label={t('govern.metric.formula')} hint={t('govern.metric.formulaHint')}><Textarea rows={2} value={form.formula ?? ''} onChange={(e) => upd({ formula: e.target.value })} /></Field>
+          {elsewhere.length > 0 && (
+            /* WHERE ELSE THIS SAME DEFINITION IS COMPUTED.
+               One line of chips, no sentence: the fact that needs conveying is
+               "this is shared, not yours", and a list of dataset names conveys it
+               faster than a paragraph explaining the concept. */
+            <div className="mb-3 flex flex-wrap items-center gap-1.5">
+              <span className="text-tiny text-text-tertiary">{t('govern.metric.alsoComputedIn')}</span>
+              {elsewhere.map((b) => (
+                <span
+                  key={`${b.dataset_id}-${b.measure_ref}`}
+                  className="rounded border border-[rgb(var(--border-line))] bg-surface-2 px-1.5 py-0.5 text-tiny text-text-secondary"
+                >
+                  {b.dataset_name || `#${b.dataset_id}`}
+                </span>
+              ))}
+            </div>
+          )}
           <div className="grid grid-cols-3 gap-3">
             <Field label={t('govern.metric.unit')}>
               {/* datalist, not a Select: these cover almost every metric but the list
@@ -218,44 +314,64 @@ export function MetricFormModal({ machineName, defaultHomeDocId, defaultDatasetI
             )}
             <Field label={t('govern.metric.owner')}><Input value={form.owner ?? ''} onChange={(e) => upd({ owner: e.target.value })} placeholder={t('govern.metric.ownerPlaceholder')} /></Field>
           </div>
-          <div className="grid grid-cols-3 gap-3">
-            {/* Data link was one text box holding "dataset_table_437.on_time_rate" —
-                a string with a database id in it, typed from memory. Two dropdowns
-                off the dataset's own model produce the same value and cannot be
-                misspelled. Falls back to the text box when no views loaded, so a
-                metric authored outside a dataset is still editable. */}
-            {views.length > 0 ? (
-              <>
-                <Field label={t('govern.metric.linkTable')}>
-                  <Select
-                    value={linkView?.id != null ? String(linkView.id) : ''}
-                    onChange={(e) => setLinkViewId(e.target.value ? Number(e.target.value) : null)}
-                  >
-                    <option value="">{t('common.none')}</option>
-                    {/* display name, not `name` — that one is the physical view ("dataset_table_440")
-     and nobody can tell which table it is from the id. */}
-                    {views.map((v) => (
-                      <option key={v.id} value={v.id}>{v.table_display_name || v.name}</option>
-                    ))}
-                  </Select>
-                </Field>
-                <Field label={t('govern.metric.linkMeasure')} hint={t('govern.metric.measureRefHint')}>
-                  <Select
-                    value={form.measure_ref ?? ''}
-                    disabled={!linkView}
-                    onChange={(e) => upd({ measure_ref: e.target.value })}
-                  >
-                    <option value="">{t('common.none')}</option>
-                    {(linkView?.measures ?? []).map((m) => {
-                      const ref = `dataset_table_${linkView?.dataset_table_id ?? linkView?.id}.${m.name}`;
-                      return <option key={m.name} value={ref}>{m.name}</option>;
-                    })}
-                  </Select>
-                </Field>
-              </>
-            ) : (
-              <Field label={t('govern.metric.measureRef')} hint={t('govern.metric.measureRefHint')}><Input value={form.measure_ref ?? ''} onChange={(e) => upd({ measure_ref: e.target.value })} /></Field>
+          <div className="space-y-3 border-y border-[rgb(var(--border-line))] py-3">
+            <div className="flex items-center justify-between">
+              <Label>{t('govern.metric.realizations')}</Label>
+              <span className="text-tiny text-text-quaternary">{t('govern.metric.realizationCount', { count: form.bindings?.length ?? 0 })}</span>
+            </div>
+            {(form.bindings ?? []).length > 0 && (
+              <div className="divide-y divide-[rgb(var(--border-line))] border border-[rgb(var(--border-line))]">
+                {(form.bindings ?? []).map((binding) => (
+                  <div key={`${binding.dataset_id}:${binding.dataset_table_id}:${binding.measure_ref}`} className="flex items-center gap-2 px-2.5 py-2 text-tiny">
+                    <span className="min-w-0 flex-1 truncate text-text-secondary">
+                      {binding.dataset_name || datasetOptions.find((dataset) => dataset.id === binding.dataset_id)?.name || `#${binding.dataset_id}`}
+                    </span>
+                    <span className="min-w-0 flex-[1.4] truncate font-mono text-text-tertiary">{binding.measure_label || binding.measure_ref || t('govern.registry.binding.unbound')}</span>
+                    <span className={cn('rounded px-1.5 py-0.5', binding.status === 'ok' ? 'bg-success/10 text-success' : binding.status === 'unresolved' ? 'bg-danger/10 text-danger' : 'bg-warning/10 text-warning')}>
+                      {t(`govern.registry.binding.${binding.status || (binding.measure_ref ? 'unresolved' : 'unbound')}`)}
+                    </span>
+                    <button type="button" title={t('govern.metric.removeRealization')} onClick={() => setForm((current) => ({ ...current, bindings: (current.bindings ?? []).filter((item) => item !== binding) }))} className="rounded p-1 text-text-quaternary hover:bg-danger/10 hover:text-danger"><X className="h-3.5 w-3.5" /></button>
+                  </div>
+                ))}
+              </div>
             )}
+            <div className="grid grid-cols-3 gap-3">
+              <Field label={t('govern.metric.linkDataset')}>
+                <Select value={bindingDatasetId == null ? '' : String(bindingDatasetId)} onChange={(event) => { setBindingDatasetId(event.target.value ? Number(event.target.value) : null); setLinkViewId(null); }}>
+                  <option value="">{t('common.none')}</option>
+                  {datasetOptions.map((dataset) => <option key={dataset.id} value={dataset.id}>{dataset.name}</option>)}
+                </Select>
+              </Field>
+              <Field label={t('govern.metric.linkTable')}>
+                <Select
+                  value={linkView?.id != null ? String(linkView.id) : ''}
+                  disabled={activeDatasetId == null || loadingModel}
+                  onChange={(event) => {
+                    const nextView = effectiveViews.find((view) => view.id === Number(event.target.value)) ?? null;
+                    setLinkViewId(nextView?.id ?? null);
+                    setLocalBinding({ dataset_table_id: nextView?.dataset_table_id ?? nextView?.id ?? null, measure_ref: null });
+                  }}
+                >
+                  <option value="">{loadingModel ? t('govern.loading') : t('common.none')}</option>
+                  {effectiveViews.map((view) => <option key={view.id} value={view.id}>{view.table_display_name || view.name}</option>)}
+                </Select>
+              </Field>
+              <Field label={t('govern.metric.linkMeasure')} hint={t('govern.metric.measureRefHint')}>
+                <Select
+                  value={activeBinding?.measure_ref ?? ''}
+                  disabled={!linkView}
+                  onChange={(event) => setLocalBinding({ measure_ref: event.target.value || null, dataset_table_id: linkView?.dataset_table_id ?? linkView?.id ?? null })}
+                >
+                  <option value="">{t('common.none')}</option>
+                  {(linkView?.measures ?? []).map((measure) => {
+                    const ref = `${linkView?.name}.${measure.name}`;
+                    return <option key={measure.name} value={ref}>{measure.label || measure.name}</option>;
+                  })}
+                </Select>
+              </Field>
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
             <Field label={t('govern.metric.relatedTerm')} hint={t('govern.metric.relatedTermHint')}>
               <Input value={form.related_term_fqn ?? ''} onChange={(e) => upd({ related_term_fqn: e.target.value })} />
             </Field>
@@ -275,7 +391,7 @@ export function MetricFormModal({ machineName, defaultHomeDocId, defaultDatasetI
           </div>
           <div className="grid grid-cols-2 gap-3">
             <Field label={t('govern.metric.synonyms')} hint={t('govern.metric.synonymsHint')}><Input value={synText} onChange={(e) => setSynText(e.target.value)} /></Field>
-            <Field label={t('govern.metric.status')}><Select value={form.status ?? 'Draft'} onChange={(e) => upd({ status: e.target.value as ManagedMetric['status'] })}>{STATUSES.map((s) => <option key={s} value={s}>{metricStatusLabel(s, t)}</option>)}</Select></Field>
+            <Field label={t('govern.metric.status')}><Select value={form.status ?? 'Draft'} onChange={(e) => upd({ status: e.target.value as ManagedMetric['status'] })}>{STATUSES.filter((status) => status !== 'Approved' || detail?.status === 'Approved').map((s) => <option key={s} value={s}>{metricStatusLabel(s, t)}</option>)}</Select></Field>
           </div>
         </div>
       )}
@@ -293,6 +409,9 @@ function MetricView({ detail, onOpenDoc }: { detail: ManagedMetricDetail; onOpen
         <span className="rounded-full bg-surface-2 px-2 py-0.5 text-tiny text-text-tertiary">v{detail.version}</span>
         {detail.category && <span className="rounded-full bg-surface-2 px-2 py-0.5 text-tiny text-text-tertiary">{detail.category}</span>}
         {detail.grain && <span className="rounded-full bg-surface-2 px-2 py-0.5 text-tiny text-text-tertiary">{grainLabel(detail.grain, t)}</span>}
+        <span className={cn('rounded-full px-2 py-0.5 text-tiny', detail.binding_status === 'ok' ? 'bg-success/10 text-success' : detail.binding_status === 'unresolved' ? 'bg-danger/10 text-danger' : 'bg-warning/10 text-warning')}>
+          {t(`govern.registry.binding.${detail.binding_status || 'unbound'}`)}
+        </span>
       </div>
 
       {detail.definition && (
@@ -313,9 +432,25 @@ function MetricView({ detail, onOpenDoc }: { detail: ManagedMetricDetail; onOpen
         <Meta label={t('govern.metric.target')} value={managedTargetLabel(detail)} />
         <Meta label={t('govern.metric.owner')} value={detail.owner || '—'} />
         <Meta label={t('govern.metric.direction')} value={directionLabel(detail.direction, t)} />
-        <Meta label={t('govern.metric.measureRef')} value={detail.measure_ref || '—'} mono />
         <Meta label={t('govern.metric.relatedTerm')} value={detail.related_term_fqn || '—'} mono />
         {detail.synonyms.length > 0 && <Meta label={t('govern.metric.synonyms')} value={detail.synonyms.join(', ')} />}
+      </div>
+
+      <div className="border-y border-[rgb(var(--border-line))] py-3">
+        <div className="mb-2 text-tiny uppercase text-text-tertiary">{t('govern.metric.realizations')}</div>
+        {(detail.bindings ?? []).length === 0 ? (
+          <p className="text-caption text-warning">{t('govern.registry.binding.unbound')}</p>
+        ) : (
+          <div className="divide-y divide-[rgb(var(--border-line))]">
+            {(detail.bindings ?? []).map((binding) => (
+              <div key={`${binding.dataset_id}:${binding.dataset_table_id}:${binding.measure_ref}`} className="grid grid-cols-[10rem_minmax(0,1fr)_7rem] gap-3 py-2 text-caption">
+                <span className="truncate text-text-secondary">{binding.dataset_name || `#${binding.dataset_id}`}</span>
+                <span className="truncate font-mono text-text-tertiary">{binding.measure_label || binding.measure_ref || '—'}</span>
+                <span className={binding.status === 'ok' ? 'text-success' : binding.status === 'unresolved' ? 'text-danger' : 'text-warning'}>{t(`govern.registry.binding.${binding.status || 'unbound'}`)}</span>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-4">

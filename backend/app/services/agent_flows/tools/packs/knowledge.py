@@ -48,7 +48,8 @@ PACK = ToolPack(
             "search_knowledge",
             label_vi="Tìm trong tài liệu",
             label_en="Search documents",
-            description_vi="Tìm trong các tài liệu tri thức mà bước này được gắn.",
+            description_vi="Tìm trong tài liệu, định nghĩa chỉ số và thuật ngữ "
+                           "công ty gắn với báo cáo này.",
             result_kind="documents",
             # MEASURED 83..562 tokens. Over `small` at the top end, and the extra
             # is `updated_at`/`version` per hit — which is the field that decides
@@ -57,10 +58,16 @@ PACK = ToolPack(
             returns={
                 "results": "mỗi kết quả: id, tiêu đề, trích đoạn, điểm khớp, "
                            "NGÀY cập nhật và phiên bản",
+                # Named in the contract because the model is told to weigh hits by
+                # it: a definition tied to this report's data is not the same
+                # claim as one that merely shares a word with the question.
+                "reached_by": "vì sao kết quả này liên quan tới báo cáo: gắn tay, "
+                              "qua measure, qua chỉ số, hay chỉ khớp từ ngữ",
                 "citations": "nguồn để dẫn lại trong câu trả lời",
                 "coverage": "tìm trong mấy tài liệu",
             },
-            answers_vi=("Doanh thu ở đây định nghĩa thế nào?",),
+            answers_vi=("Doanh thu ở đây định nghĩa thế nào?",
+                        "Công ty mình định nghĩa GMV ra sao?"),
         ),
         spec(
             "read_document",

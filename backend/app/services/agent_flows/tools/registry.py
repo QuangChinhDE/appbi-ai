@@ -618,6 +618,11 @@ _TRUSTED_META_KEYS = frozenset({
     "error", "error_code", "source_kind", "trust_note", "note", "instruction",
     "read_from", "read_note", "published", "updated_at", "version", "doc_type",
     "status", "space", "n", "ok", "cached", "query", "queries_run",
+    # WHY a knowledge hit was considered relevant — written by the retriever, not
+    # by whoever authored the document. Its current values are single words, so
+    # the length floor already spared them; naming it here means a longer reason
+    # added later is not suddenly fenced as if a stranger had written it.
+    "reached_by",
 })
 
 #: A string shorter than this is a label, a status or a name — not prose that

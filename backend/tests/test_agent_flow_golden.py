@@ -25,6 +25,8 @@ because a key expired or a warehouse was slow.
 from __future__ import annotations
 
 import os
+import re
+from types import SimpleNamespace
 
 # SET WHEN FALSY, not `setdefault`. An environment can define DATABASE_URL as an
 # EMPTY STRING — the app image does — and an empty value is still a present key,
@@ -478,7 +480,342 @@ def test_a_run_with_no_answer_is_never_reported_as_success(monkeypatch):
     assert r["status"] != "ok"
 
 
-# ── 15 · the node list is frozen, and the two halves must agree ───────────────
+# ── 15 · knowledge reaches vocabulary, and says how ───────────────────────────
+#
+# The complaint these pin: the Knowledge node "scans all metrics and cannot read
+# the glossary". Both were true, and each had its own cause — an unbound metric
+# was admitted everywhere, and the glossary had no retrieval path at all.
+class _Term:
+    def __init__(self, name, display, desc="", syn=None, status="Approved"):
+        self.name, self.display_name, self.description = name, display, desc
+        self.synonyms, self.status = syn or [], status
+
+
+class _Metric:
+    def __init__(self, name, *, dataset_id=None, dataset_table_id=None,
+                 measure_ref=None, term=None, text=""):
+        self.name, self.display_name = name, name
+        self.dataset_id, self.dataset_table_id = dataset_id, dataset_table_id
+        self.measure_ref, self.related_term_fqn = measure_ref, term
+        self.definition, self.formula = text, ""
+        self.category, self.unit = "", ""
+        self.status = "Approved"
+        self.target_value = self.target_operator = None
+        self.owner = None
+        # Empty unless a case sets them — mirrors a row written before bindings
+        # existed, which is exactly the fallback path worth exercising by default.
+        self.bindings = []
+
+
+def _govern(monkeypatch, *, terms=(), metrics=(), scope=None,
+            dsids=frozenset({7}), measure_terms=frozenset()):
+    """Stand up `govern_tools` against fixed rows — no database, no dashboard."""
+    from app.services.dashboard_ai_bot import govern_tools as gt
+    from app.services.governance_service import GovernanceService
+
+    class Ctx:
+        knowledge_scope = scope or {}
+        db = None
+        dashboard = None
+
+    monkeypatch.setattr(gt, "_scope", lambda ctx: (set(), set(dsids)))
+    monkeypatch.setattr(gt, "_granted_dataset_ids", lambda ctx: None)
+    monkeypatch.setattr(gt, "_measure_term_fqns", lambda ctx, ds: set(measure_terms))
+
+    def binding_details(_db, metric):
+        targets = list(metric.bindings or [])
+        if not targets and (metric.dataset_id or metric.dataset_table_id or metric.measure_ref):
+            targets = [metric]
+        out = []
+        for target in targets:
+            dataset_id = target.dataset_id
+            table_id = target.dataset_table_id
+            measure_ref = target.measure_ref
+            if dataset_id is None and measure_ref:
+                match = re.match(r"dataset_table_(\d+)\.", measure_ref)
+                dataset_id = int(match.group(1)) if match else None
+            out.append({
+                "status": "ok" if measure_ref else "unbound",
+                "dataset_id": dataset_id,
+                "dataset_table_id": table_id,
+            })
+        return out
+
+    monkeypatch.setattr(GovernanceService, "metric_binding_details", binding_details)
+
+    class _Q:
+        def __init__(self, rows): self._rows = rows
+        def join(self, *a, **k): return self
+        def filter(self, *a, **k): return self
+        def all(self): return self._rows
+
+    class _DB:
+        def query(self, *cols):
+            first = str(cols[0])
+            if "GlossaryTerm" in first:
+                return _Q([(t, "kd") for t in terms])
+            return _Q(list(metrics))
+
+    Ctx.db = _DB()
+    return gt, Ctx()
+
+
+def test_an_unbound_metric_no_longer_appears_on_every_report(monkeypatch):
+    """The leak: `matched or not bound` admitted every unattached metric to every
+    dashboard — and a metric carries a target, so that is a NUMBER arriving in a
+    prompt about someone else's report."""
+    gt, ctx = _govern(monkeypatch, metrics=[_Metric("chi_phi_kho", text="tồn kho")])
+    kept = gt._metrics_in_scope(ctx, "doanh thu quý 4")
+    assert kept == [], "metric chưa gắn dataset vẫn lọt vào báo cáo không liên quan"
+
+
+def test_an_unbound_metric_still_arrives_when_the_question_names_it(monkeypatch):
+    """Not banned — it has to be NAMED. Company vocabulary stays reachable; it
+    just no longer arrives merely by existing."""
+    gt, ctx = _govern(monkeypatch, metrics=[_Metric("chi_phi_kho", text="tồn kho")])
+    # The machine name is the FQN-safe spelling of the display name, so separators
+    # fold to spaces on both sides — nobody types the underscores.
+    kept = gt._metrics_in_scope(ctx, "chi phí kho tháng này bao nhiêu")
+    assert [m.name for m in kept] == ["chi_phi_kho"]
+
+
+def test_naming_a_DIFFERENT_metric_does_not_admit_this_one(monkeypatch):
+    """"chi phí tồn kho" is not "chi phí kho". Phrase containment draws that line;
+    token overlap would not, and that looseness is what let an unrelated
+    definition into someone else's report in the first place."""
+    gt, ctx = _govern(monkeypatch, metrics=[_Metric("chi_phi_kho", text="tồn kho")])
+    assert gt._metrics_in_scope(ctx, "chi phí tồn kho thế nào") == []
+
+
+def test_a_metric_bound_to_this_report_is_kept(monkeypatch):
+    gt, ctx = _govern(monkeypatch, metrics=[_Metric("gmv", dataset_id=7, measure_ref="dataset_table_7.gmv")])
+    assert [m.name for m in gt._metrics_in_scope(ctx, "bất kỳ")] == ["gmv"]
+
+
+def test_a_metric_bound_to_another_report_is_not(monkeypatch):
+    gt, ctx = _govern(monkeypatch, metrics=[_Metric("gmv", dataset_id=99, measure_ref="dataset_table_99.gmv")])
+    assert gt._metrics_in_scope(ctx, "gmv") == []
+
+
+class _Binding:
+    def __init__(self, dataset_id=None, dataset_table_id=None, measure_ref=None):
+        self.dataset_id, self.dataset_table_id = dataset_id, dataset_table_id
+        self.measure_ref, self.is_primary = measure_ref, False
+
+
+def test_a_metric_realized_in_SEVERAL_datasets_is_in_scope_for_each(monkeypatch):
+    """The structural fix. A metric carried ONE `dataset_id`, so a definition
+    computed in two datasets could be attached to one of them and was missing on
+    the other report — the same word, defined on one screen and undefined on the
+    next. Bindings make one statement serve every place it is realized."""
+    m = _Metric("gmv", dataset_id=3, measure_ref="dataset_table_3.gmv")
+    m.bindings = [_Binding(dataset_id=7, measure_ref="dataset_table_7.gmv")]
+    gt, ctx = _govern(monkeypatch, metrics=[m], dsids={7})
+    assert [x.name for x in gt._metrics_in_scope(ctx, "bất kỳ")] == ["gmv"], (
+        "metric hiện thực hoá ở nhiều dataset phải có mặt trên từng báo cáo đó"
+    )
+
+
+def test_bindings_do_not_widen_a_metric_to_unrelated_reports(monkeypatch):
+    """Many realizations, not "everywhere". A report that realizes none of them
+    still gets nothing unless the question names the metric."""
+    m = _Metric("gmv", dataset_id=3, measure_ref="dataset_table_3.gmv")
+    m.bindings = [_Binding(dataset_id=4, measure_ref="dataset_table_4.gmv")]
+    gt, ctx = _govern(monkeypatch, metrics=[m], dsids={7})
+    assert gt._metrics_in_scope(ctx, "doanh thu ra sao") == []
+
+
+def test_a_binding_expressed_only_as_a_measure_ref_still_matches(monkeypatch):
+    """Field metrics bind through `dataset_table_<id>.<measure>` rather than the
+    id columns. That path was read on the scalar column alone; now every binding
+    is checked, or a metric attached the common way would go missing."""
+    m = _Metric("gmv")
+    m.bindings = [_Binding(measure_ref="dataset_table_7.gmv")]
+    gt, ctx = _govern(monkeypatch, metrics=[m], dsids={7})
+    assert [x.name for x in gt._metrics_in_scope(ctx, "bất kỳ")] == ["gmv"]
+
+
+class _ContractQuery:
+    def __init__(self, rows, scalar_field=None):
+        self.rows, self.scalar_field = rows, scalar_field
+
+    def filter(self, *_args, **_kwargs): return self
+    def order_by(self, *_args, **_kwargs): return self
+    def all(self): return list(self.rows)
+    def first(self): return self.rows[0] if self.rows else None
+    def scalar(self):
+        row = self.first()
+        return getattr(row, self.scalar_field) if row is not None and self.scalar_field else row
+
+
+class _ContractDb:
+    def __init__(self, *, measures=(), dimensions=()):
+        self.dataset = SimpleNamespace(id=1, name="Commerce")
+        self.table = SimpleNamespace(id=10, dataset_id=1, display_name="Orders")
+        self.view = SimpleNamespace(
+            id=20, name="orders", sql_table_name="dataset_table_10",
+            dataset_table_id=10, measures=list(measures), dimensions=list(dimensions),
+        )
+
+    def query(self, *entities):
+        from app.models.dataset import Dataset, DatasetTable
+        from app.models.semantic import SemanticView
+
+        entity = entities[0]
+        owner = getattr(entity, "class_", entity)
+        if owner is Dataset:
+            field = "name" if getattr(entity, "key", None) == "name" else None
+            return _ContractQuery([self.dataset], field)
+        if owner is DatasetTable:
+            return _ContractQuery([self.table])
+        if owner is SemanticView:
+            return _ContractQuery([self.view])
+        raise AssertionError(f"unexpected query: {entities}")
+
+
+def test_governed_kpi_binding_resolves_only_to_a_semantic_measure():
+    from app.services.governance_service import GovernanceService
+
+    resolved = GovernanceService.resolve_metric_binding(
+        _ContractDb(measures=[{"name": "gmv", "label": "GMV"}]),
+        {"dataset_id": 1, "dataset_table_id": 10, "measure_ref": "dataset_table_10.gmv"},
+    )
+    assert resolved["status"] == "ok"
+    assert resolved["canonical_ref"] == "orders.gmv"
+
+
+def test_a_dimension_cannot_masquerade_as_a_governed_kpi_measure():
+    from app.services.governance_service import GovernanceError, GovernanceService
+
+    db = _ContractDb(measures=[{"name": "revenue"}], dimensions=[{"name": "gmv"}])
+    resolved = GovernanceService.resolve_metric_binding(
+        db,
+        {"dataset_id": 1, "dataset_table_id": 10, "measure_ref": "dataset_table_10.gmv"},
+    )
+    assert resolved["status"] == "unresolved"
+    assert resolved["reason"] == "measure_missing"
+    with pytest.raises(GovernanceError):
+        GovernanceService._prepare_metric_bindings(
+            db,
+            [{"dataset_id": 1, "dataset_table_id": 10, "measure_ref": "dataset_table_10.gmv"}],
+        )
+
+
+def test_a_dataset_only_kpi_binding_is_draft_scope_not_executable_lineage():
+    from app.services.governance_service import GovernanceService
+
+    resolved = GovernanceService.resolve_metric_binding(_ContractDb(), {"dataset_id": 1})
+    assert resolved["status"] == "unbound"
+    assert resolved["dataset_id"] == 1
+
+
+def test_caveat_injection_respects_registry_scope_and_approval():
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import Session
+
+    from app.core.database import Base
+    from app.models.governance import GovernDataCaveat
+    from app.services.governance_ai_service import GovernanceAIService
+
+    engine = create_engine("sqlite://", future=True)
+    Base.metadata.create_all(
+        engine,
+        tables=[GovernDataCaveat.__table__],
+    )
+    with Session(engine) as db:
+        db.add_all([
+            GovernDataCaveat(
+                id=1, title="Global", content="All reports", dataset_id=None,
+                status="Approved", always_inject=True,
+            ),
+            GovernDataCaveat(
+                id=2, title="Commerce only", content="Commerce warning",
+                dataset_id=1, status="Approved", always_inject=True,
+            ),
+            GovernDataCaveat(
+                id=3, title="Finance only", content="Finance warning",
+                dataset_id=2, status="Approved", always_inject=True,
+            ),
+            GovernDataCaveat(
+                id=4, title="Draft", content="Not trusted yet",
+                dataset_id=None, status="Draft", always_inject=True,
+            ),
+            GovernDataCaveat(
+                id=5, title="Optional", content="Do not force into context",
+                dataset_id=None, status="Approved", always_inject=False,
+            ),
+        ])
+        db.commit()
+
+        rows = GovernanceAIService.caveats_for(db, {1})
+        assert {row.title for row in rows} == {"Global", "Commerce only"}
+
+
+def test_glossary_is_reachable_through_a_measure_on_this_report(monkeypatch):
+    """The bridge dashboard → dataset → measure → term. It existed in the schema
+    and nothing traversed it, so a term curated onto a measure was invisible."""
+    gt, ctx = _govern(monkeypatch, terms=[_Term("gmv", "GMV", "Tổng giá trị hàng hoá")],
+                      measure_terms={"kd.gmv"})
+    out = gt._terms_in_scope(ctx, [], "câu hỏi không hề nhắc từ đó")
+    assert [t["id"] for t in out] == ["kd.gmv"]
+    assert out[0]["reached_by"] == "measure", "phải nói rõ vì sao term này liên quan"
+
+
+def test_glossary_is_reachable_through_a_metric_already_in_scope(monkeypatch):
+    gt, ctx = _govern(monkeypatch, terms=[_Term("gmv", "GMV")])
+    metrics = [_Metric("gmv", dataset_id=7, term="kd.gmv")]
+    out = gt._terms_in_scope(ctx, metrics, "không nhắc")
+    assert [t["reached_by"] for t in out] == ["metric"]
+
+
+def test_a_term_nobody_wired_up_arrives_only_when_the_question_uses_it(monkeypatch):
+    """The honest fallback — a MATCH, not the dump that metrics used to do."""
+    gt, ctx = _govern(monkeypatch, terms=[_Term("gmv", "GMV", syn=["tổng giá trị hàng hoá"])])
+    assert gt._terms_in_scope(ctx, [], "khách hàng rời bỏ") == []
+    hit = gt._terms_in_scope(ctx, [], "GMV quý 4 ra sao")
+    assert [t["reached_by"] for t in hit] == ["vocabulary"]
+
+
+def test_a_synonym_finds_the_term(monkeypatch):
+    gt, ctx = _govern(monkeypatch, terms=[_Term("gmv", "GMV", syn=["tổng giá trị hàng hoá"])])
+    hit = gt._terms_in_scope(ctx, [], "tổng giá trị hàng hoá tháng này")
+    assert [t["id"] for t in hit] == ["kd.gmv"]
+
+
+def test_an_explicit_attachment_is_a_ceiling_for_terms(monkeypatch):
+    """Same rule documents already obey: once the author names what a step may
+    read, a keyword coincidence cannot add to it."""
+    gt, ctx = _govern(
+        monkeypatch,
+        terms=[_Term("gmv", "GMV"), _Term("churn", "Churn", syn=["rời bỏ"])],
+        scope={"term_fqns": ["kd.gmv"]},
+    )
+    out = gt._terms_in_scope(ctx, [], "churn rời bỏ ra sao")
+    assert [t["id"] for t in out] == ["kd.gmv"]
+    assert out[0]["reached_by"] == "attached"
+
+
+def test_a_deprecated_term_is_never_returned(monkeypatch):
+    gt, ctx = _govern(monkeypatch,
+                      terms=[_Term("gmv", "GMV", status="Deprecated")],
+                      measure_terms={"kd.gmv"})
+    assert gt._terms_in_scope(ctx, [], "gmv") == []
+
+
+def test_the_knowledge_node_collects_a_term_attachment_into_its_scope():
+    """The node builds the scope the retriever reads. A `term` attachment that
+    never reached that dict would be a picker that does nothing."""
+    flow = build([
+        {"key": "kb", "type": "knowledge", "query": "{{question}}", "output_var": "kb_ctx",
+         "knowledge": [{"source": "term", "ref": "kd.gmv", "description": "định nghĩa GMV"}]},
+        AGENT,
+    ], answer_node="answer")
+    node = next(n for n in flow.all_nodes() if n.key == "kb")
+    assert [k.source for k in node.knowledge] == ["term"]
+    assert [k.ref for k in node.knowledge] == ["kd.gmv"]
+
+
+# ── 16 · the node list is frozen, and the two halves must agree ───────────────
 #: The twelve. Changing this list is a deliberate act; the test below makes it one.
 FROZEN_NODE_TYPES = {
     "agent",                                   # AI
@@ -593,6 +930,81 @@ def test_deleting_a_version_consults_the_links_that_use_it(monkeypatch):
     )
 
 
+def test_unpublish_refuses_to_break_a_bound_link(monkeypatch):
+    from app.services.agent_flows import binding as binding_service
+    from app.services.agent_flows import registry as reg
+
+    class Query:
+        def filter(self, *_args):
+            return self
+
+        def first(self):
+            return type("Row", (), {"status": "published"})()
+
+    class Db:
+        def query(self, *_args):
+            return Query()
+
+    monkeypatch.setattr(
+        binding_service,
+        "list_for_flow",
+        lambda *_args: [{"link_name": "Public report", "link_id": 7}],
+    )
+    with pytest.raises(reg.BrainError) as err:
+        reg.unpublish_version(Db(), "golden", 1)
+    assert err.value.status == 409
+    assert "binding" in str(err.value).lower()
+
+
+def test_unpublish_archives_an_unbound_published_version(monkeypatch):
+    from app.services.agent_flows import binding as binding_service
+    from app.services.agent_flows import registry as reg
+
+    row = type("Row", (), {"status": "published"})()
+
+    class Query:
+        def filter(self, *_args):
+            return self
+
+        def first(self):
+            return row
+
+    class Db:
+        committed = False
+        refreshed = False
+
+        def query(self, *_args):
+            return Query()
+
+        def commit(self):
+            self.committed = True
+
+        def refresh(self, refreshed_row):
+            assert refreshed_row is row
+            self.refreshed = True
+
+    db = Db()
+    audited = []
+    monkeypatch.setattr(binding_service, "list_for_flow", lambda *_args: [])
+    monkeypatch.setattr(reg, "_row_dict", lambda current: {"status": current.status})
+    monkeypatch.setattr(reg, "_audit", lambda *args: audited.append(args[1:]))
+
+    result = reg.unpublish_version(db, "golden", 1, "owner@appbi.io")
+
+    assert result == {"status": "archived"}
+    assert row.status == "archived"
+    assert db.committed and db.refreshed
+    assert audited == [
+        ("AGENT_FLOW_UNPUBLISHED", "golden", "owner@appbi.io", {"version": 1})
+    ]
+
+
+def test_unpublish_has_a_persistable_audit_action():
+    from app.models.audit_log import AuditAction
+
+    assert AuditAction.AGENT_FLOW_UNPUBLISHED.value == "agent_flow_unpublished"
+
+
 def test_a_binding_whose_flow_is_gone_is_recorded_broken_not_merely_refused(monkeypatch):
     """Chart drift was written onto the binding; a DELETED FLOW was not. So the
     screens that exist to surface unhealthy links showed `active` while every
@@ -691,3 +1103,299 @@ def test_stop_node_message_is_a_deliberate_answer():
     ], answer_node="answer"))
     assert "answer" not in ran(r), "Stop mà các bước sau vẫn chạy"
     assert "Ngoài phạm vi" in json.dumps(r.get("answer") or {}, ensure_ascii=False)
+
+def test_vector_recall_obeys_the_same_boundary_as_the_keyword_scan(monkeypatch):
+    """A grant that binds one retrieval path and not the other is not a grant.
+
+    `retrieve_doc_chunks` used to re-derive its own boundary from dashboard links
+    — ONE of the four ways a document is attached — so a document linked through a
+    dataset, or through the doc's own arrays, was searchable by wording and
+    invisible to meaning. And a step that narrowed its sources narrowed only the
+    keyword scan: vector recall kept returning passages the author had excluded.
+    """
+    from app.services.dashboard_ai_bot import govern_doc_embeddings as gde
+
+    seen: dict = {}
+
+    def fake_retrieve(db, dashboard_id, question="", k=6, doc_ids=None):
+        seen["doc_ids"] = doc_ids
+        return []
+
+    monkeypatch.setattr(gde, "retrieve_doc_chunks", fake_retrieve)
+
+    gt, ctx = _govern(monkeypatch, scope={"doc_ids": [7, 9]})
+    monkeypatch.setattr(gt, "_visible_doc_ids", lambda c: {7, 9})
+    monkeypatch.setattr(gt, "_entitled_doc_ids", lambda c: {7, 9})
+
+    class Dash:
+        id = 67
+
+    ctx.dashboard = Dash()
+    gt.tool_search_knowledge(ctx, {"query": "định nghĩa doanh thu", "limit": 3})
+
+    assert seen.get("doc_ids") == {7, 9}, (
+        "đường vector phải nhận đúng phạm vi mà đường keyword dùng"
+    )
+
+
+def test_document_embedding_profiles_are_fixed_to_the_vector_column_width():
+    from app.core.config import settings
+    from app.services.embedding_service import EmbeddingService
+
+    profiles = EmbeddingService.embedding_profiles()
+    assert {profile["model"] for profile in profiles} == {
+        model for model in settings.embedding_models
+        if model.startswith("text-embedding-3-")
+    }
+    assert {profile["dimensions"] for profile in profiles} == {
+        settings.openai_embedding_dimensions
+    }
+
+
+def test_best_effort_resource_embedding_does_not_rollback_caller_data(monkeypatch):
+    from sqlalchemy import create_engine, text
+    from sqlalchemy.orm import Session
+
+    from app.services.embedding_service import EmbeddingService
+
+    db = Session(create_engine("sqlite://", future=True))
+    try:
+        db.execute(text("CREATE TABLE business_record (id INTEGER PRIMARY KEY)"))
+        db.commit()
+        db.execute(text("INSERT INTO business_record (id) VALUES (1)"))
+        monkeypatch.setattr(
+            EmbeddingService,
+            "generate_embedding",
+            lambda *_args, **_kwargs: [0.1] * 768,
+        )
+
+        # resource_embeddings deliberately does not exist. The vector write
+        # fails, while the caller's pending business row must remain usable.
+        assert not EmbeddingService.upsert_embedding(
+            db, "knowledge", 1, "revenue definition", commit=False
+        )
+        assert db.execute(text("SELECT COUNT(*) FROM business_record")).scalar() == 1
+        db.commit()
+    finally:
+        db.close()
+
+
+def test_legacy_embedding_hashes_cannot_reuse_chunk_vectors():
+    from app.services.dashboard_ai_bot.govern_doc_embeddings import (
+        _body_hash,
+        _is_current_index_hash,
+    )
+
+    assert not _is_current_index_hash(None)
+    assert not _is_current_index_hash("6a09e667bb67ae85")
+    assert _is_current_index_hash(_body_hash("model:768:paragraph:850:0", "body"))
+
+
+def test_document_search_excludes_legacy_and_cross_model_vectors():
+    from app.services.dashboard_ai_bot.govern_doc_embeddings import (
+        _scoped_chunk_filter,
+    )
+
+    sql_filter, params = _scoped_chunk_filter(
+        dashboard_id=None,
+        doc_ids={7},
+        published_only=False,
+    )
+    assert "d.embedded_hash LIKE 'v2:%'" in sql_filter
+    # THE GUARANTEE, NOT THE SPELLING. This asserted the literal
+    # `c.model_version = d.embedding_model`, which pinned the punctuation of a
+    # predicate rather than what it promises — and the promise was wrong: `=`
+    # yields NULL when `embedding_model` is NULL (the column is nullable and
+    # documented as "null = the active model"), and SQL reads NULL as false, so
+    # every chunk of such a document was excluded from BOTH branches in silence.
+    # `IS NOT DISTINCT FROM` says "same vector space" including two NULLs.
+    assert "c.model_version" in sql_filter and "d.embedding_model" in sql_filter
+    assert "IS NOT DISTINCT FROM" in sql_filter, (
+        "so sánh model phải an toàn với NULL, nếu không tài liệu chưa ghi model "
+        "sẽ bị loại khỏi cả vector lẫn keyword mà không báo gì"
+    )
+    assert params["allowed"] == [7]
+
+
+def test_document_search_generates_one_query_vector_per_model(monkeypatch):
+    from app.services.dashboard_ai_bot import govern_doc_embeddings as gde
+    from app.services.embedding_service import EmbeddingService
+
+    class Rows:
+        def fetchall(self):
+            return [
+                (10, 1, "Doc A", 0, "alpha", "authored", "model-a"),
+                (20, 2, "Doc B", 0, "beta", "authored", "model-b"),
+            ]
+
+    class Db:
+        def execute(self, stmt, params=None):
+            assert "WHERE c.id = ANY(:ids)" in str(stmt)
+            return Rows()
+
+    generated = []
+    monkeypatch.setattr(
+        gde, "_model_doc_groups", lambda *_args: {"model-a": [1], "model-b": [2]}
+    )
+    monkeypatch.setattr(gde, "_keyword_ranked_ids", lambda *_args: [])
+    monkeypatch.setattr(
+        EmbeddingService,
+        "generate_query_embedding",
+        lambda query, model=None: generated.append((query, model)) or [0.1, 0.2],
+    )
+    monkeypatch.setattr(
+        gde,
+        "_vector_ranked_hits",
+        lambda _db, _scope, params, _vector, _limit: [
+            (10, 0.91) if params["embedding_model"] == "model-a" else (20, 0.82)
+        ],
+    )
+
+    rows = gde._search_scoped_doc_chunks(
+        Db(), "revenue policy", k=5, dashboard_id=None,
+        doc_ids={1, 2}, published_only=True,
+    )
+    assert generated == [
+        ("revenue policy", "model-a"),
+        ("revenue policy", "model-b"),
+    ]
+    assert {row["chunk_id"] for row in rows} == {10, 20}
+
+
+def test_document_search_keeps_keyword_hits_when_a_model_fails(monkeypatch):
+    from app.services.dashboard_ai_bot import govern_doc_embeddings as gde
+    from app.services.embedding_service import EmbeddingService
+
+    class Rows:
+        def fetchall(self):
+            return [(20, 2, "Doc B", 0, "exact Q2", "authored", "model-b")]
+
+    class Db:
+        def execute(self, stmt, params=None):
+            return Rows()
+
+    monkeypatch.setattr(gde, "_model_doc_groups", lambda *_args: {"model-b": [2]})
+    monkeypatch.setattr(gde, "_keyword_ranked_ids", lambda *_args: [20])
+    monkeypatch.setattr(
+        EmbeddingService, "generate_query_embedding", lambda *_args, **_kwargs: None
+    )
+
+    rows = gde._search_scoped_doc_chunks(
+        Db(), "Q2", k=5, dashboard_id=None,
+        doc_ids={2}, published_only=True,
+    )
+    assert rows[0]["chunk_id"] == 20
+    assert rows[0]["matched_by"] == "keyword"
+    assert rows[0]["similarity"] is None
+
+# ── 18 · an index the retriever will not trust must not be silent ─────────────
+#
+# The failure this pins was live on this deployment: migration 0049 invalidated
+# the legacy index hashes — correctly, they predate model-safe dedup — and
+# nothing rebuilt them. Five of six documents on the main dashboard became
+# unsearchable and "GMV là gì" returned nothing, while a document titled "Từ vựng
+# & Quy ước" sat one query away. Refusing an untrustworthy index is right;
+# refusing it invisibly is what made a correct migration look like a working
+# system.
+def _fake_db(rows):
+    """Minimal stand-in: `execute(...).fetchall()` returns `rows`."""
+    class _R:
+        def fetchall(self):
+            return rows
+
+    class _DB:
+        def execute(self, *a, **k):
+            return _R()
+
+    return _DB()
+
+
+def test_stale_index_reports_every_kind_of_untrusted_index():
+    from app.services.dashboard_ai_bot import govern_doc_embeddings as gde
+
+    stale = gde.stale_index_docs(_fake_db([
+        (1, "never_indexed"), (2, "old_index_format"),
+        (3, "model_changed"), (4, "no_vectors"),
+    ]))
+    assert stale == {1: "never_indexed", 2: "old_index_format",
+                     3: "model_changed", 4: "no_vectors"}
+
+
+def test_a_healthy_library_reports_nothing_to_repair():
+    from app.services.dashboard_ai_bot import govern_doc_embeddings as gde
+
+    assert gde.stale_index_docs(_fake_db([])) == {}
+    assert gde.repair_stale_index(_fake_db([]))["scanned"] == 0
+
+
+def test_repair_rebuilds_every_stale_document_and_survives_one_failure(monkeypatch):
+    """One bad document must not stop the rest — a library repairs as far as it
+    can, and reports what it could not do rather than aborting the pass."""
+    from app.services.dashboard_ai_bot import govern_doc_embeddings as gde
+
+    monkeypatch.setattr(gde, "stale_index_docs",
+                        lambda db: {7: "never_indexed", 8: "model_changed"})
+
+    class _Doc:
+        def __init__(self, i):
+            self.id = i
+
+    class _Q:
+        def __init__(self, i):
+            self.i = i
+
+        def filter(self, *a, **k):
+            return self
+
+        def first(self):
+            return _Doc(self.i)
+
+    seen = []
+
+    class _DB:
+        def query(self, *a, **k):
+            return _Q(seen[-1] if seen else 7)
+
+    def fake_embed(db, doc, *, force_full_rebuild=False):
+        assert force_full_rebuild, "phải dựng lại toàn bộ — hash cũ là thứ ta không tin"
+        return {"status": "error" if doc.id == 8 else "embedded"}
+
+    monkeypatch.setattr(gde, "embed_doc", fake_embed)
+
+    class _DB2(_DB):
+        def query(self, *a, **k):
+            class _Q2:
+                def __init__(self):
+                    self.n = 0
+
+                def filter(self, clause=None, *a, **k):
+                    self.clause = clause
+                    return self
+
+                def first(self_inner):
+                    return _Doc(_DB2.next_id)
+
+            return _Q2()
+
+    _DB2.next_id = 7
+    out = gde.repair_stale_index(_DB2())
+    assert out["scanned"] == 2
+    assert out["repaired"] + out["failed"] == 2
+
+
+def test_the_model_predicate_is_null_safe():
+    """`c.model_version = d.embedding_model` is NULL when the column is NULL, and
+    SQL treats NULL as false — which excluded every chunk of that document from
+    BOTH the vector and the keyword branch, silently. The column is nullable and
+    documented as "null = the deployment's active model", so two NULLs are the
+    same vector space and the predicate has to say so."""
+    from app.services.dashboard_ai_bot import govern_doc_embeddings as gde
+
+    scoped = gde._scoped_chunk_filter(
+        dashboard_id=67, doc_ids=None, published_only=True,
+    )
+    assert scoped is not None
+    sql, _params = scoped
+    assert "IS NOT DISTINCT FROM" in sql, "phép so sánh model phải an toàn với NULL"
+    assert "c.model_version = d.embedding_model" not in sql
+

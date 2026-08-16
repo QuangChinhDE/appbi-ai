@@ -75,8 +75,8 @@ export function PageListLayout({
   return (
     <div className="flex h-full flex-col px-4 pt-6 sm:px-6 xl:px-8">
       <div className="mb-4 shrink-0">
-        <div className="flex items-start justify-between gap-4">
-          <div>
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
+          <div className="min-w-0">
             <h1 className="text-h1 text-text-primary font-emphasis">{title}</h1>
             {description && (
               <p className="mt-1 text-caption text-text-tertiary max-w-2xl">
@@ -84,7 +84,11 @@ export function PageListLayout({
               </p>
             )}
           </div>
-          {action && <div className="flex-shrink-0">{action}</div>}
+          {action && (
+            <div className="w-full flex-shrink-0 overflow-x-auto pb-0.5 sm:w-auto sm:overflow-visible sm:pb-0">
+              {action}
+            </div>
+          )}
         </div>
       </div>
 
@@ -95,7 +99,7 @@ export function PageListLayout({
           <div className="flex flex-col gap-2.5 xl:flex-row xl:items-center">
             <div className="flex min-w-0 flex-1 flex-col gap-2.5 lg:flex-row lg:items-center">
               {searchable && (
-                <div className="min-w-[240px] max-w-xl flex-[0_0_320px]">
+                <div className="w-full min-w-0 lg:min-w-[240px] lg:max-w-xl lg:flex-[0_0_320px]">
                   <Input
                     size="sm"
                     value={filterText}

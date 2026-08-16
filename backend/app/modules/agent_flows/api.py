@@ -16,6 +16,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
@@ -349,40 +350,71 @@ def list_attachable(
         .all()
     )
     datasets = db.query(Dataset.id, Dataset.name).filter(Dataset.id.in_(ds_ids or [-1])).all()
-    # A METRIC FOLLOWS ITS DATASET.
-    #
-    # Documents and datasets were filtered by what is shared with this author;
-    # metrics were not, so the picker offered every metric in the deployment to
-    # everyone. A metric carries `dataset_id`, and pointing a step at one is how
-    # a run reaches that dataset's numbers — so an unfiltered metric list is a
-    # way around the sharing rule the other two obey.
+    # A governed KPI is global, but every resolved realization carries data reach.
+    # Show it only when all datasets reached by its semantic bindings are shared
+    # with this author. Unbound definitions remain vocabulary-only.
     #
     # A metric with NO dataset is a definition and nothing else: attaching it
     # yields a name, a formula and a unit, with no query behind it. Those stay
     # visible, because withholding a shared vocabulary teaches authors to
     # redefine terms locally, which is the problem the metric catalogue exists
     # to solve.
-    metrics = (
-        db.query(GovernMetric.name, GovernMetric.display_name,
-                 GovernMetric.category, GovernMetric.dataset_id)
+    from app.services.governance_service import GovernanceService
+
+    metrics = []
+    allowed_dataset_ids = set(ds_ids)
+    for metric in (
+        db.query(GovernMetric)
         .filter(GovernMetric.status != "Deprecated")
-        .filter(
-            (GovernMetric.dataset_id.is_(None))
-            | (GovernMetric.dataset_id.in_(ds_ids or [-1]))
-        )
         .order_by(GovernMetric.display_name)
+        .all()
+    ):
+        resolved_ids = GovernanceService.metric_dataset_ids(db, metric, resolved_only=True)
+        if resolved_ids and not resolved_ids.issubset(allowed_dataset_ids):
+            continue
+        metrics.append((metric, bool(resolved_ids)))
+    # GLOSSARY TERMS ARE VOCABULARY, AND VOCABULARY IS NOT OWNED BY A DATASET.
+    #
+    # Documents and metrics are filtered by what is shared with this author,
+    # because attaching one can reach a dataset's numbers. A term reaches nothing:
+    # it is a name, a definition and some synonyms. Filtering it the same way
+    # would teach authors to redefine words locally, which is the failure a
+    # company glossary exists to prevent.
+    #
+    # Deprecated terms are withheld — an author choosing from a list should not be
+    # offered the definition the business has retired.
+    from app.models.governance import Glossary, GlossaryTerm
+
+    terms = (
+        db.query(GlossaryTerm.name, GlossaryTerm.display_name,
+                 GlossaryTerm.description, Glossary.name.label("set_name"))
+        .join(Glossary, Glossary.id == GlossaryTerm.glossary_id)
+        .filter(func.lower(func.coalesce(GlossaryTerm.status, "")) != "deprecated")
+        .order_by(Glossary.name, GlossaryTerm.display_name)
         .all()
     )
     return {
         "documents": [{"ref": str(i), "name": t} for i, t in docs],
         "datasets": [{"ref": str(i), "name": n} for i, n in datasets],
         "metrics": [
-            {"ref": name, "name": display or name, "group": category or "",
+            {"ref": metric.name, "name": metric.display_name or metric.name, "group": metric.category or "",
              # Stated so the builder can show which metrics carry a query and
              # which are vocabulary only — the author is choosing reach here,
              # and reach they cannot see is reach they cannot judge.
-             "reads_data": ds_id is not None}
-            for name, display, category, ds_id in metrics
+             "reads_data": reads_data}
+            for metric, reads_data in metrics
+        ],
+        "terms": [
+            # `ref` is the FQN, which is what the retriever matches on and what
+            # `GovernMetric.related_term_fqn` already stores — one spelling of a
+            # term's identity across the product, not a second.
+            {"ref": f"{set_name}.{name}", "name": display or name,
+             "group": set_name,
+             # Vocabulary only, always. Said in the same field the metric list
+             # uses so the builder can render one badge rule for both.
+             "reads_data": False,
+             "hint": (description or "")[:120]}
+            for name, display, description, set_name in terms
         ],
     }
 
@@ -631,6 +663,15 @@ def delete_brain_version(
     _may_manage_flow(db, user, brain_key)
     _run(lambda: reg.delete_version(db, brain_key, version, _actor(user)))
     return {"status": "deleted"}
+
+
+@router.post("/brains/{brain_key}/{version}/unpublish")
+def unpublish_brain_version(
+    brain_key: str, version: int,
+    db: Session = Depends(get_db), user: User = Depends(can_edit),
+) -> dict[str, Any]:
+    _may_manage_flow(db, user, brain_key)
+    return _run(lambda: reg.unpublish_version(db, brain_key, version, _actor(user)))
 
 
 # ═══ Bindings — "define the data, then assign" ════════════════════════════════

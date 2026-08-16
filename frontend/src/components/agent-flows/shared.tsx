@@ -8,14 +8,16 @@
  * class is called in Vietnamese, which sources a step may attach. A generic UI
  * folder is the wrong home for vocabulary only this module has.
  */
-import { Check, ChevronDown, Search } from 'lucide-react';
+import { Check, ChevronDown, Search, X } from 'lucide-react';
 import React from 'react';
 
 import { Badge } from '@/components/ui/Badge';
 import { Input } from '@/components/ui/Input';
 import { cn } from '@/lib/utils';
 import { useI18n } from '@/providers/LanguageProvider';
-import type { AttachableItem, BrainStatus, ToolSpec } from '@/lib/agentFlows';
+import type {
+  Attachable, AttachableItem, BrainStatus, KnowledgeAttachment, ToolSpec,
+} from '@/lib/agentFlows';
 
 /* ── status ───────────────────────────────────────────────────────────────── */
 
@@ -277,6 +279,164 @@ export function SearchPicker({
                 ))}
               </div>
             ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ── knowledge attachments ────────────────────────────────────────────────── */
+
+/** WHAT A STEP MAY LOOK UP — the control that was missing entirely.
+ *
+ *  `SearchPicker` existed, `/attachable` existed and served documents, datasets
+ *  and metrics under a permission model, and the contract carried
+ *  `KnowledgeAttachment` on both Agent and Knowledge nodes. Nothing rendered any
+ *  of it. So every Knowledge node in the product ran with an empty scope, which
+ *  the retriever reads as "no narrowing" — the widest possible reach, chosen by
+ *  nobody. An author could not attach a source even if they wanted to.
+ *
+ *  The row is deliberately quiet: kind, source, and when to use it, in the order
+ *  a person decides them. `reads_data` is a badge and not a sentence, because the
+ *  one thing worth saying here — this attachment reaches real numbers, that one is
+ *  only wording — is a property of the item, and a property belongs on the item.
+ *
+ *  Add stays disabled until the row is valid. The server requires a description of
+ *  at least ten characters, and a Save that fails on a rule the form never showed
+ *  is the conflict this control exists to prevent. */
+export function KnowledgeAttachments({
+  value, options, onChange, disabled,
+}: {
+  value: KnowledgeAttachment[];
+  options: Attachable | null;
+  onChange: (next: KnowledgeAttachment[]) => void;
+  disabled?: boolean;
+}) {
+  const { t } = useI18n();
+  const [kind, setKind] = React.useState<KnowledgeAttachment['source']>('document');
+  const [ref, setRef] = React.useState('');
+  const [why, setWhy] = React.useState('');
+
+  const pool: AttachableItem[] = React.useMemo(() => {
+    if (!options) return [];
+    return kind === 'document' ? options.documents
+      : kind === 'semantic' ? options.datasets
+      : kind === 'metric' ? options.metrics
+      : options.terms || [];
+  }, [options, kind]);
+
+  const label = React.useCallback((source: KnowledgeAttachment['source']) =>
+    t(`agentFlows.knowledge.source.${source}`), [t]);
+
+  const nameOf = React.useCallback((a: KnowledgeAttachment) => {
+    if (!options) return a.ref;
+    const all = [...options.documents, ...options.datasets, ...options.metrics,
+                 ...(options.terms || [])];
+    return all.find((o) => o.ref === a.ref)?.name || a.ref;
+  }, [options]);
+
+  const canAdd = !!ref && why.trim().length >= 10
+    && !value.some((a) => a.source === kind && a.ref === ref);
+
+  const add = () => {
+    if (!canAdd) return;
+    onChange([...value, { source: kind, ref, description: why.trim() }]);
+    setRef('');
+    setWhy('');
+  };
+
+  return (
+    <div className="mt-3">
+      <SectionTitle count={value.length || undefined}>
+        {t('agentFlows.knowledge.title')}
+      </SectionTitle>
+
+      {value.length > 0 && (
+        <div className="mb-2 overflow-hidden rounded-md border border-[rgb(var(--border-line))]">
+          {value.map((a, i) => (
+            <div
+              key={`${a.source}-${a.ref}`}
+              className="flex items-start gap-2 border-t border-[rgb(var(--border-line))] p-2 first:border-t-0"
+            >
+              <Badge size="xs" variant="neutral">{label(a.source)}</Badge>
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-caption font-medium">{nameOf(a)}</div>
+                <Input
+                  size="sm"
+                  className="mt-1"
+                  disabled={disabled}
+                  value={a.description}
+                  onChange={(e) => {
+                    const next = [...value];
+                    next[i] = { ...a, description: e.target.value };
+                    onChange(next);
+                  }}
+                  placeholder={t('agentFlows.knowledge.whenPlaceholder')}
+                  invalid={a.description.trim().length < 10}
+                />
+              </div>
+              {!disabled && (
+                <button
+                  type="button"
+                  aria-label={t('agentFlows.knowledge.remove')}
+                  onClick={() => onChange(value.filter((_, j) => j !== i))}
+                  className="rounded p-1 text-text-quaternary transition hover:bg-surface-2 hover:text-danger"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {!disabled && (
+        <div className="space-y-1.5 rounded-md border border-dashed border-[rgb(var(--border-line))] p-2">
+          <div className="flex gap-1.5">
+            <select
+              value={kind}
+              onChange={(e) => {
+                setKind(e.target.value as KnowledgeAttachment['source']);
+                setRef('');
+              }}
+              className="h-8 flex-shrink-0 rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 px-2 text-caption"
+            >
+              {(['document', 'metric', 'term', 'semantic'] as const).map((k) => (
+                <option key={k} value={k}>{label(k)}</option>
+              ))}
+            </select>
+            <SearchPicker
+              className="min-w-0 flex-1"
+              value={ref}
+              options={pool}
+              onChange={setRef}
+              placeholder={t('agentFlows.knowledge.pick')}
+              emptyText={t('agentFlows.knowledge.none')}
+            />
+          </div>
+          <div className="flex gap-1.5">
+            <Input
+              size="sm"
+              className="min-w-0 flex-1"
+              value={why}
+              onChange={(e) => setWhy(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); add(); } }}
+              placeholder={t('agentFlows.knowledge.whenPlaceholder')}
+            />
+            <button
+              type="button"
+              disabled={!canAdd}
+              onClick={add}
+              className={cn(
+                'h-8 flex-shrink-0 rounded-md px-2.5 text-caption font-medium transition',
+                canAdd
+                  ? 'bg-brand text-white hover:opacity-90'
+                  : 'cursor-not-allowed bg-surface-2 text-text-quaternary',
+              )}
+            >
+              {t('agentFlows.knowledge.add')}
+            </button>
           </div>
         </div>
       )}

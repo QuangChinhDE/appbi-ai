@@ -31,10 +31,12 @@ import { cn } from '@/lib/utils';
 import { useI18n } from '@/providers/LanguageProvider';
 import {
   blankNode, branchCoverage, brainImpact, canDropInto, findNode, getBrain, insertNode,
-  listNodeSpecs, listProviders, listToolPacks, moveNode, publishBrain, removeNode,
+  listAttachable, listNodeSpecs, listProviders, listToolPacks, moveNode,
+  publishBrain, removeNode,
   replaceNode, saveBrain, testFlow, validateFlow, walkNodes,
   type FlowBody, type FlowLinkUsage, type FlowNode, type FlowPath, type InsertTarget,
-  type NodeSpec, type NodeType, type ProviderGroup, type SwitchCase, type ToolPack,
+  type Attachable, type NodeSpec, type NodeType, type ProviderGroup,
+  type SwitchCase, type ToolPack,
   type ValidateResult,
 } from '@/lib/agentFlows';
 
@@ -84,6 +86,10 @@ export function BrainBuilder({
   const [specList, setSpecList] = React.useState<NodeSpec[]>([]);
   const [toolPacks, setToolPacks] = React.useState<ToolPack[]>([]);
   const [providers, setProviders] = React.useState<ProviderGroup[]>([]);
+  // What this author may point a step at. Null until it arrives, so the picker
+  // can say "loading" rather than "nothing to attach" — the two look identical
+  // in an empty dropdown and mean opposite things.
+  const [attachable, setAttachable] = React.useState<Attachable | null>(null);
   const [coverage, setCoverage] = React.useState<Record<string, number>>({});
 
   const [selected, setSelected] = React.useState<string | null>(null);
@@ -116,6 +122,9 @@ export function BrainBuilder({
       const [detail, nodeSpecs, packs, provs] = await Promise.all([
         getBrain(brainKey), listNodeSpecs(), listToolPacks(true), listProviders(),
       ]);
+      // Fetched separately and non-blocking: a slow governance query must not
+      // hold up opening the flow, and a step with nothing attached still works.
+      listAttachable().then(setAttachable).catch(() => setAttachable(null));
       setName(detail.name);
       setDescription(detail.description || '');
       setVersion(detail.version);
@@ -529,6 +538,7 @@ export function BrainBuilder({
                   specs={specs}
                   toolPacks={toolPacks}
                   providers={providers}
+                  attachable={attachable}
                   isAnswerNode={sel.node?.key === answerKey}
                   onChange={updateNode}
                   onChangePath={updatePath}

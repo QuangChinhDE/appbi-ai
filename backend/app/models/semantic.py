@@ -9,8 +9,11 @@ from app.core.database import Base
 
 class SemanticView(Base):
     """
-    Represents a semantic view (similar to LookML view)
-    Contains dimensions and measures definitions
+    Executable semantic projection of one dataset table (similar to a LookML view).
+
+    Dimensions and measures are query definitions, not business-governance
+    records. A governed KPI may bind to one of these measures, while a glossary
+    term may classify it; neither record is owned by this view.
     """
     __tablename__ = "semantic_views"
 
@@ -41,8 +44,10 @@ class SemanticView(Base):
 
 class SemanticModel(Base):
     """
-    Represents a semantic model (similar to LookML model)
-    Groups multiple explores together
+    Dataset-owned executable query model grouping explores and joins.
+
+    This is the technical semantic layer. Company vocabulary, KPI contracts, and
+    caveats are authored centrally in the Governance Registry and linked here.
     """
     __tablename__ = "semantic_models"
 

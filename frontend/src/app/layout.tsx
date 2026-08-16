@@ -1,3 +1,4 @@
+import '@xyflow/react/dist/style.css';
 import './globals.css';
 import type { Metadata, Viewport } from 'next';
 import { DM_Sans, Inter, JetBrains_Mono, Roboto } from 'next/font/google';

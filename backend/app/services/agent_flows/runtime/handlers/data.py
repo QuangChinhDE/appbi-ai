@@ -301,7 +301,7 @@ async def run_knowledge(
     yield AgentEvent(type="status", text="Đang tra tri thức…")
 
     previous_scope = getattr(rctx.ctx, "knowledge_scope", None)
-    scope = {"doc_ids": [], "dataset_ids": [], "metric_names": []}
+    scope = {"doc_ids": [], "dataset_ids": [], "metric_names": [], "term_fqns": []}
     for k in node.knowledge:
         if k.source == "document" and k.ref.isdigit():
             scope["doc_ids"].append(int(k.ref))
@@ -309,6 +309,11 @@ async def run_knowledge(
             scope["dataset_ids"].append(int(k.ref))
         elif k.source == "metric":
             scope["metric_names"].append(k.ref)
+        elif k.source == "term":
+            # The company's own vocabulary, addressed by FQN — the same spelling
+            # `GovernMetric.related_term_fqn` uses, so a term has one identity
+            # across the product rather than one per feature.
+            scope["term_fqns"].append(k.ref)
     if hasattr(rctx.ctx, "knowledge_scope"):
         rctx.ctx.knowledge_scope = scope
 

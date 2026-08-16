@@ -30,8 +30,8 @@ the builder does not offer either.
 
 KNOWLEDGE
 ---------
-A flow attaches knowledge that already lives in AppBI — Knowledge documents, a
-dataset's Semantic Model, managed metric definitions. Each attachment carries WHEN
+A flow attaches knowledge that already lives in AppBI — Knowledge Documents, a
+Dataset's Semantic Model, and Governed KPI definitions. Each attachment carries WHEN
 TO CONSULT IT, and that description is required: faced with a report the flow was
 never written for, the model reads the description and declines to open the source.
 
@@ -57,10 +57,17 @@ from app.services.agent_flows.models_catalogue import INHERIT, MODELS, known_mod
 
 logger = logging.getLogger(__name__)
 
-#: Where a piece of attached knowledge comes from. All three already exist in the
-#: product; there is no fourth, because inventing a knowledge store when the app
-#: already has one is how two answers to one question get created.
-KnowledgeSourceKind = Literal["document", "semantic", "metric"]
+#: Where a piece of attached knowledge comes from. Every kind here already exists
+#: in the product; none was invented for this contract, because standing up a new
+#: knowledge store when the app already has one is how two answers to one question
+#: get created.
+#:
+#: `term` WAS MISSING, and the comment that used to sit here said there was no
+#: fourth store. There is: `glossary_terms`, the company's own vocabulary. Its
+#: absence meant an author could attach the DOCUMENT that mentions a term and the
+#: METRIC that measures it, but never the definition itself — so "what do we mean
+#: by GMV" was the one question the knowledge node could not be pointed at.
+KnowledgeSourceKind = Literal["document", "semantic", "metric", "term"]
 
 #: Total nodes anywhere in the tree. Not a quality opinion — depth is the author's
 #: call — but the point past which one turn's budget could not fund the flow.
@@ -111,7 +118,8 @@ class KnowledgeAttachment(_Model):
     """One source this node may consult, and WHEN.
 
     `ref` is the source's id in its own store: a document id, a dataset id, a metric
-    machine name. One string for three kinds, rather than three nullable columns.
+    machine name, a glossary term's FQN (`bộ-từ-điển.thuật-ngữ`). One string for
+    every kind, rather than a nullable column each.
     """
 
     source: KnowledgeSourceKind

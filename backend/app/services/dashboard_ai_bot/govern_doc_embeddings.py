@@ -28,8 +28,6 @@ import re
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from app.core.config import settings
-
 logger = logging.getLogger(__name__)
 
 _TOKEN_RE = re.compile(r"\{\{[^}]+\}\}")   # {{metric:…}} / {{dashboard:…}} embed tokens
@@ -41,13 +39,20 @@ _HARD = 1400           # hard-split blocks longer than this, regardless of targe
 #: while the AI only ever saw the first 40 chunks. Anything above this is
 #: reported (see chunk_doc_detailed) instead of disappearing.
 _MAX_CHUNKS = 500
+_INDEX_HASH_VERSION = "v2"
 
 
 def _body_hash(cache_key: str, body: str) -> str:
     """sha256 of a composite cache key (model + chunk config) + body — any
     change to WHAT would be re-embedded (not just the body text) must bust
     the hash-gate, so this is not just the embedding model name anymore."""
-    return hashlib.sha256(f"{cache_key}\n{body}".encode("utf-8")).hexdigest()
+    digest = hashlib.sha256(f"{cache_key}\n{body}".encode("utf-8")).hexdigest()
+    return f"{_INDEX_HASH_VERSION}:{digest}"
+
+
+def _is_current_index_hash(value: str | None) -> bool:
+    """Only current-generation hashes are eligible for chunk-vector reuse."""
+    return str(value or "").startswith(f"{_INDEX_HASH_VERSION}:")
 
 
 def _clamp_chunk_params(size: int | None, overlap: int | None) -> tuple[int, int]:
@@ -278,10 +283,15 @@ def index_is_stale(db: Session, doc) -> bool:
         body = (GovernanceService.published_body(db, doc) or "").strip()
         if not body:
             return False
-        model = (getattr(doc, "embedding_model", None) or "").strip() or settings.active_embedding_model
+        from app.services.embedding_service import EmbeddingService
+
+        model = EmbeddingService.resolve_model(getattr(doc, "embedding_model", None))
+        dimensions = EmbeddingService.dimensions_for(model)
         size, overlap = _clamp_chunk_params(getattr(doc, "chunk_size", None), getattr(doc, "chunk_overlap", None))
         strategy = getattr(doc, "chunk_strategy", None) or "paragraph"
-        return doc.embedded_hash != _body_hash(f"{model}:{strategy}:{size}:{overlap}", body)
+        return doc.embedded_hash != _body_hash(
+            f"{model}:{dimensions}:{strategy}:{size}:{overlap}", body
+        )
     except Exception:  # noqa: BLE001
         logger.warning("govern_doc_embeddings: staleness check failed (doc %s)", getattr(doc, "id", None), exc_info=True)
         return False
@@ -360,8 +370,10 @@ def _set_chunk_scope(db: Session, value: str) -> None:
         logger.warning("govern_doc_embeddings: could not set chunk scope %r", value, exc_info=True)
 
 
-def _vector_ranked_ids(db: Session, sql_filter: str, params: dict, lit: str, limit: int) -> list:
-    """Chunk ids ordered by true cosine distance, nearest first.
+def _vector_ranked_hits(
+    db: Session, sql_filter: str, params: dict, vector_literal: str, limit: int
+) -> list[tuple[int, float]]:
+    """Chunk ids and cosine similarities, ordered nearest first.
 
     Sorts on the distance the query already returns instead of trusting the
     index's emission order, which is what makes `relaxed_order` safe to use for
@@ -372,24 +384,31 @@ def _vector_ranked_ids(db: Session, sql_filter: str, params: dict, lit: str, lim
     rows = db.execute(
         text(
             f"""
-            SELECT c.id, (c.embedding <=> '{lit}'::vector) AS dist
+            SELECT c.id, (c.embedding <=> CAST(:query_vector AS vector)) AS dist
             FROM govern_doc_chunk c
             {sql_filter}
-            ORDER BY c.embedding <=> '{lit}'::vector
+            ORDER BY c.embedding <=> CAST(:query_vector AS vector)
             LIMIT :lim
             """
         ),
-        {**params, "lim": limit},
+        {**params, "query_vector": vector_literal, "lim": limit},
     ).fetchall()
-    return [r[0] for r in sorted(rows, key=lambda r: r[1])]
+    return [
+        (int(row[0]), 1.0 - float(row[1]))
+        for row in sorted(rows, key=lambda row: row[1])
+    ]
 
 
-def active_embedding_model() -> str:
-    """The model the read path will trust. Chunks embedded with anything else
-    are excluded rather than compared: cosine distance between two different
-    models' vectors is a meaningless number that still sorts, so mixing them
-    degrades ranking without ever raising an error."""
-    return (settings.active_embedding_model or "").strip()
+def _vector_ranked_ids(
+    db: Session, sql_filter: str, params: dict, lit: str, limit: int
+) -> list[int]:
+    """Backward-compatible id-only view used by the vector console/tests."""
+    return [
+        chunk_id
+        for chunk_id, _similarity in _vector_ranked_hits(
+            db, sql_filter, params, lit, limit
+        )
+    ]
 
 
 #: Reciprocal-rank-fusion constant. 60 is the value from the original RRF paper
@@ -463,7 +482,7 @@ def delete_doc_chunks(db: Session, doc_id: int) -> None:
         db.rollback()
 
 
-def embed_doc(db, doc) -> dict:
+def embed_doc(db, doc, *, force_full_rebuild: bool = False) -> dict:
     """(Re)embed a doc's chunks — hash-gated so an unchanged body AND unchanged
     chunking/model config cost nothing. `doc` is a GovernKnowledgeDoc ORM
     instance. Returns {status, chunks, new_chunks, detail?} where status is
@@ -475,12 +494,37 @@ def embed_doc(db, doc) -> dict:
         # Re-indexing legitimately touches drafts, so this transaction needs to
         # see its own unpublished chunks (the dedup read below).
         authoring_scope(db)
+        # Serialize every writer for this document. Without this lock, a reset to
+        # model B and a scheduled sync still running on model A can finish out of
+        # order and leave the document row and its chunks in different spaces.
+        db.execute(
+            text(
+                "SELECT id FROM govern_knowledge_docs "
+                "WHERE id = :d FOR UPDATE"
+            ),
+            {"d": doc.id},
+        )
+        # This instance may have been loaded before it waited for the lock.
+        # Refresh after acquiring it so model/config cannot be stale.
+        db.refresh(doc)
         # RAG serves the PUBLISHED (live) version's body — not the latest draft.
         # So editing a new draft does NOT re-index; only publishing does.
         from app.services.governance_service import GovernanceService
         live_body = GovernanceService.published_body(db, doc)
         body = (live_body or "").strip()
-        model = (getattr(doc, "embedding_model", None) or "").strip() or settings.active_embedding_model
+        try:
+            model = EmbeddingService.resolve_model(
+                getattr(doc, "embedding_model", None)
+            )
+            dimensions = EmbeddingService.dimensions_for(model)
+        except ValueError as exc:
+            db.rollback()
+            return {
+                "status": "error",
+                "chunks": 0,
+                "new_chunks": 0,
+                "detail": str(exc),
+            }
         strategy = getattr(doc, "chunk_strategy", None) or "paragraph"
         size, overlap = _clamp_chunk_params(getattr(doc, "chunk_size", None), getattr(doc, "chunk_overlap", None))
 
@@ -503,16 +547,29 @@ def embed_doc(db, doc) -> dict:
                 "detail": "Tài liệu bị chặn gửi ra nhà cung cấp embedding bên ngoài.",
             }
 
-        cache_key = f"{model}:{strategy}:{size}:{overlap}"
+        cache_key = f"{model}:{dimensions}:{strategy}:{size}:{overlap}"
         h = _body_hash(cache_key, body)
-        if doc.embedded_hash == h:
-            existing_count = db.execute(
-                text("SELECT COUNT(*) FROM govern_doc_chunk WHERE doc_id = :d"), {"d": doc.id}
-            ).scalar() or 0
-            return {"status": "unchanged", "chunks": int(existing_count), "new_chunks": 0}  # HASH-GATE — no embedding calls at all
+        if doc.embedded_hash == h and not force_full_rebuild:
+            existing = db.execute(
+                text(
+                    "SELECT COUNT(*), COUNT(*) FILTER (WHERE model_version = :m) "
+                    "FROM govern_doc_chunk WHERE doc_id = :d"
+                ),
+                {"d": doc.id, "m": model},
+            ).first()
+            existing_count = int(existing[0] or 0) if existing else 0
+            matching_count = int(existing[1] or 0) if existing else 0
+            if existing_count and existing_count == matching_count:
+                db.commit()
+                return {
+                    "status": "unchanged",
+                    "chunks": existing_count,
+                    "new_chunks": 0,
+                }
 
         chunks, chunk_info = chunk_doc_detailed(body, strategy=strategy, size=size, overlap=overlap)
         if not chunks:
+            db.commit()
             return {"status": "empty", "chunks": 0, "new_chunks": 0}
         if chunk_info["truncated"]:
             logger.warning(
@@ -520,14 +577,20 @@ def embed_doc(db, doc) -> dict:
                 doc.id, chunk_info["max_chunks"], chunk_info["dropped_chunks"], chunk_info["dropped_chars"],
             )
 
-        # Reuse embeddings of paragraphs whose text is unchanged (chunk dedup).
+        # Reuse only vectors produced by this exact model. Content hashes are not
+        # portable across embedding spaces: equal text embedded by another model
+        # is still a different vector and must be regenerated.
         existing: dict[str, str] = {}
-        for row in db.execute(
-            text("SELECT content_hash, embedding::text FROM govern_doc_chunk WHERE doc_id = :d"),
-            {"d": doc.id},
-        ).fetchall():
-            if row[1]:
-                existing[row[0]] = row[1]
+        if not force_full_rebuild and _is_current_index_hash(doc.embedded_hash):
+            for row in db.execute(
+                text(
+                    "SELECT content_hash, embedding::text FROM govern_doc_chunk "
+                    "WHERE doc_id = :d AND model_version = :m"
+                ),
+                {"d": doc.id, "m": model},
+            ).fetchall():
+                if row[1]:
+                    existing[row[0]] = row[1]
 
         prepared: list[tuple[int, str, str, str]] = []
         embedded_new = 0
@@ -539,8 +602,28 @@ def embed_doc(db, doc) -> dict:
                 if vec is None:
                     # No key / provider error / incompatible model id → keep old
                     # chunks untouched, retry on next save.
-                    logger.warning("govern_doc_embeddings: embedding unavailable (doc %s) — kept previous chunks", doc.id)
-                    return {"status": "unavailable", "chunks": 0, "new_chunks": embedded_new}
+                    detail = (
+                        "Embedding provider unavailable after reset; the old "
+                        "vector index was removed and this document is not "
+                        "searchable until a successful rebuild."
+                        if force_full_rebuild
+                        else "Embedding provider unavailable; the previous vector index was kept."
+                    )
+                    logger.warning(
+                        "govern_doc_embeddings: embedding unavailable (doc %s) — %s",
+                        doc.id,
+                        detail,
+                    )
+                    # For a normal refresh this preserves the old vectors. For
+                    # an explicit reset, the caller's pending delete is committed
+                    # so stale vectors are never relabeled as the new model.
+                    db.commit()
+                    return {
+                        "status": "unavailable",
+                        "chunks": 0,
+                        "new_chunks": embedded_new,
+                        "detail": detail,
+                    }
                 emb = str(vec)
                 embedded_new += 1
             prepared.append((idx, ch, chash, emb))
@@ -576,98 +659,432 @@ def embed_doc(db, doc) -> dict:
         return {"status": "error", "chunks": 0, "new_chunks": 0, "detail": str(exc)[:300]}
 
 
-def retrieve_doc_chunks(db: Session, dashboard_id: int, question: str = "", k: int = 6) -> list[dict]:
-    """Cosine top-k chunks over this dashboard's Published, linked docs. Empty if
-    embeddings are unavailable (→ caller falls back to summary blurbs)."""
+def reset_doc_embedding(
+    db,
+    doc,
+    *,
+    model: str,
+    chunk_strategy: str,
+    chunk_size: int,
+    chunk_overlap: int,
+) -> dict:
+    """Reset a document's vector space and rebuild it from zero.
+
+    This is the only operation allowed to change a locked document model. Old
+    vectors and the old hash are committed away before the new model is called,
+    so a failed provider request cannot leave mislabeled or mixed-model chunks.
+    """
     from app.services.embedding_service import EmbeddingService
-    try:
-        # Lock this transaction down to published chunks before touching the
-        # store, rather than trusting that nothing earlier in the request opened
-        # an authoring window.
-        restricted_scope(db)
-        # Cheap guard FIRST: if this dashboard has no embedded chunks yet, skip the
-        # query-embedding API call entirely (0 wasted tokens until docs are embedded).
-        has_chunks = db.execute(
-            text(
-                """
-                SELECT 1 FROM govern_doc_chunk c
-                JOIN govern_knowledge_docs d ON d.id = c.doc_id AND d.status = 'Published'
-                JOIN govern_doc_asset_links l ON l.doc_id = d.id
-                     AND l.asset_type = 'dashboard' AND l.asset_ref = :did
-                WHERE c.embedding IS NOT NULL AND c.model_version = :emb_model LIMIT 1
-                """
-            ),
-            {"did": str(dashboard_id), "emb_model": active_embedding_model()},
-        ).first()
-        if not has_chunks:
-            return []
-        qvec = EmbeddingService.generate_query_embedding(question or "")
-        if qvec is None:
-            return []
-        lit = str(qvec)  # floats only — safe to inline (mirrors EmbeddingService.search_similar)
 
-        # HYBRID recall: semantic (vector) OR literal (full-text), fused.
-        # Vector alone misses exact identifiers — a search for a quarter code or
-        # a date returns "related-sounding" prose instead of the line that
-        # literally contains it.
-        scope = """
-                JOIN govern_knowledge_docs d
-                     ON d.id = c.doc_id AND d.status = 'Published'
-                JOIN govern_doc_asset_links l
-                     ON l.doc_id = d.id AND l.asset_type = 'dashboard' AND l.asset_ref = :did
-                WHERE c.embedding IS NOT NULL
-                  AND c.model_version = :emb_model
-        """
-        scope_params = {"did": str(dashboard_id), "emb_model": active_embedding_model()}
-        pool = max(k * 4, 20)
-        vec_ids = _vector_ranked_ids(db, scope, scope_params, lit, pool)
-        kw_ids = _keyword_ranked_ids(db, scope, scope_params, question or "", pool)
+    resolved = EmbeddingService.resolve_model(model)
+    if chunk_strategy not in ("paragraph", "heading", "fixed"):
+        raise ValueError("chunk_strategy must be paragraph, heading, or fixed.")
+    size, overlap = _clamp_chunk_params(chunk_size, chunk_overlap)
 
-        fused = _fuse_rrf(vec_ids, kw_ids)
-        if not fused:
-            return []
-        top_ids = sorted(fused, key=lambda i: -fused[i])[:k]
-        rows = db.execute(
-            text(f"""
-                SELECT c.id, c.doc_id, d.title, c.content,
-                       1 - (c.embedding <=> '{lit}'::vector) AS sim, c.trust
-                FROM govern_doc_chunk c
-                JOIN govern_knowledge_docs d ON d.id = c.doc_id
-                WHERE c.id = ANY(:ids)
-            """),
-            {"ids": top_ids},
-        ).fetchall()
-        by_id = {r[0]: r for r in rows}
-        out = [
-            {"doc_id": by_id[i][1], "title": by_id[i][2], "content": by_id[i][3],
-             "similarity": float(by_id[i][4]),
-             # Travels WITH the passage on purpose: a consumer that never sees
-             # where the text came from cannot treat it any differently.
-             "trust": by_id[i][5],
-             "matched_by":
-                 ("both" if i in vec_ids and i in kw_ids else "keyword" if i in kw_ids else "vector")}
-            for i in top_ids if i in by_id
-        ]
-        log_retrieval(db, consumer="dashboard_bot", consumer_ref=str(dashboard_id),
-                      question=question or "", rows=out, chunk_ids=top_ids)
+    authoring_scope(db)
+    db.execute(
+        text(
+            "SELECT id FROM govern_knowledge_docs WHERE id = :d FOR UPDATE"
+        ),
+        {"d": doc.id},
+    )
+    db.refresh(doc)
+    db.execute(
+        text("DELETE FROM govern_doc_chunk WHERE doc_id = :d"), {"d": doc.id}
+    )
+    doc.embedded_hash = None
+    doc.embedding_model = resolved
+    doc.chunk_strategy = chunk_strategy
+    doc.chunk_size = size
+    doc.chunk_overlap = overlap
+    # embed_doc refreshes after taking the same row lock. Flush these settings so
+    # that refresh observes the requested profile in this transaction.
+    db.flush()
+    result = embed_doc(db, doc, force_full_rebuild=True)
+    db.commit()
+    return result
 
-        # Usage telemetry: these docs were just pulled into an AI answer.
-        # Best-effort — analytics must never break retrieval.
-        try:
-            ids = sorted({r["doc_id"] for r in out})
-            if ids:
-                db.execute(
-                    text("UPDATE govern_knowledge_docs SET retrieval_count = COALESCE(retrieval_count,0) + 1 WHERE id = ANY(:ids)"),
-                    {"ids": ids},
-                )
-                db.commit()
-        except Exception:  # noqa: BLE001
-            db.rollback()
-        return out
-    except Exception:  # noqa: BLE001
-        logger.warning("govern_doc_embeddings.retrieve_doc_chunks failed", exc_info=True)
+
+def _scoped_chunk_filter(
+    *,
+    dashboard_id: int | None,
+    doc_ids: set[int] | list[int] | None,
+    published_only: bool,
+) -> tuple[str, dict] | None:
+    """Build one scope shared by keyword and every model-specific vector scan."""
+    allowed = sorted({int(item) for item in (doc_ids or [])})
+    if doc_ids is not None and not allowed:
+        return None
+
+    joins = ["JOIN govern_knowledge_docs d ON d.id = c.doc_id"]
+    params: dict = {}
+    predicates = [
+        "c.embedding IS NOT NULL",
+        # Legacy hashes predate model-safe dedup, so their vectors cannot be
+        # trusted even when the model label happens to match. Migration 0049
+        # invalidates those hashes; backfill replaces the rows and writes v2.
+        f"d.embedded_hash LIKE '{_INDEX_HASH_VERSION}:%'",
+        # A document owns one vector space. Mismatched legacy rows are invalid
+        # index data and must never be searched, even by the keyword branch.
+        #
+        # `IS NOT DISTINCT FROM`, NOT `=`. `embedding_model` is nullable and the
+        # column is documented as "null = the deployment's active model", so a
+        # plain `=` evaluates to NULL for those rows — which SQL treats as false,
+        # excluding every chunk of that document from BOTH branches with nothing
+        # said anywhere. The invariant meant "same space", and two NULLs are the
+        # same space; `=` cannot express that.
+        "c.model_version IS NOT DISTINCT FROM d.embedding_model",
+    ]
+    if published_only:
+        predicates.append("d.status = 'Published'")
+    if allowed:
+        predicates.append("c.doc_id = ANY(:allowed)")
+        params["allowed"] = allowed
+    else:
+        if dashboard_id is None:
+            return None
+        joins.append(
+            "JOIN govern_doc_asset_links l ON l.doc_id = d.id "
+            "AND l.asset_type = 'dashboard' AND l.asset_ref = :did"
+        )
+        params["did"] = str(dashboard_id)
+    return f"{' '.join(joins)} WHERE {' AND '.join(predicates)}", params
+
+
+def _model_doc_groups(db: Session, sql_filter: str, params: dict) -> dict[str, list[int]]:
+    rows = db.execute(
+        text(
+            f"""
+            SELECT DISTINCT c.model_version, c.doc_id
+            FROM govern_doc_chunk c
+            {sql_filter}
+            ORDER BY c.model_version, c.doc_id
+            """
+        ),
+        params,
+    ).fetchall()
+    groups: dict[str, list[int]] = {}
+    for model, doc_id in rows:
+        if model:
+            groups.setdefault(str(model), []).append(int(doc_id))
+    return groups
+
+
+def _search_scoped_doc_chunks(
+    db: Session,
+    question: str,
+    *,
+    k: int,
+    dashboard_id: int | None,
+    doc_ids: set[int] | list[int] | None,
+    published_only: bool,
+) -> list[dict]:
+    """Hybrid retrieval across any number of document embedding models.
+
+    Each model gets its own query vector and filtered ANN scan. Their ranks,
+    plus one model-independent full-text rank, are merged with RRF so raw cosine
+    scores from unrelated vector spaces are never compared.
+    """
+    from app.services.embedding_service import EmbeddingService
+
+    scoped = _scoped_chunk_filter(
+        dashboard_id=dashboard_id,
+        doc_ids=doc_ids,
+        published_only=published_only,
+    )
+    if scoped is None:
+        return []
+    sql_filter, scope_params = scoped
+    groups = _model_doc_groups(db, sql_filter, scope_params)
+    if not groups:
         return []
 
+    pool = max(k * 4, 20)
+    keyword_ids = _keyword_ranked_ids(
+        db, sql_filter, scope_params, question or "", max(pool, k * 8)
+    )
+    vector_lists: list[list[int]] = []
+    vector_scores: dict[int, float] = {}
+    vector_ids: set[int] = set()
+
+    for model, model_doc_ids in groups.items():
+        query_vector = EmbeddingService.generate_query_embedding(
+            question or "", model=model
+        )
+        if query_vector is None:
+            # Keyword results for this model remain usable. One provider/model
+            # failure must not take the whole multi-model search down.
+            continue
+        model_filter = (
+            f"{sql_filter} AND c.model_version = :embedding_model "
+            "AND c.doc_id = ANY(:model_doc_ids)"
+        )
+        hits = _vector_ranked_hits(
+            db,
+            model_filter,
+            {
+                **scope_params,
+                "embedding_model": model,
+                "model_doc_ids": model_doc_ids,
+            },
+            str(query_vector),
+            pool,
+        )
+        ranked = [chunk_id for chunk_id, _similarity in hits]
+        if ranked:
+            vector_lists.append(ranked)
+            vector_ids.update(ranked)
+            vector_scores.update(dict(hits))
+
+    ranked_lists = [*vector_lists]
+    if keyword_ids:
+        ranked_lists.append(keyword_ids)
+    if not ranked_lists:
+        return []
+    fused = _fuse_rrf(*ranked_lists)
+    top_ids = sorted(fused, key=lambda item: -fused[item])[: max(1, k)]
+    rows = db.execute(
+        text(
+            """
+            SELECT c.id, c.doc_id, d.title, c.chunk_index, c.content,
+                   c.trust, c.model_version
+            FROM govern_doc_chunk c
+            JOIN govern_knowledge_docs d ON d.id = c.doc_id
+            WHERE c.id = ANY(:ids)
+            """
+        ),
+        {"ids": top_ids},
+    ).fetchall()
+    by_id = {int(row[0]): row for row in rows}
+    keyword_set = set(keyword_ids)
+    return [
+        {
+            "chunk_id": chunk_id,
+            "doc_id": int(by_id[chunk_id][1]),
+            "title": by_id[chunk_id][2],
+            "chunk_index": int(by_id[chunk_id][3]),
+            "content": by_id[chunk_id][4],
+            "similarity": vector_scores.get(chunk_id),
+            "rrf_score": float(fused[chunk_id]),
+            "trust": by_id[chunk_id][5],
+            "embedding_model": by_id[chunk_id][6],
+            "matched_by": (
+                "both"
+                if chunk_id in vector_ids and chunk_id in keyword_set
+                else "keyword"
+                if chunk_id in keyword_set
+                else "vector"
+            ),
+        }
+        for chunk_id in top_ids
+        if chunk_id in by_id
+    ]
+
+
+def search_doc_chunks(
+    db: Session,
+    question: str,
+    *,
+    k: int = 6,
+    dashboard_id: int | None = None,
+    doc_ids: set[int] | list[int] | None = None,
+    published_only: bool = True,
+    authoring: bool = False,
+) -> list[dict]:
+    """Reusable multi-model search without retrieval telemetry."""
+    if db is None:
+        return []
+    try:
+        authoring_scope(db) if authoring else restricted_scope(db)
+        return _search_scoped_doc_chunks(
+            db,
+            question,
+            k=max(1, int(k)),
+            dashboard_id=dashboard_id,
+            doc_ids=doc_ids,
+            published_only=published_only,
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning("govern_doc_embeddings.search_doc_chunks failed", exc_info=True)
+        db.rollback()
+        return []
+
+
+def retrieve_doc_chunks(
+    db: Session,
+    dashboard_id: int,
+    question: str = "",
+    k: int = 6,
+    doc_ids: set[int] | list[int] | None = None,
+) -> list[dict]:
+    """Search the published documents this report/flow is allowed to read."""
+    if db is None:
+        return []
+    out = search_doc_chunks(
+        db,
+        question,
+        k=k,
+        dashboard_id=dashboard_id,
+        doc_ids=doc_ids,
+        published_only=True,
+        authoring=False,
+    )
+    chunk_ids = [row["chunk_id"] for row in out]
+    log_retrieval(
+        db,
+        consumer="dashboard_bot",
+        consumer_ref=str(dashboard_id),
+        question=question or "",
+        rows=out,
+        chunk_ids=chunk_ids,
+    )
+
+    try:
+        ids = sorted({row["doc_id"] for row in out})
+        if ids:
+            db.execute(
+                text(
+                    "UPDATE govern_knowledge_docs "
+                    "SET retrieval_count = COALESCE(retrieval_count, 0) + 1 "
+                    "WHERE id = ANY(:ids)"
+                ),
+                {"ids": ids},
+            )
+            db.commit()
+    except Exception:  # noqa: BLE001
+        db.rollback()
+    return out
+
+
+
+#: A document whose vector index cannot be trusted, and why.
+#:
+#: THE THREE WAYS AN INDEX GOES BAD, AND WHY THEY ARE ONE PROBLEM
+#: -------------------------------------------------------------
+#: `_scoped_chunk_filter` will not search a document unless its hash is the
+#: current version AND every chunk carries the same model the document is pinned
+#: to. Anything else is index data the retriever refuses to trust — correctly,
+#: because trusting it silently returns passages from the wrong vector space.
+#:
+#: The catch is that refusing is invisible. A document in this state still exists,
+#: still shows in the library, still looks attached to its dashboard — and the
+#: assistant simply stops finding it. Measured on this deployment after migration
+#: 0049 invalidated legacy hashes: five of six documents on the main dashboard
+#: became unsearchable, and "GMV là gì" returned nothing at all while a document
+#: literally titled "Từ vựng & Quy ước" sat one query away.
+#:
+#: So the states are enumerated here rather than left implicit in a WHERE clause,
+#: and something has to act on them.
+_STALE_INDEX_SQL = f"""
+    SELECT d.id,
+           CASE
+             WHEN d.embedded_hash IS NULL THEN 'never_indexed'
+             WHEN d.embedded_hash NOT LIKE '{_INDEX_HASH_VERSION}:%' THEN 'old_index_format'
+             WHEN EXISTS (
+                    SELECT 1 FROM govern_doc_chunk c
+                     WHERE c.doc_id = d.id
+                       AND c.model_version IS DISTINCT FROM d.embedding_model
+                  ) THEN 'model_changed'
+             WHEN NOT EXISTS (
+                    SELECT 1 FROM govern_doc_chunk c
+                     WHERE c.doc_id = d.id AND c.embedding IS NOT NULL
+                  ) THEN 'no_vectors'
+             ELSE NULL
+           END AS reason
+      FROM govern_knowledge_docs d
+     WHERE d.status = 'Published'
+"""
+
+
+def stale_index_docs(db: Session) -> dict[int, str]:
+    """`doc_id -> why its index cannot be searched`. Empty when everything is fine.
+
+    Read-only and cheap: this is what a screen shows and what the repair job asks
+    before spending a single embedding call.
+    """
+    out: dict[int, str] = {}
+    try:
+        rows = db.execute(text(f"SELECT id, reason FROM ({_STALE_INDEX_SQL}) s "
+                               "WHERE reason IS NOT NULL")).fetchall()
+        out = {int(r[0]): str(r[1]) for r in rows}
+    except Exception:  # noqa: BLE001 — a health read must never break a request
+        logger.warning("govern_doc_embeddings: stale-index scan failed", exc_info=True)
+        return {}
+
+    # AND the content check, which the SQL above cannot do.
+    #
+    # The query knows the SHAPE of an index — its format, its model, whether any
+    # vectors exist. It cannot know whether the text they were made from is still
+    # the published text, because that means recomputing the hash from the live
+    # body. `index_is_stale` does exactly that, so a document re-published without
+    # a re-embed — the AI quoting a previous edition, silently — is caught here
+    # rather than by a second detector on another screen answering a different
+    # half of the same question.
+    try:
+        from app.models.governance import GovernKnowledgeDoc
+
+        for doc in (
+            db.query(GovernKnowledgeDoc)
+            .filter(GovernKnowledgeDoc.status == "Published").all()
+        ):
+            if doc.id not in out and index_is_stale(db, doc):
+                out[doc.id] = "content_changed"
+    except Exception:  # noqa: BLE001
+        logger.warning("govern_doc_embeddings: content-staleness scan failed",
+                       exc_info=True)
+    return out
+
+
+def repair_stale_index(db: Session, *, limit: int = 100) -> dict:
+    """Rebuild every document whose index the retriever refuses to trust.
+
+    WIPE AND REBUILD, NOT MIGRATE. Translating an old index into the new format
+    would mean trusting vectors produced by a chunking or model configuration
+    nobody can reconstruct — and the whole reason the retriever rejects them is
+    that they cannot be trusted. Re-embedding is a few seconds and a few cents per
+    document, and it produces an index whose provenance is known.
+
+    Idempotent by construction: `embed_doc` is hash-gated, so a document already
+    in good order costs nothing and reports `unchanged`. Bounded by `limit` so a
+    large library repairs over several passes instead of holding a worker for
+    minutes at boot.
+    """
+    from app.models.governance import GovernKnowledgeDoc
+
+    stale = stale_index_docs(db)
+    if not stale:
+        return {"scanned": 0, "repaired": 0, "failed": 0, "remaining": 0, "results": {}}
+
+    todo = sorted(stale)[:limit]
+    results: dict[int, str] = {}
+    repaired = failed = 0
+    for doc_id in todo:
+        doc = db.query(GovernKnowledgeDoc).filter(GovernKnowledgeDoc.id == doc_id).first()
+        if doc is None:
+            continue
+        try:
+            # `force_full_rebuild` because the stored hash is exactly what we have
+            # decided not to believe; letting the hash gate decide would skip the
+            # documents that most need rebuilding.
+            status = embed_doc(db, doc, force_full_rebuild=True).get("status", "error")
+        except Exception:  # noqa: BLE001 — one bad document must not stop the rest
+            logger.exception("govern_doc_embeddings: repair failed for doc %s", doc_id)
+            status = "error"
+        results[doc_id] = status
+        if status in ("embedded", "unchanged"):
+            repaired += 1
+        else:
+            failed += 1
+
+    remaining = max(0, len(stale) - len(todo))
+    logger.info(
+        "govern_doc_embeddings: index repair — %s scanned, %s repaired, %s failed, %s left",
+        len(stale), repaired, failed, remaining,
+    )
+    return {
+        "scanned": len(stale), "repaired": repaired, "failed": failed,
+        "remaining": remaining, "results": results,
+    }
 
 def backfill(db: Session) -> dict[int, str]:
     """Embed all Published docs missing/stale embeddings (idempotent, hash-gated)."""

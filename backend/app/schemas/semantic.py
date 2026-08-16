@@ -206,8 +206,8 @@ class MeasureDefinition(BaseModel):
     # and can co-exist with either. Combining 'all' and 'all_except' on the
     # same measure is rejected at save time (they mean the opposite thing).
     context_modifiers: List[ContextModifier] = Field(default_factory=list)
-    # Govern: glossary terms + classification tags attached to this metric.
-    # Pure doc-metadata (no SQL impact); managed from the Govern › Metrics view.
+    # Governance Registry references attached to this executable measure.
+    # Pure metadata (no SQL impact); the measure remains owned by its Dataset.
     glossary_terms: List[MeasureVocabRef] = Field(default_factory=list)
     tags: List[MeasureVocabRef] = Field(default_factory=list)
 

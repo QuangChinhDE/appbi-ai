@@ -65,10 +65,10 @@ MODULE_KEYS = (
 # Nothing inherits any more. The four Intelligence keys existed because one
 # Knowledge Hub was presented as five sidebar modules, and inheritance from the
 # legacy 'govern' level was what kept users working through that split. The
-# modules are gone: AI Readiness, AI Suggestions and AI Guidance were deleted, and
-# Metrics & Terms became a tab inside Datasets, granted by `datasets`. A module
-# each user can point at, and one key per module — which is what the rest of the
-# matrix always did.
+# modules are gone: AI Readiness, AI Suggestions and AI Guidance were deleted.
+# Shared KPI contracts, vocabulary, and caveats now live in Knowledge Hub's
+# Governance Registry and are granted by `govern`; Dataset authoring remains
+# executable data and Semantic Model work, granted by `datasets`.
 INTELLIGENCE_INHERIT: tuple[str, ...] = ()
 
 
