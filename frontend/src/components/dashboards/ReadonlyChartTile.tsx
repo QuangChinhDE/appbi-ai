@@ -1,7 +1,8 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
-import { AlertTriangle, Loader2, SlidersHorizontal, X } from 'lucide-react';
+import { AlertTriangle, Download, Loader2, SlidersHorizontal, X } from 'lucide-react';
+import { collectRowColumns, csvFilename, downloadCsv, rowsToCsv } from '@/lib/export-csv';
 import { ChartPreview } from '@/components/charts/ChartPreview';
 import { ExploreChart } from '@/components/explore/ExploreChart';
 import { useDashboardChartTheme } from '@/components/dashboards/DashboardThemeProvider';
@@ -53,6 +54,10 @@ interface ReadonlyChartTileProps {
   /** Per-tile lock: hide the group-by grain switcher for this public/embed
    *  viewer (the chart stays on its configured default grain). */
   lockDateGrain?: boolean;
+  /** When true, show a per-chart "Export data" (CSV) button. Gated by the
+   *  public link's `allow_data_export` appearance flag. Exports ONLY the rows
+   *  already fetched for this chart (summarized, filter- & permission-scoped). */
+  allowExport?: boolean;
 }
 
 export function ReadonlyChartTile({
@@ -74,6 +79,7 @@ export function ReadonlyChartTile({
   viewerGrain,
   onViewerDrill,
   lockDateGrain = false,
+  allowExport = false,
 }: ReadonlyChartTileProps) {
   const { t } = useI18n();
   // Track first viewport entry. Sticky once seen so scrolling away doesn't
@@ -277,6 +283,22 @@ export function ReadonlyChartTile({
     return highlightData ?? null;
   }, [highlightFilter, isHighlightSource, highlightData, chartData]);
 
+  // "Export data" (CSV): serialize the rows THIS chart already rendered — the
+  // aggregated result the server returned under the current viewer + locked +
+  // page-scope filters. Read-only, in-memory: no re-query, no new data path, so
+  // it cannot expose anything beyond what the chart shows. Headers use the same
+  // friendly labels as the on-screen chart (semantic label map → friendly name).
+  const exportRows = (chartData?.data ?? []) as Array<Record<string, unknown>>;
+  const canExport = allowExport && exportRows.length > 0;
+  const handleExportData = () => {
+    if (!canExport) return;
+    const columns = collectRowColumns(exportRows);
+    if (columns.length === 0) return;
+    const csv = rowsToCsv(exportRows, columns, (col) => roLabelMap?.get(col) ?? getFriendlyFieldLabel(col));
+    const title = (isKpiCard ? kpiHeaderTitle : displayTitle) || chart?.name || 'chart-data';
+    downloadCsv(csvFilename(title), csv);
+  };
+
   const havingOptions = useMemo<Array<{ key: string; label: string }>>(
     () => (
       Array.isArray((roleConfig as any)?.metrics)
@@ -402,7 +424,17 @@ export function ReadonlyChartTile({
               <SlidersHorizontal className={compact ? 'h-3 w-3' : 'h-3.5 w-3.5'} />
             </button>
           ) : null;
-          const hasActions = Boolean(droppedBadge || havingToggle);
+          const exportButton = canExport ? (
+            <button
+              onClick={handleExportData}
+              className="flex-shrink-0 rounded-full border border-transparent bg-surface-1 p-1.5 text-text-quaternary opacity-0 transition group-hover:opacity-100 hover:border-[rgb(var(--border-line))] hover:bg-surface-2 hover:text-text-primary"
+              title={t('dashboards.readonlyChartTile.exportData')}
+              aria-label={t('dashboards.readonlyChartTile.exportData')}
+            >
+              <Download className={compact ? 'h-3 w-3' : 'h-3.5 w-3.5'} />
+            </button>
+          ) : null;
+          const hasActions = Boolean(droppedBadge || havingToggle || exportButton);
 
           // KPI: header row carries the metric label (the de-facto title) on
           // the left, level with the actions on the right; the card body then
@@ -418,6 +450,7 @@ export function ReadonlyChartTile({
                   <div className="ml-auto flex flex-shrink-0 items-center gap-1">
                     {droppedBadge}
                     {havingToggle}
+                    {exportButton}
                   </div>
                 )}
               </div>
@@ -443,6 +476,7 @@ export function ReadonlyChartTile({
                 <div className="ml-auto flex flex-shrink-0 items-center gap-1">
                   {droppedBadge}
                   {havingToggle}
+                  {exportButton}
                 </div>
               )}
             </div>

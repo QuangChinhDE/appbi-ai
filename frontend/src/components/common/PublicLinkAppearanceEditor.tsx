@@ -243,6 +243,12 @@ export function PublicLinkAppearanceEditor({
             description="Let viewers use filter controls on the shared report."
             onToggle={() => updateField('allow_viewer_filters', !appearance.allow_viewer_filters)}
           />
+          <ToggleCard
+            checked={appearance.allow_data_export}
+            label="Allow data export"
+            description="Let viewers download each chart's data (CSV) — only the chart's filtered rows."
+            onToggle={() => updateField('allow_data_export', !appearance.allow_data_export)}
+          />
         </div>
       </div>
 
