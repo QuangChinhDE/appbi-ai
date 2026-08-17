@@ -346,13 +346,43 @@ _CACHE_MAX = 512
 _CACHE_TTL = 300.0  # seconds — a report's data is not expected to move mid-chat
 
 
+def _authorization_identity(ctx: Any) -> list:
+    """Everything that decides WHAT THIS CALLER MAY SEE, as part of the cache key.
+
+    A hit returns before `spec.fn` runs — and `assert_chart_in_scope`, the AI-scope
+    column exclusions and the step's knowledge boundary all live INSIDE the tool
+    bodies. So a key that omits them lets a cache entry answer a question the
+    second caller was never entitled to ask: two public links on one dashboard,
+    one allowed thirteen charts and one allowed three, share this dict for five
+    minutes. The narrow link asks for a chart it cannot see, the wide link's entry
+    is still warm, and the guard that would have refused it never executes.
+
+    Chart data has a second, per-context cache that already keys on the exclusion
+    set (`ToolContext._chart_data_cache`). This one is process-wide and outlives
+    the request, so it needs the whole identity, not part of it.
+    """
+    return [
+        sorted(getattr(ctx, "allowed_chart_ids", None) or []),
+        sorted(getattr(ctx, "excluded_columns", None) or []),
+        sorted((getattr(ctx, "knowledge_scope", None) or {}).items()),
+        getattr(ctx, "actor_type", None),
+        getattr(ctx, "actor_ref", None),
+    ]
+
+
 def _cache_key(ctx: Any, name: str, args: dict) -> str | None:
     dashboard = getattr(getattr(ctx, "dashboard", None), "id", None)
     if dashboard is None:
         return None
     try:
         payload = json.dumps(
-            [dashboard, getattr(ctx, "public_filters", []), name, args],
+            [
+                dashboard,
+                getattr(ctx, "public_filters", []),
+                _authorization_identity(ctx),
+                name,
+                args,
+            ],
             sort_keys=True, default=str,
         )
     except Exception:  # noqa: BLE001 — an unserialisable arg simply is not cached

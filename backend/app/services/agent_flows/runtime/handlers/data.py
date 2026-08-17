@@ -314,15 +314,17 @@ def _flag_partial(entry: dict, state: RunState, node: ReportReadNode) -> None:
 
 
 # ═══ Retrieval ════════════════════════════════════════════════════════════════
-async def run_knowledge(
-    node: KnowledgeNode, state: RunState, rctx: Any
-) -> AsyncGenerator[AgentEvent, None]:
-    query = state.resolve_text(node.query) or rctx.inp.question.text()
-    yield AgentEvent(type="status", text="Đang tra tri thức…")
+def build_knowledge_scope(attachments: Any) -> dict[str, list]:
+    """The retrieval boundary a step's attachments describe.
 
-    previous_scope = getattr(rctx.ctx, "knowledge_scope", None)
-    scope = {"doc_ids": [], "dataset_ids": [], "metric_names": [], "term_fqns": []}
-    for k in node.knowledge:
+    Shared with the Agent node on purpose: this used to be written twice, and the
+    two copies disagreed about `term_fqns`. All four keys are always present, so a
+    consumer can tell "attached nothing" from "this kind is not supported here".
+    """
+    scope: dict[str, list] = {
+        "doc_ids": [], "dataset_ids": [], "metric_names": [], "term_fqns": [],
+    }
+    for k in attachments or []:
         if k.source == "document" and k.ref.isdigit():
             scope["doc_ids"].append(int(k.ref))
         elif k.source == "semantic" and k.ref.isdigit():
@@ -334,6 +336,17 @@ async def run_knowledge(
             # `GovernMetric.related_term_fqn` uses, so a term has one identity
             # across the product rather than one per feature.
             scope["term_fqns"].append(k.ref)
+    return scope
+
+
+async def run_knowledge(
+    node: KnowledgeNode, state: RunState, rctx: Any
+) -> AsyncGenerator[AgentEvent, None]:
+    query = state.resolve_text(node.query) or rctx.inp.question.text()
+    yield AgentEvent(type="status", text="Đang tra tri thức…")
+
+    previous_scope = getattr(rctx.ctx, "knowledge_scope", None)
+    scope = build_knowledge_scope(node.knowledge)
     if hasattr(rctx.ctx, "knowledge_scope"):
         rctx.ctx.knowledge_scope = scope
 

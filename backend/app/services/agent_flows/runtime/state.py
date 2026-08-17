@@ -89,20 +89,47 @@ class Budget:
             ceiling -= min(self.answer_reserve, self.max_tool_calls // 3)
         return max(0, ceiling - self.tool_calls)
 
+    def _check_clock(self) -> None:
+        if self.elapsed() >= self.max_seconds:
+            raise BudgetExhausted("câu hỏi này đã chạy quá thời gian cho phép")
+
     def check(self) -> None:
+        """Every ceiling at once — for the executor, BETWEEN nodes.
+
+        Not for spending: a ceiling must gate the resource it counts and nothing
+        else. See `spend_llm` / `spend_tool`.
+        """
         if self.llm_calls >= self.max_llm_calls:
             raise BudgetExhausted("đã dùng hết số lượt gọi mô hình cho câu hỏi này")
         if self.tool_calls >= self.max_tool_calls:
             raise BudgetExhausted("đã dùng hết số lượt gọi công cụ cho câu hỏi này")
-        if self.elapsed() >= self.max_seconds:
-            raise BudgetExhausted("câu hỏi này đã chạy quá thời gian cho phép")
+        self._check_clock()
 
     def spend_llm(self) -> None:
-        self.check()
+        """A MODEL round is gated by the MODEL ceiling, never by the tool one.
+
+        Both spenders used to call `check()`, so the two ceilings locked each
+        other: a turn that legitimately spent its tool allowance could not open
+        the one round it needed to say what it had found, and the viewer got
+        "chưa trả lời được" out of a run whose every step reported ok. Running out
+        of tools is a reason to stop READING — never a reason to be unable to
+        speak.
+        """
+        if self.llm_calls >= self.max_llm_calls:
+            raise BudgetExhausted("đã dùng hết số lượt gọi mô hình cho câu hỏi này")
+        self._check_clock()
         self.llm_calls += 1
 
     def spend_tool(self) -> None:
-        self.check()
+        """A TOOL call is gated by the TOOL ceiling, never by the model one.
+
+        The mirror of the case above: a round that had already been paid for
+        could not run the tools it had just asked for, so the model's work was
+        thrown away at the last step instead of being used.
+        """
+        if self.tool_calls >= self.max_tool_calls:
+            raise BudgetExhausted("đã dùng hết số lượt gọi công cụ cho câu hỏi này")
+        self._check_clock()
         self.tool_calls += 1
 
 

@@ -69,6 +69,23 @@ def quota_exhausted_message() -> str:
     )
 
 
+def _tool_args(tc: dict) -> dict:
+    """A replayed tool call's arguments, whichever key the caller used.
+
+    The documented contract is `args`; the flow engine sent `arguments`, and this
+    translation read only `args` — so every tool call it replayed reached the next
+    round as `{}`. The model could not see what it had just asked for, which is
+    the one thing this message exists to tell it, and it paid a round to re-learn
+    it. Same class of boundary bug as `_tool_payload` below, and the same fix:
+    a boundary must not silently drop the thing it exists to carry.
+    """
+    for key in ("args", "arguments"):
+        value = tc.get(key)
+        if isinstance(value, dict) and value:
+            return value
+    return {}
+
+
 def _tool_payload(msg: dict) -> str:
     """The tool's output, whichever key the caller used.
 
@@ -142,7 +159,7 @@ def _to_openai_messages(system_prompt: str, messages: list[dict]) -> list[dict]:
                         "type": "function",
                         "function": {
                             "name": tc["name"],
-                            "arguments": json.dumps(tc.get("args") or {}, default=str),
+                            "arguments": json.dumps(_tool_args(tc), default=str),
                         },
                     }
                     for tc in tcs
@@ -412,15 +429,28 @@ async def stream_openai(
                         if finish in ("tool_calls", "stop", "length"):
                             # Emit any accumulated tool calls
                             for slot in sorted(pending_tools.values(), key=lambda s: s.get("id") or ""):
+                                raw = slot.get("args_buf") or "{}"
+                                malformed = ""
                                 try:
-                                    args = json.loads(slot.get("args_buf") or "{}") or {}
-                                except json.JSONDecodeError:
-                                    args = {}
+                                    args = json.loads(raw) or {}
+                                except json.JSONDecodeError as exc:
+                                    # SAY WHAT BROKE. Collapsing unparseable
+                                    # arguments to `{}` sent the model a call it
+                                    # never made: the tool then failed on a missing
+                                    # required field, and the model spent a round
+                                    # guessing at an error the runtime had already
+                                    # diagnosed. Carrying the reason lets it fix the
+                                    # arguments on the next round instead.
+                                    args, malformed = {}, str(exc)
+                                if not isinstance(args, dict):
+                                    args, malformed = {}, "arguments were not a JSON object"
                                 yield AgentEvent(
                                     type="tool_call",
                                     tool_call_id=slot.get("id") or "",
                                     tool_name=slot.get("name") or "",
-                                    tool_args=args if isinstance(args, dict) else {},
+                                    tool_args=args,
+                                    extra={"malformed_args": malformed, "raw_args": raw[:400]}
+                                    if malformed else {},
                                 )
                             pending_tools.clear()
                     # 200 stream fully consumed ([DONE] received). Terminate the
