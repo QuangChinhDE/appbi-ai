@@ -13,6 +13,7 @@ from slowapi.util import get_remote_address
 
 from app.core import get_db
 from app.core.dependencies import (
+    module_floor,
     get_current_user,
     require_permission,
     require_view_access,
@@ -42,7 +43,10 @@ from app.core.config import settings
 from app.services.google_data_access_service import get_google_data_access_status
 
 logger = get_logger(__name__)
-router = APIRouter(prefix="/datasources", tags=["datasources"])
+router = APIRouter(
+    prefix="/datasources", tags=["datasources"],
+    dependencies=[module_floor("data_sources")],
+)
 _limiter = Limiter(key_func=get_remote_address)
 
 

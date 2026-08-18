@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.core.database import get_db
 from app.core.dependencies import (
+    module_floor,
     get_current_user,
     require_permission,
     require_view_access,
@@ -92,7 +93,7 @@ from app.services.type_override_service import (
     normalize_type_overrides,
 )
 
-router = APIRouter()
+router = APIRouter(dependencies=[module_floor("datasets")])
 logger = get_logger(__name__)
 
 

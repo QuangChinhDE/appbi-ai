@@ -18,6 +18,7 @@ _pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 from app.core import get_db
 from app.core.dependencies import (
+    module_floor,
     get_current_user,
     require_permission,
     require_view_access,
@@ -83,7 +84,10 @@ from app.services.dashboard_html_import_service import (
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
-router = APIRouter(prefix="/dashboards", tags=["dashboards"])
+router = APIRouter(
+    prefix="/dashboards", tags=["dashboards"],
+    dependencies=[module_floor("dashboards")],
+)
 MAX_HTML_IMPORT_SIZE = 2 * 1024 * 1024
 MAX_SOURCE_UPLOAD_SIZE = 10 * 1024 * 1024
 

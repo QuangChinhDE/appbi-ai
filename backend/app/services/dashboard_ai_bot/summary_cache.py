@@ -40,6 +40,23 @@ CACHE_TTL_SECONDS = 300  # 5 minutes
 CACHE_MAX_ENTRIES = 256
 
 
+def scope_hash(excluded_columns) -> str:
+    """The AI-scope exclusion set, as part of a cache identity.
+
+    A pack is built AFTER the excluded columns are stripped, so what is stored is
+    already filtered — for the exclusion set that was in force at the time. Key on
+    the dashboard alone and a pack built before a column was hidden keeps being
+    served for the rest of its TTL, which is a hidden column answering questions for
+    five more minutes. The agent-flow tool cache learned the same lesson; this is the
+    same rule in the other engine, so the two cannot disagree about it.
+    """
+    if not excluded_columns:
+        return "_"
+    return hashlib.sha1(
+        ",".join(sorted(str(c) for c in excluded_columns)).encode("utf-8")
+    ).hexdigest()[:8]
+
+
 def _filters_hash(filters: list[dict] | None) -> str:
     if not filters:
         return "_"

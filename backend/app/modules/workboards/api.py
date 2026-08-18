@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 
 from app.core import get_db
 from app.core.dependencies import (
+    module_floor,
     LEVEL_ORDER,
     get_current_user,
     get_effective_permission,
@@ -71,7 +72,10 @@ from app.modules.workboards.services.write_service import (
 )
 
 logger = get_logger(__name__)
-router = APIRouter(prefix="/workboards", tags=["workboards"])
+router = APIRouter(
+    prefix="/workboards", tags=["workboards"],
+    dependencies=[module_floor("workboards")],
+)
 
 
 # ---------------------------------------------------------------------------

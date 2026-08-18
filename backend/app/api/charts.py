@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 
 from app.core import get_db
 from app.core.dependencies import (
+    module_floor,
     get_current_user,
     require_permission,
     require_view_access,
@@ -149,7 +150,10 @@ class ChartPreviewDataResponse(BaseModel):
     source_rows: List[Dict[str, Any]] = Field(default_factory=list)
 
 logger = get_logger(__name__)
-router = APIRouter(prefix="/charts", tags=["charts"])
+router = APIRouter(
+    prefix="/charts", tags=["charts"],
+    dependencies=[module_floor("explore_charts")],
+)
 
 
 def _get_dataset_for_chart_table(db: Session, dataset_table_id: int):
