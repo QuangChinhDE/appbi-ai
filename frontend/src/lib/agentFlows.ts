@@ -102,19 +102,29 @@ export interface ProviderGroup {
   note: string;
 }
 
-export interface AttachableItem { ref: string; name: string; group?: string }
+export interface AttachableItem {
+  ref: string;
+  name: string;
+  group?: string;
+  /** False for vocabulary — a definition with no query behind it. The builder
+   *  shows this so an author can see how far an attachment reaches. */
+  reads_data?: boolean;
+  hint?: string;
+}
 export interface Attachable {
   documents: AttachableItem[];
   datasets: AttachableItem[];
   /** A metric ref is matched at run time against its machine name, so it must be
    *  PICKED, never typed. */
   metrics: AttachableItem[];
+  /** Company vocabulary, addressed by FQN (`bộ-từ-điển.thuật-ngữ`). */
+  terms: AttachableItem[];
 }
 
 // ── The flow tree ───────────────────────────────────────────────────────────
 export interface ToolGrant { tool: string; note?: string }
 export interface KnowledgeAttachment {
-  source: 'document' | 'semantic' | 'metric';
+  source: 'document' | 'semantic' | 'metric' | 'term';
   ref: string;
   description: string;
 }
@@ -285,6 +295,9 @@ export type BrainStatus = 'draft' | 'published' | 'archived';
 
 export interface BrainSummary {
   brain_key: string;
+  /** What a link carries. Shared by every version of this flow, unlike a version
+   *  row's own id. Every API call below still uses `brain_key`. */
+  flow_id: number | null;
   version: number;
   status: BrainStatus;
   name: string;
@@ -362,7 +375,9 @@ export interface Binding {
   link_id: number;
   brain_key: string;
   pinned_version: number | null;
-  status: 'draft' | 'active' | 'broken' | 'needs_review';
+  /** `draft` was in this union and never in the data — the server declared it and
+   *  assigned it nowhere, so every branch written for it was unreachable. */
+  status: 'active' | 'broken' | 'needs_review';
   data_contract: DataContract;
   last_validation: { errors?: PreflightIssue[]; warnings?: PreflightIssue[] };
   store_question_content: boolean;
@@ -437,7 +452,27 @@ export interface RunStep {
   ms: number | null;
   branch: string | null;
   iteration: number | null;
+  /** What the step produced. */
   preview: string | null;
+  /** What the step was HANDED — the variables readable when it started. Kept
+   *  beside the output because "answered badly" and "was given nothing to answer
+   *  from" are indistinguishable from the output alone. */
+  input: string | null;
+  /** Tool names this step called, in order. */
+  tool_calls: string[];
+  /** What this step COST. `null` means the run predates per-step accounting —
+   *  distinct from `0`, which would claim the step was free. */
+  prompt_tokens: number | null;
+  completion_tokens: number | null;
+  /** The node's settings IN THE VERSION THAT RAN, read back from that immutable
+   *  version rather than stored per step. `null` when the version is gone. */
+  config: Record<string, unknown> | null;
+  /** `{{name}}` this step used that NOTHING in the flow produces. Each one
+   *  resolved to empty at run time — a Switch on an unproduced variable takes its
+   *  fallback every time, an agent prompt silently loses a sentence, and the
+   *  answer still comes out. The likeliest cause of a run that looks fine and is
+   *  not. */
+  unresolved_refs: string[];
   error: string | null;
 }
 
@@ -451,7 +486,28 @@ export interface RunDetail {
   binding_id: number | null;
   execution_path: string | null;
   latency_ms: number | null;
-  usage: { llm_calls: number; tool_calls: number; prompt_tokens: number; completion_tokens: number };
+  usage: {
+    llm_calls: number;
+    tool_calls: number;
+    prompt_tokens: number;
+    completion_tokens: number;
+    /** What the turn actually cost. Stored since this table existed and never
+     *  returned, so the one number an operator is accountable for was invisible.
+     *  `null` when the provider did not report a price. */
+    usd: number | null;
+  };
+  /** Which flow version the per-step `config` was read from, or why it could not
+   *  be. Shown so nobody mistakes it for the flow's CURRENT settings. */
+  config_source?: string;
+  /** The version's own review notes. Same detector as the builder's badge — the
+   *  Runs tab needs them too, because that is the screen somebody opens when an
+   *  answer looks wrong. */
+  flow_warnings?: string[];
+  /** Flow nodes with no trace row. `on_branch` distinguishes "sat on a branch
+   *  nobody took" (correct) from "absent off the spine" (a defect) — without it
+   *  a trace cannot tell the two apart, which is what makes a run look like it
+   *  is skipping steps in silence. */
+  not_executed?: { key: string; name: string; type: string; on_branch: boolean }[];
   rating: 'up' | 'down' | null;
   question: string | null;
   answer: string | null;
@@ -549,13 +605,56 @@ export async function listAttachable(): Promise<Attachable> {
     documents: data.documents || [],
     datasets: data.datasets || [],
     metrics: data.metrics || [],
+    terms: data.terms || [],
   };
+}
+
+// ── Drafting a flow with an outside assistant ───────────────────────────────
+export interface AuthoringPrompt {
+  prompt: string;
+  stats: { node_types: number; tool_packs: number; tools: number };
+  author_supplied_fields: string[];
+}
+
+export interface ImportedDraft {
+  ok: boolean;
+  errors: string[];
+  warnings: string[];
+  name?: string;
+  description?: string;
+  body?: Record<string, unknown>;
+  node_count?: number;
+  answer_node?: string;
+  todo?: string[];
+  needs_attachment?: { key: string; name: string; missing: string[]; why: string }[];
+}
+
+/** The brief to paste into ChatGPT/Claude. Generated server-side from the live
+ *  registries, so it can never describe a node type this deployment lacks. */
+export async function getAuthoringPrompt(): Promise<AuthoringPrompt> {
+  const { data } = await apiClient.get<AuthoringPrompt>(`${BASE}/authoring-prompt`);
+  return data;
+}
+
+/** Parse a pasted draft and report what it is. Saves NOTHING — creating stays
+ *  the explicit action, because a draft written elsewhere is the least trusted
+ *  input this module takes and the author has not read it yet. */
+export async function importDraft(raw: string, name?: string): Promise<ImportedDraft> {
+  const { data } = await apiClient.post<ImportedDraft>(`${BASE}/import-draft`, { raw, name });
+  return data;
 }
 
 // ── Flows ───────────────────────────────────────────────────────────────────
 export async function listBrains(): Promise<BrainSummary[]> {
   const { data } = await apiClient.get<{ brains: BrainSummary[] }>(`${BASE}/brains`);
   return data.brains || [];
+}
+
+/** The `brain_key` behind the number in a link. */
+export async function resolveFlowId(flowId: number): Promise<string> {
+  const { data } = await apiClient.get<{ brain_key: string }>(
+    `${BASE}/brains/resolve/${flowId}`);
+  return data.brain_key;
 }
 
 export async function getBrain(key: string, version?: number): Promise<BrainDetail> {
@@ -930,12 +1029,18 @@ export function uniqueKey(nodes: FlowNode[], base: string): string {
 
 /** A new node of `type`, with the defaults the server would apply anyway. Kept
  *  here so the canvas never inserts a node the contract would reject. */
-export function blankNode(type: NodeType, nodes: FlowNode[]): FlowNode {
+export interface BlankNodeLabels {
+  agentPrompt?: string;
+  pathA?: string;
+  pathB?: string;
+}
+
+export function blankNode(type: NodeType, nodes: FlowNode[], labels: BlankNodeLabels = {}): FlowNode {
   const key = uniqueKey(nodes, type);
   const base = { key, name: '' };
   switch (type) {
     case 'agent':
-      return { ...base, type, prompt: 'Mô tả bước này cần làm gì.', provider: 'inherit',
+      return { ...base, type, prompt: labels.agentPrompt || 'Describe what this step should do.', provider: 'inherit',
         max_tool_calls: 8, output_format: 'chat', context_policy: 'question', tools: [], knowledge: [] };
     case 'report_read':
       return { ...base, type, output_var: uniqueKey(nodes, 'dashboard_context'),
@@ -949,9 +1054,9 @@ export function blankNode(type: NodeType, nodes: FlowNode[]): FlowNode {
         allowed_domains: [], output_var: uniqueKey(nodes, 'web_context') };
     case 'if':
       return { ...base, type, paths: [
-        { key: 'yes', name: 'Nhánh A', kind: 'rules', match: 'all',
+        { key: 'yes', name: labels.pathA || 'Branch A', kind: 'rules', match: 'all',
           conditions: [{ left: '{{question}}', op: 'contains', right: '' }], body: [] },
-        { key: 'no', name: 'Nhánh B', kind: 'fallback', body: [] },
+        { key: 'no', name: labels.pathB || 'Branch B', kind: 'fallback', body: [] },
       ] };
     case 'switch':
       return { ...base, type, value: '{{}}', mode: 'first_match', has_fallback: true,

@@ -72,23 +72,64 @@ class Budget:
     tool_calls: int = 0
     started_at: float = field(default_factory=time.monotonic)
 
+    #: Tool calls kept back for the step that actually answers. A gathering step
+    #: reads a fixed cost per chart, so on a wide report it can spend the whole
+    #: turn's budget before the answering step asks its first question — and the
+    #: viewer gets "chưa trả lời được" from a run where every step said ok.
+    #: Gathering steps stop at the reserve; the answering step may spend it.
+    answer_reserve: int = 6
+
     def elapsed(self) -> float:
         return time.monotonic() - self.started_at
 
+    def tools_left(self, *, answering: bool = False) -> int:
+        """Tool calls still available to this kind of step."""
+        ceiling = self.max_tool_calls
+        if not answering:
+            ceiling -= min(self.answer_reserve, self.max_tool_calls // 3)
+        return max(0, ceiling - self.tool_calls)
+
+    def _check_clock(self) -> None:
+        if self.elapsed() >= self.max_seconds:
+            raise BudgetExhausted("câu hỏi này đã chạy quá thời gian cho phép")
+
     def check(self) -> None:
+        """Every ceiling at once — for the executor, BETWEEN nodes.
+
+        Not for spending: a ceiling must gate the resource it counts and nothing
+        else. See `spend_llm` / `spend_tool`.
+        """
         if self.llm_calls >= self.max_llm_calls:
             raise BudgetExhausted("đã dùng hết số lượt gọi mô hình cho câu hỏi này")
         if self.tool_calls >= self.max_tool_calls:
             raise BudgetExhausted("đã dùng hết số lượt gọi công cụ cho câu hỏi này")
-        if self.elapsed() >= self.max_seconds:
-            raise BudgetExhausted("câu hỏi này đã chạy quá thời gian cho phép")
+        self._check_clock()
 
     def spend_llm(self) -> None:
-        self.check()
+        """A MODEL round is gated by the MODEL ceiling, never by the tool one.
+
+        Both spenders used to call `check()`, so the two ceilings locked each
+        other: a turn that legitimately spent its tool allowance could not open
+        the one round it needed to say what it had found, and the viewer got
+        "chưa trả lời được" out of a run whose every step reported ok. Running out
+        of tools is a reason to stop READING — never a reason to be unable to
+        speak.
+        """
+        if self.llm_calls >= self.max_llm_calls:
+            raise BudgetExhausted("đã dùng hết số lượt gọi mô hình cho câu hỏi này")
+        self._check_clock()
         self.llm_calls += 1
 
     def spend_tool(self) -> None:
-        self.check()
+        """A TOOL call is gated by the TOOL ceiling, never by the model one.
+
+        The mirror of the case above: a round that had already been paid for
+        could not run the tools it had just asked for, so the model's work was
+        thrown away at the last step instead of being used.
+        """
+        if self.tool_calls >= self.max_tool_calls:
+            raise BudgetExhausted("đã dùng hết số lượt gọi công cụ cho câu hỏi này")
+        self._check_clock()
         self.tool_calls += 1
 
 
@@ -109,6 +150,18 @@ class RunState:
     #: Variables to persist for the next turn. Written only by nodes whose
     #: `run_policy` says so, never by everything that happens to set a variable.
     memory_set: dict[str, Any] = field(default_factory=dict)
+    #: Nodes that DECLINED to do their work, keyed by node → why.
+    #:
+    #: A handler that returns normally is recorded `ok`, which is right for a node
+    #: that did its job and wrong for one that was gated. A Web node on a link with
+    #: web search off returns quietly — correct behaviour — and the trace then
+    #: showed a green tick against a step that never reached the internet. Anyone
+    #: auditing "did this flow go outside" read that tick as yes.
+    #:
+    #: Declared by the handler rather than inferred from its output, because
+    #: inferring means guessing which shapes mean "skipped", and a guess in the
+    #: trace is worse than no trace.
+    skipped: dict[str, str] = field(default_factory=dict)
     #: Set by a Stop node, or by the executor when the budget runs out.
     stopped: bool = False
     stop_message: str = ""

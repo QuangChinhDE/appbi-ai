@@ -243,14 +243,23 @@ def _source_select_sql(source_ds: DataSource, table: DatasetTable) -> str:
     """A plain SELECT returning the table's rows on its OWN (non-BigQuery) engine,
     for the federated extract step. sql_query → wrap the source query; physical →
     SELECT * from the source table (dialect-quoted)."""
-    from app.services.live_query_service import _dialect_for_ds_type
+    from app.services.live_query_service import (
+        _build_base_table_ref,
+        _dialect_for_ds_type,
+    )
     kind = getattr(table, "source_kind", None)
     if kind == "sql_query" and table.source_query:
         return f"SELECT * FROM (\n{table.source_query}\n) AS _appbi_src"
     name = str(getattr(table, "source_table_name", "") or "").strip()
-    dia = _dialect_for_ds_type(_ds_type(source_ds))
-    q = ("`" + name.replace("`", "") + "`") if dia == "mysql" else ('"' + name.replace('"', "") + '"')
-    return f"SELECT * FROM {q}"
+    ds_type = _ds_type(source_ds)
+    dia = _dialect_for_ds_type(ds_type)
+    # A schema-qualified name is TWO identifiers. Quoting "olist.olist_orders" as
+    # one makes the engine hunt for a relation literally called that, so every
+    # build failed, the snapshot never existed, and each chart fell back to a
+    # live query that then timed out. Reuse the reference builder the live path
+    # already uses so the two agree on schemas, `manual`, and Sheets alike.
+    ref = _build_base_table_ref(ds_type, source_ds.config or {}, name, dia)
+    return f"SELECT * FROM {ref}"
 
 
 def _sanitize_name_part(name: Optional[str]) -> str:

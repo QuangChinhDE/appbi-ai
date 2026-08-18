@@ -145,6 +145,9 @@ services:
         # PDF export delivery: false = progress on the report + download only;
         # true also opens the finished file in a second tab. Baked at build time.
         NEXT_PUBLIC_PDF_PREVIEW_TAB: ${NEXT_PUBLIC_PDF_PREVIEW_TAB:-false}
+        # Home ("Trang chủ") module. Off = no sidebar row, `/` lands on
+        # Dashboards, and /overview redirects instead of loading.
+        NEXT_PUBLIC_HOME_MODULE_ENABLED: ${NEXT_PUBLIC_HOME_MODULE_ENABLED:-false}
     restart: unless-stopped
     environment:
       BACKEND_URL: http://backend:8000/api/v1
@@ -155,6 +158,7 @@ services:
       NEXT_PUBLIC_GOOGLE_CLIENT_ID: ${NEXT_PUBLIC_GOOGLE_CLIENT_ID:-}
       NEXT_PUBLIC_WORKBOARDS_ENABLED: ${NEXT_PUBLIC_WORKBOARDS_ENABLED:-true}
       NEXT_PUBLIC_PDF_PREVIEW_TAB: ${NEXT_PUBLIC_PDF_PREVIEW_TAB:-false}
+      NEXT_PUBLIC_HOME_MODULE_ENABLED: ${NEXT_PUBLIC_HOME_MODULE_ENABLED:-false}
       # Deployment-wide framing floor for /embed and /d (space-separated origins).
       # Per-integration allowlists live on the PAT and need nothing here. Runtime
       # value (the middleware reads it per request), so no rebuild to change it.

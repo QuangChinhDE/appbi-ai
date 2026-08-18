@@ -19,7 +19,8 @@
  * screen before.
  */
 import {
-  AlertTriangle, Brain, Calendar, ChevronRight, Copy, Layers, Link2, Plus, Trash2,
+  AlertTriangle, Brain, Calendar, Check, ChevronRight, Copy, Layers, Link2, Loader2,
+  Plus, Share2, Trash2,
 } from 'lucide-react';
 import React from 'react';
 
@@ -29,25 +30,32 @@ import { ModuleOverview } from '@/components/common/ModuleOverview';
 import { OwnerBadge } from '@/components/common/OwnerBadge';
 import { PageListLayout } from '@/components/common/PageListLayout';
 import { PaginatedCollection } from '@/components/common/PaginatedCollection';
+import { ShareDialog } from '@/components/common/ShareDialog';
 import { Button, IconButton } from '@/components/ui/Button';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { FilterTag } from '@/components/ui/FilterTag';
 import { FieldGroup, Input, Textarea } from '@/components/ui/Input';
 import { toast } from '@/lib/toast';
+import { cn } from '@/lib/utils';
+import { useI18n } from '@/providers/LanguageProvider';
 import {
-  blankNode, deleteBrainVersion, getBrain, listBrains, saveBrain, slugifyBrainKey,
+  blankNode, deleteBrainVersion, getAuthoringPrompt, getBrain, importDraft, listBrains,
+  saveBrain, slugifyBrainKey,
+  type AuthoringPrompt,
   type BrainSummary,
+  type FlowBody,
   type FlowNode,
+  type ImportedDraft,
 } from '@/lib/agentFlows';
 
 import { MetaChip, StatusBadge, formatWhen } from './shared';
 
 type StatusFilter = 'all' | 'published' | 'draft';
 
-const FILTERS: { key: StatusFilter; label: string }[] = [
-  { key: 'all', label: 'Tất cả' },
-  { key: 'published', label: 'Đang chạy' },
-  { key: 'draft', label: 'Chỉ có nháp' },
+const FILTERS: { key: StatusFilter; labelKey: string }[] = [
+  { key: 'all', labelKey: 'agentFlows.list.filter.all' },
+  { key: 'published', labelKey: 'agentFlows.list.filter.published' },
+  { key: 'draft', labelKey: 'agentFlows.list.filter.draft' },
 ];
 
 /** The newest version of each brain, plus what its published state actually is.
@@ -84,13 +92,15 @@ function collapse(rows: BrainSummary[]): BrainRowModel[] {
 export function BrainList({
   onOpen, canEdit,
 }: {
-  onOpen: (key: string) => void;
+  onOpen: (idOrKey: string | number) => void;
   canEdit: boolean;
 }) {
+  const { t } = useI18n();
   const [rows, setRows] = React.useState<BrainSummary[] | null>(null);
   const [search, setSearch] = React.useState('');
   const [status, setStatus] = React.useState<StatusFilter>('all');
   const [creating, setCreating] = React.useState(false);
+  const [shareTarget, setShareTarget] = React.useState<BrainSummary | null>(null);
   const [busyKey, setBusyKey] = React.useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = React.useState<BrainRowModel | null>(null);
 
@@ -99,9 +109,9 @@ export function BrainList({
       setRows(await listBrains());
     } catch {
       setRows([]);
-      toast.error('Không tải được danh sách bộ não.');
+      toast.error(t('agentFlows.list.loadFailed'));
     }
-  }, []);
+  }, [t]);
   React.useEffect(() => { void reload(); }, [reload]);
 
   const brains = React.useMemo(() => collapse(rows || []), [rows]);
@@ -135,16 +145,36 @@ export function BrainList({
       description: description.trim(),
       body: {
         nodes: [
-          { ...reader, name: 'Đọc báo cáo' } as FlowNode,
+          { ...reader, name: t('agentFlows.list.seed.readerName') } as FlowNode,
           {
             ...writer,
-            name: 'Trả lời người xem',
-            prompt: 'Dùng dữ liệu vừa đọc để trả lời câu hỏi của người xem. '
-              + 'Không tự tạo thêm số ngoài những gì đã đọc được.',
+            name: t('agentFlows.list.seed.writerName'),
+            prompt: t('agentFlows.list.seed.writerPrompt'),
           } as FlowNode,
         ],
         answer_node: writer.key,
       },
+    });
+    setCreating(false);
+    onOpen(key);
+  };
+
+  /** Save a draft an outside assistant wrote, then open it in the builder.
+   *
+   *  Saved through the SAME `saveBrain` the blank path uses — the import
+   *  endpoint only reads and reports, so there is no second way for a flow to
+   *  enter the system. What arrives here has already passed the real contract. */
+  const createFromDraft = async (d: ImportedDraft) => {
+    const flowName = (d.name || '').trim() || 'Flow từ bản nháp';
+    const key = slugifyBrainKey(flowName);
+    await saveBrain({
+      brain_key: key,
+      name: flowName,
+      description: (d.description || '').trim(),
+      // The server returns the body it already validated through the real `Flow`
+      // contract, so `nodes` is present by construction — the cast says that
+      // rather than widening the client type and losing the check everywhere else.
+      body: (d.body || { nodes: [] }) as unknown as FlowBody,
     });
     setCreating(false);
     onOpen(key);
@@ -156,17 +186,17 @@ export function BrainList({
       // Copies the version the author is looking at, not "the published one":
       // duplicating a draft you are iterating on is the common case.
       const source = await getBrain(row.latest.brain_key, row.latest.version);
-      const name = `${source.name} (bản sao)`;
+      const name = `${source.name} (${t('agentFlows.list.duplicateSuffix')})`;
       await saveBrain({
         brain_key: slugifyBrainKey(name),
         name,
         description: source.description,
         body: source.body,
       });
-      toast.success('Đã nhân bản thành một bộ não mới (bản nháp).');
+      toast.success(t('agentFlows.list.duplicateSuccess'));
       await reload();
     } catch (e) {
-      toast.error(detailMsg(e) || 'Không nhân bản được.');
+      toast.error(detailMsg(e) || t('agentFlows.list.duplicateFailed'));
     } finally {
       setBusyKey(null);
     }
@@ -176,10 +206,10 @@ export function BrainList({
     setBusyKey(row.latest.brain_key);
     try {
       await deleteBrainVersion(row.latest.brain_key, row.latest.version);
-      toast.success(`Đã xoá bản nháp v${row.latest.version}.`);
+      toast.success(t('agentFlows.list.deleteSuccess', { version: row.latest.version }));
       await reload();
     } catch (e) {
-      toast.error(detailMsg(e) || 'Không xoá được bản nháp.');
+      toast.error(detailMsg(e) || t('agentFlows.list.deleteFailed'));
     } finally {
       setBusyKey(null);
     }
@@ -188,29 +218,29 @@ export function BrainList({
   return (
     <>
       <PageListLayout
-        title="Agent Flows"
-        description="Mỗi link công khai có ChatBot sẽ chọn một bộ não. Câu hỏi của người xem đi vào đó và được xử lý theo các bước bạn đặt sẵn."
+        title={t('agentFlows.title')}
+        description={t('agentFlows.list.description')}
         overview={(
           <ModuleOverview
             icon={Brain}
             title="Agent Flows"
             stats={[
-              { label: 'Bộ não', value: brains.length },
-              { label: 'Đang chạy', value: liveCount, helper: 'có một phiên bản đã phát hành' },
-              { label: 'Chỉ có nháp', value: brains.length - liveCount, helper: 'chưa phục vụ người xem nào' },
-              { label: 'Link đang dùng', value: servingCount, helper: 'tổng số link công khai trỏ vào các bộ não này' },
+              { label: t('agentFlows.list.stat.brains'), value: brains.length },
+              { label: t('agentFlows.list.stat.running'), value: liveCount, helper: t('agentFlows.list.stat.runningHelper') },
+              { label: t('agentFlows.list.stat.draftOnly'), value: brains.length - liveCount, helper: t('agentFlows.list.stat.draftOnlyHelper') },
+              { label: t('agentFlows.list.stat.linksUsing'), value: servingCount, helper: t('agentFlows.list.stat.linksUsingHelper') },
             ]}
             storageKey="agent-flows-overview"
           />
         )}
         action={canEdit ? (
           <Button size="sm" leadingIcon={<Plus className="h-3.5 w-3.5" />} onClick={() => setCreating(true)}>
-            Bộ não mới
+            {t('agentFlows.list.newBrain')}
           </Button>
         ) : undefined}
         isLoading={rows === null}
-        loadingText="Đang tải bộ não…"
-        searchPlaceholder="Tìm theo tên, mã hoặc mô tả…"
+        loadingText={t('agentFlows.list.loading')}
+        searchPlaceholder={t('agentFlows.list.searchPlaceholder')}
         searchValue={search}
         onSearchValueChange={setSearch}
         defaultView="list"
@@ -223,7 +253,7 @@ export function BrainList({
                 active={status === f.key}
                 onClick={() => setStatus(f.key)}
               >
-                {f.label}
+                {t(f.labelKey)}
               </FilterTag>
             ))}
           </div>
@@ -234,11 +264,11 @@ export function BrainList({
             return (
               <EmptyState
                 icon={<Brain className="h-6 w-6" />}
-                title="Chưa có bộ não nào"
-                description="Một bộ não gồm các bước nối tiếp nhau. Bước đầu thường đọc báo cáo và lấy số; bước cuối viết câu trả lời cho người xem."
+                title={t('agentFlows.list.emptyTitle')}
+                description={t('agentFlows.list.emptyDescription')}
                 action={canEdit ? (
                   <Button size="sm" leadingIcon={<Plus className="h-3.5 w-3.5" />} onClick={() => setCreating(true)}>
-                    Bộ não mới
+                    {t('agentFlows.list.newBrain')}
                   </Button>
                 ) : undefined}
               />
@@ -248,11 +278,11 @@ export function BrainList({
             return (
               <EmptyState
                 icon={<Brain className="h-6 w-6" />}
-                title="Không có bộ não nào khớp"
-                description="Thử từ khoá khác, hoặc bỏ bộ lọc trạng thái."
+                title={t('agentFlows.list.noMatchTitle')}
+                description={t('agentFlows.list.noMatchDescription')}
                 action={(
                   <Button size="sm" variant="secondary" onClick={() => { setSearch(''); setStatus('all'); }}>
-                    Xoá bộ lọc
+                    {t('agentFlows.list.clearFilters')}
                   </Button>
                 )}
               />
@@ -278,6 +308,7 @@ export function BrainList({
                           onOpen={onOpen}
                           onDuplicate={() => void duplicate(row)}
                           onDelete={() => setConfirmDelete(row)}
+                          onShare={() => setShareTarget(row.latest)}
                         />
                       ))}
                     </div>
@@ -287,16 +318,16 @@ export function BrainList({
                         <table className="app-list-table divide-y divide-[rgb(var(--border-line))]">
                           <thead className="bg-surface-2">
                             <tr>
-                              <th className="app-list-header w-[34%]">Bộ não</th>
-                              <th className="app-list-header w-[14%]">Trạng thái</th>
-                              <th className="app-list-header w-[10%]">Bước</th>
-                              <th className="app-list-header w-[12%]">Link đang dùng</th>
-                              <th className="app-list-header w-[14%]">Chủ sở hữu</th>
-                              <th className="app-list-header w-[12%]">Cập nhật</th>
+                              <th className="app-list-header w-[34%]">{t('agentFlows.list.header.brain')}</th>
+                              <th className="app-list-header w-[14%]">{t('agentFlows.list.header.status')}</th>
+                              <th className="app-list-header w-[10%]">{t('agentFlows.list.header.steps')}</th>
+                              <th className="app-list-header w-[12%]">{t('agentFlows.list.header.links')}</th>
+                              <th className="app-list-header w-[14%]">{t('agentFlows.list.header.owner')}</th>
+                              <th className="app-list-header w-[12%]">{t('agentFlows.list.header.updated')}</th>
                               {/* Wide enough for the uppercase tracked label on one
                                   line; at 92px "HÀNH ĐỘNG" wrapped and pushed the
                                   header row to two lines. */}
-                              <th className="app-list-header w-[116px] text-right">Hành động</th>
+                              <th className="app-list-header w-[116px] text-right">{t('agentFlows.list.header.actions')}</th>
                             </tr>
                           </thead>
                           <tbody className="divide-y divide-[rgb(var(--border-line))] bg-surface-1">
@@ -309,6 +340,7 @@ export function BrainList({
                                 onOpen={onOpen}
                                 onDuplicate={() => void duplicate(row)}
                                 onDelete={() => setConfirmDelete(row)}
+                                onShare={() => setShareTarget(row.latest)}
                               />
                             ))}
                           </tbody>
@@ -324,21 +356,39 @@ export function BrainList({
         }}
       </PageListLayout>
 
-      {creating && <CreateBrainModal onClose={() => setCreating(false)} onCreate={create} />}
+      {creating && (
+        <CreateBrainModal
+          onClose={() => setCreating(false)}
+          onCreate={create}
+          onCreateFromDraft={createFromDraft}
+        />
+      )}
 
       <ConfirmDialog
         isOpen={confirmDelete !== null}
-        title={`Xoá bản nháp v${confirmDelete?.latest.version ?? ''}?`}
+        title={t('agentFlows.list.deleteTitle', { version: confirmDelete?.latest.version ?? '' })}
         description={
           confirmDelete?.publishedVersion !== null && confirmDelete
-            ? `“${confirmDelete.latest.name}” vẫn còn phiên bản v${confirmDelete.publishedVersion} đang phục vụ người xem — bản đó không bị ảnh hưởng.`
-            : `“${confirmDelete?.latest.name}” sẽ bị xoá. Không có phiên bản nào khác của bộ não này đang chạy.`
+            ? t('agentFlows.list.deletePublishedDescription', { name: confirmDelete.latest.name, version: confirmDelete.publishedVersion })
+            : t('agentFlows.list.deleteOnlyDraftDescription', { name: confirmDelete?.latest.name ?? '' })
         }
-        confirmLabel="Xoá bản nháp"
+        confirmLabel={t('agentFlows.list.deleteConfirm')}
         variant="danger"
         onConfirm={() => { if (confirmDelete) void removeDraft(confirmDelete); }}
         onClose={() => setConfirmDelete(null)}
       />
+
+      {/* Shares are keyed by `brain_key`, not by a version id — one share covers
+          the flow across every version of it, which is what "I shared this flow
+          with you" has to mean for a resource that gets re-saved. */}
+      {shareTarget && (
+        <ShareDialog
+          resourceType="agent_brain"
+          resourceId={shareTarget.brain_key}
+          resourceName={shareTarget.name}
+          onClose={() => setShareTarget(null)}
+        />
+      )}
     </>
   );
 }
@@ -357,20 +407,22 @@ function isDeletableDraft(row: BrainRowModel): boolean {
 /* ── grid card ────────────────────────────────────────────────────────────── */
 
 function BrainCard({
-  row, canEdit, busy, onOpen, onDuplicate, onDelete,
+  row, canEdit, busy, onOpen, onDuplicate, onDelete, onShare,
 }: {
   row: BrainRowModel;
   canEdit: boolean;
   busy: boolean;
-  onOpen: (key: string) => void;
+  onOpen: (idOrKey: string | number) => void;
   onDuplicate: () => void;
   onDelete: () => void;
+  onShare: () => void;
 }) {
+  const { t, locale } = useI18n();
   const b = row.latest;
   const links = b.link_count || 0;
   return (
     <div className="group rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 transition-[box-shadow,border-color] hover:border-[rgb(var(--border-strong))] hover:shadow-linear">
-      <button type="button" onClick={() => onOpen(b.brain_key)} className="w-full p-4 text-left">
+      <button type="button" onClick={() => onOpen(b.flow_id ?? b.brain_key)} className="w-full p-4 text-left">
         <div className="mb-2.5 flex items-start justify-between gap-2">
           <div className="flex min-w-0 items-center gap-2.5">
             <span className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg bg-brand/10 text-brand">
@@ -387,7 +439,7 @@ function BrainCard({
                   size="xs"
                 />
                 {row.publishedVersion !== null && b.status === 'draft' && (
-                  <MetaChip tone="warning">nháp v{b.version} chưa phát hành</MetaChip>
+                  <MetaChip tone="warning">{t('agentFlows.list.draftUnpublished', { version: b.version })}</MetaChip>
                 )}
               </span>
             </span>
@@ -396,21 +448,21 @@ function BrainCard({
         </div>
 
         <p className="mb-3 line-clamp-2 min-h-[2.25rem] text-caption leading-relaxed text-text-secondary">
-          {b.description || <span className="text-text-quaternary">Chưa có mô tả — mở bộ não và viết một dòng ở tab Tổng quan.</span>}
+          {b.description || <span className="text-text-quaternary">{t('agentFlows.list.noDescriptionOpen')}</span>}
         </p>
 
         <div className="flex flex-wrap items-center gap-3 text-tiny text-text-quaternary">
           <span className="inline-flex items-center gap-1">
             <Layers className="h-3 w-3" />
-            {b.node_count ?? 0} bước
+            {t('agentFlows.list.stepCount', { count: b.node_count ?? 0 })}
           </span>
           <span className={`inline-flex items-center gap-1 ${links > 0 ? 'text-brand' : ''}`}>
             <Link2 className="h-3 w-3" />
-            {links > 0 ? `${links} link đang dùng` : 'chưa link nào dùng'}
+            {links > 0 ? t('agentFlows.list.linksUsingCount', { count: links }) : t('agentFlows.list.noLinksUsing')}
           </span>
           <span className="inline-flex items-center gap-1">
             <Calendar className="h-3 w-3" />
-            {formatWhen(b.published_at || b.created_at)}
+            {formatWhen(b.published_at || b.created_at, locale)}
           </span>
         </div>
       </button>
@@ -418,9 +470,15 @@ function BrainCard({
       <div className="flex items-center justify-between gap-1 border-t border-[rgb(var(--border-line))] bg-surface-2 px-3 py-1.5">
         <OwnerBadge email={b.owner_email} />
         <div className="flex items-center gap-0.5">
+          <IconButton
+            aria-label={t('agentFlows.list.shareAria')} variant="ghost" size="sm"
+            title={t('agentFlows.list.shareTitle')} disabled={busy} onClick={onShare}
+          >
+            <Share2 className="h-3.5 w-3.5" />
+          </IconButton>
           {canEdit && (
             <IconButton
-              aria-label="Nhân bản bộ não" variant="ghost" size="sm" title="Nhân bản"
+              aria-label={t('agentFlows.list.duplicateAria')} variant="ghost" size="sm" title={t('agentFlows.list.duplicateTitle')}
               disabled={busy} onClick={onDuplicate}
             >
               <Copy className="h-3.5 w-3.5" />
@@ -428,7 +486,7 @@ function BrainCard({
           )}
           {canEdit && isDeletableDraft(row) && (
             <IconButton
-              aria-label="Xoá bản nháp" variant="ghost" size="sm" title="Xoá bản nháp"
+              aria-label={t('agentFlows.list.deleteDraftAria')} variant="ghost" size="sm" title={t('agentFlows.list.deleteConfirm')}
               className="hover:text-danger" disabled={busy} onClick={onDelete}
             >
               <Trash2 className="h-3.5 w-3.5" />
@@ -443,21 +501,23 @@ function BrainCard({
 /* ── table row ────────────────────────────────────────────────────────────── */
 
 function BrainTableRow({
-  row, canEdit, busy, onOpen, onDuplicate, onDelete,
+  row, canEdit, busy, onOpen, onDuplicate, onDelete, onShare,
 }: {
   row: BrainRowModel;
   canEdit: boolean;
   busy: boolean;
-  onOpen: (key: string) => void;
+  onOpen: (idOrKey: string | number) => void;
   onDuplicate: () => void;
   onDelete: () => void;
+  onShare: () => void;
 }) {
+  const { t, locale } = useI18n();
   const b = row.latest;
   const links = b.link_count || 0;
   return (
     <tr className="hover:bg-surface-2">
       <td className="app-list-cell">
-        <button type="button" onClick={() => onOpen(b.brain_key)} className="flex w-full items-start gap-3 text-left">
+        <button type="button" onClick={() => onOpen(b.flow_id ?? b.brain_key)} className="flex w-full items-start gap-3 text-left">
           <span className="mt-0.5 flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-md bg-brand/10 text-brand">
             <Brain className="h-4 w-4" />
           </span>
@@ -466,7 +526,7 @@ function BrainTableRow({
               {b.name}
             </span>
             <span className="app-list-text-sub mt-0.5 block text-tiny text-text-tertiary">
-              {b.description || 'Chưa có mô tả'}
+              {b.description || t('agentFlows.list.noDescription')}
             </span>
           </span>
         </button>
@@ -478,7 +538,7 @@ function BrainTableRow({
             version={row.publishedVersion ?? b.version}
           />
           {row.publishedVersion !== null && b.status === 'draft' && (
-            <MetaChip tone="warning">nháp v{b.version}</MetaChip>
+            <MetaChip tone="warning">{t('agentFlows.list.draftVersion', { version: b.version })}</MetaChip>
           )}
         </div>
       </td>
@@ -490,18 +550,24 @@ function BrainTableRow({
             {links}
           </span>
         ) : (
-          <span className="text-caption text-text-quaternary">—</span>
+          <span className="text-caption text-text-quaternary">{t('agentFlows.common.none')}</span>
         )}
       </td>
       <td className="app-list-cell"><OwnerBadge email={b.owner_email} /></td>
       <td className="app-list-cell text-tiny text-text-tertiary">
-        {formatWhen(b.published_at || b.created_at)}
+        {formatWhen(b.published_at || b.created_at, locale)}
       </td>
       <td className="app-list-cell text-right">
         <div className="inline-flex items-center gap-0.5">
+          <IconButton
+            aria-label={t('agentFlows.list.shareAria')} variant="ghost" size="sm"
+            title={t('agentFlows.list.shareTitle')} disabled={busy} onClick={onShare}
+          >
+            <Share2 className="h-3.5 w-3.5" />
+          </IconButton>
           {canEdit && (
             <IconButton
-              aria-label="Nhân bản bộ não" variant="ghost" size="sm" title="Nhân bản"
+              aria-label={t('agentFlows.list.duplicateAria')} variant="ghost" size="sm" title={t('agentFlows.list.duplicateTitle')}
               disabled={busy} onClick={onDuplicate}
             >
               <Copy className="h-3.5 w-3.5" />
@@ -509,7 +575,7 @@ function BrainTableRow({
           )}
           {canEdit && isDeletableDraft(row) && (
             <IconButton
-              aria-label="Xoá bản nháp" variant="ghost" size="sm" title="Xoá bản nháp"
+              aria-label={t('agentFlows.list.deleteDraftAria')} variant="ghost" size="sm" title={t('agentFlows.list.deleteConfirm')}
               className="hover:text-danger" disabled={busy} onClick={onDelete}
             >
               <Trash2 className="h-3.5 w-3.5" />
@@ -531,65 +597,248 @@ function BrainTableRow({
  * unreadable forever after, and there was no delete on the list to clean it up.
  */
 function CreateBrainModal({
-  onClose, onCreate,
+  onClose, onCreate, onCreateFromDraft,
 }: {
   onClose: () => void;
   onCreate: (name: string, description: string) => Promise<void>;
+  onCreateFromDraft: (d: ImportedDraft) => Promise<void>;
 }) {
+  const { t } = useI18n();
+  const [mode, setMode] = React.useState<'blank' | 'ai'>('blank');
   const [name, setName] = React.useState('');
   const [description, setDescription] = React.useState('');
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
 
+  // ── the "have an assistant draft it" path ────────────────────────────────
+  const [brief, setBrief] = React.useState<AuthoringPrompt | null>(null);
+  const [copied, setCopied] = React.useState(false);
+  const [pasted, setPasted] = React.useState('');
+  const [draft, setDraft] = React.useState<ImportedDraft | null>(null);
+  const [checking, setChecking] = React.useState(false);
+
+  React.useEffect(() => {
+    // Fetched only when the author opens that tab — it is a 11KB string and most
+    // flows are still made blank.
+    if (mode !== 'ai' || brief) return;
+    getAuthoringPrompt().then(setBrief).catch(() => setBrief(null));
+  }, [mode, brief]);
+
   const submit = async () => {
-    if (!name.trim()) { setError('Cần một cái tên.'); return; }
+    if (!name.trim()) { setError(t('agentFlows.list.create.nameRequired')); return; }
     setBusy(true);
     setError(null);
     try {
       await onCreate(name, description);
     } catch (e) {
-      setError(detailMsg(e) || 'Không tạo được bộ não.');
+      setError(detailMsg(e) || t('agentFlows.list.create.failed'));
       setBusy(false);
+    }
+  };
+
+  const checkDraft = async () => {
+    setChecking(true);
+    setError(null);
+    setDraft(null);
+    try {
+      setDraft(await importDraft(pasted, name.trim() || undefined));
+    } catch (e) {
+      setError(detailMsg(e) || 'Không đọc được bản nháp');
+    } finally { setChecking(false); }
+  };
+
+  const createFromDraft = async () => {
+    if (!draft?.ok) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await onCreateFromDraft(draft);
+    } catch (e) {
+      setError(detailMsg(e) || t('agentFlows.list.create.failed'));
+      setBusy(false);
+    }
+  };
+
+  const copyBrief = async () => {
+    if (!brief) return;
+    try {
+      await navigator.clipboard.writeText(brief.prompt);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2500);
+    } catch {
+      setError('Trình duyệt chặn copy — bôi đen ô bên dưới rồi Ctrl+C.');
     }
   };
 
   return (
     <AppModalShell
       onClose={onClose}
-      title="Bộ não mới"
-      description="Bộ não dùng lại được trên nhiều link, nên hãy đặt tên theo việc nó làm, đừng theo tên một báo cáo."
+      title={t('agentFlows.list.create.title')}
+      description={t('agentFlows.list.create.description')}
       icon={<Brain className="h-4 w-4" />}
-      maxWidthClass="max-w-lg"
+      maxWidthClass={mode === 'ai' ? 'max-w-2xl' : 'max-w-lg'}
       closeDisabled={busy}
       footer={(
         <div className="flex items-center justify-end gap-2">
-          <Button variant="secondary" size="sm" disabled={busy} onClick={onClose}>Huỷ</Button>
-          <Button size="sm" loading={busy} onClick={() => void submit()}>Tạo và mở</Button>
+          <Button variant="secondary" size="sm" disabled={busy} onClick={onClose}>
+            {t('agentFlows.list.create.cancel')}
+          </Button>
+          {mode === 'blank' ? (
+            <Button size="sm" loading={busy} onClick={() => void submit()}>
+              {t('agentFlows.list.create.submit')}
+            </Button>
+          ) : (
+            <Button size="sm" loading={busy} disabled={!draft?.ok}
+                    onClick={() => void createFromDraft()}>
+              Tạo flow từ bản nháp
+            </Button>
+          )}
         </div>
       )}
     >
       <div className="space-y-3.5">
-        <FieldGroup label="Tên bộ não" required>
+        {/* Two ways in. The AI path is not a different product — it produces the
+            same flow the builder would, then hands it to the same editor. */}
+        <div className="flex gap-1 rounded-lg bg-surface-2 p-1">
+          {([
+            ['blank', 'Tự dựng'],
+            ['ai', 'Nhờ AI viết giúp'],
+          ] as const).map(([m, label]) => (
+            <button
+              key={m}
+              type="button"
+              onClick={() => { setMode(m); setError(null); }}
+              className={cn(
+                'flex-1 rounded-md px-2 py-1.5 text-caption transition',
+                mode === m ? 'bg-surface-1 font-medium shadow-sm' : 'text-text-tertiary',
+              )}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+
+        <FieldGroup label={t('agentFlows.list.create.name')} required={mode === 'blank'}>
           <Input
             autoFocus
             value={name}
             onChange={(e) => { setName(e.target.value); setError(null); }}
-            onKeyDown={(e) => { if (e.key === 'Enter') void submit(); }}
-            placeholder="ví dụ: Phân tích doanh thu và giải thích thay đổi"
-            invalid={Boolean(error) && !name.trim()}
+            onKeyDown={(e) => { if (e.key === 'Enter' && mode === 'blank') void submit(); }}
+            placeholder={t('agentFlows.list.create.namePlaceholder')}
+            invalid={Boolean(error) && mode === 'blank' && !name.trim()}
           />
         </FieldGroup>
-        <FieldGroup
-          label="Mô tả"
-          description="Hiện trên danh sách và trong hộp chọn bộ não khi cấu hình link. Một dòng là đủ."
-        >
-          <Textarea
-            rows={3}
-            value={description}
-            onChange={(e) => setDescription(e.target.value)}
-            placeholder="Dùng cho báo cáo bán hàng: đọc số trên báo cáo, đối chiếu quy ước rồi trả lời."
-          />
-        </FieldGroup>
+
+        {mode === 'blank' && (
+          <FieldGroup
+            label={t('agentFlows.list.create.descriptionLabel')}
+            description={t('agentFlows.list.create.descriptionHint')}
+          >
+            <Textarea
+              rows={3}
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              placeholder={t('agentFlows.list.create.descriptionPlaceholder')}
+            />
+          </FieldGroup>
+        )}
+
+        {mode === 'ai' && (
+          <div className="space-y-3">
+            <ol className="space-y-3">
+              <li>
+                <div className="mb-1.5 flex items-center gap-2">
+                  <StepDot n={1} />
+                  <b className="text-caption font-strong">Copy bản mô tả hệ thống</b>
+                  {brief && (
+                    <span className="text-tiny text-text-tertiary">
+                      {brief.stats.node_types} loại bước · {brief.stats.tools} công cụ
+                    </span>
+                  )}
+                </div>
+                <p className="mb-1.5 text-tiny leading-5 text-text-tertiary">
+                  Dán vào ChatGPT hoặc Claude, rồi mô tả nhu cầu của bạn bằng lời
+                  thường. Bản mô tả này liệt kê đúng những gì hệ thống chạy được,
+                  nên thứ nó viết ra sẽ dùng được ngay.
+                </p>
+                <div className="flex gap-2">
+                  <Button size="sm" variant="secondary" disabled={!brief}
+                          onClick={() => void copyBrief()}>
+                    {copied ? '✓ Đã copy' : 'Copy bản mô tả'}
+                  </Button>
+                  {!brief && <Loader2 className="h-4 w-4 animate-spin text-text-tertiary" />}
+                </div>
+              </li>
+
+              <li>
+                <div className="mb-1.5 flex items-center gap-2">
+                  <StepDot n={2} />
+                  <b className="text-caption font-strong">Dán kết quả trợ lý trả về</b>
+                </div>
+                <Textarea
+                  rows={5}
+                  value={pasted}
+                  onChange={(e) => { setPasted(e.target.value); setDraft(null); }}
+                  placeholder='Dán cả đoạn trợ lý trả lời cũng được — hệ thống tự tìm khối ```json'
+                />
+                <Button size="sm" variant="secondary" className="mt-1.5"
+                        loading={checking} disabled={!pasted.trim()}
+                        onClick={() => void checkDraft()}>
+                  Kiểm tra bản nháp
+                </Button>
+              </li>
+            </ol>
+
+            {draft && !draft.ok && (
+              <div className="rounded-lg border border-danger/25 bg-danger/5 p-2.5">
+                <p className="mb-1 flex items-center gap-1.5 text-tiny font-medium text-danger">
+                  <AlertTriangle className="h-3.5 w-3.5" /> Bản nháp chưa dùng được
+                </p>
+                {draft.errors.map((e, i) => (
+                  <p key={i} className="text-tiny leading-5 text-danger">{e}</p>
+                ))}
+                <p className="mt-1.5 text-tiny text-text-tertiary">
+                  Gửi nguyên đoạn lỗi này lại cho trợ lý và bảo nó sửa, rồi dán lại.
+                </p>
+              </div>
+            )}
+
+            {draft?.ok && (
+              <div className="rounded-lg border border-success/30 bg-success/5 p-2.5">
+                <p className="mb-1.5 flex items-center gap-1.5 text-tiny font-medium text-success">
+                  <Check className="h-3.5 w-3.5" />
+                  Đọc được: {draft.node_count} bước · bước trả lời “{draft.answer_node}”
+                </p>
+                {/* WHAT IS STILL EMPTY, before creating rather than after.
+                    The brief tells the assistant to leave every id blank, so a
+                    good draft arrives incomplete BY DESIGN — saying which steps
+                    wait on an attachment is the difference between "here is a
+                    flow" and "here is a flow that reads nothing yet". */}
+                {(draft.needs_attachment?.length || draft.todo?.length) ? (
+                  <div className="mt-1.5 border-t border-success/20 pt-1.5">
+                    <p className="mb-1 text-tiny font-medium text-text-secondary">
+                      Sau khi tạo, bạn cần gắn thêm:
+                    </p>
+                    {draft.needs_attachment?.map((n) => (
+                      <p key={n.key} className="text-tiny leading-5 text-text-secondary">
+                        · <b>{n.name || n.key}</b> — {n.why}
+                      </p>
+                    ))}
+                    {draft.todo?.map((x, i) => (
+                      <p key={i} className="text-tiny leading-5 text-text-tertiary">· {x}</p>
+                    ))}
+                  </div>
+                ) : null}
+                {draft.warnings.map((w, i) => (
+                  <p key={i} className="mt-1.5 rounded border border-warning/25 bg-warning/5 p-1.5 text-tiny leading-5 text-warning">
+                    {w}
+                  </p>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
         {error && (
           <p className="flex gap-1.5 rounded-md border border-danger/25 bg-danger/10 px-2.5 py-2 text-tiny leading-snug text-danger">
             <AlertTriangle className="mt-0.5 h-3 w-3 flex-shrink-0" />
@@ -598,5 +847,13 @@ function CreateBrainModal({
         )}
       </div>
     </AppModalShell>
+  );
+}
+
+function StepDot({ n }: { n: number }) {
+  return (
+    <span className="flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-full bg-brand/10 text-tiny font-strong text-brand">
+      {n}
+    </span>
   );
 }

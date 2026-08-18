@@ -1,10 +1,11 @@
 """
-EmbeddingService - generate and store vector embeddings for charts/tables.
+EmbeddingService - generate vectors and store chart/table embeddings.
 
 Uses the OpenAI embeddings endpoint. Embeddings are stored in
 resource_embeddings (pgvector).
 """
 import logging
+from dataclasses import asdict, dataclass
 from typing import Any, Dict, List, Optional
 
 import httpx
@@ -18,18 +19,51 @@ logger = logging.getLogger(__name__)
 OPENAI_BASE_URL = "https://api.openai.com/v1"
 
 
+@dataclass(frozen=True)
+class EmbeddingProfile:
+    model: str
+    provider: str = "openai"
+    dimensions: int = 768
+    distance_metric: str = "cosine"
+
+
+def _configured_profiles() -> Dict[str, EmbeddingProfile]:
+    dimensions = settings.openai_embedding_dimensions
+    return {
+        model: EmbeddingProfile(model=model, dimensions=dimensions)
+        for model in settings.embedding_models
+        if model.startswith("text-embedding-3-")
+    }
+
+
+def _resolve_profile(model: Optional[str] = None) -> EmbeddingProfile:
+    requested = (model or "").strip() or settings.active_embedding_model
+    profile = _configured_profiles().get(requested)
+    if profile is None:
+        allowed = ", ".join(_configured_profiles()) or "(none configured)"
+        raise ValueError(
+            f"Unsupported embedding model '{requested}'. Allowed models: {allowed}."
+        )
+    return profile
+
+
 def _openai_embed(content: str, model: Optional[str] = None) -> Optional[List[float]]:
     api_key = settings.OPENAI_API_KEY.strip()
     if not api_key:
         return None
 
+    try:
+        profile = _resolve_profile(model)
+    except ValueError as exc:
+        logger.warning("EmbeddingService: %s", exc)
+        return None
+
     payload: Dict[str, Any] = {
-        "model": (model or "").strip() or settings.active_embedding_model,
+        "model": profile.model,
         "input": content,
         "encoding_format": "float",
+        "dimensions": profile.dimensions,
     }
-    if settings.openai_embedding_dimensions > 0:
-        payload["dimensions"] = settings.openai_embedding_dimensions
 
     try:
         response = httpx.post(
@@ -48,7 +82,16 @@ def _openai_embed(content: str, model: Optional[str] = None) -> Optional[List[fl
         embedding = data[0].get("embedding")
         if not isinstance(embedding, list):
             return None
-        return [float(value) for value in embedding]
+        vector = [float(value) for value in embedding]
+        if len(vector) != profile.dimensions:
+            logger.warning(
+                "EmbeddingService: model %s returned %s dimensions; expected %s",
+                profile.model,
+                len(vector),
+                profile.dimensions,
+            )
+            return None
+        return vector
     except Exception as exc:
         logger.warning("EmbeddingService: OpenAI embedding failed - %s", exc)
         return None
@@ -65,13 +108,21 @@ def _extract_col_names(columns_cache) -> List[str]:
 
 class EmbeddingService:
     @staticmethod
+    def embedding_profiles() -> List[Dict[str, Any]]:
+        return [asdict(profile) for profile in _configured_profiles().values()]
+
+    @staticmethod
+    def resolve_model(model: Optional[str] = None) -> str:
+        """Return a configured model id or raise before any data is changed."""
+        return _resolve_profile(model).model
+
+    @staticmethod
+    def dimensions_for(model: Optional[str] = None) -> int:
+        return _resolve_profile(model).dimensions
+
+    @staticmethod
     def generate_embedding(content: str, model: Optional[str] = None) -> Optional[List[float]]:
-        """Generate a document embedding via OpenAI. `model` overrides
-        settings.active_embedding_model (used by per-doc embedding_model
-        overrides, e.g. Govern Knowledge Docs) — an incompatible/unknown model
-        id simply fails the OpenAI call and returns None like any other
-        embedding-unavailable case, it never corrupts the fixed-width vector
-        column."""
+        """Generate a vector using a configured fixed-dimension profile."""
         if not settings.OPENAI_API_KEY.strip():
             logger.debug("EmbeddingService: OPENAI_API_KEY not set, skipping")
             return None
@@ -188,40 +239,50 @@ class EmbeddingService:
         resource_type: str,
         resource_id: int,
         source_text: str,
+        *,
+        commit: bool = True,
     ) -> bool:
-        """Generate embedding and upsert into resource_embeddings. Returns True on success."""
+        """Generate and upsert a resource vector without poisoning caller work.
+
+        The SQL runs in a savepoint because this helper is also called while a
+        knowledge fact and its review/audit rows are still pending. A vector
+        failure is best-effort and must not roll back those business records.
+        Standalone chart/table jobs keep the historical commit-on-success
+        behaviour; transactional callers pass ``commit=False``.
+        """
         vector = EmbeddingService.generate_embedding(source_text)
         if vector is None:
             return False
 
         try:
-            db.execute(
-                text(
-                    """
-                INSERT INTO resource_embeddings
-                    (resource_type, resource_id, embedding, source_text, updated_at)
-                VALUES
-                    (:rtype, :rid, :emb, :src, NOW())
-                ON CONFLICT (resource_type, resource_id)
-                DO UPDATE SET
-                    embedding   = EXCLUDED.embedding,
-                    source_text = EXCLUDED.source_text,
-                    updated_at  = NOW()
-            """
-                ),
-                {
-                    "rtype": resource_type,
-                    "rid": resource_id,
-                    "emb": str(vector),
-                    "src": source_text,
-                },
-            )
-            db.commit()
+            with db.begin_nested():
+                db.execute(
+                    text(
+                        """
+                    INSERT INTO resource_embeddings
+                        (resource_type, resource_id, embedding, source_text, updated_at)
+                    VALUES
+                        (:rtype, :rid, :emb, :src, NOW())
+                    ON CONFLICT (resource_type, resource_id)
+                    DO UPDATE SET
+                        embedding   = EXCLUDED.embedding,
+                        source_text = EXCLUDED.source_text,
+                        updated_at  = NOW()
+                """
+                    ),
+                    {
+                        "rtype": resource_type,
+                        "rid": resource_id,
+                        "emb": str(vector),
+                        "src": source_text,
+                    },
+                )
+            if commit:
+                db.commit()
             logger.info("EmbeddingService: upserted %s/%s", resource_type, resource_id)
             return True
         except Exception as exc:
             logger.warning("EmbeddingService: upsert failed - %s", exc)
-            db.rollback()
             return False
 
     @staticmethod

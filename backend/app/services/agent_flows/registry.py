@@ -59,9 +59,49 @@ def parse_flow(row: AgentBrainVersion) -> Flow | None:
         return None
 
 
+def _assign_flow_id(db: Session, row: AgentBrainVersion) -> None:
+    """Give a new version row its flow's number: the key's existing one, or its own id.
+
+    Called with the row added but not committed. The flush is what turns an id
+    into a real number — without it the first version of a brand-new flow would
+    be handed `None` and become unaddressable by link until its next save.
+    """
+    existing = (
+        db.query(AgentBrainVersion.flow_id)
+        .filter(
+            AgentBrainVersion.brain_key == row.brain_key,
+            AgentBrainVersion.flow_id.isnot(None),
+        )
+        .order_by(AgentBrainVersion.flow_id)
+        .first()
+    )
+    if existing and existing[0]:
+        row.flow_id = int(existing[0])
+        return
+    db.flush()
+    row.flow_id = row.id
+
+
+def flow_id_to_key(db: Session, flow_id: int) -> str | None:
+    """The `brain_key` a link's number refers to, or None.
+
+    Resolution happens here and nowhere else: every other function in this module
+    — and every permission check — still takes a key, so the number never becomes
+    a second identity the rest of the system has to agree about.
+    """
+    row = (
+        db.query(AgentBrainVersion.brain_key)
+        .filter(AgentBrainVersion.flow_id == flow_id)
+        .first()
+    )
+    return row[0] if row else None
+
+
 def _row_dict(row: AgentBrainVersion, *, include_body: bool = True) -> dict[str, Any]:
     out: dict[str, Any] = {
         "brain_key": row.brain_key,
+        # What a link carries. Callers keep using brain_key for every request.
+        "flow_id": row.flow_id,
         "version": row.version,
         "status": row.status,
         "name": row.name,
@@ -405,6 +445,7 @@ def save_draft(
             created_by=actor_email,
         )
         db.add(row)
+        _assign_flow_id(db, row)
         action = "created"
 
     db.commit()
@@ -592,6 +633,7 @@ def restore_to_draft(
             created_by=actor_email,
         )
         db.add(row)
+        _assign_flow_id(db, row)
     db.commit()
     db.refresh(row)
     _audit(
@@ -616,9 +658,111 @@ def delete_version(db: Session, brain_key: str, version: int, actor_email: str =
         raise BrainError(404, "Không tìm thấy phiên bản này")
     if row.status == PUBLISHED:
         raise BrainError(409, "Phiên bản đang phát hành — hãy phát hành bản khác trước")
+
+    # A DELETE MAY NOT LEAVE A LINK POINTING AT NOTHING.
+    #
+    # This checked only the row it was removing. Deleting the LAST version of a
+    # flow therefore made the flow cease to exist while every binding naming it
+    # stayed behind, and nothing anywhere said so: the link kept its bot, the
+    # dispatcher answered `not_published` on each question, and the author who
+    # deleted the version was never the person who found out. One such binding is
+    # in this deployment right now, pointing at a `brain_key` with zero versions.
+    #
+    # Refused rather than cascaded. Deleting somebody's binding as a side effect
+    # of tidying a draft is a bigger surprise than being told to unassign it
+    # first, and `impact()` already exists to show exactly who is affected.
+    from app.services.agent_flows import binding as binding_service
+
+    users = binding_service.list_for_flow(db, brain_key)
+    if users:
+        pinned = [u for u in users if u.get("pinned_version") == version]
+        if pinned:
+            names = ", ".join(str(u["link_name"] or u["link_id"]) for u in pinned[:3])
+            raise BrainError(
+                409,
+                f"{len(pinned)} link đang ghim đúng phiên bản v{version} ({names}"
+                f"{'…' if len(pinned) > 3 else ''}). Hãy đổi hoặc bỏ ghim trước khi xoá.",
+            )
+        remaining = (
+            db.query(AgentBrainVersion)
+            .filter(
+                AgentBrainVersion.brain_key == brain_key,
+                AgentBrainVersion.version != version,
+            )
+            .count()
+        )
+        if remaining == 0:
+            names = ", ".join(str(u["link_name"] or u["link_id"]) for u in users[:3])
+            raise BrainError(
+                409,
+                f"Đây là phiên bản cuối cùng của flow, mà {len(users)} link vẫn đang "
+                f"dùng nó ({names}{'…' if len(users) > 3 else ''}). Hãy gỡ flow khỏi "
+                f"các link đó trước — xoá bây giờ sẽ để lại link trỏ vào chỗ trống.",
+            )
+
     db.delete(row)
     db.commit()
     _audit(db, "AGENT_FLOW_DELETED", brain_key, actor_email, {"version": version})
+
+
+def unpublish_version(
+    db: Session,
+    brain_key: str,
+    version: int,
+    actor_email: str = "",
+) -> dict[str, Any]:
+    """Take the live version offline after every link has been unassigned.
+
+    Deletion already refuses a published version and tells callers to unpublish
+    first. This operation is that missing half of the lifecycle. It fails closed
+    while any binding still names the flow, so taking a version offline cannot
+    silently break a viewer's public link.
+    """
+    row = (
+        db.query(AgentBrainVersion)
+        .filter(
+            AgentBrainVersion.brain_key == brain_key,
+            AgentBrainVersion.version == version,
+        )
+        .first()
+    )
+    if row is None:
+        raise BrainError(404, "Không tìm thấy phiên bản này")
+    if row.status != PUBLISHED:
+        raise BrainError(409, "Chỉ phiên bản đang phát hành mới cần gỡ phát hành")
+
+    from app.services.agent_flows import binding as binding_service
+
+    users = binding_service.list_for_flow(db, brain_key)
+    if users:
+        names = ", ".join(str(item["link_name"] or item["link_id"]) for item in users[:3])
+        raise BrainError(
+            409,
+            f"{len(users)} link vẫn đang dùng flow này ({names}"
+            f"{'…' if len(users) > 3 else ''}). Hãy gỡ binding trước khi unpublish.",
+        )
+
+    row.status = ARCHIVED
+    db.commit()
+    db.refresh(row)
+    _audit(db, "AGENT_FLOW_UNPUBLISHED", brain_key, actor_email, {"version": version})
+    return _row_dict(row)
+
+
+def has_any_version(db: Session, brain_key: str) -> bool:
+    """Does this flow exist at all?
+
+    Distinct from "is anything published". A flow with drafts but no published
+    version is between states; a flow with no rows has been deleted, and a binding
+    naming it can never resolve again. The two need opposite handling, so the
+    caller has to be able to tell them apart.
+    """
+    return (
+        db.query(AgentBrainVersion.id)
+        .filter(AgentBrainVersion.brain_key == brain_key)
+        .first()
+        is not None
+    )
 
 
 def impact(db: Session, brain_key: str) -> dict[str, Any]:

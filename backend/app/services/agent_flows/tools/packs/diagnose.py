@@ -35,6 +35,10 @@ PACK = ToolPack(
                 "coverage": "mấy nhóm được liệt kê trên tổng số",
             },
             cost_class="expensive",
+            # MEASURED across every dashboard: 31 .. 738 tokens. `small` promised
+            # <= 500 and the contribution list clears it whenever a change has
+            # several drivers, which is the case worth calling the tool for.
+            payload="medium",
             self_sufficient=True,
             answers_vi=("Vì sao doanh thu giảm?", "Nhóm nào kéo số xuống?"),
         ),
@@ -50,6 +54,10 @@ PACK = ToolPack(
                 "baseline": "mức bình thường dùng để so",
             },
             cost_class="data_query",
+            # MEASURED: 31 .. 1,347 tokens. Each anomaly carries its whole row, so
+            # the payload grows with how many the method finds — and on a wide
+            # fact table it finds thousands.
+            payload="medium",
             self_sufficient=True,
             answers_vi=("Có gì bất thường không?", "Ngày nào tụt hẳn?"),
         ),

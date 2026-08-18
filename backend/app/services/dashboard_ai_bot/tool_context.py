@@ -254,6 +254,9 @@ class ToolContext:
     #: configurable in one place and enforced from another is not a limit, it is
     #: two limits, and the stricter one wins silently.
     max_rows_per_call: int | None = None
+    #: The most tokens one tool RESULT may carry, from the binding. None
+    #: falls back to the registry default. Set per run, like the row cap.
+    max_result_tokens: int | None = None
     _chart_data_cache: dict[tuple, dict] = field(default_factory=dict)
 
     @classmethod
@@ -396,8 +399,25 @@ def _ok(data: Any) -> dict:
     return {"ok": True, "data": data}
 
 
-def _err(message: str) -> dict:
-    return {"ok": False, "error": str(message)}
+def _err(message: str, *, code: str | None = None,
+         retryable: bool = False) -> dict:
+    """A failure from a legacy tool body.
+
+    `code` is optional and usually omitted: the registry infers the error code
+    from the message for every body written before typed codes existed. But
+    inference is guesswork on English fragments, and where the body KNOWS the
+    answer it should say so rather than leave it to be pattern-matched — the
+    registry passes an explicit `error_code` through untouched.
+
+    The first case was `fetch_url` refusing an internal address: inferred as
+    `query_failed`, which is marked retryable, so the one error the egress guard
+    exists to produce invited the model to try again.
+    """
+    out: dict = {"ok": False, "error": str(message)}
+    if code:
+        out["error_code"] = code
+        out["retryable"] = retryable
+    return out
 
 
 def _hash_filters(filters: list[dict]) -> str:

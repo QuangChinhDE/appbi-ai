@@ -313,8 +313,254 @@ class GovernanceService:
 
     # ── Management Metrics (metrics quản trị doanh nghiệp) ───────────────────
     @staticmethod
-    def _metric_dict(m: GovernMetric) -> dict[str, Any]:
+    def _metric_targets(metric: GovernMetric) -> list[Any]:
+        """Return binding rows, with legacy scalar columns as a read fallback."""
+        rows = list(getattr(metric, "bindings", None) or [])
+        if rows or not (metric.dataset_id or metric.dataset_table_id or metric.measure_ref):
+            return rows
+
+        class LegacyTarget:
+            id = None
+            dataset_id = metric.dataset_id
+            dataset_table_id = metric.dataset_table_id
+            measure_ref = metric.measure_ref
+            is_primary = True
+
+        return [LegacyTarget()]
+
+    @staticmethod
+    def resolve_metric_binding(db: Session, binding: Any) -> dict[str, Any]:
+        """Resolve one governed-KPI realization against a live semantic measure.
+
+        A dataset-only row is a valid Draft scope but remains ``unbound``. A ref
+        that names a dimension, a missing table, or an ambiguous measure is
+        ``unresolved`` and never produces lineage or passes certification.
+        """
+        from app.models.dataset import Dataset, DatasetTable
+        from app.models.semantic import SemanticView
+
+        def value(name: str):
+            return binding.get(name) if isinstance(binding, dict) else getattr(binding, name, None)
+
+        dataset_id = value("dataset_id")
+        table_id = value("dataset_table_id")
+        measure_ref = str(value("measure_ref") or "").strip()
+        out: dict[str, Any] = {
+            "status": "unbound",
+            "reason": "measure_required",
+            "dataset_id": int(dataset_id) if dataset_id is not None else None,
+            "dataset_table_id": int(table_id) if table_id is not None else None,
+            "measure_ref": measure_ref or None,
+            "canonical_ref": None,
+            "view_id": None,
+            "view_name": None,
+            "table_name": None,
+            "measure_name": None,
+            "measure_label": None,
+        }
+        if not (dataset_id or table_id or measure_ref):
+            out["reason"] = "empty"
+            return out
+
+        dataset = None
+        if dataset_id is not None:
+            dataset = db.query(Dataset).filter(Dataset.id == int(dataset_id)).first()
+            if dataset is None:
+                return {**out, "status": "unresolved", "reason": "dataset_missing"}
+            out["dataset_name"] = dataset.name
+
+        table = None
+        if table_id is not None:
+            table = db.query(DatasetTable).filter(DatasetTable.id == int(table_id)).first()
+            if table is None:
+                return {**out, "status": "unresolved", "reason": "table_missing"}
+            if dataset_id is not None and table.dataset_id != int(dataset_id):
+                return {**out, "status": "unresolved", "reason": "table_dataset_mismatch"}
+            out.update(
+                dataset_id=table.dataset_id,
+                dataset_table_id=table.id,
+                table_name=table.display_name,
+            )
+            if dataset is None:
+                dataset = db.query(Dataset).filter(Dataset.id == table.dataset_id).first()
+                out["dataset_name"] = dataset.name if dataset else None
+
+        if not measure_ref:
+            return out
+
+        token, dot, requested_name = measure_ref.rpartition(".")
+        if not dot:
+            token, requested_name = "", measure_ref
+        requested_lower = requested_name.strip().lower()
+        if not requested_lower:
+            return {**out, "status": "unresolved", "reason": "measure_missing"}
+
+        query = db.query(SemanticView)
+        if table is not None:
+            views = query.filter(SemanticView.dataset_table_id == table.id).all()
+        elif dataset_id is not None:
+            table_ids = [
+                row.id for row in db.query(DatasetTable.id).filter(
+                    DatasetTable.dataset_id == int(dataset_id)
+                ).all()
+            ]
+            views = query.filter(SemanticView.dataset_table_id.in_(table_ids or [-1])).all()
+        else:
+            views = query.all()
+
+        token_lower = token.strip().lower()
+        if token_lower:
+            views = [
+                view for view in views
+                if token_lower in {
+                    str(view.name or "").strip().lower(),
+                    str(view.sql_table_name or "").strip().lower(),
+                    f"dataset_table_{view.dataset_table_id}",
+                }
+            ]
+
+        matches: list[tuple[Any, dict[str, Any]]] = []
+        for view in views:
+            for measure in view.measures or []:
+                if isinstance(measure, dict) and str(measure.get("name") or "").strip().lower() == requested_lower:
+                    matches.append((view, measure))
+        if not matches:
+            return {**out, "status": "unresolved", "reason": "measure_missing"}
+        if len(matches) > 1:
+            return {**out, "status": "unresolved", "reason": "measure_ambiguous"}
+
+        view, measure = matches[0]
+        if table is None and view.dataset_table_id:
+            table = db.query(DatasetTable).filter(DatasetTable.id == view.dataset_table_id).first()
+        actual_name = str(measure.get("name"))
+        view_name = str(view.name or view.sql_table_name or f"dataset_table_{view.dataset_table_id}")
+        resolved_dataset_id = table.dataset_id if table else out.get("dataset_id")
         return {
+            **out,
+            "status": "ok",
+            "reason": None,
+            "dataset_id": resolved_dataset_id,
+            "dataset_name": (
+                db.query(Dataset.name).filter(Dataset.id == resolved_dataset_id).scalar()
+                if resolved_dataset_id else None
+            ),
+            "dataset_table_id": view.dataset_table_id,
+            "table_name": table.display_name if table else None,
+            "measure_ref": measure_ref,
+            "canonical_ref": f"{view_name}.{actual_name}",
+            "view_id": view.id,
+            "view_name": view_name,
+            "measure_name": actual_name,
+            "measure_label": measure.get("label") or actual_name,
+            "glossary_terms": measure.get("glossary_terms") or [],
+        }
+
+    @staticmethod
+    def metric_binding_details(db: Session, metric: GovernMetric) -> list[dict[str, Any]]:
+        return [
+            {
+                **GovernanceService.resolve_metric_binding(db, target),
+                "id": getattr(target, "id", None),
+                "is_primary": bool(getattr(target, "is_primary", False)),
+            }
+            for target in GovernanceService._metric_targets(metric)
+        ]
+
+    @staticmethod
+    def metric_binding_status(db: Session, metric: GovernMetric) -> str:
+        details = GovernanceService.metric_binding_details(db, metric)
+        if not details or all(row["status"] == "unbound" for row in details):
+            return "unbound"
+        if all(row["status"] == "ok" for row in details):
+            return "ok"
+        return "unresolved"
+
+    @staticmethod
+    def metric_dataset_ids(db: Session, metric: GovernMetric, *, resolved_only: bool = False) -> set[int]:
+        details = GovernanceService.metric_binding_details(db, metric)
+        return {
+            int(row["dataset_id"])
+            for row in details
+            if row.get("dataset_id") and (not resolved_only or row["status"] == "ok")
+        }
+
+    @staticmethod
+    def _prepare_metric_bindings(db: Session, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        cleaned: list[dict[str, Any]] = []
+        seen: set[tuple[Any, Any, Any]] = set()
+        for raw in rows or []:
+            if not isinstance(raw, dict):
+                raise GovernanceError(422, "Mỗi binding KPI phải là một object hợp lệ.")
+            if not (raw.get("dataset_id") or raw.get("dataset_table_id") or str(raw.get("measure_ref") or "").strip()):
+                continue
+            resolved = GovernanceService.resolve_metric_binding(db, raw)
+            if resolved["status"] == "unresolved":
+                raise GovernanceError(
+                    422,
+                    "Binding KPI không hợp lệ "
+                    f"({resolved['reason']}): hãy chọn measure từ Semantic Model hiện có.",
+                )
+            row = {
+                "dataset_id": resolved.get("dataset_id"),
+                "dataset_table_id": resolved.get("dataset_table_id"),
+                "measure_ref": resolved.get("canonical_ref") or resolved.get("measure_ref"),
+                "is_primary": bool(raw.get("is_primary")),
+            }
+            key = (row["dataset_id"], row["dataset_table_id"], row["measure_ref"])
+            if key not in seen:
+                seen.add(key)
+                cleaned.append(row)
+
+        if cleaned and not any(row["is_primary"] for row in cleaned):
+            cleaned[0]["is_primary"] = True
+        primary_seen = False
+        for row in cleaned:
+            if not row["is_primary"]:
+                continue
+            if primary_seen:
+                row["is_primary"] = False
+            else:
+                primary_seen = True
+        return cleaned
+
+    @staticmethod
+    def _dataset_names(db: Session, metrics: list[GovernMetric]) -> dict[int, str]:
+        """`dataset_id → name`, for every dataset any of these metrics is computed in.
+
+        One query for the whole page. Resolved here rather than in the frontend
+        because the caller would otherwise have to fetch the dataset list just to
+        render a chip, and a screen that lists "also computed in dataset 12" is not
+        worth rendering at all.
+        """
+        ids = {
+            b.dataset_id
+            for m in metrics
+            for b in (getattr(m, "bindings", None) or [])
+            if b.dataset_id
+        }
+        ids |= {m.dataset_id for m in metrics if m.dataset_id}
+        if not ids:
+            return {}
+        try:
+            from app.models.dataset import Dataset
+
+            return {
+                d.id: d.name
+                for d in db.query(Dataset.id, Dataset.name).filter(Dataset.id.in_(ids)).all()
+            }
+        except Exception:  # noqa: BLE001 — a label must never fail a read
+            return {}
+
+    @staticmethod
+    def _metric_dict(
+        m: GovernMetric, names: dict[int, str] | None = None, db: Session | None = None
+    ) -> dict[str, Any]:
+        details = GovernanceService.metric_binding_details(db, m) if db else []
+        detail_by_id = {row.get("id"): row for row in details if row.get("id") is not None}
+        targets = GovernanceService._metric_targets(m)
+        binding_status = GovernanceService.metric_binding_status(db, m) if db else None
+        return {
+            "id": m.id,
             "name": m.display_name,
             "machine_name": m.name,
             "fqn": m.name,
@@ -329,9 +575,42 @@ class GovernanceService:
             "target_value2": m.target_value2,
             "owner": m.owner,
             "related_term_fqn": m.related_term_fqn,
+            # THE LEGACY SINGLE BINDING. Still written and still read, so a
+            # client that predates `bindings` keeps working — it now mirrors the
+            # PRIMARY row of `govern_metric_bindings`.
             "dataset_id": m.dataset_id,
             "dataset_table_id": m.dataset_table_id,
             "measure_ref": m.measure_ref,
+            # WHERE THIS ONE DEFINITION IS COMPUTED — possibly in several places.
+            # A metric is a statement the business governs by; each binding is one
+            # dataset that realizes it. Reading them as a list is what stops the
+            # catalogue looking like a per-dataset dictionary.
+            "bindings": [
+                {
+                    "dataset_id": b.dataset_id,
+                    "dataset_table_id": b.dataset_table_id,
+                    "measure_ref": b.measure_ref,
+                    "is_primary": bool(b.is_primary),
+                    # NAMED, not just numbered. A screen showing "also computed in
+                    # dataset 12" tells an author nothing; the point of listing the
+                    # other realizations is to show that the definition is shared,
+                    # and a number cannot do that.
+                    "dataset_name": names.get(b.dataset_id) if names else None,
+                    **({
+                        "status": detail_by_id.get(b.id, {}).get("status"),
+                        "reason": detail_by_id.get(b.id, {}).get("reason"),
+                        "table_name": detail_by_id.get(b.id, {}).get("table_name"),
+                        "measure_name": detail_by_id.get(b.id, {}).get("measure_name"),
+                        "measure_label": detail_by_id.get(b.id, {}).get("measure_label"),
+                        "canonical_ref": detail_by_id.get(b.id, {}).get("canonical_ref"),
+                    } if db else {}),
+                }
+                for b in sorted(
+                    targets,
+                    key=lambda x: (not x.is_primary, x.dataset_id or 0),
+                )
+            ],
+            "binding_status": binding_status,
             "home_doc_id": m.home_doc_id,
             "anchor": m.anchor,
             "synonyms": m.synonyms or [],
@@ -361,9 +640,10 @@ class GovernanceService:
             {d.id: d for d in db.query(GovernKnowledgeDoc).filter(GovernKnowledgeDoc.id.in_(home_ids)).all()}
             if home_ids else {}
         )
+        names = GovernanceService._dataset_names(db, rows)
         out = []
         for m in rows:
-            d = GovernanceService._metric_dict(m)
+            d = GovernanceService._metric_dict(m, names, db)
             d["usage_count"] = int(counts.get(m.id, 0))
             hd = docs.get(m.home_doc_id) if m.home_doc_id else None
             d["home_doc_title"] = hd.title if hd else None
@@ -375,14 +655,61 @@ class GovernanceService:
         m = db.query(GovernMetric).filter(GovernMetric.name == name).first()
         if m is None:
             return None
-        d = GovernanceService._metric_dict(m)
+        d = GovernanceService._metric_dict(m, GovernanceService._dataset_names(db, [m]), db)
         d["lineage"] = GovernanceService.metric_lineage(db, m)
         return d
+
+    @staticmethod
+    def _replace_metric_bindings(
+        db: Session, metric: GovernMetric, rows: list[dict[str, Any]]
+    ) -> None:
+        """Set where this metric is computed, and keep the legacy fields in step.
+
+        REPLACE, NOT MERGE. A binding list is a statement about the whole metric —
+        "these are the places it is computed" — so a caller that drops one means
+        it. Merging would make removal impossible through the same door that adds.
+
+        The scalar `dataset_id` / `dataset_table_id` / `measure_ref` on the metric
+        are rewritten from whichever row is primary, because older readers (and
+        the assistant's fallback path) still consult them. Two records of the same
+        fact only stay true if one write updates both.
+        """
+        from app.models.governance import GovernMetricBinding
+
+        cleaned = GovernanceService._prepare_metric_bindings(db, rows)
+
+        db.query(GovernMetricBinding).filter(
+            GovernMetricBinding.metric_id == metric.id
+        ).delete(synchronize_session=False)
+        for c in cleaned:
+            db.add(GovernMetricBinding(metric_id=metric.id, **c))
+
+        primary = next((c for c in cleaned if c["is_primary"]), None)
+        metric.dataset_id = primary["dataset_id"] if primary else None
+        metric.dataset_table_id = primary["dataset_table_id"] if primary else None
+        metric.measure_ref = primary["measure_ref"] if primary else None
 
     @staticmethod
     def upsert_managed_metric(db: Session, payload: dict[str, Any], *, changed_by: str | None = None) -> dict[str, Any]:
         display = require_name(payload.get("name"))
         machine_name = payload.get("machine_name")
+        requested_status = payload.get("status") or "Draft"
+        if requested_status not in {"Draft", "Approved", "Deprecated"}:
+            raise GovernanceError(422, f"Trạng thái KPI không hợp lệ: {requested_status}")
+        incoming_bindings = payload.get("bindings")
+        if incoming_bindings is None and any(
+            payload.get(key) is not None for key in ("dataset_id", "dataset_table_id", "measure_ref")
+        ):
+            incoming_bindings = [{
+                "dataset_id": payload.get("dataset_id"),
+                "dataset_table_id": payload.get("dataset_table_id"),
+                "measure_ref": payload.get("measure_ref"),
+                "is_primary": True,
+            }]
+        prepared_bindings = (
+            GovernanceService._prepare_metric_bindings(db, incoming_bindings)
+            if incoming_bindings is not None else None
+        )
         fields = dict(
             definition=payload.get("definition"),
             formula=payload.get("formula"),
@@ -401,30 +728,48 @@ class GovernanceService:
             home_doc_id=payload.get("home_doc_id"),
             anchor=payload.get("anchor"),
             synonyms=[s.strip() for s in (payload.get("synonyms") or []) if s and str(s).strip()],
-            status=(payload.get("status") or "Draft"),
+            status=requested_status,
         )
         if machine_name:  # EDIT — bump version, keep machine name stable
             m = db.query(GovernMetric).filter(GovernMetric.name == machine_name).first()
             if m is None:
                 raise GovernanceError(404, "Không tìm thấy chỉ số quản trị.")
             GovernanceService._guard_system(m)
+            previous_status = m.status
+            if requested_status == "Approved" and previous_status != "Approved":
+                raise GovernanceError(409, "Hãy dùng thao tác Chứng thực để chuyển KPI sang Approved.")
             m.display_name = display
             for k, v in fields.items():
                 setattr(m, k, v)
             m.version = (m.version or 1) + 1
             action = "update"
         else:  # CREATE
+            if requested_status == "Approved":
+                raise GovernanceError(409, "KPI mới phải được lưu Draft rồi Chứng thực.")
             name = slugify(display, "metric")
             if db.query(GovernMetric).filter(GovernMetric.name == name).first():
                 name = f"{name}_{int(db.query(GovernMetric).count()) + 1}"
             m = GovernMetric(name=name, display_name=display, version=1, provider="user", **fields)
             db.add(m)
             action = "create"
+        # Bindings are replaced wholesale when the caller sends them, and left
+        # alone when it does not — an older client that knows only the scalar
+        # fields must not silently wipe a metric's other realizations.
+        if prepared_bindings is not None:
+            db.flush()  # a CREATE needs its id before rows can point at it
+            GovernanceService._replace_metric_bindings(db, m, prepared_bindings)
+            db.flush()
+            db.expire(m, ["bindings"])
+        if m.status == "Approved" and GovernanceService.metric_binding_status(db, m) != "ok":
+            raise GovernanceError(
+                422,
+                "KPI Approved phải có ít nhất một binding và mọi binding phải trỏ tới semantic measure hợp lệ.",
+            )
         GovernanceService._commit(db)
         GovernanceService.log_change(
             db, "metric", m.name, action,
             summary=f"{action} metric '{m.display_name}' (v{m.version}, {m.status})",
-            changed_by=changed_by, snapshot=GovernanceService._metric_dict(m),
+            changed_by=changed_by, snapshot=GovernanceService._metric_dict(m, db=db),
         )
         return {"ok": True, "fqn": m.name, "machine_name": m.name, "version": m.version}
 
@@ -538,34 +883,303 @@ class GovernanceService:
 
     @staticmethod
     def knowledge_graph(db: Session, current_user) -> dict[str, Any]:
-        """Whole-hub knowledge graph (Obsidian graph view): visible docs as nodes,
-        with EXPLICIT [[wikilink]] edges + implicit shared-KPI edges."""
+        """Return the complete network used by Knowledge Hub's single Graph view.
+
+        The former graph stopped at documents while a separate Map exposed AppBI's
+        other layers. One graph now carries both relationships and coverage gaps.
+        """
+        return GovernanceService.knowledge_map(db, current_user)
+
+    @staticmethod
+    def knowledge_map(db: Session, current_user) -> dict[str, Any]:
+        """The whole AppBI knowledge network: what is wired and what is missing.
+
+        Nodes and edges alone hide assets with no relationships, so the payload
+        also carries dashboard/dataset coverage rows. The graph can therefore show
+        the complete topology without making disconnected reports disappear.
+        """
+        from app.models.dataset import Dataset, DatasetTable
+        from app.models.governance import (
+            Glossary, GlossaryTerm, GovernDataCaveat, GovernDocAssetLink, GovernMetric,
+        )
+        from app.models.models import Chart, Dashboard, DashboardChart
+        from app.models.semantic import SemanticView
+
         docs = GovernanceService._visible_docs_query(db, current_user).all()
-        ids = {d.id for d in docs}
-        nodes = [{"id": d.id, "title": d.title, "space": d.space, "doc_type": d.doc_type} for d in docs]
-        edges: list[dict[str, Any]] = []
-        seen: set[tuple[int, int, str]] = set()
+        doc_ids = {d.id for d in docs}
 
-        def add(a: int, b: int, kind: str):
-            key = (min(a, b), max(a, b), kind)
-            if a != b and a in ids and b in ids and key not in seen:
-                seen.add(key)
-                edges.append({"from": a, "to": b, "type": kind})
+        datasets = db.query(Dataset.id, Dataset.name).all()
+        dashboards = db.query(Dashboard.id, Dashboard.name).all()
+        metrics = db.query(GovernMetric).filter(GovernMetric.status != "Deprecated").all()
+        caveats = db.query(GovernDataCaveat).filter(GovernDataCaveat.status != "Deprecated").all()
+        terms = (
+            db.query(GlossaryTerm, Glossary.name)
+            .join(Glossary, Glossary.id == GlossaryTerm.glossary_id).all()
+        )
 
-        # Explicit wikilink edges (directed, but drawn undirected in the graph).
-        for l in db.query(GovernDocLink).all():
-            add(l.from_doc_id, l.to_doc_id, "link")
-        # Implicit shared-governed-KPI edges (docs co-using the same metric).
-        by_metric: dict[int, set[int]] = {}
-        for mid, did in db.query(GovernMetricUsage.metric_id, GovernMetricUsage.doc_id).all():
-            if did in ids:
-                by_metric.setdefault(mid, set()).add(did)
-        for dset in by_metric.values():
-            dl = sorted(dset)
-            for i in range(len(dl)):
-                for j in range(i + 1, len(dl)):
-                    add(dl[i], dl[j], "metric")
-        return {"nodes": nodes, "edges": edges}
+        # ── which datasets each dashboard reads, through its charts ───────────
+        table_rows = db.query(DatasetTable).all()
+        tbl_to_ds = {t.id: t.dataset_id for t in table_rows if t.dataset_id}
+        table_by_id = {t.id: t for t in table_rows}
+        # A chart belongs to a dashboard through `DashboardChart`, not through a
+        # column on the chart — the same join `knowledge_context.dashboard_table_ids`
+        # walks. One resolution of "which data is on this report", so the map and
+        # the retriever cannot disagree about it.
+        dash_datasets: dict[int, set] = {}
+        dash_charts: dict[int, int] = {}
+        for dash_id, tbl_id in (
+            db.query(DashboardChart.dashboard_id, Chart.dataset_table_id)
+            .join(Chart, Chart.id == DashboardChart.chart_id).all()
+        ):
+            if not dash_id:
+                continue
+            dash_charts[dash_id] = dash_charts.get(dash_id, 0) + 1
+            ds = tbl_to_ds.get(tbl_id)
+            if ds:
+                dash_datasets.setdefault(dash_id, set()).add(ds)
+
+        # ── documents attached to each asset ──────────────────────────────────
+        docs_for_dash: dict[int, set] = {}
+        docs_for_ds: dict[int, set] = {}
+        docs_for_term: dict[str, set] = {}
+        for link in db.query(GovernDocAssetLink).all():
+            if link.doc_id not in doc_ids:
+                continue
+            ref = str(link.asset_ref)
+            if link.asset_type == "dashboard" and ref.isdigit():
+                docs_for_dash.setdefault(int(ref), set()).add(link.doc_id)
+            elif link.asset_type == "dataset" and ref.isdigit():
+                docs_for_ds.setdefault(int(ref), set()).add(link.doc_id)
+            elif link.asset_type == "term":
+                docs_for_term.setdefault(ref, set()).add(link.doc_id)
+
+        # Metadata arrays are part of the public document contract and existed
+        # before token materialization. Union both representations so Graph and
+        # retrieval do not disagree while old documents are being resaved.
+        for doc in docs:
+            for ref in doc.related_dashboard_ids or []:
+                if str(ref).isdigit():
+                    docs_for_dash.setdefault(int(ref), set()).add(doc.id)
+            for ref in doc.related_dataset_ids or []:
+                if str(ref).isdigit():
+                    docs_for_ds.setdefault(int(ref), set()).add(doc.id)
+            for ref in doc.related_terms or []:
+                docs_for_term.setdefault(str(ref), set()).add(doc.id)
+
+        # Semantic measures are executable definitions owned by a dataset model.
+        # Governed KPIs are global contracts and connect only through a binding
+        # that resolves to one of these measure nodes.
+        semantic_measures: list[dict[str, Any]] = []
+        measure_node_by_key: dict[tuple[int, str], str] = {}
+        measures_for_ds: dict[int, set[str]] = {}
+        terms_for_ds: dict[int, set[str]] = {}
+        for view in db.query(SemanticView).all():
+            table = table_by_id.get(view.dataset_table_id)
+            dataset_id = table.dataset_id if table else None
+            for measure in view.measures or []:
+                if not isinstance(measure, dict) or not measure.get("name"):
+                    continue
+                measure_name = str(measure["name"])
+                node_id = f"measure:{view.id}:{measure_name}"
+                refs = {
+                    str(ref.get("fqn"))
+                    for ref in measure.get("glossary_terms") or []
+                    if isinstance(ref, dict) and ref.get("fqn")
+                }
+                semantic_measures.append({
+                    "node_id": node_id,
+                    "view_id": view.id,
+                    "view_name": view.name,
+                    "dataset_id": dataset_id,
+                    "dataset_table_id": view.dataset_table_id,
+                    "table_name": table.display_name if table else None,
+                    "name": measure_name,
+                    "label": measure.get("label") or measure_name,
+                    "description": measure.get("description"),
+                    "glossary_terms": refs,
+                })
+                measure_node_by_key[(view.id, measure_name.lower())] = node_id
+                if dataset_id:
+                    measures_for_ds.setdefault(dataset_id, set()).add(node_id)
+                    terms_for_ds.setdefault(dataset_id, set()).update(refs)
+
+        metrics_for_ds: dict[int, set] = {}
+        metric_bindings: dict[int, list[dict[str, Any]]] = {}
+        for m in metrics:
+            resolved = [
+                row for row in GovernanceService.metric_binding_details(db, m)
+                if row["status"] == "ok"
+            ]
+            metric_bindings[m.id] = resolved
+            for ds_id in {row["dataset_id"] for row in resolved if row.get("dataset_id")}:
+                metrics_for_ds.setdefault(ds_id, set()).add(m.name)
+                if m.related_term_fqn:
+                    terms_for_ds.setdefault(ds_id, set()).add(m.related_term_fqn)
+
+        nodes: list = []
+        edges: list = []
+        edge_keys: set[tuple[str, str, str]] = set()
+
+        def node(kind, ref, label, **extra):
+            # TYPED ids. Dataset 7 and document 7 are different things; a bare
+            # integer would silently merge them into one node.
+            nodes.append({"id": f"{kind}:{ref}", "kind": kind, "ref": str(ref),
+                          "label": label or str(ref), **extra})
+
+        def edge(a, b, kind):
+            key = (str(a), str(b), str(kind))
+            if a != b and key not in edge_keys:
+                edge_keys.add(key)
+                edges.append({"from": a, "to": b, "kind": kind})
+
+        for d in docs:
+            node(
+                "doc", d.id, d.title, space=d.space, doc_type=d.doc_type,
+                status=d.status, owner=d.owner, summary=d.summary,
+            )
+        for ds_id, ds_name in datasets:
+            node("dataset", ds_id, ds_name)
+        for dash_id, dash_name in dashboards:
+            node("dashboard", dash_id, dash_name)
+        for m in metrics:
+            node(
+                "metric", m.name, m.display_name or m.name,
+                category=m.category, status=m.status, owner=m.owner,
+                binding_status=GovernanceService.metric_binding_status(db, m),
+            )
+        for measure in semantic_measures:
+            node(
+                "measure", f"{measure['view_id']}:{measure['name']}", measure["label"],
+                dataset_id=measure["dataset_id"], dataset_table_id=measure["dataset_table_id"],
+                group=measure["table_name"] or measure["view_name"],
+                summary=measure["description"],
+            )
+        for term, set_name in terms:
+            node("term", f"{set_name}.{term.name}",
+                 term.display_name or term.name, group=set_name,
+                 status=term.status, summary=term.description)
+        for caveat in caveats:
+            node(
+                "caveat", caveat.id, caveat.title,
+                status=caveat.status, owner=caveat.owner,
+                summary=caveat.content, dataset_id=caveat.dataset_id,
+            )
+
+        for dash_id, ds_ids in dash_datasets.items():
+            for ds_id in ds_ids:
+                edge(f"dashboard:{dash_id}", f"dataset:{ds_id}", "reads")
+        for dash_id, ids in docs_for_dash.items():
+            for did in ids:
+                edge(f"doc:{did}", f"dashboard:{dash_id}", "explains")
+        for ds_id, ids in docs_for_ds.items():
+            for did in ids:
+                edge(f"doc:{did}", f"dataset:{ds_id}", "explains")
+        for fqn, ids in docs_for_term.items():
+            for did in ids:
+                edge(f"doc:{did}", f"term:{fqn}", "defines")
+        for m in metrics:
+            for binding in metric_bindings.get(m.id, []):
+                target = measure_node_by_key.get(
+                    (binding.get("view_id"), str(binding.get("measure_name") or "").lower())
+                )
+                if target:
+                    edge(f"metric:{m.name}", target, "realized_by")
+            if m.related_term_fqn:
+                edge(f"metric:{m.name}", f"term:{m.related_term_fqn}", "means")
+            if m.home_doc_id in doc_ids:
+                edge(f"doc:{m.home_doc_id}", f"metric:{m.name}", "defines")
+        for measure in semantic_measures:
+            if measure["dataset_id"]:
+                edge(measure["node_id"], f"dataset:{measure['dataset_id']}", "defined_in")
+            for term_fqn in measure["glossary_terms"]:
+                edge(measure["node_id"], f"term:{term_fqn}", "means")
+        for caveat in caveats:
+            target_ids = [caveat.dataset_id] if caveat.dataset_id else [row[0] for row in datasets]
+            for dataset_id in target_ids:
+                edge(f"caveat:{caveat.id}", f"dataset:{dataset_id}", "applies_to")
+
+        # Preserve the document relationships from the former document-only
+        # graph. Metric usage goes through the metric node instead of creating a
+        # dense pairwise clique between every document that mentions it.
+        for link in db.query(GovernDocLink).all():
+            if link.from_doc_id in doc_ids and link.to_doc_id in doc_ids:
+                edge(f"doc:{link.from_doc_id}", f"doc:{link.to_doc_id}", "links")
+        metric_names = {m.id: m.name for m in metrics}
+        home_pairs = {
+            (m.home_doc_id, m.id) for m in metrics if m.home_doc_id in doc_ids
+        }
+        metric_by_name = {m.name: m for m in metrics}
+        for doc in docs:
+            referenced_names = set(doc.related_metrics or []) | metric_slugs_in(doc.body)
+            for metric_name in referenced_names:
+                metric = metric_by_name.get(str(metric_name))
+                if metric and (doc.id, metric.id) not in home_pairs:
+                    edge(f"doc:{doc.id}", f"metric:{metric.name}", "references")
+        for metric_id, doc_id in db.query(
+            GovernMetricUsage.metric_id, GovernMetricUsage.doc_id,
+        ).all():
+            metric_name = metric_names.get(metric_id)
+            if doc_id in doc_ids and metric_name and (doc_id, metric_id) not in home_pairs:
+                edge(f"doc:{doc_id}", f"metric:{metric_name}", "references")
+
+        # ── coverage: one row per asset, connected or not ─────────────────────
+        known_terms = {f"{g}.{t.name}" for t, g in terms}
+        dash_rows = []
+        for dash_id, dash_name in dashboards:
+            ds_ids = dash_datasets.get(dash_id, set())
+            mset, tset = set(), set()
+            dset = set(docs_for_dash.get(dash_id, set()))
+            for ds_id in ds_ids:
+                mset |= metrics_for_ds.get(ds_id, set())
+                tset |= terms_for_ds.get(ds_id, set())
+                dset |= docs_for_ds.get(ds_id, set())
+            dash_rows.append({
+                "id": dash_id, "name": dash_name,
+                "charts": dash_charts.get(dash_id, 0),
+                "datasets": len(ds_ids),
+                "docs": len(dset), "metrics": len(mset),
+                "measures": sum(len(measures_for_ds.get(ds_id, set())) for ds_id in ds_ids),
+                "terms": len(tset & known_terms),
+                "caveats": len([
+                    caveat for caveat in caveats
+                    if caveat.dataset_id is None or caveat.dataset_id in ds_ids
+                ]),
+            })
+
+        ds_rows = [
+            {"id": ds_id, "name": ds_name,
+             "docs": len(docs_for_ds.get(ds_id, set())),
+             "metrics": len(metrics_for_ds.get(ds_id, set())),
+             "measures": len(measures_for_ds.get(ds_id, set())),
+             "terms": len(terms_for_ds.get(ds_id, set()) & known_terms),
+             "caveats": len([
+                 caveat for caveat in caveats
+                 if caveat.dataset_id is None or caveat.dataset_id == ds_id
+             ])}
+            for ds_id, ds_name in datasets
+        ]
+
+        linked_terms = {e["to"] for e in edges if e["to"].startswith("term:")}
+        return {
+            "nodes": nodes,
+            "edges": edges,
+            "coverage": {"dashboards": dash_rows, "datasets": ds_rows},
+            "totals": {
+                "docs": len(docs), "metrics": len(metrics), "measures": len(semantic_measures),
+                "terms": len(terms), "caveats": len(caveats),
+                "datasets": len(datasets), "dashboards": len(dashboards),
+                "knowledge_edges": len([e for e in edges if e["kind"] != "reads"]),
+                "physical_edges": len([e for e in edges if e["kind"] == "reads"]),
+                # The headline, and the reason this endpoint exists at all.
+                "dashboards_without_knowledge": len(
+                    [r for r in dash_rows
+                     if not (r["docs"] or r["metrics"] or r["terms"])]
+                ),
+                "orphan_terms": len(
+                    [f for f in known_terms if f"term:{f}" not in linked_terms]
+                ),
+            },
+        }
 
     @staticmethod
     def resolve_asset(db: Session, asset_type: str, asset_ref: str) -> dict[str, Any]:
@@ -809,6 +1423,29 @@ class GovernanceService:
         a protection assumed to be on is worse than one known to be off.
         """
         out: dict[str, Any] = {}
+        # WHICH DOCUMENTS THE RETRIEVER WILL NOT SEARCH, reported on the same
+        # surface as the store's other guarantees rather than on a second one.
+        #
+        # An index the retriever refuses is invisible from every screen: the
+        # document still lists, still looks attached, and the assistant simply
+        # stops finding it. Measured here after migration 0049 invalidated the
+        # legacy hashes and nothing rebuilt them — five of six documents on the
+        # main dashboard went unsearchable and "GMV là gì" returned nothing.
+        try:
+            from app.services.dashboard_ai_bot.govern_doc_embeddings import (
+                stale_index_docs,
+            )
+
+            stale = stale_index_docs(db)
+            by_reason: dict[str, int] = {}
+            for reason in stale.values():
+                by_reason[reason] = by_reason.get(reason, 0) + 1
+            out["stale_index_docs"] = len(stale)
+            out["stale_index_reasons"] = by_reason
+            out["searchable"] = not stale
+        except Exception:  # noqa: BLE001 — a health read must never break
+            out["stale_index_docs"] = None
+
         try:
             row = db.execute(
                 sa_text(
@@ -841,12 +1478,13 @@ class GovernanceService:
             out["error"] = str(exc)[:200]
 
         try:
-            from app.services.dashboard_ai_bot.govern_doc_embeddings import (
-                active_embedding_model, authoring_scope,
-            )
+            from app.services.dashboard_ai_bot.govern_doc_embeddings import authoring_scope
+            from app.services.embedding_service import EmbeddingService
 
             authoring_scope(db)
-            out["active_model"] = active_embedding_model()
+            out["default_model"] = EmbeddingService.resolve_model()
+            out["active_model"] = out["default_model"]  # backward-compatible API alias
+            out["configured_profiles"] = EmbeddingService.embedding_profiles()
             out["models_in_store"] = [
                 r[0] for r in db.execute(
                     sa_text("SELECT DISTINCT model_version FROM govern_doc_chunk ORDER BY 1")
@@ -857,12 +1495,20 @@ class GovernanceService:
                     sa_text("SELECT count(*) FROM govern_doc_chunk WHERE doc_status <> 'Published'")
                 ).scalar() or 0
             )
-            from app.services.dashboard_ai_bot.govern_doc_embeddings import index_is_stale
-
-            docs = db.query(GovernKnowledgeDoc).filter(GovernKnowledgeDoc.status == "Published").all()
-            stale = [d.id for d in docs if index_is_stale(db, d)]
-            out["published_docs"] = len(docs)
-            out["stale_index_docs"] = stale
+            # ONE staleness answer, computed above by `stale_index_docs`.
+            #
+            # This block ran a second, narrower detector — `index_is_stale` per
+            # document — and overwrote the richer result with a bare list. Two
+            # detectors for one question is how a screen and a repair job come to
+            # disagree about whether the library is healthy: this one saw a body
+            # that had moved on, the other saw an index with no vectors, and
+            # neither saw both. `stale_index_docs` now folds the content check in,
+            # so the count, the reasons and the repair all read the same source.
+            docs_count = (
+                db.query(GovernKnowledgeDoc)
+                .filter(GovernKnowledgeDoc.status == "Published").count()
+            )
+            out["published_docs"] = docs_count
             out["index_method"] = db.execute(
                 sa_text(
                     "SELECT amname FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid "
@@ -875,16 +1521,11 @@ class GovernanceService:
 
     @staticmethod
     def _model_mismatched(db: Session, d: GovernKnowledgeDoc) -> bool:
-        """True when this doc's chunks were embedded with a model the read path
-        no longer uses. Best-effort: a failure here must not make a healthy doc
-        look broken, so it reports 'fine' when it cannot tell."""
+        """True when stored chunks do not match this document's locked model."""
         try:
-            from app.services.dashboard_ai_bot.govern_doc_embeddings import (
-                active_embedding_model, authoring_scope,
-            )
+            from app.services.dashboard_ai_bot.govern_doc_embeddings import authoring_scope
 
             authoring_scope(db)  # an author must see their own draft's index
-            active = active_embedding_model()
             rows = db.execute(
                 sa_text(
                     "SELECT DISTINCT model_version FROM govern_doc_chunk "
@@ -893,7 +1534,8 @@ class GovernanceService:
                 {"d": d.id},
             ).fetchall()
             models = {(r[0] or "").strip() for r in rows}
-            return bool(models) and active not in models
+            expected = (d.embedding_model or "").strip()
+            return bool(models) and models != {expected}
         except Exception:  # noqa: BLE001
             logger.warning("ai_retrievable: model check failed for doc %s", d.id, exc_info=True)
             return False
@@ -908,7 +1550,12 @@ class GovernanceService:
 
             authoring_scope(db)  # the list view reports on drafts too
             rows = db.execute(
-                sa_text("SELECT DISTINCT doc_id FROM govern_doc_chunk WHERE doc_id = ANY(:ids) AND embedding IS NOT NULL"),
+                sa_text(
+                    "SELECT DISTINCT c.doc_id FROM govern_doc_chunk c "
+                    "JOIN govern_knowledge_docs d ON d.id = c.doc_id "
+                    "WHERE c.doc_id = ANY(:ids) AND c.embedding IS NOT NULL "
+                    "AND d.embedded_hash LIKE 'v2:%'"
+                ),
                 {"ids": doc_ids},
             ).fetchall()
             return {r[0] for r in rows}
@@ -1155,7 +1802,16 @@ class GovernanceService:
             d.version = (d.version or 1) + 1
             action = "update"
         else:  # CREATE — the creator owns the doc (resource-level ownership)
+            from app.services.embedding_service import EmbeddingService
+
+            try:
+                embedding_model = EmbeddingService.resolve_model(
+                    payload.get("embedding_model")
+                )
+            except ValueError as exc:
+                raise GovernanceError(422, str(exc)) from exc
             d = GovernKnowledgeDoc(title=title, slug=slugify(title, "doc"), version=1, provider="user", **fields)
+            d.embedding_model = embedding_model
             if current_user is not None:
                 d.owner_id = current_user.id
             db.add(d)
@@ -1391,32 +2047,30 @@ class GovernanceService:
                 seen.add(d.id)
             if len(out["documents"]) >= 5:
                 break
-        # Semantic top-up from chunk embeddings (skip silently when unavailable)
+        # Hybrid top-up from chunks. The shared retriever creates one query
+        # vector per document model and fuses ranks, so this author-facing search
+        # follows the same vector-space rules as Agent Flow.
         if len(out["documents"]) < 5:
             try:
-                from app.services.embedding_service import EmbeddingService
-                qvec = EmbeddingService.generate_query_embedding(q) if EmbeddingService else None
-                if qvec is not None:
-                    # Author-facing search over their own space, already narrowed
-                    # by `visible_ids` below — drafts belong in these results.
-                    from app.services.dashboard_ai_bot.govern_doc_embeddings import (
-                        _tune_vector_scan, authoring_scope,
-                    )
+                from app.services.dashboard_ai_bot.govern_doc_embeddings import search_doc_chunks
 
-                    authoring_scope(db)
-                    _tune_vector_scan(db)
-                    rows = db.execute(
-                        sa_text(
-                            "SELECT c.doc_id, d.title, d.space FROM govern_doc_chunk c "
-                            "JOIN govern_knowledge_docs d ON d.id = c.doc_id "
-                            "WHERE c.embedding IS NOT NULL "
-                            f"ORDER BY c.embedding <=> '{qvec}'::vector LIMIT 6"
+                chunks = search_doc_chunks(
+                    db,
+                    q,
+                    k=12,
+                    doc_ids=visible_ids,
+                    published_only=False,
+                    authoring=True,
+                )
+                docs_by_id = {doc.id: doc for doc in docs}
+                for chunk in chunks:
+                    doc_id = chunk["doc_id"]
+                    doc = docs_by_id.get(doc_id)
+                    if doc and doc_id not in seen and len(out["documents"]) < 5:
+                        out["documents"].append(
+                            {"id": doc_id, "name": doc.title, "subtitle": doc.space}
                         )
-                    ).fetchall()
-                    for r in rows:
-                        if r[0] in visible_ids and r[0] not in seen and len(out["documents"]) < 5:
-                            out["documents"].append({"id": r[0], "name": r[1], "subtitle": r[2]})
-                            seen.add(r[0])
+                        seen.add(doc_id)
             except Exception:  # noqa: BLE001
                 pass
 

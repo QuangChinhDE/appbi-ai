@@ -2,6 +2,31 @@
 @tailwind components;
 @tailwind utilities;
 
+.knowledge-network .react-flow__controls {
+  overflow: hidden;
+  border: 1px solid rgb(var(--border-line));
+  border-radius: 6px;
+  box-shadow: none;
+}
+
+.knowledge-network .react-flow__controls-button {
+  width: 28px;
+  height: 28px;
+  border-bottom-color: rgb(var(--border-line));
+  background: rgb(var(--surface-1));
+  color: rgb(var(--text-secondary));
+}
+
+.knowledge-network .react-flow__controls-button:hover {
+  background: rgb(var(--surface-2));
+}
+
+.knowledge-network .react-flow__attribution {
+  background: transparent;
+  color: rgb(var(--text-quaternary));
+  font-size: 9px;
+}
+
 /*
  * ── Design System: Linear-inspired (Light Mode) ─────────────────────
  * Hệ màu light-mode phỏng theo Linear. Dark-mode sẽ bật ở phase sau

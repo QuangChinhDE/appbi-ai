@@ -90,10 +90,42 @@ def check_attachments(db: Session, user: Any, brain: Brain) -> list[str]:
 def usable_brains(db: Session, user: Any):
     """Brains this user may put on a link: their own, plus those shared with them.
 
-    Same mechanism as every other first-class resource. A brain is not special, and
-    a bespoke sharing table would have been a second answer to "who may use this".
+    Written out rather than delegated to `_owned_or_shared` because a flow differs
+    from every other resource in two ways, and both matter:
+
+    * It is OWNED BY EMAIL (`owner_email`), not by an `owner_id` FK.
+    * It is SHARED BY `brain_key`, not by the primary key of a row. A flow has many
+      version rows; a share pinned to one of them would stop applying the moment
+      the author saved again, which is not what "I shared this flow with you" means.
+
+    Fails closed: `agent_flows: none` sees nothing.
     """
-    return _owned_or_shared(db, AgentBrainVersion, ResourceType.AGENT_BRAIN, user)
+    from sqlalchemy import func, or_, select
+
+    from app.core.permissions import get_user_module_permission
+    from app.core.resource_shares import share_target_filter_for_user
+    from app.models.resource_share import ResourceShare
+
+    q = db.query(AgentBrainVersion)
+
+    level = get_user_module_permission(user, "agent_flows")
+    if level == "none":
+        return q.filter(False)
+    if level == "full":
+        return q
+
+    shared_keys = (
+        select(ResourceShare.resource_id)
+        .where(ResourceShare.resource_type == ResourceType.AGENT_BRAIN)
+        .where(share_target_filter_for_user(user))
+    )
+
+    owner_email = str(getattr(user, "email", "") or "").strip().lower()
+    conditions = [AgentBrainVersion.brain_key.in_(shared_keys)]
+    if owner_email:
+        conditions.append(func.lower(AgentBrainVersion.owner_email) == owner_email)
+
+    return q.filter(or_(*conditions))
 
 
 def run_scope(

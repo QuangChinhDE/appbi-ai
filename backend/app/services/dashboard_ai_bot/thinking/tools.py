@@ -515,7 +515,9 @@ def tool_compare_segments(ctx: ToolContext, args: dict) -> dict:
     delta = a_val - b_val
     pct = None if b_val == 0 else (delta / abs(b_val)) * 100.0
 
-    return _ok({
+    from app.services.dashboard_ai_bot.thinking.advanced_tools import _attach_delta_unit
+
+    return _ok(_attach_delta_unit(ctx, chart_id, columns[measure_idx], {
         "chart_id": chart_id,
         "dimension": dimension,
         "measure": columns[measure_idx],
@@ -523,7 +525,7 @@ def tool_compare_segments(ctx: ToolContext, args: dict) -> dict:
         "segment_b": {"value": segment_b, "metric": _round(b_val), "rows": b_count},
         "delta": _round(delta),
         "pct_change_vs_b": _round(pct),
-    })
+    }))
 
 
 # Tool: compute ────────────────────────────────────────────────────────────────
@@ -630,7 +632,7 @@ def tool_emit_reading_plan(ctx: ToolContext, args: dict) -> dict:
     """
     raw_items = args.get("items") if isinstance(args, dict) else None
     if not isinstance(raw_items, list) or not raw_items:
-        return _err("emit_reading_plan: items phải là list non-empty.")
+        return _err("emit_reading_plan: 'items' must be a non-empty list.")
     allowed_phases = {"triage", "health_check", "drilldown", "compare", "synthesize"}
     cleaned: list[dict] = []
     for i, item in enumerate(raw_items):
@@ -661,7 +663,7 @@ def tool_emit_reading_plan(ctx: ToolContext, args: dict) -> dict:
             "question": question,
         })
     if not cleaned:
-        return _err("emit_reading_plan: không có item hợp lệ sau khi validate.")
+        return _err("emit_reading_plan: no item survived validation.")
     overall_goal = str(args.get("overall_goal") or "").strip()
     return _ok({
         "items": cleaned,
@@ -695,7 +697,20 @@ def tool_fetch_url(ctx: ToolContext, args: dict) -> dict:
     if not isinstance(url, str) or not url.strip():
         return _err("url (str) is required")
     res = fetch_url(url.strip())
-    return _ok(res) if res.get("ok") else _err(res.get("error") or "fetch failed")
+    if res.get("ok"):
+        return _ok(res)
+    # A URL the egress guard REFUSED is not a failed fetch. Collapsed into one
+    # code, it reached the model as `query_failed`, which the contract marks
+    # retryable — so a model handed an internal address could retry it in a
+    # loop, turning a blocked request into a repeated one. The refusal is about
+    # the argument and will never succeed, so it is typed as such.
+    if res.get("refused"):
+        return _err(
+            f"{res.get('error')}. This address will never be readable — it is "
+            "not on the public internet. Do not retry it; use a public source.",
+            code="bad_argument",
+        )
+    return _err(res.get("error") or "fetch failed")
 
 
 def tool_benchmark_compare(ctx: ToolContext, args: dict) -> dict:
@@ -721,10 +736,26 @@ def tool_benchmark_compare(ctx: ToolContext, args: dict) -> dict:
     except ToolError as exc:
         return _err(str(exc))
 
-    # Deterministic report-side anchor: total of the chart's primary measure.
+    # Deterministic report-side anchor.
+    #
+    # This was `sum()` over every row, whatever the measure was. Measured on
+    # dashboard 67, that made the tool report an on-time rate of 2,058% (actually
+    # 89.5%, 23 regions summed) and average delivery of 329 days (actually 14.3)
+    # — then instructed the model to state how far ABOVE the benchmark we are.
+    # An unsummable measure summed is the defect this whole review has been
+    # removing; here it was worse than elsewhere, because the meaningless number
+    # was being anchored to a real outside figure and published as a gap.
+    #
+    # Same rule as `total_measure`: refuse rather than guess. Averaging the
+    # averages is not the fix either — 25 regional averages weighted equally
+    # ignores volume and is wrong in a quieter way.
     report_value = None
     report_measure = None
+    report_method = None
+    rows_used = 0
+    refusal = None
     try:
+        from app.services.agent_flows.tools.packs import measure_meta as _mm
         from app.services.dashboard_ai_bot.thinking.advanced_tools import (
             _detect_measure_idx,
             _to_number,
@@ -736,10 +767,48 @@ def tool_benchmark_compare(ctx: ToolContext, args: dict) -> dict:
             report_measure = cols[m_idx]
             nums = [_to_number(r[m_idx]) for r in rows if m_idx < len(r)]
             nums = [n for n in nums if n is not None]
-            if nums:
+            rows_used = len(nums)
+            # Look the measure up under BOTH names it goes by. The result column
+            # carries a display label ('Số ngày giao TB'); the chart config
+            # carries the field ('dataset_table_438.avg_item_price'). Matching
+            # only the label worked on two charts and silently failed on a third
+            # — `describe_measure` answers `additive=True` when it recognises
+            # nothing, so a failed lookup reads exactly like a safe measure and
+            # the sum went ahead. Any name that says non-additive settles it.
+            _fields = (ctx.chart_meta.get(chart_id) or {}).get("fields") or {}
+            _declared = _fields.get("measures") or _fields.get("y") or []
+            candidates = [report_measure] + [
+                (mm if isinstance(mm, str) else (mm.get("name") or mm.get("field") or ""))
+                for mm in _declared
+            ]
+            info = {"additive": True}
+            for cand in [c for c in candidates if c]:
+                probe = _mm.describe_measure(ctx, chart_id, cand)
+                if not probe.get("additive", True):
+                    info = probe
+                    break
+            if rows_used == 1:
+                # One row is not an aggregation — a KPI tile already holds the
+                # figure the report itself displays, whatever the measure is.
+                report_value = round(nums[0], 4)
+                report_method = "the chart's single displayed value (no aggregation)"
+            elif rows_used and info.get("additive", True):
                 report_value = round(sum(nums), 4)
+                report_method = f"SUM over {rows_used} rows of the chart"
+            elif rows_used:
+                refusal = _mm.additivity_error(info)
     except Exception:  # noqa: BLE001 — report anchor is best-effort
         pass
+
+    if refusal:
+        return _err(
+            f"cannot anchor this comparison on chart {chart_id}: {refusal} "
+            f"The chart holds {rows_used} rows, so any single figure taken from "
+            "it would be an aggregate of an unsummable measure. Use a KPI tile "
+            "that already shows this metric for the whole report, or benchmark "
+            "an additive measure instead.",
+            code="not_applicable",
+        )
 
     web = search_web(query.strip(), max_results=5)
     if not web.get("ok"):
@@ -750,6 +819,12 @@ def tool_benchmark_compare(ctx: ToolContext, args: dict) -> dict:
             "chart_id": chart_id,
             "measure": report_measure,
             "value": report_value,
+            # How the figure was reached and over how much. Without these the
+            # value is a bare number the model reads as "the report's answer",
+            # and it cannot tell a KPI the report already displays from an
+            # aggregate this tool computed on the way past.
+            "method": report_method,
+            "rows_aggregated": rows_used,
         },
         "external": {
             "provider": web.get("provider"),

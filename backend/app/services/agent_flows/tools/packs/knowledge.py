@@ -10,6 +10,24 @@ the third question an author asks about a report rather than the fourth thing in
 documents pack. It describes the report's own structure, not something a person
 wrote down.
 
+OPEN QUESTION, RAISED DURING THE GROUP-3 REVIEW
+-----------------------------------------------
+A comparison answered from data alone is only half an answer. "Revenue is 8%
+below plan" is a fact; whether that is a problem depends on things written down
+somewhere — the plan's assumptions, a known outage, a deliberate pricing change,
+a seasonality note in the handbook.
+
+Today the comparison tools and the knowledge tools are granted separately and
+never meet: a step gets one or the other, and nothing tells a comparison result
+that a relevant document exists. The idea is that a comparison should be able to
+carry the context that explains it.
+
+DEFERRED to this group's own review, deliberately. Deciding it here would mean
+designing the knowledge side from the comparison side's point of view, and the
+retrieval question — when is a document RELEVANT to a figure, and what does it
+cost to find out — belongs where the retrieval tools are. Whoever reviews this
+pack: this is the first thing to settle.
+
 `remember_fact` is absent. Writing back into the knowledge base required a human to
 approve anything an anonymous viewer taught; that approval screen has been deleted,
 and a queue nobody can clear is worse than no queue. Recall stays — reading what
@@ -30,14 +48,26 @@ PACK = ToolPack(
             "search_knowledge",
             label_vi="Tìm trong tài liệu",
             label_en="Search documents",
-            description_vi="Tìm trong các tài liệu tri thức mà bước này được gắn.",
+            description_vi="Tìm trong tài liệu, định nghĩa chỉ số và thuật ngữ "
+                           "công ty gắn với báo cáo này.",
             result_kind="documents",
+            # MEASURED 83..562 tokens. Over `small` at the top end, and the extra
+            # is `updated_at`/`version` per hit — which is the field that decides
+            # whether a document should still be trusted, so it earns its place.
+            payload="medium",
             returns={
-                "matches": "mỗi kết quả: tài liệu, đoạn trích, mức khớp",
+                "results": "mỗi kết quả: id, tiêu đề, trích đoạn, điểm khớp, "
+                           "NGÀY cập nhật và phiên bản",
+                # Named in the contract because the model is told to weigh hits by
+                # it: a definition tied to this report's data is not the same
+                # claim as one that merely shares a word with the question.
+                "reached_by": "vì sao kết quả này liên quan tới báo cáo: gắn tay, "
+                              "qua measure, qua chỉ số, hay chỉ khớp từ ngữ",
                 "citations": "nguồn để dẫn lại trong câu trả lời",
                 "coverage": "tìm trong mấy tài liệu",
             },
-            answers_vi=("Doanh thu ở đây định nghĩa thế nào?",),
+            answers_vi=("Doanh thu ở đây định nghĩa thế nào?",
+                        "Công ty mình định nghĩa GMV ra sao?"),
         ),
         spec(
             "read_document",

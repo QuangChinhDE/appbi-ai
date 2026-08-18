@@ -19,16 +19,17 @@ import {
   brainActivity, listVersions, restoreToDraft, rollbackBrain,
   type ActivityEvent, type BrainVersionRow,
 } from '@/lib/agentFlows';
+import { useI18n } from '@/providers/LanguageProvider';
 import { formatWhen, StatusBadge } from './shared';
 
-const ACTION_LABEL: Record<string, string> = {
-  agent_flow_saved: 'Sửa flow',
-  agent_flow_published: 'Phát hành',
-  agent_flow_rolled_back: 'Quay lại bản cũ',
-  agent_flow_restored: 'Nạp bản cũ vào nháp',
-  agent_flow_deleted: 'Xoá phiên bản',
-  agent_flow_assigned: 'Gán vào link',
-  agent_flow_unassigned: 'Gỡ khỏi link',
+const ACTION_LABEL_KEY: Record<string, string> = {
+  agent_flow_saved: 'agentFlows.activity.action.saved',
+  agent_flow_published: 'agentFlows.activity.action.published',
+  agent_flow_rolled_back: 'agentFlows.activity.action.rolledBack',
+  agent_flow_restored: 'agentFlows.activity.action.restored',
+  agent_flow_deleted: 'agentFlows.activity.action.deleted',
+  agent_flow_assigned: 'agentFlows.activity.action.assigned',
+  agent_flow_unassigned: 'agentFlows.activity.action.unassigned',
 };
 
 const ACTION_TONE: Record<string, 'success' | 'brand' | 'warning' | 'neutral'> = {
@@ -42,6 +43,7 @@ const ACTION_TONE: Record<string, 'success' | 'brand' | 'warning' | 'neutral'> =
 export function ActivityTab({
   brainKey, onReloaded,
 }: { brainKey: string; onReloaded: () => void }) {
+  const { t, locale } = useI18n();
   const [events, setEvents] = React.useState<ActivityEvent[]>([]);
   const [versions, setVersions] = React.useState<BrainVersionRow[]>([]);
   const [busy, setBusy] = React.useState('');
@@ -76,36 +78,36 @@ export function ActivityTab({
       <div className="mx-auto grid max-w-[1400px] gap-3 lg:grid-cols-[minmax(0,1.7fr)_minmax(300px,0.65fr)]">
         <div className="overflow-hidden rounded-xl border border-[rgb(var(--border-line))] bg-surface-1">
           <div className="flex items-center gap-2 border-b border-[rgb(var(--border-line))] bg-surface-2/30 px-3 py-2.5">
-            <b className="text-caption font-strong">Lịch sử hoạt động</b>
-            <span className="text-tiny text-text-tertiary">Ai đã thay đổi gì</span>
+            <b className="text-caption font-strong">{t('agentFlows.activity.title')}</b>
+            <span className="text-tiny text-text-tertiary">{t('agentFlows.activity.subtitle')}</span>
           </div>
           {events.map((e, i) => (
             <div key={i}
               className="grid grid-cols-[130px_190px_130px_1fr_60px] items-center gap-2 border-t border-[rgb(var(--border-line))] px-3 py-2.5 text-tiny first:border-t-0">
-              <span className="text-text-quaternary">{formatWhen(e.at)}</span>
-              <span className="truncate text-text-secondary">{e.actor || '—'}</span>
+              <span className="text-text-quaternary">{formatWhen(e.at, locale)}</span>
+              <span className="truncate text-text-secondary">{e.actor || t('agentFlows.common.none')}</span>
               <span>
                 <Badge size="xs" variant={ACTION_TONE[e.action] || 'brand'}>
-                  {ACTION_LABEL[e.action] || e.action}
+                  {ACTION_LABEL_KEY[e.action] ? t(ACTION_LABEL_KEY[e.action]) : e.action}
                 </Badge>
               </span>
-              <span className="truncate text-text-secondary">{e.summary || '—'}</span>
+              <span className="truncate text-text-secondary">{e.summary || t('agentFlows.common.none')}</span>
               <span className="text-right text-text-quaternary">
                 {e.version != null ? `v${e.version}` : ''}
               </span>
             </div>
           ))}
           {!events.length && (
-            <p className="p-8 text-center text-caption text-text-tertiary">Chưa có hoạt động nào.</p>
+            <p className="p-8 text-center text-caption text-text-tertiary">{t('agentFlows.activity.empty')}</p>
           )}
         </div>
 
         <aside className="overflow-hidden rounded-xl border border-[rgb(var(--border-line))] bg-surface-1">
           <div className="flex items-center gap-2 border-b border-[rgb(var(--border-line))] bg-surface-2/30 px-3 py-2.5">
-            <b className="text-caption font-strong">Phiên bản</b>
+            <b className="text-caption font-strong">{t('agentFlows.activity.versions')}</b>
             <div className="flex-1" />
             <Button variant="secondary" size="xs" onClick={rollback} loading={busy === 'rollback'}>
-              Quay lại bản trước
+              {t('agentFlows.activity.rollback')}
             </Button>
           </div>
           <div className="p-2.5">
@@ -116,9 +118,9 @@ export function ActivityTab({
                   v{v.version}
                 </span>
                 <div className="min-w-0 flex-1">
-                  <b className="block text-caption font-medium">{v.name || `Phiên bản ${v.version}`}</b>
+                  <b className="block text-caption font-medium">{v.name || t('agentFlows.activity.versionFallback', { version: v.version })}</b>
                   <span className="mt-px block text-tiny text-text-tertiary">
-                    {v.created_by || '—'} · {formatWhen(v.published_at || v.updated_at)}
+                    {v.created_by || t('agentFlows.common.none')} · {formatWhen(v.published_at || v.updated_at, locale)}
                   </span>
                 </div>
                 <div className="flex flex-shrink-0 flex-col items-end gap-1">
@@ -128,9 +130,9 @@ export function ActivityTab({
                       variant="ghost" size="xs"
                       loading={busy === `restore-${v.version}`}
                       onClick={() => restore(v.version)}
-                      title="Nạp bản này vào nháp đang mở — không đổi gì đang chạy."
+                      title={t('agentFlows.activity.restoreTitle')}
                     >
-                      Nạp lại
+                      {t('agentFlows.activity.restore')}
                     </Button>
                   )}
                 </div>

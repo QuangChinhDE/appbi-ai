@@ -72,7 +72,27 @@ async def run_report_read(
     if node.include_filters:
         out["filters"] = _call(rctx, state, "inspect_filters", {})
 
-    for chart_id in wanted[:20]:
+    planned = wanted[:20]
+    read_count = 0
+    for chart_id in planned:
+        # LEAVE THE ANSWERING STEP SOMETHING TO SPEND.
+        #
+        # Each chart costs a summary plus a data read, so a wide report can drain
+        # the turn's whole tool budget here. When that happened the answering step
+        # died on its first tool call and the viewer saw "chưa trả lời được" — from
+        # a run whose every gathering step reported ok. Reading fewer charts and
+        # saying so beats reading all of them and having no one left to answer.
+        if state.budget.tools_left() < 2:
+            state.notices.append(
+                Notice(
+                    code="read_truncated",
+                    text=f"Chỉ đọc được {read_count}/{len(planned)} biểu đồ — phần lượt "
+                         "công cụ còn lại để dành cho bước trả lời. Hãy giới hạn danh "
+                         "sách biểu đồ của bước đọc, hoặc nâng ngân sách của link.",
+                )
+            )
+            break
+        read_count += 1
         entry: dict[str, Any] = {"chart_id": chart_id}
         meta = rctx.inp.report.chart(chart_id)
         if meta:
@@ -278,10 +298,10 @@ def _flag_partial(entry: dict, state: RunState, node: ReportReadNode) -> None:
         "rows_total": total,
         "complete": False,
         "note": (
-            f"CHỈ ĐỌC ĐƯỢC {got}/{total} DÒNG — đây là {got} dòng ĐỨNG ĐẦU theo "
-            f"{entry.get('rows_ordered_by') or 'thứ tự của biểu đồ'}. Xếp hạng trong "
-            "phạm vi này là đúng; không được suy ra tổng, hay tên hạng mục nằm ngoài "
-            "số dòng này."
+            f"ONLY {got}/{total} ROWS WERE READ — these are the TOP {got} by "
+            f"{entry.get('rows_ordered_by') or 'the chart’s own order'}. A ranking "
+            "within them is correct; do NOT infer a total, and do not name a "
+            "category that is not among these rows."
         ),
     }
     state.notices.append(
@@ -294,6 +314,31 @@ def _flag_partial(entry: dict, state: RunState, node: ReportReadNode) -> None:
 
 
 # ═══ Retrieval ════════════════════════════════════════════════════════════════
+def build_knowledge_scope(attachments: Any) -> dict[str, list]:
+    """The retrieval boundary a step's attachments describe.
+
+    Shared with the Agent node on purpose: this used to be written twice, and the
+    two copies disagreed about `term_fqns`. All four keys are always present, so a
+    consumer can tell "attached nothing" from "this kind is not supported here".
+    """
+    scope: dict[str, list] = {
+        "doc_ids": [], "dataset_ids": [], "metric_names": [], "term_fqns": [],
+    }
+    for k in attachments or []:
+        if k.source == "document" and k.ref.isdigit():
+            scope["doc_ids"].append(int(k.ref))
+        elif k.source == "semantic" and k.ref.isdigit():
+            scope["dataset_ids"].append(int(k.ref))
+        elif k.source == "metric":
+            scope["metric_names"].append(k.ref)
+        elif k.source == "term":
+            # The company's own vocabulary, addressed by FQN — the same spelling
+            # `GovernMetric.related_term_fqn` uses, so a term has one identity
+            # across the product rather than one per feature.
+            scope["term_fqns"].append(k.ref)
+    return scope
+
+
 async def run_knowledge(
     node: KnowledgeNode, state: RunState, rctx: Any
 ) -> AsyncGenerator[AgentEvent, None]:
@@ -301,14 +346,7 @@ async def run_knowledge(
     yield AgentEvent(type="status", text="Đang tra tri thức…")
 
     previous_scope = getattr(rctx.ctx, "knowledge_scope", None)
-    scope = {"doc_ids": [], "dataset_ids": [], "metric_names": []}
-    for k in node.knowledge:
-        if k.source == "document" and k.ref.isdigit():
-            scope["doc_ids"].append(int(k.ref))
-        elif k.source == "semantic" and k.ref.isdigit():
-            scope["dataset_ids"].append(int(k.ref))
-        elif k.source == "metric":
-            scope["metric_names"].append(k.ref)
+    scope = build_knowledge_scope(node.knowledge)
     if hasattr(rctx.ctx, "knowledge_scope"):
         rctx.ctx.knowledge_scope = scope
 
@@ -318,12 +356,56 @@ async def run_knowledge(
         if previous_scope is not None:
             rctx.ctx.knowledge_scope = previous_scope
 
-    for k in node.knowledge:
-        if k.source == "document" and not any(
-            c.kind == "document" and c.ref == k.ref for c in state.citations
-        ):
-            state.citations.append(Citation(kind="document", ref=k.ref, label=k.description[:80]))
+    _cite_knowledge(result, node, state)
     state.outputs[node.key] = result
+
+
+# A retrieval result kind → the citation kind the answer may write. A term is
+# vocabulary, not a governed number, so it keeps its own kind rather than
+# borrowing "metric" and claiming an authority it does not have.
+_CITE_KIND = {
+    "document": "document",
+    "document_chunk": "document",
+    "metric": "metric",
+    "term": "term",
+    "semantic": "dataset",
+    "dataset": "dataset",
+}
+
+
+def _cite_knowledge(result: Any, node: KnowledgeNode, state: RunState) -> None:
+    """Cite what the search actually RETURNED, under the source's real name.
+
+    Two things were wrong here, and both reached the viewer. The label was the
+    author's private "when should it read this?" note, so a reader saw routing
+    instructions where the document title belonged. And only documents were ever
+    cited — a definition the model took from a governed metric or a glossary term
+    had no legal citation token, so the model reached for `[WEB]` on a link with
+    web research switched off. Citing the results, not the attachment list, also
+    stops a source that matched nothing from appearing as if it backed the answer.
+    """
+    payload = result if isinstance(result, dict) else {}
+    data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+    hits = data.get("results") if isinstance(data.get("results"), list) else []
+
+    # The author's note is the last resort for a title, not the first choice.
+    described: dict[str, str] = {
+        f"{k.source}:{k.ref}": (k.description or "")[:80] for k in node.knowledge
+    }
+
+    for hit in hits:
+        if not isinstance(hit, dict):
+            continue
+        kind = _CITE_KIND.get(str(hit.get("kind") or ""))
+        ref = str(hit.get("id") or "").strip()
+        if not kind or not ref:
+            continue
+        if any(c.kind == kind and c.ref == ref for c in state.citations):
+            continue
+        label = str(hit.get("title") or "").strip()
+        if not label:
+            label = described.get(f"{kind}:{ref}", "")
+        state.citations.append(Citation(kind=kind, ref=ref, label=label[:120]))
 
 
 # ═══ Outside AppBI ════════════════════════════════════════════════════════════
@@ -344,6 +426,9 @@ async def run_web(
             )
         )
         state.outputs[node.key] = {"ok": False, "skipped": "web_disabled", "results": []}
+        # Declared so the trace says "skipped", not "ok". Without this the step
+        # showed a green tick for work it deliberately did not do.
+        state.skipped[node.key] = "web_disabled"
         yield AgentEvent(type="status", text="Bỏ qua tra cứu web (link tắt).")
         return
 

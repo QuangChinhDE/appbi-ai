@@ -20,10 +20,21 @@ import { FlowBindingEditor } from '@/components/common/FlowBindingEditor';
 // What stays here is what genuinely belongs to the LINK rather than to the way
 // of thinking: whether the bot appears at all, and the credentials it runs on.
 
+// ONE VENDOR, AND THE TOKEN IS THE SERVER'S.
+//
+// The operator's decision: this product runs on OpenAI, and the credential comes
+// from the server's own environment rather than being pasted per link. So the
+// provider list is one entry and the API-key box is gone — a field that only
+// ever needed to be left blank is a question the reader has to answer wrongly
+// before learning it did not matter.
+//
+// Restoring a vendor means putting it back HERE and in
+// `backend/app/services/agent_flows/models_catalogue.py`. The two lists are
+// separate on purpose — this one is the link's own bot, that one is what an
+// Agent Flow step may pin — but they must not disagree about which vendors the
+// product supports at all.
 const AI_PROVIDERS = [
   { value: 'openai', label: 'OpenAI' },
-  { value: 'anthropic', label: 'Anthropic Claude' },
-  { value: 'gemini', label: 'Google Gemini' },
 ] as const;
 
 const AI_MODEL_OPTIONS: Record<string, { value: string; label: string }[]> = {
@@ -35,17 +46,6 @@ const AI_MODEL_OPTIONS: Record<string, { value: string; label: string }[]> = {
     { value: 'gpt-4.1', label: 'GPT-4.1' },
     { value: 'gpt-4.1-mini', label: 'GPT-4.1 mini' },
     { value: 'gpt-4o-mini', label: 'GPT-4o mini (cheap, fast)' },
-  ],
-  anthropic: [
-    { value: 'claude-sonnet-5', label: 'Claude Sonnet 5 (recommended)' },
-    { value: 'claude-opus-4-8', label: 'Claude Opus 4.8 (strongest)' },
-    { value: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6' },
-    { value: 'claude-haiku-4-5', label: 'Claude Haiku 4.5 (cheap, fast)' },
-  ],
-  gemini: [
-    { value: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro' },
-    { value: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash (recommended)' },
-    { value: 'gemini-2.0-flash', label: 'Gemini 2.0 Flash (cheap, fast)' },
   ],
 };
 
@@ -185,30 +185,35 @@ export function PublicLinkAiBotEditor({
               <FlowBindingEditor linkId={linkId} />
             </div>
 
-            <div>
-              <label className="mb-1 block text-tiny font-strong text-text-secondary">API key</label>
-              {value.ai_bot_key_configured && !value.ai_bot_key && (
-                <p className="mb-1.5 flex items-center gap-1.5 text-tiny text-success">
-                  <span className="inline-block h-1.5 w-1.5 rounded-full bg-success" />
-                  Link này đã có key cấu hình sẵn. Chỉ nhập key mới bên dưới nếu muốn thay.
+            {/* THE KEY BOX IS GONE — the server supplies the token.
+                It stays visible ONLY for a link that already stored one, so an
+                existing key can be removed. Offering an empty box on every new
+                link asked the reader for something the deployment already has,
+                and a blank they were meant to leave blank reads as a missing
+                step. */}
+            {value.ai_bot_key_configured || value.ai_bot_key ? (
+              <div>
+                <label className="mb-1 block text-tiny font-strong text-text-secondary">
+                  API key riêng của link này
+                </label>
+                <p className="mb-1.5 flex items-center gap-1.5 text-tiny text-warning">
+                  <span className="inline-block h-1.5 w-1.5 rounded-full bg-warning" />
+                  Link này đang dùng key riêng, đè lên token của máy chủ. Xoá ô này
+                  rồi lưu để quay về dùng token chung.
                 </p>
-              )}
-              <Input
-                type="password"
-                value={value.ai_bot_key || ''}
-                onChange={(e) => patch('ai_bot_key', e.target.value)}
-                placeholder={
-                  value.ai_bot_key_configured
-                    ? '(giữ key hiện tại phía server)'
-                    : provider === 'anthropic' ? 'sk-ant-...'
-                    : provider === 'gemini' ? 'AIza...'
-                    : 'sk-...'
-                }
-              />
-              <p className="mt-1 text-tiny text-text-quaternary">
-                Để trống để giữ key hiện tại. Xoá giá trị rồi lưu để gỡ key đã lưu.
+                <Input
+                  type="password"
+                  value={value.ai_bot_key || ''}
+                  onChange={(e) => patch('ai_bot_key', e.target.value)}
+                  placeholder="(giữ key hiện tại phía server)"
+                />
+              </div>
+            ) : (
+              <p className="flex items-center gap-1.5 rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 px-2.5 py-2 text-tiny text-text-tertiary">
+                <span className="inline-block h-1.5 w-1.5 flex-shrink-0 rounded-full bg-success" />
+                Token OpenAI lấy từ cấu hình máy chủ — không cần nhập ở đây.
               </p>
-            </div>
+            )}
 
             {/* Kept, and relabelled to what it now actually drives.
                 Chat stopped reading this — how the bot thinks is the chosen

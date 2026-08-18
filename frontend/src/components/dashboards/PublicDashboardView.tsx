@@ -1518,6 +1518,9 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
     ?? dashboard?.name
     ?? 'Shared dashboard';
   const viewerFiltersEnabled = appearance.allow_viewer_filters;
+  // Per-chart CSV export on public + embed (both surfaces — data is client-side,
+  // read-only, already filter/permission-scoped). Admin toggle, default on.
+  const dataExportEnabled = appearance.allow_data_export;
   const showPageTabs = appearance.show_page_tabs && dashboardPages.length > 1;
   const showFilterControls = viewerFiltersEnabled && availableFilterColumns.length > 0;
   const showLiveState = Boolean(pendingPageId || crossFilterState || chartLoadError || (chartsLoading && !isApplyingFilters));
@@ -2080,6 +2083,7 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
             viewerGrain={chartGrains[dashboardChart.chart_id]}
             onViewerDrill={(g) => handleChartDrill(dashboardChart.chart_id, g)}
             lockDateGrain={(dashboardChart.layout as any)?.lockDateGrain === true}
+            allowExport={dataExportEnabled}
             onVisible={() => {
               setVisibleChartIds((current) => {
                 if (current.has(dashboardChart.chart_id)) return current;
@@ -2629,6 +2633,7 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
                           viewerGrain={chartGrains[dashboardChart.chart_id]}
                           onViewerDrill={(g) => handleChartDrill(dashboardChart.chart_id, g)}
                           lockDateGrain={(dashboardChart.layout as any)?.lockDateGrain === true}
+                          allowExport={dataExportEnabled}
                           onVisible={() => {
                             setVisibleChartIds((current) => {
                               if (current.has(dashboardChart.chart_id)) return current;

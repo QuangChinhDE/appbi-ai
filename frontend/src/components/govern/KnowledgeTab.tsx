@@ -8,8 +8,9 @@
  *
  * A business document is long-form markdown carrying {{metric:…}} and
  * {{dashboard|dataset|term:…}} tokens the backend resolves into cards +
- * cross-links. Metrics (KPIs) are authored INSIDE documents (SSOT); master
- * vocabulary lives in the "Từ điển & Nhãn" modal (owned by the parent page).
+ * cross-links. Governed KPIs may use a document as their SSOT, while KPI lifecycle,
+ * vocabulary, classifications, and caveats are managed in the parent page's
+ * central Governance Registry.
  */
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type ChangeEvent } from 'react';
 import Link from 'next/link';
@@ -33,19 +34,21 @@ import { cn } from '@/lib/utils';
 import { toast } from '@/lib/toast';
 import type { useUrlNav } from '@/hooks/use-url-nav';
 import { useI18n } from '@/providers/LanguageProvider';
+import { SystemKnowledgeGraph } from './KnowledgeGraph';
 import {
   listKnowledge, getKnowledgeDoc, upsertKnowledgeDoc, deleteKnowledgeDoc, listManagedMetrics,
   listDocVersions, getDocVersion, aiDraftKnowledge, listDatasetsLite, governSearch, regenAiSummary, verifyDoc,
-  publishVersion, aiChangeNote, governGraph,
+  publishVersion, aiChangeNote,
   getDocSource, putDocSource, uploadDocSourceFile, syncDocSource, listGoogleDocsSources,
-  getEmbeddingConfig, previewChunks, reembedDoc,
+  getEmbeddingConfig, getEmbeddingProfiles, previewChunks, reembedDoc, resetEmbeddingModel,
   getDocHistory, getDocUsage, getDocVectors, queryDocVectors, getDocSnapshot, isSourceOwned,
   type DocSourceKind, type DocSnapshot, type GoogleDocsSource,
   type KnowledgeDoc, type KnowledgeSpace, type KnowledgeDocWrite, type KnowledgeAsset, type ManagedMetric,
-  type KnowledgeDocVersion, type DatasetLite, type GovernSearchResult, type RelatedDoc, type KnowledgeGraph, type GraphNode,
-  type DocSourceInfo, type DocSyncSchedule, type EmbeddingConfig, type ChunkPreviewResult, type DocHistory, type DocUsage, type DocVector, type VectorMatch,
+  type KnowledgeDocVersion, type DatasetLite, type GovernSearchResult, type RelatedDoc,
+  type DocSourceInfo, type DocSyncSchedule, type EmbeddingConfig, type EmbeddingProfile, type ChunkPreviewResult, type DocHistory, type DocUsage, type DocVector, type VectorMatch,
 } from '@/lib/catalog';
 import { AppModalShell } from '@/components/common/AppModalShell';
+import { OwnerBadge } from '@/components/common/OwnerBadge';
 import { ShareDialog } from '@/components/common/ShareDialog';
 import { getResourcePermissions } from '@/hooks/use-resource-permission';
 import { usePermissions, hasPermission } from '@/hooks/use-permissions';
@@ -68,8 +71,8 @@ function htmlToText(html: string): string {
   return s.replace(/\n{3,}/g, '\n\n').replace(/[ \t]+\n/g, '\n').trim();
 }
 
-function newDoc(space = 'Chung'): KnowledgeDocWrite {
-  return { title: '', space, doc_type: 'article', status: 'Draft', pinned: false, tags: [], related_metrics: [], related_terms: [] };
+function newDoc(space = 'Chung', embeddingModel?: string): KnowledgeDocWrite {
+  return { title: '', space, doc_type: 'article', status: 'Draft', pinned: false, tags: [], related_metrics: [], related_terms: [], embedding_model: embeddingModel };
 }
 
 /** Rebuild a write payload from a fetched doc so a partial update doesn't blank fields. */
@@ -107,18 +110,18 @@ function readingMinutes(body: string | undefined | null): number {
   const words = (body || '').trim().split(/\s+/).filter(Boolean).length;
   return Math.max(1, Math.round(words / 200));
 }
-function relTime(iso: string | null | undefined, locale: string): string {
-  if (!iso) return '—';
+function relTime(iso: string | null | undefined, locale: string, t: (key: string, values?: Record<string, string | number>) => string): string {
+  if (!iso) return '-';
   // Backend timestamps are naive UTC — anchor them so local offsets don't shift.
   const normalized = /Z$|[+-]\d{2}:\d{2}$/.test(iso) ? iso : `${iso}Z`;
   const dt = new Date(normalized).getTime();
   const mins = Math.floor((Date.now() - dt) / 60000);
-  if (mins < 1) return locale === 'vi' ? 'vừa xong' : 'just now';
-  if (mins < 60) return locale === 'vi' ? `${mins} phút trước` : `${mins}m ago`;
+  if (mins < 1) return t('govern.time.justNow');
+  if (mins < 60) return t('govern.time.minutesAgo', { count: mins });
   const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return locale === 'vi' ? `${hrs} giờ trước` : `${hrs}h ago`;
+  if (hrs < 24) return t('govern.time.hoursAgo', { count: hrs });
   const days = Math.floor(hrs / 24);
-  if (days < 30) return locale === 'vi' ? `${days} ngày trước` : `${days}d ago`;
+  if (days < 30) return t('govern.time.daysAgo', { count: days });
   return new Date(normalized).toLocaleDateString(locale === 'vi' ? 'vi-VN' : 'en-US');
 }
 /** Compose the human "why related" line from the shared-signal buckets. */
@@ -217,7 +220,7 @@ export function KnowledgeTab({ nav, onOpenVocab }: { nav: ReturnType<typeof useU
         <CreateDocWizard
           spaces={spaces}
           onClose={() => setWizardOpen(false)}
-          onManual={(sp, docTitle) => { setWizardOpen(false); setSeed({ ...newDoc(sp), title: docTitle }); nav.set({ doc: null, m: 'new' }); }}
+          onManual={(sp, docTitle, embeddingModel) => { setWizardOpen(false); setSeed({ ...newDoc(sp, embeddingModel), title: docTitle }); nav.set({ doc: null, m: 'new' }); }}
           onCreated={(id) => { setWizardOpen(false); void loadList(); openDoc(id); }}
         />
       )}
@@ -232,86 +235,6 @@ export function KnowledgeTab({ nav, onOpenVocab }: { nav: ReturnType<typeof useU
         />
       )}
     </>
-  );
-}
-
-// ── Obsidian-style whole-hub knowledge graph (force-directed, pure SVG) ──────
-// Exported: also rendered by the Intelligence cockpit (Sẵn sàng AI → Đồ thị).
-export function GlobalGraph({ onOpen }: { onOpen: (id: number) => void }) {
-  const { t } = useI18n();
-  const [g, setG] = useState<KnowledgeGraph | null>(null);
-  const [hover, setHover] = useState<number | null>(null);
-  useEffect(() => { governGraph().then(setG).catch(() => setG({ nodes: [], edges: [] })); }, []);
-
-  const layout = useMemo(() => {
-    const W = 1000, H = 680;
-    type Placed = GraphNode & { x: number; y: number; deg: number };
-    if (!g || g.nodes.length === 0) return { W, H, nodes: [] as Placed[], edges: [] as { from: number; to: number; type: string }[] };
-    const N = g.nodes.length;
-    const p = g.nodes.map((n, i) => ({ x: W / 2 + Math.cos((2 * Math.PI * i) / N) * 240, y: H / 2 + Math.sin((2 * Math.PI * i) / N) * 240, vx: 0, vy: 0 }));
-    const idx = new Map(g.nodes.map((n, i) => [n.id, i]));
-    const E = g.edges.map((e) => [idx.get(e.from), idx.get(e.to)] as [number | undefined, number | undefined]).filter((e): e is [number, number] => e[0] != null && e[1] != null);
-    const deg = new Array(N).fill(0); E.forEach(([a, b]) => { deg[a]++; deg[b]++; });
-    for (let it = 0; it < 260; it++) {
-      const cool = Math.max(0.05, 1 - it / 300);
-      for (let i = 0; i < N; i++) for (let j = i + 1; j < N; j++) {
-        const dx = p[i].x - p[j].x, dy = p[i].y - p[j].y; const d2 = dx * dx + dy * dy || 0.01; const d = Math.sqrt(d2);
-        const rep = 11000 / d2; const fx = (dx / d) * rep, fy = (dy / d) * rep;
-        p[i].vx += fx; p[i].vy += fy; p[j].vx -= fx; p[j].vy -= fy;
-      }
-      for (const [a, b] of E) {
-        const dx = p[b].x - p[a].x, dy = p[b].y - p[a].y; const d = Math.sqrt(dx * dx + dy * dy) || 0.01;
-        const f = (d - 160) * 0.02; const fx = (dx / d) * f, fy = (dy / d) * f;
-        p[a].vx += fx; p[a].vy += fy; p[b].vx -= fx; p[b].vy -= fy;
-      }
-      for (let i = 0; i < N; i++) {
-        p[i].vx += (W / 2 - p[i].x) * 0.003; p[i].vy += (H / 2 - p[i].y) * 0.003;
-        p[i].x += p[i].vx * cool * 0.4; p[i].y += p[i].vy * cool * 0.4;
-        p[i].vx *= 0.85; p[i].vy *= 0.85;
-      }
-    }
-    return { W, H, nodes: g.nodes.map((n, i) => ({ ...n, x: p[i].x, y: p[i].y, deg: deg[i] })), edges: g.edges };
-  }, [g]);
-
-  const posById = useMemo(() => new Map(layout.nodes.map((n) => [n.id, n])), [layout]);
-  const connected = (id: number) => hover == null || hover === id || layout.edges.some((e) => (e.from === hover && e.to === id) || (e.to === hover && e.from === id));
-
-  if (!g) return <div className="py-16 text-center text-caption text-text-tertiary">{t('govern.loading')}</div>;
-  if (g.nodes.length === 0) return (
-    <div className="rounded-xl border border-dashed border-[rgb(var(--border-strong))] bg-surface-1 px-4 py-16 text-center">
-      <Network className="mx-auto mb-2 h-8 w-8 text-text-quaternary" />
-      <p className="text-caption text-text-tertiary">{t('govern.graph.emptyGlobal')}</p>
-    </div>
-  );
-  return (
-    <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-2">
-      <svg viewBox={`0 0 ${layout.W} ${layout.H}`} className="h-[72vh] w-full" preserveAspectRatio="xMidYMid meet">
-        {layout.edges.map((e, i) => {
-          const a = posById.get(e.from), b = posById.get(e.to); if (!a || !b) return null;
-          const dim = hover != null && !(e.from === hover || e.to === hover);
-          return <line key={i} x1={a.x} y1={a.y} x2={b.x} y2={b.y}
-            stroke={e.type === 'link' ? 'rgb(var(--brand))' : 'rgb(var(--border-strong))'}
-            strokeWidth={e.type === 'link' ? 1.6 : 1} strokeDasharray={e.type === 'metric' ? '4 4' : undefined}
-            opacity={dim ? 0.12 : (e.type === 'link' ? 0.55 : 0.35)} />;
-        })}
-        {layout.nodes.map((n) => {
-          const r = Math.min(16, 6 + n.deg * 1.6); const on = connected(n.id);
-          return (
-            <g key={n.id} transform={`translate(${n.x},${n.y})`} className="cursor-pointer" opacity={on ? 1 : 0.25}
-              onMouseEnter={() => setHover(n.id)} onMouseLeave={() => setHover(null)} onClick={() => onOpen(n.id)}>
-              <circle r={r} fill="rgb(var(--brand))" fillOpacity={0.85} stroke="rgb(var(--surface-1))" strokeWidth={2} />
-              <text y={r + 12} textAnchor="middle" className="pointer-events-none fill-[rgb(var(--text-secondary))] text-[11px]"
-                style={{ fontWeight: hover === n.id ? 600 : 400 }}>{n.title.length > 26 ? n.title.slice(0, 25) + '…' : n.title}</text>
-            </g>
-          );
-        })}
-      </svg>
-      <div className="flex items-center gap-4 px-2 py-1 text-tiny text-text-quaternary">
-        <span className="flex items-center gap-1.5"><span className="h-0.5 w-4 bg-brand" />{t('govern.graph.edgeLink')}</span>
-        <span className="flex items-center gap-1.5"><span className="h-0.5 w-4 border-t border-dashed border-[rgb(var(--border-strong))]" />{t('govern.graph.edgeMetric')}</span>
-        <span className="ml-auto">{t('govern.graph.hint')}</span>
-      </div>
-    </div>
   );
 }
 
@@ -337,12 +260,12 @@ function ListScreen({ docs, spaces, loading, managed, onOpen, onNew, onOpenVocab
   // Search-everything: debounce → grouped results panel above the table.
   useEffect(() => {
     const needle = q.trim();
-    if (needle.length < 2) { setSearchRes(null); return; }
+    if (view !== 'list' || needle.length < 2) { setSearchRes(null); return; }
     const h = setTimeout(() => {
       governSearch(needle).then(setSearchRes).catch(() => setSearchRes(null));
     }, 300);
     return () => clearTimeout(h);
-  }, [q]);
+  }, [q, view]);
 
   // Knowledge-health sets — computed from the list payload (ai_ready + counters).
   const healthSets = useMemo(() => {
@@ -395,7 +318,7 @@ function ListScreen({ docs, spaces, loading, managed, onOpen, onNew, onOpenVocab
         />
       )}
       action={(
-        <div className="flex items-center gap-2">
+        <div className="flex min-w-max items-center gap-2">
           {onOpenVocab && <Button variant="secondary" leadingIcon={<Library className="h-4 w-4" />} onClick={onOpenVocab}>{t('govern.action.vocab')}</Button>}
           {canAuthor && <AiButton size="md" onClick={onAiWrite}>{t('govern.action.aiWrite')}</AiButton>}
           {canAuthor && <Button variant="primary" leadingIcon={<Plus className="h-4 w-4" />} onClick={onNew}>{t('govern.action.createDocument')}</Button>}
@@ -413,24 +336,28 @@ function ListScreen({ docs, spaces, loading, managed, onOpen, onNew, onOpenVocab
             { key: 'list', icon: <List className="h-3.5 w-3.5" />, label: t('govern.view.list') },
             { key: 'graph', icon: <Network className="h-3.5 w-3.5" />, label: t('govern.view.graph') },
           ]} />
-          <div className="mx-1 h-4 w-px bg-surface-3" />
-          <FilterTag tone="brand" active={space === null && health === null} onClick={() => { setSpace(null); setHealth(null); }}>{t('govern.filter.all')}</FilterTag>
-          {spaces.map((s) => (
-            <FilterTag key={s.space} tone="brand" active={space === s.space} onClick={() => setSpace(space === s.space ? null : s.space)}>
-              {s.space} ({s.count})
-            </FilterTag>
-          ))}
-          <div className="mx-1 h-4 w-px bg-surface-3" />
-          {HEALTH_CHIPS.map((c) => (
-            <FilterTag key={c.key} tone="warning" active={health === c.key} onClick={() => setHealth(health === c.key ? null : c.key)}>
-              {c.label} ({healthSets[c.key].size})
-            </FilterTag>
-          ))}
+          {view === 'list' && <>
+            <div className="mx-1 h-4 w-px bg-surface-3" />
+            <FilterTag tone="brand" active={space === null && health === null} onClick={() => { setSpace(null); setHealth(null); }}>{t('govern.filter.all')}</FilterTag>
+            {spaces.map((s) => (
+              <FilterTag key={s.space} tone="brand" active={space === s.space} onClick={() => setSpace(space === s.space ? null : s.space)}>
+                {s.space} ({s.count})
+              </FilterTag>
+            ))}
+            <div className="mx-1 h-4 w-px bg-surface-3" />
+            {HEALTH_CHIPS.map((c) => (
+              <FilterTag key={c.key} tone="warning" active={health === c.key} onClick={() => setHealth(health === c.key ? null : c.key)}>
+                {c.label} ({healthSets[c.key].size})
+              </FilterTag>
+            ))}
+          </>}
         </div>
       )}
     >
       {({ filterText }) => {
-        if (view === 'graph') return <GlobalGraph onOpen={onOpen} />;
+        if (view === 'graph') return (
+          <SystemKnowledgeGraph query={q} onOpenDoc={onOpen} onOpenMetric={onOpenMetric} onOpenVocab={onOpenVocab} />
+        );
         const needle = filterText.trim().toLowerCase();
         const rows = docs
           .filter((d) =>
@@ -477,14 +404,20 @@ function ListScreen({ docs, spaces, loading, managed, onOpen, onNew, onOpenVocab
                   <div className="app-list-table-wrap">
                     <table className="app-list-table divide-y divide-[rgb(var(--border-line))]">
                       <thead className="bg-surface-2"><tr>
-                        <th className="app-list-header w-[30%]">{t('govern.list.header.document')}</th>
-                        <th className="app-list-header w-[11%]">{t('govern.list.header.space')}</th>
-                        <th className="app-list-header w-[9%]">{t('govern.list.header.type')}</th>
-                        <th className="app-list-header w-[7%]">{t('govern.list.header.metrics')}</th>
-                        <th className="app-list-header w-[7%]">{t('govern.list.header.links')}</th>
-                        <th className="app-list-header w-[9%]">{t('govern.list.header.aiReady')}</th>
+                        <th className="app-list-header w-[26%]">{t('govern.list.header.document')}</th>
+                        <th className="app-list-header w-[10%]">{t('govern.list.header.space')}</th>
+                        <th className="app-list-header w-[8%]">{t('govern.list.header.type')}</th>
+                        <th className="app-list-header w-[6%]">{t('govern.list.header.metrics')}</th>
+                        <th className="app-list-header w-[6%]">{t('govern.list.header.links')}</th>
+                        <th className="app-list-header w-[8%]">{t('govern.list.header.aiReady')}</th>
                         <th className="app-list-header w-[10%]">{t('govern.list.header.status')}</th>
-                        <th className="app-list-header w-[10%]">{t('govern.list.header.updated')}</th>
+                        {/* WHO OWNS THIS. The list showed the free-text `owner`
+                            label in a filter chip and nothing else, so an admin
+                            could not tell which account a document belonged to —
+                            the two fields share a name but only `owner_email` is
+                            the account the permission system uses. */}
+                        <th className="app-list-header w-[11%]">{t('govern.list.header.owner')}</th>
+                        <th className="app-list-header w-[8%]">{t('govern.list.header.updated')}</th>
                         <th className="app-list-header w-[7%] text-right" />
                       </tr></thead>
                       <tbody className="divide-y divide-[rgb(var(--border-line))] bg-surface-1">
@@ -527,7 +460,8 @@ function ListScreen({ docs, spaces, loading, managed, onOpen, onNew, onOpenVocab
                                   <span className="text-tiny text-text-quaternary">v{d.version}</span>
                                 </span>
                               </td>
-                              <td className="app-list-cell text-tiny text-text-quaternary"><Clock3 className="mr-1 inline h-3 w-3" />{relTime(d.updated_at, language)}</td>
+                              <td className="app-list-cell"><OwnerBadge email={d.owner_email} /></td>
+                              <td className="app-list-cell text-tiny text-text-quaternary"><Clock3 className="mr-1 inline h-3 w-3" />{relTime(d.updated_at, language, t)}</td>
                               <td className="app-list-cell-tight">
                                 <span className="flex items-center justify-end gap-0.5 whitespace-nowrap">
                                   {getResourcePermissions(d.user_permission ?? undefined).canShare && (
@@ -632,6 +566,7 @@ type DetailModal = null | 'source' | 'embedding' | 'graph';
 function DetailDrawer({ title, icon, width = 'w-[26rem]', onClose, children }: {
   title: string; icon?: ReactNode; width?: string; onClose: () => void; children: ReactNode;
 }) {
+  const { t } = useI18n();
   return (
     <div className={cn(
       'absolute right-0 top-0 z-40 max-h-full overflow-y-auto rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 shadow-linear-lg',
@@ -640,7 +575,7 @@ function DetailDrawer({ title, icon, width = 'w-[26rem]', onClose, children }: {
       <div className="sticky top-0 z-10 flex h-11 items-center gap-2 border-b border-[rgb(var(--border-line))] bg-surface-1 px-3">
         <span className="flex items-center gap-1.5 text-caption font-emphasis text-text-primary">{icon}{title}</span>
         <div className="flex-1" />
-        <button onClick={onClose} aria-label="Đóng" className="text-text-quaternary transition-colors hover:text-text-primary">
+        <button onClick={onClose} aria-label={t('common.close')} className="text-text-quaternary transition-colors hover:text-text-primary">
           <X className="h-3.5 w-3.5" />
         </button>
       </div>
@@ -799,7 +734,7 @@ function HistoryDrawer({ doc, onClose, onViewVersion }: {
               <div className="min-w-0 flex-1">
                 <div className="flex items-start justify-between gap-2">
                   <span className="text-caption font-emphasis text-text-primary">{r.title}</span>
-                  <span className="whitespace-nowrap text-tiny text-text-quaternary">{relTime(r.at, language)}</span>
+                  <span className="whitespace-nowrap text-tiny text-text-quaternary">{relTime(r.at, language, t)}</span>
                 </div>
                 {r.detail && <p className="mt-0.5 text-tiny leading-relaxed text-text-tertiary">{r.detail}</p>}
                 <div className="mt-1.5 flex items-center gap-1.5">
@@ -965,7 +900,7 @@ function DetailScreen({ docId, nav, onBack, onEdit, onDeleted, onOpenMetric, onL
             doc.source_type === 'google_doc' ? 'border-info/20 bg-info/10 text-info'
             : doc.source_type === 'web' ? 'border-success/20 bg-success/10 text-success'
             : 'border-warning/20 bg-warning/10 text-warning')}>
-            {t('govern.source.typeShort.' + doc.source_type)}
+            {doc.source_type ? t(`govern.source.typeShort.${doc.source_type}`) : t('govern.source.typeManual')}
           </span>
         )}
         <span className={cn('whitespace-nowrap rounded-full px-2 py-0.5 text-tiny', STATUS_TONE[doc.status] || 'bg-surface-2 text-text-tertiary')}>
@@ -1260,7 +1195,7 @@ const SOURCE_KINDS: { kind: DocSourceKind; icon: ReactNode; tone: string }[] = [
 function CreateDocWizard({ spaces, onClose, onManual, onCreated }: {
   spaces: KnowledgeSpace[];
   onClose: () => void;
-  onManual: (space: string, title: string) => void;
+  onManual: (space: string, title: string, embeddingModel: string) => void;
   onCreated: (docId: number) => void;
 }) {
   const { t } = useI18n();
@@ -1274,13 +1209,23 @@ function CreateDocWizard({ spaces, onClose, onManual, onCreated }: {
   const [webUrl, setWebUrl] = useState('');
   const [schedule, setSchedule] = useState<DocSyncSchedule>({ mode: 'manual' });
   const [file, setFile] = useState<File | null>(null);
+  const [embeddingProfiles, setEmbeddingProfiles] = useState<EmbeddingProfile[]>([]);
+  const [embeddingModel, setEmbeddingModel] = useState('');
   const fileRef = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => { if (kind === 'google_doc') listGoogleDocsSources().then(setGsources).catch(() => {}); }, [kind]);
+  useEffect(() => {
+    getEmbeddingProfiles()
+      .then(({ profiles, default_model }) => {
+        setEmbeddingProfiles(profiles);
+        setEmbeddingModel(default_model);
+      })
+      .catch(() => toast.error(t('govern.embedding.profilesLoadFailed')));
+  }, [t]);
 
   const canSubmit = (() => {
-    if (!title.trim()) return false;
+    if (!title.trim() || !embeddingModel) return false;
     if (kind === 'google_doc') return !!datasourceId && !!googleDocRef.trim();
     if (kind === 'web') return /^https?:\/\//.test(webUrl.trim());
     if (kind === 'file') return !!file;
@@ -1289,14 +1234,14 @@ function CreateDocWizard({ spaces, onClose, onManual, onCreated }: {
 
   const submit = async () => {
     // Carry the title across — retyping it in the editor is pure friction.
-    if (kind === 'manual') { onManual(space, title.trim()); return; }
+    if (kind === 'manual') { onManual(space, title.trim(), embeddingModel); return; }
     setBusy(true);
     try {
       // 1. Create the shell document, 2. attach its source, 3. pull content once.
       // Same three steps for every connected kind — only the payload differs.
       const created = await upsertKnowledgeDoc({
         title: title.trim(), space, doc_type: 'article', status: 'Draft',
-        tags: [], related_metrics: [], related_terms: [],
+        tags: [], related_metrics: [], related_terms: [], embedding_model: embeddingModel,
       });
       if (kind === 'file') {
         await uploadDocSourceFile(created.id, file!);
@@ -1363,6 +1308,18 @@ function CreateDocWizard({ spaces, onClose, onManual, onCreated }: {
               <Input value={space} onChange={(e) => setSpace(e.target.value)} list="wizard-spaces" />
               <datalist id="wizard-spaces">{spaces.map((s) => <option key={s.space} value={s.space} />)}</datalist>
             </div>
+          </div>
+
+          <div>
+            <Label required>{t('govern.embedding.model')}</Label>
+            <Select value={embeddingModel} onChange={(e) => setEmbeddingModel(e.target.value)}>
+              {embeddingProfiles.map((profile) => (
+                <option key={profile.model} value={profile.model}>
+                  {profile.model} - {profile.dimensions}d
+                </option>
+              ))}
+            </Select>
+            <p className="mt-1 text-tiny text-text-quaternary">{t('govern.embedding.createModelHint')}</p>
           </div>
 
           {kind === 'google_doc' && (
@@ -1675,6 +1632,7 @@ function RailIcon({ icon, label, active, badge, onClick }: {
 function RailFlyout({ side, title, icon, onClose, children }: {
   side: 'left' | 'right'; title: string; icon?: ReactNode; onClose: () => void; children: ReactNode;
 }) {
+  const { t } = useI18n();
   return (
     <div className={cn(
       'absolute top-0 z-30 w-[min(20rem,calc(100vw-6.5rem))] overflow-hidden rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 shadow-linear-lg xl:w-[22rem]',
@@ -1684,7 +1642,7 @@ function RailFlyout({ side, title, icon, onClose, children }: {
         <p className="flex items-center gap-1.5 text-tiny font-emphasis uppercase tracking-[0.08em] text-text-quaternary">
           {icon}{title}
         </p>
-        <button onClick={onClose} aria-label="Đóng" className="text-text-quaternary transition-colors hover:text-text-primary">
+        <button onClick={onClose} aria-label={t('common.close')} className="text-text-quaternary transition-colors hover:text-text-primary">
           <X className="h-3.5 w-3.5" />
         </button>
       </div>
@@ -1872,13 +1830,14 @@ function DetailRail({ doc, usage, onOpenDoc, onRefresh, onOpenEmbedding, onOpenS
             <RailRow label={t('govern.list.header.type')} value={docTypeLabel(doc.doc_type, t)} />
             <RailRow label={t('govern.list.header.status')} value={<span className={cn('rounded-full px-2 py-0.5 text-tiny', STATUS_TONE[doc.status] || 'bg-surface-2 text-text-tertiary')}>{statusLabel(doc.status, t)}</span>} />
             <RailRow label={t('govern.info.version')} value={`v${doc.version}`} />
+            <RailRow label={t('govern.info.ownerAccount')} value={doc.owner_email || '—'} />
             <RailRow label={t('govern.editor.owner')} value={doc.owner || '—'} />
             {doc.business_domain && <RailRow label={t('govern.detail.businessDomain')} value={doc.business_domain} />}
             {doc.process_ref && <RailRow label={t('govern.detail.processRef')} value={doc.process_ref} />}
             <RailRow label={t('govern.detail.importance')} value={t(`govern.importance.${doc.importance || 'normal'}`)} />
             {doc.review_date && <RailRow label={t('govern.detail.reviewDate')} value={doc.review_date} />}
-            <RailRow label={t('govern.detail.lastVerified')} value={doc.last_verified_at ? relTime(doc.last_verified_at, language) : '—'} />
-            {doc.updated_at && <RailRow label={t('govern.list.header.updated')} value={relTime(doc.updated_at, language)} />}
+            <RailRow label={t('govern.detail.lastVerified')} value={doc.last_verified_at ? relTime(doc.last_verified_at, language, t) : '-'} />
+            {doc.updated_at && <RailRow label={t('govern.list.header.updated')} value={relTime(doc.updated_at, language, t)} />}
           </dl>
 
           {/* Source lives here — reading a doc, "where does this come from" is
@@ -2281,7 +2240,7 @@ function SourceTab({ doc, onRefresh }: { doc: KnowledgeDoc; onRefresh: () => voi
 
       <RailCard title={t('govern.source.status')}>
         <dl className="space-y-2.5">
-          <RailRow label={t('govern.source.lastSynced')} value={info?.last_synced_at ? relTime(info.last_synced_at, language) : '—'} />
+          <RailRow label={t('govern.source.lastSynced')} value={info?.last_synced_at ? relTime(info.last_synced_at, language, t) : '-'} />
           <RailRow label={t('govern.source.statusLabel')} value={info?.last_sync_status ? t(`govern.source.status.${info.last_sync_status}`) : '—'} />
         </dl>
         {info?.last_sync_status === 'error' && (
@@ -2428,7 +2387,7 @@ function VectorBrowser({ doc }: { doc: KnowledgeDoc }) {
                   <div className="flex justify-between gap-2"><dt className="text-text-quaternary">ID</dt><dd className="font-mono text-text-secondary">{v.id}</dd></div>
                   <div className="flex justify-between gap-2"><dt className="text-text-quaternary">{t('govern.vectors.dims')}</dt><dd className="font-mono text-text-secondary">{v.dims ?? '—'}</dd></div>
                   <div className="flex justify-between gap-2"><dt className="text-text-quaternary">{t('govern.vectors.model')}</dt><dd className="truncate font-mono text-text-secondary">{v.model || '—'}</dd></div>
-                  <div className="flex justify-between gap-2"><dt className="text-text-quaternary">{t('govern.vectors.created')}</dt><dd className="text-text-secondary">{relTime(v.created_at, language)}</dd></div>
+                  <div className="flex justify-between gap-2"><dt className="text-text-quaternary">{t('govern.vectors.created')}</dt><dd className="text-text-secondary">{relTime(v.created_at, language, t)}</dd></div>
                   <div className="col-span-2 flex justify-between gap-2"><dt className="text-text-quaternary">{t('govern.vectors.hash')}</dt><dd className="truncate font-mono text-text-secondary">{v.content_hash.slice(0, 24)}…</dd></div>
                 </dl>
                 <p className="whitespace-pre-wrap text-tiny leading-relaxed text-text-secondary">{v.content}</p>
@@ -2454,19 +2413,16 @@ function EmbeddingTab({ doc, onRefresh }: { doc: KnowledgeDoc; onRefresh: () => 
   const [preview, setPreview] = useState<ChunkPreviewResult | null>(null);
   const [saving, setSaving] = useState(false);
 
-  useEffect(() => {
-    let on = true;
+  const loadConfig = useCallback(async () => {
     setLoading(true);
-    getEmbeddingConfig(doc.id)
-      .then((c) => {
-        if (!on) return;
-        setCfg(c); setStrategy(c.chunk_strategy); setSize(c.chunk_size); setOverlap(c.chunk_overlap); setModel(c.embedding_model || '');
-        setAllowEgress(c.allow_external_embedding !== false);
-      })
-      .catch(() => toast.error(t('govern.embedding.loadFailed')))
-      .finally(() => { if (on) setLoading(false); });
-    return () => { on = false; };
+    try {
+      const c = await getEmbeddingConfig(doc.id);
+      setCfg(c); setStrategy(c.chunk_strategy); setSize(c.chunk_size); setOverlap(c.chunk_overlap); setModel(c.embedding_model || '');
+      setAllowEgress(c.allow_external_embedding !== false);
+    } catch { toast.error(t('govern.embedding.loadFailed')); }
+    finally { setLoading(false); }
   }, [doc.id, t]);
+  useEffect(() => { void loadConfig(); }, [loadConfig]);
 
   const doPreview = async () => {
     setPreviewing(true);
@@ -2478,20 +2434,31 @@ function EmbeddingTab({ doc, onRefresh }: { doc: KnowledgeDoc; onRefresh: () => 
   const saveAndReembed = async () => {
     setSaving(true);
     try {
+      const payload = { chunk_strategy: strategy, chunk_size: size, chunk_overlap: overlap, embedding_model: model.trim() || null };
+      const modelChanged = !!cfg && model.trim() !== (cfg.embedding_model || '');
+      if (modelChanged && cfg.model_locked && !window.confirm(t('govern.embedding.resetConfirm', { model }))) return;
       // The egress veto is a property of the DOCUMENT, so it is saved through
       // the document before re-indexing — otherwise re-indexing would run under
       // the old permission and send text the user just forbade.
       if (allowEgress !== (cfg?.allow_external_embedding !== false)) {
         await upsertKnowledgeDoc(docToWrite(doc, { allow_external_embedding: allowEgress }));
       }
-      const res = await reembedDoc(doc.id, { chunk_strategy: strategy, chunk_size: size, chunk_overlap: overlap, embedding_model: model.trim() || null });
-      toast.success(t('govern.embedding.reembedOk', { chunks: res.chunks }));
+      const res = modelChanged
+        ? await resetEmbeddingModel(doc.id, payload)
+        : await reembedDoc(doc.id, payload);
+      const succeeded = ['embedded', 'unchanged', 'cleared', 'empty'].includes(res.status);
+      if (succeeded) toast.success(t('govern.embedding.reembedOk', { chunks: res.chunks }));
+      else toast.error(res.detail || t('govern.embedding.reembedFailed'));
+      await loadConfig();
       onRefresh();
     } catch (e) { toast.error(errDetail(e) || t('govern.embedding.reembedFailed')); }
     finally { setSaving(false); }
   };
 
   if (loading) return <div className="flex justify-center py-14"><Loader2 className="h-5 w-5 animate-spin text-brand" /></div>;
+
+  const modelChanged = !!cfg && model.trim() !== (cfg.embedding_model || '');
+  const modelAvailable = (cfg?.available_models ?? []).some((profile) => profile.model === model);
 
   return (
     <div className="grid gap-4 xl:grid-cols-2">
@@ -2517,8 +2484,17 @@ function EmbeddingTab({ doc, onRefresh }: { doc: KnowledgeDoc; onRefresh: () => 
           </div>
           <div>
             <Label>{t('govern.embedding.model')}</Label>
-            <Input value={model} onChange={(e) => setModel(e.target.value)} placeholder={t('govern.embedding.modelPlaceholder')} />
-            <p className="mt-1 text-tiny text-text-quaternary">{t('govern.embedding.modelHint')}</p>
+            <Select value={model} onChange={(e) => setModel(e.target.value)}>
+              {!modelAvailable && model && <option value={model} disabled>{model}</option>}
+              {(cfg?.available_models ?? []).map((profile) => (
+                <option key={profile.model} value={profile.model}>
+                  {profile.model} - {profile.dimensions}d
+                </option>
+              ))}
+            </Select>
+            <p className={cn('mt-1 text-tiny', modelChanged ? 'text-warning' : 'text-text-quaternary')}>
+              {modelChanged ? t('govern.embedding.modelChangeHint') : t('govern.embedding.modelLockedHint')}
+            </p>
           </div>
           <div className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 p-2.5">
             <label className="flex cursor-pointer items-start gap-2">
@@ -2537,7 +2513,9 @@ function EmbeddingTab({ doc, onRefresh }: { doc: KnowledgeDoc; onRefresh: () => 
           </div>
           <div className="flex justify-end gap-2 pt-1">
             <Button size="sm" variant="secondary" loading={previewing} onClick={doPreview}>{t('govern.embedding.preview')}</Button>
-            <Button size="sm" variant="primary" leadingIcon={<RefreshCw className="h-3.5 w-3.5" />} loading={saving} onClick={saveAndReembed}>{t('govern.embedding.saveReembed')}</Button>
+            <Button size="sm" variant="primary" leadingIcon={<RefreshCw className="h-3.5 w-3.5" />} loading={saving} onClick={saveAndReembed}>
+              {modelChanged ? t('govern.embedding.resetReembed') : t('govern.embedding.saveReembed')}
+            </Button>
           </div>
           {cfg && <p className="text-tiny text-text-quaternary">{t('govern.embedding.currentChunks', { count: cfg.chunk_count })}</p>}
         </div>
@@ -2620,7 +2598,7 @@ function HistoryTab({ doc }: { doc: KnowledgeDoc }) {
             <div className="min-w-0 flex-1">
               <div className="flex items-center justify-between gap-2">
                 <span className="text-caption font-emphasis text-text-primary">{r.title}</span>
-                <span className="text-tiny text-text-quaternary">{relTime(r.at, language)}</span>
+                <span className="text-tiny text-text-quaternary">{relTime(r.at, language, t)}</span>
               </div>
               {r.detail && <p className="mt-0.5 truncate text-tiny text-text-tertiary">{r.detail}</p>}
             </div>
@@ -2752,7 +2730,7 @@ function VersionsDropdown({ docId, publishedVersion, latestVersion, refreshKey, 
                           {v.is_latest && <span className="rounded-full bg-surface-2 px-1.5 py-0.5 text-tiny text-text-tertiary">{t('govern.version.latest')}</span>}
                         </span>
                         {v.change_note && <span className="mt-0.5 block text-tiny text-text-secondary">{v.change_note}</span>}
-                        <span className="mt-0.5 block text-tiny text-text-quaternary">{v.changed_by || t('govern.history.system')} · {v.created_at ? relTime(v.created_at, locale) : ''}</span>
+                        <span className="mt-0.5 block text-tiny text-text-quaternary">{v.changed_by || t('govern.history.system')} · {v.created_at ? relTime(v.created_at, locale, t) : ''}</span>
                       </div>
                       <div className="flex flex-shrink-0 items-center gap-2">
                         {isViewing
@@ -2871,6 +2849,7 @@ function EditorScreen({ docId, seed, managed, allDocs, onCancel, onSaved, onOpen
   const [sourceOwned, setSourceOwned] = useState(false);
   const [tagsText, setTagsText] = useState((seed?.tags ?? []).join(', '));
   const [changeNote, setChangeNote] = useState('');
+  const [embeddingProfiles, setEmbeddingProfiles] = useState<EmbeddingProfile[]>([]);
   const [loading, setLoading] = useState(!!docId);
   const [saving, setSaving] = useState(false);
   const bodyRef = useRef<HTMLTextAreaElement>(null);
@@ -2902,6 +2881,18 @@ function EditorScreen({ docId, seed, managed, allDocs, onCancel, onSaved, onOpen
     return () => { on = false; };
   }, [docId, t]);
 
+  useEffect(() => {
+    if (docId) return;
+    getEmbeddingProfiles()
+      .then(({ profiles, default_model }) => {
+        setEmbeddingProfiles(profiles);
+        setEditing((current) => current
+          ? { ...current, embedding_model: current.embedding_model || default_model }
+          : current);
+      })
+      .catch(() => toast.error(t('govern.embedding.profilesLoadFailed')));
+  }, [docId, t]);
+
   const upd = (patch: Partial<KnowledgeDocWrite>) => setEditing((p) => (p ? { ...p, ...patch } : p));
 
   // Changing the doc TYPE on an empty document inserts that type's markdown
@@ -2909,7 +2900,7 @@ function EditorScreen({ docId, seed, managed, allDocs, onCancel, onSaved, onOpen
   const changeType = (type: string) => setEditing((p) => {
     if (!p) return p;
     const empty = !sourceOwned && !(p.body || '').trim();
-    const tpl = docTemplate(type);
+    const tpl = docTemplate(type, t);
     return { ...p, doc_type: type, body: empty && tpl ? tpl : p.body };
   });
 
@@ -2986,6 +2977,7 @@ function EditorScreen({ docId, seed, managed, allDocs, onCancel, onSaved, onOpen
   const save = async () => {
     if (!editing) return;
     if (!editing.title.trim()) { toast.error(t('govern.editor.titleRequired')); return; }
+    if (!editing.id && !editing.embedding_model) { toast.error(t('govern.embedding.modelRequired')); return; }
     setSaving(true);
     try {
       const body: KnowledgeDocWrite = {
@@ -3013,7 +3005,7 @@ function EditorScreen({ docId, seed, managed, allDocs, onCancel, onSaved, onOpen
         <span className="max-w-[320px] truncate text-sm font-medium text-text-primary">{editing.id ? t('govern.editor.titleEdit') : t('govern.editor.titleNew')}</span>
         <div className="flex-1" />
         <Button size="sm" variant="secondary" leadingIcon={<X className="h-3.5 w-3.5" />} onClick={onCancel} disabled={saving}>{t('govern.action.cancel')}</Button>
-        <Button size="sm" variant="primary" leadingIcon={<Save className="h-3.5 w-3.5" />} onClick={save} loading={saving} disabled={saving}>{editing.id ? t('govern.action.saveChanges') : t('govern.action.saveDocument')}</Button>
+        <Button size="sm" variant="primary" leadingIcon={<Save className="h-3.5 w-3.5" />} onClick={save} loading={saving} disabled={saving || (!editing.id && !editing.embedding_model)}>{editing.id ? t('govern.action.saveChanges') : t('govern.action.saveDocument')}</Button>
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-10 pt-6 sm:px-6 xl:px-8 [scrollbar-gutter:stable]">
@@ -3087,6 +3079,16 @@ function EditorScreen({ docId, seed, managed, allDocs, onCancel, onSaved, onOpen
             <div className="space-y-3 rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-4">
               <p className="text-tiny font-emphasis uppercase tracking-[0.08em] text-text-quaternary">{t('govern.editor.properties')}</p>
               <div className="space-y-1.5"><Label>{t('govern.editor.space')}</Label><Input value={editing.space ?? ''} onChange={(e) => upd({ space: e.target.value })} placeholder={t('govern.editor.spacePlaceholder')} /></div>
+              {!docId && (
+                <div className="space-y-1.5">
+                  <Label required>{t('govern.embedding.model')}</Label>
+                  <Select value={editing.embedding_model ?? ''} onChange={(e) => upd({ embedding_model: e.target.value })}>
+                    {embeddingProfiles.map((profile) => (
+                      <option key={profile.model} value={profile.model}>{profile.model} - {profile.dimensions}d</option>
+                    ))}
+                  </Select>
+                </div>
+              )}
               <div className="space-y-1.5"><Label>{t('govern.editor.type')}</Label>
                 <Select value={editing.doc_type ?? 'article'} onChange={(e) => changeType(e.target.value)}>{DOC_TYPES.map((type) => <option key={type} value={type}>{docTypeLabel(type, t)}</option>)}</Select>
               </div>

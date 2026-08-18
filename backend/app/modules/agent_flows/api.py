@@ -16,10 +16,18 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
-from app.core.dependencies import get_current_user, require_permission
+from app.core.dependencies import (
+    get_current_user,
+    get_effective_permission,
+    require_edit_access,
+    require_full_access,
+    require_permission,
+    require_view_access,
+)
 from app.models.user import User
 from app.services.agent_flows import binding as binding_service
 from app.services.agent_flows import permissions as perms
@@ -37,8 +45,12 @@ router = APIRouter(prefix="/agent-flows", tags=["agent-flows"])
 can_view = require_permission("agent_flows", "view")
 can_edit = require_permission("agent_flows", "edit")
 #: Publishing changes AI behaviour on a live, published report — the same blast
-#: radius as a deploy, so it needs the top level rather than `edit`.
-can_publish = require_permission("agent_flows", "full")
+#: radius as a deploy. That risk is real, but pinning it to module-wide `full` was
+#: the wrong lever: `full` also means "see and manage every flow in the deployment",
+#: so an author could not ship their own flow without being handed everybody else's.
+#: The module floor is `edit`; the risk is carried by `_may_manage_flow`, which
+#: additionally requires the caller to OWN the flow (or administer the module).
+can_publish = require_permission("agent_flows", "edit")
 #: Assigning a flow to a link decides what data a bot may read on someone's
 #: dashboard. That is a DASHBOARD decision, so it is gated on dashboard rights and
 #: additionally on the flow being shared with the assigner.
@@ -56,6 +68,66 @@ def _run(fn):
         raise HTTPException(status_code=exc.status, detail=exc.detail)
     except binding_service.BindingError as exc:
         raise HTTPException(status_code=exc.status, detail=exc.detail)
+
+
+def _brain_row(db: Session, brain_key: str):
+    """Newest version row for `brain_key`, or None. Any version identifies the flow;
+    ownership and shares live on the flow, not on one revision of it."""
+    from app.models.agent_brain import AgentBrainVersion
+
+    return (
+        db.query(AgentBrainVersion)
+        .filter(AgentBrainVersion.brain_key == brain_key)
+        .order_by(AgentBrainVersion.version.desc())
+        .first()
+    )
+
+
+def _may_read_flow(db: Session, user: User, brain_key: str):
+    """404/403 unless this user may open `brain_key`.
+
+    THE MODULE KEY WAS THE ONLY GATE HERE. `agent_flows: view` let anyone GET any
+    brain_key — a flow body carries its author's prompts and the ids of every
+    document and dataset it reads — and `agent_flows: edit` let anyone overwrite or
+    delete somebody else's flow. Every other module checks the ROW as well as the
+    module; this one did not, so a flow was the one first-class resource with no
+    object-level boundary at all.
+
+    404 rather than 403 for a flow the caller may not see: "this key exists but is
+    not yours" is a directory of everybody else's flows.
+    """
+    row = _brain_row(db, brain_key)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Không tìm thấy flow")
+    if get_effective_permission(db, user, row, "agent_flows") == "none":
+        raise HTTPException(status_code=404, detail="Không tìm thấy flow")
+    return row
+
+
+def _may_edit_flow(db: Session, user: User, brain_key: str):
+    """403 unless this user may change `brain_key`. A key that does not exist yet is
+    allowed through — that is how a new flow gets created."""
+    row = _brain_row(db, brain_key)
+    if row is None:
+        return None
+    if get_effective_permission(db, user, row, "agent_flows") == "none":
+        raise HTTPException(status_code=404, detail="Không tìm thấy flow")
+    require_edit_access(db, user, row, "agent_flows")
+    return row
+
+
+def _may_manage_flow(db: Session, user: User, brain_key: str):
+    """403 unless this user may PUBLISH / roll back / delete `brain_key`.
+
+    Publishing is gated at the ROW (owner, or an agent_flows administrator) instead
+    of by demanding module-wide `full`. Module `full` means "see and manage every
+    flow in the deployment", so requiring it to publish meant an author could not
+    ship their own flow without also being handed everyone else's — the two are
+    different powers and only one of them was wanted.
+    """
+    row = _may_read_flow(db, user, brain_key)
+    require_full_access(db, user, row, "agent_flows")
+    return row
 
 
 # ═══ What a flow can be built from ════════════════════════════════════════════
@@ -83,6 +155,184 @@ def list_models(_: User = Depends(can_view)) -> dict[str, Any]:
     return {"providers": model_catalogue()}
 
 
+@router.get("/authoring-prompt")
+def authoring_prompt(
+    web_enabled: bool = True, _: User = Depends(can_view)
+) -> dict[str, Any]:
+    """A brief the author pastes into ChatGPT/Claude to have a flow drafted.
+
+    GENERATED from the same registries the builder's palette reads, per request.
+    A hand-written copy would drift into naming node types the executor does not
+    have — and unlike a stale palette entry, that drift comes back laundered
+    through a competent outside model as confident, well-formed JSON.
+
+    Costs nothing and calls no model: this endpoint only describes the system.
+    """
+    from app.services.agent_flows.authoring_prompt import build_authoring_prompt
+
+    return build_authoring_prompt(web_enabled=web_enabled)
+
+
+def _iter_raw_nodes(nodes: Any):
+    """Every node dict in a RAW pasted body, including nested bodies.
+
+    Walks the payload before the contract has seen it, because the check it
+    feeds is about a field the contract deletes.
+    """
+    for n in nodes or []:
+        if not isinstance(n, dict):
+            continue
+        yield n
+        for p in (n.get("paths") or []) + (n.get("cases") or []):
+            if isinstance(p, dict):
+                yield from _iter_raw_nodes(p.get("body"))
+        yield from _iter_raw_nodes(n.get("body"))
+        yield from _iter_raw_nodes(n.get("fallback"))
+
+
+class ImportDraftBody(BaseModel):
+    """A flow drafted elsewhere, on its way in."""
+
+    brain_key: str = ""
+    name: str = ""
+    #: Accepted as TEXT, not as a parsed object. What an author has on their
+    #: clipboard is whatever the assistant printed — usually a ```json fence,
+    #: sometimes with a sentence before it. Making the UI strip that first would
+    #: put a second, quieter parser in the frontend; the paste arrives raw and is
+    #: understood in one place.
+    raw: str
+
+
+@router.post("/import-draft")
+def import_draft(
+    body: ImportDraftBody, _: User = Depends(can_edit)
+) -> dict[str, Any]:
+    """Parse a pasted draft and report what it is — WITHOUT saving anything.
+
+    Deliberately not "parse and create". A draft written by an outside model is
+    the least trusted input this module takes, and the author has not seen what
+    it contains yet. So this answers "would this work, and what does it want you
+    to attach", and creating remains the existing explicit save.
+
+    Validation is the SAME `Flow` contract the builder uses. A second, more
+    forgiving parser for imported drafts would be a way to get a flow into the
+    system that the builder itself would have refused.
+    """
+    import json as _json
+    import re as _re
+
+    text = (body.raw or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Chưa dán nội dung nào")
+
+    # A fenced block if there is one, otherwise the outermost {...}. Both shapes
+    # are what assistants actually return; neither is worth making a person edit
+    # by hand before pasting.
+    fence = _re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, _re.S)
+    if fence:
+        text = fence.group(1)
+    else:
+        first, last = text.find("{"), text.rfind("}")
+        if first >= 0 and last > first:
+            text = text[first:last + 1]
+
+    try:
+        data = _json.loads(text)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(
+            status_code=400,
+            detail=f"Không đọc được JSON: {type(exc).__name__}. Dán đúng khối "
+                   "```json mà trợ lý trả về.",
+        )
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=400, detail="Nội dung phải là một object JSON")
+
+    # `todo` is the model's note to the author about what to attach; it is not
+    # part of a Flow, so it is lifted out before validation rather than making
+    # the contract accept a field it has no use for.
+    todo = [str(x) for x in (data.pop("todo", None) or []) if str(x).strip()]
+    key = (body.brain_key or data.get("key") or "").strip()
+    name = (body.name or data.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Bản nháp thiếu 'name'")
+
+    try:
+        flow = Flow.model_validate(
+            {**upgrade_body(data, key=key or "draft", name=name),
+             "key": key or "draft", "name": name}
+        )
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "ok": False,
+            "errors": [reg._first_message(exc)],
+            "warnings": [],
+            "todo": todo,
+        }
+
+    # AN OUTSIDE MODEL THAT WIRED THE STEPS TOGETHER.
+    #
+    # A flow is an ORDERED LIST, not a graph — there is no `next` field, and node
+    # models are configured `extra: "ignore"`, so a draft carrying `next` arrays
+    # validates perfectly and the wiring is thrown away. Measured, not assumed: a
+    # two-step draft whose edges ran b→a was accepted and would have executed
+    # a→b, the list order.
+    #
+    # That is the worst failure shape available here — no error, and the flow
+    # runs in an order the author never chose. Every assistant reaches for edges
+    # unprompted, so the brief forbids it and this says so out loud when it
+    # happens anyway. Checked against the RAW payload, because by the time the
+    # contract has parsed it the evidence is already gone.
+    wired = sorted({
+        str(n.get("key") or "?")
+        for n in _iter_raw_nodes(data.get("nodes"))
+        if isinstance(n, dict) and n.get("next")
+    })
+    extra_warnings: list[str] = []
+    if wired:
+        extra_warnings.append(
+            "Bản nháp có trường `next` ở các bước: " + ", ".join(wired)
+            + ". Hệ thống KHÔNG dùng `next` — các bước chạy theo đúng thứ tự "
+            "trong danh sách. Hãy kiểm tra thứ tự trước khi lưu, hoặc bảo trợ lý "
+            "sắp xếp lại danh sách cho đúng ý và bỏ `next`."
+        )
+
+    from app.services.agent_flows.binding import estimate_cost
+
+    # WHICH STEPS ARE STILL EMPTY. The brief tells the outside model to leave
+    # every id blank, so a valid draft normally arrives incomplete BY DESIGN.
+    # Saying which steps are waiting on an attachment is the difference between
+    # "here is a flow" and "here is a flow, and these three steps read nothing
+    # until you point them at something".
+    needs: list[dict[str, Any]] = []
+    for node in flow.all_nodes():
+        # `knowledge` is the one attachment the contract actually carries, on the
+        # two node types that can hold it. A `knowledge` step with nothing
+        # attached retrieves from nothing — it will run, and find zero rows,
+        # which is the silent half-working state worth naming up front. On an
+        # `agent` step the same field is optional, so its absence is not a gap.
+        if node.type == "knowledge" and not (getattr(node, "knowledge", None) or []):
+            needs.append({
+                "key": node.key,
+                "name": node.name,
+                "missing": ["knowledge"],
+                "why": "Bước tra cứu chưa gắn tài liệu nào — sẽ không tìm thấy gì.",
+            })
+
+    return {
+        "ok": True,
+        "errors": [],
+        "warnings": extra_warnings + list(flow.warnings()),
+        "name": name,
+        "description": str(data.get("description") or "").strip(),
+        "body": flow.model_dump(mode="json", exclude={"key", "name"}),
+        "node_count": len(flow.all_nodes()),
+        "answer_node": flow.answering_key(),
+        "estimate": estimate_cost(flow),
+        "todo": todo,
+        "needs_attachment": needs,
+    }
+
+
 @router.get("/attachable")
 def list_attachable(
     db: Session = Depends(get_db), user: User = Depends(can_view)
@@ -100,18 +350,71 @@ def list_attachable(
         .all()
     )
     datasets = db.query(Dataset.id, Dataset.name).filter(Dataset.id.in_(ds_ids or [-1])).all()
-    metrics = (
-        db.query(GovernMetric.name, GovernMetric.display_name, GovernMetric.category)
+    # A governed KPI is global, but every resolved realization carries data reach.
+    # Show it only when all datasets reached by its semantic bindings are shared
+    # with this author. Unbound definitions remain vocabulary-only.
+    #
+    # A metric with NO dataset is a definition and nothing else: attaching it
+    # yields a name, a formula and a unit, with no query behind it. Those stay
+    # visible, because withholding a shared vocabulary teaches authors to
+    # redefine terms locally, which is the problem the metric catalogue exists
+    # to solve.
+    from app.services.governance_service import GovernanceService
+
+    metrics = []
+    allowed_dataset_ids = set(ds_ids)
+    for metric in (
+        db.query(GovernMetric)
         .filter(GovernMetric.status != "Deprecated")
         .order_by(GovernMetric.display_name)
+        .all()
+    ):
+        resolved_ids = GovernanceService.metric_dataset_ids(db, metric, resolved_only=True)
+        if resolved_ids and not resolved_ids.issubset(allowed_dataset_ids):
+            continue
+        metrics.append((metric, bool(resolved_ids)))
+    # GLOSSARY TERMS ARE VOCABULARY, AND VOCABULARY IS NOT OWNED BY A DATASET.
+    #
+    # Documents and metrics are filtered by what is shared with this author,
+    # because attaching one can reach a dataset's numbers. A term reaches nothing:
+    # it is a name, a definition and some synonyms. Filtering it the same way
+    # would teach authors to redefine words locally, which is the failure a
+    # company glossary exists to prevent.
+    #
+    # Deprecated terms are withheld — an author choosing from a list should not be
+    # offered the definition the business has retired.
+    from app.models.governance import Glossary, GlossaryTerm
+
+    terms = (
+        db.query(GlossaryTerm.name, GlossaryTerm.display_name,
+                 GlossaryTerm.description, Glossary.name.label("set_name"))
+        .join(Glossary, Glossary.id == GlossaryTerm.glossary_id)
+        .filter(func.lower(func.coalesce(GlossaryTerm.status, "")) != "deprecated")
+        .order_by(Glossary.name, GlossaryTerm.display_name)
         .all()
     )
     return {
         "documents": [{"ref": str(i), "name": t} for i, t in docs],
         "datasets": [{"ref": str(i), "name": n} for i, n in datasets],
         "metrics": [
-            {"ref": name, "name": display or name, "group": category or ""}
-            for name, display, category in metrics
+            {"ref": metric.name, "name": metric.display_name or metric.name, "group": metric.category or "",
+             # Stated so the builder can show which metrics carry a query and
+             # which are vocabulary only — the author is choosing reach here,
+             # and reach they cannot see is reach they cannot judge.
+             "reads_data": reads_data}
+            for metric, reads_data in metrics
+        ],
+        "terms": [
+            # `ref` is the FQN, which is what the retriever matches on and what
+            # `GovernMetric.related_term_fqn` already stores — one spelling of a
+            # term's identity across the product, not a second.
+            {"ref": f"{set_name}.{name}", "name": display or name,
+             "group": set_name,
+             # Vocabulary only, always. Said in the same field the metric list
+             # uses so the builder can render one badge rule for both.
+             "reads_data": False,
+             "hint": (description or "")[:120]}
+            for name, display, description, set_name in terms
         ],
     }
 
@@ -171,21 +474,44 @@ def brains(db: Session = Depends(get_db), user: User = Depends(can_view)) -> dic
 # Starlette matches `/brains/impact` as a flow named "impact" and answers 404 for
 # ever. It matches in registration order and does not fall through on a validation
 # failure.
+@router.get("/brains/resolve/{flow_id}")
+def resolve_flow_id(
+    flow_id: int, db: Session = Depends(get_db), user: User = Depends(can_view)
+) -> dict[str, Any]:
+    """The `brain_key` behind the number in a link.
+
+    The address bar carries a number; everything else here — permissions, runs,
+    bindings, shares — is keyed by `brain_key`. One lookup at the edge keeps it
+    that way, instead of a second identity threaded through every endpoint.
+
+    Permission-checked like any other read: a number is easy to guess, so
+    resolving one must not reveal the existence of a flow the caller may not
+    open. `_may_read_flow` raises the same 404 an unknown number gets.
+    """
+    key = reg.flow_id_to_key(db, flow_id)
+    if not key:
+        raise HTTPException(status_code=404, detail="Không tìm thấy flow này.")
+    _may_read_flow(db, user, key)
+    return {"flow_id": flow_id, "brain_key": key}
+
+
 @router.get("/brains/{brain_key}/impact")
 def brain_impact(
-    brain_key: str, db: Session = Depends(get_db), _: User = Depends(can_view)
+    brain_key: str, db: Session = Depends(get_db), user: User = Depends(can_view)
 ) -> dict[str, Any]:
     """Which live links this flow serves, and whether each is healthy. Read before
     Publish, because one edit changes every link pointing here."""
+    _may_read_flow(db, user, brain_key)
     return reg.impact(db, brain_key)
 
 
 @router.get("/brains/{brain_key}/versions")
 def brain_versions(
-    brain_key: str, db: Session = Depends(get_db), _: User = Depends(can_view)
+    brain_key: str, db: Session = Depends(get_db), user: User = Depends(can_view)
 ) -> dict[str, Any]:
     from app.models.agent_brain import AgentBrainVersion
 
+    _may_read_flow(db, user, brain_key)
     rows = (
         db.query(AgentBrainVersion)
         .filter(AgentBrainVersion.brain_key == brain_key)
@@ -208,8 +534,9 @@ def brain_versions(
 @router.get("/brains/{brain_key}/activity")
 def brain_activity(
     brain_key: str, limit: int = 100,
-    db: Session = Depends(get_db), _: User = Depends(can_view),
+    db: Session = Depends(get_db), user: User = Depends(can_view),
 ) -> dict[str, Any]:
+    _may_read_flow(db, user, brain_key)
     return reg.activity(db, brain_key, limit=limit)
 
 
@@ -224,8 +551,9 @@ def brain_runs(
     limit: int = 50,
     offset: int = 0,
     db: Session = Depends(get_db),
-    _: User = Depends(can_view),
+    user: User = Depends(can_view),
 ) -> dict[str, Any]:
+    _may_read_flow(db, user, brain_key)
     return runs_service.list_runs(
         db, brain_key=brain_key, status=status, binding_id=binding_id,
         since_hours=since_hours, search=search, include_tests=include_tests,
@@ -236,8 +564,9 @@ def brain_runs(
 @router.get("/brains/{brain_key}/runs/stats")
 def brain_run_stats(
     brain_key: str, since_hours: int = 24,
-    db: Session = Depends(get_db), _: User = Depends(can_view),
+    db: Session = Depends(get_db), user: User = Depends(can_view),
 ) -> dict[str, Any]:
+    _may_read_flow(db, user, brain_key)
     out = runs_service.stats(db, brain_key=brain_key, since_hours=since_hours)
     out["links"] = reg.impact(db, brain_key)["count"]
     return out
@@ -246,19 +575,21 @@ def brain_run_stats(
 @router.get("/brains/{brain_key}/runs/coverage")
 def brain_branch_coverage(
     brain_key: str, days: int = 30,
-    db: Session = Depends(get_db), _: User = Depends(can_view),
+    db: Session = Depends(get_db), user: User = Depends(can_view),
 ) -> dict[str, Any]:
     """How often each node actually ran. Drawn ON the canvas — a branch nobody
     reaches is a branch to delete, and no author finds that by re-reading their own
     diagram."""
+    _may_read_flow(db, user, brain_key)
     return runs_service.branch_coverage(db, brain_key=brain_key, days=days)
 
 
 @router.get("/brains/{brain_key}/runs/{run_id}")
 def brain_run_detail(
     brain_key: str, run_id: int,
-    db: Session = Depends(get_db), _: User = Depends(can_view),
+    db: Session = Depends(get_db), user: User = Depends(can_view),
 ) -> dict[str, Any]:
+    _may_read_flow(db, user, brain_key)
     out = runs_service.run_detail(db, brain_key=brain_key, run_id=run_id)
     if out is None:
         raise HTTPException(status_code=404, detail="Không tìm thấy run")
@@ -268,8 +599,9 @@ def brain_run_detail(
 @router.get("/brains/{brain_key}")
 def brain_detail(
     brain_key: str, version: int | None = None,
-    db: Session = Depends(get_db), _: User = Depends(can_view),
+    db: Session = Depends(get_db), user: User = Depends(can_view),
 ) -> dict[str, Any]:
+    _may_read_flow(db, user, brain_key)
     return _run(lambda: reg.get_brain(db, brain_key, version))
 
 
@@ -282,6 +614,10 @@ def save_brain(
     Upserts rather than minting a version per save — twenty prompt edits used to
     leave twenty rows and a version number that moved while the author typed.
     """
+    # `brain_key` comes from the request body, so without this an `agent_flows:edit`
+    # grant was a licence to overwrite anybody's flow by guessing its key. A key that
+    # does not exist yet passes through — that is how a new flow is created.
+    _may_edit_flow(db, user, body.brain_key)
     return _run(lambda: reg.save_draft(
         db, user, brain_key=body.brain_key, name=body.name,
         description=body.description, body=body.body, actor_email=_actor(user),
@@ -295,6 +631,7 @@ def publish_brain(
 ) -> dict[str, Any]:
     """Go live. Links this version would break are PINNED to what they run today
     rather than broken, and reported back so the author can fix them."""
+    _may_manage_flow(db, user, brain_key)
     return _run(lambda: reg.publish(db, brain_key, version, _actor(user)))
 
 
@@ -302,6 +639,7 @@ def publish_brain(
 def rollback_brain(
     brain_key: str, db: Session = Depends(get_db), user: User = Depends(can_publish)
 ) -> dict[str, Any]:
+    _may_manage_flow(db, user, brain_key)
     return _run(lambda: reg.rollback(db, brain_key, _actor(user)))
 
 
@@ -313,6 +651,7 @@ def restore_version(
     """Load an old version back onto the canvas. Changes nothing that is live —
     that is `rollback`, and conflating the two is how someone re-publishes a version
     they only meant to look at."""
+    _may_edit_flow(db, user, brain_key)
     return _run(lambda: reg.restore_to_draft(db, brain_key, version, _actor(user)))
 
 
@@ -321,8 +660,18 @@ def delete_brain_version(
     brain_key: str, version: int,
     db: Session = Depends(get_db), user: User = Depends(can_edit),
 ) -> dict[str, str]:
+    _may_manage_flow(db, user, brain_key)
     _run(lambda: reg.delete_version(db, brain_key, version, _actor(user)))
     return {"status": "deleted"}
+
+
+@router.post("/brains/{brain_key}/{version}/unpublish")
+def unpublish_brain_version(
+    brain_key: str, version: int,
+    db: Session = Depends(get_db), user: User = Depends(can_edit),
+) -> dict[str, Any]:
+    _may_manage_flow(db, user, brain_key)
+    return _run(lambda: reg.unpublish_version(db, brain_key, version, _actor(user)))
 
 
 # ═══ Bindings — "define the data, then assign" ════════════════════════════════
@@ -334,9 +683,23 @@ class BindingWrite(BaseModel):
     store_question_content: bool = True
 
 
-def _link_and_dashboard(db: Session, link_id: int):
-    from app.models.models import Dashboard
-    from app.models.models import DashboardPublicLink
+def _link_and_dashboard(db: Session, link_id: int, user: User):
+    """The link and its report — only if the caller may see that report.
+
+    THE REPORT IS CHECKED, NOT JUST THE MODULE. A link id is an integer chosen
+    by the caller, and every endpoint here takes one from the request body.
+    Without this, `agent_flows:edit` was enough to run a flow against ANY
+    published link: the dashboards module refuses `GET /dashboards/44` to a user
+    with no rights on it, and this path walked straight past that refusal to the
+    same data. Measured, not theorised — a user holding only `agent_flows:edit`
+    reached the flow layer on dashboard 44 and was stopped by a missing binding
+    rather than by permission.
+
+    `require_view_access` is the same ownership + share + module check the
+    dashboards module itself applies, so a flow can never reach further than the
+    person running it.
+    """
+    from app.models.models import Dashboard, DashboardPublicLink
 
     link = db.query(DashboardPublicLink).filter(DashboardPublicLink.id == link_id).first()
     if link is None:
@@ -344,6 +707,7 @@ def _link_and_dashboard(db: Session, link_id: int):
     dashboard = db.query(Dashboard).filter(Dashboard.id == link.dashboard_id).first()
     if dashboard is None:
         raise HTTPException(status_code=404, detail="Không tìm thấy báo cáo của link")
+    require_view_access(db, user, dashboard, "dashboards")
     return link, dashboard
 
 
@@ -397,7 +761,7 @@ def binding_candidates(
     Server-side so the picker cannot offer a field the dashboard does not have —
     which is the whole failure mode "define before assign" exists to prevent.
     """
-    link, dashboard = _link_and_dashboard(db, link_id)
+    link, dashboard = _link_and_dashboard(db, link_id, user)
     flow = _usable_flow(db, user, brain_key)
     from app.services.dashboard_ai_bot.tool_context import ToolContext
 
@@ -432,7 +796,7 @@ def preflight_binding(
     The estimate is not decoration: this is a public link with an unbounded
     audience, and one Loop multiplies a single question by up to 25 model calls.
     """
-    link, dashboard = _link_and_dashboard(db, body.link_id)
+    link, dashboard = _link_and_dashboard(db, body.link_id, user)
     flow = _usable_flow(db, user, body.brain_key)
     contract = binding_service.DataContract.model_validate(body.data_contract or {})
     return binding_service.preflight(
@@ -445,7 +809,7 @@ def save_binding(
     body: BindingWrite, db: Session = Depends(get_db), user: User = Depends(can_assign)
 ) -> dict[str, Any]:
     """Assign. Refused while anything required is unresolved."""
-    link, dashboard = _link_and_dashboard(db, body.link_id)
+    link, dashboard = _link_and_dashboard(db, body.link_id, user)
     flow = _usable_flow(db, user, body.brain_key)
     contract = binding_service.DataContract.model_validate(body.data_contract or {})
 
@@ -473,10 +837,10 @@ def delete_binding(
         raise HTTPException(status_code=404, detail="Link này chưa gán flow nào")
     brain_key = binding.brain_key
     db.delete(binding)
-    link, _dash = _link_and_dashboard(db, link_id)
-    cfg = dict(link.appearance_config or {})
-    cfg.pop("ai_bot_flow_key", None)
-    link.appearance_config = cfg
+    # Deleting the binding IS unassigning the flow — there is no longer a copy of
+    # the flow key on the link to clear as well. Kept as a permission check on the
+    # link, which unassigning still requires.
+    _link_and_dashboard(db, link_id, user)
     db.commit()
     reg._audit(db, "AGENT_FLOW_UNASSIGNED", brain_key, _actor(user), {"link_id": link_id})
     return {"status": "deleted"}
@@ -503,7 +867,8 @@ async def test_flow(
     a completed execution path and answer, and a second streaming protocol would be a
     second thing to keep in step with the first.
     """
-    link, dashboard = _link_and_dashboard(db, body.link_id)
+    _may_edit_flow(db, user, brain_key)
+    link, dashboard = _link_and_dashboard(db, body.link_id, user)
     binding = binding_service.get_for_link(db, link.id)
     if binding is None:
         raise HTTPException(
@@ -566,6 +931,7 @@ def test_node(
     which is exactly the node an author most often gets wrong and least wants to pay
     to check.
     """
+    _may_edit_flow(db, user, brain_key)
     detail = _run(lambda: reg.get_brain(db, brain_key, body.version))
     from app.models.agent_brain import AgentBrainVersion
 

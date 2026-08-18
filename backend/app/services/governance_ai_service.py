@@ -119,10 +119,12 @@ class GovernanceAIService:
         }
 
     @staticmethod
-    def _caveat(c: GovernDataCaveat) -> dict[str, Any]:
+    def _caveat(c: GovernDataCaveat, dataset_name: str | None = None) -> dict[str, Any]:
         return {
             "id": c.id, "dataset_id": c.dataset_id, "title": c.title, "content": c.content,
             "always_inject": bool(c.always_inject), "status": c.status, "owner": c.owner,
+            "scope": "dataset" if c.dataset_id is not None else "global",
+            "dataset_name": dataset_name,
             "updated_at": _iso(c.updated_at),
         }
 
@@ -333,40 +335,9 @@ class GovernanceAIService:
 
     @staticmethod
     def metric_binding_status(db: Session, m: GovernMetric) -> str:
-        """'ok' | 'unbound' | 'unresolved' — does measure_ref resolve against the
-        live semantic model? Refs come as "<view>.<measure>" (view = the
-        SemanticView name / sql_table_name, e.g. "dataset_table_111.gmv") or as
-        a bare measure name. String ref today; this validator prevents silent rot."""
-        if not m.measure_ref:
-            return "unbound"
-        try:
-            from app.models.semantic import SemanticView
-            ref = (m.measure_ref or "").strip().lower()
-            tbl_token, _, mname = ref.rpartition(".")
-            mname = mname or ref
+        from app.services.governance_service import GovernanceService
 
-            def field_names(view) -> set[str]:
-                out: set[str] = set()
-                for coll in (view.measures or []), (view.dimensions or []):
-                    for f in coll:
-                        if isinstance(f, dict) and f.get("name"):
-                            out.add(str(f["name"]).strip().lower())
-                return out
-
-            views = db.query(SemanticView).all()
-            if tbl_token:
-                scoped = [v for v in views
-                          if (v.sql_table_name or "").strip().lower() == tbl_token
-                          or (v.name or "").strip().lower() == tbl_token]
-                if scoped:
-                    views = scoped
-            for v in views:
-                if mname in field_names(v):
-                    return "ok"
-            return "unresolved"
-        except Exception:  # noqa: BLE001
-            logger.warning("metric_binding_status failed", exc_info=True)
-            return "ok"  # fail-open: never block on validator errors
+        return GovernanceService.metric_binding_status(db, m)
 
     # ═══ AI Instructions (versioned, scoped) ═════════════════════════════════
     @staticmethod
@@ -416,7 +387,14 @@ class GovernanceAIService:
     @staticmethod
     def list_caveats(db: Session) -> list[dict[str, Any]]:
         rows = db.query(GovernDataCaveat).order_by(GovernDataCaveat.updated_at.desc()).all()
-        return [GovernanceAIService._caveat(c) for c in rows]
+        from app.models.dataset import Dataset
+
+        ids = {c.dataset_id for c in rows if c.dataset_id is not None}
+        names = {
+            dataset.id: dataset.name
+            for dataset in db.query(Dataset.id, Dataset.name).filter(Dataset.id.in_(ids or [-1])).all()
+        }
+        return [GovernanceAIService._caveat(c, names.get(c.dataset_id)) for c in rows]
 
     @staticmethod
     def upsert_caveat(db: Session, payload: dict[str, Any], *, changed_by: str | None = None) -> dict[str, Any]:
@@ -428,8 +406,19 @@ class GovernanceAIService:
             db.add(row)
         row.title = _require(payload.get("title"), "title")[:255]
         row.content = _require(payload.get("content"), "content")
-        row.dataset_id = payload.get("dataset_id")
+        dataset_id = payload.get("dataset_id")
+        if dataset_id is not None:
+            from app.models.dataset import Dataset
+
+            if db.query(Dataset.id).filter(Dataset.id == int(dataset_id)).first() is None:
+                raise GovernanceError(422, "Dataset áp dụng không tồn tại.")
+            dataset_id = int(dataset_id)
+        status = payload.get("status") or "Approved"
+        if status not in {"Draft", "Approved", "Deprecated"}:
+            raise GovernanceError(422, f"Trạng thái caveat không hợp lệ: {status}")
+        row.dataset_id = dataset_id
         row.always_inject = bool(payload.get("always_inject", True))
+        row.status = status
         row.owner = payload.get("owner")
         db.flush()
         GovernanceAIService._log(db, "caveat", f"caveat.{row.id}", "create" if creating else "update",
@@ -491,8 +480,17 @@ class GovernanceAIService:
         try:
             from app.models.dataset import Dataset, DatasetTable
             ds = db.query(Dataset).filter(Dataset.id == dataset_id).first()
-            dic = (ds.dictionary or {}).get("columns") if ds and isinstance(ds.dictionary, dict) else {}
-            names: set[str] = set(dic.keys()) if isinstance(dic, dict) else set()
+            dictionary = ds.dictionary if ds and isinstance(ds.dictionary, dict) else {}
+            legacy = dictionary.get("columns") if isinstance(dictionary.get("columns"), dict) else {}
+            names: set[str] = set(legacy.keys())
+            for table_note in dictionary.get("table_notes") or []:
+                if not isinstance(table_note, dict):
+                    continue
+                names |= {
+                    str(note.get("column_name"))
+                    for note in table_note.get("column_notes") or []
+                    if isinstance(note, dict) and note.get("column_name")
+                }
             for t in db.query(DatasetTable).filter(DatasetTable.dataset_id == dataset_id).all():
                 if isinstance(t.column_descriptions, dict):
                     names |= set(t.column_descriptions.keys())
@@ -890,22 +888,13 @@ class GovernanceAIService:
     def caveats_for(db: Session, dataset_ids: set[int]) -> list[GovernDataCaveat]:
         rows = (
             db.query(GovernDataCaveat)
-            .filter(GovernDataCaveat.always_inject.is_(True), GovernDataCaveat.status != "Deprecated")
+            .filter(GovernDataCaveat.always_inject.is_(True), GovernDataCaveat.status == "Approved")
             .all()
         )
-        # A caveat MUST name its dataset. The clause used to be
-        # `c.dataset_id is None or c.dataset_id in dataset_ids`, so an unscoped row
-        # was injected into every report on the deployment — which is how "Dataset
-        # Olist kết thúc 2018-10" ended up being told to reports built on other
-        # data. Scoping it only in the builder would have left that path open: the
-        # UI stops creating nulls, but a null arriving from an import, an older
-        # environment or a direct write would still reach every answer.
-        #
-        # Dropping the escape means an unscoped caveat is now silently ignored
-        # rather than silently universal. Of the two silences that is the safe one:
-        # a warning that fails to appear is visible in the answer, a warning
-        # attached to data it does not describe is not.
-        return [c for c in rows if c.dataset_id is not None and c.dataset_id in dataset_ids][:8]
+        # Null is an explicit organization-wide scope chosen in the central
+        # Registry. It is no longer the accidental result of authoring inside a
+        # dataset form, so global and dataset-specific warnings can coexist safely.
+        return [c for c in rows if c.dataset_id is None or c.dataset_id in dataset_ids][:8]
 
     @staticmethod
     def scope_exclusions(db: Session, dataset_ids: set[int]) -> tuple[set[str], set[str]]:

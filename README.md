@@ -216,9 +216,18 @@ overwriting a value you've set**. Key groups:
 | First admin | `ADMIN_EMAIL`, `ADMIN_PASSWORD`, `ADMIN_NAME` |
 | Ports / URLs | `FRONTEND_PORT` (3000), `BACKEND_PORT` (8000), `NEXT_PUBLIC_API_URL`, `CORS_ORIGINS` |
 | Modules | `METADATA_CATALOG_ENABLED`, `GOVERN_ENABLED`, `OBSERVABILITY_ENABLED`, `WORKBOARDS_ENABLED` — **forced ON by `run`** |
-| AI providers | `OPENAI_API_KEY`, `GEMINI_API_KEY`, `ANTHROPIC_API_KEY` — *optional; at least one is needed for the AI Bot, AI summaries, and ✨ AI-compose. Models are fixed in code.* |
+| AI providers | `OPENAI_API_KEY`, `GEMINI_API_KEY`, `ANTHROPIC_API_KEY` — *optional; at least one is needed for the AI Bot, AI summaries, and AI-compose. Knowledge documents choose from `OPENAI_EMBEDDING_MODELS` and keep that model for their vector index.* |
 | Auth | password login (on by default) and optional Google OAuth (`AUTH_GOOGLE_*`) |
 | Performance | `WEB_CONCURRENCY`, snapshot materialization, live-query cache limits |
+
+After upgrading an installation that already has knowledge-document vectors,
+migration `20260815_0049` marks legacy indexes stale so they cannot be searched
+or reused under an unverified model label. With `OPENAI_API_KEY` configured, run
+the idempotent rebuild once after the backend is healthy:
+
+```bash
+docker compose exec backend python scripts/reindex_govern_doc_embeddings.py
+```
 
 > The core modules migrate their schema automatically on boot — no extra setup. The AI features
 > degrade gracefully when no provider key is set (the modules still author/review; only the AI

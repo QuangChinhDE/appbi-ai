@@ -25,6 +25,7 @@ import { Button } from '@/components/ui/Button';
 import { Badge } from '@/components/ui/Badge';
 import { cn } from '@/lib/utils';
 import { toast } from '@/lib/toast';
+import { useI18n } from '@/providers/LanguageProvider';
 import {
   bindingCandidates, deleteBinding, getBinding, listBrains, preflightBinding, saveBinding,
   type Binding, type BindingCandidates, type BrainSummary,
@@ -41,6 +42,7 @@ const DEFAULT_CONTRACT: DataContract = {
 };
 
 export function FlowBindingEditor({ linkId }: { linkId: number | null }) {
+  const { t } = useI18n();
   const [loading, setLoading] = React.useState(true);
   const [flows, setFlows] = React.useState<BrainSummary[]>([]);
   const [binding, setBinding] = React.useState<Binding | null>(null);
@@ -89,7 +91,7 @@ export function FlowBindingEditor({ linkId }: { linkId: number | null }) {
   if (linkId == null) {
     return (
       <p className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 px-3 py-2 text-tiny leading-5 text-text-tertiary">
-        Lưu link này trước, rồi quay lại để gán Agent Flow và định nghĩa phạm vi dữ liệu.
+        {t('agentFlows.binding.saveLinkFirst')}
       </p>
     );
   }
@@ -124,12 +126,12 @@ export function FlowBindingEditor({ linkId }: { linkId: number | null }) {
       const res = await saveBinding({
         link_id: linkId, brain_key: brainKey, data_contract: contract,
       });
-      toast.success('Đã gán flow và ghi nhận phạm vi dữ liệu');
+      toast.success(t('agentFlows.binding.assigned'));
       setBinding(await getBinding(linkId));
       setCheck(res);
     } catch (e: unknown) {
       const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-      toast.error(detail || 'Gán thất bại');
+      toast.error(detail || t('agentFlows.binding.assignFailed'));
     } finally { setBusy(false); }
   };
 
@@ -138,44 +140,89 @@ export function FlowBindingEditor({ linkId }: { linkId: number | null }) {
     try {
       await deleteBinding(linkId);
       setBinding(null); setBrainKey(''); setContract(DEFAULT_CONTRACT); setCheck(null);
-      toast.success('Đã gỡ flow khỏi link');
+      toast.success(t('agentFlows.binding.unassigned'));
     } finally { setBusy(false); }
   };
 
+  const chosenFlow = flows.find((f) => f.brain_key === brainKey);
+  const chartCount = contract.charts.ids.length;
+  const totalCharts = candidates?.charts.length ?? 0;
+
   return (
     <div className="space-y-4">
+      {/* 0 — IS THIS LINK CONNECTED?
+          Measured before this existed: the assign button sat 438px BELOW the fold
+          of a 1,423px nested scroller, and nothing above it said whether the link
+          already had a flow. So the question "is my bot wired up?" could only be
+          answered by scrolling to the bottom of a long form — which reads, to
+          anyone who does not know the form is that long, as the feature not being
+          there at all. The answer belongs at the top, before the controls that
+          change it. */}
+      <div
+        className={cn(
+          'flex flex-wrap items-center gap-2 rounded-lg border px-3 py-2',
+          binding
+            ? 'border-success/30 bg-success/5'
+            : 'border-[rgb(var(--border-line))] bg-surface-2',
+        )}
+      >
+        <Workflow className={cn('h-4 w-4 flex-shrink-0',
+          binding ? 'text-success' : 'text-text-tertiary')} />
+        {binding ? (
+          <>
+            <span className="text-caption font-medium">
+              {t('agentFlows.binding.connected', { name: chosenFlow?.name || binding.brain_key })}
+            </span>
+            <Badge variant="neutral">
+              {t('agentFlows.binding.chartCount', { count: `${chartCount}/${totalCharts || '?'}` })}
+            </Badge>
+            {/* Web access is the one capability that sends a viewer's question
+                OUT of the deployment, so it is called out rather than listed
+                neutrally when it is on. */}
+            <Badge variant={contract.capabilities.web_search ? 'warning' : 'neutral'}>
+              {contract.capabilities.web_search ? t('agentFlows.binding.webOn') : t('agentFlows.binding.webOff')}
+            </Badge>
+          </>
+        ) : (
+          <span className="text-caption text-text-secondary">
+            {brainKey
+              ? t('agentFlows.binding.notConnectedReady')
+              : t('agentFlows.binding.notConnectedStart')}
+          </span>
+        )}
+      </div>
+
       {/* 1 — pick */}
-      <Step n={1} title="Chọn Agent Flow">
+      <Step n={1} title={t('agentFlows.binding.step.pick')}>
         <select
           value={brainKey}
           onChange={(e) => setBrainKey(e.target.value)}
           className="h-8 w-full rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 px-2 text-caption"
         >
-          <option value="">— chưa chọn —</option>
+          <option value="">{t('agentFlows.binding.option.none')}</option>
           {flows.map((f) => (
             <option key={f.brain_key} value={f.brain_key}>{f.name}</option>
           ))}
         </select>
         {!flows.length && (
           <p className="mt-1.5 text-tiny text-text-tertiary">
-            Chưa có flow nào được phát hành. Mở Agent Flows, dựng một flow rồi bấm Phát hành.
+            {t('agentFlows.binding.noPublishedFlows')}
           </p>
         )}
         {binding?.status === 'needs_review' && (
           <p className="mt-2 rounded-lg border border-warning/30 bg-warning/5 px-2.5 py-2 text-tiny leading-5 text-warning">
-            Link này được chuyển từ cấu hình cũ: bot vẫn chạy như trước, nhưng phạm
-            vi dữ liệu <b>chưa được định nghĩa</b>. Cho tới khi bạn gán lại ở đây,
-            link sẽ bị ghim ở phiên bản hiện tại và không nhận bản flow mới.
+            {t('agentFlows.binding.legacyPrefix')}{' '}
+            <b>{t('agentFlows.binding.legacyStrong')}</b>.{' '}
+            {t('agentFlows.binding.legacySuffix')}
           </p>
         )}
       </Step>
 
       {/* 2 — define */}
       {brainKey && candidates && (
-        <Step n={2} title="Định nghĩa dữ liệu link này cho phép đọc">
+        <Step n={2} title={t('agentFlows.binding.step.define')}>
           <p className="mb-2 text-tiny leading-5 text-text-tertiary">
-            Flow không biết báo cáo nào — bạn chỉ ra ở đây mỗi thứ nó cần ứng với
-            cột nào trên báo cáo của link.
+            {t('agentFlows.binding.defineIntro')}
           </p>
 
           {candidates.requirements.items.map((req) => {
@@ -190,8 +237,8 @@ export function FlowBindingEditor({ linkId }: { linkId: number | null }) {
                   <b className="text-caption font-medium">{req.label || req.key}</b>
                   <Badge size="xs" variant="neutral">{req.kind}</Badge>
                   {req.required
-                    ? <Badge size="xs" variant="danger">bắt buộc</Badge>
-                    : <Badge size="xs" variant="neutral">tuỳ chọn</Badge>}
+                    ? <Badge size="xs" variant="danger">{t('agentFlows.binding.required')}</Badge>
+                    : <Badge size="xs" variant="neutral">{t('agentFlows.binding.optional')}</Badge>}
                 </div>
                 {req.hint && <p className="mb-1.5 text-tiny text-text-tertiary">{req.hint}</p>}
                 <div className="grid grid-cols-2 gap-1.5">
@@ -205,7 +252,7 @@ export function FlowBindingEditor({ linkId }: { linkId: number | null }) {
                     }}
                     className="h-8 rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 px-2 text-tiny"
                   >
-                    <option value="">— chọn biểu đồ —</option>
+                    <option value="">{t('agentFlows.binding.selectChart')}</option>
                     {candidates.charts.map((c) => (
                       <option key={c.id} value={c.id}>{c.title || `Chart ${c.id}`}</option>
                     ))}
@@ -216,7 +263,7 @@ export function FlowBindingEditor({ linkId }: { linkId: number | null }) {
                     onChange={(e) => setResolve(req.key, { ...(entry as ResolveEntry), field: e.target.value })}
                     className="h-8 rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 px-2 text-tiny disabled:opacity-50"
                   >
-                    <option value="">— chọn trường —</option>
+                    <option value="">{t('agentFlows.binding.selectField')}</option>
                     {fields.map((f) => (
                       <option key={f.field} value={f.field}>{f.label || f.field}</option>
                     ))}
@@ -227,9 +274,9 @@ export function FlowBindingEditor({ linkId }: { linkId: number | null }) {
           })}
 
           <div className="mt-3">
-            <b className="text-caption font-medium">Biểu đồ bot được đọc</b>
+            <b className="text-caption font-medium">{t('agentFlows.binding.readableCharts')}</b>
             <p className="mb-1.5 text-tiny text-text-tertiary">
-              Chỉ những biểu đồ tick ở đây. Không tick gì thì bot không đọc được gì.
+              {t('agentFlows.binding.readableChartsHint')}
             </p>
             <div className="max-h-44 overflow-auto rounded-lg border border-[rgb(var(--border-line))] p-1.5">
               {candidates.charts.map((c) => (
@@ -251,7 +298,7 @@ export function FlowBindingEditor({ linkId }: { linkId: number | null }) {
               }))}
               className="mt-1 text-tiny text-brand hover:underline"
             >
-              Chọn tất cả
+              {t('agentFlows.binding.selectAll')}
             </button>
           </div>
 
@@ -263,9 +310,9 @@ export function FlowBindingEditor({ linkId }: { linkId: number | null }) {
                 ...c, capabilities: { ...c.capabilities, web_search: e.target.checked },
               }))}
             />
-            Cho phép tra cứu web
+            {t('agentFlows.binding.allowWeb')}
             {candidates.flow_capabilities.web_search && !contract.capabilities.web_search && (
-              <span className="text-tiny text-warning">(flow có bước web — tắt thì bước đó bị bỏ qua)</span>
+              <span className="text-tiny text-warning">{t('agentFlows.binding.webStepOffHint')}</span>
             )}
           </label>
         </Step>
@@ -273,7 +320,7 @@ export function FlowBindingEditor({ linkId }: { linkId: number | null }) {
 
       {/* 3 — the gate */}
       {brainKey && (
-        <Step n={3} title="Kiểm tra trước khi gán">
+        <Step n={3} title={t('agentFlows.binding.step.preflight')}>
           {!check ? (
             <Loader2 className="h-4 w-4 animate-spin text-text-tertiary" />
           ) : (
@@ -290,36 +337,55 @@ export function FlowBindingEditor({ linkId }: { linkId: number | null }) {
               ))}
               {check.ok && !check.errors.length && (
                 <p className="mb-1.5 flex items-center gap-1.5 text-tiny text-success">
-                  <Check className="h-3.5 w-3.5" /> Đủ điều kiện để gán.
+                  <Check className="h-3.5 w-3.5" /> {t('agentFlows.binding.ready')}
                 </p>
               )}
               {/* The number the person approving this is committing to. A public
                   link has an unbounded audience and one Loop multiplies a single
                   question by up to 25 model calls. */}
               <p className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 p-2 text-tiny leading-5 text-text-secondary">
-                Ước tính tối đa cho <b>một câu hỏi</b>: {check.estimate.max_llm_calls} lần
-                gọi model, {check.estimate.max_tool_calls} lần gọi công cụ.
+                {t('agentFlows.binding.estimatePrefix')} <b>{t('agentFlows.binding.oneQuestion')}</b>:{' '}
+                {t('agentFlows.binding.estimateSuffix', {
+                  llm: check.estimate.max_llm_calls,
+                  tools: check.estimate.max_tool_calls,
+                })}
                 {check.estimate.max_tool_calls > contract.budget.max_tool_calls && (
                   <span className="text-warning">
-                    {' '}Vượt hạn mức {contract.budget.max_tool_calls} của link — flow sẽ bị
-                    cắt giữa chừng và trả lời bằng những gì đã có.
+                    {' '}{t('agentFlows.binding.overBudget', { limit: contract.budget.max_tool_calls })}
                   </span>
                 )}
               </p>
 
-              <div className="mt-3 flex gap-2">
-                <Button size="sm" onClick={assign} loading={busy} disabled={!check.ok}>
-                  {binding ? 'Cập nhật gán' : 'Gán flow vào link'}
-                </Button>
-                {binding && (
-                  <Button variant="secondary" size="sm" onClick={unassign} loading={busy}>
-                    Gỡ
-                  </Button>
-                )}
-              </div>
             </>
           )}
         </Step>
+      )}
+
+      {/* THE ACTION, OUTSIDE THE STEPS AND STUCK TO THE BOTTOM.
+          It lived inside step 3, which made two things true at once: it sat at
+          the very end of a 1,423px scroll, and how far down it sat depended on
+          how many warnings the preflight happened to raise. A `sticky` inside
+          step 3 would not have fixed that either — a sticky element only floats
+          while ITS OWN box is on screen, and step 3 was the part that was off
+          screen. Lifted out to the editor's own footer, it stays reachable for
+          the whole scroll, which is what "reachable" has to mean for the one
+          control that performs the operation. */}
+      {brainKey && check && (
+        <div className="sticky bottom-0 z-10 -mx-1 flex flex-wrap items-center gap-2 border-t border-[rgb(var(--border-line))] bg-surface-1/95 px-1 py-2.5 backdrop-blur">
+          <Button size="sm" onClick={assign} loading={busy} disabled={!check.ok}>
+            {binding ? t('agentFlows.binding.update') : t('agentFlows.binding.assign')}
+          </Button>
+          {binding && (
+            <Button variant="secondary" size="sm" onClick={unassign} loading={busy}>
+              {t('agentFlows.binding.remove')}
+            </Button>
+          )}
+          <span className="text-tiny text-text-tertiary">
+            {check.ok
+              ? t('agentFlows.binding.summaryReady', { charts: chartCount, llm: check.estimate.max_llm_calls })
+              : t('agentFlows.binding.summaryNotReady')}
+          </span>
+        </div>
       )}
     </div>
   );

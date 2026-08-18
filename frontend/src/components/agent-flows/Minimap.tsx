@@ -14,6 +14,7 @@
 import React from 'react';
 
 import { cn } from '@/lib/utils';
+import { useI18n } from '@/providers/LanguageProvider';
 
 export interface MiniRect {
   key: string;
@@ -31,6 +32,7 @@ export function Minimap({
   viewport: { top: number; height: number };
   onJump: (fraction: number) => void;
 }) {
+  const { t } = useI18n();
   const ref = React.useRef<HTMLDivElement>(null);
   if (!rects.length) return null;
 
@@ -46,7 +48,7 @@ export function Minimap({
       ref={ref}
       onPointerDown={(e) => { e.preventDefault(); jump(e.clientY); }}
       onPointerMove={(e) => { if (e.buttons === 1) jump(e.clientY); }}
-      title="Bấm để nhảy tới vị trí"
+      title={t('agentFlows.minimap.title')}
       className="absolute bottom-16 left-4 z-30 h-[150px] w-[104px] cursor-pointer overflow-hidden rounded-lg border border-[rgb(var(--border-line))] bg-surface-1/95 p-1.5 shadow-linear-sm backdrop-blur"
     >
       <div className="relative h-full w-full">

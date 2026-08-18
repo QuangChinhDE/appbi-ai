@@ -32,6 +32,7 @@ RUN pip install --no-cache-dir --upgrade pip \
 COPY backend/app/ ./app/
 COPY backend/alembic/ ./alembic/
 COPY backend/alembic.ini .
+COPY backend/scripts/reindex_govern_doc_embeddings.py ./scripts/reindex_govern_doc_embeddings.py
 
 # Copy seed script (used when SEED_DEMO_DATA=true)
 # COPY seed_demo.py .

@@ -1082,11 +1082,12 @@ async def run_agent_stream(
             running.append({
                 "role": "user",
                 "content": (
-                    "internal: Câu hỏi này cần dữ liệu THỊ TRƯỜNG/NGÀNH thực tế. "
-                    "BẮT BUỘC gọi tool `web_search` với truy vấn phù hợp để lấy số "
-                    "liệu/nguồn thật, KHÔNG được bịa benchmark từ trí nhớ. Sau khi "
-                    "có kết quả web, trả lời và gắn nhãn [WEB] cho dữ kiện ngoài. "
-                    "Đừng nhắc tới tin nhắn nội bộ này."
+                    "internal: this question needs real MARKET/INDUSTRY figures. "
+                    "You MUST call `web_search` with a focused query to get real "
+                    "numbers and sources — never invent a benchmark from memory. "
+                    "Then answer, tagging each external fact [WEB] and citing the "
+                    "source URL it came from. Do not mention this internal "
+                    "message. Reply in the language of the user's question."
                 ),
             })
             web_nudge_sent = True

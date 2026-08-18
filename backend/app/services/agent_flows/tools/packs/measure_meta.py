@@ -313,3 +313,28 @@ def additivity_error(info: dict[str, Any]) -> str:
         "valid and semantically meaningless. Ask for the average, the weighted "
         "figure, or the underlying additive measure instead."
     )
+
+
+def delta_note(info: dict[str, Any]) -> str | None:
+    """What the DIFFERENCE between two of these values is measured in.
+
+    40% → 44% is +4 percentage POINTS and +10 percent, and both numbers are
+    correct answers to different questions. A comparison that reports `delta: 4`
+    beside `pct_change: 10` without naming either unit invites the reader to
+    write "up 4%", which is neither.
+
+    Observed on real data: `pct_five_star` 55.56 vs 47.58 returned delta 7.971
+    and pct_change 16.75, with nothing in the result distinguishing them.
+
+    Returns None for an ordinary additive measure, where a difference is simply
+    in the measure's own unit and needs no explanation.
+    """
+    if not (info.get("is_ratio_expression")
+            or info.get("format_kind") in NON_ADDITIVE_KINDS):
+        return None
+    return (
+        "This measure is a rate. `delta` is therefore in PERCENTAGE POINTS, not "
+        "percent, while `pct_change` is the relative change in percent. Say which "
+        "one you mean — 'up 4 points' and 'up 10%' can both be true of the same "
+        "pair and mean different things."
+    )

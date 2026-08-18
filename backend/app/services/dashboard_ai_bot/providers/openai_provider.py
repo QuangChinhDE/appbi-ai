@@ -26,6 +26,66 @@ _STICKY_TTL = 45.0
 _FALLBACK_MODEL = "gpt-4o-mini"
 
 
+def _switchable_providers() -> str:
+    """Vendors an Agent step may actually be switched to on this product.
+
+    Read from the model catalogue, NOT from which keys happen to sit in the
+    environment. An earlier version of this message listed every vendor with a
+    key present and told the reader to switch to one — advice that stopped being
+    executable the moment the product narrowed to OpenAI, because the picker no
+    longer offers those vendors whatever keys exist.
+
+    That is the same defect this message was rewritten to remove: recommending a
+    remedy the reader cannot carry out. So the list comes from the one place that
+    decides what is choosable.
+    """
+    try:
+        from app.services.agent_flows.models_catalogue import MODELS
+
+        others = [p for p in MODELS if p != "openai"]
+        return ", ".join(others)
+    except Exception:  # noqa: BLE001 — a message must never break the stream
+        return ""
+
+
+def quota_exhausted_message() -> str:
+    """What to say when even the small model is out of budget.
+
+    A named function rather than an inline string, because this sentence is the
+    only thing the operator gets when the account runs dry and it has already
+    been wrong once — it used to recommend switching to `gpt-4o-mini`, which is
+    reachable ONLY by having just switched to mini and failed. Worth being able
+    to assert on directly instead of grepping the source for a fragment.
+    """
+    alts = _switchable_providers()
+    return (
+        "OpenAI 429 trên CẢ model nhỏ (đã tự chuyển sang "
+        f"{_FALLBACK_MODEL} và thử lại) — gần như chắc chắn là hết quota của "
+        "tài khoản OpenAI, không phải nghẽn tạm thời. Đổi sang model OpenAI "
+        "khác cũng không giúp được vì quota tính trên cả tài khoản."
+        + (f" Có thể chuyển bước này sang: {alts}." if alts else
+           " Hệ thống chỉ chạy trên OpenAI, nên cách duy nhất là nạp thêm quota "
+           "cho tài khoản của OPENAI_API_KEY trên máy chủ.")
+    )
+
+
+def _tool_args(tc: dict) -> dict:
+    """A replayed tool call's arguments, whichever key the caller used.
+
+    The documented contract is `args`; the flow engine sent `arguments`, and this
+    translation read only `args` — so every tool call it replayed reached the next
+    round as `{}`. The model could not see what it had just asked for, which is
+    the one thing this message exists to tell it, and it paid a round to re-learn
+    it. Same class of boundary bug as `_tool_payload` below, and the same fix:
+    a boundary must not silently drop the thing it exists to carry.
+    """
+    for key in ("args", "arguments"):
+        value = tc.get(key)
+        if isinstance(value, dict) and value:
+            return value
+    return {}
+
+
 def _tool_payload(msg: dict) -> str:
     """The tool's output, whichever key the caller used.
 
@@ -99,7 +159,7 @@ def _to_openai_messages(system_prompt: str, messages: list[dict]) -> list[dict]:
                         "type": "function",
                         "function": {
                             "name": tc["name"],
-                            "arguments": json.dumps(tc.get("args") or {}, default=str),
+                            "arguments": json.dumps(_tool_args(tc), default=str),
                         },
                     }
                     for tc in tcs
@@ -270,11 +330,36 @@ async def stream_openai(
                             await _asyncio.sleep(wait_s)
                             continue
                         if resp.status_code == 429:
-                            yield AgentEvent(
-                                type="error",
-                                text="OpenAI 429: vượt quota / bị rate-limit. Đợi vài chục giây rồi thử lại, hoặc chuyển sang gpt-4o-mini.",
-                                extra={"http_status": 429},
-                            )
+                            # DO NOT RECOMMEND THE THING JUST TRIED.
+                            #
+                            # The message said "wait, or switch to gpt-4o-mini" in
+                            # every case — including the case reached only BY
+                            # having already switched to mini and retried it
+                            # twice. Whoever read it went and set the model to
+                            # mini by hand, which is what v2 of the operator's
+                            # flow did, and got the same 429 for the same reason.
+                            #
+                            # Reaching here after `downgraded` means the small
+                            # model's separate budget is gone too, and that is not
+                            # a per-model rate limit — it is the ACCOUNT. Say so,
+                            # and name what this deployment can actually fall back
+                            # to instead of a model that just failed.
+                            if downgraded:
+                                yield AgentEvent(
+                                    type="error",
+                                    text=quota_exhausted_message(),
+                                    extra={"http_status": 429, "exhausted": True},
+                                )
+                            else:
+                                yield AgentEvent(
+                                    type="error",
+                                    text=(
+                                        f"OpenAI 429 trên {model}: bị rate-limit. "
+                                        "Đợi vài chục giây rồi thử lại, hoặc dùng "
+                                        f"{_FALLBACK_MODEL}."
+                                    ),
+                                    extra={"http_status": 429},
+                                )
                         elif resp.status_code in (401, 403):
                             yield AgentEvent(
                                 type="error",
@@ -344,15 +429,28 @@ async def stream_openai(
                         if finish in ("tool_calls", "stop", "length"):
                             # Emit any accumulated tool calls
                             for slot in sorted(pending_tools.values(), key=lambda s: s.get("id") or ""):
+                                raw = slot.get("args_buf") or "{}"
+                                malformed = ""
                                 try:
-                                    args = json.loads(slot.get("args_buf") or "{}") or {}
-                                except json.JSONDecodeError:
-                                    args = {}
+                                    args = json.loads(raw) or {}
+                                except json.JSONDecodeError as exc:
+                                    # SAY WHAT BROKE. Collapsing unparseable
+                                    # arguments to `{}` sent the model a call it
+                                    # never made: the tool then failed on a missing
+                                    # required field, and the model spent a round
+                                    # guessing at an error the runtime had already
+                                    # diagnosed. Carrying the reason lets it fix the
+                                    # arguments on the next round instead.
+                                    args, malformed = {}, str(exc)
+                                if not isinstance(args, dict):
+                                    args, malformed = {}, "arguments were not a JSON object"
                                 yield AgentEvent(
                                     type="tool_call",
                                     tool_call_id=slot.get("id") or "",
                                     tool_name=slot.get("name") or "",
-                                    tool_args=args if isinstance(args, dict) else {},
+                                    tool_args=args,
+                                    extra={"malformed_args": malformed, "raw_args": raw[:400]}
+                                    if malformed else {},
                                 )
                             pending_tools.clear()
                     # 200 stream fully consumed ([DONE] received). Terminate the

@@ -74,7 +74,10 @@ _DATASET_PREFIXES = (
 )
 
 #: Documents — the one catalog module that is still its own destination.
-_GOVERN_PREFIXES = ("knowledge", "search", "graph", "asset-docs", "change-log", "google-connection", "vector-store-health")
+_GOVERN_PREFIXES = (
+    "knowledge", "search", "graph", "asset-docs", "change-log",
+    "google-connection", "vector-store-health", "embedding-profiles",
+)
 
 
 def _catalog_module_for(path: str) -> str:
@@ -256,9 +259,14 @@ class ManagedMetricWrite(BaseModel):
     target_value2: float | None = None
     owner: str | None = None
     related_term_fqn: str | None = None
+    # THE PRIMARY realization. Kept for clients written before `bindings`, and
+    # mirrored from whichever binding is primary on every write.
     dataset_id: int | None = None
     dataset_table_id: int | None = None
     measure_ref: str | None = None
+    # EVERY place this definition is computed. `None` means "leave them alone" —
+    # an older client sending only the scalar fields must not wipe the others.
+    bindings: list[dict[str, Any]] | None = None
     home_doc_id: int | None = None         # knowledge doc where this metric is DEFINED (home/SSOT)
     anchor: str | None = None
     synonyms: list[str] = []
@@ -343,6 +351,9 @@ class KnowledgeDocWrite(BaseModel):
     # only writes these when the key is actually present in the payload.
     allow_external_embedding: bool | None = None
     sensitivity: str | None = None        # internal|confidential|restricted
+    # Used only when the document is created. Existing documents can switch
+    # model only through the explicit vector reset endpoint.
+    embedding_model: str | None = None
 
 
 @router.get("/govern/knowledge")
@@ -376,8 +387,15 @@ def govern_search_everything(
 
 @router.get("/govern/graph")
 def govern_knowledge_graph(db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
-    """Whole-hub knowledge graph (Obsidian-style): visible docs + [[wikilink]] and
-    shared-KPI edges."""
+    """Cross-layer AppBI knowledge network, including disconnected assets."""
+    return GovernanceService.knowledge_graph(db, user)
+
+
+@router.get("/govern/knowledge-map")
+def govern_knowledge_map(
+    db: Session = Depends(get_db), user: User = Depends(get_current_user)
+) -> dict[str, Any]:
+    """Backward-compatible alias for clients that used the former Map tab."""
     return GovernanceService.knowledge_graph(db, user)
 
 
@@ -649,7 +667,47 @@ class EmbeddingConfigWrite(BaseModel):
     chunk_strategy: str = "paragraph"   # paragraph | heading | fixed
     chunk_size: int = 850
     chunk_overlap: int = 0
-    embedding_model: str | None = None  # null = settings.active_embedding_model
+    embedding_model: str | None = None
+
+
+def _validated_embedding_config(body: EmbeddingConfigWrite, current_model: str) -> tuple[str, int, int, str]:
+    from app.services.dashboard_ai_bot.govern_doc_embeddings import _clamp_chunk_params
+    from app.services.embedding_service import EmbeddingService
+
+    if body.chunk_strategy not in ("paragraph", "heading", "fixed"):
+        raise HTTPException(
+            status_code=422,
+            detail="chunk_strategy must be paragraph, heading, or fixed.",
+        )
+    size, overlap = _clamp_chunk_params(body.chunk_size, body.chunk_overlap)
+    try:
+        model = EmbeddingService.resolve_model(body.embedding_model or current_model)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return body.chunk_strategy, size, overlap, model
+
+
+def _embedding_is_locked(db: Session, doc_id: int, embedded_hash: str | None) -> bool:
+    from sqlalchemy import text as _t
+    from app.services.dashboard_ai_bot.govern_doc_embeddings import authoring_scope
+
+    authoring_scope(db)
+    count = db.execute(
+        _t("SELECT COUNT(*) FROM govern_doc_chunk WHERE doc_id = :d"),
+        {"d": doc_id},
+    ).scalar() or 0
+    return bool(embedded_hash or count)
+
+
+@router.get("/govern/embedding-profiles")
+def govern_embedding_profiles(_: User = Depends(get_current_user)) -> dict[str, Any]:
+    from app.services.embedding_service import EmbeddingService
+
+    profiles = EmbeddingService.embedding_profiles()
+    return {
+        "profiles": profiles,
+        "default_model": EmbeddingService.resolve_model(),
+    }
 
 
 @router.get("/govern/knowledge/{doc_id}/embedding-config")
@@ -666,6 +724,7 @@ def govern_doc_embedding_config_get(doc_id: int, db: Session = Depends(get_db), 
     from app.services.dashboard_ai_bot.govern_doc_embeddings import (
         chunk_doc_detailed, egress_allowed, index_is_stale,
     )
+    from app.services.embedding_service import EmbeddingService
     _stale = index_is_stale(db, d)
     _, stats = chunk_doc_detailed(
         GovernanceService.published_body(db, d) or "",
@@ -676,6 +735,8 @@ def govern_doc_embedding_config_get(doc_id: int, db: Session = Depends(get_db), 
     return {
         "chunk_strategy": d.chunk_strategy, "chunk_size": d.chunk_size, "chunk_overlap": d.chunk_overlap,
         "embedding_model": d.embedding_model, "embedded_hash": d.embedded_hash, "chunk_count": int(chunk_count),
+        "model_locked": bool(d.embedded_hash or chunk_count),
+        "available_models": EmbeddingService.embedding_profiles(),
         "index_stale": _stale, "allow_external_embedding": egress_allowed(d),
         "sensitivity": getattr(d, "sensitivity", None) or "internal",
         "truncated": bool(stats.get("truncated")), "dropped_chunks": int(stats.get("dropped_chunks") or 0),
@@ -687,12 +748,21 @@ def govern_doc_embedding_config_get(doc_id: int, db: Session = Depends(get_db), 
 def govern_doc_embedding_config_put(doc_id: int, body: EmbeddingConfigWrite, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
     """Save chunk/embedding settings. Does not re-embed by itself — call /embed."""
     d = _run(lambda: GovernanceService.require_doc_access(db, doc_id, user, "edit"))
-    if body.chunk_strategy not in ("paragraph", "heading", "fixed"):
-        raise HTTPException(status_code=422, detail="chunk_strategy must be paragraph, heading, or fixed.")
-    d.chunk_strategy = body.chunk_strategy
-    d.chunk_size = body.chunk_size
-    d.chunk_overlap = body.chunk_overlap
-    d.embedding_model = (body.embedding_model or "").strip() or None
+    strategy, size, overlap, model = _validated_embedding_config(
+        body, d.embedding_model
+    )
+    if model != d.embedding_model and _embedding_is_locked(db, doc_id, d.embedded_hash):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Embedding model is locked after indexing. Use Reset & Re-embed "
+                "to delete the old vector space and rebuild it."
+            ),
+        )
+    d.chunk_strategy = strategy
+    d.chunk_size = size
+    d.chunk_overlap = overlap
+    d.embedding_model = model
     db.commit()
     return {"ok": True}
 
@@ -723,18 +793,62 @@ def govern_doc_embed_now(doc_id: int, body: EmbeddingConfigWrite | None = None, 
     re-embeds now (independent of the auto-embed-on-save/publish flow)."""
     d = _run(lambda: GovernanceService.require_doc_access(db, doc_id, user, "edit"))
     if body is not None:
-        if body.chunk_strategy not in ("paragraph", "heading", "fixed"):
-            raise HTTPException(status_code=422, detail="chunk_strategy must be paragraph, heading, or fixed.")
-        d.chunk_strategy = body.chunk_strategy
-        d.chunk_size = body.chunk_size
-        d.chunk_overlap = body.chunk_overlap
-        d.embedding_model = (body.embedding_model or "").strip() or None
+        strategy, size, overlap, model = _validated_embedding_config(
+            body, d.embedding_model
+        )
+        if model != d.embedding_model and _embedding_is_locked(db, doc_id, d.embedded_hash):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Embedding model is locked after indexing. Use Reset & Re-embed "
+                    "to delete the old vector space and rebuild it."
+                ),
+            )
+        d.chunk_strategy = strategy
+        d.chunk_size = size
+        d.chunk_overlap = overlap
+        d.embedding_model = model
         db.commit()
     from app.services.dashboard_ai_bot.govern_doc_embeddings import embed_doc
     result = embed_doc(db, d)
     GovernanceService.log_doc_run(
         db, doc_id, "embed", trigger="manual", status=result.get("status", "error"),
         detail=result.get("detail"), stats=result, changed_by=getattr(user, "email", None),
+    )
+    return result
+
+
+@router.post("/govern/knowledge/{doc_id}/embedding-reset")
+def govern_doc_embedding_reset(
+    doc_id: int,
+    body: EmbeddingConfigWrite,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Delete the old vector space, switch profile, and rebuild from zero."""
+    d = _run(lambda: GovernanceService.require_doc_access(db, doc_id, user, "edit"))
+    strategy, size, overlap, model = _validated_embedding_config(
+        body, d.embedding_model
+    )
+    from app.services.dashboard_ai_bot.govern_doc_embeddings import reset_doc_embedding
+
+    result = reset_doc_embedding(
+        db,
+        d,
+        model=model,
+        chunk_strategy=strategy,
+        chunk_size=size,
+        chunk_overlap=overlap,
+    )
+    GovernanceService.log_doc_run(
+        db,
+        doc_id,
+        "embed",
+        trigger="manual",
+        status=result.get("status", "error"),
+        detail=result.get("detail"),
+        stats={**result, "reset": True, "model": model},
+        changed_by=getattr(user, "email", None),
     )
     return result
 
@@ -831,50 +945,37 @@ def govern_doc_vectors_query(doc_id: int, body: VectorQueryReq, db: Session = De
     "query" box. Shows exactly which chunk the AI would retrieve for a question
     and how close it scored, so retrieval can be sanity-checked per document."""
     _run(lambda: GovernanceService.require_doc_access(db, doc_id, user, "view"))
-    from app.models.governance import GovernKnowledgeDoc
-    from app.services.embedding_service import EmbeddingService
-    from sqlalchemy import text as _t
 
     q = (body.query or "").strip()
     if not q:
         raise HTTPException(status_code=422, detail="Enter a question to test retrieval.")
-    doc = db.query(GovernKnowledgeDoc).filter(GovernKnowledgeDoc.id == doc_id).first()
-    qvec = EmbeddingService.generate_query_embedding(q, model=(doc.embedding_model or None) if doc else None)
-    if qvec is None:
-        raise HTTPException(status_code=503, detail="Embeddings are unavailable — check the AI key configuration.")
-    lit = str(qvec)  # floats only — same inlining the retrieval path uses
     k = max(1, min(int(body.k or 5), 20))
 
-    # Mirrors the bot's own hybrid recall so this console tells the truth about
-    # what retrieval will do — a vector-only preview would quietly disagree with
-    # production for exactly the queries hybrid search exists to fix.
-    from app.services.dashboard_ai_bot.govern_doc_embeddings import (
-        _fuse_rrf, _keyword_ranked_ids, _vector_ranked_ids, active_embedding_model, authoring_scope,
+    # Same multi-model hybrid path as the bot. For one document this produces
+    # exactly one query embedding using that document's locked model.
+    from app.services.dashboard_ai_bot.govern_doc_embeddings import search_doc_chunks
+
+    rows = search_doc_chunks(
+        db,
+        q,
+        k=k,
+        doc_ids={doc_id},
+        published_only=False,
+        authoring=True,
     )
-    authoring_scope(db)
-    scope = " WHERE c.doc_id = :d AND c.embedding IS NOT NULL AND c.model_version = :emb_model "
-    scope_params = {"d": doc_id, "emb_model": active_embedding_model()}
-    pool = max(k * 4, 20)
-    vec_ids = _vector_ranked_ids(db, scope, scope_params, lit, pool)
-    kw_ids = _keyword_ranked_ids(db, scope, scope_params, q, pool)
-    fused = _fuse_rrf(vec_ids, kw_ids)
-    if not fused:
-        return {"matches": []}
-    top = sorted(fused, key=lambda i: -fused[i])[:k]
-    rows = db.execute(
-        _t(f"""
-            SELECT c.id, c.chunk_index, c.content, 1 - (c.embedding <=> '{lit}'::vector) AS score, c.trust
-            FROM govern_doc_chunk c WHERE c.id = ANY(:ids)
-        """),
-        {"ids": top},
-    ).fetchall()
-    by_id = {r[0]: r for r in rows}
-    return {"matches": [
-        {"chunk_index": by_id[i][1], "content": by_id[i][2], "score": float(by_id[i][3]),
-         "trust": by_id[i][4],
-         "matched_by": ("both" if i in vec_ids and i in kw_ids else "keyword" if i in kw_ids else "vector")}
-        for i in top if i in by_id
-    ]}
+    return {
+        "matches": [
+            {
+                "chunk_index": row["chunk_index"],
+                "content": row["content"],
+                "score": float(row.get("similarity") or 0.0),
+                "trust": row.get("trust"),
+                "matched_by": row.get("matched_by"),
+                "embedding_model": row.get("embedding_model"),
+            }
+            for row in rows
+        ]
+    }
 
 
 @router.get("/govern/knowledge/{doc_id}/history")
@@ -1368,6 +1469,7 @@ class CaveatWrite(BaseModel):
     title: str
     content: str
     always_inject: bool = True
+    status: str = "Approved"
     owner: str | None = None
 
 

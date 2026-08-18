@@ -2454,7 +2454,10 @@ function normalizeAgentText(text: string): string {
   // catches them, then any STILL-unknown letter-only bracket token is dropped
   // entirely (never leak a raw `[XXX]` into the answer). Chart/confidence/WEB
   // chips and anything with digits or `:` are preserved.
-  const KNOWN = new Set(['HIGH', 'MED', 'LOW', 'WEB']);
+  // KB marks a definition taken from AppBI's own governed knowledge. It has to
+  // survive here, or the drop-unknown-tokens rule below erases the very tag that
+  // keeps the model from reaching for [WEB] on a link with web research off.
+  const KNOWN = new Set(['HIGH', 'MED', 'LOW', 'WEB', 'KB']);
   out = out.replace(/\[([^\]\d:]{2,20})\]/gu, (m, word) => {
     const w = String(word)
       .normalize('NFD').replace(/[̀-ͯ]/g, '')  // strip diacritics

@@ -10,18 +10,26 @@ PUT  /permissions/{user_id}/preset → apply a preset to a user
 
 import uuid
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload
 
 from app.core.config import settings
 from app.core.database import get_db
-from app.core.dependencies import get_current_user, require_permission, INTELLIGENCE_INHERIT
+from app.core.dependencies import (
+    MODULE_KEYS,
+    _normalize_permissions,
+    get_current_user,
+    require_permission,
+    INTELLIGENCE_INHERIT,
+)
+from app.models.audit_log import AuditAction
 from app.models.team import Team, TeamMembership
 from app.models.user import User, UserStatus
+from app.services.audit_service import audit
 
 router = APIRouter(prefix="/permissions", tags=["permissions"])
 
@@ -49,18 +57,11 @@ def _module_enabled(name: str) -> bool:
     return _OPTIONAL_MODULES.get(name, True)
 
 
-_ALL_MODULES = [
-    "data_sources",
-    "datasets",
-    # Intelligence sidebar group (was one 'govern' key; now one per module).
-    "govern",           # Documents (knowledge hub) — keeps the legacy key
-    "agent_flows",   # reserved: the module is not built yet
-    "observability",
-    "explore_charts",
-    "dashboards",
-    "workboards",
-    "settings",
-]
+# DERIVED, never re-typed. core.dependencies.MODULE_KEYS is the single source of
+# truth for "what modules exist"; it is what require_permission() caps a scoped
+# token against. Keeping a second hand-written copy here is exactly how
+# `agent_flows` came to sit in this matrix while being invisible to that cap.
+_ALL_MODULES = list(MODULE_KEYS)
 
 MODULES = [m for m in _ALL_MODULES if _module_enabled(m)]
 
@@ -212,27 +213,27 @@ def _default_permissions() -> Dict[str, str]:
 
 
 def _get_user_permissions(user: User) -> Dict[str, str]:
+    """What the Settings matrix shows for *user*.
+
+    Delegates the implicit rules to `_normalize_permissions` — the same function
+    the route gate and the data filter use — so the matrix can no longer display a
+    level the rest of the system disagrees with. It previously re-implemented the
+    admin back-fill locally and therefore showed "Full" on modules whose rows the
+    data layer was filtering away.
+    """
     base = _default_permissions()
     stored: dict = user.permissions or {}
-    base.update({k: v for k, v in stored.items() if k in MODULES})
+    effective = _normalize_permissions(user)
+
+    base.update({k: v for k, v in effective.items() if k in MODULES})
+
     # Intelligence group inherits the legacy 'govern' level when its own key is not
     # explicitly stored — so existing govern:X users keep full Intelligence access.
-    resolved = set(stored)
     _gv = stored.get("govern")
     if _gv is not None:
         for _m in INTELLIGENCE_INHERIT:
             if _m in MODULES and _m not in stored:
                 base[_m] = _gv
-                resolved.add(_m)
-    # Admin (settings=full) implicitly has any module added AFTER their
-    # permissions row was created — surface those (e.g. govern/observability
-    # enabled today) so the sidebar/matrix show them instead of hiding a new
-    # module behind a missing key. Mirrors require_permission()'s admin rule;
-    # an explicit stored level (even "none") is left untouched.
-    if str(stored.get("settings", "")).strip().lower() == "full":
-        for m in MODULES:
-            if m != "settings" and m not in resolved:
-                base[m] = "full"
     return base
 
 
@@ -323,6 +324,85 @@ def _replace_team_members(db: Session, team: Team, member_ids: List[uuid.UUID]) 
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
+
+def _is_admin_permissions(perms: Dict[str, str] | None) -> bool:
+    return str((perms or {}).get("settings", "")).strip().lower() == "full"
+
+
+def _assert_admin_remains(db: Session, target: User, new_permissions: Dict[str, str]) -> None:
+    """Refuse a change that would leave the deployment with no administrator.
+
+    Nothing stopped an admin from applying the `viewer` preset to themselves, or to
+    the last remaining admin. Either one locks Settings for everybody — including
+    the person who would have to undo it. `users.py` already refuses self-deactivate
+    and self-delete; this is the same guard on the more dangerous door.
+    """
+    if _is_admin_permissions(new_permissions):
+        return
+    if not _is_admin_permissions(target.permissions):
+        return  # target was not an admin — no admin is being removed
+
+    remaining = (
+        db.query(User)
+        .filter(
+            User.id != target.id,
+            User.status == UserStatus.ACTIVE,
+            User.permissions["settings"].astext == "full",
+        )
+        .count()
+    )
+    if remaining == 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "Đây là quản trị viên cuối cùng còn hoạt động. Hãy cấp quyền "
+                "Settings = full cho một người khác trước khi hạ quyền tài khoản này."
+            ),
+        )
+
+
+def _audit_permission_change(
+    db: Session,
+    request: Request,
+    actor: User,
+    target: User,
+    before: Dict[str, str],
+    after: Dict[str, str],
+    *,
+    preset: str | None = None,
+) -> None:
+    """Record WHO changed WHOSE permissions, and exactly what moved.
+
+    `USER_PERMISSIONS_CHANGED` existed in the AuditAction enum and in the severity
+    table from the start, but was never emitted anywhere — so the single most
+    security-relevant action in the product left no trace at all. The diff is
+    recorded, not just the new state: "who granted this, and what did they change
+    it from" is the question an investigation actually asks.
+    """
+    changed = {
+        module: {"from": before.get(module, "none"), "to": after.get(module, "none")}
+        for module in set(before) | set(after)
+        if before.get(module, "none") != after.get(module, "none")
+    }
+    if not changed:
+        return
+    details: Dict[str, Any] = {
+        "target_email": target.email,
+        "changed": changed,
+        "self_change": str(actor.id) == str(target.id),
+    }
+    if preset:
+        details["preset"] = preset
+    audit(
+        db,
+        AuditAction.USER_PERMISSIONS_CHANGED,
+        request=request,
+        user_id=actor.id,
+        resource_type="user",
+        resource_id=str(target.id),
+        details=details,
+    )
+
 
 @router.get("/presets", response_model=PresetsResponse)
 def get_presets(_: User = Depends(require_permission("settings", "full"))):
@@ -447,8 +527,9 @@ def delete_team(
 def apply_preset_to_user(
     user_id: uuid.UUID,
     body: ApplyPresetRequest,
+    request: Request,
     db: Session = Depends(get_db),
-    _: User = Depends(require_permission("settings", "full")),
+    actor: User = Depends(require_permission("settings", "full")),
 ):
     """Apply a named preset to a user's permissions."""
     if body.preset not in PRESETS:
@@ -458,8 +539,14 @@ def apply_preset_to_user(
     if not target:
         raise HTTPException(status_code=404, detail="User not found")
 
-    target.permissions = PRESETS[body.preset].copy()
+    before = dict(target.permissions or {})
+    after = PRESETS[body.preset].copy()
+    _assert_admin_remains(db, target, after)
+    target.permissions = after
     db.commit()
+
+    _audit_permission_change(db, request, actor, target, before, after, preset=body.preset)
+
     return {"status": "ok", "preset": body.preset, "permissions": target.permissions}
 
 
@@ -467,8 +554,9 @@ def apply_preset_to_user(
 def update_user_permissions(
     user_id: uuid.UUID,
     body: UpdatePermissionsRequest,
+    request: Request,
     db: Session = Depends(get_db),
-    _: User = Depends(require_permission("settings", "full")),
+    actor: User = Depends(require_permission("settings", "full")),
 ):
     """
     Bulk-update a user's module permissions.
@@ -481,9 +569,13 @@ def update_user_permissions(
     _validate_permissions(body.permissions)
 
     current: dict = dict(target.permissions or {})
+    before = dict(current)
     current.update(body.permissions)
+    _assert_admin_remains(db, target, current)
     target.permissions = current
     db.commit()
+
+    _audit_permission_change(db, request, actor, target, before, current)
 
     return {"status": "ok", "updated": len(body.permissions), "permissions": _get_user_permissions(target)}
 

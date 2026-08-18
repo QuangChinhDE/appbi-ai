@@ -9,24 +9,31 @@
 import { useState, type ReactNode } from 'react';
 import { Info, AlertTriangle, Lightbulb, CheckCircle2, ShieldCheck, Sigma, HelpCircle, Quote, ArrowUpRight, ImageOff } from 'lucide-react';
 
+import { useI18n } from '@/providers/LanguageProvider';
+
 // ── Obsidian-style callouts: > [!type] Title / > body ────────────────────────
 // tone = left-border + tint; icon + default title (VI-first, custom title wins).
-const CALLOUTS: Record<string, { icon: ReactNode; border: string; bg: string; text: string; title: string }> = {
-  note:    { icon: <Info className="h-3.5 w-3.5" />,          border: 'border-brand',   bg: 'bg-brand/[0.06]',   text: 'text-brand',   title: 'Ghi chú' },
-  info:    { icon: <Info className="h-3.5 w-3.5" />,          border: 'border-info',    bg: 'bg-info/[0.07]',    text: 'text-info',    title: 'Thông tin' },
-  tip:     { icon: <Lightbulb className="h-3.5 w-3.5" />,     border: 'border-success', bg: 'bg-success/[0.07]', text: 'text-success', title: 'Mẹo' },
-  success: { icon: <CheckCircle2 className="h-3.5 w-3.5" />,  border: 'border-success', bg: 'bg-success/[0.07]', text: 'text-success', title: 'Tốt' },
-  warning: { icon: <AlertTriangle className="h-3.5 w-3.5" />, border: 'border-warning', bg: 'bg-warning/[0.08]', text: 'text-warning', title: 'Cảnh báo' },
-  danger:  { icon: <AlertTriangle className="h-3.5 w-3.5" />, border: 'border-danger',  bg: 'bg-danger/[0.07]',  text: 'text-danger',  title: 'Nguy hiểm' },
-  rule:    { icon: <ShieldCheck className="h-3.5 w-3.5" />,   border: 'border-brand',   bg: 'bg-brand/[0.06]',   text: 'text-brand',   title: 'Quy tắc nghiệp vụ' },
-  formula: { icon: <Sigma className="h-3.5 w-3.5" />,         border: 'border-info',    bg: 'bg-info/[0.07]',    text: 'text-info',    title: 'Công thức' },
-  question:{ icon: <HelpCircle className="h-3.5 w-3.5" />,    border: 'border-text-quaternary', bg: 'bg-surface-2', text: 'text-text-secondary', title: 'Câu hỏi' },
+const CALLOUTS: Record<string, { icon: ReactNode; border: string; bg: string; text: string; titleKey: string }> = {
+  note:    { icon: <Info className="h-3.5 w-3.5" />,          border: 'border-brand',   bg: 'bg-brand/[0.06]',   text: 'text-brand',   titleKey: 'govern.markdown.callout.note' },
+  info:    { icon: <Info className="h-3.5 w-3.5" />,          border: 'border-info',    bg: 'bg-info/[0.07]',    text: 'text-info',    titleKey: 'govern.markdown.callout.info' },
+  tip:     { icon: <Lightbulb className="h-3.5 w-3.5" />,     border: 'border-success', bg: 'bg-success/[0.07]', text: 'text-success', titleKey: 'govern.markdown.callout.tip' },
+  success: { icon: <CheckCircle2 className="h-3.5 w-3.5" />,  border: 'border-success', bg: 'bg-success/[0.07]', text: 'text-success', titleKey: 'govern.markdown.callout.success' },
+  warning: { icon: <AlertTriangle className="h-3.5 w-3.5" />, border: 'border-warning', bg: 'bg-warning/[0.08]', text: 'text-warning', titleKey: 'govern.markdown.callout.warning' },
+  danger:  { icon: <AlertTriangle className="h-3.5 w-3.5" />, border: 'border-danger',  bg: 'bg-danger/[0.07]',  text: 'text-danger',  titleKey: 'govern.markdown.callout.danger' },
+  rule:    { icon: <ShieldCheck className="h-3.5 w-3.5" />,   border: 'border-brand',   bg: 'bg-brand/[0.06]',   text: 'text-brand',   titleKey: 'govern.markdown.callout.rule' },
+  formula: { icon: <Sigma className="h-3.5 w-3.5" />,         border: 'border-info',    bg: 'bg-info/[0.07]',    text: 'text-info',    titleKey: 'govern.markdown.callout.formula' },
+  question:{ icon: <HelpCircle className="h-3.5 w-3.5" />,    border: 'border-text-quaternary', bg: 'bg-surface-2', text: 'text-text-secondary', titleKey: 'govern.markdown.callout.question' },
 };
 const CALLOUT_ALIAS: Record<string, string> = { error: 'danger', bug: 'danger', warn: 'warning', hint: 'tip', faq: 'question', quote: 'note', abstract: 'info', summary: 'info' };
 
 // ── Tiny markdown renderer (headings, bold/italic/code/link, lists, quote) ──
 // onDocLink handles internal wikilinks (href scheme "govern:doc:<id>").
-function renderInline(text: string, key: string, onDocLink?: (id: number) => void): ReactNode {
+function renderInline(
+  text: string,
+  key: string,
+  t: (key: string) => string,
+  onDocLink?: (id: number) => void,
+): ReactNode {
   const parts: ReactNode[] = [];
   // `!` prefix distinguishes an image from a link — captured in group 1 so a
   // single pass handles both and an image is never mis-read as a link.
@@ -52,7 +59,7 @@ function renderInline(text: string, key: string, onDocLink?: (id: number) => voi
       // Pictures imported from a source (e.g. Google Docs) render inline. If
       // the remote URL ever stops resolving, fall back to the caption instead
       // of a broken-image icon.
-      parts.push(<DocImage key={`${key}img${i}`} src={url} alt={label} />);
+      parts.push(<DocImage key={`${key}img${i}`} src={url} alt={label} fallbackAlt={t('govern.markdown.imageFallback')} />);
     } else if (url.startsWith('govern:doc:')) {
       // Internal [[wikilink]] → clickable in-app navigation (no page reload).
       const id = parseInt(url.slice('govern:doc:'.length), 10);
@@ -64,7 +71,7 @@ function renderInline(text: string, key: string, onDocLink?: (id: number) => voi
       );
     } else if (url === 'govern:miss') {
       // Unresolved wikilink — the target doc doesn't exist (yet).
-      parts.push(<span key={`${key}w${i}`} className="text-text-quaternary underline decoration-dotted" title="Tài liệu chưa tồn tại">{label}</span>);
+      parts.push(<span key={`${key}w${i}`} className="text-text-quaternary underline decoration-dotted" title={t('govern.markdown.missingDoc')}>{label}</span>);
     } else {
       parts.push(<a key={`${key}l${i}`} href={url} target="_blank" rel="noreferrer" className="text-brand underline underline-offset-2">{label}</a>);
     }
@@ -74,12 +81,12 @@ function renderInline(text: string, key: string, onDocLink?: (id: number) => voi
   return parts;
 }
 
-function DocImage({ src, alt }: { src: string; alt: string }) {
+function DocImage({ src, alt, fallbackAlt }: { src: string; alt: string; fallbackAlt: string }) {
   const [failed, setFailed] = useState(false);
   if (failed) {
     return (
       <span className="my-1 inline-flex items-center gap-1.5 rounded-md border border-dashed border-[rgb(var(--border-strong))] px-2 py-1 text-caption text-text-quaternary">
-        <ImageOff className="h-3.5 w-3.5" />{alt || 'Image'}
+        <ImageOff className="h-3.5 w-3.5" />{alt || fallbackAlt}
       </span>
     );
   }
@@ -90,9 +97,10 @@ function DocImage({ src, alt }: { src: string; alt: string }) {
 }
 
 export function Markdown({ source, onDocLink }: { source: string; onDocLink?: (id: number) => void }) {
+  const { t } = useI18n();
   const lines = (source || '').replace(/\r\n/g, '\n').split('\n');
   const blocks: ReactNode[] = [];
-  const ri = (text: string, k: string) => renderInline(text, k, onDocLink);
+  const ri = (text: string, k: string) => renderInline(text, k, t, onDocLink);
   let list: { ordered: boolean; items: string[] } | null = null;
   let quote: string[] | null = null;  // buffered consecutive "> " lines
   const flushList = (k: string) => {
@@ -112,7 +120,7 @@ export function Markdown({ source, onDocLink }: { source: string; onDocLink?: (i
     if (head) {
       const type = CALLOUT_ALIAS[head[1].toLowerCase()] || head[1].toLowerCase();
       const c = CALLOUTS[type] || CALLOUTS.note;
-      const title = head[2].trim() || c.title;
+      const title = head[2].trim() || t(c.titleKey);
       const body = Q.slice(1);
       blocks.push(
         <div key={k} className={`my-3 rounded-lg border-l-[3px] ${c.border} ${c.bg} px-3 py-2`}>

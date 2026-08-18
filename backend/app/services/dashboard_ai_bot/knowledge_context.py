@@ -104,11 +104,25 @@ def assemble(db: Session, *, dataset_table_ids: list[int], question: str = "") -
 
     seen_cols: set[str] = set()
     for t in tables:
-        # dataset-level dictionary: {"columns": {col: {business_name, description, examples}}, ...}
+        # Current dictionary shape is table_notes[].column_notes[]. Keep the
+        # legacy flat map as a read fallback for deployments mid-migration.
         dic = {}
         ds = datasets.get(t.dataset_id)
         if ds is not None and isinstance(getattr(ds, "dictionary", None), dict):
-            dic = ds.dictionary.get("columns") if isinstance(ds.dictionary.get("columns"), dict) else {}
+            legacy = ds.dictionary.get("columns") if isinstance(ds.dictionary.get("columns"), dict) else {}
+            table_note = next(
+                (
+                    note for note in ds.dictionary.get("table_notes") or []
+                    if isinstance(note, dict) and note.get("table_id") == t.id
+                ),
+                {},
+            )
+            current = {
+                str(note.get("column_name")): note
+                for note in table_note.get("column_notes") or []
+                if isinstance(note, dict) and note.get("column_name")
+            }
+            dic = {**legacy, **current}
         col_desc = t.column_descriptions if isinstance(t.column_descriptions, dict) else {}
 
         # union of columns that have ANY authored meaning
@@ -279,6 +293,7 @@ def _govern_managed_block(db: Session, dashboard_id: int, question: str = "") ->
     try:
         from app.models.governance import GovernMetric, GovernDocAssetLink, GovernKnowledgeDoc
         from app.models.dataset import DatasetTable
+        from app.services.governance_service import GovernanceService
 
         tids = set(dashboard_table_ids(db, dashboard_id))
         dsids: set[int] = set()
@@ -290,7 +305,7 @@ def _govern_managed_block(db: Session, dashboard_id: int, question: str = "") ->
         # Managed KPIs bound to this dashboard's datasets/tables (authoritative).
         metrics = [
             m for m in db.query(GovernMetric).filter(GovernMetric.status != "Deprecated").all()
-            if (m.dataset_id in dsids) or (m.dataset_table_id in tids)
+            if GovernanceService.metric_dataset_ids(db, m, resolved_only=True) & dsids
         ]
         if metrics:
             lines.append(
@@ -413,17 +428,9 @@ def _intelligence_blocks(db: Session, dashboard_id: int, question: str = "") -> 
         # 3) Rules + playbooks bound to this dashboard's metrics.
         try:
             metric_names: set[str] = set()
+            from app.services.governance_service import GovernanceService
             for m in db.query(GovernMetric).filter(GovernMetric.status == "Approved").all():
-                matched = (m.dataset_id in dsids) or (m.dataset_table_id in tids)
-                if not matched and m.measure_ref:
-                    # Field metrics commonly bind via "dataset_table_<id>.<measure>"
-                    # strings instead of the id columns — and in practice that id
-                    # may be either a dataset_table id OR the dataset id. Honor both.
-                    ref_tbl = re.match(r"dataset_table_(\d+)\.", str(m.measure_ref))
-                    if ref_tbl:
-                        ref_id = int(ref_tbl.group(1))
-                        if ref_id in tids or ref_id in dsids:
-                            matched = True
+                matched = bool(GovernanceService.metric_dataset_ids(db, m, resolved_only=True) & dsids)
                 if matched:
                     metric_names.add(m.name)
                     if m.display_name:

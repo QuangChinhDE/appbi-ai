@@ -169,6 +169,21 @@ class Capabilities(_Model):
     web_search: bool = False
     read_rows: bool = True
     max_rows_per_call: int = 5000
+    #: The most tokens ONE tool result may carry, before it reaches a prompt.
+    #:
+    #: A single fixed number was the first version of this and it was wrong in
+    #: both directions: high enough to let a public link burn a fortune, low
+    #: enough to block an internal digest that legitimately needs a wide read.
+    #: The right ceiling is a property of the DEPLOYMENT, not of the code — a
+    #: public link answering viewer questions and a scheduled analysis over the
+    #: same data want different numbers — so it belongs beside the other things a
+    #: binding declares before a flow is assigned.
+    #:
+    #: 25,000 is the default because the largest legitimate result measured
+    #: across every dashboard here (a 70-chart `list_charts` in full detail) is
+    #: ~15,600, so it clears real work with room and still refuses the
+    #: 2,979,000-token result that prompted the guard.
+    max_result_tokens: int = 25_000
 
 
 class KnowledgeScope(_Model):
@@ -367,7 +382,7 @@ Block = Annotated[
 
 
 class Citation(_Model):
-    kind: Literal["chart", "document", "metric", "dataset", "web"]
+    kind: Literal["chart", "document", "metric", "term", "dataset", "web"]
     ref: str
     label: str = ""
     used: list[str] = Field(default_factory=list)
@@ -407,6 +422,11 @@ class TraceStep(_Model):
     branch: str = ""
     iteration: int | None = None
     tool_calls: list[str] = Field(default_factory=list)
+    #: What this node was HANDED — the variables it could read when it started.
+    #: Kept beside the output because a step that answered badly and a step that
+    #: was given nothing to answer from are indistinguishable from the output
+    #: alone, and telling those apart is the whole point of opening a run.
+    input_preview: str = ""
     output_preview: str = ""
     error: str = ""
     #: What this node cost. Recorded per node because a turn's total says a flow is

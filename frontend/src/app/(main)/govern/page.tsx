@@ -1,31 +1,31 @@
 'use client';
 
 /**
- * Govern — ONE surface: the business-document library (Cẩm nang tri thức).
- * No pill tabs. The KnowledgeTab (doc library + reader/editor + version history)
- * IS the whole page. Two things live off it:
- *   • Metrics (KPIs) are authored INSIDE documents — the editor's "Định nghĩa
- *     chỉ số" and the reader's per-card pencil open a MetricFormModal.
- *   • Master data (glossary terms + classification tags) is managed in the
- *     "Từ điển & Nhãn" modal (VocabManager wrapped in AppModalShell), launched
- *     from the document-library header.
+ * Knowledge Hub owns narrative documents plus one central Governance Registry.
+ * Dataset pages own executable tables and semantic models; governed KPIs,
+ * glossary vocabulary, classifications, and caveats are authored here and only
+ * reference datasets as realization/application scopes.
  */
 import { Suspense, useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
-import { Tags, Library, Lock, Layers, Plus, Pencil, Trash2, BookText } from 'lucide-react';
+import { Tags, Library, Lock, Layers, Plus, Pencil, Trash2, BookText, Target, AlertTriangle, Database } from 'lucide-react';
 
 import { KnowledgeTab } from '@/components/govern/KnowledgeTab';
+import { MetricFormModal } from '@/components/govern/MetricForm';
 import { AppModalShell } from '@/components/common/AppModalShell';
 import { Modal } from '@/components/common/Modal';
 import { Button } from '@/components/ui/Button';
-import { Input, Textarea, Label } from '@/components/ui/Input';
+import { Input, Textarea, Label, Select } from '@/components/ui/Input';
 import { Tabs } from '@/components/ui/Tabs';
 import { toast } from '@/lib/toast';
+import { cn } from '@/lib/utils';
 import { useUrlNav } from '@/hooks/use-url-nav';
 import { useI18n } from '@/providers/LanguageProvider';
 import {
   getMetrics, getGlossaries, listGlossaryTerms, upsertGlossary, deleteGlossary, upsertTerm, deleteTerm,
   listClassifications, getTags, upsertClassification, deleteClassification, upsertTag, deleteTag,
+  listManagedMetrics, listCaveats, upsertCaveat, deleteCaveat, listDatasetsLite, listKnowledge,
   type GlossaryTerm, type Glossary, type Classification, type Tag, type Metric,
+  type ManagedMetric, type GovernCaveat, type DatasetLite, type KnowledgeDoc,
 } from '@/lib/catalog';
 
 function errDetail(err: unknown): string | undefined {
@@ -85,21 +85,22 @@ export default function GovernPage() {
 
 function GovernModule() {
   const nav = useUrlNav();
-  const [vocabOpen, setVocabOpen] = useState(false);
+  const [registryOpen, setRegistryOpen] = useState(false);
 
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="min-h-0 flex-1 overflow-hidden">
-        <KnowledgeTab nav={nav} onOpenVocab={() => setVocabOpen(true)} />
+        <KnowledgeTab nav={nav} onOpenVocab={() => setRegistryOpen(true)} />
       </div>
-      {vocabOpen && <VocabManagerModal onClose={() => setVocabOpen(false)} />}
+      {registryOpen && <GovernanceRegistryModal onClose={() => setRegistryOpen(false)} />}
     </div>
   );
 }
 
-// ══════════════════════ Từ điển & Nhãn — master-data modal ═══════════════════
-function VocabManagerModal({ onClose }: { onClose: () => void }) {
+// Central governance registry: contracts and vocabulary, never dataset-owned.
+function GovernanceRegistryModal({ onClose }: { onClose: () => void }) {
   const { t } = useI18n();
+  const [section, setSection] = useState<'metrics' | 'vocabulary' | 'caveats'>('metrics');
   const [metrics, setMetrics] = useState<Metric[]>([]);
   const reloadMetrics = useCallback(async () => { try { setMetrics((await getMetrics()).metrics); } catch { /* ignore */ } }, []);
   useEffect(() => { void reloadMetrics(); }, [reloadMetrics]);
@@ -107,18 +108,218 @@ function VocabManagerModal({ onClose }: { onClose: () => void }) {
   return (
     <AppModalShell
       onClose={onClose}
-      title={t('govern.vocab.title')}
+      title={t('govern.registry.title')}
       icon={<Library className="h-4 w-4" />}
-      maxWidthClass="max-w-3xl"
+      maxWidthClass="max-w-5xl"
       /* FIXED panel size — opening inline forms/lists must never resize the
          modal; only the list area inside scrolls. */
       panelClassName="h-[min(680px,calc(100vh-4rem))]"
       bodyClassName="flex min-h-0 flex-col overflow-hidden p-5"
-      description={t('govern.vocab.description')}
+      description={t('govern.registry.description')}
       footer={<Button variant="secondary" onClick={onClose}>{t('govern.action.close')}</Button>}
     >
-      <VocabManager metrics={metrics} onChanged={reloadMetrics} />
+      <div className="flex h-full min-h-0 flex-col gap-3">
+        <Tabs<'metrics' | 'vocabulary' | 'caveats'>
+          value={section}
+          onChange={setSection}
+          items={[
+            { key: 'metrics', icon: <Target className="h-3.5 w-3.5" />, label: t('govern.registry.metrics') },
+            { key: 'vocabulary', icon: <BookText className="h-3.5 w-3.5" />, label: t('govern.registry.vocabulary') },
+            { key: 'caveats', icon: <AlertTriangle className="h-3.5 w-3.5" />, label: t('govern.registry.caveats') },
+          ]}
+        />
+        <div className="min-h-0 flex-1">
+          {section === 'metrics' ? (
+            <ManagedMetricsRegistry />
+          ) : section === 'vocabulary' ? (
+            <VocabManager metrics={metrics} onChanged={reloadMetrics} />
+          ) : (
+            <CaveatsRegistry />
+          )}
+        </div>
+      </div>
     </AppModalShell>
+  );
+}
+
+function ManagedMetricsRegistry() {
+  const { t } = useI18n();
+  const [rows, setRows] = useState<ManagedMetric[]>([]);
+  const [datasets, setDatasets] = useState<DatasetLite[]>([]);
+  const [docs, setDocs] = useState<KnowledgeDoc[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [editor, setEditor] = useState<{ machineName: string | null } | null>(null);
+
+  const reload = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [metrics, datasetRows, knowledge] = await Promise.all([
+        listManagedMetrics(), listDatasetsLite(), listKnowledge(),
+      ]);
+      setRows(metrics); setDatasets(datasetRows); setDocs(knowledge.docs);
+    } catch (err) {
+      toast.error(errDetail(err) || t('govern.registry.loadFailed'));
+    } finally {
+      setLoading(false);
+    }
+  }, [t]);
+  useEffect(() => { void reload(); }, [reload]);
+
+  return (
+    <div className="flex h-full min-h-0 flex-col">
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2 text-caption text-text-secondary">
+          <Target className="h-4 w-4 text-warning" />
+          <span>{t('govern.registry.metricCount', { count: rows.length })}</span>
+        </div>
+        <Button size="xs" variant="primary" leadingIcon={<Plus className="h-3.5 w-3.5" />} onClick={() => setEditor({ machineName: null })}>
+          {t('govern.registry.newMetric')}
+        </Button>
+      </div>
+      <div className="min-h-0 flex-1 overflow-y-auto border border-[rgb(var(--border-line))]">
+        {loading ? (
+          <p className="py-10 text-center text-caption text-text-tertiary">{t('govern.loading')}</p>
+        ) : rows.length === 0 ? (
+          <p className="py-10 text-center text-caption text-text-tertiary">{t('govern.registry.noMetrics')}</p>
+        ) : (
+          <div className="divide-y divide-[rgb(var(--border-line))]">
+            {rows.map((metric) => (
+              <button key={metric.machine_name} type="button" onClick={() => setEditor({ machineName: metric.machine_name })}
+                className="grid w-full grid-cols-[minmax(0,1fr)_9rem_9rem_2rem] items-center gap-3 px-3 py-2.5 text-left hover:bg-surface-2">
+                <div className="min-w-0">
+                  <div className="truncate text-caption font-strong text-text-primary">{metric.name}</div>
+                  <div className="truncate text-tiny text-text-tertiary">{metric.definition || metric.machine_name}</div>
+                </div>
+                <span className="truncate text-tiny text-text-secondary">{metric.owner || t('govern.registry.noOwner')}</span>
+                <span className={cn(
+                  'w-fit rounded px-1.5 py-0.5 text-tiny',
+                  metric.binding_status === 'ok' ? 'bg-success/10 text-success'
+                    : metric.binding_status === 'unresolved' ? 'bg-danger/10 text-danger'
+                      : 'bg-warning/10 text-warning',
+                )}>
+                  {t(`govern.registry.binding.${metric.binding_status || 'unbound'}`)}
+                </span>
+                <Pencil className="h-3.5 w-3.5 text-text-quaternary" />
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+      {editor && (
+        <MetricFormModal
+          machineName={editor.machineName}
+          datasets={datasets}
+          docs={docs.map((doc) => ({ id: doc.id, title: doc.title }))}
+          onClose={() => setEditor(null)}
+          onChanged={reload}
+        />
+      )}
+    </div>
+  );
+}
+
+type CaveatDraft = Pick<GovernCaveat, 'title' | 'content' | 'always_inject' | 'status'>
+  & Partial<Pick<GovernCaveat, 'id' | 'dataset_id' | 'owner'>>;
+
+function CaveatsRegistry() {
+  const { t } = useI18n();
+  const [rows, setRows] = useState<GovernCaveat[]>([]);
+  const [datasets, setDatasets] = useState<DatasetLite[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [draft, setDraft] = useState<CaveatDraft | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  const reload = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [caveats, datasetRows] = await Promise.all([listCaveats(), listDatasetsLite()]);
+      setRows(caveats); setDatasets(datasetRows);
+    } catch (err) {
+      toast.error(errDetail(err) || t('govern.registry.loadFailed'));
+    } finally {
+      setLoading(false);
+    }
+  }, [t]);
+  useEffect(() => { void reload(); }, [reload]);
+
+  const save = async () => {
+    if (!draft?.title.trim() || !draft.content.trim()) return;
+    setSaving(true);
+    try {
+      await upsertCaveat({ ...draft, title: draft.title.trim(), content: draft.content.trim() });
+      toast.success(t('govern.registry.caveatSaved'));
+      setDraft(null); await reload();
+    } catch (err) {
+      toast.error(errDetail(err) || t('govern.registry.saveFailed'));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="flex h-full min-h-0 flex-col">
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2 text-caption text-text-secondary">
+          <AlertTriangle className="h-4 w-4 text-danger" />
+          <span>{t('govern.registry.caveatCount', { count: rows.length })}</span>
+        </div>
+        <Button size="xs" variant="primary" leadingIcon={<Plus className="h-3.5 w-3.5" />}
+          onClick={() => setDraft({ title: '', content: '', always_inject: true, status: 'Draft', dataset_id: null })}>
+          {t('govern.registry.newCaveat')}
+        </Button>
+      </div>
+      <div className="min-h-0 flex-1 overflow-y-auto border border-[rgb(var(--border-line))]">
+        {loading ? (
+          <p className="py-10 text-center text-caption text-text-tertiary">{t('govern.loading')}</p>
+        ) : rows.length === 0 ? (
+          <p className="py-10 text-center text-caption text-text-tertiary">{t('govern.registry.noCaveats')}</p>
+        ) : (
+          <div className="divide-y divide-[rgb(var(--border-line))]">
+            {rows.map((caveat) => (
+              <div key={caveat.id} className="grid grid-cols-[minmax(0,1fr)_11rem_7rem_4rem] items-start gap-3 px-3 py-2.5">
+                <button type="button" onClick={() => setDraft({ ...caveat })} className="min-w-0 text-left">
+                  <div className="truncate text-caption font-strong text-text-primary">{caveat.title}</div>
+                  <div className="line-clamp-2 text-tiny leading-5 text-text-tertiary">{caveat.content}</div>
+                </button>
+                <span className="inline-flex items-center gap-1.5 truncate text-tiny text-text-secondary">
+                  <Database className="h-3.5 w-3.5 flex-none text-text-quaternary" />
+                  {caveat.dataset_name || t('govern.registry.globalScope')}
+                </span>
+                <span className="text-tiny text-text-secondary">{t(`govern.metric.status.${caveat.status}`)}</span>
+                <div className="flex justify-end gap-1">
+                  <button type="button" title={t('govern.action.edit')} onClick={() => setDraft({ ...caveat })} className="rounded p-1 text-text-tertiary hover:bg-surface-2 hover:text-text-primary"><Pencil className="h-3.5 w-3.5" /></button>
+                  <button type="button" title={t('govern.action.delete')} onClick={async () => {
+                    if (!window.confirm(t('govern.registry.deleteCaveat', { name: caveat.title }))) return;
+                    await deleteCaveat(caveat.id); await reload();
+                  }} className="rounded p-1 text-text-tertiary hover:bg-danger/10 hover:text-danger"><Trash2 className="h-3.5 w-3.5" /></button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {draft && (
+        <Modal isOpen onClose={() => setDraft(null)} title={draft.id ? t('govern.registry.editCaveat') : t('govern.registry.newCaveat')} size="lg"
+          footer={<><Button variant="ghost" onClick={() => setDraft(null)}>{t('govern.action.cancel')}</Button><Button onClick={save} loading={saving}>{t('govern.action.save')}</Button></>}>
+          <div className="space-y-3">
+            <Field label={t('govern.registry.scope')}>
+              <Select value={draft.dataset_id == null ? '' : String(draft.dataset_id)} onChange={(event) => setDraft({ ...draft, dataset_id: event.target.value ? Number(event.target.value) : null })}>
+                <option value="">{t('govern.registry.globalScope')}</option>
+                {datasets.map((dataset) => <option key={dataset.id} value={dataset.id}>{dataset.name}</option>)}
+              </Select>
+            </Field>
+            <Field label={t('govern.registry.caveatTitle')}><Input autoFocus value={draft.title} onChange={(event) => setDraft({ ...draft, title: event.target.value })} /></Field>
+            <Field label={t('govern.registry.caveatContent')}><Textarea rows={5} value={draft.content} onChange={(event) => setDraft({ ...draft, content: event.target.value })} /></Field>
+            <div className="grid grid-cols-2 gap-3">
+              <Field label={t('govern.metric.owner')}><Input value={draft.owner || ''} onChange={(event) => setDraft({ ...draft, owner: event.target.value })} /></Field>
+              <Field label={t('govern.metric.status')}><Select value={draft.status} onChange={(event) => setDraft({ ...draft, status: event.target.value as GovernCaveat['status'] })}><option value="Draft">{t('govern.metric.status.Draft')}</option><option value="Approved">{t('govern.metric.status.Approved')}</option><option value="Deprecated">{t('govern.metric.status.Deprecated')}</option></Select></Field>
+            </div>
+            <label className="flex items-center gap-2 text-caption text-text-secondary"><input type="checkbox" checked={draft.always_inject} onChange={(event) => setDraft({ ...draft, always_inject: event.target.checked })} />{t('govern.registry.alwaysInject')}</label>
+          </div>
+        </Modal>
+      )}
+    </div>
   );
 }
 

@@ -12,6 +12,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    Index,
     Integer,
     JSON,
     LargeBinary,
@@ -41,6 +42,12 @@ class Glossary(Base):
 
 
 class GlossaryTerm(Base):
+    """Company vocabulary, owned by a glossary rather than by any dataset.
+
+    Dataset columns, semantic measures, governed KPIs, and documents may all point
+    to the same term. That reuse is the purpose of the term; putting its authoring
+    UI inside one dataset would incorrectly make a shared definition look local.
+    """
     __tablename__ = "glossary_terms"
 
     id = Column(Integer, primary_key=True, index=True)
@@ -63,8 +70,8 @@ class GovernMetric(Base):
     """A MANAGEMENT METRIC the business governs by — the core of "metrics quản
     trị doanh nghiệp". This is authored DATA (nhập liệu), not code: a business
     records how it defines/tracks a KPI, and the AI + reports read it as the
-    authoritative meaning. Bind to physical data so a concept ties to real
-    columns/measures instead of being guessed from names.
+    authoritative meaning. It is owned by the Governance Registry. Bindings point
+    to executable semantic measures; datasets realize the KPI but never own it.
     """
     __tablename__ = "govern_metrics"
 
@@ -83,8 +90,8 @@ class GovernMetric(Base):
     owner = Column(String(128), nullable=True)          # accountable person/team
     related_term_fqn = Column(String(256), nullable=True)   # link to a GlossaryTerm (glossary.term)
     # Physical binding — concept ↔ real data (replaces name-guessing).
-    dataset_id = Column(Integer, nullable=True, index=True)
-    dataset_table_id = Column(Integer, nullable=True, index=True)
+    dataset_id = Column(Integer, ForeignKey("datasets.id", ondelete="SET NULL"), nullable=True, index=True)
+    dataset_table_id = Column(Integer, ForeignKey("dataset_tables.id", ondelete="SET NULL"), nullable=True, index=True)
     measure_ref = Column(String(256), nullable=True)    # semantic measure name / column ref
     # Home / source-of-truth: the knowledge doc where this metric is DEFINED.
     # Other docs reference it via {{metric:slug}} tokens (see govern_metric_usage)
@@ -97,6 +104,69 @@ class GovernMetric(Base):
     provider = Column(String(16), nullable=False, default="user")
     created_at = Column(DateTime, default=func.now())
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
+
+    #: Every place this one definition is computed. Cascade-deleted with the
+    #: metric: a binding without its statement is a pointer to nothing.
+    bindings = relationship(
+        "GovernMetricBinding", cascade="all, delete-orphan", lazy="selectin",
+    )
+
+
+class GovernMetricBinding(Base):
+    """WHERE a governed metric is realized in real data. Many per metric.
+
+    WHY THIS TABLE EXISTS
+    ---------------------
+    `GovernMetric` carried ONE realization — a single `dataset_id`,
+    `dataset_table_id` and `measure_ref`. That shape decided more than it looked
+    like it decided:
+
+      * A company metric realized in two datasets (an operational one and a
+        warehouse one, say) could not be expressed at all. The author had to pick
+        one and mislabel the rest, or bind nothing and lose the connection.
+      * Because a metric could belong to exactly one dataset, the only sensible
+        place to edit it was inside that dataset — which made the whole metric
+        catalogue read as "this dataset's semantic dictionary" rather than the
+        company's vocabulary. The information architecture followed the column.
+      * An assistant reading the catalogue saw fragments. "What does GMV mean
+        here" could be answered on one report and nowhere else, for the same word.
+
+    A metric is a STATEMENT the business governs by; a binding is one place that
+    statement is computed. Separating them is what lets one definition serve many
+    reports without being owned by any of them.
+
+    The scalar columns on `GovernMetric` are still read as a fallback, so a
+    deployment mid-upgrade keeps working. `20260815_0048` copies each existing
+    scalar binding into a row here.
+    """
+
+    __tablename__ = "govern_metric_bindings"
+
+    id = Column(Integer, primary_key=True, index=True)
+    metric_id = Column(
+        Integer, ForeignKey("govern_metrics.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    #: Which dataset realizes it. Kept alongside the table id because a metric may
+    #: be pinned at dataset level before anyone picks the exact measure.
+    dataset_id = Column(Integer, ForeignKey("datasets.id", ondelete="SET NULL"), nullable=True, index=True)
+    dataset_table_id = Column(Integer, ForeignKey("dataset_tables.id", ondelete="SET NULL"), nullable=True, index=True)
+    #: `dataset_table_<id>.<measure>` — the same spelling the semantic layer uses.
+    measure_ref = Column(String(256), nullable=True)
+    #: The one shown first, and the one the legacy scalar columns mirror. Exactly
+    #: one per metric is primary; the service enforces it rather than a partial
+    #: index, because promoting a binding also demotes the previous one and that
+    #: belongs in one transaction.
+    is_primary = Column(Boolean, nullable=False, default=False)
+    created_at = Column(DateTime, default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint(
+            "metric_id", "dataset_table_id", "measure_ref",
+            name="uq_metric_binding_target",
+        ),
+        Index("ix_metric_binding_dataset", "dataset_id"),
+    )
 
 
 class GovernMetricUsage(Base):
@@ -176,7 +246,7 @@ class GovernKnowledgeDoc(Base):
     owner = Column(String(128), nullable=True)          # free-text label (person/team)
     owner_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)  # resource owner (sharing/permissions)
     provider = Column(String(16), nullable=False, default="user")
-    # sha256(body)+embedding-model of the last body embedded into govern_doc_chunk;
+    # sha256(body)+embedding profile of the last body embedded into govern_doc_chunk;
     # lets a re-save with unchanged body skip embedding entirely (no wasted tokens).
     embedded_hash = Column(String(80), nullable=True)
     # ── External-embedding control (what may leave for a third party) ──────
@@ -213,7 +283,11 @@ class GovernKnowledgeDoc(Base):
     chunk_strategy = Column(String(16), nullable=False, default="paragraph")  # paragraph | heading | fixed
     chunk_size = Column(Integer, nullable=False, default=850)
     chunk_overlap = Column(Integer, nullable=False, default=0)
-    embedding_model = Column(String(100), nullable=True)  # null = settings.active_embedding_model
+    # Materialized per document. It never follows a later application-default
+    # change; switching it requires the explicit reset + rebuild operation.
+    embedding_model = Column(
+        String(100), nullable=False, default="text-embedding-3-small"
+    )
     created_at = Column(DateTime, default=func.now())
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
 
@@ -416,13 +490,19 @@ class GovernReviewItem(Base):
 
 
 class GovernDataCaveat(Base):
-    """Data caveat the AI must ALWAYS see for a dataset (freshness, grain/fan-out
-    traps, quality gaps). Injected unconditionally — RAG similarity would miss
-    these ("revenue this month?" never retrieves "data loads T+1")."""
+    """Governed warning centrally authored in the Governance Registry.
+
+    ``dataset_id`` is application scope, not ownership: null means organization-
+    wide and a value means the warning applies to that dataset. Approved caveats
+    are injected deterministically because similarity search can miss critical
+    freshness, grain, fan-out, or quality warnings.
+    """
     __tablename__ = "govern_data_caveats"
 
     id = Column(Integer, primary_key=True, index=True)
-    dataset_id = Column(Integer, nullable=True, index=True)   # null = every dataset
+    dataset_id = Column(
+        Integer, ForeignKey("datasets.id", ondelete="SET NULL"), nullable=True, index=True,
+    )  # null = organization-wide
     title = Column(String(255), nullable=False)
     content = Column(Text, nullable=False)
     always_inject = Column(Boolean, nullable=False, default=True)

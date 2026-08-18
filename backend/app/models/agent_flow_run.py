@@ -146,7 +146,17 @@ class AgentFlowRunStep(Base):
     iteration = Column(Integer, nullable=True)
     latency_ms = Column(Integer, nullable=True)
     tool_calls = Column(JSONB, nullable=True)
+    #: What this step was HANDED. Recorded alongside what it produced, because a
+    #: node that answered badly and a node that was given nothing to answer from
+    #: look identical when only the output is kept.
+    input_preview = Column(Text, nullable=True)
     output_preview = Column(Text, nullable=True)
+    #: What this step COST. The turn's total says a flow is expensive without
+    #: saying which step made it so, and the answer is usually one node carrying a
+    #: context it did not need. NULL means "written before this was recorded" —
+    #: distinct from 0, which would claim the step was free.
+    prompt_tokens = Column(Integer, nullable=True)
+    completion_tokens = Column(Integer, nullable=True)
     error = Column(Text, nullable=True)
 
     created_at = Column(

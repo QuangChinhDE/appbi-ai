@@ -138,7 +138,6 @@ export function PublicLinkAppearanceEditor({
     ai_bot_enabled: value.ai_bot_enabled,
     ai_bot_provider: value.ai_bot_provider,
     ai_bot_model: value.ai_bot_model,
-    ai_bot_flow_key: value.ai_bot_flow_key,
     ai_bot_web_search_enabled: value.ai_bot_web_search_enabled,
     ai_bot_report_context_note: value.ai_bot_report_context_note,
     ai_bot_key: value.ai_bot_key,
@@ -243,6 +242,12 @@ export function PublicLinkAppearanceEditor({
             label="Allow viewer filters"
             description="Let viewers use filter controls on the shared report."
             onToggle={() => updateField('allow_viewer_filters', !appearance.allow_viewer_filters)}
+          />
+          <ToggleCard
+            checked={appearance.allow_data_export}
+            label="Allow data export"
+            description="Let viewers download each chart's data (CSV) — only the chart's filtered rows."
+            onToggle={() => updateField('allow_data_export', !appearance.allow_data_export)}
           />
         </div>
       </div>

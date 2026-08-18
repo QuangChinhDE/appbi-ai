@@ -45,6 +45,7 @@ class AuditAction(str, enum.Enum):
     # trail as a permission change, not in a module-local log.
     AGENT_FLOW_SAVED = "agent_flow_saved"
     AGENT_FLOW_PUBLISHED = "agent_flow_published"
+    AGENT_FLOW_UNPUBLISHED = "agent_flow_unpublished"
     AGENT_FLOW_ROLLED_BACK = "agent_flow_rolled_back"
     AGENT_FLOW_RESTORED = "agent_flow_restored"
     AGENT_FLOW_DELETED = "agent_flow_deleted"

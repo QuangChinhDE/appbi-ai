@@ -16,7 +16,32 @@ export const governCatalog: ModuleCatalog = {
     'govern.action.createDocument': 'Create document',
     'govern.action.saveDocument': 'Save document',
     'govern.action.saveChanges': 'Save changes',
-    'govern.action.vocab': 'Glossary & tags',
+    'govern.action.vocab': 'Governance Registry',
+    'govern.registry.title': 'Governance Registry',
+    'govern.registry.description': 'Central definitions and controls shared across AppBI.',
+    'govern.registry.metrics': 'Governed KPIs',
+    'govern.registry.vocabulary': 'Vocabulary',
+    'govern.registry.caveats': 'Data caveats',
+    'govern.registry.loadFailed': 'Could not load the registry',
+    'govern.registry.saveFailed': 'Could not save changes',
+    'govern.registry.metricCount': '{{count}} governed KPIs',
+    'govern.registry.newMetric': 'New KPI',
+    'govern.registry.noMetrics': 'No governed KPI has been defined yet.',
+    'govern.registry.noOwner': 'No owner',
+    'govern.registry.binding.ok': 'Bound',
+    'govern.registry.binding.unbound': 'Unbound',
+    'govern.registry.binding.unresolved': 'Broken binding',
+    'govern.registry.caveatCount': '{{count}} data caveats',
+    'govern.registry.newCaveat': 'New caveat',
+    'govern.registry.editCaveat': 'Edit caveat',
+    'govern.registry.noCaveats': 'No data caveat has been defined yet.',
+    'govern.registry.caveatSaved': 'Data caveat saved',
+    'govern.registry.deleteCaveat': 'Delete caveat "{{name}}"?',
+    'govern.registry.scope': 'Application scope',
+    'govern.registry.globalScope': 'All datasets',
+    'govern.registry.caveatTitle': 'Warning title',
+    'govern.registry.caveatContent': 'Required warning',
+    'govern.registry.alwaysInject': 'Always include this warning in AI context',
     'govern.action.aiWrite': 'AI write document',
     'govern.action.defineMetric': 'Define metric',
     'govern.action.importFile': 'Import file',
@@ -69,6 +94,7 @@ export const governCatalog: ModuleCatalog = {
     'govern.aiHealth.hasContext': 'Business context',
     'govern.aiHealth.isIndexed': 'Indexed for AI',
     'govern.info.version': 'Version',
+    'govern.info.ownerAccount': 'Owner (account)',
     'govern.vectors.title': 'Vectors',
     'govern.vectors.count': 'Vectors',
     'govern.vectors.dims': 'Dimensions',
@@ -211,6 +237,13 @@ export const governCatalog: ModuleCatalog = {
     'govern.embedding.model': 'Embedding model (advanced)',
     'govern.embedding.modelPlaceholder': 'Leave empty to use the default model',
     'govern.embedding.modelHint': 'Overrides the default OpenAI embedding model id for this document only. Only text-embedding-3-* models are guaranteed compatible.',
+    'govern.embedding.createModelHint': 'This model is assigned to the document before its first sync or index.',
+    'govern.embedding.modelLockedHint': 'The document keeps this model for every sync and search query.',
+    'govern.embedding.modelChangeHint': 'Changing model deletes all existing vectors and rebuilds the document from zero.',
+    'govern.embedding.resetReembed': 'Reset & Re-embed',
+    'govern.embedding.resetConfirm': 'Delete the existing vectors and rebuild this document with {{model}}?',
+    'govern.embedding.profilesLoadFailed': 'Could not load embedding models',
+    'govern.embedding.modelRequired': 'Choose an embedding model before saving the document',
     'govern.embedding.preview': 'Preview chunks',
     'govern.embedding.saveReembed': 'Save & Re-embed',
     'govern.embedding.currentChunks': 'Currently embedded: {{count}} chunks',
@@ -435,6 +468,7 @@ export const governCatalog: ModuleCatalog = {
     'govern.metric.linkMeasure': 'Measure',
     'govern.metric.measureRefHint': 'e.g. dataset_table_437.on_time_rate',
     'govern.metric.relatedTerm': 'Related term (FQN)',
+    'govern.metric.alsoComputedIn': 'Also computed in',
     'govern.metric.relatedTermHint': 'glossary.term',
     'govern.metric.homeDoc': 'Definition page',
     'govern.metric.homeDocHint': 'Knowledge page used as source of truth (SSOT)',
@@ -445,6 +479,13 @@ export const governCatalog: ModuleCatalog = {
     'govern.metric.status.Approved': 'Approved',
     'govern.metric.status.Deprecated': 'Deprecated',
     'govern.metric.save': 'Save KPI',
+    'govern.metric.certify': 'Certify',
+    'govern.metric.certified': 'KPI certified',
+    'govern.metric.certifyFailed': 'Could not certify KPI',
+    'govern.metric.realizations': 'Semantic measure realizations',
+    'govern.metric.realizationCount': '{{count}} bindings',
+    'govern.metric.linkDataset': 'Dataset',
+    'govern.metric.removeRealization': 'Remove realization',
     'govern.metric.definitionSection': 'Definition',
     'govern.metric.formulaSection': 'Formula',
     'govern.metric.target': 'Target',
@@ -469,6 +510,7 @@ export const governCatalog: ModuleCatalog = {
     'govern.stats.needsReviewHelper': 'Documents missing owner/summary or overdue for review',
     'govern.list.header.aiReady': 'AI ready',
     'govern.list.header.updated': 'Updated',
+    'govern.list.header.owner': 'Owner',
     'govern.insight.noOwner': 'No owner',
     'govern.insight.noSummary': 'No summary',
     'govern.insight.staleReview': 'Review overdue',
@@ -531,10 +573,46 @@ export const governCatalog: ModuleCatalog = {
     'govern.graph.assets': 'Dashboards & data',
     'govern.graph.related': 'Related documents',
     'govern.graph.empty': 'No connections yet — link KPIs, dashboards or datasets in the content.',
-    'govern.graph.emptyGlobal': 'No documents to graph yet.',
-    'govern.graph.edgeLink': 'Wikilink',
-    'govern.graph.edgeMetric': 'Shared KPI',
-    'govern.graph.hint': 'Click a node to open · hover to focus',
+    'govern.graph.emptyGlobal': 'No data points to graph yet.',
+    'govern.graph.loadFailed': 'Could not load the knowledge network.',
+    'govern.graph.nodes': 'Data points',
+    'govern.graph.connections': 'Connections',
+    'govern.graph.knowledgeConnections': 'Knowledge links',
+    'govern.graph.gaps': 'Knowledge gaps',
+    'govern.graph.kind.dashboard': 'Reports',
+    'govern.graph.kind.dataset': 'Datasets',
+    'govern.graph.kind.measure': 'Semantic measures',
+    'govern.graph.kind.metric': 'Governed KPIs',
+    'govern.graph.kind.doc': 'Documents',
+    'govern.graph.kind.term': 'Terms',
+    'govern.graph.kind.caveat': 'Caveats',
+    'govern.graph.mode.all': 'All',
+    'govern.graph.mode.connected': 'Connected',
+    'govern.graph.mode.gaps': 'Gaps',
+    'govern.graph.physicalLayer': 'Data lineage',
+    'govern.graph.semanticLayer': 'Semantic bindings',
+    'govern.graph.knowledgeLayer': 'Knowledge',
+    'govern.graph.matches': '{{count}} matches',
+    'govern.graph.systemOverview': 'System overview',
+    'govern.graph.reportsWithoutKnowledge': 'Reports without knowledge',
+    'govern.graph.orphanTerms': 'Unlinked terms',
+    'govern.graph.mostConnected': 'Network hubs',
+    'govern.graph.openAsset': 'Open',
+    'govern.graph.status': 'Status',
+    'govern.graph.owner': 'Owner',
+    'govern.graph.space': 'Space',
+    'govern.graph.group': 'Glossary',
+    'govern.graph.coverage': 'Knowledge coverage',
+    'govern.graph.noConnections': 'No connected assets.',
+    'govern.graph.edge.reads': 'reads',
+    'govern.graph.edge.explains': 'explains',
+    'govern.graph.edge.defines': 'defines',
+    'govern.graph.edge.defined_in': 'defined in',
+    'govern.graph.edge.realized_by': 'realized by',
+    'govern.graph.edge.means': 'means',
+    'govern.graph.edge.applies_to': 'applies to',
+    'govern.graph.edge.links': 'links to',
+    'govern.graph.edge.references': 'references',
     'govern.view.list': 'List',
     'govern.view.graph': 'Graph',
     'govern.backlinks.title': 'Linked mentions',
@@ -760,6 +838,101 @@ export const governCatalog: ModuleCatalog = {
     'intel.ai.drafted': 'AI drafted the fields',
     'intel.ai.failed': 'AI draft failed',
     'intel.ai.rulePromptPh': 'Describe the rule in plain words, e.g. "When on-time rate drops below 90% in a week, alert and break down by carrier and state"',
+    'govern.time.justNow': 'just now',
+    'govern.time.minutesAgo': '{{count}}m ago',
+    'govern.time.hoursAgo': '{{count}}h ago',
+    'govern.time.daysAgo': '{{count}}d ago',
+    'govern.markdown.callout.note': 'Note',
+    'govern.markdown.callout.info': 'Information',
+    'govern.markdown.callout.tip': 'Tip',
+    'govern.markdown.callout.success': 'Good',
+    'govern.markdown.callout.warning': 'Warning',
+    'govern.markdown.callout.danger': 'Danger',
+    'govern.markdown.callout.rule': 'Business rule',
+    'govern.markdown.callout.formula': 'Formula',
+    'govern.markdown.callout.question': 'Question',
+    'govern.markdown.missingDoc': 'Document does not exist yet',
+    'govern.markdown.imageFallback': 'Image',
+    'govern.docTemplate.domain': `## Business meaning
+What this area covers and why it matters.
+
+## Key metrics
+Insert governed metrics with the "Define metric" button or {{metric:slug}}, with meaning and calculation notes.
+
+## Data sources & refresh
+Where the data comes from ({{dataset:id}}) and how often it refreshes.
+
+## How to read & analyze
+Which numbers to read first, and what to compare.
+
+## Exceptions & notes
+Edge cases and traps when reading the numbers.
+`,
+    'govern.docTemplate.sop': `## Purpose
+Why this process exists.
+
+## Scope
+Which team or situation this applies to.
+
+## Roles
+Who does what (operator, reviewer, approver).
+
+## Inputs
+What is needed before starting.
+
+## Steps
+1. ...
+2. ...
+3. ...
+
+## Outputs
+What result is handed off.
+
+## Exceptions
+When the process can differ and how to handle it.
+
+## Related systems
+Related dashboards/data: {{dashboard:id}}, {{dataset:id}}.
+`,
+    'govern.docTemplate.report': `## Business goal
+Which question this report answers and which decision it supports.
+
+## Audience
+Who uses it and when.
+
+## Metrics on the report
+Insert {{metric:slug}} for each key metric, with threshold or target.
+
+## Data sources
+{{dataset:id}} - model and grain.
+
+## Report
+{{dashboard:id}} - key pages/charts.
+
+## Refresh cadence
+Data refresh schedule.
+
+## Data quality notes
+Limits, incomplete data, and conventions to know.
+`,
+    'govern.docTemplate.aiKnowhow': `## Question
+The business question this knowledge answers.
+
+## Answer
+The canonical answer: concise, correct, and using approved terms.
+
+## Reasoning
+Why this answer is correct: logic, formula, source numbers ({{metric:slug}}, {{dashboard:id}}).
+
+## Good example
+A situation where this applies.
+
+## Bad example / counterexample
+Cases that are easy to confuse and how to tell them apart.
+
+## Business rules
+Non-negotiable rules related to this answer.
+`,
   },
   vi: {
     'govern.loading': 'Đang tải...',
@@ -776,7 +949,32 @@ export const governCatalog: ModuleCatalog = {
     'govern.action.createDocument': 'Tạo tài liệu',
     'govern.action.saveDocument': 'Lưu tài liệu',
     'govern.action.saveChanges': 'Lưu thay đổi',
-    'govern.action.vocab': 'Từ điển & Nhãn',
+    'govern.action.vocab': 'Danh mục quản trị',
+    'govern.registry.title': 'Danh mục quản trị',
+    'govern.registry.description': 'Định nghĩa và kiểm soát dùng chung trong toàn bộ AppBI.',
+    'govern.registry.metrics': 'KPI quản trị',
+    'govern.registry.vocabulary': 'Từ vựng',
+    'govern.registry.caveats': 'Lưu ý dữ liệu',
+    'govern.registry.loadFailed': 'Không tải được danh mục quản trị',
+    'govern.registry.saveFailed': 'Không lưu được thay đổi',
+    'govern.registry.metricCount': '{{count}} KPI quản trị',
+    'govern.registry.newMetric': 'KPI mới',
+    'govern.registry.noMetrics': 'Chưa có KPI quản trị nào.',
+    'govern.registry.noOwner': 'Chưa có chủ sở hữu',
+    'govern.registry.binding.ok': 'Đã gắn measure',
+    'govern.registry.binding.unbound': 'Chưa gắn',
+    'govern.registry.binding.unresolved': 'Liên kết lỗi',
+    'govern.registry.caveatCount': '{{count}} lưu ý dữ liệu',
+    'govern.registry.newCaveat': 'Thêm lưu ý',
+    'govern.registry.editCaveat': 'Sửa lưu ý',
+    'govern.registry.noCaveats': 'Chưa có lưu ý dữ liệu nào.',
+    'govern.registry.caveatSaved': 'Đã lưu lưu ý dữ liệu',
+    'govern.registry.deleteCaveat': 'Xóa lưu ý "{{name}}"?',
+    'govern.registry.scope': 'Phạm vi áp dụng',
+    'govern.registry.globalScope': 'Tất cả dataset',
+    'govern.registry.caveatTitle': 'Tiêu đề cảnh báo',
+    'govern.registry.caveatContent': 'Nội dung bắt buộc lưu ý',
+    'govern.registry.alwaysInject': 'Luôn đưa cảnh báo này vào ngữ cảnh AI',
     'govern.action.aiWrite': 'AI viết tài liệu',
     'govern.action.defineMetric': 'Định nghĩa chỉ số',
     'govern.action.importFile': 'Nhập từ tệp',
@@ -829,6 +1027,7 @@ export const governCatalog: ModuleCatalog = {
     'govern.aiHealth.hasContext': 'C\u00f3 business context',
     'govern.aiHealth.isIndexed': '\u0110\u00e3 index cho AI',
     'govern.info.version': 'Phi\u00ean b\u1ea3n',
+    'govern.info.ownerAccount': 'Chủ sở hữu (tài khoản)',
     'govern.vectors.title': 'Vector',
     'govern.vectors.count': 'S\u1ed1 vector',
     'govern.vectors.dims': 'S\u1ed1 chi\u1ec1u',
@@ -971,6 +1170,13 @@ export const governCatalog: ModuleCatalog = {
     'govern.embedding.model': 'Model embedding (nâng cao)',
     'govern.embedding.modelPlaceholder': 'Để trống để dùng model mặc định',
     'govern.embedding.modelHint': 'Ghi đè model embedding OpenAI mặc định chỉ cho tài liệu này. Chỉ các model text-embedding-3-* được đảm bảo tương thích.',
+    'govern.embedding.createModelHint': 'Model này được gán cho tài liệu trước lần đồng bộ hoặc index đầu tiên.',
+    'govern.embedding.modelLockedHint': 'Tài liệu giữ nguyên model này cho mọi lần sync và truy vấn search.',
+    'govern.embedding.modelChangeHint': 'Đổi model sẽ xóa toàn bộ vector cũ và embed lại tài liệu từ đầu.',
+    'govern.embedding.resetReembed': 'Reset & Embed lại',
+    'govern.embedding.resetConfirm': 'Xóa toàn bộ vector hiện tại và embed lại tài liệu bằng {{model}}?',
+    'govern.embedding.profilesLoadFailed': 'Không tải được danh sách model embedding',
+    'govern.embedding.modelRequired': 'Hãy chọn model embedding trước khi lưu tài liệu',
     'govern.embedding.preview': 'Xem trước chunk',
     'govern.embedding.saveReembed': 'Lưu & Embed lại',
     'govern.embedding.currentChunks': 'Hiện đang embed: {{count}} chunk',
@@ -1195,6 +1401,7 @@ export const governCatalog: ModuleCatalog = {
     'govern.metric.linkMeasure': 'Measure',
     'govern.metric.measureRefHint': 'vd: dataset_table_437.on_time_rate',
     'govern.metric.relatedTerm': 'Thuật ngữ liên quan (FQN)',
+    'govern.metric.alsoComputedIn': 'Còn được tính ở',
     'govern.metric.relatedTermHint': 'glossary.term',
     'govern.metric.homeDoc': 'Trang định nghĩa',
     'govern.metric.homeDocHint': 'Trang cẩm nang là nguồn định nghĩa (SSOT)',
@@ -1205,6 +1412,13 @@ export const governCatalog: ModuleCatalog = {
     'govern.metric.status.Approved': 'Đã duyệt',
     'govern.metric.status.Deprecated': 'Không dùng nữa',
     'govern.metric.save': 'Lưu chỉ số',
+    'govern.metric.certify': 'Chứng thực',
+    'govern.metric.certified': 'Đã chứng thực KPI',
+    'govern.metric.certifyFailed': 'Không chứng thực được KPI',
+    'govern.metric.realizations': 'Measure hiện thực hóa KPI',
+    'govern.metric.realizationCount': '{{count}} liên kết',
+    'govern.metric.linkDataset': 'Dataset',
+    'govern.metric.removeRealization': 'Gỡ measure',
     'govern.metric.definitionSection': 'Định nghĩa',
     'govern.metric.formulaSection': 'Công thức',
     'govern.metric.target': 'Mục tiêu',
@@ -1229,6 +1443,7 @@ export const governCatalog: ModuleCatalog = {
     'govern.stats.needsReviewHelper': 'Tài liệu thiếu chủ sở hữu/tóm tắt hoặc quá hạn rà soát',
     'govern.list.header.aiReady': 'AI ready',
     'govern.list.header.updated': 'Cập nhật',
+    'govern.list.header.owner': 'Chủ sở hữu',
     'govern.insight.noOwner': 'Thiếu chủ sở hữu',
     'govern.insight.noSummary': 'Thiếu tóm tắt',
     'govern.insight.staleReview': 'Quá hạn rà soát',
@@ -1291,10 +1506,46 @@ export const governCatalog: ModuleCatalog = {
     'govern.graph.assets': 'Báo cáo & dữ liệu',
     'govern.graph.related': 'Tài liệu liên quan',
     'govern.graph.empty': 'Chưa có kết nối — hãy gắn chỉ số, báo cáo hoặc dữ liệu trong nội dung.',
-    'govern.graph.emptyGlobal': 'Chưa có tài liệu để dựng đồ thị.',
-    'govern.graph.edgeLink': 'Liên kết wiki',
-    'govern.graph.edgeMetric': 'Chung chỉ số',
-    'govern.graph.hint': 'Bấm node để mở · rê chuột để làm nổi',
+    'govern.graph.emptyGlobal': 'Chưa có điểm dữ liệu để dựng đồ thị.',
+    'govern.graph.loadFailed': 'Không tải được mạng tri thức.',
+    'govern.graph.nodes': 'Điểm dữ liệu',
+    'govern.graph.connections': 'Kết nối',
+    'govern.graph.knowledgeConnections': 'Liên kết tri thức',
+    'govern.graph.gaps': 'Điểm đứt tri thức',
+    'govern.graph.kind.dashboard': 'Báo cáo',
+    'govern.graph.kind.dataset': 'Dataset',
+    'govern.graph.kind.measure': 'Measure ngữ nghĩa',
+    'govern.graph.kind.metric': 'KPI quản trị',
+    'govern.graph.kind.doc': 'Tài liệu',
+    'govern.graph.kind.term': 'Thuật ngữ',
+    'govern.graph.kind.caveat': 'Lưu ý dữ liệu',
+    'govern.graph.mode.all': 'Tất cả',
+    'govern.graph.mode.connected': 'Đã kết nối',
+    'govern.graph.mode.gaps': 'Điểm đứt',
+    'govern.graph.physicalLayer': 'Luồng dữ liệu',
+    'govern.graph.semanticLayer': 'Liên kết ngữ nghĩa',
+    'govern.graph.knowledgeLayer': 'Tri thức',
+    'govern.graph.matches': '{{count}} kết quả',
+    'govern.graph.systemOverview': 'Toàn cảnh hệ thống',
+    'govern.graph.reportsWithoutKnowledge': 'Báo cáo chưa có tri thức',
+    'govern.graph.orphanTerms': 'Thuật ngữ chưa liên kết',
+    'govern.graph.mostConnected': 'Trung tâm kết nối',
+    'govern.graph.openAsset': 'Mở',
+    'govern.graph.status': 'Trạng thái',
+    'govern.graph.owner': 'Phụ trách',
+    'govern.graph.space': 'Không gian',
+    'govern.graph.group': 'Bộ thuật ngữ',
+    'govern.graph.coverage': 'Độ phủ tri thức',
+    'govern.graph.noConnections': 'Chưa có tài sản nào kết nối.',
+    'govern.graph.edge.reads': 'đọc',
+    'govern.graph.edge.explains': 'giải thích',
+    'govern.graph.edge.defines': 'định nghĩa',
+    'govern.graph.edge.defined_in': 'định nghĩa trong',
+    'govern.graph.edge.realized_by': 'được hiện thực bởi',
+    'govern.graph.edge.means': 'mang nghĩa',
+    'govern.graph.edge.applies_to': 'áp dụng cho',
+    'govern.graph.edge.links': 'liên kết tới',
+    'govern.graph.edge.references': 'tham chiếu',
     'govern.view.list': 'Danh sách',
     'govern.view.graph': 'Đồ thị',
     'govern.backlinks.title': 'Được nhắc tới',
@@ -1520,5 +1771,100 @@ export const governCatalog: ModuleCatalog = {
     'intel.ai.drafted': 'AI đã soạn nháp các trường',
     'intel.ai.failed': 'AI soạn thất bại',
     'intel.ai.rulePromptPh': 'Mô tả quy tắc bằng lời, vd: "Khi tỷ lệ giao đúng hạn xuống dưới 90% trong tuần thì cảnh báo và phân rã theo hãng vận chuyển và theo bang"',
+    'govern.time.justNow': 'vừa xong',
+    'govern.time.minutesAgo': '{{count}} phút trước',
+    'govern.time.hoursAgo': '{{count}} giờ trước',
+    'govern.time.daysAgo': '{{count}} ngày trước',
+    'govern.markdown.callout.note': 'Ghi chú',
+    'govern.markdown.callout.info': 'Thông tin',
+    'govern.markdown.callout.tip': 'Mẹo',
+    'govern.markdown.callout.success': 'Tốt',
+    'govern.markdown.callout.warning': 'Cảnh báo',
+    'govern.markdown.callout.danger': 'Nguy hiểm',
+    'govern.markdown.callout.rule': 'Quy tắc nghiệp vụ',
+    'govern.markdown.callout.formula': 'Công thức',
+    'govern.markdown.callout.question': 'Câu hỏi',
+    'govern.markdown.missingDoc': 'Tài liệu chưa tồn tại',
+    'govern.markdown.imageFallback': 'Ảnh',
+    'govern.docTemplate.domain': `## Ý nghĩa nghiệp vụ
+Mảng này nói về điều gì, vì sao quan trọng.
+
+## Chỉ số chính
+Chèn chỉ số quản trị bằng nút "Định nghĩa chỉ số" hoặc {{metric:slug}} — kèm ý nghĩa + cách tính.
+
+## Nguồn dữ liệu & làm mới
+Dữ liệu lấy từ đâu ({{dataset:id}}), tần suất cập nhật.
+
+## Cách đọc & phân tích
+Đọc số theo thứ tự nào, đối chiếu gì với gì.
+
+## Ngoại lệ & lưu ý
+Trường hợp ngoại lệ, bẫy khi đọc số.
+`,
+    'govern.docTemplate.sop': `## Mục đích
+Quy trình này tồn tại để làm gì.
+
+## Phạm vi
+Áp dụng cho bộ phận/tình huống nào.
+
+## Vai trò tham gia
+Ai làm gì (người thực hiện, người duyệt).
+
+## Đầu vào
+Cần gì trước khi bắt đầu.
+
+## Các bước thực hiện
+1. ...
+2. ...
+3. ...
+
+## Đầu ra
+Kết quả bàn giao là gì.
+
+## Ngoại lệ
+Khi nào đi lệch quy trình và xử lý ra sao.
+
+## Hệ thống liên quan
+Báo cáo/dữ liệu liên quan: {{dashboard:id}}, {{dataset:id}}.
+`,
+    'govern.docTemplate.report': `## Mục tiêu kinh doanh
+Báo cáo này trả lời câu hỏi gì, phục vụ quyết định nào.
+
+## Đối tượng sử dụng
+Ai xem, xem khi nào.
+
+## Chỉ số trên báo cáo
+Chèn {{metric:slug}} cho từng chỉ số chính — kèm ngưỡng/mục tiêu.
+
+## Nguồn dữ liệu
+{{dataset:id}} — mô hình, cấp dữ liệu (grain).
+
+## Báo cáo
+{{dashboard:id}} — các trang/biểu đồ chính.
+
+## Tần suất cập nhật
+Lịch làm mới dữ liệu.
+
+## Lưu ý chất lượng dữ liệu
+Giới hạn, dữ liệu chưa đủ, quy ước cần biết.
+`,
+    'govern.docTemplate.aiKnowhow': `## Câu hỏi
+Câu hỏi nghiệp vụ mà tri thức này trả lời.
+
+## Trả lời
+Câu trả lời chuẩn, ngắn gọn, đúng thuật ngữ.
+
+## Suy luận
+Vì sao trả lời như vậy — logic, công thức, nguồn số ({{metric:slug}}, {{dashboard:id}}).
+
+## Ví dụ đúng
+Tình huống áp dụng đúng.
+
+## Ví dụ sai / phản ví dụ
+Tình huống dễ nhầm và cách phân biệt.
+
+## Quy tắc nghiệp vụ
+Các quy tắc bất biến liên quan.
+`,
   },
 };

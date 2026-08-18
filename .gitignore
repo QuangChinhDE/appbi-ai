@@ -160,6 +160,10 @@ backend/scripts/regression_*.py
 !backend/tests/test_filter_layered_merge.py
 !backend/tests/test_workboard_offline_relation_phase2.py
 !backend/tests/test_non_fanning_reachability.py
+# Agent Flow runtime safety net (branch/loop/retry/budget/memory/binding/
+# trace + the frozen node list). Tracked and CI-run for the same reason as
+# the suites above: a local-only test cannot protect a refactor.
+!backend/tests/test_agent_flow_golden.py
 # Golden matrix — tracked so CI/reviewers can replay. BQ cases (ds55/56/65)
 # need a datasource → integration tier; the snowflake fixture seeds a local
 # Postgres and runs in CI.
@@ -214,3 +218,7 @@ base-testlab-*.json
 # Agent / editor scratch (Playwright a11y dumps, atomic-write temp files)
 thinking-state.md
 *.py.tmp.*
+
+# pytest fallback artefacts (backend/tests/conftest.py)
+backend/tests/.pytest-fallback.db
+backend/tests/.testdata/

@@ -660,6 +660,10 @@ export interface PublicLinkAppearanceConfig {
   show_stats?: boolean;
   show_page_tabs?: boolean;
   allow_viewer_filters?: boolean;
+  /** When true (default), viewers can download each chart's data as CSV on the
+   *  public/embed report (only the chart's already-filtered/permission-scoped
+   *  rows). Admins can turn it off per link. */
+  allow_data_export?: boolean;
   show_footer?: boolean;
   show_chart_type_label?: boolean;
   /** Snapshot freshness for this public link (perf #5, Stage 2). Minutes past
@@ -681,19 +685,6 @@ export interface PublicLinkAppearanceConfig {
    */
   ai_bot_report_context_note?: string | null;
   /**
-   * WHICH WAY OF THINKING this link's bot uses — the key of a published AI Flow
-   * (a chain of AI Agents built in AI Flow Studio).
-   *
-   * Empty or absent means "use the system default flow", resolved server-side.
-   * Deliberately not defaulted to the built-in key on save: writing it would
-   * freeze the link onto today's default, so a later change of default would
-   * skip every link that had merely been left alone.
-   *
-   * This replaced `ai_bot_default_mode`. Depth is now a property of the chosen
-   * flow — a one-step lookup chain and a five-step analysis chain ARE the two
-   * modes — rather than a dropdown that reconfigured one monolithic bot.
-   */
-  ai_bot_flow_key?: string | null;
   /**
    * Allow the Thinking bot to search the public web for domain/market
    * know-how (off by default; needs TAVILY_API_KEY server-side).

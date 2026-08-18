@@ -191,32 +191,51 @@ def _entitled_doc_ids(ctx: ToolContext) -> set[int]:
     return visible
 
 
-def _metrics_in_scope(ctx: ToolContext) -> list[Any]:
+def _metrics_in_scope(ctx: ToolContext, question: str = "") -> list[Any]:
+    """Metrics this report may read.
+
+    `question` is used for one thing only: letting an UNBOUND metric in when the
+    question names it. Admission is by name, not by token overlap — a metric's
+    definition is prose, so overlap would readmit through the back door exactly
+    what removing the `not bound` escape was meant to shut.
+    """
     chosen = _authored_metric_names(ctx)
     from app.models.governance import GovernMetric
+    from app.services.governance_service import GovernanceService
 
     tids, dsids = _scope(ctx)
     out: list[Any] = []
     for metric in (
         ctx.db.query(GovernMetric).filter(GovernMetric.status != "Deprecated").all()
     ):
-        bound = metric.dataset_id is not None or metric.dataset_table_id is not None
-        matched = (metric.dataset_id in dsids) or (metric.dataset_table_id in tids)
-        if not matched and metric.measure_ref:
-            # Field metrics commonly bind through a "dataset_table_<id>.<measure>"
-            # string rather than the id columns, and in practice that id may be
-            # either a dataset_table id or a dataset id. Honour both — the
-            # sibling code path in knowledge_context does, and a definition that
-            # reaches the rules block but not the dictionary is worse than
-            # either outcome alone.
-            ref = re.match(r"dataset_table_(\d+)\.", str(metric.measure_ref))
-            if ref:
-                bound = True
-                ref_id = int(ref.group(1))
-                if ref_id in tids or ref_id in dsids:
-                    matched = True
-        if not (matched or not bound):
-            continue
+        # Every valid semantic realization counts. A stale string or a dataset-only
+        # Draft scope is not data reach and cannot place a KPI on a report.
+        details = GovernanceService.metric_binding_details(ctx.db, metric)
+        bound = bool(details)
+        matched = any(
+            row["status"] == "ok"
+            and (row.get("dataset_id") in dsids or row.get("dataset_table_id") in tids)
+            for row in details
+        )
+        # AN UNBOUND METRIC IS VOCABULARY, NOT A RESIDENT OF EVERY REPORT.
+        #
+        # This read `matched or not bound`, so a metric with no dataset appeared on
+        # EVERY dashboard in the deployment. Unbound is the normal state while a
+        # definition is being written, so the set that leaked was the newest and
+        # least reviewed — and a metric carries `target_value`, so an out-of-scope
+        # one does not merely add noise: it puts a NUMBER WITH A THRESHOLD into a
+        # prompt about someone else's report, where a model may quote it as if it
+        # had been measured.
+        #
+        # Unbound metrics still belong to the company's shared vocabulary, so they
+        # are not banned — they must be NAMED. The question (or the step's own
+        # attachment list) has to reach for them, exactly as an unwired glossary
+        # term does. Nothing arrives merely by existing.
+        if not matched:
+            if bound:
+                continue
+            if not _question_names(question, [metric.display_name or "", metric.name]):
+                continue
         # The step's own narrowing, applied AFTER entitlement — same rule as
         # documents, so a name that is not in scope cannot be added by listing it.
         if chosen and metric.name not in chosen and (metric.display_name or "") not in chosen:
@@ -231,10 +250,188 @@ def _metric_text(metric: Any) -> str:
     return " ".join(str(b) for b in bits if b)
 
 
+def _authored_term_fqns(ctx: ToolContext) -> set[str] | None:
+    raw = (getattr(ctx, "knowledge_scope", None) or {}).get("term_fqns") or []
+    out = {str(x).strip() for x in raw if str(x).strip()}
+    return out or None
+
+
+def _measure_term_fqns(ctx: ToolContext, dsids: set[int]) -> set[str]:
+    """Glossary terms reached THROUGH the report's own measures.
+
+    A semantic measure can carry `glossary_terms` — the richest vocabulary link in
+    the product, and the only many-to-many one. Nothing read it: the assistant
+    reads `GovernMetric`, which carries a single `related_term_fqn`, so a term
+    curated onto a measure decorated an object the assistant never opened. The
+    Govern screen even counted "usage" from these links, which made the curation
+    look effective while it changed nothing.
+
+    This is the bridge, not a new store: dashboard → dataset → measure → term.
+    """
+    if not dsids:
+        return set()
+    out: set[str] = set()
+    try:
+        from app.models.dataset import DatasetTable
+        from app.models.semantic import SemanticView
+
+        table_ids = [
+            t.id for t in ctx.db.query(DatasetTable.id)
+            .filter(DatasetTable.dataset_id.in_(dsids)).all()
+        ]
+        if not table_ids:
+            return set()
+        for view in (
+            ctx.db.query(SemanticView)
+            .filter(SemanticView.dataset_table_id.in_(table_ids)).all()
+        ):
+            for coll in ("measures", "dimensions"):
+                for field in (getattr(view, coll, None) or []):
+                    if not isinstance(field, dict):
+                        continue
+                    for ref in (field.get("glossary_terms") or []):
+                        fqn = (ref or {}).get("fqn") if isinstance(ref, dict) else ref
+                        if fqn:
+                            out.add(str(fqn).strip())
+    except Exception:  # noqa: BLE001 — a bridge must never break a search
+        logger.warning("search_knowledge: measure→term bridge failed", exc_info=True)
+    return out
+
+
+def _question_names(question: str, phrases: list[str]) -> str | None:
+    """The phrase from `phrases` the question actually uses, or None.
+
+    PHRASE CONTAINMENT, NOT TOKEN OVERLAP, and the difference is not academic.
+    `_score` returns the fraction of question tokens present in a haystack, which
+    is a fair signal for a DOCUMENT — long prose, already entitled to this report,
+    where any overlap is weak evidence worth ranking. A glossary entry is two or
+    three words, so one shared common word is a coincidence, not a reference:
+    "khách hàng rời bỏ" scored a hit against the term "tổng giá trị hàng hoá" on
+    the word `hàng` alone. Caught by the test that asked for exactly that.
+
+    A vocabulary hit has to mean the question SAID the word. Matched on a word
+    boundary so `gmv` does not match inside another token.
+    """
+    # Separators folded to spaces on BOTH sides. A machine name is the FQN-safe
+    # spelling of the display name — `chi_phi_kho` for "Chi phí kho" — so matching
+    # it literally would only ever fire if somebody typed the underscores.
+    def flat(s: str) -> str:
+        return re.sub(r"\s+", " ", re.sub(r"[_\-.]+", " ", _fold(s or ""))).strip()
+
+    hay = flat(question)
+    if not hay:
+        return None
+    for phrase in phrases:
+        p = flat(phrase)
+        if len(p) < 2:
+            continue
+        if re.search(rf"(?<![a-z0-9]){re.escape(p)}(?![a-z0-9])", hay):
+            return phrase
+    return None
+
+
+def _terms_in_scope(ctx: ToolContext, metrics: list[Any], question: str) -> list[dict]:
+    """The glossary, reached the way a report actually relates to vocabulary.
+
+    WHY THIS DID NOT EXIST
+    ----------------------
+    `search_knowledge` read documents and managed metrics and never touched
+    `glossary_terms`, so the one store that answers "what do we mean by this word"
+    was unreachable from a flow. Four separate things blocked it — no query here,
+    no `term` source kind to attach one, the context block that used to carry the
+    glossary deliberately switched off for flows, and the measure-level links
+    dropped on read. Each had to go.
+
+    RELEVANCE IS REALIZATION, NOT OWNERSHIP
+    ---------------------------------------
+    A term is company vocabulary; it belongs to no dataset, and the schema says so
+    — `glossary_terms` has no asset column at all. So a report cannot "own" terms.
+    It can only REACH them, four ways, and each hit says which one was used:
+
+      attached   the step named this term explicitly — always included
+      measure    a measure on this report's data points at it
+      metric     a metric already in scope names it in `related_term_fqn`
+      vocabulary the question itself uses the term or one of its synonyms
+
+    The first three are structural and need no keyword luck. The fourth is the
+    honest fallback for a term nobody has wired up yet — and it is a MATCH, not a
+    dump: the alternative that was rejected is the one metrics still use, where
+    anything unattached is shown everywhere.
+    """
+    try:
+        from app.models.governance import Glossary, GlossaryTerm
+    except Exception:  # noqa: BLE001
+        return []
+
+    attached = _authored_term_fqns(ctx)
+    _tids, dsids = _scope(ctx)
+    granted = _granted_dataset_ids(ctx)
+    if granted:
+        dsids = granted
+
+    via_measure = _measure_term_fqns(ctx, dsids)
+    via_metric = {
+        str(m.related_term_fqn).strip()
+        for m in metrics
+        if getattr(m, "related_term_fqn", None)
+    }
+
+    out: list[dict] = []
+    try:
+        rows = (
+            ctx.db.query(GlossaryTerm, Glossary.name)
+            .join(Glossary, Glossary.id == GlossaryTerm.glossary_id)
+            .all()
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning("search_knowledge: glossary scan failed", exc_info=True)
+        return []
+
+    for term, set_name in rows:
+        if str(term.status or "").strip().lower() == "deprecated":
+            continue
+        fqn = f"{set_name}.{term.name}"
+        synonyms = [str(s) for s in (term.synonyms or []) if str(s).strip()]
+
+        if attached and fqn in attached:
+            reached, score = "attached", 100.0
+        elif fqn in via_measure:
+            reached, score = "measure", 60.0
+        elif fqn in via_metric:
+            reached, score = "metric", 55.0
+        else:
+            # Vocabulary reach: the question has to NAME the term — its display
+            # name, its machine name, or one of its synonyms — as a phrase.
+            said = _question_names(question, [term.display_name or "", term.name, *synonyms])
+            if not said:
+                continue
+            reached, score = "vocabulary", 40.0
+
+        # An EXPLICIT step attachment is a ceiling here exactly as it is for
+        # documents: once the author has named the terms this step may read,
+        # nothing else joins on a keyword.
+        if attached and reached != "attached":
+            continue
+
+        out.append({
+            "kind": "term",
+            "id": fqn,
+            "title": term.display_name or term.name,
+            "definition": _plain(term.description, MAX_SNIPPET_CHARS),
+            "synonyms": synonyms[:8],
+            # WHY this term is here. Without it a reader cannot tell a structural
+            # hit from a keyword coincidence, and those two deserve different
+            # trust — which is the whole complaint about the metric list.
+            "reached_by": reached,
+            "score": score,
+        })
+    return out
+
+
 def tool_search_knowledge(ctx: ToolContext, args: dict) -> dict:
     query = str((args or {}).get("query") or "").strip()
     if not query:
-        return _err("cần 'query' — từ khoá hoặc câu hỏi cần tra")
+        return _err("'query' is required — a keyword or the question to look up")
     try:
         limit = int((args or {}).get("limit") or 6)
     except (TypeError, ValueError):
@@ -244,10 +441,110 @@ def tool_search_knowledge(ctx: ToolContext, args: dict) -> dict:
     needles = _tokens(query)
     hits: list[dict] = []
 
+    # ── embeddings first, keyword as the floor ───────────────────────────────
+    #
+    # THIS WAS NOT WIRED UP. The deployment has pgvector installed, an embedding
+    # service, and 48 embedded chunks sitting in `govern_doc_chunk` — and this
+    # tool never touched any of it. It scored whole documents by token overlap,
+    # so a question phrased differently from the document's wording found
+    # nothing, and there was no way to tell from the outside that retrieval was
+    # keyword-only. That is why the system looked "not connected to embeddings":
+    # it was connected everywhere except at the one place a flow reads.
+    #
+    # `retrieve_doc_chunks` is reused rather than reimplemented. It already does
+    # hybrid recall (cosine OR full-text, fused — vector alone misses exact
+    # identifiers like a quarter code), and it already restricts to Published
+    # docs linked to THIS dashboard, which is the same boundary
+    # `_visible_doc_ids` enforces. A second retrieval path would be a second
+    # place for that boundary to drift.
+    #
+    # Keyword scoring still runs underneath: embeddings can be unavailable, a
+    # doc can be unembedded, and a chunk store that returns nothing must not
+    # turn a working search into an empty one.
+    retrieval = "keyword"
+    chunk_hits: list[dict] = []
+    # Computed ONCE and handed to both paths below. Two retrievers deriving the
+    # same boundary separately is how they came to disagree about it.
+    doc_scope = _visible_doc_ids(ctx)
+    # `ToolContext` carries the Dashboard object, not a bare id.
+    dash_id = getattr(getattr(ctx, "dashboard", None), "id", None)
+    if dash_id:
+        try:
+            from app.services.dashboard_ai_bot.govern_doc_embeddings import (
+                retrieve_doc_chunks,
+            )
+
+            # ONE boundary for both retrieval paths. `_visible_doc_ids` already
+            # applied this report's entitlement AND the step's own narrowing;
+            # passing it means vector recall can no longer reach a document the
+            # keyword scan is forbidden from — which it could, through three of
+            # the four ways a document gets attached, and past any grant the
+            # author set on the step.
+            for ch in retrieve_doc_chunks(
+                ctx.db, int(dash_id), query, k=limit, doc_ids=doc_scope,
+            ) or []:
+                if not isinstance(ch, dict):
+                    continue
+                chunk_hits.append({
+                    "kind": "document_chunk",
+                    "id": ch.get("doc_id"),
+                    "title": ch.get("title") or "",
+                    "snippet": _plain(ch.get("content"), MAX_SNIPPET_CHARS),
+                    # The chunk store's own similarity, kept under its own name so
+                    # it is never compared with the keyword score below — the two
+                    # are different scales and averaging them would be arithmetic
+                    # that runs and means nothing.
+                    "similarity": ch.get("similarity"),
+                    "rank_score": ch.get("rrf_score"),
+                    "embedding_model": ch.get("embedding_model"),
+                    # The store fuses vector and full-text recall and says which
+                    # one found each row. Passed through: "vector" and "keyword"
+                    # answer differently badly, and a reader debugging a poor
+                    # result needs to know which one produced it.
+                    "retrieved_by": ch.get("matched_by") or "embedding",
+                    "trust": ch.get("trust"),
+                })
+            if chunk_hits:
+                retrieval = (
+                    "embedding+keyword"
+                    if any(hit.get("retrieved_by") in ("vector", "both") for hit in chunk_hits)
+                    else "keyword"
+                )
+                # WHEN was this written — carried onto chunks too.
+                #
+                # The keyword path already attached `updated_at`/`version`, and
+                # the chunk path did not, so wiring embeddings in dropped the
+                # date from the hits that now rank FIRST. A passage retrieved by
+                # meaning is exactly the one whose age is hardest to judge from
+                # the text, and the group-6 audit caught it: the same "2019
+                # policy quoted as current" failure this field was added to
+                # prevent, reintroduced by the retrieval upgrade.
+                from app.models.governance import GovernKnowledgeDoc as _GKD
+
+                ids = {c["id"] for c in chunk_hits if c.get("id") is not None}
+                if ids:
+                    meta = {
+                        d.id: d for d in ctx.db.query(_GKD)
+                        .filter(_GKD.id.in_(ids)).all()
+                    }
+                    for c in chunk_hits:
+                        doc = meta.get(c.get("id"))
+                        if doc is None:
+                            continue
+                        when = (getattr(doc, "updated_at", None)
+                                or getattr(doc, "created_at", None))
+                        c["updated_at"] = when.isoformat() if when else None
+                        c["version"] = getattr(doc, "version", None)
+                        c["doc_type"] = getattr(doc, "doc_type", None)
+                        if not c.get("title"):
+                            c["title"] = doc.title
+        except Exception:  # noqa: BLE001 — retrieval must never break a search
+            logger.warning("search_knowledge: chunk retrieval failed", exc_info=True)
+
     try:
         from app.models.governance import GovernKnowledgeDoc
 
-        doc_ids = _visible_doc_ids(ctx)
+        doc_ids = doc_scope
         if doc_ids:
             for doc in (
                 ctx.db.query(GovernKnowledgeDoc)
@@ -260,18 +557,31 @@ def tool_search_knowledge(ctx: ToolContext, args: dict) -> dict:
                 score = _score(haystack, needles)
                 if score <= 0:
                     continue
+                # WHEN was this written.
+                #
+                # The hit carried id, title, snippet and score — everything except
+                # the one field that decides whether a reader should still trust
+                # it. A process document from 2019 quoted as current is the same
+                # failure as a forecast anchored to data that stopped in 2018, and
+                # the date was sitting on the row all along.
+                updated = getattr(doc, "updated_at", None) or getattr(doc, "created_at", None)
                 hits.append({
                     "kind": "document",
                     "id": doc.id,
                     "title": doc.title,
                     "snippet": _plain(doc.summary or doc.body, MAX_SNIPPET_CHARS),
                     "score": round(score, 3),
+                    "updated_at": updated.isoformat() if updated else None,
+                    "version": getattr(doc, "version", None),
+                    "doc_type": getattr(doc, "doc_type", None),
                 })
     except Exception:  # noqa: BLE001
         logger.warning("search_knowledge: document scan failed", exc_info=True)
 
+    in_scope_metrics: list[Any] = []
     try:
-        for metric in _metrics_in_scope(ctx):
+        in_scope_metrics = _metrics_in_scope(ctx, query)
+        for metric in in_scope_metrics:
             score = _score(_metric_text(metric), needles)
             if score <= 0:
                 continue
@@ -287,18 +597,71 @@ def tool_search_knowledge(ctx: ToolContext, args: dict) -> dict:
                 "unit": metric.unit or None,
                 "target": target,
                 "owner": metric.owner or None,
+                # Same provenance field the terms carry, for the same reason: a
+                # definition bound to this report's data and one that merely
+                # shares a word deserve different trust, and only the record can
+                # tell them apart.
+                "reached_by": (
+                    "dataset"
+                    if (metric.dataset_id is not None or metric.dataset_table_id is not None)
+                    else "vocabulary"
+                ),
                 "score": round(score, 3),
             })
     except Exception:  # noqa: BLE001
         logger.warning("search_knowledge: metric scan failed", exc_info=True)
 
+    # ── the glossary, reached through this report rather than dumped ──────────
+    try:
+        hits.extend(_terms_in_scope(ctx, in_scope_metrics, query))
+    except Exception:  # noqa: BLE001
+        logger.warning("search_knowledge: glossary scan failed", exc_info=True)
+
     hits.sort(key=lambda h: h["score"], reverse=True)
-    top = hits[:limit]
+    # De-duplicated first: the same document can arrive down both paths, and
+    # paying twice for it in the payload is a cost with no answer attached.
+    seen_docs = {c["id"] for c in chunk_hits if c.get("id") is not None}
+    vocabulary = [h for h in hits if h.get("id") not in seen_docs]
+
+    # DEFINITIONS GET RESERVED SLOTS; THEY DO NOT COMPETE WITH PASSAGES.
+    #
+    # This was `chunk_hits + vocabulary`, truncated to `limit`. Passages always
+    # won: a report with six embedded documents fills every slot with prose, so a
+    # metric definition or a glossary term could be found, counted in
+    # `total_matches`, and never once reach the model. Measured — asking "doanh
+    # thu thuần nghĩa là gì" on a report whose glossary defines exactly that
+    # returned eight document chunks and zero terms.
+    #
+    # They are not competing for the same job. A passage is evidence with context
+    # and costs hundreds of tokens; a definition is one authoritative line and
+    # costs a few dozen. Ranking them on one list means the cheap, exact answer
+    # loses to whatever prose happened to embed near the question.
+    reserved = min(len(vocabulary), max(1, limit // 3))
+    top = (chunk_hits[: max(0, limit - reserved)] + vocabulary[:reserved])[:limit]
+    # Anything either list still has, if the other left room.
+    if len(top) < limit:
+        for extra in chunk_hits[len(top):] + vocabulary[reserved:]:
+            if extra not in top:
+                top.append(extra)
+            if len(top) >= limit:
+                break
+    merged = chunk_hits + vocabulary
     return _ok({
         "query": query,
-        "total_matches": len(hits),
+        "total_matches": len(merged),
         "returned": len(top),
         "results": top,
+        # HOW these were found, said out loud. Without it there is no way to see
+        # from a result whether the vector store was consulted, which is exactly
+        # why a fully-embedded deployment could look unconnected.
+        "retrieval": retrieval,
+        "retrieval_note": (
+            "Passages were retrieved by MEANING (embeddings) and by keyword, "
+            "then merged."
+            if retrieval != "keyword" else
+            "Keyword ranking only — semantic query vectors were unavailable for "
+            "the matching documents, or those documents are not indexed yet."
+        ),
         # Said explicitly because the model must not treat a definition's target
         # or an example figure as a measurement of this report.
         "note": (
@@ -314,37 +677,107 @@ def tool_read_document(ctx: ToolContext, args: dict) -> dict:
     try:
         doc_id = int(raw_id)
     except (TypeError, ValueError):
-        return _err("cần 'doc_id' dạng số — lấy từ kết quả search_knowledge")
+        return _err("'doc_id' must be a number — take it from a search_knowledge result")
 
     if doc_id not in _visible_doc_ids(ctx):
         # Deliberately the same message for "does not exist", "is a draft" and
         # "belongs to another report": an anonymous viewer must not be able to
         # probe which document ids exist by reading the error.
         return _err(
-            "không có tài liệu này trong phạm vi báo cáo (chỉ đọc được tài liệu "
-            "đã Published và được gắn vào báo cáo/bộ dữ liệu của báo cáo)"
+            "no such document within this report's scope. Only Published "
+            "documents attached to this report or its dataset can be read."
         )
 
     from app.models.governance import GovernKnowledgeDoc
 
     doc = ctx.db.query(GovernKnowledgeDoc).filter(GovernKnowledgeDoc.id == doc_id).first()
     if doc is None:
-        return _err("không có tài liệu này trong phạm vi báo cáo")
+        return _err("no such document within this report's scope")
 
+    full_len = len(str(doc.body or ""))
     body = _plain(doc.body, MAX_BODY_CHARS)
+    reading = "whole document"
+    passages: list[dict] = []
+
+    # A LONG DOCUMENT, READ AT THE RIGHT PLACE.
+    #
+    # Truncation took the first N characters, which is the correct passage only
+    # when the answer happens to be at the top. On a long policy the reader gets
+    # the preamble and the tool reports `truncated: true` — technically honest
+    # and practically useless, because the paragraph that answered the question
+    # was at the bottom.
+    #
+    # The chunks are already embedded. When the caller says what it is looking
+    # for, rank them and return those instead of the opening. Without a
+    # `question` the old behaviour stands: "show me this document" is a
+    # different request from "what does this document say about X".
+    question = str((args or {}).get("question") or "").strip()
+    if question and full_len > MAX_BODY_CHARS:
+        try:
+            passages = _rank_doc_chunks(ctx, doc_id, question, k=6)
+        except Exception:  # noqa: BLE001 — never fail a read over ranking
+            logger.warning("read_document: chunk ranking failed", exc_info=True)
+        if passages:
+            reading = "passages most relevant to the question"
+            body = "\n\n".join(p["text"] for p in passages)[:MAX_BODY_CHARS]
+
     return _ok({
         "id": doc.id,
         "title": doc.title,
         "doc_type": doc.doc_type,
         "summary": _plain(doc.summary, MAX_SNIPPET_CHARS) or None,
         "body": body,
-        "truncated": len(str(doc.body or "")) > MAX_BODY_CHARS,
+        "truncated": full_len > MAX_BODY_CHARS and not passages,
+        # WHICH PART was read, and how it was chosen. Without this a model
+        # cannot tell the opening of a document from the passages that answer
+        # the question, and would summarise one as though it were the other.
+        "reading": reading,
+        **({"passages": passages,
+            "reading_note": (
+                f"The document is {full_len:,} characters. These are the "
+                f"{len(passages)} passages closest in meaning to the question, "
+                "not the document in order — do not describe them as its "
+                "structure or its conclusion."
+            )} if passages else {}),
         "owner": doc.owner or None,
         "note": (
-            "Nội dung tài liệu do người viết. Số trong tài liệu KHÔNG phải số đo "
-            "từ dữ liệu báo cáo."
+            "This is prose somebody WROTE. Any figure inside it is a claim from "
+            "the document, not a measurement from the report's data — attribute "
+            "it to the document, and read the actual number from a chart."
         ),
     })
+
+
+def _rank_doc_chunks(ctx: ToolContext, doc_id: int, question: str,
+                     k: int = 6) -> list[dict]:
+    """This document's own chunks, ranked by closeness to the question.
+
+    Scoped to ONE doc_id that the caller has already been cleared for by
+    `_visible_doc_ids`, so this adds no reach — it chooses where to read inside
+    a document, not which document.
+    """
+    from app.services.dashboard_ai_bot.govern_doc_embeddings import (
+        search_doc_chunks,
+    )
+
+    rows = search_doc_chunks(
+        ctx.db,
+        question,
+        k=k,
+        doc_ids={doc_id},
+        published_only=True,
+        authoring=False,
+    )
+    return [
+        {
+            "chunk_index": row["chunk_index"],
+            "text": _plain(row["content"], MAX_SNIPPET_CHARS * 2),
+            "similarity": round(float(row.get("similarity") or 0.0), 4),
+            "matched_by": row.get("matched_by"),
+            "embedding_model": row.get("embedding_model"),
+        }
+        for row in rows
+    ]
 
 
 def _granted_dataset_ids(ctx: ToolContext) -> set[int] | None:
@@ -382,7 +815,9 @@ def tool_describe_semantic_model(ctx: ToolContext, args: dict) -> dict:
         return _ok({
             "datasets": [],
             "fields": [],
-            "note": "Báo cáo này chưa gắn bộ dữ liệu nào có mô tả nghiệp vụ.",
+            "note": ("No dataset attached to this report carries business descriptions, so "
+             "there is no semantic meaning to report. Say the field meanings are "
+             "not documented rather than guessing them from column names."),
         })
 
     try:

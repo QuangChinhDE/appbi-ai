@@ -331,11 +331,24 @@ export const usersApi = {
     return response.data;
   },
 
-  getShareable: async (resourceType: string, resourceId: number | string) => {
+  /**
+   * People this user may share with, matching `query`.
+   *
+   * SERVER-SIDE SEARCH. The endpoint no longer returns every active user — that
+   * was a full directory of names and emails handed to anyone who could share one
+   * resource. An empty query returns teammates only, so the picker still opens
+   * with something useful; anything else has to be typed.
+   */
+  getShareable: async (
+    resourceType: string,
+    resourceId: number | string,
+    query = '',
+  ) => {
     const response = await apiClient.get('/users/shareable', {
       params: {
         resource_type: resourceType,
         resource_id: String(resourceId),
+        q: query,
       },
     });
     return response.data;

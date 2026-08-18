@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from typing import Dict, Type, TypeVar
 
-from sqlalchemy import cast, or_, select, String
+from sqlalchemy import cast, func, or_, select, String
 from sqlalchemy.orm import Session, Query
 
 from app.core.resource_shares import share_target_filter_for_user
@@ -45,9 +45,42 @@ _RESOURCE_TO_MODULE: Dict[str, str] = {
 
 
 def get_user_module_permission(user: User, module: str) -> str:
-    """Return effective permission level string for a user on a module."""
-    perms: dict = user.permissions or {}
-    return perms.get(module, "none")
+    """Return effective permission level string for a user on a module.
+
+    Routes through ``_normalize_permissions`` so a scoped personal access token is
+    capped HERE too. Reading ``user.permissions`` directly was a second, uncapped
+    answer to "what may this user do": a PAT scoped to ``datasets: view`` owned by
+    someone with ``datasets: full`` still listed every dataset in the deployment,
+    because the list filter below never saw the cap that the route dependency did.
+    """
+    from app.core.dependencies import _normalize_permissions
+
+    return _normalize_permissions(user).get(module, "none")
+
+
+def _owner_predicate(model, user: User):
+    """The "this row belongs to me" SQL predicate for *model*, or ``None`` when the
+    model declares no ownership at all.
+
+    Three spellings are recognised, in priority order: ``owner_id``, ``user_id``,
+    and ``owner_email``. The last exists because some tables key ownership by email
+    rather than by FK (``agent_brain_versions``); without it those models fell into
+    the no-ownership branch and were never filtered.
+    """
+    owner_col = getattr(model, "owner_id", None)
+    if owner_col is None:
+        owner_col = getattr(model, "user_id", None)
+    if owner_col is not None:
+        return owner_col == user.id
+
+    email_col = getattr(model, "owner_email", None)
+    if email_col is not None:
+        user_email = str(getattr(user, "email", "") or "").strip().lower()
+        if not user_email:
+            return None
+        return func.lower(email_col) == user_email
+
+    return None
 
 
 def _owned_or_shared(
@@ -79,11 +112,14 @@ def _owned_or_shared(
         return q
 
     # view or edit: own + shared only
-    # Models must have an owner_id (or user_id) column.
-    owner_col = getattr(model, "owner_id", None) or getattr(model, "user_id", None)
-    if owner_col is None:
-        # Fallback: if model has no ownership column, return all for non-none levels
-        return q
+    owner_predicate = _owner_predicate(model, user)
+    if owner_predicate is None:
+        # Fail CLOSED. This used to `return q` — EVERY row, for every level above
+        # `none` — whenever a model had no ownership column. AgentBrainVersion is
+        # exactly such a model (it keys ownership by `owner_email`), so "flows
+        # shared with me" silently meant "every flow in the deployment". A filter
+        # that cannot be built is not a reason to skip filtering.
+        return q.filter(False)
 
     shared_ids_subq = (
         select(ResourceShare.resource_id)
@@ -93,7 +129,7 @@ def _owned_or_shared(
 
     return q.filter(
         or_(
-            owner_col == user.id,
+            owner_predicate,
             cast(model.id, String).in_(shared_ids_subq),
         )
     )

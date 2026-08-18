@@ -75,7 +75,12 @@ def _gather_one(db: Session, dataset_id: int) -> tuple[str, Any]:
     # Existing governed metrics bound to this dataset
     try:
         from app.models.governance import GovernMetric
-        gms = db.query(GovernMetric).filter(GovernMetric.dataset_id == dataset_id).all()
+        from app.services.governance_service import GovernanceService
+
+        gms = [
+            metric for metric in db.query(GovernMetric).filter(GovernMetric.status != "Deprecated").all()
+            if dataset_id in GovernanceService.metric_dataset_ids(db, metric)
+        ]
         if gms:
             lines.append("\nCHỈ SỐ QUẢN TRỊ đã khai báo (đừng định nghĩa lại, có thể tham chiếu):")
             for m in gms[:20]:

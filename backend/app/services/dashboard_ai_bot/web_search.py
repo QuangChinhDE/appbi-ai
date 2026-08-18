@@ -14,6 +14,7 @@ raising — the agent simply continues without web context.
 """
 from __future__ import annotations
 
+import html as _html
 import logging
 import os
 import re
@@ -99,6 +100,80 @@ _WS_RE = re.compile(r"[ \t\r\f\v]+")
 _MULTINL_RE = re.compile(r"\n{3,}")
 
 
+# ── egress guard ─────────────────────────────────────────────────────────────
+# `fetch_url` takes a URL chosen by a MODEL reading an anonymous viewer's
+# question on a PUBLIC link, and hands it to httpx. The only check was that the
+# string began with http:// or https://.
+#
+# FOUND BY TESTING, not by reading: probes at localhost, the database port and
+# the cloud metadata address all came back refused, which looked like a guard and
+# was not — they were rejected by the CONTENT-TYPE filter, because an API returns
+# JSON. An internal page that serves HTML went straight through:
+#
+#     fetch_url("http://frontend:3000/login")          -> ok=True
+#     fetch_url("http://appbi-ai-frontend-1:3000/")    -> ok=True
+#
+# On a cloud deployment the same call reaches 169.254.169.254 and returns
+# instance credentials. This is the most serious defect the tool review found,
+# and it was invisible to every green test result.
+#
+# The guard resolves the hostname and refuses any address that is loopback,
+# private, link-local, reserved or multicast — resolution first, because a
+# hostname that looks public can resolve inward, and that is the whole trick.
+# Redirects are followed manually so every hop is checked: validating only the
+# first URL is the same hole with an extra step.
+
+_ALLOWED_SCHEMES = ("http", "https")
+_MAX_REDIRECTS = 3
+
+
+def _address_is_internal(host: str) -> str | None:
+    """Reason this host must not be fetched, or None when it is safe."""
+    import ipaddress
+    import socket
+
+    if not host:
+        return "no host in url"
+    bare = host.strip("[]").lower()
+    if bare in ("localhost", "localhost.localdomain") or bare.endswith(".localhost"):
+        return "loopback hostname"
+    # A name with no dot is a container or a search-domain host — never a real
+    # public site, and exactly how `appbi-db` and `frontend` were reachable.
+    if "." not in bare and ":" not in bare:
+        return f"single-label hostname '{bare}' (internal service name)"
+    try:
+        infos = socket.getaddrinfo(bare, None)
+    except Exception:  # noqa: BLE001 — an unresolvable host is refused, not fetched
+        return f"hostname '{bare}' does not resolve"
+    for info in infos:
+        raw = info[4][0]
+        try:
+            ip = ipaddress.ip_address(raw)
+        except ValueError:
+            continue
+        if (ip.is_private or ip.is_loopback or ip.is_link_local
+                or ip.is_reserved or ip.is_multicast or ip.is_unspecified):
+            return f"resolves to a non-public address ({raw})"
+    return None
+
+
+def _check_url(raw: str) -> tuple[str, str | None]:
+    """Normalise a URL and say why it is refused, if it is."""
+    from urllib.parse import urlparse
+
+    candidate = (raw or "").strip()
+    parsed = urlparse(candidate)
+    if parsed.scheme.lower() not in _ALLOWED_SCHEMES:
+        return candidate, "url must start with http:// or https://"
+    reason = _address_is_internal(parsed.hostname or "")
+    if reason:
+        return candidate, (
+            f"refused: {reason}. This tool reads the public internet only — it "
+            "must never be pointed at the deployment's own network."
+        )
+    return candidate, None
+
+
 def fetch_url(url: str, *, max_chars: int = 4000, include_html: bool = False) -> dict:
     """Fetch ONE specific page and return its cleaned text.
 
@@ -113,16 +188,40 @@ def fetch_url(url: str, *, max_chars: int = 4000, include_html: bool = False) ->
     is never rendered as trusted markup: the FE shows it in a script-less
     sandboxed iframe.
     """
-    url = (url or "").strip()
-    if not url.startswith(("http://", "https://")):
-        return {"ok": False, "error": "url must start with http:// or https://"}
+    # `refused` marks an address the egress guard rejected, as opposed to a
+    # network or server failure. The caller collapses both into one error code
+    # otherwise, and the two mean opposite things: a refusal is final and about
+    # the URL, a fetch failure is transient and worth retrying. Told they were
+    # the same, a model given an internal host retries it in a loop.
+    url, refusal = _check_url(url)
+    if refusal:
+        return {"ok": False, "error": refusal, "url": url, "refused": True}
     try:
-        resp = httpx.get(
-            url,
-            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"},
-            timeout=20.0,
-            follow_redirects=True,
-        )
+        # Redirects are followed BY HAND so each hop passes the same check. With
+        # `follow_redirects=True` a public URL can 302 straight to an internal
+        # one and only the first address is ever examined.
+        resp = None
+        target = url
+        for _ in range(_MAX_REDIRECTS + 1):
+            resp = httpx.get(
+                target,
+                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"},
+                timeout=20.0,
+                follow_redirects=False,
+            )
+            if resp.status_code not in (301, 302, 303, 307, 308):
+                break
+            nxt = resp.headers.get("location") or ""
+            if not nxt:
+                break
+            from urllib.parse import urljoin
+
+            target, refusal = _check_url(urljoin(target, nxt))
+            if refusal:
+                return {"ok": False, "error": f"redirect {refusal}", "url": url,
+                        "refused": True}
+        else:
+            return {"ok": False, "error": "too many redirects", "url": url}
         if resp.status_code != 200:
             return {"ok": False, "error": f"fetch failed: HTTP {resp.status_code}", "url": url}
         ctype = resp.headers.get("content-type", "")
@@ -138,7 +237,11 @@ def fetch_url(url: str, *, max_chars: int = 4000, include_html: bool = False) ->
     title = _clean(title_m.group(1), 200) if title_m else ""
     body = _SCRIPT_STYLE_RE.sub(" ", html)
     body = _TAG_RE.sub("\n", body)
-    body = body.replace("&amp;", "&").replace("&#x27;", "'").replace("&nbsp;", " ").replace("&quot;", '"')
+    # Same hand-written entity list as `_clean` had, with the same hole. This
+    # one is worse: `fetch_url` is what Govern Knowledge Docs crawls web pages
+    # with, so a Vietnamese page saved as a Knowledge Doc kept the mangled text
+    # in the database, not just in one answer.
+    body = _html.unescape(body).replace("\xa0", " ")
     body = _WS_RE.sub(" ", body)
     body = _MULTINL_RE.sub("\n\n", body).strip()
     truncated = len(body) > max_chars
@@ -160,7 +263,17 @@ _TAG_RE = re.compile(r"<[^>]+>")
 
 
 def _clean(text: str, limit: int) -> str:
-    return _TAG_RE.sub("", text or "").replace("&amp;", "&").replace("&#x27;", "'").strip()[:limit]
+    """Strip tags and decode entities.
+
+    Two entities were unescaped by hand, which is fine for English and breaks
+    every Vietnamese page: the search backend returns titles as numeric
+    references — `Một ng&#224;nh đang b&#249;ng nổ` — and the hand-written pair
+    does not touch them. The model then reads the mangled form, spends tokens on
+    it, and any figure quoted out of it carries the noise.
+
+    `html.unescape` handles the full set, named and numeric, and is stdlib.
+    """
+    return _html.unescape(_TAG_RE.sub("", text or "")).replace("\xa0", " ").strip()[:limit]
 
 
 def _unwrap_ddg(url: str) -> str:

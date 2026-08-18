@@ -52,9 +52,15 @@ async def run(
     web_enabled = bool(rctx.inp.binding.capabilities.web_search)
     schemas = tool_registry.definitions_for(allowed, web_enabled=web_enabled)
 
-    # This node's own knowledge scope, set for the duration of the node. An agent
-    # granted `read_document` reaches only what THIS node attached — which is what
-    # makes per-node knowledge a boundary and not a hint.
+    # This node's own knowledge scope, set for the duration of the node.
+    #
+    # ATTACHING NARROWS; ATTACHING NOTHING DOES NOT MEAN NOTHING. A step that names
+    # its sources reaches only those. A step that names none is not sealed off — it
+    # reaches everything the REPORT is entitled to, which is what the binding's
+    # `knowledge.mode` grants. This comment used to claim the boundary held in both
+    # cases, and a reader who trusted it would have thought an unattached step read
+    # nothing at all. The entitlement is still the ceiling either way; the author's
+    # list only ever cuts inside it.
     previous_scope = getattr(rctx.ctx, "knowledge_scope", None)
     _apply_scope(rctx.ctx, node)
 
@@ -121,31 +127,84 @@ async def run(
             if not pending:
                 break
 
-            if calls_made >= node.max_tool_calls:
-                # Out of this node's budget: tell the model so it answers with what
-                # it has, rather than cutting it off mid-thought.
+            # HOW MANY OF THIS BATCH MAY ACTUALLY RUN.
+            #
+            # The node ceiling used to be tested once per ROUND, then the whole
+            # batch ran. A model that asks for five tools in parallel with one
+            # call of headroom left made five — the limit held on paper and was
+            # exceeded in fact. The run-wide budget is checked here too, so the
+            # answer step is refused a tool rather than killed by one.
+            room = max(0, min(
+                node.max_tool_calls - calls_made,
+                state.budget.tools_left(answering=is_answering),
+            ))
+            if room <= 0:
+                # Out of budget: tell the model so it answers with what it has,
+                # rather than cutting it off mid-thought.
                 messages.append({
                     "role": "user",
-                    "content": "Hết lượt gọi công cụ. Hãy trả lời bằng những gì đã có.",
+                    "content": (
+                        "No tool calls remain for this step. Answer with what "
+                        "you already have, and say plainly what you could not "
+                        "check. Reply in the language of the user's question."
+                    ),
                 })
                 schemas = []
                 continue
 
+            runnable, refused = pending[:room], pending[room:]
             messages.append({
                 "role": "assistant",
                 "content": assistant_text,
+                # `args` — the key BOTH provider adapters read and the one their
+                # own docstrings document. Sending `arguments` meant every tool
+                # call this engine replayed reached the next round as `{}`: the
+                # model could not see what it had just asked for, so it re-asked,
+                # spending a second round to learn what it already knew.
                 "tool_calls": [
-                    {"id": c.tool_call_id, "name": c.tool_name, "arguments": c.tool_args}
+                    {"id": c.tool_call_id, "name": c.tool_name, "args": c.tool_args}
                     for c in pending
                 ],
             })
-            for call in pending:
+            # THE PROTOCOL OWES A RESULT TO EVERY CALL IT ANNOUNCED.
+            #
+            # A tool_call with no matching tool message makes OpenAI reject the
+            # whole request, so a refused call must still be answered — with the
+            # reason, which is also the more useful thing for the model to read.
+            for call in refused:
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": call.tool_call_id,
+                    "name": call.tool_name,
+                    "result": {
+                        "ok": False,
+                        "error_code": "budget_exhausted",
+                        "error": "không còn lượt gọi công cụ cho bước này — hãy "
+                                 "trả lời bằng dữ liệu đã có và nói rõ phần chưa kiểm được",
+                    },
+                })
+            for call in runnable:
                 state.budget.spend_tool()
                 calls_made += 1
                 yield AgentEvent(type="status", text=f"Đang dùng {call.tool_name}…")
-                result = tool_registry.execute(
-                    rctx.ctx, call.tool_name, call.tool_args, allowed=allowed
-                )
+                # ARGUMENTS THE PROVIDER COULD NOT PARSE ARE NOT ARGUMENTS.
+                #
+                # They used to arrive as `{}` and the call went ahead, so the tool
+                # failed on a missing required field and the model had to guess at
+                # a fault the runtime had already identified. Handing back the
+                # parse error instead lets it correct the call on the next round.
+                malformed = (call.extra or {}).get("malformed_args")
+                if malformed:
+                    result = {
+                        "ok": False,
+                        "error_code": "bad_tool_arguments",
+                        "error": f"tham số gửi kèm không phải JSON hợp lệ ({malformed}). "
+                                 "Hãy gọi lại công cụ với JSON đúng định dạng.",
+                    }
+                else:
+                    result = tool_registry.execute(
+                        rctx.ctx, call.tool_name, call.tool_args, allowed=allowed
+                    )
                 # Named in the run history, success or not. A refused call is the
                 # most interesting row in an audit and the easiest one to lose.
                 state.tool_log.append(
@@ -196,22 +255,19 @@ def _resolve_model(node: AgentNode, rctx: Any) -> tuple[str, str]:
 
 
 def _apply_scope(ctx: Any, node: AgentNode) -> None:
-    doc_ids: list[int] = []
-    dataset_ids: list[int] = []
-    metric_names: list[str] = []
-    for k in node.knowledge:
-        if k.source == "document" and k.ref.isdigit():
-            doc_ids.append(int(k.ref))
-        elif k.source == "semantic" and k.ref.isdigit():
-            dataset_ids.append(int(k.ref))
-        elif k.source == "metric":
-            metric_names.append(k.ref)
+    """This node's knowledge boundary, built by the SAME code the Knowledge node
+    uses.
+
+    Two copies of this existed and they disagreed: the copy here never collected
+    `term_fqns`, so a glossary term attached to an Agent step was accepted by the
+    builder, shown in the step's source list, and then dropped before retrieval —
+    the picker worked and the boundary it configured did not. One builder, one
+    set of keys, no room for the two to drift again.
+    """
+    from app.services.agent_flows.runtime.handlers.data import build_knowledge_scope
+
     if hasattr(ctx, "knowledge_scope"):
-        ctx.knowledge_scope = {
-            "doc_ids": doc_ids,
-            "dataset_ids": dataset_ids,
-            "metric_names": metric_names,
-        }
+        ctx.knowledge_scope = build_knowledge_scope(node.knowledge)
 
 
 def _messages(node: AgentNode, state: RunState, rctx: Any) -> list[dict]:
@@ -231,13 +287,34 @@ def _messages(node: AgentNode, state: RunState, rctx: Any) -> list[dict]:
         picked = []
 
     out: list[dict] = [*picked, {"role": "user", "content": rctx.inp.question.text()}]
-    previous = state.vars.get("previous")
-    if isinstance(previous, str) and previous.strip():
+    carried = _previous_text(state.vars.get("previous"))
+    if carried:
         out.append({
             "role": "user",
-            "content": f"Kết quả của bước trước:\n\n{previous.strip()[:8000]}",
+            "content": f"Result of the previous step:\n\n{carried[:8000]}",
         })
     return out
+
+
+def _previous_text(previous: Any) -> str:
+    """The previous step's result, in a form a model can actually read.
+
+    Only `str` used to survive this. `report_read` and `knowledge` — the two steps
+    whose entire job is to fetch what the answer is built on — hand back a dict,
+    so their output was dropped in silence: the run showed every step green, the
+    author saw "→ {{dashboard_context}}" on the canvas, and the model that wrote
+    the answer had been shown none of it. It only ever worked when the author
+    happened to interpolate the variable by hand, or granted the step tools to go
+    and fetch the same data a second time.
+    """
+    if isinstance(previous, str):
+        return previous.strip()
+    if isinstance(previous, (dict, list)) and previous:
+        try:
+            return json.dumps(previous, ensure_ascii=False, default=str)
+        except (TypeError, ValueError):  # pragma: no cover — default=str covers it
+            return str(previous)
+    return ""
 
 
 def _system_prompt(node: AgentNode, state: RunState, rctx: Any) -> str:
@@ -276,16 +353,46 @@ def _system_prompt(node: AgentNode, state: RunState, rctx: Any) -> str:
         )
     if node.output_format == "json":
         parts.append(_BLOCK_INSTRUCTIONS)
+    elif node.key == rctx.answer_key:
+        # THE PLATFORM'S CONTRACT HAS TO OUTLIVE THE AUTHOR'S PROMPT.
+        #
+        # The base prompt already asks for 2-3 `[FOLLOWUP]` lines — the markers the
+        # chat UI turns into clickable suggestion chips. But it is appended BEFORE
+        # the author's own instructions, and an author who writes "answer in
+        # exactly one short sentence" wins: the model obeys the nearer, more
+        # specific rule and drops the follow-ups. Measured across this
+        # deployment's stored answers: ONE in twenty-five carried a marker, so the
+        # suggestion chips were effectively dead while looking implemented.
+        #
+        # Restated last, and only for the node that talks to the viewer, so a
+        # terse answer style and a working suggestion strip can coexist. Kept to
+        # two lines because a long reminder here would itself start competing with
+        # the author's prompt for the model's attention.
+        parts.append(
+            "Dù hướng dẫn ở trên yêu cầu ngắn gọn thế nào, LUÔN kết thúc câu trả "
+            "lời bằng 2-3 dòng gợi ý, mỗi dòng bắt đầu bằng [FOLLOWUP] và kết "
+            "thúc bằng dấu ?. Chúng không tính vào độ dài câu trả lời."
+        )
     return "\n\n".join(p for p in parts if p)
 
 
 #: What a `json` node must return. Deliberately terse and example-led: a long JSON
 #: schema in a prompt buys compliance on the shape and loses it on the content.
-_BLOCK_INSTRUCTIONS = """ĐỊNH DẠNG TRẢ VỀ
-Chỉ trả về MỘT object JSON, không có chữ nào ngoài JSON:
+#:
+#: English, like the rest of the machine contract. This block was written in
+#: Vietnamese and survived the language cleanup because it is assembled HERE, in
+#: the handler, rather than in `prompts.py` — so a sweep that went file by file
+#: through the prompt module never saw it. The lesson is in the scanner now: read
+#: the ASSEMBLED prompt, not the files it is thought to come from.
+#:
+#: The block VALUES stay language-neutral; what the model writes inside
+#: `markdown`, `label` and `items` follows the viewer's question, as rule 5 of
+#: the base prompt says.
+_BLOCK_INSTRUCTIONS = """OUTPUT FORMAT
+Return ONE JSON object and nothing else — no prose before or after:
 {"blocks":[ ... ]}
 
-Các loại block dùng được:
+Block types available:
 {"type":"text","markdown":"..."}
 {"type":"metric","label":"...","value":123,"format":"currency|percent|number",
  "delta":{"value":-0.084,"format":"percent","direction":"down"},"source":{"chart_id":41}}
@@ -294,9 +401,11 @@ Các loại block dùng được:
 {"type":"chart_ref","chart_id":41,"highlight":{"field":"segment","values":["Enterprise"]},
  "caption":"..."}
 {"type":"callout","level":"info|warning|danger","text":"..."}
-{"type":"followups","items":["câu hỏi tiếp theo","..."]}
+{"type":"followups","items":["next question","..."]}
 
-Chỉ dùng chart_id có thật trong báo cáo. Luôn mở đầu bằng một block "text"."""
+Use only chart_id values that exist in this report. Always open with a "text"
+block. Write the TEXT inside the blocks in the language of the viewer's
+question — this instruction being English says nothing about that."""
 
 
 def _parse_blocks(text: str, state: RunState, node: AgentNode) -> dict:

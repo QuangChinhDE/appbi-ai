@@ -58,8 +58,14 @@ class User(Base):
     shares_received = relationship("ResourceShare", back_populates="user",
                                    foreign_keys="ResourceShare.user_id",
                                    cascade="all, delete-orphan")
+    # `cascade` on BOTH sides. `shared_by` is NOT NULL with ON DELETE CASCADE at the
+    # DB level, but without a cascade rule here the ORM tries to NULL it out first
+    # and the delete dies on the not-null constraint — so permanently deleting
+    # anyone who had ever shared a resource answered 500. The docstring in
+    # core/user_deletion.py already promised both sides cascade away.
     shares_given = relationship("ResourceShare", back_populates="shared_by_user",
-                                foreign_keys="ResourceShare.shared_by")
+                                foreign_keys="ResourceShare.shared_by",
+                                cascade="all, delete-orphan")
     team_memberships = relationship(
         "TeamMembership",
         back_populates="user",

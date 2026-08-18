@@ -3,7 +3,7 @@
 import uuid
 from typing import List
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import func
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session, joinedload
@@ -11,12 +11,14 @@ from sqlalchemy.orm import Session, joinedload
 from app.core.database import get_db
 from app.core.dependencies import get_current_user, require_full_access
 from app.core.share_access import require_share_access
+from app.models.audit_log import AuditAction
 from app.models.dataset import Dataset, DatasetTable
 from app.models.models import Chart, Dashboard, DashboardChart
 from app.models.resource_share import ResourceShare, ResourceType, SharePermission
 from app.models.team import Team
 from app.models.user import User, UserStatus
 from app.schemas.auth import ShareAllTeamRequest, ShareCreate, ShareResponse, ShareUpdate
+from app.services.audit_service import audit
 
 router = APIRouter(prefix="/shares", tags=["shares"])
 
@@ -307,6 +309,7 @@ def add_share(
     resource_type: ResourceType,
     resource_id: str,
     body: ShareCreate,
+    request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -344,6 +347,23 @@ def add_share(
             team_id=target_team_id,
         )
         db.commit()
+
+    # Granting access to a resource is a permission change; it belongs in the same
+    # trail as one. SHARE_CREATED was declared in AuditAction and never emitted.
+    audit(
+        db,
+        AuditAction.SHARE_CREATED,
+        request=request,
+        user_id=current_user.id,
+        resource_type=resource_type.value,
+        resource_id=str(resource_id),
+        details={
+            "permission": body.permission.value if hasattr(body.permission, "value") else str(body.permission),
+            "target_user_id": str(target_user_id) if target_user_id else None,
+            "target_team_id": str(target_team_id) if target_team_id else None,
+            "cascaded": resource_type == ResourceType.DASHBOARD,
+        },
+    )
 
     return _get_share_for_target(
         db,
@@ -406,13 +426,14 @@ def revoke_share(
     resource_type: ResourceType,
     resource_id: str,
     user_id: uuid.UUID,
+    request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """Backward-compatible revoke for direct user shares."""
     require_share_access(db, current_user, resource_type, resource_id)
     share = _get_share_for_target(db, resource_type, resource_id, user_id=user_id)
-    revoke_share_entry(resource_type, resource_id, share.id, db, current_user)
+    revoke_share_entry(resource_type, resource_id, share.id, request, db, current_user)
 
 
 @router.delete("/{resource_type}/{resource_id}/entries/{share_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -420,6 +441,7 @@ def revoke_share_entry(
     resource_type: ResourceType,
     resource_id: str,
     share_id: int,
+    request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -427,6 +449,18 @@ def revoke_share_entry(
     require_share_access(db, current_user, resource_type, resource_id)
 
     share = _load_share_or_404(db, resource_type, resource_id, share_id)
+    audit(
+        db,
+        AuditAction.SHARE_REVOKED,
+        request=request,
+        user_id=current_user.id,
+        resource_type=resource_type.value,
+        resource_id=str(resource_id),
+        details={
+            "target_user_id": str(share.user_id) if share.user_id else None,
+            "target_team_id": str(share.team_id) if share.team_id else None,
+        },
+    )
     if resource_type == ResourceType.DASHBOARD:
         _revoke_cascade(
             db,
