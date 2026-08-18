@@ -23,6 +23,7 @@ export interface NormalizedPublicLinkAppearanceConfig {
   show_stats: boolean;
   show_page_tabs: boolean;
   allow_viewer_filters: boolean;
+  allow_data_export: boolean;
   show_footer: boolean;
   show_chart_type_label: boolean;
 }
@@ -164,6 +165,7 @@ const DEFAULT_APPEARANCE: NormalizedPublicLinkAppearanceConfig = {
   show_stats: false,
   show_page_tabs: true,
   allow_viewer_filters: true,
+  allow_data_export: true,
   show_footer: false,
   show_chart_type_label: false,
 };
@@ -265,6 +267,9 @@ export function normalizePublicLinkAppearance(
     allow_viewer_filters: typeof source.allow_viewer_filters === 'boolean'
       ? source.allow_viewer_filters
       : DEFAULT_APPEARANCE.allow_viewer_filters,
+    allow_data_export: typeof source.allow_data_export === 'boolean'
+      ? source.allow_data_export
+      : DEFAULT_APPEARANCE.allow_data_export,
     show_footer: DEFAULT_APPEARANCE.show_footer,
     show_chart_type_label: DEFAULT_APPEARANCE.show_chart_type_label,
   };

@@ -12,6 +12,8 @@ import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 import { jwtVerify } from 'jose';
 
+import { DEFAULT_LANDING_PATH, HOME_MODULE_ENABLED } from '@/lib/feature-flags';
+
 // Public paths that do NOT require authentication.
 // /ws/ + /w/ are workspace + workboard public links. End-user sessions use
 // Workboard app users, not AppBI accounts.
@@ -209,6 +211,25 @@ export async function middleware(request: NextRequest) {
   // Allow Next.js internals and other API routes (e.g. /api/auth/*) through
   if (pathname.startsWith('/_next') || pathname.startsWith('/favicon') || pathname.startsWith('/api/')) {
     return NextResponse.next();
+  }
+
+  // --- Hidden Home module (see lib/feature-flags.ts) -------------------------
+  //
+  // Bounce /overview HERE, on the server, rather than from inside the page. A
+  // client-side guard would still have to mount the page first, and mounting is
+  // exactly what costs us: the component fires five list queries the moment it
+  // renders. Redirecting at the edge means the route's bundle is never fetched
+  // and those endpoints are never called — for a bookmark, a typed URL, or a
+  // client-side navigation (App Router runs middleware on the RSC request too).
+  //
+  // Placed BEFORE the auth check on purpose: a logged-out visitor then gets
+  // `?next=/dashboards` and lands somewhere real after signing in, instead of
+  // being sent back to a route that only redirects again.
+  if (!HOME_MODULE_ENABLED && (pathname === '/overview' || pathname.startsWith('/overview/'))) {
+    const landing = request.nextUrl.clone();
+    landing.pathname = DEFAULT_LANDING_PATH;
+    landing.search = '';
+    return NextResponse.redirect(landing);
   }
 
   // Read the httpOnly auth cookie

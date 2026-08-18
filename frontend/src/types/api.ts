@@ -660,6 +660,10 @@ export interface PublicLinkAppearanceConfig {
   show_stats?: boolean;
   show_page_tabs?: boolean;
   allow_viewer_filters?: boolean;
+  /** When true (default), viewers can download each chart's data as CSV on the
+   *  public/embed report (only the chart's already-filtered/permission-scoped
+   *  rows). Admins can turn it off per link. */
+  allow_data_export?: boolean;
   show_footer?: boolean;
   show_chart_type_label?: boolean;
   /** Snapshot freshness for this public link (perf #5, Stage 2). Minutes past

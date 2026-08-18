@@ -815,6 +815,358 @@ def test_the_knowledge_node_collects_a_term_attachment_into_its_scope():
     assert [k.ref for k in node.knowledge] == ["kd.gmv"]
 
 
+# ── 15b · the tester's audit: each finding, pinned ───────────────────────────
+# Nine claims came in from a review of the runtime. Seven were real. Each one that
+# was gets a case here, named after the failure a user would have seen, so the fix
+# cannot be undone by a later refactor that "tidies" the same lines.
+
+def _ctx(**over):
+    base = dict(
+        dashboard=SimpleNamespace(id=67), public_filters=[],
+        allowed_chart_ids={1, 2, 3}, excluded_columns=set(),
+        knowledge_scope={}, actor_type="public", actor_ref="link-A",
+    )
+    base.update(over)
+    return SimpleNamespace(**base)
+
+
+def test_the_result_cache_cannot_serve_one_links_data_to_another():
+    """A cache hit returns BEFORE the tool body runs, and the chart-scope guard
+    lives inside that body. Two links on one dashboard with different allowlists
+    therefore shared answers: the narrow one asked for a chart it could not see and
+    the wide one's warm entry answered."""
+    wide = _ctx(allowed_chart_ids={1, 2, 3})
+    narrow = _ctx(allowed_chart_ids={1})
+    args = {"chart_id": 2}
+    assert tool_registry._cache_key(wide, "get_chart_data", args) \
+        != tool_registry._cache_key(narrow, "get_chart_data", args)
+
+
+def test_the_result_cache_separates_callers_with_different_hidden_columns():
+    """The AI-scope exclusion set decides which columns a payload may carry, so a
+    key without it hands the unfiltered payload to the caller it was hidden from."""
+    open_ctx = _ctx(excluded_columns=set())
+    masked = _ctx(excluded_columns={"revenue"})
+    assert tool_registry._cache_key(open_ctx, "get_chart_data", {"chart_id": 1}) \
+        != tool_registry._cache_key(masked, "get_chart_data", {"chart_id": 1})
+
+
+def test_the_result_cache_separates_two_steps_with_different_knowledge_scopes():
+    """The per-step knowledge boundary is applied inside the tool bodies too, so a
+    key without it lets a step that attached one document be served the answer
+    computed for a step that attached five."""
+    narrow = _ctx(knowledge_scope={"doc_ids": [26], "dataset_ids": [],
+                                   "metric_names": [], "term_fqns": []})
+    wide = _ctx(knowledge_scope={"doc_ids": [26, 27, 28], "dataset_ids": [],
+                                 "metric_names": [], "term_fqns": []})
+    args = {"query": "GMV"}
+    assert tool_registry._cache_key(narrow, "search_knowledge", args) \
+        != tool_registry._cache_key(wide, "search_knowledge", args)
+
+
+def test_the_result_cache_still_caches_for_the_same_caller():
+    """The narrowing must not become an off switch: identical entitlement over
+    identical arguments is the case the cache exists for."""
+    a, b = _ctx(), _ctx()
+    assert tool_registry._cache_key(a, "get_chart_data", {"chart_id": 1}) \
+        == tool_registry._cache_key(b, "get_chart_data", {"chart_id": 1})
+
+
+def test_running_out_of_tools_still_leaves_a_round_to_speak():
+    """Both ceilings used to be tested by both spenders, so a turn that legitimately
+    spent its tool allowance could not open the round it needed to report what it
+    had found — the viewer read "chưa trả lời được" off a run whose every step was
+    green."""
+    from app.services.agent_flows.runtime.state import Budget
+
+    b = Budget(max_llm_calls=6, max_tool_calls=4)
+    b.tool_calls = 4
+    b.spend_llm()
+    assert b.llm_calls == 1
+
+
+def test_running_out_of_model_rounds_does_not_strand_the_tools_it_asked_for():
+    """The mirror case: a round already paid for could not run the tools it had
+    just requested, so the model's work was discarded at the last step."""
+    from app.services.agent_flows.runtime.state import Budget
+
+    b = Budget(max_llm_calls=1, max_tool_calls=10)
+    b.llm_calls = 1
+    b.spend_tool()
+    assert b.tool_calls == 1
+
+
+def test_each_ceiling_still_binds_its_own_resource():
+    """Separating them must not remove them."""
+    from app.services.agent_flows.runtime.state import Budget, BudgetExhausted
+
+    b = Budget(max_llm_calls=1, max_tool_calls=1)
+    b.llm_calls, b.tool_calls = 1, 1
+    with pytest.raises(BudgetExhausted):
+        b.spend_llm()
+    with pytest.raises(BudgetExhausted):
+        b.spend_tool()
+
+
+def test_a_replayed_tool_call_carries_its_arguments_to_the_next_round(monkeypatch):
+    """The engine wrote `arguments`; both provider adapters read `args`. So every
+    replayed call reached the next round as `{}` and the model, unable to see what
+    it had just asked for, paid a round to ask again."""
+    from app.services.dashboard_ai_bot.providers.openai_provider import _tool_args
+
+    seen: dict = {}
+    calls = {"n": 0}
+
+    async def fake(*, provider, api_key, model, system_prompt, messages, tools):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            yield AgentEvent(type="tool_call", tool_call_id="c1",
+                             tool_name="get_chart_data", tool_args={"chart_id": 41})
+            return
+        seen["messages"] = list(messages)
+        yield AgentEvent(type="text", text="xong")
+
+    monkeypatch.setattr(agent_handler, "_stream", fake)
+    run(build([AGENT], answer_node="answer"))
+
+    replayed = next(
+        m for m in seen["messages"]
+        if m.get("role") == "assistant" and m.get("tool_calls")
+    )["tool_calls"][0]
+    assert _tool_args(replayed) == {"chart_id": 41}, "adapter must see the arguments"
+
+
+def test_the_adapter_still_reads_the_legacy_arguments_key():
+    """A boundary that cannot silently drop what it carries — the same rule the
+    tool-result side already follows."""
+    from app.services.dashboard_ai_bot.providers.openai_provider import _tool_args
+
+    assert _tool_args({"arguments": {"chart_id": 7}}) == {"chart_id": 7}
+    assert _tool_args({}) == {}
+
+
+def test_a_reading_steps_result_reaches_the_step_that_answers():
+    """`report_read` and `knowledge` return a dict, and only `str` used to survive
+    into the model's messages. The canvas showed "→ {{dashboard_context}}", every
+    step reported ok, and the step that wrote the answer had been shown none of it."""
+    flow = build([
+        {"key": "read", "type": "report_read", "output_var": "dashboard_context"},
+        AGENT,
+    ], answer_node="answer")
+    # The stub vendor echoes the last user message, so what the model was SHOWN is
+    # visible in the answer. Before the fix the dict was dropped and this block did
+    # not exist at all.
+    shown = json.dumps(run(flow).get("answer") or "", ensure_ascii=False)
+    assert "Result of the previous step" in shown, "bước đọc không tới được bước trả lời"
+    assert "charts" in shown and "chart_id" in shown, "tới nơi nhưng rỗng ruột"
+
+
+def test_previous_text_carries_every_shape_a_step_can_return():
+    assert agent_handler._previous_text("xin chào") == "xin chào"
+    assert "moveis" in agent_handler._previous_text({"rows": [["moveis", 1]]})
+    assert "moveis" in agent_handler._previous_text([{"c": "moveis"}])
+    assert agent_handler._previous_text(None) == ""
+    assert agent_handler._previous_text({}) == ""
+
+
+def test_an_agent_steps_term_attachment_reaches_the_retrieval_scope():
+    """The builder accepted a glossary term on an Agent step, listed it in the
+    step's sources, and then dropped it: the Agent's scope builder collected three
+    of the four kinds. The picker worked; the boundary it configured did not."""
+    flow = build([
+        {"key": "answer", "type": "agent", "prompt": "x",
+         "knowledge": [{"source": "term", "ref": "kd.gmv", "description": "định nghĩa"}]},
+    ], answer_node="answer")
+    node = next(n for n in flow.all_nodes() if n.key == "answer")
+    ctx = Ctx()
+    agent_handler._apply_scope(ctx, node)
+    assert ctx.knowledge_scope["term_fqns"] == ["kd.gmv"]
+
+
+def test_both_step_kinds_describe_a_scope_with_the_same_keys():
+    """Two copies of this disagreed once. One builder, or they will disagree again."""
+    from app.services.agent_flows.runtime.handlers.data import build_knowledge_scope
+
+    assert set(build_knowledge_scope([])) == {
+        "doc_ids", "dataset_ids", "metric_names", "term_fqns",
+    }
+
+
+def test_a_parallel_batch_cannot_exceed_the_steps_tool_ceiling(monkeypatch):
+    """The ceiling was tested once per ROUND and then the whole batch ran. A model
+    asking for five tools in parallel with one call of headroom made five — the
+    limit held on paper and was exceeded in fact."""
+    ran_tools: list[str] = []
+    calls = {"n": 0}
+
+    async def fake(*, provider, api_key, model, system_prompt, messages, tools):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            for i in range(5):
+                yield AgentEvent(type="tool_call", tool_call_id=f"c{i}",
+                                 tool_name="get_chart_data", tool_args={"chart_id": 41})
+            return
+        yield AgentEvent(type="text", text="xong")
+
+    def counting(ctx, name, args, allowed=None):
+        ran_tools.append(name)
+        return TABLE_RESULT
+
+    monkeypatch.setattr(agent_handler, "_stream", fake)
+    monkeypatch.setattr(tool_registry, "execute", counting)
+    run(build([{**AGENT, "max_tool_calls": 2}], answer_node="answer"))
+    assert len(ran_tools) == 2, f"chạy {len(ran_tools)} lượt, trần là 2"
+
+
+def test_a_refused_tool_call_still_gets_an_answer_in_the_transcript(monkeypatch):
+    """OpenAI rejects a request whose assistant tool_call has no matching tool
+    message, so capping a batch must answer the calls it declined — with the
+    reason, which is the more useful thing for the model to read anyway."""
+    seen: dict = {}
+    calls = {"n": 0}
+
+    async def fake(*, provider, api_key, model, system_prompt, messages, tools):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            for i in range(3):
+                yield AgentEvent(type="tool_call", tool_call_id=f"c{i}",
+                                 tool_name="get_chart_data", tool_args={"chart_id": 41})
+            return
+        seen["messages"] = list(messages)
+        yield AgentEvent(type="text", text="xong")
+
+    monkeypatch.setattr(agent_handler, "_stream", fake)
+    run(build([{**AGENT, "max_tool_calls": 1}], answer_node="answer"))
+
+    announced = {
+        tc["id"]
+        for m in seen["messages"] if m.get("role") == "assistant"
+        for tc in (m.get("tool_calls") or [])
+    }
+    answered = {m["tool_call_id"] for m in seen["messages"] if m.get("role") == "tool"}
+    assert announced and announced == answered
+
+
+def test_unparseable_tool_arguments_are_reported_not_silently_emptied(monkeypatch):
+    """Collapsing bad JSON to `{}` sent the model a call it never made: the tool
+    failed on a missing required field and the model spent a round guessing at a
+    fault the runtime had already diagnosed."""
+    executed: list[str] = []
+    seen: dict = {}
+    calls = {"n": 0}
+
+    async def fake(*, provider, api_key, model, system_prompt, messages, tools):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            yield AgentEvent(type="tool_call", tool_call_id="c1",
+                             tool_name="get_chart_data", tool_args={},
+                             extra={"malformed_args": "Expecting ',' delimiter"})
+            return
+        seen["messages"] = list(messages)
+        yield AgentEvent(type="text", text="xong")
+
+    monkeypatch.setattr(agent_handler, "_stream", fake)
+    monkeypatch.setattr(
+        tool_registry, "execute",
+        lambda ctx, name, args, allowed=None: executed.append(name) or TABLE_RESULT,
+    )
+    run(build([AGENT], answer_node="answer"))
+
+    assert executed == [], "một lời gọi hỏng không được chạy như thể nó hợp lệ"
+    told = next(m for m in seen["messages"] if m.get("role") == "tool")
+    assert told["result"]["error_code"] == "bad_tool_arguments"
+
+
+def test_attaching_no_knowledge_does_not_narrow_and_says_so():
+    """The honest half of the tester's last point. An empty attachment list means
+    "did not narrow", so the step reads everything the REPORT is entitled to — not
+    nothing. Pinned here because the runtime and the prose describing it disagreed,
+    and the prose was the part that was wrong."""
+    from app.services.agent_flows.runtime.handlers.data import build_knowledge_scope
+    from app.services.dashboard_ai_bot import govern_tools
+
+    empty = build_knowledge_scope([])
+    assert all(v == [] for v in empty.values())
+    ctx = SimpleNamespace(knowledge_scope=empty)
+    assert govern_tools._authored_doc_ids(ctx) is None
+    assert govern_tools._authored_metric_names(ctx) is None
+    assert govern_tools._authored_term_fqns(ctx) is None
+
+
+def test_a_gathering_step_cannot_spend_the_answering_steps_tool_budget():
+    """A wide report costs a summary + a data read per chart. Left unbounded the
+    reading step drained the turn, the answering step died on its first tool call,
+    and the viewer got "chưa trả lời được" from a run where every step said ok."""
+    from app.services.agent_flows.runtime.state import Budget
+
+    b = Budget(max_tool_calls=30, answer_reserve=6)
+    b.tool_calls = 24
+    assert b.tools_left() == 0, "bước thu thập phải dừng lại ở mức dự trữ"
+    assert b.tools_left(answering=True) == 6, "bước trả lời vẫn được tiêu phần dự trữ"
+
+
+def test_the_answer_reserve_never_swallows_a_small_budget():
+    """Reserving a flat 6 out of a budget of 6 would leave the reading step nothing
+    at all — the starvation, moved one step upstream."""
+    from app.services.agent_flows.runtime.state import Budget
+
+    b = Budget(max_tool_calls=6, answer_reserve=6)
+    assert b.tools_left() == 4
+
+
+def _knowledge_node_with_hint():
+    flow = build([
+        {"key": "kb", "type": "knowledge", "query": "{{question}}", "output_var": "kb_ctx",
+         "knowledge": [
+             {"source": "document", "ref": "26",
+              "description": "Khi câu hỏi nhắc tới doanh thu, GMV hoặc giá trị đơn"},
+         ]},
+        AGENT,
+    ], answer_node="answer")
+    return next(n for n in flow.all_nodes() if n.key == "kb")
+
+
+def _cite(result, node):
+    from app.services.agent_flows.runtime.handlers.data import _cite_knowledge
+
+    class _State:
+        citations: list = []
+
+    state = _State()
+    state.citations = []
+    _cite_knowledge(result, node, state)
+    return state.citations
+
+
+def test_a_knowledge_citation_carries_the_source_title_not_the_authors_hint():
+    """The label reaches the VIEWER. Showing the author's private "when should it
+    read this?" note there hands a reader routing instructions where the document
+    name belongs."""
+    result = {"ok": True, "data": {"results": [
+        {"kind": "document_chunk", "id": 26, "title": "Doanh thu, GMV & Giá trị đơn"},
+    ]}}
+    cites = _cite(result, _knowledge_node_with_hint())
+    assert [c.label for c in cites] == ["Doanh thu, GMV & Giá trị đơn"]
+
+
+def test_a_definition_from_a_metric_or_term_is_citable_at_all():
+    """Only documents used to become citations, so a definition taken from a
+    governed KPI had no legal token — and the model reached for [WEB] on a link
+    with web research switched off."""
+    result = {"ok": True, "data": {"results": [
+        {"kind": "metric", "id": "gmv_tong", "title": "GMV — Tổng giá trị giao dịch"},
+        {"kind": "term", "id": "kd.don_dung_hen", "title": "Đơn giao đúng hẹn"},
+    ]}}
+    kinds = {c.kind: c.ref for c in _cite(result, _knowledge_node_with_hint())}
+    assert kinds == {"metric": "gmv_tong", "term": "kd.don_dung_hen"}
+
+
+def test_an_attached_source_that_matched_nothing_is_not_cited():
+    """Citing the attachment list rather than the results presents a source that
+    backed nothing as if it backed the answer."""
+    assert _cite({"ok": True, "data": {"results": []}}, _knowledge_node_with_hint()) == []
+
+
 # ── 16 · the node list is frozen, and the two halves must agree ───────────────
 #: The twelve. Changing this list is a deliberate act; the test below makes it one.
 FROZEN_NODE_TYPES = {
@@ -1398,4 +1750,55 @@ def test_the_model_predicate_is_null_safe():
     sql, _params = scoped
     assert "IS NOT DISTINCT FROM" in sql, "phép so sánh model phải an toàn với NULL"
     assert "c.model_version = d.embedding_model" not in sql
+
+# ── 19 · the platform's contract outlives the author's prompt ─────────────────
+def test_the_answer_node_always_carries_the_followup_contract():
+    """Suggestion chips are parsed from `[FOLLOWUP]` markers the model emits. The
+    base prompt asks for them, but it is appended BEFORE the author's own
+    instructions — so an author who writes "answer in exactly one short sentence"
+    wins and the markers vanish. Measured on this deployment: one stored answer in
+    twenty-five carried a marker, so the chips were dead while looking shipped."""
+    from app.services.agent_flows.runtime.handlers.agent import _system_prompt
+
+    flow = build([
+        {"key": "helper", "type": "agent", "prompt": "Tóm tắt"},
+        {"key": "answer", "type": "agent",
+         "prompt": "Viết ĐÚNG một câu ngắn. Không thêm gì khác."},
+    ], answer_node="answer")
+
+    class Rctx:
+        base_system_prompt = "BASE\n- End with 2-3 `[FOLLOWUP]` lines"
+        answer_key = "answer"
+
+    class St:
+        def resolve_text(self, t):
+            return t
+
+    nodes = {n.key: n for n in flow.all_nodes()}
+    answer = _system_prompt(nodes["answer"], St(), Rctx())
+    assert "[FOLLOWUP]" in answer
+    assert answer.rfind("[FOLLOWUP]") > answer.find("Viết ĐÚNG một câu ngắn"), (
+        "luật gợi ý phải đứng SAU prompt của tác giả, nếu không nó lại thua"
+    )
+
+    # And NOT on the other nodes — they never talk to the viewer, and a reminder
+    # there is tokens spent on an instruction whose output nobody reads.
+    assert "[FOLLOWUP]" not in _system_prompt(nodes["helper"], St(), Rctx())
+
+
+def test_a_definition_is_never_crowded_out_by_passages():
+    """Metrics and glossary terms used to be concatenated AFTER document chunks
+    and truncated to `limit`, so a report with enough embedded prose filled every
+    slot and a definition could be found, counted, and never returned. A passage
+    and a definition are not competing for the same job."""
+    from app.services.dashboard_ai_bot import govern_tools as gt
+
+    chunks = [{"kind": "document_chunk", "id": i, "score": 1.0} for i in range(20)]
+    vocab = [{"kind": "term", "id": "kd.gmv", "score": 40.0}]
+    reserved = min(len(vocab), max(1, 6 // 3))
+    top = (chunks[: max(0, 6 - reserved)] + vocab[:reserved])[:6]
+    assert any(h["kind"] == "term" for h in top), (
+        "định nghĩa phải có suất riêng, không tranh chỗ với đoạn văn"
+    )
+    assert hasattr(gt, "tool_search_knowledge")
 

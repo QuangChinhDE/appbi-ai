@@ -1,24 +1,16 @@
 /**
- * Home page - redirect to the Overview module
+ * `/` — send the user straight into the default landing module.
+ *
+ * A server redirect rather than a client `router.push`: the browser no longer
+ * downloads a page bundle just to bounce, so there is no spinner frame on every
+ * cold entry and no window in which a landing module could mount twice. The
+ * target follows `DEFAULT_LANDING_PATH`, so switching the Home module back on
+ * moves this redirect with it.
  */
-'use client';
+import { redirect } from 'next/navigation';
 
-import { useEffect } from 'react';
-import { useRouter } from 'next/navigation';
+import { DEFAULT_LANDING_PATH } from '@/lib/feature-flags';
 
-export default function Home() {
-  const router = useRouter();
-
-  useEffect(() => {
-    router.push('/overview');
-  }, [router]);
-
-  return (
-    <div className="min-h-screen bg-surface-2 flex items-center justify-center">
-      <div className="text-center">
-        <div className="inline-block animate-spin rounded-full h-12 w-12 border-b-2 border-brand"></div>
-        <p className="text-text-secondary mt-4">Loading…</p>
-      </div>
-    </div>
-  );
+export default function RootPage() {
+  redirect(DEFAULT_LANDING_PATH);
 }

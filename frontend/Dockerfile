@@ -47,6 +47,10 @@ ENV NEXT_PUBLIC_WORKBOARDS_ENABLED=$NEXT_PUBLIC_WORKBOARDS_ENABLED
 # true also opens the finished PDF in a second tab. Inlined by `next build`.
 ARG NEXT_PUBLIC_PDF_PREVIEW_TAB=false
 ENV NEXT_PUBLIC_PDF_PREVIEW_TAB=$NEXT_PUBLIC_PDF_PREVIEW_TAB
+# Home ("Trang chủ" / Overview) module. Off: the sidebar row is gone and `/`
+# lands on Dashboards. See frontend/src/lib/feature-flags.ts.
+ARG NEXT_PUBLIC_HOME_MODULE_ENABLED=false
+ENV NEXT_PUBLIC_HOME_MODULE_ENABLED=$NEXT_PUBLIC_HOME_MODULE_ENABLED
 
 # Copy dependencies from deps stage
 COPY --from=deps /app/node_modules ./node_modules

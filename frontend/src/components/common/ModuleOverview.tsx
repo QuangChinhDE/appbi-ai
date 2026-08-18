@@ -13,8 +13,10 @@ interface ModuleOverviewProps {
   /**
    * Kept for backward compatibility with existing call sites. The explainer
    * card (icon / title / description / badges) is intentionally not rendered
-   * here — that long-form context lives on the /overview home. Module pages
-   * keep only a thin, single-line stats strip so the list dominates the screen.
+   * here — that long-form context moved to the /overview home, which is itself
+   * switched off now (lib/feature-flags.ts); the same guide is reachable from
+   * the sidebar user menu. Module pages keep only a thin, single-line stats
+   * strip so the list dominates the screen.
    */
   icon?: LucideIcon;
   title?: string;

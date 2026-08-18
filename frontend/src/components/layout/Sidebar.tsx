@@ -37,6 +37,7 @@ import {
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { cn } from '@/lib/utils';
+import { DEFAULT_LANDING_PATH, HOME_MODULE_ENABLED } from '@/lib/feature-flags';
 import { useCurrentUser } from '@/hooks/use-current-user';
 import { usePermissions, hasPermission } from '@/hooks/use-permissions';
 import { authApi } from '@/lib/api-client';
@@ -68,11 +69,18 @@ interface SidebarProps {
 
 // Modules grouped by what the user is doing, instead of one flat list.
 const NAV_GROUPS: NavGroup[] = [
-  {
-    items: [
-      { labelKey: 'sidebar.nav.overview', href: '/overview', icon: <Home className="h-4 w-4" /> },
-    ],
-  },
+  // Home / Overview — omitted entirely while the module is switched off, so the
+  // row is gone rather than disabled and Next never prefetches the route (see
+  // lib/feature-flags.ts).
+  ...(HOME_MODULE_ENABLED
+    ? ([
+        {
+          items: [
+            { labelKey: 'sidebar.nav.overview', href: '/overview', icon: <Home className="h-4 w-4" /> },
+          ],
+        },
+      ] satisfies NavGroup[])
+    : []),
   {
     labelKey: 'sidebar.group.build',
     items: [
@@ -192,7 +200,7 @@ export function Sidebar({ isCollapsed, onToggleCollapse }: SidebarProps) {
       <div className="flex h-14 items-center px-3">
         {!isCollapsed ? (
           <Link
-            href="/"
+            href={DEFAULT_LANDING_PATH}
             className="flex items-center gap-2 rounded-md px-1.5 py-1 transition-colors hover:bg-surface-2"
           >
             <div className="flex h-6 w-6 items-center justify-center rounded-md bg-brand text-text-inverse">
@@ -204,7 +212,7 @@ export function Sidebar({ isCollapsed, onToggleCollapse }: SidebarProps) {
           </Link>
         ) : (
           <Link
-            href="/"
+            href={DEFAULT_LANDING_PATH}
             className="mx-auto flex h-8 w-8 items-center justify-center rounded-md bg-brand text-text-inverse"
           >
             <BarChart3 className="h-4 w-4" />
@@ -448,7 +456,17 @@ export function Sidebar({ isCollapsed, onToggleCollapse }: SidebarProps) {
       {showChangePassword && user?.has_password && user.auth_provider === 'password' && (
         <ChangePasswordModal onClose={() => setShowChangePassword(false)} />
       )}
-      <GettingStartedModal open={showGuide} onClose={() => setShowGuide(false)} locale={language} />
+      {/*
+        Mounted only while open. This modal reads /datasources, /datasets,
+        /charts and /dashboards to tick off its setup checklist, and the sidebar
+        is on every authenticated screen — rendering it unconditionally meant
+        those four list calls fired on every page load, including pages that
+        need none of them. It is opened from the user menu, so paying for the
+        data on open is the right trade.
+      */}
+      {showGuide && (
+        <GettingStartedModal open onClose={() => setShowGuide(false)} locale={language} />
+      )}
       <NotificationsModal
         open={showNotifications}
         onClose={() => setShowNotifications(false)}
