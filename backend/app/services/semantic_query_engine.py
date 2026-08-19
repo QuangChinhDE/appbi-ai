@@ -1093,6 +1093,29 @@ class SemanticQueryEngine:
             return f"{view_alias}.{self._quote_ident(stripped)}"
         return self._render_sql_template(raw_sql, view_alias)
     
+    def _dimension_is_text_typed(self, field_ref: str) -> bool:
+        """True when this dimension's column is stored as TEXT.
+
+        Same recorded metadata + same shared vocabulary the SUM gate uses
+        (``physical_type_map.loads_as_text``), so "needs a cast" means one thing
+        across aggregation, joins and time grains. Unresolvable field → False
+        (render exactly as before)."""
+        try:
+            view_name, col = self._parse_field_ref(field_ref)
+        except ValueError:
+            return False
+        view = self.views_cache.get(view_name) or self._get_view_for_node(view_name)
+        if view is None:
+            return False
+        dim = next(
+            (d for d in (getattr(view, "dimensions", None) or []) if d.get("name") == col),
+            None,
+        )
+        if dim is not None:
+            return _ptm.loads_as_text(dim.get("source_type"), dim.get("type"))
+        phys = self._physical_source_type(view, col)
+        return bool(phys) and _ptm.loads_as_text(phys)
+
     def _render_dimension_with_time_grain(
         self,
         field_ref: str,
@@ -1112,6 +1135,17 @@ class SemanticQueryEngine:
         """
         base_sql = self._render_dimension(field_ref, view_alias)
         dialect = (self.database_type or "").lower()
+        # A time grain over a column that is PHYSICALLY TEXT is invalid SQL, not a
+        # rounding problem: BigQuery rejects `TIMESTAMP_TRUNC(STRING, MONTH)` and
+        # the whole chart 400s. Text dates are normal here — a CSV/Sheets cell is
+        # always text, and Airbyte lands dates as STRING — so coerce first. The
+        # cast is a value-preserving no-op on a genuine DATE/TIMESTAMP column, so
+        # the common case is unchanged, and unparseable text becomes NULL (an
+        # empty bucket) instead of killing the query.
+        if self._dimension_is_text_typed(field_ref):
+            from app.services.type_override_service import build_safe_cast_sql
+
+            base_sql = build_safe_cast_sql(base_sql, "datetime", dialect)
 
         if dialect == "bigquery":
             grain_map = {

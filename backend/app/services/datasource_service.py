@@ -1478,7 +1478,7 @@ class DataSourceConnectionService:
             # app/services/physical_type_map.py for why this must not be a local
             # substring table (a dropped "number" token here typed every CSV
             # numeric column as STRING while the engine summed it uncast → 400).
-            return _ptm.bq_load_type(meta.get("source_type"), meta.get("type"))
+            return _ptm.bq_extract_load_type(meta.get("source_type"), meta.get("type"))
 
         def _coerce_to(bq_t: str, v):
             """Coerce a JSON-safe value to match its declared BigQuery type so the

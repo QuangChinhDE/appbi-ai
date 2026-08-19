@@ -199,6 +199,33 @@ def bq_load_type(source_type: Any, sampled_type: Any = None) -> str:
     return _BQ_BY_FAMILY.get(fam, "STRING")
 
 
+def bq_extract_load_type(source_type: Any, sampled_type: Any = None) -> str:
+    """The BigQuery type to LOAD a federated (non-BigQuery) column with.
+
+    Same as :func:`bq_load_type`, with one deliberate promotion: a column whose
+    physical storage is TEXT but whose MODEL type is a date/time family is
+    materialized as DATE / TIMESTAMP / TIME.
+
+    Why only here, and why only dates: for a schema-less source (an uploaded CSV,
+    a Google Sheet) every cell is text, so "physical type" is a fiction and the
+    model's detected type is the only real declaration — the DA sees the field
+    labelled DATE in the builder. A text NUMBER column still works downstream
+    (the engine SAFE_CASTs before SUM/filters), but a text DATE column breaks the
+    entire date layer: ``TIMESTAMP_TRUNC(STRING, MONTH)`` is rejected outright,
+    date filters compare text to dates, and the axis sorts lexicographically. The
+    caller VERIFIES the promotion against the extracted values
+    (:func:`verified_bq_type`), so a column whose values are not ISO falls back
+    to STRING instead of failing the load.
+
+    Not applied to the engine's cast gates (:func:`loads_as_text`): those describe
+    what a column IS, and a BigQuery-hosted text column stays text no matter what
+    the model calls it — the engine casts it at query time instead."""
+    promoted = family(sampled_type)
+    if promoted in ("date", "timestamp", "time") and family(source_type) in TEXT_FAMILIES:
+        return _BQ_BY_FAMILY[promoted]
+    return bq_load_type(source_type, sampled_type)
+
+
 def loads_as_text(source_type: Any, sampled_type: Any = None) -> bool:
     """True when this column is (or would be) materialized as TEXT.
 
@@ -393,6 +420,6 @@ def mapping_changed_for(columns: Iterable[Any]) -> bool:
         if not isinstance(col, dict):
             continue
         src, sam = col.get("source_type"), col.get("type")
-        if bq_load_type(src, sam) != legacy_bq_load_type(src, sam):
+        if bq_extract_load_type(src, sam) != legacy_bq_load_type(src, sam):
             return True
     return False
