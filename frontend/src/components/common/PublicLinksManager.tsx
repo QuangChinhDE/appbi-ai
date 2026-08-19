@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Link2, Copy, Check, Trash2, Globe, Filter, Plus, X,
   Eye, EyeOff, Clock, Loader2, ArrowLeft, Lock, Code2, Sparkles,
@@ -757,6 +757,17 @@ export function PublicLinksManager({
     }
   };
 
+  // A pending Agent Flow choice lives inside the AI Bot tab's own editor, which
+  // has its own "Update assignment" button. The primary Save below must write it
+  // too: picking a flow and pressing Save used to close the dialog, report "Link
+  // updated" and discard the choice, so reopening showed the previous flow and the
+  // setting looked like it had not stuck.
+  const bindingFlushRef = useRef<(() => Promise<void>) | null>(null);
+  const registerBindingFlush = useCallback(
+    (flush: (() => Promise<void>) | null) => { bindingFlushRef.current = flush; },
+    [],
+  );
+
   const handleUpdate = async () => {
     if (!editingLink) return;
     const { password, validationError } = resolvePasswordPayload();
@@ -783,6 +794,24 @@ export function PublicLinksManager({
         ...passwordField,
       });
       setLinks((prev) => prev.map((link) => (link.id === editingLink.id ? updated : link)));
+
+      // The flow assignment is a SEPARATE resource, so it is written separately —
+      // but reported together, because the reader pressed one button. A failure
+      // here (an unresolved mapping, a flow that no longer preflights) must not be
+      // hidden behind "Link updated"; the dialog stays open so the choice is not
+      // lost along with the message.
+      const flushBinding = bindingFlushRef.current;
+      if (flushBinding) {
+        try {
+          await flushBinding();
+        } catch (err) {
+          const detail = (err as { response?: { data?: { detail?: string } } })
+            ?.response?.data?.detail;
+          toast.error(detail || 'Đã lưu link, nhưng chưa gán được Agent Flow.');
+          return;
+        }
+      }
+
       resetForm();
       setView('list');
       toast.success('Link updated');
@@ -1583,6 +1612,7 @@ export function PublicLinksManager({
                     onChange={setFormAppearance}
                     dashboardId={dashboardId}
                     linkId={editingLink?.id ?? null}
+                    registerBindingFlush={registerBindingFlush}
                   />
                 )}
 

@@ -7,7 +7,7 @@ import type { PublicLinkAppearanceConfig } from '@/types/api';
 import { Input, Textarea } from '@/components/ui/Input';
 import { AiButton } from '@/components/ui/AiButton';
 import { dashboardApi } from '@/lib/api/dashboards';
-import { FlowBindingEditor } from '@/components/common/FlowBindingEditor';
+import { FlowBindingEditor, type BindingFlush } from '@/components/common/FlowBindingEditor';
 
 // The AI setup for one public link.
 //
@@ -58,10 +58,14 @@ interface PublicLinkAiBotEditorProps {
   /** Null while the link is still being created. The data contract is attached to a
    *  LINK, so there is nothing to define until one exists. */
   linkId: number | null;
+  /** Passed straight to the flow editor so the modal's own Save can write a flow
+   *  the author picked here. Without it that choice is dropped on save — see the
+   *  note on `FlowBindingEditorProps.registerFlush`. */
+  registerBindingFlush?: (flush: BindingFlush | null) => void;
 }
 
 export function PublicLinkAiBotEditor({
-  value, onChange, dashboardId, linkId,
+  value, onChange, dashboardId, linkId, registerBindingFlush,
 }: PublicLinkAiBotEditorProps) {
   const enabled = value.ai_bot_enabled === true;
   const provider = value.ai_bot_provider || 'openai';
@@ -182,7 +186,7 @@ export function PublicLinkAiBotEditor({
                 <Workflow className="h-3.5 w-3.5 text-brand" />
                 Agent Flow &amp; phạm vi dữ liệu
               </label>
-              <FlowBindingEditor linkId={linkId} />
+              <FlowBindingEditor linkId={linkId} registerFlush={registerBindingFlush} />
             </div>
 
             {/* THE KEY BOX IS GONE — the server supplies the token.
