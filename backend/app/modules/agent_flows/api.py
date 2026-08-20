@@ -322,6 +322,11 @@ def import_draft(
         "ok": True,
         "errors": [],
         "warnings": extra_warnings + list(flow.warnings()),
+        # The subset that REFUSES a publish, sent separately so the builder can
+        # show it before the button rather than as a failed attempt afterwards.
+        # Kept out of `warnings` so the existing "N notes" chip keeps its meaning:
+        # notes are trade-offs, these are defects.
+        "blocking_problems": list(flow.blocking_problems()),
         "name": name,
         "description": str(data.get("description") or "").strip(),
         "body": flow.model_dump(mode="json", exclude={"key", "name"}),
@@ -448,6 +453,7 @@ def validate_flow(body: ValidateBody, _: User = Depends(can_view)) -> dict[str, 
         "ok": True,
         "errors": [],
         "warnings": flow.warnings(),
+        "blocking_problems": list(flow.blocking_problems()),
         "node_count": len(flow.all_nodes()),
         "answer_node": flow.answering_key(),
         "requirements": flow.requirements.model_dump(mode="json"),
@@ -627,12 +633,19 @@ def save_brain(
 @router.post("/brains/{brain_key}/{version}/publish")
 def publish_brain(
     brain_key: str, version: int,
+    acknowledge_problems: bool = False,
     db: Session = Depends(get_db), user: User = Depends(can_publish),
 ) -> dict[str, Any]:
     """Go live. Links this version would break are PINNED to what they run today
-    rather than broken, and reported back so the author can fix them."""
+    rather than broken, and reported back so the author can fix them.
+
+    Refuses with 409 while the flow reads a variable no step produces, unless the
+    caller says `acknowledge_problems` — see `Flow.blocking_problems`."""
     _may_manage_flow(db, user, brain_key)
-    return _run(lambda: reg.publish(db, brain_key, version, _actor(user)))
+    return _run(lambda: reg.publish(
+        db, brain_key, version, _actor(user),
+        acknowledge_problems=acknowledge_problems,
+    ))
 
 
 @router.post("/brains/{brain_key}/rollback")

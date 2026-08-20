@@ -281,8 +281,35 @@ class AgentNode(BaseNode):
     #: `chat` streams prose (the default, and what keeps authoring simple).
     #: `json` asks the model for typed answer blocks — richer, but not streamable,
     #: because a half-written JSON object cannot be rendered.
-    output_format: Literal["chat", "json"] = "chat"
+    #: `choice` is a CLASSIFIER: the step must answer with one of `choices` and
+    #: nothing else, and the runtime enforces that rather than asking for it.
+    output_format: Literal["chat", "json", "choice"] = "chat"
+    #: The only answers a `choice` step may give.
+    #:
+    #: A classifier feeding a Switch used to be built by writing "reply with exactly
+    #: one of: a, b, c" in the prompt and hoping. When the model answered in prose
+    #: instead — which it does, especially when the engine's own base prompt has
+    #: told it to explain itself when data is missing — no case matched, the branch
+    #: ran nothing, and the run still reported ok. Prompts are requests; this is the
+    #: constraint, checked in code after the model speaks.
+    choices: list[str] = Field(default_factory=list)
     context_policy: ContextPolicy = "question"
+
+    @model_validator(mode="after")
+    def _choice_has_options(self) -> "AgentNode":
+        """A `choice` step with no options can never produce a legal answer, so it
+        would fail on every question. Refused at save time, where an author is
+        looking at the node, rather than at run time in front of a viewer."""
+        if self.output_format == "choice":
+            cleaned = [str(c).strip() for c in self.choices if str(c).strip()]
+            if len(cleaned) < 2:
+                raise ValueError(
+                    "bước phân loại phải có ít nhất 2 lựa chọn để chọn giữa"
+                )
+            if len(set(cleaned)) != len(cleaned):
+                raise ValueError("các lựa chọn của bước phân loại phải khác nhau")
+            object.__setattr__(self, "choices", cleaned)
+        return self
 
     @field_validator("prompt")
     @classmethod
@@ -887,6 +914,30 @@ class Flow(_Model):
                 "không phải requirement — lúc chạy nó sẽ rỗng."
             )
         return out
+
+    def blocking_problems(self) -> list[str]:
+        """The subset of `warnings()` that is a DEFECT rather than a trade-off.
+
+        Most warnings describe a choice: no knowledge attached, a report named in a
+        prompt, a chart-shaped requirement. An author can read those and decide they
+        meant it.
+
+        A `{{variable}}` that no step produces is not a choice. At run time it
+        resolves to an empty string, so the prompt that reads it is silently
+        missing the thing it was written around — and the step still reports ok,
+        which is the whole family of failure this module keeps finding. The warning
+        was computed and shown, and nothing ever stopped: a flow could go live with
+        it and answer viewers from a prompt with a hole in it.
+        """
+        supplied = {r.key for r in self.requirements.items}
+        missing = sorted(
+            self.referenced_vars() - self.produced_vars() - supplied - _BUILTIN_VARS
+        )
+        return [
+            f"Biến {{{{{v}}}}} được dùng nhưng không bước nào tạo ra nó — lúc chạy "
+            "nó sẽ rỗng, và bước đọc nó sẽ chạy thiếu đúng phần dữ liệu đó."
+            for v in missing
+        ]
 
     def to_dict(self) -> dict[str, Any]:
         return self.model_dump(mode="json")

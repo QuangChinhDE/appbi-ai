@@ -316,10 +316,10 @@ export function BrainBuilder({
     } finally { setSaving(false); }
   };
 
-  const doPublish = async () => {
+  const doPublish = async (acknowledgeProblems = false) => {
     setSaving(true);
     try {
-      const res = await publishBrain(brainKey, version);
+      const res = await publishBrain(brainKey, version, acknowledgeProblems);
       setPublishOpen(false);
       setStatus('published');
       setPublishedVersion(version);
@@ -572,6 +572,7 @@ export function BrainBuilder({
         <PublishDialog
           version={version}
           links={links}
+          problems={validation?.blocking_problems || []}
           onCancel={() => setPublishOpen(false)}
           onConfirm={doPublish}
           busy={saving}
@@ -589,13 +590,20 @@ export function BrainBuilder({
  *  A link that would break is PINNED, not broken — stated up front so publishing
  *  stops being a thing authors avoid. */
 function PublishDialog({
-  version, links, onCancel, onConfirm, busy,
+  version, links, problems, onCancel, onConfirm, busy,
 }: {
   version: number; links: FlowLinkUsage[];
-  onCancel: () => void; onConfirm: () => void; busy: boolean;
+  /** Defects the server will refuse on. Shown BEFORE the button: the check already
+   *  existed and ran on every keystroke, and publishing was the one moment nobody
+   *  consulted it — so a flow reading a variable no step writes went live and
+   *  answered viewers from a prompt with a hole in it. */
+  problems: string[];
+  onCancel: () => void; onConfirm: (acknowledgeProblems?: boolean) => void; busy: boolean;
 }) {
   const { t } = useI18n();
   const needsReview = links.filter((l) => l.status === 'needs_review');
+  const [accepted, setAccepted] = React.useState(false);
+  const blocked = problems.length > 0 && !accepted;
   return (
     <div className="absolute inset-0 z-50 flex items-center justify-center bg-[rgb(0_0_0/0.22)]">
       <div className="w-[540px] rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 shadow-linear-lg">
@@ -627,6 +635,23 @@ function PublishDialog({
               {t('agentFlows.publish.noLinks')}
             </p>
           )}
+          {!!problems.length && (
+            <div className="mt-3 rounded-lg border border-danger/30 bg-danger/5 p-2.5">
+              <b className="block text-caption text-danger">
+                {t('agentFlows.publish.problemsTitle')}
+              </b>
+              <ul className="mt-1.5 space-y-1">
+                {problems.map((p, i) => (
+                  <li key={i} className="text-caption leading-relaxed text-danger">• {p}</li>
+                ))}
+              </ul>
+              <label className="mt-2.5 flex cursor-pointer items-start gap-2 text-caption text-text-secondary">
+                <input type="checkbox" className="mt-0.5" checked={accepted}
+                  onChange={(e) => setAccepted(e.target.checked)} />
+                <span>{t('agentFlows.publish.problemsAcknowledge')}</span>
+              </label>
+            </div>
+          )}
           {!!needsReview.length && (
             <p className="mt-3 rounded-lg border border-warning/25 bg-warning/5 p-2.5 text-caption leading-relaxed text-warning">
               {t('agentFlows.publish.needsReviewPrefix', { count: needsReview.length })}{' '}
@@ -637,7 +662,9 @@ function PublishDialog({
         </div>
         <div className="flex justify-end gap-2 border-t border-[rgb(var(--border-line))] p-3">
           <Button variant="secondary" size="sm" onClick={onCancel}>{t('agentFlows.publish.cancel')}</Button>
-          <Button size="sm" onClick={onConfirm} loading={busy}>{t('agentFlows.builder.publish')}</Button>
+          <Button size="sm" onClick={() => onConfirm(accepted)} loading={busy} disabled={blocked}>
+            {t('agentFlows.builder.publish')}
+          </Button>
         </div>
       </div>
     </div>

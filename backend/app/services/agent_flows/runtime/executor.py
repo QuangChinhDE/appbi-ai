@@ -65,6 +65,13 @@ from app.services.dashboard_ai_bot.events import AgentEvent
 
 logger = logging.getLogger(__name__)
 
+#: Notices that mean the run did NOT execute as designed, even though every step
+#: that ran, ran without error. They downgrade `ok` to `partial`, because a run
+#: whose branches all missed is not a success — it is a question the flow was not
+#: shaped to answer, and the operator has to be able to see that in the numbers.
+DEGRADING_NOTICES = frozenset({"branch_unmatched"})
+
+
 
 class BranchStopped(Exception):
     """A Filter node said this branch should not continue.
@@ -206,6 +213,15 @@ async def run_flow(
             else "Chưa tạo được câu trả lời cho câu hỏi này."
         )
     if any(s.status == "error" for s in state.trace) and status == "ok":
+        status = "partial"
+    if status == "ok" and any(n.code in DEGRADING_NOTICES for n in state.notices):
+        # EVERY STEP RAN FINE AND THE FLOW STILL DID NOT RUN AS DESIGNED.
+        #
+        # A branching node that matched nothing executes cleanly — there is no
+        # error to find in the trace — so the existing "any step errored" rule
+        # cannot see it, and the run was filed `ok`. An operator reading the flow's
+        # success rate then counts a question whose whole analysis lane was skipped
+        # as a working answer. "ok" has to mean the designed path ran.
         status = "partial"
 
     # ── Are the answer's figures supported by what the run actually read? ──────
@@ -519,7 +535,21 @@ async def _run_if(
         chosen = next((p for p in node.paths if p.kind == "fallback"), None)
 
     if chosen is None:
+        # NOTHING RAN, AND UNTIL NOW NOTHING SAID SO.
+        #
+        # `_run_loop` already reports an empty iteration for exactly this reason —
+        # "a run that looked complete with a body that never executed" — and the two
+        # branching nodes were left out of that lesson. An IF whose conditions all
+        # missed with no fallback drew lanes on the canvas and drove down none of
+        # them, while the trace showed the step green.
         state.outputs[node.key] = {"matched": None}
+        state.notices.append(
+            Notice(
+                code="branch_unmatched",
+                text=f"Bước “{node.name or node.key}” không nhánh nào khớp và cũng "
+                     "không có nhánh dự phòng, nên phần việc trong các nhánh đã bị bỏ qua.",
+            )
+        )
         return
 
     label = chosen.name or chosen.key
@@ -562,6 +592,27 @@ async def _run_switch(
     state.outputs[node.key] = {
         "matched": [c.key for c in matched], "value": value,
     }
+    if not matched:
+        # Same silence as the IF above, with one addition that matters when it is
+        # a model choosing the value: SAY WHAT THE VALUE WAS. "No case matched" is
+        # not actionable; "no case matched 'Không có dữ liệu…'" tells the author
+        # both that their classifier answered in prose and which case list to fix.
+        shown = str(value)
+        declared_but_empty = node.has_fallback and not node.fallback
+        state.notices.append(
+            Notice(
+                code="branch_unmatched",
+                text=(
+                    f"Bước “{node.name or node.key}” không có nhánh nào khớp với giá trị "
+                    f"“{shown[:80]}”"
+                    + (
+                        " — nhánh dự phòng đã bật nhưng đang rỗng, nên không có gì chạy."
+                        if declared_but_empty
+                        else ", nên không có nhánh nào chạy."
+                    )
+                ),
+            )
+        )
     for case in matched:
         label = case.label or case.key
         state.path.append(label)

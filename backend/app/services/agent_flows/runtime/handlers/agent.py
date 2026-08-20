@@ -243,8 +243,74 @@ async def run(
 
     if node.output_format == "json":
         state.outputs[node.key] = _parse_blocks(text, state, node)
+    elif node.output_format == "choice":
+        # THE CONSTRAINT, CHECKED AFTER THE MODEL SPEAKS.
+        #
+        # The prompt above asks for one of the listed values; this decides whether
+        # it got one. Asking was the whole mechanism before, and a classifier that
+        # answered in prose sent an unmatchable value into the Switch below it,
+        # which then ran nothing and still reported ok.
+        #
+        # One corrective round, because the common miss is shape rather than
+        # understanding — a model that appended a sentence usually names the right
+        # value when told to send only the value. If the second answer is still not
+        # one of them, this RAISES: the step is recorded `error`, the run is no
+        # longer `ok`, and the author reads what the model actually said instead of
+        # finding an empty branch.
+        picked = _match_choice(text, node.choices)
+        if picked is None and not provider_error:
+            picked = await _retry_choice(
+                node, state, system, messages, text,
+                provider=provider, api_key=api_key, model=model,
+            )
+        if picked is None:
+            raise RuntimeError(
+                f"bước phân loại không trả về giá trị hợp lệ "
+                f"(cho phép: {', '.join(node.choices)}) — model trả lời: "
+                f"“{(text or '').strip()[:120] or '(rỗng)'}”"
+            )
+        state.outputs[node.key] = picked
     else:
         state.outputs[node.key] = text
+
+
+async def _retry_choice(
+    node: AgentNode, state: RunState, system: str, messages: list[dict], said: str,
+    *, provider: str, api_key: str, model: str,
+) -> str | None:
+    """One more round, with the miss quoted back. Returns the value, or None.
+
+    Costs a model call, so it is bounded to exactly one and skipped when the run
+    has no budget left for it — a classifier is a cheap step and must not be the
+    reason an answer never gets written.
+    """
+    try:
+        state.budget.spend_llm()
+    except Exception:  # noqa: BLE001 — out of budget is not this step's failure
+        return None
+    retry_messages = [
+        *messages,
+        {"role": "assistant", "content": said},
+        {
+            "role": "user",
+            "content": (
+                "Câu trả lời trên không nằm trong danh sách. Trả lời lại bằng ĐÚNG "
+                "một giá trị, nguyên văn, không thêm gì khác:\n"
+                + "\n".join(f"- {c}" for c in node.choices)
+            ),
+        },
+    ]
+    got = ""
+    async for ev in _stream(
+        provider=provider, api_key=api_key, model=model,
+        system_prompt=system, messages=retry_messages, tools=[],
+    ):
+        if ev.type == "text":
+            got += ev.text
+        elif ev.type == "usage":
+            state.prompt_tokens += int(ev.extra.get("prompt_tokens") or 0)
+            state.completion_tokens += int(ev.extra.get("completion_tokens") or 0)
+    return _match_choice(got, node.choices)
 
 
 def _resolve_model(node: AgentNode, rctx: Any) -> tuple[str, str]:
@@ -334,7 +400,18 @@ def _system_prompt(node: AgentNode, state: RunState, rctx: Any) -> str:
     # "write one sentence about {{segment}}" does not need the citation contract;
     # it needs the two rules that must never be dropped, which is what the compact
     # form carries.
-    if rctx.base_system_prompt.strip():
+    if node.output_format == "choice":
+        # A CLASSIFIER IS NOT AN ANALYST, SO IT DOES NOT GET THE ANALYST'S RULES.
+        #
+        # `_COMPACT_BASE` ends with "Nếu dữ liệu không có, nói rõ là không có" — the
+        # right instruction for a step that writes prose about figures, and the
+        # wrong one for a step whose entire job is to emit one token from a fixed
+        # list. Given both, a model handed thin input follows the more specific,
+        # more recent sentence and explains itself; the Switch downstream then
+        # matches nothing. The classifier's contract is below, and it is the only
+        # contract it needs.
+        parts.append(_choice_instructions(node))
+    elif rctx.base_system_prompt.strip():
         parts.append(
             rctx.base_system_prompt.strip()
             if node.key == rctx.answer_key
@@ -388,6 +465,47 @@ def _system_prompt(node: AgentNode, state: RunState, rctx: Any) -> str:
 #: The block VALUES stay language-neutral; what the model writes inside
 #: `markdown`, `label` and `items` follows the viewer's question, as rule 5 of
 #: the base prompt says.
+def _choice_instructions(node: AgentNode) -> str:
+    """What a classifier is told. The rule that MATTERS is enforced below, in code;
+    this only saves a round by asking for the right shape first."""
+    options = "\n".join(f"- {c}" for c in node.choices)
+    return (
+        "Bạn là bộ PHÂN LOẠI. Trả lời bằng ĐÚNG MỘT giá trị trong danh sách dưới "
+        "đây, viết nguyên văn, không thêm dấu câu, không giải thích, không xuống "
+        "dòng. Nếu không chắc, vẫn phải chọn giá trị gần đúng nhất — không được "
+        "trả lời rằng thiếu dữ liệu.\n" + options
+    )
+
+
+def _match_choice(text: str, choices: list[str]) -> str | None:
+    """The model's answer as one of `choices`, or None.
+
+    Deliberately forgiving about SHAPE and strict about VALUE: a model that obeyed
+    the instruction and then added a full stop, a quote, or an "Answer:" prefix has
+    classified correctly, and failing that turn would spend a retry on punctuation.
+    A model that wrote a sentence has NOT classified, and no amount of substring
+    matching should turn that into a decision — the containment check below runs
+    only on a short reply, so a paragraph that mentions a category in passing
+    cannot be read as choosing it.
+    """
+    raw = (text or "").strip().strip("\"'`.。 \n\t")
+    if not raw:
+        return None
+    lowered = raw.lower()
+    for c in choices:
+        if lowered == c.strip().lower():
+            return c
+    for c in choices:
+        tail = c.strip().lower()
+        if lowered.endswith(": " + tail) or lowered.endswith("=" + tail):
+            return c
+    if len(raw) <= 64:
+        hits = [c for c in choices if c.strip().lower() in lowered]
+        if len(hits) == 1:
+            return hits[0]
+    return None
+
+
 _BLOCK_INSTRUCTIONS = """OUTPUT FORMAT
 Return ONE JSON object and nothing else — no prose before or after:
 {"blocks":[ ... ]}

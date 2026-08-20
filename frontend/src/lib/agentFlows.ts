@@ -336,6 +336,11 @@ export interface ValidateResult {
   ok: boolean;
   errors: string[];
   warnings: string[];
+  /** The subset of `warnings` that REFUSES a publish (a `{{variable}}` no step
+   *  produces). Separate from `warnings` because notes are trade-offs an author
+   *  may accept and these are defects that change what a viewer is told.
+   *  Optional so a frontend deployed ahead of the backend simply shows nothing. */
+  blocking_problems?: string[];
   node_count?: number;
   answer_node?: string;
   requirements?: FlowRequirements;
@@ -683,9 +688,13 @@ export async function validateFlow(body: {
 
 export async function publishBrain(
   key: string, version: number,
+  /** Publish anyway, with the blocking problems seen and accepted. The server
+   *  answers 409 without it — see `Flow.blocking_problems`. */
+  acknowledgeProblems = false,
 ): Promise<BrainDetail & { pinned_links?: { link_name: string; reasons: string[] }[] }> {
+  const q = acknowledgeProblems ? '?acknowledge_problems=true' : '';
   const { data } = await apiClient.post(
-    `${BASE}/brains/${encodeURIComponent(key)}/${version}/publish`, {});
+    `${BASE}/brains/${encodeURIComponent(key)}/${version}/publish${q}`, {});
   return data;
 }
 
