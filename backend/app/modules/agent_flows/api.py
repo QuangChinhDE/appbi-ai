@@ -12,6 +12,7 @@ been written in the wrong place.
 from __future__ import annotations
 
 import logging
+from types import SimpleNamespace
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -923,6 +924,113 @@ async def test_flow(
         if ev.type == "result":
             envelope = ev.extra.get("envelope")
     return {"envelope": envelope}
+
+
+class ReportTestBody(BaseModel):
+    question: str
+    #: WHICH REPORT to try it on. A flow serves one report or many, and an author
+    #: builds it before any link exists — so the thing they pick here is the report,
+    #: not a published link. See `binding.ad_hoc_contract` for what the run gets.
+    dashboard_id: int
+    version: int | None = None
+
+
+@router.post("/brains/{brain_key}/test-on-report")
+async def test_flow_on_report(
+    brain_key: str, body: ReportTestBody,
+    db: Session = Depends(get_db), user: User = Depends(can_edit),
+) -> dict[str, Any]:
+    """Run the draft against a REPORT the author may see, with no link needed.
+
+    The other test endpoint needs a link, and that was right for the question it
+    answers — but it made the button refuse at the moment it was most useful. An
+    author with an unfinished flow had to bind it to a live public link to find out
+    whether it worked, which is testing in front of viewers.
+
+    TWO PERMISSION GATES, BOTH NAMED. `_may_edit_flow` says this is their flow to
+    change; `require_view_access` says this is their report to read. The second is
+    not a formality: a test runs the bot over real report data and returns real
+    figures, so it is exactly as sensitive as opening the report itself. The picker
+    on the frontend lists what the same check allows, so the two cannot disagree
+    about which reports are offered and which actually run.
+
+    Returns `readiness` alongside the envelope rather than refusing on it. A flow
+    mid-build usually HAS unresolved requirements — that is what "mid-build" means —
+    and refusing would reproduce the problem this endpoint exists to fix. Saying
+    "this ran with X empty" lets the author read the answer and the caveat together.
+    """
+    from app.models.models import Dashboard
+
+    _may_edit_flow(db, user, brain_key)
+
+    dashboard = db.query(Dashboard).filter(Dashboard.id == body.dashboard_id).first()
+    if dashboard is None:
+        raise HTTPException(status_code=404, detail="Không tìm thấy báo cáo")
+    require_view_access(db, user, dashboard, "dashboards")
+
+    detail = _run(lambda: reg.get_brain(db, brain_key, body.version))
+    from app.models.agent_brain import AgentBrainVersion
+
+    row = (
+        db.query(AgentBrainVersion)
+        .filter(
+            AgentBrainVersion.brain_key == brain_key,
+            AgentBrainVersion.version == detail["version"],
+        )
+        .first()
+    )
+    flow = reg.parse_flow(row) if row else None
+    if flow is None:
+        raise HTTPException(status_code=422, detail="Flow không hợp lệ, chưa test được")
+
+    contract = binding_service.ad_hoc_contract(flow, dashboard)
+    readiness = binding_service.preflight(
+        db, flow=flow, contract=contract, dashboard=dashboard, link=None
+    )
+    binding = binding_service.ephemeral_binding(flow, dashboard)
+
+    from app.services.agent_flows.dispatch import run_preview
+    from app.services.dashboard_ai_bot.public_link_config import deployment_key
+    from app.services.dashboard_ai_bot.tool_context import ToolContext
+
+    ctx = ToolContext.from_dashboard(
+        db=db, dashboard=dashboard, public_filters=[],
+        actor_type="user", actor_ref=_actor(user),
+    )
+    # The deployment's own token, resolved by the same helper the public bot uses.
+    # There is no link here to carry a key, and asking an author to paste one to
+    # test their own flow is the friction this endpoint removes.
+    api_key, provider = deployment_key()
+    if not api_key:
+        raise HTTPException(
+            status_code=409,
+            detail="Máy chủ chưa có API key cho AI — chưa test được. "
+                   "Đặt OPENAI_API_KEY rồi thử lại.",
+        )
+
+    envelope: dict | None = None
+    async for ev in run_preview(
+        db, flow=flow, version=row.version, binding=binding,
+        link=SimpleNamespace(token="", appearance_config={}),
+        dashboard=dashboard, ctx=ctx, question=body.question,
+        api_key=api_key, provider=provider, model="",
+    ):
+        if ev.type == "result":
+            envelope = ev.extra.get("envelope")
+    total_charts = len(getattr(dashboard, "dashboard_charts", None) or [])
+    return {
+        "envelope": envelope,
+        "readiness": readiness,
+        "report": {
+            "id": dashboard.id,
+            "name": dashboard.name,
+            # Said out loud, because it changes how to read the answer: a test on a
+            # wide report reads a slice of it, and an author comparing the bot's
+            # figure against a tile that was not in the slice deserves to know why.
+            "charts_read": len(contract.charts.ids) or total_charts,
+            "charts_total": total_charts,
+        },
+    }
 
 
 class NodeTestBody(BaseModel):

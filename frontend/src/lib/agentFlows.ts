@@ -698,6 +698,41 @@ export async function publishBrain(
   return data;
 }
 
+/** A report the caller may test a flow on. Same permission answer the Dashboards
+ *  module gives — the picker and the run must not disagree about which reports are
+ *  offered and which actually execute. */
+export interface TestTargetReport {
+  id: number;
+  name: string;
+  description?: string | null;
+  permission?: string;
+}
+
+export async function listTestTargetReports(): Promise<TestTargetReport[]> {
+  const { data } = await apiClient.get<TestTargetReport[]>('/dashboards/accessible-summary');
+  return Array.isArray(data) ? data : [];
+}
+
+export interface ReportTestResult {
+  envelope: unknown;
+  /** What a real link would still have to answer. A flow mid-build normally has
+   *  some of these; they are shown, not treated as a failure. */
+  readiness?: { errors?: { message: string }[]; warnings?: { message: string }[] };
+  report?: { id: number; name: string; charts_read?: number; charts_total?: number };
+}
+
+/** Run the draft against a REPORT, with no link and no binding. The companion to
+ *  `testFlow`, which needs a link — see the endpoint's docstring for why both
+ *  exist. */
+export async function testFlowOnReport(
+  key: string,
+  body: { dashboard_id: number; question: string; version?: number },
+): Promise<ReportTestResult> {
+  const { data } = await apiClient.post(
+    `${BASE}/brains/${encodeURIComponent(key)}/test-on-report`, body);
+  return data;
+}
+
 export async function rollbackBrain(key: string): Promise<BrainDetail> {
   const { data } = await apiClient.post<BrainDetail>(
     `${BASE}/brains/${encodeURIComponent(key)}/rollback`, {});

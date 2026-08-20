@@ -33,6 +33,8 @@ import {
   blankNode, branchCoverage, brainImpact, canDropInto, findNode, getBrain, insertNode,
   listAttachable, listNodeSpecs, listProviders, listToolPacks, moveNode,
   publishBrain, removeNode,
+  listTestTargetReports, testFlowOnReport,
+  type TestTargetReport, type ReportTestResult,
   replaceNode, saveBrain, testFlow, validateFlow, walkNodes,
   type FlowBody, type FlowLinkUsage, type FlowNode, type FlowPath, type InsertTarget,
   type Attachable, type NodeSpec, type NodeType, type ProviderGroup,
@@ -580,7 +582,7 @@ export function BrainBuilder({
       )}
 
       {testOpen && (
-        <TestDialog brainKey={brainKey} links={links} onClose={() => setTestOpen(false)} />
+        <TestDialog brainKey={brainKey} links={links} version={version} onClose={() => setTestOpen(false)} />
       )}
     </div>
   );
@@ -671,38 +673,99 @@ function PublishDialog({
   );
 }
 
-/** Test runs against a real BINDING, not a bare dashboard.
- *  "Does this flow work" is a question about a flow ON A LINK: two links resolve the
- *  same requirements to different fields, so a test without one tests nothing. */
+/** Try the flow on a REPORT, before any link exists.
+ *
+ *  This dialog used to demand a link, and that made the button useless exactly when
+ *  it was needed: an author with an unfinished flow had to assign it to a live
+ *  public link to find out whether it worked. A flow serves one report or many, so
+ *  the thing you pick here is the report — and the list is the same one the
+ *  Dashboards module would show you, because a test reads real figures and is
+ *  therefore exactly as sensitive as opening the report itself.
+ *
+ *  Testing against a LINK is still offered when the flow has any: two links resolve
+ *  their requirements differently, so late in the build "does it work on THAT link"
+ *  is the sharper question. Report first because it is the one you ask more often.
+ */
 function TestDialog({
-  brainKey, links, onClose,
-}: { brainKey: string; links: FlowLinkUsage[]; onClose: () => void }) {
+  brainKey, links, version, onClose,
+}: { brainKey: string; links: FlowLinkUsage[]; version: number; onClose: () => void }) {
   const { t } = useI18n();
+  const [target, setTarget] = React.useState<'report' | 'link'>('report');
   const [question, setQuestion] = React.useState(t('agentFlows.test.initialQuestion'));
+  const [reports, setReports] = React.useState<TestTargetReport[] | null>(null);
+  const [reportId, setReportId] = React.useState<number | null>(null);
+  const [reportError, setReportError] = React.useState<string | null>(null);
   const [linkId, setLinkId] = React.useState<number | null>(links[0]?.link_id ?? null);
   const [busy, setBusy] = React.useState(false);
-  const [result, setResult] = React.useState<Record<string, unknown> | null>(null);
+  const [result, setResult] = React.useState<ReportTestResult | null>(null);
+
+  React.useEffect(() => {
+    let alive = true;
+    listTestTargetReports()
+      .then((rs) => {
+        if (!alive) return;
+        setReports(rs);
+        setReportId((cur) => cur ?? rs[0]?.id ?? null);
+      })
+      .catch((e: unknown) => {
+        if (!alive) return;
+        // A 403 here is the honest answer, not a failure to load: this account has
+        // no Dashboards permission, so there is no report it may test against.
+        const status = (e as { response?: { status?: number } })?.response?.status;
+        setReports([]);
+        setReportError(
+          status === 403
+            ? t('agentFlows.test.noReportAccess')
+            : t('agentFlows.test.reportsFailed'),
+        );
+      });
+    return () => { alive = false; };
+  }, [t]);
 
   const run = async () => {
-    if (!linkId) return;
     setBusy(true);
+    setResult(null);
     try {
-      const res = await testFlow(brainKey, { question, link_id: linkId });
-      setResult(res.envelope as unknown as Record<string, unknown>);
+      if (target === 'report') {
+        if (!reportId) return;
+        setResult(await testFlowOnReport(brainKey, {
+          dashboard_id: reportId, question, version,
+        }));
+      } else {
+        if (!linkId) return;
+        const res = await testFlow(brainKey, { question, link_id: linkId, version });
+        setResult({ envelope: res.envelope });
+      }
     } catch (e: unknown) {
       const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
       toast.error(detail || t('agentFlows.test.failed'));
     } finally { setBusy(false); }
   };
 
-  const env = result as unknown as {
-    status?: string; trace?: { path: string; steps: { key: string; name: string; type: string; status: string; ms: number }[] };
+  const env = result?.envelope as {
+    status?: string;
+    trace?: { path: string; steps: { key: string; name: string; type: string; status: string; ms: number }[] };
     answer?: { blocks: { type: string; markdown?: string }[] };
-  } | null;
+    notices?: { code: string; text: string }[];
+  } | undefined;
+
+  const rd = result?.readiness;
+  // ERRORS ONLY. `preflight` also returns the flow's own advisory notes ("no
+  // knowledge attached", "the answer step still has tools") and those are not
+  // things a LINK answers — they already sit in the header's notes chip, and
+  // repeating them here under a heading that promises otherwise made two
+  // unrelated observations read as blockers.
+  const gaps = rd?.errors || [];
+  const rep = result?.report;
+  const partialRead =
+    rep && rep.charts_total != null && rep.charts_read != null
+    && rep.charts_read < rep.charts_total;
+
+  const canRun = target === 'report' ? Boolean(reportId) : Boolean(linkId);
 
   return (
     <div className="absolute inset-0 z-50 flex items-center justify-center bg-[rgb(0_0_0/0.22)]">
-      <div className="flex max-h-[80vh] w-[560px] flex-col rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 shadow-linear-lg">
+      <div className="flex max-h-[84vh] w-[580px] flex-col rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 shadow-linear-lg">
         <div className="flex items-center gap-2 border-b border-[rgb(var(--border-line))] p-3.5">
           <b className="text-body font-strong">{t('agentFlows.test.title')}</b>
           <div className="flex-1" />
@@ -710,53 +773,142 @@ function TestDialog({
             <X className="h-4 w-4" />
           </button>
         </div>
+
         <div className="min-h-0 flex-1 overflow-auto p-3.5">
-          {!links.length ? (
-            <p className="rounded-lg border border-warning/25 bg-warning/5 p-3 text-caption leading-relaxed text-warning">
-              {t('agentFlows.test.noLinks')}
-            </p>
+          {/* Only offered when there is a choice to make. One tab is not a tab. */}
+          {!!links.length && (
+            <div className="mb-3 flex gap-1 rounded-lg bg-surface-2 p-1">
+              {([
+                ['report', t('agentFlows.test.onReport')],
+                ['link', t('agentFlows.test.onLink')],
+              ] as const).map(([m, label]) => (
+                <button
+                  key={m}
+                  type="button"
+                  onClick={() => { setTarget(m); setResult(null); }}
+                  className={cn(
+                    'flex-1 rounded-md px-2 py-1.5 text-caption transition',
+                    target === m ? 'bg-surface-1 font-medium shadow-sm' : 'text-text-tertiary',
+                  )}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {target === 'report' ? (
+            <>
+              <label className="mb-1 block text-caption font-medium text-text-secondary">
+                {t('agentFlows.test.report')}
+              </label>
+              {reports === null ? (
+                <Loader2 className="h-4 w-4 animate-spin text-text-tertiary" />
+              ) : reportError ? (
+                <p className="rounded-lg border border-warning/25 bg-warning/5 p-2.5 text-caption leading-relaxed text-warning">
+                  {reportError}
+                </p>
+              ) : !reports.length ? (
+                <p className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 p-2.5 text-caption text-text-tertiary">
+                  {t('agentFlows.test.noReports')}
+                </p>
+              ) : (
+                <select
+                  value={reportId ?? ''}
+                  onChange={(e) => { setReportId(Number(e.target.value)); setResult(null); }}
+                  className="h-8 w-full rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 px-2 text-caption"
+                >
+                  {reports.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
+                </select>
+              )}
+              <p className="mt-1.5 text-tiny leading-5 text-text-tertiary">
+                {t('agentFlows.test.reportHint')}
+              </p>
+            </>
           ) : (
             <>
-              <label className="mb-1 block text-caption font-medium text-text-secondary">{t('agentFlows.test.link')}</label>
+              <label className="mb-1 block text-caption font-medium text-text-secondary">
+                {t('agentFlows.test.link')}
+              </label>
               <select
                 value={linkId ?? ''}
-                onChange={(e) => setLinkId(Number(e.target.value))}
+                onChange={(e) => { setLinkId(Number(e.target.value)); setResult(null); }}
                 className="h-8 w-full rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 px-2 text-caption"
               >
                 {links.map((l) => <option key={l.link_id} value={l.link_id}>{l.link_name}</option>)}
               </select>
-              <label className="mb-1 mt-3 block text-caption font-medium text-text-secondary">{t('agentFlows.test.question')}</label>
-              <Textarea rows={3} value={question} onChange={(e) => setQuestion(e.target.value)} />
-              <Button className="mt-3 w-full" size="sm" onClick={run} loading={busy}>
-                <Play className="h-3.5 w-3.5" /> {t('agentFlows.test.run')}
-              </Button>
-
-              {env && (
-                <div className="mt-4">
-                  <div className="flex items-center gap-2">
-                    <Badge size="xs" variant={env.status === 'ok' ? 'success' : 'warning'}>
-                      {env.status}
-                    </Badge>
-                    <span className="text-tiny text-text-tertiary">{env.trace?.path}</span>
-                  </div>
-                  <div className="mt-2 overflow-hidden rounded-lg border border-[rgb(var(--border-line))]">
-                    {(env.trace?.steps || []).map((s, i) => (
-                      <div key={i} className="flex items-center gap-2 border-t border-[rgb(var(--border-line))] px-2.5 py-1.5 text-tiny first:border-t-0">
-                        <span className={cn('h-1.5 w-1.5 rounded-full',
-                          s.status === 'ok' ? 'bg-success'
-                            : s.status === 'error' ? 'bg-danger'
-                            : s.status === 'reused' ? 'bg-info' : 'bg-surface-3')} />
-                        <span className="flex-1 truncate">{s.name || s.key}</span>
-                        <span className="text-text-quaternary">{s.status} · {s.ms}ms</span>
-                      </div>
-                    ))}
-                  </div>
-                  <p className="mt-2 whitespace-pre-wrap rounded-lg border border-success/20 bg-success/5 p-2.5 text-caption leading-relaxed">
-                    {(env.answer?.blocks || []).map((b) => b.markdown).filter(Boolean).join('\n\n') || '—'}
-                  </p>
-                </div>
-              )}
             </>
+          )}
+
+          <label className="mb-1 mt-3 block text-caption font-medium text-text-secondary">
+            {t('agentFlows.test.question')}
+          </label>
+          <Textarea rows={3} value={question} onChange={(e) => setQuestion(e.target.value)} />
+          <Button className="mt-3 w-full" size="sm" onClick={run} loading={busy} disabled={!canRun}>
+            <Play className="h-3.5 w-3.5" /> {t('agentFlows.test.run')}
+          </Button>
+
+          {/* WHAT A REAL LINK WOULD STILL HAVE TO ANSWER.
+              Shown next to the answer rather than instead of it: a flow being built
+              normally has unresolved requirements, and refusing to run would put
+              this dialog back where it started. */}
+          {!!gaps.length && (
+            <div className="mt-3 rounded-lg border border-warning/25 bg-warning/5 p-2.5">
+              <b className="block text-caption text-warning">{t('agentFlows.test.gapsTitle')}</b>
+              <ul className="mt-1 space-y-1">
+                {gaps.map((g, i) => (
+                  <li key={i} className="text-caption leading-relaxed text-warning">• {g.message}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {env && (
+            <div className="mt-4">
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge size="xs" variant={env.status === 'ok' ? 'success' : env.status === 'failed' ? 'danger' : 'warning'}>
+                  {env.status}
+                </Badge>
+                <span className="text-tiny text-text-tertiary">{env.trace?.path}</span>
+                {partialRead && (
+                  <span className="text-tiny text-text-tertiary">
+                    {t('agentFlows.test.chartsRead', {
+                      read: rep!.charts_read!, total: rep!.charts_total!,
+                    })}
+                  </span>
+                )}
+              </div>
+
+              <div className="mt-2 overflow-hidden rounded-lg border border-[rgb(var(--border-line))]">
+                {(env.trace?.steps || []).map((s, i) => (
+                  <div key={i} className="flex items-center gap-2 border-t border-[rgb(var(--border-line))] px-2.5 py-1.5 text-tiny first:border-t-0">
+                    <span className={cn('h-1.5 w-1.5 rounded-full',
+                      s.status === 'ok' ? 'bg-success'
+                        : s.status === 'error' ? 'bg-danger'
+                        : s.status === 'reused' ? 'bg-info' : 'bg-surface-3')} />
+                    <span className="flex-1 truncate">{s.name || s.key}</span>
+                    <span className="text-text-quaternary">{s.status} · {s.ms}ms</span>
+                  </div>
+                ))}
+              </div>
+
+              {/* The run's own notices. `branch_unmatched`, a truncated read, a reset
+                  memory — each one explains an answer that would otherwise look
+                  unexplained, which is the whole reason they exist. */}
+              {!!(env.notices || []).length && (
+                <ul className="mt-2 space-y-1">
+                  {env.notices!.map((n, i) => (
+                    <li key={i} className="rounded-md border border-[rgb(var(--border-line))] bg-surface-2 px-2.5 py-1.5 text-tiny leading-5 text-text-secondary">
+                      {n.text}
+                    </li>
+                  ))}
+                </ul>
+              )}
+
+              <p className="mt-2 whitespace-pre-wrap rounded-lg border border-success/20 bg-success/5 p-2.5 text-caption leading-relaxed">
+                {(env.answer?.blocks || []).map((b) => b.markdown).filter(Boolean).join('\n\n') || '—'}
+              </p>
+            </div>
           )}
         </div>
       </div>

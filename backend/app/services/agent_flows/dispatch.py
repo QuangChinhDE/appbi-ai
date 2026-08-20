@@ -584,6 +584,10 @@ async def run_preview(
             out = FlowOutput.model_validate(ev.extra.get("envelope"))
             runs_service.record(
                 db, inp=inp, out=out, brain_key=flow.key, version=version,
-                binding_id=binding.id, store_content=True,
+                # `or None`: a test on a bare report carries the sentinel id 0 in
+                # the envelope (where the type is fixed), and storing that in the
+                # run row would read as a binding that exists. The column is
+                # nullable precisely so "no binding" can be said honestly.
+                binding_id=binding.id or None, store_content=True,
             )
         yield ev
