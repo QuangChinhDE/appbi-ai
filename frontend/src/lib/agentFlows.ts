@@ -482,6 +482,11 @@ export interface RunStep {
 }
 
 export interface RunDetail {
+  /** Where the question came from. `is_test` distinguishes an author's own trial
+   *  in the Studio from a viewer asking on a public link — the same event shape,
+   *  opposite meanings. */
+  is_test?: boolean;
+  trigger?: string | null;
   id: number;
   run_key: string;
   at: string | null;
@@ -719,6 +724,10 @@ export interface ReportTestResult {
    *  some of these; they are shown, not treated as a failure. */
   readiness?: { errors?: { message: string }[]; warnings?: { message: string }[] };
   report?: { id: number; name: string; charts_read?: number; charts_total?: number };
+  /** The history row this test wrote, so the dialog can hand over the full trace.
+   *  Not the envelope's `run_id` — that is a generated string, this is the row the
+   *  Runs tab addresses (`?run=193`). Marked `is_test` there. */
+  run_row_id?: number | null;
 }
 
 /** Run the draft against a REPORT, with no link and no binding. The companion to
@@ -803,7 +812,7 @@ export async function branchCoverage(key: string, days = 30): Promise<Record<str
 // ── Test ────────────────────────────────────────────────────────────────────
 export async function testFlow(key: string, body: {
   question: string; link_id: number; version?: number;
-}): Promise<{ envelope: FlowOutputEnvelope | null }> {
+}): Promise<{ envelope: FlowOutputEnvelope | null; run_row_id?: number | null }> {
   const { data } = await apiClient.post(
     `${BASE}/brains/${encodeURIComponent(key)}/test`, body);
   return data;

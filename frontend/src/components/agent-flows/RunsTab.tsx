@@ -164,7 +164,16 @@ export function RunsTab({ brainKey }: { brainKey: string }) {
        scrolls independently and the canvas gets whatever is left over. */
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex-shrink-0 border-b border-[rgb(var(--border-line))] px-4 pt-3">
-        <div className="mb-3 flex flex-wrap items-center gap-6 rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 px-4 py-2.5">
+        {/* VIEWER TRAFFIC ONLY — and it has to say so.
+            These figures deliberately exclude the author's own test runs: a p95
+            computed over 40-second studio trials describes nobody's experience, and
+            an error rate that counts a half-built flow is not an error rate. But
+            silence made them look broken instead of scoped — with "Include test
+            runs" ticked the strip read "0 runs" above ten visible rows. */}
+        <div
+          className="mb-3 flex flex-wrap items-center gap-6 rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 px-4 py-2.5"
+          title={t('agentFlows.runs.statsExcludeTests')}
+        >
           <Stat value={stats?.runs ?? 0} label={`Runs / ${hours}h`} />
           {/* "Trả lời được", not "Thành công": a `partial` run DID answer the
               viewer, so it counts here — but printing 100% THÀNH CÔNG above a row
@@ -175,6 +184,9 @@ export function RunsTab({ brainKey }: { brainKey: string }) {
           <Stat value={stats?.avg_tokens ?? 0} label="Token TB" />
           <Stat value={stats?.errors ?? 0} label={t('agentFlows.runs.errors')} />
           <Stat value={stats?.links ?? 0} label={t('agentFlows.runs.linksUsing')} />
+          <span className="text-tiny text-text-quaternary">
+            {t('agentFlows.runs.statsExcludeTests')}
+          </span>
         </div>
 
         <div className="mb-3 flex flex-wrap items-center gap-2">
@@ -237,6 +249,15 @@ export function RunsTab({ brainKey }: { brainKey: string }) {
                     <Badge variant={STATUS_TONE[r.status] || 'neutral'} size="xs">
                       {STATUS_LABEL_KEY[r.status] ? t(STATUS_LABEL_KEY[r.status]) : r.status}
                     </Badge>
+                  )}
+                  {/* A TEST AND A VIEWER'S QUESTION ARE NOT THE SAME EVENT.
+                      `is_test` has been on the row since the first version and was
+                      rendered nowhere, so with "include test runs" ticked an
+                      author's own trial sat in the history looking exactly like
+                      somebody on a public link asking a real question — and the two
+                      lead to opposite conclusions about whether the flow is used. */}
+                  {r.is_test && (
+                    <Badge variant="info" size="xs">{t('agentFlows.runs.testBadge')}</Badge>
                   )}
                   {r.execution_path && (
                     <span className="truncate">· {r.execution_path}</span>
@@ -367,6 +388,9 @@ export function RunsTab({ brainKey }: { brainKey: string }) {
                 <Badge variant={STATUS_TONE[detail.status] || 'neutral'} size="xs">
                   {STATUS_LABEL_KEY[detail.status] ? t(STATUS_LABEL_KEY[detail.status]) : detail.status}
                 </Badge>
+                {detail.is_test && (
+                  <Badge variant="info" size="xs">{t('agentFlows.runs.testBadge')}</Badge>
+                )}
                 <div className="flex-1" />
                 {detail.version != null && <Badge size="xs" variant="neutral">v{detail.version}</Badge>}
               </div>

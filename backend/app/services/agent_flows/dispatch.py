@@ -582,7 +582,7 @@ async def run_preview(
     ):
         if ev.type == "result":
             out = FlowOutput.model_validate(ev.extra.get("envelope"))
-            runs_service.record(
+            row_id = runs_service.record(
                 db, inp=inp, out=out, brain_key=flow.key, version=version,
                 # `or None`: a test on a bare report carries the sentinel id 0 in
                 # the envelope (where the type is fixed), and storing that in the
@@ -590,4 +590,11 @@ async def run_preview(
                 # nullable precisely so "no binding" can be said honestly.
                 binding_id=binding.id or None, store_content=True,
             )
+            # The row id, not the envelope's `run_id`. They are different keys for
+            # the same run: the envelope carries a generated string, the Runs tab
+            # addresses a row (`?run=193`). This test was just written to history —
+            # handing back the id is what lets the author open its full trace
+            # instead of re-reading the summary the dialog has room for.
+            if row_id:
+                ev.extra["run_row_id"] = row_id
         yield ev

@@ -553,18 +553,18 @@ async def _run_if(
         return
 
     label = chosen.name or chosen.key
-    state.path.append(label)
     state.outputs[node.key] = {"matched": chosen.key, "label": label}
     yield AgentEvent(
         type="branch_taken",
         extra={"step": node.key, "path": chosen.key, "label": label},
     )
-    try:
-        async for ev in _run_body(chosen.body, state, rctx):
-            yield ev
-    except BranchStopped:
-        # The filter stopped THIS lane. Siblings after the IF still run.
-        pass
+    with state.in_branch(label):
+        try:
+            async for ev in _run_body(chosen.body, state, rctx):
+                yield ev
+        except BranchStopped:
+            # The filter stopped THIS lane. Siblings after the IF still run.
+            pass
 
 
 async def _run_switch(
@@ -579,14 +579,14 @@ async def _run_switch(
                 break
 
     if not matched and node.has_fallback and node.fallback:
-        state.path.append("fallback")
         state.outputs[node.key] = {"matched": None, "value": value}
         yield AgentEvent(type="branch_taken", extra={"step": node.key, "path": "fallback"})
-        try:
-            async for ev in _run_body(node.fallback, state, rctx):
-                yield ev
-        except BranchStopped:
-            pass
+        with state.in_branch("fallback"):
+            try:
+                async for ev in _run_body(node.fallback, state, rctx):
+                    yield ev
+            except BranchStopped:
+                pass
         return
 
     state.outputs[node.key] = {
@@ -615,15 +615,15 @@ async def _run_switch(
         )
     for case in matched:
         label = case.label or case.key
-        state.path.append(label)
         yield AgentEvent(
             type="branch_taken", extra={"step": node.key, "path": case.key, "label": label}
         )
-        try:
-            async for ev in _run_body(case.body, state, rctx):
-                yield ev
-        except BranchStopped:
-            continue
+        with state.in_branch(label):
+            try:
+                async for ev in _run_body(case.body, state, rctx):
+                    yield ev
+            except BranchStopped:
+                continue
 
 
 async def _run_loop(
@@ -651,26 +651,26 @@ async def _run_loop(
             )
         )
 
-    state.path.append(f"Loop×{len(items)}")
-    for index, item in enumerate(items):
-        state.budget.check()
-        state.set_var(node.item_var, item)
-        if node.index_var:
-            state.set_var(node.index_var, index)
-        yield AgentEvent(
-            type="loop_iteration",
-            extra={"step": node.key, "index": index, "total": len(items)},
-        )
-        try:
-            async for ev in _run_body(node.body, state, rctx):
-                yield ev
-        except BranchStopped:
-            # This item was filtered out; the remaining items still run.
-            continue
-        if state.stopped:
-            break
-        last = state.outputs.get(node.body[-1].key) if node.body else None
-        collected.append(last)
+    with state.in_branch(f"Loop×{len(items)}"):
+        for index, item in enumerate(items):
+            state.budget.check()
+            state.set_var(node.item_var, item)
+            if node.index_var:
+                state.set_var(node.index_var, index)
+            yield AgentEvent(
+                type="loop_iteration",
+                extra={"step": node.key, "index": index, "total": len(items)},
+            )
+            try:
+                async for ev in _run_body(node.body, state, rctx):
+                    yield ev
+            except BranchStopped:
+                # This item was filtered out; the remaining items still run.
+                continue
+            if state.stopped:
+                break
+            last = state.outputs.get(node.body[-1].key) if node.body else None
+            collected.append(last)
 
     # The loop variable is restored rather than left dangling: a node AFTER the loop
     # reading `{{segment}}` would otherwise silently get the last iteration's value.

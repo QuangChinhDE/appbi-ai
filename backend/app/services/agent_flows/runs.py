@@ -259,6 +259,12 @@ def run_detail(db: Session, *, brain_key: str, run_id: int) -> dict[str, Any] | 
         "version": row.version,
         "link_token": row.link_token,
         "binding_id": row.binding_id,
+        # WHERE THE QUESTION CAME FROM. The list has carried `is_test` from the
+        # start; the detail did not, so opening a run gave no way to tell an
+        # author's own trial from a viewer asking on a public link — two events
+        # that lead to opposite conclusions about whether the flow is working.
+        "is_test": bool(row.is_test),
+        "trigger": row.trigger,
         "execution_path": row.execution_path,
         "latency_ms": row.latency_ms,
         "usage": {

@@ -3688,6 +3688,27 @@ async def save_ai_chat_session(
                 entry["rating"] = rating
             safe_messages.append(entry)
 
+    # THE THUMB HAS TO REACH THE RUN, NOT ONLY THE TRANSCRIPT.
+    #
+    # `agent_flow_runs.rating` existed, `runs.apply_rating` existed, the run detail
+    # returned the field and the Runs tab had a column for it — and nothing ever
+    # wrote it, because the rating arrived here, inside the session blob, and this
+    # endpoint stored the blob and stopped. So a viewer's thumbs-down was recorded
+    # in a JSON column nobody reads and absent from the one screen an operator opens
+    # to ask "which answers were bad". Matched on the answer TEXT because a public
+    # chat client does not know run ids; that also means it can only rate text the
+    # server produced.
+    for entry in safe_messages:
+        if entry["role"] == "assistant" and entry.get("rating"):
+            try:
+                from app.services.agent_flows import runs as _runs
+                _runs.apply_rating(
+                    db, session_key=session_key,
+                    answer_text=entry["content"], rating=entry["rating"],
+                )
+            except Exception:  # noqa: BLE001 — a rating must never fail a save
+                logger.warning("[ai-session] rating did not attach", exc_info=True)
+
     row = db.query(AiChatSession).filter(
         AiChatSession.token == token,
         AiChatSession.session_key == session_key,

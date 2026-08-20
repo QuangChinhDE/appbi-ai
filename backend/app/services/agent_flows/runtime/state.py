@@ -24,8 +24,9 @@ from __future__ import annotations
 import logging
 import re
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Iterator
 
 from app.services.agent_flows.envelope import Citation, Notice, TraceStep
 
@@ -145,6 +146,12 @@ class RunState:
     #: Human-readable route, e.g. ["Path A", "Loop×4", "MEDIUM"]. What the Runs
     #: table shows in its "Execution path" column.
     path: list[str] = field(default_factory=list)
+    #: The branch a step is running INSIDE, right now. Separate from `path`, which
+    #: is the cumulative route ("Branch B · Loop×2") and is never popped — using
+    #: its last entry to label a step attributed everything after a loop TO that
+    #: loop. This one is pushed and popped around a body, so it answers a different
+    #: question: not "where has the run been" but "where is it".
+    branch_stack: list[str] = field(default_factory=list)
     notices: list[Notice] = field(default_factory=list)
     citations: list[Citation] = field(default_factory=list)
     #: Variables to persist for the next turn. Written only by nodes whose
@@ -279,10 +286,38 @@ class RunState:
 
     # ── Trace ─────────────────────────────────────────────────────────────────
     def record(self, step: TraceStep) -> None:
+        """Append a step, stamped with the branch it ran inside.
+
+        `TraceStep.branch` was declared in the envelope, given a column in
+        `agent_flow_run_steps`, returned by the run detail and rendered by the Runs
+        tab — and set by nobody, so every step of every run reported no branch. The
+        one place that knows is here: `self.path` is pushed with the case label
+        immediately before its body runs, so the innermost entry IS the branch this
+        step is executing under. Stamping it at the single recording point means a
+        new node type cannot forget to.
+        """
+        if not step.branch and self.branch_stack:
+            step.branch = self.branch_stack[-1]
         self.trace.append(step)
 
     def path_label(self) -> str:
         return " · ".join(self.path)
+
+    @contextmanager
+    def in_branch(self, label: str) -> Iterator[None]:
+        """Run a body inside a named branch.
+
+        Records the label on the cumulative route AND on the branch stack, then
+        pops only the stack. Every node executed within the block is stamped with
+        this label; anything after the block is not, which is the distinction the
+        Runs tab needs to show which lane a step belonged to.
+        """
+        self.path.append(label)
+        self.branch_stack.append(label)
+        try:
+            yield
+        finally:
+            self.branch_stack.pop()
 
     def memory_payload(self) -> dict[str, Any]:
         """What to persist, bounded.

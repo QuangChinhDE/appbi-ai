@@ -916,6 +916,7 @@ async def test_flow(
     api_key, provider, model = _link_credentials(cfg)
 
     envelope: dict | None = None
+    run_row_id: int | None = None
     async for ev in run_preview(
         db, flow=flow, version=row.version, binding=binding, link=link,
         dashboard=dashboard, ctx=ctx, question=body.question,
@@ -923,7 +924,8 @@ async def test_flow(
     ):
         if ev.type == "result":
             envelope = ev.extra.get("envelope")
-    return {"envelope": envelope}
+            run_row_id = ev.extra.get("run_row_id")
+    return {"envelope": envelope, "run_row_id": run_row_id}
 
 
 class ReportTestBody(BaseModel):
@@ -1009,6 +1011,7 @@ async def test_flow_on_report(
         )
 
     envelope: dict | None = None
+    run_row_id: int | None = None
     async for ev in run_preview(
         db, flow=flow, version=row.version, binding=binding,
         link=SimpleNamespace(token="", appearance_config={}),
@@ -1017,9 +1020,15 @@ async def test_flow_on_report(
     ):
         if ev.type == "result":
             envelope = ev.extra.get("envelope")
+            run_row_id = ev.extra.get("run_row_id")
     total_charts = len(getattr(dashboard, "dashboard_charts", None) or [])
     return {
         "envelope": envelope,
+        # The history row this test just wrote, so the dialog can hand the author
+        # the full trace instead of the summary it has room for. Marked `is_test`
+        # there, which is how an operator tells an author's trial apart from a
+        # viewer's question on a live link.
+        "run_row_id": run_row_id,
         "readiness": readiness,
         "report": {
             "id": dashboard.id,

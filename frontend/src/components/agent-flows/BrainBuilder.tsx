@@ -582,7 +582,23 @@ export function BrainBuilder({
       )}
 
       {testOpen && (
-        <TestDialog brainKey={brainKey} links={links} version={version} onClose={() => setTestOpen(false)} />
+        <TestDialog
+          brainKey={brainKey}
+          links={links}
+          version={version}
+          // The dialog reads the flow to offer its branches as test targets, so it
+          // is handed the live draft rather than the saved version: the branch you
+          // just added is the one you want to try.
+          nodes={body.nodes}
+          onOpenRun={(runId) => {
+            setTestOpen(false);
+            const q = new URLSearchParams(searchParams?.toString() || '');
+            q.set('tab', 'runs');
+            q.set('run', String(runId));
+            router.replace(`${pathname}?${q.toString()}`);
+          }}
+          onClose={() => setTestOpen(false)}
+        />
       )}
     </div>
   );
@@ -673,6 +689,60 @@ function PublishDialog({
   );
 }
 
+/** One alternative a branching node can take, as something testable.
+ *
+ *  A flow's branches are the part authors get wrong, and they are invisible in a
+ *  free-text test box: you type a question, read a plausible answer, and never
+ *  learn that it came down the fallback lane. So the dialog reads the flow and
+ *  offers its branches directly — with the label the RUNTIME will push onto the
+ *  path, which is what makes the after-the-fact comparison exact rather than a
+ *  guess at string matching.
+ */
+type BranchProbe = {
+  nodeKey: string;
+  nodeName: string;
+  /** The label `state.path` receives when this branch runs — `name or key` for an
+   *  IF path, `label or key` for a switch case, the literal `fallback` otherwise.
+   *  Mirrors `executor._run_if` / `_run_switch`; if those change, this follows. */
+  pathLabel: string;
+  /** A question likely to reach this branch, when the flow says enough to build
+   *  one. A switch case comparing against "doanh thu" tells us; an IF comparing
+   *  two variables does not, and then the author writes their own. */
+  hint: string;
+};
+
+function branchProbes(nodes: FlowNode[]): BranchProbe[] {
+  const out: BranchProbe[] = [];
+  for (const n of walkNodes(nodes || [])) {
+    const nodeName = n.name || n.key;
+    if (n.type === 'switch') {
+      for (const c of n.cases || []) {
+        out.push({
+          nodeKey: n.key, nodeName,
+          pathLabel: c.label || c.key,
+          // The compared-against value IS the phrase that reaches this case when
+          // the switch reads the question or a classifier's answer.
+          hint: (c.value || '').trim(),
+        });
+      }
+      if (n.has_fallback && (n.fallback || []).length) {
+        out.push({ nodeKey: n.key, nodeName, pathLabel: 'fallback', hint: '' });
+      }
+    } else if (n.type === 'if') {
+      for (const p of n.paths || []) {
+        out.push({
+          nodeKey: n.key, nodeName,
+          pathLabel: p.name || p.key,
+          // `right` is the compared-against side — a literal when the author typed
+          // one, which is exactly the phrase that reaches this path.
+          hint: (p.conditions || []).map((c) => String(c.right ?? '')).find(Boolean) || '',
+        });
+      }
+    }
+  }
+  return out;
+}
+
 /** Try the flow on a REPORT, before any link exists.
  *
  *  This dialog used to demand a link, and that made the button useless exactly when
@@ -685,27 +755,73 @@ function PublishDialog({
  *  Testing against a LINK is still offered when the flow has any: two links resolve
  *  their requirements differently, so late in the build "does it work on THAT link"
  *  is the sharper question. Report first because it is the one you ask more often.
+ *
+ *  WHAT IT KNOWS BESIDES THE QUESTION.
+ *    · The flow's branches, offered as chips, so a test can target a PATH instead
+ *      of hoping to hit one — and the result then says whether the flow went there.
+ *      An answer that reads fine down the wrong lane is the defect a textbox hides.
+ *    · Which reports the flow already serves, floated to the top: those are the
+ *      ones a regression would be noticed on.
+ *    · The last report and question used, per flow, so re-testing after an edit is
+ *      one click. Building is a loop of edit-and-retry; re-picking every round was
+ *      friction the dialog itself added.
+ *    · What the test cost, and the history row it wrote — the trace here is a
+ *      summary, and the Runs tab holds the full one, marked as a test.
  */
 function TestDialog({
-  brainKey, links, version, onClose,
-}: { brainKey: string; links: FlowLinkUsage[]; version: number; onClose: () => void }) {
+  brainKey, links, version, nodes, onOpenRun, onClose,
+}: {
+  brainKey: string; links: FlowLinkUsage[]; version: number;
+  nodes: FlowNode[];
+  /** Jump to this run in the Runs tab. Passed in rather than routed from here so
+   *  the dialog does not need to know how the builder addresses its tabs. */
+  onOpenRun: (runId: number) => void;
+  onClose: () => void;
+}) {
   const { t } = useI18n();
+  const memKey = `appbi.flowtest.${brainKey}`;
   const [target, setTarget] = React.useState<'report' | 'link'>('report');
   const [question, setQuestion] = React.useState(t('agentFlows.test.initialQuestion'));
+  const [intended, setIntended] = React.useState<BranchProbe | null>(null);
   const [reports, setReports] = React.useState<TestTargetReport[] | null>(null);
   const [reportId, setReportId] = React.useState<number | null>(null);
+  const [reportFilter, setReportFilter] = React.useState('');
   const [reportError, setReportError] = React.useState<string | null>(null);
   const [linkId, setLinkId] = React.useState<number | null>(links[0]?.link_id ?? null);
   const [busy, setBusy] = React.useState(false);
   const [result, setResult] = React.useState<ReportTestResult | null>(null);
 
+  const probes = React.useMemo(() => branchProbes(nodes), [nodes]);
+  /** Reports this flow is attached to. A test on one of these exercises what
+   *  viewers actually see, so they lead the list. */
+  const servedIds = React.useMemo(
+    () => new Set(links.map((l) => l.dashboard_id)), [links],
+  );
+
   React.useEffect(() => {
     let alive = true;
+    // What was tested last time, restored before the list arrives so the pick is
+    // not overwritten by the default when it does.
+    let remembered: { reportId?: number; question?: string } = {};
+    try {
+      remembered = JSON.parse(window.localStorage.getItem(memKey) || '{}') || {};
+    } catch { /* a corrupt entry is not worth a broken dialog */ }
+    if (remembered.question) setQuestion(remembered.question);
+
     listTestTargetReports()
       .then((rs) => {
         if (!alive) return;
-        setReports(rs);
-        setReportId((cur) => cur ?? rs[0]?.id ?? null);
+        const ordered = [...rs].sort((a, b) => {
+          const sa = servedIds.has(a.id) ? 0 : 1;
+          const sb = servedIds.has(b.id) ? 0 : 1;
+          return sa - sb || a.name.localeCompare(b.name);
+        });
+        setReports(ordered);
+        // Remembered pick first, but only if it is still one this account may see.
+        const kept = remembered.reportId
+          && ordered.some((r) => r.id === remembered.reportId)
+          ? remembered.reportId : null;
+        setReportId((cur) => cur ?? kept ?? ordered[0]?.id ?? null);
       })
       .catch((e: unknown) => {
         if (!alive) return;
@@ -720,7 +836,13 @@ function TestDialog({
         );
       });
     return () => { alive = false; };
-  }, [t]);
+  }, [t, memKey, servedIds]);
+
+  const pickProbe = (p: BranchProbe) => {
+    setIntended(p);
+    setResult(null);
+    if (p.hint) setQuestion(p.hint);
+  };
 
   const run = async () => {
     setBusy(true);
@@ -731,10 +853,13 @@ function TestDialog({
         setResult(await testFlowOnReport(brainKey, {
           dashboard_id: reportId, question, version,
         }));
+        try {
+          window.localStorage.setItem(memKey, JSON.stringify({ reportId, question }));
+        } catch { /* private mode: remembering is a convenience, not a requirement */ }
       } else {
         if (!linkId) return;
         const res = await testFlow(brainKey, { question, link_id: linkId, version });
-        setResult({ envelope: res.envelope });
+        setResult({ envelope: res.envelope, run_row_id: res.run_row_id });
       }
     } catch (e: unknown) {
       const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
@@ -744,23 +869,34 @@ function TestDialog({
 
   const env = result?.envelope as {
     status?: string;
-    trace?: { path: string; steps: { key: string; name: string; type: string; status: string; ms: number }[] };
+    trace?: { path: string; steps: { key: string; name: string; type: string; status: string; ms: number; branch?: string }[] };
     answer?: { blocks: { type: string; markdown?: string }[] };
     notices?: { code: string; text: string }[];
+    usage?: { llm_calls?: number; tool_calls?: number; prompt_tokens?: number; completion_tokens?: number };
   } | undefined;
 
   const rd = result?.readiness;
-  // ERRORS ONLY. `preflight` also returns the flow's own advisory notes ("no
-  // knowledge attached", "the answer step still has tools") and those are not
-  // things a LINK answers — they already sit in the header's notes chip, and
-  // repeating them here under a heading that promises otherwise made two
-  // unrelated observations read as blockers.
+  // Only the ERRORS. A flow mid-build carries advisory warnings by definition, and
+  // listing those under "what a real link would still have to answer" told authors
+  // a working flow was broken.
   const gaps = rd?.errors || [];
   const rep = result?.report;
   const partialRead =
     rep && rep.charts_total != null && rep.charts_read != null
     && rep.charts_read < rep.charts_total;
 
+  /** Did it go where the author aimed? The path is the labels the runtime pushed,
+   *  joined — so containment is an exact test, not a heuristic. */
+  const wentElsewhere = Boolean(
+    intended && env && !(env.trace?.path || '')
+      .split(' · ').map((x) => x.trim()).includes(intended.pathLabel),
+  );
+
+  const tokens = (env?.usage?.prompt_tokens || 0) + (env?.usage?.completion_tokens || 0);
+  const visible = (reports || []).filter(
+    (r) => !reportFilter.trim()
+      || r.name.toLowerCase().includes(reportFilter.trim().toLowerCase()),
+  );
   const canRun = target === 'report' ? Boolean(reportId) : Boolean(linkId);
 
   return (
@@ -813,13 +949,40 @@ function TestDialog({
                   {t('agentFlows.test.noReports')}
                 </p>
               ) : (
-                <select
-                  value={reportId ?? ''}
-                  onChange={(e) => { setReportId(Number(e.target.value)); setResult(null); }}
-                  className="h-8 w-full rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 px-2 text-caption"
-                >
-                  {reports.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
-                </select>
+                <>
+                  {/* A dropdown is fine for six reports and useless for sixty, and
+                      an account with Dashboards access usually has sixty. */}
+                  {reports.length > 6 && (
+                    <Input
+                      value={reportFilter}
+                      onChange={(e) => setReportFilter(e.target.value)}
+                      placeholder={t('agentFlows.test.searchReports')}
+                      className="mb-1.5 h-8"
+                    />
+                  )}
+                  <div className="max-h-[142px] overflow-auto rounded-lg border border-[rgb(var(--border-line))]">
+                    {!visible.length ? (
+                      <p className="px-2.5 py-2 text-caption text-text-tertiary">
+                        {t('agentFlows.test.noMatch')}
+                      </p>
+                    ) : visible.map((r) => (
+                      <button
+                        key={r.id}
+                        type="button"
+                        onClick={() => { setReportId(r.id); setResult(null); }}
+                        className={cn(
+                          'flex w-full items-center gap-2 border-t border-[rgb(var(--border-line))] px-2.5 py-1.5 text-left text-caption first:border-t-0',
+                          reportId === r.id ? 'bg-accent/10 font-medium' : 'hover:bg-surface-2',
+                        )}
+                      >
+                        <span className="min-w-0 flex-1 truncate">{r.name}</span>
+                        {servedIds.has(r.id) && (
+                          <Badge size="xs" variant="info">{t('agentFlows.test.inUse')}</Badge>
+                        )}
+                      </button>
+                    ))}
+                  </div>
+                </>
               )}
               <p className="mt-1.5 text-tiny leading-5 text-text-tertiary">
                 {t('agentFlows.test.reportHint')}
@@ -837,6 +1000,46 @@ function TestDialog({
               >
                 {links.map((l) => <option key={l.link_id} value={l.link_id}>{l.link_name}</option>)}
               </select>
+            </>
+          )}
+
+          {/* AIM AT A PATH, NOT JUST AT THE FLOW.
+              Each chip is one branch the flow can take. Picking one both fills a
+              question aimed there and records the aim, which is what lets the
+              result below say "it went somewhere else" — the failure a free-text
+              box cannot report because nothing knew what you intended. */}
+          {!!probes.length && (
+            <>
+              <label className="mb-1 mt-3 block text-caption font-medium text-text-secondary">
+                {t('agentFlows.test.probeLabel')}
+              </label>
+              <div className="flex flex-wrap gap-1.5">
+                {probes.map((p) => (
+                  <button
+                    key={`${p.nodeKey}:${p.pathLabel}`}
+                    type="button"
+                    title={p.nodeName}
+                    onClick={() => pickProbe(p)}
+                    className={cn(
+                      'rounded-full border px-2.5 py-1 text-tiny transition',
+                      intended?.nodeKey === p.nodeKey && intended?.pathLabel === p.pathLabel
+                        ? 'border-accent bg-accent/10 font-medium text-accent'
+                        : 'border-[rgb(var(--border-line))] text-text-secondary hover:bg-surface-2',
+                    )}
+                  >
+                    {p.pathLabel}
+                  </button>
+                ))}
+                {intended && (
+                  <button
+                    type="button"
+                    onClick={() => setIntended(null)}
+                    className="rounded-full px-2 py-1 text-tiny text-text-tertiary hover:bg-surface-2"
+                  >
+                    {t('agentFlows.test.clearProbe')}
+                  </button>
+                )}
+              </div>
             </>
           )}
 
@@ -870,6 +1073,15 @@ function TestDialog({
                   {env.status}
                 </Badge>
                 <span className="text-tiny text-text-tertiary">{env.trace?.path}</span>
+                {!!tokens && (
+                  <span className="text-tiny text-text-tertiary">
+                    {t('agentFlows.test.cost', {
+                      tokens: tokens.toLocaleString(),
+                      calls: env.usage?.llm_calls || 0,
+                      tools: env.usage?.tool_calls || 0,
+                    })}
+                  </span>
+                )}
                 {partialRead && (
                   <span className="text-tiny text-text-tertiary">
                     {t('agentFlows.test.chartsRead', {
@@ -877,7 +1089,28 @@ function TestDialog({
                     })}
                   </span>
                 )}
+                {!!result?.run_row_id && (
+                  <button
+                    type="button"
+                    onClick={() => onOpenRun(result.run_row_id!)}
+                    className="ml-auto text-tiny text-accent underline-offset-2 hover:underline"
+                  >
+                    {t('agentFlows.test.openRun')}
+                  </button>
+                )}
               </div>
+
+              {/* THE ANSWER CAN BE FINE AND THE ROUTING STILL WRONG.
+                  Said before the answer, because an author who reads a good answer
+                  first stops reading. */}
+              {wentElsewhere && (
+                <p className="mt-2 rounded-lg border border-warning/30 bg-warning/5 p-2.5 text-caption leading-relaxed text-warning">
+                  {t('agentFlows.test.wrongPath', {
+                    intended: intended!.pathLabel,
+                    actual: env.trace?.path || t('agentFlows.test.noPath'),
+                  })}
+                </p>
+              )}
 
               <div className="mt-2 overflow-hidden rounded-lg border border-[rgb(var(--border-line))]">
                 {(env.trace?.steps || []).map((s, i) => (
@@ -887,6 +1120,11 @@ function TestDialog({
                         : s.status === 'error' ? 'bg-danger'
                         : s.status === 'reused' ? 'bg-info' : 'bg-surface-3')} />
                     <span className="flex-1 truncate">{s.name || s.key}</span>
+                    {/* Which lane this step ran in. Only shown when the flow has
+                        lanes, where "did my branch run" is the actual question. */}
+                    {!!s.branch && (
+                      <span className="shrink-0 rounded bg-surface-2 px-1.5 text-text-tertiary">{s.branch}</span>
+                    )}
                     <span className="text-text-quaternary">{s.status} · {s.ms}ms</span>
                   </div>
                 ))}
