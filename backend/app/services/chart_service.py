@@ -1162,6 +1162,38 @@ def _normalize_runtime_filters_for_chart(
     return result
 
 
+def _top_n_from_filters(runtime_filters: list[dict]) -> tuple[int, str]:
+    """Extract a Top-N / Bottom-N control expressed as a filter operator.
+
+    FilterBuilder (and the AI bot) may author Top-N as a filter with operator
+    ``top_n`` / ``bottom_n`` instead of ``styleConfig.dataLimit``. Both mean the
+    same thing — rank by the chart's primary measure and keep N rows — so this
+    normalizes the filter form into ``(n, direction)`` the render path already
+    understands. ``top_n`` → DESC (leading N), ``bottom_n`` → ASC (trailing N).
+
+    The N value is read defensively: a bare number (``value = 10``), a numeric
+    string (``"10"``), or a legacy object (``{"n": 10}``). Anything unparseable
+    or ≤ 0 yields ``(0, "")`` (no limit). The LAST valid Top-N filter wins.
+    """
+    n_out, dir_out = 0, ""
+    for filt in runtime_filters or []:
+        operator = str(filt.get("operator") or "").strip().lower()
+        if operator not in {"top_n", "bottom_n"}:
+            continue
+        raw = filt.get("value")
+        if isinstance(raw, dict):
+            raw = raw.get("n")
+        try:
+            n_val = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if n_val <= 0:
+            continue
+        n_out = n_val
+        dir_out = "desc" if operator == "top_n" else "asc"
+    return n_out, dir_out
+
+
 def _semantic_view_has_field(semantic_view, field_name: str) -> bool:
     target = str(field_name or "").strip()
     if not target:
@@ -2106,6 +2138,12 @@ def _execute_semantic_chart_runtime(
             continue
         operator = str(filt.get("operator") or "eq").strip().lower()
         operator = _OP_ALIAS.get(operator, operator)
+        # Top-N / Bottom-N are NOT WHERE predicates — they are a rank + LIMIT.
+        # The semantic SQL builder skips them anyway (would be a silent no-op),
+        # so don't forward them here. They converge into the SAME effective_limit
+        # path as styleConfig.dataLimit just below (see `_top_n_from_filters`).
+        if operator in {"top_n", "bottom_n"}:
+            continue
         # PBI-parity (2026-05-31): a field may carry MULTIPLE predicates
         # (chart_base AND runtime on the SAME field). engine_filters maps
         # field -> LIST of predicates; the engine's WHERE/HAVING builders
@@ -2228,13 +2266,23 @@ def _execute_semantic_chart_runtime(
         _data_limit_n = int(_data_limit_raw) if _data_limit_raw not in (None, "") else 0
     except (TypeError, ValueError):
         _data_limit_n = 0
+    # A `top_n` / `bottom_n` FILTER (authored in FilterBuilder or by the AI bot)
+    # is the SAME Top-N control, expressed as a filter operator instead of
+    # styleConfig.dataLimit. Converge it here so it is honoured identically —
+    # never a silent no-op — with dataLimit taking precedence when both are set.
+    _top_n_dir = ""  # "" none | "desc" top | "asc" bottom
+    if _data_limit_n <= 0:
+        _data_limit_n, _top_n_dir = _top_n_from_filters(runtime_filters)
     if _data_limit_n > 0:
         _rank_ref = (
             measure_refs[0] if measure_refs
             else (dimension_refs[0] if dimension_refs else None)
         )
         if _rank_ref:
-            _dir = "asc" if str(_style_cfg.get("dataLimitDirection") or "top").lower() == "bottom" else "desc"
+            if _top_n_dir:
+                _dir = _top_n_dir
+            else:
+                _dir = "asc" if str(_style_cfg.get("dataLimitDirection") or "top").lower() == "bottom" else "desc"
             chart_sorts = [{"field": _rank_ref, "direction": _dir}]
         effective_limit = max(1, _data_limit_n)
 
