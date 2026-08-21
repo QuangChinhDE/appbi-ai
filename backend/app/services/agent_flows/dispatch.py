@@ -115,12 +115,18 @@ def build_report_info(dashboard: Any, ctx: Any) -> ReportInfo:
 
 
 def fingerprint(*, binding_id: int, version: int, filters: list[dict], charts: list[int],
-                locale: str) -> str:
+                locale: str, shape: str = "") -> str:
     """What invalidates a session's memory.
 
     Change the filters, the version, the allowed charts or the language, and every
     fact derived under the old ones is stale. One hash rather than per-fact
     reasoning: cheap, and impossible to get subtly wrong per variable.
+
+    `shape` exists for the studio. A viewer's session runs one published version, so
+    the version number is enough to notice a change; an author's test session runs a
+    DRAFT they are editing under a version number that does not move. Without this,
+    editing the step you are testing and re-running reused the old step's output as
+    "still valid" — the silent skip, arrived at from the other direction.
     """
     payload = json.dumps(
         {
@@ -129,10 +135,40 @@ def fingerprint(*, binding_id: int, version: int, filters: list[dict], charts: l
             "f": sorted(json.dumps(f, sort_keys=True, default=str) for f in (filters or [])),
             "c": sorted(charts or []),
             "l": locale,
+            "s": shape,
         },
         sort_keys=True,
     )
     return hashlib.sha256(payload.encode()).hexdigest()[:32]
+
+
+def flow_shape(flow: Flow) -> str:
+    """A hash of the flow as configured. Changes when the author changes anything.
+
+    Only the studio uses it. Serialising the whole flow is the point: a narrower
+    signature (node keys, or node count) would miss the edit that matters most —
+    rewriting the prompt of the very step you are re-testing — and leave its
+    previous output in session memory marked reusable.
+    """
+    try:
+        body = flow.model_dump(mode="json") if hasattr(flow, "model_dump") else {}
+    except Exception:  # noqa: BLE001 — a fingerprint must never fail a run
+        return ""
+    return hashlib.sha256(
+        json.dumps(body, sort_keys=True, default=str).encode()
+    ).hexdigest()[:16]
+
+
+def studio_token(brain_key: str) -> str:
+    """The session store's owner for an author's test.
+
+    `load_memory` refuses a session whose stored token differs from the caller's,
+    which is what keeps one browser tab from carrying facts between two public
+    links. A studio test has no link, so it gets its own token rather than an empty
+    one: distinct from every real token, so a test session can never be read on a
+    link and a link's session can never be read here.
+    """
+    return f"studio:{brain_key}"[:200]
 
 
 def load_memory(db: Session, *, session_key: str, token: str, fp: str) -> tuple[MemoryInfo, list[Notice]]:
@@ -538,6 +574,8 @@ async def run_preview(
     dashboard: Any,
     ctx: Any,
     question: str,
+    session_key: str = "",
+    history: list[dict] | None = None,
     api_key: str = "",
     provider: str = "",
     model: str = "",
@@ -548,6 +586,23 @@ async def run_preview(
     Against a binding rather than a bare dashboard, because "does this flow work" is
     not a question about a flow — it is a question about a flow ON A LINK, and the
     two links a flow serves resolve their requirements differently.
+
+    ONE QUESTION WAS NEVER A TEST OF A FLOW.
+    This used to take a question and nothing else, and that quietly put half the
+    authoring surface out of reach. `context_policy: last_3` has nothing to read
+    without history. `run_policy: once_per_session` cannot be observed reusing
+    anything on a first turn. A `memory_delta` cannot be seen surviving into a turn
+    that does not exist. So an author could configure all three, watch a single
+    question answer correctly, and ship a flow whose second turn behaved in a way
+    nothing in the studio had ever shown them.
+
+    The session is the SAME machinery a viewer gets — `load_memory` / `save_memory`
+    over the server-owned store — because a test that exercises a different
+    mechanism proves nothing about the one that runs. It differs in exactly two
+    places, both deliberate: the store is owned by a `studio:` token so a test
+    session and a link session can never read each other, and the fingerprint
+    includes the flow's shape so editing the step you are testing does not leave the
+    old step's output behind as "still valid".
     """
     run_id = new_run_id()
     report = build_report_info(dashboard, ctx)
@@ -558,14 +613,29 @@ async def run_preview(
     ctx.allowed_chart_ids = set(ctx.allowed_chart_ids or set()) & set(binding_info.allowed_chart_ids)
     contract = binding_service.contract_of(binding)
 
+    turns = [
+        Turn(role=h.get("role", "user"), content=str(h.get("content") or ""))
+        for h in (history or [])
+        if isinstance(h, dict) and h.get("role") in ("user", "assistant")
+    ]
+    token = studio_token(flow.key)
+    fp = fingerprint(
+        binding_id=binding.id or 0, version=version, filters=[],
+        charts=binding_info.allowed_chart_ids, locale="vi",
+        shape=flow_shape(flow),
+    )
+    memory, memory_notices = load_memory(db, session_key=session_key, token=token, fp=fp)
+
     inp = FlowInput(
         request=RequestInfo(
             id=run_id, at=datetime.now(timezone.utc).isoformat(),
             is_test=True, trigger="studio_test",
         ),
-        question=QuestionInfo(raw=question, normalized=question),
+        question=QuestionInfo(raw=question, normalized=question, turn_index=len(turns) // 2),
+        conversation=ConversationInfo(session_key=session_key, history=turns),
         report=report,
         binding=binding_info,
+        memory=memory,
         runtime=RuntimeInfo(
             # Coerced at the boundary. The link's stored model is nullable and the
             # envelope's types are fixed by design (L1: a field that is present
@@ -582,6 +652,14 @@ async def run_preview(
     ):
         if ev.type == "result":
             out = FlowOutput.model_validate(ev.extra.get("envelope"))
+            # A memory notice explains an answer that would otherwise look
+            # unexplained ("I recalculated from scratch"), and the author needs to
+            # see it for the same reason the viewer does — more so, since in the
+            # studio it usually means their own edit invalidated the session.
+            out.notices = [*memory_notices, *out.notices]
+            ev.extra["envelope"] = out.to_dict()
+            if session_key:
+                save_memory(db, session_key=session_key, token=token, fp=fp, out=out, flow=flow)
             row_id = runs_service.record(
                 db, inp=inp, out=out, brain_key=flow.key, version=version,
                 # `or None`: a test on a bare report carries the sentinel id 0 in

@@ -645,6 +645,16 @@
     color: rgb(var(--text-quaternary));
   }
 
+  /* NUMERIC COLUMNS. `.app-list-header` sets `text-align: left`, lives in
+     @layer utilities and is loaded after Tailwind's own utilities, so a
+     `text-right` class on the same element loses on source order — every count
+     and token total in the Agent Flow history sat under a left-aligned header
+     while its own values were right-aligned. A variant in the system beats an
+     `!important` at each call site, and the next list gets it for free. */
+  .app-list-header-right {
+    text-align: right;
+  }
+
   .app-list-cell {
     padding: 0.875rem;
   }

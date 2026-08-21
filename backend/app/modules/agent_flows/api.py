@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import logging
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -33,6 +33,7 @@ from app.models.user import User
 from app.services.agent_flows import binding as binding_service
 from app.services.agent_flows import permissions as perms
 from app.services.agent_flows import registry as reg
+from app.services.agent_flows import history as history_service
 from app.services.agent_flows import runs as runs_service
 from app.services.agent_flows.contract import Flow, upgrade_body
 from app.services.agent_flows.models_catalogue import catalogue as model_catalogue
@@ -568,13 +569,101 @@ def brain_runs(
     )
 
 
-@router.get("/brains/{brain_key}/runs/stats")
-def brain_run_stats(
-    brain_key: str, since_hours: int = 24,
+class RatingBody(BaseModel):
+    #: `None` clears it. A thumb pressed by mistake has to be retractable, or
+    #: people stop pressing them and the Feedback tab goes quiet for the wrong
+    #: reason.
+    rating: Literal["up", "down"] | None = None
+
+
+@router.post("/brains/{brain_key}/runs/{run_id}/rating")
+def rate_brain_run(
+    brain_key: str, run_id: int, body: RatingBody,
+    db: Session = Depends(get_db), user: User = Depends(can_edit),
+) -> dict[str, Any]:
+    """Mark a run good or bad from inside AppBI.
+
+    `can_edit`, not `can_view`: a rating is a judgement that shows up in the
+    Feedback tab's summary and steers what somebody fixes next.
+    """
+    _may_edit_flow(db, user, brain_key)
+    if not runs_service.rate_run(db, brain_key=brain_key, run_id=run_id, rating=body.rating):
+        raise HTTPException(status_code=404, detail="Không tìm thấy lượt chạy")
+    return {"ok": True, "rating": body.rating}
+
+
+@router.get("/brains/{brain_key}/conversations")
+def brain_conversations(
+    brain_key: str,
+    since_hours: int = 24,
+    source: str = "all",
+    status: str | None = None,
+    rated: str | None = None,
+    search: str = "",
+    limit: int = 50,
+    offset: int = 0,
+    db: Session = Depends(get_db),
+    user: User = Depends(can_view),
+) -> dict[str, Any]:
+    """History grouped the way it happened.
+
+    The per-turn list stays (`/runs`) because "did this call succeed" is a real
+    question. But a viewer who asked four times because the first three answers were
+    useless showed up there as four unrelated rows, three of them `ok` — each turn
+    DID answer. What went wrong lived between the rows.
+    """
+    _may_read_flow(db, user, brain_key)
+    return history_service.list_conversations(
+        db, brain_key=brain_key, since_hours=since_hours,
+        source=source, status=status, rated=rated, search=search,
+        limit=min(limit, 200), offset=offset,
+    )
+
+
+@router.get("/brains/{brain_key}/conversations/{key}")
+def brain_conversation_detail(
+    brain_key: str, key: str,
     db: Session = Depends(get_db), user: User = Depends(can_view),
 ) -> dict[str, Any]:
     _may_read_flow(db, user, brain_key)
-    out = runs_service.stats(db, brain_key=brain_key, since_hours=since_hours)
+    out = history_service.conversation_detail(db, brain_key=brain_key, key=key)
+    if out is None:
+        raise HTTPException(status_code=404, detail="Không tìm thấy hội thoại")
+    return out
+
+
+@router.get("/brains/{brain_key}/feedback")
+def brain_feedback(
+    brain_key: str,
+    rating: str | None = None,
+    since_hours: int = 24 * 7,
+    source: str = "all",
+    limit: int = 50,
+    db: Session = Depends(get_db),
+    user: User = Depends(can_view),
+) -> dict[str, Any]:
+    """Rated turns, and what the flow did on them.
+
+    One thumbs-down is an anecdote. The summary is the feature: eight of them that
+    all ran the same branch, or all carried the same notice, is a defect with an
+    address.
+    """
+    _may_read_flow(db, user, brain_key)
+    return history_service.feedback(
+        db, brain_key=brain_key, rating=rating, since_hours=since_hours,
+        source=source, limit=min(limit, 200),
+    )
+
+
+@router.get("/brains/{brain_key}/runs/stats")
+def brain_run_stats(
+    brain_key: str, since_hours: int = 24, source: str = "viewer",
+    db: Session = Depends(get_db), user: User = Depends(can_view),
+) -> dict[str, Any]:
+    _may_read_flow(db, user, brain_key)
+    out = runs_service.stats(
+        db, brain_key=brain_key, since_hours=since_hours, source=source
+    )
     out["links"] = reg.impact(db, brain_key)["count"]
     return out
 
@@ -861,7 +950,52 @@ def delete_binding(
 
 
 # ═══ Test ═════════════════════════════════════════════════════════════════════
-class TestBody(BaseModel):
+def _chart_titles(dashboard: Any, ctx: Any) -> list[dict[str, Any]]:
+    """`id → title` for the charts a test could cite.
+
+    The answer text carries `[chart:N]` markers, and the renderer turns those into
+    chips naming the tile. Without this map the studio drew the raw id while a
+    viewer on the same flow saw the name — the same answer reading as two different
+    things depending on who looked at it.
+    """
+    from app.services.agent_flows.dispatch import build_report_info
+
+    try:
+        return [
+            {"id": c.id, "title": c.title}
+            for c in build_report_info(dashboard, ctx).charts
+        ]
+    except Exception:  # noqa: BLE001 — a label map must never fail a test run
+        return []
+
+
+class TestTurn(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str = ""
+
+
+class _Conversational(BaseModel):
+    """The two fields that turn a test into a conversation.
+
+    On BOTH test bodies, deliberately. A test against a link and a test against a
+    bare report answer different questions — the link's real contract versus "does
+    this work at all" — but they are the same MACHINERY, and if only one of them
+    could hold a session then which question you asked would decide whether
+    `once_per_session` was observable. That is the kind of asymmetry that teaches
+    people the feature is unreliable.
+    """
+
+    #: Same key across the turns of one test chat, so the server-owned session store
+    #: carries memory between them. Empty means a one-off turn — still supported,
+    #: because the first turn of any chat is exactly that.
+    session_key: str = Field(default="", max_length=64)
+    #: What was already said, oldest first. Capped: a step with `context_policy:
+    #: full` would otherwise let the author's own client grow this without limit
+    #: into every prompt.
+    history: list[TestTurn] = Field(default_factory=list, max_length=40)
+
+
+class TestBody(_Conversational):
     question: str
     #: WHICH LINK to test against. Not a bare dashboard: "does this flow work" is a
     #: question about a flow ON A LINK, and two links resolve requirements
@@ -920,15 +1054,25 @@ async def test_flow(
     async for ev in run_preview(
         db, flow=flow, version=row.version, binding=binding, link=link,
         dashboard=dashboard, ctx=ctx, question=body.question,
+        session_key=body.session_key,
+        history=[t.model_dump() for t in body.history],
         api_key=api_key, provider=provider, model=model,
     ):
         if ev.type == "result":
             envelope = ev.extra.get("envelope")
             run_row_id = ev.extra.get("run_row_id")
-    return {"envelope": envelope, "run_row_id": run_row_id}
+    return {
+        "envelope": envelope,
+        "run_row_id": run_row_id,
+        "report": {
+            "id": dashboard.id,
+            "name": dashboard.name,
+            "charts": _chart_titles(dashboard, ctx),
+        },
+    }
 
 
-class ReportTestBody(BaseModel):
+class ReportTestBody(_Conversational):
     question: str
     #: WHICH REPORT to try it on. A flow serves one report or many, and an author
     #: builds it before any link exists — so the thing they pick here is the report,
@@ -1016,6 +1160,8 @@ async def test_flow_on_report(
         db, flow=flow, version=row.version, binding=binding,
         link=SimpleNamespace(token="", appearance_config={}),
         dashboard=dashboard, ctx=ctx, question=body.question,
+        session_key=body.session_key,
+        history=[t.model_dump() for t in body.history],
         api_key=api_key, provider=provider, model="",
     ):
         if ev.type == "result":
@@ -1038,6 +1184,7 @@ async def test_flow_on_report(
             # figure against a tile that was not in the slice deserves to know why.
             "charts_read": len(contract.charts.ids) or total_charts,
             "charts_total": total_charts,
+            "charts": _chart_titles(dashboard, ctx),
         },
     }
 
@@ -1140,7 +1287,18 @@ def test_node(
 
 
 def _link_credentials(cfg: dict) -> tuple[str, str, str]:
-    """The link's stored AI credential, decrypted. Never returned to any client."""
+    """The credential a link runs on: its own if it has one, else the deployment's.
+
+    THE FALLBACK IS THE POINT. Per-link keys came first; the deployment key came
+    later and is now how this install is configured — one token in the environment,
+    every link using it. Nothing updated this resolver, so testing a flow ON A LINK
+    failed with "chưa có token để gọi openai" while the same flow tested on a bare
+    report answered fine. Same deployment, same model, same question: the only
+    difference was which of two code paths resolved the key.
+
+    A link's own key still wins where one is set, because a deployment may
+    deliberately bill one link separately. Never returned to any client either way.
+    """
     provider = str((cfg or {}).get("ai_bot_provider") or "").strip().lower()
     model = str((cfg or {}).get("ai_bot_model") or "")
     raw = str((cfg or {}).get("ai_bot_key") or "")
@@ -1153,4 +1311,9 @@ def _link_credentials(cfg: dict) -> tuple[str, str, str]:
         except Exception:  # noqa: BLE001
             logger.warning("[flow] link credential will not decrypt")
             key = ""
+    if not key:
+        from app.services.dashboard_ai_bot.public_link_config import deployment_key
+
+        key, dep_provider = deployment_key()
+        provider = provider or dep_provider
     return key, provider, model

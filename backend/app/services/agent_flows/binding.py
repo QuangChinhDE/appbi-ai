@@ -29,6 +29,7 @@ from sqlalchemy.orm import Session
 
 from app.models.agent_flow_binding import AgentFlowBinding
 from app.models.models import DashboardPublicLink
+from app.services.agent_flows.coverage import coverage as coverage_of
 from app.services.agent_flows.contract import (
     AgentNode,
     Flow,
@@ -453,6 +454,14 @@ def preflight(
         "errors": errors,
         "warnings": warnings,
         "estimate": {**estimate, "worst_seconds": worst_seconds},
+        # WHICH KINDS OF QUESTION THIS FLOW CANNOT ANSWER.
+        #
+        # Not an error and not a warning — a flow narrowed on purpose is a good
+        # flow. But the alternative to saying it here is the bot saying it in
+        # production, badly: asked for anomalies with no diagnostic tool granted, it
+        # answered "the report does not contain that information", which blamed the
+        # data for a gap in the configuration and gave the author nothing to act on.
+        "coverage": coverage_of(flow),
         "resolved": sorted(contract.resolve.keys()),
         "unresolved": [
             r.key for r in flow.requirements.items if r.key not in contract.resolve

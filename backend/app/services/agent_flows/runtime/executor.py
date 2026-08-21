@@ -405,6 +405,10 @@ async def _run_node(
                     key=node.key, type=node.type, name=label, status="skipped",
                     ms=int((time.monotonic() - began) * 1000),
                     output_preview="điều kiện không khớp — dừng nhánh",
+                    # A step that spent tokens before it stopped still spent them.
+                    prompt_tokens=state.prompt_tokens - tokens_before[0],
+                    completion_tokens=state.completion_tokens - tokens_before[1],
+                    tool_calls=state.tool_log[tools_before:],
                 )
             )
             yield AgentEvent(
@@ -424,6 +428,19 @@ async def _run_node(
                     key=node.key, type=node.type, name=label, status="error",
                     ms=int((time.monotonic() - began) * 1000),
                     error=str(exc),
+                    # THE COST OF THE STEP THAT ATE THE BUDGET.
+                    #
+                    # The comment above says the node that consumed the budget is
+                    # the single most useful fact about such a run — and then this
+                    # row reported it as costing nothing, because the token deltas
+                    # were only set on the success path. Measured on a 13-node
+                    # harness: a turn spent 9,737 prompt tokens and only 7,227 of
+                    # them landed on any step, the missing 2,510 belonging to the
+                    # one step that failed. Reading the trace, the expensive step
+                    # looked free.
+                    prompt_tokens=state.prompt_tokens - tokens_before[0],
+                    completion_tokens=state.completion_tokens - tokens_before[1],
+                    tool_calls=state.tool_log[tools_before:],
                     output_preview=(
                         f"đã dùng {state.budget.tool_calls}/{state.budget.max_tool_calls} "
                         f"lượt công cụ và {state.budget.llm_calls}/"
@@ -453,6 +470,12 @@ async def _run_node(
                 key=node.key, type=node.type, name=label,
                 status="error", ms=ms, error=last_error,
                 tool_calls=state.tool_log[tools_before:],
+                # Same reasoning as the budget path above, and it matters more here:
+                # `retry` means a failing step can pay for the same work several
+                # times over, and a row reading 0 tokens for three attempts hides
+                # exactly the configuration an author would want to reconsider.
+                prompt_tokens=state.prompt_tokens - tokens_before[0],
+                completion_tokens=state.completion_tokens - tokens_before[1],
             )
         )
         yield AgentEvent(

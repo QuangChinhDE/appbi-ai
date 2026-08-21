@@ -165,8 +165,18 @@ export interface AgentNode extends BaseNode {
   knowledge?: KnowledgeAttachment[];
   max_tool_calls?: number;
   /** `chat` streams prose and is the default. `json` asks for typed answer blocks —
-   *  richer, but not streamable, because half a JSON object cannot be rendered. */
-  output_format?: 'chat' | 'json';
+   *  richer, but not streamable, because half a JSON object cannot be rendered.
+   *  `choice` is a CLASSIFIER: the step emits exactly one of `choices` and the
+   *  runtime enforces it rather than asking for it. */
+  output_format?: 'chat' | 'json' | 'choice';
+  /** The only answers a `choice` step may give. A Switch downstream matches on
+   *  these, so they are values, not prose. */
+  choices?: string[];
+  /** What each choice MEANS, keyed by the choice. Optional and worth writing: a
+   *  model handed bare variable names is guessing at what they stand for, and
+   *  measured on a coverage harness it sent a plain lookup down the forecast
+   *  branch. */
+  choice_hints?: Record<string, string>;
   /** Read-only, from the server: is a token stored for this node. The value itself
    *  is never returned, so `api_key` empty means KEEP and erasing needs its own
    *  flag. */
@@ -485,6 +495,9 @@ export interface RunDetail {
   /** Where the question came from. `is_test` distinguishes an author's own trial
    *  in the Studio from a viewer asking on a public link — the same event shape,
    *  opposite meanings. */
+  /** The conversation this turn belongs to — `null` for a legacy run that was
+   *  never part of a session. Lets a `?run=` link open the whole conversation. */
+  session_key?: string | null;
   is_test?: boolean;
   trigger?: string | null;
   id: number;
@@ -535,6 +548,9 @@ export interface RunStats {
   errors: number;
   window_hours: number;
   links: number;
+  /** Which traffic these figures describe, echoed back so the screen can label the
+   *  scope instead of asserting one it only assumed. */
+  source?: RunSourceFilter;
 }
 
 export interface ActivityEvent {
@@ -722,8 +738,27 @@ export interface ReportTestResult {
   envelope: unknown;
   /** What a real link would still have to answer. A flow mid-build normally has
    *  some of these; they are shown, not treated as a failure. */
-  readiness?: { errors?: { message: string }[]; warnings?: { message: string }[] };
-  report?: { id: number; name: string; charts_read?: number; charts_total?: number };
+  readiness?: {
+    errors?: { message: string }[];
+    warnings?: { message: string }[];
+    /** Which KINDS of question this flow can answer, derived from the tools it
+     *  grants. Gaps are not errors — a flow narrowed on purpose is a good flow —
+     *  but the alternative to naming them here is the bot naming them in
+     *  production, badly: asked for anomalies with no diagnostic tool granted, it
+     *  told the viewer the report contained no such information. */
+    coverage?: {
+      answerable: number;
+      total: number;
+      covered: { key: string; label: string; example: string }[];
+      gaps: { key: string; label: string; example: string; pack: string }[];
+    };
+  };
+  report?: {
+    id: number; name: string; charts_read?: number; charts_total?: number;
+    /** `id → title` for the charts this run could cite, so `[chart:N]` in the
+     *  answer renders as the tile's name — what the viewer's chat shows. */
+    charts?: { id: number; title: string }[];
+  };
   /** The history row this test wrote, so the dialog can hand over the full trace.
    *  Not the envelope's `run_id` — that is a generated string, this is the row the
    *  Runs tab addresses (`?run=193`). Marked `is_test` there. */
@@ -735,7 +770,15 @@ export interface ReportTestResult {
  *  exist. */
 export async function testFlowOnReport(
   key: string,
-  body: { dashboard_id: number; question: string; version?: number },
+  body: {
+    dashboard_id: number; question: string; version?: number;
+    /** Same key across the turns of one test chat, so the session store carries
+     *  memory between them. Without it a test cannot exercise `once_per_session`,
+     *  `context_policy: last_3`, or a `memory_delta` surviving into a later turn —
+     *  an author could configure all three and never see any of them run. */
+    session_key?: string;
+    history?: { role: 'user' | 'assistant'; content: string }[];
+  },
 ): Promise<ReportTestResult> {
   const { data } = await apiClient.post(
     `${BASE}/brains/${encodeURIComponent(key)}/test-on-report`, body);
@@ -789,9 +832,12 @@ export async function listRuns(key: string, params: {
   return data;
 }
 
-export async function runStats(key: string, sinceHours = 24): Promise<RunStats> {
+export async function runStats(
+  key: string, sinceHours = 24, source: RunSourceFilter = 'viewer',
+): Promise<RunStats> {
   const { data } = await apiClient.get<RunStats>(
-    `${BASE}/brains/${encodeURIComponent(key)}/runs/stats`, { params: { since_hours: sinceHours } });
+    `${BASE}/brains/${encodeURIComponent(key)}/runs/stats`,
+    { params: { since_hours: sinceHours, source } });
   return data;
 }
 
@@ -812,7 +858,18 @@ export async function branchCoverage(key: string, days = 30): Promise<Record<str
 // ── Test ────────────────────────────────────────────────────────────────────
 export async function testFlow(key: string, body: {
   question: string; link_id: number; version?: number;
-}): Promise<{ envelope: FlowOutputEnvelope | null; run_row_id?: number | null }> {
+  /** Same conversation fields as `testFlowOnReport`. Both paths carry them: they
+   *  answer different questions — the link's real contract versus "does this work
+   *  at all" — but they are the same machinery, and if only one could hold a
+   *  session then which question you asked would decide whether `once_per_session`
+   *  was observable at all. */
+  session_key?: string;
+  history?: { role: 'user' | 'assistant'; content: string }[];
+}): Promise<{
+  envelope: FlowOutputEnvelope | null;
+  run_row_id?: number | null;
+  report?: { id: number; name: string; charts?: { id: number; title: string }[] };
+}> {
   const { data } = await apiClient.post(
     `${BASE}/brains/${encodeURIComponent(key)}/test`, body);
   return data;
@@ -1132,3 +1189,161 @@ export function blankNode(type: NodeType, nodes: FlowNode[], labels: BlankNodeLa
       return { ...base, type: 'set_var', var: 'my_var', value: '' } as FlowNode;
   }
 }
+
+// ── Conversations & feedback ────────────────────────────────────────────────
+//
+// The per-run list stays where it is. These read the SAME rows grouped by
+// session, which is the unit a viewer actually experiences: somebody who asked
+// four times because the first three answers were useless is one dissatisfied
+// conversation, not four `ok` rows.
+
+/** One turn inside a conversation. */
+export interface ConversationTurn {
+  index: number;
+  run_id: number;
+  at: string | null;
+  status: 'ok' | 'partial' | 'blocked' | 'failed';
+  version: number | null;
+  is_test: boolean;
+  trigger: string | null;
+  rating: 'up' | 'down' | null;
+  question: string | null;
+  answer: string | null;
+  citations: unknown[];
+  notices: { code: string; text: string }[];
+  execution_path: string | null;
+  blocked_reason: string | null;
+  missing_requirements: unknown[];
+  usage: {
+    llm_calls: number | null; tool_calls: number | null;
+    prompt_tokens: number | null; completion_tokens: number | null;
+    ms: number | null; usd: number | null;
+  };
+  steps: RunStep[];
+  /** What this turn did that could explain a complaint — the branch it took, a
+   *  step that errored or was skipped, a notice it raised. Factual, never an
+   *  inference about the viewer's mood. */
+  signals: { code: string; text: string }[];
+}
+
+export interface ConversationSummary {
+  /** Groups by session. Falls back to the run id for legacy turns that were never
+   *  part of a session, so nothing silently drops out of history. */
+  key: string;
+  session_key: string | null;
+  turns: number;
+  started_at: string | null;
+  last_at: string | null;
+  first_run_id: number;
+  last_run_id: number;
+  first_question: string;
+  worst_status: 'ok' | 'partial' | 'blocked' | 'failed';
+  statuses: string[];
+  tokens: number;
+  ms: number;
+  up: number;
+  down: number;
+  is_test: boolean;
+  paths: string[];
+  dashboard_id: number | null;
+  link_token: string | null;
+  version: number | null;
+  /** Long enough that the viewer was probably not satisfied by the early answers. */
+  kept_asking: boolean;
+}
+
+export interface ConversationDetail {
+  key: string;
+  session_key: string | null;
+  brain_key: string;
+  turns: ConversationTurn[];
+  turn_count: number;
+  started_at: string | null;
+  last_at: string | null;
+  is_test: boolean;
+  dashboard_id: number | null;
+  link_token: string | null;
+  version: number | null;
+  tokens: number;
+  up: number;
+  down: number;
+}
+
+export async function listConversations(key: string, params: {
+  since_hours?: number; source?: RunSourceFilter; status?: string;
+  /** Matches ANY turn's question, not just the opening one: the phrase somebody
+   *  remembers is usually from the middle of the conversation. */
+  search?: string;
+  rated?: 'up' | 'down' | 'any'; limit?: number; offset?: number;
+} = {}): Promise<{ total: number; conversations: ConversationSummary[] }> {
+  const { data } = await apiClient.get(
+    `${BASE}/brains/${encodeURIComponent(key)}/conversations`, { params });
+  return data;
+}
+
+export async function conversationDetail(
+  key: string, conversationKey: string,
+): Promise<ConversationDetail> {
+  const { data } = await apiClient.get(
+    `${BASE}/brains/${encodeURIComponent(key)}/conversations/${encodeURIComponent(conversationKey)}`);
+  return data;
+}
+
+export interface FeedbackItem {
+  run_id: number;
+  conversation_key: string;
+  session_key: string | null;
+  conversation_turns: number;
+  at: string | null;
+  rating: 'up' | 'down';
+  status: string;
+  is_test: boolean;
+  version: number | null;
+  link_token: string | null;
+  dashboard_id: number | null;
+  question: string | null;
+  answer: string | null;
+  execution_path: string | null;
+  signals: { code: string; text: string }[];
+}
+
+export interface FeedbackResult {
+  items: FeedbackItem[];
+  /** What the complaints have in common — counted over the DOWN votes only, since
+   *  a signal shared with an up vote is not what went wrong. */
+  summary: {
+    up: number; down: number; rated: number; down_share: number;
+    by_signal: { key: string; count: number }[];
+    by_path: { key: string; count: number }[];
+    by_status: { key: string; count: number }[];
+  };
+}
+
+export async function listFeedback(key: string, params: {
+  rating?: 'up' | 'down'; since_hours?: number; source?: RunSourceFilter; limit?: number;
+} = {}): Promise<FeedbackResult> {
+  const { data } = await apiClient.get(
+    `${BASE}/brains/${encodeURIComponent(key)}/feedback`, { params });
+  return data;
+}
+
+/** Rate one run from inside AppBI. `null` clears it.
+ *
+ *  By id, not by answer text: the public chat client rates text because it does not
+ *  know run ids, and the studio does, so it should not inherit the ambiguity —
+ *  two turns that happened to answer identically are indistinguishable by text. */
+export async function rateRun(
+  key: string, runId: number, rating: 'up' | 'down' | null,
+): Promise<void> {
+  await apiClient.post(
+    `${BASE}/brains/${encodeURIComponent(key)}/runs/${runId}/rating`, { rating });
+}
+
+/** WHERE A TURN CAME FROM, as a filter.
+ *
+ *  Three values, not a boolean. The old `include_tests` flag could express "viewers"
+ *  or "viewers and me" and never "just what I ran" — which is the view an author
+ *  wants while building, and the one the Runs tab could not produce. It also
+ *  defaulted to excluding tests, so the tab was empty in the moment right after a
+ *  test run. */
+export type RunSourceFilter = 'all' | 'viewer' | 'test';

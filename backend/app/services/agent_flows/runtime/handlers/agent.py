@@ -229,6 +229,20 @@ async def run(
                     # about a report it had never actually been shown.
                     "result": result,
                 })
+        # THE LANGUAGE CONSTRAINT HAS TO SIT NEXT TO THE DECISION.
+        #
+        # It is already in the system prompt, and that was not enough. A tool result
+        # is a large English payload — English keys, an English `ordered_by`, English
+        # notes like "compare the values, do not add them" — and next to a
+        # ten-word Vietnamese question the model follows the payload. Measured:
+        # `total_measure` answered in Vietnamese, `rank_values` and `share_of`
+        # answered in English, on identical prompts in one session.
+        #
+        # So the reminder is repeated as the LAST message before generation, after
+        # the tool output rather than before it. One short line, only when a tool
+        # actually ran — a flow that never calls one never had the problem.
+        if calls_made:
+            messages.append({"role": "user", "content": _language_reminder(rctx)})
     finally:
         # Restored even when the node raises, or the next node would inherit a scope
         # it was never granted — a silent widening of what the flow may read.
@@ -271,7 +285,159 @@ async def run(
             )
         state.outputs[node.key] = picked
     else:
+        # THE LANGUAGE CONSTRAINT, CHECKED AFTER THE MODEL SPEAKS.
+        #
+        # Same shape as the classifier check above, and for the same reason: asking
+        # was the whole mechanism, and asking was not enough. Saying it in the system
+        # prompt fixed one of two leaking turns; repeating it after the tool payload
+        # fixed a second; a third still came back in English because a large English
+        # result sitting next to a ten-word Vietnamese question is simply stronger
+        # than an instruction.
+        #
+        # So it is verified rather than requested. The check is deliberately narrow
+        # (see `_looks_wrong_language`) and the correction costs one model call that
+        # only happens when the answer is actually wrong — which, by then, is the
+        # cheapest thing in the turn.
+        asked = getattr(getattr(rctx, "inp", None), "question", None)
+        asked_text = asked.text() if hasattr(asked, "text") else ""
+        if (
+            node.key == rctx.answer_key
+            and text
+            and not provider_error
+            and _looks_wrong_language(text, _locale_of(rctx), asked_text)
+        ):
+            fixed = await _retry_language(
+                node, state, system, messages, text,
+                provider=provider, api_key=api_key, model=model,
+                locale=_locale_of(rctx),
+            )
+            # Only if the second attempt is actually better. A restatement that
+            # still reads as the wrong language is not worth losing the first
+            # answer's figures over.
+            if fixed and not _looks_wrong_language(fixed, _locale_of(rctx), asked_text):
+                text = fixed
         state.outputs[node.key] = text
+
+
+#: Any one of these means the text contains Vietnamese. Cheaper and far more
+#: reliable than counting English words: Vietnamese prose of any real length carries
+#: a diacritic, and English prose never does.
+_VI_DIACRITICS = set(
+    "ăâđêôơưàáảãạằắẳẵặầấẩẫậèéẻẽẹềếểễệìíỉĩị"
+    "òóỏõọồốổỗộờớởỡợùúủũụừứửữựỳýỷỹỵ"
+    "ĂÂĐÊÔƠƯÀÁẢÃẠẰẮẲẴẶẦẤẨẪẬÈÉẺẼẸỀẾỂỄỆÌÍỈĨỊ"
+    "ÒÓỎÕỌỒỐỔỖỘỜỚỞỠỢÙÚỦŨỤỪỨỬỮỰỲÝỶỸỴ"
+)
+
+#: A word made only of plain ASCII letters. Tokens with digits, underscores or dots
+#: are excluded on purpose: `health_beauty`, `dataset_table_219` and `9.26` are DATA
+#: and appear verbatim in a correct Vietnamese answer, so counting them would flag
+#: every reply that quotes a category name.
+_ASCII_WORD = re.compile(r"(?<![\w.])[A-Za-z]{2,}(?![\w.])")
+
+#: Below this many plain-ASCII words there is nothing to judge. "GMV is 15,843,553"
+#: is two words and a figure — a fragment, not a language choice, and not worth a
+#: model call to rewrite.
+_MIN_WORDS_TO_JUDGE = 6
+
+
+def _locale_of(rctx: Any) -> str:
+    _req = getattr(getattr(rctx, "inp", None), "request", None)
+    return (getattr(_req, "locale", "") or "vi").lower().split("-")[0]
+
+
+def _segment_is_wrong_language(segment: str, locale: str) -> bool:
+    """Is this ONE passage in the wrong language?
+
+    Conservative by construction: it only answers yes when the passage is long
+    enough to have needed a diacritic and has none. Wrong answers cost in both
+    directions — a false positive spends a model call and risks replacing a good
+    answer, a false negative ships an English reply to a Vietnamese viewer — so the
+    test is a fact about the characters rather than a guess about the words.
+    """
+    if locale != "vi" or not segment.strip():
+        return False
+    if any(ch in _VI_DIACRITICS for ch in segment):
+        return False
+    return len(_ASCII_WORD.findall(segment)) >= _MIN_WORDS_TO_JUDGE
+
+
+def _looks_wrong_language(text: str, locale: str, question: str = "") -> bool:
+    """Does the answer fail to match the LANGUAGE OF THE QUESTION?
+
+    The question decides, not the locale. A `vi` link with an English-speaking
+    viewer should get English answers, and an earlier draft of this check would have
+    rewritten them into Vietnamese — enforcing the default instead of the rule, and
+    breaking the case the rule exists for. The locale is only the fallback for when
+    the question itself says nothing, and a question that says nothing is a question
+    too short to judge, so in practice this fires on one shape: a clearly Vietnamese
+    question answered in English.
+
+    CHECKED IN TWO PARTS, because they failed independently. The prose and the
+    `[FOLLOWUP]` suggestion lines are written under the same instruction and did not
+    obey it together: measured here, the answer came back in Vietnamese and all three
+    suggestion chips in English. Judging the whole string at once hid that — the
+    prose supplied the diacritics that made the chips look fine. The chips are the
+    part a reader is invited to CLICK, so they are judged on their own.
+    """
+    if locale != "vi" or not text:
+        return False
+    # The viewer wrote Vietnamese, or there is nothing to enforce.
+    if not any(ch in _VI_DIACRITICS for ch in question or ""):
+        return False
+    body: list[str] = []
+    follow: list[str] = []
+    for line in text.split("\n"):
+        (follow if "[FOLLOWUP]" in line.upper() else body).append(line)
+    return (
+        _segment_is_wrong_language("\n".join(body), locale)
+        or _segment_is_wrong_language("\n".join(follow), locale)
+    )
+
+
+async def _retry_language(
+    node: AgentNode, state: RunState, system: str, messages: list[dict], said: str,
+    *, provider: str, api_key: str, model: str, locale: str,
+) -> str:
+    """Ask once for the same answer in the right language.
+
+    RESTATE, never re-analyse: the figures in `said` were derived from tool results
+    this call no longer carries, so anything it recomputes would be invented. The
+    instruction is therefore about the words and explicitly not about the numbers.
+    """
+    lang = _LANGUAGE_NAMES.get(locale, locale)
+    retry_messages = [
+        *messages,
+        {"role": "assistant", "content": said},
+        {
+            "role": "user",
+            "content": (
+                f"Hãy viết lại CHÍNH câu trả lời trên bằng {lang}, KỂ CẢ các "
+                "dòng [FOLLOWUP] (giữ đúng số dòng và vẫn bắt đầu bằng "
+                "[FOLLOWUP]). Giữ nguyên mọi con số và mọi tên dữ liệu như "
+                "health_beauty. Không thêm nhận định mới, không bỏ bớt nội dung."
+            ),
+        },
+    ]
+    try:
+        state.budget.spend_llm()
+    except Exception:  # noqa: BLE001 — out of budget is not this step's failure
+        return ""
+    out = ""
+    try:
+        async for ev in _stream(
+            provider=provider, api_key=api_key, model=model,
+            system_prompt=system, messages=retry_messages, tools=[],
+        ):
+            if ev.type == "text":
+                out += ev.text
+            elif ev.type == "usage":
+                state.prompt_tokens += int(ev.extra.get("prompt_tokens") or 0)
+                state.completion_tokens += int(ev.extra.get("completion_tokens") or 0)
+    except Exception:  # noqa: BLE001 — a failed correction keeps the first answer
+        logger.warning("[flow] language restatement failed", exc_info=True)
+        return ""
+    return out.strip()
 
 
 async def _retry_choice(
@@ -448,11 +614,64 @@ def _system_prompt(node: AgentNode, state: RunState, rctx: Any) -> str:
         parts.append(
             "Dù hướng dẫn ở trên yêu cầu ngắn gọn thế nào, LUÔN kết thúc câu trả "
             "lời bằng 2-3 dòng gợi ý, mỗi dòng bắt đầu bằng [FOLLOWUP] và kết "
-            "thúc bằng dấu ?. Chúng không tính vào độ dài câu trả lời."
+            "thúc bằng dấu ?. Chúng không tính vào độ dài câu trả lời. "
+            # The chips are the one part of the reply the reader is invited to
+            # CLICK, and they were coming back in English under a Vietnamese
+            # answer — the language rule was read as being about the prose. Said
+            # here because this is the sentence that asks for them.
+            "Các dòng gợi ý phải CÙNG ngôn ngữ với câu trả lời."
+        )
+        # WHICH LANGUAGE TO ANSWER IN, SAID RATHER THAN INFERRED.
+        #
+        # The base prompt already asks for "the language of the question", and the
+        # model still got it wrong: measured on this deployment, two of four
+        # Vietnamese questions in one session came back in English — the two where a
+        # tool returned English data values (`health_beauty`), which is apparently
+        # enough to tip the inference. Meanwhile `request.locale` had been on the
+        # envelope from the start, set per link, and read by nothing.
+        #
+        # So the rule now carries a CONCRETE default instead of a principle: the
+        # question's language wins, and when that is unclear the link's own language
+        # decides. Appended last, beside the follow-up contract, for the same reason
+        # — an author's "answer in one short sentence" otherwise wins over anything
+        # said earlier.
+        # Reached defensively, like everything else this builder touches: assembling
+        # a prompt must never be the thing that fails a run, so a caller without a
+        # request envelope gets the default rather than an AttributeError.
+        _req = getattr(getattr(rctx, "inp", None), "request", None)
+        locale = (getattr(_req, "locale", "") or "vi").lower()
+        lang = _LANGUAGE_NAMES.get(locale.split("-")[0], locale)
+        parts.append(
+            "NGÔN NGỮ: trả lời bằng ngôn ngữ của câu hỏi. Nếu không xác định được, "
+            f"trả lời bằng {lang}. Giá trị dữ liệu (tên danh mục, tên bang…) giữ "
+            "nguyên như trong báo cáo, không dịch."
         )
     return "\n\n".join(p for p in parts if p)
 
 
+def _language_reminder(rctx: Any) -> str:
+    """One line, repeated after tool output, naming the language to answer in.
+
+    Deliberately short. It is competing for attention with a large tool payload, and
+    a paragraph here would push the payload further from the model's focus while
+    saying nothing the system prompt has not already said.
+    """
+    _req = getattr(getattr(rctx, "inp", None), "request", None)
+    locale = (getattr(_req, "locale", "") or "vi").lower()
+    lang = _LANGUAGE_NAMES.get(locale.split("-")[0], locale)
+    return (
+        f"(Nhắc lại: trả lời bằng ngôn ngữ của câu hỏi — nếu không rõ thì {lang}. "
+        "Dữ liệu ở trên là tiếng Anh, đừng để nó đổi ngôn ngữ câu trả lời.)"
+    )
+
+
+#: Named in the prompt so the instruction is concrete rather than a principle. Only
+#: the languages this deployment serves; anything else falls through to its own code,
+#: which a model reads correctly ("answer in ja") far more reliably than it guesses.
+_LANGUAGE_NAMES = {
+    "vi": "tiếng Việt",
+    "en": "English",
+}
 #: What a `json` node must return. Deliberately terse and example-led: a long JSON
 #: schema in a prompt buys compliance on the shape and loses it on the content.
 #:
@@ -467,8 +686,19 @@ def _system_prompt(node: AgentNode, state: RunState, rctx: Any) -> str:
 #: the base prompt says.
 def _choice_instructions(node: AgentNode) -> str:
     """What a classifier is told. The rule that MATTERS is enforced below, in code;
-    this only saves a round by asking for the right shape first."""
-    options = "\n".join(f"- {c}" for c in node.choices)
+    this only saves a round by asking for the right shape first.
+
+    THE OPTIONS CARRY THEIR MEANING WHERE THE AUTHOR GAVE ONE. A choice list is
+    usually variable names — `tra_so`, `du_bao` — and a model asked to pick between
+    variable names is guessing at what they were meant to stand for. Measured: a
+    plain lookup question was routed to the forecast branch, and the lookup branch
+    never fired at all. `choice_hints` costs a dozen words per option on a step
+    whose entire output is one token.
+    """
+    options = "\n".join(
+        f"- {c}" + (f" — {node.choice_hints[c]}" if node.choice_hints.get(c) else "")
+        for c in node.choices
+    )
     return (
         "Bạn là bộ PHÂN LOẠI. Trả lời bằng ĐÚNG MỘT giá trị trong danh sách dưới "
         "đây, viết nguyên văn, không thêm dấu câu, không giải thích, không xuống "

@@ -15,45 +15,47 @@
  * Test runs are excluded by default. Without that, the first week of any flow's
  * numbers is mostly its author trying things.
  */
+import { ChevronLeft, ThumbsDown, ThumbsUp } from 'lucide-react';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import React from 'react';
 
+import { RichMarkdown, extractFollowups } from '@/components/common/AiAnswer';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
 import { Badge } from '@/components/ui/Badge';
 import { cn } from '@/lib/utils';
 import { useI18n } from '@/providers/LanguageProvider';
 import {
-  getBrain, listNodeSpecs, listRuns, runDetail, runStats,
-  type FlowNode, type NodeSpec,
-  type RunDetail, type RunRow, type RunStats, type RunStep,
+  conversationDetail, getBrain, listNodeSpecs, runDetail, runStats,
+  type ConversationDetail, type FlowNode, type NodeSpec, type RunSourceFilter,
+  type RunDetail, type RunStats, type RunStep,
 } from '@/lib/agentFlows';
 import { FlowCanvas } from './FlowCanvas';
-import { formatWhen } from './shared';
+import { ConversationsPanel } from './ConversationsPanel';
+import {
+  RunStatusBadge, SourceFilter, Stat, StatStrip, formatWhen,
+} from './shared';
 
-const STATUS_TONE: Record<string, 'success' | 'warning' | 'danger' | 'neutral'> = {
-  ok: 'success', partial: 'warning', blocked: 'danger', failed: 'danger', throttled: 'warning',
-};
-const STATUS_LABEL_KEY: Record<string, string> = {
-  ok: 'agentFlows.runs.status.ok',
-  partial: 'agentFlows.runs.status.partial',
-  blocked: 'agentFlows.runs.status.blocked',
-  failed: 'agentFlows.runs.status.failed',
-  throttled: 'agentFlows.runs.status.throttled',
-};
+// Run status tone and labels moved to `shared.tsx` as `RunStatusBadge`: the
+// conversations and feedback views render the same statuses, and three copies
+// would eventually disagree about what colour `partial` is.
 
 export function RunsTab({ brainKey }: { brainKey: string }) {
   const { t, locale } = useI18n();
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
-  const [rows, setRows] = React.useState<RunRow[]>([]);
   const [stats, setStats] = React.useState<RunStats | null>(null);
   const [detail, setDetail] = React.useState<RunDetail | null>(null);
-  const [status, setStatus] = React.useState('');
   const [hours, setHours] = React.useState(24);
   const [search, setSearch] = React.useState('');
-  const [includeTests, setIncludeTests] = React.useState(false);
+  const [status, setStatus] = React.useState('');
+  const [rated, setRated] = React.useState<'' | 'up' | 'down' | 'any'>('');
+  const [convCount, setConvCount] = React.useState(0);
+  // ALL, not "viewers only". This tab is inside the builder and is read by the
+  // person who wrote the flow: the previous default hid their own test runs, so the
+  // history was empty in the one moment they most needed it — right after testing.
+  const [source, setSource] = React.useState<RunSourceFilter>('all');
   const [loading, setLoading] = React.useState(true);
   //: Which node the right pane is describing. Reset when a different run is
   //: opened, or the panel would show step 3 of the previous run against this
@@ -76,18 +78,15 @@ export function RunsTab({ brainKey }: { brainKey: string }) {
   React.useEffect(() => {
     let alive = true;
     setLoading(true);
-    Promise.all([
-      listRuns(brainKey, { status: status || undefined, since_hours: hours, search, include_tests: includeTests }),
-      runStats(brainKey, hours),
-    ])
-      .then(([list, s]) => {
-        if (!alive) return;
-        setRows(list.runs);
-        setStats(s);
-      })
+    // The strip follows the source filter, so it describes the rows underneath it.
+    // Hardcoding viewer traffic here made it read "0 runs / 0% answered" above ten
+    // visible test rows, and a row of zeros over a populated table reads as broken
+    // rather than as scoped.
+    runStats(brainKey, hours, source)
+      .then((s) => { if (alive) setStats(s); })
       .finally(() => alive && setLoading(false));
     return () => { alive = false; };
-  }, [brainKey, status, hours, search, includeTests]);
+  }, [brainKey, hours, source]);
 
   const load = React.useCallback(async (runId: number) => {
     setOpenStep(null);
@@ -114,10 +113,37 @@ export function RunsTab({ brainKey }: { brainKey: string }) {
   // a run could not be sent to anybody. `?run=169` restores the same run, and
   // is what somebody pastes into a bug report.
   const runParam = searchParams?.get('run');
+  // A conversation is addressable for the same reason a run is, and it is the
+  // link the Feedback tab hands over: a complaint about turn five is not readable
+  // without turns one to four.
+  const convParam = searchParams?.get('conversation') || null;
 
-  const open = (row: RunRow) => {
+  /** THE CONVERSATION THIS TAB IS SHOWING, if any.
+   *
+   *  There is no flat turn list any more. A turn is only readable next to the turns
+   *  around it — a `partial` answer that made somebody re-ask looks fine in
+   *  isolation — so the tab lists conversations, and opening one loads its turns
+   *  into the left column of the same three-pane view that was already here. */
+  const [conv, setConv] = React.useState<ConversationDetail | null>(null);
+  const [convLoading, setConvLoading] = React.useState(false);
+
+  const openConversation = React.useCallback((key: string) => {
     const next = new URLSearchParams(searchParams?.toString() || '');
-    next.set('run', String(row.id));
+    next.set('conversation', key);
+    next.delete('run');
+    router.replace(`${pathname}?${next.toString()}`, { scroll: false });
+  }, [router, pathname, searchParams]);
+
+  const closeConversation = React.useCallback(() => {
+    const next = new URLSearchParams(searchParams?.toString() || '');
+    next.delete('conversation');
+    next.delete('run');
+    router.replace(`${pathname}?${next.toString()}`, { scroll: false });
+  }, [router, pathname, searchParams]);
+
+  const open = (runId: number) => {
+    const next = new URLSearchParams(searchParams?.toString() || '');
+    next.set('run', String(runId));
     router.replace(`${pathname}?${next.toString()}`, { scroll: false });
   };
 
@@ -135,6 +161,57 @@ export function RunsTab({ brainKey }: { brainKey: string }) {
     });
   }, [runParam, detail?.id, load, pathname, router, searchParams]);
 
+  // LOAD THE CONVERSATION THE URL NAMES.
+  React.useEffect(() => {
+    if (!convParam) { setConv(null); return; }
+    if (conv?.key === convParam) return;
+    let alive = true;
+    setConvLoading(true);
+    conversationDetail(brainKey, convParam)
+      .then((d) => { if (alive) setConv(d); })
+      .catch(() => { if (alive) setConv(null); })
+      .finally(() => { if (alive) setConvLoading(false); });
+    return () => { alive = false; };
+  }, [brainKey, convParam, conv?.key]);
+
+  // A BARE RUN LINK OPENS ITS CONVERSATION.
+  //
+  // `?run=193` used to land on a flat list that no longer exists. Rather than
+  // reintroduce one for a single turn, the run's own `session_key` says which
+  // conversation it belongs to — so a pasted run link arrives with the turns around
+  // it, which is the context that makes the turn readable.
+  //
+  // GATED ON `runParam`, NOT ON `detail`, AND THAT IS THE WHOLE POINT.
+  //
+  // The URL is the state here, and two effects were both writing it from derived
+  // data: this one said "a loaded run implies its conversation", while the Back
+  // button said "the reader wants out". Back cleared both params — and `detail` was
+  // still loaded for a beat, so this fired and put the conversation straight back.
+  // The URL never changed and the button was simply dead.
+  //
+  // Reading `runParam` fixes it because that is what Back actually clears. The id
+  // comparison closes the same hole one step further in: a `detail` left over from
+  // the previous run must not decide where the next one navigates.
+  React.useEffect(() => {
+    if (convParam || !runParam || !detail) return;
+    if (detail.id !== Number(runParam)) return;
+    openConversation(detail.session_key || String(detail.id));
+  }, [convParam, runParam, detail, openConversation]);
+
+  // Opening a conversation with no turn chosen selects its FIRST turn, so the canvas
+  // and the inspector are never blank next to a populated list.
+  //
+  // Also gated on `convParam` rather than on the loaded `conv`, for the same reason:
+  // during the beat after Back, `conv` still held the closed conversation, and
+  // selecting a turn from it would have written `?run=` back into a URL the reader
+  // had just cleared — bouncing them in through the other door.
+  React.useEffect(() => {
+    if (!convParam || !conv || runParam) return;
+    const first = conv.turns[0];
+    if (first) open(first.run_id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [convParam, conv?.key, runParam]);
+
   /** node key → what happened to it in THIS run, for the canvas overlay.
    *  `skipped` covers a node the run never reached: the canvas draws the whole
    *  flow, and a branch nobody took must look different from one that ran. */
@@ -148,6 +225,12 @@ export function RunsTab({ brainKey }: { brainKey: string }) {
     }
     return out;
   }, [detail]);
+
+  /** The answer split into prose and the follow-ups it suggested, exactly as the
+   *  viewer's chat splits it. */
+  const { body: answerBody, suggestions: answerSuggestions } = React.useMemo(
+    () => extractFollowups(detail?.answer || ''), [detail?.answer],
+  );
 
   const selectedStep = React.useMemo(
     () => (detail?.steps || []).find((s) => s.key === openStep) || null,
@@ -164,131 +247,150 @@ export function RunsTab({ brainKey }: { brainKey: string }) {
        scrolls independently and the canvas gets whatever is left over. */
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex-shrink-0 border-b border-[rgb(var(--border-line))] px-4 pt-3">
-        {/* VIEWER TRAFFIC ONLY — and it has to say so.
+        {/* VIEWER TRAFFIC ONLY — and it says so.
             These figures deliberately exclude the author's own test runs: a p95
             computed over 40-second studio trials describes nobody's experience, and
-            an error rate that counts a half-built flow is not an error rate. But
-            silence made them look broken instead of scoped — with "Include test
-            runs" ticked the strip read "0 runs" above ten visible rows. */}
-        <div
-          className="mb-3 flex flex-wrap items-center gap-6 rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 px-4 py-2.5"
-          title={t('agentFlows.runs.statsExcludeTests')}
-        >
-          <Stat value={stats?.runs ?? 0} label={`Runs / ${hours}h`} />
+            an error rate that counts a half-built flow is not an error rate. The
+            LIST below follows the source filter; this strip does not, so the note is
+            not optional — without it the strip reading "0 runs" above ten visible
+            rows looks broken rather than scoped. */}
+        <StatStrip note={t(`agentFlows.runs.statsScope.${source}`)}>
+          <Stat value={stats?.runs ?? 0} label={t('agentFlows.runs.statRuns', { h: hours })} />
           {/* "Trả lời được", not "Thành công": a `partial` run DID answer the
               viewer, so it counts here — but printing 100% THÀNH CÔNG above a row
               visibly marked "Một phần" makes the number look wrong even when it is
               right. The label is what had to change. */}
           <Stat value={`${stats?.success_rate ?? 0}%`} label={t('agentFlows.runs.answerable')} />
           <Stat value={`${((stats?.p95_latency_ms ?? 0) / 1000).toFixed(1)}s`} label="P95" />
-          <Stat value={stats?.avg_tokens ?? 0} label="Token TB" />
-          <Stat value={stats?.errors ?? 0} label={t('agentFlows.runs.errors')} />
+          <Stat value={stats?.avg_tokens ?? 0} label={t('agentFlows.runs.statAvgTokens')} />
+          <Stat value={stats?.errors ?? 0} label={t('agentFlows.runs.errors')} tone={stats?.errors ? 'danger' : undefined} />
           <Stat value={stats?.links ?? 0} label={t('agentFlows.runs.linksUsing')} />
-          <span className="text-tiny text-text-quaternary">
-            {t('agentFlows.runs.statsExcludeTests')}
-          </span>
-        </div>
+        </StatStrip>
 
+        {/* ONE filter bar for this tab. The conversation list used to carry a second
+            one of its own, so the same screen had two rows of controls answering
+            overlapping questions in different styles. */}
         <div className="mb-3 flex flex-wrap items-center gap-2">
           <Input value={search} onChange={(e) => setSearch(e.target.value)}
-            placeholder={t('agentFlows.runs.searchPlaceholder')} className="w-72" />
-          <select value={status} onChange={(e) => setStatus(e.target.value)}
-            className="h-8 rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 px-2 text-caption">
-            <option value="">{t('agentFlows.runs.allStatuses')}</option>
-            {Object.keys(STATUS_LABEL_KEY).map((s) => <option key={s} value={s}>{t(STATUS_LABEL_KEY[s])}</option>)}
-          </select>
+            placeholder={t('agentFlows.runs.searchPlaceholder')} className="w-64" />
           <select value={hours} onChange={(e) => setHours(Number(e.target.value))}
             className="h-8 rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 px-2 text-caption">
             <option value={24}>{t('agentFlows.runs.range.24h')}</option>
             <option value={168}>{t('agentFlows.runs.range.7d')}</option>
             <option value={720}>{t('agentFlows.runs.range.30d')}</option>
           </select>
-          <label className="flex items-center gap-1.5 text-caption text-text-tertiary">
-            <input type="checkbox" checked={includeTests}
-              onChange={(e) => setIncludeTests(e.target.checked)} />
-            {t('agentFlows.runs.includeTests')}
-          </label>
+          <select value={status} onChange={(e) => setStatus(e.target.value)}
+            className="h-8 rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 px-2 text-caption">
+            <option value="">{t('agentFlows.conv.anyStatus')}</option>
+            {(['failed', 'blocked', 'partial', 'ok'] as const).map((v) => (
+              <option key={v} value={v}>{t('agentFlows.conv.containing', { status: v })}</option>
+            ))}
+          </select>
+          <select value={rated} onChange={(e) => setRated(e.target.value as typeof rated)}
+            className="h-8 rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 px-2 text-caption">
+            <option value="">{t('agentFlows.conv.anyRating')}</option>
+            <option value="down">{t('agentFlows.conv.withDown')}</option>
+            <option value="up">{t('agentFlows.conv.withUp')}</option>
+            <option value="any">{t('agentFlows.conv.withAny')}</option>
+          </select>
+          <SourceFilter value={source} onChange={setSource} />
+          <span className="text-tiny text-text-tertiary">
+            {t('agentFlows.conv.total', { n: convCount })}
+          </span>
         </div>
       </div>
 
-      {/* left: history · middle: the flow as it ran · right: the chosen node */}
-      <div className="flex min-h-0 flex-1">
-        {/* CARDS, NOT A TABLE.
-            A 360px column cannot carry four aligned columns: every cell truncates
-            and the question — the only thing that identifies a run to a person —
-            truncates worst. A card gives the question the full width and puts the
-            rest on one quiet line under it. */}
-        <div className="w-[360px] flex-shrink-0 space-y-1.5 overflow-auto border-r border-[rgb(var(--border-line))] p-2">
-          {rows.map((r) => {
-            const active = detail?.id === r.id;
-            return (
-              <button
-                key={r.id}
-                type="button"
-                onClick={() => open(r)}
-                className={cn(
-                  'w-full rounded-lg border px-2.5 py-2 text-left transition',
-                  active
-                    ? 'border-brand/40 bg-brand/5'
-                    : 'border-[rgb(var(--border-line))] bg-surface-1 hover:bg-surface-2',
+      {!convParam ? (
+        <ConversationsPanel
+          brainKey={brainKey}
+          hours={hours}
+          source={source}
+          search={search}
+          status={status}
+          rated={rated}
+          activeKey={convParam}
+          onOpen={openConversation}
+          onCountChange={setConvCount}
+        />
+      ) : (
+        /* left: the conversation's turns · middle: the flow as it ran · right: the
+           chosen step. The three panes were already here for a flat run list; a
+           conversation just supplies a better left column. */
+        <div className="flex min-h-0 flex-1">
+        {/* LEFT — every turn of this conversation, in order.
+            A card per turn rather than table rows: the question is the only thing
+            that identifies a turn to a person, and in a 360px column an aligned
+            table truncates it worst of all. */}
+        <div className="flex w-[360px] flex-shrink-0 flex-col border-r border-[rgb(var(--border-line))]">
+          <div className="flex flex-shrink-0 items-center gap-1.5 border-b border-[rgb(var(--border-line))] px-2 py-1.5">
+            <Button size="sm" variant="ghost" onClick={closeConversation}>
+              <ChevronLeft className="h-3.5 w-3.5" /> {t('agentFlows.conv.back')}
+            </Button>
+            {!!conv && (
+              <>
+                <span className="text-tiny text-text-tertiary">
+                  {conv.turn_count === 1
+                    ? t('agentFlows.conv.turnCountOne')
+                    : t('agentFlows.conv.turnCount', { n: conv.turn_count })}
+                </span>
+                {conv.is_test && (
+                  <Badge size="xs" variant="info">{t('agentFlows.runs.testBadge')}</Badge>
                 )}
-              >
-                <div className="flex items-start gap-2">
-                  <span className={cn('mt-1 h-1.5 w-1.5 flex-shrink-0 rounded-full',
-                    r.status === 'ok' ? 'bg-success'
-                      : r.status === 'partial' || r.status === 'throttled' ? 'bg-warning'
-                      : 'bg-danger')} />
-                  <span className="line-clamp-2 flex-1 text-caption leading-snug text-text-secondary">
-                    {r.question || t('agentFlows.common.none')}
-                  </span>
-                </div>
-                <div className="mt-1 flex items-center gap-2 pl-3.5 text-tiny text-text-quaternary">
-                  <span>{formatWhen(r.at, locale)}</span>
-                  {r.latency_ms != null && <span>{(r.latency_ms / 1000).toFixed(1)}s</span>}
-                  {r.status !== 'ok' && (
-                    <Badge variant={STATUS_TONE[r.status] || 'neutral'} size="xs">
-                      {STATUS_LABEL_KEY[r.status] ? t(STATUS_LABEL_KEY[r.status]) : r.status}
-                    </Badge>
+              </>
+            )}
+          </div>
+
+          <div className="min-h-0 flex-1 space-y-1.5 overflow-auto p-2">
+            {convLoading && !conv ? (
+              <p className="px-3 py-10 text-center text-caption text-text-tertiary">…</p>
+            ) : !conv ? (
+              <p className="px-3 py-10 text-center text-caption text-text-tertiary">
+                {t('agentFlows.conv.notFound')}
+              </p>
+            ) : conv.turns.map((turn) => {
+              const active = detail?.id === turn.run_id;
+              return (
+                <button
+                  key={turn.run_id}
+                  type="button"
+                  onClick={() => open(turn.run_id)}
+                  className={cn(
+                    'w-full rounded-lg border px-2.5 py-2 text-left transition',
+                    active
+                      ? 'border-brand/40 bg-brand/5'
+                      : 'border-[rgb(var(--border-line))] bg-surface-1 hover:bg-surface-2',
                   )}
-                  {/* A TEST AND A VIEWER'S QUESTION ARE NOT THE SAME EVENT.
-                      `is_test` has been on the row since the first version and was
-                      rendered nowhere, so with "include test runs" ticked an
-                      author's own trial sat in the history looking exactly like
-                      somebody on a public link asking a real question — and the two
-                      lead to opposite conclusions about whether the flow is used. */}
-                  {r.is_test && (
-                    <Badge variant="info" size="xs">{t('agentFlows.runs.testBadge')}</Badge>
+                >
+                  <div className="flex items-start gap-2">
+                    <span className={cn('mt-1 h-1.5 w-1.5 flex-shrink-0 rounded-full',
+                      turn.status === 'ok' ? 'bg-success'
+                        : turn.status === 'partial' ? 'bg-warning'
+                        : 'bg-danger')} />
+                    <span className="line-clamp-2 flex-1 text-caption leading-snug text-text-secondary">
+                      {turn.question || t('agentFlows.common.none')}
+                    </span>
+                    {turn.rating === 'up' && <ThumbsUp className="mt-0.5 h-3 w-3 flex-shrink-0 text-success" />}
+                    {turn.rating === 'down' && <ThumbsDown className="mt-0.5 h-3 w-3 flex-shrink-0 text-danger" />}
+                  </div>
+                  <div className="mt-1 flex flex-wrap items-center gap-2 pl-3.5 text-tiny text-text-quaternary">
+                    <span>{formatWhen(turn.at, locale)}</span>
+                    {turn.usage.ms != null && <span>{(turn.usage.ms / 1000).toFixed(1)}s</span>}
+                    {turn.status !== 'ok' && <RunStatusBadge status={turn.status} />}
+                    {turn.execution_path && <span className="truncate">· {turn.execution_path}</span>}
+                  </div>
+                  {/* WHAT THIS TURN DID THAT COULD EXPLAIN A COMPLAINT. On the row
+                      itself, because the point of reading a conversation is to find
+                      the turn where it went wrong without opening all of them. */}
+                  {!!turn.signals.length && (
+                    <p className="mt-1 pl-3.5 text-tiny leading-5 text-warning">
+                      {turn.signals[0].text}
+                      {turn.signals.length > 1 && ` (+${turn.signals.length - 1})`}
+                    </p>
                   )}
-                  {r.execution_path && (
-                    <span className="truncate">· {r.execution_path}</span>
-                  )}
-                </div>
-              </button>
-            );
-          })}
-          {!rows.length && !loading && (
-            <p className="px-3 py-10 text-center text-caption text-text-tertiary">
-              {t('agentFlows.runs.empty')}
-            </p>
-          )}
-          {/* A LINKED RUN THAT THE FILTERS HIDE.
-              Opening `?run=…` loads the run whatever the filters say — a link
-              must not depend on the recipient's filter settings. But an empty
-              list beside a fully populated run reads as a broken screen, so the
-              mismatch is named, with the one control that resolves it. */}
-          {!!detail && !rows.some((r) => r.id === detail.id) && !loading && (
-            <p className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 px-2.5 py-2 text-tiny leading-5 text-text-tertiary">
-              Đang xem run #{detail.id} mở từ đường dẫn. Nó không nằm trong danh
-              sách bên này vì bộ lọc hiện tại —{' '}
-              {!includeTests && (
-                <button type="button" onClick={() => setIncludeTests(true)}
-                  className="underline underline-offset-2 hover:text-text-secondary">
-                  bật “{t('agentFlows.runs.includeTests')}”
                 </button>
-              )}
-              {!includeTests ? ' hoặc nới ' : 'thử nới '}khoảng thời gian.
-            </p>
-          )}
+              );
+            })}
+          </div>
         </div>
 
         {/* MIDDLE — the same canvas the Design tab draws, with this run's
@@ -385,9 +487,7 @@ export function RunsTab({ brainKey }: { brainKey: string }) {
             <>
               <div className="flex items-center gap-2 border-b border-[rgb(var(--border-line))] bg-surface-2/40 px-3 py-2.5">
                 <b className="text-caption font-strong">Run #{detail.id}</b>
-                <Badge variant={STATUS_TONE[detail.status] || 'neutral'} size="xs">
-                  {STATUS_LABEL_KEY[detail.status] ? t(STATUS_LABEL_KEY[detail.status]) : detail.status}
-                </Badge>
+                <RunStatusBadge status={detail.status} />
                 {detail.is_test && (
                   <Badge variant="info" size="xs">{t('agentFlows.runs.testBadge')}</Badge>
                 )}
@@ -480,10 +580,29 @@ export function RunsTab({ brainKey }: { brainKey: string }) {
                   </>
                 )}
 
+                {/* AS THE VIEWER SAW IT. The stored text carries `[chart:N]`,
+                    `[HIGH]` and `[FOLLOWUP]` markers; printing them raw showed the
+                    operator the machinery instead of the answer, and made "was this
+                    reply any good?" harder to judge than it needs to be. Same
+                    renderer the chat uses. */}
                 <Label className="mt-3">{t('agentFlows.runs.answer')}</Label>
-                <p className="mt-1 whitespace-pre-wrap text-caption leading-relaxed text-text-secondary">
-                  {detail.answer || t('agentFlows.common.none')}
-                </p>
+                <div className="mt-1 text-caption leading-relaxed text-text-secondary">
+                  {answerBody
+                    ? <RichMarkdown text={answerBody} />
+                    : <span>{t('agentFlows.common.none')}</span>}
+                </div>
+                {!!answerSuggestions.length && (
+                  <div className="mt-1.5 flex flex-wrap gap-1.5">
+                    {answerSuggestions.map((q, i) => (
+                      <span
+                        key={i}
+                        className="rounded-full border border-[rgb(var(--border-line))] px-2 py-0.5 text-tiny text-text-tertiary"
+                      >
+                        {q}
+                      </span>
+                    ))}
+                  </div>
+                )}
 
                 <Label className="mt-3">{t('agentFlows.runs.cost')}</Label>
                 <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1 rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 px-2.5 py-2">
@@ -548,6 +667,7 @@ export function RunsTab({ brainKey }: { brainKey: string }) {
           )}
         </aside>
       </div>
+      )}
     </div>
   );
 }
@@ -952,14 +1072,9 @@ function Money({ label, value, unit }: { label: string; value: number | null; un
   );
 }
 
-function Stat({ value, label }: { value: React.ReactNode; label: string }) {
-  return (
-    <div className="flex items-baseline gap-1.5">
-      <strong className="text-body font-strong">{value}</strong>
-      <span className="text-tiny uppercase tracking-wide text-text-tertiary">{label}</span>
-    </div>
-  );
-}
+// `Stat` moved to `shared.tsx` when the Feedback tab needed the same strip. Two
+// copies would have drifted in the one place drift shows most: a row of figures
+// whose figures do not line up.
 
 function Label({ children, className }: { children: React.ReactNode; className?: string }) {
   return (
