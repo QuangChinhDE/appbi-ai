@@ -335,12 +335,18 @@ def _govern_managed_block(db: Session, dashboard_id: int, question: str = "") ->
             rag_chunks = []
 
         if rag_chunks:
-            lines.append("• Trích đoạn tài liệu nghiệp vụ liên quan nhất tới câu hỏi (Cẩm nang tri thức):")
+            # ASSEMBLED, not truncated. This used to be `content[:420]` — a
+            # character cut with no relation to the model's window, which threw
+            # away the heading path, the page, the surrounding section and the
+            # trust label, and left the model nothing to cite.
+            from app.services.dashboard_ai_bot.govern_doc_context import assemble
+
+            assembled = assemble(db, rag_chunks)
+            if assembled["text"]:
+                lines.append(assembled["text"])
             seen_docs: set[str] = set()
-            for c in rag_chunks:
-                passage = re.sub(r"\s+", " ", c.get("content") or "").strip()[:420]
-                lines.append(f"   - [{c.get('title')}] {passage}")
-                title = str(c.get("title") or "")
+            for source in assembled["sources"]:
+                title = str(source.get("title") or "")
                 if title and title not in seen_docs:
                     seen_docs.add(title)
                     refs.append({"kind": "doc", "ref": str(c.get("doc_id") or title), "name": title})

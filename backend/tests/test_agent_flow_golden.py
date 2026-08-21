@@ -1615,21 +1615,60 @@ def test_document_search_excludes_legacy_and_cross_model_vectors():
     assert params["allowed"] == [7]
 
 
+class _Result:
+    """`execute(...)` result with the three readers retrieval uses.
+
+    One place, so a new column or a new query in the retriever fails ONE fixture
+    instead of being papered over in each test that happens to touch it.
+    """
+
+    def __init__(self, rows):
+        self._rows = list(rows)
+
+    def fetchall(self):
+        return self._rows
+
+    def first(self):
+        return self._rows[0] if self._rows else None
+
+    def scalar(self):
+        row = self.first()
+        return row[0] if row else None
+
+    def __iter__(self):
+        return iter(self._rows)
+
+
 def test_document_search_generates_one_query_vector_per_model(monkeypatch):
     from app.services.dashboard_ai_bot import govern_doc_embeddings as gde
     from app.services.embedding_service import EmbeddingService
 
-    class Rows:
-        def fetchall(self):
-            return [
-                (10, 1, "Doc A", 0, "alpha", "authored", "model-a", "Doc A", None, "prose", 4, 0),
-                (20, 2, "Doc B", 0, "beta", "authored", "model-b", "Doc B", None, "prose", 4, 0),
-            ]
+    # id, doc_id, title, chunk_index, content, trust, model, heading_path, page,
+    # block_kind, token_count, section_index, block_from, block_to, source_version
+    HYDRATED = [
+        (10, 1, "Doc A", 0, "alpha", "authored", "model-a", "Doc A", None,
+         "paragraph", 4, 0, 3, 3, 1),
+        (20, 2, "Doc B", 0, "beta", "authored", "model-b", "Doc B", None,
+         "paragraph", 4, 0, 5, 5, 1),
+    ]
 
     class Db:
+        """Answers the hydration query and nothing else.
+
+        It used to assert `WHERE c.id = ANY(:ids)` on EVERY statement and return
+        the same rows to all of them. Both halves were wrong once retrieval grew:
+        the section-context and metric-SSOT queries are legitimate, and handing
+        them fifteen-column chunk rows makes a passing test measure a shape
+        production never sees. So it answers the query it is pinning and returns
+        nothing to the others, which is a truthful empty result.
+        """
+
+        def __init__(self):
+            self.statements = []
+
         def execute(self, stmt, params=None):
-            assert "WHERE c.id = ANY(:ids)" in str(stmt)
-            return Rows()
+            self.statements.append(str(stmt))
+            return _Result(HYDRATED if "WHERE c.id = ANY(:ids)" in str(stmt) else [])
 
     generated = []
     monkeypatch.setattr(
@@ -1649,10 +1688,14 @@ def test_document_search_generates_one_query_vector_per_model(monkeypatch):
         ],
     )
 
+    db = Db()
     rows = gde._search_scoped_doc_chunks(
-        Db(), "revenue policy", k=5, dashboard_id=None,
+        db, "revenue policy", k=5, dashboard_id=None,
         doc_ids={1, 2}, published_only=True,
     )
+    # The hydration query still fetches by chunk id — the property the old
+    # blanket assert was trying to pin.
+    assert any("WHERE c.id = ANY(:ids)" in sql for sql in db.statements)
     assert generated == [
         ("revenue policy", "model-a"),
         ("revenue policy", "model-b"),
@@ -1664,13 +1707,12 @@ def test_document_search_keeps_keyword_hits_when_a_model_fails(monkeypatch):
     from app.services.dashboard_ai_bot import govern_doc_embeddings as gde
     from app.services.embedding_service import EmbeddingService
 
-    class Rows:
-        def fetchall(self):
-            return [(20, 2, "Doc B", 0, "exact Q2", "authored", "model-b", "Doc B", None, "prose", 4, 0)]
+    HYDRATED = [(20, 2, "Doc B", 0, "exact Q2", "authored", "model-b", "Doc B",
+                 None, "paragraph", 4, 0, 5, 5, 1)]
 
     class Db:
         def execute(self, stmt, params=None):
-            return Rows()
+            return _Result(HYDRATED if "WHERE c.id = ANY(:ids)" in str(stmt) else [])
 
     monkeypatch.setattr(gde, "_model_doc_groups", lambda *_args: {"model-b": [2]})
     monkeypatch.setattr(gde, "_keyword_ranked_ids", lambda *_args: [20])
@@ -2719,14 +2761,14 @@ def test_one_definition_of_output_a_viewer_can_be_shown():
         {"key": "sv", "type": "set_var", "var": "x", "value": "none"},
         {"key": "cls", "type": "agent", "prompt": "p", "output_format": "choice",
          "choices": ["tra_so", "du_bao"]},
-        {"key": "prose", "type": "agent", "prompt": "p"},
+        {"key": "paragraph", "type": "agent", "prompt": "p"},
         {"key": "blocks", "type": "agent", "prompt": "p", "output_format": "json"},
         {"key": "ans", "type": "agent", "prompt": "p"},
     ], answer_node="ans")
 
     assert not flow.writes_prose("sv"), "một biến không phải là một câu"
     assert not flow.writes_prose("cls"), "phân loại chỉ trả về một token, không phải câu"
-    assert flow.writes_prose("prose")
+    assert flow.writes_prose("paragraph")
     # `json` steps emit answer blocks — prose with structure, and what the viewer
     # actually sees when they succeed.
     assert flow.writes_prose("blocks")

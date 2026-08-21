@@ -34,75 +34,6 @@ def _markdown_table(rows: list[list[str]]) -> str:
     return "\n".join(out)
 
 
-def _pdf_pages_with_tables(data: bytes) -> tuple[list[tuple[int, str]], set[int]]:
-    """Page markdown with tables preserved as tables.
-
-    pypdf returns a flat stream of words, so a financial table collapses into
-    "Doanh thu / 100 ty / 92 ty" with no way to tell which number is the target
-    and which is actual — the exact mistake that matters most in a BI product.
-    pdfplumber knows where the table cells are, so we render those as markdown
-    and take the remaining prose from outside the table areas.
-    """
-    import pdfplumber
-
-    pages: list[tuple[int, str]] = []
-    empty_pages: set[int] = set()
-    with pdfplumber.open(io.BytesIO(data)) as pdf:
-        for index, page in enumerate(pdf.pages, start=1):
-            parts: list[str] = []
-            try:
-                found = page.find_tables()
-            except Exception:  # noqa: BLE001
-                found = []
-
-            # Prose = words that do NOT sit inside a detected table, so table
-            # cells are not duplicated once as text and once as a table.
-            try:
-                if found:
-                    boxes = [t.bbox for t in found]
-
-                    def outside(obj):
-                        cx = (obj["x0"] + obj["x1"]) / 2
-                        cy = (obj["top"] + obj["bottom"]) / 2
-                        return not any(b[0] <= cx <= b[2] and b[1] <= cy <= b[3] for b in boxes)
-
-                    prose = (page.filter(outside).extract_text() or "").strip()
-                else:
-                    prose = (page.extract_text() or "").strip()
-            except Exception:  # noqa: BLE001
-                prose = (page.extract_text() or "").strip()
-            if prose:
-                parts.append(prose)
-
-            for table in found:
-                try:
-                    rows = table.extract()
-                except Exception:  # noqa: BLE001
-                    continue
-                md = _markdown_table([[_md_cell(c) for c in (row or [])] for row in (rows or [])])
-                if md:
-                    parts.append(md)
-
-            joined = "\n\n".join(parts).strip()
-            if len(joined) >= _OCR_TEXT_FLOOR:
-                pages.append((index, f"## Page {index}\n\n{joined}"))
-            else:
-                # Kept as a candidate for OCR rather than dropped. Silently
-                # skipping it is how a scanned document became an empty index.
-                empty_pages.add(index)
-    return pages, empty_pages
-
-
-#: A page yielding fewer than this many characters of extractable text is treated
-#: as an IMAGE of a page rather than a page of text. Scanned pages are not empty —
-#: they usually carry a few stray glyphs from a letterhead or a page number — so a
-#: strict zero would miss most of them.
-_OCR_TEXT_FLOOR = 24
-
-#: Render scale. Tesseract wants roughly 300 DPI; PDF user space is 72 DPI.
-_OCR_SCALE = 300 / 72
-
-
 def ocr_available() -> bool:
     """Whether local OCR can run. Reported rather than assumed, because a missing
     tesseract binary makes scanned documents silently index as empty."""
@@ -180,6 +111,120 @@ def _ocr_pdf_pages(data: bytes, needed: set[int]) -> dict[int, str]:
     return out
 
 
+#: A page yielding fewer than this many characters of extractable text is treated
+#: as an IMAGE of a page rather than a page of text. Scanned pages are not empty —
+#: they usually carry a few stray glyphs from a letterhead or a page number — so a
+#: strict zero would miss most of them.
+_OCR_TEXT_FLOOR = 24
+
+#: Render scale. Tesseract wants roughly 300 DPI; PDF user space is 72 DPI.
+_OCR_SCALE = 300 / 72
+
+
+def _pdf_structured(data: bytes) -> tuple[list[dict], set[int]]:
+    """A PDF as BLOCKS — text, tables and figures, each with page and geometry.
+
+    Replaces the markdown-first path. Flattening to text first destroyed the
+    column layout, the reading order, the figure regions and the coordinates a
+    citation could point at, none of which can be recovered afterwards. The
+    markdown is still produced (see `blocks_to_markdown`) because the editor and
+    the version snapshots are markdown, but it is now derived FROM the blocks
+    rather than being the only thing that survives.
+
+    Returns `(blocks, pages_with_no_text)`; the second is what OCR is asked for.
+    """
+    import pdfplumber
+
+    from app.services.govern_doc_sources.pdf_layout import page_blocks
+
+    blocks: list[dict] = []
+    empty_pages: set[int] = set()
+    with pdfplumber.open(io.BytesIO(data)) as pdf:
+        for index, page in enumerate(pdf.pages, start=1):
+            try:
+                found = page.find_tables()
+            except Exception:  # noqa: BLE001
+                found = []
+            table_bboxes = [t.bbox for t in found]
+
+            page_items: list[dict] = []
+            for table in found:
+                try:
+                    rows = table.extract() or []
+                except Exception:  # noqa: BLE001
+                    continue
+                cells = [[_md_cell(c) for c in (row or [])] for row in rows]
+                markdown = _markdown_table(cells)
+                if not markdown:
+                    continue
+                header = "\n".join(markdown.split("\n")[:2])
+                page_items.append({
+                    "kind": "table", "text": markdown, "page": index,
+                    "bbox": list(table.bbox), "table_header": header,
+                    "meta": {"rows": len(cells)},
+                })
+
+            for block in page_blocks(page, index, table_bboxes):
+                page_items.append({
+                    "kind": block.kind, "text": block.text, "page": index,
+                    "bbox": list(block.bbox), "table_header": block.table_header,
+                    "meta": {**block.meta, "column": block.column},
+                })
+
+            prose = "".join(
+                item["text"] for item in page_items if item["kind"] != "figure"
+            ).strip()
+            if len(prose) < _OCR_TEXT_FLOOR:
+                # An image of a page. Kept as an OCR candidate rather than dropped:
+                # silently skipping it is how a scanned document became an empty
+                # index. Figures found on it are still recorded.
+                empty_pages.add(index)
+                page_items = [i for i in page_items if i["kind"] == "figure"]
+            blocks.extend(page_items)
+    return blocks, empty_pages
+
+
+def blocks_to_markdown(blocks: list[dict]) -> str:
+    """Blocks back to markdown, for the editor and the version snapshot.
+
+    `## Page N` headings are emitted because the rest of the pipeline reads page
+    numbers from them for non-PDF sources, and because a person opening the editor
+    expects to see where the pages were.
+    """
+    parts: list[str] = []
+    current_page: int | None = None
+    for block in blocks:
+        page = block.get("page")
+        if page and page != current_page:
+            parts.append("## Page %d" % page)
+            current_page = page
+        text = (block.get("text") or "").strip()
+        if not text:
+            continue
+        if block.get("kind") == "figure":
+            parts.append("> [hình] " + text)
+        else:
+            parts.append(text)
+    return "\n\n".join(parts).strip()
+
+
+def extract_pdf_blocks(data: bytes) -> list[dict]:
+    """The structured extraction, with OCR filled in for scanned pages."""
+    blocks, empty_pages = _pdf_structured(data)
+    for page, text in _ocr_pdf_pages(data, empty_pages).items():
+        blocks.append({
+            "kind": "paragraph", "text": text, "page": page,
+            "bbox": None, "table_header": None,
+            "meta": {"ocr": True, "column": 0},
+        })
+    blocks.sort(key=lambda b: (
+        b.get("page") or 0,
+        (b.get("meta") or {}).get("column", 0),
+        (b.get("bbox") or [0, 0, 0, 0])[1],
+    ))
+    return blocks
+
+
 def _extract_pdf(data: bytes) -> str:
     """Prefer layout-aware extraction; fall back to a plain text read.
 
@@ -188,18 +233,12 @@ def _extract_pdf(data: bytes) -> str:
     upload that fails outright.
     """
     try:
-        pages, empty_pages = _pdf_pages_with_tables(data)
-        # A page with no extractable text is an IMAGE of a page. That is the whole
-        # scanned-PDF case, and before OCR it indexed as nothing at all — the
-        # document existed, looked fine on screen, and the AI could not read a
-        # word of it.
-        recovered = _ocr_pdf_pages(data, empty_pages)
-        for index, text in recovered.items():
-            pages.append((index, f"## Page {index}\n\n{text}"))
-        if pages:
-            return "\n\n".join(text for _index, text in sorted(pages))
+        blocks = extract_pdf_blocks(data)
+        if blocks:
+            return blocks_to_markdown(blocks)
     except Exception:  # noqa: BLE001
-        logger.warning("file_text_extractor: pdfplumber failed, falling back to pypdf", exc_info=True)
+        logger.warning("file_text_extractor: structured extraction failed, "
+                       "falling back to pypdf", exc_info=True)
 
     from pypdf import PdfReader
 

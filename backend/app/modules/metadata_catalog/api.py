@@ -959,6 +959,131 @@ def govern_doc_vectors(doc_id: int, db: Session = Depends(get_db), user: User = 
     }
 
 
+@router.get("/govern/knowledge/{doc_id}/structure")
+def govern_doc_structure(doc_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
+    """The document as the extractor SEES it: outline, block kinds, figure state.
+
+    Everything below this endpoint existed and was invisible. A document is parsed
+    into a block tree, figures are resolved to captions, pages are recorded, and an
+    author could see none of it — so "why is this figure not searchable" and "did
+    the extractor find my headings" were questions with no answer short of reading
+    the database.
+
+    Three things it deliberately reports, because each one silently produces a
+    worse index and nothing else says so:
+
+      * `figures.no_text` — pictures with no caption. They stay citable but are NOT
+        embedded, because a vector whose content is a URL is a false claim about
+        what can be found. Eleven of this corpus's eighty-two chunks used to be
+        exactly that.
+      * `figures.reason` — WHY they have no description. "Not allowed" (the
+        document's processing policy), "no provider configured", and "the model
+        read the image and could not tell" need three different fixes, and a single
+        zero cannot distinguish them.
+      * `unindexed` — blocks the chunker skipped, with their kind. A section whose
+        prose never became a chunk is unanswerable, and that is invisible from a
+        chunk count alone.
+    """
+    d = _run(lambda: GovernanceService.require_doc_access(db, doc_id, user, "view"))
+    from sqlalchemy import text as _t
+
+    from app.services.dashboard_ai_bot.govern_doc_ast import ast_blocks, outline
+    from app.services.dashboard_ai_bot.govern_doc_embeddings import (
+        egress_allowed,
+        processing_policy,
+    )
+    from app.services.govern_doc_sources.figure_vision import vision_available
+
+    blocks = ast_blocks(db, d)
+    kinds: dict[str, int] = {}
+    for block in blocks:
+        kind = str(block.get("kind") or "unknown")
+        kinds[kind] = kinds.get(kind, 0) + 1
+
+    figures = [b for b in blocks if b.get("kind") == "figure"]
+    described = [b for b in figures if str(b.get("text") or "").strip()]
+    # Why the rest have no text, in the order a reader would ask.
+    if not figures:
+        reason = None
+    elif len(described) == len(figures):
+        reason = "all_described"
+    elif not egress_allowed(d, "vision"):
+        reason = "policy_%s" % processing_policy(d)
+    elif not vision_available():
+        reason = "no_vision_provider"
+    else:
+        reason = "model_could_not_read"
+
+    indexed = {
+        int(r[0])
+        for r in db.execute(
+            _t(
+                """
+                SELECT DISTINCT generate_series(block_from, block_to)
+                FROM govern_doc_chunk
+                WHERE doc_id = :d AND block_from IS NOT NULL AND block_to IS NOT NULL
+                """
+            ),
+            {"d": doc_id},
+        ).fetchall()
+    }
+    # A chunk covering blocks 10..20 marks all eleven as indexed, INCLUDING a
+    # caption-less figure at 15 that contributed no text to it. So span coverage
+    # alone reported doc 43's eleven empty figures as indexed and flagged only the
+    # one that happened to fall outside a span — a count that looked reassuring and
+    # meant nothing. Content is the test: a block with no text cannot be indexed
+    # and is not a defect, and a block WITH text that no chunk carries is.
+    not_indexable = [b for b in blocks
+                     if b.get("kind") != "section" and not str(b.get("text") or "").strip()]
+    unindexed = [
+        {"ordinal": b.get("ordinal"), "kind": b.get("kind"), "page": b.get("page"),
+         "heading_path": b.get("heading_path"),
+         "preview": (str(b.get("text") or "")[:120] or None)}
+        for b in blocks
+        if b.get("kind") != "section"
+        and str(b.get("text") or "").strip()
+        and b.get("ordinal") not in indexed
+    ]
+
+    ast_hash = getattr(d, "ast_hash", None) or ""
+    return {
+        # The column is called `ast_version` and holds the SOURCE version the tree
+        # describes — which is the useful fact ("this structure is of published v5")
+        # but not what the name suggests. Named for what it is on the way out, and
+        # the tree FORMAT read off the fingerprint where it actually lives.
+        "source_version": getattr(d, "ast_version", None),
+        "ast_format": (ast_hash.split(":", 1)[0] or None) if ast_hash else None,
+        "ast_hash": ast_hash[:16] or None,
+        "source_type": getattr(d, "source_type", None),
+        "blocks": len(blocks),
+        "kinds": kinds,
+        "pages": sorted({int(b["page"]) for b in blocks if b.get("page")}),
+        "outline": outline(db, d),
+        "figures": {
+            "total": len(figures),
+            "described": len(described),
+            "no_text": len(figures) - len(described),
+            "reason": reason,
+            "policy": processing_policy(d),
+            "items": [
+                {"ordinal": b.get("ordinal"), "page": b.get("page"),
+                 "caption": str(b.get("text") or "") or None,
+                 "source": ((b.get("meta") or {}).get("caption_from")),
+                 "src": ((b.get("meta") or {}).get("src"))}
+                for b in figures
+            ],
+        },
+        # Not a warning by itself: a heading-only block or an empty cell is
+        # correctly skipped. It becomes one when a paragraph is in this list.
+        "unindexed": unindexed[:40],
+        "unindexed_total": len(unindexed),
+        # Blocks that CANNOT be indexed because they carry no text. Expected for a
+        # caption-less figure, reported separately so it never reads as a defect
+        # and never hides one.
+        "not_indexable": len(not_indexable),
+    }
+
+
 @router.post("/govern/knowledge/{doc_id}/vectors/query")
 def govern_doc_vectors_query(doc_id: int, body: VectorQueryReq, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
     """Run a similarity search against THIS document's vectors — the Pinecone

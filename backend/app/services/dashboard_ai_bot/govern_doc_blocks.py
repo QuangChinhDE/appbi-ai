@@ -52,6 +52,15 @@ import re
 from dataclasses import dataclass, field
 
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.*?)\s*#*$")
+
+#: Inline emphasis, stripped from a HEADING only.
+#:
+#: A Google Docs export writes every heading as bold text, so the parser kept
+#: `**Tích hợp với bên thứ ba version 2**` as the section title — and a heading
+#: title is not decoration, it is the heading PATH, which is what a citation
+#: reads. Every citation for that document carried literal asterisks. Body text
+#: keeps its emphasis: that is the author's formatting and the model can read it.
+_HEADING_MARKUP_RE = re.compile(r"(\*\*|__|\*|_|`)")
 _PAGE_HEADING_RE = re.compile(r"^#{1,6}\s*page\s+(\d+)\s*$", re.I)
 _TABLE_ROW_RE = re.compile(r"^\s*\|.*\|\s*$")
 _TABLE_DIVIDER_RE = re.compile(r"^\s*\|[\s:|-]+\|\s*$")
@@ -84,10 +93,12 @@ def estimate_tokens(text: str) -> int:
 class Block:
     """One structural unit of a document."""
 
-    kind: str                    # prose | table | list | figure | heading
+    kind: str            # section | prose | table | list | figure
     text: str
     heading_path: tuple[str, ...] = ()
     page: int | None = None
+    #: Heading depth for a `section`; 0 for everything else.
+    level: int = 0
 
     @property
     def tokens(self) -> int:
@@ -133,7 +144,7 @@ def parse_blocks(body: str | None) -> list[Block]:
     stack: list[tuple[int, str]] = []          # (heading level, title)
     page: int | None = None
     buffer: list[str] = []
-    buffer_kind = "prose"
+    buffer_kind = "paragraph"
 
     def path() -> tuple[str, ...]:
         return tuple(title for _level, title in stack)
@@ -144,7 +155,7 @@ def parse_blocks(body: str | None) -> list[Block]:
         if text:
             blocks.append(Block(kind=buffer_kind, text=text, heading_path=path(), page=page))
         buffer = []
-        buffer_kind = "prose"
+        buffer_kind = "paragraph"
 
     index = 0
     while index < len(lines):
@@ -161,11 +172,18 @@ def parse_blocks(body: str | None) -> list[Block]:
         if heading:
             flush()
             level = len(heading.group(1))
-            title = heading.group(2).strip()
+            title = _HEADING_MARKUP_RE.sub("", heading.group(2)).strip()
             while stack and stack[-1][0] >= level:
                 stack.pop()
             if title:
                 stack.append((level, title))
+                # A heading is emitted as a SECTION block, not merely absorbed
+                # into the heading path. The PDF front-end emits sections (it has
+                # to — it detects them from type size), and when this one did not,
+                # the projection saw zero section boundaries and merged every
+                # section of every markdown document into one chunk.
+                blocks.append(Block(kind="section", text=title,
+                                    heading_path=path(), page=page, level=level))
             index += 1
             continue
 
@@ -187,7 +205,7 @@ def parse_blocks(body: str | None) -> list[Block]:
 
         kind = ("figure" if _IMAGE_RE.search(line)
                 else "list" if _LIST_RE.match(line)
-                else "prose")
+                else "paragraph")
         if buffer and kind != buffer_kind:
             flush()
         buffer_kind = kind
@@ -264,56 +282,6 @@ def _split_prose(block: Block, max_tokens: int) -> list[Block]:
             final.append(Block(kind=piece.kind, text=piece.text[start:start + hard],
                                heading_path=piece.heading_path, page=piece.page))
     return final
-
-
-def build_sections(body: str | None, *, child_tokens: int) -> list[Section]:
-    """Group blocks under their heading, then size children within each section.
-
-    Children never straddle a heading: a passage that spans two sections belongs
-    to neither, and its citation would name the wrong one.
-    """
-    sections: list[Section] = []
-    for block in parse_blocks(body):
-        key = (block.heading_path, block.page)
-        if not sections or (sections[-1].heading_path, sections[-1].page) != key:
-            sections.append(Section(heading_path=block.heading_path, page=block.page))
-        pieces = (_split_table(block, child_tokens) if block.kind == "table"
-                  else _split_prose(block, child_tokens))
-        sections[-1].blocks.extend(pieces)
-    return sections
-
-
-def merge_children(section: Section, *, child_tokens: int) -> list[Block]:
-    """Pack a section's blocks into children of about `child_tokens`.
-
-    A table is never merged with anything: mixing a table into a prose chunk
-    makes both harder to read and destroys the "this passage is a table" signal
-    the reader needs to interpret the numbers.
-    """
-    out: list[Block] = []
-    current: list[Block] = []
-
-    def flush() -> None:
-        nonlocal current
-        if current:
-            out.append(Block(
-                kind=current[0].kind if len(current) == 1 else "prose",
-                text="\n\n".join(b.text for b in current),
-                heading_path=section.heading_path,
-                page=section.page,
-            ))
-            current = []
-
-    for block in section.blocks:
-        if block.kind == "table":
-            flush()
-            out.append(block)
-            continue
-        if current and estimate_tokens("\n\n".join(b.text for b in current + [block])) > child_tokens:
-            flush()
-        current.append(block)
-    flush()
-    return out
 
 
 def heading_path_text(path: tuple[str, ...] | list[str] | None) -> str:

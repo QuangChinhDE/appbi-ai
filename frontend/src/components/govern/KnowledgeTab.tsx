@@ -19,7 +19,7 @@ import {
   Tag as TagIcon, History, Plus, Pencil, Trash2, Save, X, Pin, ChevronLeft, ChevronRight, ChevronDown,
   ExternalLink, AlertTriangle, Check, Loader2, Library, Search, Upload, Sparkles, RefreshCw,
   Bold, Italic, Strikethrough, Heading1, Heading2, Heading3, List, ListOrdered, Quote, Code, Link2, Table, Eye,
-  GitBranch, ShieldCheck, Clock3, BookCheck, MessageCircleQuestion, Share2, Info, Network,
+  GitBranch, ShieldCheck, Clock3, BookCheck, MessageCircleQuestion, Share2, Info, Network, ListTree,
 } from 'lucide-react';
 
 import { PageListLayout } from '@/components/common/PageListLayout';
@@ -42,10 +42,11 @@ import {
   getDocSource, putDocSource, uploadDocSourceFile, syncDocSource, listGoogleDocsSources,
   getEmbeddingConfig, getEmbeddingProfiles, previewChunks, reembedDoc, resetEmbeddingModel,
   getDocHistory, getDocUsage, getDocVectors, queryDocVectors, getDocSnapshot, isSourceOwned,
+  getDocStructure,
   type DocSourceKind, type DocSnapshot, type GoogleDocsSource,
   type KnowledgeDoc, type KnowledgeSpace, type KnowledgeDocWrite, type KnowledgeAsset, type ManagedMetric,
   type KnowledgeDocVersion, type DatasetLite, type GovernSearchResult, type RelatedDoc,
-  type DocSourceInfo, type DocSyncSchedule, type EmbeddingConfig, type EmbeddingProfile, type ChunkPreviewResult, type DocHistory, type DocUsage, type DocVector, type VectorMatch,
+  type DocSourceInfo, type DocSyncSchedule, type EmbeddingConfig, type EmbeddingProfile, type ChunkPreviewResult, type DocHistory, type DocUsage, type DocVector, type VectorMatch, type DocStructure,
 } from '@/lib/catalog';
 import { AppModalShell } from '@/components/common/AppModalShell';
 import { OwnerBadge } from '@/components/common/OwnerBadge';
@@ -779,7 +780,7 @@ function DetailScreen({ docId, nav, onBack, onEdit, onDeleted, onOpenMetric, onL
   const setPanel = (p: DetailPanel) => nav.set({ dp: p || undefined });
   const [modal, setModal] = useState<DetailModal>(null);
   const [moreOpen, setMoreOpen] = useState(false);
-  const [embedTab, setEmbedTab] = useState<'config' | 'vectors'>('config');
+  const [embedTab, setEmbedTab] = useState<'config' | 'structure' | 'vectors'>('config');
   const [usage, setUsage] = useState<DocUsage | null>(null);
   const [syncing, setSyncing] = useState(false);
 
@@ -1003,14 +1004,17 @@ function DetailScreen({ docId, nav, onBack, onEdit, onDeleted, onOpenMetric, onL
       )}
       {modal === 'embedding' && (
         <AppModalShell title={t('govern.menu.aiIndexSettings')} onClose={() => setModal(null)} maxWidthClass="max-w-5xl">
-          <Tabs<'config' | 'vectors'> size="sm" value={embedTab} onChange={(v) => setEmbedTab(v)} items={[
+          <Tabs<'config' | 'structure' | 'vectors'> size="sm" value={embedTab} onChange={(v) => setEmbedTab(v)} items={[
             { key: 'config', label: t('govern.aiHealth.settings'), icon: <Boxes className="h-4 w-4" /> },
+            { key: 'structure', label: t('govern.structure.title'), icon: <ListTree className="h-4 w-4" /> },
             { key: 'vectors', label: t('govern.vectors.title'), icon: <Database className="h-4 w-4" /> },
           ]} />
           <div className="mt-3">
             {embedTab === 'config'
               ? <EmbeddingTab doc={doc} onRefresh={() => setRefresh((v) => v + 1)} />
-              : <VectorBrowser doc={doc} />}
+              : embedTab === 'structure'
+                ? <StructurePanel doc={doc} />
+                : <VectorBrowser doc={doc} />}
           </div>
         </AppModalShell>
       )}
@@ -2268,6 +2272,145 @@ function SourceTab({ doc, onRefresh }: { doc: KnowledgeDoc; onRefresh: () => voi
 // Mirrors a Pinecone console: one row per vector (id, the text it encodes,
 // model, dimensions, a peek at raw values) plus a query box to see which
 // chunk the AI would actually retrieve, and how strongly it matched.
+/** The document as the EXTRACTOR sees it.
+ *
+ *  A document is parsed into a block tree, figures are resolved to captions and
+ *  page numbers are recorded — and none of it had a surface. So "did the extractor
+ *  find my headings" and "why is this image not searchable" were questions an
+ *  author could not answer, while a wrong answer to either silently produces a
+ *  worse index.
+ *
+ *  Leads with the two numbers that are actually actionable: content that did NOT
+ *  make the index, and figures with no caption together with the REASON. */
+function StructurePanel({ doc }: { doc: KnowledgeDoc }) {
+  const { t } = useI18n();
+  const [loading, setLoading] = useState(true);
+  const [data, setData] = useState<DocStructure | null>(null);
+
+  useEffect(() => {
+    setLoading(true);
+    getDocStructure(doc.id)
+      .then(setData)
+      .catch((e) => toast.error(errDetail(e) || t('govern.structure.loadFailed')))
+      .finally(() => setLoading(false));
+  }, [doc.id, t]);
+
+  if (loading) return <div className="flex justify-center py-14"><Loader2 className="h-5 w-5 animate-spin text-brand" /></div>;
+  if (!data || !data.blocks) {
+    return (
+      <div className="rounded-xl border border-dashed border-[rgb(var(--border-strong))] bg-surface-1 px-4 py-10 text-center">
+        <Boxes className="mx-auto mb-2 h-8 w-8 text-text-quaternary" />
+        <p className="text-caption text-text-tertiary">{t('govern.structure.empty')}</p>
+      </div>
+    );
+  }
+
+  const KIND_LABEL: Record<string, string> = {
+    section: t('govern.structure.kind.section'),
+    paragraph: t('govern.structure.kind.paragraph'),
+    list: t('govern.structure.kind.list'),
+    table: t('govern.structure.kind.table'),
+    figure: t('govern.structure.kind.figure'),
+  };
+  const figures = data.figures;
+  // Said in words, because the causes need different fixes and a zero
+  // distinguishes none of them.
+  const figureReason = !figures.total || figures.reason === 'all_described'
+    ? null
+    : figures.reason === 'no_vision_provider'
+      ? t('govern.structure.fig.noProvider')
+      : figures.reason === 'model_could_not_read'
+        ? t('govern.structure.fig.unreadable')
+        : t('govern.structure.fig.policy', { policy: figures.policy });
+
+  return (
+    <div className="space-y-3">
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+        {[
+          { label: t('govern.structure.blocks'), value: data.blocks },
+          { label: t('govern.structure.pages'), value: data.pages.length || '—' },
+          { label: t('govern.structure.format'), value: data.ast_format || '—' },
+          // A draft has never been published, so its structure describes version
+          // zero — and "Structure of v 0" is a number pretending to be a fact.
+          { label: t('govern.structure.sourceVersion'),
+            value: data.source_version ? `v${data.source_version}` : t('govern.structure.draft') },
+        ].map((c) => (
+          <div key={c.label} className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 px-3 py-2">
+            <p className="text-micro uppercase tracking-wide text-text-quaternary">{c.label}</p>
+            <p className="mt-0.5 truncate text-body font-medium text-text-primary">{c.value}</p>
+          </div>
+        ))}
+      </div>
+
+      {data.unindexed_total > 0 && (
+        <div className="rounded-lg border border-warning/40 bg-warning/5 px-3 py-2">
+          <p className="text-caption font-medium text-text-primary">
+            {t('govern.structure.unindexed', { n: data.unindexed_total })}
+          </p>
+          <ul className="mt-1 space-y-0.5">
+            {data.unindexed.slice(0, 6).map((b) => (
+              <li key={b.ordinal} className="truncate text-micro text-text-tertiary">
+                {KIND_LABEL[b.kind] || b.kind}
+                {b.page ? ` · ${t('govern.structure.page', { n: b.page })}` : ''}
+                {b.preview ? ` — ${b.preview}` : ''}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      <div className="flex flex-wrap gap-1.5">
+        {Object.entries(data.kinds).map(([kind, n]) => (
+          <span key={kind} className="rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-0.5 text-micro text-text-secondary">
+            {KIND_LABEL[kind] || kind} <span className="font-medium text-text-primary">{n}</span>
+          </span>
+        ))}
+        {data.not_indexable > 0 && (
+          <span className="rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-0.5 text-micro text-text-tertiary">
+            {t('govern.structure.notIndexable', { n: data.not_indexable })}
+          </span>
+        )}
+      </div>
+
+      {figures.total > 0 && (
+        <div className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 px-3 py-2">
+          <p className="text-caption font-medium text-text-primary">
+            {t('govern.structure.fig.title', { described: figures.described, total: figures.total })}
+          </p>
+          {figureReason && <p className="mt-0.5 text-micro text-text-tertiary">{figureReason}</p>}
+          <ul className="mt-1.5 space-y-0.5">
+            {figures.items.slice(0, 8).map((f) => (
+              <li key={f.ordinal} className="flex items-start gap-1.5 text-micro">
+                <span className="shrink-0 text-text-quaternary">
+                  {f.page ? t('govern.structure.page', { n: f.page }) : `#${f.ordinal}`}
+                </span>
+                <span className={f.caption ? 'text-text-secondary' : 'italic text-text-quaternary'}>
+                  {f.caption || t('govern.structure.fig.noCaption')}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {data.outline.length > 0 && (
+        <div className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 px-3 py-2">
+          <p className="mb-1 text-micro uppercase tracking-wide text-text-quaternary">{t('govern.structure.outline')}</p>
+          <ul className="space-y-0.5">
+            {data.outline.map((h) => (
+              <li key={h.ordinal} className="truncate text-caption text-text-secondary"
+                  style={{ paddingLeft: `${Math.max(0, h.level - 1) * 12}px` }}>
+                {h.title}
+                {h.page ? <span className="ml-1.5 text-micro text-text-quaternary">{t('govern.structure.page', { n: h.page })}</span> : null}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function VectorBrowser({ doc }: { doc: KnowledgeDoc }) {
   const { t, language } = useI18n();
   const [loading, setLoading] = useState(true);

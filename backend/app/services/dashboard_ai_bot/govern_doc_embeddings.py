@@ -46,7 +46,7 @@ _MAX_CHUNKS = 500
 #: chunk profile — none of which had changed — while the chunker was about to
 #: split every document a completely different way. `embed_doc` reported
 #: "unchanged" and was right to. A chunker version belongs in the cache key.
-_INDEX_HASH_VERSION = "v5"
+_INDEX_HASH_VERSION = "v6"
 
 
 def _body_hash(cache_key: str, body: str) -> str:
@@ -77,23 +77,47 @@ def _clamp_chunk_params(size: int | None, overlap: int | None) -> tuple[int, int
     return size, overlap
 
 
-def build_chunk_rows(doc_title: str | None, body: str | None, *,
-                     child_tokens: int) -> tuple[list[dict], dict]:
-    """The document as indexable chunks, each knowing which section it came from.
+def _split_oversized(block: dict, child_tokens: int) -> list[dict]:
+    """One block into as many pieces as the budget needs, keeping its identity.
 
-    Returns `(rows, info)`. There is one row per chunk and NO row per section: a
-    section has no text of its own, only its chunks concatenated, so storing it
-    separately stored the same prose twice. `section_index` is the key that groups
-    them, and `_section_context` assembles the section at read time.
-
-    `embed_text` is what goes to the provider — the heading path and title
-    prepended to the body. `content` is the body alone, because that is what gets
-    quoted back to a reader. The heading is deliberately NOT duplicated into the
-    body: it is in `heading_path`, and the reader that shows a passage shows its
-    heading path with it.
+    Every piece keeps the SAME `ordinal`, so a citation still resolves to the one
+    block the text came from — splitting for size must not invent structure the
+    document does not have.
     """
     from app.services.dashboard_ai_bot.govern_doc_blocks import (
-        build_sections, context_prefix, heading_path_text, merge_children,
+        Block, _split_prose, _split_table, estimate_tokens,
+    )
+
+    if estimate_tokens(block.get("text") or "") <= child_tokens:
+        return [block]
+    stub = Block(kind=block["kind"], text=block.get("text") or "")
+    pieces = (_split_table(stub, child_tokens) if block["kind"] == "table"
+              else _split_prose(stub, child_tokens))
+    return [{**block, "text": piece.text} for piece in pieces] or [block]
+
+
+def build_chunk_rows(doc_title: str | None, blocks: list[dict], *,
+                     child_tokens: int) -> tuple[list[dict], dict]:
+    """Project the AST into indexable chunks.
+
+    Takes BLOCKS, not markdown. Chunking is now a projection of a structure that
+    was already extracted, so changing how chunks are sized does not re-run
+    extraction — which for a scanned document means not re-running OCR.
+
+    Each chunk records the block ordinals it covers (`block_from`/`block_to`).
+    That is what makes a citation survive a re-chunk: block ordinals are stable
+    for the life of a document version, chunk ids are not.
+
+    Rules that are not negotiable:
+      * a chunk never crosses a section boundary — a passage spanning two sections
+        belongs to neither and its citation would name the wrong one
+      * a table is never merged with prose, and carries its header
+      * a figure is never merged with anything, or its classification is lost —
+        which is exactly what happened when merging set every multi-block chunk to
+        "paragraph" and left zero figures in a corpus with seven of them
+    """
+    from app.services.dashboard_ai_bot.govern_doc_blocks import (
+        context_prefix, estimate_tokens,
     )
 
     rows: list[dict] = []
@@ -102,31 +126,100 @@ def build_chunk_rows(doc_title: str | None, body: str | None, *,
     dropped_chars = 0
     truncated = False
 
-    for section_index, section in enumerate(build_sections(body, child_tokens=child_tokens)):
-        path_text = heading_path_text(section.heading_path) or None
-        prefix = context_prefix(doc_title, section.heading_path, section.page)
-        for child in merge_children(section, child_tokens=child_tokens):
-            if not child.text.strip():
-                continue
+    # Group blocks into sections: a `section` block starts a new one, and its own
+    # title is not chunk content — it is the heading path of what follows.
+    groups: list[dict] = []
+    for block in blocks:
+        if block["kind"] == "section":
+            groups.append({
+                "heading_path": block.get("heading_path") or block.get("text"),
+                "page": block.get("page"),
+                "blocks": [],
+            })
+            continue
+        if not (block.get("text") or "").strip():
+            continue
+        if not groups:
+            groups.append({
+                "heading_path": block.get("heading_path"),
+                "page": block.get("page"),
+                "blocks": [],
+            })
+        groups[-1]["blocks"].append(block)
+
+    for section_index, group in enumerate(groups):
+        members = group["blocks"]
+        if not members:
+            continue
+        prefix = context_prefix(
+            doc_title,
+            [p for p in (group.get("heading_path") or "").split(" > ") if p],
+            group.get("page"),
+        )
+        pending: list[dict] = []
+
+        def emit(items: list[dict]) -> None:
+            nonlocal produced, dropped, dropped_chars, truncated
+            if not items:
+                return
+            body = "\n\n".join(b["text"] for b in items).strip()
+            if not body:
+                return
             if produced >= _MAX_CHUNKS:
-                # Counted, not just flagged. `produced` has to mean "what this
-                # document WOULD have produced" or the caller cannot say how much
-                # was left out — and "truncated: true, produced: 500, kept: 500"
-                # is a report that contradicts itself.
                 truncated = True
                 dropped += 1
-                dropped_chars += len(child.text)
-                continue
+                dropped_chars += len(body)
+                return
+            header = next((b.get("table_header") for b in items if b.get("table_header")), None)
+            kind = items[0]["kind"] if len(items) == 1 else "paragraph"
             rows.append({
-                "content": child.text,
-                "embed_text": (prefix + "\n\n" + child.text) if prefix else child.text,
+                "content": body,
+                # The header is prepended to what gets EMBEDDED so a table
+                # fragment is searchable by its column names, and kept in
+                # `table_header` so the assembler can show it too.
+                "embed_text": "\n\n".join(
+                    part for part in [prefix, header if kind == "table" else None, body] if part
+                ),
                 "section_index": section_index,
-                "heading_path": path_text,
-                "block_kind": child.kind,
-                "page": section.page,
-                "token_count": child.tokens,
+                "heading_path": group.get("heading_path") or None,
+                "block_kind": kind,
+                "page": items[0].get("page") or group.get("page"),
+                "token_count": estimate_tokens(body),
+                "block_from": items[0]["ordinal"],
+                "block_to": items[-1]["ordinal"],
+                "table_header": header,
             })
             produced += 1
+
+        for block in members:
+            # Tables and figures stand alone: merging a table into prose destroys
+            # the signal a reader needs to interpret the numbers, and merging a
+            # figure loses the fact that it IS a figure.
+            if block["kind"] in ("table", "figure"):
+                emit(pending)
+                pending = []
+                # A block bigger than the budget is SPLIT, not emitted whole. The
+                # AST records a table as one table because that is what the
+                # document has; the projection is where it gets divided — and each
+                # fragment keeps its header, because a row of numbers whose columns
+                # nobody can name is the worst thing a BI index can hold.
+                for piece in _split_oversized(block, child_tokens):
+                    emit([piece])
+                continue
+            pieces = _split_oversized(block, child_tokens)
+            if len(pieces) > 1:
+                emit(pending)
+                pending = []
+                for piece in pieces:
+                    emit([piece])
+                continue
+            candidate = pending + [block]
+            if pending and estimate_tokens("\n\n".join(b["text"] for b in candidate)) > child_tokens:
+                emit(pending)
+                pending = [block]
+            else:
+                pending = candidate
+        emit(pending)
 
     info = {
         "produced": produced + dropped,
@@ -151,7 +244,12 @@ def chunk_doc_detailed(body: str | None, *, strategy: str = "paragraph", size: i
     # be indexed. `strategy`/`overlap` are accepted and IGNORED: the block model
     # derives structure from the document instead of being told how to guess at
     # it, and keeping the old knobs alive would mean keeping the old chunker too.
-    rows, info = build_chunk_rows(None, body, child_tokens=_tokens_for(size))
+    # Markdown in, blocks out, then the same projection the indexer uses — so a
+    # preview cannot disagree with what will actually be embedded.
+    from app.services.dashboard_ai_bot.govern_doc_ast import _blocks_from_markdown
+
+    blocks = [{**b, "ordinal": i} for i, b in enumerate(_blocks_from_markdown(body or ""))]
+    rows, info = build_chunk_rows(None, blocks, child_tokens=_tokens_for(size))
     return [r["content"] for r in rows], info
 
 
@@ -258,6 +356,25 @@ def log_retrieval(db: Session, *, consumer: str, consumer_ref: str | None, quest
         db.rollback()
         logger.warning("govern_doc_embeddings: retrieval audit write failed", exc_info=True)
 
+def index_cache_key(doc, model: str, dimensions) -> str:
+    """Everything that decides WHETHER a re-embed is needed, in one place.
+
+    Two callers compute this: `embed_doc`, to decide whether to work, and
+    `index_is_stale`, to report whether the index is current. They were building
+    it separately and drifted — the reporter kept the old format, missing the
+    embedding dimensions and the AST fingerprint, so after the AST landed every
+    document reported as stale while search worked perfectly. A gate and its
+    detector have to agree by construction, not by both being edited.
+    """
+    size, overlap = _clamp_chunk_params(
+        getattr(doc, "chunk_size", None), getattr(doc, "chunk_overlap", None)
+    )
+    strategy = getattr(doc, "chunk_strategy", None) or "paragraph"
+    return "%s:%s:%s:%s:%s:%s" % (
+        model, dimensions, strategy, size, overlap, getattr(doc, "ast_hash", None),
+    )
+
+
 def index_is_stale(db: Session, doc) -> bool:
     """Has the published content moved on since the last successful embed?
 
@@ -278,11 +395,7 @@ def index_is_stale(db: Session, doc) -> bool:
 
         model = EmbeddingService.resolve_model(getattr(doc, "embedding_model", None))
         dimensions = EmbeddingService.dimensions_for(model)
-        size, overlap = _clamp_chunk_params(getattr(doc, "chunk_size", None), getattr(doc, "chunk_overlap", None))
-        strategy = getattr(doc, "chunk_strategy", None) or "paragraph"
-        return doc.embedded_hash != _body_hash(
-            f"{model}:{dimensions}:{strategy}:{size}:{overlap}", body
-        )
+        return doc.embedded_hash != _body_hash(index_cache_key(doc, model, dimensions), body)
     except Exception:  # noqa: BLE001
         logger.warning("govern_doc_embeddings: staleness check failed (doc %s)", getattr(doc, "id", None), exc_info=True)
         return False
@@ -598,8 +711,11 @@ def embed_doc(db, doc, *, force_full_rebuild: bool = False) -> dict:
                 ),
             }
 
-        cache_key = f"{model}:{dimensions}:{strategy}:{size}:{overlap}"
-        h = _body_hash(cache_key, body)
+        # GATE TWO: the chunker and the model. The AST hash is part of the key so a
+        # rebuilt AST re-embeds, and the chunker version is part of it so a new
+        # chunker does — the first block chunker shipped and re-indexed NOTHING
+        # because neither the model nor the profile had changed.
+        h = _body_hash(index_cache_key(doc, model, dimensions), body)
         if doc.embedded_hash == h and not force_full_rebuild:
             existing = db.execute(
                 text(
@@ -618,8 +734,21 @@ def embed_doc(db, doc, *, force_full_rebuild: bool = False) -> dict:
                     "new_chunks": 0,
                 }
 
+        # GATE ONE: the source. Rebuilds the AST only when the published version
+        # or the extraction changed — never because the chunker did.
+        from app.services.dashboard_ai_bot.govern_doc_ast import ast_blocks, ensure_ast
+
+        ast_state = ensure_ast(db, doc, force=force_full_rebuild)
+        blocks = ast_blocks(db, doc)
+        if not blocks:
+            db.execute(text("DELETE FROM govern_doc_chunk WHERE doc_id = :d"), {"d": doc.id})
+            doc.embedded_hash = None
+            db.commit()
+            return {"status": "empty", "chunks": 0, "new_chunks": 0,
+                    "ast": ast_state}
+
         children, chunk_info = build_chunk_rows(
-            getattr(doc, "title", None), body, child_tokens=_tokens_for(size)
+            getattr(doc, "title", None), blocks, child_tokens=_tokens_for(size)
         )
         if not children:
             db.commit()
@@ -693,8 +822,10 @@ def embed_doc(db, doc, *, force_full_rebuild: bool = False) -> dict:
                     """INSERT INTO govern_doc_chunk
                            (doc_id, chunk_index, content, content_hash, embedding,
                             model_version, section_index, heading_path,
-                            block_kind, page, token_count)
-                       VALUES (:d, :i, :c, :h, :e, :m, :si, :hp, :bk, :pg, :tc)"""
+                            block_kind, page, token_count,
+                            source_version, block_from, block_to)
+                       VALUES (:d, :i, :c, :h, :e, :m, :si, :hp, :bk, :pg, :tc,
+                               :sv, :bf, :bt)"""
                 ),
                 {
                     "d": doc.id, "i": index, "c": row["content"], "h": row["hash"],
@@ -702,6 +833,8 @@ def embed_doc(db, doc, *, force_full_rebuild: bool = False) -> dict:
                     "si": row["section_index"], "hp": row["heading_path"],
                     "bk": row["block_kind"], "pg": row["page"],
                     "tc": row["token_count"],
+                    "sv": int(getattr(doc, "ast_version", 0) or 0),
+                    "bf": row.get("block_from"), "bt": row.get("block_to"),
                 },
             )
         doc.embedded_hash = h
@@ -715,6 +848,7 @@ def embed_doc(db, doc, *, force_full_rebuild: bool = False) -> dict:
         return {
             "status": "embedded", "chunks": len(children),
             "sections": chunk_info["sections"], "new_chunks": embedded_new,
+            "ast": ast_state,
             # Surfaced so the UI can say "N chunks were not indexed" instead of
             # the document quietly being 2/3 present.
             "truncated": chunk_info["truncated"],
@@ -901,6 +1035,7 @@ def _search_scoped_doc_chunks(
     dashboard_id: int | None,
     doc_ids: set[int] | list[int] | None,
     published_only: bool,
+    gate_question: str | None = None,
 ) -> list[dict]:
     """Hybrid retrieval across any number of document embedding models.
 
@@ -995,7 +1130,8 @@ def _search_scoped_doc_chunks(
             """
             SELECT c.id, c.doc_id, d.title, c.chunk_index, c.content,
                    c.trust, c.model_version, c.heading_path, c.page, c.block_kind,
-                   c.token_count, c.section_index
+                   c.token_count, c.section_index,
+                   c.block_from, c.block_to, c.source_version
             FROM govern_doc_chunk c
             JOIN govern_knowledge_docs d ON d.id = c.doc_id
             WHERE c.id = ANY(:ids)
@@ -1032,12 +1168,19 @@ def _search_scoped_doc_chunks(
             "section_content": section_context.get(
                 (int(by_id[chunk_id][1]), int(by_id[chunk_id][11]))
             ),
+            "block_from": by_id[chunk_id][12],
+            "block_to": by_id[chunk_id][13],
+            "source_version": by_id[chunk_id][14],
             "citation": {
                 "doc_id": int(by_id[chunk_id][1]),
                 "title": by_id[chunk_id][2],
                 "heading_path": by_id[chunk_id][7],
                 "page": by_id[chunk_id][8],
-                "chunk_index": int(by_id[chunk_id][3]),
+                # The STABLE anchor. `chunk_index` moves on every re-index, so a
+                # citation recorded against it dangled; a block ordinal does not
+                # move for the life of a document version.
+                "block": by_id[chunk_id][12],
+                "source_version": by_id[chunk_id][14],
             },
             "matched_by": (
                 "both"
@@ -1063,6 +1206,9 @@ def _search_scoped_doc_chunks(
     reranked = score_candidates(
         db, question or "", candidates, sql_filter=sql_filter, params=scope_params,
         metric_home_docs=metric_home_docs,
+        # On an expanded search `question` is a clause or a glossary variant; the
+        # relevance gate must still judge against what the reader asked.
+        gate_question=gate_question or question or "",
     )
     for row in reranked:
         # Named so a consumer can say "this is the declared definition" rather
@@ -1094,18 +1240,31 @@ def search_doc_chunks(
     if db is None:
         return []
     k = max(1, int(k))
+    # `published_only` and `authoring` are not independent. Three of the four
+    # combinations are legal; the fourth — an AI retrieval path allowed to read
+    # drafts — is a leak, and nothing but convention was preventing it. Draft
+    # visibility is a PROPERTY of authoring, so it is derived here rather than
+    # passed alongside and trusted: an author testing their own document may see
+    # its draft, an agent answering a question may not, and a future caller
+    # cannot get that wrong by forgetting an argument.
+    if not authoring:
+        published_only = True
     try:
         authoring_scope(db) if authoring else restricted_scope(db)
         rows = _search_scoped_doc_chunks(
             db, question, k=k, dashboard_id=dashboard_id,
             doc_ids=doc_ids, published_only=published_only,
+            gate_question=question,
         )
 
         from app.services.dashboard_ai_bot.govern_doc_query_plan import (
-            describe, uncovered_clauses,
+            describe, glossary_variants, uncovered_clauses,
         )
 
-        missing = uncovered_clauses(question, rows)
+        # Two reasons to look again, both read off the evidence rather than
+        # predicted: a PART of the question found nothing, or a term the glossary
+        # knows by another name found nothing under the name that was used.
+        missing = uncovered_clauses(question, rows) + glossary_variants(db, question, rows)
         extra = 0
         if missing:
             # Retrieve for the parts that went unanswered and merge. Merged by
@@ -1118,6 +1277,8 @@ def search_doc_chunks(
                 for row in _search_scoped_doc_chunks(
                     db, clause, k=k, dashboard_id=dashboard_id,
                     doc_ids=doc_ids, published_only=published_only,
+                    # RETRIEVED for the clause, JUDGED against the whole question.
+                    gate_question=question,
                 ):
                     current = by_id.get(row["chunk_id"])
                     if current is None or (row.get("rerank_score") or 0) > (current.get("rerank_score") or 0):

@@ -843,6 +843,44 @@ def _collect_citation(state: RunState, tool: str, args: dict, result: Any) -> No
     if doc_id and not any(c.ref == str(doc_id) for c in state.citations):
         state.citations.append(Citation(kind="document", ref=str(doc_id)))
 
+    # THE PASSAGES A KNOWLEDGE SEARCH ACTUALLY RETURNED.
+    #
+    # Only `chart_id` and `document_id` were read above, both from the tool's
+    # ARGUMENTS — so a `search_knowledge` call, which names no document in its
+    # arguments and returns eight numbered sources in its result, contributed
+    # nothing. An agent could search the knowledge base, quote a policy, and hand
+    # the viewer an answer whose citation list was empty.
+    #
+    # `ref` is "doc:block" rather than the document id alone: two passages from
+    # different sections of the same document are two different citations, and
+    # collapsing them loses the only part a reader needs — which part.
+    for source in (result.get("citations") or [])[:12]:
+        if not isinstance(source, dict):
+            continue
+        ref = "%s:%s" % (source.get("doc_id"), source.get("block"))
+        if any(c.ref == ref for c in state.citations):
+            continue
+        state.citations.append(Citation(
+            kind="document",
+            ref=ref,
+            label=_source_label(source),
+            # The number the model was told to cite. Without it a `[3]` in the
+            # answer cannot be resolved back to the passage it names.
+            used=[str(source.get("n"))] if source.get("n") else [],
+        ))
+
+
+def _source_label(source: dict) -> str:
+    """A passage named the way a person would name it: document, section, page."""
+    title = str(source.get("title") or "").strip()
+    path = [p.strip() for p in str(source.get("heading_path") or "").split(">") if p.strip()]
+    if path and title and path[0].lower() == title.lower():
+        path = path[1:]
+    parts = [title, " > ".join(path)]
+    if source.get("page"):
+        parts.append("trang %s" % source["page"])
+    return " › ".join(p for p in parts if p)
+
 
 async def _stream(
     *, provider: str, api_key: str, model: str,

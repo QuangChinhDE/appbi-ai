@@ -527,6 +527,52 @@ export async function getDocVectors(docId: number): Promise<DocVectors> {
   const { data } = await apiClient.get<DocVectors>(`/catalog/govern/knowledge/${docId}/vectors`);
   return data;
 }
+/** The document as the EXTRACTOR sees it, not as the author typed it.
+ *
+ *  Everything here existed on the backend and had no surface: the block tree, the
+ *  page numbers, which figures got a caption and which did not. "Why is this image
+ *  not searchable" was a question with no answer short of reading the database. */
+export interface DocStructure {
+  /** Tree format ("a2"). Bumping it rebuilds every document's structure. */
+  ast_format: string | null;
+  /** Which published version this structure describes. */
+  source_version: number | null;
+  ast_hash: string | null;
+  source_type: string | null;
+  blocks: number;
+  /** section / paragraph / list / table / figure → count. */
+  kinds: Record<string, number>;
+  pages: number[];
+  outline: Array<{ ordinal: number; level: number; title: string; heading_path: string; page: number | null }>;
+  figures: {
+    total: number;
+    described: number;
+    no_text: number;
+    /** WHY undescribed figures are undescribed. "not allowed by policy", "no
+     *  provider configured" and "the model could not read it" need three
+     *  different fixes, and a bare zero distinguishes none of them. */
+    reason: string | null;
+    policy: string;
+    items: Array<{
+      ordinal: number | null; page: number | null; caption: string | null;
+      source: string | null; src: string | null;
+    }>;
+  };
+  /** Blocks WITH text that no chunk carries — unanswerable content. An alarm. */
+  unindexed: Array<{
+    ordinal: number | null; kind: string; page: number | null;
+    heading_path: string | null; preview: string | null;
+  }>;
+  unindexed_total: number;
+  /** Blocks with no text at all, so nothing to index. Expected, not a defect. */
+  not_indexable: number;
+}
+
+export async function getDocStructure(docId: number): Promise<DocStructure> {
+  const { data } = await apiClient.get<DocStructure>(`/catalog/govern/knowledge/${docId}/structure`);
+  return data;
+}
+
 export async function queryDocVectors(docId: number, query: string, k = 5): Promise<VectorMatch[]> {
   const { data } = await apiClient.post<{ matches: VectorMatch[] }>(`/catalog/govern/knowledge/${docId}/vectors/query`, { query, k });
   return data.matches ?? [];

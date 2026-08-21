@@ -262,6 +262,16 @@ async def run_flow(
                 )
             )
 
+    # THE OTHER HALF OF THE SAME CHECK.
+    #
+    # `_verify_figures` asks whether the answer's NUMBERS came from somewhere. This
+    # asks whether its SOURCE REFERENCES do. The retriever hands the model numbered
+    # passages and an instruction to cite them; a `[7]` when six were given is not a
+    # typo, it is a reference nobody can follow — the exact failure citations were
+    # added to prevent. A wrong number is caught above; an uncheckable source was
+    # not caught at all.
+    _verify_answer_citations(state, answer)
+
     # Built BEFORE the envelope: `memory_payload()` can append a notice (a value too
     # large to remember), and Pydantic COPIES the notices list when it validates —
     # so a notice added while the envelope was being constructed vanished. The one
@@ -788,6 +798,82 @@ def _verify_figures(state: RunState, answer: Answer) -> dict | None:
     except Exception:  # noqa: BLE001
         logger.debug("[flow] figure verification failed", exc_info=True)
         return None
+
+
+def _verify_answer_citations(state: RunState, answer: Answer) -> dict | None:
+    """Check every `[n]` in the answer against the sources the run actually read.
+
+    WHY IT REWRITES THE ANSWER INSTEAD OF ONLY WARNING
+    -------------------------------------------------
+    A notice is the right response to a figure that does not match: the number is
+    still the model's claim and the reader can weigh it. An invented citation is
+    different — the marker itself asserts "this came from source 7", and leaving it
+    in place while adding a footnote elsewhere means the sentence keeps making a
+    false claim about its own provenance. So the marker goes, and the notice says
+    why. Nothing else about the sentence is touched: removing the model's WORDS
+    over a citation defect would be editing the answer, which is not this
+    function's business.
+
+    A citation-free answer is NOT an error. Not every sentence needs a source, and
+    demanding one produces decorative citations, which are worse than none.
+    """
+    from app.services.dashboard_ai_bot.govern_doc_context import verify_citations
+
+    allowed = sorted({
+        int(n) for c in state.citations if c.kind == "document"
+        for n in c.used if str(n).isdigit()
+    })
+    if not allowed:
+        return None
+    sources = [{"n": n} for n in allowed]
+    text_seen = answer.plain_text()
+    result = verify_citations(text_seen, sources)
+    if result["ok"]:
+        return result
+
+    invented = result["invented"]
+    logger.warning(
+        "[flow] answer cites %s but only %s were provided", invented, allowed,
+    )
+    _strip_invented_markers(answer, invented)
+    state.notices.append(
+        Notice(
+            code="citations_invented",
+            text="Câu trả lời dẫn nguồn [%s] không có trong danh sách trích dẫn — "
+                 "các dấu dẫn nguồn đó đã được bỏ, nội dung câu giữ nguyên để bạn "
+                 "tự đối chiếu." % ", ".join(str(n) for n in invented),
+        )
+    )
+    return result
+
+
+def _strip_invented_markers(answer: Answer, invented: list[int]) -> None:
+    """Remove exactly the bracketed numbers that point nowhere.
+
+    Bounded to `[n]` with the specific numbers found: a blanket strip of every
+    bracketed digit would also delete `[1]` when it was correct, and delete
+    legitimate brackets from a quoted formula.
+    """
+    import re
+
+    if not invented:
+        return
+    pattern = re.compile(r"\s?\[(?:%s)\]" % "|".join(str(n) for n in invented))
+    # Both fields `plain_text()` reads. A callout is prose the viewer reads exactly
+    # like a paragraph, so cleaning only `markdown` would leave the false marker
+    # standing in the one block designed to draw the eye.
+    for block in answer.blocks:
+        for field in ("markdown", "text"):
+            value = getattr(block, field, None)
+            if not isinstance(value, str) or not value:
+                continue
+            cleaned = pattern.sub("", value)
+            if cleaned == value:
+                continue
+            try:
+                setattr(block, field, cleaned)
+            except Exception:  # noqa: BLE001 — a frozen block keeps its text
+                logger.debug("[flow] could not rewrite a block's %s", field)
 
 
 def _unknown_labels(state: RunState, answer: Answer) -> list[str]:

@@ -120,3 +120,55 @@ def describe(question: str, rows: list[dict], extra_passes: int) -> dict:
         "extra_passes": extra_passes,
         "uncovered": uncovered_clauses(question, rows),
     }
+
+def glossary_variants(db, question: str, rows: list[dict]) -> list[str]:
+    """Alternative phrasings for glossary terms the question named but the results
+    do not contain.
+
+    A reader asks about "net revenue" and the document says "doanh thu thuan".
+    Embeddings sometimes bridge that and sometimes do not; the glossary knows for
+    certain, because somebody wrote the synonyms down. So this is a lookup, not a
+    guess — the same reasoning as resolving a metric to its defining document.
+
+    Gated on the evidence: a term whose wording ALREADY appears in what was
+    retrieved needs no second query, so an ordinary question about revenue does not
+    pay for an expansion it does not need.
+    """
+    from sqlalchemy import text as _text
+
+    from app.core.text_fold import fold_text
+
+    folded_question = fold_text(question)
+    if not folded_question:
+        return []
+    haystack = fold_text(" ".join(
+        " ".join([
+            str(row.get("heading_path") or ""),
+            str(row.get("content") or ""),
+            str(row.get("section_content") or ""),
+        ])
+        for row in rows
+    ))
+    try:
+        found = db.execute(_text(
+            "SELECT name, display_name, synonyms FROM glossary_terms"
+        )).fetchall()
+    except Exception:  # noqa: BLE001 - an enhancement, never a dependency
+        logger.warning("govern_doc_query_plan: glossary lookup failed", exc_info=True)
+        return []
+
+    out: list[str] = []
+    for row in found:
+        raw = [row[0], row[1], *(row[2] or [])]
+        forms = [f for f in ((str(x or "")).strip() for x in raw) if len(f) >= 3]
+        folded = {fold_text(f).replace("_", " "): f for f in forms}
+        named = [orig for key, orig in folded.items() if key and key in folded_question]
+        if not named:
+            continue
+        if any(key in haystack for key in folded if key):
+            continue          # the wording is already in the evidence
+        for key, original in folded.items():
+            if original not in named and key not in folded_question:
+                out.append(original)
+    # Bounded: each variant is another query embedding.
+    return out[:_MAX_CLAUSES]

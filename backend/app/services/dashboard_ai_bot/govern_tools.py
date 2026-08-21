@@ -466,6 +466,10 @@ def tool_search_knowledge(ctx: ToolContext, args: dict) -> dict:
     # turn a working search into an empty one.
     retrieval = "keyword"
     chunk_hits: list[dict] = []
+    # The retriever's OWN rows, kept so the context assembler can be handed the
+    # full shape — section text, block anchors, trust — rather than the flattened
+    # hit dicts below, which are shaped for the tool's JSON reply.
+    retrieved_rows: list[dict] = []
     # Computed ONCE and handed to both paths below. Two retrievers deriving the
     # same boundary separately is how they came to disagree about it.
     doc_scope = _visible_doc_ids(ctx)
@@ -497,11 +501,24 @@ def tool_search_knowledge(ctx: ToolContext, args: dict) -> dict:
             ) or []:
                 if not isinstance(ch, dict):
                     continue
+                retrieved_rows.append(ch)
                 chunk_hits.append({
                     "kind": "document_chunk",
                     "id": ch.get("doc_id"),
                     "title": ch.get("title") or "",
                     "snippet": _plain(ch.get("content"), MAX_SNIPPET_CHARS),
+                    # WHERE the passage is. Without these an agent can quote a
+                    # document but cannot say which part of it — and the citation
+                    # data was being produced and dropped right here.
+                    "heading_path": ch.get("heading_path"),
+                    "page": ch.get("page"),
+                    "block": ch.get("block_from"),
+                    "block_kind": ch.get("block_kind"),
+                    "table_header": ch.get("table_header"),
+                    # The section around the hit. Small-to-big only works if the
+                    # big half reaches the reader.
+                    "section": _plain(ch.get("section_content"), MAX_SNIPPET_CHARS * 3),
+                    "is_metric_home": bool(ch.get("is_metric_home")),
                     # The chunk store's own similarity, kept under its own name so
                     # it is never compared with the keyword score below — the two
                     # are different scales and averaging them would be arithmetic
@@ -665,11 +682,29 @@ def tool_search_knowledge(ctx: ToolContext, args: dict) -> dict:
             if len(top) >= limit:
                 break
     merged = chunk_hits + vocabulary
+    # One assembled, budgeted, NUMBERED evidence block alongside the raw hits, so
+    # a step that wants to reason gets the same context the dashboard bot does
+    # instead of re-inventing a snippet format — and so there is something for an
+    # answer to cite and a verifier to check against.
+    context = None
+    if retrieved_rows:
+        try:
+            from app.services.dashboard_ai_bot.govern_doc_context import assemble
+
+            context = assemble(ctx.db, retrieved_rows)
+        except Exception:  # noqa: BLE001 — the hits are still usable without it
+            logger.warning("search_knowledge: context assembly failed", exc_info=True)
     return _ok({
         "query": query,
         "total_matches": len(merged),
         "returned": len(top),
         "results": top,
+        # The block to put in front of the model, with its citation rules, plus the
+        # citations an answer is allowed to use.
+        "context": (context or {}).get("text") or None,
+        "citations": (context or {}).get("citations") or [],
+        "context_tokens": (context or {}).get("tokens") or 0,
+        "context_truncated": bool((context or {}).get("truncated")),
         # HOW these were found, said out loud. Without it there is no way to see
         # from a result whether the vector store was consulted, which is exactly
         # why a fully-embedded deployment could look unconnected.

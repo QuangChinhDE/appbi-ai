@@ -75,10 +75,16 @@ _MAX_QUERY_TERMS = 12
 #: counted. The count is one GIN lookup per term, which is cheap until it is not.
 _IDF_EXACT_LIMIT = 200_000
 
-#: Weights, swept against the eval set (eval/experiment_rerank.py) and re-swept
-#: after the scorer's input changed from the body alone to heading path + body.
-#: Re-tuning was not optional: the weights that were best on the old input scored
-#: hit@1 0.846 on the new one, and 0.15 scores 0.885.
+#: Weights, swept against the eval set and re-swept after the scorer's input
+#: changed from the body alone to heading path + body. Re-tuning was not optional:
+#: the weights that were best on the old input scored hit@1 0.846 on the new one,
+#: and 0.15 scores 0.885. A plain weighted sum of cosine and BM25 was measured too
+#: and lost — see `score_candidates` for why the multiplication is not decoration.
+#:
+#: The sweep harness that produced these is gone: it monkeypatched a scorer
+#: signature that has since grown, so it no longer ran, and a measurement script
+#: that raises is worse than none. Re-derive with the same shape as
+#: eval/experiment_cross_encoder.py if these ever need re-tuning.
 _W_LEXICAL = 0.15
 _W_SEMANTIC = 1.0
 _W_GOVERNANCE = 0.05
@@ -218,7 +224,8 @@ def governance_score(row: dict) -> float:
 
 def score_candidates(db: Session, question: str, rows: list[dict], *,
                      sql_filter: str, params: dict,
-                     metric_home_docs: set[int] | None = None) -> list[dict]:
+                     metric_home_docs: set[int] | None = None,
+                     gate_question: str | None = None) -> list[dict]:
     """Attach `rerank_score` to each candidate and return them best first.
 
     The score is cosine similarity AMPLIFIED BY lexical evidence, plus a small
@@ -264,7 +271,82 @@ def score_candidates(db: Session, question: str, rows: list[dict], *,
         scored.append(out)
 
     scored.sort(key=lambda r: (-r["rerank_score"], r["chunk_id"]))
+    # The gate runs HERE, on the full candidate pool, because that is where it
+    # earns its cost: it can lift a passage the base score ranked tenth. Measured
+    # both ways — moving it after the pool was cut to k lost hit@1 0.806 → 0.774,
+    # since by then there is nothing left to lift.
+    #
+    # But it judges `gate_question`, the question the USER asked, not `question`,
+    # which on an expanded search is a clause or a glossary variant. The merge
+    # keeps the higher `rerank_score` across passes, so without this a passage the
+    # gate approved for the variant "doanh thu ròng" outranked one approved for
+    # what was actually asked.
+    scored = _apply_relevance_gate(gate_question or question, scored)
     return _diversify(scored)
+
+
+#: What a positive cross-encoder verdict is worth. Large enough that a relevant
+#: passage always outranks an irrelevant one, and applied UNIFORMLY so ordering
+#: inside each band is still decided by the score above.
+_W_CE_GATE = 2.0
+
+
+def _apply_relevance_gate(question: str, scored: list[dict]) -> list[dict]:
+    """Let the cross-encoder say WHETHER each candidate is relevant, nothing more.
+
+    Called ONCE per question, on the final candidate set, by `search_doc_chunks`.
+    It used to run inside `score_candidates`, which is per RETRIEVAL PASS — and a
+    multi-part or glossary-expanded question runs several. That was wrong twice
+    over. It tripled the cost (three forward passes over the same pool, measured
+    at 2.2s for one question), and the merge keeps the HIGHER `rerank_score` across
+    passes, so a passage the gate approved while answering a glossary VARIANT
+    outranked one approved for the question the user actually asked. A relevance
+    verdict is a property of the question and the final candidates, not of
+    whichever pass happened to surface a row.
+
+    Its magnitude is deliberately discarded. Measured over 34 questions, using the
+    raw logit as the ranking collapsed recall@6 from 1.0 to 0.742: the model emits
+    roughly ±8, so its own ordering is nearly binary and cannot choose between two
+    relevant passages — which is the judgement that decides whether the sentence
+    holding the answer makes the window. Using only the SIGN raised hit@1 from
+    0.742 to 0.839 and MRR from 0.860 to 0.906 with phrase_hit unchanged. See
+    eval/experiment_cross_encoder.py for all five arms.
+
+    Silent no-op when the model is absent, and — by construction — when it cannot
+    discriminate: if every candidate scores the same side of zero, every candidate
+    gets the same constant and the order is untouched.
+    """
+    if len(scored) < 2:
+        return scored
+    from app.services.dashboard_ai_bot import doc_rerank_semantic
+
+    verdicts = doc_rerank_semantic.score_pairs(question, scored)
+    if verdicts is None:
+        return scored
+    for row, logit in zip(scored, verdicts):
+        row["ce_logit"] = round(float(logit), 3)
+        row["ce_relevant"] = bool(logit > 0)
+        if logit > 0:
+            row["rerank_score"] = round(row["rerank_score"] + _W_CE_GATE, 4)
+    scored.sort(key=lambda r: (-r["rerank_score"], r["chunk_id"]))
+    return scored
+
+
+# NO VERDICT CACHE, DELIBERATELY.
+#
+# An expanded search gates an overlapping pool two or three times against the same
+# question, so memoising the verdict looks free: measured, it took a three-pass
+# question from 3.8s to 2.3s while a one-pass question stayed at ~1.2s. It was
+# tried and removed.
+#
+# The cache has to be keyed on the model's real input — (question, passage) — or a
+# hit can return a verdict about different text; chunk id is not that key, because
+# a re-index reuses ids. Keyed correctly it then collapses two candidates with
+# identical text into one entry, which is right, and it makes the ranking depend on
+# what the process scored earlier, which is how two of its three revisions were
+# wrong. A stateful cache that keeps producing subtle bugs is not worth 1.5s on a
+# minority query shape; the extra passes only run when the first genuinely missed
+# something, and that is a real second search, not an avoidable one.
 
 
 #: At most this many chunks from one document in the returned window.

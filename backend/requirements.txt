@@ -49,6 +49,16 @@ pytesseract==0.3.13
 pillow==10.4.0
 python-docx==1.1.2
 
+# Local cross-encoder reranker for Knowledge Hub retrieval (doc_rerank_semantic).
+# onnxruntime runs the int8 ONNX export; `tokenizers` reads tokenizer.json
+# directly, so neither torch nor sentencepiece is needed — the two of these are
+# ~60MB against ~2GB for a torch install. The MODEL itself is not in the image:
+# fetch it with `python scripts/fetch_reranker_model.py` (119MB, one command,
+# documented in that file). Its absence is logged and degrades to lexical
+# reranking, exactly like a missing tesseract binary degrades OCR.
+onnxruntime==1.19.2
+tokenizers>=0.15,<1.0
+
 # JS sandbox for Phase-14 computed columns (engine='js'). QuickJS-based,
 # enforces per-row timeout + isolated globals (no require / fetch / fs).
 quickjs==1.19.4
