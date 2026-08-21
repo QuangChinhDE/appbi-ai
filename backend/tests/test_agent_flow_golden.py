@@ -1477,8 +1477,14 @@ def test_vector_recall_obeys_the_same_boundary_as_the_keyword_scan(monkeypatch):
 
     seen: dict = {}
 
-    def fake_retrieve(db, dashboard_id, question="", k=6, doc_ids=None):
+    # `consumer` names who is reading, so the retrieval audit can tell an Agent
+    # Flow step from the Dashboard Bot. A fake that rejects it makes the real call
+    # raise inside the tool's try/except and the assertion below sees nothing at
+    # all — which is how this test failed without saying why.
+    def fake_retrieve(db, dashboard_id=None, question="", k=6, doc_ids=None,
+                      consumer="dashboard_bot"):
         seen["doc_ids"] = doc_ids
+        seen["consumer"] = consumer
         return []
 
     monkeypatch.setattr(gde, "retrieve_doc_chunks", fake_retrieve)
@@ -1495,6 +1501,9 @@ def test_vector_recall_obeys_the_same_boundary_as_the_keyword_scan(monkeypatch):
 
     assert seen.get("doc_ids") == {7, 9}, (
         "đường vector phải nhận đúng phạm vi mà đường keyword dùng"
+    )
+    assert seen.get("consumer") == "agent_flow", (
+        "nhật ký truy xuất phải phân biệt được Agent Flow với bot Dashboard"
     )
 
 
@@ -1551,17 +1560,46 @@ def test_legacy_embedding_hashes_cannot_reuse_chunk_vectors():
     assert _is_current_index_hash(_body_hash("model:768:paragraph:850:0", "body"))
 
 
+class _NoDb:
+    """`_scoped_chunk_filter` only touches the database to resolve a dashboard to
+    document ids. Given an explicit `doc_ids`, it must not query at all."""
+
+    def execute(self, *a, **k):
+        raise AssertionError("an explicit doc_ids scope must not need a query")
+
+
+class _DashboardDb:
+    """Resolves dashboard 67 to two documents."""
+
+    def execute(self, *a, **k):
+        return self
+
+    def fetchall(self):
+        return [(7,), (9,)]
+
+
 def test_document_search_excludes_legacy_and_cross_model_vectors():
     from app.services.dashboard_ai_bot.govern_doc_embeddings import (
         _scoped_chunk_filter,
     )
 
+    # `db` is a required argument now. A dashboard used to be expressed as a JOIN
+    # against the link table while an explicit grant used `doc_id = ANY(...)`, and
+    # Postgres planned the two shapes differently over the SAME rows — which, with
+    # an approximate index scanning in relaxed order, returned different CANDIDATE
+    # SETS. The eval harness caught the dashboard and the agent disagreeing on one
+    # question with six identical documents in scope. The dashboard is therefore
+    # resolved to ids first, and that needs a session.
     sql_filter, params = _scoped_chunk_filter(
+        _NoDb(),
         dashboard_id=None,
         doc_ids={7},
         published_only=False,
     )
-    assert "d.embedded_hash LIKE 'v2:%'" in sql_filter
+    # The version travels with the CHUNKER, not just the model: the block chunker
+    # would otherwise have been skipped for every document whose model and profile
+    # had not changed, which is every document.
+    assert "d.embedded_hash LIKE '" in sql_filter
     # THE GUARANTEE, NOT THE SPELLING. This asserted the literal
     # `c.model_version = d.embedding_model`, which pinned the punctuation of a
     # predicate rather than what it promises — and the promise was wrong: `=`
@@ -1584,8 +1622,8 @@ def test_document_search_generates_one_query_vector_per_model(monkeypatch):
     class Rows:
         def fetchall(self):
             return [
-                (10, 1, "Doc A", 0, "alpha", "authored", "model-a"),
-                (20, 2, "Doc B", 0, "beta", "authored", "model-b"),
+                (10, 1, "Doc A", 0, "alpha", "authored", "model-a", "Doc A", None, "prose", 4, 0),
+                (20, 2, "Doc B", 0, "beta", "authored", "model-b", "Doc B", None, "prose", 4, 0),
             ]
 
     class Db:
@@ -1628,7 +1666,7 @@ def test_document_search_keeps_keyword_hits_when_a_model_fails(monkeypatch):
 
     class Rows:
         def fetchall(self):
-            return [(20, 2, "Doc B", 0, "exact Q2", "authored", "model-b")]
+            return [(20, 2, "Doc B", 0, "exact Q2", "authored", "model-b", "Doc B", None, "prose", 4, 0)]
 
     class Db:
         def execute(self, stmt, params=None):
@@ -1752,7 +1790,7 @@ def test_the_model_predicate_is_null_safe():
     from app.services.dashboard_ai_bot import govern_doc_embeddings as gde
 
     scoped = gde._scoped_chunk_filter(
-        dashboard_id=67, doc_ids=None, published_only=True,
+        _DashboardDb(), dashboard_id=67, doc_ids=None, published_only=True,
     )
     assert scoped is not None
     sql, _params = scoped
@@ -2584,3 +2622,122 @@ def test_a_failed_step_reports_what_it_spent():
     assert "prompt_tokens=state.prompt_tokens" not in reused_block, (
         "a reused step must NOT be billed — the Runs table would overstate the turn"
     )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# One truth written twice, and the two copies drifting. Three instances, each
+# reduced to a single definition — the lesson `_apply_scope` already records.
+# ═══════════════════════════════════════════════════════════════════════════════
+def test_one_renderer_for_a_value_becoming_text():
+    """Three copies serialised dicts and one of them crashed.
+
+    Template substitution, the previous-step text handed to an Agent, and the
+    `join_text` transform each did their own `json.dumps`. Two passed `default=str`;
+    `resolve_text` did not — and the values come from chart data, which is full of
+    `date` and `Decimal`. So `{{rows}}` raised `TypeError: Object of type date is
+    not JSON serializable` on exactly the data a flow exists to talk about, while
+    the other two rendered it fine. No logic was wrong: one copy never got a fix
+    the others did.
+    """
+    from datetime import date
+    from decimal import Decimal
+
+    from app.services.agent_flows.runtime.handlers.agent import _previous_text
+    from app.services.agent_flows.runtime.state import RunState, render_value
+
+    value = {"txn_date": date(2026, 8, 20), "revenue": Decimal("15843553.24")}
+    st = RunState()
+    st.vars["rows"] = value
+
+    # The crash, and the agreement.
+    rendered = st.resolve_text("Số liệu: {{rows}}")
+    assert "2026-08-20" in rendered
+    assert rendered == "Số liệu: " + _previous_text(value)
+
+    # A list reads as a list, and a `date` INSIDE one still survives — the nested
+    # case the old `", ".join(str(x) ...)` happened to pass and the dict branch did
+    # not, which is how the two stayed out of sync for so long.
+    st.vars["mixed"] = [date(2026, 1, 1), {"d": date(2026, 2, 2)}, "x"]
+    assert st.resolve_text("{{mixed}}") == '2026-01-01, {"d": "2026-02-02"}, x'
+
+    # And the plain cases stay plain: no JSON quoting on a string, nothing for None.
+    assert render_value("abc") == "abc"
+    assert render_value(None) == ""
+
+
+def test_one_rule_for_which_model_a_step_runs_on():
+    """The runtime preferred the node's pin; the slow-model guard read only the link.
+
+    A flow pinning `gpt-5` on a `gpt-4o` link was costed at 4 seconds a call instead
+    of 18, so the warning whose whole job is to catch a ninety-second answer stayed
+    silent. The reverse was equally wrong.
+    """
+    from app.services.agent_flows.binding import _slowest_model
+    from app.services.agent_flows.models_catalogue import effective_model
+
+    # The shared rule: a pin wins, otherwise inherit.
+    assert effective_model("openai", "gpt-5", "openai", "gpt-4o") == ("openai", "gpt-5")
+    assert effective_model("inherit", "", "openai", "gpt-4o") == ("openai", "gpt-4o")
+
+    fast = {"ai_bot_provider": "openai", "ai_bot_model": "gpt-4o"}
+    slow = {"ai_bot_provider": "openai", "ai_bot_model": "gpt-5"}
+
+    # The measured failure: one step pins a reasoning model on a fast link.
+    pinned_slow = build([
+        {"key": "a", "type": "agent", "prompt": "p", "provider": "openai", "model": "gpt-5"},
+        {"key": "b", "type": "agent", "prompt": "p"},
+    ], answer_node="b")
+    assert _slowest_model(pinned_slow, fast) == ("gpt-5", 18)
+
+    # The other direction: every step pins something fast, so no `gpt-5` call ever
+    # happens and costing it as one is the same false alarm reversed. Seeding the
+    # max from the link's model reintroduced exactly this.
+    pinned_fast = build([
+        {"key": "a", "type": "agent", "prompt": "p", "provider": "openai", "model": "gpt-4o"},
+        {"key": "b", "type": "agent", "prompt": "p", "provider": "openai", "model": "gpt-4o"},
+    ], answer_node="b")
+    assert _slowest_model(pinned_fast, slow) == ("gpt-4o", 4)
+
+    # A step that INHERITS is how the link's model legitimately enters the set.
+    mixed = build([
+        {"key": "a", "type": "agent", "prompt": "p", "provider": "openai", "model": "gpt-4o"},
+        {"key": "b", "type": "agent", "prompt": "p"},
+    ], answer_node="b")
+    assert _slowest_model(mixed, slow) == ("gpt-5", 18)
+
+
+def test_one_definition_of_output_a_viewer_can_be_shown():
+    """A classifier is an agent, and its output is one token from a list.
+
+    `_final_answer`'s fallback tested `step.type == "agent"`, so when the answering
+    step failed it could hand the viewer the word "du_bao" — the same defect its own
+    comment describes about a Set Variable holding "none", arriving through the door
+    the comment left open. `handlers/agent.py` has known `choice` is special since it
+    was added; the fallback never learned.
+    """
+    flow = build([
+        {"key": "sv", "type": "set_var", "var": "x", "value": "none"},
+        {"key": "cls", "type": "agent", "prompt": "p", "output_format": "choice",
+         "choices": ["tra_so", "du_bao"]},
+        {"key": "prose", "type": "agent", "prompt": "p"},
+        {"key": "blocks", "type": "agent", "prompt": "p", "output_format": "json"},
+        {"key": "ans", "type": "agent", "prompt": "p"},
+    ], answer_node="ans")
+
+    assert not flow.writes_prose("sv"), "một biến không phải là một câu"
+    assert not flow.writes_prose("cls"), "phân loại chỉ trả về một token, không phải câu"
+    assert flow.writes_prose("prose")
+    # `json` steps emit answer blocks — prose with structure, and what the viewer
+    # actually sees when they succeed.
+    assert flow.writes_prose("blocks")
+    assert flow.writes_prose("ans")
+    assert not flow.writes_prose("does_not_exist")
+
+    # And the executor asks the flow rather than reading `step.type` itself.
+    import inspect
+
+    from app.services.agent_flows.runtime import executor
+
+    src = inspect.getsource(executor._final_answer)
+    assert "writes_prose" in src
+    assert 'step.type != "agent"' not in src, "bản copy cũ vẫn còn trong fallback"

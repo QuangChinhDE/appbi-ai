@@ -1293,7 +1293,7 @@ class GovernanceService:
             "review_date": d.review_date.isoformat() if d.review_date else None,
             "last_verified_at": d.last_verified_at.isoformat() if d.last_verified_at else None,
             "importance": d.importance or "normal",
-            "allow_external_embedding": bool(getattr(d, "allow_external_embedding", True)),
+            "external_processing": (getattr(d, "external_processing", None) or "embedding"),
             "sensitivity": getattr(d, "sensitivity", None) or "internal",
             "ai_summary": d.ai_summary, "ai_keywords": d.ai_keywords or [],
             "view_count": int(d.view_count or 0),
@@ -1387,7 +1387,7 @@ class GovernanceService:
         reasons: list[str] = []
         from app.services.dashboard_ai_bot.govern_doc_embeddings import egress_allowed
 
-        if not egress_allowed(d):
+        if not egress_allowed(d, "embedding"):
             # Deliberate, not a defect — but the consequence must be visible, or
             # someone will wonder for a week why the AI never cites this document.
             return {"ok": False, "reasons": ["egress_blocked"]}
@@ -1774,8 +1774,11 @@ class GovernanceService:
         # `is not None`, NOT `in payload`: the API layer builds this dict from a
         # Pydantic model, so every optional key is PRESENT with a value of None.
         # Keying on presence therefore read every ordinary save as "block this".
-        if payload.get("allow_external_embedding") is not None:
-            fields["allow_external_embedding"] = bool(payload["allow_external_embedding"])
+        if payload.get("external_processing") is not None:
+            level = str(payload["external_processing"]).strip().lower()
+            if level not in ("none", "embedding", "full"):
+                raise GovernanceError(422, "external_processing phải là none | embedding | full.")
+            fields["external_processing"] = level
         if payload.get("sensitivity"):
             fields["sensitivity"] = str(payload["sensitivity"]).strip().lower()
 
@@ -1843,17 +1846,17 @@ class GovernanceService:
             db.commit()
         except Exception:  # noqa: BLE001 — history must never block a save
             db.rollback()
-        # Embed the doc body into chunks for RAG (hash-gated → unchanged body = 0
-        # embedding calls). Best-effort: never block a save on embedding.
-        try:
-            from app.services.dashboard_ai_bot.govern_doc_embeddings import embed_doc
-            result = embed_doc(db, d)
-            GovernanceService.log_doc_run(
-                db, d.id, "embed", trigger="save", status=result.get("status", "error"),
-                detail=result.get("detail"), stats=result, changed_by=changed_by,
-            )
-        except Exception:  # noqa: BLE001
-            db.rollback()
+        # Indexing is QUEUED, never done here. A 500-chunk document is 500
+        # provider calls; doing that inside the save timed the request out and
+        # left the document half-indexed with nothing recording that it had.
+        # `govern_doc_index_queue` is the only path to `embed_doc`.
+        from app.services.govern_doc_index_queue import enqueue as enqueue_index
+
+        job = enqueue_index(db, d.id, reason="save", requested_by=changed_by)
+        GovernanceService.log_doc_run(
+            db, d.id, "embed", trigger="save", status="queued",
+            detail="đã đưa vào hàng đợi lập chỉ mục", stats=job, changed_by=changed_by,
+        )
         # AI summary + keywords (hash-gated the same way; user-editable output).
         try:
             from app.services.dashboard_ai_bot.govern_ai_summary import generate_summary
@@ -1894,6 +1897,10 @@ class GovernanceService:
         # Drop RAG chunk embeddings for this doc (raw table, no ORM model).
         try:
             db.execute(sa_text("DELETE FROM govern_doc_chunk WHERE doc_id = :d"), {"d": doc_id})
+            # And its queue entry. A job for a document that no longer exists is
+            # handled gracefully by the worker, but leaving the row behind grows
+            # the same kind of orphan the chunk table was already cleaned of.
+            db.execute(sa_text("DELETE FROM govern_doc_index_job WHERE doc_id = :d"), {"d": doc_id})
         except Exception:  # noqa: BLE001 — table may not exist pre-migration
             pass
         # Metrics that called this doc their SSOT home lose the pointer (kept as metrics).
@@ -1961,16 +1968,15 @@ class GovernanceService:
         GovernanceService._commit(db)
         GovernanceService.log_change(db, "knowledge", d.slug or str(d.id), "publish",
                                      summary=f"xuất bản v{version} trang '{d.title}': {note[:120]}", changed_by=changed_by)
-        # Re-embed the live body (published version) for RAG. Best-effort.
-        try:
-            from app.services.dashboard_ai_bot.govern_doc_embeddings import embed_doc
-            result = embed_doc(db, d)
-            GovernanceService.log_doc_run(
-                db, d.id, "embed", trigger="publish", status=result.get("status", "error"),
-                detail=result.get("detail"), stats=result, changed_by=changed_by,
-            )
-        except Exception:  # noqa: BLE001
-            db.rollback()
+        # Publishing changes WHAT gets indexed (retrieval serves the published
+        # snapshot), so it queues the same way a save does.
+        from app.services.govern_doc_index_queue import enqueue as enqueue_index
+
+        job = enqueue_index(db, d.id, reason="publish", requested_by=changed_by)
+        GovernanceService.log_doc_run(
+            db, d.id, "embed", trigger="publish", status="queued",
+            detail="đã đưa vào hàng đợi lập chỉ mục", stats=job, changed_by=changed_by,
+        )
         return {"ok": True, "published_version": version}
 
     @staticmethod

@@ -253,7 +253,11 @@ class GovernKnowledgeDoc(Base):
     # Embedding sends the document's full text to an external provider. This is
     # the veto for documents that must not go, and the honest cost of using it
     # is that the doc becomes unreachable by AI — stated, never silent.
-    allow_external_embedding = Column(Boolean, nullable=False, default=True)
+    #: What may leave for a third party: 'none' | 'embedding' | 'full'.
+    #: Replaced a boolean named after the embedding call, which could not govern
+    #: OCR or figure description — so a document marked "do not send" would have
+    #: had its page images sent while its prose was correctly withheld.
+    external_processing = Column(String(16), nullable=False, default="embedding")
     sensitivity = Column(String(16), nullable=False, default="internal")  # internal|confidential|restricted
     # ── Knowledge Hub metadata (AI-readable node, review workflow) ─────────
     business_domain = Column(String(120), nullable=True)   # e.g. "Bán hàng", "Vận hành"

@@ -43,6 +43,10 @@ sqlglot==26.16.2
 openpyxl==3.1.5
 pypdf==5.1.0
 pdfplumber==0.11.4
+# OCR for scanned PDFs. Pairs with the tesseract binary from the Dockerfile;
+# pypdfium2 (already a pdfplumber dependency) renders the page to an image.
+pytesseract==0.3.13
+pillow==10.4.0
 python-docx==1.1.2
 
 # JS sandbox for Phase-14 computed columns (engine='js'). QuickJS-based,

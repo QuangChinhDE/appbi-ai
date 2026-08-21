@@ -88,13 +88,11 @@ async def run_transform(
     elif node.operation == "format_object":
         result = state.resolve_text(node.source or "")
     elif node.operation == "join_text":
-        from app.services.agent_flows.runtime.state import as_list
+        from app.services.agent_flows.runtime.state import as_list, render_value
 
         parts = as_list(source, limit=1000)
-        result = node.separator.join(
-            x if isinstance(x, str) else json.dumps(x, ensure_ascii=False, default=str)
-            for x in parts
-        )
+        # Third of the three copies. See `render_value` for what they disagreed on.
+        result = node.separator.join(render_value(x) for x in parts)
     elif node.operation == "pick":
         keys = list(node.mapping.keys())
         if isinstance(source, list):

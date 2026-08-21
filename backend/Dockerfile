@@ -11,6 +11,15 @@ RUN apt-get update && apt-get install -y \
     default-libmysqlclient-dev \
     pkg-config \
     postgresql-client \
+    # OCR for scanned PDFs. LOCAL on purpose: a cloud OCR service would send
+    # page IMAGES to a third party, which the per-document external_processing
+    # policy would then have to authorise. Running it here means a scanned
+    # document becomes readable without anything leaving the building.
+    # -vie is the Vietnamese language data: without it diacritics come back
+    # mangled, and mangled text silently poisons the search index.
+    tesseract-ocr \
+    tesseract-ocr-vie \
+    tesseract-ocr-eng \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements first for better caching

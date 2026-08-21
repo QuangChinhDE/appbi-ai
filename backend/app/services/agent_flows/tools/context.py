@@ -336,9 +336,9 @@ def fold_column(name: Any) -> str:
     Mirrors GovernanceAIService._fold so a scope authored as "Khách hàng" also
     matches a column physically named "khach_hang".
     """
-    s = unicodedata.normalize("NFKD", str(name or ""))
-    s = "".join(ch for ch in s if not unicodedata.combining(ch))
-    return re.sub(r"\s+", " ", s).strip().lower()
+    from app.core.text_fold import fold_text
+
+    return fold_text(name)
 
 
 def _resolve_excluded_columns(db: Session, dashboard: Dashboard) -> set[str]:

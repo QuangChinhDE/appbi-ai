@@ -738,12 +738,17 @@ def _final_answer(state: RunState, rctx: RunContext) -> Answer:
         # The answering node failed. Fall back to the last node that produced PROSE,
         # so a working chain with a broken final step still says something.
         #
-        # Restricted to `agent` nodes on purpose. Accepting any string output meant a
-        # Set Variable holding "none" became the viewer's answer — a variable is not
-        # a sentence, and presenting one as the reply is worse than admitting there
-        # is no answer.
+        # Restricted on purpose. Accepting any string output meant a Set Variable
+        # holding "none" became the viewer's answer — a variable is not a sentence,
+        # and presenting one as the reply is worse than admitting there is no answer.
+        #
+        # `flow.writes_prose` rather than `step.type == "agent"`, which was the test
+        # here and was one definition of "prose" out of two. A `choice` agent IS an
+        # agent and emits a single token from a fixed list, so this fallback could
+        # hand a viewer the word "du_bao" as the reply — the same defect the comment
+        # above describes, arriving through the door the comment left open.
         for step in reversed(state.trace):
-            if step.type != "agent":
+            if not rctx.flow.writes_prose(step.key):
                 continue
             candidate = state.outputs.get(step.key)
             if isinstance(candidate, str) and candidate.strip():

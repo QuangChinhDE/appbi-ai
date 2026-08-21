@@ -289,9 +289,10 @@ export interface KnowledgeDoc {
    * reasons: 'not_published' | 'no_dashboard' | 'not_indexed'
    */
   ai_retrievable?: { ok: boolean; reasons: string[] };
-  /** False = this document is never sent to the external embedding provider,
-   *  and is therefore deliberately unreachable by AI. */
-  allow_external_embedding?: boolean;
+  /** What may leave for a third party. 'none' means the document is deliberately
+   *  unreachable by AI; 'full' additionally permits OCR and figure description,
+   *  which send page images rather than prose. */
+  external_processing?: 'none' | 'embedding' | 'full';
   sensitivity?: string;
   /** Which version is live (RAG/public read it); may differ from the latest. */
   published_version?: number | null;
@@ -409,7 +410,15 @@ export interface EmbeddingConfig {
   max_chunks?: number;
   /** Published content has moved on since the last successful embed. */
   index_stale?: boolean;
-  allow_external_embedding?: boolean;
+  /** Indexing is QUEUED now, so "is it done yet" has to be answerable. */
+  index_job?: {
+    state: 'queued' | 'running' | 'done' | 'error';
+    reason?: string; attempts?: number; error?: string | null;
+    queued_at?: string | null; finished_at?: string | null;
+    result?: { status?: string; chunks?: number } | null;
+  } | null;
+  external_processing?: 'none' | 'embedding' | 'full';
+  embedding_allowed?: boolean;
   sensitivity?: string;
   model_locked: boolean;
   available_models: EmbeddingProfile[];
@@ -451,6 +460,9 @@ export interface EmbeddingRunResult {
   truncated?: boolean;
   dropped_chunks?: number;
   dropped_chars?: number;
+  /** Indexing is queued, so the immediate answer is a JOB, not a count.
+   *  `chunks` is only present on paths that already had a result. */
+  job?: { state?: string; reason?: string } | null;
 }
 
 export async function reembedDoc(docId: number, body?: EmbeddingConfigWrite): Promise<EmbeddingRunResult> {
@@ -477,6 +489,10 @@ export interface DocVector {
   char_count: number;
   trust?: string;
   doc_status?: string;
+  heading_path?: string | null;
+  page?: number | null;
+  block_kind?: string | null;
+  section_index?: number | null;
 }
 export interface DocVectors { vectors: DocVector[]; total: number; dims: number | null; model: string | null }
 export interface VectorMatch {
@@ -489,6 +505,22 @@ export interface VectorMatch {
   /** Where the passage came from: authored | uploaded | linked | external. */
   trust?: string;
   embedding_model?: string;
+  /** Where in the document this passage is — what a citation is made of. */
+  heading_path?: string | null;
+  page?: number | null;
+  block_kind?: string | null;
+  /** The section around the passage. Small-to-big: the chunk is what matched,
+   *  this is what a model should read to understand it. */
+  section_content?: string | null;
+  /** True when this document was DECLARED the definition of a metric the
+   *  question named — authority, not similarity. */
+  is_metric_home?: boolean;
+  /** The score that DECIDED the order (stage-two rerank). `score` is cosine,
+   *  shown for reference but no longer what sorts the list. */
+  rerank_score?: number;
+  /** Share of the query's weighted terms present in this passage. Diagnostic
+   *  only — it does not separate answerable from unanswerable questions. */
+  term_coverage?: number;
 }
 
 export async function getDocVectors(docId: number): Promise<DocVectors> {
@@ -572,7 +604,7 @@ export interface KnowledgeDocWrite {
   review_date?: string | null;  // YYYY-MM-DD
   importance?: string;          // low|normal|high
   /** Omit to leave unchanged — the backend only writes it when non-null. */
-  allow_external_embedding?: boolean;
+  external_processing?: 'none' | 'embedding' | 'full';
   sensitivity?: string;
   embedding_model?: string;
 }

@@ -349,8 +349,10 @@ class KnowledgeDocWrite(BaseModel):
     importance: str | None = None         # low|normal|high
     # External-embedding control. `None` means "leave as it is" — the service
     # only writes these when the key is actually present in the payload.
-    allow_external_embedding: bool | None = None
-    sensitivity: str | None = None        # internal|confidential|restricted
+    # None = leave unchanged. See GovernanceService.upsert_knowledge_doc: the
+    # payload always carries every optional key, so presence cannot mean intent.
+    external_processing: str | None = None   # none | embedding | full
+    sensitivity: str | None = None           # internal|confidential|restricted
     # Used only when the document is created. Existing documents can switch
     # model only through the explicit vector reset endpoint.
     embedding_model: str | None = None
@@ -722,8 +724,11 @@ def govern_doc_embedding_config_get(doc_id: int, db: Session = Depends(get_db), 
     # body rather than remembered from the last run — so the warning is still
     # right after an edit and survives a page reload. Pure string work, no I/O.
     from app.services.dashboard_ai_bot.govern_doc_embeddings import (
-        chunk_doc_detailed, egress_allowed, index_is_stale,
+        chunk_doc_detailed, egress_allowed, index_is_stale, processing_policy,
     )
+    from app.services.govern_doc_index_queue import job_status
+
+    _index_job = job_status(db, doc_id)
     from app.services.embedding_service import EmbeddingService
     _stale = index_is_stale(db, d)
     _, stats = chunk_doc_detailed(
@@ -737,7 +742,11 @@ def govern_doc_embedding_config_get(doc_id: int, db: Session = Depends(get_db), 
         "embedding_model": d.embedding_model, "embedded_hash": d.embedded_hash, "chunk_count": int(chunk_count),
         "model_locked": bool(d.embedded_hash or chunk_count),
         "available_models": EmbeddingService.embedding_profiles(),
-        "index_stale": _stale, "allow_external_embedding": egress_allowed(d),
+        "index_stale": _stale,
+        # Indexing is asynchronous now, so "is it done yet" has to be answerable.
+        "index_job": _index_job,
+        "external_processing": processing_policy(d),
+        "embedding_allowed": egress_allowed(d, "embedding"),
         "sensitivity": getattr(d, "sensitivity", None) or "internal",
         "truncated": bool(stats.get("truncated")), "dropped_chunks": int(stats.get("dropped_chunks") or 0),
         "dropped_chars": int(stats.get("dropped_chars") or 0), "max_chunks": int(stats.get("max_chunks") or 0),
@@ -809,13 +818,18 @@ def govern_doc_embed_now(doc_id: int, body: EmbeddingConfigWrite | None = None, 
         d.chunk_overlap = overlap
         d.embedding_model = model
         db.commit()
-    from app.services.dashboard_ai_bot.govern_doc_embeddings import embed_doc
-    result = embed_doc(db, d)
+    # The button queues like everything else. Keeping a synchronous path here
+    # "just for one document" is exactly the second behaviour this refactor
+    # removed: it would be the path nobody tests and the one that times out.
+    from app.services.govern_doc_index_queue import enqueue
+
+    job = enqueue(db, doc_id, reason="manual", requested_by=getattr(user, "email", None))
     GovernanceService.log_doc_run(
-        db, doc_id, "embed", trigger="manual", status=result.get("status", "error"),
-        detail=result.get("detail"), stats=result, changed_by=getattr(user, "email", None),
+        db, doc_id, "embed", trigger="manual", status="queued",
+        detail="đã đưa vào hàng đợi lập chỉ mục", stats=job,
+        changed_by=getattr(user, "email", None),
     )
-    return result
+    return {"status": "queued", "job": job}
 
 
 @router.post("/govern/knowledge/{doc_id}/embedding-reset")
@@ -839,6 +853,7 @@ def govern_doc_embedding_reset(
         chunk_strategy=strategy,
         chunk_size=size,
         chunk_overlap=overlap,
+        changed_by=getattr(user, "email", None),
     )
     GovernanceService.log_doc_run(
         db,
@@ -908,6 +923,7 @@ def govern_doc_vectors(doc_id: int, db: Session = Depends(get_db), user: User = 
         _t(
             """
             SELECT id, chunk_index, content, content_hash, model_version, created_at, trust, doc_status,
+                   heading_path, page, block_kind, section_index,
                    (embedding IS NOT NULL) AS has_vector,
                    CASE WHEN embedding IS NOT NULL
                         THEN array_length(embedding::real[], 1) END AS dims,
@@ -925,8 +941,12 @@ def govern_doc_vectors(doc_id: int, db: Session = Depends(get_db), user: User = 
             "id": r[0], "chunk_index": r[1], "content": r[2], "content_hash": r[3],
             "model": r[4], "created_at": r[5],
             "trust": r[6], "doc_status": r[7],
-            "has_vector": bool(r[8]),
-            "dims": r[9], "preview": [float(x) for x in (r[10] or [])],
+            # Where in the document this chunk is — the browser shows it, and it is
+            # what a citation is made of.
+            "heading_path": r[8], "page": r[9], "block_kind": r[10],
+            "section_index": r[11],
+            "has_vector": bool(r[12]),
+            "dims": r[13], "preview": [float(x) for x in (r[14] or [])],
             "char_count": len(r[2] or ""),
         }
         for r in rows
@@ -944,7 +964,7 @@ def govern_doc_vectors_query(doc_id: int, body: VectorQueryReq, db: Session = De
     """Run a similarity search against THIS document's vectors — the Pinecone
     "query" box. Shows exactly which chunk the AI would retrieve for a question
     and how close it scored, so retrieval can be sanity-checked per document."""
-    _run(lambda: GovernanceService.require_doc_access(db, doc_id, user, "view"))
+    d = _run(lambda: GovernanceService.require_doc_access(db, doc_id, user, "view"))
 
     q = (body.query or "").strip()
     if not q:
@@ -963,14 +983,39 @@ def govern_doc_vectors_query(doc_id: int, body: VectorQueryReq, db: Session = De
         published_only=False,
         authoring=True,
     )
+    # An empty result has two very different causes and the console has to tell
+    # them apart. "Nothing matched" is an answer; "this document's index is not
+    # searchable" is a defect the author can fix with one button — and it looked
+    # exactly like the former until this said so.
+    reason = None
+    if not rows:
+        from app.services.dashboard_ai_bot.govern_doc_embeddings import _is_current_index_hash
+
+        if not _is_current_index_hash(getattr(d, "embedded_hash", None)):
+            reason = "index_not_searchable"
     return {
+        "reason": reason,
         "matches": [
             {
                 "chunk_index": row["chunk_index"],
                 "content": row["content"],
                 "score": float(row.get("similarity") or 0.0),
+                # Cosine is shown as `score` because that is what a vector browser
+                # means by it, but the ORDER comes from `rerank_score` — so both
+                # are returned rather than leaving the console to explain a list
+                # that is not sorted by the number next to it.
+                "rerank_score": row.get("rerank_score"),
+                "term_coverage": row.get("term_coverage"),
                 "trust": row.get("trust"),
                 "matched_by": row.get("matched_by"),
+                # The citation. Without these the console can show WHICH passage
+                # the AI would retrieve but not WHERE it is, which is half the
+                # question an author is asking when they open this box.
+                "heading_path": row.get("heading_path"),
+                "page": row.get("page"),
+                "block_kind": row.get("block_kind"),
+                "section_content": row.get("section_content"),
+                "is_metric_home": row.get("is_metric_home"),
                 "embedding_model": row.get("embedding_model"),
             }
             for row in rows

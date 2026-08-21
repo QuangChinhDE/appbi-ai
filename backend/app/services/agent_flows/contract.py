@@ -846,6 +846,27 @@ class Flow(_Model):
                 return n
         return None
 
+    def writes_prose(self, key: str) -> bool:
+        """Would this step's output read as a sentence to a viewer? THE one rule.
+
+        WRITTEN IN TWO PLACES AND ONE OF THEM WAS OUT OF DATE.
+        `executor._final_answer` falls back to the last step that produced prose
+        when the answering step fails, and its test was `step.type == "agent"`. The
+        comment there explains exactly why the restriction exists — "a Set Variable
+        holding 'none' became the viewer's answer; a variable is not a sentence" —
+        and a `choice` agent is the same category of thing: a classifier emits one
+        token, `tra_so` or `du_bao`, chosen from a fixed list. `handlers/agent.py`
+        has known `choice` is special since it was added; the fallback never learned,
+        so a failed answering step could reply to a viewer with the word "du_bao".
+
+        `json` counts: those steps emit answer blocks, which is prose with structure
+        and is exactly what the viewer is shown when they succeed.
+        """
+        n = self.node(key)
+        if not isinstance(n, AgentNode):
+            return False
+        return n.output_format != "choice"
+
     def answering_key(self) -> str:
         """The node whose text reaches the viewer.
 

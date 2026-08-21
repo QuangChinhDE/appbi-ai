@@ -1717,7 +1717,12 @@ function DetailRail({ doc, usage, onOpenDoc, onRefresh, onOpenEmbedding, onOpenS
     setReindexBusy(true);
     try {
       const res = await reembedDoc(doc.id);
-      toast.success(t('govern.embedding.reembedOk', { chunks: res.chunks }));
+      // Indexing is queued, so the honest message is "queued", not a chunk count
+      // the server has not produced yet. Reporting a count here printed
+      // "Re-embedded — undefined chunks".
+      toast.success(res.status === 'queued'
+        ? t('govern.embedding.queued')
+        : t('govern.embedding.reembedOk', { chunks: res.chunks ?? 0 }));
       // Truncation is a correctness problem, not a detail: part of the document
       // is simply not in the index. Warn separately so it is not read as noise
       // attached to the success line.
@@ -1791,6 +1796,12 @@ function DetailRail({ doc, usage, onOpenDoc, onRefresh, onOpenEmbedding, onOpenS
               embed ? t('govern.embedding.currentChunks', { count: embed.chunk_count }) : '—'} />
             <Health label={t('govern.aiHealth.strategy')} value={
               embed ? t(`govern.embedding.strategy${embed.chunk_strategy === 'heading' ? 'Heading' : embed.chunk_strategy === 'fixed' ? 'Fixed' : 'Paragraph'}`) : '—'} />
+            {embed?.index_job && embed.index_job.state !== 'done' && (
+              <p className="mt-1 flex items-start gap-1.5 rounded-md bg-brand/10 p-1.5 text-tiny text-brand">
+                <RefreshCw className="mt-px h-3 w-3 shrink-0 animate-spin" />
+                {t('govern.embedding.jobState.' + embed.index_job.state)}
+              </p>
+            )}
             {embed?.index_stale && (
               <p className="mt-1 flex items-start gap-1.5 rounded-md bg-warning/10 p-1.5 text-tiny text-warning">
                 <AlertTriangle className="mt-px h-3 w-3 shrink-0" />
@@ -2342,11 +2353,25 @@ function VectorBrowser({ doc }: { doc: KnowledgeDoc }) {
                       </span>
                     )}
                   </span>
-                  <span className={cn('rounded-full px-2 py-0.5 text-tiny font-emphasis',
-                    m.score >= 0.5 ? 'bg-success/10 text-success' : m.score >= 0.3 ? 'bg-warning/10 text-warning' : 'bg-surface-2 text-text-tertiary')}>
-                    {m.score.toFixed(3)}
+                  <span className="flex items-center gap-1.5">
+                    {m.rerank_score != null && (
+                      <span className="rounded-full bg-brand/10 px-2 py-0.5 text-tiny font-emphasis text-brand"
+                        title={t('govern.vectors.rerankHint')}>
+                        {m.rerank_score.toFixed(2)}
+                      </span>
+                    )}
+                    <span className={cn('rounded-full px-2 py-0.5 text-tiny',
+                      m.score >= 0.5 ? 'bg-success/10 text-success' : m.score >= 0.3 ? 'bg-warning/10 text-warning' : 'bg-surface-2 text-text-tertiary')}
+                      title={t('govern.vectors.cosineHint')}>
+                      {m.score.toFixed(3)}
+                    </span>
                   </span>
                 </div>
+                {(m.heading_path || m.page) && (
+                  <p className="mb-1 truncate text-tiny text-text-quaternary" title={m.heading_path || ''}>
+                    {m.heading_path}{m.page ? ` · ${t('govern.vectors.page', { n: m.page })}` : ''}
+                  </p>
+                )}
                 <p className="line-clamp-3 text-tiny leading-relaxed text-text-tertiary">{m.content}</p>
               </div>
             ))}
@@ -2371,6 +2396,11 @@ function VectorBrowser({ doc }: { doc: KnowledgeDoc }) {
                 )}
               </span>
               <span className="min-w-0 flex-1">
+                {(v.heading_path || v.page) && (
+                  <span className="mb-0.5 block truncate text-tiny text-text-quaternary" title={v.heading_path || ''}>
+                    {v.heading_path}{v.page ? ` · ${t('govern.vectors.page', { n: v.page })}` : ''}
+                  </span>
+                )}
                 <span className="line-clamp-2 block text-tiny leading-relaxed text-text-secondary">{v.content}</span>
                 <span className="mt-1 block font-mono text-tiny text-text-quaternary">
                   {v.has_vector
@@ -2408,7 +2438,7 @@ function EmbeddingTab({ doc, onRefresh }: { doc: KnowledgeDoc; onRefresh: () => 
   const [size, setSize] = useState(850);
   const [overlap, setOverlap] = useState(0);
   const [model, setModel] = useState('');
-  const [allowEgress, setAllowEgress] = useState(true);
+  const [policy, setPolicy] = useState<'none' | 'embedding' | 'full'>('embedding');
   const [previewing, setPreviewing] = useState(false);
   const [preview, setPreview] = useState<ChunkPreviewResult | null>(null);
   const [saving, setSaving] = useState(false);
@@ -2418,7 +2448,7 @@ function EmbeddingTab({ doc, onRefresh }: { doc: KnowledgeDoc; onRefresh: () => 
     try {
       const c = await getEmbeddingConfig(doc.id);
       setCfg(c); setStrategy(c.chunk_strategy); setSize(c.chunk_size); setOverlap(c.chunk_overlap); setModel(c.embedding_model || '');
-      setAllowEgress(c.allow_external_embedding !== false);
+      setPolicy(c.external_processing || 'embedding');
     } catch { toast.error(t('govern.embedding.loadFailed')); }
     finally { setLoading(false); }
   }, [doc.id, t]);
@@ -2437,17 +2467,21 @@ function EmbeddingTab({ doc, onRefresh }: { doc: KnowledgeDoc; onRefresh: () => 
       const payload = { chunk_strategy: strategy, chunk_size: size, chunk_overlap: overlap, embedding_model: model.trim() || null };
       const modelChanged = !!cfg && model.trim() !== (cfg.embedding_model || '');
       if (modelChanged && cfg.model_locked && !window.confirm(t('govern.embedding.resetConfirm', { model }))) return;
-      // The egress veto is a property of the DOCUMENT, so it is saved through
-      // the document before re-indexing — otherwise re-indexing would run under
-      // the old permission and send text the user just forbade.
-      if (allowEgress !== (cfg?.allow_external_embedding !== false)) {
-        await upsertKnowledgeDoc(docToWrite(doc, { allow_external_embedding: allowEgress }));
+      // The policy belongs to the DOCUMENT, so it is saved BEFORE re-indexing —
+      // otherwise the re-index would run under the old permission and send text
+      // the user just forbade.
+      if (policy !== (cfg?.external_processing || 'embedding')) {
+        await upsertKnowledgeDoc(docToWrite(doc, { external_processing: policy }));
       }
       const res = modelChanged
         ? await resetEmbeddingModel(doc.id, payload)
         : await reembedDoc(doc.id, payload);
-      const succeeded = ['embedded', 'unchanged', 'cleared', 'empty'].includes(res.status);
-      if (succeeded) toast.success(t('govern.embedding.reembedOk', { chunks: res.chunks }));
+      const succeeded = ['queued', 'embedded', 'unchanged', 'cleared', 'empty', 'blocked'].includes(res.status);
+      if (succeeded) toast.success(res.status === 'queued'
+        ? t('govern.embedding.queued')
+        : res.status === 'blocked'
+          ? t('govern.embedding.blocked')
+        : t('govern.embedding.reembedOk', { chunks: res.chunks ?? 0 }));
       else toast.error(res.detail || t('govern.embedding.reembedFailed'));
       await loadConfig();
       onRefresh();
@@ -2497,15 +2531,14 @@ function EmbeddingTab({ doc, onRefresh }: { doc: KnowledgeDoc; onRefresh: () => 
             </p>
           </div>
           <div className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 p-2.5">
-            <label className="flex cursor-pointer items-start gap-2">
-              <input type="checkbox" className="mt-0.5" checked={!allowEgress}
-                onChange={(e) => setAllowEgress(!e.target.checked)} />
-              <span className="min-w-0">
-                <span className="block text-tiny font-emphasis text-text-secondary">{t('govern.egress.blockLabel')}</span>
-                <span className="mt-0.5 block text-tiny text-text-quaternary">{t('govern.egress.blockHint')}</span>
-              </span>
-            </label>
-            {!allowEgress && (
+            <Label>{t('govern.egress.policyLabel')}</Label>
+            <Select value={policy} onChange={(e) => setPolicy(e.target.value as 'none' | 'embedding' | 'full')}>
+              <option value="none">{t('govern.egress.policyNone')}</option>
+              <option value="embedding">{t('govern.egress.policyEmbedding')}</option>
+              <option value="full">{t('govern.egress.policyFull')}</option>
+            </Select>
+            <p className="mt-1 text-tiny text-text-quaternary">{t('govern.egress.hint.' + policy)}</p>
+            {policy === 'none' && (
               <p className="mt-1.5 flex items-start gap-1.5 text-tiny text-warning">
                 <AlertTriangle className="mt-px h-3 w-3 shrink-0" />{t('govern.egress.blockedConsequence')}
               </p>

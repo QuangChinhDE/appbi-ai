@@ -34,7 +34,7 @@ def _markdown_table(rows: list[list[str]]) -> str:
     return "\n".join(out)
 
 
-def _pdf_pages_with_tables(data: bytes) -> list[str]:
+def _pdf_pages_with_tables(data: bytes) -> tuple[list[tuple[int, str]], set[int]]:
     """Page markdown with tables preserved as tables.
 
     pypdf returns a flat stream of words, so a financial table collapses into
@@ -45,7 +45,8 @@ def _pdf_pages_with_tables(data: bytes) -> list[str]:
     """
     import pdfplumber
 
-    pages: list[str] = []
+    pages: list[tuple[int, str]] = []
+    empty_pages: set[int] = set()
     with pdfplumber.open(io.BytesIO(data)) as pdf:
         for index, page in enumerate(pdf.pages, start=1):
             parts: list[str] = []
@@ -82,9 +83,101 @@ def _pdf_pages_with_tables(data: bytes) -> list[str]:
                 if md:
                     parts.append(md)
 
-            if parts:
-                pages.append(f"## Page {index}\n\n" + "\n\n".join(parts))
-    return pages
+            joined = "\n\n".join(parts).strip()
+            if len(joined) >= _OCR_TEXT_FLOOR:
+                pages.append((index, f"## Page {index}\n\n{joined}"))
+            else:
+                # Kept as a candidate for OCR rather than dropped. Silently
+                # skipping it is how a scanned document became an empty index.
+                empty_pages.add(index)
+    return pages, empty_pages
+
+
+#: A page yielding fewer than this many characters of extractable text is treated
+#: as an IMAGE of a page rather than a page of text. Scanned pages are not empty —
+#: they usually carry a few stray glyphs from a letterhead or a page number — so a
+#: strict zero would miss most of them.
+_OCR_TEXT_FLOOR = 24
+
+#: Render scale. Tesseract wants roughly 300 DPI; PDF user space is 72 DPI.
+_OCR_SCALE = 300 / 72
+
+
+def ocr_available() -> bool:
+    """Whether local OCR can run. Reported rather than assumed, because a missing
+    tesseract binary makes scanned documents silently index as empty."""
+    try:
+        import pypdfium2  # noqa: F401
+        import pytesseract
+
+        pytesseract.get_tesseract_version()
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _ocr_pdf_page(pdf, page_index: int) -> str:
+    """Read one page as an image, LOCALLY.
+
+    Local by design. A cloud OCR service would send the page IMAGE — everything
+    visible on the page, not just its prose — to a third party, and that is what
+    `external_processing = 'full'` exists to authorise. Tesseract here means a
+    scanned document becomes searchable with nothing leaving the building, so no
+    permission is required and none is claimed.
+
+    Vietnamese first in the language list, with English as a fallback for the
+    mixed-language documents this corpus is full of. Without `vie`, diacritics
+    come back mangled — and mangled text does not fail loudly, it just quietly
+    becomes an index nobody can search.
+    """
+    import pytesseract
+
+    page = pdf[page_index]
+    bitmap = page.render(scale=_OCR_SCALE)
+    try:
+        image = bitmap.to_pil()
+    finally:
+        close = getattr(bitmap, "close", None)
+        if close:
+            close()
+    return (pytesseract.image_to_string(image, lang="vie+eng") or "").strip()
+
+
+def _ocr_pdf_pages(data: bytes, needed: set[int]) -> dict[int, str]:
+    """OCR only the pages that produced no text. Rendering and reading a page is
+    expensive; doing it for pages that already extracted cleanly would multiply
+    the cost of every ordinary PDF for no gain."""
+    if not needed:
+        return {}
+    if not ocr_available():
+        logger.warning(
+            "file_text_extractor: %s page(s) have no extractable text and local OCR "
+            "is unavailable — those pages will not be indexed", len(needed),
+        )
+        return {}
+    out: dict[int, str] = {}
+    try:
+        import pypdfium2 as pdfium
+
+        pdf = pdfium.PdfDocument(io.BytesIO(data))
+        try:
+            for index in sorted(needed):
+                if index - 1 >= len(pdf):
+                    continue
+                try:
+                    text = _ocr_pdf_page(pdf, index - 1)
+                except Exception:  # noqa: BLE001 — one bad page must not lose the rest
+                    logger.warning("file_text_extractor: OCR failed on page %s", index, exc_info=True)
+                    continue
+                if len(text) >= _OCR_TEXT_FLOOR:
+                    out[index] = text
+        finally:
+            pdf.close()
+    except Exception:  # noqa: BLE001
+        logger.warning("file_text_extractor: OCR pass failed", exc_info=True)
+    if out:
+        logger.info("file_text_extractor: OCR recovered %s scanned page(s)", len(out))
+    return out
 
 
 def _extract_pdf(data: bytes) -> str:
@@ -95,9 +188,16 @@ def _extract_pdf(data: bytes) -> str:
     upload that fails outright.
     """
     try:
-        pages = _pdf_pages_with_tables(data)
+        pages, empty_pages = _pdf_pages_with_tables(data)
+        # A page with no extractable text is an IMAGE of a page. That is the whole
+        # scanned-PDF case, and before OCR it indexed as nothing at all — the
+        # document existed, looked fine on screen, and the AI could not read a
+        # word of it.
+        recovered = _ocr_pdf_pages(data, empty_pages)
+        for index, text in recovered.items():
+            pages.append((index, f"## Page {index}\n\n{text}"))
         if pages:
-            return "\n\n".join(pages)
+            return "\n\n".join(text for _index, text in sorted(pages))
     except Exception:  # noqa: BLE001
         logger.warning("file_text_extractor: pdfplumber failed, falling back to pypdf", exc_info=True)
 

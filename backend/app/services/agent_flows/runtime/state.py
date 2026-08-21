@@ -271,16 +271,7 @@ class RunState:
             return text or ""
 
         def sub(m: re.Match) -> str:
-            v = self.get(m.group(1))
-            if v is None:
-                return ""
-            if isinstance(v, (list, tuple)):
-                return ", ".join(str(x) for x in v)
-            if isinstance(v, dict):
-                import json
-
-                return json.dumps(v, ensure_ascii=False)
-            return str(v)
+            return render_value(self.get(m.group(1)))
 
         return _TEMPLATE_RE.sub(sub, text)
 
@@ -460,6 +451,43 @@ def _num(v: Any) -> float | None:
         return float(str(v).strip().replace(",", ""))
     except (TypeError, ValueError):
         return None
+
+
+def render_value(v: Any) -> str:
+    """A step's value as text a prompt can carry. THE one definition.
+
+    THREE COPIES OF THIS EXISTED AND ONE OF THEM CRASHED.
+    Template substitution (here), the previous-step text handed to an Agent
+    (`handlers/agent._previous_text`) and the `join_text` transform
+    (`handlers/util`) each serialised dicts on their own. Two passed
+    `default=str`; this one did not — and the values in question come from chart
+    data, which is full of `date` and `Decimal`. So `{{rows}}` in a prompt raised
+    `TypeError: Object of type date is not JSON serializable` on exactly the data
+    the flow exists to talk about, while the other two rendered it fine.
+
+    No logic was wrong anywhere. One copy simply never received a fix the others
+    got — the same failure `_apply_scope` in `handlers/agent.py` records: "one
+    builder, one set of keys, no room for the two to drift again".
+    """
+    if v is None:
+        return ""
+    if isinstance(v, str):
+        return v
+    if isinstance(v, (list, tuple)):
+        # A list reads as a list, not as JSON: `{{segments}}` in a sentence should
+        # come out "Bắc, Trung, Nam". Elements go through this same function, so a
+        # list OF dicts still survives a `date` inside one of them.
+        return ", ".join(render_value(x) for x in v)
+    if isinstance(v, dict):
+        import json
+
+        try:
+            return json.dumps(v, ensure_ascii=False, default=str)
+        except (TypeError, ValueError):
+            # `default=str` covers all but the self-referential; a readable repr
+            # beats failing the node that reads the variable.
+            return str(v)
+    return str(v)
 
 
 def as_list(value: Any, *, limit: int) -> list[Any]:

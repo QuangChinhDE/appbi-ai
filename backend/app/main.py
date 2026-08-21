@@ -50,6 +50,8 @@ async def lifespan(app: FastAPI):
     # connected to a Google Doc / web page source
     from app.services.govern_doc_sync_scheduler import startup as govern_doc_sync_startup
     govern_doc_sync_startup()
+    from app.services.govern_doc_index_worker import startup as govern_doc_index_startup
+    govern_doc_index_startup()
 
     # Rebuild document indexes the retriever refuses to trust. A migration or a
     # model change invalidates them CORRECTLY, but the refusal is invisible — the
@@ -104,6 +106,8 @@ async def lifespan(app: FastAPI):
 
     from app.services.govern_doc_sync_scheduler import shutdown as govern_doc_sync_shutdown
     govern_doc_sync_shutdown()
+    from app.services.govern_doc_index_worker import shutdown as govern_doc_index_shutdown
+    govern_doc_index_shutdown()
 
     from app.services.dataset_quality_scheduler import shutdown as quality_scheduler_shutdown
     quality_scheduler_shutdown()

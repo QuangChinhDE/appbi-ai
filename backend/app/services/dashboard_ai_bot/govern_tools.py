@@ -64,12 +64,15 @@ MAX_HITS = 8
 
 
 def _fold(text: str) -> str:
-    """Lowercase and strip Vietnamese diacritics so "doanh thu" matches "Doanh Thu"."""
-    import unicodedata
+    """Lowercase and strip Vietnamese diacritics so "doanh thu" matches "Doanh Thu".
 
-    normalised = unicodedata.normalize("NFD", str(text or "").lower())
-    stripped = "".join(c for c in normalised if unicodedata.category(c) != "Mn")
-    return stripped.replace("đ", "d")
+    Delegates to the one canonical folder. This was the ONLY one of thirteen
+    helpers that handled `đ`; the rest silently did not, and keeping a local copy
+    of the correct behaviour is how the other twelve came to be wrong.
+    """
+    from app.core.text_fold import fold_text
+
+    return fold_text(text)
 
 
 def _tokens(text: str) -> set[str]:
@@ -468,7 +471,11 @@ def tool_search_knowledge(ctx: ToolContext, args: dict) -> dict:
     doc_scope = _visible_doc_ids(ctx)
     # `ToolContext` carries the Dashboard object, not a bare id.
     dash_id = getattr(getattr(ctx, "dashboard", None), "id", None)
-    if dash_id:
+    # Gated on the DOC SCOPE, not on the dashboard. A step's grant is a scope in
+    # its own right, and gating on `dash_id` sent any dashboard-less flow back to
+    # keyword-only recall — the one thing unifying the retrieval path was meant
+    # to stop happening.
+    if doc_scope:
         try:
             from app.services.dashboard_ai_bot.govern_doc_embeddings import (
                 retrieve_doc_chunks,
@@ -481,7 +488,12 @@ def tool_search_knowledge(ctx: ToolContext, args: dict) -> dict:
             # the four ways a document gets attached, and past any grant the
             # author set on the step.
             for ch in retrieve_doc_chunks(
-                ctx.db, int(dash_id), query, k=limit, doc_ids=doc_scope,
+                ctx.db,
+                int(dash_id) if dash_id else None,
+                query,
+                k=limit,
+                doc_ids=doc_scope,
+                consumer="agent_flow",
             ) or []:
                 if not isinstance(ch, dict):
                     continue
@@ -495,7 +507,14 @@ def tool_search_knowledge(ctx: ToolContext, args: dict) -> dict:
                     # are different scales and averaging them would be arithmetic
                     # that runs and means nothing.
                     "similarity": ch.get("similarity"),
-                    "rank_score": ch.get("rrf_score"),
+                    # The score that DECIDED this order. `rrf_score` ranks the
+                    # candidate pool in stage one; stage two reranks it, so
+                    # reporting the stage-one number next to a stage-two order
+                    # hands the reader two scores and one sequence that do not
+                    # explain each other.
+                    "rank_score": ch.get("rerank_score", ch.get("rrf_score")),
+                    "lexical_bm25": ch.get("bm25"),
+                    "term_coverage": ch.get("term_coverage"),
                     "embedding_model": ch.get("embedding_model"),
                     # The store fuses vector and full-text recall and says which
                     # one found each row. Passed through: "vector" and "keyword"

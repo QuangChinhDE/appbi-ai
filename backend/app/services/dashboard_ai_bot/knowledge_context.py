@@ -35,9 +35,10 @@ _WORD_RE = re.compile(r"[0-9A-Za-zÀ-ỹ]+", re.UNICODE)
 
 
 def _fold(s: str) -> str:
-    s = unicodedata.normalize("NFKD", s or "")
-    s = "".join(ch for ch in s if not unicodedata.combining(ch))
-    return re.sub(r"\s+", " ", s.lower()).strip()
+    """Canonical folding. Was a local NFKD copy that left Vietnamese `đ` intact."""
+    from app.core.text_fold import fold_text
+
+    return fold_text(s)
 
 
 def _tokens(s: str) -> set[str]:

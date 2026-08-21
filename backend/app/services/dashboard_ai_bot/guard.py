@@ -40,10 +40,14 @@ _INVISIBLE_RE = re.compile(r"[​-‏‪-‮⁠-⁤﻿­]")
 
 
 def _fold(text: str) -> str:
-    """Lowercase + strip diacritics so 'Bỏ Qua' and 'bo qua' hit one pattern."""
-    s = unicodedata.normalize("NFKD", text or "")
-    s = "".join(ch for ch in s if not unicodedata.combining(ch))
-    return re.sub(r"\s+", " ", s).strip().lower()
+    """Lowercase + strip diacritics so 'Bỏ Qua' and 'bo qua' hit one pattern.
+
+    Canonical folding. An injection guard that cannot fold `đ` is a guard with a
+    documented bypass.
+    """
+    from app.core.text_fold import fold_text
+
+    return fold_text(text)
 
 
 def _rx(pattern: str) -> re.Pattern:

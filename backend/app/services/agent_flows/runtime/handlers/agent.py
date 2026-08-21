@@ -480,10 +480,19 @@ async def _retry_choice(
 
 
 def _resolve_model(node: AgentNode, rctx: Any) -> tuple[str, str]:
-    """The node's provider/model, or the link's when it inherits."""
-    if node.provider != INHERIT and node.model:
-        return node.provider, node.model
-    return rctx.inp.runtime.provider, rctx.inp.runtime.model or ""
+    """The node's provider/model, or the link's when it inherits.
+
+    Delegates rather than deciding: the preflight guard needs the same answer to
+    cost the flow, and when it had its own copy it read only the link's model — so
+    a flow pinning a reasoning model on a fast link was costed at a quarter of what
+    it takes. One rule, both readers.
+    """
+    from app.services.agent_flows.models_catalogue import effective_model
+
+    return effective_model(
+        node.provider, node.model,
+        rctx.inp.runtime.provider, rctx.inp.runtime.model,
+    )
 
 
 def _apply_scope(ctx: Any, node: AgentNode) -> None:
@@ -542,10 +551,11 @@ def _previous_text(previous: Any) -> str:
     if isinstance(previous, str):
         return previous.strip()
     if isinstance(previous, (dict, list)) and previous:
-        try:
-            return json.dumps(previous, ensure_ascii=False, default=str)
-        except (TypeError, ValueError):  # pragma: no cover — default=str covers it
-            return str(previous)
+        # `render_value`, not a local `json.dumps`: this was one of three copies of
+        # the same rendering and the third one crashed on a `date`.
+        from app.services.agent_flows.runtime.state import render_value
+
+        return render_value(previous)
     return ""
 
 
