@@ -1615,6 +1615,32 @@ def test_document_search_excludes_legacy_and_cross_model_vectors():
     assert params["allowed"] == [7]
 
 
+#: Built from the retriever's OWN column list, so a fixture cannot describe a row
+#: shape production does not produce. Two fixtures hard-coded a fifteen-tuple and
+#: broke with `IndexError` when the SELECT grew — pointing at neither the SELECT
+#: nor the reader.
+from app.services.dashboard_ai_bot.govern_doc_embeddings import (  # noqa: E402
+    CHUNK_HYDRATION_COLUMNS,
+)
+
+
+def chunk_row(**values):
+    """One hydration row, defaults for everything not named."""
+    defaults = {
+        "trust": "authored", "chunk_index": 0, "page": None,
+        "model_version": "text-embedding-3-small", "heading_path": None,
+        "block_kind": "paragraph", "token_count": 4, "section_index": 0,
+        "block_from": 0, "block_to": 0, "source_version": 0,
+        "last_verified_at": None, "review_date": None, "importance": "normal",
+        "sensitivity": "internal", "owner": None, "status": "Published",
+        "updated_at": None, "doc_type": "article",
+    }
+    defaults.update(values)
+    missing = [n for n in CHUNK_HYDRATION_COLUMNS if n not in defaults]
+    assert not missing, "chunk_row() chua biet cot moi: %s" % ", ".join(missing)
+    return tuple(defaults[name] for name in CHUNK_HYDRATION_COLUMNS)
+
+
 class _Result:
     """`execute(...)` result with the three readers retrieval uses.
 
@@ -1639,17 +1665,29 @@ class _Result:
         return iter(self._rows)
 
 
+def test_the_fixture_matches_the_real_select():
+    """The fixture is built from the retriever's own column list, so drift is
+    impossible by construction — this pins that the two are still the same list
+    rather than a copy that happens to agree today."""
+    from app.services.dashboard_ai_bot.govern_doc_embeddings import _by_name
+
+    row = chunk_row(id=1, doc_id=2, title="T", content="c")
+    assert len(row) == len(CHUNK_HYDRATION_COLUMNS)
+    # `_by_name` raises when the SELECT and the list disagree, so a row this
+    # builder produced must pass through it.
+    assert _by_name(row)["doc_id"] == 2
+
+
 def test_document_search_generates_one_query_vector_per_model(monkeypatch):
     from app.services.dashboard_ai_bot import govern_doc_embeddings as gde
     from app.services.embedding_service import EmbeddingService
 
-    # id, doc_id, title, chunk_index, content, trust, model, heading_path, page,
-    # block_kind, token_count, section_index, block_from, block_to, source_version
     HYDRATED = [
-        (10, 1, "Doc A", 0, "alpha", "authored", "model-a", "Doc A", None,
-         "paragraph", 4, 0, 3, 3, 1),
-        (20, 2, "Doc B", 0, "beta", "authored", "model-b", "Doc B", None,
-         "paragraph", 4, 0, 5, 5, 1),
+        chunk_row(id=10, doc_id=1, title="Doc A", content="alpha",
+                  model_version="model-a", heading_path="Doc A"),
+        chunk_row(id=20, doc_id=2, title="Doc B", content="beta",
+                  model_version="model-b", heading_path="Doc B", block_from=5,
+                  block_to=5),
     ]
 
     class Db:
@@ -1707,8 +1745,9 @@ def test_document_search_keeps_keyword_hits_when_a_model_fails(monkeypatch):
     from app.services.dashboard_ai_bot import govern_doc_embeddings as gde
     from app.services.embedding_service import EmbeddingService
 
-    HYDRATED = [(20, 2, "Doc B", 0, "exact Q2", "authored", "model-b", "Doc B",
-                 None, "paragraph", 4, 0, 5, 5, 1)]
+    HYDRATED = [chunk_row(id=20, doc_id=2, title="Doc B", content="exact Q2",
+                          model_version="model-b", heading_path="Doc B",
+                          block_from=5, block_to=5)]
 
     class Db:
         def execute(self, stmt, params=None):

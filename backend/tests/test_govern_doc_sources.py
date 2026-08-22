@@ -13,6 +13,31 @@ Covers the pure-function surface added for the Source/Embedding tabs:
 """
 from __future__ import annotations
 
+#: Built from the retriever's OWN column list, so a fixture cannot describe a row
+#: shape production does not produce. Two fixtures hard-coded a fifteen-tuple and
+#: broke with `IndexError` when the SELECT grew — pointing at neither the SELECT
+#: nor the reader.
+from app.services.dashboard_ai_bot.govern_doc_embeddings import (  # noqa: E402
+    CHUNK_HYDRATION_COLUMNS,
+)
+
+
+def chunk_row(**values):
+    """One hydration row, defaults for everything not named."""
+    defaults = {
+        "trust": "authored", "chunk_index": 0, "page": None,
+        "model_version": "text-embedding-3-small", "heading_path": None,
+        "block_kind": "paragraph", "token_count": 4, "section_index": 0,
+        "block_from": 0, "block_to": 0, "source_version": 0,
+        "last_verified_at": None, "review_date": None, "importance": "normal",
+        "sensitivity": "internal", "owner": None, "status": "Published",
+        "updated_at": None, "doc_type": "article",
+    }
+    defaults.update(values)
+    missing = [n for n in CHUNK_HYDRATION_COLUMNS if n not in defaults]
+    assert not missing, "chunk_row() chua biet cot moi: %s" % ", ".join(missing)
+    return tuple(defaults[name] for name in CHUNK_HYDRATION_COLUMNS)
+
 import os
 
 os.environ.setdefault("DATABASE_URL", "sqlite:///./test_govern_doc_sources.db")
@@ -516,8 +541,10 @@ def test_multi_model_search_embeds_the_query_once_per_model(monkeypatch):
         # it came from cannot be cited.
         def fetchall(self):
             return [
-                (10, 1, "Doc A", 0, "alpha", "authored", "model-a", "Doc A", None, "paragraph", 4, 0, 0, 0, 0),
-                (20, 2, "Doc B", 0, "beta", "authored", "model-b", "Doc B", None, "paragraph", 4, 0, 0, 0, 0),
+                chunk_row(id=10, doc_id=1, title="Doc A", content="alpha",
+                          model_version="model-a", heading_path="Doc A"),
+                chunk_row(id=20, doc_id=2, title="Doc B", content="beta",
+                          model_version="model-b", heading_path="Doc B"),
             ]
 
         def first(self):
@@ -569,8 +596,9 @@ def test_failed_model_keeps_its_keyword_results(monkeypatch):
 
     class _Rows:
         def fetchall(self):
-            return [(20, 2, "Doc B", 0, "exact code Q2", "authored", "model-b",
-                     "Doc B > Muc", None, "paragraph", 12, 0, 0, 0, 0)]
+            return [chunk_row(id=20, doc_id=2, title="Doc B",
+                              content="exact code Q2", model_version="model-b",
+                              heading_path="Doc B > Muc", token_count=12)]
 
     class _Db:
         def execute(self, stmt, params=None):

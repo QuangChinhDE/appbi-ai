@@ -925,6 +925,38 @@ def _dashboard_doc_ids(db: Session, dashboard_id: int) -> list[int]:
     return sorted({int(r[0]) for r in rows})
 
 
+#: The hydration SELECT's columns, in order.
+#:
+#: The row was read by POSITION — `by_id[chunk_id][15]`, twenty-three times — and
+#: every column added shifted the ones after it. Two test fixtures and both
+#: retrieval tests broke on the last addition with `IndexError: tuple index out of
+#: range`, pointing at neither the SELECT nor the reader. Positional access to a
+#: twenty-three-column row is a puzzle, not an interface.
+#:
+#: Declared here so the SQL below, the reader, and the test fixtures all name the
+#: same thing. Adding a column means one entry here and one in the SELECT, and
+#: forgetting the second is a KeyError that says which name is missing.
+CHUNK_HYDRATION_COLUMNS = (
+    "id", "doc_id", "title", "chunk_index", "content",
+    "trust", "model_version", "heading_path", "page", "block_kind",
+    "token_count", "section_index",
+    "block_from", "block_to", "source_version",
+    "last_verified_at", "review_date", "importance",
+    "sensitivity", "owner", "status", "updated_at", "doc_type",
+)
+
+
+def _by_name(row) -> dict:
+    """One hydration row as a mapping. Raises if the SELECT and the list disagree."""
+    if len(row) != len(CHUNK_HYDRATION_COLUMNS):
+        raise ValueError(
+            "hydration row has %d columns, CHUNK_HYDRATION_COLUMNS declares %d — "
+            "the SELECT and the column list have drifted"
+            % (len(row), len(CHUNK_HYDRATION_COLUMNS))
+        )
+    return dict(zip(CHUNK_HYDRATION_COLUMNS, row))
+
+
 def _scoped_chunk_filter(
     db: Session,
     *,
@@ -1131,7 +1163,17 @@ def _search_scoped_doc_chunks(
             SELECT c.id, c.doc_id, d.title, c.chunk_index, c.content,
                    c.trust, c.model_version, c.heading_path, c.page, c.block_kind,
                    c.token_count, c.section_index,
-                   c.block_from, c.block_to, c.source_version
+                   c.block_from, c.block_to, c.source_version,
+                   -- GOVERNANCE, read at retrieval time.
+                   --
+                   -- Ranking by authority and warning a reader that a policy is
+                   -- overdue for review both need these, and both were impossible:
+                   -- the retriever selected content and provenance and stopped, so
+                   -- every consumer that wanted "is this still verified" had to go
+                   -- back to the database per row or do without. They are columns
+                   -- on a table already joined; carrying them costs nothing.
+                   d.last_verified_at, d.review_date, d.importance,
+                   d.sensitivity, d.owner, d.status, d.updated_at, d.doc_type
             FROM govern_doc_chunk c
             JOIN govern_knowledge_docs d ON d.id = c.doc_id
             WHERE c.id = ANY(:ids)
@@ -1139,48 +1181,57 @@ def _search_scoped_doc_chunks(
         ),
         {"ids": candidate_ids},
     ).fetchall()
-    by_id = {int(row[0]): row for row in rows}
+    by_id = {int(row[0]): _by_name(row) for row in rows}
     section_context = _section_context(
-        db, {(int(r[1]), int(r[11])) for r in rows}
+        db, {(int(r["doc_id"]), int(r["section_index"])) for r in by_id.values()}
     )
     keyword_set = set(keyword_ids)
     candidates = [
         {
             "chunk_id": chunk_id,
-            "doc_id": int(by_id[chunk_id][1]),
-            "title": by_id[chunk_id][2],
-            "chunk_index": int(by_id[chunk_id][3]),
-            "content": by_id[chunk_id][4],
+            "doc_id": int(row["doc_id"]),
+            "title": row["title"],
+            "chunk_index": int(row["chunk_index"]),
+            "content": row["content"],
             "similarity": vector_scores.get(chunk_id),
             "rrf_score": float(fused[chunk_id]),
-            "trust": by_id[chunk_id][5],
-            "embedding_model": by_id[chunk_id][6],
+            "trust": row["trust"],
+            "embedding_model": row["model_version"],
             # Where this passage came from, recorded at index time. A citation
             # rebuilt later from a re-chunked document is a guess.
-            "heading_path": by_id[chunk_id][7],
-            "page": by_id[chunk_id][8],
-            "block_kind": by_id[chunk_id][9],
-            "token_count": by_id[chunk_id][10],
-            "section_index": by_id[chunk_id][11],
+            "heading_path": row["heading_path"],
+            "page": row["page"],
+            "block_kind": row["block_kind"],
+            "token_count": row["token_count"],
+            "section_index": row["section_index"],
             # SMALL TO BIG. The chunk is what matched; the section is what a model
             # should read to understand it. Assembled from its siblings, so no row
             # stores a second copy of the same prose.
             "section_content": section_context.get(
-                (int(by_id[chunk_id][1]), int(by_id[chunk_id][11]))
+                (int(row["doc_id"]), int(row["section_index"]))
             ),
-            "block_from": by_id[chunk_id][12],
-            "block_to": by_id[chunk_id][13],
-            "source_version": by_id[chunk_id][14],
+            "block_from": row["block_from"],
+            "block_to": row["block_to"],
+            "source_version": row["source_version"],
+            # How much a reader should trust this ROW, beyond how well it matched.
+            "last_verified_at": row["last_verified_at"],
+            "review_date": row["review_date"],
+            "importance": row["importance"],
+            "sensitivity": row["sensitivity"],
+            "owner": row["owner"],
+            "doc_status": row["status"],
+            "updated_at": row["updated_at"],
+            "doc_type": row["doc_type"],
             "citation": {
-                "doc_id": int(by_id[chunk_id][1]),
-                "title": by_id[chunk_id][2],
-                "heading_path": by_id[chunk_id][7],
-                "page": by_id[chunk_id][8],
+                "doc_id": int(row["doc_id"]),
+                "title": row["title"],
+                "heading_path": row["heading_path"],
+                "page": row["page"],
                 # The STABLE anchor. `chunk_index` moves on every re-index, so a
                 # citation recorded against it dangled; a block ordinal does not
                 # move for the life of a document version.
-                "block": by_id[chunk_id][12],
-                "source_version": by_id[chunk_id][14],
+                "block": row["block_from"],
+                "source_version": row["source_version"],
             },
             "matched_by": (
                 "both"
@@ -1194,8 +1245,9 @@ def _search_scoped_doc_chunks(
                 else "metric"
             ),
         }
-        for chunk_id in candidate_ids
-        if chunk_id in by_id
+        for chunk_id, row in (
+            (cid, by_id[cid]) for cid in candidate_ids if cid in by_id
+        )
     ]
 
     # ── stage two ─────────────────────────────────────────────────────────────
