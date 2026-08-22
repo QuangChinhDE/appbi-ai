@@ -405,7 +405,17 @@ def normalize_filter_conditions(
     """
     normalized: list[dict] = []
     for filt in filters or []:
-        if isinstance(filt, dict) and str(filt.get("type") or "").lower() == "image":
+        if not isinstance(filt, dict):
+            # A malformed entry (not an object — a stray string / null / list
+            # from a bad save or a hand-crafted request). Skip defensively
+            # instead of letting `filt.get(...)` raise AttributeError: this is
+            # the shared chokepoint, and in the per-page batch endpoint an
+            # exception here would fail EVERY chart on the page, not just the
+            # one carrying the bad filter (the "1 bad filter → whole page 500"
+            # outage). A soft drop keeps the rest of the page rendering.
+            _record_dropped_filter(diagnostics, filt, "no_field", "filter entry is not an object")
+            continue
+        if str(filt.get("type") or "").lower() == "image":
             # Phase-G — slicer cluster image child, not a filter predicate.
             continue
         field = filt.get("field")
