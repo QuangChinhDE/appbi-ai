@@ -570,6 +570,81 @@ def _sanitize_public_viewer_filters(
     return sanitized
 
 
+def _date_slicer_field_key(entry: dict) -> str:
+    """Identity of a slicer/filter for preset-token matching — the qualified
+    semantic ref when present, else the bare field. Lowercased so a FE-sent
+    filter and its stored definition compare equal."""
+    return str(
+        entry.get("semanticField")
+        or entry.get("fieldKey")
+        or entry.get("field")
+        or ""
+    ).strip().lower()
+
+
+def _authoritative_date_presets(dash: Dashboard) -> dict[str, str]:
+    """Map ``field-key -> datePreset token`` for every stored slicer/filter the
+    dashboard defines with a RELATIVE preset — across BOTH the top-bar
+    (`slicers_config` / `filters_config`) AND every page (`pages_config[].slicers`
+    / `[].filters`).
+
+    This is what lets the server treat the stored ``datePreset`` as authoritative
+    for PAGE-scope slicers too (the blind spot: the merge only ever read
+    `slicers_config`, so a page slicer's relative window was never recomputed —
+    a "last 30 days" page slicer stayed frozen at its publish-time value). We use
+    it to re-attach the token onto an incoming date filter that arrived WITHOUT
+    one (a stale/embed FE that sent the frozen value only); `normalize_filter_
+    conditions` then resolves it to the current window. An incoming filter that
+    already carries its own token (an explicit viewer choice) is left untouched.
+    """
+    presets: dict[str, str] = {}
+
+    def scan(entries) -> None:
+        for entry in entries or []:
+            if not isinstance(entry, dict):
+                continue
+            token = str(entry.get("datePreset") or entry.get("date_preset") or "").strip().lower()
+            if not token or token == "custom":
+                continue
+            key = _date_slicer_field_key(entry)
+            if key:
+                presets.setdefault(key, token)
+
+    scan(getattr(dash, "slicers_config", None))
+    scan(getattr(dash, "filters_config", None))
+    for page in (getattr(dash, "pages_config", None) or []):
+        if isinstance(page, dict):
+            scan(page.get("slicers"))
+            scan(page.get("filters"))
+    return presets
+
+
+def _reattach_authoritative_date_presets(
+    viewer_filters: list[dict] | None,
+    presets: dict[str, str],
+) -> list[dict]:
+    """Re-attach the stored authoritative ``datePreset`` token to any incoming
+    date filter that lacks one but targets a field the dashboard defines as a
+    relative-preset slicer. Non-date filters, and filters that already carry a
+    token (explicit viewer selection, incl. 'custom'), pass through unchanged."""
+    if not presets:
+        return list(viewer_filters or [])
+    out: list[dict] = []
+    for f in viewer_filters or []:
+        if isinstance(f, dict):
+            has_token = str(f.get("datePreset") or f.get("date_preset") or "").strip()
+            is_date = (
+                str(f.get("type") or "").strip().lower() == "date"
+                or str(f.get("operator") or "").strip().lower() in {"between", "date_between"}
+            )
+            if not has_token and is_date:
+                token = presets.get(_date_slicer_field_key(f))
+                if token:
+                    f = {**f, "datePreset": token}
+        out.append(f)
+    return out
+
+
 def _build_public_chart_filters(
     dash: Dashboard,
     link_filters_config: list[dict] | None,
@@ -602,6 +677,16 @@ def _build_public_chart_filters(
     `dashboard_ai_bot_filters` calls out the previous drift between
     those sites; this helper closes it.
     """
+    # Server-authoritative relative dates for PAGE-scope slicers too: a stale /
+    # embed FE may send a page date slicer with only its frozen `value` (no
+    # `datePreset`), and the merge never consulted `pages_config` to know the
+    # field is actually a "last N days" slicer — so the window stayed frozen at
+    # publish time regardless of a fresh token. Re-attach the stored token here
+    # so `normalize_filter_conditions` recomputes it to the current window. A
+    # filter that already carries a token (explicit viewer choice) is untouched.
+    viewer_filters = _reattach_authoritative_date_presets(
+        viewer_filters, _authoritative_date_presets(dash),
+    )
     raw_link = [item for item in (link_filters_config or []) if isinstance(item, dict)]
     # Peel off 'limit' (allow-list scope) entries BEFORE the lock/hide split:
     # they must NOT land in the authoritative locked layer (which would override
@@ -3017,6 +3102,7 @@ def get_public_charts_data_batch(
 
     items: list[dict] = []
     not_found: list[int] = []
+    build_errors: list[dict] = []
     seen: set[int] = set()
     for it in body.items:
         cid = int(it.chart_id)
@@ -3026,11 +3112,26 @@ def get_public_charts_data_batch(
         if cid not in valid_ids:
             not_found.append(cid)
             continue
-        viewer_filters = [f for f in (it.filters or []) if isinstance(f, dict)]
-        combined_filters = _build_public_chart_filters(
-            dash, public_filters, viewer_filters,
-            context_for_log=f"chart_data_batch:{token}:{cid}",
-        )
+        # Isolate the filter build PER CHART. `get_charts_data_batch` already
+        # runs each chart's query in its own try/except-guarded worker, but the
+        # filter merge ran here in a shared loop with no guard — so one chart
+        # whose merge raised (e.g. a malformed slicer/filter in the stored
+        # config or link) took down the WHOLE page's response (every tile 500s),
+        # not just its own tile. Degrade to a per-chart error instead.
+        try:
+            viewer_filters = [f for f in (it.filters or []) if isinstance(f, dict)]
+            combined_filters = _build_public_chart_filters(
+                dash, public_filters, viewer_filters,
+                context_for_log=f"chart_data_batch:{token}:{cid}",
+            )
+        except Exception:
+            logger.exception("chart_data_batch: filter build failed for chart=%s", cid)
+            build_errors.append({
+                "chart_id": cid,
+                "error": "Could not apply filters for this chart.",
+                "status": 400,
+            })
+            continue
         _grain = str(it.granularity or "").strip().lower()
         grain = _grain if _grain in {"raw", "day", "week", "month", "quarter", "year"} else None
         items.append({
@@ -3064,6 +3165,9 @@ def get_public_charts_data_batch(
             "error": "Chart not found in this shared dashboard.",
             "status": 404,
         })
+    # Per-chart filter-build failures (isolated above) surface as that tile's
+    # own error, so the rest of the page still renders.
+    results.extend(build_errors)
     return {"results": results}
 
 
