@@ -443,3 +443,119 @@ export function KnowledgeAttachments({
     </div>
   );
 }
+
+/* ── run status ───────────────────────────────────────────────────────────── */
+
+/** A RUN's outcome, as distinct from a brain's lifecycle status above.
+ *
+ *  The tone table and label keys lived inside `RunsTab` and were about to be
+ *  copied into the conversations and feedback views — three places deciding
+ *  independently what colour `partial` is. One definition instead, here, because
+ *  `partial` reading as danger in one view and warning in another would make a
+ *  reader distrust both.
+ *
+ *  `partial` is WARNING, not danger, on purpose: a partial run answered the
+ *  viewer. It just could not finish everything it set out to do. */
+const RUN_TONE: Record<string, 'success' | 'warning' | 'danger' | 'neutral'> = {
+  ok: 'success', partial: 'warning', blocked: 'danger', failed: 'danger',
+  throttled: 'warning',
+};
+
+const RUN_LABEL_KEY: Record<string, string> = {
+  ok: 'agentFlows.runs.status.ok',
+  partial: 'agentFlows.runs.status.partial',
+  blocked: 'agentFlows.runs.status.blocked',
+  failed: 'agentFlows.runs.status.failed',
+  throttled: 'agentFlows.runs.status.throttled',
+};
+
+export function RunStatusBadge({
+  status, size = 'xs',
+}: { status: string; size?: 'xs' | 'sm' }) {
+  const { t } = useI18n();
+  return (
+    <Badge variant={RUN_TONE[status] || 'neutral'} size={size}>
+      {RUN_LABEL_KEY[status] ? t(RUN_LABEL_KEY[status]) : status}
+    </Badge>
+  );
+}
+
+/* ── history surfaces ─────────────────────────────────────────────────────── */
+
+/** One figure in a summary strip. Value then a quiet uppercase label.
+ *
+ *  Moved here from `RunsTab` when the Feedback tab needed the same strip. Two
+ *  copies would have drifted in the one place drift is most visible: a row of
+ *  numbers where the numbers do not line up. */
+export function Stat({
+  value, label, tone,
+}: {
+  value: React.ReactNode;
+  label: string;
+  /** Semantic emphasis for a figure that means good or bad. Left off for
+   *  counts and durations, which are neither. */
+  tone?: 'success' | 'danger';
+}) {
+  return (
+    <div className="flex items-baseline gap-1.5">
+      <strong className={cn(
+        'text-body font-strong',
+        tone === 'success' && 'text-success',
+        tone === 'danger' && 'text-danger',
+      )}>
+        {value}
+      </strong>
+      <span className="text-tiny uppercase tracking-wide text-text-tertiary">{label}</span>
+    </div>
+  );
+}
+
+/** The strip itself, so every history tab frames its numbers identically. */
+export function StatStrip({
+  children, note,
+}: { children: React.ReactNode; note?: string }) {
+  return (
+    <div
+      className="mb-3 flex flex-wrap items-center gap-x-6 gap-y-1.5 rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 px-4 py-2.5"
+      title={note}
+    >
+      {children}
+      {note && <span className="text-tiny text-text-quaternary">{note}</span>}
+    </div>
+  );
+}
+
+/** WHERE A TURN CAME FROM.
+ *
+ *  This replaced an "include test runs" checkbox that defaulted to OFF, which made
+ *  the Runs tab empty in the one moment an author most needs it: straight after
+ *  running a test. The checkbox was also the wrong control for the question — it
+ *  offered "viewers" or "viewers and me", and never "just what I ran", which is the
+ *  view you want while building.
+ *
+ *  Default is `all`: this tab lives inside the builder, and hiding the author's own
+ *  work from the author is not a sensible default anywhere in it. */
+export type RunSource = 'all' | 'viewer' | 'test';
+
+export function SourceFilter({
+  value, onChange,
+}: { value: RunSource; onChange: (v: RunSource) => void }) {
+  const { t } = useI18n();
+  return (
+    <div className="flex gap-1 rounded-lg bg-surface-2 p-1">
+      {(['all', 'viewer', 'test'] as const).map((v) => (
+        <button
+          key={v}
+          type="button"
+          onClick={() => onChange(v)}
+          className={cn(
+            'rounded-md px-2 py-1 text-caption transition',
+            value === v ? 'bg-surface-1 font-medium shadow-linear-sm' : 'text-text-tertiary',
+          )}
+        >
+          {t(`agentFlows.runs.source.${v}`)}
+        </button>
+      ))}
+    </div>
+  );
+}

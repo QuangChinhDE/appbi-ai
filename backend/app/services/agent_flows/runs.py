@@ -137,13 +137,48 @@ def record(
         return None
 
 
+#: Session bookkeeping — never the reason a turn failed.
+#:
+#: These are merged into the notice list by the CALLER, after the run, so they sit
+#: FIRST and `_blocked_reason` picked them as the cause. A turn abandoned by the
+#: viewer, or one that ran out of tool budget, was filed under "memory_reset" — so
+#: the one column an operator reads to answer "why did this fail" answered with a
+#: note about recalculating. The real cause was in the list, one entry further down.
+_NOT_A_CAUSE = frozenset({"memory_reset", "memory_expired"})
+
+
 def _blocked_reason(out: FlowOutput) -> str | None:
     if out.status not in {"blocked", "failed"}:
         return None
     for n in out.notices:
-        if n.code:
+        if n.code and n.code not in _NOT_A_CAUSE:
             return n.code[:64]
     return out.status
+
+
+def rate_run(db: Session, *, brain_key: str, run_id: int, rating: str | None) -> bool:
+    """Rate one run BY ID. The authenticated counterpart of `apply_rating`.
+
+    A public chat client does not know run ids, which is why `apply_rating` matches
+    on answer text. Inside AppBI the id is right there, so the ambiguity is not
+    worth inheriting — two turns of a session that happened to produce identical
+    answers would be indistinguishable by text.
+
+    `None` clears the rating, because a thumb pressed by mistake has to be
+    retractable or people stop pressing them.
+    """
+    if rating not in {"up", "down", None}:
+        return False
+    row = (
+        db.query(AgentFlowRun)
+        .filter(AgentFlowRun.id == run_id, AgentFlowRun.brain_key == brain_key)
+        .first()
+    )
+    if row is None:
+        return False
+    row.rating = rating
+    db.commit()
+    return True
 
 
 def apply_rating(db: Session, *, session_key: str, answer_text: str, rating: str) -> None:
@@ -259,6 +294,17 @@ def run_detail(db: Session, *, brain_key: str, run_id: int) -> dict[str, Any] | 
         "version": row.version,
         "link_token": row.link_token,
         "binding_id": row.binding_id,
+        # WHERE THE QUESTION CAME FROM. The list has carried `is_test` from the
+        # start; the detail did not, so opening a run gave no way to tell an
+        # author's own trial from a viewer asking on a public link — two events
+        # that lead to opposite conclusions about whether the flow is working.
+        "is_test": bool(row.is_test),
+        "trigger": row.trigger,
+        # WHICH CONVERSATION THIS TURN BELONGS TO. A run link has to be able to open
+        # the conversation around it: one turn out of the middle of a session is the
+        # least readable way to look at a run, and until this was returned the client
+        # had no way to get from a run id back to the session it was part of.
+        "session_key": row.session_key,
         "execution_path": row.execution_path,
         "latency_ms": row.latency_ms,
         "usage": {
@@ -534,26 +580,47 @@ def _not_executed(
         return []
 
 
-def stats(db: Session, *, brain_key: str, since_hours: int = 24) -> dict[str, Any]:
-    """The six tiles above the Runs table."""
+def stats(
+    db: Session, *, brain_key: str, since_hours: int = 24, source: str = "viewer"
+) -> dict[str, Any]:
+    """The tiles above the history table.
+
+    `source` FOLLOWS THE LIST. This used to be hardcoded to viewer traffic, which was
+    the right scope and the wrong behaviour: the list below it can be filtered to the
+    author's own test runs, and the strip then read "0 runs / 0% answered" above ten
+    visible rows. A row of zeros over a populated table does not read as "scoped", it
+    reads as broken, and the note explaining it was doing all the work.
+
+    The default stays `viewer`: a p95 computed over 40-second studio trials describes
+    nobody's experience, and an error rate that counts a half-built flow is not an
+    error rate. The caller asks for something else deliberately, and the screen says
+    which scope it is showing.
+    """
     since = datetime.now(timezone.utc) - timedelta(hours=since_hours)
-    base = db.query(AgentFlowRun).filter(
-        AgentFlowRun.brain_key == brain_key,
-        AgentFlowRun.is_test.is_(False),
-        AgentFlowRun.created_at >= since,
+
+    def scoped(q):
+        if source == "viewer":
+            return q.filter(AgentFlowRun.is_test.is_(False))
+        if source == "test":
+            return q.filter(AgentFlowRun.is_test.is_(True))
+        return q
+
+    base = scoped(
+        db.query(AgentFlowRun).filter(
+            AgentFlowRun.brain_key == brain_key,
+            AgentFlowRun.created_at >= since,
+        )
     )
     total = base.count()
     ok = base.filter(AgentFlowRun.status.in_(["ok", "partial"])).count()
     errors = base.filter(AgentFlowRun.status.in_(["failed", "blocked"])).count()
-    avg_tokens = (
+    avg_tokens = scoped(
         db.query(func.avg(AgentFlowRun.prompt_tokens + AgentFlowRun.completion_tokens))
         .filter(
             AgentFlowRun.brain_key == brain_key,
-            AgentFlowRun.is_test.is_(False),
             AgentFlowRun.created_at >= since,
         )
-        .scalar()
-    )
+    ).scalar()
     latencies = sorted(
         x[0] for x in base.with_entities(AgentFlowRun.latency_ms).all() if x[0] is not None
     )
@@ -565,6 +632,9 @@ def stats(db: Session, *, brain_key: str, since_hours: int = 24) -> dict[str, An
         "avg_tokens": int(avg_tokens or 0),
         "errors": errors,
         "window_hours": since_hours,
+        # Echoed back so the screen can label what it is showing instead of
+        # asserting a scope it only assumed.
+        "source": source,
     }
 
 

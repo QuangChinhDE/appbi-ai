@@ -248,6 +248,14 @@ def packs() -> list[ToolPack]:
 
 
 def pack_of(name: str) -> ToolPack | None:
+    """The pack a tool belongs to. No caller YET, deliberately kept.
+
+    `all_specs` went in the same sweep as this because it was a second way to read
+    the node registry that nothing used. This one is different: it is the primitive
+    the agreed "grant a pack, not thirty-three tools" change needs, and deleting
+    code that is about to be written again is churn rather than cleanliness. If that
+    change does not happen, this goes.
+    """
     _load_packs()
     for p in _PACKS.values():
         if any(t.name == name for t in p.tools):

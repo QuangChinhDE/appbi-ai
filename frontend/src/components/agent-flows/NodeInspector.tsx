@@ -317,16 +317,100 @@ function NodeForm(props: InspectorProps & { node: FlowNode }) {
           <Field label={t('agentFlows.inspector.outputFormat')}>
             <Select
               value={node.output_format || 'chat'}
-              onChange={(v) => set({ output_format: v as 'chat' | 'json' } as Partial<FlowNode>)}
+              onChange={(v) => set({
+                output_format: v as 'chat' | 'json' | 'choice',
+              } as Partial<FlowNode>)}
               options={[
                 { value: 'chat', label: t('agentFlows.inspector.output.chat') },
                 { value: 'json', label: t('agentFlows.inspector.output.json') },
+                { value: 'choice', label: t('agentFlows.inspector.output.choice') },
               ]}
             />
             <HintText>
               {t('agentFlows.inspector.outputHint')}
             </HintText>
           </Field>
+
+          {/* THE CLASSIFIER, WHICH HAD NO UI AT ALL.
+              `choice` is what makes a Switch work: the step emits exactly one value
+              from this list and the runtime enforces it. The backend has supported it
+              from the start and the dropdown offered only chat and json, so the node
+              that governs every branching flow could be created by API and nowhere
+              else — and a Switch whose value nothing produces matches nothing and
+              still reports ok.
+
+              THE HINT IS NOT DECORATION. Options are usually variable names, and a
+              model asked to choose between variable names is guessing what they were
+              meant to stand for. Measured on a full-coverage harness: with bare keys
+              a plain lookup question was routed to the FORECAST branch and the
+              lookup branch never fired once in four questions. */}
+          {node.output_format === 'choice' && (
+            <Field
+              label={t('agentFlows.inspector.choices')}
+              hint={t('agentFlows.inspector.choicesHint')}
+            >
+              <div className="space-y-1.5">
+                {(node.choices || []).map((c, i) => (
+                  <div key={i} className="flex items-start gap-1.5">
+                    <Input
+                      className="w-[38%] font-mono text-tiny"
+                      value={c}
+                      placeholder={t('agentFlows.inspector.choiceValue')}
+                      onChange={(e) => {
+                        const next = [...(node.choices || [])];
+                        const prev = next[i];
+                        next[i] = e.target.value;
+                        // Carry the description across a rename, or renaming a
+                        // choice would silently orphan the words explaining it.
+                        const hints = { ...(node.choice_hints || {}) };
+                        if (prev && hints[prev] !== undefined) {
+                          hints[e.target.value] = hints[prev];
+                          delete hints[prev];
+                        }
+                        set({ choices: next, choice_hints: hints } as Partial<FlowNode>);
+                      }}
+                    />
+                    <Input
+                      className="flex-1"
+                      value={(node.choice_hints || {})[c] || ''}
+                      placeholder={t('agentFlows.inspector.choiceHint')}
+                      onChange={(e) => set({
+                        choice_hints: { ...(node.choice_hints || {}), [c]: e.target.value },
+                      } as Partial<FlowNode>)}
+                    />
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      aria-label={t('common.delete')}
+                      onClick={() => {
+                        const next = (node.choices || []).filter((_, j) => j !== i);
+                        const hints = { ...(node.choice_hints || {}) };
+                        delete hints[c];
+                        set({ choices: next, choice_hints: hints } as Partial<FlowNode>);
+                      }}
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </Button>
+                  </div>
+                ))}
+              </div>
+              <Button
+                size="sm"
+                variant="ghost"
+                className="mt-1.5"
+                onClick={() => set({
+                  choices: [...(node.choices || []), ''],
+                } as Partial<FlowNode>)}
+              >
+                <Plus className="h-3.5 w-3.5" /> {t('agentFlows.inspector.addChoice')}
+              </Button>
+              {/* Refused at save time by the contract, so it is said here first —
+                  where the author is looking at the node rather than at a toast. */}
+              {(node.choices || []).filter((c) => c.trim()).length < 2 && (
+                <HintText>{t('agentFlows.inspector.choicesTooFew')}</HintText>
+              )}
+            </Field>
+          )}
           <Field label={t('agentFlows.inspector.maxToolCalls')}>
             <Input type="number" min={1} max={MAX_TOOL_CALLS} value={node.max_tool_calls ?? 8}
               onChange={(e) => set({ max_tool_calls: Number(e.target.value) } as Partial<FlowNode>)} />

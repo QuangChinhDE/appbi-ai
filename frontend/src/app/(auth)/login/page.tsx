@@ -6,6 +6,7 @@ import Script from 'next/script';
 import { BarChart3 } from 'lucide-react';
 
 import { authConfig } from '@/lib/auth-config';
+import { DEFAULT_LANDING_PATH } from '@/lib/feature-flags';
 import { Button } from '@/components/ui/Button';
 import { Input, Label } from '@/components/ui/Input';
 
@@ -38,7 +39,11 @@ function LoginForm() {
   const canUseGoogle = authConfig.googleEnabled && Boolean(authConfig.googleClientId);
   const canUsePassword = authConfig.passwordEnabled;
   const nextPath = searchParams.get('next');
-  const redirectTarget = nextPath && nextPath.startsWith('/') ? nextPath : '/dashboards';
+  // Land on the shared home, not on a module. Signing in used to drop everybody on
+  // `/dashboards` — including people with no Dashboards permission at all, who then
+  // met an empty module shell offering to create something the server would refuse.
+  // `DEFAULT_LANDING_PATH` is the same target the sidebar's home link uses.
+  const redirectTarget = nextPath && nextPath.startsWith('/') ? nextPath : DEFAULT_LANDING_PATH;
 
   const submitGoogleCredential = useCallback(async (credential: string) => {
     setError('');

@@ -222,7 +222,15 @@ def tool_get_chart_summary(ctx: ToolContext, args: dict) -> dict:
     from app.services.dashboard_ai_bot.summary_cache import (
         get_cached_pack,
         put_cached_pack,
+        scope_hash,
     )
+
+    # The exclusion set is part of the cache identity, not a detail of the payload:
+    # a pack built while a column was visible must not answer for a caller the column
+    # is now hidden from. Folded into the filter hash so the key shape — and every
+    # existing call site — stay exactly as they were.
+    cache_filters = [*(ctx.public_filters or []),
+                     {"__ai_scope__": scope_hash(getattr(ctx, "excluded_columns", None))}]
 
     meta = ctx.chart_meta.get(chart_id, {})
 
@@ -248,7 +256,7 @@ def tool_get_chart_summary(ctx: ToolContext, args: dict) -> dict:
 
     dashboard_id = getattr(ctx.dashboard, "id", None)
     if isinstance(dashboard_id, int):
-        cached = get_cached_pack(dashboard_id, ctx.public_filters, chart_id)
+        cached = get_cached_pack(dashboard_id, cache_filters, chart_id)
         if cached is not None:
             logger.debug(
                 "dashboard_ai_bot summary cache HIT dashboard_id=%s chart_id=%s",
@@ -287,7 +295,7 @@ def tool_get_chart_summary(ctx: ToolContext, args: dict) -> dict:
     pack_dict = pack.to_dict()
     if isinstance(dashboard_id, int):
         # Cache the raw SQL-stats pack; vocabulary is layered on at read time.
-        put_cached_pack(dashboard_id, ctx.public_filters, chart_id, pack_dict)
+        put_cached_pack(dashboard_id, cache_filters, chart_id, pack_dict)
     return _ok(_enrich(pack_dict))
 
 

@@ -18,6 +18,7 @@ from app.core.logging import get_logger
 from app.core.config import settings
 from app.models import DataSourceType
 from app.services.sql_validator import validate_select_only
+from app.services import physical_type_map as _ptm
 from app.services.google_sheets_connector import create_google_sheets_connector
 from app.services.manual_table_connector import create_manual_table_connector
 from app.services.google_data_access_service import get_google_credentials_for_user_id
@@ -203,6 +204,37 @@ def _sheets_referenced_by_sql(sql_query: str, sheet_names: List[str]) -> List[st
     if not referenced:
         return list(sheet_names)
     return referenced
+
+
+def _python_value_type_token(value: Any) -> str:
+    """The physical type token implied by a value a query engine returned.
+
+    Used for schema-less sources (imported files, Google Sheets) where the only
+    authority on a column's type is the engine that produced it. Tokens are the
+    ones `physical_type_map` understands, so the snapshot loader and the semantic
+    engine read the same vocabulary."""
+    import datetime as _dt
+    from decimal import Decimal as _Dec
+
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, int):
+        return "bigint"
+    if isinstance(value, float):
+        return "double"
+    if isinstance(value, _Dec):
+        return "numeric"
+    if isinstance(value, _dt.datetime):
+        return "timestamp"
+    if isinstance(value, _dt.date):
+        return "date"
+    if isinstance(value, _dt.time):
+        return "time"
+    if isinstance(value, (bytes, bytearray)):
+        return "bytes"
+    if isinstance(value, (dict, list, tuple)):
+        return "json"
+    return "string"
 
 
 def _build_arrow_table_from_sheet(pa_module, col_defs: List[Dict[str, Any]], rows: List[Dict[str, Any]]):
@@ -1397,6 +1429,7 @@ class DataSourceConnectionService:
     def extract_generic_for_snapshot(
         ds_type: str, config: Dict[str, Any], sql: str,
         columns_meta: Optional[List[Dict[str, Any]]] = None, timeout_seconds: int = 280,
+        effective_types_out: Optional[Dict[str, str]] = None,
     ) -> Tuple[Optional[list], List[Dict[str, Any]]]:
         """EXTRACT step for a NON-BigQuery source (Google Sheets / manual / other
         warehouse) in a federated dataset: run `sql` on the source's OWN engine and
@@ -1409,7 +1442,17 @@ class DataSourceConnectionService:
         (e.g. a dim key guessed INT64 while the fact key is STRING) → BQ then
         rejects the JOIN (`No matching signature for operator =`). Declared types
         keep join keys consistent. Falls back to autodetect (None) only when no
-        column metadata is available."""
+        column metadata is available.
+
+        The declared type → BigQuery type mapping lives in ``physical_type_map``
+        and is SHARED with the semantic engine's SAFE_CAST gates, so a token can
+        never mean "text" to the loader and "number" to the engine (that split is
+        what produced `SUM(STRING)` 400s on CSV/manual snapshots). Each column's
+        declared type is then VERIFIED against the extracted values: a column the
+        data does not honour (``"007"`` in a numeric column, ``"01/01/2026"`` in a
+        DATE column) is loaded as STRING instead of corrupting values or failing
+        the whole LOAD job. ``effective_types_out``, when given, receives the
+        ``{column: BQ type}`` actually used so the caller can record it."""
         import base64
         import datetime as _dt
         import json as _json
@@ -1431,25 +1474,11 @@ class DataSourceConnectionService:
             return v
 
         def _bq_type(meta: Dict[str, Any]) -> str:
-            t = str(meta.get("source_type") or meta.get("type") or "").strip().lower()
-            if any(k in t for k in ("timestamp", "datetime")):
-                return "TIMESTAMP"
-            if t == "date":
-                return "DATE"
-            if t == "time":
-                return "TIME"
-            if "bool" in t:
-                return "BOOL"
-            # Issue #19: exact-decimal types → NUMERIC (not FLOAT64) so a Postgres
-            # NUMERIC/DECIMAL amount keeps its precision when federated into
-            # BigQuery. Only true floating types map to FLOAT64.
-            if any(k in t for k in ("numeric", "decimal")):
-                return "NUMERIC"
-            if any(k in t for k in ("float", "double", "real")):
-                return "FLOAT64"
-            if "int" in t:
-                return "INT64"
-            return "STRING"  # string / json / number-unknown → STRING (join-safe default)
+            # ONE shared vocabulary with the semantic engine's cast gates — see
+            # app/services/physical_type_map.py for why this must not be a local
+            # substring table (a dropped "number" token here typed every CSV
+            # numeric column as STRING while the engine summed it uncast → 400).
+            return _ptm.bq_extract_load_type(meta.get("source_type"), meta.get("type"))
 
         def _coerce_to(bq_t: str, v):
             """Coerce a JSON-safe value to match its declared BigQuery type so the
@@ -1461,7 +1490,7 @@ class DataSourceConnectionService:
                     return int(float(v)) if not isinstance(v, bool) else int(v)
                 if bq_t == "FLOAT64":
                     return float(v)
-                if bq_t == "NUMERIC":
+                if bq_t in ("NUMERIC", "BIGNUMERIC"):
                     # Keep as STRING for the JSON load so BigQuery parses it as
                     # exact NUMERIC (float() would lose precision). Decimal was
                     # already str()'d by _json_safe; pass numbers through as str.
@@ -1488,6 +1517,23 @@ class DataSourceConnectionService:
             return None, safe_rows  # no metadata → autodetect fallback
 
         type_by_name = {c["name"]: _bq_type(c) for c in cols}
+        # VERIFY the declared type against the data actually extracted. A
+        # declared type the values do not honour is not worth betting a build on:
+        # a bad DATE fails the whole BigQuery LOAD job, and "007"/"1,234" in a
+        # numeric column would be silently corrupted or NULLed. Such a column
+        # falls back to STRING — the caller records that (effective_types_out) so
+        # the engine's gates SAFE_CAST it, exactly like a Google-Sheets column.
+        for _name, _bt in list(type_by_name.items()):
+            _verified = _ptm.verified_bq_type(_bt, (row.get(_name) for row in safe_rows))
+            if _verified != _bt:
+                logger.info(
+                    "[snapshot] column %r declared %s but values do not fit → loading as STRING",
+                    _name, _bt,
+                )
+                type_by_name[_name] = _verified
+        if effective_types_out is not None:
+            effective_types_out.clear()
+            effective_types_out.update(type_by_name)
         bq_schema = [bigquery.SchemaField(name, bt) for name, bt in type_by_name.items()]
         typed_rows = [
             {name: _coerce_to(bt, row.get(name)) for name, bt in type_by_name.items()}
@@ -1611,6 +1657,7 @@ class DataSourceConnectionService:
         host_config: Dict[str, Any], dataset_name: str, table_name: str,
         storage: Dict[str, Any], chunk_size: Optional[int] = None,
         timeout_seconds: int = 280, progress_cb=None,
+        effective_types_out: Optional[Dict[str, str]] = None,
     ) -> Tuple[int, Optional[str]]:
         """Batched EXTRACT+LOAD (Pha-C-lite): stream the source in bounded chunks
         and load into a PARTITIONED/CLUSTERED snapshot table — first chunk
@@ -1619,7 +1666,10 @@ class DataSourceConnectionService:
         whole result set, and avoids the single-job 280s ceiling on huge tables.
         The target is built fresh (not the current pointer) so the caller's atomic
         swap keeps reads consistent; a mid-stream failure just orphans the partial
-        table. Returns (row_count, storage_warning)."""
+        table. Returns (row_count, storage_warning). ``effective_types_out``, when
+        given, receives the ``{column: BigQuery type}`` the snapshot was ACTUALLY
+        built with, so the caller can reconcile the model's recorded types with
+        what the physical table holds."""
         import base64, datetime as _dt
         from decimal import Decimal
         from app.services import dataset_snapshot_config as _sc
@@ -1652,6 +1702,17 @@ class DataSourceConnectionService:
             job = read_client.query(resolved_sql)
             it = job.result(timeout=timeout_seconds)
             bq_schema = list(it.schema)
+            if effective_types_out is not None:
+                # BQ→BQ keeps the source's own schema, so the effective types are
+                # simply what the source query returned.
+                effective_types_out.clear()
+                effective_types_out.update({
+                    str(getattr(f, "name", "")): str(
+                        getattr(f, "field_type", "") or getattr(f, "type_", "") or ""
+                    ).upper()
+                    for f in bq_schema
+                    if getattr(f, "name", None)
+                })
             def _rows():
                 for r in it:  # RowIterator pages from BigQuery — bounded memory
                     yield {k: _coerce(val) for k, val in dict(r).items()}
@@ -1662,6 +1723,7 @@ class DataSourceConnectionService:
             bq_schema, safe_rows = DataSourceConnectionService.extract_generic_for_snapshot(
                 source_ds_type, source_config, source_select_sql,
                 columns_meta=columns_meta, timeout_seconds=timeout_seconds,
+                effective_types_out=effective_types_out,
             )
             def _rows():
                 for r in safe_rows:
@@ -2428,7 +2490,17 @@ class DataSourceConnectionService:
     
     @staticmethod
     def _infer_postgresql_types(config: Dict[str, Any], sql_query: str) -> List[Dict[str, str]]:
-        """Infer column types from PostgreSQL query."""
+        """Infer column types from PostgreSQL query.
+
+        Decrypts the config first. Execution paths (`execute_query`,
+        `list_tables`) decrypt upfront, but the type-inference paths receive the
+        RAW stored config, where `password` is still the `_enc:…` ciphertext — so
+        this connect failed authentication, physical-type resolution silently
+        returned nothing, and every Postgres column fell back to its
+        value-sampled type (the same class of bug as `_build_gcp_credentials`
+        already documents for BigQuery). `decrypt_config` is idempotent."""
+        from app.core.crypto import decrypt_config
+        config = decrypt_config(config)
         conn = None
         cursor = None
         try:
@@ -2448,11 +2520,17 @@ class DataSourceConnectionService:
             for desc in cursor.description:
                 columns.append({
                     "name": desc[0],
-                    "type": DataSourceConnectionService._pg_type_to_string(desc[1])
+                    "type": DataSourceConnectionService._pg_type_to_string(desc[1]),
+                    "_oid": desc[1],
                 })
-            
+            # Anything the static OID map missed (enums, domains, extension
+            # types) is resolved from the catalog on this same connection.
+            DataSourceConnectionService._pg_resolve_unknown_oids(cursor, columns)
+            for col in columns:
+                col.pop("_oid", None)
+
             return columns
-            
+
         finally:
             if cursor:
                 cursor.close()
@@ -2461,7 +2539,12 @@ class DataSourceConnectionService:
     
     @staticmethod
     def _infer_mysql_types(config: Dict[str, Any], sql_query: str) -> List[Dict[str, str]]:
-        """Infer column types from MySQL query."""
+        """Infer column types from MySQL query.
+
+        Decrypts the config first — see `_infer_postgresql_types` for why the
+        inference paths cannot assume a pre-decrypted config."""
+        from app.core.crypto import decrypt_config
+        config = decrypt_config(config)
         conn = None
         cursor = None
         try:
@@ -2526,24 +2609,109 @@ class DataSourceConnectionService:
     
     @staticmethod
     def _infer_manual_types(config: Dict[str, Any], sql_query: str) -> List[Dict[str, str]]:
-        """Infer column types for Manual Table datasources."""
+        """Physical column types for an imported-file (manual) datasource.
+
+        An imported file has no warehouse schema, so its physical types are the
+        ones the query ENGINE produces. The query is executed (LIMIT 0) on the
+        same DuckDB the live path uses, and DuckDB's own result schema is
+        reported. That matters for more than tidiness:
+
+        * a column declared ``number`` on upload materialises as DuckDB
+          ``DOUBLE`` — reporting the width-less label ``number`` instead made the
+          snapshot loader read it as text and store CSV numbers as STRING, so
+          ``SUM`` worked in preview and 400'd on the dashboard;
+        * the SQL passed here is the table's FULL projection (transformations and
+          type overrides included), so a computed column or a DA's "this column
+          is a date" conversion is described too. Reading the sheet's declared
+          columns instead — the previous behaviour — could not see either, and a
+          converted date column was recorded as text.
+
+        Falls back to the sheet's declared columns when DuckDB is unavailable."""
         try:
-            from app.services.manual_table_connector import create_manual_table_connector, extract_sheet_name_from_sql
+            from app.services.manual_table_connector import (
+                create_manual_table_connector,
+                extract_sheet_name_from_sql,
+            )
             connector = create_manual_table_connector(config)
+            try:
+                cols = DataSourceConnectionService._duckdb_result_types(
+                    config, sql_query, source="manual",
+                )
+                if cols:
+                    return cols
+            except Exception as exc:  # noqa: BLE001 — fall back to declarations
+                logger.info("Manual DuckDB type probe failed (%s); using declared types", exc)
             sheet_name = extract_sheet_name_from_sql(sql_query)
             data = connector.get_sheet_data(sheet_name)
-            return [{"name": col["name"], "type": col.get("type", "string")} for col in data["columns"]]
+            return [
+                {
+                    "name": col["name"],
+                    "type": (
+                        "double"
+                        if str(col.get("type") or "").strip().lower() == "number"
+                        else "string"
+                    ),
+                }
+                for col in data["columns"]
+            ]
         except Exception as e:
             logger.error(f"Manual type inference failed: {str(e)}")
             raise
 
     @staticmethod
+    def _duckdb_result_types(
+        config: Dict[str, Any], sql_query: str, *, source: str
+    ) -> List[Dict[str, str]]:
+        """``[{name, type}]`` for a manual / Google-Sheets query, read from what
+        the DuckDB engine actually RETURNS.
+
+        Schema-less sources have no catalog to ask, so the engine that executes
+        the query is the only honest authority on its types — and it is the same
+        engine the live path uses, which is exactly why this closes the gap: the
+        recorded physical type, the snapshot column type, and the type charts read
+        can no longer disagree. A handful of rows is enough (these sources are
+        small and their reads are cached), and a column whose sample is entirely
+        NULL stays ``string`` — the conservative choice, since the loader then
+        keeps it as text and the engine SAFE_CASTs it."""
+        cols, rows, _ms = DataSourceConnectionService.execute_query(
+            source, config, sql_query, limit=20, timeout_seconds=120,
+        )
+        out: List[Dict[str, str]] = []
+        for name in (cols or []):
+            token = "string"
+            for row in (rows or []):
+                value = row.get(name) if isinstance(row, dict) else None
+                if value is None:
+                    continue
+                token = _python_value_type_token(value)
+                break
+            out.append({"name": str(name), "type": token})
+        return out
+
+    @staticmethod
     def _infer_google_sheets_types(config: Dict[str, Any], sql_query: str) -> List[Dict[str, str]]:
-        """Infer column names from the live Google Sheets workbook."""
+        """Physical column types for a Google Sheets query.
+
+        Sheet cells arrive as text, so most columns genuinely ARE text — that part
+        never changed. What did change: the types are now read from what the
+        engine RETURNS rather than hard-coded to ``string``, so a column the DA
+        converted with a type override, or one produced by a transformation, is
+        described as the number/date it has become. Hard-coding ``string`` meant a
+        converted Sheets column was still materialized as text in the snapshot.
+        Falls back to all-``string`` (the previous behaviour) on any probe
+        failure."""
         try:
             from app.core.crypto import decrypt_config
 
             live_config = decrypt_config(config)
+            try:
+                probed = DataSourceConnectionService._duckdb_result_types(
+                    live_config, sql_query, source="google_sheets",
+                )
+                if probed:
+                    return probed
+            except Exception as exc:  # noqa: BLE001
+                logger.info("Sheets type probe failed (%s); assuming text columns", exc)
             columns, _ = DataSourceConnectionService._execute_google_sheets(
                 live_config,
                 sql_query,
@@ -2556,22 +2724,76 @@ class DataSourceConnectionService:
 
     @staticmethod
     def _pg_type_to_string(type_code: int) -> str:
-        """Convert PostgreSQL type code to string."""
-        # Common PostgreSQL type codes
+        """Convert PostgreSQL type OID to a type token.
+
+        This map is the PHYSICAL type a Postgres column reports, and it feeds
+        both the snapshot LOAD schema and the engine's SAFE_CAST gates — so a
+        missing OID is not cosmetic. OID 1700 (``numeric``) used to be absent:
+        every Postgres NUMERIC/DECIMAL money column reported ``unknown`` →
+        materialized as STRING → ``SUM(STRING)`` 400 on the snapshot, and the
+        "exact-decimal keeps its precision" rule could never fire because the
+        token it looks for was never produced. Unmapped OIDs are resolved from
+        the live ``pg_type`` catalog by the caller (extensions, enums, domains),
+        so ``unknown`` is now a genuine last resort."""
         type_map = {
             16: "boolean",
+            17: "bytea",
+            18: "char",
             20: "bigint",
             21: "smallint",
             23: "integer",
             25: "text",
+            26: "bigint",         # oid
+            114: "json",
             700: "real",
-            701: "double",
+            701: "double precision",
+            790: "money",
+            1042: "bpchar",
             1043: "varchar",
             1082: "date",
+            1083: "time",
             1114: "timestamp",
             1184: "timestamptz",
+            1266: "timetz",
+            1700: "numeric",      # ← the gap: PG's default exact-decimal type
+            2950: "uuid",
+            3802: "jsonb",
         }
         return type_map.get(type_code, "unknown")
+
+    @staticmethod
+    def _pg_resolve_unknown_oids(cursor, columns: List[Dict[str, str]]) -> None:
+        """Fill in ``unknown`` tokens from the live ``pg_type`` catalog, in place.
+
+        Enums, domains, extension types (citext, hstore, PostGIS…) and any OID
+        the static map does not carry would otherwise reach the snapshot loader
+        as ``unknown``. Domains resolve to their BASE type so a
+        ``CREATE DOMAIN money_amount AS numeric`` column still materializes as
+        exact NUMERIC. Best-effort: any failure leaves the tokens untouched."""
+        oids = sorted({
+            int(c["_oid"]) for c in columns
+            if c.get("type") == "unknown" and c.get("_oid") is not None
+        })
+        if not oids:
+            return
+        try:
+            cursor.execute(
+                "SELECT t.oid, COALESCE(bt.typname, t.typname) "
+                "FROM pg_type t "
+                "LEFT JOIN pg_type bt ON bt.oid = t.typbasetype AND t.typtype = 'd' "
+                "WHERE t.oid = ANY(%s)",
+                (oids,),
+            )
+            by_oid = {int(row[0]): str(row[1] or "").strip().lower() for row in cursor.fetchall()}
+        except Exception as exc:  # noqa: BLE001 — never break type inference
+            logger.info("pg_type catalog lookup failed (%s); keeping 'unknown'", exc)
+            return
+        for col in columns:
+            if col.get("type") != "unknown":
+                continue
+            name = by_oid.get(int(col.get("_oid") or -1))
+            if name:
+                col["type"] = name
     
     @staticmethod
     def _mysql_type_to_string(type_code: int) -> str:

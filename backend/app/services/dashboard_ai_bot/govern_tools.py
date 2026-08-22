@@ -52,6 +52,7 @@ import logging
 import re
 from typing import Any
 
+from app.services.dashboard_ai_bot import knowledge_hit
 from app.services.dashboard_ai_bot.tool_context import ToolContext, _err, _ok
 
 logger = logging.getLogger(__name__)
@@ -64,12 +65,15 @@ MAX_HITS = 8
 
 
 def _fold(text: str) -> str:
-    """Lowercase and strip Vietnamese diacritics so "doanh thu" matches "Doanh Thu"."""
-    import unicodedata
+    """Lowercase and strip Vietnamese diacritics so "doanh thu" matches "Doanh Thu".
 
-    normalised = unicodedata.normalize("NFD", str(text or "").lower())
-    stripped = "".join(c for c in normalised if unicodedata.category(c) != "Mn")
-    return stripped.replace("đ", "d")
+    Delegates to the one canonical folder. This was the ONLY one of thirteen
+    helpers that handled `đ`; the rest silently did not, and keeping a local copy
+    of the correct behaviour is how the other twelve came to be wrong.
+    """
+    from app.core.text_fold import fold_text
+
+    return fold_text(text)
 
 
 def _tokens(text: str) -> set[str]:
@@ -127,6 +131,34 @@ def _authored_metric_names(ctx: ToolContext) -> set[str] | None:
     raw = (getattr(ctx, "knowledge_scope", None) or {}).get("metric_names") or []
     out = {str(x).strip() for x in raw if str(x).strip()}
     return out or None
+
+
+def _published_body(ctx: ToolContext, doc) -> str:
+    """A document's LIVE prose — the published snapshot, never the draft.
+
+    Cached on the context for the length of one tool call: a document scan reads
+    every visible document, and each miss is a version-table lookup.
+    """
+    cache = getattr(ctx, "_published_body_cache", None)
+    if cache is None:
+        cache = {}
+        try:
+            ctx._published_body_cache = cache
+        except Exception:  # noqa: BLE001 — a frozen context just re-reads
+            cache = {}
+    if doc.id in cache:
+        return cache[doc.id]
+    from app.services.governance_service import GovernanceService
+
+    body = GovernanceService.published_body(ctx.db, doc) or ""
+    cache[doc.id] = body
+    return body
+
+
+def _conflict_payload(answerability: dict | None) -> dict | None:
+    """The conflict record, but only when there IS one."""
+    conflict = (answerability or {}).get("conflict") or {}
+    return conflict if conflict.get("conflict") else None
 
 
 def _visible_doc_ids(ctx: ToolContext) -> set[int]:
@@ -413,18 +445,17 @@ def _terms_in_scope(ctx: ToolContext, metrics: list[Any], question: str) -> list
         if attached and reached != "attached":
             continue
 
-        out.append({
-            "kind": "term",
-            "id": fqn,
-            "title": term.display_name or term.name,
-            "definition": _plain(term.description, MAX_SNIPPET_CHARS),
-            "synonyms": synonyms[:8],
-            # WHY this term is here. Without it a reader cannot tell a structural
-            # hit from a keyword coincidence, and those two deserve different
-            # trust — which is the whole complaint about the metric list.
-            "reached_by": reached,
-            "score": score,
-        })
+        hit = knowledge_hit.from_term(term)
+        hit["kind"] = "term"
+        hit["id"] = fqn
+        hit["definition"] = _plain(term.description, MAX_SNIPPET_CHARS)
+        hit["synonyms"] = synonyms[:8]
+        # WHY this term is here. Without it a reader cannot tell a structural hit
+        # from a keyword coincidence, and those two deserve different trust —
+        # which is the whole complaint about the metric list.
+        hit["reached_by"] = reached
+        hit["score"] = score
+        out.append(hit)
     return out
 
 
@@ -463,12 +494,20 @@ def tool_search_knowledge(ctx: ToolContext, args: dict) -> dict:
     # turn a working search into an empty one.
     retrieval = "keyword"
     chunk_hits: list[dict] = []
+    # The retriever's OWN rows, kept so the context assembler can be handed the
+    # full shape — section text, block anchors, trust — rather than the flattened
+    # hit dicts below, which are shaped for the tool's JSON reply.
+    retrieved_rows: list[dict] = []
     # Computed ONCE and handed to both paths below. Two retrievers deriving the
     # same boundary separately is how they came to disagree about it.
     doc_scope = _visible_doc_ids(ctx)
     # `ToolContext` carries the Dashboard object, not a bare id.
     dash_id = getattr(getattr(ctx, "dashboard", None), "id", None)
-    if dash_id:
+    # Gated on the DOC SCOPE, not on the dashboard. A step's grant is a scope in
+    # its own right, and gating on `dash_id` sent any dashboard-less flow back to
+    # keyword-only recall — the one thing unifying the retrieval path was meant
+    # to stop happening.
+    if doc_scope:
         try:
             from app.services.dashboard_ai_bot.govern_doc_embeddings import (
                 retrieve_doc_chunks,
@@ -481,63 +520,42 @@ def tool_search_knowledge(ctx: ToolContext, args: dict) -> dict:
             # the four ways a document gets attached, and past any grant the
             # author set on the step.
             for ch in retrieve_doc_chunks(
-                ctx.db, int(dash_id), query, k=limit, doc_ids=doc_scope,
+                ctx.db,
+                int(dash_id) if dash_id else None,
+                query,
+                k=limit,
+                doc_ids=doc_scope,
+                consumer="agent_flow",
             ) or []:
                 if not isinstance(ch, dict):
                     continue
-                chunk_hits.append({
-                    "kind": "document_chunk",
-                    "id": ch.get("doc_id"),
-                    "title": ch.get("title") or "",
-                    "snippet": _plain(ch.get("content"), MAX_SNIPPET_CHARS),
-                    # The chunk store's own similarity, kept under its own name so
-                    # it is never compared with the keyword score below — the two
-                    # are different scales and averaging them would be arithmetic
-                    # that runs and means nothing.
-                    "similarity": ch.get("similarity"),
-                    "rank_score": ch.get("rrf_score"),
-                    "embedding_model": ch.get("embedding_model"),
-                    # The store fuses vector and full-text recall and says which
-                    # one found each row. Passed through: "vector" and "keyword"
-                    # answer differently badly, and a reader debugging a poor
-                    # result needs to know which one produced it.
-                    "retrieved_by": ch.get("matched_by") or "embedding",
-                    "trust": ch.get("trust"),
-                })
+                retrieved_rows.append(ch)
+                # ONE shape, declared in knowledge_hit. This used to be a
+                # hand-built dict that renamed six fields on the way past
+                # (content→snippet, doc_id→id, rerank_score→rank_score…) and
+                # dropped `chunk_id` entirely, so no consumer could point at a
+                # passage and check it later.
+                hit = knowledge_hit.from_chunk(ch)
+                hit["kind"] = "document_chunk"
+                chunk_hits.append(hit)
             if chunk_hits:
                 retrieval = (
                     "embedding+keyword"
-                    if any(hit.get("retrieved_by") in ("vector", "both") for hit in chunk_hits)
+                    if any(h.get("retrieval_method") in ("vector", "both")
+                           for h in chunk_hits)
                     else "keyword"
                 )
-                # WHEN was this written — carried onto chunks too.
+                # The second query that used to live here — one SELECT over
+                # GovernKnowledgeDoc purely to attach `updated_at`, `version` and
+                # `doc_type` to each hit — is gone. The retriever already joins
+                # that table, so it now carries them, along with the governance
+                # fields ranking and review warnings need.
                 #
-                # The keyword path already attached `updated_at`/`version`, and
-                # the chunk path did not, so wiring embeddings in dropped the
-                # date from the hits that now rank FIRST. A passage retrieved by
-                # meaning is exactly the one whose age is hardest to judge from
-                # the text, and the group-6 audit caught it: the same "2019
-                # policy quoted as current" failure this field was added to
-                # prevent, reintroduced by the retrieval upgrade.
-                from app.models.governance import GovernKnowledgeDoc as _GKD
-
-                ids = {c["id"] for c in chunk_hits if c.get("id") is not None}
-                if ids:
-                    meta = {
-                        d.id: d for d in ctx.db.query(_GKD)
-                        .filter(_GKD.id.in_(ids)).all()
-                    }
-                    for c in chunk_hits:
-                        doc = meta.get(c.get("id"))
-                        if doc is None:
-                            continue
-                        when = (getattr(doc, "updated_at", None)
-                                or getattr(doc, "created_at", None))
-                        c["updated_at"] = when.isoformat() if when else None
-                        c["version"] = getattr(doc, "version", None)
-                        c["doc_type"] = getattr(doc, "doc_type", None)
-                        if not c.get("title"):
-                            c["title"] = doc.title
+                # That is not only one query fewer. The comment it replaced
+                # described a real bug: the keyword path attached the date and the
+                # chunk path did not, so wiring embeddings in silently dropped it
+                # from the hits that rank FIRST. Two places attaching the same
+                # fact is what made that possible; there is now one.
         except Exception:  # noqa: BLE001 — retrieval must never break a search
             logger.warning("search_knowledge: chunk retrieval failed", exc_info=True)
 
@@ -552,7 +570,8 @@ def tool_search_knowledge(ctx: ToolContext, args: dict) -> dict:
                 .all()
             ):
                 haystack = " ".join(
-                    str(x) for x in (doc.title, doc.summary, doc.body, doc.tags) if x
+                    str(x) for x in (doc.title, doc.summary,
+                                     _published_body(ctx, doc), doc.tags) if x
                 )
                 score = _score(haystack, needles)
                 if score <= 0:
@@ -564,17 +583,14 @@ def tool_search_knowledge(ctx: ToolContext, args: dict) -> dict:
                 # it. A process document from 2019 quoted as current is the same
                 # failure as a forecast anchored to data that stopped in 2018, and
                 # the date was sitting on the row all along.
-                updated = getattr(doc, "updated_at", None) or getattr(doc, "created_at", None)
-                hits.append({
-                    "kind": "document",
-                    "id": doc.id,
-                    "title": doc.title,
-                    "snippet": _plain(doc.summary or doc.body, MAX_SNIPPET_CHARS),
-                    "score": round(score, 3),
-                    "updated_at": updated.isoformat() if updated else None,
-                    "version": getattr(doc, "version", None),
-                    "doc_type": getattr(doc, "doc_type", None),
-                })
+                hit = knowledge_hit.from_document(
+                    doc,
+                    content=(doc.summary or _published_body(ctx, doc)),
+                    method="keyword",
+                )
+                hit["kind"] = "document"
+                hit["score"] = round(score, 3)
+                hits.append(hit)
     except Exception:  # noqa: BLE001
         logger.warning("search_knowledge: document scan failed", exc_info=True)
 
@@ -588,26 +604,30 @@ def tool_search_knowledge(ctx: ToolContext, args: dict) -> dict:
             target = None
             if metric.target_operator and metric.target_value is not None:
                 target = f"{metric.target_operator} {metric.target_value}"
-            hits.append({
-                "kind": "metric",
-                "id": metric.name,
-                "title": metric.display_name or metric.name,
-                "definition": _plain(metric.definition, MAX_SNIPPET_CHARS),
-                "formula": _plain(metric.formula, MAX_SNIPPET_CHARS),
-                "unit": metric.unit or None,
-                "target": target,
-                "owner": metric.owner or None,
-                # Same provenance field the terms carry, for the same reason: a
-                # definition bound to this report's data and one that merely
-                # shares a word deserve different trust, and only the record can
-                # tell them apart.
-                "reached_by": (
-                    "dataset"
-                    if (metric.dataset_id is not None or metric.dataset_table_id is not None)
-                    else "vocabulary"
-                ),
-                "score": round(score, 3),
-            })
+            # The shared spine from the contract, then the fields only a metric
+            # has. Forcing `formula` and `target` into a shape built for passages
+            # would either lose them or put document fields on a KPI — "one
+            # contract" means the SHARED facts share names, not that a metric must
+            # pretend to be a paragraph.
+            hit = knowledge_hit.from_metric(
+                metric, home_doc_id=getattr(metric, "home_doc_id", None)
+            )
+            hit["kind"] = "metric"
+            hit["id"] = metric.name
+            hit["definition"] = _plain(metric.definition, MAX_SNIPPET_CHARS)
+            hit["formula"] = _plain(metric.formula, MAX_SNIPPET_CHARS)
+            hit["unit"] = metric.unit or None
+            hit["target"] = target
+            # A definition bound to this report's data and one that merely shares
+            # a word deserve different trust, and only the record can tell them
+            # apart.
+            hit["reached_by"] = (
+                "dataset"
+                if (metric.dataset_id is not None or metric.dataset_table_id is not None)
+                else "vocabulary"
+            )
+            hit["score"] = round(score, 3)
+            hits.append(hit)
     except Exception:  # noqa: BLE001
         logger.warning("search_knowledge: metric scan failed", exc_info=True)
 
@@ -620,8 +640,15 @@ def tool_search_knowledge(ctx: ToolContext, args: dict) -> dict:
     hits.sort(key=lambda h: h["score"], reverse=True)
     # De-duplicated first: the same document can arrive down both paths, and
     # paying twice for it in the payload is a cost with no answer attached.
-    seen_docs = {c["id"] for c in chunk_hits if c.get("id") is not None}
-    vocabulary = [h for h in hits if h.get("id") not in seen_docs]
+    # On `doc_id`, which is what both paths now call it. This read `c["id"]`,
+    # the name the hand-built chunk dict used before the contract landed — and a
+    # dedup key that no longer exists does not raise, it silently matches nothing
+    # and lets the same document through twice.
+    seen_docs = {c.get("doc_id") for c in chunk_hits if c.get("doc_id") is not None}
+    vocabulary = [
+        h for h in hits
+        if not (h.get("kind") == "document" and h.get("doc_id") in seen_docs)
+    ]
 
     # DEFINITIONS GET RESERVED SLOTS; THEY DO NOT COMPETE WITH PASSAGES.
     #
@@ -646,11 +673,67 @@ def tool_search_knowledge(ctx: ToolContext, args: dict) -> dict:
             if len(top) >= limit:
                 break
     merged = chunk_hits + vocabulary
+    # One assembled, budgeted, NUMBERED evidence block alongside the raw hits, so
+    # a step that wants to reason gets the same context the dashboard bot does
+    # instead of re-inventing a snippet format — and so there is something for an
+    # answer to cite and a verifier to check against.
+    context = None
+    answerability = None
+    if retrieved_rows:
+        try:
+            from app.services.dashboard_ai_bot.govern_doc_context import assemble
+
+            context = assemble(ctx.db, retrieved_rows)
+        except Exception:  # noqa: BLE001 — the hits are still usable without it
+            logger.warning("search_knowledge: context assembly failed", exc_info=True)
+
+        # DOES THE EVIDENCE SUPPORT AN ANSWER, AND DO THE SOURCES AGREE?
+        #
+        # Returned with the passages rather than left to the model to infer. A
+        # model handed twelve passages has no way to know that two of them state
+        # different numbers for the same policy, or that the closest one is not
+        # actually about the question — both are facts about the RESULT SET, which
+        # is exactly what the tool is in a position to say and the model is not.
+        try:
+            from app.services.dashboard_ai_bot import (
+                govern_doc_answerability as _ans,
+            )
+            from app.services.dashboard_ai_bot import govern_doc_conflict as _conf
+
+            conflict = _conf.detect(query, retrieved_rows)
+            answerability = _ans.evaluate(
+                ctx.db, query, retrieved_rows,
+                conflict=conflict, doc_ids=doc_scope,
+            )
+        except Exception:  # noqa: BLE001 — a verdict is an addition, not a gate
+            logger.warning("search_knowledge: answerability failed", exc_info=True)
     return _ok({
         "query": query,
         "total_matches": len(merged),
         "returned": len(top),
         "results": top,
+        # WHAT THE EVIDENCE SUPPORTS: ANSWERABLE | PARTIALLY_ANSWERABLE |
+        # NOT_ENOUGH_EVIDENCE | CONTRADICTORY, with the reason and the parts of the
+        # question that went unanswered.
+        "answerability": (answerability or {}).get("verdict"),
+        "answerability_reason": (answerability or {}).get("reason"),
+        "missing_parts": (answerability or {}).get("missing_clauses") or [],
+        # Present ONLY when two sources disagree. Carries both figures and, when
+        # the governance record allows it, which one is current.
+        #
+        # `.get("conflict", {})` was tried and is wrong: the key is ALWAYS written,
+        # with None for a non-conflict verdict, and a default only applies when a
+        # key is absent. It raised on the first question that had no conflict.
+        "conflict": _conflict_payload(answerability),
+        # What to tell the reader when there is nothing to answer from — one
+        # wording, so every consumer says the same thing.
+        "abstain_text": (answerability or {}).get("abstain_text"),
+        # The block to put in front of the model, with its citation rules, plus the
+        # citations an answer is allowed to use.
+        "context": (context or {}).get("text") or None,
+        "citations": (context or {}).get("citations") or [],
+        "context_tokens": (context or {}).get("tokens") or 0,
+        "context_truncated": bool((context or {}).get("truncated")),
         # HOW these were found, said out loud. Without it there is no way to see
         # from a result whether the vector store was consulted, which is exactly
         # why a fully-embedded deployment could look unconnected.
@@ -694,8 +777,23 @@ def tool_read_document(ctx: ToolContext, args: dict) -> dict:
     if doc is None:
         return _err("no such document within this report's scope")
 
-    full_len = len(str(doc.body or ""))
-    body = _plain(doc.body, MAX_BODY_CHARS)
+    # THE PUBLISHED BODY, NOT THE WORKING DRAFT.
+    #
+    # Retrieval has always served `published_body()`; this tool read `doc.body`,
+    # so an agent that searched found the published text and an agent that READ
+    # the same document got whatever the author had typed since. On this
+    # deployment that was not academic: document 26's draft carries a business
+    # rule and a data caveat — "GMV chưa trừ hoàn tiền", "mọi báo cáo nhắc tới GMV
+    # phải tham chiếu định nghĩa gốc" — that nobody has published, and the tool
+    # handed them over as company policy.
+    #
+    # Publishing is the act by which somebody takes responsibility for a sentence.
+    # A reader must never be shown one that has not happened.
+    from app.services.governance_service import GovernanceService
+
+    published = GovernanceService.published_body(ctx.db, doc) or ""
+    full_len = len(published)
+    body = _plain(published, MAX_BODY_CHARS)
     reading = "whole document"
     passages: list[dict] = []
 
@@ -719,7 +817,14 @@ def tool_read_document(ctx: ToolContext, args: dict) -> dict:
             logger.warning("read_document: chunk ranking failed", exc_info=True)
         if passages:
             reading = "passages most relevant to the question"
-            body = "\n\n".join(p["text"] for p in passages)[:MAX_BODY_CHARS]
+            # Each passage under its heading, so the model sees WHERE in the
+            # document each one sits instead of a run-on of fragments, and the
+            # answer can name the section it used.
+            body = "\n\n".join(
+                ("%s\n%s" % (p["heading_path"], p["content"]))
+                if p.get("heading_path") else str(p.get("content") or "")
+                for p in passages
+            )[:MAX_BODY_CHARS]
 
     return _ok({
         "id": doc.id,
@@ -768,16 +873,11 @@ def _rank_doc_chunks(ctx: ToolContext, doc_id: int, question: str,
         published_only=True,
         authoring=False,
     )
-    return [
-        {
-            "chunk_index": row["chunk_index"],
-            "text": _plain(row["content"], MAX_SNIPPET_CHARS * 2),
-            "similarity": round(float(row.get("similarity") or 0.0), 4),
-            "matched_by": row.get("matched_by"),
-            "embedding_model": row.get("embedding_model"),
-        }
-        for row in rows
-    ]
+    # Same contract as a search hit. Reading INSIDE one document produces the same
+    # kind of thing as searching across many — a passage, with where it is and why
+    # it was chosen — and it was returning a fourth shape with a `text` field and
+    # no citation, so an agent could quote a section it could not name.
+    return [knowledge_hit.from_chunk(row) for row in rows]
 
 
 def _granted_dataset_ids(ctx: ToolContext) -> set[int] | None:

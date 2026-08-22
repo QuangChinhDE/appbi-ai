@@ -88,11 +88,6 @@ def _load() -> None:
             register(spec)
 
 
-def all_specs() -> dict[str, NodeSpec]:
-    _load()
-    return dict(_REGISTRY)
-
-
 def spec_for(node_type: str) -> NodeSpec | None:
     _load()
     return _REGISTRY.get(node_type)

@@ -50,15 +50,15 @@ def _reindex_after_ingest(db, doc, *, changed_by: str | None = None) -> None:
     nothing. Best-effort: ingestion must not fail because indexing did.
     """
     try:
-        from app.services.dashboard_ai_bot.govern_doc_embeddings import embed_doc
+        from app.services.govern_doc_index_queue import enqueue
         from app.services.governance_service import GovernanceService
-        result = embed_doc(db, doc)
+        job = enqueue(db, doc.id, reason="source_sync", requested_by=changed_by)
         GovernanceService.log_doc_run(
-            db, doc.id, "embed", trigger="sync", status=result.get("status", "error"),
-            detail=result.get("detail"), stats=result, changed_by=changed_by,
+            db, doc.id, "embed", trigger="sync", status="queued",
+            detail="đã đưa vào hàng đợi lập chỉ mục", stats=job, changed_by=changed_by,
         )
     except Exception:  # noqa: BLE001
-        logger.warning("govern_doc_sync_service: post-ingest reindex failed (doc %s)", getattr(doc, "id", None), exc_info=True)
+        logger.warning("govern_doc_sync_service: could not queue reindex (doc %s)", getattr(doc, "id", None), exc_info=True)
         db.rollback()
 
 

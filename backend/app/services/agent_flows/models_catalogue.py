@@ -73,6 +73,26 @@ def known_model(provider: str, model: str) -> bool:
     return any(m["model"] == model for m in MODELS.get(provider, []))
 
 
+def effective_model(
+    node_provider: str, node_model: str, link_provider: str, link_model: str
+) -> tuple[str, str]:
+    """Which provider and model a step will ACTUALLY run on. THE one definition.
+
+    THIS WAS WRITTEN IN TWO PLACES AND THEY DISAGREED.
+    The runtime (`handlers/agent._resolve_model`) prefers the node's own pin and
+    falls back to the link. The preflight guard that warns "this flow is too slow
+    for the link's time budget" read the LINK's model and nothing else — so a flow
+    whose steps pin `gpt-5` on a link configured for `gpt-4o` was costed at 4
+    seconds per call instead of 18, and the warning that exists precisely to catch
+    a ninety-second answer stayed silent. The reverse case is just as wrong: a
+    `gpt-4o` node on a `gpt-5` link raised a slow-model warning about calls that
+    were never going to be slow.
+    """
+    if node_provider != INHERIT and node_model:
+        return node_provider, node_model
+    return link_provider, link_model or ""
+
+
 def _deployment_has_key(provider: str) -> bool:
     """Does THIS deployment hold a credential for that vendor right now?
 

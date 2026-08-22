@@ -281,8 +281,59 @@ class AgentNode(BaseNode):
     #: `chat` streams prose (the default, and what keeps authoring simple).
     #: `json` asks the model for typed answer blocks — richer, but not streamable,
     #: because a half-written JSON object cannot be rendered.
-    output_format: Literal["chat", "json"] = "chat"
+    #: `choice` is a CLASSIFIER: the step must answer with one of `choices` and
+    #: nothing else, and the runtime enforces that rather than asking for it.
+    output_format: Literal["chat", "json", "choice"] = "chat"
+    #: The only answers a `choice` step may give.
+    #:
+    #: A classifier feeding a Switch used to be built by writing "reply with exactly
+    #: one of: a, b, c" in the prompt and hoping. When the model answered in prose
+    #: instead — which it does, especially when the engine's own base prompt has
+    #: told it to explain itself when data is missing — no case matched, the branch
+    #: ran nothing, and the run still reported ok. Prompts are requests; this is the
+    #: constraint, checked in code after the model speaks.
+    choices: list[str] = Field(default_factory=list)
+    #: What each choice MEANS, keyed by the choice. Optional, and the reason it
+    #: exists is measured rather than assumed.
+    #:
+    #: A classifier used to be handed the bare list — `tra_so`, `so_sanh`,
+    #: `bat_thuong`, `du_bao`, `dinh_nghia` — and nothing else. Those are variable
+    #: names, not descriptions, and on a 13-node harness the model sent "GMV toàn kỳ
+    #: là bao nhiêu?" (a plain lookup) down the FORECAST branch, while the lookup
+    #: case never fired once across four questions. The routing was wrong and the
+    #: answer that came back was still fluent, which is the failure mode branching
+    #: makes possible and the hardest one for an author to notice.
+    #:
+    #: A description per choice is the cheapest possible fix: a dozen words each, on
+    #: a step whose whole output is one token.
+    choice_hints: dict[str, str] = Field(default_factory=dict)
     context_policy: ContextPolicy = "question"
+
+    @model_validator(mode="after")
+    def _choice_has_options(self) -> "AgentNode":
+        """A `choice` step with no options can never produce a legal answer, so it
+        would fail on every question. Refused at save time, where an author is
+        looking at the node, rather than at run time in front of a viewer."""
+        if self.output_format == "choice":
+            cleaned = [str(c).strip() for c in self.choices if str(c).strip()]
+            if len(cleaned) < 2:
+                raise ValueError(
+                    "bước phân loại phải có ít nhất 2 lựa chọn để chọn giữa"
+                )
+            if len(set(cleaned)) != len(cleaned):
+                raise ValueError("các lựa chọn của bước phân loại phải khác nhau")
+            object.__setattr__(self, "choices", cleaned)
+            # A hint for a choice that does not exist is a typo, and silently
+            # ignoring it means the author never learns why their description had
+            # no effect. Dropped, not raised: a stale hint left over from renaming a
+            # choice should not make the flow unsaveable.
+            hints = {
+                k: str(v).strip()
+                for k, v in (self.choice_hints or {}).items()
+                if k in set(cleaned) and str(v).strip()
+            }
+            object.__setattr__(self, "choice_hints", hints)
+        return self
 
     @field_validator("prompt")
     @classmethod
@@ -645,6 +696,26 @@ class Requirement(_Model):
         return v
 
 
+#: Tools whose arguments are keyed by `chart_id`. A step granted one of these has
+#: to name a chart, and the only place chart ids appear is the output of a
+#: `report_read` step — so a step holding these tools and reading no read-step
+#: variable is guessing.
+#:
+#: Kept as a literal set rather than derived from the registry: `contract.py` is the
+#: schema layer and importing the tool registry here would make the shape of a flow
+#: depend on which packs happen to be installed.
+_CHART_KEYED_TOOLS = frozenset({
+    "total_measure", "rank_values", "share_of", "get_chart_summary",
+    "get_chart_data", "aggregate_chart_data", "get_chart_glossary",
+    "compare_to_target", "compare_periods", "compare_segments", "segment_compare",
+    "explain_change", "detect_anomaly", "smart_drilldown", "describe_distribution",
+    "project_to_period_end", "detect_seasonality", "analyze_trend",
+    "forecast_measure",
+})
+
+
+
+
 class FlowRequirements(_Model):
     """The flow's interface. This is the half of "define before you assign" that
     lives on the FLOW; the binding is the half that lives on the link."""
@@ -775,6 +846,27 @@ class Flow(_Model):
                 return n
         return None
 
+    def writes_prose(self, key: str) -> bool:
+        """Would this step's output read as a sentence to a viewer? THE one rule.
+
+        WRITTEN IN TWO PLACES AND ONE OF THEM WAS OUT OF DATE.
+        `executor._final_answer` falls back to the last step that produced prose
+        when the answering step fails, and its test was `step.type == "agent"`. The
+        comment there explains exactly why the restriction exists — "a Set Variable
+        holding 'none' became the viewer's answer; a variable is not a sentence" —
+        and a `choice` agent is the same category of thing: a classifier emits one
+        token, `tra_so` or `du_bao`, chosen from a fixed list. `handlers/agent.py`
+        has known `choice` is special since it was added; the fallback never learned,
+        so a failed answering step could reply to a viewer with the word "du_bao".
+
+        `json` counts: those steps emit answer blocks, which is prose with structure
+        and is exactly what the viewer is shown when they succeed.
+        """
+        n = self.node(key)
+        if not isinstance(n, AgentNode):
+            return False
+        return n.output_format != "choice"
+
     def answering_key(self) -> str:
         """The node whose text reaches the viewer.
 
@@ -861,6 +953,37 @@ class Flow(_Model):
                 "Bước viết câu trả lời mà còn gọi được công cụ thì dễ đưa ra số "
                 "chưa qua các bước trước."
             )
+        # A STEP THAT MUST NAME A CHART, AND WAS NEVER SHOWN ONE.
+        #
+        # The measure, compare, diagnose and project tools all take a `chart_id`, and
+        # the only place those ids exist is a `report_read` step's output. A step
+        # granted those tools whose prompt reads no read-step variable has to invent
+        # an id, and it does.
+        #
+        # Measured on a nine-node flow: every branch agent was granted the right
+        # tools and handed no index. Seven consecutive calls came back
+        # `chart_out_of_scope`, the tool budget was spent on them, and the viewer was
+        # told the report contained no GMV — on a report whose GMV is 15,843,553.24.
+        # Adding `{{ctx}}` to those four prompts took the same flow to zero failed
+        # calls and the correct figure.
+        read_vars = {
+            n.output_var for n in self.all_nodes()
+            if isinstance(n, ReportReadNode) and n.output_var
+        }
+        if read_vars:
+            for n in self.agent_nodes():
+                keyed = sorted({t.tool for t in n.tools} & _CHART_KEYED_TOOLS)
+                if not keyed:
+                    continue
+                if node_referenced_vars(n) & read_vars:
+                    continue
+                out.append(
+                    f"Bước “{n.name or n.key}” được cấp công cụ cần chart_id "
+                    f"({', '.join(keyed[:3])}…) nhưng prompt không đọc "
+                    + " hoặc ".join("{{" + v + "}}" for v in sorted(read_vars))
+                    + " — nó sẽ phải đoán chart_id và gọi công cụ thất bại."
+                )
+
         for n in self.agent_nodes():
             named = _REPORT_NAME_RE.search(n.prompt)
             if named:
@@ -885,6 +1008,83 @@ class Flow(_Model):
             out.append(
                 f"Biến {{{{{v}}}}} được dùng nhưng không bước nào tạo ra nó, và cũng "
                 "không phải requirement — lúc chạy nó sẽ rỗng."
+            )
+        # Named even when it is not the answering step: a node parked below a Stop
+        # is invisible on the canvas — it looks exactly like a node that runs.
+        dead = self.unreachable_nodes()
+        if dead:
+            out.append(
+                "Các bước sau một bước Stop ở cấp ngoài cùng sẽ không bao giờ chạy: "
+                + ", ".join(dead)
+                + ". Stop không có điều kiện — muốn dừng có điều kiện thì đặt nó "
+                "trong một nhánh IF hoặc sau một Filter."
+            )
+        return out
+
+    def unreachable_nodes(self) -> list[str]:
+        """Top-level nodes that can never run, because a Stop above them always does.
+
+        A `stop` node has no condition — `emit` and `message` are all it carries — so
+        a Stop at the TOP level ends every run that reaches it. Anything after it is
+        dead, and a Stop meant to fire only sometimes belongs inside an IF path or
+        behind a Filter.
+
+        Measured on a nine-node harness: a Stop sat two nodes above the designated
+        answering step, so the answering step never ran on any turn, the viewer
+        received an intermediate step's text, and `validate` returned ok with no
+        blocking problem — while still warning about the tools granted to the node
+        that could not run. Every part of that was working as written.
+
+        Only top-level nodes are considered. A Stop inside a branch or a loop body is
+        conditional by construction: the branch may not be taken.
+        """
+        out: list[str] = []
+        stopped_by = ""
+        for node in self.nodes:
+            if stopped_by:
+                out.append(node.key)
+                continue
+            if node.type == "stop":
+                stopped_by = node.key
+        return out
+
+    def blocking_problems(self) -> list[str]:
+        """The subset of `warnings()` that is a DEFECT rather than a trade-off.
+
+        Most warnings describe a choice: no knowledge attached, a report named in a
+        prompt, a chart-shaped requirement. An author can read those and decide they
+        meant it.
+
+        A `{{variable}}` that no step produces is not a choice. At run time it
+        resolves to an empty string, so the prompt that reads it is silently
+        missing the thing it was written around — and the step still reports ok,
+        which is the whole family of failure this module keeps finding. The warning
+        was computed and shown, and nothing ever stopped: a flow could go live with
+        it and answer viewers from a prompt with a hole in it.
+        """
+        supplied = {r.key for r in self.requirements.items}
+        missing = sorted(
+            self.referenced_vars() - self.produced_vars() - supplied - _BUILTIN_VARS
+        )
+        out = [
+            f"Biến {{{{{v}}}}} được dùng nhưng không bước nào tạo ra nó — lúc chạy "
+            "nó sẽ rỗng, và bước đọc nó sẽ chạy thiếu đúng phần dữ liệu đó."
+            for v in missing
+        ]
+        # A FLOW THAT CANNOT REACH ITS OWN ANSWER IS NOT A TRADE-OFF.
+        #
+        # Unreachable nodes in general are a warning — an author may have parked a
+        # step below a Stop on purpose. The answering node is different: the run
+        # ends, `_final_answer` falls back to whatever an intermediate step left
+        # behind, and the viewer is handed working notes. Blocking, so it is caught
+        # at save time rather than by a reader.
+        dead = self.unreachable_nodes()
+        answer_key = self.answer_node or (self.nodes[-1].key if self.nodes else "")
+        if answer_key and answer_key in dead:
+            out.append(
+                f"Bước trả lời “{answer_key}” nằm sau một bước Stop nên không bao "
+                "giờ chạy — người xem sẽ nhận kết quả của một bước trung gian. "
+                "Chuyển Stop vào trong một nhánh, hoặc bỏ nó đi."
             )
         return out
 

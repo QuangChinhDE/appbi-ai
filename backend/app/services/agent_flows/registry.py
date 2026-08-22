@@ -459,7 +459,8 @@ def save_draft(
 
 
 def publish(
-    db: Session, brain_key: str, version: int, actor_email: str, *, pin_incompatible: bool = True
+    db: Session, brain_key: str, version: int, actor_email: str, *,
+    pin_incompatible: bool = True, acknowledge_problems: bool = False,
 ) -> dict[str, Any]:
     """Make one version live, pinning the links it would break.
 
@@ -481,6 +482,26 @@ def publish(
     flow = parse_flow(row)
     if flow is None:
         raise BrainError(422, "Không phát hành được: cấu hình flow không hợp lệ")
+
+    # STOP AT THE DOOR, NOT AFTER IT.
+    #
+    # `Flow.blocking_problems()` was computed and displayed in the builder and
+    # nothing acted on it, so a flow whose prompt reads a variable no step writes
+    # could go live and answer viewers with that hole in it — the run would report
+    # ok, because an empty string is not an error. Publishing is the moment it
+    # starts talking to people, which is the last moment worth asking.
+    #
+    # Refused rather than blocked outright: an author who genuinely means it — a
+    # variable a future binding will supply, a flow mid-rewrite — passes
+    # `acknowledge_problems` and the decision is theirs, on the record, instead of
+    # being made silently by a default.
+    problems = flow.blocking_problems()
+    if problems and not acknowledge_problems:
+        raise BrainError(
+            409,
+            "Chưa phát hành được — flow còn lỗi sẽ ảnh hưởng lúc chạy:"
+            + "".join(chr(10) + "• " + p for p in problems),
+        )
 
     previous = (
         db.query(AgentBrainVersion)

@@ -328,6 +328,38 @@ def require_permission(module: str, min_level: str = "view"):
     return _check
 
 
+def module_floor(module: str):
+    """A router-level FLOOR: nothing under this router answers `module: none`.
+
+    WHY A FLOOR AND NOT A FULL GATE.
+
+    Every endpoint in these routers already checks the caller's RELATION to the row
+    it touches — `require_view_access`, `require_edit_access`, `_owned_or_shared` —
+    and that is what keeps one person's data away from another. Measured, it works:
+    a user holding `dashboards: view` and no share is refused every dashboard by id
+    and every write, and the list comes back empty.
+
+    What was missing is the cheaper question underneath: may this person open this
+    module AT ALL? That gate was written per endpoint, so it could be forgotten, and
+    on seven list endpoints it was — `/dashboards/`, `/datasets/`, `/charts/`,
+    `/datasources/`, `/workboards/`, `/dashboards/accessible-summary` and
+    `/datasets/composable-parents` all answered `200 []` to somebody the permission
+    matrix says has no access to anything. No row leaked, but the module answered,
+    which is not what "none" is supposed to mean — and `govern`, `agent_flows` and
+    `observability`, which gate at the router, correctly said 403.
+
+    A FLOOR (`view` for every method) rather than the method-aware gate those three
+    use, because these routers are not pure CRUD: a viewer legitimately POSTs to
+    presence endpoints like `/{id}/editing/leave`, and demanding `edit` for every
+    write here would break co-viewing. Anyone who holds the module sees no change;
+    only `none` is turned away.
+
+    Router-level so a NEW endpoint inherits it instead of depending on its author
+    remembering. That is the actual repair — the seven gaps were a symptom.
+    """
+    return Depends(require_permission(module, "view"))
+
+
 # ── Resource-type → Module mapping ──────────────────────────
 _MODEL_TO_RESOURCE_TYPE = {
     "DataSource": ResourceType.DATASOURCE,

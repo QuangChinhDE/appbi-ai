@@ -289,9 +289,10 @@ export interface KnowledgeDoc {
    * reasons: 'not_published' | 'no_dashboard' | 'not_indexed'
    */
   ai_retrievable?: { ok: boolean; reasons: string[] };
-  /** False = this document is never sent to the external embedding provider,
-   *  and is therefore deliberately unreachable by AI. */
-  allow_external_embedding?: boolean;
+  /** What may leave for a third party. 'none' means the document is deliberately
+   *  unreachable by AI; 'full' additionally permits OCR and figure description,
+   *  which send page images rather than prose. */
+  external_processing?: 'none' | 'embedding' | 'full';
   sensitivity?: string;
   /** Which version is live (RAG/public read it); may differ from the latest. */
   published_version?: number | null;
@@ -409,7 +410,15 @@ export interface EmbeddingConfig {
   max_chunks?: number;
   /** Published content has moved on since the last successful embed. */
   index_stale?: boolean;
-  allow_external_embedding?: boolean;
+  /** Indexing is QUEUED now, so "is it done yet" has to be answerable. */
+  index_job?: {
+    state: 'queued' | 'running' | 'done' | 'error';
+    reason?: string; attempts?: number; error?: string | null;
+    queued_at?: string | null; finished_at?: string | null;
+    result?: { status?: string; chunks?: number } | null;
+  } | null;
+  external_processing?: 'none' | 'embedding' | 'full';
+  embedding_allowed?: boolean;
   sensitivity?: string;
   model_locked: boolean;
   available_models: EmbeddingProfile[];
@@ -451,6 +460,9 @@ export interface EmbeddingRunResult {
   truncated?: boolean;
   dropped_chunks?: number;
   dropped_chars?: number;
+  /** Indexing is queued, so the immediate answer is a JOB, not a count.
+   *  `chunks` is only present on paths that already had a result. */
+  job?: { state?: string; reason?: string } | null;
 }
 
 export async function reembedDoc(docId: number, body?: EmbeddingConfigWrite): Promise<EmbeddingRunResult> {
@@ -477,6 +489,10 @@ export interface DocVector {
   char_count: number;
   trust?: string;
   doc_status?: string;
+  heading_path?: string | null;
+  page?: number | null;
+  block_kind?: string | null;
+  section_index?: number | null;
 }
 export interface DocVectors { vectors: DocVector[]; total: number; dims: number | null; model: string | null }
 export interface VectorMatch {
@@ -489,12 +505,106 @@ export interface VectorMatch {
   /** Where the passage came from: authored | uploaded | linked | external. */
   trust?: string;
   embedding_model?: string;
+  /** Where in the document this passage is — what a citation is made of. */
+  heading_path?: string | null;
+  page?: number | null;
+  block_kind?: string | null;
+  /** The section around the passage. Small-to-big: the chunk is what matched,
+   *  this is what a model should read to understand it. */
+  section_content?: string | null;
+  /** True when this document was DECLARED the definition of a metric the
+   *  question named — authority, not similarity. */
+  is_metric_home?: boolean;
+  /** The score that DECIDED the order (stage-two rerank). `score` is cosine,
+   *  shown for reference but no longer what sorts the list. */
+  rerank_score?: number;
+  /** Share of the query's weighted terms present in this passage. Diagnostic
+   *  only — it does not separate answerable from unanswerable questions. */
+  term_coverage?: number;
 }
 
 export async function getDocVectors(docId: number): Promise<DocVectors> {
   const { data } = await apiClient.get<DocVectors>(`/catalog/govern/knowledge/${docId}/vectors`);
   return data;
 }
+/** The document as the EXTRACTOR sees it, not as the author typed it.
+ *
+ *  Everything here existed on the backend and had no surface: the block tree, the
+ *  page numbers, which figures got a caption and which did not. "Why is this image
+ *  not searchable" was a question with no answer short of reading the database. */
+export interface DocStructure {
+  /** Tree format ("a2"). Bumping it rebuilds every document's structure. */
+  ast_format: string | null;
+  /** Which published version this structure describes. */
+  source_version: number | null;
+  ast_hash: string | null;
+  source_type: string | null;
+  blocks: number;
+  /** section / paragraph / list / table / figure → count. */
+  kinds: Record<string, number>;
+  pages: number[];
+  outline: Array<{ ordinal: number; level: number; title: string; heading_path: string; page: number | null }>;
+  figures: {
+    total: number;
+    described: number;
+    no_text: number;
+    /** WHY undescribed figures are undescribed. "not allowed by policy", "no
+     *  provider configured" and "the model could not read it" need three
+     *  different fixes, and a bare zero distinguishes none of them. */
+    reason: string | null;
+    policy: string;
+    items: Array<{
+      ordinal: number | null; page: number | null; caption: string | null;
+      source: string | null; src: string | null;
+    }>;
+  };
+  /** Blocks WITH text that no chunk carries — unanswerable content. An alarm. */
+  unindexed: Array<{
+    ordinal: number | null; kind: string; page: number | null;
+    heading_path: string | null; preview: string | null;
+  }>;
+  unindexed_total: number;
+  /** Blocks with no text at all, so nothing to index. Expected, not a defect. */
+  not_indexable: number;
+}
+
+/** One passage, opened at the version an answer cited it from.
+ *
+ *  `status` is not decoration. A citation names a VERSION and the block table
+ *  holds only the current one, so "resolved" and "resolved + verified" and
+ *  "source_changed" are three different truths and the reader needs the third. */
+export interface ResolvedCitation {
+  status: 'resolved' | 'source_changed' | 'version_not_kept' | 'document_gone' | 'block_not_found';
+  resolved: boolean;
+  /** Did the CONTENT check pass, as opposed to merely finding something at the
+   *  coordinates? A citation resolved without verification is a guess that landed. */
+  verified: boolean;
+  version: number | null;
+  current_version?: number | null;
+  is_current?: boolean;
+  title?: string | null;
+  text: string | null;
+  heading_path?: string | null;
+  page?: number | null;
+  block?: number | null;
+  block_kind?: string | null;
+  note?: string | null;
+}
+
+export async function resolveCitation(citation: {
+  doc_id: number; document_version?: number; block?: number;
+  block_to?: number; content_fingerprint?: string;
+}): Promise<ResolvedCitation> {
+  const { data } = await apiClient.post<ResolvedCitation>(
+    '/catalog/govern/knowledge/citation/resolve', citation);
+  return data;
+}
+
+export async function getDocStructure(docId: number): Promise<DocStructure> {
+  const { data } = await apiClient.get<DocStructure>(`/catalog/govern/knowledge/${docId}/structure`);
+  return data;
+}
+
 export async function queryDocVectors(docId: number, query: string, k = 5): Promise<VectorMatch[]> {
   const { data } = await apiClient.post<{ matches: VectorMatch[] }>(`/catalog/govern/knowledge/${docId}/vectors/query`, { query, k });
   return data.matches ?? [];
@@ -572,7 +682,7 @@ export interface KnowledgeDocWrite {
   review_date?: string | null;  // YYYY-MM-DD
   importance?: string;          // low|normal|high
   /** Omit to leave unchanged — the backend only writes it when non-null. */
-  allow_external_embedding?: boolean;
+  external_processing?: 'none' | 'embedding' | 'full';
   sensitivity?: string;
   embedding_model?: string;
 }

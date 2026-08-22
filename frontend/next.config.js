@@ -24,6 +24,24 @@ const nextConfig = {
   // then FastAPI redirects back with Location: http://backend:8000/... exposing
   // the internal Docker hostname to the browser and causing CORS errors.
   skipTrailingSlashRedirect: true,
+  experimental: {
+    // HOW LONG THE PROXY WAITS FOR THE BACKEND.
+    //
+    // Every /api/v1/* call reaches FastAPI through the rewrite in middleware.ts,
+    // and Next's default patience for a proxied request is 30 seconds. Past that
+    // it hangs up the socket and answers the browser 500 — while the backend keeps
+    // going and COMPLETES the work. That failure mode is worse than a slow call:
+    // an Agent Flow test on a cold report takes ~28-40s, the author saw "test
+    // failed", and the run had in fact succeeded and was already written to the
+    // Runs tab. The same wall sits in front of every other long operation that
+    // answers in one response — building a snapshot, publishing a dataset,
+    // exporting a PDF — which is why this is set here rather than worked around
+    // in one screen.
+    //
+    // Two minutes: comfortably past the slowest real operation, and still short
+    // enough that a genuinely hung request fails instead of holding a socket open.
+    proxyTimeout: 120_000,
+  },
   async rewrites() {
     return [
       // REST API proxying is handled by middleware.ts.

@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.core.database import get_db
 from app.core.dependencies import (
+    module_floor,
     get_current_user,
     require_permission,
     require_view_access,
@@ -92,7 +93,7 @@ from app.services.type_override_service import (
     normalize_type_overrides,
 )
 
-router = APIRouter()
+router = APIRouter(dependencies=[module_floor("datasets")])
 logger = get_logger(__name__)
 
 
@@ -1645,8 +1646,14 @@ def _resolve_physical_column_types(
     if datasource is None or is_generated_calendar_table(db_table):
         return {}
     try:
+        # WITH the type overrides applied. A column the DA converted ("legacy_date
+        # is DD/MM/YYYY", "amount is a number") is that type everywhere the data is
+        # read — the semantic view SQL casts it and the snapshot materializes the
+        # cast result — so resolving its physical type WITHOUT the override made
+        # the record disagree with reality: a converted date column was recorded as
+        # text, then materialized as a STRING column holding ISO dates.
         plan = build_live_base_query_plan(
-            datasource, db_table, apply_type_overrides=False,
+            datasource, db_table, apply_type_overrides=True,
         )
     except Exception as exc:  # noqa: BLE001
         logger.info("Physical-type resolution skipped (plan) for table %s: %s",
@@ -3624,11 +3631,17 @@ def update_dataset_table(
         # can show a confirm dialog instead of a generic toast. Caller may
         # retry with ?force=true to bypass.
         if preview_metadata and not force:
-            new_cols = {
-                str(col.get("name") if isinstance(col, dict) else col).strip()
-                for col in preview_metadata
-                if (col.get("name") if isinstance(col, dict) else col)
-            }
+            # `_infer_dataset_table_columns` returns ColumnMetadata MODELS, not
+            # dicts. `str(model)` yields "name='revenue' type='float' …", so the
+            # name set never matched the current columns and EVERY transformation
+            # edit reported "all 7 columns will be dropped" — a false cascade
+            # warning on a change that drops nothing.
+            def _col_name(col: Any) -> str:
+                if isinstance(col, dict):
+                    return str(col.get("name") or "").strip()
+                return str(getattr(col, "name", "") or "").strip()
+
+            new_cols = {n for n in (_col_name(col) for col in preview_metadata) if n}
             old_cols = _columns_for_table(db_table)
             dropped = old_cols - new_cols
             if dropped:

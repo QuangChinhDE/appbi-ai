@@ -234,6 +234,19 @@ class ToolContext:
     #: intersects, so an author listing an id they are not entitled to gains
     #: nothing — the ceiling is not theirs to raise.
     knowledge_scope: dict[str, Any] = field(default_factory=dict)
+    #: The most rows a single read may return, set per run from the binding's
+    #: `capabilities.max_rows_per_call`. None means fall back to `MAX_TOP_N`.
+    #:
+    #: It exists because the binding's declaration was not being honoured: a link
+    #: could grant 500 rows per call and `tool_get_chart_data` would hand back 50
+    #: without a word, so an operator raising the ceiling to fix a truncated
+    #: answer changed nothing and had no way to find out why. A limit that is
+    #: configurable in one place and enforced from another is not a limit, it is
+    #: two limits, and the stricter one wins silently.
+    max_rows_per_call: int | None = None
+    #: The most tokens one tool RESULT may carry, from the binding. None
+    #: falls back to the registry default. Set per run, like the row cap.
+    max_result_tokens: int | None = None
     _chart_data_cache: dict[tuple, dict] = field(default_factory=dict)
 
     @classmethod
@@ -323,9 +336,9 @@ def fold_column(name: Any) -> str:
     Mirrors GovernanceAIService._fold so a scope authored as "Khách hàng" also
     matches a column physically named "khach_hang".
     """
-    s = unicodedata.normalize("NFKD", str(name or ""))
-    s = "".join(ch for ch in s if not unicodedata.combining(ch))
-    return re.sub(r"\s+", " ", s).strip().lower()
+    from app.core.text_fold import fold_text
+
+    return fold_text(name)
 
 
 def _resolve_excluded_columns(db: Session, dashboard: Dashboard) -> set[str]:
@@ -376,8 +389,25 @@ def _ok(data: Any) -> dict:
     return {"ok": True, "data": data}
 
 
-def _err(message: str) -> dict:
-    return {"ok": False, "error": str(message)}
+def _err(message: str, *, code: str | None = None,
+         retryable: bool = False) -> dict:
+    """A failure from a legacy tool body.
+
+    `code` is optional and usually omitted: the registry infers the error code
+    from the message for every body written before typed codes existed. But
+    inference is guesswork on English fragments, and where the body KNOWS the
+    answer it should say so rather than leave it to be pattern-matched — the
+    registry passes an explicit `error_code` through untouched.
+
+    The first case was `fetch_url` refusing an internal address: inferred as
+    `query_failed`, which is marked retryable, so the one error the egress guard
+    exists to produce invited the model to try again.
+    """
+    out: dict = {"ok": False, "error": str(message)}
+    if code:
+        out["error_code"] = code
+        out["retryable"] = retryable
+    return out
 
 
 def _hash_filters(filters: list[dict]) -> str:

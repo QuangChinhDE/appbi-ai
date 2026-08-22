@@ -33,7 +33,7 @@ import {
   blankNode, branchCoverage, brainImpact, canDropInto, findNode, getBrain, insertNode,
   listAttachable, listNodeSpecs, listProviders, listToolPacks, moveNode,
   publishBrain, removeNode,
-  replaceNode, saveBrain, testFlow, validateFlow, walkNodes,
+  replaceNode, saveBrain, validateFlow, walkNodes,
   type FlowBody, type FlowLinkUsage, type FlowNode, type FlowPath, type InsertTarget,
   type Attachable, type NodeSpec, type NodeType, type ProviderGroup,
   type SwitchCase, type ToolPack,
@@ -45,10 +45,12 @@ import { FlowCanvas } from './FlowCanvas';
 import { NodeInspector } from './NodeInspector';
 import { NodeLibrary } from './NodeLibrary';
 import { Minimap, type MiniRect } from './Minimap';
+import { FeedbackTab } from './FeedbackTab';
 import { RunsTab } from './RunsTab';
+import { TestChat } from './TestChat';
 import { StatusBadge } from './shared';
 
-type Mode = 'design' | 'runs' | 'activity';
+type Mode = 'design' | 'runs' | 'feedback' | 'activity';
 
 export function BrainBuilder({
   brainKey, onBack, canEdit, canPublish,
@@ -65,12 +67,27 @@ export function BrainBuilder({
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const rawTab = searchParams?.get('tab');
-  const mode: Mode = (rawTab === 'runs' || rawTab === 'activity') ? rawTab : 'design';
-  const setMode = React.useCallback((next: Mode) => {
+  const mode: Mode = (rawTab === 'runs' || rawTab === 'feedback' || rawTab === 'activity')
+    ? rawTab : 'design';
+  /** Move to a tab, optionally carrying what to open there.
+   *
+   *  One helper rather than a URLSearchParams dance per call site: the test panel,
+   *  the feedback list and the tab strip all navigate, and three hand-rolled copies
+   *  is how one of them ends up forgetting to clear a stale `run=`. */
+  const goTab = React.useCallback((next: Mode, extra?: Record<string, string>) => {
     const q = new URLSearchParams(searchParams?.toString() || '');
     if (next === 'design') q.delete('tab'); else q.set('tab', next);
+    // Landing on a tab means landing on ONE thing there. Whatever the previous
+    // visit had open is not what was just asked for.
+    q.delete('run');
+    q.delete('conversation');
+    for (const [k, v] of Object.entries(extra || {})) q.set(k, v);
     router.replace(`${pathname}?${q.toString()}`);
   }, [router, pathname, searchParams]);
+  const setMode = React.useCallback((next: Mode) => goTab(next), [goTab]);
+  const openRun = React.useCallback(
+    (runId: number) => goTab('runs', { run: String(runId) }), [goTab],
+  );
   const [loading, setLoading] = React.useState(true);
   const [saving, setSaving] = React.useState(false);
   const [dirty, setDirty] = React.useState(false);
@@ -316,10 +333,10 @@ export function BrainBuilder({
     } finally { setSaving(false); }
   };
 
-  const doPublish = async () => {
+  const doPublish = async (acknowledgeProblems = false) => {
     setSaving(true);
     try {
-      const res = await publishBrain(brainKey, version);
+      const res = await publishBrain(brainKey, version, acknowledgeProblems);
       setPublishOpen(false);
       setStatus('published');
       setPublishedVersion(version);
@@ -388,6 +405,10 @@ export function BrainBuilder({
           {([
             ['design', 'agentFlows.builder.tab.design'],
             ['runs', 'agentFlows.builder.tab.runs'],
+            // Feedback sits next to Runs, not inside it: "what did it do" and "what
+            // did people think of it" are separate questions, and burying the
+            // second under a filter on the first is how it stayed unread.
+            ['feedback', 'agentFlows.builder.tab.feedback'],
             ['activity', 'agentFlows.builder.tab.activity'],
           ] as const).map(([key, labelKey]) => (
             <button key={key} type="button" onClick={() => setMode(key as Mode)}
@@ -554,6 +575,15 @@ export function BrainBuilder({
         )}
 
         {mode === 'runs' && <RunsTab brainKey={brainKey} />}
+        {mode === 'feedback' && (
+          <FeedbackTab
+            brainKey={brainKey}
+            onOpenRun={openRun}
+            // Landing on the conversation rather than the turn, because a
+            // complaint about turn five is not readable without turns one to four.
+            onOpenConversation={(key) => goTab('runs', { conversation: key })}
+          />
+        )}
         {mode === 'activity' && <ActivityTab brainKey={brainKey} onReloaded={load} />}
 
         {insertAt && (
@@ -572,6 +602,7 @@ export function BrainBuilder({
         <PublishDialog
           version={version}
           links={links}
+          problems={validation?.blocking_problems || []}
           onCancel={() => setPublishOpen(false)}
           onConfirm={doPublish}
           busy={saving}
@@ -579,7 +610,18 @@ export function BrainBuilder({
       )}
 
       {testOpen && (
-        <TestDialog brainKey={brainKey} links={links} onClose={() => setTestOpen(false)} />
+        <TestChat
+          brainKey={brainKey}
+          brainName={name || brainKey}
+          links={links}
+          version={version}
+          // Handed the live DRAFT, not the saved version: the branch you just added
+          // is the one you want to try, and the panel reads the flow to offer its
+          // branches as test targets.
+          nodes={body.nodes}
+          onOpenRun={(runId) => { setTestOpen(false); openRun(runId); }}
+          onClose={() => setTestOpen(false)}
+        />
       )}
     </div>
   );
@@ -589,13 +631,20 @@ export function BrainBuilder({
  *  A link that would break is PINNED, not broken — stated up front so publishing
  *  stops being a thing authors avoid. */
 function PublishDialog({
-  version, links, onCancel, onConfirm, busy,
+  version, links, problems, onCancel, onConfirm, busy,
 }: {
   version: number; links: FlowLinkUsage[];
-  onCancel: () => void; onConfirm: () => void; busy: boolean;
+  /** Defects the server will refuse on. Shown BEFORE the button: the check already
+   *  existed and ran on every keystroke, and publishing was the one moment nobody
+   *  consulted it — so a flow reading a variable no step writes went live and
+   *  answered viewers from a prompt with a hole in it. */
+  problems: string[];
+  onCancel: () => void; onConfirm: (acknowledgeProblems?: boolean) => void; busy: boolean;
 }) {
   const { t } = useI18n();
   const needsReview = links.filter((l) => l.status === 'needs_review');
+  const [accepted, setAccepted] = React.useState(false);
+  const blocked = problems.length > 0 && !accepted;
   return (
     <div className="absolute inset-0 z-50 flex items-center justify-center bg-[rgb(0_0_0/0.22)]">
       <div className="w-[540px] rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 shadow-linear-lg">
@@ -627,6 +676,23 @@ function PublishDialog({
               {t('agentFlows.publish.noLinks')}
             </p>
           )}
+          {!!problems.length && (
+            <div className="mt-3 rounded-lg border border-danger/30 bg-danger/5 p-2.5">
+              <b className="block text-caption text-danger">
+                {t('agentFlows.publish.problemsTitle')}
+              </b>
+              <ul className="mt-1.5 space-y-1">
+                {problems.map((p, i) => (
+                  <li key={i} className="text-caption leading-relaxed text-danger">• {p}</li>
+                ))}
+              </ul>
+              <label className="mt-2.5 flex cursor-pointer items-start gap-2 text-caption text-text-secondary">
+                <input type="checkbox" className="mt-0.5" checked={accepted}
+                  onChange={(e) => setAccepted(e.target.checked)} />
+                <span>{t('agentFlows.publish.problemsAcknowledge')}</span>
+              </label>
+            </div>
+          )}
           {!!needsReview.length && (
             <p className="mt-3 rounded-lg border border-warning/25 bg-warning/5 p-2.5 text-caption leading-relaxed text-warning">
               {t('agentFlows.publish.needsReviewPrefix', { count: needsReview.length })}{' '}
@@ -637,105 +703,15 @@ function PublishDialog({
         </div>
         <div className="flex justify-end gap-2 border-t border-[rgb(var(--border-line))] p-3">
           <Button variant="secondary" size="sm" onClick={onCancel}>{t('agentFlows.publish.cancel')}</Button>
-          <Button size="sm" onClick={onConfirm} loading={busy}>{t('agentFlows.builder.publish')}</Button>
+          <Button size="sm" onClick={() => onConfirm(accepted)} loading={busy} disabled={blocked}>
+            {t('agentFlows.builder.publish')}
+          </Button>
         </div>
       </div>
     </div>
   );
 }
 
-/** Test runs against a real BINDING, not a bare dashboard.
- *  "Does this flow work" is a question about a flow ON A LINK: two links resolve the
- *  same requirements to different fields, so a test without one tests nothing. */
-function TestDialog({
-  brainKey, links, onClose,
-}: { brainKey: string; links: FlowLinkUsage[]; onClose: () => void }) {
-  const { t } = useI18n();
-  const [question, setQuestion] = React.useState(t('agentFlows.test.initialQuestion'));
-  const [linkId, setLinkId] = React.useState<number | null>(links[0]?.link_id ?? null);
-  const [busy, setBusy] = React.useState(false);
-  const [result, setResult] = React.useState<Record<string, unknown> | null>(null);
-
-  const run = async () => {
-    if (!linkId) return;
-    setBusy(true);
-    try {
-      const res = await testFlow(brainKey, { question, link_id: linkId });
-      setResult(res.envelope as unknown as Record<string, unknown>);
-    } catch (e: unknown) {
-      const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-      toast.error(detail || t('agentFlows.test.failed'));
-    } finally { setBusy(false); }
-  };
-
-  const env = result as unknown as {
-    status?: string; trace?: { path: string; steps: { key: string; name: string; type: string; status: string; ms: number }[] };
-    answer?: { blocks: { type: string; markdown?: string }[] };
-  } | null;
-
-  return (
-    <div className="absolute inset-0 z-50 flex items-center justify-center bg-[rgb(0_0_0/0.22)]">
-      <div className="flex max-h-[80vh] w-[560px] flex-col rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 shadow-linear-lg">
-        <div className="flex items-center gap-2 border-b border-[rgb(var(--border-line))] p-3.5">
-          <b className="text-body font-strong">{t('agentFlows.test.title')}</b>
-          <div className="flex-1" />
-          <button type="button" onClick={onClose} className="rounded p-1 text-text-tertiary hover:bg-surface-2">
-            <X className="h-4 w-4" />
-          </button>
-        </div>
-        <div className="min-h-0 flex-1 overflow-auto p-3.5">
-          {!links.length ? (
-            <p className="rounded-lg border border-warning/25 bg-warning/5 p-3 text-caption leading-relaxed text-warning">
-              {t('agentFlows.test.noLinks')}
-            </p>
-          ) : (
-            <>
-              <label className="mb-1 block text-caption font-medium text-text-secondary">{t('agentFlows.test.link')}</label>
-              <select
-                value={linkId ?? ''}
-                onChange={(e) => setLinkId(Number(e.target.value))}
-                className="h-8 w-full rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 px-2 text-caption"
-              >
-                {links.map((l) => <option key={l.link_id} value={l.link_id}>{l.link_name}</option>)}
-              </select>
-              <label className="mb-1 mt-3 block text-caption font-medium text-text-secondary">{t('agentFlows.test.question')}</label>
-              <Textarea rows={3} value={question} onChange={(e) => setQuestion(e.target.value)} />
-              <Button className="mt-3 w-full" size="sm" onClick={run} loading={busy}>
-                <Play className="h-3.5 w-3.5" /> {t('agentFlows.test.run')}
-              </Button>
-
-              {env && (
-                <div className="mt-4">
-                  <div className="flex items-center gap-2">
-                    <Badge size="xs" variant={env.status === 'ok' ? 'success' : 'warning'}>
-                      {env.status}
-                    </Badge>
-                    <span className="text-tiny text-text-tertiary">{env.trace?.path}</span>
-                  </div>
-                  <div className="mt-2 overflow-hidden rounded-lg border border-[rgb(var(--border-line))]">
-                    {(env.trace?.steps || []).map((s, i) => (
-                      <div key={i} className="flex items-center gap-2 border-t border-[rgb(var(--border-line))] px-2.5 py-1.5 text-tiny first:border-t-0">
-                        <span className={cn('h-1.5 w-1.5 rounded-full',
-                          s.status === 'ok' ? 'bg-success'
-                            : s.status === 'error' ? 'bg-danger'
-                            : s.status === 'reused' ? 'bg-info' : 'bg-surface-3')} />
-                        <span className="flex-1 truncate">{s.name || s.key}</span>
-                        <span className="text-text-quaternary">{s.status} · {s.ms}ms</span>
-                      </div>
-                    ))}
-                  </div>
-                  <p className="mt-2 whitespace-pre-wrap rounded-lg border border-success/20 bg-success/5 p-2.5 text-caption leading-relaxed">
-                    {(env.answer?.blocks || []).map((b) => b.markdown).filter(Boolean).join('\n\n') || '—'}
-                  </p>
-                </div>
-              )}
-            </>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
 
 
 /** A square icon button. Small enough that a label would double its width, so the

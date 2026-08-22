@@ -34,6 +34,7 @@ from sqlalchemy.orm import Session
 
 from app.models.dataset import Dataset, DatasetTable, DatasetTableSnapshot
 from app.models.models import DataSource
+from app.services import physical_type_map as _ptm
 from app.services import query_cache as _qc
 from app.services import sync_control as _sc
 from app.services.datasource_service import DataSourceConnectionService, _is_quota_exceeded
@@ -223,16 +224,112 @@ def _resolved_sql(dataset_obj: Dataset, table: DatasetTable, datasource: DataSou
     )
 
 
-def _fingerprint(resolved_sql: str, table: DatasetTable) -> str:
-    cols = []
+def _columns_meta(table: DatasetTable) -> Optional[list]:
+    """The table's declared column metadata, whichever shape the cache is in.
+
+    ``columns_cache`` is polymorphic across the codebase: ``{"columns": [...]}``
+    on tables built by the current helpers, a bare ``[...]`` on older ones. A
+    dict-only reader raises ``AttributeError`` on the list shape and fails the
+    whole snapshot build, so every reader here goes through this helper."""
     cc = getattr(table, "columns_cache", None)
     if isinstance(cc, dict):
-        for c in (cc.get("columns") or []):
-            name = str(c.get("name") or "").strip()
-            typ = str(c.get("source_type") or c.get("type") or "").strip().lower()
-            if name:
-                cols.append(f"{name}:{typ}")
+        cols = cc.get("columns")
+        return cols if isinstance(cols, list) else None
+    if isinstance(cc, list):
+        return cc
+    return None
+
+
+def _reconcile_physical_types(
+    db: Session, table: DatasetTable, effective: Dict[str, str]
+) -> None:
+    """Record the physical type a just-built snapshot ACTUALLY stored, when it
+    contradicts what the model declared.
+
+    Only DOWNGRADES are written back — a column the loader had to store as text
+    (``"007"`` in a numeric column, ``"01/01/2026"`` in a date column). Leaving
+    the declaration numeric there is exactly the divergence that breaks charts:
+    the engine's gates read the declared type, skip the SAFE_CAST, and BigQuery
+    rejects ``SUM(STRING)`` / ``STRING = INT64``. Recording ``string`` makes the
+    gates cast — the same, long-proven behaviour Google-Sheets columns have.
+
+    Upgrades are deliberately NOT written back: when the loader stores a real
+    numeric type, the declared numeric label already agrees with it, and
+    rewriting it would churn the fingerprint on every build. The cache keeps
+    describing the SOURCE, which is what a live-fallback read needs."""
+    if not effective:
+        return
+    cols = _columns_meta(table)
+    if not cols:
+        return
+    changed: List[str] = []
+    fresh: List[Dict] = []
+    for col in cols:
+        if not isinstance(col, dict):
+            fresh.append(col)
+            continue
+        entry = dict(col)
+        name = str(entry.get("name") or "")
+        bq_t = str(effective.get(name) or "").upper()
+        if bq_t == "STRING" and not _ptm.loads_as_text(entry.get("source_type"), entry.get("type")):
+            entry["source_type"] = _ptm.token_for_bq_type(bq_t)
+            changed.append(name)
+        fresh.append(entry)
+    if not changed:
+        return
+    # Build a FRESH payload (never mutate the loaded JSON in place — SQLAlchemy
+    # has no Mutable tracking on this column and would skip the UPDATE).
+    cc = getattr(table, "columns_cache", None)
+    if isinstance(cc, dict):
+        table.columns_cache = {**cc, "columns": fresh}
+    else:
+        table.columns_cache = fresh
+    try:
+        from sqlalchemy.orm.attributes import flag_modified
+
+        flag_modified(table, "columns_cache")
+        db.commit()
+        logger.info(
+            "[snapshot] recorded physical type STRING for table=%s column(s)=%s "
+            "(declared type not honoured by the data → engine will SAFE_CAST)",
+            table.id, ", ".join(changed[:12]),
+        )
+    except Exception as exc:  # noqa: BLE001 — never fail a good build on bookkeeping
+        db.rollback()
+        logger.warning("[snapshot] physical-type reconcile failed table=%s: %s", table.id, exc)
+
+
+def _fingerprint(resolved_sql: str, table: DatasetTable, *, loader_typed: bool) -> str:
+    """The recipe a snapshot was built from. A mismatch ⇒ the snapshot no longer
+    matches the live definition (rebuild / serve-live, see
+    ``current_fingerprint_for_table``).
+
+    ``loader_typed`` says whether the LOADER's declared-type → BigQuery-type map
+    decided this table's physical column types — true only for a NON-BigQuery
+    source, whose rows are extracted and re-typed on the way in. Those snapshots
+    must be rebuilt when the map changes (an older build may hold mistyped
+    columns), so the map version joins their fingerprint.
+
+    A BigQuery→BigQuery snapshot takes its schema from the source query itself,
+    so the map never touched it: its fingerprint deliberately stays free of the
+    map version. That is what keeps every existing BigQuery-sourced report
+    byte-identical across this change — no forced rebuild, no INCOMPATIBLE
+    reconcile, no staleness on a report someone is using right now."""
+    cols = []
+    for c in (_columns_meta(table) or []):
+        if not isinstance(c, dict):
+            continue
+        name = str(c.get("name") or "").strip()
+        typ = str(c.get("source_type") or c.get("type") or "").strip().lower()
+        if name:
+            cols.append(f"{name}:{typ}")
     payload = "bigquery" + resolved_sql + "" + "|".join(sorted(cols))
+    if loader_typed and _ptm.mapping_changed_for(_columns_meta(table) or []):
+        # Only when THIS table's columns would now be typed differently than the
+        # map that built its snapshot produced. A federated table the map change
+        # does not touch keeps its fingerprint, so a report using it is never
+        # rebuilt, re-served live, or flagged stale for a change it never felt.
+        payload += "loader=" + _ptm.LOADER_VERSION
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
@@ -240,13 +337,52 @@ def _fingerprint(resolved_sql: str, table: DatasetTable) -> str:
 
 # ── build (single-flight) ───────────────────────────────────────────────────
 def _source_select_sql(source_ds: DataSource, table: DatasetTable) -> str:
-    """A plain SELECT returning the table's rows on its OWN (non-BigQuery) engine,
-    for the federated extract step. sql_query → wrap the source query; physical →
-    SELECT * from the source table (dialect-quoted)."""
+    """The SELECT that produces this table's rows on its OWN (non-BigQuery) engine,
+    for the federated extract step.
+
+    It must be the SAME projection the live path would run, because the snapshot
+    REPLACES that projection at read time (the engine swaps the FROM operand for
+    the flat snapshot — ``_snapshot_ref_for_view`` — so anything the view's SQL
+    would have done is only present if it was baked in at build time). A plain
+    ``SELECT *`` therefore silently dropped the table's server-side
+    TRANSFORMATIONS and TYPE OVERRIDES from every Sheets/manual/Postgres
+    snapshot: renamed/derived columns never existed in the physical table, and a
+    DA's "convert this column to date/number" had no effect on any dashboard.
+
+    ``build_live_base_query_plan`` is the one definition of that projection
+    (source SELECT → transformations → runtime type casts) and is what preview
+    already runs, so extracting through it makes snapshot ≡ preview ≡ live. Falls
+    back to the plain dialect-quoted SELECT when no plan can be built."""
     from app.services.live_query_service import (
         _build_base_table_ref,
         _dialect_for_ds_type,
+        build_live_base_query_plan,
     )
+    # Only route through the planner when the table actually HAS something the
+    # plain SELECT would lose. The planner's SQL is equivalent but not textually
+    # identical (it aliases the subquery differently), and the extract SQL is part
+    # of the snapshot fingerprint — so rewriting it for a table with no transforms
+    # and no overrides would rebuild a perfectly good snapshot, and briefly
+    # disturb a report, for a cosmetic diff.
+    from app.services.transformation_compiler import TransformationCompiler
+    from app.services.type_override_service import normalize_type_overrides
+
+    needs_projection = bool(
+        normalize_type_overrides(getattr(table, "type_overrides", None))
+        or TransformationCompiler.normalize_server_transformations(
+            getattr(table, "transformations", None) or []
+        )
+    )
+    if needs_projection:
+        try:
+            plan = build_live_base_query_plan(source_ds, table, apply_type_overrides=True)
+            if plan.sql and plan.sql.strip():
+                return plan.sql
+        except Exception as exc:  # noqa: BLE001 — never block a build on the planner
+            logger.warning(
+                "[snapshot] live-plan extract SQL unavailable for table %s (%s) → plain SELECT",
+                getattr(table, "id", None), exc,
+            )
     kind = getattr(table, "source_kind", None)
     if kind == "sql_query" and table.source_query:
         return f"SELECT * FROM (\n{table.source_query}\n) AS _appbi_src"
@@ -311,7 +447,10 @@ def build_table_snapshot(
     except Exception as exc:  # noqa: BLE001
         logger.warning("[snapshot] resolve SQL failed for table %s: %s", table.id, exc)
         return None
-    fp = _fingerprint(source_sig, table)
+    # resolved_sql is set ONLY for a BigQuery source; a non-BQ source is
+    # extracted + re-typed by the loader, so its fingerprint carries the map
+    # version (see _fingerprint).
+    fp = _fingerprint(source_sig, table, loader_typed=(resolved_sql is None))
     cfg = settings_for(host)
     snap_dataset = cfg["dataset"]
     project = str((host.config or {}).get("project_id") or "").strip()
@@ -425,7 +564,11 @@ def build_table_snapshot(
             from app.services import dataset_snapshot_config as _snapcfg
             from app.services import sync_progress as _sp
             _storage = _snapcfg.table_storage_config(dataset_obj, table.id)
-            _cols_meta = (getattr(table, "columns_cache", None) or {}).get("columns")
+            _cols_meta = _columns_meta(table)
+            # The {column: BigQuery type} the physical table ends up with. Read
+            # back after the build to reconcile the model's recorded types with
+            # what was actually stored (see _reconcile_physical_types).
+            _effective_types: Dict[str, str] = {}
 
             def _row_progress(n: int, _dsid=dataset_obj.id, _tid=table.id) -> None:
                 # Cooperative Stop: abort the in-flight load between chunks. The
@@ -492,6 +635,7 @@ def build_table_snapshot(
                         source_ds_type=_ds_type(datasource), source_config=datasource.config,
                         resolved_sql=resolved_sql, source_select_sql=source_sig,
                         columns_meta=_cols_meta, host_config=host.config,
+                        effective_types_out=_effective_types,
                         dataset_name=snap_dataset, table_name=table_name,
                         storage=_storage, timeout_seconds=_DDL_TIMEOUT_SEC, progress_cb=_row_progress,
                     )
@@ -556,6 +700,13 @@ def build_table_snapshot(
         except Exception:  # noqa: BLE001 — best-effort; None → TTL fallback
             row.source_watermark = None
         db.commit()
+
+        # Keep the model honest about what was actually stored: when the loader
+        # had to fall back to STRING for a column (values that do not honour the
+        # declared type), the engine MUST know — otherwise it emits SUM/joins
+        # against a text column with no SAFE_CAST and BigQuery 400s. This is the
+        # one place that knows both the declaration and the physical outcome.
+        _reconcile_physical_types(db, table, _effective_types)
 
         # Phase 4 — NO immediate GC of just-superseded physical tables. A query
         # that resolved the old refs may still be executing (issue #10); the
@@ -821,11 +972,12 @@ def current_fingerprint_for_table(
     live definition (SQL/schema/columns_cache drift → INCOMPATIBLE, issue #12).
     None ⇒ cannot fingerprint (treat as unknown, do NOT flag)."""
     try:
-        if _ds_type(datasource) == "bigquery":
+        is_bq = _ds_type(datasource) == "bigquery"
+        if is_bq:
             sig = _resolved_sql(dataset_obj, table, datasource, db)
         else:
             sig = _source_select_sql(datasource, table)
-        return _fingerprint(sig, table)
+        return _fingerprint(sig, table, loader_typed=not is_bq)
     except Exception:  # noqa: BLE001 — unknown, never break a read
         return None
 
@@ -1278,7 +1430,12 @@ def invalidate_stale_fingerprints(db: Session, dataset_id: int) -> int:
                 ds = db.query(DataSource).filter(DataSource.id == t.datasource_id).first()
                 ds_cache[t.datasource_id] = ds
             try:
-                fp = _fingerprint(_resolved_sql(dataset_obj, t, ds, db), t)
+                # Use the SAME recipe the builder and the read-time reconcile use.
+                # This unconditionally assumed a BigQuery source, so for a
+                # Sheets/CSV/Postgres table it compared a BQ-style signature to a
+                # federated one — never equal, so those snapshots were invalidated
+                # on every pass and rebuilt for no reason.
+                fp = current_fingerprint_for_table(db, dataset_obj, t, ds) if ds is not None else None
             except Exception:  # noqa: BLE001 — can't resolve → be safe, invalidate
                 fp = None
             if fp != row.fingerprint:

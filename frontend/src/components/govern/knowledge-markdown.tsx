@@ -103,6 +103,7 @@ export function Markdown({ source, onDocLink }: { source: string; onDocLink?: (i
   const ri = (text: string, k: string) => renderInline(text, k, t, onDocLink);
   let list: { ordered: boolean; items: string[] } | null = null;
   let quote: string[] | null = null;  // buffered consecutive "> " lines
+  let table: string[] | null = null;  // buffered consecutive "| … |" rows
   const flushList = (k: string) => {
     if (!list) return;
     const L = list;
@@ -112,6 +113,50 @@ export function Markdown({ source, onDocLink }: { source: string; onDocLink?: (i
         : <ul key={k} className="my-2.5 ml-5 list-disc space-y-1.5 text-text-secondary marker:text-text-quaternary">{L.items.map((it, i) => <li key={i} className="pl-1 leading-relaxed">{ri(it, `${k}i${i}`)}</li>)}</ul>,
     );
     list = null;
+  };
+  /** Consecutive pipe rows into a real table.
+   *
+   *  This renderer had headings, lists and callouts and no tables, so a fifteen-row
+   *  policy table in a knowledge document rendered as fifteen paragraphs of raw
+   *  pipes. The AST parses it correctly — it is one table block with its header —
+   *  which made this the one place the reader saw something the retriever did not.
+   *  A table nobody can read is a table nobody governs. */
+  const flushTable = (k: string) => {
+    if (!table) return;
+    const rows = table.filter((r) => !/^\s*\|[\s|:-]*\|\s*$/.test(r));  // drop the |---| rule
+    table = null;
+    if (!rows.length) return;
+    const cells = (row: string) => row.trim().replace(/^\|/, '').replace(/\|$/, '').split('|');
+    const head = cells(rows[0]);
+    const body = rows.slice(1).map(cells);
+    blocks.push(
+      // Scrolls in its OWN container: a wide table must never make the page
+      // scroll sideways, and a knowledge doc's tables are usually wide.
+      <div key={k} className="my-3 overflow-x-auto rounded-lg border border-[rgb(var(--border-line))]">
+        <table className="w-full border-collapse text-caption">
+          <thead>
+            <tr className="bg-surface-2">
+              {head.map((c, i) => (
+                <th key={i} className="border-b border-[rgb(var(--border-line))] px-2.5 py-1.5 text-left font-strong text-text-primary">
+                  {ri(c.trim(), `${k}h${i}`)}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {body.map((row, r) => (
+              <tr key={r} className="align-top">
+                {head.map((_, c) => (
+                  <td key={c} className="border-b border-[rgb(var(--border-line))] px-2.5 py-1.5 text-text-secondary last:border-r-0">
+                    {ri((row[c] ?? '').trim(), `${k}r${r}c${c}`)}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>,
+    );
   };
   const flushQuote = (k: string) => {
     if (!quote) return;
@@ -141,6 +186,15 @@ export function Markdown({ source, onDocLink }: { source: string; onDocLink?: (i
   lines.forEach((raw, idx) => {
     const line = raw.trimEnd();
     const k = `md${idx}`;
+    // A pipe row continues the table being buffered, or starts one. Checked
+    // before everything else because `| --- | --- |` also matches the list rule.
+    if (/^\|.*\|\s*$/.test(line)) {
+      flushList(k); flushQuote(k);
+      if (table === null) table = [];
+      table.push(line);
+      return;
+    }
+    flushTable(k);
     const q = line.match(/^>\s?(.*)$/);
     if (q) { flushList(k); if (quote === null) quote = []; quote.push(q[1]); return; }
     flushQuote(k);
@@ -160,6 +214,7 @@ export function Markdown({ source, onDocLink }: { source: string; onDocLink?: (i
   });
   flushList('mdend');
   flushQuote('mdendq');
+  flushTable('mdendt');
   return <div className="text-small [&>*:first-child]:mt-0">{blocks}</div>;
 }
 

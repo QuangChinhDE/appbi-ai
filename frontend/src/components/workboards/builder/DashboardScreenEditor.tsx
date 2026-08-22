@@ -103,7 +103,16 @@ export default function DashboardScreenEditor({
       const res = await apiClient.get('/dashboards/accessible-summary');
       setAccessible(Array.isArray(res.data) ? (res.data as AccessibleDashboard[]) : []);
     } catch (err) {
-      setListError(getApiErrorMessage(err, t('workboards.dashboard.loadAccessibleFailed')));
+      // A 403 here is not a failure to load — it is the honest answer that this
+      // author holds no Dashboards permission, so there is nothing to embed. The
+      // module floor started returning it instead of a silently empty list, and a
+      // generic "could not load" would send them hunting for a bug that isn't one.
+      const status = (err as { response?: { status?: number } })?.response?.status;
+      setListError(
+        status === 403
+          ? t('workboards.dashboard.noDashboardAccess')
+          : getApiErrorMessage(err, t('workboards.dashboard.loadAccessibleFailed')),
+      );
     } finally {
       setListLoading(false);
     }

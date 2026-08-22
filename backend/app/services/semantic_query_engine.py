@@ -13,6 +13,7 @@ a re-export shim so old imports stay working.
 from typing import List, Tuple, Dict, Any, Optional, Set
 from sqlalchemy.orm import Session
 from app.models.semantic import SemanticView, SemanticExplore, SemanticModel
+from app.services import physical_type_map as _ptm
 from app.services.semantic_join_resolver import SemanticJoinResolver
 from app.schemas.semantic import (
     WindowFunctionDefinition,
@@ -1092,6 +1093,29 @@ class SemanticQueryEngine:
             return f"{view_alias}.{self._quote_ident(stripped)}"
         return self._render_sql_template(raw_sql, view_alias)
     
+    def _dimension_is_text_typed(self, field_ref: str) -> bool:
+        """True when this dimension's column is stored as TEXT.
+
+        Same recorded metadata + same shared vocabulary the SUM gate uses
+        (``physical_type_map.loads_as_text``), so "needs a cast" means one thing
+        across aggregation, joins and time grains. Unresolvable field → False
+        (render exactly as before)."""
+        try:
+            view_name, col = self._parse_field_ref(field_ref)
+        except ValueError:
+            return False
+        view = self.views_cache.get(view_name) or self._get_view_for_node(view_name)
+        if view is None:
+            return False
+        dim = next(
+            (d for d in (getattr(view, "dimensions", None) or []) if d.get("name") == col),
+            None,
+        )
+        if dim is not None:
+            return _ptm.loads_as_text(dim.get("source_type"), dim.get("type"))
+        phys = self._physical_source_type(view, col)
+        return bool(phys) and _ptm.loads_as_text(phys)
+
     def _render_dimension_with_time_grain(
         self,
         field_ref: str,
@@ -1111,6 +1135,17 @@ class SemanticQueryEngine:
         """
         base_sql = self._render_dimension(field_ref, view_alias)
         dialect = (self.database_type or "").lower()
+        # A time grain over a column that is PHYSICALLY TEXT is invalid SQL, not a
+        # rounding problem: BigQuery rejects `TIMESTAMP_TRUNC(STRING, MONTH)` and
+        # the whole chart 400s. Text dates are normal here — a CSV/Sheets cell is
+        # always text, and Airbyte lands dates as STRING — so coerce first. The
+        # cast is a value-preserving no-op on a genuine DATE/TIMESTAMP column, so
+        # the common case is unchanged, and unparseable text becomes NULL (an
+        # empty bucket) instead of killing the query.
+        if self._dimension_is_text_typed(field_ref):
+            from app.services.type_override_service import build_safe_cast_sql
+
+            base_sql = build_safe_cast_sql(base_sql, "datetime", dialect)
 
         if dialect == "bigquery":
             grain_map = {
@@ -1312,29 +1347,24 @@ class SemanticQueryEngine:
         # cross-view reference we must not blindly cast.
         if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", col):
             return False
-        # Physical string-family storage types across supported warehouses
-        # (BigQuery STRING, Postgres text/varchar/char, MySQL char/varchar/…).
-        _STRING_PHYSICAL = {
-            "string", "text", "varchar", "char", "nvarchar", "nchar",
-            "character varying", "character", "bpchar", "clob", "str", "utf8",
-        }
+        # THE decision is delegated to `physical_type_map.loads_as_text`, which is
+        # the SAME map the snapshot loader uses to choose each column's physical
+        # BigQuery type. Keeping a private token set here is what broke: the loader
+        # stopped recognising `number` (CSV/manual) and stored STRING while this
+        # gate still read `number` as numeric and skipped the cast → SUM(STRING)
+        # 400. Sharing the map makes "stored as text" and "cast before SUM" one
+        # decision that cannot drift.
         dim = next(
             (d for d in (getattr(view, "dimensions", None) or []) if d.get("name") == col),
             None,
         )
         if not dim:
-            # Not a declared dimension — fall back to the physical type from
-            # columns_cache so SUM/AVG over a numeric-looking STRING column that
-            # was never modeled still gets SAFE_CAST (else SUM(STRING) → 400).
-            # No physical type / a genuine numeric → False (no cast), unchanged.
-            phys = (self._physical_source_type(view, col) or "").strip().lower()
-            return bool(phys) and phys in _STRING_PHYSICAL
-        source_type = str(dim.get("source_type") or "").strip().lower()
-        if source_type:
-            return source_type in _STRING_PHYSICAL
-        # Legacy cache without a recorded physical type: fall back to the
-        # value-sampled semantic type (only catches columns modeled `string`).
-        return str(dim.get("type") or "").lower() == "string"
+            # Not a declared dimension (deleted dim, column added after model-gen,
+            # or picked from the measure-column combobox) — recover the physical
+            # type from columns_cache so an unmodeled text column still casts.
+            phys = self._physical_source_type(view, col)
+            return bool(phys) and _ptm.loads_as_text(phys)
+        return _ptm.loads_as_text(dim.get("source_type"), dim.get("type"))
 
     def _field_rejects_pattern_operator(self, field_ref: str) -> bool:
         """True when a LIKE/pattern operator can't apply to ``field_ref``'s column.
@@ -1476,21 +1506,20 @@ class SemanticQueryEngine:
             sem = ""
             if not st:
                 return None
-        _NUM = {
-            "int", "integer", "int64", "bigint", "smallint", "tinyint",
-            "float", "float64", "double", "double precision", "real",
-            "numeric", "decimal", "number",
-        }
-        _BOOL = {"bool", "boolean", "yesno"}
-        _DATE = {"date"}
-        _DT = {"datetime", "timestamp", "timestamptz", "time"}
-        if st in _BOOL or sem in _BOOL:
+        # Physical families come from the shared vocabulary (physical_type_map) so
+        # every driver token — int8/float8/timestamptz/money/numeric(10,2) … — is
+        # classified the same way here, in the loader, and in the cast gates.
+        # The SEMANTIC type still wins for intent (a `number` label means the DA
+        # wants a numeric comparison even on a physically-text column).
+        st_fam = _ptm.family(st)
+        _BOOL_SEM = {"bool", "boolean", "yesno"}
+        if st_fam == "bool" or sem in _BOOL_SEM:
             return "bool"
-        if st in _DATE or sem == "date":
+        if st_fam == "date" or sem == "date":
             return "date"
-        if st in _DT or sem == "datetime":
+        if st_fam in ("timestamp", "time") or sem == "datetime":
             return "datetime"
-        if sem == "number" or st in _NUM:
+        if sem == "number" or st_fam in _ptm.NUMERIC_FAMILIES:
             return "number"
         return "string"
 
@@ -3135,27 +3164,16 @@ class SemanticQueryEngine:
         r"^\s*\$\{TABLE\}\.([A-Za-z_][A-Za-z0-9_]*)\s*=\s*"
         r"\$\{([^}]+)\}\.([A-Za-z_][A-Za-z0-9_]*)\s*$"
     )
-    _JOINKEY_NUMBER_PHYSICAL = {
-        "int", "integer", "bigint", "smallint", "tinyint", "int64", "int32",
-        "number", "numeric", "decimal", "float", "float64", "double",
-        "double precision", "real",
-    }
-    _JOINKEY_STRING_PHYSICAL = {
-        "string", "text", "varchar", "char", "nvarchar", "nchar",
-        "character varying", "character", "bpchar", "clob", "str", "utf8",
-    }
-
     def _joinkey_family(self, view, col: str) -> Optional[str]:
-        """'number' | 'string' | None for a join-key column's PHYSICAL type."""
-        t = (self._physical_source_type(view, col) or "").strip().lower()
+        """'number' | 'string' | None for a join-key column's PHYSICAL type.
+
+        Resolved through the shared ``physical_type_map`` so a key MATERIALIZED as
+        text is treated as text even when the model labelled it numeric — the
+        mismatch that produced ``STRING = INT64`` on federated joins."""
+        t = self._physical_source_type(view, col)
         if not t:
             return None
-        base = t.split("(", 1)[0].strip()
-        if base in self._JOINKEY_NUMBER_PHYSICAL:
-            return "number"
-        if base in self._JOINKEY_STRING_PHYSICAL:
-            return "string"
-        return None
+        return _ptm.compare_family(t)
 
     def _typed_join_condition(self, edge, condition: str) -> Optional[str]:
         """Type-aware rebuild of a CANONICAL key-equality join condition.
@@ -3203,10 +3221,20 @@ class SemanticQueryEngine:
                 lhs = f"{edge.from_node}.{fc}"
                 rhs = f"{edge.to_node}.{tc}"
                 if {ff, tf} == {"number", "string"}:
-                    if ff == "string":
-                        lhs = build_safe_cast_sql(lhs, "float", self.database_type)
-                    else:
-                        rhs = build_safe_cast_sql(rhs, "float", self.database_type)
+                    # Cast BOTH sides, not just the text one. Casting a single
+                    # side trusts the OTHER side's recorded type to be exact, and
+                    # a materialized column can disagree with the model that
+                    # describes it (a Postgres key whose physical type was never
+                    # resolved landed in the snapshot as STRING while the model
+                    # called it an integer) — the join then emitted
+                    # `FLOAT64 = STRING` and BigQuery rejected the whole query.
+                    # SAFE_CAST over a genuine number is a value-preserving no-op,
+                    # so casting both makes the comparison type-check whatever the
+                    # physical types turn out to be. Only reached when one side is
+                    # KNOWN numeric and the other KNOWN text: two text keys are
+                    # left alone (casting them could NULL a legitimate match).
+                    lhs = build_safe_cast_sql(lhs, "float", self.database_type)
+                    rhs = build_safe_cast_sql(rhs, "float", self.database_type)
                     any_cast = True
                 rebuilt.append(f"{lhs} = {rhs}")
             if not any_cast:

@@ -65,6 +65,13 @@ from app.services.dashboard_ai_bot.events import AgentEvent
 
 logger = logging.getLogger(__name__)
 
+#: Notices that mean the run did NOT execute as designed, even though every step
+#: that ran, ran without error. They downgrade `ok` to `partial`, because a run
+#: whose branches all missed is not a success — it is a question the flow was not
+#: shaped to answer, and the operator has to be able to see that in the numbers.
+DEGRADING_NOTICES = frozenset({"branch_unmatched"})
+
+
 
 class BranchStopped(Exception):
     """A Filter node said this branch should not continue.
@@ -207,6 +214,15 @@ async def run_flow(
         )
     if any(s.status == "error" for s in state.trace) and status == "ok":
         status = "partial"
+    if status == "ok" and any(n.code in DEGRADING_NOTICES for n in state.notices):
+        # EVERY STEP RAN FINE AND THE FLOW STILL DID NOT RUN AS DESIGNED.
+        #
+        # A branching node that matched nothing executes cleanly — there is no
+        # error to find in the trace — so the existing "any step errored" rule
+        # cannot see it, and the run was filed `ok`. An operator reading the flow's
+        # success rate then counts a question whose whole analysis lane was skipped
+        # as a working answer. "ok" has to mean the designed path ran.
+        status = "partial"
 
     # ── Are the answer's figures supported by what the run actually read? ──────
     #
@@ -245,6 +261,16 @@ async def run_flow(
                          "không khớp với dữ liệu đã đọc — hãy đối chiếu lại trước khi dùng.",
                 )
             )
+
+    # THE OTHER HALF OF THE SAME CHECK.
+    #
+    # `_verify_figures` asks whether the answer's NUMBERS came from somewhere. This
+    # asks whether its SOURCE REFERENCES do. The retriever hands the model numbered
+    # passages and an instruction to cite them; a `[7]` when six were given is not a
+    # typo, it is a reference nobody can follow — the exact failure citations were
+    # added to prevent. A wrong number is caught above; an uncheckable source was
+    # not caught at all.
+    _verify_answer_citations(state, answer)
 
     # Built BEFORE the envelope: `memory_payload()` can append a notice (a value too
     # large to remember), and Pydantic COPIES the notices list when it validates —
@@ -389,6 +415,10 @@ async def _run_node(
                     key=node.key, type=node.type, name=label, status="skipped",
                     ms=int((time.monotonic() - began) * 1000),
                     output_preview="điều kiện không khớp — dừng nhánh",
+                    # A step that spent tokens before it stopped still spent them.
+                    prompt_tokens=state.prompt_tokens - tokens_before[0],
+                    completion_tokens=state.completion_tokens - tokens_before[1],
+                    tool_calls=state.tool_log[tools_before:],
                 )
             )
             yield AgentEvent(
@@ -408,6 +438,19 @@ async def _run_node(
                     key=node.key, type=node.type, name=label, status="error",
                     ms=int((time.monotonic() - began) * 1000),
                     error=str(exc),
+                    # THE COST OF THE STEP THAT ATE THE BUDGET.
+                    #
+                    # The comment above says the node that consumed the budget is
+                    # the single most useful fact about such a run — and then this
+                    # row reported it as costing nothing, because the token deltas
+                    # were only set on the success path. Measured on a 13-node
+                    # harness: a turn spent 9,737 prompt tokens and only 7,227 of
+                    # them landed on any step, the missing 2,510 belonging to the
+                    # one step that failed. Reading the trace, the expensive step
+                    # looked free.
+                    prompt_tokens=state.prompt_tokens - tokens_before[0],
+                    completion_tokens=state.completion_tokens - tokens_before[1],
+                    tool_calls=state.tool_log[tools_before:],
                     output_preview=(
                         f"đã dùng {state.budget.tool_calls}/{state.budget.max_tool_calls} "
                         f"lượt công cụ và {state.budget.llm_calls}/"
@@ -437,6 +480,12 @@ async def _run_node(
                 key=node.key, type=node.type, name=label,
                 status="error", ms=ms, error=last_error,
                 tool_calls=state.tool_log[tools_before:],
+                # Same reasoning as the budget path above, and it matters more here:
+                # `retry` means a failing step can pay for the same work several
+                # times over, and a row reading 0 tokens for three attempts hides
+                # exactly the configuration an author would want to reconsider.
+                prompt_tokens=state.prompt_tokens - tokens_before[0],
+                completion_tokens=state.completion_tokens - tokens_before[1],
             )
         )
         yield AgentEvent(
@@ -519,22 +568,36 @@ async def _run_if(
         chosen = next((p for p in node.paths if p.kind == "fallback"), None)
 
     if chosen is None:
+        # NOTHING RAN, AND UNTIL NOW NOTHING SAID SO.
+        #
+        # `_run_loop` already reports an empty iteration for exactly this reason —
+        # "a run that looked complete with a body that never executed" — and the two
+        # branching nodes were left out of that lesson. An IF whose conditions all
+        # missed with no fallback drew lanes on the canvas and drove down none of
+        # them, while the trace showed the step green.
         state.outputs[node.key] = {"matched": None}
+        state.notices.append(
+            Notice(
+                code="branch_unmatched",
+                text=f"Bước “{node.name or node.key}” không nhánh nào khớp và cũng "
+                     "không có nhánh dự phòng, nên phần việc trong các nhánh đã bị bỏ qua.",
+            )
+        )
         return
 
     label = chosen.name or chosen.key
-    state.path.append(label)
     state.outputs[node.key] = {"matched": chosen.key, "label": label}
     yield AgentEvent(
         type="branch_taken",
         extra={"step": node.key, "path": chosen.key, "label": label},
     )
-    try:
-        async for ev in _run_body(chosen.body, state, rctx):
-            yield ev
-    except BranchStopped:
-        # The filter stopped THIS lane. Siblings after the IF still run.
-        pass
+    with state.in_branch(label):
+        try:
+            async for ev in _run_body(chosen.body, state, rctx):
+                yield ev
+        except BranchStopped:
+            # The filter stopped THIS lane. Siblings after the IF still run.
+            pass
 
 
 async def _run_switch(
@@ -549,30 +612,51 @@ async def _run_switch(
                 break
 
     if not matched and node.has_fallback and node.fallback:
-        state.path.append("fallback")
         state.outputs[node.key] = {"matched": None, "value": value}
         yield AgentEvent(type="branch_taken", extra={"step": node.key, "path": "fallback"})
-        try:
-            async for ev in _run_body(node.fallback, state, rctx):
-                yield ev
-        except BranchStopped:
-            pass
+        with state.in_branch("fallback"):
+            try:
+                async for ev in _run_body(node.fallback, state, rctx):
+                    yield ev
+            except BranchStopped:
+                pass
         return
 
     state.outputs[node.key] = {
         "matched": [c.key for c in matched], "value": value,
     }
+    if not matched:
+        # Same silence as the IF above, with one addition that matters when it is
+        # a model choosing the value: SAY WHAT THE VALUE WAS. "No case matched" is
+        # not actionable; "no case matched 'Không có dữ liệu…'" tells the author
+        # both that their classifier answered in prose and which case list to fix.
+        shown = str(value)
+        declared_but_empty = node.has_fallback and not node.fallback
+        state.notices.append(
+            Notice(
+                code="branch_unmatched",
+                text=(
+                    f"Bước “{node.name or node.key}” không có nhánh nào khớp với giá trị "
+                    f"“{shown[:80]}”"
+                    + (
+                        " — nhánh dự phòng đã bật nhưng đang rỗng, nên không có gì chạy."
+                        if declared_but_empty
+                        else ", nên không có nhánh nào chạy."
+                    )
+                ),
+            )
+        )
     for case in matched:
         label = case.label or case.key
-        state.path.append(label)
         yield AgentEvent(
             type="branch_taken", extra={"step": node.key, "path": case.key, "label": label}
         )
-        try:
-            async for ev in _run_body(case.body, state, rctx):
-                yield ev
-        except BranchStopped:
-            continue
+        with state.in_branch(label):
+            try:
+                async for ev in _run_body(case.body, state, rctx):
+                    yield ev
+            except BranchStopped:
+                continue
 
 
 async def _run_loop(
@@ -600,26 +684,26 @@ async def _run_loop(
             )
         )
 
-    state.path.append(f"Loop×{len(items)}")
-    for index, item in enumerate(items):
-        state.budget.check()
-        state.set_var(node.item_var, item)
-        if node.index_var:
-            state.set_var(node.index_var, index)
-        yield AgentEvent(
-            type="loop_iteration",
-            extra={"step": node.key, "index": index, "total": len(items)},
-        )
-        try:
-            async for ev in _run_body(node.body, state, rctx):
-                yield ev
-        except BranchStopped:
-            # This item was filtered out; the remaining items still run.
-            continue
-        if state.stopped:
-            break
-        last = state.outputs.get(node.body[-1].key) if node.body else None
-        collected.append(last)
+    with state.in_branch(f"Loop×{len(items)}"):
+        for index, item in enumerate(items):
+            state.budget.check()
+            state.set_var(node.item_var, item)
+            if node.index_var:
+                state.set_var(node.index_var, index)
+            yield AgentEvent(
+                type="loop_iteration",
+                extra={"step": node.key, "index": index, "total": len(items)},
+            )
+            try:
+                async for ev in _run_body(node.body, state, rctx):
+                    yield ev
+            except BranchStopped:
+                # This item was filtered out; the remaining items still run.
+                continue
+            if state.stopped:
+                break
+            last = state.outputs.get(node.body[-1].key) if node.body else None
+            collected.append(last)
 
     # The loop variable is restored rather than left dangling: a node AFTER the loop
     # reading `{{segment}}` would otherwise silently get the last iteration's value.
@@ -664,12 +748,17 @@ def _final_answer(state: RunState, rctx: RunContext) -> Answer:
         # The answering node failed. Fall back to the last node that produced PROSE,
         # so a working chain with a broken final step still says something.
         #
-        # Restricted to `agent` nodes on purpose. Accepting any string output meant a
-        # Set Variable holding "none" became the viewer's answer — a variable is not
-        # a sentence, and presenting one as the reply is worse than admitting there
-        # is no answer.
+        # Restricted on purpose. Accepting any string output meant a Set Variable
+        # holding "none" became the viewer's answer — a variable is not a sentence,
+        # and presenting one as the reply is worse than admitting there is no answer.
+        #
+        # `flow.writes_prose` rather than `step.type == "agent"`, which was the test
+        # here and was one definition of "prose" out of two. A `choice` agent IS an
+        # agent and emits a single token from a fixed list, so this fallback could
+        # hand a viewer the word "du_bao" as the reply — the same defect the comment
+        # above describes, arriving through the door the comment left open.
         for step in reversed(state.trace):
-            if step.type != "agent":
+            if not rctx.flow.writes_prose(step.key):
                 continue
             candidate = state.outputs.get(step.key)
             if isinstance(candidate, str) and candidate.strip():
@@ -709,6 +798,82 @@ def _verify_figures(state: RunState, answer: Answer) -> dict | None:
     except Exception:  # noqa: BLE001
         logger.debug("[flow] figure verification failed", exc_info=True)
         return None
+
+
+def _verify_answer_citations(state: RunState, answer: Answer) -> dict | None:
+    """Check every `[n]` in the answer against the sources the run actually read.
+
+    WHY IT REWRITES THE ANSWER INSTEAD OF ONLY WARNING
+    -------------------------------------------------
+    A notice is the right response to a figure that does not match: the number is
+    still the model's claim and the reader can weigh it. An invented citation is
+    different — the marker itself asserts "this came from source 7", and leaving it
+    in place while adding a footnote elsewhere means the sentence keeps making a
+    false claim about its own provenance. So the marker goes, and the notice says
+    why. Nothing else about the sentence is touched: removing the model's WORDS
+    over a citation defect would be editing the answer, which is not this
+    function's business.
+
+    A citation-free answer is NOT an error. Not every sentence needs a source, and
+    demanding one produces decorative citations, which are worse than none.
+    """
+    from app.services.dashboard_ai_bot.govern_doc_context import verify_citations
+
+    allowed = sorted({
+        int(n) for c in state.citations if c.kind == "document"
+        for n in c.used if str(n).isdigit()
+    })
+    if not allowed:
+        return None
+    sources = [{"n": n} for n in allowed]
+    text_seen = answer.plain_text()
+    result = verify_citations(text_seen, sources)
+    if result["ok"]:
+        return result
+
+    invented = result["invented"]
+    logger.warning(
+        "[flow] answer cites %s but only %s were provided", invented, allowed,
+    )
+    _strip_invented_markers(answer, invented)
+    state.notices.append(
+        Notice(
+            code="citations_invented",
+            text="Câu trả lời dẫn nguồn [%s] không có trong danh sách trích dẫn — "
+                 "các dấu dẫn nguồn đó đã được bỏ, nội dung câu giữ nguyên để bạn "
+                 "tự đối chiếu." % ", ".join(str(n) for n in invented),
+        )
+    )
+    return result
+
+
+def _strip_invented_markers(answer: Answer, invented: list[int]) -> None:
+    """Remove exactly the bracketed numbers that point nowhere.
+
+    Bounded to `[n]` with the specific numbers found: a blanket strip of every
+    bracketed digit would also delete `[1]` when it was correct, and delete
+    legitimate brackets from a quoted formula.
+    """
+    import re
+
+    if not invented:
+        return
+    pattern = re.compile(r"\s?\[(?:%s)\]" % "|".join(str(n) for n in invented))
+    # Both fields `plain_text()` reads. A callout is prose the viewer reads exactly
+    # like a paragraph, so cleaning only `markdown` would leave the false marker
+    # standing in the one block designed to draw the eye.
+    for block in answer.blocks:
+        for field in ("markdown", "text"):
+            value = getattr(block, field, None)
+            if not isinstance(value, str) or not value:
+                continue
+            cleaned = pattern.sub("", value)
+            if cleaned == value:
+                continue
+            try:
+                setattr(block, field, cleaned)
+            except Exception:  # noqa: BLE001 — a frozen block keeps its text
+                logger.debug("[flow] could not rewrite a block's %s", field)
 
 
 def _unknown_labels(state: RunState, answer: Answer) -> list[str]:

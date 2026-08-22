@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Plus, Trash2, ChevronDown, Info, Loader2, Search } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
-import { getFilterTypeForColumn, getDistinctValues, type FilterType } from '@/lib/filters';
+import { getFilterTypeForColumn, getDistinctValues, type FilterType, type FilterOperator } from '@/lib/filters';
 import { fetchDatasetModelDistinctValues, SLICER_DISTINCT_PREFETCH_LIMIT, modelKeys } from '@/hooks/use-dataset-model';
 import { DateInput } from '@/components/ui/DateInput';
 import { useI18n } from '@/providers/LanguageProvider';
@@ -21,7 +21,67 @@ export interface Filter {
 // sample rows, show a multi-select dropdown instead of a free-text input.
 const MAX_DROPDOWN_VALS = 80;
 
+// ── Operator labels — SINGLE source of truth ───────────────────────────────────
+// Every operator FilterBuilder can ever display MUST have an entry here. The
+// operator `<select>` and the out-of-menu fallback (see `optionsFor`) both read
+// it, so an operator absent from `OPERATORS_BY_TYPE` (e.g. a `top_n` filter
+// authored elsewhere) still renders as a LABELLED option instead of a blank row.
+// `FilterBuilder.test.ts` asserts this map covers the whole FilterOperator union
+// — that guard is what turns "undeclared operator → invisible filter" (the
+// "Top 10 filter disappears next day" bug) into a failing test at build time.
+// Typed as Record<FilterOperator, …> ON PURPOSE: it MUST cover the whole
+// FilterOperator union. Add an operator to `@/lib/filters` without a label here
+// and `tsc` fails on this object — the compile-time guard that turns "operator
+// exists in the data model but has no UI" (the "Top 10 filter disappears next
+// day" bug) into a build error instead of an invisible/blank filter row.
+export const OPERATOR_LABEL_KEYS: Record<FilterOperator, string> = {
+  between:       'explore.filters.operator.isBetween',
+  not_between:   'explore.filters.operator.notBetween',
+  gte:           'explore.filters.operator.greaterOrEqual',
+  lte:           'explore.filters.operator.lessOrEqual',
+  gt:            'explore.filters.operator.greaterThan',
+  lt:            'explore.filters.operator.lessThan',
+  eq:            'explore.filters.operator.equals',
+  neq:           'explore.filters.operator.notEquals',
+  like:          'explore.filters.operator.contains',
+  contains:      'explore.filters.operator.contains',
+  not_contains:  'explore.filters.operator.doesNotContain',
+  starts_with:   'explore.filters.operator.startsWith',
+  ends_with:     'explore.filters.operator.endsWith',
+  matches_regex: 'explore.filters.operator.matchesRegex',
+  in:            'explore.filters.operator.isAnyOf',
+  not_in:        'explore.filters.operator.isNotAnyOf',
+  is_null:       'explore.filters.operator.isEmpty',
+  is_not_null:   'explore.filters.operator.isNotEmpty',
+  date_eq:       'explore.filters.operator.exactlyOn',
+  date_between:  'explore.filters.operator.isBetween',
+  date_in_last:  'explore.filters.operator.inLast',
+  date_this:     'explore.filters.operator.thisPeriod',
+  date_to_date:  'explore.filters.operator.toDate',
+  top_n:         'explore.filters.operator.topN',
+  bottom_n:      'explore.filters.operator.bottomN',
+};
+
+// Compile-time guard #2 — Top-N controls must stay declared. If someone removes
+// 'top_n' / 'bottom_n' from FilterOperator, this line stops compiling, flagging
+// that the FilterBuilder Top-N surface (and its convergence with dataLimit) lost
+// its operators. Keep alongside the Record<FilterOperator> exhaustiveness above.
+const _TOP_N_OPERATORS_DECLARED: readonly FilterOperator[] = ['top_n', 'bottom_n'];
+void _TOP_N_OPERATORS_DECLARED;
+
+const op = (value: string): { value: string; label: string } => ({
+  value,
+  // Cast for lookup: an out-of-menu saved operator can be any string; unknown
+  // values fall back to the raw value (never blank).
+  label: (OPERATOR_LABEL_KEYS as Record<string, string>)[value] ?? value,
+});
+
 // ── Per-type operator menus ───────────────────────────────────────────────────
+// `top_n` / `bottom_n` are Top-N controls, not WHERE predicates: they keep the
+// leading / trailing N rows ranked by the chart's main measure — the SAME effect
+// as the chart's `styleConfig.dataLimit` (that remains the canonical author-time
+// surface). Offered on the ranking dimension (number / text / dropdown), never on
+// a date axis where "top N dates" is meaningless.
 const OPERATORS_BY_TYPE: Record<FilterType, { value: string; label: string }[]> = {
   date: [
     { value: 'between',    label: 'explore.filters.operator.isBetween' },
@@ -34,34 +94,33 @@ const OPERATORS_BY_TYPE: Record<FilterType, { value: string; label: string }[]> 
     { value: 'is_not_null',label: 'explore.filters.operator.isNotEmpty' },
   ],
   number: [
-    { value: 'eq',         label: 'explore.filters.operator.equals' },
-    { value: 'neq',        label: 'explore.filters.operator.notEquals' },
-    { value: 'between',    label: 'explore.filters.operator.isBetween' },
-    { value: 'gt',         label: 'explore.filters.operator.greaterThan' },
-    { value: 'gte',        label: 'explore.filters.operator.greaterOrEqual' },
-    { value: 'lt',         label: 'explore.filters.operator.lessThan' },
-    { value: 'lte',        label: 'explore.filters.operator.lessOrEqual' },
-    { value: 'is_null',    label: 'explore.filters.operator.isEmpty' },
-    { value: 'is_not_null',label: 'explore.filters.operator.isNotEmpty' },
+    op('eq'), op('neq'), op('between'), op('gt'), op('gte'), op('lt'), op('lte'),
+    op('top_n'), op('bottom_n'),
+    op('is_null'), op('is_not_null'),
   ],
   text: [
-    { value: 'contains',      label: 'explore.filters.operator.contains' },
-    { value: 'eq',            label: 'explore.filters.operator.equals' },
-    { value: 'neq',           label: 'explore.filters.operator.notEquals' },
-    { value: 'starts_with',   label: 'explore.filters.operator.startsWith' },
-    { value: 'not_contains',  label: 'explore.filters.operator.doesNotContain' },
-    { value: 'is_null',       label: 'explore.filters.operator.isEmpty' },
-    { value: 'is_not_null',   label: 'explore.filters.operator.isNotEmpty' },
+    op('contains'), op('eq'), op('neq'), op('starts_with'), op('not_contains'),
+    op('top_n'), op('bottom_n'),
+    op('is_null'), op('is_not_null'),
   ],
   dropdown: [
-    { value: 'in',     label: 'explore.filters.operator.isAnyOf' },
-    { value: 'not_in', label: 'explore.filters.operator.isNotAnyOf' },
-    { value: 'eq',     label: 'explore.filters.operator.isExactly' },
-    { value: 'neq',    label: 'explore.filters.operator.isNot' },
-    { value: 'is_null',    label: 'explore.filters.operator.isEmpty' },
-    { value: 'is_not_null',label: 'explore.filters.operator.isNotEmpty' },
+    op('in'), op('not_in'), op('eq'), op('neq'),
+    op('top_n'), op('bottom_n'),
+    op('is_null'), op('is_not_null'),
   ],
 };
+
+/** Operator options to render for a row: the type's menu, plus — when the saved
+ *  operator isn't in that menu — a leading labelled option for it, so the
+ *  `<select>` never shows a blank/empty selection for a legacy operator. */
+export function optionsFor(
+  colType: FilterType,
+  currentOperator: string,
+): { value: string; label: string }[] {
+  const base = OPERATORS_BY_TYPE[colType];
+  if (base.some((o) => o.value === currentOperator)) return base;
+  return [op(currentOperator), ...base];
+}
 
 const DEFAULT_OP: Record<FilterType, string> = {
   date:     'between',
@@ -77,9 +136,12 @@ const TYPE_ICON: Record<FilterType, string> = {
   dropdown: '≡',
 };
 
-function defaultValue(colType: FilterType, op: string): any {
-  if (op === 'between') return ['', ''];
-  if (op === 'in' || op === 'not_in') return [];
+const DEFAULT_TOP_N = 10;
+
+function defaultValue(colType: FilterType, operator: string): any {
+  if (operator === 'between') return ['', ''];
+  if (operator === 'in' || operator === 'not_in') return [];
+  if (operator === 'top_n' || operator === 'bottom_n') return DEFAULT_TOP_N;
   return '';
 }
 
@@ -228,7 +290,7 @@ export function FilterBuilder({
       {filters.map((filter, idx) => {
         const col = cols.find(c => c.name === filter.field);
         const colType: FilterType = col ? resolveType(col, dataRows) : 'text';
-        const ops = OPERATORS_BY_TYPE[colType];
+        const ops = optionsFor(colType, filter.operator);
         // Phase-15.21: try local sample first. For qualified `view.field`
         // refs (cross-table after Hướng A) the local rows are keyed by
         // bare column name, so `row[view.field]` returns undefined and
@@ -548,7 +610,28 @@ function FilterRow({
       </select>
 
       {/* Null operators take no value input */}
-      {(filter.operator === 'is_null' || filter.operator === 'is_not_null') ? null : (
+      {(filter.operator === 'is_null' || filter.operator === 'is_not_null') ? null
+       : (filter.operator === 'top_n' || filter.operator === 'bottom_n') ? (
+        /* ── TOP-N / BOTTOM-N — a single "how many rows" (N), any column type ── */
+        <div>
+          <input type="number" min={1} step={1}
+            value={
+              typeof filter.value === 'object' && filter.value !== null
+                ? ((filter.value as { n?: number }).n ?? '')
+                : (filter.value ?? '')
+            }
+            onChange={e => onChangeValue(
+              e.target.value === '' ? '' : Math.max(1, Math.trunc(Number(e.target.value) || 1)),
+            )}
+            placeholder={t('explore.filters.enterN')}
+            className="w-full px-2 py-1 border border-[rgb(var(--border-line))] rounded text-xs bg-surface-1 focus:ring-1 focus:ring-brand outline-none"
+          />
+          <p className="mt-1 flex items-start gap-1 text-[10px] leading-snug text-text-quaternary">
+            <Info className="mt-0.5 h-3 w-3 flex-shrink-0" />
+            <span>{t('explore.filters.topNHint')}</span>
+          </p>
+        </div>
+       ) : (
       <>
 
       {/* ── DATE inputs ─────────────────────────────────────────────────────── */}

@@ -624,21 +624,56 @@ def _source_columns_for_transformations(table: DatasetTable) -> list[str] | None
 
 
 def _apply_semantic_transformations(base_query: str, table: DatasetTable, *, dialect: str) -> str:
+    """The view's FROM operand: source SELECT → transformations → type casts.
+
+    Mirrors ``live_query_service.build_live_base_query_plan`` step for step. That
+    parity is the contract ``dataset_relation_service.resolve_dataset_table_relation``
+    states — "type overrides and transformations are always applied, so chart-time
+    SQL matches preview-time SQL by construction" — but the semantic path built its
+    own SQL and applied only the transformations, so a DA's column-type conversion
+    was honoured in the Dataset preview and silently ignored by every chart (and,
+    through ``snapshot_service._resolved_sql``, by every materialized snapshot)."""
     from app.services.transformation_compiler import TransformationCompiler
 
     server_transforms = TransformationCompiler.normalize_server_transformations(
         getattr(table, "transformations", None) or []
     )
-    if not server_transforms:
-        return f"({base_query})"
-
-    compiled_sql, _ = TransformationCompiler.compile_transformations(
-        base_query,
-        server_transforms,
-        dialect=dialect,
-        available_columns=_source_columns_for_transformations(table),
-    )
+    compiled_sql = base_query
+    if server_transforms:
+        compiled_sql, _ = TransformationCompiler.compile_transformations(
+            base_query,
+            server_transforms,
+            dialect=dialect,
+            available_columns=_source_columns_for_transformations(table),
+        )
+    compiled_sql = _apply_semantic_type_overrides(compiled_sql, table, dialect=dialect)
     return f"({compiled_sql})"
+
+
+def _apply_semantic_type_overrides(sql: str, table: DatasetTable, *, dialect: str) -> str:
+    """Wrap ``sql`` with the table's runtime type casts, or return it untouched.
+
+    Byte-identical when the table has no type overrides (the overwhelming
+    majority), so this cannot perturb existing SQL."""
+    from app.services.type_override_service import (
+        build_runtime_projection_query,
+        normalize_type_overrides,
+    )
+
+    overrides = normalize_type_overrides(getattr(table, "type_overrides", None))
+    if not overrides:
+        return sql
+    try:
+        from app.services.live_query_service import _extract_cached_output_columns
+
+        columns = _extract_cached_output_columns(table)
+        return build_runtime_projection_query(sql, columns, overrides, dialect)
+    except Exception as exc:  # noqa: BLE001 — never break model/chart rendering
+        logger.warning(
+            "[semantic_sql] type-override projection skipped for table %s: %s",
+            getattr(table, "id", None), exc,
+        )
+        return sql
 
 
 def _coerce_distinct_values(rows: list[Any]) -> list[str]:

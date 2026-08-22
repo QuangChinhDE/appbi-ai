@@ -249,11 +249,22 @@ class GovernKnowledgeDoc(Base):
     # sha256(body)+embedding profile of the last body embedded into govern_doc_chunk;
     # lets a re-save with unchanged body skip embedding entirely (no wasted tokens).
     embedded_hash = Column(String(80), nullable=True)
+    #: Fingerprint of the SOURCE the AST was built from, and which document
+    #: version that was. Separate from `embedded_hash` on purpose: the source
+    #: changing means re-extract (and for a scanned PDF, re-OCR), while the
+    #: chunker or model changing means only re-chunk. One hash for both made every
+    #: chunker change re-run extraction.
+    ast_hash = Column(String(80), nullable=True)
+    ast_version = Column(Integer, nullable=True)
     # ── External-embedding control (what may leave for a third party) ──────
     # Embedding sends the document's full text to an external provider. This is
     # the veto for documents that must not go, and the honest cost of using it
     # is that the doc becomes unreachable by AI — stated, never silent.
-    allow_external_embedding = Column(Boolean, nullable=False, default=True)
+    #: What may leave for a third party: 'none' | 'embedding' | 'full'.
+    #: Replaced a boolean named after the embedding call, which could not govern
+    #: OCR or figure description — so a document marked "do not send" would have
+    #: had its page images sent while its prose was correctly withheld.
+    external_processing = Column(String(16), nullable=False, default="embedding")
     sensitivity = Column(String(16), nullable=False, default="internal")  # internal|confidential|restricted
     # ── Knowledge Hub metadata (AI-readable node, review workflow) ─────────
     business_domain = Column(String(120), nullable=True)   # e.g. "Bán hàng", "Vận hành"
@@ -571,6 +582,41 @@ class ClassificationTag(Base):
     classification = relationship("Classification", back_populates="tags")
 
     __table_args__ = (UniqueConstraint("classification_id", "name", name="uq_classification_tag_name"),)
+
+
+class GovernDocBlock(Base):
+    """One structural block of a document — the AST, as rows.
+
+    Extraction produces this ONCE per document version; chunking is a projection
+    of it. That separation is what stops a chunker change from re-running OCR, and
+    what gives a citation an anchor (`ordinal`) that survives a re-chunk when a
+    chunk id does not.
+
+    Carries the same `doc_status`/`space`/`trust` labels as the chunk table, kept
+    correct by triggers and enforced by the same row-level policy: any table
+    holding text derived from a document has to, or the isolation reopens through
+    the new table.
+    """
+    __tablename__ = "govern_doc_block"
+
+    id = Column(Integer, primary_key=True, index=True)
+    doc_id = Column(Integer, nullable=False, index=True)
+    source_version = Column(Integer, nullable=False, default=0)
+    ordinal = Column(Integer, nullable=False)
+    parent_id = Column(Integer, nullable=True)
+    kind = Column(String(16), nullable=False, default="paragraph")
+    level = Column(Integer, nullable=False, default=0)
+    text = Column(Text, nullable=False, default="")
+    heading_path = Column(Text, nullable=True)
+    page = Column(Integer, nullable=True)
+    bbox = Column(JSON, nullable=True)
+    table_header = Column(Text, nullable=True)
+    meta = Column(JSON, nullable=False, default=dict)
+    token_count = Column(Integer, nullable=False, default=0)
+    doc_status = Column(String(16), nullable=False, default="Draft")
+    space = Column(String(128), nullable=False, default="Chung")
+    trust = Column(String(16), nullable=False, default="authored")
+    created_at = Column(DateTime, default=func.now())
 
 
 class GovernDocEgressLog(Base):

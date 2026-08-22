@@ -41,7 +41,40 @@ const DEFAULT_CONTRACT: DataContract = {
   budget: { max_llm_calls: 12, max_tool_calls: 40, max_seconds: 45 },
 };
 
-export function FlowBindingEditor({ linkId }: { linkId: number | null }) {
+/** A pending change this editor holds but has not written yet. */
+export type BindingFlush = () => Promise<void>;
+
+interface FlowBindingEditorProps {
+  linkId: number | null;
+  /**
+   * Hands the parent a way to WRITE a pending choice, or null when there is
+   * nothing pending.
+   *
+   * This editor keeps the chosen flow and its data contract in local state and
+   * used to persist them only through its own "Update assignment" button. The
+   * modal around it has a primary "Save changes" that knew nothing about any of
+   * that — so picking a flow and pressing the obvious Save closed the dialog,
+   * reported "Link updated", and threw the choice away. Reopening showed the old
+   * flow, which reads as "the setting did not stick" rather than "you pressed the
+   * wrong button". One Save that saves everything on the screen is the contract a
+   * reader already assumes; this is how the modal keeps it.
+   */
+  registerFlush?: (flush: BindingFlush | null) => void;
+}
+
+/** Key-order-independent, so a re-serialized contract does not read as an edit. */
+function stableJson(value: unknown): string {
+  return JSON.stringify(value, (_k, v) =>
+    v && typeof v === 'object' && !Array.isArray(v)
+      ? Object.keys(v).sort().reduce<Record<string, unknown>>((acc, k) => {
+          acc[k] = (v as Record<string, unknown>)[k];
+          return acc;
+        }, {})
+      : v,
+  );
+}
+
+export function FlowBindingEditor({ linkId, registerFlush }: FlowBindingEditorProps) {
   const { t } = useI18n();
   const [loading, setLoading] = React.useState(true);
   const [flows, setFlows] = React.useState<BrainSummary[]>([]);
@@ -88,6 +121,34 @@ export function FlowBindingEditor({ linkId }: { linkId: number | null }) {
     return () => clearTimeout(t);
   }, [linkId, brainKey, contract]);
 
+  // WHAT IS ON SCREEN BUT NOT YET WRITTEN.
+  //
+  // Compared against the binding as it was loaded, so re-opening the dialog and
+  // touching nothing registers no flush and the modal's Save stays a no-op here.
+  //
+  // These hooks sit ABOVE the early returns below on purpose. This component
+  // returns early while the link is null or the binding is still loading, and a
+  // hook placed after that point runs on some renders and not others — React
+  // counts them and throws #310 the moment loading flips. (It did.)
+  const persistedKey = binding?.brain_key ?? '';
+  const persistedContract = React.useMemo(
+    () => stableJson(binding ? { ...DEFAULT_CONTRACT, ...(binding.data_contract || {}) } : null),
+    [binding],
+  );
+  const dirty =
+    brainKey !== persistedKey ||
+    (!!brainKey && stableJson(contract) !== persistedContract);
+
+  // Holds the LATEST persist closure so the parent is not re-registered on every
+  // keystroke. Assigned during render further down, once `persist` exists.
+  const persistRef = React.useRef<((o?: { silent?: boolean }) => Promise<void>) | null>(null);
+
+  React.useEffect(() => {
+    if (!registerFlush) return;
+    registerFlush(dirty ? () => persistRef.current!({ silent: true }) : null);
+    return () => registerFlush(null);
+  }, [registerFlush, dirty]);
+
   if (linkId == null) {
     return (
       <p className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 px-3 py-2 text-tiny leading-5 text-text-tertiary">
@@ -120,20 +181,43 @@ export function FlowBindingEditor({ linkId }: { linkId: number | null }) {
     });
   };
 
-  const assign = async () => {
+  /** Write the pending choice. `silent` is for the modal's own Save, which
+   *  reports once for the whole dialog rather than once per section. It RETHROWS
+   *  so the caller can refuse to claim success — a binding that failed preflight
+   *  must not be reported as "Link updated". */
+  const persist = async ({ silent = false }: { silent?: boolean } = {}) => {
+    if (linkId == null) return;
     setBusy(true);
     try {
+      if (!brainKey) {
+        // The picker was cleared. Nothing assigned is a real state, and leaving
+        // the old binding in place would keep answering viewers with a flow the
+        // author just removed from the screen.
+        if (binding) {
+          await deleteBinding(linkId);
+          setBinding(null); setContract(DEFAULT_CONTRACT); setCheck(null);
+          if (!silent) toast.success(t('agentFlows.binding.unassigned'));
+        }
+        return;
+      }
       const res = await saveBinding({
         link_id: linkId, brain_key: brainKey, data_contract: contract,
       });
-      toast.success(t('agentFlows.binding.assigned'));
+      if (!silent) toast.success(t('agentFlows.binding.assigned'));
       setBinding(await getBinding(linkId));
       setCheck(res);
     } catch (e: unknown) {
       const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-      toast.error(detail || t('agentFlows.binding.assignFailed'));
+      if (!silent) toast.error(detail || t('agentFlows.binding.assignFailed'));
+      throw e;
     } finally { setBusy(false); }
   };
+
+  const assign = async () => {
+    try { await persist(); } catch { /* reported above */ }
+  };
+
+  persistRef.current = persist;
 
   const unassign = async () => {
     setBusy(true);

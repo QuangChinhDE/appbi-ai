@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 
 import { SessionKeepAlive } from '@/components/auth/SessionKeepAlive';
+import { ModuleAccessGuard } from '@/components/layout/ModuleAccessGuard';
 import { Sidebar } from '@/components/layout/Sidebar';
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
@@ -41,7 +42,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
             isSidebarCollapsed ? 'ml-14' : 'ml-60'
           }`}
         >
-          {children}
+          <ModuleAccessGuard>{children}</ModuleAccessGuard>
         </main>
       </div>
     </>

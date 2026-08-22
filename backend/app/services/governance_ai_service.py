@@ -42,9 +42,16 @@ _LIFECYCLE = ("Draft", "Approved", "Deprecated")
 
 
 def _fold(s: str) -> str:
-    s = unicodedata.normalize("NFKD", s or "")
-    s = "".join(ch for ch in s if not unicodedata.combining(ch))
-    return re.sub(r"\s+", " ", s.lower()).strip()
+    """Canonical folding.
+
+    This one is load-bearing for a governance control: AI data scope excludes
+    columns by folded name, and the previous NFKD-only version could not fold
+    `đ` — so a column excluded as "Đơn hàng" never matched a physical
+    `don_hang`, and the exclusion reported success while doing nothing.
+    """
+    from app.core.text_fold import fold_text
+
+    return fold_text(s)
 
 
 def _iso(dt) -> str | None:

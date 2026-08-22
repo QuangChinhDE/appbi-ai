@@ -284,11 +284,33 @@ class FlowInput(_Model):
             out[f"{key}__ref"] = ref.model_dump(mode="json")
         out.update(self.memory.vars)
         out["question"] = self.question.text()
+        # ADVERTISE ONLY WHAT THE RUN MAY ACTUALLY READ.
+        #
+        # These two lists are what a step's prompt shows the model as the fields it
+        # can ask about, and they were computed over EVERY chart in the report —
+        # while the tools enforce `binding.allowed_chart_ids`, which is narrower
+        # whenever the link pins a chart set or a test reads a slice of a wide
+        # report.
+        #
+        # Measured on a 70-chart dashboard whose ad-hoc test contract reads 12: the
+        # model was shown metrics from all 70, picked one of the other 58, and the
+        # tool refused it with `chart_out_of_scope`. It then burned the rest of its
+        # tool budget retrying and answered "tôi không thể lấy được thông tin GMV"
+        # about a report that contains GMV. Every part of that was working as
+        # written — the ceiling held, the tool was right to refuse — and the run was
+        # still wasted, because the engine had advertised what it would not serve.
+        #
+        # An EMPTY allow-list means no ceiling rather than nothing allowed, which is
+        # how the field behaves everywhere else it is read.
+        allowed = set(self.binding.allowed_chart_ids or [])
+        readable = [
+            c for c in self.report.charts if not allowed or c.id in allowed
+        ]
         out["available_metrics"] = sorted(
-            {m.field for c in self.report.charts for m in c.measures}
+            {m.field for c in readable for m in c.measures}
         )
         out["available_dimensions"] = sorted(
-            {d.field for c in self.report.charts for d in c.dimensions}
+            {d.field for c in readable for d in c.dimensions}
         )
         return out
 
@@ -388,6 +410,16 @@ class Citation(_Model):
     used: list[str] = Field(default_factory=list)
     quote: str = ""
     url: str = ""
+    #: WHICH published version this passage came from, and a hash of what it SAID.
+    #:
+    #: A document citation without these can only be re-opened at today's text: the
+    #: block table holds one version, so an ordinal recorded in March resolves
+    #: against June's document silently. With them a reader clicking a citation is
+    #: shown the exact passage the answer read, or told plainly that the source has
+    #: changed since.
+    version: int | None = None
+    block_to: int | None = None
+    fingerprint: str = ""
 
 
 class Notice(_Model):

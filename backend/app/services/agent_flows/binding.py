@@ -29,6 +29,7 @@ from sqlalchemy.orm import Session
 
 from app.models.agent_flow_binding import AgentFlowBinding
 from app.models.models import DashboardPublicLink
+from app.services.agent_flows.coverage import coverage as coverage_of
 from app.services.agent_flows.contract import (
     AgentNode,
     Flow,
@@ -136,6 +137,94 @@ class DataContract(_Model):
     capabilities: Capabilities = Field(default_factory=Capabilities)
     defaults: dict[str, Any] = Field(default_factory=dict)
     budget: BudgetContract = Field(default_factory=BudgetContract)
+
+
+#: How many charts a bindingless TEST reads. Not a guess — measured: the ad-hoc
+#: contract first shipped with `all_current`, and on a 70-chart report the reading
+#: step spent all 40 tool calls and blew the 45-second ceiling before the answering
+#: step got a turn. The run came back `failed` on a flow that was fine.
+#:
+#: Twelve, and the budget stays exactly what a real link gets. Raising the budget
+#: for tests would have been the easier fix and the wrong one: the number an author
+#: watches while iterating has to be the number a viewer will pay. So the SCOPE
+#: shrinks, and the response says by how much.
+AD_HOC_TEST_CHARTS = 12
+
+
+def ad_hoc_contract(flow: "Flow", dashboard: Any = None) -> DataContract:
+    """The contract a TEST uses when there is no link yet.
+
+    WHY A TEST MAY SKIP THE LINK, WHEN A RUN MAY NOT.
+
+    A published flow answers viewers through a binding, and that binding exists
+    because two links over the same flow resolve their requirements differently —
+    "does this flow work" is a question about a flow ON A LINK. But an author
+    building a flow has no link yet, and demanding one first made the Test button
+    refuse at the moment it was most useful: they had to assign an unfinished flow
+    to a live public link to find out whether it worked at all.
+
+    So a test gets a contract with nothing hidden in it:
+
+      charts     the report's first `AD_HOC_TEST_CHARTS`, in tile order — enough to
+                 tell whether the flow behaves, small enough to answer quickly.
+                 See the constant above for why this is not "all of them".
+      knowledge  whatever the FLOW attached, and nothing else. Not widened: the
+                 delegation ceiling is the author's own reading rights either way.
+      web        OFF. A test must not reach outside the deployment on a surface
+                 whose whole purpose is to be run repeatedly while iterating.
+      budget     the same defaults a new link gets, so the cost an author sees
+                 while testing is the cost a viewer will pay.
+
+    `resolve` stays EMPTY on purpose. Requirements are the one thing a link
+    genuinely has to answer, and guessing them here would hand the author a green
+    test that a real link then fails. `preflight` reports each one instead, and the
+    test panel shows what ran empty — the honest version of the same convenience.
+    """
+    ids: list[int] = []
+    for dc in (getattr(dashboard, "dashboard_charts", None) or []):
+        cid = getattr(dc, "chart_id", None)
+        if cid and cid not in ids:
+            ids.append(cid)
+        if len(ids) >= AD_HOC_TEST_CHARTS:
+            break
+
+    return DataContract(
+        # A report with no charts at all falls back to `all_current`, which then
+        # resolves to the empty list anyway — one less special case downstream.
+        charts=ChartsScope(mode="allowlist", ids=ids) if ids
+        else ChartsScope(mode="all_current", ids=[]),
+        resolve={},
+        knowledge=KnowledgeContract(mode="flow_all"),
+        capabilities=Capabilities(web_search=False, read_rows=True),
+        defaults={},
+        budget=BudgetContract(),
+    )
+
+
+def ephemeral_binding(flow: "Flow", dashboard: Any) -> AgentFlowBinding:
+    """A binding that is never saved, for a test against a bare report.
+
+    Built rather than faked with a stub object so the test travels the SAME code
+    path a real run does — `contract_of`, `build_binding_info`, the chart ceiling,
+    the knowledge scope. A parallel "test mode" path is how a test comes to pass on
+    something production does differently.
+
+    `id` is 0, not None. `BindingInfo.id` in the envelope is a plain `int` by
+    design — "a field that is present always has the same type" — and widening it to
+    `int | None` would push a null into every consumer to serve one caller. Zero is
+    the readable sentinel: no saved binding. `agent_flow_runs.binding_id` IS
+    nullable, so the run row stores null there and the Runs tab shows the test like
+    any other run, labelled as one.
+    """
+    return AgentFlowBinding(
+        id=0,
+        link_id=None,
+        dashboard_id=getattr(dashboard, "id", None),
+        brain_key=flow.key,
+        status=ACTIVE,
+        data_contract=ad_hoc_contract(flow, dashboard).model_dump(mode="json"),
+        store_question_content=True,
+    )
 
 
 # ═══ Reading ══════════════════════════════════════════════════════════════════
@@ -293,19 +382,24 @@ def preflight(
     # chat client's own patience — gives up long before that. Measured, not
     # theoretical: this flow ran in 16s on a fast model and 91s on gpt-5.
     estimate = estimate_cost(flow, chart_count=len(contract.charts.ids))
-    link_model = str((cfg or {}).get("ai_bot_model") or "").strip().lower()
-    seconds_each = next(
-        (s for prefix, s in SECONDS_PER_CALL.items() if link_model.startswith(prefix)), 4
-    )
+    # THE MODEL A STEP RUNS ON IS NOT ALWAYS THE LINK'S MODEL.
+    #
+    # This used to read `ai_bot_model` and stop. A step may pin its own provider and
+    # model, and the runtime prefers that pin — so a flow whose steps run `gpt-5` on
+    # a link configured for `gpt-4o` was costed at 4 seconds a call instead of 18,
+    # and this warning, whose entire job is to catch a ninety-second answer, stayed
+    # quiet. `effective_model` is now the one rule both sides read.
+    slowest_model, seconds_each = _slowest_model(flow, cfg)
     worst_seconds = estimate["max_llm_calls"] * seconds_each
     if worst_seconds > contract.budget.max_seconds:
         warnings.append({
             "code": "slow_model",
             "key": "runtime",
             "message": (
-                f"Link đang dùng “{link_model or 'model mặc định'}”: {estimate['max_llm_calls']} "
-                f"lần gọi model ≈ {worst_seconds}s, vượt hạn mức {contract.budget.max_seconds}s "
-                "của link. Hãy giảm số vòng lặp, đổi model nhanh hơn, hoặc nâng hạn mức."
+                f"Flow này sẽ chạy trên “{slowest_model or 'model mặc định'}”: "
+                f"{estimate['max_llm_calls']} lần gọi model ≈ {worst_seconds}s, vượt "
+                f"hạn mức {contract.budget.max_seconds}s của link. Hãy giảm số vòng "
+                "lặp, đổi model nhanh hơn, hoặc nâng hạn mức."
             ),
         })
 
@@ -365,6 +459,14 @@ def preflight(
         "errors": errors,
         "warnings": warnings,
         "estimate": {**estimate, "worst_seconds": worst_seconds},
+        # WHICH KINDS OF QUESTION THIS FLOW CANNOT ANSWER.
+        #
+        # Not an error and not a warning — a flow narrowed on purpose is a good
+        # flow. But the alternative to saying it here is the bot saying it in
+        # production, badly: asked for anomalies with no diagnostic tool granted, it
+        # answered "the report does not contain that information", which blamed the
+        # data for a gap in the configuration and gave the author nothing to act on.
+        "coverage": coverage_of(flow),
         "resolved": sorted(contract.resolve.keys()),
         "unresolved": [
             r.key for r in flow.requirements.items if r.key not in contract.resolve
@@ -385,6 +487,50 @@ def _fixed_read_cost(flow: Flow, *, per_read: int) -> int:
         per_read for n in flow.nodes
         if getattr(n, "type", "") in {"report_read", "knowledge"}
     )
+
+
+def _seconds_per_call(model: str) -> int:
+    """How long one call to that model takes here. 4s for anything unmeasured."""
+    m = (model or "").strip().lower()
+    return next(
+        (s for prefix, s in SECONDS_PER_CALL.items() if m.startswith(prefix)), 4
+    )
+
+
+def _slowest_model(flow: Flow, cfg: dict | None) -> tuple[str, int]:
+    """The slowest model any step of this flow will actually run on.
+
+    WORST CASE ACROSS STEPS, not "the link's model". A flow mixes models: a cheap
+    classifier on `gpt-4o` and an answering step pinned to `gpt-5` is a sensible
+    design, and its wait is set by the `gpt-5` calls. Asking the link alone gave the
+    wrong answer in both directions — silent when a step pinned something slow,
+    and falsely alarmed when a step pinned something fast.
+
+    `effective_model` decides per step, so this and the runtime cannot disagree
+    about which model a step uses; the only thing added here is the max.
+    """
+    from app.services.agent_flows.models_catalogue import effective_model
+
+    link_provider = str((cfg or {}).get("ai_bot_provider") or "").strip().lower()
+    link_model = str((cfg or {}).get("ai_bot_model") or "").strip().lower()
+
+    # THE MAX IS OVER THE STEPS, NOT OVER THE STEPS AND THE LINK.
+    #
+    # Seeding this from the link's model looked harmless and reintroduced half the
+    # bug: a flow whose every step pins `gpt-4o` on a link configured for `gpt-5`
+    # never makes a `gpt-5` call, and costing it at 18 seconds is the same false
+    # alarm in the other direction. The link's model enters this set the only way it
+    # legitimately can — through a step that INHERITS it.
+    used = [
+        effective_model(node.provider, node.model, link_provider, link_model)[1]
+        for node in flow.agent_nodes()
+    ]
+    if not used:
+        # No agent step means no model call at all, so there is nothing to cost. The
+        # link's model is reported for the message's sake only.
+        return link_model, _seconds_per_call(link_model)
+    worst = max(used, key=_seconds_per_call)
+    return worst, _seconds_per_call(worst)
 
 
 def estimate_cost(flow: Flow, *, chart_count: int = 0) -> dict[str, int]:
