@@ -568,6 +568,38 @@ export interface DocStructure {
   not_indexable: number;
 }
 
+/** One passage, opened at the version an answer cited it from.
+ *
+ *  `status` is not decoration. A citation names a VERSION and the block table
+ *  holds only the current one, so "resolved" and "resolved + verified" and
+ *  "source_changed" are three different truths and the reader needs the third. */
+export interface ResolvedCitation {
+  status: 'resolved' | 'source_changed' | 'version_not_kept' | 'document_gone' | 'block_not_found';
+  resolved: boolean;
+  /** Did the CONTENT check pass, as opposed to merely finding something at the
+   *  coordinates? A citation resolved without verification is a guess that landed. */
+  verified: boolean;
+  version: number | null;
+  current_version?: number | null;
+  is_current?: boolean;
+  title?: string | null;
+  text: string | null;
+  heading_path?: string | null;
+  page?: number | null;
+  block?: number | null;
+  block_kind?: string | null;
+  note?: string | null;
+}
+
+export async function resolveCitation(citation: {
+  doc_id: number; document_version?: number; block?: number;
+  block_to?: number; content_fingerprint?: string;
+}): Promise<ResolvedCitation> {
+  const { data } = await apiClient.post<ResolvedCitation>(
+    '/catalog/govern/knowledge/citation/resolve', citation);
+  return data;
+}
+
 export async function getDocStructure(docId: number): Promise<DocStructure> {
   const { data } = await apiClient.get<DocStructure>(`/catalog/govern/knowledge/${docId}/structure`);
   return data;

@@ -834,10 +834,24 @@ def _collect_citation(state: RunState, tool: str, args: dict, result: Any) -> No
 
     if not isinstance(result, dict) or result.get("ok") is False:
         return
+
+    # THE PAYLOAD IS UNDER `data`.
+    #
+    # `tools.result.normalise` wraps every tool body as `{ok, kind, data}`, so
+    # `result.get("citations")` is None and `result.get("name")` is None — this
+    # read the ENVELOPE and the facts live one level down. Every knowledge search
+    # therefore contributed nothing to the answer's citation list, and every chart
+    # citation was labelled with an empty string, in production, while a unit test
+    # passed because it handed this function the inner payload directly.
+    #
+    # Found by driving the Test panel in a browser and seeing no source cards under
+    # an answer whose trace showed three `search_knowledge` calls.
+    payload = result.get("data") if isinstance(result.get("data"), dict) else result
+
     chart_id = args.get("chart_id") if isinstance(args, dict) else None
     if chart_id and not any(c.ref == str(chart_id) for c in state.citations):
         state.citations.append(
-            Citation(kind="chart", ref=str(chart_id), label=str(result.get("name") or ""))
+            Citation(kind="chart", ref=str(chart_id), label=str(payload.get("name") or ""))
         )
     doc_id = args.get("document_id") if isinstance(args, dict) else None
     if doc_id and not any(c.ref == str(doc_id) for c in state.citations):
@@ -854,7 +868,7 @@ def _collect_citation(state: RunState, tool: str, args: dict, result: Any) -> No
     # `ref` is "doc:block" rather than the document id alone: two passages from
     # different sections of the same document are two different citations, and
     # collapsing them loses the only part a reader needs — which part.
-    for source in (result.get("citations") or [])[:12]:
+    for source in (payload.get("citations") or [])[:12]:
         if not isinstance(source, dict):
             continue
         ref = "%s:%s" % (source.get("doc_id"), source.get("block"))
@@ -867,6 +881,11 @@ def _collect_citation(state: RunState, tool: str, args: dict, result: Any) -> No
             # The number the model was told to cite. Without it a `[3]` in the
             # answer cannot be resolved back to the passage it names.
             used=[str(source.get("n"))] if source.get("n") else [],
+            # What makes the citation re-openable at the version it was made
+            # against, months later, with a check that the text is still the same.
+            version=source.get("source_version"),
+            block_to=source.get("block_to"),
+            fingerprint=str(source.get("content_fingerprint") or ""),
         ))
 
 

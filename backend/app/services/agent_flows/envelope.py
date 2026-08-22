@@ -410,6 +410,16 @@ class Citation(_Model):
     used: list[str] = Field(default_factory=list)
     quote: str = ""
     url: str = ""
+    #: WHICH published version this passage came from, and a hash of what it SAID.
+    #:
+    #: A document citation without these can only be re-opened at today's text: the
+    #: block table holds one version, so an ordinal recorded in March resolves
+    #: against June's document silently. With them a reader clicking a citation is
+    #: shown the exact passage the answer read, or told plainly that the source has
+    #: changed since.
+    version: int | None = None
+    block_to: int | None = None
+    fingerprint: str = ""
 
 
 class Notice(_Model):

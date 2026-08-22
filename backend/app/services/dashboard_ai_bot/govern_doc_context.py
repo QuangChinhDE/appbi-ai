@@ -179,6 +179,10 @@ def assemble(db: Session, rows: list[dict], *,
             "heading_path": row.get("heading_path"),
             "page": row.get("page"),
             "block": block_from,
+            "block_to": row.get("block_to", block_from),
+            # The chunk's OWN text, kept beside the assembled `text` so a citation
+            # fingerprints the passage rather than the passage plus its neighbours.
+            "content": row.get("content"),
             "source_version": row.get("source_version"),
             "trust": trust,
             "trust_note": _TRUST_NOTE.get(trust, trust),
@@ -194,9 +198,19 @@ def assemble(db: Session, rows: list[dict], *,
 
     return {
         "sources": sources,
+        # Everything `govern_doc_citation.resolve` needs to open this passage AT
+        # THE VERSION IT WAS CITED FROM and prove it is the same text. Without the
+        # span and the fingerprint a reader clicking a citation gets "here is
+        # something at those coordinates", which is the guess this whole layer
+        # exists to replace.
         "citations": [
-            {k: source[k] for k in
-             ("n", "doc_id", "title", "heading_path", "page", "block", "source_version")}
+            {
+                **{k: source[k] for k in
+                   ("n", "doc_id", "title", "heading_path", "page", "block",
+                    "source_version")},
+                "block_to": source.get("block_to", source.get("block")),
+                "content_fingerprint": _fingerprint(source),
+            }
             for source in sources
         ],
         "text": render(sources),
@@ -204,6 +218,18 @@ def assemble(db: Session, rows: list[dict], *,
         "dropped": dropped,
         "truncated": dropped > 0,
     }
+
+
+def _fingerprint(source: dict) -> str:
+    """The passage's content hash, over the text the ANSWER read.
+
+    `source["text"]` is what the assembler put in front of the model — which may
+    include a neighbour or a table header. The fingerprint has to be of the CITED
+    passage, so it is taken over the chunk's own content.
+    """
+    from app.services.dashboard_ai_bot.govern_doc_citation import fingerprint
+
+    return fingerprint(source.get("content") or source.get("text"))
 
 
 def cite_label(source: dict) -> str:

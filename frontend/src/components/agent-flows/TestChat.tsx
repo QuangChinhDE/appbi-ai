@@ -38,6 +38,7 @@ import React from 'react';
 
 import { AppModalShell } from '@/components/common/AppModalShell';
 import { ChartNamesContext, RichMarkdown, extractFollowups } from '@/components/common/AiAnswer';
+import { CitationCards } from '@/components/common/CitationCards';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
 import { Input, Textarea } from '@/components/ui/Input';
@@ -100,6 +101,13 @@ type Envelope = {
   trace?: { path: string; steps: TraceStepView[] };
   answer?: { blocks: { type: string; markdown?: string }[] };
   notices?: { code: string; text: string }[];
+  /** Which passages the answer was built from. The runtime has recorded these for
+   *  a while and nothing rendered them — an answer arrived with its evidence
+   *  attached and the reader saw prose. */
+  citations?: {
+    kind: string; ref: string; label?: string; used?: string[];
+    version?: number | null; block_to?: number | null; fingerprint?: string;
+  }[];
   usage?: {
     llm_calls?: number; tool_calls?: number;
     prompt_tokens?: number; completion_tokens?: number; ms?: number;
@@ -653,6 +661,10 @@ function TurnView({
             {answer.body
               ? <RichMarkdown text={answer.body} />
               : <span className="text-text-tertiary">—</span>}
+            {/* THE EVIDENCE, openable at the version it was cited from. Testing a
+                flow means checking WHERE its answers come from, and until now the
+                one screen built for that showed only the prose. */}
+            <CitationCards citations={turn.env?.citations || []} />
           </div>
 
           {/* THE SUGGESTIONS A VIEWER WOULD SEE, and they work here too. Clicking

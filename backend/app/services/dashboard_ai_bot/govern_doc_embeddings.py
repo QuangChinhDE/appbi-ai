@@ -942,7 +942,7 @@ CHUNK_HYDRATION_COLUMNS = (
     "token_count", "section_index",
     "block_from", "block_to", "source_version",
     "last_verified_at", "review_date", "importance",
-    "sensitivity", "owner", "status", "updated_at", "doc_type",
+    "sensitivity", "owner", "status", "updated_at", "doc_type", "source_type",
 )
 
 
@@ -1173,7 +1173,12 @@ def _search_scoped_doc_chunks(
                    -- back to the database per row or do without. They are columns
                    -- on a table already joined; carrying them costs nothing.
                    d.last_verified_at, d.review_date, d.importance,
-                   d.sensitivity, d.owner, d.status, d.updated_at, d.doc_type
+                   d.sensitivity, d.owner, d.status, d.updated_at, d.doc_type,
+                   -- WHERE a passage lives is described differently per source: a
+                   -- page for a PDF, a heading for a Google Doc, a URL for a
+                   -- crawled page. The anchor cannot be built without knowing
+                   -- which kind of document this is.
+                   d.source_type
             FROM govern_doc_chunk c
             JOIN govern_knowledge_docs d ON d.id = c.doc_id
             WHERE c.id = ANY(:ids)
@@ -1186,6 +1191,8 @@ def _search_scoped_doc_chunks(
         db, {(int(r["doc_id"]), int(r["section_index"])) for r in by_id.values()}
     )
     keyword_set = set(keyword_ids)
+    from app.services.dashboard_ai_bot import govern_doc_citation as _citation
+
     candidates = [
         {
             "chunk_id": chunk_id,
@@ -1222,17 +1229,22 @@ def _search_scoped_doc_chunks(
             "doc_status": row["status"],
             "updated_at": row["updated_at"],
             "doc_type": row["doc_type"],
-            "citation": {
-                "doc_id": int(row["doc_id"]),
-                "title": row["title"],
-                "heading_path": row["heading_path"],
-                "page": row["page"],
-                # The STABLE anchor. `chunk_index` moves on every re-index, so a
-                # citation recorded against it dangled; a block ordinal does not
-                # move for the life of a document version.
-                "block": row["block_from"],
-                "source_version": row["source_version"],
-            },
+            "source_type": row["source_type"],
+            # Built by ONE function, which also computes the content fingerprint
+            # that makes the citation checkable later. A block ordinal is a
+            # coordinate and coordinates move: `govern_doc_block` keeps a single
+            # version per document, so resolving an old ordinal against it returns
+            # today's text at yesterday's position — silently. The fingerprint is
+            # what turns that into a detectable mismatch.
+            "citation": _citation.build(
+                {**row_dict, "content": row["content"],
+                 "chunk_id": chunk_id, "doc_id": int(row["doc_id"]),
+                 "title": row["title"], "heading_path": row["heading_path"],
+                 "page": row["page"], "block_from": row["block_from"],
+                 "block_kind": row["block_kind"],
+                 "source_version": row["source_version"]},
+                source_type=row["source_type"],
+            ),
             "matched_by": (
                 "both"
                 if chunk_id in vector_ids and chunk_id in keyword_set
@@ -1245,8 +1257,8 @@ def _search_scoped_doc_chunks(
                 else "metric"
             ),
         }
-        for chunk_id, row in (
-            (cid, by_id[cid]) for cid in candidate_ids if cid in by_id
+        for chunk_id, row, row_dict in (
+            (cid, by_id[cid], by_id[cid]) for cid in candidate_ids if cid in by_id
         )
     ]
 

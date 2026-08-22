@@ -81,6 +81,7 @@ FIELDS = (
     # contract keeps it rather than dropping a field a consumer already relied on.
     "updated_at",
     "doc_type",
+    "source_type",
 )
 
 #: Ceiling for a hit's `content`, in tokens. Roughly 900 characters of the mixed
@@ -139,14 +140,14 @@ def from_chunk(row: dict) -> dict:
     """A retriever row → a hit. The one place that mapping is written."""
     content, truncated = _clip(row.get("content"))
     method = str(row.get("matched_by") or "") or None
-    citation = row.get("citation") or {
-        "doc_id": row.get("doc_id"),
-        "title": row.get("title"),
-        "heading_path": row.get("heading_path"),
-        "page": row.get("page"),
-        "block": row.get("block_from"),
-        "source_version": row.get("source_version"),
-    }
+    # The retriever builds this with a content fingerprint and a source-specific
+    # anchor. The fallback is for rows that never went through it — a hand-built
+    # test row, or a caller assembling a hit from something other than a search.
+    citation = row.get("citation")
+    if not citation:
+        from app.services.dashboard_ai_bot import govern_doc_citation
+
+        citation = govern_doc_citation.build(row, source_type=row.get("source_type"))
     return {
         "source_type": "document",
         "doc_id": row.get("doc_id"),
@@ -179,6 +180,7 @@ def from_chunk(row: dict) -> dict:
         "embedding_model": row.get("embedding_model"),
         "updated_at": _iso(row.get("updated_at")),
         "doc_type": row.get("doc_type"),
+        "source_type": row.get("source_type"),
     }
 
 

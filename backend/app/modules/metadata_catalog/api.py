@@ -959,6 +959,58 @@ def govern_doc_vectors(doc_id: int, db: Session = Depends(get_db), user: User = 
     }
 
 
+class CitationResolveReq(BaseModel):
+    """A citation as an answer recorded it. Every field optional but `doc_id`:
+    older answers were stored before some of them existed, and refusing to open
+    those would make the feature useless exactly where it matters most."""
+
+    doc_id: int
+    document_version: int | None = None
+    block: int | None = None
+    block_to: int | None = None
+    content_fingerprint: str | None = None
+
+
+@router.post("/govern/knowledge/citation/resolve")
+def govern_resolve_citation(
+    body: CitationResolveReq,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Open the exact passage a citation names, at the version it was cited from.
+
+    An answer written in March cites document 27 at version 5. The block table
+    holds only version 6 — `persist_ast` deletes and rewrites — so reading the
+    citation's ordinal from it returns version 6's text at version 5's coordinates,
+    with nothing to say it happened. This rebuilds version 5 from its stored body
+    and checks the content fingerprint before returning anything.
+
+    PERMISSION IS CHECKED ON THE DOCUMENT, not on the citation. A citation is data
+    that can be copied out of an answer and edited; the only safe reading is that
+    the caller is asking to see document N, and the same gate applies as anywhere
+    else.
+    """
+    _run(lambda: GovernanceService.require_doc_access(db, body.doc_id, user, "view"))
+
+    from app.services.dashboard_ai_bot import govern_doc_citation
+
+    out = govern_doc_citation.resolve(db, body.model_dump())
+    # The document's own identity comes from the database, never from the request:
+    # a caller could otherwise pass a title and have it echoed back as though the
+    # system had confirmed it.
+    from app.models.governance import GovernKnowledgeDoc
+
+    doc = db.query(GovernKnowledgeDoc).filter(
+        GovernKnowledgeDoc.id == body.doc_id).first()
+    out["title"] = doc.title if doc else None
+    out["current_version"] = getattr(doc, "published_version", None) if doc else None
+    out["is_current"] = bool(
+        out.get("version") is not None
+        and out["version"] == out["current_version"]
+    )
+    return out
+
+
 @router.get("/govern/knowledge/{doc_id}/structure")
 def govern_doc_structure(doc_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
     """The document as the extractor SEES it: outline, block kinds, figure state.

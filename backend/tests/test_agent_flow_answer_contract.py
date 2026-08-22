@@ -14,8 +14,15 @@ from app.services.agent_flows.runtime.executor import (
 from app.services.agent_flows.runtime.handlers.agent import _collect_citation
 from app.services.agent_flows.runtime.state import RunState
 
+#: THE PRODUCTION SHAPE. `tools.result.normalise` wraps every tool body as
+#: `{ok, kind, data}`, and the earlier version of this fixture put `citations` at
+#: the top level — so these tests passed while the runtime, reading the real
+#: envelope, recorded no citations at all for any knowledge search. A fixture that
+#: is more convenient than production tests the convenience.
 SEARCH_RESULT = {
     "ok": True,
+    "kind": "knowledge",
+    "data": {
     "results": [{"kind": "document_chunk", "id": 27, "title": "Vận hành & Giao vận"}],
     "citations": [
         {"n": 1, "doc_id": 27, "title": "Vận hành & Giao vận",
@@ -25,6 +32,7 @@ SEARCH_RESULT = {
          "heading_path": "Doanh thu, GMV & Giá trị đơn > Doanh thu thuần", "page": 3,
          "block": 9, "source_version": 2},
     ],
+    },
 }
 
 
@@ -43,10 +51,10 @@ def test_a_knowledge_search_produces_citations():
 def test_two_passages_from_one_document_are_two_citations():
     """Collapsing them to the document id loses the only part a reader needs."""
     state = RunState()
-    result = {"ok": True, "citations": [
+    result = {"ok": True, "data": {"citations": [
         {"n": 1, "doc_id": 27, "block": 5, "title": "T", "heading_path": "T > A"},
         {"n": 2, "doc_id": 27, "block": 40, "title": "T", "heading_path": "T > B"},
-    ]}
+    ]}}
     _collect_citation(state, "search_knowledge", {}, result)
     assert len(state.citations) == 2
     assert {c.ref for c in state.citations} == {"27:5", "27:40"}
@@ -75,14 +83,15 @@ def test_the_document_title_is_not_repeated_in_its_own_label():
 
 def test_a_failed_search_contributes_nothing():
     state = RunState()
-    _collect_citation(state, "search_knowledge", {}, {"ok": False, "citations": []})
+    _collect_citation(state, "search_knowledge", {}, {"ok": False, "data": {"citations": []}})
     assert state.citations == []
 
 
 def test_the_existing_chart_citation_still_works():
     """This function had one job before; adding a second must not cost the first."""
     state = RunState()
-    _collect_citation(state, "read_report", {"chart_id": 67}, {"ok": True, "name": "Dash67"})
+    _collect_citation(state, "read_report", {"chart_id": 67},
+                      {"ok": True, "data": {"name": "Dash67"}})
     assert [c.kind for c in state.citations] == ["chart"]
     assert state.citations[0].label == "Dash67"
 
@@ -173,3 +182,40 @@ def test_stripping_nothing_changes_nothing():
     answer = text_answer("Nguyên văn [1].")
     _strip_invented_markers(answer, [])
     assert answer.plain_text() == "Nguyên văn [1]."
+
+
+def test_the_payload_is_read_from_under_data_not_from_the_envelope():
+    """`normalise` wraps every tool body as `{ok, kind, data}`. Reading the envelope
+    found nothing: every knowledge search contributed zero citations in production
+    while these tests passed against a flatter fixture. Pinned so the two shapes
+    cannot drift apart again."""
+    state = RunState()
+    _collect_citation(state, "search_knowledge", {}, {
+        "ok": True, "kind": "knowledge",
+        "data": {"citations": [{"n": 1, "doc_id": 9, "block": 1, "title": "T"}]},
+    })
+    assert len(state.citations) == 1 and state.citations[0].ref == "9:1"
+
+
+def test_an_unwrapped_result_still_works():
+    """A tool body that already speaks the contract passes through `normalise`
+    untouched, so both shapes reach here."""
+    state = RunState()
+    _collect_citation(state, "search_knowledge", {},
+                      {"ok": True, "citations": [{"n": 1, "doc_id": 9, "block": 1}]})
+    assert len(state.citations) == 1
+
+
+def test_the_citation_carries_what_a_resolver_needs():
+    """Phase 3: version + span + fingerprint, or a reader clicking a citation gets
+    today's text at yesterday's coordinates."""
+    state = RunState()
+    _collect_citation(state, "search_knowledge", {}, {
+        "ok": True,
+        "data": {"citations": [{
+            "n": 1, "doc_id": 27, "block": 3, "block_to": 4, "title": "T",
+            "source_version": 6, "content_fingerprint": "abc123def456",
+        }]},
+    })
+    c = state.citations[0]
+    assert c.version == 6 and c.block_to == 4 and c.fingerprint == "abc123def456"

@@ -1633,7 +1633,7 @@ def chunk_row(**values):
         "block_from": 0, "block_to": 0, "source_version": 0,
         "last_verified_at": None, "review_date": None, "importance": "normal",
         "sensitivity": "internal", "owner": None, "status": "Published",
-        "updated_at": None, "doc_type": "article",
+        "updated_at": None, "doc_type": "article", "source_type": None,
     }
     defaults.update(values)
     missing = [n for n in CHUNK_HYDRATION_COLUMNS if n not in defaults]
