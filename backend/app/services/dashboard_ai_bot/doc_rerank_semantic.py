@@ -208,7 +208,8 @@ def _passage(row: dict) -> str:
 
 
 def score_pairs(question: str, rows: list[dict]) -> list[float] | None:
-    """A relevance LOGIT per row, or None when the model is unavailable.
+    """A relevance LOGIT per row — or None for that row when it was not scored —
+    or None for the whole list when the model is unavailable.
 
     Unbounded and signed: positive means relevant, negative means not, and the
     magnitude carries the gradation a caller needs to order two passages that are
@@ -229,10 +230,15 @@ def score_pairs(question: str, rows: list[dict]) -> list[float] | None:
         return None
 
     started = time.monotonic()
-    # A candidate never scored — because the time budget ran out — must not look
-    # like one the model rejected. Very negative would sink it below real misses;
-    # zero is the model's own decision boundary, which is the honest "unknown".
-    scores: list[float] = [0.0] * len(rows)
+    # NONE, not zero. A candidate the model never looked at — beyond
+    # MAX_CANDIDATES, or after the time budget ran out — must not look like one it
+    # judged. Zero was chosen first, on the reasoning that it is the decision
+    # boundary and therefore the honest "unknown"; it is not. Zero is a NUMBER, so
+    # `max()` over a set of real negative logits and a few unscored sentinels
+    # returns the sentinel, and `ce_relevant: False` on an unscored row asserts a
+    # verdict that was never reached. Both were live: an answerability measurement
+    # read 0.0 as "the best this question could do" for 40 of 48 cases.
+    scores: list[float | None] = [None] * len(rows)
     budget = TIME_BUDGET_MS / 1000.0
 
     # Batched by SIMILAR LENGTH. Padding is per-batch, so mixing a two-line

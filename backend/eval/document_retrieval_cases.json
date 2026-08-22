@@ -117,6 +117,9 @@
       ],
       "expect_phrases": [
         "92%"
+      ],
+      "conflict_in_scopes": [
+        "agent_all_docs"
       ]
     },
     {
@@ -386,7 +389,8 @@
         "95%",
         "88%"
       ],
-      "note": "HAI tai lieu Published noi hai so khac nhau. Retrieval phai tra ve CA HAI de nguoi doc thay co xung dot, thay vi chon mot con so."
+      "note": "HAI tai lieu Published noi hai so khac nhau. Retrieval phai tra ve CA HAI de nguoi doc thay co xung dot, thay vi chon mot con so.",
+      "expect_conflict": true
     },
     {
       "id": "na-leave-policy",
@@ -408,6 +412,239 @@
       "question": "Cấu hình Kubernetes ingress cho cụm production?",
       "expect_docs": [],
       "should_abstain": true
+    },
+    {
+      "id": "na-warehouse-cost",
+      "category": "no_answer",
+      "question": "Chi phí thuê kho bãi mỗi tháng là bao nhiêu?",
+      "expect_docs": [],
+      "should_abstain": true
+    },
+    {
+      "id": "na-supplier-terms",
+      "category": "no_answer",
+      "question": "Điều khoản thanh toán với nhà cung cấp là bao nhiêu ngày?",
+      "expect_docs": [],
+      "should_abstain": true
+    },
+    {
+      "id": "na-refund-window",
+      "category": "no_answer",
+      "question": "Khách được hoàn tiền trong bao nhiêu ngày kể từ khi nhận hàng?",
+      "expect_docs": [],
+      "should_abstain": true
+    },
+    {
+      "id": "na-headcount",
+      "category": "no_answer",
+      "question": "Đội vận hành hiện có bao nhiêu nhân sự?",
+      "expect_docs": [],
+      "should_abstain": true
+    },
+    {
+      "id": "na-gmv-target-2027",
+      "category": "no_answer",
+      "question": "Mục tiêu GMV năm 2027 là bao nhiêu tỷ?",
+      "expect_docs": [],
+      "should_abstain": true,
+      "note": "GMV duoc dinh nghia trong corpus nhung KHONG co muc tieu 2027. Truong hop kho nhat: dung chu de, khong co bang chung."
+    },
+    {
+      "id": "na-sla-penalty",
+      "category": "no_answer",
+      "question": "Mức phạt khi vi phạm cam kết giao đúng hẹn là bao nhiêu?",
+      "expect_docs": [],
+      "should_abstain": true,
+      "note": "Tai lieu co cam ket SLA nhung khong noi gi ve muc phat."
+    },
+    {
+      "id": "partial-sla-and-leave",
+      "category": "partial_answer",
+      "question": "Mục tiêu giao đúng hẹn là bao nhiêu và chính sách nghỉ phép ra sao?",
+      "expect_docs": [
+        27
+      ],
+      "expect_phrases": [
+        "92%"
+      ],
+      "partially_answerable": true,
+      "answerable_part": "Mục tiêu giao đúng hẹn",
+      "unanswerable_part": "chính sách nghỉ phép"
+    },
+    {
+      "id": "partial-gmv-and-supplier",
+      "category": "partial_answer",
+      "question": "GMV được tính thế nào và điều khoản với nhà cung cấp là gì?",
+      "expect_docs": [
+        26
+      ],
+      "expect_phrases": [
+        "tong tien hang da thanh toan"
+      ],
+      "partially_answerable": true,
+      "answerable_part": "GMV được tính thế nào",
+      "unanswerable_part": "điều khoản với nhà cung cấp"
+    },
+    {
+      "id": "partial-aov-and-headcount",
+      "category": "partial_answer",
+      "question": "Giá trị đơn trung bình nghĩa là gì và đội vận hành có bao nhiêu người?",
+      "expect_docs": [
+        26
+      ],
+      "partially_answerable": true,
+      "answerable_part": "Giá trị đơn trung bình",
+      "unanswerable_part": "đội vận hành có bao nhiêu người"
+    },
+    {
+      "id": "contradiction-sla-paraphrase",
+      "category": "contradictory_docs",
+      "question": "Tỷ lệ giao hàng đúng hẹn tối thiểu phải đạt bao nhiêu phần trăm?",
+      "expect_docs": [
+        "[EVAL] Chính sách SLA giao hàng (hiện hành)",
+        "[EVAL] Sổ tay vận hành kho (bản cũ)"
+      ],
+      "expect_phrases": [
+        "95%",
+        "88%"
+      ],
+      "expect_all_docs": true,
+      "expect_conflict": true,
+      "scopes": [
+        "agent_all_docs"
+      ]
+    },
+    {
+      "id": "contradiction-sla-english",
+      "category": "contradictory_docs",
+      "question": "What is the on-time delivery threshold?",
+      "expect_docs": [
+        "[EVAL] Chính sách SLA giao hàng (hiện hành)",
+        "[EVAL] Sổ tay vận hành kho (bản cũ)"
+      ],
+      "expect_conflict": true,
+      "scopes": [
+        "agent_all_docs"
+      ]
+    },
+    {
+      "id": "contradiction-resolves-to-current",
+      "category": "contradictory_docs",
+      "question": "Ngưỡng giao đúng hẹn hiện hành là bao nhiêu?",
+      "expect_docs": [
+        "[EVAL] Chính sách SLA giao hàng (hiện hành)"
+      ],
+      "expect_conflict": true,
+      "conflict_winner": "[EVAL] Chính sách SLA giao hàng (hiện hành)",
+      "note": "Co xung dot, nhung mot ban la 'hien hanh' va ban kia la 'ban cu' — conflict resolver phai chon duoc, khong duoc de UNRESOLVED.",
+      "scopes": [
+        "agent_all_docs"
+      ]
+    },
+    {
+      "id": "ans-sla-exclusions",
+      "category": "target_lookup",
+      "question": "Đơn nào không được tính vào tỷ lệ giao đúng hẹn?",
+      "expect_docs": [
+        27
+      ]
+    },
+    {
+      "id": "ans-gmv-excludes",
+      "category": "definition_lookup",
+      "question": "GMV không bao gồm những gì?",
+      "expect_docs": [
+        26
+      ],
+      "expect_phrases": [
+        "don huy"
+      ]
+    },
+    {
+      "id": "partial-cac-and-office",
+      "category": "partial_answer",
+      "question": "CAC được tính thế nào và văn phòng công ty ở đâu?",
+      "expect_docs": [
+        29
+      ],
+      "partially_answerable": true,
+      "answerable_part": "CAC được tính thế nào",
+      "unanswerable_part": "văn phòng công ty ở đâu"
+    },
+    {
+      "id": "partial-rating-and-bonus",
+      "category": "partial_answer",
+      "question": "Điểm đánh giá trung bình mục tiêu là bao nhiêu và thưởng cuối năm tính ra sao?",
+      "expect_docs": [
+        28
+      ],
+      "partially_answerable": true,
+      "answerable_part": "Điểm đánh giá trung bình mục tiêu",
+      "unanswerable_part": "thưởng cuối năm"
+    },
+    {
+      "id": "partial-sla-and-vendor-sla",
+      "category": "partial_answer",
+      "question": "Cam kết giao đúng hẹn là gì và SLA với đối tác vận chuyển ký mấy năm?",
+      "expect_docs": [
+        27
+      ],
+      "partially_answerable": true,
+      "answerable_part": "Cam kết giao đúng hẹn",
+      "unanswerable_part": "SLA với đối tác vận chuyển ký mấy năm"
+    },
+    {
+      "id": "partial-gmv-and-tax",
+      "category": "partial_answer",
+      "question": "GMV bao gồm những gì và thuế suất áp dụng là bao nhiêu?",
+      "expect_docs": [
+        26
+      ],
+      "partially_answerable": true,
+      "answerable_part": "GMV bao gồm những gì",
+      "unanswerable_part": "thuế suất áp dụng"
+    },
+    {
+      "id": "multiclause-gmv-and-aov",
+      "category": "multi_doc",
+      "question": "GMV được tính thế nào và AOV được tính thế nào?",
+      "expect_docs": [
+        26
+      ]
+    },
+    {
+      "id": "multiclause-sla-and-rating",
+      "category": "multi_doc",
+      "question": "Mục tiêu giao đúng hẹn là bao nhiêu và mục tiêu điểm đánh giá là bao nhiêu?",
+      "expect_docs": [
+        27,
+        28
+      ],
+      "expect_all_docs": true,
+      "conflict_in_scopes": [
+        "agent_all_docs"
+      ]
+    },
+    {
+      "id": "multiclause-cac-and-gmv",
+      "category": "multi_doc",
+      "question": "Định nghĩa CAC và định nghĩa GMV",
+      "expect_docs": [
+        29,
+        26
+      ],
+      "expect_all_docs": true
+    },
+    {
+      "id": "multiclause-ontime-and-cost",
+      "category": "multi_doc",
+      "question": "Tỷ lệ giao đúng hẹn và hiệu quả chi phí vận hành được đo thế nào?",
+      "expect_docs": [
+        27
+      ],
+      "conflict_in_scopes": [
+        "agent_all_docs"
+      ]
     }
   ]
 }

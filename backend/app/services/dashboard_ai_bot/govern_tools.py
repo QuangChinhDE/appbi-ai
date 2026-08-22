@@ -155,6 +155,12 @@ def _published_body(ctx: ToolContext, doc) -> str:
     return body
 
 
+def _conflict_payload(answerability: dict | None) -> dict | None:
+    """The conflict record, but only when there IS one."""
+    conflict = (answerability or {}).get("conflict") or {}
+    return conflict if conflict.get("conflict") else None
+
+
 def _visible_doc_ids(ctx: ToolContext) -> set[int]:
     """Documents this report is allowed to read, then narrowed to what this STEP
     was scoped to. See the module docstring for why the order matters: the
@@ -672,6 +678,7 @@ def tool_search_knowledge(ctx: ToolContext, args: dict) -> dict:
     # instead of re-inventing a snippet format — and so there is something for an
     # answer to cite and a verifier to check against.
     context = None
+    answerability = None
     if retrieved_rows:
         try:
             from app.services.dashboard_ai_bot.govern_doc_context import assemble
@@ -679,11 +686,48 @@ def tool_search_knowledge(ctx: ToolContext, args: dict) -> dict:
             context = assemble(ctx.db, retrieved_rows)
         except Exception:  # noqa: BLE001 — the hits are still usable without it
             logger.warning("search_knowledge: context assembly failed", exc_info=True)
+
+        # DOES THE EVIDENCE SUPPORT AN ANSWER, AND DO THE SOURCES AGREE?
+        #
+        # Returned with the passages rather than left to the model to infer. A
+        # model handed twelve passages has no way to know that two of them state
+        # different numbers for the same policy, or that the closest one is not
+        # actually about the question — both are facts about the RESULT SET, which
+        # is exactly what the tool is in a position to say and the model is not.
+        try:
+            from app.services.dashboard_ai_bot import (
+                govern_doc_answerability as _ans,
+            )
+            from app.services.dashboard_ai_bot import govern_doc_conflict as _conf
+
+            conflict = _conf.detect(query, retrieved_rows)
+            answerability = _ans.evaluate(
+                ctx.db, query, retrieved_rows,
+                conflict=conflict, doc_ids=doc_scope,
+            )
+        except Exception:  # noqa: BLE001 — a verdict is an addition, not a gate
+            logger.warning("search_knowledge: answerability failed", exc_info=True)
     return _ok({
         "query": query,
         "total_matches": len(merged),
         "returned": len(top),
         "results": top,
+        # WHAT THE EVIDENCE SUPPORTS: ANSWERABLE | PARTIALLY_ANSWERABLE |
+        # NOT_ENOUGH_EVIDENCE | CONTRADICTORY, with the reason and the parts of the
+        # question that went unanswered.
+        "answerability": (answerability or {}).get("verdict"),
+        "answerability_reason": (answerability or {}).get("reason"),
+        "missing_parts": (answerability or {}).get("missing_clauses") or [],
+        # Present ONLY when two sources disagree. Carries both figures and, when
+        # the governance record allows it, which one is current.
+        #
+        # `.get("conflict", {})` was tried and is wrong: the key is ALWAYS written,
+        # with None for a non-conflict verdict, and a default only applies when a
+        # key is absent. It raised on the first question that had no conflict.
+        "conflict": _conflict_payload(answerability),
+        # What to tell the reader when there is nothing to answer from — one
+        # wording, so every consumer says the same thing.
+        "abstain_text": (answerability or {}).get("abstain_text"),
         # The block to put in front of the model, with its citation rules, plus the
         # citations an answer is allowed to use.
         "context": (context or {}).get("text") or None,

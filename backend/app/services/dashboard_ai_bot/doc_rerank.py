@@ -213,11 +213,44 @@ def governance_score(row: dict) -> float:
     one be a crawled web page. Ranking is where that gets decided, because the
     reranker will otherwise pick on wording alone. Kept deliberately small — this
     breaks ties, it does not overrule evidence.
+
+    WHY ONLY TRUST, WHEN THE ROW NOW CARRIES MORE
+    ---------------------------------------------
+    `last_verified_at`, `review_date` and `importance` reach this function now.
+    They were used here, and the measurement said to stop.
+
+    Adding "verified recently → +0.5" changed exactly one document's score on this
+    corpus, because exactly one document has a verification date: the OVERVIEW,
+    which mentions every topic shallowly. Its +0.5 became +0.025 after the weight
+    — small enough to look harmless, and enough to lift an overview passage above
+    the specific document that answered the question. Measured over the original
+    34 cases:
+
+        governance term      hit@1     MRR
+        trust only           0.806     0.898
+        + verification       0.774     0.882
+
+    That is the exact failure section 7 forbids: a document boosted for being
+    well-governed outranking one that actually answers. The margins at the top of
+    a reranked list are smaller than ±0.065 "surely cannot matter" assumes.
+
+    So verification and review live where they decide something real without
+    displacing evidence:
+
+      * CONFLICT RESOLUTION — when two sources disagree, `last_verified_at` is
+        precisely the fact that says which is current (govern_doc_conflict)
+      * THE HIT — `review_overdue`, `last_verified_at` and `owner` travel with
+        every passage so an answer can tell a reader the policy it just quoted is
+        overdue for review (knowledge_hit)
+
+    Neither of those reorders anything, and both use the signal for what it
+    actually means.
     """
     score = 0.0
-    if (row.get("trust") or "authored") in ("authored", "uploaded"):
+    trust = (row.get("trust") or "authored")
+    if trust in ("authored", "uploaded"):
         score += 0.5
-    if row.get("trust") == "external":
+    elif trust == "external":
         score -= 0.5
     return score
 
@@ -324,6 +357,13 @@ def _apply_relevance_gate(question: str, scored: list[dict]) -> list[dict]:
     if verdicts is None:
         return scored
     for row, logit in zip(scored, verdicts):
+        if logit is None:
+            # Not judged — beyond the candidate cap or past the time budget. The
+            # row keeps its base score and says nothing about a verdict, because
+            # "the model found this irrelevant" and "the model never saw this" are
+            # different facts and a consumer deciding whether to answer needs to
+            # tell them apart.
+            continue
         row["ce_logit"] = round(float(logit), 3)
         row["ce_relevant"] = bool(logit > 0)
         if logit > 0:
