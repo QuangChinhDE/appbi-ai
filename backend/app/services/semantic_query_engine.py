@@ -2935,6 +2935,38 @@ class SemanticQueryEngine:
             if keyword in sql_upper:
                 raise ValueError(f"Calculated field contains forbidden keyword: {keyword}")
     
+    def _snapshot_renamed_columns(self, tid) -> Dict[str, str]:
+        """``{original_name: safe_name}`` for columns of dataset_table ``tid``
+        whose physical snapshot name was sanitized at build time
+        (``bq_safe_field``). Empty for clean names — the common case, so the
+        snapshot FROM operand stays byte-identical. Derived from the SAME
+        per-name function the build uses, so no shared state is needed."""
+        cache = getattr(self, "_snap_rename_cache", None)
+        if cache is None:
+            cache = {}
+            self._snap_rename_cache = cache
+        if tid in cache:
+            return cache[tid]
+        out: Dict[str, str] = {}
+        try:
+            from app.models.dataset import DatasetTable
+            from app.services.datasource_service import bq_safe_field
+
+            t = self.db.query(DatasetTable).filter(DatasetTable.id == tid).first()
+            cc = getattr(t, "columns_cache", None) if t is not None else None
+            cols = cc.get("columns") if isinstance(cc, dict) else cc
+            for c in cols or []:
+                name = c.get("name") if isinstance(c, dict) else None
+                if not name:
+                    continue
+                safe = bq_safe_field(name)
+                if safe != name:
+                    out[name] = safe
+        except Exception:  # noqa: BLE001 — never break rendering over a rename map
+            out = {}
+        cache[tid] = out
+        return out
+
     def _snapshot_ref_for_view(self, view) -> Optional[str]:
         """Dashboard perf #5 — if this view's dataset table has a fresh
         materialized snapshot, return a drop-in FROM operand that reads the flat
@@ -2968,9 +3000,24 @@ class SemanticQueryEngine:
         # mode, so this stays backticks in practice) — but the renderer itself
         # no longer bakes in that assumption.
         d = (self.database_type or "").lower()
+        # Re-alias any physically-renamed columns back to their ORIGINAL names.
+        # The snapshot BUILD sanitizes BigQuery-invalid Sheet headers (e.g.
+        # "BC/CD phụ trách") via bq_safe_field; here we map them back so the chart
+        # SQL that references the original names still resolves. `SELECT * EXCEPT`
+        # renames ONLY the affected columns (robust to columns_cache staleness);
+        # empty for every clean dataset → the FROM operand is byte-identical.
+        renamed = self._snapshot_renamed_columns(tid) if tid is not None else {}
         if d in ("bigquery", "mysql"):
+            if renamed:
+                _except = ", ".join(f"`{safe}`" for safe in renamed.values())
+                _alias = ", ".join(f"`{safe}` AS `{orig}`" for orig, safe in renamed.items())
+                return f"(SELECT * EXCEPT ({_except}), {_alias} FROM `{ref}`)"
             return f"(SELECT * FROM `{ref}`)"
         quoted = ".".join('"' + p.replace('"', "") + '"' for p in str(ref).split("."))
+        if renamed:
+            _except = ", ".join('"' + safe + '"' for safe in renamed.values())
+            _alias = ", ".join(f'"{safe}" AS "{orig}"' for orig, safe in renamed.items())
+            return f"(SELECT * EXCEPT ({_except}), {_alias} FROM {quoted})"
         return f"(SELECT * FROM {quoted})"
 
     def _calendar_live_sql_for_dialect(self) -> Optional[str]:
