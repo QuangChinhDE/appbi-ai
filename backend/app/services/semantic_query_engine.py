@@ -1717,7 +1717,11 @@ class SemanticQueryEngine:
             measure_def = {
                 'name': field_name,
                 'type': requested_agg,
-                'sql': '${TABLE}.' + field_name,
+                # Quote the column so names with spaces / special chars (e.g. a
+                # Google-Sheets header "ID KH") emit `alias."ID KH"` instead of
+                # the unquoted `alias.ID KH` that DuckDB/BigQuery reject. Plain
+                # identifiers stay unquoted (byte-identical) via _quote_ident.
+                'sql': '${TABLE}.' + self._quote_ident(field_name),
             }
 
         stored_measure_type = str(measure_def.get('type', 'count') or 'count').lower().strip()
@@ -1782,9 +1786,13 @@ class SemanticQueryEngine:
             and sql_template != '*'
             and "${TABLE}" not in sql_template
             and "${" not in sql_template  # skip ${view.field} cross-refs
-            and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", sql_template.strip())
+            # Allow spaces in the bare column name ([\w ]) so a Sheets header
+            # like "ID KH" qualifies too — mirrors the dimension path (1092).
+            and re.fullmatch(r"[A-Za-z_][\w ]*", sql_template.strip())
         ):
-            sql_template = f"${{TABLE}}.{sql_template.strip()}"
+            # _quote_ident leaves plain names unquoted (byte-identical) and
+            # quotes names with spaces/special chars → `${TABLE}."ID KH"`.
+            sql_template = f"${{TABLE}}.{self._quote_ident(sql_template.strip())}"
 
         # Phase-15.30: Path-C guard. An expression with an aggregate call
         # but no depends_on would get wrapped in this method's outer
@@ -2745,7 +2753,11 @@ class SemanticQueryEngine:
             measure_def = {
                 'name': field_name,
                 'type': requested_agg,
-                'sql': '${TABLE}.' + field_name,
+                # Quote the column so names with spaces / special chars (e.g. a
+                # Google-Sheets header "ID KH") emit `alias."ID KH"` instead of
+                # the unquoted `alias.ID KH` that DuckDB/BigQuery reject. Plain
+                # identifiers stay unquoted (byte-identical) via _quote_ident.
+                'sql': '${TABLE}.' + self._quote_ident(field_name),
             }
 
         # Mirror `_render_measure`: an "auto" (or unknown) agg_override means
