@@ -689,6 +689,37 @@ class DashboardRelayoutRequest(BaseModel):
     )
 
 
+class PresentationPlanRequest(BaseModel):
+    """Ask the model how this page should be arranged.
+
+    The snapshot is built and sanitized by the CLIENT, which is the only place
+    that knows what the renderer honours. The server does not read it, does not
+    trust it and does not persist it -- it forwards it to a model and returns
+    the plan. Nothing here can write to a dashboard.
+    """
+    prompt: str = Field(..., min_length=1, max_length=2000)
+    snapshot: Dict[str, Any] = Field(
+        ..., description="DashboardPresentationSnapshot — presentation state only, no data"
+    )
+    conversation: Optional[List[Dict[str, str]]] = Field(
+        None,
+        description=(
+            "Earlier turns, so an iterative request ('bigger') is read against "
+            "the preview the user is looking at."
+        ),
+    )
+
+
+class PresentationPlanResponse(BaseModel):
+    """The model's answer, unmodified.
+
+    Deliberately untyped beyond `plan`: the server validates nothing, so
+    describing the plan's shape here would imply a guarantee it does not make.
+    The client's validator is the authority.
+    """
+    plan: Dict[str, Any]
+
+
 class DashboardAddChartRequest(BaseModel):
     """Schema for adding a chart or widget to a dashboard."""
     chart_id: Optional[int] = None

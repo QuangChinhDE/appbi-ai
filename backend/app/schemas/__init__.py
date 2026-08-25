@@ -34,6 +34,8 @@ from app.schemas.schemas import (
     DashboardResponse,
     DashboardAddChartRequest,
     DashboardRelayoutRequest,
+    PresentationPlanRequest,
+    PresentationPlanResponse,
     DashboardUpdateDraftFiltersRequest,
     DashboardUpdateLayoutRequest,
     DashboardUpdateWidgetRequest,

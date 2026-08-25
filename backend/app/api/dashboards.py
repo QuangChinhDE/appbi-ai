@@ -38,6 +38,8 @@ from app.schemas import (
     DashboardResponse,
     DashboardAddChartRequest,
     DashboardRelayoutRequest,
+    PresentationPlanRequest,
+    PresentationPlanResponse,
     DashboardUpdateDraftFiltersRequest,
     DashboardUpdateLayoutRequest,
     DashboardUpdateWidgetRequest,
@@ -1989,6 +1991,61 @@ def relayout_dashboard_to_template(
         dashboard_id, family, len(items), target_page, warnings,
     )
     return _serialize_dashboard_with_draft(db, dash, current_user)
+
+
+@router.post("/{dashboard_id}/presentation-plan", response_model=PresentationPlanResponse)
+def plan_dashboard_presentation(
+    dashboard_id: int,
+    request: PresentationPlanRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Ask the model how this page should be arranged. Returns a plan; changes nothing.
+
+    This endpoint has no write path, and that is the design rather than an
+    omission. The model never touches a dashboard: it is handed a presentation
+    snapshot the client already stripped of data-source detail, and it answers
+    with a plan the client then validates, compiles and applies through the same
+    draft flow a mouse drag uses. If the model hallucinates a chart, invents a
+    capability or tries to change a chart type, the client refuses the plan and
+    the dashboard is exactly where it was.
+
+    The permission gate is `edit`, not `view`. Nothing is written here, but the
+    snapshot describes a report's structure and the response costs money to
+    produce -- both are things a read-only viewer should not be able to spend.
+    """
+    dash = db.query(Dashboard).filter(Dashboard.id == dashboard_id).first()
+    if not dash:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Dashboard with ID {dashboard_id} not found",
+        )
+    require_edit_access(db, current_user, dash, "dashboards")
+
+    from app.services.dashboard_presentation_planner import (
+        PresentationPlanUnavailable,
+        plan_presentation,
+    )
+
+    try:
+        plan = plan_presentation(
+            snapshot=request.snapshot,
+            user_prompt=request.prompt,
+            conversation=request.conversation,
+        )
+    except PresentationPlanUnavailable as exc:
+        # 503, not 500: the report is fine and the request was valid — there is
+        # simply no model available to answer it right now.
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc) or "No AI provider is configured for presentation planning.",
+        ) from exc
+
+    logger.info(
+        "presentation-plan dashboard=%s user=%s prompt_len=%s",
+        dashboard_id, getattr(current_user, "id", None), len(request.prompt),
+    )
+    return PresentationPlanResponse(plan=plan)
 
 
 @router.post("/{dashboard_id}/widgets", response_model=DashboardResponse)

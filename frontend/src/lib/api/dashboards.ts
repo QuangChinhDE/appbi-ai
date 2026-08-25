@@ -414,6 +414,31 @@ export const dashboardApi = {
     return response.data;
   },
 
+  /**
+   * Ask the model how this page should be arranged.
+   *
+   * Returns a plan and writes nothing. The snapshot is built client-side and
+   * carries presentation state only — no dataset, no columns, no rows — and the
+   * plan that comes back is validated and compiled here before it can touch the
+   * draft. The server is a proxy so the API key stays server-side; it has no
+   * opinion about what a legal plan is.
+   */
+  planPresentation: async (
+    dashboardId: number,
+    input: {
+      prompt: string;
+      snapshot: unknown;
+      conversation?: Array<{ role: string; text: string }>;
+    },
+  ): Promise<{ plan: unknown }> => {
+    const response = await apiClient.post(`/dashboards/${dashboardId}/presentation-plan`, {
+      prompt: input.prompt,
+      snapshot: input.snapshot,
+      conversation: input.conversation ?? null,
+    });
+    return response.data;
+  },
+
   buildHtmlImportBatch: async (input: DashboardHtmlImportBatchBuildInput): Promise<DashboardHtmlImportBatchBuildResponse> => {
     const formData = new FormData();
     formData.append('analyses_json', JSON.stringify((input.documents ?? []).map((document) => ({

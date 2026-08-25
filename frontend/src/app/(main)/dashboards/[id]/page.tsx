@@ -18,8 +18,13 @@ import {
 } from '@/hooks/use-dashboards';
 import { dashboardApi } from '@/lib/api/dashboards';
 import { DashboardGrid } from '@/components/dashboards/DashboardGrid';
-import { DashboardThemeProvider } from '@/components/dashboards/DashboardThemeProvider';
+import { DashboardThemeProvider, getDashboardGridMargin } from '@/components/dashboards/DashboardThemeProvider';
 import { resolveStyleTokens } from '@/lib/dashboard-theme-tokens';
+import { AiDesignPanel } from '@/components/dashboards/ai-design/AiDesignPanel';
+import { planFromTemplate } from '@/lib/dashboard-presentation/templates';
+import { buildPresentationSnapshot, tilesOnPage } from '@/lib/dashboard-presentation/snapshot';
+import { buildPresentationMutation, tilesWithLocalEdits, toLocalLayoutOverrides } from '@/lib/dashboard-presentation/executor';
+import { useAiDesign } from '@/components/dashboards/ai-design/useAiDesign';
 import { DashboardThemeModal } from '@/components/dashboards/DashboardThemeModal';
 import { DashboardCanvas } from '@/components/dashboards/DashboardCanvas';
 import { Palette, Move, Undo2, Redo2, ArrowUpToLine } from 'lucide-react';
@@ -328,13 +333,24 @@ export default function DashboardDetailPage() {
   const localLayoutOverridesRef = React.useRef(localLayoutOverrides);
   localLayoutOverridesRef.current = localLayoutOverrides;
 
+  // A proposed design being LOOKED at, not yet accepted. It sits above the
+  // local edits and below nothing: the grid renders it, and Save Draft never
+  // sees it, because saving reads `localLayoutOverrides` and this is a separate
+  // buffer. That is what makes Discard free — there is nothing to roll back,
+  // only a layer to drop. It is a view state, like a drag ghost, not a third
+  // place presentation is stored.
+  const [previewLayoutOverrides, setPreviewLayoutOverrides] = useState<
+    Record<number, Record<string, any>> | null
+  >(null);
+
   // Memoized dashboard view: server data overlaid with (1) BE draft_layouts,
-  // (2) in-progress local edits. Children see a normal dashboard_charts list.
+  // (2) in-progress local edits, (3) an AI design being previewed.
   const dashboard = React.useMemo(() => {
     if (!serverDashboard) return serverDashboard;
     const beDrafts = serverDashboard.draft_layouts;
     if (
       !hasLocalLayoutChanges
+      && !previewLayoutOverrides
       && (!beDrafts || Object.keys(beDrafts).length === 0)
     ) {
       return serverDashboard;
@@ -346,18 +362,20 @@ export default function DashboardDetailPage() {
           ? (beDrafts[dc.id] ?? beDrafts[String(dc.id) as any])
           : null;
         const localOverride = localLayoutOverrides[dc.id];
-        if (!beOverride && !localOverride) return dc;
+        const previewOverride = previewLayoutOverrides?.[dc.id];
+        if (!beOverride && !localOverride && !previewOverride) return dc;
         return {
           ...dc,
           layout: {
             ...(dc.layout ?? {}),
             ...(beOverride ?? {}),
             ...(localOverride ?? {}),
+            ...(previewOverride ?? {}),
           },
         };
       }),
     };
-  }, [serverDashboard, localLayoutOverrides, hasLocalLayoutChanges]);
+  }, [serverDashboard, localLayoutOverrides, hasLocalLayoutChanges, previewLayoutOverrides]);
 
   // The dock the CLUSTER will actually use. Resolved here too so the wrapper
   // that positions the cluster beside the grid cannot disagree with the
@@ -431,9 +449,21 @@ export default function DashboardDetailPage() {
   // undoable — those actions instead call resetUndo() so a restore can never
   // desync the multi-tier draft/save flow. History caps at 50, lives in refs; a
   // tick state re-renders the toolbar buttons.
+  // A third kind, for a change that is ONE thing to the person who made it. An
+  // AI redesign moves a dozen tiles, repaints the report and re-docks the
+  // filters in a single click; recording that as fourteen entries would mean
+  // fourteen Ctrl+Z presses to get back, with the report in a nonsense
+  // intermediate state at every step. The transaction boundary follows the
+  // user's action, not the number of fields it touched.
+  type PresentationState = {
+    layout: Record<number, Record<string, any>>;
+    theme: any;
+    slicerCluster: any;
+  };
   type UndoEntry =
     | { kind: 'layout'; prev: Record<number, Record<string, any>>; next: Record<number, Record<string, any>> }
-    | { kind: 'theme'; prev: any; next: any };
+    | { kind: 'theme'; prev: any; next: any }
+    | { kind: 'ai-presentation'; prev: PresentationState; next: PresentationState };
   const undoRef = React.useRef<UndoEntry[]>([]);
   const redoRef = React.useRef<UndoEntry[]>([]);
   const [, setHistoryTick] = React.useState(0);
@@ -506,8 +536,20 @@ export default function DashboardDetailPage() {
   };
   const applyUndoEntry = (entry: UndoEntry, dir: 'prev' | 'next') => {
     const value = dir === 'prev' ? entry.prev : entry.next;
-    if (entry.kind === 'layout') setLocalLayoutOverrides(value);
-    else void applyThemeConfig(value);
+    if (entry.kind === 'layout') { setLocalLayoutOverrides(value as any); return; }
+    if (entry.kind === 'ai-presentation') {
+      const state = value as PresentationState;
+      setLocalLayoutOverrides(state.layout);
+      if (state.slicerCluster !== undefined) {
+        setDraftSlicerClusterLayout(state.slicerCluster);
+        setAppliedSlicerClusterLayout(state.slicerCluster);
+      }
+      // Only when the redesign actually repainted. Re-applying an unchanged
+      // theme would still round-trip to the server and repaint every tile.
+      if (state.theme !== undefined) void applyThemeConfig(state.theme);
+      return;
+    }
+    void applyThemeConfig(value);
   };
   const doUndo = () => {
     const entry = undoRef.current.pop();
@@ -515,7 +557,7 @@ export default function DashboardDetailPage() {
     redoRef.current.push(entry);
     applyUndoEntry(entry, 'prev');
     bumpHistory();
-    toast.success(t(entry.kind === 'layout' ? 'dashboards.detail.undoLayout' : 'dashboards.detail.undoTheme'));
+    toast.success(t(entry.kind === 'theme' ? 'dashboards.detail.undoTheme' : 'dashboards.detail.undoLayout'));
   };
   const doRedo = () => {
     const entry = redoRef.current.pop();
@@ -742,6 +784,76 @@ export default function DashboardDetailPage() {
     [preferredFilterDock, draftGlobalSlicers.length, draftPageSlicers.length, viewportWidth, canEditResource],
   );
   const effectiveFilterDock = filterDockDecision.dock;
+
+  // ── AI Design ─────────────────────────────────────────────────────────────
+  // The panel and everything behind it live in `components/dashboards/ai-design`
+  // and `lib/dashboard-presentation`. What stays here is orchestration: which
+  // mode is showing, and what "commit" means — because committing has to reach
+  // the same three pieces of state a manual edit reaches, and that state lives
+  // in this file.
+  const [designMode, setDesignMode] = useState<'manual' | 'ai'>('manual');
+
+  const commitPresentation = React.useCallback((commit: {
+    layoutOverrides: Record<number, Record<string, any>>;
+    themePatch: Record<string, any> | null;
+    slicerClusterPatch: Record<string, any> | null;
+  }) => {
+    // One undo entry for one click (§14). The `before` half is captured here,
+    // from live state, rather than being handed in — a caller that snapshotted
+    // earlier would record a baseline that has since moved.
+    const nextTheme = commit.themePatch
+      ? { ...(dashboard?.theme_config ?? {}), ...commit.themePatch }
+      : undefined;
+    const nextCluster = commit.slicerClusterPatch
+      ? { ...(draftSlicerClusterLayout ?? {}), ...commit.slicerClusterPatch }
+      : undefined;
+
+    pushUndo({
+      kind: 'ai-presentation',
+      prev: {
+        layout: localLayoutOverrides,
+        theme: nextTheme === undefined ? undefined : (dashboard?.theme_config ?? {}),
+        slicerCluster: nextCluster === undefined ? undefined : draftSlicerClusterLayout,
+      },
+      next: {
+        layout: commit.layoutOverrides,
+        theme: nextTheme,
+        slicerCluster: nextCluster,
+      },
+    });
+
+    setPreviewLayoutOverrides(null);
+    setLocalLayoutOverrides(commit.layoutOverrides);
+    if (nextCluster !== undefined) {
+      setDraftSlicerClusterLayout(nextCluster);
+      setAppliedSlicerClusterLayout(nextCluster);
+    }
+    if (nextTheme !== undefined) void applyThemeConfig(nextTheme);
+  }, [dashboard?.theme_config, draftSlicerClusterLayout, localLayoutOverrides]);
+
+  const aiDesign = useAiDesign({
+    dashboardId: Number(dashboardId),
+    dashboard,
+    activePageId,
+    activePageName: currentPage?.name ?? activePageId,
+    pageCount: dashboardPages.length,
+    localLayoutOverrides,
+    slicers: [...draftGlobalSlicers, ...draftPageSlicers],
+    slicerDock: effectiveFilterDock,
+    currentTheme: dashboard?.theme_config,
+    slicerClusterLayout: draftSlicerClusterLayout,
+    gridGapPx: getDashboardGridMargin(dashboard?.theme_config)[1],
+    onCommit: commitPresentation,
+  });
+
+  // The preview is a view layer, so it is pushed into the render overlay rather
+  // than returned by the hook and threaded through every child.
+  React.useEffect(() => {
+    setPreviewLayoutOverrides(
+      aiDesign.pending ? (aiDesign.pending.mutation.layoutOverrides as any) : null,
+    );
+  }, [aiDesign.pending]);
+
   const pageSlicersServerSignatureRef = React.useRef<string>('');
   React.useEffect(() => {
     const sig = `${activePageId}::${JSON.stringify(activePageSlicers)}`;
@@ -3157,6 +3269,46 @@ export default function DashboardDetailPage() {
                 )}
               </div>
 
+              {/* Design mode. A segmented control rather than a menu item: it
+                  changes what the whole right-hand side of the screen is for,
+                  and a person needs to see which mode they are in without
+                  opening anything. Grid only — a canvas dashboard has no grid
+                  for a composition to compile onto. */}
+              {canEditThisPage && (dashboard?.layout_mode ?? 'grid') === 'grid' && (
+                <div
+                  className="inline-flex h-7 items-center rounded-md border border-[rgb(var(--border-line))] p-0.5"
+                  role="radiogroup"
+                  aria-label={t('dashboards.aiDesign.modeLabel')}
+                >
+                  {(['manual', 'ai'] as const).map((mode) => {
+                    const active = designMode === mode;
+                    return (
+                      <button
+                        key={mode}
+                        type="button"
+                        role="radio"
+                        aria-checked={active}
+                        onClick={() => {
+                          // Leaving AI mode drops a preview rather than keeping
+                          // it invisibly pending — an unapplied design that
+                          // survives a mode switch is a change nobody can see.
+                          if (mode === 'manual' && aiDesign.pending) aiDesign.discard();
+                          setDesignMode(mode);
+                        }}
+                        className={`inline-flex h-6 items-center gap-1 rounded px-2 text-[12px] font-[510] transition-colors ${
+                          active
+                            ? 'bg-brand text-white'
+                            : 'text-text-secondary hover:bg-[rgba(255,255,255,0.06)] hover:text-text-primary'
+                        }`}
+                      >
+                        {mode === 'ai' && <Sparkles className="h-3 w-3" />}
+                        {t(mode === 'manual' ? 'dashboards.aiDesign.modeManual' : 'dashboards.aiDesign.modeAi')}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+
               {canEditThisPage && (
                 <button
                   onClick={() => setIsAddChartModalOpen(true)}
@@ -3178,7 +3330,11 @@ export default function DashboardDetailPage() {
           shell: [Canvas | FilterPane]. Picking a field happens inside
           each FilterPane section's "+ Add filter" picker — no separate
           FieldList sidebar (DA: long mouse travel was annoying). */}
-      <div className={`px-4 pb-8 sm:px-6 lg:px-8 ${isFilterPaneOpen ? 'flex gap-3 items-stretch min-h-[calc(100vh-12rem)]' : ''}`}>
+      {/* The content row goes side-by-side only when something is docked to the
+          right of the grid. Without this the dock renders as a full-width block
+          BELOW the report — which is what the AI panel did on first wiring: it
+          was in the DOM, 380px wide, and 2000px down the page. */}
+      <div className={`px-4 pb-8 sm:px-6 lg:px-8 ${isFilterPaneOpen || designMode === 'ai' ? 'flex gap-3 items-stretch min-h-[calc(100vh-12rem)]' : ''}`}>
 
         <div className={isFilterPaneOpen ? 'min-w-0 flex-1' : 'w-full'}>
         {activeCrossFilter && (
@@ -3422,6 +3578,25 @@ export default function DashboardDetailPage() {
             ))}
         </div>
         </div>
+
+        {/* Right dock: AI Design. Sits in the same rail as the Filter Pane and
+            beside the SAME grid — the preview a person judges is the real
+            renderer with a proposed layout laid over it, not a mock of one. */}
+        {designMode === 'ai' && (
+          <AiDesignPanel
+            turns={aiDesign.turns}
+            busy={aiDesign.busy}
+            scope={aiDesign.scope}
+            onScopeChange={aiDesign.setScope}
+            onSubmit={aiDesign.submit}
+            pendingDiff={aiDesign.pending?.diff ?? null}
+            onApply={aiDesign.apply}
+            onDiscard={aiDesign.discard}
+            onClose={() => { aiDesign.discard(); setDesignMode('manual'); }}
+            visualCount={aiDesign.visualCount}
+            pageName={currentPage?.name ?? activePageId}
+          />
+        )}
 
         {/* Right dock: Filter Pane (Phase-15.81). Sticky alongside the
             canvas; sections own visual / page / all-pages scope. */}
@@ -3676,35 +3851,44 @@ export default function DashboardDetailPage() {
               }
               pushUndo({ kind: 'layout', prev: geometryBefore, next: {} });
               try {
-                await dashboardApi.relayoutToTemplate(Number(dashboardId), templateId, activePageId);
-                // Two things have to happen for the new shape to appear, and
-                // missing either one leaves a button that answers 200 and moves
-                // nothing until the page is reloaded.
-                //
-                // The server rewrote the geometry of every tile on this page, so
-                // any unsaved local move of one of those tiles is now a stale
-                // instruction that would be re-applied ON TOP of the new shape --
-                // `dashboardWithOverrides` merges local last. Drop the overrides
-                // for the re-flowed page only; a manual move on another page is
-                // still the user's unsaved work.
-                setLocalLayoutOverrides((previous) => {
-                  const tiles = serverDashboard?.dashboard_charts ?? [];
-                  const pageOf = new Map(tiles.map((dc) => [dc.id, (dc.layout as any)?.pageId ?? null]));
-                  // The server re-flows the tiles of ONE page, and falls back to
-                  // every tile when it can't tell them apart -- mirror both, or
-                  // the two disagree about which overrides are now stale.
-                  const scoped = activePageId && tiles.some((dc) => pageOf.get(dc.id) === activePageId);
-                  if (!scoped) return {};
-                  const kept: typeof previous = {};
-                  for (const [id, layout] of Object.entries(previous)) {
-                    if (pageOf.get(Number(id)) !== activePageId) kept[Number(id)] = layout;
-                  }
-                  return kept;
+                // Templates and AI Design go through the SAME compiler (§19).
+                // This used to POST to a server-side relayout that had its own
+                // copy of the recipes, which meant a quality fix -- a readable
+                // KPI height, a chart that never gets a third of the width --
+                // landed on one path and not the other. Compiling here keeps
+                // one engine, and Apply lands in the same draft a drag does.
+                const pageTiles = tilesOnPage(dashboard, activePageId);
+                const baseline = tilesWithLocalEdits(dashboard, localLayoutOverrides, pageTiles);
+                if (baseline.length === 0) {
+                  toast.info(t('dashboards.themeModal.relayoutEmpty'));
+                  return;
+                }
+                const snapshot = buildPresentationSnapshot({
+                  dashboard: dashboard!,
+                  tiles: baseline,
+                  pageId: activePageId,
+                  pageName: currentPage?.name ?? activePageId,
+                  pageCount: dashboardPages.length,
+                  slicers: [...draftGlobalSlicers, ...draftPageSlicers],
+                  slicerDock: effectiveFilterDock,
                 });
-                // ...and the refetch has to name the key the dashboard query is
-                // actually registered under. Everything else in this file uses
-                // the plural; the singular invalidated nothing.
-                await queryClient.invalidateQueries({ queryKey: ['dashboards', dashboardId] });
+                // Layout only. Picking a template in the modal already applies
+                // its colours through the theme path; re-applying them here
+                // would repaint every page as a side effect of a layout button.
+                const plan = planFromTemplate(templateId, snapshot, 'page');
+                const built = buildPresentationMutation({
+                  plan,
+                  snapshot,
+                  tiles: baseline,
+                  pageId: activePageId,
+                  currentTheme: dashboard?.theme_config,
+                  gridGapPx: getDashboardGridMargin(dashboard?.theme_config)[1],
+                });
+                if (!built.ok) {
+                  toast.error(t('dashboards.themeModal.relayoutFailed'));
+                  return;
+                }
+                setLocalLayoutOverrides((previous) => toLocalLayoutOverrides(built.mutation, previous));
                 toast.success(t('dashboards.themeModal.relayoutDone'));
               } catch {
                 toast.error(t('dashboards.themeModal.relayoutFailed'));

@@ -9,7 +9,8 @@
     "start": "next start",
     "lint": "next lint",
     "qa:theme": "node scripts/check-theme-presets.mjs",
-    "qa": "npm run qa:theme"
+    "qa:presentation": "node scripts/check-presentation-contract.mjs",
+    "qa": "npm run qa:theme && npm run qa:presentation"
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.20.1",
