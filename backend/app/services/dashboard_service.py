@@ -34,6 +34,18 @@ _FONT_PRESETS = {
     "dm-sans": 'var(--font-dm-sans), "DM Sans", var(--font-inter), Inter, ui-sans-serif, system-ui, sans-serif',
     "dm sans": 'var(--font-dm-sans), "DM Sans", var(--font-inter), Inter, ui-sans-serif, system-ui, sans-serif',
     "roboto": 'var(--font-roboto), Roboto, var(--font-inter), Inter, ui-sans-serif, system-ui, sans-serif',
+    # Report faces added with the theme-menu rework. Every stack ends in the
+    # app's own Inter so a face that fails to load degrades to the product
+    # font rather than to the OS default.
+    "be-vietnam": 'var(--font-be-vietnam), "Be Vietnam Pro", var(--font-inter), Inter, ui-sans-serif, system-ui, sans-serif',
+    "be vietnam pro": 'var(--font-be-vietnam), "Be Vietnam Pro", var(--font-inter), Inter, ui-sans-serif, system-ui, sans-serif',
+    "jakarta": 'var(--font-jakarta), "Plus Jakarta Sans", var(--font-inter), Inter, ui-sans-serif, system-ui, sans-serif',
+    "plus jakarta sans": 'var(--font-jakarta), "Plus Jakarta Sans", var(--font-inter), Inter, ui-sans-serif, system-ui, sans-serif',
+    "grotesk": 'var(--font-grotesk), "Space Grotesk", var(--font-inter), Inter, ui-sans-serif, system-ui, sans-serif',
+    "space grotesk": 'var(--font-grotesk), "Space Grotesk", var(--font-inter), Inter, ui-sans-serif, system-ui, sans-serif',
+    "serif": 'var(--font-serif), "Source Serif 4", Georgia, Cambria, "Times New Roman", serif',
+    "source serif": 'var(--font-serif), "Source Serif 4", Georgia, Cambria, "Times New Roman", serif',
+    "mono": 'var(--font-mono), ui-monospace, SFMono-Regular, Menlo, monospace',
 }
 
 
@@ -102,6 +114,59 @@ def normalize_dashboard_widget_config(widget_type: str | None, widget_config: Op
             target_value = config.get("targetDate")
         if target_value is not None:
             config["target"] = str(target_value)
+
+    elif wt == "section_header":
+        # The importer writes {title, subtitle}; MCP and older specs say
+        # {text}/{heading}. One shape reaches the renderer.
+        title = config.get("title") or config.get("heading") or config.get("text")
+        if title is not None:
+            config["title"] = str(title)
+        subtitle = config.get("subtitle") or config.get("description")
+        if subtitle is not None:
+            config["subtitle"] = str(subtitle)
+
+    elif wt == "callout":
+        body = config.get("text")
+        if body is None:
+            body = config.get("body")
+        if body is None:
+            body = config.get("template")
+        if body is not None:
+            config["text"] = str(body)
+        tone = str(config.get("tone") or "accent").strip().lower()
+        config["tone"] = tone if tone in {"accent", "info", "success", "warning", "danger", "neutral"} else "accent"
+
+    elif wt == "hero_strip":
+        headline = config.get("headline") or config.get("title") or config.get("text")
+        if headline is not None:
+            config["headline"] = str(headline)
+        sub = config.get("subhead") or config.get("subtitle")
+        if sub is not None:
+            config["subhead"] = str(sub)
+
+    elif wt == "html_fragment":
+        # THE gate, not a second opinion. An analyze response round-trips
+        # through the browser before the client posts it back to /build, so the
+        # sanitizing done during analysis says nothing about what actually
+        # arrives here. Everything stored is sanitized at this line.
+        from app.services.html_fragment_sanitizer import sanitize_html_fragment
+
+        raw_html = config.get("html")
+        if raw_html is None:
+            raw_html = config.get("fragment")
+        cleaned, fragment_warnings = sanitize_html_fragment(str(raw_html or ""))
+        config["html"] = cleaned
+        config.pop("fragment", None)
+        # What the source could do that the stored copy cannot. The importer
+        # surfaces these; keeping them on the widget means a reader who opens
+        # the tile a month later can still see why it is inert.
+        existing = config.get("degraded")
+        notes = list(existing) if isinstance(existing, list) else []
+        for note in fragment_warnings:
+            if note not in notes:
+                notes.append(note)
+        if notes:
+            config["degraded"] = notes[:8]
 
     elif wt == "shape":
         kind_value = config.get("kind")

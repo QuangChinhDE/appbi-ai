@@ -7,7 +7,9 @@
     "build": "next build",
     "typecheck": "tsc --noEmit",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "qa:theme": "node scripts/check-theme-presets.mjs",
+    "qa": "npm run qa:theme"
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.20.1",

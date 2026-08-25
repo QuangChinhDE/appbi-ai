@@ -23,7 +23,7 @@ import type {
   TableCellFormat,
   SemanticLabelMap,
 } from './ExploreChartConfig';
-import { fieldLabel, metricKey, metricLabel, normalizeChartStyleConfig, normalizeRoleConfig } from './ExploreChartConfig';
+import { DEFAULT_STYLE_CONFIG, fieldLabel, metricKey, metricLabel, normalizeChartStyleConfig, normalizeRoleConfig } from './ExploreChartConfig';
 import type { ChartSortRule, TimeGranularity } from '@/types/api';
 import { KpiCard } from '@/components/visualizations/KpiCard';
 import { TableVisualization } from '@/components/visualizations/TableVisualization';
@@ -675,13 +675,23 @@ function resolveDataLabelStyle(
   // flush to its end — the Power BI look) rather than `top` (which, having no
   // horizontal meaning, falls through to outside-right and overflows the plot).
   orientation?: 'vertical' | 'horizontal' | 'point',
+  // What the report's chart chrome wants when the chart itself has no opinion.
+  // Without this the resolver re-derived `enabled` from `style` alone and
+  // returned null, so a theme asking for stated numbers was overruled by the
+  // seeded `showDataLabels: false` even though the caller had already decided
+  // to render the LabelList.
+  themeWantsLabels?: boolean,
 ): (Required<Pick<DataLabelStyle, 'position' | 'rotation' | 'fontSize' | 'fontColor' | 'background' | 'backgroundColor'>> & {
   format?: NumberFormat;
   autoHideOverlap: boolean;
 }) | null {
   const dlc = style?.dataLabelConfig;
-  // Backward compat — legacy showDataLabels enables when no new config exists.
-  const enabled = dlc?.enabled ?? style?.showDataLabels ?? false;
+  // Backward compat — legacy showDataLabels enables when no new config exists;
+  // the theme's chrome supplies the answer when neither does.
+  const enabled = dlc?.enabled
+    ?? (style?.showDataLabels === true ? true : undefined)
+    ?? themeWantsLabels
+    ?? false;
   if (!enabled) return null;
 
   const override = dlc?.overrides?.[seriesKey];
@@ -1550,7 +1560,12 @@ function ExploreChartInner({
   // Modern/SaaS skin → clean chart chrome: gridlines become a light SOLID hair
   // line instead of the busy dashed "3 3" (the preset also sets a very faint
   // gridlineColor). Classic look keeps the dashed default. Opt-in, no breakage.
-  const gridDash = dashboardTheme.skin === 'modern' ? undefined : '3 3';
+  // Dashed gridlines are an editorial choice, not a skin side effect: the
+  // chrome names it directly, and the old skin rule stays as the fallback for
+  // reports saved before chromes existed.
+  const gridDash = dashboardTheme.tokens?.chart
+    ? (dashboardTheme.tokens.chart.gridlines === 'dashed' ? '3 3' : undefined)
+    : (dashboardTheme.skin === 'modern' ? undefined : '3 3');
   // Resolve per-series color: explicit override beats palette index.
   const getSeriesColor = useCallback(
     (key: string, index: number): string => {
@@ -1580,10 +1595,28 @@ function ExploreChartInner({
     const n = typeof raw === 'number' ? raw : parseFloat(String(raw));
     return Number.isFinite(n) && n > 0 ? n : undefined;
   })();
+  // The theme's type SCALE beats the responsive guess: a report set to
+  // typoBase 17 should have 17x0.82 axis ticks, not whatever size the tile
+  // happens to imply. An explicit per-chart fontSize still wins over both, and
+  // a report with no scale keeps the responsive behaviour exactly as before.
+  const themeAxisRole = dashboardTheme.tokens
+    ? Math.round(dashboardTheme.tokens.typoBase * 0.82 * 10) / 10
+    : undefined;
   const fontSize = hasExplicitFontSize
     ? (style.fontSize as number)
-    : themeLabelFontSize ?? responsive.fontSize;
-  const chartTitleFontSize = Math.max(style.chartTitleFontSize ?? fontSize, 14);
+    : themeLabelFontSize
+      // Never let the scale push ticks past what the tile can show.
+      ?? (themeAxisRole != null ? Math.min(themeAxisRole, responsive.fontSize + 3) : responsive.fontSize);
+  // The chartTitle typography role, when the report defines a scale. Without
+  // this a report at typoBase 17 kept 14px titles while its axis ticks grew —
+  // the scale applied to everything except the line the eye lands on first.
+  const themeTitleRole = dashboardTheme.tokens
+    ? Math.round(dashboardTheme.tokens.typoBase * 1.0)
+    : undefined;
+  const chartTitleFontSize = Math.max(
+    style.chartTitleFontSize ?? themeTitleRole ?? fontSize,
+    14,
+  );
   const kpiValueFontSize = style.kpiValueFontSize ?? (hasExplicitFontSize ? style.fontSize : undefined);
   const tableNumberFormat = style.numberFormat && style.numberFormat !== 'compact' ? style.numberFormat : 'auto';
   // Phase-15.83 — showAllPoints flag retired; adapter renders every row.
@@ -1948,21 +1981,51 @@ function ExploreChartInner({
   const TruncationBanner: React.ReactNode = null;
 
   // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Shared rendering helpers ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
-  const showGrid = style.showGrid ?? true;
-  const legendPos = style.legendPosition || 'bottom';
+  // ── Chart chrome, from the theme ──────────────────────────────────────────
+  //
+  // `resolveStyleTokens().chart` carries a designed set of chrome traits per
+  // ChartChrome (minimal / clean / executive / editorial / vibrant). Until now
+  // exactly ONE of them was read (markFill); every other value below came from
+  // `style.*` with a hard-coded fallback, so all five chromes were inert and
+  // switching theme left the charts — the largest surface in any report —
+  // looking identical.
+  //
+  // Precedence is explicit-chart-style → theme chrome → hard default. A chart
+  // whose author set a bar radius keeps it; everything else follows the report.
+  const chrome = dashboardTheme.tokens?.chart;
+  // `normalizeChartStyleConfig` spreads DEFAULT_STYLE_CONFIG over every chart,
+  // so `style.showGrid` / `barRadius` / `legendPosition` are NEVER undefined —
+  // a plain `??` would let the seeded default beat the theme and the chrome
+  // would look wired while doing nothing (measured: `minimal` still drew 28
+  // gridlines). So a value equal to the default counts as "no opinion", the
+  // same heuristic the KPI number-format resolution already documents. Cost of
+  // the tradeoff, stated: an author who deliberately set a value that happens
+  // to equal the default hands that decision to the theme.
+  const opinion = <T,>(value: T | undefined, dflt: T): T | undefined =>
+    value === undefined || value === dflt ? undefined : value;
+
+  const showGrid = opinion(style.showGrid, DEFAULT_STYLE_CONFIG.showGrid)
+    ?? (chrome ? chrome.gridlines !== 'none' : true);
+  const legendPos = opinion(style.legendPosition, DEFAULT_STYLE_CONFIG.legendPosition)
+    || (chrome?.legend === 'hidden' ? 'none' : 'bottom');
   // Hide the legend on a tile too short to spare a legend row (responsive) —
   // the colored marks + tooltip still convey the series. Side legends (left/
   // right) consume width not height, so the short-height rule only applies to
   // top/bottom legends.
   const legendConsumesHeight = legendPos === 'top' || legendPos === 'bottom';
   const showLegend = legendPos !== 'none' && (!legendConsumesHeight || responsive.showLegend);
-  const barRadius = style.barRadius ?? 4;
+  const barRadius = opinion(style.barRadius, DEFAULT_STYLE_CONFIG.barRadius) ?? chrome?.barRadius ?? 4;
   const barSize = typeof style.barSize === 'number' && style.barSize > 0 ? style.barSize : undefined;
   // Phase-15.84 — `showDataLabels` is now a derived signal: enabled when
   // EITHER the legacy flag or the new DataLabelConfig.enabled is true.
   // Renderers gate on this; per-series visibility comes from
   // resolveDataLabelStyle below.
-  const showDataLabels = style.dataLabelConfig?.enabled ?? style.showDataLabels ?? false;
+  // 'always' turns labels on for a theme built around stated numbers
+  // (executive / vibrant); 'off' keeps a minimal chrome clean. 'auto' leaves
+  // the decision to the chart, which is the historical behaviour.
+  const showDataLabels = style.dataLabelConfig?.enabled
+    ?? opinion(style.showDataLabels, DEFAULT_STYLE_CONFIG.showDataLabels)
+    ?? (chrome?.dataLabels === 'always');
   // Phase-15.84 — collision registry as a Map keyed by series+pointIndex.
   // Recreated each React render. Recharts replays `content` on every
   // animation tick within the same render closure; the Map shape is
@@ -2002,7 +2065,7 @@ function ExploreChartInner({
         : LABEL_DENSITY_BAR;
     // Dense chart → render no printed label (tooltip still carries the value).
     if (cartesianPointCount > densityLimit) return () => null;
-    const resolved = resolveDataLabelStyle(style, seriesKey, orientation);
+    const resolved = resolveDataLabelStyle(style, seriesKey, orientation, chrome?.dataLabels === 'always');
     return buildDataLabelContent({
       resolved,
       seriesKey,
@@ -2030,9 +2093,57 @@ function ExploreChartInner({
     if (showDotsPref === true) return n <= DOT_DENSITY_CAP;
     return n <= DOT_AUTO_LIMIT;
   };
-  const lineWidth = style.lineWidth ?? 2;
-  const areaOpacity = style.areaOpacity ?? 0.6;
+  const lineWidth = style.lineWidth ?? chrome?.lineWidth ?? 2;
+  const areaOpacity = style.areaOpacity ?? chrome?.areaOpacity ?? 0.6;
   const lineDash = style.lineStyle === 'dashed' ? '8 4' : undefined;
+
+  // ── Mark fill (theme token `markFill`) ────────────────────────────────────
+  // A flat fill is what makes a chart read as a spreadsheet export; the fade
+  // toward the baseline is most of what "designed" looks like on a column or
+  // area. Implemented as one <defs> block of vertical gradients, one per series
+  // colour, referenced by url(#id). Ids are namespaced with useId() because a
+  // dashboard renders many charts into ONE document and duplicate gradient ids
+  // would make every chart adopt whichever palette mounted last.
+  const gradientNs = React.useId().replace(/:/g, '');
+  const markFill = dashboardTheme.tokens?.chart?.markFill ?? 'solid';
+  const gradientStops = markFill === 'soft'
+    ? [{ o: 0.55 }, { o: 0.06 }]   // barely-there wash
+    : [{ o: 1 }, { o: 0.35 }];     // 'gradient' — full colour fading to a tint
+  // Keyed by COLOUR rather than by series, because the series list differs per
+  // chart branch while the set of colours in play does not — the palette plus
+  // whatever per-series overrides the author set.
+  const markFillColors = React.useMemo(() => {
+    const set = new Set<string>(PALETTE);
+    for (const c of Object.values(style.seriesColors ?? {})) if (c) set.add(String(c));
+    return [...set];
+  }, [PALETTE, style.seriesColors]);
+  const gradId = React.useCallback(
+    (color: string) => `mf-${gradientNs}-${color.replace(/[^a-zA-Z0-9]/g, '')}`,
+    [gradientNs],
+  );
+  /** Fill for a filled mark: a gradient url when the theme asks for one, the
+   *  flat colour otherwise. Stroke colours never go through this — a faded
+   *  stroke just looks like a rendering bug. */
+  const fillFor = React.useCallback((color: string): string => {
+    if (markFill === 'solid' || !markFillColors.includes(color)) return color;
+    return `url(#${gradId(color)})`;
+  }, [markFill, markFillColors, gradId]);
+  /** The <defs> block, rendered once inside each chart that uses `fillFor`. */
+  const markFillDefs = React.useMemo(() => {
+    if (markFill === 'solid') return null;
+    const [top, bottom] = gradientStops;
+    return (
+      <defs>
+        {markFillColors.map((color) => (
+          <linearGradient key={color} id={gradId(color)} x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor={color} stopOpacity={top.o} />
+            <stop offset="100%" stopColor={color} stopOpacity={bottom.o} />
+          </linearGradient>
+        ))}
+      </defs>
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [markFill, markFillColors, gradId, gradientStops[0].o, gradientStops[1].o]);
   const chartTitle = style.chartTitle?.trim() || undefined;
   // Donut hole %, interpreted relative to the pie's OUTER radius (see the
   // <Pie> below). A fresh DONUT defaults to a real hole so it doesn't render
@@ -2251,6 +2362,8 @@ function ExploreChartInner({
     return (
       <XAxis
         dataKey={dataKey}
+        axisLine={chrome?.axisLine ?? false}
+        tickLine={chrome?.axisLine ?? false}
         tick={(
           <CustomAxisTick
             angle={angle}
@@ -2297,7 +2410,7 @@ function ExploreChartInner({
     // <Label>) so it stays readable, never collides with the legend, and never
     // scrolls off-screen on a wide horizontally-scrolling chart.
     return (
-    <YAxis tick={{ fontSize, fill: axisTickFill }} tickFormatter={axisTickFormatter} domain={yDomain} allowDataOverflow={yAxisClamp} width={widthOverride ?? yAxisWidth} />
+    <YAxis axisLine={chrome?.axisLine ?? false} tickLine={chrome?.axisLine ?? false} tick={{ fontSize, fill: axisTickFill }} tickFormatter={axisTickFormatter} domain={yDomain} allowDataOverflow={yAxisClamp} width={widthOverride ?? yAxisWidth} />
     );
   };
   // Render the X/Y axis TITLES as DOM labels around the chart (instead of SVG
@@ -2581,6 +2694,34 @@ function ExploreChartInner({
     // format.kind='percent', value=59) — renders "5900.0%" out of
     // the box, no styleConfig changes required.
     const kpiMetricKey = metricKey(kpiMetric);
+    // ── Trend strip data ──────────────────────────────────────────────────
+    // DORMANT BY DEFAULT, and measurably so: a KPI query aggregates to a single
+    // number, so `data` is one row (verified across dash 67 — all four KPI
+    // charts return rowCount 1) and the guard below yields undefined. The strip
+    // therefore renders only for a KPI whose query happens to return a series,
+    // and never invents one.
+    //
+    // Lighting it up for ordinary KPIs needs a SECOND query — the same measure
+    // bucketed over a time grain — which is a data-path decision (an extra
+    // request per KPI tile, its caching, and the cost on a 66-tile dashboard),
+    // not a theming one. The rendering half is done and correct; that query is
+    // the outstanding piece.
+    //
+    // Gated on the KPI style so no existing report sprouts a chart it never
+    // configured. A stated cap keeps a 50k-row result from building a
+    // 50k-point path.
+    const kpiTrendSeries = (dashboardTheme.tokens?.kpiStyle === 'accent'
+      || dashboardTheme.tokens?.kpiStyle === 'gradient'
+      || dashboardTheme.tokens?.kpiStyle === 'tinted')
+      ? (() => {
+          const rows = data.slice(-120);
+          if (rows.length < 2) return undefined;
+          const vals = rows
+            .map((r) => Number(r?.[kpiMetricKey]))
+            .filter((n) => Number.isFinite(n));
+          return vals.length >= 2 ? vals : undefined;
+        })()
+      : undefined;
     const chartWideFormatIfSet = style.numberFormat && style.numberFormat !== 'compact'
       ? style.numberFormat
       : undefined;
@@ -2631,6 +2772,8 @@ function ExploreChartInner({
               enableColorRules={style.kpiEnableColorRules}
               colorRules={style.kpiColorRules}
               rowCount={data.length}
+              trendSeries={kpiTrendSeries}
+              trendColor={dashboardTheme.accent}
               iconName={style.kpiIconName}
               iconColor={style.kpiIconColor}
               accentBorder={style.kpiAccentBorder}
@@ -2964,6 +3107,7 @@ function ExploreChartInner({
         <div className="flex-1 min-h-0">
           <ResponsiveContainer width="100%" height="100%">
             <ScatterChart onClick={handleScatterClick}>
+              {markFillDefs}
               {showGrid && <CartesianGrid strokeDasharray={gridDash} stroke={gridStroke} />}
               <XAxis dataKey="x" name={fieldLabel(scatterX, labelMap)} type="number" tick={{ fontSize, fill: axisTickFill }}
                 label={{ value: style.xAxisLabel || fieldLabel(scatterX, labelMap), position: 'insideBottom', offset: -5, fontSize }} />
@@ -3103,7 +3247,7 @@ function ExploreChartInner({
       displaySeries.reduce((acc, s) => acc + (Number(row[s.key]) || 0), 0),
     );
     const percentYAxis = isPercent ? (
-      <YAxis tick={{ fontSize, fill: axisTickFill }} tickFormatter={(v) => `${(v * 100).toFixed(0)}%`} domain={[0, 1]}
+      <YAxis axisLine={chrome?.axisLine ?? false} tickLine={chrome?.axisLine ?? false} tick={{ fontSize, fill: axisTickFill }} tickFormatter={(v) => `${(v * 100).toFixed(0)}%`} domain={[0, 1]}
         label={yAxisLabel ? { value: yAxisLabel, angle: -90, position: 'insideLeft', fontSize, dx: -10 } : undefined} />
     ) : renderYAxis();
     return (
@@ -3115,6 +3259,7 @@ function ExploreChartInner({
           {axisTitled(wrapScrollable(
             <BarChart data={displayData} margin={cartesianMargin} onClick={handleCategoricalChartClick}
               stackOffset={isPercent ? 'expand' : undefined}>
+              {markFillDefs}
               {showGrid && <CartesianGrid strokeDasharray={gridDash} stroke={gridStroke} />}
               {renderXAxis(xField, displayData.length, xAxisIsDateLike)}
               {percentYAxis}
@@ -3187,7 +3332,7 @@ function ExploreChartInner({
                     ? resolveSegmentLabelStyle(style, series.key, barFill)
                     : null;
                   return (
-                    <Bar isAnimationActive={animate} key={series.key} dataKey={series.key} stackId="s" fill={barFill}
+                    <Bar isAnimationActive={animate} key={series.key} dataKey={series.key} stackId="s" fill={fillFor(barFill)}
                       name={series.label}
                       hide={hiddenSeries.has(series.key)}
                       barSize={barSize}
@@ -3373,6 +3518,7 @@ function ExploreChartInner({
           {TruncationBanner}
           {axisTitled(wrapScrollable(
             <AreaChart data={displayData} margin={cartesianMargin} onClick={handleCategoricalChartClick}>
+              {markFillDefs}
               {showGrid && <CartesianGrid strokeDasharray={gridDash} stroke={gridStroke} />}
               {renderXAxis(xField, displayData.length, dateLikeXAxis)}
               {renderYAxis()}
@@ -3390,7 +3536,7 @@ function ExploreChartInner({
                       name={series.label}
                       hide={hiddenSeries.has(series.key)}
                       stroke={color}
-                      fill={color}
+                      fill={fillFor(color)}
                       fillOpacity={isHighlight ? areaOpacity * HIGHLIGHT_DIM_OPACITY : areaOpacity}
                       strokeOpacity={isHighlight ? HIGHLIGHT_DIM_OPACITY : 1}
                       strokeWidth={lineWidth}
@@ -3410,7 +3556,7 @@ function ExploreChartInner({
                         name={series.label}
                         hide={hiddenSeries.has(series.key)}
                         stroke={color}
-                        fill={color}
+                        fill={fillFor(color)}
                         fillOpacity={areaOpacity}
                         strokeOpacity={1}
                         strokeWidth={lineWidth + 1}
@@ -3471,6 +3617,7 @@ function ExploreChartInner({
           {TruncationBanner}
           {axisTitled(wrapScrollable(
             <LineChart data={displayData} margin={cartesianMargin} onClick={handleCategoricalChartClick}>
+              {markFillDefs}
               {showGrid && <CartesianGrid strokeDasharray={gridDash} stroke={gridStroke} />}
               {renderXAxis(xField, displayData.length, dateLikeXAxis)}
               {renderYAxis(leftAxisSeriesKey, leftAxisWidth)}
@@ -3556,6 +3703,7 @@ function ExploreChartInner({
       : undefined; // let ResponsiveContainer fill parent
     const innerChart = (
       <BarChart data={hbarData} layout="vertical" margin={CHART_BASE_MARGIN} onClick={handleCategoricalChartClick}>
+        {markFillDefs}
         {showGrid && <CartesianGrid strokeDasharray={gridDash} stroke={gridStroke} />}
         {/* Phase-15.22: category labels on horizontal bar live on YAxis.
             Same interval=0 + truncate-with-tooltip treatment as XAxis on
@@ -3590,10 +3738,10 @@ function ExploreChartInner({
             return (
               <React.Fragment key={series.key}>
                 <Bar isAnimationActive={animate} dataKey={`${series.key}__hl`} stackId={series.key}
-                  name={series.label} hide={hiddenSeries.has(series.key)} fill={baseColor}
+                  name={series.label} hide={hiddenSeries.has(series.key)} fill={fillFor(baseColor)}
                   fillOpacity={1} barSize={barSize} radius={[0, 0, 0, 0]} />
                 <Bar isAnimationActive={animate} dataKey={`${series.key}__rest`} stackId={series.key}
-                  name={series.label} hide={hiddenSeries.has(series.key)} fill={baseColor} legendType="none"
+                  name={series.label} hide={hiddenSeries.has(series.key)} fill={fillFor(baseColor)} legendType="none"
                   fillOpacity={HIGHLIGHT_DIM_OPACITY} barSize={barSize} radius={[0, barRadius, barRadius, 0]} />
               </React.Fragment>
             );
@@ -3602,7 +3750,7 @@ function ExploreChartInner({
             <Bar isAnimationActive={animate} key={series.key} dataKey={series.key}
               name={series.label}
               hide={hiddenSeries.has(series.key)}
-              fill={baseColor}
+              fill={fillFor(baseColor)}
               barSize={barSize}
               radius={[0, barRadius, barRadius, 0]}>
               {/* Phase-15.86 — conditional cell colors now apply to
@@ -3690,6 +3838,7 @@ function ExploreChartInner({
           {TruncationBanner}
           {axisTitled(wrapScrollable(
             <ComposedChart data={displayData} margin={cartesianMargin} onClick={handleCategoricalChartClick}>
+              {markFillDefs}
               {showGrid && <CartesianGrid strokeDasharray={gridDash} stroke={gridStroke} />}
               {renderXAxis(xField!, displayData.length, xAxisIsDateLike)}
               {renderYAxis()}
@@ -3749,7 +3898,7 @@ function ExploreChartInner({
                           hide={hiddenSeries.has(series.key)}
                           type="monotone"
                           stroke={color}
-                          fill={color}
+                          fill={fillFor(color)}
                           fillOpacity={isHighlight ? areaOpacity * HIGHLIGHT_DIM_OPACITY : areaOpacity}
                           strokeOpacity={isHighlight ? HIGHLIGHT_DIM_OPACITY : 1}
                           strokeWidth={lineWidth}
@@ -3766,7 +3915,7 @@ function ExploreChartInner({
                         dataKey={series.key}
                         name={series.label}
                         hide={hiddenSeries.has(series.key)}
-                        fill={color}
+                        fill={fillFor(color)}
                         radius={[barRadius, barRadius, 0, 0]}
                         barSize={barSize}
                       >
@@ -3782,7 +3931,7 @@ function ExploreChartInner({
                     {comboBarSeries.map((series, index) => (
                       <Bar isAnimationActive={animate} key={series.key} dataKey={series.key} name={series.label}
                         hide={hiddenSeries.has(series.key)}
-                        fill={getSeriesColor(series.key, index)} radius={[barRadius, barRadius, 0, 0]}
+                        fill={fillFor(getSeriesColor(series.key, index))} radius={[barRadius, barRadius, 0, 0]}
                         barSize={barSize}>
                         {comboCells(series.key)}
                         {showDataLabels && !isHighlight && (
@@ -3839,6 +3988,7 @@ function ExploreChartInner({
         {TruncationBanner}
         {axisTitled(wrapScrollable(
           <BarChart data={barChartData} margin={cartesianMargin} onClick={handleCategoricalChartClick}>
+            {markFillDefs}
             {showGrid && <CartesianGrid strokeDasharray={gridDash} stroke={gridStroke} />}
             {renderXAxis(xField, barChartData.length, xAxisIsDateLike)}
             {renderYAxis()}
@@ -3858,10 +4008,10 @@ function ExploreChartInner({
                 return (
                   <React.Fragment key={series.key}>
                     <Bar isAnimationActive={animate} dataKey={`${series.key}__hl`} stackId={series.key}
-                      name={series.label} hide={hiddenSeries.has(series.key)} fill={baseColor}
+                      name={series.label} hide={hiddenSeries.has(series.key)} fill={fillFor(baseColor)}
                       fillOpacity={1} barSize={barSize} radius={[0, 0, 0, 0]} />
                     <Bar isAnimationActive={animate} dataKey={`${series.key}__rest`} stackId={series.key}
-                      name={series.label} hide={hiddenSeries.has(series.key)} fill={baseColor} legendType="none"
+                      name={series.label} hide={hiddenSeries.has(series.key)} fill={fillFor(baseColor)} legendType="none"
                       fillOpacity={HIGHLIGHT_DIM_OPACITY} barSize={barSize} radius={[barRadius, barRadius, 0, 0]} />
                   </React.Fragment>
                 );
@@ -3870,7 +4020,7 @@ function ExploreChartInner({
                 <Bar isAnimationActive={animate} key={series.key} dataKey={series.key}
                   name={series.label}
                   hide={hiddenSeries.has(series.key)}
-                  fill={baseColor}
+                  fill={fillFor(baseColor)}
                   barSize={barSize}
                   radius={[barRadius, barRadius, 0, 0]}>
                   {/* Phase-15.82 — conditional cell coloring. Each <Cell>

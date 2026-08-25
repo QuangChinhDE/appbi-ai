@@ -394,6 +394,26 @@ export const dashboardApi = {
     return response.data;
   },
 
+  /**
+   * Re-flow a dashboard into a layout template's topology.
+   *
+   * Separate from saving the theme: it moves tiles, so it is something a person
+   * asks for. The geometry is computed server-side by the same recipe the HTML
+   * importer uses, so a template means the same thing however the report was
+   * created.
+   */
+  relayoutToTemplate: async (
+    dashboardId: number,
+    templateFamily: string,
+    pageId?: string | null,
+  ): Promise<any> => {
+    const response = await apiClient.post(`/dashboards/${dashboardId}/relayout`, {
+      template_family: templateFamily,
+      page_id: pageId ?? null,
+    });
+    return response.data;
+  },
+
   buildHtmlImportBatch: async (input: DashboardHtmlImportBatchBuildInput): Promise<DashboardHtmlImportBatchBuildResponse> => {
     const formData = new FormData();
     formData.append('analyses_json', JSON.stringify((input.documents ?? []).map((document) => ({

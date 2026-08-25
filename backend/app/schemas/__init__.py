@@ -33,6 +33,7 @@ from app.schemas.schemas import (
     PublicLinkResponse,
     DashboardResponse,
     DashboardAddChartRequest,
+    DashboardRelayoutRequest,
     DashboardUpdateDraftFiltersRequest,
     DashboardUpdateLayoutRequest,
     DashboardUpdateWidgetRequest,

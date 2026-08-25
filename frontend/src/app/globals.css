@@ -1320,3 +1320,336 @@
 [data-dashboard-chartchrome="editorial"] .recharts-legend-wrapper {
   font-size: calc(var(--dash-font-legend, 11px) * 0.94);
 }
+
+/* ══════════════════════════════════════════════════════════════════════════
+   Phase-2 theme ingredients — the traits the token layer could not express.
+   Each is one rule keyed on a wrapper data-attribute, so it reaches every
+   surface (builder grid, free canvas, public report, embed, print/PDF) at
+   once; adding a themed surface stays "add a class hook", never "add theming
+   code to the component".
+   ══════════════════════════════════════════════════════════════════════════ */
+
+/* ── Eyebrow labels ───────────────────────────────────────────────────────
+   The signature of a modern dashboard: the small text that NAMES a value is
+   tracked out, weighted up and set in caps, so it reads as a label instead of
+   competing with the value. Applied only to supporting roles — a dashboard
+   title in tracked caps is a different, worse design. */
+[data-dashboard-labelstyle='eyebrow'] .dashboard-kpi-label,
+[data-dashboard-labelstyle='eyebrow'] .dashboard-slicer > label,
+[data-dashboard-labelstyle='eyebrow'] .dashboard-chart-subtitle,
+[data-dashboard-labelstyle='caps'] .dashboard-kpi-label,
+[data-dashboard-labelstyle='caps'] .dashboard-slicer > label,
+[data-dashboard-labelstyle='caps'] .dashboard-chart-subtitle {
+  text-transform: var(--dash-label-transform, none);
+  letter-spacing: var(--dash-label-tracking, 0);
+  opacity: var(--dash-label-opacity, 1);
+}
+[data-dashboard-labelstyle='eyebrow'] .dashboard-tile table thead th,
+[data-dashboard-labelstyle='caps'] .dashboard-tile table thead th {
+  text-transform: var(--dash-label-transform, none);
+  letter-spacing: var(--dash-label-tracking, 0);
+}
+
+/* ── Figures ──────────────────────────────────────────────────────────────
+   Digits that shift width between renders make a KPI jitter and a column of
+   numbers fail to line up on the decimal. `tabular` fixes the advance in the
+   report's own face; `mono` hands figures to the monospace family. */
+[data-dashboard-numericfont] .dashboard-kpi-value,
+[data-dashboard-numericfont] .dashboard-tile table tbody td,
+[data-dashboard-numericfont] .recharts-cartesian-axis-tick-value {
+  font-variant-numeric: var(--dash-numeric-variant, normal);
+}
+[data-dashboard-numericfont='mono'] .dashboard-kpi-value,
+[data-dashboard-numericfont='mono'] .dashboard-tile table tbody td {
+  font-family: var(--dash-numeric-family, inherit);
+  letter-spacing: -0.01em; /* mono runs wide; pull it back so KPIs still fit */
+}
+
+/* ── Section surface ──────────────────────────────────────────────────────
+   The missing level between "page" and "card". A report with only one surface
+   depth reads as loose cards no matter how well each card is styled; grouping
+   is a surface behind the members, not a border on each one. */
+[data-dashboard-sectionsurface='sunken'] .dashboard-section {
+  background: color-mix(in srgb, rgb(var(--surface-2)) 55%, transparent);
+  border-radius: calc(var(--dashboard-card-radius, 12px) + 4px);
+  padding: 12px;
+}
+[data-dashboard-sectionsurface='raised'] .dashboard-section {
+  background: rgb(var(--surface-1));
+  border-radius: calc(var(--dashboard-card-radius, 12px) + 4px);
+  box-shadow: var(--dash-card-shadow, none);
+  padding: 12px;
+}
+[data-dashboard-sectionsurface='outline'] .dashboard-section {
+  border: 1px solid color-mix(in srgb, var(--dashboard-accent, #5b5bd6) 22%, rgb(var(--border-line)));
+  border-radius: calc(var(--dashboard-card-radius, 12px) + 4px);
+  padding: 12px;
+}
+/* The section's own heading picks up the accent + label treatment. */
+[data-dashboard-sectionsurface] .dashboard-section > .dashboard-section-title {
+  color: color-mix(in srgb, var(--dashboard-accent, #5b5bd6) 80%, rgb(var(--text-primary)));
+  text-transform: var(--dash-label-transform, none);
+  letter-spacing: var(--dash-label-tracking, 0);
+  margin-bottom: 8px;
+}
+
+/* ── KPI styles ───────────────────────────────────────────────────────────
+   `data-dashboard-kpistyle` was stamped on the wrapper by the theme provider
+   but NOTHING read it — all seven KPI styles were inert, the same failure the
+   token layer had on the save path. These rules give each one a real look.
+   They deliberately style the CARD and the LABEL/VALUE relationship rather
+   than the number itself: a KPI reads as a KPI because of the frame and the
+   caption, not because the digits changed. */
+[data-dashboard-kpistyle] .dashboard-kpi-value {
+  font-size: var(--dash-font-kpiValue, inherit);
+  font-weight: var(--dash-weight-kpiValue, 700);
+  line-height: 1.05;
+}
+[data-dashboard-kpistyle] .dashboard-kpi-label {
+  font-size: var(--dash-font-kpiLabel, inherit);
+  font-weight: var(--dash-weight-kpiLabel, 500);
+}
+
+/* accent — an accent RULE under the number, not an accent number.
+   Painting a 58px figure in the report accent made every KPI shout at the same
+   volume: six identical red numbers across the top of a report, with nothing
+   telling the reader which one matters. The figure is the content, so it wears
+   ink; the accent marks the card. */
+[data-dashboard-kpistyle='accent'] .dashboard-kpi-value {
+  position: relative;
+  padding-bottom: 10px;
+}
+[data-dashboard-kpistyle='accent'] .dashboard-kpi-value::after {
+  content: '';
+  position: absolute;
+  left: 0; bottom: 0;
+  width: 34px; height: 3px;
+  border-radius: 2px;
+  background: var(--dashboard-accent, #5b5bd6);
+}
+/* tinted — a wash of the accent behind the whole card. */
+[data-dashboard-kpistyle='tinted'] .dashboard-tile:has(.dashboard-kpi-value) {
+  background-image: linear-gradient(180deg,
+    color-mix(in srgb, var(--dashboard-accent, #5b5bd6) 10%, transparent),
+    transparent 65%);
+}
+/* gradient — a stronger, directional wash for presentation decks. */
+[data-dashboard-kpistyle='gradient'] .dashboard-tile:has(.dashboard-kpi-value) {
+  background-image: linear-gradient(135deg,
+    color-mix(in srgb, var(--dashboard-accent, #5b5bd6) 18%, transparent),
+    transparent 70%);
+}
+/* gradient — the wash already carries the accent, so the number stays ink. */
+/* benchmark — the delta chip is the point, so give it weight. */
+[data-dashboard-kpistyle='benchmark'] .dashboard-kpi-delta {
+  border: 1px solid color-mix(in srgb, var(--dashboard-accent, #5b5bd6) 28%, transparent);
+}
+/* icon — leave room at the top-left for the lucide glyph the card renders. */
+[data-dashboard-kpistyle='icon'] .dashboard-kpi-label {
+  letter-spacing: var(--dash-label-tracking, .04em);
+  text-transform: var(--dash-label-transform, uppercase);
+}
+/* status — a left rail in the semantic colour, so state reads before the number. */
+[data-dashboard-kpistyle='status'] .dashboard-tile:has(.dashboard-kpi-value) {
+  border-left: 3px solid color-mix(in srgb, var(--dashboard-accent, #5b5bd6) 70%, transparent);
+}
+/* minimal — strip the chip's frame; the number stands alone. */
+[data-dashboard-kpistyle='minimal'] .dashboard-kpi-delta {
+  background: none !important;
+  padding-left: 0;
+  padding-right: 0;
+}
+
+/* ── Chart mark fill ──────────────────────────────────────────────────────
+   The gradient itself is an SVG <defs> inside each chart (ids namespaced per
+   chart instance). This rule only handles the plot-area wash that the
+   editorial/vibrant chromes ask for. */
+[data-dashboard-chartchrome='editorial'] .recharts-surface,
+[data-dashboard-chartchrome='vibrant'] .recharts-surface {
+  border-radius: 6px;
+}
+
+/* ── Filter surfaces ──────────────────────────────────────────────────────
+   The slicer CARD already followed the theme; the menu it opens did not. The
+   panels live in the React tree (not a portal), so they were always reachable
+   by these selectors — they simply carried no class to select. A glass report
+   opening a square opaque menu was the visible symptom. */
+[data-dashboard-slicerstyle] .dashboard-slicer-menu {
+  border-radius: var(--dashboard-card-radius, 8px);
+  border-color: color-mix(in srgb, var(--dashboard-accent, #5b5bd6) 20%, rgb(var(--border-line)));
+  box-shadow: var(--dash-card-shadow, 0 10px 30px -12px rgba(15, 23, 42, .35));
+}
+[data-dashboard-slicerstyle='glass'] .dashboard-slicer-menu {
+  backdrop-filter: blur(14px) saturate(1.2);
+  -webkit-backdrop-filter: blur(14px) saturate(1.2);
+  background-color: color-mix(in srgb, rgb(var(--surface-1)) 88%, transparent);
+}
+[data-dashboard-slicerstyle='pill'] .dashboard-slicer-menu { border-radius: 16px; }
+
+/* The cluster frame reads the report's card radius, so the filter zone lines
+   up with the tiles instead of sitting at its own hard-coded 8px. */
+[data-dashboard-cardtreatment] .slicer-cluster {
+  border-radius: var(--dashboard-card-radius, 8px);
+}
+/* Under the breakpoint a 280px side rail leaves nothing for the charts. */
+@media (max-width: 1023px) {
+  .slicer-cluster[data-slicer-cluster-position='left'],
+  .slicer-cluster[data-slicer-cluster-position='right'] {
+    width: 100% !important;
+    height: auto !important;
+  }
+}
+
+/* ── Plot-area wash ───────────────────────────────────────────────────────
+   `plotBackground: 'tint'` — the editorial and vibrant chromes seat the marks
+   on a faint accent field instead of on bare card. It reads as a deliberate
+   plot area rather than "chart floating in a box", and it is the cheapest
+   visible difference between chromes on a chart-heavy report. */
+[data-dashboard-chartchrome='editorial'] .recharts-wrapper,
+[data-dashboard-chartchrome='vibrant'] .recharts-wrapper {
+  background: linear-gradient(180deg,
+    color-mix(in srgb, var(--dashboard-accent, #5b5bd6) 5%, transparent),
+    transparent 78%);
+  border-radius: 8px;
+}
+
+/* ── KPI sparkline ────────────────────────────────────────────────────────
+   The trend strip is drawn by KpiCard as an inline SVG; this only positions it
+   and keeps it subordinate to the number it supports. */
+.dashboard-kpi-spark {
+  display: block;
+  width: 100%;
+  height: 34px;
+  margin-top: 6px;
+  overflow: visible;
+}
+[data-dashboard-kpistyle='minimal'] .dashboard-kpi-spark,
+[data-dashboard-kpistyle='status'] .dashboard-kpi-spark { opacity: .55; }
+
+/* ── Section bands ────────────────────────────────────────────────────────
+   The surface behind a group of tiles, drawn by SectionBands from the grid
+   geometry. `sectionSurface` picks the treatment; 'none' leaves the band
+   invisible so the token stays fully opt-out. */
+.dashboard-section-band {
+  border-radius: calc(var(--dashboard-card-radius, 12px) + 6px);
+  transition: background-color .15s ease, border-color .15s ease;
+}
+[data-dashboard-sectionsurface='sunken'] .dashboard-section-band {
+  background: color-mix(in srgb, rgb(var(--surface-2)) 62%, transparent);
+}
+[data-dashboard-sectionsurface='raised'] .dashboard-section-band {
+  background: rgb(var(--surface-1));
+  box-shadow: var(--dash-card-shadow, 0 10px 30px -18px rgba(15, 23, 42, .35));
+}
+[data-dashboard-sectionsurface='outline'] .dashboard-section-band {
+  border: 1px solid color-mix(in srgb, var(--dashboard-accent, #5b5bd6) 20%, rgb(var(--border-line)));
+}
+/* Tiles must sit ABOVE the band; the band layer is z-0 inside the wrapper.
+   Scoped to a themed dashboard and to z-index only — react-grid-layout owns
+   `position` and `transform` on its items, and overriding those globally would
+   reach every other grid in the app. */
+[data-dashboard-cardtreatment] .react-grid-item { z-index: 1; }
+
+/* ── Slicer variant ───────────────────────────────────────────────────────
+   Every dashboard template of this kind writes a filter as one line —
+   `Timeframe: All-time ▾` — sized to its own content. AppBI wrote a labelled
+   BOX: caption on one row, value on the next, stretched to a third of the
+   screen, so a three-value year picker occupied 470px to display the word
+   "All". `compact` is that one-line pill.
+
+   Done in CSS on the wrapper attribute rather than in the component, for the
+   same reason the rest of the token layer is: it reaches the builder, the
+   public report, the embed and the PDF at once. `!important` is needed because
+   the card carries an inline width for the drag-to-resize handle. */
+[data-dashboard-slicervariant='compact'] .dashboard-slicer {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 12px;
+  border-radius: 999px;
+  width: auto !important;
+  max-width: 100% !important;
+  min-width: 0 !important;
+}
+/* The caption stops being a heading and becomes the first half of a sentence. */
+[data-dashboard-slicervariant='compact'] .dashboard-slicer > :first-child {
+  flex: 0 0 auto;
+  opacity: .62;
+}
+/* The caption's own box has trailing space, so the colon has to be pulled back
+   onto the word rather than simply appended. */
+[data-dashboard-slicervariant='compact'] .dashboard-slicer > :first-child::after {
+  content: ':';
+  margin-left: -2px;
+}
+[data-dashboard-slicervariant='compact'] .dashboard-slicer {
+  gap: 5px;
+}
+[data-dashboard-slicervariant='compact'] .dashboard-slicer > :nth-child(2) {
+  min-width: 0;
+  font-weight: 600;
+}
+/* Pills sit on one line and wrap as a group, not as a stretched grid. */
+[data-dashboard-slicervariant='compact'] .slicer-cluster [class*='flex-row'] {
+  flex-wrap: wrap;
+}
+/* The pill's own width is auto, but its wrapper carries `flex-1` from the
+   distribute-evenly mode, so the row stretched it back out to 530px. The
+   wrapper has to stop claiming a share of the row too. */
+[data-dashboard-slicervariant='compact'] .slicer-cluster *:has(> .dashboard-slicer) {
+  flex: 0 0 auto !important;
+  width: auto !important;
+  min-width: 0 !important;
+}
+
+/* ── Segmented slicer ─────────────────────────────────────────────────────
+   Every dashboard of this kind shows a short option list inline —
+   `Today | 15 Days | 30 Days | 90 Days` — rather than hiding four choices
+   behind a dropdown that reads "All". Shape follows the report's slicer style
+   so the control belongs to the theme rather than looking bolted on. */
+[data-dashboard-slicerstyle='pill'] .dashboard-slicer-segmented { border-radius: 999px; }
+[data-dashboard-slicerstyle='pill'] .dashboard-slicer-segmented > button:first-child { border-top-left-radius: 999px; border-bottom-left-radius: 999px; }
+[data-dashboard-slicerstyle='pill'] .dashboard-slicer-segmented > button:last-child { border-top-right-radius: 999px; border-bottom-right-radius: 999px; }
+[data-dashboard-slicerstyle='minimal'] .dashboard-slicer-segmented { border-color: transparent; background: color-mix(in srgb, rgb(var(--surface-2)) 70%, transparent); }
+/* A segmented control lists its own options, so the caption above it can go —
+   the label already sits beside it in compact mode. */
+[data-dashboard-slicervariant='compact'] .dashboard-slicer-segmented { flex: 1 1 auto; min-width: 0; }
+
+/* ── Preserved HTML fragments ───────────────────────────────────────────────
+ *
+ * Markup lifted out of an imported source document. It arrives with the source
+ * page's computed styles already inlined, so the job here is CONTAINMENT, not
+ * styling: the fragment must not reach outside its tile, and the app's own
+ * resets must not fight the inline values the fragment depends on.
+ */
+.dashboard-html-fragment {
+  /* The fragment's inline styles are absolute pixel values from another page.
+   * Isolating layout keeps a stray `height: 100vh` inside it from resizing the
+   * tile it lives in. */
+  contain: layout paint;
+  /* Source pages are light by default and the frozen values assume that; a
+   * fragment dropped into a dark dashboard would otherwise be dark-on-dark. */
+  color-scheme: light;
+}
+.dashboard-html-fragment img,
+.dashboard-html-fragment svg {
+  max-width: 100%;
+  height: auto;
+}
+.dashboard-html-fragment table {
+  border-collapse: collapse;
+}
+/* Tailwind's preflight zeroes heading and list styling globally. The fragment
+ * carries its own values for the properties it cared about, but anything it
+ * left to the browser default now resolves to preflight's reset instead — so
+ * an imported <h3> renders at body size and a <ul> loses its markers. */
+.dashboard-html-fragment :is(h1, h2, h3, h4, h5, h6) {
+  font-weight: revert;
+  font-size: revert;
+  margin: revert;
+}
+.dashboard-html-fragment :is(ul, ol) {
+  list-style: revert;
+  padding-inline-start: revert;
+  margin: revert;
+}

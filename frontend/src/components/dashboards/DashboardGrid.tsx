@@ -107,6 +107,96 @@ interface DashboardGridProps {
   onBindParameter?: (dashboardChartId: number) => void;
 }
 
+
+/**
+ * The surface behind a group of tiles.
+ *
+ * A report with only ONE surface depth — page under card — reads as a bag of
+ * loose tiles however well each tile is styled, and no amount of card polish
+ * fixes it, because grouping is a surface, not a border on each member. This
+ * draws that missing level: a `section_header` widget opens a band, the band
+ * runs until the next header, and every tile in between sits on it.
+ *
+ * Drawn as a backdrop layer rather than as a real container because
+ * react-grid-layout positions children absolutely from the layout array — a
+ * wrapper element would have to become a grid item and would then be draggable,
+ * resizable and collide with its own contents. The geometry is deterministic,
+ * so the band can be computed from the same numbers the library uses:
+ *
+ *   colWidth = (W - mx*(cols+1)) / cols
+ *   x_px     = colWidth*x + (x+1)*mx        w_px = w*colWidth + (w-1)*mx
+ *   y_px     = rowH*y     + (y+1)*my        h_px = h*rowH     + (h-1)*my
+ *
+ * Bands are inert to the pointer so dragging, resizing and tile clicks behave
+ * exactly as before.
+ */
+function SectionBands({
+  layouts, dashboardCharts, cols, rowH, margin, width,
+}: {
+  layouts: Layout[];
+  dashboardCharts: any[];
+  cols: number;
+  rowH: number;
+  margin: [number, number];
+  width: number;
+}) {
+  const bands = React.useMemo(() => {
+    if (!width) return [];
+    const [mx, my] = margin;
+    const typeById = new Map<string, string>(
+      dashboardCharts.map((dc) => [String(dc.id), String(dc.widget_type ?? 'chart')]),
+    );
+    const sorted = [...layouts].sort((a, b) => a.y - b.y || a.x - b.x);
+    const headers = sorted.filter((l) => typeById.get(l.i) === 'section_header');
+    if (!headers.length) return [];
+
+    const colWidth = (width - mx * (cols + 1)) / cols;
+    const out: { key: string; left: number; top: number; width: number; height: number }[] = [];
+
+    headers.forEach((header, idx) => {
+      const next = headers[idx + 1];
+      // Members are the tiles between this header and the next one. The header
+      // itself is included so the band starts at its top edge.
+      const members = sorted.filter((l) =>
+        l.y >= header.y && (next ? l.y < next.y : true));
+      if (members.length < 2) return; // a header with nothing under it is not a group
+
+      const minX = Math.min(...members.map((l) => l.x));
+      const maxX = Math.max(...members.map((l) => l.x + l.w));
+      const minY = Math.min(...members.map((l) => l.y));
+      const maxY = Math.max(...members.map((l) => l.y + l.h));
+
+      const left = colWidth * minX + (minX + 1) * mx;
+      const right = colWidth * maxX + maxX * mx;
+      const top = rowH * minY + (minY + 1) * my;
+      const bottom = rowH * maxY + maxY * my;
+      out.push({
+        key: header.i,
+        // Bleed a little past the tiles so the band reads as containing them
+        // rather than as a rectangle drawn exactly under them.
+        left: left - mx / 2,
+        top: top - my / 2,
+        width: (right - left) + mx,
+        height: (bottom - top) + my,
+      });
+    });
+    return out;
+  }, [layouts, dashboardCharts, cols, rowH, margin, width]);
+
+  if (!bands.length) return null;
+  return (
+    <div className="pointer-events-none absolute inset-0 z-0" aria-hidden="true">
+      {bands.map((b) => (
+        <div
+          key={b.key}
+          className="dashboard-section-band absolute"
+          style={{ left: b.left, top: b.top, width: b.width, height: b.height }}
+        />
+      ))}
+    </div>
+  );
+}
+
 export function DashboardGrid({
   dashboardId,
   dashboardCharts,
@@ -153,7 +243,34 @@ export function DashboardGrid({
   // above the topmost tile is the DA's intentional spacing and must survive render
   // (WYSIWYG with the published report). "Dồn lên trên" is an explicit, on-demand
   // action only — never a render/persist side effect.
-  const layouts = dashboardCharts.map((dc) => {
+  // WidthProvider measures the grid internally and does not expose it, so the
+  // section backdrop takes its own measurement of the same box.
+  //
+  // ABOVE the empty-state early return on purpose: these three hooks used to
+  // sit below it, so a dashboard going from zero charts to one changed the
+  // hook count between renders and threw React #300, taking the grid with it.
+  const gridWrapRef = React.useRef<HTMLDivElement | null>(null);
+  const [gridWidth, setGridWidth] = React.useState(0);
+  React.useEffect(() => {
+    const el = gridWrapRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver((entries) => {
+      const w = entries[0]?.contentRect?.width ?? 0;
+      // Only react to real changes: a sub-pixel jitter here would re-render the
+      // whole grid on every scroll-driven layout pass.
+      setGridWidth((prev) => (Math.abs(prev - w) > 0.5 ? w : prev));
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  // Below this the 12-column arrangement stops being readable rather than
+  // merely tight: measured on a 4-KPI console at 390px, each card came out
+  // 53px wide and "16.0M" rendered as "1".
+  const NARROW_GRID_PX = 700;
+  const isNarrow = gridWidth > 0 && gridWidth < NARROW_GRID_PX;
+
+  const authoredLayouts = dashboardCharts.map((dc) => {
     const layout = dc.layout;
     const isWidget = Boolean(dc.widget_type && dc.widget_type !== 'chart');
     return {
@@ -174,6 +291,35 @@ export function DashboardGrid({
     };
   });
 
+  /**
+   * The same tiles, stacked, for a viewport too narrow to hold the grid.
+   *
+   * This is a PROJECTION, never a save. `ResponsiveGridLayout` was rejected for
+   * exactly that reason -- it reflows onto a breakpoint and then reports the
+   * reflowed positions through `onLayoutChange`, so opening DevTools once would
+   * rewrite a report's desktop layout. Deriving the narrow arrangement here and
+   * refusing to persist it keeps the authored geometry the single source of
+   * truth: widen the window and the original comes back untouched.
+   *
+   * Reading order is the authored one -- top to bottom, left to right -- so a
+   * KPI strip stays above the charts it introduces.
+   */
+  const narrowLayouts = React.useMemo(() => {
+    if (!isNarrow) return authoredLayouts;
+    const byReadingOrder = [...authoredLayouts].sort((a, b) => (a.y - b.y) || (a.x - b.x));
+    let cursor = 0;
+    return byReadingOrder.map((item) => {
+      // Full width, and tall enough that a chart squeezed to one column is
+      // still worth looking at.
+      const height = Math.max(item.h, item.minH ?? 3);
+      const placed = { ...item, x: 0, y: cursor, w: DASHBOARD_GRID_COLS, h: height, static: true };
+      cursor += height;
+      return placed;
+    });
+  }, [isNarrow, authoredLayouts]);
+
+  const layouts = isNarrow ? narrowLayouts : authoredLayouts;
+
   // Persist ONLY the tile the user just finished manipulating. react-grid-layout
   // hands the moved item as the 3rd onDragStop/onResizeStop arg; we forward JUST
   // that item (a single-element array), never the whole layout — so a gesture is a
@@ -188,6 +334,7 @@ export function DashboardGrid({
       || item.x !== prev.x || item.y !== prev.y || item.w !== prev.w || item.h !== prev.h;
     if (changed) onLayoutChange([item]);
   };
+
 
   if (dashboardCharts.length === 0) {
     return (
@@ -210,7 +357,17 @@ export function DashboardGrid({
   // Finer grid: 36 cols + a row height coupled to the theme gap so ×3-migrated
   // tiles keep their exact pixel size (see dashboardRowHeight). Margin unchanged.
   const gridMargin = getDashboardGridMargin(themeConfig);
+  const gridRowHeight = dashboardRowHeight(gridMargin[1]);
   return (
+    <div ref={gridWrapRef} className="relative">
+      <SectionBands
+        layouts={layouts}
+        dashboardCharts={dashboardCharts}
+        cols={DASHBOARD_GRID_COLS}
+        rowH={gridRowHeight}
+        margin={gridMargin}
+        width={gridWidth}
+      />
     <FixedGridLayout
       // `rgl-no-anim` (edit mode only) kills the library's 200ms position
       // transition on ALL tiles so a settled drag doesn't leave siblings sliding
@@ -219,16 +376,16 @@ export function DashboardGrid({
       className={onLayoutChange ? 'layout rgl-no-anim' : 'layout'}
       layout={layouts}
       cols={DASHBOARD_GRID_COLS}
-      rowHeight={dashboardRowHeight(gridMargin[1])}
+      rowHeight={gridRowHeight}
       margin={gridMargin}
-      onDragStop={(_layout, _oldItem, newItem) => persistItem(newItem)}
-      onResizeStop={(_layout, _oldItem, newItem) => persistItem(newItem)}
+      onDragStop={(_layout, _oldItem, newItem) => { if (!isNarrow) persistItem(newItem); }}
+      onResizeStop={(_layout, _oldItem, newItem) => { if (!isNarrow) persistItem(newItem); }}
       draggableHandle=".drag-handle"
       // Never start a drag from an interactive control or the widget's own
       // edit/delete cluster (whole widget bodies are now drag handles).
       draggableCancel=".no-drag, button, select, input, textarea, a"
-      isDraggable={!!onLayoutChange}
-      isResizable={!!onLayoutChange}
+      isDraggable={!!onLayoutChange && !isNarrow}
+      isResizable={!!onLayoutChange && !isNarrow}
       // Grid arrange model = FREE-FORM / WYSIWYG (matches the published report,
       // which renders with compactType={null} + preventCollision). A tile stays
       // EXACTLY where the user drops it; dragging one tile never reflows the
@@ -356,5 +513,6 @@ export function DashboardGrid({
         );
       })}
     </FixedGridLayout>
+    </div>
   );
 }

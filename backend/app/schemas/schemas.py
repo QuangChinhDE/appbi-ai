@@ -672,6 +672,23 @@ class DashboardResponse(DashboardBase):
     model_config = ConfigDict(from_attributes=True)
 
 
+class DashboardRelayoutRequest(BaseModel):
+    """Ask a dashboard to be re-flowed into a layout template's topology.
+
+    Separate from saving `theme_config` on purpose: re-flowing moves tiles a
+    person may have placed by hand, so it is something they ask for and can
+    undo -- not something that happens because they tried a different colour.
+    """
+    template_family: str = Field(..., description="console | brief | ops | editorial | stage")
+    page_id: Optional[str] = Field(
+        None,
+        description=(
+            "Re-flow only this page. Omitted means the default page; a multi-page "
+            "report is never re-flowed wholesale from one page's view."
+        ),
+    )
+
+
 class DashboardAddChartRequest(BaseModel):
     """Schema for adding a chart or widget to a dashboard."""
     chart_id: Optional[int] = None

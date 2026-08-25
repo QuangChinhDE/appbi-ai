@@ -104,6 +104,18 @@ export interface DashboardHtmlImportAnalyzeResponse {
   ignored_blocks: Array<Record<string, any>>;
   warnings: string[];
   ai_meta: DashboardHtmlImportAiMeta;
+  // ── Dashboard-level contract ──────────────────────────────────────────────
+  // Round-tripped verbatim: the client posts this object straight back to
+  // /build, so anything missing here is silently dropped between analyze and
+  // build. That is exactly how the theme branch in build stayed unreachable.
+  theme_config?: Record<string, any> | null;
+  layout_mode?: string | null;
+  canvas_config?: Record<string, any> | null;
+  slicer_cluster_layout?: Record<string, any> | null;
+  slicers?: Record<string, any>[];
+  pages_config?: Record<string, any>[];
+  widgets?: Record<string, any>[];
+  template_family?: string | null;
 }
 
 export interface DashboardHtmlImportBatchAnalyzeDocument {
@@ -250,6 +262,13 @@ export interface DashboardHtmlSummaryBlock {
     headers: string[];
     rows: string[][];
   } | null;
+  /**
+   * The block's rendered appearance frozen into standalone markup, with the
+   * stylesheet's computed values inlined. Present so a block AppBI has no
+   * native visual for can be preserved instead of dropped. Empty when the
+   * subtree was too large to be worth carrying.
+   */
+  html?: string;
 }
 
 // ── Validation & AI fix ──────────────────────────────────────────────────────
@@ -311,4 +330,10 @@ export interface DashboardHtmlImportPreviewCalculatedResponse {
 export interface DashboardHtmlSummary {
   title: string;
   blocks: DashboardHtmlSummaryBlock[];
+  /**
+   * Labels of the source's own filter controls. Collected separately because a
+   * `<select>` is never a block -- no heading, no text, no visual -- so the
+   * filters of every imported report were being lost outright.
+   */
+  filterControls?: string[];
 }

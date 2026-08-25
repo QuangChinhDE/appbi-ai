@@ -2685,6 +2685,61 @@ def dataset_publish_status(
     return dataset_publish_service.get_publish_info(db, ds)
 
 
+@router.get("/{dataset_id}/import-skill")
+def dataset_import_skill(
+    dataset_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """A skill document for authoring importable dashboard HTML for this dataset.
+
+    Handed to whoever (or whatever) writes the HTML, so the file comes back
+    naming columns that exist and declaring its own plan. That turns the import
+    from a translation into a check -- see `dashboard_import_skill` for what the
+    guessing path was actually costing.
+    """
+    from fastapi.responses import PlainTextResponse
+
+    from app.models.dataset import Dataset, DatasetTable
+    from app.services.dashboard_import_skill import build_import_skill
+
+    ds = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if not ds:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    require_view_access(db, current_user, ds, "datasets")
+
+    tables = []
+    for table in (
+        db.query(DatasetTable)
+        .filter(DatasetTable.dataset_id == dataset_id)
+        .order_by(DatasetTable.id)
+        .all()
+    ):
+        cache = table.columns_cache
+        # columns_cache is a list on older rows and {"columns": [...]} on newer
+        # ones; both shapes are live in the same database.
+        columns = cache.get("columns") if isinstance(cache, dict) else cache
+        tables.append({"display_name": table.display_name, "columns": columns or []})
+
+    if not tables:
+        raise HTTPException(
+            status_code=409,
+            detail="This dataset has no tables yet, so there is nothing to write a dashboard against.",
+        )
+
+    body = build_import_skill(
+        dataset_id=dataset_id, dataset_name=ds.name, tables=tables
+    )
+    safe_name = re.sub(r"[^A-Za-z0-9._-]+", "-", ds.name).strip("-") or f"dataset-{dataset_id}"
+    return PlainTextResponse(
+        body,
+        media_type="text/markdown",
+        headers={
+            "Content-Disposition": f'attachment; filename="appbi-skill-{safe_name}.md"',
+        },
+    )
+
+
 @router.get("/{dataset_id}/grants")
 def list_dataset_grants(
     dataset_id: int,

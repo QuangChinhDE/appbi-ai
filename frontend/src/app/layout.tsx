@@ -1,7 +1,7 @@
 import '@xyflow/react/dist/style.css';
 import './globals.css';
 import type { Metadata, Viewport } from 'next';
-import { DM_Sans, Inter, JetBrains_Mono, Roboto } from 'next/font/google';
+import { Be_Vietnam_Pro, DM_Sans, Inter, JetBrains_Mono, Plus_Jakarta_Sans, Roboto, Source_Serif_4, Space_Grotesk } from 'next/font/google';
 import { AppProviders } from './providers';
 
 // PWA / iOS home-screen support. iOS Safari ignores the web manifest's install
@@ -46,6 +46,40 @@ const dmSans = DM_Sans({
   preload: false,
 });
 
+// Report faces. Declared here so a dashboard theme can name one without the
+// page fetching a stylesheet at render time. `preload: false` keeps them off
+// the critical path — only a report that selects one pays for it.
+// Be Vietnam Pro carries full Vietnamese diacritics, which most display faces
+// drop to fallback glyphs at exactly the sizes a dashboard title uses.
+const beVietnamPro = Be_Vietnam_Pro({
+  subsets: ['latin', 'vietnamese'],
+  weight: ['400', '500', '600', '700'],
+  display: 'swap',
+  variable: '--font-be-vietnam',
+  preload: false,
+});
+
+const plusJakarta = Plus_Jakarta_Sans({
+  subsets: ['latin'],
+  display: 'swap',
+  variable: '--font-jakarta',
+  preload: false,
+});
+
+const spaceGrotesk = Space_Grotesk({
+  subsets: ['latin'],
+  display: 'swap',
+  variable: '--font-grotesk',
+  preload: false,
+});
+
+const sourceSerif = Source_Serif_4({
+  subsets: ['latin'],
+  display: 'swap',
+  variable: '--font-serif',
+  preload: false,
+});
+
 const roboto = Roboto({
   subsets: ['latin', 'latin-ext'],
   weight: ['400', '500', '700'],
@@ -60,7 +94,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="en" className={`${inter.variable} ${jetbrainsMono.variable} ${dmSans.variable} ${roboto.variable} h-full`}>
+    <html lang="en" className={`${inter.variable} ${jetbrainsMono.variable} ${dmSans.variable} ${roboto.variable} ${beVietnamPro.variable} ${plusJakarta.variable} ${spaceGrotesk.variable} ${sourceSerif.variable} h-full`}>
       {/*
         Don't lock <body> overflow here — public/embed routes (/d/[token],
         /embed/[token]) rely on body scroll. The authenticated app's own

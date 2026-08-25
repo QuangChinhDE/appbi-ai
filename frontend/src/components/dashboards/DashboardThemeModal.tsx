@@ -6,134 +6,137 @@ import type { DashboardThemeConfig } from '@/types/api';
 import { useI18n } from '@/providers/LanguageProvider';
 import {
   CARD_TREATMENTS, CHART_CHROMES, KPI_STYLES, TABLE_STYLES, SLICER_STYLES,
+  LABEL_STYLES, NUMERIC_FONTS, MARK_FILLS, SECTION_SURFACES,
+  FILTER_DOCKS, SLICER_VARIANTS,
   TYPOGRAPHY_ROLES, TYPO_BASE_DEFAULT,
   contrastRatio, paletteFromBrandColor, resolveStyleTokens,
   type CardTreatment, type ChartChrome, type KpiStyle, type TableStyle, type SlicerStyle,
 } from '@/lib/dashboard-theme-tokens';
+import {
+  COLORWAYS, COLORWAY_KEYS, LEGACY_PRESET_MAP, TEMPLATES, TEMPLATE_KEYS,
+  type Colorway, type LayoutTemplate as LayoutTemplateDef,
+} from '@/lib/dashboard-theme-catalog';
+import { Button } from '@/components/ui/Button';
 import { ThemeLivePreview } from './ThemeLivePreview';
 
 type Props = {
   initial: DashboardThemeConfig | null | undefined;
   onClose: () => void;
   onSave: (theme: DashboardThemeConfig) => Promise<void> | void;
+  /**
+   * Re-flow the report into the picked template's topology.
+   *
+   * Optional and explicit. A template is a composition -- a KPI strip over a
+   * chart grid, a rail beside one main chart, a dense wall -- but that
+   * composition was only ever applied when a report was IMPORTED. Picking a
+   * template afterwards repainted it and left every tile where the previous
+   * template had put it, which is why five presets read as one layout in five
+   * palettes. Offering it as an action rather than doing it on save keeps a
+   * hand-arranged report from being rearranged because someone tried a colour.
+   */
+  onApplyLayout?: (templateId: string) => Promise<void> | void;
 };
 
-/** Full-theme presets — one click sets a coherent, scientifically-grounded look
- *  (Power BI "report theme"). Each carries the WHOLE look: page background,
- *  accent, categorical data palette, status colors, card style + mode. The
- *  palettes are grounded in recognized sources (Tableau 10, Okabe–Ito CB-safe,
- *  IBM Carbon, ColorBrewer, viridis) so a user can pick a finished look without
- *  any manual setup. `id` lets the editor highlight the active one. */
-type ThemePreset = { id: string; label: string; hint: string; value: DashboardThemeConfig };
-const PRESETS: ThemePreset[] = [
-  // ── Modern / SaaS skin — the "vibe-code" look: tinted cards + accent bar +
-  //    soft shadow + clean chart chrome. `skin:'modern'` drives the ambient CSS
-  //    + clean-chrome; the rest is a cohesive, restrained palette (accent-led,
-  //    not rainbow) so color lives around the chart, not inside every mark.
-  {
-    id: 'modern-indigo', label: 'dashboards.themeModal.presetModernIndigo', hint: 'dashboards.themeModal.presetModernIndigoHint',
-    value: {
-      mode: 'light', skin: 'modern', cardStyle: 'soft', density: 'normal', cardRadius: 16,
-      background: 'linear-gradient(180deg, #f7f8fb 0%, #f2f3f9 100%)', accent: '#5b5bd6',
-      dataColors: ['#5b5bd6', '#22b8cf', '#12b886', '#fab005', '#fa5252', '#be4bdb', '#4dabf7', '#748ffc'],
-      goodColor: '#12b886', neutralColor: '#868e96', badColor: '#fa5252',
-      cardBorderColor: 'rgba(20,26,42,0.08)',
-      cardShadow: '0 1px 2px rgba(20,26,42,.05), 0 10px 26px -14px rgba(20,26,42,.28)',
-      gridlineColor: 'rgba(20,26,42,0.06)', titleFontSize: 15,
-    },
-  },
-  {
-    id: 'modern-emerald', label: 'dashboards.themeModal.presetModernEmerald', hint: 'dashboards.themeModal.presetModernEmeraldHint',
-    value: {
-      mode: 'light', skin: 'modern', cardStyle: 'soft', density: 'normal', cardRadius: 16,
-      background: 'linear-gradient(180deg, #f5faf7 0%, #eff7f2 100%)', accent: '#0e9f6e',
-      dataColors: ['#0e9f6e', '#2cc98d', '#0ca5e9', '#fab005', '#fa7066', '#7c7ce6', '#12b8a6', '#868e96'],
-      goodColor: '#0e9f6e', neutralColor: '#868e96', badColor: '#fa5252',
-      cardBorderColor: 'rgba(20,26,42,0.08)',
-      cardShadow: '0 1px 2px rgba(20,26,42,.05), 0 10px 26px -14px rgba(20,26,42,.28)',
-      gridlineColor: 'rgba(20,26,42,0.06)', titleFontSize: 15,
-    },
-  },
-  {
-    id: 'modern-coral', label: 'dashboards.themeModal.presetModernCoral', hint: 'dashboards.themeModal.presetModernCoralHint',
-    value: {
-      mode: 'light', skin: 'modern', cardStyle: 'soft', density: 'normal', cardRadius: 16,
-      background: 'linear-gradient(180deg, #fdf6f4 0%, #fbf0ed 100%)', accent: '#e5604d',
-      dataColors: ['#e5604d', '#f0836f', '#fab005', '#12b886', '#5b5bd6', '#0ca5e9', '#be4bdb', '#868e96'],
-      goodColor: '#12b886', neutralColor: '#868e96', badColor: '#e5604d',
-      cardBorderColor: 'rgba(20,26,42,0.08)',
-      cardShadow: '0 1px 2px rgba(20,26,42,.05), 0 10px 26px -14px rgba(20,26,42,.28)',
-      gridlineColor: 'rgba(20,26,42,0.06)', titleFontSize: 15,
-    },
-  },
-  {
-    id: 'clean-light', label: 'dashboards.themeModal.presetCleanLight', hint: 'dashboards.themeModal.presetCleanLightHint',
-    value: {
-      mode: 'light', cardStyle: 'soft', density: 'normal', background: '#f8fafc', accent: '#2563eb',
-      dataColors: ['#4e79a7', '#f28e2b', '#e15759', '#76b7b2', '#59a14f', '#edc948', '#b07aa1', '#9c755f'],
-      goodColor: '#59a14f', neutralColor: '#79706e', badColor: '#e15759',
-    },
-  },
-  {
-    id: 'neutral-slate', label: 'dashboards.themeModal.presetNeutralSlate', hint: 'dashboards.themeModal.presetNeutralSlateHint',
-    value: {
-      mode: 'light', cardStyle: 'flat', density: 'normal', background: '#eef2f6', accent: '#475569',
-      dataColors: ['#5b7c99', '#8aa399', '#c4a35a', '#a3766b', '#7d8597', '#b0a6c0'],
-      goodColor: '#4d8b6f', neutralColor: '#7b8794', badColor: '#b4654a',
-    },
-  },
-  {
-    id: 'cb-safe', label: 'dashboards.themeModal.presetCbSafe', hint: 'dashboards.themeModal.presetCbSafeHint',
-    value: {
-      mode: 'light', cardStyle: 'soft', density: 'normal', background: '#ffffff', accent: '#0072b2',
-      dataColors: ['#0072b2', '#e69f00', '#009e73', '#cc79a7', '#56b4e9', '#d55e00', '#f0e442'],
-      goodColor: '#009e73', neutralColor: '#999999', badColor: '#d55e00',
-    },
-  },
-  {
-    id: 'high-contrast', label: 'dashboards.themeModal.presetHighContrast', hint: 'dashboards.themeModal.presetHighContrastHint',
-    value: {
-      mode: 'light', cardStyle: 'sharp', density: 'normal', background: '#ffffff', accent: '#0f172a',
-      dataColors: ['#1192e8', '#fa4d56', '#198038', '#9f1853', '#fff1f1', '#6929c4', '#b28600', '#009d9a'],
-      goodColor: '#198038', neutralColor: '#525252', badColor: '#da1e28',
-      cardBorderWidth: '1px', cardBorderColor: '#0f172a',
-    },
-  },
-  {
-    id: 'ocean', label: 'dashboards.themeModal.presetOcean', hint: 'dashboards.themeModal.presetOceanHint',
-    value: {
-      mode: 'light', cardStyle: 'soft', density: 'normal',
-      background: 'linear-gradient(180deg, #ecfeff 0%, #f0fdfa 100%)', accent: '#0e7490',
-      dataColors: ['#440154', '#3b528b', '#21918c', '#5ec962', '#fde725', '#2a788e'],
-      goodColor: '#21918c', neutralColor: '#64748b', badColor: '#b4334a',
-    },
-  },
-  {
-    id: 'warm-sunset', label: 'dashboards.themeModal.presetWarmSunset', hint: 'dashboards.themeModal.presetWarmSunsetHint',
-    value: {
-      mode: 'light', cardStyle: 'soft', density: 'normal',
-      background: 'linear-gradient(180deg, #fff7ed 0%, #fffbeb 100%)', accent: '#ea580c',
-      dataColors: ['#d73027', '#fc8d59', '#fee090', '#91bfdb', '#4575b4', '#f46d43'],
-      goodColor: '#1a9850', neutralColor: '#8c8c8c', badColor: '#d73027',
-    },
-  },
-  {
-    id: 'midnight', label: 'dashboards.themeModal.presetMidnight', hint: 'dashboards.themeModal.presetMidnightHint',
-    value: {
-      mode: 'dark', cardStyle: 'soft', density: 'normal', background: '#0f172a', accent: '#38bdf8',
-      dataColors: ['#38bdf8', '#34d399', '#fbbf24', '#fb7185', '#a78bfa', '#22d3ee', '#f472b6', '#a3e635'],
-      goodColor: '#34d399', neutralColor: '#94a3b8', badColor: '#fb7185',
-    },
-  },
-  {
-    id: 'graphite', label: 'dashboards.themeModal.presetGraphite', hint: 'dashboards.themeModal.presetGraphiteHint',
-    value: {
-      mode: 'dark', cardStyle: 'flat', density: 'normal', background: '#101114', accent: '#a78bfa',
-      dataColors: ['#8a3ffc', '#33b1ff', '#007d79', '#ff7eb6', '#fa4d56', '#42be65', '#d4bbff', '#ffb000'],
-      goodColor: '#42be65', neutralColor: '#8d8d8d', badColor: '#fa4d56',
-    },
-  },
-];
+/**
+ * Every key `resolveStyleTokens` reads, in one list.
+ *
+ * Why this exists: the seed below and `submit()` used to be two hand-written
+ * allow-lists, and the token keys were in NEITHER. The Styles gallery wrote
+ * `cardTreatment` etc. into state, the live preview honoured them, and `submit()`
+ * quietly dropped every one on save — the whole token layer was write-only. A DB
+ * sweep found 0 of 33 dashboards carrying a single token key. Both places now
+ * derive from this constant, so a new token can't be half-wired again.
+ */
+const TOKEN_KEYS = [
+  // style vocabularies (the Styles gallery)
+  'cardTreatment', 'chartChrome', 'kpiStyle', 'tableStyle', 'slicerStyle',
+  'labelStyle', 'numericFont', 'sectionSurface', 'markFill',
+  // composition — where the filters live and how each control presents
+  'filterDock', 'slicerVariant',
+  // typography scale
+  'typoBase',
+  // card detail overrides (Advanced)
+  'accentBar', 'accentSize', 'cardTint', 'cardShadowLevel', 'cardBorderStyle',
+  'cardBlur', 'cardOpacity',
+  // chart chrome overrides (Advanced)
+  'gridlines', 'axisLine', 'barRadius', 'lineWidth', 'areaOpacity',
+  'legendStyle', 'plotBackground', 'dataLabelStyle',
+  // Which layout and which palette the report is on. Both are real state, not
+  // derived: without them the menu can only guess from the legacy single
+  // `presetId`, and a report whose layout or colour has been fine-tuned since
+  // would open with the wrong card ticked — or none at all.
+  'templateId', 'colorwayId',
+] as const;
+
+/**
+ * Pre-token keys that also define the look, so applying a preset has to clear
+ * them too.
+ *
+ * These beat the token layer wherever both are set — `resolveStyleTokens` takes
+ * an explicit `cardShadow` string over the treatment's shadow level, and an
+ * explicit `titleFontSize` is applied inline and so overrides the `chartTitle`
+ * typography role. Left behind by the previous theme they silently defeat the
+ * preset you just picked: High contrast is `outline` + no shadow, but arrived
+ * carrying the old Modern soft shadow and a pinned 15px title.
+ */
+const LEGACY_LOOK_KEYS = [
+  'cardShadow', 'cardBorderWidth', 'cardBorderColor',
+  'titleFontSize', 'titleColor', 'labelFontSize', 'kpiFontSize',
+  'gridlineColor', 'axisLabelColor', 'hoverAnimation', 'displayUnits',
+] as const;
+
+/** Copy the token keys that carry a real value. `false` is a real value
+ *  (`axisLine`), so only undefined/null/'' are treated as "not set". */
+function pickTokenKeys(src?: Record<string, any> | null): Record<string, any> {
+  const out: Record<string, any> = {};
+  if (!src) return out;
+  for (const k of TOKEN_KEYS) {
+    const v = src[k];
+    if (v !== undefined && v !== null && v !== '') out[k] = v;
+  }
+  return out;
+}
+
+/** Full-theme presets — one click sets a coherent, validated look (Power BI
+ *  "report theme"). Each carries the WHOLE look: the structural tokens
+ *  (card / chart chrome / KPI / table / slicer / type scale) AND the colour
+ *  layer (background, accent, categorical palette, status colours).
+ *
+ *  Two rules these presets follow, both learned the hard way:
+ *
+ *  1. **A preset must set the structural tokens, not just colours.** Before this
+ *     rewrite all 11 presets set only `accent`/`dataColors`/`background`, so
+ *     every one of them fell through to `SKIN_DEFAULTS` — 3 rendered as Modern,
+ *     8 as Classic. Eleven entries, two actual looks, which is exactly what
+ *     "changing the preset only changes the colour" felt like.
+ *  2. **Every palette is generated in OKLCH and validated**, not hand-picked.
+ *     Each one clears the lightness band, the chroma floor, adjacent-pair CVD
+ *     separation (protan/deutan/tritan) and the normal-vision floor, and its
+ *     first three slots additionally clear those floors on the ALL-pairs list
+ *     (the cap for scatter/bubble/choropleth — eight slots cannot clear
+ *     all-pairs under any ordering). The palettes they replaced failed: one
+ *     shipped `#fff1f1` (contrast 1.07 — invisible) inside a preset named
+ *     "high contrast", and two used a sequential/diverging ramp (viridis,
+ *     RdYlBu) as a categorical palette. */
+/**
+ * The theme menu, as two independent choices.
+ *
+ * It used to be 19 bundles that each fixed a layout AND a palette together, so
+ * "Modern Indigo" and "Modern Emerald" were two menu entries for one layout in
+ * two colours, while the thing that actually differs between a boardroom report
+ * and an ops wall — where the filters live, how dense the grid is, how loud the
+ * type is — was buried inside a name that sounded like a colour. Grouping the
+ * 19 by their real composition collapsed them to five.
+ *
+ *   TEMPLATE decides the layout: filter dock, slicer control, card treatment,
+ *            chart chrome, KPI/table style, type scale, density.
+ *   COLORWAY decides the paint: accent, categorical palette, background, mode.
+ *
+ * Five templates × eight colorways is forty looks from thirteen menu entries,
+ * and — the point — the two choices are independent: repainting a report never
+ * moves its filters, and changing its layout never loses its brand colour.
+ */
+
 
 /** Data-color (series) palettes — the report-wide chart palette, like PBI. */
 const PALETTE_PRESETS: Array<{ label: string; colors: string[] }> = [
@@ -143,13 +146,19 @@ const PALETTE_PRESETS: Array<{ label: string; colors: string[] }> = [
   { label: 'dashboards.themeModal.paletteSoft', colors: ['#7c93d8', '#6ec79a', '#e6b566', '#e88aa6', '#a07ad8', '#5fc2bb'] },
 ];
 
+/**
+ * Two tabs, not six.
+ *
+ * Four of the original six — Text, Cards, Charts, Styles — were all the same
+ * thing: individual overrides of tokens a template already sets. Splitting them
+ * across four tabs made the everyday job (pick a look, pick a colour) look like
+ * a six-step configuration, and hid the two choices that matter behind a row of
+ * equals. They now live together under Fine-tune, which the Basic/Advanced
+ * switch reveals, so Basic mode is a single tab.
+ */
 const SECTIONS = [
   { key: 'mau', label: 'dashboards.themeModal.sectionTemplates', icon: LayoutTemplate },
-  { key: 'color', label: 'dashboards.themeModal.sectionColors', icon: PaletteIcon },
-  { key: 'text', label: 'dashboards.themeModal.sectionText', icon: Type },
-  { key: 'card', label: 'dashboards.themeModal.sectionCards', icon: Square },
-  { key: 'chart', label: 'dashboards.themeModal.sectionCharts', icon: BarChart3 },
-  { key: 'styles', label: 'dashboards.themeModal.sectionStyles', icon: Sparkles },
+  { key: 'tune', label: 'dashboards.themeModal.sectionFineTune', icon: Sparkles },
 ] as const;
 type SectionKey = (typeof SECTIONS)[number]['key'];
 
@@ -196,28 +205,66 @@ function SliderRow({ label, value, min, max, step = 1, onChange }: {
 
 const RADIUS_BY_STYLE: Record<string, number> = { soft: 10, elevated: 12, flat: 6, sharp: 2 };
 
-/** Phase-B16 — a MINI dashboard mockup that previews exactly what a preset does:
- *  its page background, two cards (in the preset's card style + accent), and the
- *  data-color palette rendered as little bars. So a user sees the look, not just
- *  a name. Module-scoped (stable component). */
-function ThemePresetCard({ preset, active, onApply }: {
-  preset: ThemePreset; active: boolean; onApply: () => void;
+/**
+ * A template swatch shows the LAYOUT, not the colours.
+ *
+ * The old swatch drew a palette, which is exactly why fifteen entries looked
+ * interchangeable — the thing that actually differs between these five is where
+ * the filters sit, how dense the grid is and how big the type runs, and none of
+ * that was visible. This draws the composition in one neutral tone: the filter
+ * dock as a solid band, the KPI row, the chart area, at the template's own
+ * density. Colour is deliberately absent; it is the other choice.
+ */
+function TemplateCard({ tpl, active, onApply }: {
+  tpl: LayoutTemplateDef; active: boolean; onApply: () => void;
 }) {
   const { t } = useI18n();
-  const v = preset.value;
-  const dark = v.mode === 'dark';
-  const cardFill = dark ? '#1e293b' : '#ffffff';
-  const cardBorder = dark ? 'rgba(255,255,255,0.12)' : 'rgba(15,23,42,0.10)';
-  const textColor = dark ? '#e2e8f0' : '#0f172a';
-  const subText = dark ? '#94a3b8' : '#64748b';
-  const radius = RADIUS_BY_STYLE[v.cardStyle || 'soft'] ?? 8;
-  const palette = (v.dataColors && v.dataColors.length ? v.dataColors : [v.accent || '#2563eb']).slice(0, 6);
-  const accent = v.accent || palette[0];
+  const v = tpl.value;
+  const dock = String(v.filterDock ?? 'top');
+  const gap = v.density === 'compact' ? 2 : v.density === 'spacious' ? 5 : 3.5;
+  const radius = Math.min(pxNum(v.cardRadius, 8) / 2.2, 6);
+  const ink = 'rgb(var(--text-primary))';
+
+  const block = (o: number, extra?: React.CSSProperties): React.CSSProperties => ({
+    background: ink, opacity: o, borderRadius: radius, ...extra,
+  });
+  /** The filter dock, drawn as the one emphasised element. */
+  const filterBar = (
+    <div
+      style={{
+        display: 'flex', gap: 2,
+        ...(dock === 'left' || dock === 'right'
+          ? { flexDirection: 'column', width: 13, flex: '0 0 auto' }
+          : { flexDirection: 'row', height: 7 }),
+      }}
+    >
+      {[0, 1, 2].map((i) => (
+        <div key={i} style={block(0.42, dock === 'left' || dock === 'right'
+          ? { height: 5, width: '100%' }
+          : { width: dock === 'drawer' ? 12 : 22, height: '100%' })} />
+      ))}
+    </div>
+  );
+
+  const body = (
+    <div style={{ display: 'flex', flexDirection: 'column', gap, flex: 1, minWidth: 0 }}>
+      <div style={{ display: 'flex', gap }}>
+        {[0, 1, 2, 3].map((i) => (
+          <div key={i} style={block(0.13, { flex: 1, height: v.typoBase && v.typoBase >= 16 ? 15 : 12 })} />
+        ))}
+      </div>
+      <div style={{ display: 'flex', gap, flex: 1 }}>
+        <div style={block(0.1, { flex: 2 })} />
+        <div style={block(0.1, { flex: 1 })} />
+      </div>
+    </div>
+  );
+
   return (
     <button
       type="button"
       onClick={onApply}
-      title={t(preset.label)}
+      title={t(tpl.label)}
       className={`group relative flex flex-col overflow-hidden rounded-xl border text-left transition ${
         active ? 'border-brand ring-2 ring-brand/40' : 'border-[rgb(var(--border-line))] hover:border-brand/50'
       }`}
@@ -227,39 +274,55 @@ function ThemePresetCard({ preset, active, onApply }: {
           <Check className="h-3 w-3" />
         </span>
       )}
-      {/* mini dashboard mockup */}
-      <div className="p-2" style={{ background: v.background || (dark ? '#0f172a' : '#f8fafc') }}>
-        {/* mini KPI strip */}
-        <div className="mb-1.5 flex gap-1.5">
-          {[0, 1].map((i) => (
-            <div key={i} className="flex-1 rounded px-1.5 py-1" style={{ background: cardFill, border: `1px solid ${cardBorder}`, borderRadius: radius }}>
-              <div className="h-1 w-5 rounded-full" style={{ background: subText, opacity: 0.5 }} />
-              <div className="mt-1 text-[9px] font-bold leading-none" style={{ color: i === 0 ? accent : textColor }}>
-                {i === 0 ? '89%' : '2.4K'}
-              </div>
-            </div>
+      <div
+        className="bg-surface-2"
+        style={{
+          padding: gap + 3, height: 104,
+          display: 'flex', gap: gap + 1,
+          flexDirection: dock === 'left' ? 'row' : dock === 'right' ? 'row-reverse' : dock === 'bottom' ? 'column-reverse' : 'column',
+        }}
+      >
+        {dock !== 'hidden' && filterBar}
+        {body}
+      </div>
+      <div className="border-t border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1.5">
+        <div className="truncate text-xs font-semibold text-text-primary">{t(tpl.label)}</div>
+        <div className="truncate text-[10px] text-text-quaternary">{t(tpl.hint)}</div>
+      </div>
+    </button>
+  );
+}
+
+/** A colorway swatch shows only paint: the page ground and the series ramp. */
+function ColorwayCard({ cw, active, onApply }: {
+  cw: Colorway; active: boolean; onApply: () => void;
+}) {
+  const { t } = useI18n();
+  const colors = (cw.value.dataColors ?? []).slice(0, 8);
+  return (
+    <button
+      type="button"
+      onClick={onApply}
+      title={t(cw.label)}
+      className={`relative flex flex-col overflow-hidden rounded-lg border text-left transition ${
+        active ? 'border-brand ring-2 ring-brand/40' : 'border-[rgb(var(--border-line))] hover:border-brand/50'
+      }`}
+    >
+      {active && (
+        <span className="absolute right-1 top-1 z-10 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-brand text-white">
+          <Check className="h-2.5 w-2.5" />
+        </span>
+      )}
+      <div style={{ background: cw.value.background, padding: 7 }}>
+        <div className="flex overflow-hidden rounded" style={{ height: 22 }}>
+          {colors.map((c, i) => (
+            <span key={i} style={{ background: c, flex: 1 }} />
           ))}
-        </div>
-        {/* mini bar chart card */}
-        <div className="rounded px-1.5 pb-1 pt-1.5" style={{ background: cardFill, border: `1px solid ${cardBorder}`, borderRadius: radius }}>
-          <div className="flex h-9 items-end gap-1">
-            {palette.map((c, i) => (
-              <div key={i} className="flex-1 rounded-sm" style={{ background: c, height: `${38 + ((i * 37) % 55)}%` }} />
-            ))}
-          </div>
         </div>
       </div>
-      {/* label + palette dots */}
-      <div className="flex items-center justify-between gap-1 border-t border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1.5">
-        <div className="min-w-0">
-          <div className="truncate text-xs font-semibold text-text-primary">{t(preset.label)}</div>
-          <div className="truncate text-[10px] text-text-quaternary">{t(preset.hint)}</div>
-        </div>
-        <div className="flex shrink-0 gap-0.5">
-          {palette.slice(0, 4).map((c, i) => (
-            <span key={i} className="h-2.5 w-2.5 rounded-full" style={{ background: c }} />
-          ))}
-        </div>
+      <div className="flex items-center gap-1.5 border-t border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1">
+        <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: cw.value.accent }} />
+        <span className="truncate text-[11px] font-medium text-text-primary">{t(cw.label)}</span>
       </div>
     </button>
   );
@@ -303,7 +366,8 @@ async function downscaleImageToDataUrl(file: File): Promise<string> {
   return out;
 }
 
-export function DashboardThemeModal({ initial, onClose, onSave }: Props) {
+export function DashboardThemeModal({ initial, onClose, onSave, onApplyLayout }: Props) {
+  const [relayoutBusy, setRelayoutBusy] = useState(false);
   const { t } = useI18n();
   const [section, setSection] = useState<SectionKey>('mau');
   const [theme, setTheme] = useState<DashboardThemeConfig>({
@@ -342,6 +406,10 @@ export function DashboardThemeModal({ initial, onClose, onSave }: Props) {
     // `skin:'modern'` on submit and the report silently fell back to the classic
     // look while the Modern preset card still showed as selected.
     skin: initial?.skin === 'modern' ? 'modern' : 'classic',
+    // Every token `resolveStyleTokens` reads. Seeded from the SAME list
+    // `submit()` writes back, so a saved token always survives a round-trip
+    // through this dialog.
+    ...pickTokenKeys(initial as any),
   });
   // Basic vs Advanced. Basic is the whole job for most people: pick a look and
   // go. Advanced exposes the individual tokens behind those looks — kept behind
@@ -375,17 +443,50 @@ export function DashboardThemeModal({ initial, onClose, onSave }: Props) {
 
   // Apply a full-theme preset — replaces look-defining keys, preserves any
   // uploaded background image + glass setting so a chosen image survives.
-  const applyPreset = (p: ThemePreset) =>
-    // `skin` set EXPLICITLY (not just spread) so switching from a Modern preset
-    // to a classic one clears it instead of sticking.
-    setTheme((t) => ({
-      ...t,
-      ...p.value,
-      skin: p.value.skin === 'modern' ? 'modern' : 'classic',
-      presetId: p.id,
-      glassCards: t.glassCards,
-      backgroundImage: t.backgroundImage,
-    }));
+  /**
+   * Apply a LAYOUT. Clears only the keys a template owns, so the report keeps
+   * whatever colour it is currently wearing — changing how a report is laid out
+   * must never repaint it.
+   */
+  const applyTemplate = (tpl: LayoutTemplateDef) =>
+    setTheme((t) => {
+      const cleared: Record<string, any> = {};
+      for (const k of TEMPLATE_KEYS) cleared[k] = undefined;
+      // The pre-token look keys have to go too. They OUTRANK the token layer —
+      // an explicit `cardShadow` string beats the treatment's shadow level, and
+      // `titleFontSize` / `kpiFontSize` / `labelFontSize` are applied inline so
+      // they beat the typography roles. Left behind by the previous template
+      // they silently defeat the one just picked: Brief (clean, no shadow, 14px
+      // roles) would arrive still wearing Console's soft shadow and a pinned
+      // 15px title.
+      for (const k of LEGACY_LOOK_KEYS) cleared[k] = undefined;
+      return {
+        ...t, ...cleared, ...tpl.value,
+        skin: tpl.value.skin === 'modern' ? 'modern' : 'classic',
+        templateId: tpl.id,
+        // The legacy single-id field is kept in step so a report saved now still
+        // opens correctly on a build that has not shipped this yet.
+        presetId: `${tpl.id}-${(t as any).colorwayId ?? 'indigo'}`,
+      };
+    });
+
+  /**
+   * Apply a PALETTE. Clears only colour keys, so repainting never moves a
+   * filter or changes the density.
+   */
+  const applyColorway = (cw: Colorway) =>
+    setTheme((t) => {
+      const cleared: Record<string, any> = {};
+      for (const k of COLORWAY_KEYS) cleared[k] = undefined;
+      return {
+        ...t, ...cleared, ...cw.value,
+        colorwayId: cw.id,
+        presetId: `${(t as any).templateId ?? 'console'}-${cw.id}`,
+        // A user-uploaded background survives both choices.
+        backgroundImage: t.backgroundImage,
+        glassCards: t.glassCards,
+      };
+    });
 
   // The SKIN is the design language (Modern vs Classic); a preset is just a set
   // of starting values. Keeping them separate is what lets someone take Modern
@@ -407,18 +508,27 @@ export function DashboardThemeModal({ initial, onClose, onSave }: Props) {
   // Derived by COMPARING against the preset rather than tracking edits: it stays
   // correct no matter how the value got there (preset click, manual edit, reset,
   // or a theme saved by an older build).
-  const basePreset = PRESETS.find((p) => p.id === theme.presetId);
+  // Which template / colorway is active. A dashboard saved before the rework
+  // only has a `presetId`, so fall back through the legacy map rather than
+  // opening with nothing selected and making the user guess.
+  const legacy = LEGACY_PRESET_MAP[String(theme.presetId ?? '')];
+  const activeTemplateId = String((theme as any).templateId ?? legacy?.template ?? '');
+  const activeColorwayId = String((theme as any).colorwayId ?? legacy?.colorway ?? '');
+  const baseTemplate = TEMPLATES.find((x) => x.id === activeTemplateId);
+  const baseColorway = COLORWAYS.find((x) => x.id === activeColorwayId);
+
+  /** Has the user moved away from the chosen layout? Compared by value so it
+   *  stays right however the value got there. */
   const isCustomised = React.useMemo(() => {
-    if (!basePreset) return false;
+    if (!baseTemplate) return false;
     const same = (a: unknown, b: unknown) => {
       if (Array.isArray(a) || Array.isArray(b)) return JSON.stringify(a ?? []) === JSON.stringify(b ?? []);
       if (a == null || a === '') return b == null || b === '';
       if (typeof a === 'number' || typeof b === 'number') return pxNum(a as any, NaN) === pxNum(b as any, NaN);
       return String(a) === String(b);
     };
-    return Object.entries(basePreset.value).some(([k, v]) => !same((theme as any)[k], v))
-      || (theme.skin === 'modern') !== (basePreset.value.skin === 'modern');
-  }, [basePreset, theme]);
+    return Object.entries(baseTemplate.value).some(([k, v]) => !same((theme as any)[k], v));
+  }, [baseTemplate, theme]);
 
   // Style galleries. Each entry is a designed bundle of the tokens in
   // lib/dashboard-theme-tokens — the user combines looks, never raw CSS, which
@@ -472,7 +582,7 @@ export function DashboardThemeModal({ initial, onClose, onSave }: Props) {
   };
 
   /** Back to the preset this theme started from, keeping the uploaded image. */
-  const resetToPreset = () => { if (basePreset) applyPreset(basePreset); };
+  const resetToPreset = () => { if (baseTemplate) applyTemplate(baseTemplate); };
   /** Back to what the dashboard had when this dialog opened. */
   const resetToSaved = () =>
     setTheme((t) => ({
@@ -544,6 +654,12 @@ export function DashboardThemeModal({ initial, onClose, onSave }: Props) {
         // just omitted, so switching Modern → Classic is a real change instead of
         // "no value" that a later default could re-interpret.
         skin: theme.skin === 'modern' ? 'modern' : 'classic',
+        // The design-token layer. This used to be missing entirely: the Styles
+        // gallery and the Advanced sliders wrote these into state, the preview
+        // honoured them, and every one was dropped here on save. Derived from
+        // TOKEN_KEYS so adding a token can never again mean adding it in one
+        // place and forgetting the other.
+        ...pickTokenKeys(theme as any),
       };
       await onSave(cleaned);
       onClose();
@@ -633,7 +749,7 @@ export function DashboardThemeModal({ initial, onClose, onSave }: Props) {
         <div className="flex-1 overflow-y-auto px-6 py-5">
           <div className="mx-auto w-full max-w-4xl">
           {/* ── STYLES (galleries) ───────────────────────────────── */}
-          {section === 'styles' && (
+          {section === 'tune' && (
             <div className="space-y-5">
               <p className="text-xs text-text-quaternary">{t('dashboards.themeModal.stylesHint')}</p>
               {([
@@ -642,6 +758,12 @@ export function DashboardThemeModal({ initial, onClose, onSave }: Props) {
                 { key: 'kpiStyle', label: 'dashboards.themeModal.kpiStyleHeading', options: KPI_STYLES, current: tokens.kpiStyle },
                 { key: 'tableStyle', label: 'dashboards.themeModal.tableStyleHeading', options: TABLE_STYLES, current: tokens.tableStyle },
                 { key: 'slicerStyle', label: 'dashboards.themeModal.slicerStyleHeading', options: SLICER_STYLES, current: tokens.slicerStyle },
+                { key: 'labelStyle', label: 'dashboards.themeModal.labelStyleHeading', options: LABEL_STYLES, current: tokens.labelStyle },
+                { key: 'numericFont', label: 'dashboards.themeModal.numericFontHeading', options: NUMERIC_FONTS, current: tokens.numericFont },
+                { key: 'markFill', label: 'dashboards.themeModal.markFillHeading', options: MARK_FILLS, current: tokens.chart.markFill },
+                { key: 'sectionSurface', label: 'dashboards.themeModal.sectionSurfaceHeading', options: SECTION_SURFACES, current: tokens.sectionSurface },
+                { key: 'filterDock', label: 'dashboards.themeModal.filterDockHeading', options: FILTER_DOCKS, current: tokens.filterDock },
+                { key: 'slicerVariant', label: 'dashboards.themeModal.slicerVariantHeading', options: SLICER_VARIANTS, current: tokens.slicerVariant },
               ] as const).map((group) => (
                 <div key={group.key}>
                   <div className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-text-tertiary">{t(group.label)}</div>
@@ -757,44 +879,20 @@ export function DashboardThemeModal({ initial, onClose, onSave }: Props) {
           {/* ── MẪU ─────────────────────────────────────────────── */}
           {section === 'mau' && (
             <div className="space-y-5">
-              {/* SKIN — the design language, independent of the colour preset. */}
-              <div>
-                <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-text-tertiary">{t('dashboards.themeModal.skinHeading')}</div>
-                <div className="flex gap-2">
-                  {(['modern', 'classic'] as const).map((sk) => {
-                    const active = (theme.skin === 'modern') === (sk === 'modern');
-                    return (
-                      <button
-                        key={sk}
-                        type="button"
-                        onClick={() => setSkin(sk)}
-                        className={`flex-1 rounded-lg border px-3 py-2 text-left transition ${
-                          active
-                            ? 'border-brand bg-brand/5 ring-1 ring-brand/30'
-                            : 'border-[rgb(var(--border-line))] bg-surface-2 hover:bg-surface-3'
-                        }`}
-                      >
-                        <div className="text-sm font-medium text-text-primary">
-                          {t(sk === 'modern' ? 'dashboards.themeModal.skinModern' : 'dashboards.themeModal.skinClassic')}
-                        </div>
-                        <div className="text-[11px] leading-snug text-text-quaternary">
-                          {t(sk === 'modern' ? 'dashboards.themeModal.skinModernHint' : 'dashboards.themeModal.skinClassicHint')}
-                        </div>
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
+              {/* The design language used to be a second control here (Modern vs
+                  Classic). A template now carries `skin`, so keeping it meant
+                  two widgets driving one value that could disagree — pick a
+                  layout and the language comes with it. */}
 
               <div>
                 <div className="mb-2 flex items-center justify-between gap-2">
                   <div className="text-xs font-semibold uppercase tracking-wide text-text-tertiary">{t('dashboards.themeModal.presetsHeading')}</div>
-                  {basePreset && isCustomised && (
+                  {baseTemplate && isCustomised && (
                     <div className="flex items-center gap-2">
                       {/* A preset is a starting point: once anything differs, say so
                           instead of leaving the card ticked as if it were pristine. */}
                       <span className="rounded-full bg-surface-3 px-2 py-0.5 text-[11px] text-text-secondary">
-                        {t('dashboards.themeModal.customBasedOn', { preset: t(basePreset.label) })}
+                        {t('dashboards.themeModal.customBasedOn', { preset: t(baseTemplate.label) })}
                       </span>
                       <button type="button" onClick={resetToPreset} className="text-[11px] font-medium text-brand hover:underline">
                         {t('dashboards.themeModal.resetToPreset')}
@@ -803,13 +901,65 @@ export function DashboardThemeModal({ initial, onClose, onSave }: Props) {
                   )}
                 </div>
                 <p className="mb-2.5 text-xs text-text-quaternary">{t('dashboards.themeModal.presetsHint')}</p>
-                <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3 lg:grid-cols-4">
-                  {PRESETS.map((p) => (
-                    <ThemePresetCard
-                      key={p.id}
-                      preset={p}
-                      active={theme.presetId === p.id && !isCustomised}
-                      onApply={() => applyPreset(p)}
+
+                {/* Two choices, in the order people actually make them: what
+                    KIND of report is this, then what colour is it. They are
+                    independent — repainting never moves a filter, and changing
+                    the layout never loses the brand colour. */}
+                <div className="mb-1.5 flex items-baseline gap-2">
+                  <h4 className="text-xs font-semibold uppercase tracking-wide text-text-secondary">
+                    {t('dashboards.themeModal.stepLayout')}
+                  </h4>
+                  <span className="truncate text-[11px] text-text-quaternary">{t('dashboards.themeModal.stepLayoutHint')}</span>
+                </div>
+                <div className="mb-5 grid grid-cols-2 gap-2.5 sm:grid-cols-3 lg:grid-cols-5">
+                  {TEMPLATES.map((tpl) => (
+                    <TemplateCard
+                      key={tpl.id}
+                      tpl={tpl}
+                      active={activeTemplateId === tpl.id && !isCustomised}
+                      onApply={() => applyTemplate(tpl)}
+                    />
+                  ))}
+                </div>
+
+                {/* Picking a template repaints and re-docks. Re-flowing the
+                    tiles into its topology is the other half, and it is offered
+                    rather than done: it moves tiles someone may have placed by
+                    hand. Undo covers it either way. */}
+                {onApplyLayout && activeTemplateId && (
+                  <div className="mb-5 flex flex-wrap items-center gap-2 rounded-lg border border-dashed border-[rgb(var(--border-strong))] bg-surface-2 px-3 py-2">
+                    <p className="min-w-0 flex-1 text-[11px] leading-relaxed text-text-tertiary">
+                      {t('dashboards.themeModal.relayoutHint')}
+                    </p>
+                    <Button
+                      variant="secondary"
+                      size="xs"
+                      loading={relayoutBusy}
+                      onClick={async () => {
+                        setRelayoutBusy(true);
+                        try { await onApplyLayout(activeTemplateId); }
+                        finally { setRelayoutBusy(false); }
+                      }}
+                    >
+                      {t('dashboards.themeModal.relayoutApply')}
+                    </Button>
+                  </div>
+                )}
+
+                <div className="mb-1.5 flex items-baseline gap-2">
+                  <h4 className="text-xs font-semibold uppercase tracking-wide text-text-secondary">
+                    {t('dashboards.themeModal.stepColour')}
+                  </h4>
+                  <span className="truncate text-[11px] text-text-quaternary">{t('dashboards.themeModal.stepColourHint')}</span>
+                </div>
+                <div className="grid grid-cols-3 gap-2 sm:grid-cols-4 lg:grid-cols-8">
+                  {COLORWAYS.map((cw) => (
+                    <ColorwayCard
+                      key={cw.id}
+                      cw={cw}
+                      active={activeColorwayId === cw.id}
+                      onApply={() => applyColorway(cw)}
                     />
                   ))}
                 </div>
@@ -883,7 +1033,7 @@ export function DashboardThemeModal({ initial, onClose, onSave }: Props) {
           )}
 
           {/* ── MÀU ─────────────────────────────────────────────── */}
-          {section === 'color' && (
+          {section === 'tune' && (
             <div className="space-y-5">
               <div className="space-y-3">
                 <ColorRow label={t('dashboards.themeModal.accentColor')} value={theme.accent} fallback="#2563eb" placeholder="#2563eb" onChange={(v) => update('accent', v)} />
@@ -952,7 +1102,7 @@ export function DashboardThemeModal({ initial, onClose, onSave }: Props) {
           )}
 
           {/* ── CHỮ ─────────────────────────────────────────────── */}
-          {section === 'text' && (
+          {section === 'tune' && (
             <div className="space-y-4">
               <label className="flex flex-col gap-1 text-sm">
                 <span className="text-text-tertiary">{t('dashboards.themeModal.fontFamily')}</span>
@@ -975,7 +1125,7 @@ export function DashboardThemeModal({ initial, onClose, onSave }: Props) {
           )}
 
           {/* ── THẺ ─────────────────────────────────────────────── */}
-          {section === 'card' && (
+          {section === 'tune' && (
             <div className="space-y-4">
               <div className="grid grid-cols-2 gap-3">
                 <label className="flex flex-col gap-1 text-sm">
@@ -1024,7 +1174,7 @@ export function DashboardThemeModal({ initial, onClose, onSave }: Props) {
           )}
 
           {/* ── BIỂU ĐỒ ─────────────────────────────────────────── */}
-          {section === 'chart' && (
+          {section === 'tune' && (
             <div className="space-y-4">
               <div className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-2/40 p-3 space-y-2.5">
                 <div className="text-xs font-semibold uppercase tracking-wide text-text-tertiary">{t('dashboards.themeModal.gridAxisHeading')}</div>

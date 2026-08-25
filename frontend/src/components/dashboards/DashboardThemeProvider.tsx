@@ -2,6 +2,7 @@
 
 import React from 'react';
 import type { DashboardThemeConfig } from '@/types/api';
+import { expandThemeIdentity } from '@/lib/dashboard-theme-catalog';
 import {
   resolveStyleTokens,
   styleTokensToCssVars,
@@ -23,6 +24,15 @@ const FONT_PRESETS: Record<string, string> = {
   'dm-sans': 'var(--font-dm-sans), "DM Sans", var(--font-inter), Inter, ui-sans-serif, system-ui, sans-serif',
   'dm sans': 'var(--font-dm-sans), "DM Sans", var(--font-inter), Inter, ui-sans-serif, system-ui, sans-serif',
   roboto: 'var(--font-roboto), Roboto, var(--font-inter), Inter, ui-sans-serif, system-ui, sans-serif',
+  'be-vietnam': 'var(--font-be-vietnam), "Be Vietnam Pro", var(--font-inter), Inter, ui-sans-serif, system-ui, sans-serif',
+  'be vietnam pro': 'var(--font-be-vietnam), "Be Vietnam Pro", var(--font-inter), Inter, ui-sans-serif, system-ui, sans-serif',
+  jakarta: 'var(--font-jakarta), "Plus Jakarta Sans", var(--font-inter), Inter, ui-sans-serif, system-ui, sans-serif',
+  'plus jakarta sans': 'var(--font-jakarta), "Plus Jakarta Sans", var(--font-inter), Inter, ui-sans-serif, system-ui, sans-serif',
+  grotesk: 'var(--font-grotesk), "Space Grotesk", var(--font-inter), Inter, ui-sans-serif, system-ui, sans-serif',
+  'space grotesk': 'var(--font-grotesk), "Space Grotesk", var(--font-inter), Inter, ui-sans-serif, system-ui, sans-serif',
+  serif: 'var(--font-serif), "Source Serif 4", Georgia, Cambria, "Times New Roman", serif',
+  'source serif': 'var(--font-serif), "Source Serif 4", Georgia, Cambria, "Times New Roman", serif',
+  mono: 'var(--font-mono), ui-monospace, SFMono-Regular, Menlo, monospace',
 };
 
 const NAMED_ACCENTS: Record<string, string> = {
@@ -90,7 +100,10 @@ function hexToRgbTriplet(value: string): string | undefined {
 }
 
 export function normalizeDashboardTheme(theme?: DashboardThemeConfig | null) {
-  const raw = theme ?? {};
+  // Same expansion as resolveStyleTokens: this side owns accent / background /
+  // dataColors, so without it an identity-only theme would get its layout but
+  // none of its paint.
+  const raw = expandThemeIdentity(theme) ?? {};
   const density = normalizeDensity(raw.density);
   const cardStyle = normalizeCardStyle(raw.cardStyle);
   const accent = normalizeAccent(raw.accent);
@@ -327,6 +340,12 @@ export function DashboardThemeProvider({ theme, children, className, style: base
         data-dashboard-kpistyle={tokens.kpiStyle}
         data-dashboard-tablestyle={tokens.tableStyle}
         data-dashboard-slicerstyle={tokens.slicerStyle}
+        data-dashboard-slicervariant={tokens.slicerVariant}
+        data-dashboard-filterdock={tokens.filterDock}
+        data-dashboard-labelstyle={tokens.labelStyle}
+        data-dashboard-numericfont={tokens.numericFont}
+        data-dashboard-sectionsurface={tokens.sectionSurface}
+        data-dashboard-markfill={tokens.chart.markFill}
         data-dashboard-hover={t.hoverAnimation ?? 'none'}
         style={style}
       >

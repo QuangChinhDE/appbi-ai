@@ -5,7 +5,7 @@ import {
   Plus, X, Filter, ChevronDown, ChevronRight, Search, Link2, Check, RotateCcw,
   Calendar, Pencil, ToggleLeft, ToggleRight,
   // Phase-9 — icons for the Looker-style interaction-type picker.
-  List, ListChecks, TextCursor, SlidersHorizontal, CheckSquare, Settings2,
+  List, TextCursor, SlidersHorizontal, CheckSquare, Settings2,
   ArrowLeft,
 } from 'lucide-react';
 import {
@@ -26,6 +26,8 @@ import {
 } from '@/lib/filters';
 import { DateInput } from '@/components/ui/DateInput';
 import { useI18n } from '@/providers/LanguageProvider';
+import { useDashboardChartTheme } from '@/components/dashboards/DashboardThemeProvider';
+import { pickSlicerVariant } from '@/lib/dashboard-theme-tokens';
 
 // ─── Type badge helpers ────────────────────────────────────────
 const TYPE_BADGE: Record<FilterType, string> = { text: 'T', number: '#', date: 'D', dropdown: '=' };
@@ -191,6 +193,8 @@ interface DashboardFilterBarProps {
    * + horizontal (top) layout; vertical/left and the legacy filter bar
    * keep their existing behavior. */
   distributeChildren?: boolean;
+  /** Direction a collapsed card opens from a vertical rail/drawer. */
+  verticalPopoverPlacement?: 'left' | 'right';
   /** Per-slicer "Trang này / Tất cả trang" scope toggle (dashboard build
    * only). When true, each slicer card shows a scope toggle that writes
    * `scope: 'all' | 'page'` onto the filter; the dashboard page routes
@@ -237,6 +241,7 @@ export function DashboardFilterBar({
   stackVertical = false,
   collapsedSlicers = false,
   distributeChildren = false,
+  verticalPopoverPlacement,
   showScopeToggle = false,
   dashboardPages,
   activePageId,
@@ -671,7 +676,7 @@ export function DashboardFilterBar({
   return (
     <div className={embedded ? 'border-t border-[rgba(255,255,255,0.06)]' : 'mb-4 rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 shadow-linear-sm'}>
       {/* ── Header bar ────────────────────────────────────────────── */}
-      <div className={`flex items-center gap-2 flex-wrap ${embedded ? 'px-3 py-1.5' : 'px-4 py-2.5'}`}>
+      <div className={`flex items-center gap-2 flex-wrap ${embedded ? 'px-3 py-1' : 'px-4 py-2.5'}`}>
         {/* Phase-B8 — headerExtras (Thu gọn + config gear) moved to the RIGHT
             group next to "Add Filter" (was on the left, forcing the user to
             look/click both sides). See the ml-auto cluster below. */}
@@ -850,7 +855,7 @@ export function DashboardFilterBar({
                   setPickedType(null);
                 }} />
                 <div
-                  className="fixed z-[9999] max-h-[min(34rem,75vh)] w-[26rem] max-w-[calc(100vw-1rem)] overflow-y-auto rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 shadow-linear-lg"
+                  className="dashboard-slicer-menu fixed z-[9999] max-h-[min(34rem,75vh)] w-[26rem] max-w-[calc(100vw-1rem)] overflow-y-auto rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 shadow-linear-lg"
                   style={
                     dropdownPos
                       ? dropdownPos.left != null
@@ -989,7 +994,12 @@ export function DashboardFilterBar({
             // stack when stackVertical/left). Each button opens a popover.
             // Phase-10: when `distributeChildren` is on (horizontal mode only),
             // drop flex-wrap so cards share the row equally via flex-1 below.
-            ? `px-3 pb-3 pt-1 flex gap-2 ${
+            // A horizontal band sits between the header and the first row of
+            // tiles, so every pixel of its padding is pixels of gap the reader
+            // reads as "the report starts way down there". The rail has a whole
+            // column to itself and does not have that problem, so only the
+            // horizontal case is tightened.
+            ? `px-3 ${stackVertical ? 'pb-3 pt-1' : 'pb-2 pt-0.5'} flex gap-2 ${
                 stackVertical
                   ? 'flex-col items-stretch'
                   : distributeChildren
@@ -1042,7 +1052,7 @@ export function DashboardFilterBar({
                 activePageId={activePageId}
                 onUpdateSlicerScope={onUpdateSlicerScope}
                 collapsedPopover={collapsedSlicers}
-                popoverPlacement={stackVertical ? 'right' : 'bottom'}
+                popoverPlacement={stackVertical ? (verticalPopoverPlacement ?? 'right') : 'bottom'}
                 onUpdateWidth={(w) => updateWidth(f.id, w)}
                 distributeChildren={distributeChildren && !stackVertical}
               />
@@ -1050,7 +1060,6 @@ export function DashboardFilterBar({
           })}
         </div>
       )}
-
       {/* Empty state */}
       {isExpanded && filters.length === 0 && (
         <div className="px-4 py-5 text-center border-t border-[rgb(var(--border-line))]">
@@ -1147,7 +1156,7 @@ interface FilterCardProps {
   /** Phase-G — where the popover opens relative to the collapsed
    * button. 'right' for the Left-column cluster (opens beside, over
    * charts); 'bottom' for the Top bar (opens below). */
-  popoverPlacement?: 'bottom' | 'right';
+  popoverPlacement?: 'bottom' | 'left' | 'right';
   /** Phase-G — persist the card width after the author drags its right
    * edge (collapsed-card mode, editor only). */
   onUpdateWidth?: (widthPx: number | undefined) => void;
@@ -1247,7 +1256,7 @@ function FilterCard({
   // full-width; the public viewer passes no onUpdateWidth).
   // Phase-10 — hide the manual width-drag handle when "Tự động giãn cách"
   // is on, since the row layout overrides any committed widthPx anyway.
-  const canResizeCard = collapsedPopover && !!onUpdateWidth && popoverPlacement !== 'right' && !distributeChildren;
+  const canResizeCard = collapsedPopover && !!onUpdateWidth && popoverPlacement === 'bottom' && !distributeChildren;
   const [liveWidth, setLiveWidth] = useState<number | null>(null);
   const widthDragRef = useRef<{ startX: number; startW: number } | null>(null);
   const cardResizeRef = useRef<HTMLDivElement>(null);
@@ -1321,6 +1330,20 @@ function FilterCard({
     });
     return Array.from(set).sort();
   }, [f, allDistinctValues]);
+
+  // Should this slicer show its options inline? The theme states the rule and
+  // the data decides: a control can only be segmented if the values will fit.
+  const dashTokens = useDashboardChartTheme().tokens;
+  const segmented = useMemo(() => {
+    // Only a plain multi/single-select list can be segmented; a date range or a
+    // numeric slider has no option list to lay out.
+    const kind = f.interactionType;
+    if (kind && kind !== 'dropdown' && kind !== 'fixed_list' && kind !== 'checkbox') return false;
+    const longest = mergedValues.reduce((m, v) => Math.max(m, String(v).length), 0);
+    return pickSlicerVariant(dashTokens?.slicerVariant, mergedValues.length, longest) === 'segmented';
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dashTokens?.slicerVariant, mergedValues, f.interactionType]);
+
 
   // Server-side type-to-search results for high-cardinality dimensions. null =
   // no active server search (fall back to client-side filtering of mergedValues).
@@ -1779,6 +1802,8 @@ function FilterCard({
   //   'bottom' → Top bar: buttons flow in a row; the popover opens
   //              BELOW the button (over the charts beneath).
   const openRight = popoverPlacement === 'right';
+  const openLeft = popoverPlacement === 'left';
+  const openSide = openRight || openLeft;
   // Tableau-style slicer CARD: field name as a small EDITABLE title on
   // top (double-click to rename, editor only), current value + chevron
   // below, thin even border. Active (real value) = brand-tinted border.
@@ -1789,14 +1814,19 @@ function FilterCard({
   // card stretches via flex-1 (set on the OUTER wrapper). We still set a
   // sensible width on the inner box so the popover anchor doesn't collapse
   // when the row has only 1 filter.
-  const cardWidthStyle: React.CSSProperties = openRight
+  const cardWidthStyle: React.CSSProperties = openSide
     ? { width: '100%' }
     : distributeChildren
-      ? { width: '100%', minWidth: 140 }
-      : { width: `${liveWidth ?? f.widthPx ?? 190}px`, minWidth: 140 };
+      // "Distribute evenly" used to mean "stretch to fill", which on a wide
+      // report gave a YEAR picker 470px of width to display the word "All" —
+      // three slicers eating a third of the screen each. Even distribution is
+      // still the intent, but a control is capped at the width its content can
+      // actually use; the row stays balanced and stops looking empty.
+      ? { width: '100%', minWidth: 140, maxWidth: 320 }
+      : { width: `${liveWidth ?? f.widthPx ?? 190}px`, minWidth: 140, maxWidth: 320 };
   // Outer wrapper class: `inline-block` is the legacy fixed-width mode.
   // With distribute on, switch to `flex-1` so siblings share the row.
-  const outerWrapperClass = openRight
+  const outerWrapperClass = openSide
     ? 'relative block w-full'
     : distributeChildren
       ? 'relative flex-1 min-w-0'
@@ -1861,27 +1891,72 @@ function FilterCard({
             </span>
           )}
         </span>
-        {/* Value row — opens the popover. */}
-        <button
-          type="button"
-          onClick={() => setPopoverOpen((v) => !v)}
-          className="flex items-center justify-between gap-1.5 text-left"
-          title={`${getFilterDisplayLabel(f)}: ${valueSummary}`}
-        >
-          <span className={`truncate text-sm ${hasValue ? 'font-medium text-text-primary' : 'text-text-tertiary'}`}>
-            {valueSummary}
-          </span>
-          <ChevronDown className={`h-3.5 w-3.5 flex-shrink-0 text-text-quaternary transition-transform ${popoverOpen ? 'rotate-180' : ''}`} />
-        </button>
+        {/* Value row.
+            A short option list is shown as a SEGMENTED control — every choice
+            visible, one click to switch — instead of a dropdown that hides four
+            options behind the word "All". Longer lists keep the popover, which
+            is what a search is for. The theme decides the rule; see
+            `pickSlicerVariant`. */}
+        {segmented ? (
+          <div
+            role="group"
+            aria-label={getFilterDisplayLabel(f)}
+            className="dashboard-slicer-segmented flex items-stretch overflow-hidden rounded-md border border-[rgb(var(--border-line))]"
+          >
+            <button
+              type="button"
+              onClick={onDeselectAll}
+              aria-pressed={!hasValue}
+              className={`min-w-0 flex-1 px-2 py-1 text-xs transition-colors ${
+                !hasValue ? 'bg-brand text-text-inverse font-medium' : 'text-text-secondary hover:bg-surface-2'
+              }`}
+            >
+              {t('dashboards.filterCard.valueAll')}
+            </button>
+            {mergedValues.map((v) => {
+              const on = Array.isArray(f.value) ? f.value.includes(v) : f.value === v;
+              return (
+                <button
+                  key={v}
+                  type="button"
+                  onClick={() => onToggleValue(v)}
+                  aria-pressed={on}
+                  title={v}
+                  className={`min-w-0 flex-1 truncate border-l border-[rgb(var(--border-line))] px-2 py-1 text-xs transition-colors ${
+                    on ? 'bg-brand text-text-inverse font-medium' : 'text-text-secondary hover:bg-surface-2'
+                  }`}
+                >
+                  {v}
+                </button>
+              );
+            })}
+          </div>
+        ) : (
+          <button
+            type="button"
+            onClick={() => setPopoverOpen((v) => !v)}
+            className="flex items-center justify-between gap-1.5 text-left"
+            title={`${getFilterDisplayLabel(f)}: ${valueSummary}`}
+          >
+            <span className={`truncate text-sm ${hasValue ? 'font-medium text-text-primary' : 'text-text-tertiary'}`}>
+              {valueSummary}
+            </span>
+            <ChevronDown className={`h-3.5 w-3.5 flex-shrink-0 text-text-quaternary transition-transform ${popoverOpen ? 'rotate-180' : ''}`} />
+          </button>
+        )}
       </div>
       {popoverOpen && (
         <div
-          className={`absolute z-50 w-[280px] max-h-[60vh] overflow-auto rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 shadow-xl ${
+          className={`dashboard-slicer-menu absolute z-50 w-[320px] max-h-[70vh] min-h-[18rem] overflow-auto rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 shadow-xl ${
             openRight
               // Open to the right of the column, aligned to the card top.
               ? 'left-full top-0 ml-2'
+              : openLeft
+                // Right rails and drawers sit at the viewport edge, so their
+                // menus open inward instead of being clipped off-screen.
+                ? 'right-full top-0 mr-2'
               // Open below the card.
-              : 'left-0 top-full mt-1'
+                : 'left-0 top-full mt-1'
           }`}
         >
           {cardContent}

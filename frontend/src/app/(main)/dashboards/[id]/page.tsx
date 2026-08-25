@@ -19,6 +19,7 @@ import {
 import { dashboardApi } from '@/lib/api/dashboards';
 import { DashboardGrid } from '@/components/dashboards/DashboardGrid';
 import { DashboardThemeProvider } from '@/components/dashboards/DashboardThemeProvider';
+import { resolveStyleTokens } from '@/lib/dashboard-theme-tokens';
 import { DashboardThemeModal } from '@/components/dashboards/DashboardThemeModal';
 import { DashboardCanvas } from '@/components/dashboards/DashboardCanvas';
 import { Palette, Move, Undo2, Redo2, ArrowUpToLine } from 'lucide-react';
@@ -51,6 +52,7 @@ import type { BaseFilter, ColumnInfo, FilterType, Filter as TypedFilter } from '
 import {
   applyScopeBound,
   collectJoinKeySemanticFields,
+  dockLayoutClasses,
   fromBaseFilter,
   getColumnDisplayLabel,
   getDistinctValueFilterContext,
@@ -62,6 +64,7 @@ import {
   isSemanticDimensionFilterableForDashboard,
   resolveEffectiveFilterSet,
   toBaseFilter,
+  resolveFilterDock,
 } from '@/lib/filters';
 import { extractParamDefs, seedParamValues, paramsToFilters } from '@/lib/dashboard-params';
 import { fetchDatasetModel, fetchDatasetModelDistinctValues, SLICER_DISTINCT_PREFETCH_LIMIT, modelKeys, type DatasetModelResponse } from '@/hooks/use-dataset-model';
@@ -356,6 +359,29 @@ export default function DashboardDetailPage() {
     };
   }, [serverDashboard, localLayoutOverrides, hasLocalLayoutChanges]);
 
+  // The dock the CLUSTER will actually use. Resolved here too so the wrapper
+  // that positions the cluster beside the grid cannot disagree with the
+  // cluster's own decision — the theme supplies the default composition, an
+  // explicit author placement overrides it.
+  // Track the viewport so the dock can answer "is there room for a rail?".
+  // A rail on a phone takes the width the charts need, and squeezing every
+  // slicer into one horizontal row instead is not the answer either.
+  const [viewportWidth, setViewportWidth] = React.useState(
+    () => (typeof window === 'undefined' ? 1440 : window.innerWidth),
+  );
+  React.useEffect(() => {
+    const onResize = () => setViewportWidth(window.innerWidth);
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+
+  const preferredFilterDock = React.useMemo(
+    () => draftSlicerClusterLayout?.position
+      ?? resolveStyleTokens((dashboard?.theme_config ?? null) as any).filterDock,
+    [draftSlicerClusterLayout?.position, dashboard?.theme_config],
+  );
+
+
   const dashboardDatasetIds = React.useMemo(
     () => Array.from(new Set(
       (dashboard?.dashboard_charts ?? [])
@@ -434,15 +460,43 @@ export default function DashboardDetailPage() {
   // why layout edits repaint live) guarantees the in-session restyle for BOTH a
   // manual theme change AND theme undo/redo. Only the LIST is invalidated (card
   // refresh); the detail query is written directly to avoid racing a stale refetch.
-  const applyThemeConfig = async (theme: any) => {
+  /**
+   * Persist a theme, and hand the filter dock back to it when the user picked a
+   * LAYOUT.
+   *
+   * `slicer_cluster_layout.position` outranks the theme's `filterDock` on
+   * purpose — an author who drags the filter rail somewhere must keep it. The
+   * trap is that `DEFAULT_LAYOUT` carries `position: 'top'` and every draft save
+   * writes the whole object, so a dashboard that has merely BEEN EDITED holds a
+   * stored 'top' that is indistinguishable from a deliberate choice. Measured on
+   * dash 67: the theme resolved `filterDock: left`, the draft held
+   * `position: 'top'`, and the rail never moved — every template's dock was
+   * silently dead on any dashboard with an edit history, which is all of them.
+   *
+   * Picking a layout template IS picking where the filters go, so applying one
+   * clears the stored position and lets the template drive. Dragging the cluster
+   * afterwards writes it back and that choice sticks until the next template.
+   */
+  const applyThemeConfig = async (theme: any, opts?: { releaseDock?: boolean }) => {
     // Optimistic-first: repaint the cached dashboard IMMEDIATELY so a manual theme
     // change and (especially) Ctrl+Z undo feel instant, then persist in the
     // background. On success reconcile with the server-normalized value; on
     // failure a reload reconciles (the theme is already visually applied).
     queryClient.setQueryData(['dashboards', dashboardId], (old: any) =>
       old ? { ...old, theme_config: theme } : old);
+    // Local draft state first, so the rail moves on the same frame as the paint.
+    const clearedDock = opts?.releaseDock && draftSlicerClusterLayout
+      ? { ...draftSlicerClusterLayout, position: undefined, direction: undefined }
+      : null;
+    if (clearedDock) {
+      setDraftSlicerClusterLayout(clearedDock);
+      setAppliedSlicerClusterLayout(clearedDock);
+    }
     try {
-      const updated = await dashboardApi.update(dashboardId, { theme_config: theme });
+      const updated = await dashboardApi.update(dashboardId, {
+        theme_config: theme,
+        ...(clearedDock ? { slicer_cluster_layout: clearedDock } : {}),
+      } as any);
       queryClient.setQueryData(['dashboards', dashboardId], (old: any) =>
         old ? { ...old, theme_config: updated?.theme_config ?? theme } : old);
       queryClient.invalidateQueries({ queryKey: ['dashboards'], exact: true });
@@ -674,6 +728,20 @@ export default function DashboardDetailPage() {
     [currentPage],
   );
   const [draftPageSlicers, setDraftPageSlicers] = useState<any[]>([]);
+
+  // The template states a preference; the content and the viewport decide
+  // whether it holds. See `resolveFilterDock` for the cases and why each one
+  // exists.
+  const filterDockDecision = React.useMemo(
+    () => resolveFilterDock({
+      preferred: preferredFilterDock,
+      slicerCount: draftGlobalSlicers.length + draftPageSlicers.length,
+      viewportWidth,
+      canEdit: canEditResource,
+    }),
+    [preferredFilterDock, draftGlobalSlicers.length, draftPageSlicers.length, viewportWidth, canEditResource],
+  );
+  const effectiveFilterDock = filterDockDecision.dock;
   const pageSlicersServerSignatureRef = React.useRef<string>('');
   React.useEffect(() => {
     const sig = `${activePageId}::${JSON.stringify(activePageSlicers)}`;
@@ -3140,22 +3208,10 @@ export default function DashboardDetailPage() {
           </div>
         )}
 
-        {/* Phase-G3 — SlicerCluster arrangement honors layout.position:
-            'top'  → block above charts (default)
-            'left' → flex-row [cluster | charts]
-            'free' → absolute overlay (cluster positions itself; the
-                     wrapper just provides position:relative anchor). */}
+        {/* SlicerCluster and the dashboard grid share the selected dock layout. */}
         <div
-          className={
-            (draftSlicerClusterLayout?.position === 'left')
-              ? 'flex flex-row items-stretch gap-3'
-              : ''
-          }
-          style={
-            (draftSlicerClusterLayout?.position === 'free')
-              ? { position: 'relative' }
-              : undefined
-          }
+          className={dockLayoutClasses(effectiveFilterDock).wrapper}
+          style={effectiveFilterDock === 'drawer' ? { position: 'relative' } : undefined}
         >
         {(draftGlobalSlicers.length > 0 || draftPageSlicers.length > 0 || canEditResource) && (
           <SlicerCluster
@@ -3164,7 +3220,7 @@ export default function DashboardDetailPage() {
             // per-page VISIBLE hiding is applied only on the public viewer.
             // The chart PREVIEW still respects scope via effectivePageScopeFilters
             // (only slicers that filter the active page are applied).
-            children={orderedSlicerChildren}
+            items={orderedSlicerChildren}
             onChildrenChange={handleSlicerChildrenChange}
             layout={draftSlicerClusterLayout}
             onLayoutChange={setDraftSlicerClusterLayout}
@@ -3225,7 +3281,7 @@ export default function DashboardDetailPage() {
             left, this area flexes to fill the remaining width. */}
         <div
           ref={dashboardContentRef}
-          className={draftSlicerClusterLayout?.position === 'left' ? 'min-w-0 flex-1' : ''}
+          className={dockLayoutClasses(effectiveFilterDock).content}
         >
         {/* Phase-B19 — per-page co-edit banners (owner-priority + request→approve).
             Never shown during PDF export. */}
@@ -3588,7 +3644,71 @@ export default function DashboardDetailPage() {
               // Use {} (→ server defaults) not null: normalize_dashboard_theme_config
               // does dict(x) and would throw on a null restore.
               pushUndo({ kind: 'theme', prev: dashboard?.theme_config ?? {}, next: theme });
-              await applyThemeConfig(theme);
+              // A templateId in the payload means the user chose a LAYOUT, and a
+              // layout owns the filter dock — so release any stored position.
+              await applyThemeConfig(theme, { releaseDock: Boolean((theme as any)?.templateId) });
+            }}
+            onApplyLayout={async (templateId) => {
+              // The other half of picking a template. Snapshot first: this moves
+              // every tile, and someone who tried it on a report they had
+              // arranged by hand needs one keystroke back.
+              //
+              // Snapshotting the OVERRIDES alone is not that keystroke. An undo
+              // restores `localLayoutOverrides`, and those merge over whatever
+              // the server holds -- so once the server has been re-flowed, an
+              // empty override map "restores" the new shape and Ctrl+Z appears
+              // to do nothing. What has to be captured is the geometry ITSELF,
+              // as an override per re-flowed tile, which both redraws the old
+              // shape and is what a later save would persist.
+              const reflowedTiles = (serverDashboard?.dashboard_charts ?? []).filter((dc) => {
+                const page = (dc.layout as any)?.pageId ?? null;
+                return activePageId ? page === activePageId || page === null : true;
+              });
+              const geometryBefore: Record<number, Record<string, any>> = {};
+              for (const dc of reflowedTiles) {
+                const layout = (dc.layout ?? {}) as Record<string, any>;
+                if (typeof layout.x !== 'number' || typeof layout.y !== 'number') continue;
+                geometryBefore[dc.id] = {
+                  ...(localLayoutOverrides[dc.id] ?? {}),
+                  x: layout.x, y: layout.y, w: layout.w, h: layout.h,
+                  ...(layout.gv != null ? { gv: layout.gv } : {}),
+                };
+              }
+              pushUndo({ kind: 'layout', prev: geometryBefore, next: {} });
+              try {
+                await dashboardApi.relayoutToTemplate(Number(dashboardId), templateId, activePageId);
+                // Two things have to happen for the new shape to appear, and
+                // missing either one leaves a button that answers 200 and moves
+                // nothing until the page is reloaded.
+                //
+                // The server rewrote the geometry of every tile on this page, so
+                // any unsaved local move of one of those tiles is now a stale
+                // instruction that would be re-applied ON TOP of the new shape --
+                // `dashboardWithOverrides` merges local last. Drop the overrides
+                // for the re-flowed page only; a manual move on another page is
+                // still the user's unsaved work.
+                setLocalLayoutOverrides((previous) => {
+                  const tiles = serverDashboard?.dashboard_charts ?? [];
+                  const pageOf = new Map(tiles.map((dc) => [dc.id, (dc.layout as any)?.pageId ?? null]));
+                  // The server re-flows the tiles of ONE page, and falls back to
+                  // every tile when it can't tell them apart -- mirror both, or
+                  // the two disagree about which overrides are now stale.
+                  const scoped = activePageId && tiles.some((dc) => pageOf.get(dc.id) === activePageId);
+                  if (!scoped) return {};
+                  const kept: typeof previous = {};
+                  for (const [id, layout] of Object.entries(previous)) {
+                    if (pageOf.get(Number(id)) !== activePageId) kept[Number(id)] = layout;
+                  }
+                  return kept;
+                });
+                // ...and the refetch has to name the key the dashboard query is
+                // actually registered under. Everything else in this file uses
+                // the plural; the singular invalidated nothing.
+                await queryClient.invalidateQueries({ queryKey: ['dashboards', dashboardId] });
+                toast.success(t('dashboards.themeModal.relayoutDone'));
+              } catch {
+                toast.error(t('dashboards.themeModal.relayoutFailed'));
+              }
             }}
           />
         )}

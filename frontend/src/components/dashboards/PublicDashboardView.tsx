@@ -54,7 +54,8 @@ import {
   normalizeDashboardGridForRender,
   REPORT_STACK_BREAKPOINT,
 } from '@/lib/dashboard-pages';
-import { applyScopeBound, getColumnKey, getDistinctValueFilterContext, getFilterDisplayLabel, getFilterKey, type BaseFilter, type ColumnInfo } from '@/lib/filters';
+import { resolveStyleTokens } from '@/lib/dashboard-theme-tokens';
+import { applyScopeBound, dockLayoutClasses, getColumnKey, getDistinctValueFilterContext, getFilterDisplayLabel, getFilterKey, type BaseFilter, type ColumnInfo } from '@/lib/filters';
 import { usePublicFilterDistinctValues } from '@/hooks/use-public-filter-distinct-values';
 import { buildPublicLinkTheme } from '@/lib/public-link-appearance';
 import { buildPublicDashboardFilterRuntime } from '@/lib/public-dashboard-runtime';
@@ -1524,11 +1525,23 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
   const showPageTabs = appearance.show_page_tabs && dashboardPages.length > 1;
   const showFilterControls = viewerFiltersEnabled && availableFilterColumns.length > 0;
   const showLiveState = Boolean(pendingPageId || crossFilterState || chartLoadError || (chartsLoading && !isApplyingFilters));
-  // Phase-G — honor the slicer cluster's saved position on the public
-  // link. 'left' lays the cluster as a column beside the charts; 'top'
-  // (default) stacks it above. ('free' was removed → treated as top.)
-  const slicerClusterPositionLeft =
-    ((dashboard as any)?.slicer_cluster_layout?.position) === 'left';
+  // The saved dock, honoured on the public link exactly as in the builder.
+  //
+  // This used to be a boolean for 'left' only, duplicated from the builder's
+  // own branch — so widening the builder to six docks would have silently left
+  // the public report on two. Both now read `dockLayoutClasses`, and a rail is
+  // left OR right rather than a hard-coded side.
+  // Same resolution as the builder: author placement first, then the theme's
+  // composition default.
+  const slicerDock = String(
+    (dashboard as any)?.slicer_cluster_layout?.position
+    ?? resolveStyleTokens(((dashboard as any)?.theme_config ?? null) as any).filterDock,
+  );
+  const slicerClusterIsRail = slicerDock === 'left' || slicerDock === 'right';
+  const slicerDockClasses = dockLayoutClasses(slicerDock);
+  // 'hidden' keeps the filter VALUES (they are merged server-side) and drops
+  // only the UI — the case a locked public link is built for.
+  const slicerDockHidden = slicerDock === 'hidden';
 
   const handleApplyFilters = useCallback(() => {
     setIsApplyingFilters(true);
@@ -1648,7 +1661,7 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
   const slicerClusterNode = showFilterControls ? (
     <div className="[&>div]:mb-0">
       <SlicerCluster
-        children={[
+        items={[
           ...draftViewerFilters,
           ...(((dashboard as any)?.slicers_config || []).filter(
             (c: any) => c && typeof c === 'object' && c.type === 'image',
@@ -2110,7 +2123,7 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
     <ExportModeContext.Provider value={exportRenderMode || (printMode ? printRenderMode : false)}>
       <section
         ref={gridSectionRef}
-        className={`px-1 pb-1 pt-0 transition-opacity duration-200 sm:px-1.5 ${pendingPageId ? 'opacity-70' : 'opacity-100'} ${slicerClusterPositionLeft ? 'min-w-0 flex-1' : 'w-full'}`}
+        className={`px-1 pb-1 pt-0 transition-opacity duration-200 sm:px-1.5 ${pendingPageId ? 'opacity-70' : 'opacity-100'} ${slicerClusterIsRail ? 'min-w-0 flex-1' : 'w-full'}`}
       >
         {visibleDashboardCharts.length === 0 ? (
           <div className="flex h-64 items-center justify-center rounded-lg border-2 border-dashed border-[rgb(var(--border-line))] bg-surface-2">
@@ -2209,7 +2222,7 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
       <main ref={publicContentRef} className={isEmbed
         ? 'w-full min-w-0 flex flex-col gap-1 px-3 pt-3 pb-0 sm:px-4'
         : 'flex-1 min-w-0 overflow-hidden flex flex-col gap-1 px-3 pt-4 pb-0 sm:px-4 lg:px-6 lg:pt-5'}>
-        {slicerClusterPositionLeft ? (
+        {slicerClusterIsRail ? (
           /* ── LEFT app-shell ──────────────────────────────────────────────
              When the author placed the slicer cluster on the LEFT, the report
              becomes a 2-column shell: the brand mark + title sit ABOVE the
@@ -2342,7 +2355,7 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
               is true — otherwise it draws an empty divider + padding. Only render
               it for the top-mode slicers, live state, or the locked/override
               banners. */}
-          {((showFilterControls && !slicerClusterPositionLeft) || showLiveState || lockedBannerEntries.length > 0 || overridableFilterEntries.length > 0) && (
+          {((showFilterControls && !slicerClusterIsRail && !slicerDockHidden) || showLiveState || lockedBannerEntries.length > 0 || overridableFilterEntries.length > 0) && (
             <div className="mt-2 space-y-2 border-t border-[rgb(var(--border-line))] pt-2">
 
               {/* Phase-F THẬT (PBI-parity rework) — banner for locked
@@ -2471,7 +2484,7 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
               {/* Top mode renders the slicer cluster here (stacked
                   above charts). Left mode renders it BESIDE the grid in
                   the flex-row wrapper below instead. */}
-              {showFilterControls && !slicerClusterPositionLeft && slicerClusterNode}
+              {showFilterControls && !slicerClusterIsRail && !slicerDockHidden && slicerClusterNode}
 
               {showLiveState && (
                 <div className="flex flex-col gap-3">
@@ -2558,8 +2571,8 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
 
         {/* Only the chart region scrolls; the header above stays pinned. */}
         <div className={isEmbed ? 'pb-4' : 'min-h-0 flex-1 overflow-y-auto pb-4'}>
-        <div className={`mx-auto w-full ${slicerClusterPositionLeft ? 'flex flex-col gap-3 lg:flex-row lg:items-start' : ''}`}>
-        {slicerClusterPositionLeft && showFilterControls && (
+        <div className={`mx-auto w-full ${slicerClusterIsRail ? `flex flex-col gap-3 lg:items-start ${slicerDock === 'right' ? 'lg:flex-row-reverse' : 'lg:flex-row'}` : slicerDockClasses.wrapper}`}>
+        {slicerClusterIsRail && showFilterControls && !slicerDockHidden && (
           <div className="w-full flex-shrink-0 rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-2 shadow-linear-sm lg:sticky lg:top-3 lg:w-[280px]">
             {slicerClusterNode}
           </div>
@@ -2570,7 +2583,7 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
         <ExportModeContext.Provider value={exportRenderMode}>
         <section
           ref={gridSectionRef}
-          className={`px-1 pb-1 pt-0 transition-opacity duration-200 sm:px-1.5 ${pendingPageId ? 'opacity-70' : 'opacity-100'} ${slicerClusterPositionLeft ? 'min-w-0 flex-1' : 'w-full'}`}
+          className={`px-1 pb-1 pt-0 transition-opacity duration-200 sm:px-1.5 ${pendingPageId ? 'opacity-70' : 'opacity-100'} ${slicerClusterIsRail ? 'min-w-0 flex-1' : 'w-full'}`}
         >
           {visibleDashboardCharts.length === 0 ? (
             <div className="flex h-64 items-center justify-center rounded-lg border-2 border-dashed border-[rgb(var(--border-line))] bg-surface-2">

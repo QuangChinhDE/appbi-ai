@@ -186,12 +186,124 @@ export function isSlicerImageEntry(child: any): child is SlicerImageEntry {
 // Phase-G — cluster-level layout metadata. Stored on
 // `Dashboard.slicer_cluster_layout`. Undefined/null → use the default
 // auto-stacked top-bar layout (backward compat).
+/** The docks a slicer cluster can occupy. See `SlicerClusterLayout.position`. */
+export type DockPosition = 'top' | 'bottom' | 'left' | 'right' | 'drawer' | 'hidden';
+
+/** The docks offered in the UI, in the order they are shown. */
+export const DOCK_POSITIONS: DockPosition[] = ['top', 'bottom', 'left', 'right', 'drawer', 'hidden'];
+
+/**
+ * Flex classes that place the cluster relative to the chart grid.
+ *
+ * Returned from one place because the builder and the public viewer each had
+ * their own copy of this branch, and going from two docks to six would have
+ * meant maintaining the same six-way decision in two files (then a third for
+ * embed, a fourth for PDF). `wrapper` goes on the element containing both the
+ * cluster and the grid; `content` goes on the grid.
+ *
+ * DOM order stays cluster-then-grid so the filters are reachable first by
+ * keyboard and by a screen reader; `row-reverse` / `column-reverse` move them
+ * visually for the trailing docks without reordering the document.
+ */
+/**
+ * Where the filters should actually sit, given what there are and how much room.
+ *
+ * A template names a preferred dock, and until now that preference was obeyed
+ * literally: a report with one filter and a `left` template kept a rail beside
+ * the charts forever, and a report with none still reserved the band. Measured
+ * on a live console report: a top band 138px tall holding zero slicers, pushing
+ * the first chart 216px down the page.
+ *
+ * So the template's choice is a preference, and these are the cases where the
+ * content overrules it. Nothing is removed by any of this -- every slicer keeps
+ * its behaviour; only where the controls live changes.
+ */
+
+/** Below this a side rail leaves the charts less than two thirds of the page. */
+const RAIL_MIN_VIEWPORT = 1024;
+/** A rail earns its column only once there are enough controls to fill it. */
+const RAIL_MIN_SLICERS = 2;
+/** Past this, a flat row stops being scannable and wants a searchable panel. */
+const DRAWER_MIN_SLICERS = 9;
+
+export type DockDecision = {
+  dock: DockPosition;
+  /** Why it differs from the template's preference, for the author to see. */
+  reason?: 'no-filters' | 'too-few-for-a-rail' | 'too-many-for-a-band' | 'viewport-too-narrow';
+};
+
+export function resolveFilterDock({
+  preferred,
+  slicerCount,
+  viewportWidth,
+  canEdit,
+}: {
+  preferred?: string | null;
+  slicerCount: number;
+  viewportWidth: number;
+  /** An author needs somewhere to add the first slicer; a reader does not. */
+  canEdit: boolean;
+}): DockDecision {
+  const wanted = (DOCK_POSITIONS as readonly string[]).includes(String(preferred))
+    ? (preferred as DockPosition)
+    : 'top';
+
+  if (wanted === 'hidden') return { dock: 'hidden' };
+
+  // Nothing to show and nothing to add: the report starts at the top of the
+  // page, where it should.
+  if (slicerCount === 0 && !canEdit) return { dock: 'hidden', reason: 'no-filters' };
+
+  // Enough controls that a flat row stops being readable.
+  if (slicerCount >= DRAWER_MIN_SLICERS) return { dock: 'drawer', reason: 'too-many-for-a-band' };
+
+  const isRail = wanted === 'left' || wanted === 'right';
+  if (isRail) {
+    // A rail is a desktop arrangement. On a phone it would take the width the
+    // charts need, so the controls move behind a drawer instead of being
+    // squeezed into a row.
+    if (viewportWidth < RAIL_MIN_VIEWPORT) return { dock: 'drawer', reason: 'viewport-too-narrow' };
+    // One control does not justify a permanent column.
+    if (slicerCount < RAIL_MIN_SLICERS) return { dock: 'top', reason: 'too-few-for-a-rail' };
+  }
+
+  return { dock: wanted };
+}
+
+export function dockLayoutClasses(position?: string | null): { wrapper: string; content: string } {
+  switch (position) {
+    // Rails are a DESKTOP arrangement. Below `lg` a 280px column leaves a phone
+    // with barely half its width for the charts, so both rails stack into a
+    // band — the same rule the cluster's own CSS enforces on its width.
+    case 'left':   return { wrapper: 'flex flex-col lg:flex-row lg:items-stretch gap-3', content: 'min-w-0 lg:flex-1' };
+    case 'right':  return { wrapper: 'flex flex-col lg:flex-row-reverse lg:items-stretch gap-3', content: 'min-w-0 lg:flex-1' };
+    case 'bottom': return { wrapper: 'flex flex-col-reverse', content: 'min-w-0' };
+    // 'drawer' and 'hidden' take the cluster out of the flow entirely; the grid
+    // gets the full width and the cluster positions itself (or renders nothing).
+    case 'drawer':
+    case 'hidden': return { wrapper: '', content: 'min-w-0' };
+    default:       return { wrapper: '', content: '' };
+  }
+}
+
 export interface SlicerClusterLayout {
-  /** Where the cluster lives on the canvas.
-   *   'top'  — stacked above the chart grid (default)
-   *   'left' — vertical column to the left of the grid
-   *   'free' — author dragged/resized; uses x/y/w/h or pixel coords */
-  position?: 'top' | 'left' | 'free';
+  /** Where the cluster docks.
+   *
+   *   'top'    — a band above the chart grid (default)
+   *   'bottom' — a band below the grid
+   *   'left'   — a column to the left of the grid
+   *   'right'  — a column to the right of the grid
+   *   'drawer' — collapsed to a button; slides over the report when opened
+   *   'hidden' — no filter UI at all (values still apply; for links/embeds
+   *              that carry their own locked filters)
+   *   'free'   — retired. Free placement let authors scatter slicers across the
+   *              canvas and the reports stopped being readable, so it is coerced
+   *              to 'top' on read. The CLUSTER is the unit that moves, never the
+   *              individual slicer — that constraint is the whole design.
+   *
+   * Below the mobile breakpoint every dock collapses to 'drawer': a 280px side
+   * rail on a phone leaves nothing for the charts. */
+  position?: 'top' | 'bottom' | 'left' | 'right' | 'drawer' | 'hidden' | 'free';
   /** 12-col grid coords (used when dashboard.layout_mode === 'grid'). */
   x?: number;
   y?: number;

@@ -1,10 +1,8 @@
 """HTML dashboard import helpers.
 
-This service converts Claude-style HTML dashboard summaries into AppBI-native
-charts and dashboards. The import path is intentionally "chart first":
-deterministic parsing and validation define the available surface, while AI is
-used only to classify ambiguous HTML blocks and propose field mappings inside
-that surface.
+This service converts generated HTML reports into AppBI-native dashboards.
+Deterministic parsing and validation define the available surface; composition
+is resolved before charts and widgets are materialized inside that contract.
 """
 
 from __future__ import annotations
@@ -48,6 +46,8 @@ from app.services.dashboard_service import (
 )
 from app.services.dataset_crud import DatasetCRUDService
 from app.services.datasource_crud_service import DataSourceCRUDService
+from app.services.dashboard_import_skill import compare_source_contract_to_dataset
+from app.services.html_fragment_sanitizer import sanitize_html_fragment
 from app.services.llm_client import LLMClient
 
 logger = get_logger(__name__)
@@ -494,17 +494,24 @@ def _classify_block_role(block: Dict[str, Any]) -> str:
     if tag in {"h1", "h2", "h3"}:
         return "title"
 
-    searchable_text = " ".join(
+    # Keywords come from what the author NAMED the block, never from its prose.
+    # Searching the text let one word decide: a pull quote reading "Late orders
+    # average 4.1 days beyond estimate" was classified as a KPI and laid out in
+    # the metric strip.
+    named_text = " ".join(
         [
-            _normalize_text(block.get("heading")),
-            _normalize_text(block.get("text")),
             " ".join(str(item) for item in (block.get("classes") or [])),
             _normalize_text(block.get("id_attr")),
         ]
     ).lower()
-    if "kpi" in searchable_text or "metric" in searchable_text or "score" in searchable_text:
+    text = _normalize_text(block.get("text"))
+    # What a metric LOOKS like: a small box that is mostly a figure. It is the
+    # signal that survives generated HTML, which rarely has useful class names.
+    if 0 < len(text) <= 48 and len(re.findall(r"\d", text)) >= 2:
         return "kpi"
-    if _BLOCK_KEYWORD_RE.search(searchable_text):
+    if "kpi" in named_text or "metric" in named_text or "score" in named_text:
+        return "kpi"
+    if _BLOCK_KEYWORD_RE.search(named_text + " " + _normalize_text(block.get("heading")).lower()):
         return "chart"
     return "text"
 
@@ -1118,6 +1125,11 @@ def _build_document_summary(
                 "id_attr": _normalize_text(raw_block.get("id_attr"), max_len=120),
                 "style": _parse_style_map(raw_block.get("style")),
                 "table": raw_block.get("table") if isinstance(raw_block.get("table"), dict) else None,
+                # The block's appearance, frozen by the client with the
+                # stylesheet's computed values inlined. Sanitized here rather
+                # than at the point of use, so nothing downstream ever holds
+                # raw source markup.
+                "html": sanitize_html_fragment(str(raw_block.get("html") or ""))[0],
             }
         )
 
@@ -1134,6 +1146,7 @@ def _build_document_summary(
                 "id_attr": "",
                 "style": {},
                 "table": None,
+                "html": "",
             }
         )
 
@@ -1146,10 +1159,20 @@ def _build_document_summary(
     if not title:
         title = "Imported Dashboard"
 
+    # Labels of the source's own filter controls. A `<select>` is never a block
+    # -- no heading, no text, no visual -- so before this every imported report
+    # arrived with no slicers at all, however many filters the source had.
+    filter_controls = [
+        _normalize_text(item, max_len=60)
+        for item in (summary.get("filterControls") or summary.get("filter_controls") or [])
+        if _normalize_text(item, max_len=60)
+    ][:8]
+
     return {
         "title": title,
         "blocks": sorted(normalized_blocks, key=lambda item: (item.get("order", 0), item.get("id", ""))),
         "html_excerpt": _plain_html_excerpt(html_text),
+        "filter_controls": filter_controls,
     }
 
 
@@ -1314,6 +1337,54 @@ def _layout_dimensions(chart_type: str, size_hint: str) -> Tuple[int, int]:
     if size_hint == "third":
         return 4, 4
     return 6, 4
+
+
+def _normalize_declared_layout(raw_layout: Any) -> Optional[Dict[str, Any]]:
+    """Keep valid authored grid/canvas geometry without inventing coordinates.
+
+    A canvas tile may declare only ``xPx/yPx/wPx/hPx``. Treating that as a
+    malformed grid layout used to erase the pixel geometry before the builder
+    could persist it. Grid coordinates are therefore accepted as one complete
+    group, while canvas coordinates are copied independently.
+    """
+    if not isinstance(raw_layout, dict) or not raw_layout:
+        return None
+
+    normalized: Dict[str, Any] = {}
+    if all(key in raw_layout for key in ("x", "y", "w", "h")):
+        try:
+            x = int(raw_layout["x"])
+            y = int(raw_layout["y"])
+            w = max(1, min(12, int(raw_layout["w"])))
+            h = max(1, int(raw_layout["h"]))
+            if x >= 0 and y >= 0 and (x + w) <= 12:
+                normalized.update({"x": x, "y": y, "w": w, "h": h})
+        except (TypeError, ValueError):
+            pass
+
+    for key in ("xPx", "yPx", "wPx", "hPx"):
+        value = raw_layout.get(key)
+        if isinstance(value, bool) or value is None:
+            continue
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            continue
+        if key in {"xPx", "yPx"} and number < 0:
+            continue
+        if key in {"wPx", "hPx"} and number <= 0:
+            continue
+        normalized[key] = int(number) if number.is_integer() else number
+
+    z_value = raw_layout.get("z")
+    if not isinstance(z_value, bool) and z_value is not None:
+        try:
+            normalized["z"] = int(z_value)
+        except (TypeError, ValueError):
+            pass
+    if isinstance(raw_layout.get("styleConfigOverride"), dict):
+        normalized["styleConfigOverride"] = dict(raw_layout["styleConfigOverride"])
+    return normalized or None
 
 
 def _assign_layouts(plans: List[Dict[str, Any]]) -> None:
@@ -1609,13 +1680,52 @@ def _complete_json_with_import_provider(
     return LLMClient.complete_json(prompt, system=system_prompt, model=model, max_tokens=max_tokens)
 
 
+#: Words that appear in an expression without being a column: SQL functions,
+#: operators and literals. Everything else an expression names has to be a real
+#: column or the query will not run.
+_EXPRESSION_RESERVED = {
+    "abs", "and", "as", "avg", "between", "case", "cast", "ceil", "ceiling",
+    "coalesce", "count", "current_date", "date", "date_diff", "day", "else",
+    "end", "exp", "extract", "false", "floor", "greatest", "if", "ifnull", "in",
+    "is", "least", "ln", "log", "max", "min", "mod", "month", "not", "null",
+    "nullif", "or", "power", "round", "safe_cast", "safe_divide", "sqrt", "sum",
+    "then", "true", "trunc", "when", "year",
+}
+_EXPRESSION_IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+def _expression_unknown_columns(expression: str, known_columns: Set[str]) -> List[str]:
+    """Identifiers in an expression that are not columns and not SQL words."""
+    known_lower = {str(c).lower() for c in known_columns}
+    unknown: List[str] = []
+    for token in _EXPRESSION_IDENT_RE.findall(expression or ""):
+        lowered = token.lower()
+        if lowered in _EXPRESSION_RESERVED or lowered in known_lower:
+            continue
+        if token not in unknown:
+            unknown.append(token)
+    return unknown
+
+
 def _validate_calculated_fields(
     calculated_fields: List[Dict[str, Any]],
     source_columns: List[str],
+    warnings_out: Optional[List[str]] = None,
 ) -> List[Dict[str, Any]]:
-    """Validate AI-suggested calculated fields, keeping only safe ones."""
+    """Validate AI-suggested calculated fields, keeping only safe ones.
+
+    "Safe" has to include "references columns that exist". `all_known_columns`
+    was assembled here and then never consulted, so an expression naming
+    columns the source does not have -- `avg_delivery_days_current -
+    avg_delivery_days_previous`, invented wholesale from a KPI card that showed
+    a delta -- passed validation and was injected into the SELECT of EVERY
+    chart. One hallucinated column therefore failed all ten charts of an import
+    with `column "avg_delivery_days_current" does not exist`, and the Build
+    button stayed disabled with no way for the author to see why.
+    """
     from app.services.transformation_compiler import TransformationCompiler
 
+    notes = warnings_out if warnings_out is not None else []
     valid: List[Dict[str, Any]] = []
     seen_names: set = set()
     all_known_columns = set(source_columns)
@@ -1631,6 +1741,21 @@ def _validate_calculated_fields(
         is_valid, error = TransformationCompiler.validate_expression(expression)
         if not is_valid:
             logger.warning("Skipping calculated field '%s': %s", name, error)
+            notes.append(f"Calculated field '{name}' was dropped: {error}")
+            continue
+
+        # A field may reference the ones defined before it, so the known set
+        # grows as we go -- but only with fields that themselves resolved.
+        unknown = _expression_unknown_columns(expression, all_known_columns)
+        if unknown:
+            logger.warning(
+                "Skipping calculated field '%s': unknown column(s) %s", name, ", ".join(unknown)
+            )
+            notes.append(
+                f"Calculated field '{name}' was dropped: it refers to "
+                + ", ".join(f"'{c}'" for c in unknown[:4])
+                + ", which the source does not have."
+            )
             continue
 
         seen_names.add(name)
@@ -1643,6 +1768,35 @@ def _validate_calculated_fields(
         })
 
     return valid
+
+
+def _document_shape(
+    document_summary: Dict[str, Any],
+    candidates: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """The counts that decide what kind of report this is.
+
+    Handed to the model because it was choosing the layout family from the
+    document's language, where the answer is in its construction: a report with
+    three KPI cards, one chart and a detail table is a brief however its
+    headings are worded.
+    """
+    blocks = document_summary.get("blocks") or []
+    roles = [str(b.get("role") or "") for b in blocks]
+    prose = sum(
+        len(_normalize_text(b.get("text")))
+        for b in blocks
+        if str(b.get("role") or "") not in {"chart", "table", "kpi"}
+    )
+    return {
+        "kpi_blocks": roles.count("kpi"),
+        "chart_blocks": roles.count("chart"),
+        "table_blocks": roles.count("table"),
+        "heading_blocks": roles.count("title"),
+        "prose_characters": prose,
+        "filter_controls": len(document_summary.get("filter_controls") or []),
+        "chartable_blocks": len(candidates),
+    }
 
 
 def _ai_chart_plans(
@@ -1718,7 +1872,17 @@ def _ai_chart_plans(
 
     prompt = json.dumps(
         {
-            "task": "Map HTML dashboard blocks into AppBI-native chart plans. When the HTML references metrics that do not exist directly in the source columns, propose calculated_fields with SQL-safe expressions to derive them.",
+            "task": (
+                "Read this document as a COMPOSITION, then convert it. Work in three "
+                "passes and report all three. (1) REGIONS: name the areas the page is "
+                "actually built from. (2) BLOCKS: classify every block by what AppBI can "
+                "do with it, without deciding chart types yet. (3) CHARTS: only for the "
+                "blocks classified native_chart, produce the chart plan. Passes 1 and 2 "
+                "exist because a report IS its arrangement: converting chart-first "
+                "produced the same generic mosaic no matter what the source looked like. "
+                "When the HTML references metrics that are not in the source columns, "
+                "propose calculated_fields with SQL-safe expressions to derive them."
+            ),
             "supported_chart_types": sorted(_SUPPORTED_CHART_TYPES),
             "rules": [
                 "Stay inside the supported chart types list.",
@@ -1727,7 +1891,38 @@ def _ai_chart_plans(
                 "Calculated field expressions must be simple SQL-safe math: +, -, *, /, ROUND(), COALESCE(), IF(condition, true_val, false_val). No SELECT/FROM/JOIN.",
                 "Calculated field names must be valid SQL identifiers (no spaces, no special chars).",
                 "If the HTML implies a chart AppBI does not support, choose the closest supported chart type and explain it in conversion_note.",
-                "Skip narrative-only blocks by omitting them from charts.",
+                "Every block gets exactly one classification in block_plan. Nothing is "
+                "left out: a block you cannot use is classified, not omitted. Dropping "
+                "blocks silently is what made imported reports lose their structure.",
+                "classification meanings. native_chart = the block plots data AppBI can "
+                "query. native_widget = a heading, a callout, a lead paragraph, a hero "
+                "banner: structure a themeable widget can carry. slicer = a visible "
+                "filter control (dropdown, segmented control, date range) that filters "
+                "the rest of the page. html_fragment_preserved = visual richness with no "
+                "AppBI equivalent (a gauge or illustration drawn in SVG, an avatar row, a "
+                "progress rail, a styled badge grid); choose it ONLY when has_markup is "
+                "true and nothing native fits, because a fragment is frozen: it will not "
+                "follow the theme, translate, or respond to filters. "
+                "unsupported_interaction = the block IS an interaction (a tab strip, a "
+                "modal trigger, a live-refresh control, a drill-down); say what stops "
+                "working in degraded_note.",
+                "Choose layout_recipe BEFORE assigning any block to a region. The recipe "
+                "decides which regions exist; regions do not add up to a recipe.",
+                "Choose it from document_shape, not from the document's wording. The test "
+                "that separates the two commonest answers: a console carries a GRID of "
+                "charts (four or more); a brief carries one or two, with a detail table "
+                "under them. Long prose beats both -- that is editorial.",
+                "Set layout_recipe from how the document is BUILT, not its wording: "
+                "console = KPI strip over a chart grid with a filter bar; "
+                "brief = KPI strip plus one main chart and a detail table, read in a meeting; "
+                "ops = a dense table/chart grid monitored continuously; "
+                "editorial = long prose carrying a few wide visuals; "
+                "stage = a wall of big numbers meant to be read from a distance.",
+                "Region names to use: hero, kpi_strip, filter_rail, chart_mosaic, "
+                "insight_column, detail_band, footer. Name only the regions the document "
+                "actually has, in the order they appear.",
+                "slicer_fields: list ONLY columns that a visible filter/dropdown/segmented "
+                "control in the HTML is filtering by. Omit the key when there is no filter UI.",
                 "Prefer TABLE when confidence is low or when the block behaves like a wide data table.",
                 "KPI requires one numeric metric. TIME_SERIES requires one date field and one numeric metric. PIE requires one dimension and one numeric metric.",
                 "BAR_LINE requires one dimension plus one bar metric and one line metric.",
@@ -1738,23 +1933,66 @@ def _ai_chart_plans(
             "document_summary": {
                 "title": document_summary.get("title"),
                 "html_excerpt": document_summary.get("html_excerpt"),
+                "filter_controls": document_summary.get("filter_controls") or [],
                 "blocks": [
                     {
                         "id": block.get("id"),
                         "order": block.get("order"),
                         "role": block.get("role"),
                         "heading": block.get("heading"),
-                        "text": block.get("text"),
-                        "classes": block.get("classes"),
+                        "text": _normalize_text(block.get("text"), max_len=240),
+                        "classes": (block.get("classes") or [])[:8],
                         "style": block.get("style"),
                         "table": block.get("table"),
+                        # Whether this block's appearance was captured. Without
+                        # it html_fragment_preserved is not an option, and the
+                        # model has to find something native or say the block is
+                        # an interaction it cannot carry.
+                        "has_markup": bool(block.get("html")),
                     }
-                    for block in candidates[:16]
+                    # Composition needs the heading, note and control blocks too;
+                    # a candidates-only list made "classify every block"
+                    # impossible by construction.
+                    for block in (document_summary.get("blocks") or [])[:40]
                 ],
             },
+            # The same structural facts the fallback heuristic uses. Without
+            # them the model was choosing the family from the document's prose:
+            # a report with three KPI cards, ONE chart and a detail table -- the
+            # definition of a brief -- came back as "console", with reasoning
+            # that described a brief.
+            "document_shape": _document_shape(document_summary, candidates),
             "source_profile": source_section,
             "return_json_shape": {
                 "dashboard_title": "string",
+                # Pass 1. The composition, decided before any block is placed.
+                # This is the piece that was missing: the old shape asked only
+                # for charts, so the arrangement of the source was thrown away
+                # and every import came out looking the same.
+                "composition": {
+                    "layout_recipe": "console|brief|ops|editorial|stage",
+                    "reasoning": "what about the document's construction says this",
+                    "regions": [
+                        {
+                            "name": "hero|kpi_strip|filter_rail|chart_mosaic|insight_column|detail_band|footer",
+                            "block_ids": ["ids of the blocks that sit in this region, in order"],
+                        }
+                    ],
+                },
+                # Pass 2. EVERY block, classified. A block missing from this
+                # list is a block the import silently loses.
+                "block_plan": [
+                    {
+                        "block_id": "string",
+                        "classification": "native_chart|native_widget|slicer|html_fragment_preserved|unsupported_interaction",
+                        "widget_type": "section_header|callout|text|hero_strip | null (native_widget only)",
+                        "degraded_note": "string | null: what the source block did that the imported one will not",
+                    }
+                ],
+                # Columns any filter control in the source appears to drive, so
+                # an imported report keeps its filter UX instead of arriving
+                # with none.
+                "slicer_fields": ["source column name"],
                 "calculated_fields": [
                     {
                         "name": "ValidSQLIdentifier",
@@ -1792,12 +2030,17 @@ def _ai_chart_plans(
     )
 
     system_prompt = (
-        "You convert HTML dashboard summaries into AppBI-native chart plans. "
+        "You convert an HTML report into an AppBI dashboard. "
+        "Composition first: decide what kind of report this is and what regions it is "
+        "built from BEFORE you decide anything about individual charts, and classify "
+        "every block -- a block you cannot convert is reported with a reason, never "
+        "left out. "
         "When the raw data lacks a metric the HTML dashboard displays (like percentages, totals, differences, cumulative values), "
         "define it as a calculated_field with a SQL-safe expression before referencing it in charts. "
         "When the dataset has multiple tables, assign each chart to the most appropriate table via source_key. "
-        "Be conservative. Stay inside the supported chart types. "
-        "When the HTML is too rich for the native canvas, adapt it to the closest chart the system already supports."
+        "Be conservative. Stay inside the supported chart types. Prefer native widgets "
+        "for structure; preserve sanitized static markup only when no native surface can "
+        "carry the visual, and report unsupported interactions explicitly."
     )
 
     payload = _complete_json_with_import_provider(prompt, system_prompt=system_prompt, max_tokens=3000)
@@ -1825,9 +2068,11 @@ def _ai_chart_plans(
     raw_calc_fields = payload.get("calculated_fields") or []
     if not isinstance(raw_calc_fields, list):
         raw_calc_fields = []
-    validated_calc_fields = _validate_calculated_fields(raw_calc_fields, source_col_names)
-
-    return charts, validated_calc_fields, build_ai_assist_meta(
+    calc_field_warnings: List[str] = []
+    validated_calc_fields = _validate_calculated_fields(
+        raw_calc_fields, source_col_names, warnings_out=calc_field_warnings
+    )
+    ai_meta = build_ai_assist_meta(
         requested=True,
         applied=True,
         status="applied",
@@ -1835,6 +2080,69 @@ def _ai_chart_plans(
         model=settings.html_import_ai_model,
         message="AI refined HTML block classification, field mapping, and calculated fields inside the native dashboard/chart contract.",
     )
+    if calc_field_warnings:
+        # Set AFTER build_ai_assist_meta, which REPLACES ai_meta wholesale --
+        # writing this before it silently threw the warnings away.
+        ai_meta["calculated_field_warnings"] = calc_field_warnings[:6]
+    # Composition the model was asked for. Carried on ai_meta rather than as a
+    # fourth return value so every existing caller keeps working; the analyzer
+    # reads it back off the meta when it builds the dashboard contract.
+    composition = payload.get("composition") if isinstance(payload.get("composition"), dict) else {}
+    # `template_family` is the older key; the prompt now asks for it inside
+    # composition as `layout_recipe`, and imports made by a previous version of
+    # the prompt still round-trip through the old one.
+    family = (
+        _normalize_template_family(composition.get("layout_recipe"))
+        or _normalize_template_family(payload.get("template_family"))
+    )
+    if family:
+        ai_meta["template_family"] = family
+    if composition.get("reasoning"):
+        ai_meta["composition_reasoning"] = _normalize_text(composition.get("reasoning"), max_len=280)
+
+    # Region assignment: which blocks the model says belong together. The
+    # packer uses it to keep a source's grouping instead of re-deriving one
+    # from block kinds alone.
+    regions: List[Dict[str, Any]] = []
+    for entry in (composition.get("regions") or []):
+        if not isinstance(entry, dict):
+            continue
+        name = str(entry.get("name") or "").strip().lower()
+        block_ids = [str(b).strip() for b in (entry.get("block_ids") or []) if str(b).strip()]
+        if name and block_ids:
+            regions.append({"name": name, "block_ids": block_ids[:24]})
+    if regions:
+        ai_meta["regions"] = regions[:8]
+
+    # Pass 2: every block, classified. This is what stops a block from being
+    # dropped in silence -- anything the model could not use is still named,
+    # with a reason the author can read.
+    block_plan: List[Dict[str, Any]] = []
+    for entry in (payload.get("block_plan") or []):
+        if not isinstance(entry, dict):
+            continue
+        block_id = str(entry.get("block_id") or "").strip()
+        classification = str(entry.get("classification") or "").strip().lower()
+        if not block_id or classification not in _BLOCK_CLASSIFICATIONS:
+            continue
+        widget_type = str(entry.get("widget_type") or "").strip().lower()
+        block_plan.append({
+            "block_id": block_id,
+            "classification": classification,
+            "widget_type": widget_type if widget_type in _AI_WIDGET_TYPES else "",
+            "degraded_note": _normalize_text(entry.get("degraded_note"), max_len=200),
+        })
+    if block_plan:
+        ai_meta["block_plan"] = block_plan[:40]
+
+    slicer_fields = [
+        str(v).strip() for v in (payload.get("slicer_fields") or [])
+        if isinstance(v, (str, int, float)) and str(v).strip()
+    ]
+    if slicer_fields:
+        ai_meta["slicer_fields"] = slicer_fields[:8]
+
+    return charts, validated_calc_fields, ai_meta
 
 
 _APPBI_META_RE = re.compile(
@@ -1845,6 +2153,18 @@ _APPBI_META_RE = re.compile(
 _APPBI_SOURCE_PLACEHOLDER_RE = re.compile(
     r"\{\{\s*source\s*:\s*([^}]+?)\s*\}\}"
 )
+
+class SourceContractMismatch(ValueError):
+    """The file was written for data this dataset no longer has.
+
+    Raised rather than warned: the alternative is importing a dashboard whose
+    charts point at columns chosen by resemblance, which looks like it worked.
+    """
+
+    def __init__(self, findings: List[str]):
+        self.findings = list(findings)
+        super().__init__(" ".join(self.findings) or "Source contract does not match the selected dataset.")
+
 
 APPBI_IMPORT_PLAN_V1_VERSION = "appbi-import/v1"
 APPBI_IMPORT_PLAN_V2_VERSION = "appbi-import/v2"
@@ -2060,21 +2380,11 @@ def _finalize_plan_from_v1_metadata(
             filter_entry["value"] = flt.get("value")
         base_filters.append(filter_entry)
 
-    layout_raw = raw.get("layout") if isinstance(raw.get("layout"), dict) else {}
-    layout: Optional[Dict[str, int]] = None
-    try:
-        x = int(layout_raw.get("x"))
-        y = int(layout_raw.get("y"))
-        w = max(1, min(12, int(layout_raw.get("w"))))
-        h = max(1, int(layout_raw.get("h")))
-        if x >= 0 and y >= 0 and (x + w) <= 12:
-            layout = {"x": x, "y": y, "w": w, "h": h}
-    except (TypeError, ValueError):
-        layout = None
+    layout = _normalize_declared_layout(raw.get("layout"))
 
     size_hint = str(raw.get("size_hint") or "").lower()
     if size_hint not in {"full", "half", "third", "kpi"}:
-        if layout is not None:
+        if layout is not None and all(key in layout for key in ("x", "y", "w", "h")):
             lw = layout["w"]
             size_hint = (
                 "kpi" if final_chart_type == "KPI" and lw <= 3
@@ -2643,13 +2953,27 @@ def _analyze_from_embedded_metadata(
         finalized_plans.append(plan)
 
     finalized_plans.sort(key=lambda p: (p.get("order", 0), p.get("block_id", "")))
-    _assign_layouts(finalized_plans)
+    _legacy_contract = build_dashboard_contract(
+        document_summary=document_summary,
+        chart_plans=finalized_plans,
+        embedded=embedded,
+    )
+    _legacy_ignored = _candidate_blocks(document_summary)[1]
+    _legacy_block_warnings: List[str] = []
+    _legacy_widgets = widgets_from_blocks(
+        _legacy_ignored, document_summary, warnings_out=_legacy_block_warnings
+    )
+    _legacy_layout_warnings = compose_import_layout(
+        chart_plans=finalized_plans,
+        widgets=_legacy_widgets,
+        family=_legacy_contract["template_family"],
+    )
 
     title = _normalize_text(embedded.get("dashboard_title") or document_summary.get("title"), max_len=180) or "Imported Dashboard"
 
     _, ignored = _candidate_blocks(document_summary)
 
-    warnings: List[str] = []
+    warnings: List[str] = list(_legacy_layout_warnings) + _legacy_block_warnings
     if not finalized_plans:
         warnings.append("Embedded metadata contained no valid chart plans.")
     if any(p.get("changed_chart_type") for p in finalized_plans):
@@ -2665,6 +2989,8 @@ def _analyze_from_embedded_metadata(
         "derived_tables": [],
         "ignored_blocks": ignored,
         "warnings": warnings,
+        **_legacy_contract,
+        "widgets": _legacy_widgets,
         "ai_meta": build_ai_assist_meta(
             requested=False,
             applied=False,
@@ -2870,7 +3196,30 @@ def _analyze_from_v1_metadata(
             )
 
     finalized_plans.sort(key=lambda p: (p.get("order", 0), p.get("block_id", "")))
-    _assign_layouts(finalized_plans)
+
+    # v1 metadata may declare explicit grid coordinates. Those are the author's
+    # report and are never overwritten; anything they left unplaced is composed
+    # by the template's recipe around them.
+    _v1_contract = build_dashboard_contract(
+        document_summary=document_summary,
+        chart_plans=finalized_plans,
+        embedded=embedded,
+    )
+    _v1_ignored_preview, = (_candidate_blocks(document_summary)[1],)
+    _v1_block_warnings: List[str] = []
+    # A declared plan owns its non-chart tiles. Falling through to inference
+    # when the plan HAS widgets produced each heading twice -- once as declared
+    # and once re-derived from the markup -- and the re-derived copies landed on
+    # top of the charts.
+    _declared_widgets = widgets_from_plan(embedded.get("widgets"))
+    _v1_widgets = _declared_widgets or widgets_from_blocks(
+        _v1_ignored_preview, document_summary, warnings_out=_v1_block_warnings
+    )
+    _v1_layout_warnings = compose_import_layout(
+        chart_plans=finalized_plans,
+        widgets=_v1_widgets,
+        family=_v1_contract["template_family"],
+    )
 
     dash_title = (
         _normalize_text(dashboard_meta.get("title"), max_len=180)
@@ -2882,15 +3231,34 @@ def _analyze_from_v1_metadata(
 
     _, ignored = _candidate_blocks(document_summary)
 
-    # Phase 3: source contract validation (warn-only — does not block import).
-    contract_warnings = _compare_source_contract(
+    # Phase 3: the source contract.
+    #
+    # A file authored against the skill declares the dataset it was written for
+    # and the columns it uses. If those columns are gone, the honest answer is
+    # to stop: re-mapping a reference to whatever looks similar is exactly the
+    # guessing the declarative path exists to remove, and it silently produces a
+    # dashboard that reads the wrong numbers.
+    _contract_tables = [
+        {"display_name": key, "columns": profile.get("columns") or []}
+        for key, profile in (all_source_profiles or {}).items()
+    ] or [{
+        "display_name": str(source_profile.get("dataset_table_name") or ""),
+        "columns": source_profile.get("columns") or [],
+    }]
+    _contract_ok, _contract_findings = compare_source_contract_to_dataset(
+        source_contract=source_contract, tables=_contract_tables
+    )
+    if not _contract_ok:
+        raise SourceContractMismatch(_contract_findings)
+
+    contract_warnings = list(_contract_findings) + _compare_source_contract(
         source_contract=source_contract,
         source_profile=source_profile,
         all_source_profiles=all_source_profiles,
         derived_source_keys=[dt["source_key"] for dt in derived_tables],
     )
 
-    warnings: List[str] = []
+    warnings: List[str] = list(_v1_layout_warnings) + _v1_block_warnings
     warnings.extend(op_warnings)
     warnings.extend(contract_warnings)
     warnings.extend(field_resolution_warnings)
@@ -2935,6 +3303,28 @@ def _analyze_from_v1_metadata(
         "ignored_blocks": ignored,
         "warnings": warnings,
         "ai_meta": ai_meta,
+        # A round-trip must not redesign the author's report: anything the
+        # metadata declares is honoured verbatim here.
+        **_v1_contract,
+        "widgets": _v1_widgets,
+        # Declared filters. The v1 path never built slicers at all, so a plan
+        # that asked for `["order_status"]` imported with an empty filter bar
+        # reading "No slicers added" -- and a report without its filters is a
+        # screenshot. Names are still resolved against real columns: a declared
+        # slicer that matches no column is dropped rather than guessed at.
+        "slicers": slicers_from_source(
+            ai_slicer_fields=[
+                str(field).strip()
+                for field in (dashboard_meta.get("slicers") or [])
+                if str(field).strip()
+            ],
+            document_summary=document_summary,
+            source_profile=source_profile,
+            all_source_profiles=all_source_profiles,
+            # The plan said what the filters are. Harvesting more from the
+            # markup on top of that produced a slicer nobody asked for.
+            declared=True,
+        ),
     }
 
 
@@ -3026,6 +3416,1078 @@ def _build_table_id_map_from_dataset_tables(dataset_tables: Iterable[Any]) -> Di
 
 
 
+
+# Layout families the import can target. These mirror the FE layout templates
+# one-for-one; an import that picks a family is picking the same composition a
+# user would pick from the theme menu.
+# ── Layout recipes ──────────────────────────────────────────────────────────
+#
+# A template is not a palette and not a bag of tokens: it is a COMPOSITION. But
+# a composition is not a seating chart either.
+#
+# The first version of this sorted every block into a contiguous band by kind --
+# all the KPIs, then all the charts, then all the notes. That reads well on a
+# document that was already built that way and destroys every other one: the
+# three section headers of a five-section report ended up stacked on top of each
+# other at rows 0, 2 and 4, introducing nothing, and the KPI cards that opened
+# the source finished up below the charts they were meant to summarise.
+#
+# So the split is: the TEMPLATE owns shape, the DOCUMENT owns order.
+#
+#   * `lead` bands are hoisted above the body. Only the things that are a
+#     header by nature belong here -- a hero, a KPI strip. This is what makes a
+#     `stage` report open with a wall of numbers whatever order the source used.
+#   * `flow` gives each kind its shape -- how many sit across, how tall they are,
+#     whether they span the full width -- and the body is laid out in the
+#     source's own order using those shapes. A section header therefore still
+#     sits directly above the tiles it introduces.
+#
+# The grid is 12 columns wide and one unit of `h` is about 96 px tall.
+#
+# That number is not arbitrary and it is not 80: the runtime grid is 36 columns
+# (`GRID_FINER = 3` in `frontend/src/lib/dashboard-pages.ts`), and a layout
+# written in 12-column coordinates is upscaled x3 when it is read. So `h` here
+# buys three runtime rows, and `h: 10` renders as a 944 px tile -- which is how
+# a four-chart report came out five thousand pixels tall, mostly white.
+#
+# Measured on a live grid: rendered height = 96 * h - 16.
+#   h=1 ->  80px   a slim band
+#   h=2 -> 176px   a KPI card or a note
+#   h=4 -> 368px   a chart you can actually read
+#   h=7 -> 656px   an oversized, across-the-room visual
+#
+# Charts stay individually draggable afterwards: the recipe decides where things
+# START, not where they are locked.
+
+#: Grid width every recipe is expressed in.
+RECIPE_GRID_COLS = 12
+
+#: Every widget kind an import may persist. The runtime renderer must have a
+#: case for each one -- a kind that is not here is silently rewritten to
+#: "chart", which then renders as a load failure.
+#: Colorways the theme catalog offers. Kept beside the templates because the
+#: two travel together: a declared plan names one of each.
+IMPORT_COLORWAYS = {
+    "indigo", "emerald", "coral", "ocean", "amber", "slate", "midnight", "graphite",
+}
+
+IMPORT_WIDGET_TYPES = {
+    "chart",
+    "text",
+    "image",
+    "countdown",
+    "shape",
+    "parameter_switcher",
+    "section_header",
+    "callout",
+    "hero_strip",
+    "html_fragment",
+}
+
+#: `lead` band: kinds hoisted to the top, `cols` across, `h` tall, at most `max`.
+#: `flow`: per-kind shape for the body. `full` spans all 12 columns.
+LAYOUT_RECIPES: Dict[str, Dict[str, Any]] = {
+    # The default SaaS console: headline numbers under a filter bar, then the
+    # visuals that explain them, two across.
+    "console": {
+        "filter_dock": "top",
+        "lead": [
+            {"name": "hero", "kinds": ["hero_strip"], "cols": 1, "h": 3, "max": 1, "full": True},
+            {"name": "kpi_strip", "kinds": ["kpi"], "cols": 4, "h": 2, "max": 8},
+        ],
+        "flow": {
+            "section_header": {"cols": 1, "h": 1, "full": True},
+            "hero_strip": {"cols": 1, "h": 3, "full": True},
+            "kpi": {"cols": 4, "h": 2},
+            "chart": {"cols": 2, "h": 4},
+            "html_fragment": {"cols": 2, "h": 4},
+            "callout": {"cols": 2, "h": 2},
+            "text": {"cols": 2, "h": 2},
+            "table": {"cols": 1, "h": 5, "full": True},
+        },
+    },
+    # A board pack read in a meeting: filters out of the way in a left rail, a
+    # KPI row, then one chart at a time carrying the argument, then the detail
+    # people ask for.
+    "brief": {
+        "filter_dock": "left",
+        "lead": [
+            {"name": "kpi_row", "kinds": ["kpi"], "cols": 4, "h": 2, "max": 8},
+        ],
+        "flow": {
+            "section_header": {"cols": 1, "h": 1, "full": True},
+            "hero_strip": {"cols": 1, "h": 3, "full": True},
+            "kpi": {"cols": 4, "h": 2},
+            "chart": {"cols": 1, "h": 6, "full": True},
+            "html_fragment": {"cols": 1, "h": 5, "full": True},
+            "callout": {"cols": 1, "h": 2, "full": True},
+            "text": {"cols": 1, "h": 2, "full": True},
+            "table": {"cols": 1, "h": 6, "full": True},
+        },
+    },
+    # A wall display: maximum information per pixel, filters compact on a rail,
+    # everything packed three across.
+    "ops": {
+        "filter_dock": "left",
+        "lead": [
+            {"name": "status_row", "kinds": ["kpi"], "cols": 6, "h": 2, "max": 12},
+        ],
+        "flow": {
+            "section_header": {"cols": 1, "h": 1, "full": True},
+            "hero_strip": {"cols": 1, "h": 2, "full": True},
+            "kpi": {"cols": 6, "h": 2},
+            "chart": {"cols": 3, "h": 4},
+            "html_fragment": {"cols": 3, "h": 4},
+            "table": {"cols": 3, "h": 4},
+            "callout": {"cols": 3, "h": 2},
+            "text": {"cols": 3, "h": 2},
+        },
+    },
+    # An article: narrative sections and the wide visuals that illustrate them,
+    # read top to bottom in the order it was written.
+    "editorial": {
+        "filter_dock": "drawer",
+        "lead": [
+            {"name": "hero", "kinds": ["hero_strip"], "cols": 1, "h": 4, "max": 1, "full": True},
+            # A data story opens with its headline figures under the standfirst;
+            # left to flow inline they end up one per row, each a third of the
+            # width, with prose between them.
+            {"name": "figures", "kinds": ["kpi"], "cols": 3, "h": 2, "max": 6},
+        ],
+        "flow": {
+            "section_header": {"cols": 1, "h": 2, "full": True},
+            "hero_strip": {"cols": 1, "h": 4, "full": True},
+            "kpi": {"cols": 3, "h": 2},
+            "chart": {"cols": 1, "h": 5, "full": True},
+            "html_fragment": {"cols": 1, "h": 4, "full": True},
+            "callout": {"cols": 2, "h": 2},
+            "text": {"cols": 1, "h": 2, "full": True},
+            "table": {"cols": 1, "h": 5, "full": True},
+        },
+    },
+    # Read from across a room: a wall of big numbers, then a couple of
+    # oversized visuals. Nothing small, nothing dense.
+    "stage": {
+        "filter_dock": "top",
+        "lead": [
+            {"name": "hero", "kinds": ["hero_strip"], "cols": 1, "h": 4, "max": 1, "full": True},
+            {"name": "metric_wall", "kinds": ["kpi"], "cols": 3, "h": 4, "max": 9},
+        ],
+        "flow": {
+            "section_header": {"cols": 1, "h": 2, "full": True},
+            "hero_strip": {"cols": 1, "h": 4, "full": True},
+            "kpi": {"cols": 3, "h": 4},
+            "chart": {"cols": 1, "h": 7, "full": True},
+            "html_fragment": {"cols": 1, "h": 5, "full": True},
+            "callout": {"cols": 1, "h": 2, "full": True},
+            "text": {"cols": 1, "h": 2, "full": True},
+            "table": {"cols": 2, "h": 5},
+        },
+    },
+}
+
+#: Shape used for a kind no recipe mentions, so a new widget kind lands
+#: somewhere reasonable instead of nowhere.
+_FALLBACK_SHAPE = {"cols": 2, "h": 8}
+
+
+def _block_kind(item: Dict[str, Any]) -> str:
+    """Which recipe kind a planned block belongs to.
+
+    Charts declare a chart type; widgets declare a widget type. Both fold into
+    the one vocabulary the recipes speak, so a single packer can place them.
+    """
+    wt = str(item.get("widget_type") or "").strip().lower()
+    if wt and wt != "chart":
+        # A KPI card that could not be bound to a column is still a KPI card.
+        # Shaped as a plain callout it came out six columns wide and five rows
+        # tall -- four of them filling the top of the report as fat boxes, where
+        # the source had a tidy strip of four.
+        if wt in {"callout", "text", "html_fragment"} and str(item.get("_source_role") or "") == "kpi":
+            return "kpi"
+        known = {"section_header", "callout", "text", "hero_strip", "html_fragment"}
+        return wt if wt in known else "text"
+    ct = str(item.get("final_chart_type") or item.get("chart_type") or "").upper()
+    if ct == "KPI":
+        return "kpi"
+    if ct in {"TABLE", "MATRIX"}:
+        return "table"
+    return "chart"
+
+
+def apply_layout_recipe(items: List[Dict[str, Any]], family: str) -> List[str]:
+    """Place every block: template shapes, document order.
+
+    Charts and widgets go through ONE pass. They used to be packed separately --
+    `_assign_layouts` saw only the charts -- so every widget reached the builder
+    with no layout at all and the build defaulted it to x=0, y=0, stacking every
+    section header on top of each other and on top of the first chart.
+
+    Returns human-readable warnings; layouts are written onto the items in
+    place. Nothing is dropped.
+    """
+    recipe = LAYOUT_RECIPES.get(family) or LAYOUT_RECIPES["console"]
+    flow: Dict[str, Any] = recipe["flow"]
+    warnings: List[str] = []
+
+    # The source's own reading order. A report's structure IS its order, which
+    # is what keeps a section header attached to the charts it introduces.
+    ordered = sorted(items, key=lambda it: (int(it.get("order") or 0), str(it.get("block_id") or "")))
+
+    # Pass 1: hoist the header bands. A KPI strip is a header whatever position
+    # the source gave it, and interleaved KPIs read as scattered noise.
+    lead_bands: List[Tuple[Dict[str, Any], List[Dict[str, Any]]]] = []
+    hoisted: Set[int] = set()
+    for band in recipe.get("lead") or []:
+        members: List[Dict[str, Any]] = []
+        for item in ordered:
+            if id(item) in hoisted or len(members) >= int(band["max"]):
+                continue
+            if _block_kind(item) in band["kinds"]:
+                members.append(item)
+                hoisted.add(id(item))
+        if members:
+            lead_bands.append((band, members))
+
+    y = 0
+    for band, members in lead_bands:
+        cols = 1 if band.get("full") else max(1, int(band["cols"]))
+        span = RECIPE_GRID_COLS // cols
+        height = int(band["h"])
+        for index, item in enumerate(members):
+            column = index % cols
+            if column == 0 and index > 0:
+                y += height
+            item["layout"] = {"x": column * span, "y": y, "w": span, "h": height}
+            item["_region"] = band["name"]
+        y += height
+
+    # Pass 2: the body, in the source's order, wearing the template's shapes.
+    # `column` and `row_height` track the run being filled; a run ends when the
+    # shape changes, when the row is full, or at a full-width block.
+    column = 0
+    row_height = 0
+    current_shape: Optional[str] = None
+
+    for item in ordered:
+        if id(item) in hoisted:
+            continue
+        kind = _block_kind(item)
+        shape = flow.get(kind) or _FALLBACK_SHAPE
+        cols = 1 if shape.get("full") else max(1, int(shape["cols"]))
+        span = RECIPE_GRID_COLS // cols
+        height = int(shape["h"])
+        signature = f"{kind}:{cols}:{height}"
+
+        # A section header always opens a new row: it introduces what follows,
+        # so it must not share a line with the tail of what came before.
+        starts_row = (
+            kind == "section_header"
+            or current_shape != signature
+            or column + span > RECIPE_GRID_COLS
+        )
+        if starts_row and row_height:
+            y += row_height
+            column = 0
+            row_height = 0
+
+        item["layout"] = {"x": column, "y": y, "w": span, "h": height}
+        item["_region"] = kind
+        column += span
+        row_height = max(row_height, height)
+        current_shape = signature
+        if column >= RECIPE_GRID_COLS:
+            y += row_height
+            column = 0
+            row_height = 0
+            current_shape = None
+
+    if not flow:
+        warnings.append(f"The '{family}' layout defines no shapes; blocks were laid out at a default size.")
+    return warnings
+
+
+#: The layout templates, named EXACTLY as the frontend catalog names them
+#: (`frontend/src/lib/dashboard-theme-catalog.ts`). The id written into
+#: `theme_config.templateId` is looked up there by `expandThemeIdentity`, so a
+#: name that only exists on one side silently resolves to nothing and the
+#: imported report lands on stock defaults — which is what "presentation"
+#: (backend) vs "stage" (frontend) was doing to every AI-classified deck.
+IMPORT_TEMPLATE_FAMILIES = ("console", "brief", "ops", "editorial", "stage")
+
+#: Words the model (or a hand-written HTML) may reasonably use for a template.
+#: Accepting synonyms costs nothing; silently dropping a valid answer because it
+#: said "presentation" instead of "stage" costs the whole layout.
+_TEMPLATE_ALIASES = {
+    "presentation": "stage",
+    "deck": "stage",
+    "executive": "brief",
+    "executive_brief": "brief",
+    "executive-brief": "brief",
+    "operations": "ops",
+    "command_center": "ops",
+    "article": "editorial",
+    "report": "editorial",
+    "saas": "console",
+    "dashboard": "console",
+}
+
+#: Where each template puts the filters. Kept here rather than inferred so an
+#: imported report and a hand-themed one land on identical layouts.
+_FAMILY_DOCK = {
+    "console": "top",
+    "brief": "left",
+    "ops": "left",
+    "editorial": "drawer",
+    "stage": "top",
+}
+
+
+#: What the model may say about a block. Five outcomes, and every block gets
+#: exactly one -- the point is that "we could not use it" is a REPORTED outcome
+#: rather than an omission.
+_BLOCK_CLASSIFICATIONS = {
+    "native_chart",
+    "native_widget",
+    "slicer",
+    "html_fragment_preserved",
+    "unsupported_interaction",
+}
+
+#: Widget kinds the model is allowed to name for a native_widget block.
+_AI_WIDGET_TYPES = {"section_header", "callout", "text", "hero_strip"}
+
+
+def _normalize_template_family(value: Any) -> Optional[str]:
+    name = str(value or "").strip().lower().replace(" ", "_")
+    name = _TEMPLATE_ALIASES.get(name, name)
+    return name if name in IMPORT_TEMPLATE_FAMILIES else None
+
+
+def choose_template_family(document_summary: Dict[str, Any], chart_plans: List[Dict[str, Any]]) -> str:
+    """Pick the layout family a source HTML most resembles.
+
+    Deliberately structural, not lexical: it reads how the document is BUILT —
+    how many KPIs sit above the charts, whether there is a table-heavy grid,
+    whether the copy runs long — because that is what the family encodes. A
+    keyword match on the title would just be a different way of guessing.
+    """
+    kinds = [str(p.get("final_chart_type") or "").upper() for p in chart_plans]
+    # KPIs are counted from the DOCUMENT, not only from the charts.
+    #
+    # A KPI card the planner cannot bind becomes a widget, so it leaves
+    # `chart_plans` entirely -- and a brief is defined by having a KPI row, so a
+    # document with three headline figures and one main chart came out as a
+    # console the moment those figures stopped being charts. What the source has
+    # does not change because of what AppBI managed to do with it.
+    charted_ids = {str(p.get("block_id")) for p in chart_plans}
+    kpi_blocks = {
+        str(b.get("id"))
+        for b in (document_summary.get("blocks") or [])
+        if str(b.get("role") or "") == "kpi"
+    }
+    kpi_count = sum(1 for k in kinds if k == "KPI") + len(kpi_blocks - charted_ids)
+    table_count = sum(1 for k in kinds if k in {"TABLE", "MATRIX"})
+    chart_count = max(len(kinds) - kpi_count - table_count, 0)
+    prose = sum(
+        len(_normalize_text(b.get("text")))
+        for b in (document_summary.get("blocks") or [])
+        if str(b.get("role") or "") not in {"chart", "table", "kpi"}
+    )
+
+    # Long-form copy carrying a few visuals is an article, not a console.
+    if prose > 1200 and chart_count <= 4:
+        return "editorial"
+    # Tables dominating means someone is working a list, not reading a summary.
+    if table_count >= 2 and table_count >= chart_count:
+        return "ops"
+    # A dense grid with little narrative is an operations wall.
+    if chart_count + table_count >= 10 and prose < 400:
+        return "ops"
+    # A KPI strip WITH a table is a board pack -- someone will read the detail.
+    # Checked before "stage" because the table is the deciding signal: without
+    # it the same shape is a wall display, with it it is a summary.
+    #
+    # The chart count is part of the test, not decoration. A brief carries ONE
+    # chart making the argument; a console carries a grid of them. Without this
+    # clause a 4-KPI/4-chart/1-table SaaS console came out as a brief, which
+    # then packed its four charts into the recipe's single main_chart slot.
+    if kpi_count >= 3 and table_count >= 1 and chart_count <= 3:
+        return "brief"
+    # A handful of big numbers and one or two visuals reads from across a room.
+    if kpi_count >= 3 and chart_count <= 2:
+        return "stage"
+    return "console"
+
+
+def _detect_dark_mode(document_summary: Dict[str, Any]) -> bool:
+    """Does the source read as a dark report?
+
+    Only the coarse signal is used — an explicit dark background on a block or
+    the word in a class name. AppBI paints from its own colorways, so all this
+    decides is WHICH colorway, never a literal colour lifted from the HTML.
+    """
+    for block in (document_summary.get("blocks") or [])[:8]:
+        style = block.get("style") or {}
+        bg = str(style.get("background") or style.get("background-color") or "").strip().lower()
+        m = re.match(r"^#([0-9a-f]{6})$", bg)
+        if m:
+            r, g, b = (int(m.group(1)[i:i + 2], 16) for i in (0, 2, 4))
+            if (0.2126 * r + 0.7152 * g + 0.0722 * b) < 90:
+                return True
+        classes = " ".join(block.get("classes") or []).lower()
+        if "dark" in classes or "night" in classes:
+            return True
+    return False
+
+
+def _slicer_blocks(document_summary: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Blocks that look like filter controls in the source."""
+    out: List[Dict[str, Any]] = []
+    for block in document_summary.get("blocks") or []:
+        hay = " ".join([
+            _normalize_text(block.get("heading")),
+            " ".join(block.get("classes") or []),
+            _normalize_text(block.get("id_attr")),
+        ]).lower()
+        if _FILTERISH_RE.search(hay):
+            out.append(block)
+    return out
+
+
+_FILTERISH_RE = re.compile(
+    r"(filter|slicer|facet|segment|control|dropdown|select|date-?range|timeframe|"
+    r"period|toolbar|bo-?loc|khoang-?thoi-?gian)",
+    re.IGNORECASE,
+)
+
+
+
+
+# ── HTML fragment preservation ──────────────────────────────────────────────
+
+# The fragment sanitizer lives in its own module: the persistence layer needs
+# it too and cannot import this one back.
+#: Markup that carries meaning a heading or a paragraph cannot: a gauge drawn
+#: in SVG, an avatar row, a progress rail, an illustration.
+_FRAGMENT_RICH_RE = re.compile(r"<(svg|img|table|ul|ol|figure)\b", re.IGNORECASE)
+#: Below this the fragment is a wrapper around a sentence, and a text widget
+#: says the same thing while staying themeable, searchable and translatable.
+#:
+#: Two, not four. A KPI card is three elements -- a label, a figure, a delta --
+#: and at four they failed this test, had too little text to become a text
+#: widget, and were dropped with "held no content AppBI could carry". Two of a
+#: brief's three headline figures went that way while the third, which the model
+#: happened to classify, survived; the same document lost different blocks on
+#: different runs.
+_FRAGMENT_MIN_ELEMENTS = 2
+
+
+def _fragment_is_worth_preserving(fragment: str, text: str) -> bool:
+    """Whether a block earns an html_fragment rather than a native widget.
+
+    Preserving is not free: a fragment is inert markup frozen at import time.
+    It does not follow the dashboard theme, cannot be translated, and will not
+    reflow the way a native widget does. So it is the answer only when there is
+    something in the block that no native widget can express.
+    """
+    if not fragment:
+        return False
+    if _FRAGMENT_RICH_RE.search(fragment):
+        return True
+    element_count = fragment.count("<") - fragment.count("</")
+    if element_count < _FRAGMENT_MIN_ELEMENTS:
+        return False
+    # A wall of prose is prose, however many divs it is wrapped in.
+    return len(text) < 400
+
+
+def split_plans_by_classification(
+    chart_plans: List[Dict[str, Any]],
+    block_plan: Optional[List[Dict[str, Any]]],
+    block_roles: Optional[Dict[str, str]] = None,
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """Let the model's classification decide what a planned block becomes.
+
+    The classification used to be applied only to blocks the chart planner had
+    already given up on, which made it decorative: a block the model called a
+    heading or a preserved fragment still went through as a chart, because the
+    planner had produced SOMETHING for it.
+
+    That is how four KPI cards -- classified `native_widget`, and holding a
+    figure with no column behind it -- were laid out as four full-width detail
+    tables. The planner's fallback for "cannot bind this" is TABLE, and a table
+    is the widest, tallest tile there is, so an unbindable block became the most
+    prominent thing on the page.
+
+    Returns `(charts, reclassified_blocks)`. The reclassified entries keep
+    their block id so the widget builder can pick them up.
+    """
+    planned = {
+        str(entry.get("block_id")): entry
+        for entry in (block_plan or [])
+        if isinstance(entry, dict) and entry.get("block_id")
+    }
+    roles = {str(k): str(v) for k, v in (block_roles or {}).items()}
+
+    def _planner_gave_up(plan: Dict[str, Any]) -> bool:
+        """A KPI card rendered as a table is the planner admitting defeat.
+
+        TABLE is its fallback for "I cannot bind this", and a table is also the
+        widest, tallest tile in the grid -- so an unbindable block became the
+        most prominent thing on the page.
+
+        This check does not consult the model at all, and that is the point:
+        classification varies run to run, so the same document imported as four
+        tidy cards one time and four full-size tables the next.
+        """
+        return (
+            roles.get(str(plan.get("block_id"))) == "kpi"
+            and str(plan.get("final_chart_type") or "").upper() in {"TABLE", "MATRIX"}
+        )
+
+    if not planned:
+        forced = [p for p in chart_plans if _planner_gave_up(p)]
+        if not forced:
+            return chart_plans, []
+        kept = [p for p in chart_plans if p not in forced]
+        return kept, [{"block_id": p.get("block_id"), "entry": None, "plan": p} for p in forced]
+
+    charts: List[Dict[str, Any]] = []
+    reclassified: List[Dict[str, Any]] = []
+
+    for plan in chart_plans:
+        entry = planned.get(str(plan.get("block_id")))
+        classification = str((entry or {}).get("classification") or "")
+        if _planner_gave_up(plan):
+            reclassified.append({"block_id": plan.get("block_id"), "entry": entry, "plan": plan})
+            continue
+        if classification in {"", "native_chart", "slicer"}:
+            # `slicer` blocks stay in the chart list on purpose: the slicer
+            # itself is built from resolved COLUMNS, and dropping the chart
+            # would lose a real visual over a control we may not resolve.
+            charts.append(plan)
+            continue
+
+        # A chart the planner had to guess at is worth less than the model's
+        # read of the block; a chart it was confident about is worth more.
+        if float(plan.get("confidence") or 0) >= 0.75 and classification != "unsupported_interaction":
+            charts.append(plan)
+            continue
+
+        reclassified.append({"block_id": plan.get("block_id"), "entry": entry, "plan": plan})
+
+    return charts, reclassified
+
+
+def _section_header_config(heading: str, text: str) -> Dict[str, Any]:
+    """Title and, only when it says something else, a subtitle.
+
+    A block that IS a heading has the same string for both, and setting them
+    both rendered the section as "Revenue & fulfilment" with "REVENUE &
+    FULFILMENT" repeated underneath it in small caps.
+    """
+    title = heading or text[:80]
+    subtitle = text[:120] if heading else ""
+    if subtitle.strip().lower() == title.strip().lower():
+        subtitle = ""
+    return {"title": title, "subtitle": subtitle}
+
+
+def _widget_own_words(config: Any) -> str:
+    """The first thing a widget's config actually says, for use as its title."""
+    if not isinstance(config, dict):
+        return ""
+    for key in ("title", "headline", "text", "template", "subtitle", "subhead"):
+        value = config.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def widgets_from_plan(declared: Any) -> List[Dict[str, Any]]:
+    """Non-chart tiles the document DECLARED, in the shape the packer expects.
+
+    When a plan declares its widgets, they are the answer -- inference must not
+    run alongside them. Running both produced a document's headings twice: once
+    from the plan and once re-derived from the markup, landing a full-width
+    section header on top of the first KPI at (0, 0).
+
+    A declared widget with a declared layout keeps it exactly; one without gets
+    placed by the recipe like anything else.
+    """
+    out: List[Dict[str, Any]] = []
+    for index, raw in enumerate(declared or [], start=1):
+        if not isinstance(raw, dict):
+            continue
+        widget_type = str(raw.get("widget_type") or "").strip().lower()
+        if widget_type not in IMPORT_WIDGET_TYPES or widget_type == "chart":
+            continue
+        config = raw.get("widget_config")
+        entry: Dict[str, Any] = {
+            "block_id": str(raw.get("block_id") or f"widget-{index}"),
+            "order": int(raw.get("order") or index),
+            "widget_type": widget_type,
+            "widget_config": dict(config) if isinstance(config, dict) else {},
+            # The title names the TILE, in the preview and on the built
+            # dashboard. Falling straight to the kind produced a tile called
+            # "Callout" sitting above the sentence it was carrying, which tells
+            # a reader nothing they could not already see.
+            "title": _normalize_text(raw.get("title"), max_len=160)
+            or _normalize_text(_widget_own_words(config), max_len=160)
+            or widget_type.replace("_", " ").title(),
+            "size_hint": "full" if widget_type in {"section_header", "hero_strip"} else "half",
+        }
+        layout = _normalize_declared_layout(raw.get("layout"))
+        if layout:
+            entry["layout"] = layout
+        out.append(entry)
+    return out
+
+
+def widgets_from_blocks(
+    ignored_blocks: List[Dict[str, Any]],
+    document_summary: Dict[str, Any],
+    block_plan: Optional[List[Dict[str, Any]]] = None,
+    warnings_out: Optional[List[str]] = None,
+) -> List[Dict[str, Any]]:
+    """Turn the blocks a chart-first import throws away into real widgets.
+
+    A heading, a callout and a lead paragraph are what tell a reader how a
+    report is organised. Dropping them with "narrative block not converted"
+    kept the numbers and discarded the structure, which is most of why an
+    imported dashboard read as a bag of loose charts.
+
+    `block_plan` is the model's classification of every block. When it has an
+    opinion about a block, that opinion wins: it read the block's own markup and
+    can tell a status badge from a heading, which the class-name regexes below
+    cannot. The regexes remain as the answer for every block the model did not
+    reach -- and for imports running with AI assist off.
+
+    Preference order is native-first. A native widget follows the theme,
+    translates and reflows; a preserved fragment does none of those, so it is
+    the answer only when nothing native can carry the block. Nothing is dropped
+    in silence: blocks that yield no widget are appended to `warnings_out`.
+    """
+    by_id = {str(b.get("id")): b for b in (document_summary.get("blocks") or [])}
+    planned = {
+        str(entry.get("block_id")): entry
+        for entry in (block_plan or [])
+        if isinstance(entry, dict) and entry.get("block_id")
+    }
+    notes = warnings_out if warnings_out is not None else []
+    out: List[Dict[str, Any]] = []
+
+    for entry in ignored_blocks or []:
+        block = by_id.get(str(entry.get("block_id")))
+        if not block:
+            continue
+        heading = _normalize_text(block.get("heading"), max_len=120)
+        text = _normalize_text(block.get("text"), max_len=600)
+        tag = str(block.get("tag") or "").lower()
+        classes = " ".join(block.get("classes") or []).lower()
+        fragment = str(block.get("html") or "")
+        plan = planned.get(str(block.get("id"))) or {}
+        classification = str(plan.get("classification") or "")
+        degraded: List[str] = []
+        if plan.get("degraded_note"):
+            degraded.append(str(plan["degraded_note"]))
+
+        widget_type = ""
+        widget_config: Dict[str, Any] = {}
+
+        if classification == "unsupported_interaction":
+            # Named, not converted. The report is honest about the hole instead
+            # of quietly rendering one block fewer than the source had.
+            label = heading or text[:60] or str(block.get("id"))
+            note = plan.get("degraded_note") or "the interaction it provided does not exist in AppBI"
+            notes.append(f"Block '{label}' was not imported: {note}.")
+            continue
+
+        if classification == "html_fragment_preserved" and fragment:
+            widget_type = "html_fragment"
+            widget_config = {"html": fragment}
+        elif classification == "native_widget" and plan.get("widget_type"):
+            widget_type = str(plan["widget_type"])
+            # A KPI card the planner could not bind is the case the preserved
+            # fragment exists for: AppBI has no live figure to draw, and the
+            # source has a finished one -- a small caps label, a 27px number, a
+            # coloured delta. Demoted to a callout it rendered as a single line
+            # of 11px grey text in a 160px box, which is a worse answer than the
+            # source's own design.
+            if (
+                widget_type in {"callout", "text"}
+                and str(block.get("role") or "") in {"kpi", "chart"}
+                and fragment
+            ):
+                widget_type = "html_fragment"
+            if widget_type == "section_header":
+                widget_config = _section_header_config(heading, text)
+            elif widget_type == "callout":
+                widget_config = {"text": text or heading, "tone": "accent"}
+            elif widget_type == "hero_strip":
+                widget_config = {"headline": heading or text[:60], "subhead": text[:140] if heading else ""}
+            elif widget_type == "html_fragment":
+                widget_config = {"html": fragment}
+            else:
+                # Anything this chain has no branch for is copy. The branch
+                # above is not optional: without it the html_fragment chosen a
+                # few lines earlier fell through to here and was rewritten back
+                # to text, so the preserved-card path looked wired up and never
+                # once produced a fragment.
+                widget_type = "text"
+                widget_config = {"template": text or heading}
+
+        if not widget_type:
+            # No usable opinion from the model: fall back to structure.
+            if tag in {"h1", "h2", "h3"} or heading:
+                widget_type = "section_header"
+                widget_config = _section_header_config(heading, text)
+            elif re.search(r"(callout|note|alert|tip|warning|insight)", classes):
+                widget_type = "callout"
+                widget_config = {"text": text, "tone": "accent"}
+            elif _fragment_is_worth_preserving(fragment, text):
+                widget_type = "html_fragment"
+                widget_config = {"html": fragment}
+            elif len(text) >= 40:
+                widget_type = "text"
+                widget_config = {"template": text}
+            else:
+                label = heading or text[:60] or str(block.get("id"))
+                notes.append(f"Block '{label}' held no content AppBI could carry and was skipped.")
+                continue
+
+        if widget_type in {"callout", "text", "hero_strip"} and str(block.get("role") or "") in {"kpi", "chart"}:
+            # The block showed a NUMBER. Carrying it as copy keeps the report
+            # looking like its source, but the figure is now a quotation, not a
+            # measurement, and a reader has no other way to tell.
+            degraded.append(
+                "The figures in this block are copied from the source document. They do not "
+                "refresh and they ignore the dashboard's filters."
+            )
+
+        if widget_type == "html_fragment":
+            # Said plainly so an author knows what to rebuild natively if the
+            # frozen copy is not good enough.
+            degraded.append(
+                "Preserved as static markup: any hover, tooltip or click behaviour in "
+                "the original block no longer runs, and it will not follow the dashboard "
+                "theme or respond to filters."
+            )
+            widget_config["degraded"] = degraded
+        elif degraded:
+            widget_config["degraded"] = degraded
+
+        out.append({
+            "block_id": block.get("id"),
+            "order": block.get("order", 0),
+            # What the block WAS in the source, kept so the packer can give a
+            # demoted KPI card the shape of a KPI rather than of a note.
+            "_source_role": str(block.get("role") or ""),
+            "widget_type": widget_type,
+            "widget_config": widget_config,
+            "title": heading or widget_type.replace("_", " ").title(),
+            # A header spans the row it introduces; a note is half width.
+            "size_hint": "full" if widget_type in {"section_header", "hero_strip"} else "half",
+        })
+    return out
+
+
+
+def slicers_from_source(
+    *,
+    ai_slicer_fields: List[str],
+    document_summary: Dict[str, Any],
+    source_profile: Dict[str, Any],
+    all_source_profiles: Optional[Dict[str, Dict[str, Any]]] = None,
+    declared: bool = False,
+) -> List[Dict[str, Any]]:
+    """Recreate the source's filter controls as real slicer entries.
+
+    A report without its filters is a screenshot.
+
+    Two things this gets wrong if you let it. The first is scope: a dataset has
+    many tables, and resolving only against the PRIMARY one silently dropped
+    every declared filter that lived elsewhere -- a plan asking to filter by
+    `payment_type` (Order Payments) or `review_score` (Order Reviews) built a
+    dashboard with an empty filter bar and no explanation.
+
+    The second is invention. Candidate names are harvested from filter-ish
+    blocks as well, which is a reasonable guess for a document that declared
+    nothing -- but applied to a plan that DID declare its filters it produced a
+    slicer nobody asked for: a report declaring `seller_state` came out
+    filtering by `order_status`. So `declared` turns the guessing off.
+    """
+    # Every column the dataset offers, not just the primary table's. A declared
+    # filter names a real column; which table holds it is not the author's
+    # problem.
+    columns: List[Dict[str, Any]] = list(source_profile.get("columns") or [])
+    seen_names = {str(c.get("name") or "") for c in columns}
+    for profile in (all_source_profiles or {}).values():
+        for column in (profile.get("columns") or []):
+            name = str(column.get("name") or "")
+            if name and name not in seen_names:
+                seen_names.add(name)
+                columns.append(column)
+    if not columns:
+        return []
+
+    # The controls the source actually rendered come first: they are evidence,
+    # where a filter-ish BLOCK is an inference and the model's list is a guess.
+    candidates: List[str] = list(ai_slicer_fields or [])
+    if not declared:
+        candidates.extend(document_summary.get("filter_controls") or [])
+        for block in _slicer_blocks(document_summary):
+            for part in (block.get("heading"), block.get("text")):
+                label = _normalize_text(part, max_len=60)
+                if label:
+                    candidates.append(label)
+
+    seen: Set[str] = set()
+    out: List[Dict[str, Any]] = []
+    for raw in candidates:
+        matched = _resolve_column_name(raw, _build_column_alias_map(columns)) or _best_field_match(raw, columns)
+        if not matched or matched in seen:
+            continue
+        # An identifier makes a useless slicer: thousands of distinct values and
+        # no meaning to a reader.
+        if _is_identifier_like_column(matched):
+            continue
+        seen.add(matched)
+        col_type = next((str(c.get("type") or "") for c in columns if c.get("name") == matched), "")
+        out.append({
+            "id": f"slicer-{len(out) + 1}",
+            "field": matched,
+            "label": matched,
+            "type": "date" if _is_date_type(col_type) else "number" if _is_number_type(col_type) else "dropdown",
+            "operator": "date_between" if _is_date_type(col_type) else "in",
+            "value": None if _is_date_type(col_type) else [],
+            "scope": "all",
+        })
+        if len(out) >= 4:  # a filter bar past four controls stops being scannable
+            break
+    return out
+
+
+def build_dashboard_contract(
+    *,
+    document_summary: Dict[str, Any],
+    chart_plans: List[Dict[str, Any]],
+    embedded: Optional[Dict[str, Any]] = None,
+    ai_family: Optional[str] = None,
+) -> Dict[str, Any]:
+    """The dashboard-level half of an import.
+
+    Charts alone do not make a report: what makes one recognisable is where the
+    filters sit, how the sections are grouped, and which look it wears. When the
+    source declares those (AppBI metadata) they are honoured verbatim — a
+    round-trip must not redesign the author's report. When it does not, they are
+    DERIVED from the document's structure and expressed in AppBI's own token
+    vocabulary, never as CSS lifted from the page.
+    """
+    dash_meta = (embedded or {}).get("dashboard") if isinstance((embedded or {}).get("dashboard"), dict) else {}
+
+    declared_theme = None
+    for source in (embedded or {}, dash_meta):
+        candidate = source.get("theme_config") if isinstance(source, dict) else None
+        if isinstance(candidate, dict) and candidate:
+            declared_theme = candidate
+            break
+
+    declared_dock = None
+    for source in (embedded or {}, dash_meta):
+        candidate = source.get("slicer_cluster_layout") if isinstance(source, dict) else None
+        if isinstance(candidate, dict) and candidate:
+            declared_dock = candidate
+            break
+
+    # Declared metadata first, then the model's read of the document, then the
+    # structural heuristic. The model sees the source's own language — headings,
+    # captions, how it addresses its reader — which the heuristic cannot.
+    family = (
+        _normalize_template_family((embedded or {}).get("template_family"))
+        or _normalize_template_family(dash_meta.get("template_family"))
+        or _normalize_template_family(ai_family)
+        or choose_template_family(document_summary, chart_plans)
+    )
+
+    if declared_theme is not None:
+        theme_config = dict(declared_theme)
+    else:
+        # Expressed as an identity, not a pile of tokens: the FE resolves
+        # templateId/colorwayId through the same catalog the theme menu uses, so
+        # an imported report is indistinguishable from one themed by hand.
+        # A declared colorway is a choice; the dark-mode sniff is a guess for
+        # documents that made none. Ignoring the choice meant a plan asking for
+        # `ocean` imported as `indigo`, with nothing to say why.
+        declared_colorway = _normalize_identifier(
+            (embedded or {}).get("colorway") or dash_meta.get("colorway")
+        )
+        theme_config = {
+            "templateId": family,
+            "colorwayId": (
+                declared_colorway
+                if declared_colorway in IMPORT_COLORWAYS
+                else ("graphite" if _detect_dark_mode(document_summary) else "indigo")
+            ),
+        }
+
+    if declared_dock is not None:
+        slicer_cluster_layout = dict(declared_dock)
+    else:
+        dock = _FAMILY_DOCK.get(family, "top")
+        slicer_cluster_layout = {
+            "position": dock,
+            "direction": "vertical" if dock in {"left", "right", "drawer"} else "horizontal",
+        }
+
+    layout_mode = str((embedded or {}).get("layout_mode") or dash_meta.get("layout_mode") or "grid").strip().lower()
+    if layout_mode not in {"grid", "canvas"}:
+        layout_mode = "grid"
+    canvas_config = (embedded or {}).get("canvas_config") or dash_meta.get("canvas_config")
+
+    return {
+        "theme_config": theme_config,
+        "layout_mode": layout_mode,
+        "canvas_config": canvas_config if isinstance(canvas_config, dict) else None,
+        "slicer_cluster_layout": slicer_cluster_layout,
+        "template_family": family,
+    }
+
+
+
+def _grid_rect(item: Dict[str, Any]) -> Optional[Dict[str, int]]:
+    layout = item.get("layout")
+    if not isinstance(layout, dict) or not all(key in layout for key in ("x", "y", "w", "h")):
+        return None
+    try:
+        rect = {key: int(layout[key]) for key in ("x", "y", "w", "h")}
+    except (TypeError, ValueError):
+        return None
+    if (
+        rect["x"] < 0
+        or rect["y"] < 0
+        or rect["w"] <= 0
+        or rect["h"] <= 0
+        or rect["x"] + rect["w"] > RECIPE_GRID_COLS
+    ):
+        return None
+    return rect
+
+
+def _rects_overlap(a: Dict[str, int], b: Dict[str, int]) -> bool:
+    return (
+        a["x"] < b["x"] + b["w"]
+        and b["x"] < a["x"] + a["w"]
+        and a["y"] < b["y"] + b["h"]
+        and b["y"] < a["y"] + a["h"]
+    )
+
+
+def _place_generated_layouts_around_authored(
+    authored: List[Dict[str, Any]],
+    generated: List[Dict[str, Any]],
+) -> List[str]:
+    """Keep recipe shapes while moving generated tiles out of authored space."""
+    warnings: List[str] = []
+    occupied: List[Tuple[str, Dict[str, int]]] = []
+    for item in authored:
+        rect = _grid_rect(item)
+        if rect is None:
+            # Canvas-only geometry is valid and must remain untouched. It does
+            # not participate in the grid collision pass.
+            continue
+        block_id = str(item.get("block_id") or "authored tile")
+        collisions = [other_id for other_id, other in occupied if _rects_overlap(rect, other)]
+        if collisions:
+            warnings.append(
+                f"Authored tile '{block_id}' overlaps {', '.join(collisions)}; "
+                "the declared coordinates were preserved."
+            )
+        occupied.append((block_id, rect))
+
+    moved = 0
+    ordered = sorted(
+        generated,
+        key=lambda item: (
+            (_grid_rect(item) or {}).get("y", 0),
+            (_grid_rect(item) or {}).get("x", 0),
+            int(item.get("order") or 0),
+        ),
+    )
+    for item in ordered:
+        desired = _grid_rect(item)
+        if desired is None:
+            continue
+        preferred_x = desired["x"]
+        x_candidates = [preferred_x] + [
+            x for x in range(0, RECIPE_GRID_COLS - desired["w"] + 1)
+            if x != preferred_x
+        ]
+        y = desired["y"]
+        while True:
+            placed: Optional[Dict[str, int]] = None
+            for x in x_candidates:
+                candidate = {**desired, "x": x, "y": y}
+                if not any(_rects_overlap(candidate, rect) for _, rect in occupied):
+                    placed = candidate
+                    break
+            if placed is not None:
+                break
+            y += 1
+
+        if placed["x"] != desired["x"] or placed["y"] != desired["y"]:
+            moved += 1
+        item["layout"] = {**dict(item.get("layout") or {}), **placed}
+        occupied.append((str(item.get("block_id") or "generated tile"), placed))
+
+    if moved:
+        warnings.append(f"Moved {moved} generated tile(s) to avoid authored layout coordinates.")
+    return warnings
+
+
+def compose_import_layout(
+    *,
+    chart_plans: List[Dict[str, Any]],
+    widgets: List[Dict[str, Any]],
+    family: str,
+) -> List[str]:
+    """Lay out an imported report through its template's recipe.
+
+    Replaces the old `_assign_layouts` path for import. That one packed blocks
+    into a 12-column grid purely by a per-block "size hint", which is why every
+    imported report came out as the same undifferentiated mosaic however the
+    source was built -- the hint described one tile, and nothing described the
+    REPORT. A recipe does: named regions, in order, each with a shape.
+
+    Three rules the packer keeps:
+
+    * A layout DECLARED by the source (AppBI metadata) is never overwritten. A
+      round-trip must reproduce the author's report, not redesign it.
+    * Charts and widgets are packed TOGETHER. Packing them separately is what
+      left every widget at x=0,y=0, stacking each section header on top of the
+      first chart.
+    * The source's own order governs the body. The recipe supplies the SHAPE
+      of each kind and hoists the header bands; it does not re-sort the report.
+      An earlier version sorted every block into a band by kind, which stacked
+      a report's three section headers on top of one another at the very top,
+      introducing nothing.
+    """
+    # Declared-ness is a property of a TILE, not of charts. Splitting only the
+    # charts meant a declared widget layout was handed to the recipe and
+    # overwritten: a plan that put its section header at y=2 got it packed to
+    # y=0, on top of the first KPI.
+    everything = list(chart_plans) + list(widgets)
+    declared = [it for it in everything if isinstance(it.get("layout"), dict) and it["layout"]]
+    free = [it for it in everything if not (isinstance(it.get("layout"), dict) and it["layout"])]
+
+    warnings = apply_layout_recipe(free, family)
+
+    if declared and free:
+        warnings.extend(_place_generated_layouts_around_authored(declared, free))
+    return warnings
+
+
 def analyze_dashboard_html_import(
     *,
     html_text: str,
@@ -3108,14 +4570,77 @@ def analyze_dashboard_html_import(
 
     finalized_plans = [plan for plan in finalized_plans if plan.get("source_fields_used") or plan.get("final_chart_type") == "TABLE"]
     finalized_plans.sort(key=lambda item: (item.get("order", 0), item.get("block_id", "")))
-    _assign_layouts(finalized_plans)
 
-    warnings: List[str] = []
+    # Classify, THEN compose, THEN place. Each step's input is the previous
+    # step's output:
+    #
+    #   1. classification decides which blocks are charts at all,
+    #   2. the surviving chart mix decides the template family,
+    #   3. the family's recipe decides where everything goes.
+    #
+    # Getting this order wrong is not cosmetic. Computing the family first --
+    # as this did -- meant counting four unbindable KPI cards as four TABLEs,
+    # and a table-heavy count picks a table-heavy template for a document that
+    # has one table in it.
+    block_warnings: List[str] = []
+    finalized_plans, reclassified = split_plans_by_classification(
+        finalized_plans,
+        (ai_meta or {}).get("block_plan"),
+        block_roles={
+            str(b.get("id")): str(b.get("role") or "")
+            for b in (document_summary.get("blocks") or [])
+        },
+    )
+
+    contract = build_dashboard_contract(
+        document_summary=document_summary,
+        chart_plans=finalized_plans,
+        embedded=None,
+        ai_family=(ai_meta or {}).get("template_family"),
+    )
+
+    # A candidate the planner never returned a plan for is the third way a
+    # block can disappear, and it was the quietest: it is not in `ignored`
+    # (the analyzer thought it WAS chartable) and it is not in the plans (the
+    # model skipped it), so nothing downstream ever saw it again. Two of a
+    # brief's three headline figures went missing exactly this way.
+    planned_ids = {str(p.get("block_id")) for p in finalized_plans}
+    planned_ids.update(str(item["block_id"]) for item in reclassified)
+    unplanned = [
+        {"block_id": block.get("id")}
+        for block in candidates
+        if str(block.get("id")) not in planned_ids
+    ]
+
+    widgets = widgets_from_blocks(
+        ignored + unplanned + [{"block_id": item["block_id"]} for item in reclassified],
+        document_summary,
+        block_plan=(ai_meta or {}).get("block_plan"),
+        warnings_out=block_warnings,
+    )
+    if reclassified:
+        block_warnings.append(
+            f"{len(reclassified)} block(s) the chart planner could not bind to data were kept "
+            "as their own kind of content instead of being forced into a table. Figures shown "
+            "in them come from the source document and do not refresh."
+        )
+    layout_warnings = compose_import_layout(
+        chart_plans=finalized_plans,
+        widgets=widgets,
+        family=contract["template_family"],
+    )
+
+    warnings: List[str] = list(layout_warnings) + block_warnings
+    warnings.extend((ai_meta or {}).get("calculated_field_warnings") or [])
     if not finalized_plans:
         warnings.append("No chart plans could be validated from the imported HTML and selected source.")
     if any(plan.get("changed_chart_type") for plan in finalized_plans):
         warnings.append("One or more HTML visuals were adapted to the closest supported AppBI chart type.")
-    warnings.append("Narrative HTML blocks are ignored in this MVP; the import focuses on chart tiles and layout.")
+    if widgets:
+        warnings.append(
+            f"Recovered {len(widgets)} non-chart block(s) — section headings, notes and copy — "
+            f"as widgets, laid out with the '{contract['template_family']}' template."
+        )
 
     return {
         "suggested_dashboard_name": _normalize_text(document_summary.get("title"), max_len=180) or "Imported Dashboard",
@@ -3127,6 +4652,19 @@ def analyze_dashboard_html_import(
         "ignored_blocks": ignored,
         "warnings": warnings,
         "ai_meta": ai_meta,
+        # The composition derived above: which template, where the filters live,
+        # what the non-chart blocks became. Without it an import produced charts
+        # and nothing else — no filter placement, no density, no hierarchy.
+        **contract,
+        "widgets": widgets,
+        "slicers": slicers_from_source(
+            ai_slicer_fields=(ai_meta or {}).get("slicer_fields") or [],
+            document_summary=document_summary,
+            source_profile=source_profile,
+            # A filter column can live in any table of the dataset, not only
+            # the one the primary chart happens to read from.
+            all_source_profiles=all_source_profiles,
+        ),
     }
 
 
@@ -3762,8 +5300,21 @@ def build_dashboard_from_import(
     # with widget_type + widget_config set, chart_id=NULL. The migration
     # 20260501_0001 made dashboard_charts.chart_id nullable for exactly this case.
     def _plan_widget_type(plan: Dict[str, Any]) -> str:
+        """The widget kind this plan builds, or "chart".
+
+        Unknown kinds fall back to "chart", and that fallback is a trap worth
+        naming: a `section_header` missing from this set was persisted as a
+        chart with `chart_id = NULL`, so the renderer went looking for a chart
+        that was never there and the tile read "Failed to load chart" -- three
+        of them across the top of an imported report, with the correct
+        `widget_config` sitting right there in the row.
+
+        So this set is not a nicety. Any widget kind the importer can EMIT has
+        to be listed here, and `frontend/scripts/check-theme-presets.mjs` fails
+        the build if the renderer has no case for one of them.
+        """
         wt = str(plan.get("widget_type") or "chart").strip().lower()
-        return wt if wt in {"chart", "text", "image", "countdown", "shape", "parameter_switcher"} else "chart"
+        return wt if wt in IMPORT_WIDGET_TYPES else "chart"
 
     def _layout_number(layout: Dict[str, Any], key: str) -> float | None:
         value = layout.get(key)
@@ -3808,7 +5359,13 @@ def build_dashboard_from_import(
         return materialized
 
     chart_plans_only = [p for p in chart_plans if _plan_widget_type(p) == "chart"]
-    widget_plans = [p for p in chart_plans if _plan_widget_type(p) != "chart"]
+    # `analysis["widgets"]` carries the section headers / callouts / text the
+    # analyzer recovered from blocks a chart-first import used to discard. They
+    # are the source's visual hierarchy; without them the import reproduces the
+    # numbers and loses the report. They join the same widget path plans already
+    # use (chart_id NULL), so nothing downstream needs to know the difference.
+    contract_widgets = [w for w in (analysis.get("widgets") or []) if isinstance(w, dict)]
+    widget_plans = [p for p in chart_plans if _plan_widget_type(p) != "chart"] + contract_widgets
 
     for index, plan in enumerate(chart_plans_only, start=1):
         # Prefer user-edited title/description from the manual editor, falling back
@@ -3945,6 +5502,15 @@ def build_dashboard_from_import(
             dashboard_kwargs["canvas_config"] = plan_canvas_config
         if plan_theme_config is not None:
             dashboard_kwargs["theme_config"] = plan_theme_config
+        # Filter placement is part of the imported report, not an afterthought:
+        # a source built around a left rail must not land as a top bar. Stored
+        # on its own column, so it has to be carried across explicitly.
+        plan_dock = analysis.get("slicer_cluster_layout")
+        if isinstance(plan_dock, dict) and plan_dock:
+            dashboard_kwargs["slicer_cluster_layout"] = plan_dock
+        plan_slicers = analysis.get("slicers")
+        if isinstance(plan_slicers, list) and plan_slicers:
+            dashboard_kwargs["slicers_config"] = plan_slicers
         dashboard_obj = Dashboard(**dashboard_kwargs)
         db.add(dashboard_obj)
         db.flush()
@@ -4205,7 +5771,6 @@ def validate_chart_plans(
     from app.services.live_query_service import (
         _dialect_for_ds_type,
         build_live_agg_query,
-        build_live_base_query_plan,
     )
 
     tables = (

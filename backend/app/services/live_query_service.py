@@ -619,6 +619,52 @@ def _build_where_clause(filters: list, dialect: str) -> str:
     def value_present(value) -> bool:
         return value is not None and not (isinstance(value, str) and not value.strip())
 
+    def _numeric_text(v):
+        """An integer-like string, e.g. the "2017" a slicer hands back.
+
+        The distinct-values endpoint renders every value as text, so picking a
+        year from a slicer sends the STRING "2017" at an INT64 column and
+        BigQuery refuses: `No matching signature for operator IN for argument
+        types INT64 and {STRING}`. Measured on dash 67 — every chart 400'd the
+        moment a year was selected, through the dropdown as much as the
+        segmented control.
+
+        Only integer-like text is converted. Floats are left alone (their text
+        form round-trips badly) and so is anything with padding or separators,
+        so a genuine string code is never silently turned into a number.
+        """
+        if not isinstance(v, str):
+            return None
+        t = v.strip()
+        if not t or t in {"-", "+"}:
+            return None
+        body = t[1:] if t[0] in "+-" else t
+        if not body.isdigit():
+            return None
+        # Leading zeros carry identity in codes like "007"; leave them as text.
+        if len(body) > 1 and body[0] == "0":
+            return None
+        try:
+            return int(t)
+        except ValueError:
+            return None
+
+    def _coerce_numeric_text(values):
+        """Convert a list of values when EVERY present one is integer-like text.
+
+        All-or-nothing on purpose: a mixed list means the column is genuinely
+        textual and the numbers in it are incidental.
+        """
+        present = [v for v in values if value_present(v)]
+        if not present:
+            return values
+        converted = [_numeric_text(v) for v in present]
+        if any(c is None for c in converted):
+            return values
+        # `_num` below now sees numbers and SAFE_CASTs the column, which makes
+        # the comparison work whether the column is physically INT64 or STRING.
+        return converted
+
     def _num(col_sql, is_calendar, *vals):
         # Compare-as-number guard: when the filter value(s) are numeric, cast
         # the column so the comparison works even if the column is physically
@@ -654,8 +700,10 @@ def _build_where_clause(filters: list, dialect: str) -> str:
         ) or qi(field, dialect)
         cal = bool(calendar_field)
         if op == "eq":
+            _v = _coerce_numeric_text([value])[0]
             parts.append(f"{_num(qf, cal, value)} = {_sql_literal(value)}")
         elif op == "neq":
+            _v = _coerce_numeric_text([value])[0]
             parts.append(f"{_num(qf, cal, value)} != {_sql_literal(value)}")
         elif op == "gt":
             parts.append(f"{_num(qf, cal, value)} > {_sql_literal(value)}")
@@ -675,7 +723,7 @@ def _build_where_clause(filters: list, dialect: str) -> str:
             elif value_present(hi):
                 parts.append(f"{bf} <= {_sql_literal(hi)}")
         elif op == "in" and isinstance(value, list):
-            present = [v for v in value if value_present(v)]
+            present = [v for v in _coerce_numeric_text(value) if value_present(v)]
             vals = ", ".join(_sql_literal(v) for v in present)
             if vals:
                 parts.append(f"{_num(qf, cal, *present)} IN ({vals})")
@@ -686,7 +734,7 @@ def _build_where_clause(filters: list, dialect: str) -> str:
             if vals:
                 parts.append(f"{qf} IN ({vals})")
         elif op == "not_in" and isinstance(value, list):
-            present = [v for v in value if value_present(v)]
+            present = [v for v in _coerce_numeric_text(value) if value_present(v)]
             vals = ", ".join(_sql_literal(v) for v in present)
             if vals:
                 parts.append(f"{_num(qf, cal, *present)} NOT IN ({vals})")

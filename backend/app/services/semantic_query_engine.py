@@ -3422,6 +3422,49 @@ class SemanticQueryEngine:
                 return build_safe_cast_sql(col_sql, "float", _dialect)
             return col_sql
 
+        def _numeric_text(v: Any) -> Optional[int]:
+            """An integer-like STRING, e.g. the "2017" a slicer hands back.
+
+            The mirror image of the guard above. Distinct values reach the
+            client as text, so choosing a year sends `["2017"]` at an INT64
+            column and BigQuery refuses outright: *No matching signature for
+            operator IN for argument types INT64 and {STRING}*. Measured on
+            dash 67 — selecting a year 400'd every chart on the page, through
+            the dropdown exactly as much as through the segmented control.
+
+            Only plain integer text converts. Floats keep their text form
+            (it round-trips badly) and anything zero-padded stays text, because
+            in a code like "007" the padding is part of the identity.
+            """
+            if not isinstance(v, str):
+                return None
+            t = v.strip()
+            body = t[1:] if t[:1] in {"+", "-"} else t
+            if not body.isdigit():
+                return None
+            if len(body) > 1 and body[0] == "0":
+                return None
+            try:
+                return int(t)
+            except ValueError:
+                return None
+
+        def _coerce_numeric_text(values: list) -> list:
+            """Convert a value list when EVERY present entry is integer text.
+
+            All-or-nothing: a mixed list means the column really is textual and
+            the numbers in it are incidental. Once converted, `_num` above sees
+            numbers and SAFE_CASTs the column, so the comparison lands whether
+            the column is physically INT64 or STRING.
+            """
+            present = [v for v in values if _value_present(v)]
+            if not present:
+                return values
+            converted = [_numeric_text(v) for v in present]
+            if any(c is None for c in converted):
+                return values
+            return converted
+
         where_conditions: list[str] = []      # base / select-side predicates
         exists_groups: dict[str, list[str]] = {}  # filter-only view -> predicates
         # Defensive default — pivot-value fetch (line ~445) calls this with only
@@ -3764,9 +3807,9 @@ class SemanticQueryEngine:
             if operator == "in":
                 present: list[Any] = []
                 if isinstance(value, list):
-                    present = [v for v in value if _value_present(v)]
+                    present = _coerce_numeric_text([v for v in value if _value_present(v)])
                 elif isinstance(value, str) and value.strip():
-                    present = [v.strip() for v in value.split(",") if v.strip()]
+                    present = _coerce_numeric_text([v.strip() for v in value.split(",") if v.strip()])
                 vals = ", ".join(_lit(v) for v in present)
                 if vals:
                     conditions.append(f"{_num(field_sql, *present)} IN ({vals})")
@@ -3774,9 +3817,9 @@ class SemanticQueryEngine:
             if operator == "not_in":
                 present = []
                 if isinstance(value, list):
-                    present = [v for v in value if _value_present(v)]
+                    present = _coerce_numeric_text([v for v in value if _value_present(v)])
                 elif isinstance(value, str) and value.strip():
-                    present = [v.strip() for v in value.split(",") if v.strip()]
+                    present = _coerce_numeric_text([v.strip() for v in value.split(",") if v.strip()])
                 vals = ", ".join(_lit(v) for v in present)
                 if vals:
                     conditions.append(f"{_num(field_sql, *present)} NOT IN ({vals})")
