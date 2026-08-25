@@ -200,8 +200,26 @@ def upgrade() -> None:
     op.execute("CREATE POLICY govern_doc_block_insert ON govern_doc_block FOR INSERT WITH CHECK (true)")
     op.execute("CREATE POLICY govern_doc_block_update ON govern_doc_block FOR UPDATE USING (true) WITH CHECK (true)")
     op.execute("CREATE POLICY govern_doc_block_delete ON govern_doc_block FOR DELETE USING (true)")
-    op.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON govern_doc_block TO appbi_app")
-    op.execute("GRANT USAGE, SELECT ON SEQUENCE govern_doc_block_id_seq TO appbi_app")
+    # Grant to appbi_app ONLY when the role exists. It is provisioned
+    # conditionally by 0048 (skipped when the DB account lacks CREATEROLE, e.g. a
+    # managed Postgres), so an unconditional GRANT here crash-loops the whole
+    # boot with "role appbi_app does not exist". Guard on existence + swallow a
+    # privilege error, mirroring 0048 — RLS just stays inert until a DBA
+    # provisions the role. See [[migration_privileged_op_managed_pg]].
+    op.execute(
+        """
+        DO $$
+        BEGIN
+            IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'appbi_app') THEN
+                GRANT SELECT, INSERT, UPDATE, DELETE ON govern_doc_block TO appbi_app;
+                GRANT USAGE, SELECT ON SEQUENCE govern_doc_block_id_seq TO appbi_app;
+            END IF;
+        EXCEPTION
+            WHEN insufficient_privilege OR undefined_object THEN
+                RAISE NOTICE 'appbi_app grants on govern_doc_block skipped (role/privilege absent); RLS stays inert until a DBA provisions appbi_app.';
+        END $$
+        """
+    )
 
     # ── the chunk points at the blocks it covers ────────────────────────────
     op.execute(
