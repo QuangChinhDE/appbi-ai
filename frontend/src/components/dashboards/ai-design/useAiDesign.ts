@@ -173,6 +173,12 @@ export function useAiDesign(input: UseAiDesignInput) {
       // the compiler's own notes go into — the user should see one honest
       // account of what was changed and what was interpreted.
       built.mutation.notes = [...boundaryNotes, ...built.mutation.notes];
+      // When the turn will carry the actionable "apply to the whole report"
+      // affordance, drop the compiler's prose note that says the same thing — one
+      // clear control beats a note and a button repeating each other.
+      if (themeDeferred) {
+        built.mutation.notes = built.mutation.notes.filter((n) => !/Entire report/i.test(n));
+      }
       const diff = diffPresentation(baselineTiles, built.mutation);
       if (isEmptyDiff(diff)) {
         setTurns((previous) => [...previous, {

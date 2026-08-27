@@ -132,7 +132,7 @@ function DiffChips({ diff }: { diff: PresentationDiff }) {
   );
 }
 
-function Turn({ turn, onRetryEntireReport }: { turn: AiDesignTurn; onRetryEntireReport?: () => void }) {
+function Turn({ turn, onRetryEntireReport, scope }: { turn: AiDesignTurn; onRetryEntireReport?: () => void; scope: PresentationScope }) {
   const { t } = useI18n();
 
   if (turn.role === 'user') {
@@ -177,7 +177,7 @@ function Turn({ turn, onRetryEntireReport }: { turn: AiDesignTurn; onRetryEntire
       <div className="min-w-0 flex-1">
         <p className="text-caption leading-relaxed text-text-secondary">{turn.text}</p>
         {turn.diff && <DiffChips diff={turn.diff} />}
-        {turn.themeDeferred && onRetryEntireReport && (
+        {turn.themeDeferred && scope === 'page' && onRetryEntireReport && (
           // The colour/theme part of this request needs report scope. Rather
           // than leave the user staring at an unchanged theme, offer the switch.
           <div className="mt-2 rounded-lg border border-[rgb(var(--accent))]/30 bg-[rgb(var(--accent))]/[0.06] px-2.5 py-2">
@@ -436,7 +436,7 @@ export function AiDesignPanel({
         )}
 
         {turns.map((turn, index) => (
-          <Turn key={`${turn.role}-${index}`} turn={turn} onRetryEntireReport={onRetryEntireReport} />
+          <Turn key={`${turn.role}-${index}`} turn={turn} onRetryEntireReport={onRetryEntireReport} scope={scope} />
         ))}
 
         {busy && (
