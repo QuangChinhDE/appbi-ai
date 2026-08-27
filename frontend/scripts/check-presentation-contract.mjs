@@ -1025,6 +1025,28 @@ check('a KPI-only key is dropped on a chart but kept on a KPI', () => {
   assertEqual(onKpi.mutation.layoutOverrides[101].styleConfigOverride.kpiBackgroundMode, 'dark', 'a kpi key was dropped from a KPI');
 });
 
+check('a custom hex accent overrides the colorway accent', () => {
+  // "deep blue #1E3A8A" should show the exact colour, not the nearest named
+  // colorway's approximation.
+  const patch = executor.resolveThemePatch(
+    { colorway: 'slate', accent: '#1E3A8A' },
+    {},
+  );
+  assertEqual(patch.accent, '#1E3A8A', 'the custom accent was not honoured');
+  assertEqual(patch.colorwayId, 'slate', 'the colorway (palette/surface) was dropped');
+});
+
+check('an invalid accent is dropped with a note, not hard-failed', () => {
+  const { plan, notes } = validator.coerceModelPlan(
+    { scope: 'report', direction: { style: 'x', density: 'y' }, sections: [], themeIntent: { colorway: 'indigo', accent: 'deep blue' } },
+    { scope: 'report' },
+  );
+  assert(!(plan.themeIntent && 'accent' in plan.themeIntent), 'a non-hex accent survived coercion');
+  assert(notes.some((n) => /#RRGGBB|colour/.test(n)), 'the dropped accent was not disclosed');
+  const result = validator.validatePresentationPlan(plan, [101]);
+  assert(!result.violations.some((v) => v.code === 'plan.accent'), 'a dropped accent still raised an accent violation');
+});
+
 check('a focused restyle is reported as restyled only, never moved or resized', () => {
   // The diff summary must be honest: a style-only override has no x/y/w/h, so
   // `Number(undefined)` must not be read as NaN and counted as a move/resize.

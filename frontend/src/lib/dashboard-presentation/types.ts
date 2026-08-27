@@ -116,6 +116,12 @@ export interface ThemeIntent {
   template?: string;
   /** One of the catalog colorway ids. */
   colorway?: string;
+  /** An exact brand accent, `#RRGGBB`. When the user names a specific colour
+   *  (e.g. "deep blue #1E3A8A"), the closest named colorway is only an
+   *  approximation; this overrides its accent with the exact hue so the report
+   *  actually shows the requested colour. The colorway still supplies the rest
+   *  (data palette, surface). Validated as a hex; anything else is refused. */
+  accent?: string;
   mode?: 'light' | 'dark';
   density?: PresentationDensity;
   cardTreatment?: 'clean' | 'soft' | 'tinted' | 'elevated' | 'glass' | 'outline' | 'frameless';

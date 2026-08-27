@@ -3714,6 +3714,7 @@ export default function DashboardDetailPage() {
               pageName={currentPage?.name ?? activePageId}
               focusedChartName={focusedChartName}
               onClearFocus={() => setFocusedTileId(null)}
+              onRetryEntireReport={aiDesign.retryEntireReport}
             />
           </div>
         ))}

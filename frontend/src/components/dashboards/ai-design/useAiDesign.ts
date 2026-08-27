@@ -116,8 +116,12 @@ export function useAiDesign(input: UseAiDesignInput) {
     );
   }, [input.activePageId, scope]);
 
-  const submit = React.useCallback(async (prompt: string, images?: string[]) => {
+  const submit = React.useCallback(async (prompt: string, images?: string[], scopeOverride?: PresentationScope) => {
     if (!snapshot || busy) return;
+    // A one-click "apply to the whole report" re-runs the last prompt with the
+    // scope forced to report; the state setter has not settled yet, so the
+    // override travels as an argument rather than being read from `scope`.
+    const effScope = scopeOverride ?? scope;
     const refs = (images ?? []).filter((img) => typeof img === 'string' && img.length > 0);
     setBusy(true);
     setTurns((previous) => [...previous, { role: 'user', text: prompt, images: refs.length ? refs : undefined }]);
@@ -135,7 +139,12 @@ export function useAiDesign(input: UseAiDesignInput) {
       // Scope is imposed, not read. A model that decided for itself to redesign
       // the whole report because the prompt mentioned colour is the silent
       // blast radius the scope selector exists to prevent.
-      const { plan, notes: boundaryNotes } = coerceModelPlan(response?.plan, { scope });
+      const { plan, notes: boundaryNotes } = coerceModelPlan(response?.plan, { scope: effScope });
+      // The user asked for a colour/theme change but the scope in force is a
+      // single page, where theme is left alone. Flag it so the turn can offer a
+      // one-click switch to the whole report instead of appearing to do nothing.
+      const themeDeferred = effScope === 'page'
+        && !!plan.themeIntent && Object.keys(plan.themeIntent).length > 0;
 
       const built = buildPresentationMutation({
         plan,
@@ -170,6 +179,7 @@ export function useAiDesign(input: UseAiDesignInput) {
           role: 'assistant',
           text: plan.rationale || t('dashboards.aiDesign.noChange'),
           diff,
+          themeDeferred,
         }]);
         return;
       }
@@ -179,12 +189,13 @@ export function useAiDesign(input: UseAiDesignInput) {
         diff,
         previewTiles: applyMutationToTiles(baselineTiles, built.mutation),
         pageId: input.activePageId,
-        scope,
+        scope: effScope,
       });
       setTurns((previous) => [...previous, {
         role: 'assistant',
         text: plan.rationale || t('dashboards.aiDesign.suggestedChanges'),
         diff,
+        themeDeferred,
       }]);
     } catch (error: any) {
       const status = error?.response?.status;
@@ -231,12 +242,23 @@ export function useAiDesign(input: UseAiDesignInput) {
     toast.info(t('dashboards.aiDesign.discarded'));
   }, [t]);
 
+  // Re-run the most recent request against the whole report — the one-click fix
+  // for a theme/colour change that page scope deferred. Flips the scope (so the
+  // selector and future turns follow) and forces it on this run via the arg.
+  const retryEntireReport = React.useCallback(() => {
+    const lastUser = [...turns].reverse().find((turn) => turn.role === 'user');
+    if (!lastUser?.text) return;
+    setScope('report');
+    void submit(lastUser.text, undefined, 'report');
+  }, [turns, submit]);
+
   return {
     turns,
     busy,
     scope,
     setScope,
     submit,
+    retryEntireReport,
     apply,
     discard,
     pending,

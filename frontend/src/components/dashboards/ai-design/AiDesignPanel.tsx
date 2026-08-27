@@ -43,6 +43,10 @@ export interface AiDesignTurn {
   /** Reference images (data URLs) the user attached to THIS turn, shown back as
    *  thumbnails so the conversation records what the design was matched against. */
   images?: string[];
+  /** The user asked for a theme/colour change on PAGE scope, where theme is
+   *  left alone (it is shared by every page). Set so the turn can offer a
+   *  one-click "apply to the whole report" instead of silently doing nothing. */
+  themeDeferred?: boolean;
 }
 
 export interface AiDesignPanelProps {
@@ -64,6 +68,9 @@ export interface AiDesignPanelProps {
    *  return to whole-page editing. */
   focusedChartName?: string | null;
   onClearFocus?: () => void;
+  /** Re-run the last request with the scope flipped to the whole report, so a
+   *  theme/colour change that page scope deferred can be applied in one click. */
+  onRetryEntireReport?: () => void;
 }
 
 const CHIP_ICONS = {
@@ -125,7 +132,7 @@ function DiffChips({ diff }: { diff: PresentationDiff }) {
   );
 }
 
-function Turn({ turn }: { turn: AiDesignTurn }) {
+function Turn({ turn, onRetryEntireReport }: { turn: AiDesignTurn; onRetryEntireReport?: () => void }) {
   const { t } = useI18n();
 
   if (turn.role === 'user') {
@@ -170,6 +177,24 @@ function Turn({ turn }: { turn: AiDesignTurn }) {
       <div className="min-w-0 flex-1">
         <p className="text-caption leading-relaxed text-text-secondary">{turn.text}</p>
         {turn.diff && <DiffChips diff={turn.diff} />}
+        {turn.themeDeferred && onRetryEntireReport && (
+          // The colour/theme part of this request needs report scope. Rather
+          // than leave the user staring at an unchanged theme, offer the switch.
+          <div className="mt-2 rounded-lg border border-[rgb(var(--accent))]/30 bg-[rgb(var(--accent))]/[0.06] px-2.5 py-2">
+            <p className="mb-1.5 flex gap-1.5 text-[11px] leading-relaxed text-text-secondary">
+              <Palette className="mt-[2px] h-3 w-3 shrink-0 text-[rgb(var(--accent))]" />
+              <span>{t('dashboards.aiDesign.themeNeedsReport')}</span>
+            </p>
+            <button
+              type="button"
+              onClick={onRetryEntireReport}
+              className="inline-flex items-center gap-1.5 rounded-md bg-brand px-2.5 py-1 text-[11px] font-[560] text-white transition-colors hover:bg-brand-hover"
+            >
+              <Sparkles className="h-3 w-3" />
+              {t('dashboards.aiDesign.applyToWholeReport')}
+            </button>
+          </div>
+        )}
         {refused && (
           <ul className="mt-2 space-y-1 rounded-lg border border-danger/25 bg-danger/[0.04] px-2.5 py-2">
             {turn.violations!.slice(0, 4).map((violation) => (
@@ -193,7 +218,7 @@ function Turn({ turn }: { turn: AiDesignTurn }) {
 export function AiDesignPanel({
   turns, busy, scope, onScopeChange, onSubmit,
   pendingDiff, onApply, onDiscard, onCollapse, onClose, visualCount, pageName,
-  focusedChartName, onClearFocus,
+  focusedChartName, onClearFocus, onRetryEntireReport,
 }: AiDesignPanelProps) {
   const { t } = useI18n();
   const [draft, setDraft] = React.useState('');
@@ -411,7 +436,7 @@ export function AiDesignPanel({
         )}
 
         {turns.map((turn, index) => (
-          <Turn key={`${turn.role}-${index}`} turn={turn} />
+          <Turn key={`${turn.role}-${index}`} turn={turn} onRetryEntireReport={onRetryEntireReport} />
         ))}
 
         {busy && (

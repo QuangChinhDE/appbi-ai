@@ -178,6 +178,13 @@ export function coerceModelPlan(
     if (intent.mode && intent.mode !== 'light' && intent.mode !== 'dark') {
       delete intent.mode;
     }
+    // A custom accent that is not a real hex (a colour name, a short hex) is
+    // dropped with a note rather than left to hard-fail the whole redesign — the
+    // colorway still gives a sensible accent.
+    if (intent.accent != null && !/^#[0-9a-fA-F]{6}$/.test(String(intent.accent))) {
+      notes.push(`"${String(intent.accent)}" is not a #RRGGBB colour; the palette accent was kept.`);
+      delete intent.accent;
+    }
     themeIntent = Object.keys(intent).length > 0 ? intent : undefined;
   }
 
@@ -275,6 +282,12 @@ export function validatePresentationPlan(
   }
   if (theme?.mode && theme.mode !== 'light' && theme.mode !== 'dark') {
     violations.push({ severity: 'capability', code: 'plan.mode', message: `Unknown mode "${theme.mode}".` });
+  }
+  // A custom accent must be an exact 6-digit hex; anything else (a colour name,
+  // a token, a short hex) is refused so it can never smuggle a non-colour value
+  // into the theme's accent slot.
+  if (theme?.accent != null && !/^#[0-9a-fA-F]{6}$/.test(String(theme.accent))) {
+    violations.push({ severity: 'capability', code: 'plan.accent', message: `Accent "${String(theme.accent)}" is not a #RRGGBB hex.` });
   }
 
   const slicer = plan.slicerPresentation;

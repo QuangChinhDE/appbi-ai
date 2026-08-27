@@ -99,6 +99,14 @@ export function resolveThemePatch(
   if (intent.density) patch.density = intent.density === 'balanced' ? 'normal' : intent.density;
   if (intent.cardTreatment) patch.cardTreatment = intent.cardTreatment;
 
+  // A named colorway is only ever an approximation of a colour the user spelled
+  // out. When they gave an exact accent, honour it — applied AFTER the colorway
+  // so it overrides that colorway's own accent while the colorway still supplies
+  // the data palette and surface. The validator guarantees it is a real hex.
+  if (typeof intent.accent === 'string' && /^#[0-9a-fA-F]{6}$/.test(intent.accent)) {
+    patch.accent = intent.accent;
+  }
+
   // `templateId`, `colorwayId` and `presetId` are identity, not tokens — they
   // are not in the allow-list and must not be stripped by it.
   const identityKeys = new Set(['templateId', 'colorwayId', 'presetId']);

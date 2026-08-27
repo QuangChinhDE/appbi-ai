@@ -78,8 +78,13 @@ the `hero_with_rail` primitive, and send tables to the bottom. Choose a \
 dark or night look, a template whose `skin` is modern for a modern look, and \
 the colorway whose `accent` is closest to any colour they name (the \
 capabilities `theme.colorwayGuide` and `theme.templateGuide` give you the mode, \
-accent and skin of every option). A bold composition is still a restrained one: \
-commit to the arrangement, keep the hierarchy singular and the palette limited.
+accent and skin of every option). When the user names a SPECIFIC colour — a hex \
+like "#1E3A8A" or a precise brand colour ("deep blue", "electric orange") — do \
+NOT settle for the nearest named colorway: still pick the closest colorway for \
+the data palette and surface, and ALSO set `themeIntent.accent` to the exact \
+`#RRGGBB` so the report shows the real colour, not an approximation. `accent` \
+must be a 6-digit hex or it is refused. A bold composition is still a restrained \
+one: commit to the arrangement, keep the hierarchy singular and the palette limited.
 
 If a REFERENCE IMAGE is attached, read its COMPOSITION and SURFACE, never its \
 content. Take from it where the headline numbers sit, whether there is one hero \
@@ -150,6 +155,7 @@ PLAN_SCHEMA_HINT: Dict[str, Any] = {
     "themeIntent": {
         "template": "one of capabilities.theme.templates",
         "colorway": "one of capabilities.theme.colorways",
+        "accent": "optional exact brand colour as #RRGGBB (overrides the colorway accent)",
         "mode": "light | dark",
     },
     "decorativeElements": [
