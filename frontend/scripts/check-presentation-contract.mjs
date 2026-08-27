@@ -1095,6 +1095,33 @@ check('a custom hex accent overrides the colorway accent', () => {
   assertEqual(patch.colorwayId, 'slate', 'the colorway (palette/surface) was dropped');
 });
 
+check('a second brand colour + a font reach the theme patch', () => {
+  const patch = executor.resolveThemePatch(
+    { colorway: 'indigo', accent: '#1E3A8A', dataColors: ['#1E3A8A', '#F97316'], fontFamily: 'inter' },
+    {},
+  );
+  assertEqual(patch.accent, '#1E3A8A', 'accent lost');
+  assertEqual(patch.dataColors, ['#1E3A8A', '#F97316'], 'the chart palette (second colour) was dropped');
+  assertEqual(patch.fontFamily, 'inter', 'the font was dropped');
+});
+
+check('an unshipped font and non-hex palette entries are dropped', () => {
+  // resolveThemePatch keeps only shipped fonts and real hexes.
+  const patch = executor.resolveThemePatch(
+    { colorway: 'indigo', fontFamily: 'comic sans', dataColors: ['#1E3A8A', 'orange', 'not-a-hex'] },
+    {},
+  );
+  assert(!('fontFamily' in patch), 'an unshipped font survived');
+  assertEqual(patch.dataColors, ['#1E3A8A'], 'a non-hex palette entry survived');
+  // And coerce discloses the dropped font rather than hard-failing.
+  const { plan, notes } = validator.coerceModelPlan(
+    { scope: 'report', direction: { style: 'x', density: 'y' }, sections: [], themeIntent: { fontFamily: 'comic sans' } },
+    { scope: 'report' },
+  );
+  assert(!(plan.themeIntent && 'fontFamily' in plan.themeIntent), 'an unshipped font survived coercion');
+  assert(notes.some((n) => /font/i.test(n)), 'the dropped font was not disclosed');
+});
+
 check('an invalid accent is dropped with a note, not hard-failed', () => {
   const { plan, notes } = validator.coerceModelPlan(
     { scope: 'report', direction: { style: 'x', density: 'y' }, sections: [], themeIntent: { colorway: 'indigo', accent: 'deep blue' } },

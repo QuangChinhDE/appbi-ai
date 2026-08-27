@@ -19,7 +19,7 @@
 import type { Dashboard, DashboardChart, DashboardChartLayout, DashboardThemeConfig } from '@/types/api';
 import { COLORWAYS, COLORWAY_KEYS, TEMPLATES, TEMPLATE_KEYS } from '@/lib/dashboard-theme-catalog';
 import { compilePresentationPlan } from './compiler';
-import { isAllowedChartStyleKey, isAllowedThemeKey, KPI_ONLY_STYLE_KEYS } from './capabilities';
+import { isAllowedChartStyleKey, isAllowedThemeKey, isAllowedFont, KPI_ONLY_STYLE_KEYS } from './capabilities';
 import { buildPresentationFingerprint } from './snapshot';
 import { validatePresentationMutation, validatePresentationPlan } from './validator';
 import type { ValidationResult } from './validator';
@@ -119,6 +119,21 @@ export function resolveThemePatch(
   // the data palette and surface. The validator guarantees it is a real hex.
   if (typeof intent.accent === 'string' && /^#[0-9a-fA-F]{6}$/.test(intent.accent)) {
     patch.accent = intent.accent;
+  }
+
+  // A second brand colour lives in the chart palette: `accent` drives KPIs/bars,
+  // `dataColors` the chart series, so "deep blue + electric orange" shows both.
+  if (Array.isArray(intent.dataColors)) {
+    const hexes = intent.dataColors.filter(
+      (colour): colour is string => typeof colour === 'string' && /^#[0-9a-fA-F]{6}$/.test(colour),
+    );
+    if (hexes.length > 0) patch.dataColors = hexes;
+  }
+
+  // A curated report font — the provider ships only these faces, so an unknown
+  // name is dropped rather than left to fall back to nothing.
+  if (typeof intent.fontFamily === 'string' && isAllowedFont(intent.fontFamily)) {
+    patch.fontFamily = intent.fontFamily.toLowerCase();
   }
 
   // `templateId`, `colorwayId` and `presetId` are identity, not tokens — they

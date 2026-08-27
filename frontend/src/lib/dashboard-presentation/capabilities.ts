@@ -149,9 +149,24 @@ export const SEMANTIC_CHART_STYLE_KEYS = [
 /** Theme keys reachable from a plan. Reuses the catalog's own definition of
  *  what a template and a colorway own, so the AI can never set a token the
  *  one-click template picker could not. */
+/** Report fonts the renderer actually ships (DashboardThemeProvider FONT_PRESETS).
+ *  A curated list, not free text — an unknown face would fall back and silently
+ *  do nothing. */
+export const AI_ALLOWED_FONTS = [
+  'inter', 'roboto', 'dm-sans', 'jakarta', 'grotesk', 'serif', 'mono',
+] as const;
+export type AiAllowedFont = (typeof AI_ALLOWED_FONTS)[number];
+const ALLOWED_FONT_SET: ReadonlySet<string> = new Set(AI_ALLOWED_FONTS);
+export function isAllowedFont(value: string): boolean {
+  return ALLOWED_FONT_SET.has(value.toLowerCase());
+}
+
 export const AI_ALLOWED_THEME_KEYS: readonly string[] = [
   ...TEMPLATE_KEYS,
   ...COLORWAY_KEYS,
+  // A report font family — carried on theme_config, applied by the provider,
+  // but not owned by a template or colorway, so it is listed on its own.
+  'fontFamily',
 ];
 
 const ALLOWED_THEME_KEY_SET: ReadonlySet<string> = new Set(AI_ALLOWED_THEME_KEYS);

@@ -122,6 +122,13 @@ export interface ThemeIntent {
    *  actually shows the requested colour. The colorway still supplies the rest
    *  (data palette, surface). Validated as a hex; anything else is refused. */
   accent?: string;
+  /** The chart series palette as exact `#RRGGBB` hexes — the home for a SECOND
+   *  brand colour ("deep blue + electric orange"): `accent` drives KPIs/bars,
+   *  `dataColors` colours the chart series. Each entry must be a hex. */
+  dataColors?: string[];
+  /** A curated report font family id (inter, roboto, dm-sans, jakarta, grotesk,
+   *  serif, mono). Not free text — the renderer only ships these faces. */
+  fontFamily?: string;
   mode?: 'light' | 'dark';
   density?: PresentationDensity;
   cardTreatment?: 'clean' | 'soft' | 'tinted' | 'elevated' | 'glass' | 'outline' | 'frameless';

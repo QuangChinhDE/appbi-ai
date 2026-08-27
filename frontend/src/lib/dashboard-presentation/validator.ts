@@ -25,6 +25,7 @@ import {
   colorwayIds,
   isAllowedChartStyleKey,
   isAllowedThemeKey,
+  isAllowedFont,
   templateIds,
 } from './capabilities';
 import {
@@ -185,6 +186,20 @@ export function coerceModelPlan(
       notes.push(`"${String(intent.accent)}" is not a #RRGGBB colour; the palette accent was kept.`);
       delete intent.accent;
     }
+    // The chart palette keeps only real hexes; anything else is dropped.
+    if (intent.dataColors != null) {
+      const hexes = Array.isArray(intent.dataColors)
+        ? intent.dataColors.filter((c: unknown) => typeof c === 'string' && /^#[0-9a-fA-F]{6}$/.test(c))
+        : [];
+      if (hexes.length > 0) intent.dataColors = hexes;
+      else delete intent.dataColors;
+    }
+    // A font the renderer does not ship is dropped WITH a note, so the model can
+    // never quietly imply it changed a face it cannot.
+    if (intent.fontFamily != null && !isAllowedFont(String(intent.fontFamily))) {
+      notes.push(`Font "${String(intent.fontFamily)}" isn't one AppBI ships, so the font was left unchanged.`);
+      delete intent.fontFamily;
+    }
     themeIntent = Object.keys(intent).length > 0 ? intent : undefined;
   }
 
@@ -288,6 +303,16 @@ export function validatePresentationPlan(
   // into the theme's accent slot.
   if (theme?.accent != null && !/^#[0-9a-fA-F]{6}$/.test(String(theme.accent))) {
     violations.push({ severity: 'capability', code: 'plan.accent', message: `Accent "${String(theme.accent)}" is not a #RRGGBB hex.` });
+  }
+  if (theme?.fontFamily != null && !isAllowedFont(String(theme.fontFamily))) {
+    violations.push({ severity: 'capability', code: 'plan.font', message: `Font "${String(theme.fontFamily)}" is not a shipped face.` });
+  }
+  if (theme?.dataColors != null) {
+    const bad = !Array.isArray(theme.dataColors)
+      || theme.dataColors.some((c: unknown) => typeof c !== 'string' || !/^#[0-9a-fA-F]{6}$/.test(c));
+    if (bad) {
+      violations.push({ severity: 'capability', code: 'plan.dataColors', message: 'dataColors must be an array of #RRGGBB hexes.' });
+    }
   }
 
   const slicer = plan.slicerPresentation;

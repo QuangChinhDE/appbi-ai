@@ -83,7 +83,16 @@ like "#1E3A8A" or a precise brand colour ("deep blue", "electric orange") — do
 NOT settle for the nearest named colorway: still pick the closest colorway for \
 the data palette and surface, and ALSO set `themeIntent.accent` to the exact \
 `#RRGGBB` so the report shows the real colour, not an approximation. `accent` \
-must be a 6-digit hex or it is refused. A bold composition is still a restrained \
+must be a 6-digit hex or it is refused. When the user names TWO brand colours \
+("deep blue AND electric orange"), the first is the `accent` (KPIs, bars, \
+buttons) and BOTH go into `dataColors` as `#RRGGBB` so the chart series show the \
+pair — that is the only place a second colour lands. For a FONT, set `fontFamily` \
+to one of inter, roboto, dm-sans, jakarta, grotesk, serif, mono (map "Inter" or \
+"modern sans-serif" -> inter; "Georgia/serif" -> serif; "monospace" -> mono). \
+HONESTY: claim in `rationale` ONLY what you actually put in the plan; if the user \
+asks for something not expressible here (an unlisted font, a gradient, an image), \
+do NOT say you applied it — state briefly that it is not available. \
+A bold composition is still a restrained \
 one: commit to the arrangement, keep the hierarchy singular and the palette limited.
 
 If a REFERENCE IMAGE is attached, read its COMPOSITION and SURFACE, never its \
@@ -156,6 +165,8 @@ PLAN_SCHEMA_HINT: Dict[str, Any] = {
         "template": "one of capabilities.theme.templates",
         "colorway": "one of capabilities.theme.colorways",
         "accent": "optional exact brand colour as #RRGGBB (overrides the colorway accent)",
+        "dataColors": "optional array of #RRGGBB for the chart series palette (home for a SECOND brand colour)",
+        "fontFamily": "optional report font: inter | roboto | dm-sans | jakarta | grotesk | serif | mono",
         "mode": "light | dark",
     },
     "decorativeElements": [
