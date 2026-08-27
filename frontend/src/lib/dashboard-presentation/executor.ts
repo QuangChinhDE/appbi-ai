@@ -281,13 +281,19 @@ export function buildPresentationMutation(input: BuildMutationInput): BuildMutat
   // still layers a per-tile exception on top — render-time specificity is
   // unchanged; this only clears STALE exceptions at the moment the theme is
   // deliberately reset.
-  const themeAuthoritative = plan.scope === 'report'
-    && !!plan.themeIntent && Object.keys(plan.themeIntent).length > 0;
+  // Theme is a REPORT-level property by nature (theme_config is shared by every
+  // page), so a colour/theme request applies report-wide the moment it is made —
+  // there is no "page-scoped theme". The scope selector governs LAYOUT reach,
+  // not this. Whenever the plan carries a themeIntent the theme is applied and
+  // becomes authoritative over stale per-tile colour; a layout-only redesign
+  // (no themeIntent) never touches the theme.
+  const themeRequested = !!plan.themeIntent && Object.keys(plan.themeIntent).length > 0;
+  const themeAuthoritative = themeRequested;
   // The colour the report is being set to (custom hex, else the colorway's own
   // accent). Per-tile colour keys are re-pointed to it, not blanked — clearing
   // `kpiAccentColor` alone would drop the number back to plain text, not the new
   // theme colour, so the change would still look like it did nothing.
-  const resolvedThemePatch = plan.scope === 'report'
+  const resolvedThemePatch = themeRequested
     ? resolveThemePatch(plan.themeIntent, currentTheme)
     : {};
   const themeAccent = themeAuthoritative
@@ -344,18 +350,14 @@ export function buildPresentationMutation(input: BuildMutationInput): BuildMutat
   const slicer = resolveSlicerPatch(plan.slicerPresentation);
   mutation.slicerClusterPatch = slicer.cluster;
 
-  if (plan.scope === 'report') {
-    mutation.themePatch = {
-      ...(resolvedThemePatch as Partial<DashboardThemeConfig>),
-      ...(slicer.theme as Partial<DashboardThemeConfig>),
-    };
-  } else if (plan.themeIntent && Object.keys(plan.themeIntent).length > 0) {
-    // Refused rather than silently dropped: the user asked for a look and is
-    // entitled to know why the page did not change colour.
-    mutation.notes.push(
-      'Theme is shared by every page of this report, so it was left alone. Switch the scope to "Entire report" to change it.',
-    );
-  }
+  // Theme applies whenever it was asked for — no scope gate, no deferral — and
+  // the slicer's LOOK (dock/variant/style) rides in the same patch whenever a
+  // slicerPresentation was given, independent of any colour change. An empty
+  // patch (neither asked for) stays empty and commits nothing.
+  mutation.themePatch = {
+    ...(resolvedThemePatch as Partial<DashboardThemeConfig>),
+    ...(slicer.theme as Partial<DashboardThemeConfig>),
+  };
 
   const before = buildPresentationFingerprint(tiles);
   const after = buildPresentationFingerprint(applyMutationToTiles(tiles, mutation));

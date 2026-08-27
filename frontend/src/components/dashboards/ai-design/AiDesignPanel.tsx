@@ -2,7 +2,7 @@
 
 import React from 'react';
 import {
-  ArrowUp, Check, Crosshair, Info, Layers, Loader2, Maximize2, Minus, Move,
+  ArrowUp, Check, Crosshair, Info, Layers, Lightbulb, Loader2, Maximize2, Minus, Move,
   Palette, Paperclip, ShieldAlert, SlidersHorizontal, Sparkles, X,
 } from 'lucide-react';
 import { toast } from 'sonner';
@@ -226,6 +226,7 @@ export function AiDesignPanel({
   // — a reference belongs to the turn it was attached to, not the conversation.
   const [attached, setAttached] = React.useState<string[]>([]);
   const [dragging, setDragging] = React.useState(false);
+  const [showGuide, setShowGuide] = React.useState(false);
   const scrollRef = React.useRef<HTMLDivElement | null>(null);
   const textareaRef = React.useRef<HTMLTextAreaElement | null>(null);
   const fileInputRef = React.useRef<HTMLInputElement | null>(null);
@@ -304,9 +305,33 @@ export function AiDesignPanel({
     t('dashboards.aiDesign.example3'),
   ];
 
+  // The prompt guide — grouped, tap-to-fill example prompts covering every
+  // capability, so a user learns what AI Design can do without guessing. Tapping
+  // an example DROPS it into the input (never auto-sends), so the user can tweak
+  // it first. Purely presentational strings — nothing here is dashboard-specific.
+  const guideGroups: Array<{ title: string; prompts: string[] }> = [
+    { title: t('dashboards.aiDesign.guideLayout'), prompts: [
+      t('dashboards.aiDesign.guideLayout1'), t('dashboards.aiDesign.guideLayout2'),
+    ] },
+    { title: t('dashboards.aiDesign.guideColour'), prompts: [
+      t('dashboards.aiDesign.guideColour1'), t('dashboards.aiDesign.guideColour2'),
+    ] },
+    { title: t('dashboards.aiDesign.guideFont'), prompts: [
+      t('dashboards.aiDesign.guideFont1'), t('dashboards.aiDesign.guideFont2'),
+    ] },
+    { title: t('dashboards.aiDesign.guideChart'), prompts: [
+      t('dashboards.aiDesign.guideChart1'), t('dashboards.aiDesign.guideChart2'),
+    ] },
+  ];
+  const fillFromGuide = (prompt: string) => {
+    setDraft(prompt);
+    setShowGuide(false);
+    textareaRef.current?.focus();
+  };
+
   return (
     <aside
-      className="flex h-full w-[380px] shrink-0 flex-col overflow-hidden rounded-xl border border-[rgb(var(--border-line))] bg-surface-1"
+      className="relative flex h-full w-[380px] shrink-0 flex-col overflow-hidden rounded-xl border border-[rgb(var(--border-line))] bg-surface-1"
       aria-label={t('dashboards.aiDesign.title')}
     >
       <header className="flex items-start gap-2.5 border-b border-[rgb(var(--border-line))] px-4 py-3">
@@ -320,6 +345,17 @@ export function AiDesignPanel({
           </p>
         </div>
         <div className="-mr-1 flex items-center gap-0.5">
+          <button
+            type="button"
+            onClick={() => setShowGuide((v) => !v)}
+            aria-label={t('dashboards.aiDesign.guideTitle')}
+            title={t('dashboards.aiDesign.guideTitle')}
+            className={`rounded-md p-1 transition-colors hover:bg-surface-2 ${
+              showGuide ? 'text-brand' : 'text-text-quaternary hover:text-text-primary'
+            }`}
+          >
+            <Lightbulb className="h-3.5 w-3.5" />
+          </button>
           {onCollapse && (
             <button
               type="button"
@@ -341,6 +377,52 @@ export function AiDesignPanel({
           </button>
         </div>
       </header>
+
+      {showGuide && (
+        // Tap-to-fill prompt guide, laid over the conversation. Escape/backdrop
+        // or a second tap on the lightbulb closes it.
+        <div className="absolute inset-x-0 bottom-0 top-[57px] z-20 flex flex-col bg-surface-1">
+          <div className="flex items-center justify-between border-b border-[rgb(var(--border-line))] px-4 py-2.5">
+            <span className="flex items-center gap-1.5 text-[12px] font-[560] text-text-primary">
+              <Lightbulb className="h-3.5 w-3.5 text-brand" />
+              {t('dashboards.aiDesign.guideTitle')}
+            </span>
+            <button
+              type="button"
+              onClick={() => setShowGuide(false)}
+              aria-label={t('dashboards.aiDesign.close')}
+              className="rounded-md p-1 text-text-quaternary transition-colors hover:bg-surface-2 hover:text-text-primary"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </div>
+          <div className="min-h-0 flex-1 space-y-3.5 overflow-y-auto px-4 py-3.5">
+            <p className="text-[11px] leading-relaxed text-text-tertiary">{t('dashboards.aiDesign.guideIntro')}</p>
+            {guideGroups.map((group) => (
+              <div key={group.title}>
+                <p className="mb-1.5 text-[11px] font-[560] uppercase tracking-wide text-text-quaternary">{group.title}</p>
+                <div className="space-y-1.5">
+                  {group.prompts.map((prompt) => (
+                    <button
+                      key={prompt}
+                      type="button"
+                      onClick={() => fillFromGuide(prompt)}
+                      className="group flex w-full items-start gap-2 rounded-lg border border-[rgb(var(--border-line))] px-2.5 py-2 text-left transition-colors hover:border-brand/40 hover:bg-brand/[0.04]"
+                    >
+                      <ArrowUp className="mt-0.5 h-3 w-3 shrink-0 rotate-45 text-text-quaternary transition-colors group-hover:text-brand" />
+                      <span className="text-[11px] leading-relaxed text-text-secondary">{prompt}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ))}
+            <p className="flex gap-1.5 rounded-lg bg-surface-2 px-2.5 py-2 text-[11px] leading-relaxed text-text-tertiary">
+              <ShieldAlert className="mt-[2px] h-3 w-3 shrink-0" />
+              <span>{t('dashboards.aiDesign.guideSafety')}</span>
+            </p>
+          </div>
+        </div>
+      )}
 
       {focusedChartName ? (
         // The user clicked one visual. The scope selector is meaningless here —

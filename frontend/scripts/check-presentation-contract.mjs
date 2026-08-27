@@ -1216,13 +1216,12 @@ check('a semantic violation is still fatal after coercion', () => {
   assert(!result.ok && !result.repairable, 'a row limit survived the softened boundary');
 });
 
-check('the panel decides scope, not the model', () => {
-  // The reply above asks for 'report'. The user chose this page.
+check('the panel decides LAYOUT scope, not the model', () => {
+  // The reply above asks for 'report'. The user chose this page; the scope the
+  // model wanted is imposed back to the panel's choice for LAYOUT reach. (Theme
+  // is report-wide by nature and applies whenever requested — see below.)
   const { plan } = validator.coerceModelPlan(REAL_MODEL_REPLY, { scope: 'page' });
   assertEqual(plan.scope, 'page', 'the model widened its own blast radius');
-  const tiles = makeTiles();
-  const result = buildFor(tiles, plan);
-  assertEqual(result.mutation.themePatch, {}, 'a page-scoped run repainted the report anyway');
 });
 
 check('a real model reply compiles to a clean page', () => {
@@ -1251,15 +1250,17 @@ check('an echoed prompt is refused rather than compiled', () => {
 
 // ── Executor: scope, baseline and the single write path ─────────────────────
 
-check('a page-scoped redesign never writes a theme key', () => {
+check('theme applies whenever requested; a layout-only redesign writes no theme', () => {
   const tiles = makeTiles();
-  const plan = { ...planFor(tiles), scope: 'page', themeIntent: { template: 'ops', colorway: 'slate' } };
-  const result = buildFor(tiles, plan);
-  assertEqual(result.mutation.themePatch, {}, 'a page redesign repainted the whole report');
-  assert(
-    result.mutation.notes.some((n) => /every page/i.test(n)),
-    'the user was not told why the theme did not change',
-  );
+  // Theme is a report-level property, so a theme intent applies report-wide the
+  // moment it is asked for — even on page scope. No deferral, no "switch scope".
+  const themed = buildFor(tiles, { ...planFor(tiles), scope: 'page', themeIntent: { template: 'ops', colorway: 'slate' } });
+  assert(Object.keys(themed.mutation.themePatch).length > 0, 'a requested theme was deferred instead of applied');
+  assert(!themed.mutation.notes.some((n) => /Entire report/i.test(n)), 'a stale "switch scope" note was emitted');
+  // But a redesign that asked for NO theme (planFor carries none) must never
+  // repaint the theme, on any scope.
+  const layoutOnly = buildFor(tiles, { ...planFor(tiles), scope: 'report' });
+  assertEqual(layoutOnly.mutation.themePatch, {}, 'a layout-only redesign repainted the theme');
 });
 
 check('a report-scoped redesign writes theme keys from the catalog', () => {

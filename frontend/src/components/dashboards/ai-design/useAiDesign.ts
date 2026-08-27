@@ -140,11 +140,10 @@ export function useAiDesign(input: UseAiDesignInput) {
       // the whole report because the prompt mentioned colour is the silent
       // blast radius the scope selector exists to prevent.
       const { plan, notes: boundaryNotes } = coerceModelPlan(response?.plan, { scope: effScope });
-      // The user asked for a colour/theme change but the scope in force is a
-      // single page, where theme is left alone. Flag it so the turn can offer a
-      // one-click switch to the whole report instead of appearing to do nothing.
-      const themeDeferred = effScope === 'page'
-        && !!plan.themeIntent && Object.keys(plan.themeIntent).length > 0;
+      // Theme now applies report-wide the moment it is requested (theme is a
+      // report-level property; there is no page-scoped theme), so it is never
+      // deferred and no "apply to the whole report" prompt is needed.
+      const themeDeferred = false;
 
       const built = buildPresentationMutation({
         plan,
