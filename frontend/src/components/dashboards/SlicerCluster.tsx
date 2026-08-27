@@ -21,7 +21,8 @@
  * positioning unit, not each slicer.
  */
 
-import React, { useMemo, useState, useRef, useEffect } from 'react';
+import React, { useMemo, useState, useRef, useEffect, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import { Image as ImageIcon, X, Settings2, Link2, Filter, Plus } from 'lucide-react';
 import { useI18n } from '@/providers/LanguageProvider';
 import { DashboardFilterBar } from '@/components/dashboards/DashboardFilterBar';
@@ -192,20 +193,52 @@ export function SlicerCluster({
   // expanded in both builder and public views. Individual slicer popovers still
   // handle their own open/close state inside DashboardFilterBar.
   const configMenuRef = useRef<HTMLDivElement>(null);
+  // The gear menu is rendered through a portal (below) so it escapes the
+  // cluster's overflow:hidden — otherwise it is clipped mid-item against the
+  // report edge (the "Add slicer / Auto-distribute / Add image cut off" bug).
+  // Its own ref lets the outside-click test count clicks INSIDE the portaled
+  // menu as inside, even though it lives on document.body.
+  const configMenuPortalRef = useRef<HTMLDivElement>(null);
+  const [menuPos, setMenuPos] = useState<{ top: number; left: number; maxHeight: number } | null>(null);
   // The gear anchors the "Add slicer" picker (moved out of the filter bar), and
   // `openAddSlicerRef` holds the opener DashboardFilterBar hands back.
   const gearBtnRef = useRef<HTMLButtonElement>(null);
   const openAddSlicerRef = useRef<(() => void) | null>(null);
+
+  // Fixed-position the gear menu under its button, right-aligned to the button
+  // but clamped inside the viewport so it never overflows (and never clips) at
+  // any dock or screen width. Recomputed while open on scroll/resize.
+  const MENU_W = 224; // w-56
+  const computeMenuPos = useCallback(() => {
+    const el = gearBtnRef.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const left = Math.min(Math.max(r.right - MENU_W, 8), Math.max(8, vw - MENU_W - 8));
+    const top = r.bottom + 4;
+    const maxHeight = Math.max(160, vh - top - 8);
+    setMenuPos({ top, left, maxHeight });
+  }, []);
   useEffect(() => {
     if (!configMenuOpen) return;
+    computeMenuPos();
     const onDocClick = (e: MouseEvent) => {
-      if (configMenuRef.current && !configMenuRef.current.contains(e.target as Node)) {
-        setConfigMenuOpen(false);
-      }
+      const t = e.target as Node;
+      if (configMenuRef.current?.contains(t)) return;
+      if (configMenuPortalRef.current?.contains(t)) return;
+      setConfigMenuOpen(false);
     };
+    const onReflow = () => computeMenuPos();
     document.addEventListener('mousedown', onDocClick);
-    return () => document.removeEventListener('mousedown', onDocClick);
-  }, [configMenuOpen]);
+    window.addEventListener('scroll', onReflow, true);
+    window.addEventListener('resize', onReflow);
+    return () => {
+      document.removeEventListener('mousedown', onDocClick);
+      window.removeEventListener('scroll', onReflow, true);
+      window.removeEventListener('resize', onReflow);
+    };
+  }, [configMenuOpen, computeMenuPos]);
 
   const handleSlicersChange = (nextSlicers: BaseFilter[]) => {
     // Merge: keep image children in their current order, replace the
@@ -376,14 +409,12 @@ export function SlicerCluster({
         >
           <Settings2 className="h-3.5 w-3.5" />
         </button>
-        {configMenuOpen && (
-          <div className={`absolute top-full z-[60] mt-1 w-56 rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 p-2 shadow-xl ${
-            // A LEFT/TOP rail sits against the left nav; opening the menu to the
-            // right (left-0) keeps it in the report area instead of sliding under
-            // the sidebar, which sits in a higher stacking context this popover
-            // can never rise above. A right rail opens the other way.
-            dock === 'right' ? 'right-0' : 'left-0'
-          }`}>
+        {configMenuOpen && menuPos && createPortal(
+          <div
+            ref={configMenuPortalRef}
+            className="fixed z-[70] w-56 overflow-y-auto overscroll-contain rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 p-2 shadow-xl"
+            style={{ top: menuPos.top, left: menuPos.left, maxHeight: menuPos.maxHeight }}
+          >
             {/* Add slicer — the primary action, first in the menu. Opens the
                 picker that DashboardFilterBar still owns (via openAddSlicerRef). */}
             <button
@@ -481,7 +512,8 @@ export function SlicerCluster({
                 <span>{t('dashboards.slicerCluster.filterMap')}</span>
               </button>
             )}
-          </div>
+          </div>,
+          document.body,
         )}
       </div>
     </>
