@@ -38,6 +38,20 @@ const LEGACY_LOOK_KEYS = [
   'cardShadow', 'titleFontSize', 'kpiFontSize', 'labelFontSize', 'radius', 'cardBorderWidth',
 ] as const;
 
+/** Per-tile styleConfigOverride colour/surface keys a report-scoped theme change
+ *  overrides so the new theme actually shows. Two behaviours:
+ *   - REPOINT: a literal colour a KPI/icon carried is re-pointed to the new theme
+ *     accent (the number follows the theme, it does not fall back to plain text).
+ *   - RESET: a mode/surface/palette choice is cleared so it inherits the theme.
+ *  Non-colour styles (lineWidth, showGrid, dataLabels, a Top-N) are never touched. */
+const THEME_REPOINT_COLOUR_KEYS = ['kpiAccentColor', 'kpiIconColor'] as const;
+const THEME_RESET_COLOUR_KEYS = [
+  'kpiBackgroundMode', 'kpiGradientBg', 'kpiAccentBorder', 'chartSurface', 'palette',
+] as const;
+const THEME_OVERRIDABLE_COLOUR_KEYS = [
+  ...THEME_REPOINT_COLOUR_KEYS, ...THEME_RESET_COLOUR_KEYS,
+] as const;
+
 export interface BuildMutationInput {
   plan: PresentationPlan;
   snapshot: DashboardPresentationSnapshot;
@@ -242,10 +256,50 @@ export function buildPresentationMutation(input: BuildMutationInput): BuildMutat
   // `styleConfigOverride` already lives — one field, one save, one undo.
   const tileStyles = resolveTileStyles(plan, tiles);
   const existingById = new Map(tiles.map((t) => [t.id, t]));
+
+  // Theme authority: a report-scoped theme change makes the report the source of
+  // truth for COLOUR. Per-tile colour exceptions left by an earlier design
+  // (kpiAccentColor, chartSurface, palette, …) would otherwise mask the new
+  // theme — "change the report to deep blue" would leave the KPIs their old
+  // colours. So those keys are reset here; non-colour per-tile styles (lineWidth,
+  // showDataLabels, a hand-set Top-N) are kept. A focused restyle after this
+  // still layers a per-tile exception on top — render-time specificity is
+  // unchanged; this only clears STALE exceptions at the moment the theme is
+  // deliberately reset.
+  const themeAuthoritative = plan.scope === 'report'
+    && !!plan.themeIntent && Object.keys(plan.themeIntent).length > 0;
+  // The colour the report is being set to (custom hex, else the colorway's own
+  // accent). Per-tile colour keys are re-pointed to it, not blanked — clearing
+  // `kpiAccentColor` alone would drop the number back to plain text, not the new
+  // theme colour, so the change would still look like it did nothing.
+  const resolvedThemePatch = plan.scope === 'report'
+    ? resolveThemePatch(plan.themeIntent, currentTheme)
+    : {};
+  const themeAccent = themeAuthoritative
+    ? ((resolvedThemePatch as Record<string, unknown>).accent as string | undefined)
+    : undefined;
+  const clearColour = (prev: Record<string, unknown>): Record<string, unknown> => {
+    const next = { ...prev };
+    // Mode/surface/palette keys fall back to the theme.
+    for (const key of THEME_RESET_COLOUR_KEYS) delete next[key];
+    // A direct colour a KPI/icon carried follows the new theme colour instead of
+    // vanishing to plain text — so "make the report deep blue" turns the numbers
+    // deep blue, not black.
+    if (themeAccent) {
+      for (const key of THEME_REPOINT_COLOUR_KEYS) {
+        if (key in next) next[key] = themeAccent;
+      }
+    } else {
+      for (const key of THEME_REPOINT_COLOUR_KEYS) delete next[key];
+    }
+    return next;
+  };
+
   for (const [rawId, style] of Object.entries(tileStyles)) {
     const id = Number(rawId);
     const layout = mutation.layoutOverrides[id] ?? {};
-    const previous = ((existingById.get(id)?.layout as any)?.styleConfigOverride ?? {}) as Record<string, unknown>;
+    let previous = ((existingById.get(id)?.layout as any)?.styleConfigOverride ?? {}) as Record<string, unknown>;
+    if (themeAuthoritative) previous = clearColour(previous);
     // Merge over what the tile already carries: a redesign that set
     // `legendPosition` must not wipe a Top-N the author configured by hand.
     mutation.layoutOverrides[id] = {
@@ -254,12 +308,30 @@ export function buildPresentationMutation(input: BuildMutationInput): BuildMutat
     } as Partial<DashboardChartLayout>;
   }
 
+  // Tiles the plan gave no explicit style still need their stale colour cleared
+  // when the theme is now authoritative — including tiles the compiler only
+  // MOVED (they have a geometry override but no styleConfigOverride yet).
+  // Otherwise a KPI with a leftover accent keeps it and the theme change looks
+  // like it did nothing. Geometry already written is preserved.
+  if (themeAuthoritative) {
+    const styledByPlan = new Set(Object.keys(tileStyles).map(Number));
+    for (const tile of tiles) {
+      if (styledByPlan.has(tile.id)) continue; // already cleared + merged above
+      const prev = ((tile.layout as any)?.styleConfigOverride ?? {}) as Record<string, unknown>;
+      if (!THEME_OVERRIDABLE_COLOUR_KEYS.some((key) => key in prev)) continue;
+      mutation.layoutOverrides[tile.id] = {
+        ...(mutation.layoutOverrides[tile.id] ?? {}),
+        styleConfigOverride: clearColour(prev),
+      } as Partial<DashboardChartLayout>;
+    }
+  }
+
   const slicer = resolveSlicerPatch(plan.slicerPresentation);
   mutation.slicerClusterPatch = slicer.cluster;
 
   if (plan.scope === 'report') {
     mutation.themePatch = {
-      ...resolveThemePatch(plan.themeIntent, currentTheme),
+      ...(resolvedThemePatch as Partial<DashboardThemeConfig>),
       ...(slicer.theme as Partial<DashboardThemeConfig>),
     };
   } else if (plan.themeIntent && Object.keys(plan.themeIntent).length > 0) {

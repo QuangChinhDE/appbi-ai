@@ -1025,6 +1025,65 @@ check('a KPI-only key is dropped on a chart but kept on a KPI', () => {
   assertEqual(onKpi.mutation.layoutOverrides[101].styleConfigOverride.kpiBackgroundMode, 'dark', 'a kpi key was dropped from a KPI');
 });
 
+check('a report theme change resets per-tile colour but keeps non-colour styles', () => {
+  // A KPI carrying a leftover accent + a hand-set line width. A report-scoped
+  // theme change must clear the colour (so the new theme shows) but keep the
+  // line width (not a colour, not the theme's business).
+  const tiles = makeTiles().map((t) => (t.id === 101
+    ? { ...t, layout: { ...t.layout, styleConfigOverride: { kpiAccentColor: 'blue', lineWidth: 'thick' } } }
+    : t));
+  const built = executor.buildPresentationMutation({
+    plan: {
+      scope: 'report',
+      direction: { style: 'saas', density: 'balanced' },
+      sections: [{ primitive: 'kpi_strip', visuals: [101, 102, 103, 104] }, { primitive: 'full_width', visuals: [105] }],
+      visualPreferences: {},
+      themeIntent: { colorway: 'indigo', accent: '#1E3A8A' },
+      rationale: 'deep blue',
+    },
+    snapshot: makeSnapshot(tiles), tiles, pageId: 'page-1', currentTheme: {},
+  });
+  const ov = built.mutation.layoutOverrides[101]?.styleConfigOverride ?? {};
+  // The KPI's own colour follows the new theme accent (not blanked to plain text).
+  assertEqual(ov.kpiAccentColor, '#1E3A8A', 'a KPI colour did not follow the new theme accent');
+  assertEqual(ov.lineWidth, 'thick', 'a non-colour per-tile style was wrongly cleared');
+  assert(Object.keys(built.mutation.themePatch).length > 0, 'the theme patch was not written');
+});
+
+check('a mode/surface per-tile key is reset (not re-pointed) by a report theme change', () => {
+  const tiles = makeTiles().map((t) => (t.id === 105
+    ? { ...t, layout: { ...t.layout, styleConfigOverride: { chartSurface: 'dark', lineWidth: 'thick' } } }
+    : t));
+  const built = executor.buildPresentationMutation({
+    plan: {
+      scope: 'report', direction: { style: 'saas', density: 'balanced' },
+      sections: [{ primitive: 'kpi_strip', visuals: [101, 102, 103, 104] }, { primitive: 'full_width', visuals: [105] }],
+      visualPreferences: {}, themeIntent: { colorway: 'indigo', accent: '#1E3A8A' }, rationale: 'deep blue',
+    },
+    snapshot: makeSnapshot(tiles), tiles, pageId: 'page-1', currentTheme: {},
+  });
+  const ov = built.mutation.layoutOverrides[105]?.styleConfigOverride ?? {};
+  assert(!('chartSurface' in ov), 'a per-tile surface survived a report theme change');
+  assertEqual(ov.lineWidth, 'thick', 'a non-colour per-tile style was wrongly cleared');
+});
+
+check('a page-scoped or layout-only redesign never clears per-tile colour', () => {
+  const tiles = makeTiles().map((t) => (t.id === 101
+    ? { ...t, layout: { ...t.layout, styleConfigOverride: { kpiAccentColor: 'blue' } } }
+    : t));
+  // Report scope but NO themeIntent → not a theme change → colour is kept.
+  const built = executor.buildPresentationMutation({
+    plan: {
+      scope: 'report', direction: { style: 'saas', density: 'balanced' },
+      sections: [{ primitive: 'kpi_strip', visuals: [101, 102, 103, 104] }, { primitive: 'full_width', visuals: [105] }],
+      visualPreferences: {}, rationale: 'layout only',
+    },
+    snapshot: makeSnapshot(tiles), tiles, pageId: 'page-1', currentTheme: {},
+  });
+  const ov = built.mutation.layoutOverrides[101]?.styleConfigOverride;
+  assert(!ov || ov.kpiAccentColor === 'blue', 'a layout-only redesign wrongly cleared a per-tile colour');
+});
+
 check('a custom hex accent overrides the colorway accent', () => {
   // "deep blue #1E3A8A" should show the exact colour, not the nearest named
   // colorway's approximation.
