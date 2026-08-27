@@ -44,8 +44,16 @@ export function diffPresentation(
     const next = mutation.layoutOverrides[tile.id];
     if (!next) { unchanged.push(tile.id); continue; }
     const before = rectOf(tile);
-    const positionChanged = Number(next.x) !== before.x || Number(next.y) !== before.y;
-    const sizeChanged = Number(next.w) !== before.w || Number(next.h) !== before.h;
+    // A focused restyle writes only styleConfigOverride — no x/y/w/h. Guard each
+    // comparison on the key being present, or `Number(undefined)` is NaN and
+    // `NaN !== before.x` counts a move that never happened (a pure restyle would
+    // be reported as "moved · resized · restyled").
+    const positionChanged =
+      (next.x != null && Number(next.x) !== before.x) ||
+      (next.y != null && Number(next.y) !== before.y);
+    const sizeChanged =
+      (next.w != null && Number(next.w) !== before.w) ||
+      (next.h != null && Number(next.h) !== before.h);
     // A tile can be both moved and resized; counting it in both is the honest
     // answer, and the summary says "moved 8 · resized 5", not "13 changes".
     if (positionChanged) moved.push(tile.id);

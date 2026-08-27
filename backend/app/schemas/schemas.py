@@ -1,7 +1,7 @@
 """
 Pydantic schemas for request/response validation.
 """
-from pydantic import BaseModel, Field, ConfigDict, model_validator, field_serializer
+from pydantic import BaseModel, Field, ConfigDict, model_validator, field_serializer, field_validator
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 from enum import Enum
@@ -708,6 +708,47 @@ class PresentationPlanRequest(BaseModel):
             "the preview the user is looking at."
         ),
     )
+    images: Optional[List[str]] = Field(
+        None,
+        max_length=3,
+        description=(
+            "Up to 3 reference images as data URLs (data:image/...;base64,...). "
+            "Presentation context for the design tier ONLY — the model reads a "
+            "reference's layout and mood, never its content, and the plan it "
+            "returns still cannot change any chart's data."
+        ),
+    )
+    focused_chart_id: Optional[int] = Field(
+        None,
+        description=(
+            "When set, the user clicked ONE visual and is restyling only it. The "
+            "plan must touch that visual's appearance and nothing else — no layout "
+            "move, no other tile, no theme."
+        ),
+    )
+
+    @field_validator("images")
+    @classmethod
+    def _bound_images(cls, value: Optional[List[str]]) -> Optional[List[str]]:
+        """Keep the proxy from forwarding a junk or oversized payload.
+
+        Not a security boundary — the plan is re-validated client-side regardless
+        — but a request has no business carrying tens of megabytes, and a
+        non-string here is a bug worth catching at the door rather than at the
+        provider.
+        """
+        if value is None:
+            return value
+        total = 0
+        for item in value:
+            if not isinstance(item, str) or not item.strip():
+                raise ValueError("each reference image must be a non-empty data-URL string")
+            total += len(item)
+            if len(item) > 8_000_000:  # ~6MB decoded, per image
+                raise ValueError("a reference image is too large (max ~6MB each)")
+        if total > 16_000_000:
+            raise ValueError("reference images are too large in total")
+        return value
 
 
 class PresentationPlanResponse(BaseModel):

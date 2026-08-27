@@ -61,6 +61,12 @@ export interface ValidationResult {
 
 const COLS = DASHBOARD_GRID_COLS;
 
+/** Not tokens — the record of which template/colorway a theme IS. The theme
+ *  modal writes these too; `executor.resolveThemePatch` emits them so a redesign
+ *  can be re-opened with its template selected. Allowed in a theme patch even
+ *  though they are outside the token allow-list. */
+const THEME_IDENTITY_KEYS: ReadonlySet<string> = new Set(['templateId', 'colorwayId', 'presetId']);
+
 function fail(list: Violation[]): ValidationResult {
   const hasHardFailure = list.some((v) => v.severity !== 'geometry');
   return {
@@ -435,24 +441,32 @@ export function validatePresentationMutation(input: MutationValidationInput): Va
         message: `Visual ${id} was assigned to page ${String(layout.pageId)} but the redesign is scoped to ${pageId}.`,
       });
     }
-    const x = Number(layout.x);
-    const y = Number(layout.y);
-    const w = Number(layout.w);
-    const h = Number(layout.h);
-    if (!Number.isFinite(x) || x < 0) {
-      violations.push({ severity: 'geometry', code: 'grid.x', visualId: id, message: `Visual ${id} has x=${layout.x}.` });
-    }
-    if (!Number.isFinite(y) || y < 0) {
-      violations.push({ severity: 'geometry', code: 'grid.y', visualId: id, message: `Visual ${id} has y=${layout.y}.` });
-    }
-    if (!Number.isFinite(w) || w < MIN_TILE_W) {
-      violations.push({ severity: 'geometry', code: 'grid.wMin', visualId: id, message: `Visual ${id} is ${layout.w} columns wide (min ${MIN_TILE_W}).` });
-    }
-    if (Number.isFinite(x) && Number.isFinite(w) && x + w > COLS) {
-      violations.push({ severity: 'geometry', code: 'grid.overflow', visualId: id, message: `Visual ${id} ends at column ${x + w} (grid is ${COLS}).` });
-    }
-    if (!Number.isFinite(h) || h < MIN_TILE_H || h > MAX_TILE_H) {
-      violations.push({ severity: 'geometry', code: 'grid.h', visualId: id, message: `Visual ${id} has height ${layout.h}.` });
+    // A style-only override (focused single-chart restyle) carries no x/y/w/h:
+    // nothing moved, so there is no geometry to validate. Only check position
+    // when the override actually writes one — otherwise `Number(undefined)` is
+    // NaN and a pure restyle would be rejected for a geometry it never touched.
+    const writesGeometry =
+      layout.x != null || layout.y != null || layout.w != null || layout.h != null;
+    if (writesGeometry) {
+      const x = Number(layout.x);
+      const y = Number(layout.y);
+      const w = Number(layout.w);
+      const h = Number(layout.h);
+      if (!Number.isFinite(x) || x < 0) {
+        violations.push({ severity: 'geometry', code: 'grid.x', visualId: id, message: `Visual ${id} has x=${layout.x}.` });
+      }
+      if (!Number.isFinite(y) || y < 0) {
+        violations.push({ severity: 'geometry', code: 'grid.y', visualId: id, message: `Visual ${id} has y=${layout.y}.` });
+      }
+      if (!Number.isFinite(w) || w < MIN_TILE_W) {
+        violations.push({ severity: 'geometry', code: 'grid.wMin', visualId: id, message: `Visual ${id} is ${layout.w} columns wide (min ${MIN_TILE_W}).` });
+      }
+      if (Number.isFinite(x) && Number.isFinite(w) && x + w > COLS) {
+        violations.push({ severity: 'geometry', code: 'grid.overflow', visualId: id, message: `Visual ${id} ends at column ${x + w} (grid is ${COLS}).` });
+      }
+      if (!Number.isFinite(h) || h < MIN_TILE_H || h > MAX_TILE_H) {
+        violations.push({ severity: 'geometry', code: 'grid.h', visualId: id, message: `Visual ${id} has height ${layout.h}.` });
+      }
     }
   }
 
@@ -463,10 +477,19 @@ export function validatePresentationMutation(input: MutationValidationInput): Va
     });
   }
 
-  for (const key of Object.keys(mutation.themePatch ?? {})) {
-    if (!isAllowedThemeKey(key)) {
-      violations.push({ severity: 'capability', code: 'theme.key', message: `"${key}" is not a theme key a redesign may set.` });
-    }
+  for (const [key, value] of Object.entries(mutation.themePatch ?? {})) {
+    // Three things are legitimately in a theme patch beyond the token allow-list,
+    // and forbidding any of them refused every report-scoped template change:
+    //   - IDENTITY (templateId, colorwayId, presetId): not tokens but the record
+    //     of WHICH template/colorway is applied, exactly what the theme modal
+    //     writes. A plan cannot forge a look with them — the tokens still have to
+    //     pass — so they are allowed with a real value.
+    //   - a CLEAR (value === undefined): removing an override can never inject a
+    //     bad value, so switching a template may clear the inline legacy-look
+    //     keys (cardShadow, titleFontSize, …) the modal also clears.
+    // Everything else with a real value must be an allow-listed token.
+    if (value === undefined || THEME_IDENTITY_KEYS.has(key) || isAllowedThemeKey(key)) continue;
+    violations.push({ severity: 'capability', code: 'theme.key', message: `"${key}" is not a theme key a redesign may set.` });
   }
 
   for (const key of Object.keys(mutation.slicerClusterPatch ?? {})) {

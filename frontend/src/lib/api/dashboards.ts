@@ -429,12 +429,20 @@ export const dashboardApi = {
       prompt: string;
       snapshot: unknown;
       conversation?: Array<{ role: string; text: string }>;
+      /** Reference images as data URLs. Presentation context only — the plan
+       *  that comes back is validated and compiled here before it can touch a
+       *  tile, so an image can never change what a chart shows. */
+      images?: string[];
+      /** When the user clicked one chart to restyle only it. */
+      focusedChartId?: number | null;
     },
   ): Promise<{ plan: unknown }> => {
     const response = await apiClient.post(`/dashboards/${dashboardId}/presentation-plan`, {
       prompt: input.prompt,
       snapshot: input.snapshot,
       conversation: input.conversation ?? null,
+      images: input.images && input.images.length > 0 ? input.images : null,
+      focused_chart_id: input.focusedChartId ?? null,
     });
     return response.data;
   },

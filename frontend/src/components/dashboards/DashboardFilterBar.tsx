@@ -247,6 +247,8 @@ export function DashboardFilterBar({
   activePageId,
   onUpdateSlicerScope,
   headerExtras,
+  externalAddAnchorRef,
+  onRegisterAddSlicer,
 }: DashboardFilterBarPropsWithExtras) {
   const { t } = useI18n();
   const [isExpanded, setIsExpanded] = useState(initialExpanded);
@@ -262,10 +264,16 @@ export function DashboardFilterBar({
   const addButtonRef = useRef<HTMLButtonElement>(null);
   const [dropdownPos, setDropdownPos] = useState<{ top: number; left?: number; right?: number } | null>(null);
 
+  // Hand the opener out so the cluster's gear can trigger the picker.
+  useEffect(() => {
+    onRegisterAddSlicer?.(() => setAddingField(true));
+  }, [onRegisterAddSlicer]);
+
   // Compute fixed position when dropdown opens so it escapes overflow-hidden parents
   useEffect(() => {
-    if (addingField && addButtonRef.current) {
-      const rect = addButtonRef.current.getBoundingClientRect();
+    const anchorEl = externalAddAnchorRef?.current ?? addButtonRef.current;
+    if (addingField && anchorEl) {
+      const rect = anchorEl.getBoundingClientRect();
       if (stackVertical) {
         const viewportGap = 8;
         const flyoutGap = 8;
@@ -823,6 +831,10 @@ export function DashboardFilterBar({
                                         creates a BaseFilter with explicit operator. */}
           {!lockSlots && (
           <div className="relative">
+            {/* The button hides when the cluster hosts the trigger in its gear
+                (externalAddAnchorRef); the picker below still renders and anchors
+                to that gear. */}
+            {!externalAddAnchorRef && (
             <button
               ref={addButtonRef}
               onClick={() => {
@@ -846,6 +858,7 @@ export function DashboardFilterBar({
               <Plus className="w-3 h-3" />
               {t('dashboards.filterBar.addSlicer')}
             </button>
+            )}
 
             {addingField && addableColumns.length > 0 && (
               <>
@@ -1168,6 +1181,14 @@ interface DashboardFilterBarPropsWithExtras extends DashboardFilterBarProps {
    * position toggle + Add Image here so everything lives in a SINGLE
    * header row instead of two stacked headers. */
   headerExtras?: React.ReactNode;
+  /** When set, the built-in "Add slicer" button is HIDDEN and the add-picker
+   *  anchors to THIS element instead — so the cluster can host the trigger from
+   *  its config gear and keep the filter zone free of a toolbar. The picker
+   *  logic (search, type pick) stays here; only the opener moves. */
+  externalAddAnchorRef?: React.RefObject<HTMLElement | null>;
+  /** Handed a function that opens the add-picker, so an external control (the
+   *  gear's "Add slicer" item) can trigger it. */
+  onRegisterAddSlicer?: (open: () => void) => void;
 }
 
 function FilterCard({

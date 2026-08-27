@@ -41,8 +41,8 @@ const COLS = DASHBOARD_GRID_COLS; // 36
  * so they stay right when the theme's density changes the gap.
  */
 const TARGET_HEIGHT_PX: Record<string, number> = {
-  headline: 200,   // one number, large, with room for a delta
-  kpi: 150,        // the strip: value + label, nothing cramped
+  headline: 120,   // one big number — still compact; a KPI strip stays one band
+  kpi: 104,        // the strip: value + label, compact — a number is not a chart
   primary: 380,    // the argument — an axis you can read
   secondary: 320,
   breakdown: 320,  // a donut needs to be round, not a letterbox
@@ -71,6 +71,26 @@ const DENSITY_HEIGHT_SCALE: Record<PresentationDensity, number> = {
  */
 const MIN_DATA_VISUAL_PX = 150;
 const MIN_DECORATIVE_PX = 56;
+/** A KPI is a number and a label, not an axis — it reads fine well below the
+ *  chart floor, and holding it to the chart floor left a strip of tall cards
+ *  with a lot of empty space under each number (§ KPI-too-tall). */
+const MIN_KPI_PX = 95;
+const KPI_ROLES: ReadonlySet<string> = new Set(['kpi', 'headline']);
+
+/**
+ * Chart types that need REAL height regardless of the role they were given.
+ *
+ * A gauge is a semicircle, a funnel is a stack, a donut is a ring — squeeze any
+ * of them into a KPI-strip band and it renders as a broken sliver (the on-time
+ * gauge came out as a 91.9 with a smear behind it). The role decides prominence;
+ * the chart type decides the floor below which the mark stops being itself. This
+ * floor is applied on TOP of the role floor, so a gauge the model called a "kpi"
+ * still gets the height a gauge needs.
+ */
+const CHART_TYPE_MIN_PX: Record<string, number> = {
+  GAUGE: 220, FUNNEL: 240, PIE: 210, DONUT: 210, RADAR: 240,
+  WATERFALL: 240, SANKEY: 260, TREEMAP: 210, RADIAL_BAR: 220, PODIUM: 210,
+};
 
 /** How a primitive divides a row. `null` means "share equally between however
  *  many visuals the section holds", which is what the KPI strip needs. */
@@ -86,8 +106,27 @@ const PRIMITIVE_SPANS: Record<LayoutPrimitive, number[] | null> = {
   bento_secondary: [12, 12, 12],
   table_full: [COLS],
   analysis_with_sidebar: [27, 9],
+  // Self-sizing, like the KPI strip: the hero and the rail do not share a row,
+  // so a single span table cannot describe them. `placeRail` owns the geometry.
+  hero_with_rail: null,
   section_break: [COLS],
 };
+
+/** The hero/rail split, in columns. A rail tile at 12 of 36 sits exactly on the
+ *  `CHART_MAX_PER_ROW` floor — a third of the width — which is the narrowest a
+ *  chart with an axis stays readable at. Narrower and the rail becomes a column
+ *  of unreadable slivers, which is the failure this whole file exists to avoid. */
+const HERO_RAIL_HERO_COLS = 24;
+const HERO_RAIL_RAIL_COLS = COLS - HERO_RAIL_HERO_COLS; // 12
+
+/** At most three charts stacked in the rail. A fourth makes each one too short
+ *  to read once the section is clamped to the grid's max height. */
+const RAIL_MAX_TILES = 3;
+
+/** The rail's charts are secondary by definition, so they are sized a little
+ *  under their standalone height — a rail of full-height charts would tower over
+ *  the hero it is meant to support. */
+const RAIL_HEIGHT_SCALE = 0.85;
 
 /**
  * How many KPIs to put on one row.
@@ -304,7 +343,13 @@ export function compilePresentationPlan(input: CompileInput): CompileResult {
       // A section header is meant to be a thin band; a chart is not. Only a
       // real widget gets the low floor — an unknown tile is treated as a chart,
       // because being too tall is a nuisance and being too short hides data.
-      const floorPx = visual?.isWidget ? MIN_DECORATIVE_PX : MIN_DATA_VISUAL_PX;
+      const roleFloorPx = visual?.isWidget
+        ? MIN_DECORATIVE_PX
+        : (KPI_ROLES.has(role) ? MIN_KPI_PX : MIN_DATA_VISUAL_PX);
+      // A gauge/funnel/donut keeps the height its shape needs even when the role
+      // would make it a compact card.
+      const chartFloorPx = CHART_TYPE_MIN_PX[String(visual?.chartType ?? '').toUpperCase()] ?? 0;
+      const floorPx = Math.max(roleFloorPx, chartFloorPx);
       return Math.max(rowsForHeight(scaled, gapPx), rowsAtLeast(floorPx, gapPx));
     });
     const rowH = heights.length > 0 ? Math.max(...heights) : MIN_TILE_H;
@@ -317,6 +362,64 @@ export function compilePresentationPlan(input: CompileInput): CompileResult {
       x += span;
     });
     cursorY += rowH;
+  };
+
+  // The height one tile wants, in rows, by the same arithmetic `placeRow` uses.
+  // Broken out because the rail needs a per-tile height and `placeRow`
+  // deliberately gives every tile in its row the SAME height — the rail is the
+  // one place tiles that are NOT in a shared row get sized individually.
+  const rowsForRole = (id: VisualId, extraScale: number): number => {
+    const visual = byId.get(id);
+    const pref = plan.visualPreferences?.[String(id)];
+    const role = pref?.role ?? visual?.displayRoleHint ?? 'supporting';
+    const weight = SPAN_WEIGHT[pref?.span ?? 'medium'] ?? 1;
+    const scaled = (TARGET_HEIGHT_PX[role] ?? TARGET_HEIGHT_PX.supporting)
+      * heightScale * extraScale * (weight > 1 ? 1.12 : 1);
+    const floorPx = visual?.isWidget ? MIN_DECORATIVE_PX : MIN_DATA_VISUAL_PX;
+    return Math.max(rowsForHeight(scaled, gapPx), rowsAtLeast(floorPx, gapPx));
+  };
+
+  /**
+   * A hero on the left, a vertical rail of stacked charts on the right.
+   *
+   * The grid's row model is what makes this align to the pixel: a tile spanning
+   * H rows occupies exactly the vertical extent of consecutive tiles whose row
+   * counts sum to H (the inter-tile gaps land in the same places either way). So
+   * the hero is given `sectionRows` and the rail tiles are sized to sum to it,
+   * and their bottoms meet the hero's with no fudge factor.
+   *
+   * Every height is clamped so the section fits `MAX_TILE_H`; without that a
+   * three-chart rail could ask for a hero taller than a tile may be, which the
+   * mutation validator would reject as geometry and turn the whole redesign into
+   * a refusal the user cannot act on.
+   */
+  const placeRail = (heroId: VisualId, railIds: VisualId[]) => {
+    const railCount = Math.max(1, railIds.length);
+    // Split the max height between the rail tiles so their sum can never exceed
+    // one tile's ceiling — then the hero, sized to that sum, cannot either.
+    const perRailCap = Math.max(MIN_TILE_H, Math.floor(MAX_TILE_H / railCount));
+    const railRows = railIds.map((id) => clamp(rowsForRole(id, RAIL_HEIGHT_SCALE), MIN_TILE_H, perRailCap));
+    const railTotal = railRows.reduce((sum, h) => sum + h, 0);
+    const heroOwn = clamp(rowsForRole(heroId, 1), MIN_TILE_H, MAX_TILE_H);
+    const sectionRows = clamp(Math.max(heroOwn, railTotal), MIN_TILE_H, MAX_TILE_H);
+
+    layoutOverrides[heroId] = {
+      x: 0, y: cursorY, w: HERO_RAIL_HERO_COLS, h: sectionRows, gv: GRID_VERSION, pageId,
+    };
+    placed.add(heroId);
+
+    let ry = cursorY;
+    railIds.forEach((id, index) => {
+      // The last tile absorbs the difference between the rail's natural total
+      // and the section height, so the rail's bottom always meets the hero's.
+      const h = index === railIds.length - 1 ? sectionRows - (ry - cursorY) : railRows[index];
+      layoutOverrides[id] = {
+        x: HERO_RAIL_HERO_COLS, y: ry, w: HERO_RAIL_RAIL_COLS, h, gv: GRID_VERSION, pageId,
+      };
+      placed.add(id);
+      ry += h;
+    });
+    cursorY += sectionRows;
   };
 
   const roleOf = (id: VisualId): string =>
@@ -342,6 +445,25 @@ export function compilePresentationPlan(input: CompileInput): CompileResult {
       for (let i = 0; i < ids.length; i += perRow) {
         const slice = ids.slice(i, i + perRow);
         placeRow(slice, splitRow(slice.length));
+      }
+      continue;
+    }
+
+    if (section.primitive === 'hero_with_rail') {
+      // hero + 1–3 rail tiles is the shape. One visual has no rail, so it is a
+      // full-width tile; more than four cannot be a legible rail, so it falls
+      // back to the even-split wall the oversized case already uses — the
+      // primitive degrades to something sane rather than producing slivers.
+      if (ids.length >= 2 && ids.length <= 1 + RAIL_MAX_TILES) {
+        placeRail(ids[0], ids.slice(1));
+      } else if (ids.length === 1) {
+        placeRow(ids, [COLS]);
+      } else {
+        const perRow = bestDivisor(ids.length, CHART_MAX_PER_ROW);
+        for (let i = 0; i < ids.length; i += perRow) {
+          const slice = ids.slice(i, i + perRow);
+          placeRow(slice, splitRow(slice.length));
+        }
       }
       continue;
     }

@@ -19,7 +19,7 @@
 import type { Dashboard, DashboardChart, DashboardChartLayout, DashboardThemeConfig } from '@/types/api';
 import { COLORWAYS, COLORWAY_KEYS, TEMPLATES, TEMPLATE_KEYS } from '@/lib/dashboard-theme-catalog';
 import { compilePresentationPlan } from './compiler';
-import { isAllowedChartStyleKey, isAllowedThemeKey } from './capabilities';
+import { isAllowedChartStyleKey, isAllowedThemeKey, KPI_ONLY_STYLE_KEYS } from './capabilities';
 import { buildPresentationFingerprint } from './snapshot';
 import { validatePresentationMutation, validatePresentationPlan } from './validator';
 import type { ValidationResult } from './validator';
@@ -49,6 +49,9 @@ export interface BuildMutationInput {
   /** The theme's inter-tile gap. It sets the grid's row pitch, so the compiler
    *  needs it to turn a height in pixels into a number of rows. */
   gridGapPx?: number;
+  /** When set, ONE chart is being restyled: skip the layout compile entirely and
+   *  emit only that tile's style override, so nothing else moves or changes. */
+  focusedChartId?: number | null;
 }
 
 export interface BuildMutationResult {
@@ -134,13 +137,21 @@ function resolveTileStyles(
   tiles: DashboardChart[],
 ): Record<VisualId, Record<string, unknown>> {
   const out: Record<VisualId, Record<string, unknown>> = {};
-  const known = new Set(tiles.map((t) => t.id));
+  const byId = new Map(tiles.map((t) => [t.id, t]));
   for (const [rawId, intent] of Object.entries(plan.tileStyles ?? {})) {
     const id = Number(rawId);
-    if (!known.has(id)) continue;
+    const tile = byId.get(id);
+    if (!tile) continue;
+    // KPI background/accent keys are inert on a chart — a model that reaches for
+    // `kpiBackgroundMode` to "darken a line chart" would otherwise produce a
+    // no-op reported as a change. Drop them off a KPI; the cross-type way to
+    // reskin a chart is `chartSurface`.
+    const isKpi = String((tile.chart as any)?.chart_type ?? '').toUpperCase() === 'KPI';
     const safe: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(intent ?? {})) {
-      if (isAllowedChartStyleKey(key)) safe[key] = value;
+      if (!isAllowedChartStyleKey(key)) continue;
+      if (!isKpi && KPI_ONLY_STYLE_KEYS.has(key)) continue;
+      safe[key] = value;
     }
     if (Object.keys(safe).length > 0) out[id] = safe;
   }
@@ -154,10 +165,59 @@ function resolveTileStyles(
 export function buildPresentationMutation(input: BuildMutationInput): BuildMutationResult {
   const { plan, snapshot, tiles, pageId, currentTheme, gridGapPx } = input;
 
-  const planValidation = validatePresentationPlan(plan, tiles.map((t) => t.id));
   const emptyMutation: PresentationMutation = {
     layoutOverrides: {}, themePatch: {}, slicerClusterPatch: {}, createdWidgets: [], notes: [],
   };
+
+  // ── Focused single-chart restyle ──────────────────────────────────────────
+  // The user clicked one tile: change ONLY its appearance. There is no compile
+  // (nothing moves), no theme, no slicer — just that tile's styleConfigOverride,
+  // merged over what it already carries so a hand-set Top-N survives. The same
+  // fingerprint check runs, so the restyle still cannot touch what the chart
+  // shows, and every OTHER tile is provably identical.
+  //
+  // Runs BEFORE the whole-plan gate on purpose: `resolveTileStyles` already
+  // drops any key outside the allow-list, and the fingerprint proves no data
+  // moved, so a focused restyle is safe by construction. A model that also
+  // filled in `direction`/`sections` (which we never apply here) must not sink
+  // the one tile the user asked to restyle — so those parts of the plan are not
+  // validated in this path. The pass is the focused tileStyle + the fingerprint.
+  if (input.focusedChartId != null) {
+    const id = input.focusedChartId;
+    const target = tiles.find((t) => t.id === id);
+    const style = resolveTileStyles(plan, tiles)[id] ?? {};
+    if (!target || Object.keys(style).length === 0) {
+      // Nothing survived the allow-list (or the tile is gone): a no-op, not a
+      // refusal. Returning ok with an empty mutation lets the caller's
+      // empty-diff path render it as "already matches / nothing to do".
+      return {
+        ok: true,
+        mutation: emptyMutation,
+        planValidation: { ok: true, repairable: false, violations: [] },
+        mutationValidation: { ok: true, repairable: false, violations: [] },
+        orphanIds: [],
+      };
+    }
+    const previous = ((target.layout as any)?.styleConfigOverride ?? {}) as Record<string, unknown>;
+    const mutation: PresentationMutation = {
+      layoutOverrides: {
+        [id]: { styleConfigOverride: { ...previous, ...style } } as Partial<DashboardChartLayout>,
+      },
+      themePatch: {}, slicerClusterPatch: {}, createdWidgets: [], notes: [],
+    };
+    const before = buildPresentationFingerprint(tiles);
+    const after = buildPresentationFingerprint(applyMutationToTiles(tiles, mutation));
+    const mutationValidation = validatePresentationMutation({ before, after, mutation, pageId });
+    return {
+      ok: mutationValidation.ok,
+      mutation,
+      planValidation: { ok: true, repairable: false, violations: [] },
+      mutationValidation,
+      orphanIds: [],
+    };
+  }
+
+  const planValidation = validatePresentationPlan(plan, tiles.map((t) => t.id));
   if (!planValidation.ok && !planValidation.repairable) {
     return {
       ok: false,

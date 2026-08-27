@@ -56,12 +56,18 @@ export type LayoutPrimitive =
   | 'bento_secondary'
   | 'table_full'
   | 'analysis_with_sidebar'
+  // A large primary on the left with a VERTICAL rail of 2–3 stacked secondary
+  // charts on the right — the shape a modern SaaS analytics report is built on.
+  // Unlike every other primitive it is not one row: the hero spans the full
+  // height of the rail, so `visuals[0]` is the hero and the rest stack beside
+  // it. The compiler special-cases it exactly as it does `kpi_strip` (§9).
+  | 'hero_with_rail'
   | 'section_break';
 
 export const LAYOUT_PRIMITIVES: LayoutPrimitive[] = [
   'kpi_strip', 'hero_metric', 'full_width', 'two_equal', 'two_one', 'one_two',
   'three_equal', 'bento_primary', 'bento_secondary', 'table_full',
-  'analysis_with_sidebar', 'section_break',
+  'analysis_with_sidebar', 'hero_with_rail', 'section_break',
 ];
 
 export type CompositionStyle =
@@ -169,6 +175,18 @@ export interface SnapshotVisual {
   widgetType: string;
   /** Which allow-listed style keys this visual's renderer actually honours. */
   styleCapabilities: string[];
+  /**
+   * The SHAPE this visual renders best in — the model's cue for how to SIZE it,
+   * so a gauge is never handed a full-width band. This is deliberately advice,
+   * not a constraint the compiler enforces by clamping width: the planner is
+   * told what each chart wants and left to compose, which is the whole point of
+   * keeping intelligence in the plan and geometry in the compiler.
+   *   'square' — gauge, pie, donut, radial: a compact, roughly-square slot
+   *   'wide'   — line, area, bar, table, time series: room for an axis
+   *   'tall'   — funnel, sankey: vertical space
+   *   'flex'   — anything else; no strong preference
+   */
+  renderAspect: 'square' | 'wide' | 'tall' | 'flex';
 }
 
 export interface SnapshotSlicer {

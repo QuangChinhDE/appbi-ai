@@ -97,6 +97,9 @@ interface DashboardGridProps {
    *  brand-ring while editing, and click toggles focus. */
   focusedDashboardChartId?: number | null;
   onFocusChart?: (dashboardChartId: number) => void;
+  /** AI Design mode — tiles become click-to-focus targets (no drag handle) so a
+   *  click anywhere on a tile scopes an AI restyle to just that visual. */
+  aiDesignMode?: boolean;
   /** Phase-B17 — collaborators currently editing each tile (GG-Sheets cursors). */
   presenceByChart?: Record<number, { name: string; color: string }>;
   /** Dashboard-level parameter values (what-if / field parameters). Consumed by
@@ -222,6 +225,7 @@ export function DashboardGrid({
   disableLazy = false,
   focusedDashboardChartId = null,
   onFocusChart,
+  aiDesignMode = false,
   presenceByChart,
   params = {},
   onParamChange,
@@ -496,6 +500,7 @@ export function DashboardGrid({
             onMoveToPage={onMoveChartToPage ? (pageId) => onMoveChartToPage(dc.id, pageId) : undefined}
             isFocused={focusedDashboardChartId === dc.id}
             onFocus={onFocusChart}
+            aiDesignMode={aiDesignMode}
             editingBy={presenceByChart?.[dc.id] ?? null}
           />
         );

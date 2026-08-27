@@ -1653,3 +1653,47 @@
   padding-inline-start: revert;
   margin: revert;
 }
+
+/* ── AI Design per-chart surface ──────────────────────────────────────────────
+ * A focused restyle can set `chartSurface: 'dark' | 'light'` on one tile. The
+ * tile paints a dark/light card and flips its `--text-*` / `--border-line`
+ * tokens (see ChartTile), which handles the title and any text drawn with
+ * `rgb(var(--text-*))`. Recharts, though, paints its axis ticks, axis lines and
+ * grid with fixed SVG presentation attributes (#666 / #ccc) that ignore those
+ * tokens — so they are overridden here with the CSS `fill`/`stroke` properties,
+ * which win over the SVG attributes. Scoped to the tile, so only the restyled
+ * chart changes. Series colours are left alone: a blue line reads on either. */
+.chart-surface-dark .recharts-cartesian-axis-tick-value,
+.chart-surface-dark .recharts-cartesian-axis-tick text,
+.chart-surface-dark .recharts-label,
+.chart-surface-dark .recharts-legend-item-text {
+  fill: rgb(203 213 225) !important;
+  color: rgb(203 213 225) !important;
+}
+.chart-surface-dark .recharts-cartesian-axis-line,
+.chart-surface-dark .recharts-cartesian-axis-tick-line {
+  stroke: rgb(71 85 105) !important;
+}
+.chart-surface-dark .recharts-cartesian-grid line {
+  stroke: rgb(51 65 85) !important;
+}
+.chart-surface-dark .recharts-tooltip-wrapper .recharts-default-tooltip {
+  background: rgb(15 23 42) !important;
+  border-color: rgb(51 65 85) !important;
+  color: rgb(226 232 240) !important;
+}
+
+.chart-surface-light .recharts-cartesian-axis-tick-value,
+.chart-surface-light .recharts-cartesian-axis-tick text,
+.chart-surface-light .recharts-label,
+.chart-surface-light .recharts-legend-item-text {
+  fill: rgb(60 65 73) !important;
+  color: rgb(60 65 73) !important;
+}
+.chart-surface-light .recharts-cartesian-axis-line,
+.chart-surface-light .recharts-cartesian-axis-tick-line {
+  stroke: rgb(203 213 225) !important;
+}
+.chart-surface-light .recharts-cartesian-grid line {
+  stroke: rgb(226 230 235) !important;
+}

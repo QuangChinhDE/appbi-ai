@@ -49,6 +49,9 @@ export interface UseAiDesignInput {
   /** Theme grid gap, so compiled tiles are sized in the density the report
    *  actually renders at. */
   gridGapPx?: number;
+  /** The DashboardChart id the user clicked to restyle on its own; null for a
+   *  whole-page/report redesign. Set → the redesign scopes to just this tile. */
+  focusedChartId?: number | null;
   /** Commit a design. One call, one undo entry. */
   onCommit: (input: {
     layoutOverrides: Record<number, Record<string, any>>;
@@ -61,6 +64,13 @@ interface PendingDesign {
   mutation: PresentationMutation;
   diff: PresentationDiff;
   previewTiles: DashboardChart[];
+  /** The page and scope this preview was compiled for. A preview is geometry
+   *  for one page; rendered over another it paints the wrong tiles, and its
+   *  theme patch was decided by the scope in force when it was built. Both are
+   *  recorded so a page switch or a scope flip drops it instead of applying it
+   *  blind (§18, §24). */
+  pageId: string;
+  scope: PresentationScope;
 }
 
 export function useAiDesign(input: UseAiDesignInput) {
@@ -96,15 +106,30 @@ export function useAiDesign(input: UseAiDesignInput) {
     input.pageCount, input.slicers, input.slicerDock,
   ]);
 
-  const submit = React.useCallback(async (prompt: string) => {
+  // A preview outlives neither the page it was drawn for nor the scope it was
+  // compiled under. Switching either while one is on screen would leave an
+  // overlay describing tiles the user is no longer looking at, so it is dropped
+  // the moment they diverge — the user re-runs against what they can now see.
+  React.useEffect(() => {
+    setPending((current) =>
+      current && (current.pageId !== input.activePageId || current.scope !== scope) ? null : current,
+    );
+  }, [input.activePageId, scope]);
+
+  const submit = React.useCallback(async (prompt: string, images?: string[]) => {
     if (!snapshot || busy) return;
+    const refs = (images ?? []).filter((img) => typeof img === 'string' && img.length > 0);
     setBusy(true);
-    setTurns((previous) => [...previous, { role: 'user', text: prompt }]);
+    setTurns((previous) => [...previous, { role: 'user', text: prompt, images: refs.length ? refs : undefined }]);
 
     try {
+      // Only the intent of earlier turns travels, never their images — a
+      // reference belongs to the turn that attached it, and re-sending it would
+      // make "now make it denser" silently re-apply the old look (§12).
       const conversation = turns.slice(-6).map((turn) => ({ role: turn.role, text: turn.text }));
       const response = await dashboardApi.planPresentation(input.dashboardId, {
-        prompt, snapshot, conversation,
+        prompt, snapshot, conversation, images: refs.length ? refs : undefined,
+        focusedChartId: input.focusedChartId ?? null,
       });
 
       // Scope is imposed, not read. A model that decided for itself to redesign
@@ -119,6 +144,7 @@ export function useAiDesign(input: UseAiDesignInput) {
         pageId: input.activePageId,
         currentTheme: input.currentTheme,
         gridGapPx: input.gridGapPx,
+        focusedChartId: input.focusedChartId ?? null,
       });
 
       if (!built.ok) {
@@ -152,6 +178,8 @@ export function useAiDesign(input: UseAiDesignInput) {
         mutation: built.mutation,
         diff,
         previewTiles: applyMutationToTiles(baselineTiles, built.mutation),
+        pageId: input.activePageId,
+        scope,
       });
       setTurns((previous) => [...previous, {
         role: 'assistant',
@@ -172,11 +200,19 @@ export function useAiDesign(input: UseAiDesignInput) {
     }
   }, [
     snapshot, busy, turns, scope, baselineTiles, input.dashboardId,
-    input.activePageId, input.currentTheme, input.gridGapPx, t,
+    input.activePageId, input.currentTheme, input.gridGapPx, input.focusedChartId, t,
   ]);
 
   const apply = React.useCallback(() => {
     if (!pending) return;
+    // Belt to the effect's braces: never commit a preview built for a different
+    // page or scope than the one in force now. The effect already clears it on
+    // divergence, but Apply is the irreversible step, so it checks again.
+    if (pending.pageId !== input.activePageId || pending.scope !== scope) {
+      setPending(null);
+      toast.info(t('dashboards.aiDesign.discarded'));
+      return;
+    }
     input.onCommit({
       layoutOverrides: toLocalLayoutOverrides(pending.mutation, input.localLayoutOverrides),
       themePatch: Object.keys(pending.mutation.themePatch ?? {}).length > 0
@@ -188,7 +224,7 @@ export function useAiDesign(input: UseAiDesignInput) {
     });
     setPending(null);
     toast.success(t('dashboards.aiDesign.applied'));
-  }, [pending, input, t]);
+  }, [pending, input, scope, t]);
 
   const discard = React.useCallback(() => {
     setPending(null);

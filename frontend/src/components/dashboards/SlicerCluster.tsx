@@ -22,7 +22,7 @@
  */
 
 import React, { useMemo, useState, useRef, useEffect } from 'react';
-import { Image as ImageIcon, X, Settings2, Link2, Filter } from 'lucide-react';
+import { Image as ImageIcon, X, Settings2, Link2, Filter, Plus } from 'lucide-react';
 import { useI18n } from '@/providers/LanguageProvider';
 import { DashboardFilterBar } from '@/components/dashboards/DashboardFilterBar';
 import { useDashboardChartTheme } from '@/components/dashboards/DashboardThemeProvider';
@@ -192,6 +192,10 @@ export function SlicerCluster({
   // expanded in both builder and public views. Individual slicer popovers still
   // handle their own open/close state inside DashboardFilterBar.
   const configMenuRef = useRef<HTMLDivElement>(null);
+  // The gear anchors the "Add slicer" picker (moved out of the filter bar), and
+  // `openAddSlicerRef` holds the opener DashboardFilterBar hands back.
+  const gearBtnRef = useRef<HTMLButtonElement>(null);
+  const openAddSlicerRef = useRef<(() => void) | null>(null);
   useEffect(() => {
     if (!configMenuOpen) return;
     const onDocClick = (e: MouseEvent) => {
@@ -277,14 +281,25 @@ export function SlicerCluster({
     // other surface (`clusterMatchesCardTreatment: false`). Reading the same
     // `--dashboard-card-*` variables the tiles read makes the filter area part
     // of the report rather than a component parked on top of it.
+    // A left/right RAIL becomes a real filter PANEL — a card with the report's
+    // own surface, border and shadow — instead of controls floating in an empty
+    // column. That empty left margin was the thing that read as "not a real
+    // product": a SaaS report puts its filters in a panel, so the rail now does
+    // too, using the same `--dashboard-card-*` tokens the tiles use so it matches
+    // whatever theme is applied. A TOP band stays transparent — a filter bar
+    // wants to be a clean strip, not a boxed card.
     background: effectiveLayout.background
-      ?? 'transparent',
+      ?? (isRail ? 'var(--dashboard-card-bg, rgb(var(--surface-1)))' : 'transparent'),
     border:
       effectiveLayout.border === 'none'
         ? '1px solid transparent'
-        : effectiveLayout.border === 'solid'
+        : (effectiveLayout.border === 'solid' || isRail)
           ? '1px solid var(--dashboard-card-border-color, rgb(var(--border-line)))'
           : '1px solid transparent',
+    // The panel earns a soft shadow like every other card; a top band gets none.
+    boxShadow: (isRail && effectiveLayout.border !== 'none' && !effectiveLayout.background)
+      ? 'var(--dashboard-card-shadow, 0 1px 3px rgba(16,24,40,0.06))'
+      : undefined,
     // The dashed "this zone is for slicers" affordance is an EDITING cue, so it
     // is drawn as an outline: outlines sit outside the box model, so turning the
     // cue on and off no longer shifts the slicers by a pixel, and nothing about
@@ -297,7 +312,7 @@ export function SlicerCluster({
     // Public viewer: the cards carry their own borders and the cluster is
     // transparent, so the 8px frame padding is pure dead whitespace above the
     // charts. Drop it to a hair on the public link to pull the grid up.
-    padding: lockSlots ? 2 : 8,
+    padding: isRail ? 14 : (lockSlots ? 2 : 8),
     gap: effectiveLayout.gap ?? 8,
     overflow: 'visible',
     // Height follows content. 80px unconditionally meant a top band was 138px
@@ -343,25 +358,13 @@ export function SlicerCluster({
   // ONE header row instead of two. Editor only (hidden when lockSlots).
   const clusterControls = lockSlots ? null : (
     <>
-      {/* "Bản đồ filter" — at-a-glance overview of every filter source, surfaced
-          here (where the DA manages slicers) instead of being buried in the
-          More menu. Build only (prop omitted on the public viewer). */}
-      {onOpenFilterMap && (
-        <button
-          type="button"
-          onClick={onOpenFilterMap}
-          title={t('dashboards.slicerCluster.filterMapTooltip')}
-          className="inline-flex flex-shrink-0 items-center gap-1 rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1 text-tiny font-medium text-text-secondary transition-colors hover:border-brand/40 hover:bg-brand/5 hover:text-brand"
-        >
-          <Filter className="h-3.5 w-3.5" />
-          <span className="hidden sm:inline">{t('dashboards.slicerCluster.filterMap')}</span>
-        </button>
-      )}
-      {/* Config gear — holds the rarely-used setup controls (position +
-          add image) so the header stays clean. (Phase-B8: the "SLICER" chip
-          was removed — redundant; the dashed zone already signals the area.) */}
+      {/* ONE gear holds every edit control — position, layout, add image and the
+          filter map — so the filter zone shows filters, not a toolbar. The DA
+          only reaches for setup occasionally; laying those buttons out full-time
+          was the clutter that made the panel "khó coi". */}
       <div ref={configMenuRef} className="relative flex-shrink-0">
         <button
+          ref={gearBtnRef}
           type="button"
           onClick={() => setConfigMenuOpen((v) => !v)}
           className={`inline-flex items-center gap-1 rounded border px-1.5 py-1 text-tiny transition-colors ${
@@ -374,7 +377,23 @@ export function SlicerCluster({
           <Settings2 className="h-3.5 w-3.5" />
         </button>
         {configMenuOpen && (
-          <div className="absolute right-0 top-full z-50 mt-1 w-56 rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 p-2 shadow-xl">
+          <div className={`absolute top-full z-[60] mt-1 w-56 rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 p-2 shadow-xl ${
+            // A LEFT/TOP rail sits against the left nav; opening the menu to the
+            // right (left-0) keeps it in the report area instead of sliding under
+            // the sidebar, which sits in a higher stacking context this popover
+            // can never rise above. A right rail opens the other way.
+            dock === 'right' ? 'right-0' : 'left-0'
+          }`}>
+            {/* Add slicer — the primary action, first in the menu. Opens the
+                picker that DashboardFilterBar still owns (via openAddSlicerRef). */}
+            <button
+              type="button"
+              onClick={() => { openAddSlicerRef.current?.(); setConfigMenuOpen(false); }}
+              className="mb-2 flex w-full items-center gap-1.5 rounded-md bg-brand px-2 py-1.5 text-tiny font-medium text-white shadow-sm transition-colors hover:bg-brand-hover"
+            >
+              <Plus className="h-3.5 w-3.5" />
+              <span>{t('dashboards.filterBar.addSlicer')}</span>
+            </button>
             <div className="mb-1 px-1 text-tiny font-emphasis text-text-tertiary">{t('dashboards.slicerCluster.position')}</div>
             {/* Six docks, rendered from DOCK_POSITIONS so adding one is a
                 single-line change in lib/filters and never a UI edit. The
@@ -449,6 +468,19 @@ export function SlicerCluster({
                 }}
               />
             </label>
+            {/* Filter map lives here too, so the panel header stays a single
+                gear instead of a row of buttons cluttering the filter zone. */}
+            {onOpenFilterMap && (
+              <button
+                type="button"
+                onClick={() => { onOpenFilterMap(); setConfigMenuOpen(false); }}
+                className="mt-2 flex w-full items-center gap-1.5 rounded border border-[rgb(var(--border-line))] px-2 py-1.5 text-tiny text-text-secondary hover:bg-surface-2"
+                title={t('dashboards.slicerCluster.filterMapTooltip')}
+              >
+                <Filter className="h-3.5 w-3.5" />
+                <span>{t('dashboards.slicerCluster.filterMap')}</span>
+              </button>
+            )}
           </div>
         )}
       </div>
@@ -493,6 +525,9 @@ export function SlicerCluster({
       style={containerStyle}
     >
       <div className="relative" style={innerLayout}>
+        {/* No header here: DashboardFilterBar already renders a "Filters" title,
+            and adding a second read as a duplicate on the public link. The rail
+            card background (above) is what turns the column into a panel. */}
         <div
           className="min-w-0"
           style={isVertical ? { width: '100%' } : { flex: 1, minWidth: 0 }}
@@ -521,6 +556,14 @@ export function SlicerCluster({
             collapsedSlicers
             verticalPopoverPlacement={dock === 'left' ? 'right' : 'left'}
             headerExtras={clusterControls}
+            // Move "Add slicer" out of the filter bar and into the gear: hide
+            // its button, anchor the picker to the gear, and let the gear's menu
+            // item open it. Builder only (the gear does not exist on a locked
+            // public/embed view, where adding a slicer is not offered anyway).
+            {...(!lockSlots ? {
+              externalAddAnchorRef: gearBtnRef,
+              onRegisterAddSlicer: (open: () => void) => { openAddSlicerRef.current = open; },
+            } : {})}
           />
         </div>
         {imageEntries.map((img) => (

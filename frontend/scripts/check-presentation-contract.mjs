@@ -208,6 +208,28 @@ check('the capability schema only advertises real ids', () => {
   assert(schema.grid.columns === COLS, `schema says ${schema.grid.columns} columns, grid has ${COLS}`);
 });
 
+check('the schema names the mood of every theme option so dark/modern is choosable', () => {
+  const schema = capabilities.buildCapabilitySchema();
+  const guide = schema.theme.colorwayGuide;
+  assert(Array.isArray(guide) && guide.length === schema.theme.colorways.length, 'colorwayGuide does not cover every colorway');
+  // A "dark violet SaaS" request has to be answerable on purpose, not by luck:
+  // at least one option is dark, and every option carries the accent a planner
+  // matches a named colour to.
+  assert(guide.some((c) => c.mode === 'dark'), 'no dark colorway is advertised — a dark request cannot be honoured');
+  for (const c of guide) {
+    assert(typeof c.accent === 'string' && c.accent.length > 0, `colorway ${c.id} advertises no accent colour`);
+  }
+  const templateGuide = schema.theme.templateGuide;
+  assert(Array.isArray(templateGuide) && templateGuide.some((t) => t.skin === 'modern'), 'no modern-skinned template is advertised');
+});
+
+check('the rail primitive is advertised to the planner', () => {
+  const types = load('lib/dashboard-presentation/types.ts');
+  assert(types.LAYOUT_PRIMITIVES.includes('hero_with_rail'), 'hero_with_rail missing from the primitive list');
+  const schema = capabilities.buildCapabilitySchema();
+  assert(schema.composition.primitives.includes('hero_with_rail'), 'hero_with_rail is not offered in the capability schema');
+});
+
 // ── Role inference ──────────────────────────────────────────────────────────
 
 check('role inference reads chart type and authored size', () => {
@@ -341,6 +363,86 @@ check('a primitive that fits its section is honoured, not capped', () => {
   assertEqual(mutation.layoutOverrides[106].w, 9, 'the sidebar was rewritten');
 });
 
+check('hero_with_rail stacks a vertical rail beside a full-height hero', () => {
+  const tiles = makeTiles();
+  const plan = {
+    scope: 'page',
+    direction: { style: 'saas', density: 'balanced' },
+    sections: [{ primitive: 'hero_with_rail', visuals: [105, 106, 107] }],
+    visualPreferences: {
+      105: { role: 'primary', span: 'large', emphasis: 'high' },
+      106: { role: 'secondary', span: 'medium', emphasis: 'normal' },
+      107: { role: 'breakdown', span: 'small', emphasis: 'normal' },
+    },
+  };
+  const { mutation } = compile(tiles, plan);
+  const hero = mutation.layoutOverrides[105];
+  const r1 = mutation.layoutOverrides[106];
+  const r2 = mutation.layoutOverrides[107];
+  // Hero on the left, the rail a single column on the right, together filling
+  // the grid with no shared column.
+  assertEqual(hero.x, 0, 'the hero is not at the left edge');
+  assert(hero.w >= 24, `the hero is only ${hero.w} columns wide`);
+  assertEqual(r1.x, hero.w, 'the rail does not begin where the hero ends');
+  assertEqual(r1.x, r2.x, 'the rail is not a single column');
+  assertEqual(hero.w + r1.w, COLS, `hero ${hero.w} + rail ${r1.w} do not fill ${COLS}`);
+  // The rail is stacked, not overlapping, and its bottom meets the hero's — the
+  // whole point of the primitive, and the thing the grid's row model buys us.
+  assertEqual(r2.y, r1.y + r1.h, 'the second rail tile does not sit below the first');
+  assertEqual(hero.y + hero.h, r2.y + r2.h, "the rail bottom does not meet the hero's");
+  assertEqual(validator.findOverlaps(mutation.layoutOverrides), [], 'the hero and rail overlap');
+  // Nothing may exceed a tile's maximum height, or the mutation validator would
+  // reject the whole redesign as un-actionable geometry.
+  for (const id of [105, 106, 107]) {
+    assert(mutation.layoutOverrides[id].h <= 24, `visual ${id} is ${mutation.layoutOverrides[id].h} rows (max 24)`);
+    assert(mutation.layoutOverrides[id].x + mutation.layoutOverrides[id].w <= COLS, `visual ${id} overflows the grid`);
+  }
+});
+
+check('hero_with_rail keeps identity and semantics like any other primitive', () => {
+  const tiles = makeTiles();
+  const before = snapshotMod.buildPresentationFingerprint(tiles);
+  const plan = {
+    scope: 'page',
+    direction: { style: 'saas', density: 'balanced' },
+    sections: [
+      { primitive: 'kpi_strip', visuals: [101, 102, 103, 104] },
+      { primitive: 'hero_with_rail', visuals: [105, 106, 107] },
+      { primitive: 'table_full', visuals: [108] },
+    ],
+    visualPreferences: {
+      105: { role: 'primary', span: 'large', emphasis: 'high' },
+      106: { role: 'secondary', span: 'medium', emphasis: 'normal' },
+      107: { role: 'breakdown', span: 'small', emphasis: 'normal' },
+    },
+  };
+  const { mutation, orphanIds } = compile(tiles, plan);
+  assertEqual(orphanIds, [], 'a rail composition dropped a visual');
+  const after = snapshotMod.buildPresentationFingerprint(applyMutation(tiles, mutation));
+  const result = validator.validatePresentationMutation({ before, after, mutation, pageId: 'page-1' });
+  assert(result.ok, `a rail composition broke the contract: ${JSON.stringify(result.violations)}`);
+});
+
+check('hero_with_rail degrades to something sane when it holds too few or too many', () => {
+  const tiles = makeTiles();
+  // One visual: no rail to build, so it is simply full width.
+  const single = compile(tiles, {
+    scope: 'page', direction: { style: 'saas', density: 'balanced' },
+    sections: [{ primitive: 'hero_with_rail', visuals: [105] }], visualPreferences: {},
+  });
+  assertEqual(single.mutation.layoutOverrides[105].w, COLS, 'a lone hero was not made full width');
+  // Six visuals: too many for a legible rail, so it falls back to a clean wall
+  // rather than a column of slivers.
+  const many = compile(tiles, {
+    scope: 'page', direction: { style: 'saas', density: 'balanced' },
+    sections: [{ primitive: 'hero_with_rail', visuals: [101, 102, 103, 104, 105, 106] }], visualPreferences: {},
+  });
+  assertEqual(validator.findOverlaps(many.mutation.layoutOverrides), [], 'the oversized rail fell back into overlaps');
+  for (const id of [101, 102, 103, 104, 105, 106]) {
+    assert(many.mutation.layoutOverrides[id].w >= 12, `fallback gave visual ${id} only ${many.mutation.layoutOverrides[id].w} columns`);
+  }
+});
+
 check('five KPIs wrap instead of producing a 5th sliver', () => {
   const tiles = makeTiles();
   tiles.push({
@@ -465,10 +567,32 @@ check('a compiled tile is tall enough to read', () => {
   const { mutation } = compile(tiles, planFor(tiles));
   const px = (id) => tileHeightPx(mutation.layoutOverrides[id].h);
   for (const id of [101, 102, 103, 104]) {
-    assert(px(id) >= 130, `KPI ${id} compiles to ${Math.round(px(id))}px — a number cannot be read in that`);
+    // A KPI is a number + label, not an axis — a compact strip card (~1 line of
+    // value) reads fine; holding it to the chart floor left tall, half-empty
+    // cards (§ KPI-too-tall). Still must clear a floor a value can be read in.
+    assert(px(id) >= 105, `KPI ${id} compiles to ${Math.round(px(id))}px — a number cannot be read in that`);
+    assert(px(id) <= 150, `KPI ${id} compiles to ${Math.round(px(id))}px — a single number does not need a card that tall`);
   }
   assert(px(105) >= 300, `the primary chart is ${Math.round(px(105))}px tall`);
   assert(px(108) >= 380, `the table is ${Math.round(px(108))}px tall`);
+});
+
+check('a gauge/funnel keeps chart height even when the role is a compact KPI', () => {
+  // The on-time gauge came out as a squished 91.9 because GAUGE is a KPI_TYPE →
+  // 'kpi' role → the compact strip height. A gauge is a chart; it must keep the
+  // height its shape needs regardless of the role.
+  for (const type of ['GAUGE', 'FUNNEL']) {
+    const tiles = makeTiles();
+    tiles[0].chart.chart_type = type; // 101 becomes a gauge/funnel
+    const plan = {
+      scope: 'page', direction: { style: 'saas', density: 'balanced' },
+      sections: [{ primitive: 'full_width', visuals: [101] }],
+      visualPreferences: { 101: { role: 'kpi', span: 'small', emphasis: 'normal' } },
+    };
+    const { mutation } = compile(tiles, plan);
+    const px = tileHeightPx(mutation.layoutOverrides[101].h);
+    assert(px >= 200, `a ${type} in a kpi role compiled to ${Math.round(px)}px — too short to render`);
+  }
 });
 
 check('no data visual compiles below the readable floor, at any density', () => {
@@ -489,7 +613,8 @@ check('no data visual compiles below the readable floor, at any density', () => 
       const { mutation } = compile(tiles, plan);
       for (const [id, l] of Object.entries(mutation.layoutOverrides)) {
         const px = tileHeightPx(l.h);
-        assert(px >= 140, `${density}/${span}: visual ${id} compiled to ${Math.round(px)}px`);
+        // KPI role floors lower than a chart (a number, not an axis).
+        assert(px >= 100, `${density}/${span}: visual ${id} compiled to ${Math.round(px)}px`);
       }
     }
   }
@@ -548,6 +673,22 @@ check('identity and semantics survive a redesign', () => {
   const after = snapshotMod.buildPresentationFingerprint(applyMutation(tiles, mutation));
   const result = validator.validatePresentationMutation({ before, after, mutation, pageId: 'page-1' });
   assert(result.ok, `redesign violated the contract: ${JSON.stringify(result.violations)}`);
+});
+
+check('a style-only override (no x/y/w/h) is not rejected for phantom geometry', () => {
+  // A focused single-chart restyle writes only styleConfigOverride — nothing
+  // moves. The mutation validator must not read a missing x/y/w/h as NaN and
+  // reject a restyle for a geometry it never touched.
+  const tiles = makeTiles();
+  const before = snapshotMod.buildPresentationFingerprint(tiles);
+  const mutation = {
+    layoutOverrides: { 105: { styleConfigOverride: { lineWidth: 'thick', showGrid: false, showDots: true } } },
+    themePatch: {}, slicerClusterPatch: {}, createdWidgets: [], notes: [],
+  };
+  const after = snapshotMod.buildPresentationFingerprint(applyMutation(tiles, mutation));
+  const result = validator.validatePresentationMutation({ before, after, mutation, pageId: 'page-1' });
+  assert(result.ok, `a pure restyle was rejected: ${JSON.stringify(result.violations)}`);
+  assert(!result.violations.some((v) => String(v.code).startsWith('grid.')), 'phantom geometry violation raised');
 });
 
 check('a removed chart is caught', () => {
@@ -766,6 +907,24 @@ check('templates differ in COMPOSITION, not only in colour', () => {
   );
 });
 
+check('the saas composition anchors the page on a hero with a rail', () => {
+  // The fixture's trend is narrow, so widen it into a primary the way an author
+  // who cared about it would have — then the saas template must build a hero
+  // with a rail of secondary charts, not fall back to a row of equal cards.
+  const tiles = makeTiles().map((t) => (t.id === 105 ? { ...t, layout: { ...t.layout, w: 24 } } : t));
+  const snapshot = makeSnapshot(tiles);
+  const plan = templates.planFromTemplate('console', snapshot); // console → saas composition
+  assert(
+    plan.sections.some((s) => s.primitive === 'hero_with_rail'),
+    'the saas composition produced no hero_with_rail section',
+  );
+  const { mutation, orphanIds } = compiler.compilePresentationPlan({ plan, snapshot, pageId: 'page-1' });
+  assertEqual(orphanIds, [], 'the saas rail dropped a visual');
+  assertEqual(validator.findOverlaps(mutation.layoutOverrides), [], 'the saas rail overlaps');
+  const hero = mutation.layoutOverrides[105];
+  assert(hero.w >= 24, `the hero is only ${hero.w} columns wide`);
+});
+
 check('a template puts numbers above the argument and detail last', () => {
   const tiles = makeTiles();
   const snapshot = makeSnapshot(tiles);
@@ -799,6 +958,90 @@ function buildFor(tiles, plan, theme = {}) {
     plan, snapshot: makeSnapshot(tiles), tiles, pageId: 'page-1', currentTheme: theme,
   });
 }
+
+check('a focused restyle applies only that tile and survives a stray direction', () => {
+  // Verbatim shape from the deployed planner on dashboard 129 for a click-to-
+  // edit restyle: `direction` filled in, `sections` omitted, one tileStyle. The
+  // focused path applies ONLY the tile's tileStyle, so an unknown composition
+  // style it never uses (and a missing sections list) must not sink the restyle.
+  const tiles = makeTiles();
+  const built = executor.buildPresentationMutation({
+    plan: {
+      scope: 'page',
+      direction: { style: 'executive', density: 'spacious' },
+      tileStyles: { 105: { lineWidth: 'thick', showGrid: false, showDots: true } },
+      rationale: 'thicker line',
+    },
+    snapshot: makeSnapshot(tiles), tiles, pageId: 'page-1', currentTheme: {}, focusedChartId: 105,
+  });
+  assert(built.ok, `focused restyle was refused: ${JSON.stringify(built.mutationValidation?.violations)}`);
+  const ids = Object.keys(built.mutation.layoutOverrides);
+  assertEqual(ids.length, 1, 'focused restyle touched more than one tile');
+  assertEqual(ids[0], '105', 'focused restyle touched the wrong tile');
+  const ov = built.mutation.layoutOverrides[105];
+  assert(ov.styleConfigOverride && ov.x == null && ov.y == null && ov.w == null && ov.h == null,
+    'focused restyle wrote geometry it should not have');
+  assert(Object.keys(built.mutation.themePatch).length === 0, 'focused restyle leaked a theme patch');
+});
+
+check('a focused restyle cannot smuggle a data-semantic key', () => {
+  // resolveTileStyles drops anything off the allow-list, so a plan that tries a
+  // data key (Top-N) produces an empty no-op mutation, never a data change.
+  const tiles = makeTiles();
+  const built = executor.buildPresentationMutation({
+    plan: {
+      scope: 'page', direction: { style: 'executive', density: 'spacious' },
+      tileStyles: { 105: { dataLimit: 5 } }, rationale: 'sneaky',
+    },
+    snapshot: makeSnapshot(tiles), tiles, pageId: 'page-1', currentTheme: {}, focusedChartId: 105,
+  });
+  assertEqual(Object.keys(built.mutation.layoutOverrides).length, 0, 'a data key survived a focused restyle');
+});
+
+check('chartSurface repaints any chart type via a focused restyle', () => {
+  const tiles = makeTiles(); // 105 is a LINE chart
+  const built = executor.buildPresentationMutation({
+    plan: {
+      scope: 'page', direction: { style: 'executive', density: 'spacious' },
+      tileStyles: { 105: { chartSurface: 'dark' } }, rationale: 'dark chart',
+    },
+    snapshot: makeSnapshot(tiles), tiles, pageId: 'page-1', currentTheme: {}, focusedChartId: 105,
+  });
+  assert(built.ok, `chartSurface restyle refused: ${JSON.stringify(built.mutationValidation?.violations)}`);
+  assertEqual(built.mutation.layoutOverrides[105].styleConfigOverride.chartSurface, 'dark', 'chartSurface was dropped');
+});
+
+check('a KPI-only key is dropped on a chart but kept on a KPI', () => {
+  const tiles = makeTiles(); // 105 LINE, 101 KPI
+  const onChart = executor.buildPresentationMutation({
+    plan: { scope: 'page', direction: { style: 'x', density: 'y' }, tileStyles: { 105: { kpiBackgroundMode: 'dark' } }, rationale: 'r' },
+    snapshot: makeSnapshot(tiles), tiles, pageId: 'page-1', currentTheme: {}, focusedChartId: 105,
+  });
+  assertEqual(Object.keys(onChart.mutation.layoutOverrides).length, 0, 'a kpi-only key rendered on a chart');
+  const onKpi = executor.buildPresentationMutation({
+    plan: { scope: 'page', direction: { style: 'x', density: 'y' }, tileStyles: { 101: { kpiBackgroundMode: 'dark' } }, rationale: 'r' },
+    snapshot: makeSnapshot(tiles), tiles, pageId: 'page-1', currentTheme: {}, focusedChartId: 101,
+  });
+  assertEqual(onKpi.mutation.layoutOverrides[101].styleConfigOverride.kpiBackgroundMode, 'dark', 'a kpi key was dropped from a KPI');
+});
+
+check('a focused restyle is reported as restyled only, never moved or resized', () => {
+  // The diff summary must be honest: a style-only override has no x/y/w/h, so
+  // `Number(undefined)` must not be read as NaN and counted as a move/resize.
+  const tiles = makeTiles();
+  const built = executor.buildPresentationMutation({
+    plan: {
+      scope: 'page', direction: { style: 'executive', density: 'spacious' },
+      tileStyles: { 105: { lineWidth: 'thick', showGrid: false, showDots: true } },
+      rationale: 'thicker line',
+    },
+    snapshot: makeSnapshot(tiles), tiles, pageId: 'page-1', currentTheme: {}, focusedChartId: 105,
+  });
+  const diff = diffMod.diffPresentation(tiles, built.mutation);
+  assertEqual(diff.moved, [], 'a pure restyle was counted as a move');
+  assertEqual(diff.resized, [], 'a pure restyle was counted as a resize');
+  assertEqual(diff.restyled, [105], 'the restyle was not reported');
+});
 
 
 /** Verbatim from the deployed planner on dashboard 129 — string ids, a scope
@@ -915,6 +1158,12 @@ check('a report-scoped redesign writes theme keys from the catalog', () => {
   const tiles = makeTiles();
   const plan = { ...planFor(tiles), scope: 'report', themeIntent: { template: 'ops', colorway: 'slate' } };
   const result = buildFor(tiles, plan);
+  // The whole build must SURVIVE validation — a template switch clears the
+  // inline legacy-look keys (cardShadow, titleFontSize, …) by setting them to
+  // undefined, and the mutation validator must accept that clear rather than
+  // reject the redesign for naming a non-allow-listed key. Regression guard for
+  // the live bug where every "Entire report" dark-SaaS redesign was refused.
+  assert(result.ok, `a report-scoped redesign was refused: ${JSON.stringify(result.mutationValidation.violations)}`);
   const patch = result.mutation.themePatch;
   assert(Object.keys(patch).length > 0, 'a report redesign changed no theme keys');
   assertEqual(patch.templateId, 'ops', 'template identity not recorded');
@@ -923,6 +1172,21 @@ check('a report-scoped redesign writes theme keys from the catalog', () => {
   const catalog = load('lib/dashboard-theme-catalog.ts');
   const ops = catalog.TEMPLATES.find((t) => t.id === 'ops').value;
   assertEqual(patch.kpiStyle, ops.kpiStyle, 'template tokens were not taken from the catalog');
+});
+
+check('clearing a legacy-look key is allowed; setting a bad key is not', () => {
+  // The clear (undefined) must pass; a real disallowed value must still fail.
+  const before = snapshotMod.buildPresentationFingerprint(makeTiles());
+  const okClear = validator.validatePresentationMutation({
+    before, after: before, pageId: 'page-1',
+    mutation: { layoutOverrides: {}, themePatch: { cardShadow: undefined, titleFontSize: undefined, accent: '#325ac2' }, slicerClusterPatch: {}, createdWidgets: [], notes: [] },
+  });
+  assert(okClear.ok, `clearing legacy keys was refused: ${JSON.stringify(okClear.violations)}`);
+  const badSet = validator.validatePresentationMutation({
+    before, after: before, pageId: 'page-1',
+    mutation: { layoutOverrides: {}, themePatch: { cardShadow: '0 4px 20px red' }, slicerClusterPatch: {}, createdWidgets: [], notes: [] },
+  });
+  assert(badSet.violations.some((v) => v.code === 'theme.key'), 'a real value for a disallowed key slipped through');
 });
 
 check('a theme patch cannot carry a key outside the catalog allow-list', () => {
@@ -1094,6 +1358,37 @@ if (!real) {
     const typesAfter = applied.map((t) => (t.chart || {}).chart_type).filter(Boolean).sort();
     assertEqual(typesAfter, typesBefore, 'a chart type changed');
     assertEqual(applied.length, tiles.length, 'the tile count changed');
+  });
+
+  check('real report: every tile\'s data semantics are byte-identical after a redesign (numbers cannot move)', () => {
+    // The guarantee a user checks by duplicating a 70-chart report and comparing
+    // the numbers before and after AI Design. Proven here deterministically and
+    // for every page: the semanticHash folds in the chart ref, type, config,
+    // dataset, parameters, tile filters and the NON-presentational half of
+    // styleConfigOverride (Top-N, sort, benchmarks) — everything a rendered
+    // number depends on. If it is identical for all 70 tiles after the most
+    // aggressive composition the system has (console → saas → hero_with_rail),
+    // then no query, filter or limit changed, so no number can. The
+    // reference-image path shares this exact gate: an image only steers the
+    // PLAN, and the plan is fingerprint-checked the same way.
+    for (const pageId of realPages) {
+      const tiles = snapshotMod.tilesOnPage({ dashboard_charts: real.dashboard_charts }, pageId);
+      const snapshot = snapshotMod.buildPresentationSnapshot({
+        dashboard: real, tiles, pageId, pageName: pageId,
+        pageCount: realPages.length, slicers: real.slicers_config ?? [], slicerDock: 'top',
+      });
+      const before = snapshotMod.buildPresentationFingerprint(tiles);
+      const plan = templates.planFromTemplate('console', snapshot);
+      const { mutation } = compiler.compilePresentationPlan({ plan, snapshot, pageId });
+      const after = snapshotMod.buildPresentationFingerprint(applyMutation(tiles, mutation));
+      for (const id of Object.keys(before)) {
+        assertEqual(after[id].semanticHash, before[id].semanticHash,
+          `tile ${id} on ${pageId}: DATA SEMANTICS changed by the redesign`);
+        assertEqual(after[id].chartId, before[id].chartId, `tile ${id} on ${pageId}: chart ref changed`);
+        assertEqual(after[id].chartType, before[id].chartType, `tile ${id} on ${pageId}: chart type changed`);
+        assertEqual(after[id].pageId, before[id].pageId, `tile ${id} on ${pageId}: page changed`);
+      }
+    }
   });
 
   check('real report: redesigning one page leaves the other four untouched', () => {

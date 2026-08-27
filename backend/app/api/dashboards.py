@@ -2032,6 +2032,8 @@ def plan_dashboard_presentation(
             snapshot=request.snapshot,
             user_prompt=request.prompt,
             conversation=request.conversation,
+            images=request.images,
+            focused_chart_id=request.focused_chart_id,
         )
     except PresentationPlanUnavailable as exc:
         # 503, not 500: the report is fine and the request was valid — there is
@@ -2042,8 +2044,9 @@ def plan_dashboard_presentation(
         ) from exc
 
     logger.info(
-        "presentation-plan dashboard=%s user=%s prompt_len=%s",
+        "presentation-plan dashboard=%s user=%s prompt_len=%s images=%s",
         dashboard_id, getattr(current_user, "id", None), len(request.prompt),
+        len(request.images or []),
     )
     return PresentationPlanResponse(plan=plan)
 

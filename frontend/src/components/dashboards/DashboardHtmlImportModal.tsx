@@ -1279,21 +1279,12 @@ export function DashboardHtmlImportModal({
     >
       <div className="h-full overflow-y-auto px-5 py-4">
       {step === 'configure' ? (
-        <div className="space-y-5">
-          <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-2 p-4">
-            <div className="flex items-start gap-3">
-              <div className="rounded-lg bg-brand/10 p-2 text-brand">
-                <Sparkles className="h-4 w-4" />
-              </div>
-              <div className="space-y-1">
-                <p className="text-sm font-semibold text-text-primary">
-                  {t('dashboards.htmlImport.heroTitle')}
-                </p>
-                <p className="text-caption text-text-tertiary">
-                  {t('dashboards.htmlImport.heroDescription')}
-                </p>
-              </div>
-            </div>
+        <div className="space-y-4">
+          {/* One slim line, not a hero box: the modal title already says what
+              this is, so a full padded card of explainer was pure vertical cost. */}
+          <div className="flex items-center gap-2 text-caption text-text-tertiary">
+            <Sparkles className="h-4 w-4 shrink-0 text-brand" />
+            <span>{t('dashboards.htmlImport.heroDescription')}</span>
           </div>
 
           {snapshotInfo && snapshotFile && (
@@ -1539,17 +1530,9 @@ export function DashboardHtmlImportModal({
               />
             </FieldGroup>
 
-            {sourceMode === 'existing_dataset' && selectedDataset && (
-              <div className="mt-4 rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 p-3">
-                <p className="text-caption font-semibold text-text-primary">
-                  {selectedDataset.name}
-                </p>
-                <p className="mt-1 text-caption text-text-tertiary">
-                  {t('dashboards.htmlImport.selectedDatasetTablesUsed', { count: tables.filter((t) => t.source_kind !== 'generated_calendar').length })}
-                </p>
-              </div>
-            )}
-
+            {/* The "which dataset / N tables" recap lived here AND in the Choose
+                Source card — one is enough, so it stays where the dataset is
+                picked and this Build Target card holds only the name. */}
             {sourceMode === 'upload_excel' && (
               <div className="mt-4 rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 p-3">
                 <p className="text-caption font-semibold text-text-primary">{t('dashboards.htmlImport.multiFileSourceUploadTitle')}</p>

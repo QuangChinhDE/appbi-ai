@@ -79,7 +79,11 @@ export const AI_ALLOWED_CHART_STYLE_KEYS = [
   'numberFormat',
   'decimalPlaces',
   'axisDisplayUnits',
-  // KPI presentation
+  // Surface — a chart's own card background as a named mode (not a free colour),
+  // so "make this chart dark" works for ANY chart type. The tile flips its text,
+  // axis and grid colours to stay readable; the data is untouched.
+  'chartSurface',
+  // KPI presentation (applies to KPI tiles only; inert on a chart)
   'kpiBackgroundMode',
   'kpiAccentColor',
   'kpiAccentBorder',
@@ -88,6 +92,14 @@ export const AI_ALLOWED_CHART_STYLE_KEYS = [
   'kpiIconName',
   'kpiIconColor',
 ] as const;
+
+/** Style keys that only mean anything on a KPI card. Applied to a chart they are
+ *  inert, so a focused restyle drops them rather than reporting a change that
+ *  never renders. `chartSurface` is the cross-type way to reskin a chart. */
+export const KPI_ONLY_STYLE_KEYS: ReadonlySet<string> = new Set([
+  'kpiBackgroundMode', 'kpiAccentColor', 'kpiAccentBorder', 'kpiGradientBg',
+  'kpiValueFontSize', 'kpiIconName', 'kpiIconColor',
+]);
 
 export type AiAllowedChartStyleKey = (typeof AI_ALLOWED_CHART_STYLE_KEYS)[number];
 
@@ -156,6 +168,31 @@ export function colorwayIds(): string[] {
   return COLORWAYS.map((c) => c.id);
 }
 
+/**
+ * Each colorway's mood, derived from the catalog rather than restated.
+ *
+ * The bare id list tells a planner that `graphite` exists; it does not tell it
+ * that graphite is the dark, violet one. Asked for "a dark modern SaaS report
+ * with a violet accent" the model then either guesses or picks a light palette,
+ * and the redesign that comes back is not dark at all. Handing it the mode and
+ * the accent colour of every option lets it choose on purpose — the accent is
+ * the catalog's own value, so this can never drift from what actually renders.
+ */
+export function colorwayGuide(): Array<{ id: string; mode: string; accent: string }> {
+  return COLORWAYS.map((c) => ({
+    id: c.id,
+    mode: String(c.value.mode ?? (c.dark ? 'dark' : 'light')),
+    accent: String(c.value.accent ?? ''),
+  }));
+}
+
+/** Each template's mood, so the planner can match a requested feel to a
+ *  composition instead of a name it has to already know. `skin` is what makes a
+ *  report read as "modern" (soft cards, sunken sections) versus "classic". */
+export function templateGuide(): Array<{ id: string; skin: string }> {
+  return TEMPLATES.map((t) => ({ id: t.id, skin: String(t.value.skin ?? 'classic') }));
+}
+
 // ── Slicer ──────────────────────────────────────────────────────────────────
 
 export const AI_ALLOWED_SLICER_DOCKS = ['top', 'bottom', 'left', 'right', 'drawer'] as const;
@@ -204,6 +241,12 @@ export function buildCapabilitySchema() {
       colorways: colorwayIds(),
       modes: ['light', 'dark'],
       cardTreatments: ['clean', 'soft', 'tinted', 'elevated', 'glass', 'outline', 'frameless'],
+      // The mood behind each id, so "dark, violet, modern" can be chosen rather
+      // than guessed. Match a requested colour to a colorway's `accent`, a
+      // dark/night request to one whose `mode` is dark, and a "modern" request
+      // to a template whose `skin` is modern.
+      colorwayGuide: colorwayGuide(),
+      templateGuide: templateGuide(),
     },
     slicer: {
       docks: [...AI_ALLOWED_SLICER_DOCKS],

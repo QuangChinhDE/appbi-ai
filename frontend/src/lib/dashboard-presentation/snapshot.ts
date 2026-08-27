@@ -143,6 +143,20 @@ function styleCapabilitiesFor(chartType: string, widgetType: string): string[] {
   return [...cartesian, 'barRadius', 'barSize'];
 }
 
+/** The shape a chart renders best in — advice the planner uses to SIZE it. A
+ *  radial mark (gauge/pie/donut) shrinks to the smaller side, so in a wide band
+ *  it becomes a dot in a sea of whitespace; it wants a roughly-square slot. A
+ *  line needs width for its axis; a funnel needs height. Kept beside
+ *  `styleCapabilitiesFor` because both answer "what does THIS chart need". */
+function renderAspectFor(chartType: string, widgetType: string): 'square' | 'wide' | 'tall' | 'flex' {
+  if (!isDataVisual(widgetType)) return 'flex';
+  const type = chartType.toUpperCase();
+  if (['GAUGE', 'PIE', 'DONUT', 'RADAR', 'RADIAL_BAR', 'PODIUM'].includes(type)) return 'square';
+  if (['FUNNEL', 'SANKEY', 'WATERFALL'].includes(type)) return 'tall';
+  if (['LINE', 'TIME_SERIES', 'AREA', 'BAR', 'BAR_LINE', 'COMBO', 'TABLE', 'MATRIX', 'PIVOT', 'HEATMAP'].includes(type)) return 'wide';
+  return 'flex';
+}
+
 export interface BuildSnapshotInput {
   dashboard: Dashboard;
   /** The tiles as the USER currently sees them — server state with unsaved
@@ -181,6 +195,7 @@ export function buildPresentationSnapshot(input: BuildSnapshotInput): DashboardP
       isWidget: !isDataVisual(widgetType),
       widgetType,
       styleCapabilities: styleCapabilitiesFor(chartType, widgetType),
+      renderAspect: renderAspectFor(chartType, widgetType),
     };
   });
 

@@ -245,6 +245,12 @@ export default function DashboardDetailPage() {
   // Phase-G — cluster-level layout (position/direction/gap/etc.).
   const [draftSlicerClusterLayout, setDraftSlicerClusterLayout] = useState<any | null>(null);
   const [appliedSlicerClusterLayout, setAppliedSlicerClusterLayout] = useState<any | null>(null);
+  // An AI-Design theme that has been APPLIED to the draft but NOT persisted. A
+  // manual theme change (the modal) saves instantly; an AI redesign must not,
+  // because "Apply" is a draft step — the report only truly changes colour on
+  // Save/Publish, and Discard drops it. Painted into the query cache for the
+  // preview; the server keeps the published theme until a save flushes this.
+  const [pendingThemeConfig, setPendingThemeConfig] = useState<any | null>(null);
   const slicersSeededRef = React.useRef(false);
   const [isApplyingFilters, setIsApplyingFilters] = useState(false);
   const [crossFilterState, setCrossFilterState] = useState<{
@@ -327,7 +333,7 @@ export default function DashboardDetailPage() {
     Record<number, Record<string, any>>
   >({});
   const hasLocalLayoutChanges = Object.keys(localLayoutOverrides).length > 0;
-  const hasAnyPendingChanges = hasLocalLayoutChanges || Boolean(serverDashboard?.has_draft);
+  const hasAnyPendingChanges = hasLocalLayoutChanges || Boolean(serverDashboard?.has_draft) || Boolean(pendingThemeConfig);
   // Always-current mirror of localLayoutOverrides so undo-capture can read the
   // pre-change value without adding it to every handler's dep array.
   const localLayoutOverridesRef = React.useRef(localLayoutOverrides);
@@ -534,6 +540,28 @@ export default function DashboardDetailPage() {
       console.error('Failed to persist theme:', err);
     }
   };
+  /** Paint an AI-Design theme WITHOUT persisting — the draft path. The report
+   *  shows the new surface immediately (cache paint), the server keeps the
+   *  published theme, and `persistPendingTheme` / Discard decide its fate. */
+  const paintThemeDraft = (theme: any) => {
+    setPendingThemeConfig(theme);
+    queryClient.setQueryData(['dashboards', dashboardId], (old: any) =>
+      old ? { ...old, theme_config: theme } : old);
+  };
+
+  /** Flush a drafted AI theme to the server. Called by Save draft and Publish so
+   *  the colour only becomes real when the author commits, matching the layout. */
+  const persistPendingTheme = async (): Promise<boolean> => {
+    if (!pendingThemeConfig) return true;
+    try {
+      await applyThemeConfig(pendingThemeConfig);
+      setPendingThemeConfig(null);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
   const applyUndoEntry = (entry: UndoEntry, dir: 'prev' | 'next') => {
     const value = dir === 'prev' ? entry.prev : entry.next;
     if (entry.kind === 'layout') { setLocalLayoutOverrides(value as any); return; }
@@ -544,9 +572,10 @@ export default function DashboardDetailPage() {
         setDraftSlicerClusterLayout(state.slicerCluster);
         setAppliedSlicerClusterLayout(state.slicerCluster);
       }
-      // Only when the redesign actually repainted. Re-applying an unchanged
-      // theme would still round-trip to the server and repaint every tile.
-      if (state.theme !== undefined) void applyThemeConfig(state.theme);
+      // Undo/redo of an AI redesign stays in the DRAFT — repaint the theme
+      // without persisting, the same way Apply did, so a stray Ctrl+Z can never
+      // write the live report.
+      if (state.theme !== undefined) paintThemeDraft(state.theme);
       return;
     }
     void applyThemeConfig(value);
@@ -792,6 +821,9 @@ export default function DashboardDetailPage() {
   // the same three pieces of state a manual edit reaches, and that state lives
   // in this file.
   const [designMode, setDesignMode] = useState<'manual' | 'ai'>('manual');
+  // The AI drawer collapses to a floating bubble so the report underneath is
+  // never hidden — the popup sits OVER the report, it does not shrink it.
+  const [aiPanelCollapsed, setAiPanelCollapsed] = useState(false);
 
   const commitPresentation = React.useCallback((commit: {
     layoutOverrides: Record<number, Record<string, any>>;
@@ -828,8 +860,15 @@ export default function DashboardDetailPage() {
       setDraftSlicerClusterLayout(nextCluster);
       setAppliedSlicerClusterLayout(nextCluster);
     }
-    if (nextTheme !== undefined) void applyThemeConfig(nextTheme);
+    // Draft, don't persist: the colour lands on Save/Publish and Discard drops
+    // it — an AI Apply must not silently repaint the live report (§ theme-draft).
+    if (nextTheme !== undefined) paintThemeDraft(nextTheme);
   }, [dashboard?.theme_config, draftSlicerClusterLayout, localLayoutOverrides]);
+
+  // Tile focus (Canvas/Grid highlight). Declared here — above useAiDesign —
+  // because in AI mode a focused tile scopes the redesign to that one visual
+  // (click-chart-to-edit), so the hook needs to read it.
+  const [focusedTileId, setFocusedTileId] = useState<number | null>(null);
 
   const aiDesign = useAiDesign({
     dashboardId: Number(dashboardId),
@@ -843,6 +882,8 @@ export default function DashboardDetailPage() {
     currentTheme: dashboard?.theme_config,
     slicerClusterLayout: draftSlicerClusterLayout,
     gridGapPx: getDashboardGridMargin(dashboard?.theme_config)[1],
+    // Only a click while the AI panel is open means "restyle just this one".
+    focusedChartId: designMode === 'ai' ? focusedTileId : null,
     onCommit: commitPresentation,
   });
 
@@ -853,6 +894,36 @@ export default function DashboardDetailPage() {
       aiDesign.pending ? (aiDesign.pending.mutation.layoutOverrides as any) : null,
     );
   }, [aiDesign.pending]);
+
+  // Clicking a chart while the AI panel is minimised should bring the panel
+  // back — otherwise the "Editing: X" chip the click just armed is invisible.
+  React.useEffect(() => {
+    if (designMode === 'ai' && focusedTileId != null && aiPanelCollapsed) {
+      setAiPanelCollapsed(false);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusedTileId, designMode]);
+
+  // A report-scoped redesign changes the SURFACE — a dark ground, a violet
+  // accent, softer cards — and that is the biggest thing "make this a dark
+  // modern report" asks for. Previewing only the layout would hide it until
+  // Apply, so the pending theme patch is overlaid on the live theme for as long
+  // as the preview is on screen. It is derived from `pending`, never stored, so
+  // Discard reverts it for free. Page-scoped previews carry no theme patch, so
+  // this is exactly the live theme for them.
+  const previewTheme = React.useMemo(() => {
+    const patch = aiDesign.pending?.mutation.themePatch;
+    if (!patch || Object.keys(patch).length === 0) return dashboard?.theme_config;
+    // Preview the SURFACE and the slicer's LOOK, but not its POSITION. The dock
+    // and variant reflow the filter cluster — reflowing it mid-preview shoves the
+    // whole grid sideways (the "charts jumping" §) — so those land on Apply.
+    // `slicerStyle` (card/pill/glass/…) only repaints the chips, no reflow, so it
+    // rides in the preview: a "modern glass filter" should look modern before you
+    // commit, not after.
+    const { filterDock, slicerVariant, ...surface } = patch as Record<string, any>;
+    void filterDock; void slicerVariant;
+    return { ...(dashboard?.theme_config ?? {}), ...surface };
+  }, [aiDesign.pending, dashboard?.theme_config]);
 
   const pageSlicersServerSignatureRef = React.useRef<string>('');
   React.useEffect(() => {
@@ -1051,11 +1122,8 @@ export default function DashboardDetailPage() {
   // `resolvedAvailableColumns` exists — a filter-bound param needs the column's
   // semantic identity to resolve on a semantic dataset.
 
-  // Phase-15.81 — tile focus state (Canvas/Grid highlight only).
-  // Per-visual filters were removed from FilterPane: each chart edits
-  // its own filters inside the chart editor, so a focused-tile filter
-  // scope here was redundant.
-  const [focusedTileId, setFocusedTileId] = useState<number | null>(null);
+  // Phase-15.81 — tile focus state (Canvas/Grid highlight only) is declared
+  // above useAiDesign so AI mode can scope a redesign to the focused tile.
   // Phase-B17/B19 — presence + per-page co-edit rights: heartbeat my focused
   // tile + page, learn where others edit, and resolve who may edit THIS page
   // (owner priority). `editLock.can_edit` is server-resolved.
@@ -1246,9 +1314,15 @@ export default function DashboardDetailPage() {
   // Flush helpers — used by Save draft / Save & Publish buttons.
   const flushLocalLayoutsToDraft = async () => {
     if (!hasLocalLayoutChanges) return true;
-    const chartLayouts = Object.entries(localLayoutOverrides).map(([id, layout]) => ({
+    // Send the COMPLETE layout for each changed tile, not the bare override. A
+    // focused AI restyle produces a style-only override ({styleConfigOverride})
+    // with no x/y/w/h; the draft-layout endpoint replaces the row and requires
+    // geometry, so a raw style-only override 422s and sinks the whole save.
+    // resolveDashboardChartLayout merges base + draft + override → always has
+    // x/y/w/h, and carries the styleConfigOverride along.
+    const chartLayouts = Object.keys(localLayoutOverrides).map((id) => ({
       id: Number(id),
-      layout,
+      layout: resolveDashboardChartLayout(Number(id)),
     }));
     try {
       // Clear the local overrides in the mutation's onSuccess — the SAME batch as
@@ -1268,6 +1342,8 @@ export default function DashboardDetailPage() {
 
   const handleSaveDraft = async () => {
     const ok = await flushLocalLayoutsToDraft();
+    // A drafted AI theme becomes real on Save, together with the layout.
+    await persistPendingTheme();
     if (ok) {
       // Save flushes local overrides → the pre-save snapshots in the undo stack
       // no longer map cleanly onto the now-empty override buffer, so clear the
@@ -1364,6 +1440,8 @@ export default function DashboardDetailPage() {
       toast.error(t('dashboards.detail.publishAbortedDraftFailed'));
       return;
     }
+    // A drafted AI theme becomes real on Publish, together with the layout.
+    await persistPendingTheme();
     resetUndo();
     try {
       await publishDashboardMutation.mutateAsync({ dashboardId, tileBaseV });
@@ -1393,6 +1471,12 @@ export default function DashboardDetailPage() {
 
   const handleDiscardAll = async () => {
     setLocalLayoutOverrides({});
+    // A drafted AI theme was only painted into the cache, never persisted — drop
+    // it and refetch the server's published theme so Discard reverts colour too.
+    if (pendingThemeConfig) {
+      setPendingThemeConfig(null);
+      queryClient.invalidateQueries({ queryKey: ['dashboards', dashboardId] });
+    }
     resetUndo();
     if (serverDashboard?.has_draft) {
       try {
@@ -2713,8 +2797,19 @@ export default function DashboardDetailPage() {
       ?? t('dashboards.detail.chartFallbackName', { id: crossFilterState.sourceChartId }))
     : null;
 
+  // The name of the tile the user clicked to restyle in AI mode — shown as the
+  // "Editing: X" chip. Only meaningful while the AI panel is open.
+  const focusedChartName = (designMode === 'ai' && focusedTileId != null)
+    ? (() => {
+        const dc = visibleDashboardCharts.find((c) => c.id === focusedTileId);
+        return dc?.layout?.custom_title
+          ?? dc?.chart?.name
+          ?? t('dashboards.detail.chartFallbackName', { id: focusedTileId });
+      })()
+    : null;
+
   return (
-    <DashboardThemeProvider theme={dashboard?.theme_config} className="min-h-full bg-surface-2">
+    <DashboardThemeProvider theme={previewTheme} className="min-h-full bg-surface-2">
       {/* ── Sticky compact header (single row) ── */}
       <div className="sticky top-0 z-20 bg-surface-2 px-4 pt-3 pb-2 sm:px-6 lg:px-8">
         <div className="rounded-xl border border-[rgba(255,255,255,0.08)] bg-surface-1 shadow-linear-sm overflow-visible">
@@ -3334,7 +3429,7 @@ export default function DashboardDetailPage() {
           right of the grid. Without this the dock renders as a full-width block
           BELOW the report — which is what the AI panel did on first wiring: it
           was in the DOM, 380px wide, and 2000px down the page. */}
-      <div className={`px-4 pb-8 sm:px-6 lg:px-8 ${isFilterPaneOpen || designMode === 'ai' ? 'flex gap-3 items-stretch min-h-[calc(100vh-12rem)]' : ''}`}>
+      <div className={`px-4 pb-8 sm:px-6 lg:px-8 ${isFilterPaneOpen ? 'flex gap-3 items-stretch min-h-[calc(100vh-12rem)]' : ''}`}>
 
         <div className={isFilterPaneOpen ? 'min-w-0 flex-1' : 'w-full'}>
         {activeCrossFilter && (
@@ -3544,6 +3639,7 @@ export default function DashboardDetailPage() {
             emptyMessage={emptyPageMessage}
             focusedDashboardChartId={focusedTileId}
             onFocusChart={setFocusedTileId}
+            aiDesignMode={designMode === 'ai'}
             params={paramValues}
             onParamChange={handleParamChange}
             onBindParameter={canEditThisPage ? setBindingChartId : undefined}
@@ -3579,24 +3675,48 @@ export default function DashboardDetailPage() {
         </div>
         </div>
 
-        {/* Right dock: AI Design. Sits in the same rail as the Filter Pane and
-            beside the SAME grid — the preview a person judges is the real
-            renderer with a proposed layout laid over it, not a mock of one. */}
-        {designMode === 'ai' && (
-          <AiDesignPanel
-            turns={aiDesign.turns}
-            busy={aiDesign.busy}
-            scope={aiDesign.scope}
-            onScopeChange={aiDesign.setScope}
-            onSubmit={aiDesign.submit}
-            pendingDiff={aiDesign.pending?.diff ?? null}
-            onApply={aiDesign.apply}
-            onDiscard={aiDesign.discard}
-            onClose={() => { aiDesign.discard(); setDesignMode('manual'); }}
-            visualCount={aiDesign.visualCount}
-            pageName={currentPage?.name ?? activePageId}
-          />
-        )}
+        {/* Right dock: AI Design — a FLOATING overlay, not a flex sibling.
+            Docking it in the flow shrank the grid the model was redesigning, and
+            when the slicer rail then took its share the grid collapsed to a
+            single stacked column: the "charts jumping" a person sees. As a fixed
+            drawer it sits OVER the report at a stable width, the grid keeps the
+            frame it will publish at (the page reserves `lg:pr` for the drawer so
+            nothing hides behind it), and typing a long instruction grows the box
+            inside the drawer instead of reflowing the whole page. */}
+        {designMode === 'ai' && (aiPanelCollapsed ? (
+          <button
+            type="button"
+            onClick={() => setAiPanelCollapsed(false)}
+            aria-label={t('dashboards.aiDesign.title')}
+            className="fixed right-5 bottom-5 z-30 inline-flex h-12 w-12 items-center justify-center rounded-full bg-brand text-white shadow-xl transition-transform hover:scale-105"
+          >
+            <Sparkles className="h-5 w-5" />
+            {/* A dot when a design is waiting, so a collapsed bubble still says
+                "there is something to look at". */}
+            {aiDesign.pending && (
+              <span className="absolute -right-0.5 -top-0.5 h-3 w-3 rounded-full bg-warning ring-2 ring-[rgb(var(--surface-1))]" />
+            )}
+          </button>
+        ) : (
+          <div className="fixed right-3 top-[64px] bottom-3 z-30 w-[380px] max-w-[calc(100vw-1.5rem)] shadow-xl rounded-xl">
+            <AiDesignPanel
+              turns={aiDesign.turns}
+              busy={aiDesign.busy}
+              scope={aiDesign.scope}
+              onScopeChange={aiDesign.setScope}
+              onSubmit={aiDesign.submit}
+              pendingDiff={aiDesign.pending?.diff ?? null}
+              onApply={aiDesign.apply}
+              onDiscard={aiDesign.discard}
+              onCollapse={() => setAiPanelCollapsed(true)}
+              onClose={() => { aiDesign.discard(); setDesignMode('manual'); }}
+              visualCount={aiDesign.visualCount}
+              pageName={currentPage?.name ?? activePageId}
+              focusedChartName={focusedChartName}
+              onClearFocus={() => setFocusedTileId(null)}
+            />
+          </div>
+        ))}
 
         {/* Right dock: Filter Pane (Phase-15.81). Sticky alongside the
             canvas; sections own visual / page / all-pages scope. */}

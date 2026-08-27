@@ -165,6 +165,36 @@ export function ReadonlyChartTile({
   // dashboard's own background shows through (frameless). Cross-filter/highlight
   // rings still render (Tailwind ring = box-shadow, independent of the border).
   const transparentTile = effectiveStyleConfig.transparentBackground === true;
+  // Per-tile surface (AI Design "make this chart dark/light"). Must mirror
+  // ChartTile so a saved/published restyle renders identically on the public
+  // and embed views — the builder and the viewer use different tile components.
+  const chartSurface = (effectiveStyleConfig as any).chartSurface as 'dark' | 'light' | undefined;
+  const surfaceClass = chartSurface === 'dark'
+    ? 'chart-surface-dark'
+    : chartSurface === 'light' ? 'chart-surface-light' : '';
+  const surfaceVars: CSSProperties | undefined = (!transparentTile && chartSurface === 'dark')
+    ? ({
+        background: '#0f172a',
+        '--surface-1': '15 23 42',
+        '--surface-2': '30 41 59',
+        '--text-primary': '226 232 240',
+        '--text-secondary': '203 213 225',
+        '--text-tertiary': '148 163 184',
+        '--border-line': '51 65 85',
+        color: 'rgb(226 232 240)',
+      } as CSSProperties)
+    : (!transparentTile && chartSurface === 'light')
+    ? ({
+        background: '#ffffff',
+        '--surface-1': '255 255 255',
+        '--surface-2': '243 244 245',
+        '--text-primary': '8 9 10',
+        '--text-secondary': '60 65 73',
+        '--text-tertiary': '120 126 134',
+        '--border-line': '230 230 230',
+        color: 'rgb(8 9 10)',
+      } as CSSProperties)
+    : undefined;
   const themeTitleStyle: CSSProperties | undefined =
     dashTheme.titleFontSize || dashTheme.titleColor
       ? { fontSize: dashTheme.titleFontSize, color: dashTheme.titleColor }
@@ -350,7 +380,7 @@ export function ReadonlyChartTile({
       /* Phase-B4 — flat "BI card": 8px radius, 1px hairline border, NO heavy
          drop-shadow/backdrop-blur (read as a web card before), tighter padding.
          Phase-B14 — honor the dashboard theme's card radius/border. */
-      className={`dashboard-tile group relative h-full overflow-hidden rounded-lg p-3 transition-colors ${
+      className={`dashboard-tile group relative h-full overflow-hidden rounded-lg p-3 transition-colors ${surfaceClass} ${
         transparentTile ? '' : 'border bg-surface-1'
       } ${
         isCrossFilterSource || isHighlightSource
@@ -380,6 +410,8 @@ export function ReadonlyChartTile({
                   }
                 : {}),
             }),
+        // Per-tile AI Design surface — after the theme bg so a dark chart wins.
+        ...(surfaceVars ?? {}),
       }}
     >
       <div className="flex h-full min-h-0 flex-col">

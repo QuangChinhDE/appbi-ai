@@ -68,8 +68,43 @@ normally has one obvious visual hierarchy, limited competing colours, \
 consistent spacing, intentional whitespace, clear primary and secondary \
 visuals, compact controls, readable KPI emphasis and predictable sections.
 
+When the user asks for a specific look, a named style, or a full redesign — \
+"make this a modern SaaS analytics report", "dark dashboard", "redesign like \
+this reference" — commit to it, do not merely nudge. Build the composition that \
+reads that way: put the headline numbers in a `kpi_strip`, give the argument one \
+large hero with a vertical rail of two or three secondary charts beside it using \
+the `hero_with_rail` primitive, and send tables to the bottom. Choose a \
+`themeIntent` that matches the words: a colorway whose `mode` is dark for a \
+dark or night look, a template whose `skin` is modern for a modern look, and \
+the colorway whose `accent` is closest to any colour they name (the \
+capabilities `theme.colorwayGuide` and `theme.templateGuide` give you the mode, \
+accent and skin of every option). A bold composition is still a restrained one: \
+commit to the arrangement, keep the hierarchy singular and the palette limited.
+
+If a REFERENCE IMAGE is attached, read its COMPOSITION and SURFACE, never its \
+content. Take from it where the headline numbers sit, whether there is one hero \
+with a rail of smaller charts beside it, how dense the grid is, whether it is \
+dark or light, and its accent colour — and reproduce that ARRANGEMENT and MOOD \
+using THIS report's existing visuals. Do not copy the image's numbers, labels, \
+words, series or chart types; they belong to someone else's data. You are \
+matching how a report looks, not what it says. Map what you see to the supplied \
+primitives and theme options — an image can never justify a capability that is \
+not in the schema.
+
 Avoid making every card equally loud. Avoid unnecessary gradients. Avoid \
 excessive shadows. Avoid turning every element into a floating card.
+
+Size a chart to the shape it renders in — each visual carries an `aspect`:
+- `square` (a gauge, pie or donut) draws a circle that shrinks to the shorter \
+side, so a full-width band turns it into a dot in a field of whitespace. Give \
+it a COMPACT, roughly-square slot — put several across in a `three_equal`, a \
+`kpi_strip`, or a rail; never `full_width` or `table_full`.
+- `wide` (a line, time series, bar or table) needs horizontal room for its axis \
+or columns — give it a `full_width`, `two_one` lead, or the hero of a \
+`hero_with_rail`.
+- `tall` (a funnel) wants height, not width — a narrower column reads better \
+than a wide strip.
+Do NOT stretch a single square chart across the whole page.
 
 Preserve the user's existing information architecture unless their prompt \
 explicitly requests reorganization.
@@ -143,6 +178,8 @@ def _visual_digest(snapshot: Dict[str, Any]) -> List[Dict[str, Any]]:
             "currentRole": visual.get("displayRoleHint"),
             "isDecorative": bool(visual.get("isWidget")),
             "currentSize": {"w": layout.get("w"), "h": layout.get("h")},
+            # The shape this chart renders best in — size it accordingly.
+            "aspect": visual.get("renderAspect"),
         })
     return out
 
@@ -152,6 +189,8 @@ def build_planner_prompt(
     snapshot: Dict[str, Any],
     user_prompt: str,
     conversation: Optional[List[Dict[str, str]]] = None,
+    has_reference: bool = False,
+    focused_chart_id: Optional[int] = None,
 ) -> str:
     """Assemble the user-side message.
 
@@ -209,10 +248,42 @@ def build_planner_prompt(
         "This is context to read, not content to return.\n"
         f"{json.dumps(payload, ensure_ascii=False)}\n"
     )
+    if has_reference:
+        parts.append(
+            "A REFERENCE IMAGE is attached to this message. Read its layout and "
+            "surface — the arrangement of numbers and charts, the density, the "
+            "light/dark mood and the accent colour — and reproduce that look with "
+            "INPUT.visuals. Do NOT reproduce anything the image SAYS: its numbers, "
+            "labels, words and chart types are another report's content, not this "
+            "one's. Match the presentation, never the data.\n"
+        )
+    if focused_chart_id is not None:
+        parts.append(
+            f"FOCUSED EDIT: the user clicked ONE visual — id {focused_chart_id} — "
+            "and wants to restyle only it. Return a plan whose `tileStyles` has an "
+            f"entry for {focused_chart_id} with the requested per-tile presentation "
+            "keys, and NOTHING else: no other tileStyles, no themeIntent, no "
+            "slicerPresentation, no decorativeElements. Sections/visualPreferences "
+            "may be omitted or minimal — the layout is not changing. Only keys in "
+            "capabilities.tileStyle.allowedKeys are permitted (they are visual "
+            "only; a data/semantic key is refused).\n"
+            "To change THIS chart's BACKGROUND / theme / make it dark or light — "
+            'for ANY chart type — set `chartSurface`: "dark" or "light". It repaints '
+            "the card and keeps the text, axis and grid readable. The `kpi*` keys "
+            "(kpiBackgroundMode, kpiAccentColor, kpiGradientBg, …) style a KPI card "
+            "ONLY and are ignored on a chart — never use them to darken a chart.\n"
+            "For colours, `palette` accepts ONLY these named sets: \"default\", "
+            '"vibrant", "classic", "monochrome", "pastel". Never invent a palette '
+            "name (e.g. \"emerald\", \"ocean\") — it is silently ignored. There is no "
+            "free per-series colour key, so a single-series chart cannot be recoloured "
+            "to an arbitrary colour; pick the closest named palette instead.\n"
+        )
     parts.append(f"THE USER ASKS:\n{user_prompt.strip()}\n")
     parts.append(
-        "Now return the PresentationPlan. Every visual id in INPUT.visuals must "
-        'appear in exactly one section. Begin with {"scope":'
+        "Now return the PresentationPlan. "
+        + ("" if focused_chart_id is not None
+           else "Every visual id in INPUT.visuals must appear in exactly one section. ")
+        + 'Begin with {"scope":'
     )
     return "\n".join(parts)
 
@@ -227,7 +298,13 @@ def _looks_like_a_plan(candidate: Any) -> bool:
     """
     if not isinstance(candidate, dict):
         return False
-    return isinstance(candidate.get("sections"), list) and "direction" in candidate
+    if "direction" not in candidate:
+        return False
+    # A whole-page plan arranges tiles into `sections`; a focused single-chart
+    # restyle legitimately carries none and answers with `tileStyles` alone.
+    # Either shape counts as "the model answered" — the client's validator still
+    # decides whether the answer is legal.
+    return isinstance(candidate.get("sections"), list) or isinstance(candidate.get("tileStyles"), dict)
 
 
 class PresentationPlanUnavailable(RuntimeError):
@@ -239,21 +316,32 @@ def plan_presentation(
     snapshot: Dict[str, Any],
     user_prompt: str,
     conversation: Optional[List[Dict[str, str]]] = None,
+    images: Optional[List[str]] = None,
+    focused_chart_id: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Return a PresentationPlan dict. Raises when no model answered.
+
+    Runs on the design tier (4o, vision-capable) so it can read an attached
+    reference image and reason about layout more capably than the cheap text
+    tier. `images` is a list of data URLs; passing none is a normal text-only
+    request that still benefits from the smarter model.
 
     Note what is NOT here: no validation, no repair, no defaulting of missing
     fields. A plan that comes back malformed goes to the client malformed and is
     refused there, by the same validator that guards every other path. Fixing it
     up here would create a second, weaker set of rules in the place least able
-    to enforce them.
+    to enforce them. That is also why an image is safe here — this function has
+    no write path, and the plan it returns cannot change a chart, only arrange it.
     """
+    clean_images = [img for img in (images or []) if isinstance(img, str) and img.strip()]
     prompt = build_planner_prompt(
         snapshot=snapshot, user_prompt=user_prompt, conversation=conversation,
+        has_reference=bool(clean_images), focused_chart_id=focused_chart_id,
     )
-    result = LLMClient.complete_json(
+    result = LLMClient.complete_json_multimodal(
         prompt=prompt,
         system=SYSTEM_PROMPT,
+        images=clean_images or None,
         max_tokens=MAX_PLAN_TOKENS,
     )
 
@@ -264,7 +352,7 @@ def plan_presentation(
     if result is not None and not _looks_like_a_plan(result):
         logger.warning("presentation plan: first reply was not a plan (keys=%s) — retrying once",
                        list(result.keys())[:8])
-        result = LLMClient.complete_json(
+        result = LLMClient.complete_json_multimodal(
             prompt=(
                 "Your previous reply was not a PresentationPlan — it repeated the input.\n"
                 'Reply with ONLY the plan object: {"scope": ..., "direction": {...}, '
@@ -272,6 +360,7 @@ def plan_presentation(
                 + prompt
             ),
             system=SYSTEM_PROMPT,
+            images=clean_images or None,
             max_tokens=MAX_PLAN_TOKENS,
         )
 

@@ -174,8 +174,38 @@ export function composeSections(
       break;
     }
 
+    case 'saas': {
+      // The signature analytics-app shape: one hero carrying the argument with a
+      // vertical rail of secondary charts stacked beside it, then the rest in
+      // pairs. This is the composition the "modern SaaS report" request means,
+      // and it is a genuinely different arrangement from the executive one below
+      // rather than the same grid in a darker palette.
+      const RAIL_MAX = 3;
+      const lead = primaries.shift();
+      const rail: SnapshotVisual[] = [];
+      while (rail.length < RAIL_MAX && (breakdowns.length > 0 || secondaries.length > 0)) {
+        const next = breakdowns.shift() ?? secondaries.shift();
+        if (next) rail.push(next);
+      }
+      if (lead && rail.length > 0) {
+        push('hero_with_rail', [lead.dashboardChartId, ...ids(rail)]);
+      } else if (lead) {
+        push('full_width', [lead.dashboardChartId]);
+      } else {
+        // No primary to anchor a rail — return the candidates to the pool so
+        // they are paired below rather than lost.
+        for (let i = rail.length - 1; i >= 0; i -= 1) secondaries.unshift(rail[i]);
+      }
+
+      const rest = [...primaries, ...secondaries, ...breakdowns];
+      for (let i = 0; i < rest.length; i += 2) {
+        const slice = rest.slice(i, i + 2);
+        push(slice.length === 2 ? 'two_equal' : 'full_width', ids(slice));
+      }
+      break;
+    }
+
     case 'executive':
-    case 'saas':
     default: {
       // The shape people recognise: the argument large with its breakdown
       // beside it, then supporting pairs.
