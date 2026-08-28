@@ -67,6 +67,136 @@ _quota_cooldown: Dict[int, float] = {}
 _quota_cooldown_lock = threading.Lock()
 
 
+def _notify_snapshot_build_failed(db: Session, dataset_obj: Dataset, table, *, quota: bool, error: str) -> None:
+    """Surface a snapshot build failure as an ObservabilityIncident + a
+    UserNotification for the dataset owner — previously this only reached
+    `logger.warning`, so a dashboard silently kept serving stale data while
+    every sync attempt failed underneath it."""
+    try:
+        from app.models.observability import ObservabilityIncident
+        from app.services.user_notification_service import notify_user
+
+        dedup_key = f"snapshot:table_{table.id}"
+        title = f"Snapshot lỗi: {table.name if hasattr(table, 'name') else table.id}"
+        detail_msg = (
+            "Hết quota BigQuery (partition-modifications) — dữ liệu dashboard có thể đang cũ."
+            if quota else f"Build snapshot thất bại: {error[:300]}"
+        )
+        incident = (
+            db.query(ObservabilityIncident)
+            .filter(ObservabilityIncident.dedup_key == dedup_key, ObservabilityIncident.status != "resolved")
+            .first()
+        )
+        now = datetime.utcnow()
+        if incident:
+            incident.last_seen_at = now
+            incident.detail = {"error": error[:2000], "quota": quota}
+        else:
+            incident = ObservabilityIncident(
+                dataset_id=dataset_obj.id,
+                dataset_table_id=table.id,
+                source="snapshot",
+                pillar="freshness",
+                dedup_key=dedup_key,
+                title=title,
+                detail={"error": error[:2000], "quota": quota},
+                severity="critical" if quota else "warning",
+                status="open",
+                first_seen_at=now,
+                last_seen_at=now,
+            )
+            db.add(incident)
+        db.commit()
+
+        if dataset_obj.owner_id:
+            notify_user(
+                db, dataset_obj.owner_id,
+                level="error", title=title, description=detail_msg,
+                link=f"/observability?incident={incident.id}", source="snapshot",
+                dedup_key=dedup_key,
+            )
+    except Exception as exc:  # noqa: BLE001 — never let notification break a snapshot build
+        db.rollback()
+        logger.warning("[snapshot] failed to record incident/notification: %s", exc)
+
+
+def _resolve_snapshot_incident(db: Session, table_id: int) -> None:
+    """Auto-resolve on recovery (Datadog-style): a build failure notification
+    means nothing once the very next build for that table succeeds — without
+    this, a resolved "snapshot lỗi" notification would sit unread forever
+    even though the dashboard is fresh again."""
+    try:
+        from app.models.observability import ObservabilityIncident
+        from app.models.user_notification import UserNotification
+
+        dedup_key = f"snapshot:table_{table_id}"
+        incident = (
+            db.query(ObservabilityIncident)
+            .filter(ObservabilityIncident.dedup_key == dedup_key, ObservabilityIncident.status != "resolved")
+            .first()
+        )
+        if incident is None:
+            return
+        now = datetime.utcnow()
+        incident.status = "resolved"
+        incident.resolved_at = now
+        db.query(UserNotification).filter(
+            UserNotification.dedup_key == dedup_key,
+            UserNotification.read == False,  # noqa: E712
+        ).delete(synchronize_session=False)
+        db.commit()
+    except Exception as exc:  # noqa: BLE001 — never let auto-resolve break a successful build
+        db.rollback()
+        logger.warning("[snapshot] failed to auto-resolve incident table=%s: %s", table_id, exc)
+
+
+def _notify_snapshot_gc_failed(db: Session, dataset_id: int, *, error: str) -> None:
+    """A recurring delayed-GC failure becomes ONE open, low-severity incident
+    (deduped per dataset) instead of being swallowed entirely."""
+    try:
+        from app.models.observability import ObservabilityIncident
+        from app.services.user_notification_service import notify_user
+
+        dedup_key = f"snapshot_gc:dataset_{dataset_id}"
+        incident = (
+            db.query(ObservabilityIncident)
+            .filter(ObservabilityIncident.dedup_key == dedup_key, ObservabilityIncident.status != "resolved")
+            .first()
+        )
+        now = datetime.utcnow()
+        if incident:
+            incident.last_seen_at = now
+            incident.detail = {"error": error[:2000]}
+        else:
+            incident = ObservabilityIncident(
+                dataset_id=dataset_id,
+                source="snapshot_gc",
+                pillar="freshness",
+                dedup_key=dedup_key,
+                title="Dọn dẹp snapshot cũ thất bại nhiều lần",
+                detail={"error": error[:2000]},
+                severity="warning",
+                status="open",
+                first_seen_at=now,
+                last_seen_at=now,
+            )
+            db.add(incident)
+        db.commit()
+
+        owner_id = db.query(Dataset.owner_id).filter(Dataset.id == dataset_id).scalar()
+        if owner_id:
+            notify_user(
+                db, owner_id,
+                level="warning", title="Dọn dẹp snapshot cũ thất bại nhiều lần",
+                description=error[:300],
+                link=f"/observability?incident={incident.id}", source="snapshot_gc",
+                dedup_key=dedup_key,
+            )
+    except Exception as exc:  # noqa: BLE001
+        db.rollback()
+        logger.warning("[snapshot] failed to record GC incident/notification: %s", exc)
+
+
 def _quota_cooldown_key(dataset_id: int) -> str:
     return f"quotacooldown::{int(dataset_id)}"
 
@@ -670,6 +800,7 @@ def build_table_snapshot(
                                table.id, ref, dataset_obj.id, exc)
             else:
                 logger.warning("[snapshot] build failed table=%s ref=%s: %s", table.id, ref, exc)
+            _notify_snapshot_build_failed(db, dataset_obj, table, quota=_quota, error=str(exc))
             return None
 
         # Atomic pointer swap: supersede the old current, promote the new one.
@@ -700,6 +831,7 @@ def build_table_snapshot(
         except Exception:  # noqa: BLE001 — best-effort; None → TTL fallback
             row.source_watermark = None
         db.commit()
+        _resolve_snapshot_incident(db, table.id)
 
         # Keep the model honest about what was actually stored: when the loader
         # had to fall back to STRING for a column (values that do not honour the
@@ -1168,9 +1300,10 @@ def gc_dataset_snapshots(db: Session, dataset_id: int, host: DataSource) -> int:
             logger.info("[snapshot] delayed GC retired %d rows dataset=%s (kept gens=%s)",
                         retired, dataset_id, sorted(keep_gens, reverse=True))
         return retired
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
         db.rollback()
         logger.warning("[snapshot] delayed GC error dataset=%s", dataset_id, exc_info=True)
+        _notify_snapshot_gc_failed(db, dataset_id, error=str(exc))
         return 0
 
 

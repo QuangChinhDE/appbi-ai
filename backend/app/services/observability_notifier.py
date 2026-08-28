@@ -77,15 +77,37 @@ def _send_one(channel: ObservabilityAlertChannel, incident: ObservabilityInciden
         raise ValueError(f"unknown channel kind {channel.kind}")
 
 
+def pending_retry_incidents(db: Session, channels: List[ObservabilityAlertChannel]) -> List[ObservabilityIncident]:
+    """Still-open incidents whose channel had an error the last time we tried
+    (or was inactive) and has since recovered (`last_error is None` now).
+    Before this, a channel outage at the moment an incident opened meant that
+    incident was NEVER retried even after the channel came back — the scan
+    only ever fanned out brand-new incidents, dropping anything that failed
+    to send on the first attempt."""
+    if not any(c.is_active and c.last_error is None for c in channels):
+        return []
+    return (
+        db.query(ObservabilityIncident)
+        .filter(ObservabilityIncident.status == "open")
+        .all()
+    )
+
+
 def notify_new_incidents(db: Session, incidents: List[ObservabilityIncident]) -> int:
-    """Dispatch each new incident to every matching channel. Returns send count."""
+    """Dispatch each new (or retry-eligible) incident to every matching channel.
+    Returns send count."""
     incidents = [i for i in incidents if i is not None]
-    if not incidents:
-        return 0
     channels = db.query(ObservabilityAlertChannel).filter(
         ObservabilityAlertChannel.is_active == True  # noqa: E712
     ).all()
     if not channels:
+        return 0
+
+    retry = pending_retry_incidents(db, channels)
+    if retry:
+        seen_ids = {i.id for i in incidents}
+        incidents = incidents + [i for i in retry if i.id not in seen_ids]
+    if not incidents:
         return 0
 
     sent = 0
@@ -113,8 +135,8 @@ def test_channel(db: Session, channel: ObservabilityAlertChannel) -> tuple:
     """Send a synthetic test alert. Returns (ok, error_or_none)."""
     fake = ObservabilityIncident(
         id=0, dataset_id=channel.dataset_id or 0, source="freshness", pillar="freshness",
-        dedup_key="test", title="Test cảnh báo từ AppBI Observability",
-        detail={"note": "Đây là thông báo thử nghiệm."}, severity="warning",
+        dedup_key="test", title="[TEST — không phải cảnh báo thật] Kiểm tra kênh AppBI Observability",
+        detail={"note": "Đây là thông báo thử nghiệm, không phản ánh sự cố thật."}, severity="warning",
         status="open", first_seen_at=datetime.utcnow(), last_seen_at=datetime.utcnow(),
     )
     try:

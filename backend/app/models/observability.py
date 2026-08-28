@@ -35,7 +35,7 @@ from app.core.database import Base
 MONITOR_KINDS = ("freshness", "volume", "schema")
 
 # Unified incident sources
-INCIDENT_SOURCES = ("freshness", "volume", "schema", "quality", "anomaly")
+INCIDENT_SOURCES = ("freshness", "volume", "schema", "quality", "anomaly", "snapshot", "snapshot_gc")
 
 INCIDENT_STATUSES = ("open", "acknowledged", "resolved")
 

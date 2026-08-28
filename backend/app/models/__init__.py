@@ -37,6 +37,7 @@ from app.models.observability import (
     ObservabilityIncident,
     ObservabilityAlertChannel,
 )
+from app.models.user_notification import UserNotification, NOTIFICATION_LEVELS
 from app.models.ai_feedback import AIFeedback
 from app.models.personal_access_token import PersonalAccessToken
 from app.models.revoked_token import RevokedToken

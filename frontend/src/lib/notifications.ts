@@ -1,196 +1,96 @@
 'use client';
 
-import { useSyncExternalStore } from 'react';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+
+import { apiClient } from '@/lib/api-client';
 
 export type AppNotificationLevel = 'success' | 'error' | 'info' | 'warning';
 
 export interface AppNotification {
-  id: string;
+  id: number;
   level: AppNotificationLevel;
   title: string;
   description?: string;
+  link?: string;
+  source?: string;
   createdAt: string;
   read: boolean;
 }
 
-const STORAGE_KEY = 'appbi.notifications';
-const MAX_NOTIFICATIONS = 100;
-
-let isLoaded = false;
-let notifications: AppNotification[] = [];
-const listeners = new Set<() => void>();
-const EMPTY_NOTIFICATIONS: AppNotification[] = [];
-
-function canUseStorage(): boolean {
-  return typeof window !== 'undefined' && typeof window.localStorage !== 'undefined';
-}
-
-function emitChange() {
-  listeners.forEach((listener) => listener());
-}
-
-function persistNotifications() {
-  if (!canUseStorage()) {
-    return;
-  }
-
-  window.localStorage.setItem(STORAGE_KEY, JSON.stringify(notifications));
-}
-
-function ensureLoaded() {
-  if (isLoaded || !canUseStorage()) {
-    return;
-  }
-
-  isLoaded = true;
-
-  try {
-    const stored = window.localStorage.getItem(STORAGE_KEY);
-    if (!stored) {
-      notifications = [];
-      return;
-    }
-
-    const parsed = JSON.parse(stored);
-    notifications = Array.isArray(parsed)
-      ? parsed.filter((item): item is AppNotification => (
-        typeof item?.id === 'string'
-        && typeof item?.level === 'string'
-        && typeof item?.title === 'string'
-        && typeof item?.createdAt === 'string'
-        && typeof item?.read === 'boolean'
-      )).slice(0, MAX_NOTIFICATIONS)
-      : [];
-  } catch {
-    notifications = [];
-  }
-}
-
-function createId(): string {
-  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-    return crypto.randomUUID();
-  }
-
-  return `notification-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-}
-
-function normalizeText(value: unknown): string | undefined {
-  if (typeof value === 'string') {
-    const trimmed = value.trim();
-    return trimmed.length > 0 ? trimmed : undefined;
-  }
-
-  if (typeof value === 'number' || typeof value === 'boolean') {
-    return String(value);
-  }
-
-  return undefined;
-}
-
-export function addNotification(input: {
+interface RawNotification {
+  id: number;
   level: AppNotificationLevel;
-  title: unknown;
-  description?: unknown;
-}) {
-  ensureLoaded();
-
-  const title = normalizeText(input.title);
-  if (!title) {
-    return null;
-  }
-
-  const notification: AppNotification = {
-    id: createId(),
-    level: input.level,
-    title,
-    description: normalizeText(input.description),
-    createdAt: new Date().toISOString(),
-    read: false,
-  };
-
-  notifications = [notification, ...notifications].slice(0, MAX_NOTIFICATIONS);
-  persistNotifications();
-  emitChange();
-
-  return notification;
+  title: string;
+  description?: string | null;
+  link?: string | null;
+  source?: string | null;
+  read: boolean;
+  createdAt: string | null;
 }
 
-export function markNotificationRead(id: string) {
-  ensureLoaded();
-
-  let changed = false;
-  notifications = notifications.map((notification) => {
-    if (notification.id !== id || notification.read) {
-      return notification;
-    }
-
-    changed = true;
-    return { ...notification, read: true };
-  });
-
-  if (changed) {
-    persistNotifications();
-    emitChange();
-  }
-}
-
-export function markAllNotificationsRead() {
-  ensureLoaded();
-
-  let changed = false;
-  notifications = notifications.map((notification) => {
-    if (notification.read) {
-      return notification;
-    }
-
-    changed = true;
-    return { ...notification, read: true };
-  });
-
-  if (changed) {
-    persistNotifications();
-    emitChange();
-  }
-}
-
-export function clearNotifications() {
-  ensureLoaded();
-
-  if (notifications.length === 0) {
-    return;
-  }
-
-  notifications = [];
-  persistNotifications();
-  emitChange();
-}
-
-function subscribe(listener: () => void) {
-  ensureLoaded();
-  listeners.add(listener);
-
-  return () => {
-    listeners.delete(listener);
+function normalize(raw: RawNotification): AppNotification {
+  return {
+    id: raw.id,
+    level: raw.level,
+    title: raw.title,
+    description: raw.description ?? undefined,
+    link: raw.link ?? undefined,
+    source: raw.source ?? undefined,
+    createdAt: raw.createdAt ?? new Date(0).toISOString(),
+    read: raw.read,
   };
 }
 
-function getSnapshot() {
-  ensureLoaded();
-  return notifications;
+const NOTIFICATIONS_QUERY_KEY = ['notifications'] as const;
+const POLL_INTERVAL_MS = 30_000;
+
+async function fetchNotifications(): Promise<AppNotification[]> {
+  const response = await apiClient.get<RawNotification[]>('/notifications', {
+    params: { limit: 50 },
+  });
+  return response.data.map(normalize);
 }
 
-function getServerSnapshot() {
-  return EMPTY_NOTIFICATIONS;
-}
-
+/**
+ * Server-backed notification feed (bell icon). Replaces the old
+ * localStorage-only store: notifications now come from background events
+ * (observability incidents, snapshot failures, invites) recorded server-side
+ * via /notifications, not from local toast() calls — so they are shared
+ * across devices/sessions and survive a cleared browser.
+ */
 export function useNotifications() {
-  const items = useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
+  const queryClient = useQueryClient();
+
+  const query = useQuery({
+    queryKey: NOTIFICATIONS_QUERY_KEY,
+    queryFn: fetchNotifications,
+    refetchInterval: typeof document === 'undefined'
+      ? false
+      : () => (document.visibilityState === 'visible' ? POLL_INTERVAL_MS : false),
+  });
+
+  const markReadMutation = useMutation({
+    mutationFn: (id: number) => apiClient.patch(`/notifications/${id}/read`),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: NOTIFICATIONS_QUERY_KEY }),
+  });
+
+  const markAllReadMutation = useMutation({
+    mutationFn: () => apiClient.post('/notifications/read-all'),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: NOTIFICATIONS_QUERY_KEY }),
+  });
+
+  const clearAllMutation = useMutation({
+    mutationFn: () => apiClient.delete('/notifications'),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: NOTIFICATIONS_QUERY_KEY }),
+  });
+
+  const notifications = query.data ?? [];
 
   return {
-    notifications: items,
-    unreadCount: items.filter((notification) => !notification.read).length,
-    markNotificationRead,
-    markAllNotificationsRead,
-    clearNotifications,
+    notifications,
+    unreadCount: notifications.filter((n) => !n.read).length,
+    markNotificationRead: (id: number) => markReadMutation.mutate(id),
+    markAllNotificationsRead: () => markAllReadMutation.mutate(),
+    clearNotifications: () => clearAllMutation.mutate(),
   };
 }

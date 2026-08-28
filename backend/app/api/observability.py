@@ -144,6 +144,15 @@ def update_incident(
         raise HTTPException(status_code=422, detail="action must be acknowledge|resolve|reopen")
     db.commit()
     db.refresh(inc)
+    if payload.action in ("acknowledge", "resolve") and inc.dedup_key:
+        # PagerDuty-style ack suppression: handling it here in Observability
+        # means the bell icon shouldn't keep nagging about the same thing.
+        from app.models.user_notification import UserNotification
+        db.query(UserNotification).filter(
+            UserNotification.dedup_key == inc.dedup_key,
+            UserNotification.read == False,  # noqa: E712
+        ).update({"read": True})
+        db.commit()
     ds = db.query(Dataset).filter(Dataset.id == inc.dataset_id).first()
     return ObservabilityService.incident_dict(inc, ds.name if ds else None)
 
