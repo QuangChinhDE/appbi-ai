@@ -29,6 +29,13 @@ type KpiCardProps = {
   enableColorRules?: boolean;
   colorRules?: KpiValueColorRule[];
   rowCount?: number;
+  /** Values behind the headline, oldest → newest. When present and the theme
+   *  asks for it, the card draws a trend strip under the number. A KPI states
+   *  "where are we"; the sparkline answers "and which way is it going" without
+   *  spending a second tile on it. */
+  trendSeries?: number[];
+  /** Colour for the trend stroke. Defaults to the report accent. */
+  trendColor?: string;
   iconName?: string;
   iconColor?: string;
   accentBorder?: boolean;
@@ -47,7 +54,8 @@ type KpiCardProps = {
 };
 
 const DEFAULT_ACCENT_COLOR = '#2563eb';
-const FALLBACK_VALUE_COLOR = '#0f172a';
+// Follows the report's ink so a dark theme doesn't render near-black on near-black.
+const FALLBACK_VALUE_COLOR = 'rgb(var(--text-primary))';
 const FALLBACK_TONE_COLORS = {
   good: '#16a34a',
   bad: '#dc2626',
@@ -274,6 +282,9 @@ function getDeltaAppearance(delta: number, goalDirection: KpiGoalDirection) {
   };
 }
 
+const SPARK_W = 100;
+const SPARK_H = 34;
+
 export function KpiCard({
   value,
   label,
@@ -293,6 +304,8 @@ export function KpiCard({
   enableColorRules = false,
   colorRules = [],
   rowCount,
+  trendSeries,
+  trendColor,
   iconName,
   iconColor,
   accentBorder = false,
@@ -327,7 +340,18 @@ export function KpiCard({
     : undefined;
   const formattedValue = formatNumericValue(value, { format, displayUnits: effectiveDisplayUnits, decimalPlaces, currencySymbol });
   const formattedBenchmark = formatNumericValue(numericBenchmark, { format, displayUnits: effectiveDisplayUnits, decimalPlaces, currencySymbol });
-  const valueColor = matchedRule?.color || effectiveAccent || FALLBACK_VALUE_COLOR;
+  // The figure is CONTENT, so it wears ink. The accent marks the card — the
+  // rule under the number, the icon, the delta — it does not fill the headline.
+  //
+  // This used to fall straight through to the theme accent, so a six-KPI header
+  // rendered six 58px numbers in one identical colour, all shouting at the same
+  // volume with nothing saying which mattered. A colour rule (a real signal:
+  // this value crossed a threshold) still wins, and so does an accent the
+  // author set on THIS card; only the report-wide accent stops applying.
+  const authorSetCardAccent = accentColor && accentColor !== DEFAULT_ACCENT_COLOR
+    ? accentColor
+    : undefined;
+  const valueColor = matchedRule?.color || authorSetCardAccent || FALLBACK_VALUE_COLOR;
   const delta = numericValue !== null && numericBenchmark !== null ? numericValue - numericBenchmark : null;
   const deltaPercent = delta !== null && numericBenchmark !== null && numericBenchmark !== 0
     ? delta / Math.abs(numericBenchmark)
@@ -388,6 +412,33 @@ export function KpiCard({
       }
     : undefined;
   const showHeaderIcon = hideLabel && Boolean(IconComponent);
+  // ── Trend strip ───────────────────────────────────────────────────────────
+  // Built here rather than with a chart library: the strip is decoration for a
+  // number, it must not pull a charting runtime into every KPI tile, and at
+  // 34px tall the only things that matter are the path and the last point.
+  const sparkGradientId = React.useId().replace(/:/g, '');
+  const sparkColor = trendColor || effectiveAccent || DEFAULT_ACCENT_COLOR;
+  const sparkPath = React.useMemo(() => {
+    const pts = (trendSeries ?? []).filter((n) => typeof n === 'number' && Number.isFinite(n));
+    // Two points is the minimum that can show a direction.
+    if (pts.length < 2) return null;
+    const min = Math.min(...pts);
+    const max = Math.max(...pts);
+    // A flat series would divide by zero; draw it down the middle instead.
+    const span = max - min || 1;
+    const stepX = SPARK_W / (pts.length - 1);
+    const xy = pts.map((v, i) => {
+      const x = i * stepX;
+      // Inset by the stroke so the extremes are not clipped by the viewBox.
+      const y = SPARK_H - 3 - ((v - min) / span) * (SPARK_H - 6);
+      return [x, y] as const;
+    });
+    const line = xy.map(([x, y], i) => `${i === 0 ? 'M' : 'L'}${x.toFixed(2)},${y.toFixed(2)}`).join(' ');
+    const area = `${line} L${SPARK_W},${SPARK_H} L0,${SPARK_H} Z`;
+    const [lastX, lastY] = xy[xy.length - 1];
+    return { line, area, lastX, lastY };
+  }, [trendSeries]);
+
   const resolvedValueFontSize = typeof valueFontSize === 'number' && Number.isFinite(valueFontSize)
     ? Math.min(Math.max(Math.round(valueFontSize), 16), 80)
     : undefined;
@@ -429,7 +480,17 @@ export function KpiCard({
   // Value font derived from available height. Ceiling = author/theme override
   // or 72; floor = 18 so it stays legible. Reserve more height for the value
   // when panels share the card.
-  const fontCeil = resolvedValueFontSize ?? (dashTheme.kpiFontSize as number | undefined) ?? 72;
+  // The report's own type scale is the ceiling when it has one. Autofit exists
+  // to stop a long number overflowing a short tile, not to inflate a short
+  // number to 72px because the tile happens to be tall — which is how six KPIs
+  // ended up shouting in identical 58px digits.
+  const themeKpiRole = dashTheme.tokens
+    ? Math.round(dashTheme.tokens.typoBase * 1.85)
+    : undefined;
+  const fontCeil = resolvedValueFontSize
+    ?? (dashTheme.kpiFontSize as number | undefined)
+    ?? themeKpiRole
+    ?? 72;
   // Height budget. A KPI with just label+value (no benchmark/delta panels) was
   // only taking ~0.36 of the tile height, so the number sat small with a big
   // empty band under it ("card trông trống/xấu"). Give the headline a larger
@@ -504,7 +565,7 @@ export function KpiCard({
             )}
 
             <div
-              className={`font-semibold tracking-tight text-text-primary tabular-nums ${autoFit ? 'overflow-hidden whitespace-nowrap' : 'break-words text-4xl sm:text-5xl'} ${compact ? 'mt-1' : 'mt-3'}`}
+              className={`dashboard-kpi-value font-semibold tracking-tight text-text-primary tabular-nums ${autoFit ? 'overflow-hidden whitespace-nowrap' : 'break-words text-4xl sm:text-5xl'} ${compact ? 'mt-1' : 'mt-3'}`}
               style={{
                 color: valueColor || FALLBACK_VALUE_COLOR,
                 ...(autoValueFont
@@ -518,6 +579,35 @@ export function KpiCard({
             >
               {formattedValue}
             </div>
+
+            {sparkPath && (
+              <svg
+                className="dashboard-kpi-spark"
+                viewBox={`0 0 ${SPARK_W} ${SPARK_H}`}
+                preserveAspectRatio="none"
+                aria-hidden="true"
+              >
+                <defs>
+                  <linearGradient id={sparkGradientId} x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor={sparkColor} stopOpacity={0.28} />
+                    <stop offset="100%" stopColor={sparkColor} stopOpacity={0} />
+                  </linearGradient>
+                </defs>
+                <path d={sparkPath.area} fill={`url(#${sparkGradientId})`} />
+                <path
+                  d={sparkPath.line}
+                  fill="none"
+                  stroke={sparkColor}
+                  strokeWidth={1.75}
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  vectorEffect="non-scaling-stroke"
+                />
+                {/* The last point is the one the reader is standing on, so it
+                    gets the only marker. */}
+                <circle cx={sparkPath.lastX} cy={sparkPath.lastY} r={2.6} fill={sparkColor} vectorEffect="non-scaling-stroke" />
+              </svg>
+            )}
 
             {contextText && (
               <div className="mt-3 whitespace-pre-line text-sm leading-6 text-text-secondary">
@@ -568,7 +658,7 @@ export function KpiCard({
 
             {hasDelta && delta !== null && deltaAppearance && DeltaIcon && (
               <div
-                className={`rounded-xl px-4 py-3 ${toneColor(deltaAppearance.tone) ? '' : deltaAppearance.surfaceClass}`}
+                className={`dashboard-kpi-delta rounded-xl px-4 py-3 ${toneColor(deltaAppearance.tone) ? '' : deltaAppearance.surfaceClass}`}
                 style={toneColor(deltaAppearance.tone) ? { backgroundColor: colorWithAlpha(toneColor(deltaAppearance.tone), 0.10) } : panelBackgroundStyle}
               >
                 <div

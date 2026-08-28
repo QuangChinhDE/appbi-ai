@@ -37,6 +37,9 @@ from app.schemas import (
     DashboardShareRequest,
     DashboardResponse,
     DashboardAddChartRequest,
+    DashboardRelayoutRequest,
+    PresentationPlanRequest,
+    PresentationPlanResponse,
     DashboardUpdateDraftFiltersRequest,
     DashboardUpdateLayoutRequest,
     DashboardUpdateWidgetRequest,
@@ -65,6 +68,7 @@ from app.services.dashboard_html_import_service import (
     _load_uploaded_multi_source_profiles,
     _load_uploaded_single_file_multi_sheet_profiles,
     ai_fix_chart_plan,
+    SourceContractMismatch,
     analyze_dashboard_html_import,
     analyze_dashboard_html_import_batch,
     build_dashboard_from_import as build_dashboard_from_html_import_service,
@@ -545,6 +549,14 @@ async def analyze_html_dashboard_import(
                 )
     except HTTPException:
         raise
+    except SourceContractMismatch as exc:
+        # 409, not 400: the request is well formed, it just describes data this
+        # dataset does not have. The findings say exactly which columns, so the
+        # author can regenerate the file rather than guess.
+        raise HTTPException(status_code=409, detail={
+            "reason": "source_contract_mismatch",
+            "findings": exc.findings,
+        }) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
@@ -648,6 +660,14 @@ async def analyze_html_dashboard_import_batch_route(
         )
     except HTTPException:
         raise
+    except SourceContractMismatch as exc:
+        # 409, not 400: the request is well formed, it just describes data this
+        # dataset does not have. The findings say exactly which columns, so the
+        # author can regenerate the file rather than guess.
+        raise HTTPException(status_code=409, detail={
+            "reason": "source_contract_mismatch",
+            "findings": exc.findings,
+        }) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
@@ -754,6 +774,14 @@ async def build_html_dashboard_import(
         return result
     except HTTPException:
         raise
+    except SourceContractMismatch as exc:
+        # 409, not 400: the request is well formed, it just describes data this
+        # dataset does not have. The findings say exactly which columns, so the
+        # author can regenerate the file rather than guess.
+        raise HTTPException(status_code=409, detail={
+            "reason": "source_contract_mismatch",
+            "findings": exc.findings,
+        }) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
@@ -992,6 +1020,14 @@ async def build_html_dashboard_import_batch_route(
         return result
     except HTTPException:
         raise
+    except SourceContractMismatch as exc:
+        # 409, not 400: the request is well formed, it just describes data this
+        # dataset does not have. The findings say exactly which columns, so the
+        # author can regenerate the file rather than guess.
+        raise HTTPException(status_code=409, detail={
+            "reason": "source_contract_mismatch",
+            "findings": exc.findings,
+        }) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
@@ -1021,6 +1057,14 @@ async def preview_html_dashboard_import_source(
             "default_sheet_name": default_sheet_name,
             "sheets": sheets,
         }
+    except SourceContractMismatch as exc:
+        # 409, not 400: the request is well formed, it just describes data this
+        # dataset does not have. The findings say exactly which columns, so the
+        # author can regenerate the file rather than guess.
+        raise HTTPException(status_code=409, detail={
+            "reason": "source_contract_mismatch",
+            "findings": exc.findings,
+        }) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
@@ -1821,6 +1865,190 @@ def add_chart_to_dashboard(
         return _serialize_dashboard_with_draft(db, dashboard, current_user)
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+
+@router.post("/{dashboard_id}/relayout", response_model=DashboardResponse)
+def relayout_dashboard_to_template(
+    dashboard_id: int,
+    request: DashboardRelayoutRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Re-flow an existing dashboard into a layout template's topology.
+
+    A template is a composition -- a KPI strip over a chart grid, a rail beside
+    one main chart, a dense three-across wall -- and until now that composition
+    was applied at IMPORT time and never again. Switching template on a
+    dashboard that already existed rewrote its colours and its filter dock and
+    left every tile exactly where the previous template had put it, which is why
+    the presets read as one layout in five palettes.
+
+    This is deliberately a separate call rather than a side effect of saving
+    `theme_config`: re-flowing moves tiles a person may have arranged by hand,
+    so it has to be something they ask for and can undo, not something that
+    happens because they tried a colour.
+
+    Geometry is recomputed by the same recipe the importer uses, so a template
+    means the same thing whether a report arrived through import or was built
+    here.
+    """
+    from app.services.dashboard_html_import_service import (
+        IMPORT_TEMPLATE_FAMILIES,
+        apply_layout_recipe,
+    )
+    from app.services.dashboard_service import DEFAULT_DASHBOARD_PAGE_ID
+
+    # The runtime grid is finer than the 12 columns the recipes are written in,
+    # and a tile says which version its coordinates are in via `layout.gv`.
+    # These mirror `GRID_FINER` / `GRID_VERSION` in
+    # `frontend/src/lib/dashboard-pages.ts`; the theme QA script fails if they
+    # drift apart.
+    GRID_FINER = 3
+    GRID_VERSION = 2
+
+    dash = db.query(Dashboard).filter(Dashboard.id == dashboard_id).first()
+    if not dash:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Dashboard with ID {dashboard_id} not found")
+    require_edit_access(db, current_user, dash, "dashboards")
+
+    family = str(request.template_family or "").strip().lower()
+    if family not in IMPORT_TEMPLATE_FAMILIES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unknown layout template '{family}'. Expected one of {sorted(IMPORT_TEMPLATE_FAMILIES)}.",
+        )
+
+    tiles = list(dash.dashboard_charts or [])
+    if not tiles:
+        return _serialize_dashboard_with_draft(db, dash, current_user)
+
+    page_id = request.page_id
+    # One page at a time: re-flowing every page of a multi-page report because
+    # someone changed the template on the page they were looking at is the kind
+    # of surprise this endpoint exists to avoid.
+    def _page_of(tile) -> str:
+        layout = tile.layout if isinstance(tile.layout, dict) else {}
+        return str(layout.get("pageId") or DEFAULT_DASHBOARD_PAGE_ID)
+
+    target_page = str(page_id or DEFAULT_DASHBOARD_PAGE_ID)
+    on_page = [t for t in tiles if _page_of(t) == target_page]
+    if not on_page:
+        on_page = tiles
+        target_page = None
+
+    # The recipe speaks the importer's vocabulary, so each tile is described the
+    # way an import plan would describe it.
+    def _chart_type_of(tile) -> str:
+        """The chart's type as the recipe spells it.
+
+        `chart_type` is an enum, so `str()` on it yields "ChartType.KPI" -- which
+        matches nothing, and every KPI was laid out with the shape of a chart:
+        four headline numbers came back as four 4x4 tiles instead of a strip.
+        """
+        raw = getattr(getattr(tile, "chart", None), "chart_type", None)
+        if raw is None:
+            return ""
+        return str(getattr(raw, "value", raw)).upper()
+
+    items: List[Dict[str, Any]] = []
+    for order, tile in enumerate(on_page, start=1):
+        chart_type = _chart_type_of(tile)
+        items.append({
+            "block_id": str(tile.id),
+            "order": order,
+            "widget_type": str(tile.widget_type or "chart"),
+            "final_chart_type": chart_type,
+            "_source_role": "kpi" if chart_type == "KPI" else "",
+        })
+
+    warnings = apply_layout_recipe(items, family)
+
+    # The recipe works in 12 columns; the runtime grid is finer. Writing the
+    # finished coordinates in the CURRENT grid version keeps the read-time
+    # upscale from applying twice.
+    scale = GRID_FINER
+    by_id = {str(tile.id): tile for tile in on_page}
+    for item in items:
+        tile = by_id.get(str(item["block_id"]))
+        layout = item.get("layout")
+        if tile is None or not isinstance(layout, dict):
+            continue
+        previous = tile.layout if isinstance(tile.layout, dict) else {}
+        tile.layout = {
+            **previous,
+            "x": int(layout["x"]) * scale,
+            "y": int(layout["y"]) * scale,
+            "w": int(layout["w"]) * scale,
+            "h": int(layout["h"]) * scale,
+            "gv": GRID_VERSION,
+        }
+        flag_modified(tile, "layout")
+
+    db.commit()
+    db.refresh(dash)
+    logger.info(
+        "relayout dashboard=%s family=%s tiles=%s page=%s warnings=%s",
+        dashboard_id, family, len(items), target_page, warnings,
+    )
+    return _serialize_dashboard_with_draft(db, dash, current_user)
+
+
+@router.post("/{dashboard_id}/presentation-plan", response_model=PresentationPlanResponse)
+def plan_dashboard_presentation(
+    dashboard_id: int,
+    request: PresentationPlanRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Ask the model how this page should be arranged. Returns a plan; changes nothing.
+
+    This endpoint has no write path, and that is the design rather than an
+    omission. The model never touches a dashboard: it is handed a presentation
+    snapshot the client already stripped of data-source detail, and it answers
+    with a plan the client then validates, compiles and applies through the same
+    draft flow a mouse drag uses. If the model hallucinates a chart, invents a
+    capability or tries to change a chart type, the client refuses the plan and
+    the dashboard is exactly where it was.
+
+    The permission gate is `edit`, not `view`. Nothing is written here, but the
+    snapshot describes a report's structure and the response costs money to
+    produce -- both are things a read-only viewer should not be able to spend.
+    """
+    dash = db.query(Dashboard).filter(Dashboard.id == dashboard_id).first()
+    if not dash:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Dashboard with ID {dashboard_id} not found",
+        )
+    require_edit_access(db, current_user, dash, "dashboards")
+
+    from app.services.dashboard_presentation_planner import (
+        PresentationPlanUnavailable,
+        plan_presentation,
+    )
+
+    try:
+        plan = plan_presentation(
+            snapshot=request.snapshot,
+            user_prompt=request.prompt,
+            conversation=request.conversation,
+            images=request.images,
+            focused_chart_id=request.focused_chart_id,
+        )
+    except PresentationPlanUnavailable as exc:
+        # 503, not 500: the report is fine and the request was valid — there is
+        # simply no model available to answer it right now.
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc) or "No AI provider is configured for presentation planning.",
+        ) from exc
+
+    logger.info(
+        "presentation-plan dashboard=%s user=%s prompt_len=%s images=%s",
+        dashboard_id, getattr(current_user, "id", None), len(request.prompt),
+        len(request.images or []),
+    )
+    return PresentationPlanResponse(plan=plan)
 
 
 @router.post("/{dashboard_id}/widgets", response_model=DashboardResponse)

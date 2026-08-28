@@ -225,7 +225,10 @@ export type DashboardWidgetType =
   // Modern/SaaS "element" widgets (decorative inserts).
   | 'section_header'
   | 'callout'
-  | 'hero_strip';
+  | 'hero_strip'
+  // A block of imported source markup AppBI has no native visual for, kept as
+  // sanitized static HTML instead of dropped.
+  | 'html_fragment';
 
 export interface DashboardThemeConfig {
   mode?: 'light' | 'dark';

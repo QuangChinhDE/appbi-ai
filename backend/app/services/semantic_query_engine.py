@@ -1717,7 +1717,11 @@ class SemanticQueryEngine:
             measure_def = {
                 'name': field_name,
                 'type': requested_agg,
-                'sql': '${TABLE}.' + field_name,
+                # Quote the column so names with spaces / special chars (e.g. a
+                # Google-Sheets header "ID KH") emit `alias."ID KH"` instead of
+                # the unquoted `alias.ID KH` that DuckDB/BigQuery reject. Plain
+                # identifiers stay unquoted (byte-identical) via _quote_ident.
+                'sql': '${TABLE}.' + self._quote_ident(field_name),
             }
 
         stored_measure_type = str(measure_def.get('type', 'count') or 'count').lower().strip()
@@ -1782,9 +1786,13 @@ class SemanticQueryEngine:
             and sql_template != '*'
             and "${TABLE}" not in sql_template
             and "${" not in sql_template  # skip ${view.field} cross-refs
-            and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", sql_template.strip())
+            # Allow spaces in the bare column name ([\w ]) so a Sheets header
+            # like "ID KH" qualifies too — mirrors the dimension path (1092).
+            and re.fullmatch(r"[A-Za-z_][\w ]*", sql_template.strip())
         ):
-            sql_template = f"${{TABLE}}.{sql_template.strip()}"
+            # _quote_ident leaves plain names unquoted (byte-identical) and
+            # quotes names with spaces/special chars → `${TABLE}."ID KH"`.
+            sql_template = f"${{TABLE}}.{self._quote_ident(sql_template.strip())}"
 
         # Phase-15.30: Path-C guard. An expression with an aggregate call
         # but no depends_on would get wrapped in this method's outer
@@ -2745,7 +2753,11 @@ class SemanticQueryEngine:
             measure_def = {
                 'name': field_name,
                 'type': requested_agg,
-                'sql': '${TABLE}.' + field_name,
+                # Quote the column so names with spaces / special chars (e.g. a
+                # Google-Sheets header "ID KH") emit `alias."ID KH"` instead of
+                # the unquoted `alias.ID KH` that DuckDB/BigQuery reject. Plain
+                # identifiers stay unquoted (byte-identical) via _quote_ident.
+                'sql': '${TABLE}.' + self._quote_ident(field_name),
             }
 
         # Mirror `_render_measure`: an "auto" (or unknown) agg_override means
@@ -2923,6 +2935,38 @@ class SemanticQueryEngine:
             if keyword in sql_upper:
                 raise ValueError(f"Calculated field contains forbidden keyword: {keyword}")
     
+    def _snapshot_renamed_columns(self, tid) -> Dict[str, str]:
+        """``{original_name: safe_name}`` for columns of dataset_table ``tid``
+        whose physical snapshot name was sanitized at build time
+        (``bq_safe_field``). Empty for clean names — the common case, so the
+        snapshot FROM operand stays byte-identical. Derived from the SAME
+        per-name function the build uses, so no shared state is needed."""
+        cache = getattr(self, "_snap_rename_cache", None)
+        if cache is None:
+            cache = {}
+            self._snap_rename_cache = cache
+        if tid in cache:
+            return cache[tid]
+        out: Dict[str, str] = {}
+        try:
+            from app.models.dataset import DatasetTable
+            from app.services.datasource_service import bq_safe_field
+
+            t = self.db.query(DatasetTable).filter(DatasetTable.id == tid).first()
+            cc = getattr(t, "columns_cache", None) if t is not None else None
+            cols = cc.get("columns") if isinstance(cc, dict) else cc
+            for c in cols or []:
+                name = c.get("name") if isinstance(c, dict) else None
+                if not name:
+                    continue
+                safe = bq_safe_field(name)
+                if safe != name:
+                    out[name] = safe
+        except Exception:  # noqa: BLE001 — never break rendering over a rename map
+            out = {}
+        cache[tid] = out
+        return out
+
     def _snapshot_ref_for_view(self, view) -> Optional[str]:
         """Dashboard perf #5 — if this view's dataset table has a fresh
         materialized snapshot, return a drop-in FROM operand that reads the flat
@@ -2956,9 +3000,24 @@ class SemanticQueryEngine:
         # mode, so this stays backticks in practice) — but the renderer itself
         # no longer bakes in that assumption.
         d = (self.database_type or "").lower()
+        # Re-alias any physically-renamed columns back to their ORIGINAL names.
+        # The snapshot BUILD sanitizes BigQuery-invalid Sheet headers (e.g.
+        # "BC/CD phụ trách") via bq_safe_field; here we map them back so the chart
+        # SQL that references the original names still resolves. `SELECT * EXCEPT`
+        # renames ONLY the affected columns (robust to columns_cache staleness);
+        # empty for every clean dataset → the FROM operand is byte-identical.
+        renamed = self._snapshot_renamed_columns(tid) if tid is not None else {}
         if d in ("bigquery", "mysql"):
+            if renamed:
+                _except = ", ".join(f"`{safe}`" for safe in renamed.values())
+                _alias = ", ".join(f"`{safe}` AS `{orig}`" for orig, safe in renamed.items())
+                return f"(SELECT * EXCEPT ({_except}), {_alias} FROM `{ref}`)"
             return f"(SELECT * FROM `{ref}`)"
         quoted = ".".join('"' + p.replace('"', "") + '"' for p in str(ref).split("."))
+        if renamed:
+            _except = ", ".join('"' + safe + '"' for safe in renamed.values())
+            _alias = ", ".join(f'"{safe}" AS "{orig}"' for orig, safe in renamed.items())
+            return f"(SELECT * EXCEPT ({_except}), {_alias} FROM {quoted})"
         return f"(SELECT * FROM {quoted})"
 
     def _calendar_live_sql_for_dialect(self) -> Optional[str]:
@@ -3363,6 +3422,49 @@ class SemanticQueryEngine:
                 return build_safe_cast_sql(col_sql, "float", _dialect)
             return col_sql
 
+        def _numeric_text(v: Any) -> Optional[int]:
+            """An integer-like STRING, e.g. the "2017" a slicer hands back.
+
+            The mirror image of the guard above. Distinct values reach the
+            client as text, so choosing a year sends `["2017"]` at an INT64
+            column and BigQuery refuses outright: *No matching signature for
+            operator IN for argument types INT64 and {STRING}*. Measured on
+            dash 67 — selecting a year 400'd every chart on the page, through
+            the dropdown exactly as much as through the segmented control.
+
+            Only plain integer text converts. Floats keep their text form
+            (it round-trips badly) and anything zero-padded stays text, because
+            in a code like "007" the padding is part of the identity.
+            """
+            if not isinstance(v, str):
+                return None
+            t = v.strip()
+            body = t[1:] if t[:1] in {"+", "-"} else t
+            if not body.isdigit():
+                return None
+            if len(body) > 1 and body[0] == "0":
+                return None
+            try:
+                return int(t)
+            except ValueError:
+                return None
+
+        def _coerce_numeric_text(values: list) -> list:
+            """Convert a value list when EVERY present entry is integer text.
+
+            All-or-nothing: a mixed list means the column really is textual and
+            the numbers in it are incidental. Once converted, `_num` above sees
+            numbers and SAFE_CASTs the column, so the comparison lands whether
+            the column is physically INT64 or STRING.
+            """
+            present = [v for v in values if _value_present(v)]
+            if not present:
+                return values
+            converted = [_numeric_text(v) for v in present]
+            if any(c is None for c in converted):
+                return values
+            return converted
+
         where_conditions: list[str] = []      # base / select-side predicates
         exists_groups: dict[str, list[str]] = {}  # filter-only view -> predicates
         # Defensive default — pivot-value fetch (line ~445) calls this with only
@@ -3705,9 +3807,9 @@ class SemanticQueryEngine:
             if operator == "in":
                 present: list[Any] = []
                 if isinstance(value, list):
-                    present = [v for v in value if _value_present(v)]
+                    present = _coerce_numeric_text([v for v in value if _value_present(v)])
                 elif isinstance(value, str) and value.strip():
-                    present = [v.strip() for v in value.split(",") if v.strip()]
+                    present = _coerce_numeric_text([v.strip() for v in value.split(",") if v.strip()])
                 vals = ", ".join(_lit(v) for v in present)
                 if vals:
                     conditions.append(f"{_num(field_sql, *present)} IN ({vals})")
@@ -3715,9 +3817,9 @@ class SemanticQueryEngine:
             if operator == "not_in":
                 present = []
                 if isinstance(value, list):
-                    present = [v for v in value if _value_present(v)]
+                    present = _coerce_numeric_text([v for v in value if _value_present(v)])
                 elif isinstance(value, str) and value.strip():
-                    present = [v.strip() for v in value.split(",") if v.strip()]
+                    present = _coerce_numeric_text([v.strip() for v in value.split(",") if v.strip()])
                 vals = ", ".join(_lit(v) for v in present)
                 if vals:
                     conditions.append(f"{_num(field_sql, *present)} NOT IN ({vals})")

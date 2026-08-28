@@ -38,6 +38,60 @@ class DashboardHtmlImportAnalyzeResponse(BaseModel):
     warnings: List[str] = Field(default_factory=list)
     ai_meta: Dict[str, Any] = Field(default_factory=dict)
 
+    # ── Dashboard-level contract ────────────────────────────────────────────
+    # These are the fields that make an import produce a REPORT rather than a
+    # pile of charts. `build_dashboard_from_import` has always read them off the
+    # analysis dict, but they were never declared here — and because the client
+    # round-trips this response back to /build, Pydantic dropped every one on
+    # serialisation. The theme branch in build was therefore unreachable from
+    # any UI flow, which is why an imported dashboard always landed on the
+    # default look no matter what the source HTML declared.
+    theme_config: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description=(
+            "Report theme in AppBI's own token vocabulary — templateId / "
+            "colorwayId plus any explicit tokens. Never raw CSS."
+        ),
+    )
+    layout_mode: Optional[str] = Field(
+        default=None, description="'grid' | 'canvas'."
+    )
+    canvas_config: Optional[Dict[str, Any]] = Field(
+        default=None, description="Free-canvas size/snap, when layout_mode='canvas'."
+    )
+    slicer_cluster_layout: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description=(
+            "Where the filters live: position (top/bottom/left/right/drawer/"
+            "hidden) + direction. Derived from the source's own filter bar or "
+            "rail so an imported report keeps its filter UX."
+        ),
+    )
+    slicers: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description="Filter controls recognised in the source, as slicer entries.",
+    )
+    pages_config: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description="Page list, when one document expands into several pages.",
+    )
+    widgets: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description=(
+            "Non-chart blocks — section headers, callouts, text, images. These "
+            "carry the source's visual hierarchy; dropping them was what turned "
+            "an imported report into a bag of loose charts."
+        ),
+    )
+    template_family: Optional[str] = Field(
+        default=None,
+        description=(
+            "console | brief | ops | editorial | presentation — the layout "
+            "family the source most resembles, chosen by AI when the HTML "
+            "carries no AppBI metadata of its own."
+        ),
+    )
+
 
 class DashboardHtmlImportBatchAnalyzeDocumentResponse(BaseModel):
     """Analyze result for one HTML document in a batch import."""

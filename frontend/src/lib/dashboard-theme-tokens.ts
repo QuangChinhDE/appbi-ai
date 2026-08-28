@@ -1,4 +1,5 @@
 import type { DashboardThemeConfig } from '@/types/api';
+import { expandThemeIdentity } from '@/lib/dashboard-theme-catalog';
 
 /**
  * The dashboard design system, expressed as tokens.
@@ -31,6 +32,114 @@ export type KpiStyle = 'minimal' | 'accent' | 'tinted' | 'gradient' | 'benchmark
 export type TableStyle = 'clean' | 'compact' | 'financial' | 'zebra' | 'executive';
 export type SlicerStyle = 'card' | 'pill' | 'compact' | 'glass' | 'minimal';
 export type AccentBarPosition = 'top' | 'bottom' | 'left' | 'right' | 'none';
+
+/**
+ * How the small supporting labels are set — KPI captions, table headers, filter
+ * labels, chart subtitles.
+ *
+ * This is the single most recognisable trait of a modern dashboard and the type
+ * scale alone cannot express it: an eyebrow is not "smaller text", it is small
+ * text that has been tracked out, weighted up and set in caps so it reads as a
+ * label rather than as content. Offered as three named settings rather than a
+ * letter-spacing slider, for the same reason the rest of this file is —
+ * a value picked from a designed set composes with everything else. */
+export type LabelStyle = 'plain' | 'eyebrow' | 'caps';
+
+/** Figures line up in columns and compare across rows, which proportional
+ *  digits actively fight. `tabular` keeps the report's own face but locks digit
+ *  advance; `mono` switches figures to the monospace face for a data-tool feel. */
+export type NumericFont = 'inherit' | 'tabular' | 'mono';
+
+/** How a filled mark is painted. Flat fills read as a spreadsheet chart; the
+ *  fade toward the baseline is what makes an area or column look designed. */
+export type MarkFill = 'solid' | 'gradient' | 'soft';
+
+/** Treatment for a group of tiles that belong together.
+ *  Without a level between "page" and "card", a report is a bag of loose cards
+ *  and no amount of card styling fixes it — grouping is a surface, not a border
+ *  on each member. */
+export type SectionSurface = 'none' | 'sunken' | 'raised' | 'outline';
+
+/**
+ * Where a theme wants the filters, and how it wants each control to look.
+ *
+ * These are the first COMPOSITION tokens. Until now a theme could only repaint:
+ * the dock lived in `Dashboard.slicer_cluster_layout`, a different column that
+ * no preset touched, so "SaaS console" and "Executive brief" — two looks that
+ * in every real template put their filters in completely different places —
+ * both rendered the same three dropdown boxes across the top. A look is a
+ * layout decision as much as a colour one.
+ *
+ * The author still outranks the theme: an explicit dock on the cluster wins,
+ * and the theme only supplies the default.
+ */
+export type FilterDock = 'top' | 'bottom' | 'left' | 'right' | 'drawer';
+
+/**
+ * How a single slicer presents itself.
+ *
+ *  'auto'      — pick by cardinality (see `pickSlicerVariant`)
+ *  'segmented' — all options visible as one connected control
+ *  'dropdown'  — a labelled box that opens a list (today's only option)
+ *  'compact'   — an inline pill, sized to its content
+ */
+export type SlicerVariant = 'auto' | 'segmented' | 'dropdown' | 'compact';
+
+export const FILTER_DOCKS: FilterDock[] = ['top', 'bottom', 'left', 'right', 'drawer'];
+export const SLICER_VARIANTS: SlicerVariant[] = ['auto', 'segmented', 'dropdown', 'compact'];
+
+/**
+ * Choose the control that fits the data.
+ *
+ * A three-value year filter rendered as a dropdown reading "All" is the worst
+ * of both worlds: it occupies a full-width box AND hides its own options behind
+ * a click. Few options belong on screen; many belong behind a search. This is
+ * the whole "smart slicer" rule — cardinality picks the control.
+ */
+/** Beyond this many options a segmented control stops being readable: the
+ *  labels truncate to initials and the row turns into noise. */
+export const SEGMENTED_MAX_OPTIONS = 5;
+/** Long labels blow the row apart well before the count does. */
+export const SEGMENTED_MAX_LABEL_CHARS = 10;
+
+export function pickSlicerVariant(
+  declared: SlicerVariant | undefined,
+  distinctCount: number | undefined,
+  longestLabel?: number,
+): Exclude<SlicerVariant, 'auto'> {
+  const count = typeof distinctCount === 'number' ? distinctCount : 0;
+  // Does the data allow options to be shown inline at all?
+  const fits = count > 0
+    && count <= SEGMENTED_MAX_OPTIONS
+    && (longestLabel == null || longestLabel <= SEGMENTED_MAX_LABEL_CHARS);
+
+  if (declared && declared !== 'auto') {
+    // A template STATES a preference; the data gets a veto. Asking for
+    // segmented and getting it unconditionally rendered 27 Brazilian states as
+    // "A A A A B C D E G M M M P P P" — every label truncated to one letter.
+    // Anything that cannot fit falls back to the control that can.
+    if (declared === 'segmented' && !fits) return 'dropdown';
+    return declared;
+  }
+  return fits ? 'segmented' : 'dropdown';
+}
+
+export const LABEL_STYLES: LabelStyle[] = ['plain', 'eyebrow', 'caps'];
+export const NUMERIC_FONTS: NumericFont[] = ['inherit', 'tabular', 'mono'];
+export const MARK_FILLS: MarkFill[] = ['solid', 'gradient', 'soft'];
+export const SECTION_SURFACES: SectionSurface[] = ['none', 'sunken', 'raised', 'outline'];
+
+/** Tracking + case per label style. Tracking is in em so it scales with type. */
+export const LABEL_STYLE_TOKENS: Record<LabelStyle, {
+  tracking: number;          // em
+  transform: 'none' | 'uppercase';
+  weightBump: number;        // added to the role's weight
+  opacity: number;           // labels sit back from the value they describe
+}> = {
+  plain:   { tracking: 0,    transform: 'none',      weightBump: 0,   opacity: 1 },
+  eyebrow: { tracking: 0.08, transform: 'uppercase', weightBump: 100, opacity: 0.72 },
+  caps:    { tracking: 0.04, transform: 'uppercase', weightBump: 0,   opacity: 1 },
+};
 
 export const CARD_TREATMENTS: CardTreatment[] = ['clean', 'soft', 'tinted', 'elevated', 'glass', 'outline', 'frameless'];
 export const CHART_CHROMES: ChartChrome[] = ['clean', 'minimal', 'executive', 'editorial', 'vibrant'];
@@ -75,12 +184,13 @@ export const CHART_CHROME_TOKENS: Record<ChartChrome, {
   legend: 'default' | 'compact' | 'hidden';
   plotBackground: 'none' | 'tint';
   dataLabels: 'off' | 'auto' | 'always';
+  markFill: MarkFill;
 }> = {
-  clean:     { gridlines: 'light',  axisLine: false, barRadius: 6, lineWidth: 2,   areaOpacity: 0.18, legend: 'default', plotBackground: 'none', dataLabels: 'auto' },
-  minimal:   { gridlines: 'none',   axisLine: false, barRadius: 8, lineWidth: 2,   areaOpacity: 0.12, legend: 'compact', plotBackground: 'none', dataLabels: 'off' },
-  executive: { gridlines: 'light',  axisLine: true,  barRadius: 2, lineWidth: 2.5, areaOpacity: 0.10, legend: 'default', plotBackground: 'none', dataLabels: 'always' },
-  editorial: { gridlines: 'dashed', axisLine: false, barRadius: 4, lineWidth: 3,   areaOpacity: 0.22, legend: 'compact', plotBackground: 'tint', dataLabels: 'auto' },
-  vibrant:   { gridlines: 'solid',  axisLine: true,  barRadius: 10, lineWidth: 3.5, areaOpacity: 0.32, legend: 'default', plotBackground: 'tint', dataLabels: 'always' },
+  clean:     { gridlines: 'light',  axisLine: false, barRadius: 6, lineWidth: 2,   areaOpacity: 0.18, legend: 'default', plotBackground: 'none', dataLabels: 'auto',   markFill: 'gradient' },
+  minimal:   { gridlines: 'none',   axisLine: false, barRadius: 8, lineWidth: 2,   areaOpacity: 0.12, legend: 'compact', plotBackground: 'none', dataLabels: 'off',    markFill: 'soft' },
+  executive: { gridlines: 'light',  axisLine: true,  barRadius: 2, lineWidth: 2.5, areaOpacity: 0.10, legend: 'default', plotBackground: 'none', dataLabels: 'always', markFill: 'solid' },
+  editorial: { gridlines: 'dashed', axisLine: false, barRadius: 4, lineWidth: 3,   areaOpacity: 0.22, legend: 'compact', plotBackground: 'tint', dataLabels: 'auto',   markFill: 'gradient' },
+  vibrant:   { gridlines: 'solid',  axisLine: true,  barRadius: 10, lineWidth: 3.5, areaOpacity: 0.32, legend: 'default', plotBackground: 'tint', dataLabels: 'always', markFill: 'gradient' },
 };
 
 /**
@@ -95,7 +205,11 @@ export const TYPOGRAPHY_ROLES = [
   { key: 'sectionTitle',   scale: 1.05, weight: 600 },
   { key: 'chartTitle',     scale: 1.00, weight: 600 },
   { key: 'chartSubtitle',  scale: 0.86, weight: 400 },
-  { key: 'kpiValue',       scale: 2.60, weight: 700 },
+  // 1.85, not 2.6. At typoBase 14 that is ~26px, which is where every dashboard
+  // template of this kind actually sets a KPI figure. 2.6 (plus a 72px autofit
+  // ceiling) produced 58px numbers: a row of six of them read as an alarm, and
+  // dwarfed the chart titles beside them so the page had no hierarchy left.
+  { key: 'kpiValue',       scale: 1.85, weight: 700 },
   { key: 'kpiLabel',       scale: 0.86, weight: 500 },
   { key: 'axisLabel',      scale: 0.82, weight: 400 },
   { key: 'legend',         scale: 0.82, weight: 400 },
@@ -144,6 +258,11 @@ export interface ResolvedStyleTokens {
   blur: number;
   cardOpacity: number;
   typoBase: number;
+  labelStyle: LabelStyle;
+  numericFont: NumericFont;
+  sectionSurface: SectionSurface;
+  filterDock: FilterDock;
+  slicerVariant: SlicerVariant;
   chart: (typeof CHART_CHROME_TOKENS)[ChartChrome];
 }
 
@@ -170,7 +289,10 @@ function num(value: unknown, fallback: number): number {
  * makes "change one thing, keep the look" work.
  */
 export function resolveStyleTokens(theme?: DashboardThemeConfig | null): ResolvedStyleTokens {
-  const raw = (theme ?? {}) as Record<string, unknown>;
+  // A theme may be stored as just an identity (`templateId` / `colorwayId`);
+  // expand it before reading tokens, or an Ops report resolves to stock
+  // Classic because none of the token keys are physically present.
+  const raw = (expandThemeIdentity(theme) ?? {}) as Record<string, unknown>;
   const skin: SkinId = raw.skin === 'modern' ? 'modern' : 'classic';
   const d = SKIN_DEFAULTS[skin];
 
@@ -200,8 +322,16 @@ export function resolveStyleTokens(theme?: DashboardThemeConfig | null): Resolve
     blur: num(raw.cardBlur, base.blur),
     cardOpacity: Math.max(0.3, Math.min(1, num(raw.cardOpacity, base.opacity))),
     typoBase: Math.max(10, Math.min(22, num(raw.typoBase, TYPO_BASE_DEFAULT))),
+    // Modern skins set their labels as eyebrows by default; classic keeps the
+    // plain sentence-case label it always had, so existing reports don't shift.
+    labelStyle: pick<LabelStyle>(raw.labelStyle, LABEL_STYLES, skin === 'modern' ? 'eyebrow' : 'plain'),
+    numericFont: pick<NumericFont>(raw.numericFont, NUMERIC_FONTS, 'tabular'),
+    sectionSurface: pick<SectionSurface>(raw.sectionSurface, SECTION_SURFACES, skin === 'modern' ? 'sunken' : 'none'),
+    filterDock: pick<FilterDock>(raw.filterDock, FILTER_DOCKS, 'top'),
+    slicerVariant: pick<SlicerVariant>(raw.slicerVariant, SLICER_VARIANTS, 'auto'),
     chart: {
       ...chartBase,
+      markFill: pick<MarkFill>(raw.markFill, MARK_FILLS, chartBase.markFill),
       gridlines: pick(raw.gridlines, ['none', 'light', 'solid', 'dashed'] as const, chartBase.gridlines),
       axisLine: raw.axisLine == null ? chartBase.axisLine : raw.axisLine === true || raw.axisLine === 'true',
       barRadius: num(raw.barRadius, chartBase.barRadius),
@@ -227,12 +357,35 @@ export function styleTokensToCssVars(t: ResolvedStyleTokens): Record<string, str
     '--dash-typo-base': `${t.typoBase}px`,
     '--dash-bar-radius': `${t.chart.barRadius}px`,
   };
+  // Label styling. Only the SUPPORTING roles take the eyebrow treatment — a
+  // dashboard title in tracked-out caps is a different (and worse) design.
+  const ls = LABEL_STYLE_TOKENS[t.labelStyle];
+  vars['--dash-label-tracking'] = `${ls.tracking}em`;
+  vars['--dash-label-transform'] = ls.transform;
+  vars['--dash-label-opacity'] = String(ls.opacity);
+
+  // Figures. `tabular` locks digit advance in the report's own face; `mono`
+  // hands them to the monospace family loaded in the root layout.
+  vars['--dash-numeric-variant'] = t.numericFont === 'inherit' ? 'normal' : 'tabular-nums';
+  vars['--dash-numeric-family'] = t.numericFont === 'mono'
+    ? 'var(--font-mono), ui-monospace, SFMono-Regular, Menlo, monospace'
+    : 'inherit';
+
   for (const role of TYPOGRAPHY_ROLES) {
     vars[`--dash-font-${role.key}`] = `${Math.round(t.typoBase * role.scale * 100) / 100}px`;
-    vars[`--dash-weight-${role.key}`] = String(role.weight);
+    const isLabel = LABEL_ROLES.has(role.key);
+    vars[`--dash-weight-${role.key}`] = String(
+      isLabel ? Math.min(800, role.weight + ls.weightBump) : role.weight,
+    );
   }
   return vars;
 }
+
+/** Roles the label style applies to — the small text that names something,
+ *  never the text that IS the something. */
+export const LABEL_ROLES = new Set<TypographyRole>([
+  'kpiLabel', 'tableHeader', 'filterLabel', 'chartSubtitle',
+]);
 
 /** Per-role font size, for components that style text in JS rather than CSS. */
 export function roleFontSize(t: ResolvedStyleTokens, role: TypographyRole): number {

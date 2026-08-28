@@ -39,6 +39,13 @@ _ROOT_ENV = str(_PROJECT_ROOT / ".env")
 # one of the configured embedding models, while every profile emits the same
 # 768 dimensions required by the current pgvector columns.
 OPENAI_TEXT_MODEL = "gpt-4o-mini"
+# The presentation "Art Director" (AI Design) reasons about layout and, when a
+# reference image is attached, reads its composition — a job the cheap text tier
+# is not reliably good at. It runs on the full 4o (vision-capable) instead. It is
+# a low-frequency, high-value call, so the extra cost per call is not a concern;
+# kept as its own constant so bumping the design model never disturbs the
+# auto-tagging/description tier above.
+OPENAI_DESIGN_MODEL = "gpt-4o"
 OPENAI_EMBEDDING_MODEL = "text-embedding-3-small"
 OPENAI_EMBEDDING_DIMS = 768
 

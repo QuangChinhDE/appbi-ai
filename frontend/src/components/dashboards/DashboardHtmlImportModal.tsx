@@ -6,6 +6,7 @@ import {
   AlertTriangle,
   CheckCircle2,
   Database,
+  Download,
   FileCode2,
   FileSpreadsheet,
   Loader2,
@@ -25,6 +26,8 @@ import {
 } from '@/components/dashboards/HtmlImportChartEditor';
 import { HtmlImportUploadChartEditor } from '@/components/dashboards/HtmlImportUploadChartEditor';
 import { CalculatedFieldsPanel } from '@/components/dashboards/CalculatedFieldsPanel';
+import { ImportLayoutPreview } from '@/components/dashboards/ImportLayoutPreview';
+import { ImportHtmlDropzone } from '@/components/dashboards/ImportHtmlDropzone';
 import { Button } from '@/components/ui/Button';
 import { FieldGroup, Input, Select, Textarea } from '@/components/ui/Input';
 import {
@@ -40,7 +43,7 @@ import {
   useImportDashboardSnapshot,
 } from '@/hooks/use-dashboards';
 import { useDatasets, useDatasetTables, useTablePreview } from '@/hooks/use-datasets';
-import { detectDashboardSnapshotHtml, detectEmbeddedMultiPageImportHtml, summarizeImportedDashboardHtml } from '@/lib/dashboard-html-import';
+import { detectDashboardSnapshotHtml, detectEmbeddedMultiPageImportHtml, summarizeImportedDashboardHtmlWithFragments } from '@/lib/dashboard-html-import';
 import { toast } from '@/lib/toast';
 import { useI18n } from '@/providers/LanguageProvider';
 import type {
@@ -92,6 +95,38 @@ function ChartTypeBadge({ value }: { value: string }) {
 
 function stripHtmlExtension(filename: string): string {
   return filename.replace(/\.(html?|xhtml)$/i, '').trim();
+}
+
+
+/**
+ * Download the skill for a dataset.
+ *
+ * The file it produces is what makes the declarative import path usable by
+ * anyone: it carries the dataset's real column names, the chart types and what
+ * each one needs, and the metadata block to embed. A document written against
+ * it imports as a check rather than a translation -- no model call, and the
+ * same result every time.
+ */
+async function downloadImportSkill(datasetId: number): Promise<void> {
+  const response = await fetch(`/api/v1/datasets/${datasetId}/import-skill`, {
+    credentials: 'include',
+  });
+  if (!response.ok) {
+    toast.error(await response.text().catch(() => 'Could not build the skill for this dataset.'));
+    return;
+  }
+  const blob = await response.blob();
+  // The filename the server chose, so it names the dataset it was built for.
+  const disposition = response.headers.get('content-disposition') ?? '';
+  const named = /filename="([^"]+)"/.exec(disposition)?.[1];
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = named || `appbi-skill-${datasetId}.md`;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
 }
 
 export function DashboardHtmlImportModal({
@@ -421,20 +456,23 @@ export function DashboardHtmlImportModal({
         return;
       }
 
+      // Staged (rendered) summaries: the block appearance capture needs the
+      // source's stylesheet to have actually applied, which only happens in a
+      // real browsing context.
       const batchDocuments = isBatchInputMode
-        ? htmlDocuments.map((document) => ({
+        ? await Promise.all(htmlDocuments.map(async (document) => ({
           documentId: document.documentId,
           filename: document.filename,
           pageName: document.pageName,
           htmlContent: document.htmlContent,
-          htmlSummary: summarizeImportedDashboardHtml(document.htmlContent),
-        }))
+          htmlSummary: await summarizeImportedDashboardHtmlWithFragments(document.htmlContent),
+        })))
         : [{
           documentId: 'html-1',
           filename: htmlFilename || null,
           pageName: embeddedMultiPage.pageNames[0] || stripHtmlExtension(htmlFilename) || t('dashboards.htmlImport.importedPageN', { number: 1 }),
           htmlContent: trimmedHtml,
-          htmlSummary: summarizeImportedDashboardHtml(trimmedHtml),
+          htmlSummary: await summarizeImportedDashboardHtmlWithFragments(trimmedHtml),
         }];
 
       try {
@@ -468,7 +506,7 @@ export function DashboardHtmlImportModal({
     }
 
     await new Promise((resolve) => setTimeout(resolve, 0));
-    const htmlSummary = summarizeImportedDashboardHtml(trimmedHtml);
+    const htmlSummary = await summarizeImportedDashboardHtmlWithFragments(trimmedHtml);
     try {
       const result = await analyzeMutation.mutateAsync({
         htmlContent: trimmedHtml,
@@ -1014,6 +1052,17 @@ export function DashboardHtmlImportModal({
     (id) => validationResults[id]?.status === 'error',
   );
 
+  // Every failing block, selected or not, so the layout map can mark them where
+  // they sit rather than only in the list underneath it.
+  const failingBlockIds = useMemo(
+    () => new Set(
+      Object.entries(validationResults)
+        .filter(([, result]) => result?.status === 'error')
+        .map(([id]) => id),
+    ),
+    [validationResults],
+  );
+
   /** Single source of truth for "why Build is disabled". Covers both
    * per-chart errors AND dataset-level problems (draft prep crash, whole
    * validation batch failed, validation never ran with a dataset context). */
@@ -1230,21 +1279,12 @@ export function DashboardHtmlImportModal({
     >
       <div className="h-full overflow-y-auto px-5 py-4">
       {step === 'configure' ? (
-        <div className="space-y-5">
-          <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-2 p-4">
-            <div className="flex items-start gap-3">
-              <div className="rounded-lg bg-brand/10 p-2 text-brand">
-                <Sparkles className="h-4 w-4" />
-              </div>
-              <div className="space-y-1">
-                <p className="text-sm font-semibold text-text-primary">
-                  {t('dashboards.htmlImport.heroTitle')}
-                </p>
-                <p className="text-caption text-text-tertiary">
-                  {t('dashboards.htmlImport.heroDescription')}
-                </p>
-              </div>
-            </div>
+        <div className="space-y-4">
+          {/* One slim line, not a hero box: the modal title already says what
+              this is, so a full padded card of explainer was pure vertical cost. */}
+          <div className="flex items-center gap-2 text-caption text-text-tertiary">
+            <Sparkles className="h-4 w-4 shrink-0 text-brand" />
+            <span>{t('dashboards.htmlImport.heroDescription')}</span>
           </div>
 
           {snapshotInfo && snapshotFile && (
@@ -1290,86 +1330,6 @@ export function DashboardHtmlImportModal({
               </div>
             </div>
           )}
-
-          <FieldGroup
-            label={t('dashboards.htmlImport.dashboardHtmlLabel')}
-            required
-            description={isBatchInputMode
-              ? t('dashboards.htmlImport.dashboardHtmlDescriptionBatch')
-              : t('dashboards.htmlImport.dashboardHtmlDescriptionSingle')}
-          >
-            {isBatchInputMode ? (
-              <div className="space-y-3 rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 p-3">
-                {htmlDocuments.map((document) => (
-                  <div key={document.documentId} className="flex items-center gap-2 rounded-lg border border-brand/20 bg-brand/10 px-3 py-2 text-caption text-text-primary">
-                    <FileCode2 className="h-3.5 w-3.5 flex-shrink-0 text-brand" />
-                    <div className="min-w-0 flex-1">
-                      <p className="truncate font-medium">{document.filename}</p>
-                      <p className="truncate text-text-tertiary">{t('dashboards.htmlImport.defaultPageName', { name: document.pageName })}</p>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => handleRemoveHtmlDocument(document.documentId)}
-                      className="rounded p-0.5 text-text-tertiary hover:bg-brand/10 hover:text-brand"
-                    >
-                      <X className="h-3 w-3" />
-                    </button>
-                  </div>
-                ))}
-                <p className="text-caption text-text-tertiary">
-                  {t('dashboards.htmlImport.multiPageStreamlined')}
-                </p>
-              </div>
-            ) : (
-              <Textarea
-                value={htmlInput}
-                onChange={(event) => setHtmlInput(event.target.value)}
-                rows={12}
-                placeholder="<html>...</html>"
-              />
-            )}
-            <div className="flex flex-wrap items-center gap-2">
-              <Button
-                variant="secondary"
-                size="sm"
-                leadingIcon={<FileCode2 className="h-3.5 w-3.5" />}
-                onClick={() => htmlFileInputRef.current?.click()}
-              >
-                {t('dashboards.htmlImport.loadHtmlFiles')}
-              </Button>
-              {htmlFilename && (
-                <span className="text-caption text-text-tertiary">
-                  {htmlFilename}
-                </span>
-              )}
-              <input
-                ref={htmlFileInputRef}
-                type="file"
-                accept=".html,.htm,text/html"
-                multiple
-                className="hidden"
-                onChange={(event) => {
-                  const files = Array.from(event.target.files ?? []);
-                  void handleHtmlFilesChange(files);
-                  event.currentTarget.value = '';
-                }}
-              />
-              {isBatchInputMode && (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => {
-                    setHtmlDocuments([]);
-                    setHtmlFilename('');
-                    setBatchAnalysis(null);
-                    setActiveBatchDocumentId('');
-                  }}
-                >
-                  {t('dashboards.htmlImport.clearHtmlBatch')}
-                </Button>
-              )}
-            </div>
-          </FieldGroup>
 
           <div className="grid gap-4 lg:grid-cols-2">
             <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-4">
@@ -1429,6 +1389,26 @@ export function DashboardHtmlImportModal({
                       ))}
                     </Select>
                   </FieldGroup>
+                  {selectedDatasetId && (
+                    <div className="rounded-lg border border-dashed border-[rgb(var(--border-strong))] bg-surface-2 p-3">
+                      <p className="text-caption font-semibold text-text-primary">
+                        {t('dashboards.htmlImport.skillTitle')}
+                      </p>
+                      <p className="mt-1 text-caption leading-relaxed text-text-tertiary">
+                        {t('dashboards.htmlImport.skillDescription')}
+                      </p>
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        size="sm"
+                        className="mt-2.5"
+                        onClick={() => void downloadImportSkill(selectedDatasetId)}
+                      >
+                        <Download className="h-3.5 w-3.5" />
+                        {t('dashboards.htmlImport.skillDownload')}
+                      </Button>
+                    </div>
+                  )}
                   {selectedDatasetId && tables.length > 0 && (
                     <div className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 p-3">
                       <p className="text-caption font-semibold text-text-primary">
@@ -1498,49 +1478,71 @@ export function DashboardHtmlImportModal({
               )}
             </div>
 
-            <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-4">
-              <div className="mb-3 flex items-center gap-2">
-                {targetMode === 'append_to_dashboard' ? (
-                  <FileSpreadsheet className="h-4 w-4 text-brand" />
-                ) : (
-                  <CheckCircle2 className="h-4 w-4 text-brand" />
-                )}
-                <p className="text-sm font-semibold text-text-primary">{t('dashboards.htmlImport.buildTarget')}</p>
-              </div>
-              <FieldGroup
-                label={targetMode === 'append_to_dashboard' ? t('dashboards.htmlImport.importedPageName') : t('dashboards.htmlImport.newDashboardName')}
-                description={targetMode === 'append_to_dashboard'
-                  ? t('dashboards.htmlImport.appendTargetDescription', { name: targetDashboardName ?? t('dashboards.htmlImport.currentDashboard') })
-                  : t('dashboards.htmlImport.createTargetDescription')}
-              >
-                <Input
-                  value={buildName}
-                  onChange={(event) => setBuildName(event.target.value)}
-                  placeholder={targetMode === 'append_to_dashboard' ? t('dashboards.htmlImport.importedPagePlaceholder') : t('dashboards.htmlImport.importedDashboardPlaceholder')}
-                />
-              </FieldGroup>
-
-              {sourceMode === 'existing_dataset' && selectedDataset && (
-                <div className="mt-4 rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 p-3">
-                  <p className="text-caption font-semibold text-text-primary">
-                    {selectedDataset.name}
-                  </p>
-                  <p className="mt-1 text-caption text-text-tertiary">
-                    {t('dashboards.htmlImport.selectedDatasetTablesUsed', { count: tables.filter((t) => t.source_kind !== 'generated_calendar').length })}
-                  </p>
-                </div>
-              )}
-
-              {sourceMode === 'upload_excel' && (
-                <div className="mt-4 rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 p-3">
-                  <p className="text-caption font-semibold text-text-primary">{t('dashboards.htmlImport.multiFileSourceUploadTitle')}</p>
-                  <p className="mt-1 text-caption text-text-tertiary">
-                    {t('dashboards.htmlImport.multiFileSourceUploadDescription')}
-                  </p>
-                </div>
-              )}
-            </div>
+            <FieldGroup
+              label={t('dashboards.htmlImport.dashboardHtmlLabel')}
+              required
+              description={t('dashboards.htmlImport.dashboardHtmlDescription')}
+            >
+              <ImportHtmlDropzone
+                htmlInput={htmlInput}
+                onHtmlChange={(value) => {
+                  setHtmlInput(value);
+                  if (!value.trim()) setHtmlFilename('');
+                }}
+                htmlFilename={htmlFilename}
+                onFiles={(files) => void handleHtmlFilesChange(files)}
+                batchDocuments={htmlDocuments.map((document) => ({
+                  documentId: document.documentId,
+                  filename: document.filename,
+                  pageName: document.pageName,
+                }))}
+                onRemoveDocument={handleRemoveHtmlDocument}
+                onClearBatch={() => {
+                  setHtmlDocuments([]);
+                  setHtmlFilename('');
+                  setBatchAnalysis(null);
+                  setActiveBatchDocumentId('');
+                }}
+                selectedDatasetName={selectedDataset?.name ?? null}
+              />
+            </FieldGroup>
           </div>
+
+          <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-4">
+            <div className="mb-3 flex items-center gap-2">
+              {targetMode === 'append_to_dashboard' ? (
+                <FileSpreadsheet className="h-4 w-4 text-brand" />
+              ) : (
+                <CheckCircle2 className="h-4 w-4 text-brand" />
+              )}
+              <p className="text-sm font-semibold text-text-primary">{t('dashboards.htmlImport.buildTarget')}</p>
+            </div>
+            <FieldGroup
+              label={targetMode === 'append_to_dashboard' ? t('dashboards.htmlImport.importedPageName') : t('dashboards.htmlImport.newDashboardName')}
+              description={targetMode === 'append_to_dashboard'
+                ? t('dashboards.htmlImport.appendTargetDescription', { name: targetDashboardName ?? t('dashboards.htmlImport.currentDashboard') })
+                : t('dashboards.htmlImport.createTargetDescription')}
+            >
+              <Input
+                value={buildName}
+                onChange={(event) => setBuildName(event.target.value)}
+                placeholder={targetMode === 'append_to_dashboard' ? t('dashboards.htmlImport.importedPagePlaceholder') : t('dashboards.htmlImport.importedDashboardPlaceholder')}
+              />
+            </FieldGroup>
+
+            {/* The "which dataset / N tables" recap lived here AND in the Choose
+                Source card — one is enough, so it stays where the dataset is
+                picked and this Build Target card holds only the name. */}
+            {sourceMode === 'upload_excel' && (
+              <div className="mt-4 rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 p-3">
+                <p className="text-caption font-semibold text-text-primary">{t('dashboards.htmlImport.multiFileSourceUploadTitle')}</p>
+                <p className="mt-1 text-caption text-text-tertiary">
+                  {t('dashboards.htmlImport.multiFileSourceUploadDescription')}
+                </p>
+              </div>
+            )}
+          </div>
+
 
           {sourceMode === 'existing_dataset' && tablePreviewQuery.data && (
             <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-4">
@@ -1918,6 +1920,21 @@ export function DashboardHtmlImportModal({
                       <span className="font-semibold">{t('dashboards.htmlImport.aiMappingPrefix')}</span> {analysis.ai_meta.message}
                     </div>
                   )}
+
+                  {/* Where every tile lands, before committing to it. The list
+                      below answers "will each chart run"; this answers "is this
+                      the report I designed", which nothing did until now. */}
+                  <div className="mt-4">
+                    <ImportLayoutPreview
+                      chartPlans={analysis.chart_plans ?? []}
+                      widgets={(analysis as any).widgets ?? []}
+                      templateFamily={(analysis as any).template_family}
+                      colorway={(analysis as any).theme_config?.colorwayId}
+                      filterDock={(analysis as any).slicer_cluster_layout?.position}
+                      slicers={(analysis as any).slicers ?? []}
+                      failingBlockIds={failingBlockIds}
+                    />
+                  </div>
                 </div>
 
                 <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-4">

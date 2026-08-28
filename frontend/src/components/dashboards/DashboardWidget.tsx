@@ -45,6 +45,8 @@ export function DashboardWidget({ widget, params = {}, onParamChange }: Props) {
       return <CalloutWidget config={cfg} />;
     case 'hero_strip':
       return <HeroStripWidget config={cfg} />;
+    case 'html_fragment':
+      return <HtmlFragmentWidget config={cfg} />;
     default:
       return (
         <div className="flex h-full items-center justify-center rounded-xl border border-dashed border-[rgb(var(--border-strong))] bg-surface-2 text-xs text-text-tertiary">
@@ -187,12 +189,104 @@ function ShapeWidget({ config }: { config: any }) {
 // from the theme CSS var so they match whichever skin/preset is active.
 const ACCENT = 'var(--dashboard-accent, #5b5bd6)';
 
+/**
+ * A block of the imported source that AppBI has no native visual for, kept as
+ * inert markup so the report does not lose it.
+ *
+ * The markup is sanitized on the server, at the point it is STORED, so what
+ * arrives here is already an allow-listed subset with no scripts, no handlers
+ * and no external references. This component does not re-sanitize -- doing so
+ * in the browser would imply the server's pass was optional, and a client-side
+ * filter is not a security boundary anyway.
+ *
+ * It renders scaled-to-fit rather than clipped: the fragment was captured at
+ * the source page's width, and a tile is usually narrower. Clipping would show
+ * the left third of a card and read as a rendering bug.
+ */
+function HtmlFragmentWidget({ config }: { config: any }) {
+  const { t } = useI18n();
+  const html = String(config.html ?? '');
+  const degraded: string[] = Array.isArray(config.degraded) ? config.degraded.map(String) : [];
+  const hostRef = React.useRef<HTMLDivElement | null>(null);
+  const innerRef = React.useRef<HTMLDivElement | null>(null);
+  const [scale, setScale] = useState(1);
+  const [showNotes, setShowNotes] = useState(false);
+
+  // Measure after paint and on every resize: the fragment carries its own
+  // pixel widths, so the only way to know the scale is to lay it out and look.
+  useEffect(() => {
+    const host = hostRef.current;
+    const inner = innerRef.current;
+    if (!host || !inner) return;
+    const measure = () => {
+      const available = host.clientWidth;
+      const natural = inner.scrollWidth;
+      if (!available || !natural) return;
+      // Only ever shrink. Blowing a small fragment up to tile width would
+      // magnify its pixel grid and look worse than leaving it alone.
+      setScale(natural > available ? Math.max(0.35, available / natural) : 1);
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(host);
+    return () => observer.disconnect();
+  }, [html]);
+
+  if (!html) {
+    return (
+      <div className="flex h-full items-center justify-center rounded-xl border border-dashed border-[rgb(var(--border-strong))] bg-surface-2 text-xs text-text-tertiary">
+        {t('dashboards.widget.fragmentEmpty')}
+      </div>
+    );
+  }
+
+  return (
+    <div ref={hostRef} className="relative h-full w-full overflow-hidden">
+      <div
+        ref={innerRef}
+        // `w-max` only while the fragment is being shrunk: it is what lets the
+        // element keep its natural width so the scale factor means something.
+        // Applied at scale 1 it makes a fragment that already fits report a
+        // shrink-to-fit width instead of filling the tile, and the rounding
+        // leaves a scrollbar along the bottom of every card.
+        className={`dashboard-html-fragment ${scale === 1 ? 'w-full' : 'w-max'}`}
+        style={{ transform: scale === 1 ? undefined : `scale(${scale})`, transformOrigin: 'top left' }}
+        dangerouslySetInnerHTML={{ __html: html }}
+      />
+      {degraded.length > 0 && (
+        <>
+          <button
+            type="button"
+            onClick={() => setShowNotes((v) => !v)}
+            className="absolute right-1 top-1 rounded-md bg-surface-2/90 px-1.5 py-0.5 text-[10px] font-medium text-text-tertiary ring-1 ring-[rgb(var(--border-strong))] hover:text-text-primary"
+            title={t('dashboards.widget.fragmentDegradedTitle')}
+          >
+            {t('dashboards.widget.fragmentDegradedBadge')}
+          </button>
+          {showNotes && (
+            <div className="absolute right-1 top-7 z-10 max-w-[min(20rem,90%)] rounded-lg bg-surface-1 p-2.5 text-[11px] leading-relaxed text-text-secondary shadow-lg ring-1 ring-[rgb(var(--border-strong))]">
+              <ul className="list-disc space-y-1 pl-3.5">
+                {degraded.map((note, i) => <li key={i}>{note}</li>)}
+              </ul>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
 function SectionHeaderWidget({ config }: { config: any }) {
   const eyebrow = String(config.eyebrow ?? '');
   const title = String(config.title ?? '');
   const subtitle = String(config.subtitle ?? '');
+  // `dashboard-section` is the theme hook for the section surface token: the
+  // header renders as a BAND that introduces the tiles under it, rather than as
+  // one more loose card among them. That band is the missing depth level
+  // between the page and the cards — with only one surface depth a report reads
+  // as scattered tiles no matter how well each tile is styled.
   return (
-    <div className="flex h-full w-full flex-col justify-center gap-1 px-1">
+    <div className="dashboard-section flex h-full w-full flex-col justify-center gap-1 px-1">
       <div className="flex items-center gap-2.5">
         <span className="h-4 w-1 shrink-0 rounded-full" style={{ background: ACCENT }} />
         <div className="min-w-0">
@@ -201,17 +295,22 @@ function SectionHeaderWidget({ config }: { config: any }) {
               {eyebrow}
             </div>
           )}
-          {title && <div className="truncate text-[15px] font-semibold leading-tight text-text-primary">{title}</div>}
+          {title && <div className="dashboard-section-title truncate text-[15px] font-semibold leading-tight text-text-primary">{title}</div>}
         </div>
       </div>
-      {subtitle && <div className="ml-3.5 truncate text-xs text-text-tertiary">{subtitle}</div>}
+      {subtitle && <div className="dashboard-chart-subtitle ml-3.5 truncate text-xs text-text-tertiary">{subtitle}</div>}
     </div>
   );
 }
 
 function HeroStripWidget({ config }: { config: any }) {
-  const title = String(config.title ?? '');
-  const subtitle = String(config.subtitle ?? '');
+  // `headline`/`subhead` is what the server normalizes a hero strip to; the
+  // older `title`/`subtitle` shape is still in stored dashboards. Reading only
+  // the second rendered an imported hero as an empty gradient box with its text
+  // sitting unused in the row -- the same key mismatch that made section
+  // headers and callouts come up blank.
+  const title = String(config.headline ?? config.title ?? '');
+  const subtitle = String(config.subhead ?? config.subtitle ?? '');
   const metric = String(config.metric ?? '');
   const metricLabel = String(config.metricLabel ?? '');
   return (

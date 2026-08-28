@@ -155,6 +155,36 @@ def _duckdb_quote_ident(name: str) -> str:
     return '"' + str(name).replace('"', '""') + '"'
 
 
+def bq_safe_field(name: str) -> str:
+    """Return a BigQuery-VALID field name for ``name``.
+
+    BigQuery field names must match ``[A-Za-z_][A-Za-z0-9_]*`` and be ≤300 chars;
+    a Google-Sheets / manual header like ``"BC/CD phụ trách"`` (slash, spaces,
+    accents) is rejected by the LOAD job (400 "Invalid field name"). This maps
+    such a name to a valid one so the snapshot can be built at all.
+
+    Contract (so BUILD and READ agree WITHOUT sharing state):
+      * PER-NAME and DETERMINISTIC — the same input always gives the same output,
+        independent of the other columns or their order. The snapshot build
+        renames physical columns with this; the snapshot read (`_snapshot_ref_
+        for_view`) re-aliases them back to the original, deriving the same map.
+      * IDENTITY for names that are already valid → existing snapshots and every
+        clean dataset are byte-identical (no behaviour change).
+      * COLLISION-FREE — two different originals never collide: a changed name
+        gets a 6-char hash of the ORIGINAL appended, so ``"a/b"`` and ``"a b"``
+        stay distinct.
+    """
+    s = str(name)
+    if len(s) <= 300 and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", s):
+        return s
+    base = re.sub(r"[^A-Za-z0-9_]", "_", s)
+    if not base or not re.match(r"[A-Za-z_]", base[0]):
+        base = "_" + base
+    base = base[:280].rstrip("_") or "col"
+    suffix = hashlib.sha1(s.encode("utf-8")).hexdigest()[:6]
+    return f"{base}_{suffix}"
+
+
 def _sheets_referenced_by_sql(sql_query: str, sheet_names: List[str]) -> List[str]:
     """Return the subset of ``sheet_names`` that the SQL appears to reference.
 
@@ -1730,6 +1760,54 @@ class DataSourceConnectionService:
                     yield r
 
         pf, pt, cf, warn = _sc.resolved_partition_cluster(storage, bq_schema)
+
+        # ── Sanitize physical column names to BigQuery-valid field names ──
+        # Google-Sheets / manual headers like "BC/CD phụ trách" (slash, spaces,
+        # accents) make the LOAD job fail 400 "Invalid field name" — which broke
+        # the whole snapshot generation. Rename the schema fields, row keys, and
+        # any partition/cluster field here; the snapshot READ
+        # (semantic_query_engine._snapshot_ref_for_view) re-aliases them back to
+        # the original via the SAME per-name map (bq_safe_field), so charts keep
+        # referencing the original names. Identity for already-valid names, so
+        # existing snapshots and every clean dataset are byte-identical.
+        _orig_names = (
+            [getattr(f, "name", None) for f in bq_schema]
+            if bq_schema
+            else [c.get("name") for c in (columns_meta or [])]
+        )
+        _name_map = {n: bq_safe_field(n) for n in _orig_names if n}
+        if any(k != v for k, v in _name_map.items()):
+            _changed = {k: v for k, v in _name_map.items() if k != v}
+            logger.info(
+                "[snapshot] %s: %d column(s) renamed to BigQuery-valid field names: %s",
+                table_ref, len(_changed), _changed,
+            )
+            if bq_schema:
+                bq_schema = [
+                    bigquery.SchemaField(
+                        _name_map.get(f.name, f.name),
+                        f.field_type,
+                        mode=f.mode,
+                        fields=getattr(f, "fields", ()) or (),
+                    )
+                    for f in bq_schema
+                ]
+            if effective_types_out:
+                _remapped = {
+                    _name_map.get(k, k): v for k, v in dict(effective_types_out).items()
+                }
+                effective_types_out.clear()
+                effective_types_out.update(_remapped)
+            if pf:
+                pf = _name_map.get(pf, pf)
+            if cf:
+                cf = [_name_map.get(c, c) for c in cf]
+            _src_rows = _rows
+
+            def _rows():  # noqa: F811 — intentional rebind to remap row keys
+                for _r in _src_rows():
+                    yield {_name_map.get(_k, _k): _v for _k, _v in _r.items()}
+
         # When the target is PARTITIONED, load chunks into a NON-partitioned STAGING
         # table (no partition-modification quota) then do ONE CTAS into the
         # partitioned+clustered target — a single, bounded partition write. This

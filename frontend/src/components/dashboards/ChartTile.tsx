@@ -83,6 +83,12 @@ interface ChartTileProps {
    *  edits. onFocus fires on tile body click. */
   isFocused?: boolean;
   onFocus?: (dashboardChartId: number) => void;
+  /** AI Design mode. When true, click-to-focus is the primary gesture: the tile
+   *  is NOT a drag handle (so a click anywhere — title included — reliably
+   *  focuses it for a scoped restyle instead of being swallowed by the grid's
+   *  drag), and the whole tile shows a pointer cursor. Manual dragging stays in
+   *  the Manual design mode. */
+  aiDesignMode?: boolean;
   /** Phase-B17 — a collaborator currently editing this tile (GG-Sheets cursor). */
   editingBy?: { name: string; color: string } | null;
 }
@@ -238,6 +244,7 @@ function ChartTileBase({
   onMoveToPage,
   isFocused = false,
   onFocus,
+  aiDesignMode = false,
   editingBy = null,
   dashboardParams,
   onBindParameter,
@@ -695,6 +702,38 @@ function ChartTileBase({
   // dashboard's own background shows through (frameless). Focus / cross-filter /
   // collaborator rings still render (Tailwind ring / inline ring = box-shadow).
   const transparentTile = effectiveStyleConfig.transparentBackground === true;
+  // Per-tile surface (AI Design "make this chart dark/light"). A named mode, not
+  // a free colour: the tile paints a dark/light card and, crucially, overrides
+  // the text / axis / grid tokens on ITS OWN subtree so Recharts (which reads
+  // `rgb(var(--text-*))` and, for its SVG internals, the `.chart-surface-*` CSS
+  // in globals.css) stays readable. The data never changes — this is paint.
+  const chartSurface = (effectiveStyleConfig as any).chartSurface as 'dark' | 'light' | undefined;
+  const surfaceClass = chartSurface === 'dark'
+    ? 'chart-surface-dark'
+    : chartSurface === 'light' ? 'chart-surface-light' : '';
+  const surfaceVars: React.CSSProperties | undefined = (!transparentTile && chartSurface === 'dark')
+    ? ({
+        background: '#0f172a',
+        '--surface-1': '15 23 42',
+        '--surface-2': '30 41 59',
+        '--text-primary': '226 232 240',
+        '--text-secondary': '203 213 225',
+        '--text-tertiary': '148 163 184',
+        '--border-line': '51 65 85',
+        color: 'rgb(226 232 240)',
+      } as React.CSSProperties)
+    : (!transparentTile && chartSurface === 'light')
+    ? ({
+        background: '#ffffff',
+        '--surface-1': '255 255 255',
+        '--surface-2': '243 244 245',
+        '--text-primary': '8 9 10',
+        '--text-secondary': '60 65 73',
+        '--text-tertiary': '120 126 134',
+        '--border-line': '230 230 230',
+        color: 'rgb(8 9 10)',
+      } as React.CSSProperties)
+    : undefined;
 
   // Focus input when entering edit mode
   useEffect(() => {
@@ -1064,8 +1103,8 @@ function ChartTileBase({
          clipped when the tile was small. The chart body has its own
          overflow-hidden (so the chart never spills), and tile content is inset
          by p-3 so it won't poke the rounded corners — only the menu escapes. */
-      className={`dashboard-tile bi-card-hover relative group flex h-full flex-col rounded-lg p-3 ${
-        canEdit ? 'drag-handle cursor-move' : ''
+      className={`dashboard-tile bi-card-hover relative group flex h-full flex-col rounded-lg p-3 ${surfaceClass} ${
+        aiDesignMode ? 'cursor-pointer' : canEdit ? 'drag-handle cursor-move' : ''
       } ${
         transparentTile ? '' : 'border bg-surface-1'
       } ${
@@ -1101,6 +1140,10 @@ function ChartTileBase({
                   }
                 : {}),
             }),
+        // Per-tile surface override (AI Design). Placed after the theme bg so a
+        // "dark chart" wins over the report's card background, and the flipped
+        // text/border tokens cascade to the whole tile subtree.
+        ...(surfaceVars ?? {}),
         // Phase-B17 — a collaborator is editing THIS tile: colored ring (kept
         // even when transparent so presence stays visible).
         ...(editingBy ? { boxShadow: `0 0 0 2px ${editingBy.color}`, borderColor: editingBy.color } : {}),
@@ -1140,8 +1183,10 @@ function ChartTileBase({
       </button>
       )}
 
-      {/* Drag handle + editable title + parameter chips */}
-      <div className="drag-handle mb-2 flex flex-col gap-1 cursor-grab active:cursor-grabbing pr-8">
+      {/* Drag handle + editable title + parameter chips. In AI Design mode the
+          header is NOT a drag handle — a click on the title must focus the tile
+          for a scoped restyle, not start a grid drag. */}
+      <div className={`mb-2 flex flex-col gap-1 pr-8 ${aiDesignMode ? '' : 'drag-handle cursor-grab active:cursor-grabbing'}`}>
         {/* Title row */}
         <div className="flex items-center gap-1.5 min-h-[1.5rem]">
         {isEditingTitle ? (
@@ -1727,6 +1772,7 @@ function chartTilePropsEqual(prev: ChartTileProps, next: ChartTileProps): boolea
   if (prev.isHighlightSource !== next.isHighlightSource) return false;
   if (prev.highlightFilter !== next.highlightFilter) return false;
   if (prev.isFocused !== next.isFocused) return false;
+  if (prev.aiDesignMode !== next.aiDesignMode) return false;
   if (prev.currentPageId !== next.currentPageId) return false;
   // Layout reference change is fine — we render the same DOM either way;
   // the parent grid moves the wrapper via CSS transform. Skip deep

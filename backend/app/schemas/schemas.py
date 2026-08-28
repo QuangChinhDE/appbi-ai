@@ -1,7 +1,7 @@
 """
 Pydantic schemas for request/response validation.
 """
-from pydantic import BaseModel, Field, ConfigDict, model_validator, field_serializer
+from pydantic import BaseModel, Field, ConfigDict, model_validator, field_serializer, field_validator
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 from enum import Enum
@@ -670,6 +670,95 @@ class DashboardResponse(DashboardBase):
     has_draft: bool = False
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class DashboardRelayoutRequest(BaseModel):
+    """Ask a dashboard to be re-flowed into a layout template's topology.
+
+    Separate from saving `theme_config` on purpose: re-flowing moves tiles a
+    person may have placed by hand, so it is something they ask for and can
+    undo -- not something that happens because they tried a different colour.
+    """
+    template_family: str = Field(..., description="console | brief | ops | editorial | stage")
+    page_id: Optional[str] = Field(
+        None,
+        description=(
+            "Re-flow only this page. Omitted means the default page; a multi-page "
+            "report is never re-flowed wholesale from one page's view."
+        ),
+    )
+
+
+class PresentationPlanRequest(BaseModel):
+    """Ask the model how this page should be arranged.
+
+    The snapshot is built and sanitized by the CLIENT, which is the only place
+    that knows what the renderer honours. The server does not read it, does not
+    trust it and does not persist it -- it forwards it to a model and returns
+    the plan. Nothing here can write to a dashboard.
+    """
+    prompt: str = Field(..., min_length=1, max_length=2000)
+    snapshot: Dict[str, Any] = Field(
+        ..., description="DashboardPresentationSnapshot — presentation state only, no data"
+    )
+    conversation: Optional[List[Dict[str, str]]] = Field(
+        None,
+        description=(
+            "Earlier turns, so an iterative request ('bigger') is read against "
+            "the preview the user is looking at."
+        ),
+    )
+    images: Optional[List[str]] = Field(
+        None,
+        max_length=3,
+        description=(
+            "Up to 3 reference images as data URLs (data:image/...;base64,...). "
+            "Presentation context for the design tier ONLY — the model reads a "
+            "reference's layout and mood, never its content, and the plan it "
+            "returns still cannot change any chart's data."
+        ),
+    )
+    focused_chart_id: Optional[int] = Field(
+        None,
+        description=(
+            "When set, the user clicked ONE visual and is restyling only it. The "
+            "plan must touch that visual's appearance and nothing else — no layout "
+            "move, no other tile, no theme."
+        ),
+    )
+
+    @field_validator("images")
+    @classmethod
+    def _bound_images(cls, value: Optional[List[str]]) -> Optional[List[str]]:
+        """Keep the proxy from forwarding a junk or oversized payload.
+
+        Not a security boundary — the plan is re-validated client-side regardless
+        — but a request has no business carrying tens of megabytes, and a
+        non-string here is a bug worth catching at the door rather than at the
+        provider.
+        """
+        if value is None:
+            return value
+        total = 0
+        for item in value:
+            if not isinstance(item, str) or not item.strip():
+                raise ValueError("each reference image must be a non-empty data-URL string")
+            total += len(item)
+            if len(item) > 8_000_000:  # ~6MB decoded, per image
+                raise ValueError("a reference image is too large (max ~6MB each)")
+        if total > 16_000_000:
+            raise ValueError("reference images are too large in total")
+        return value
+
+
+class PresentationPlanResponse(BaseModel):
+    """The model's answer, unmodified.
+
+    Deliberately untyped beyond `plan`: the server validates nothing, so
+    describing the plan's shape here would imply a guarantee it does not make.
+    The client's validator is the authority.
+    """
+    plan: Dict[str, Any]
 
 
 class DashboardAddChartRequest(BaseModel):
