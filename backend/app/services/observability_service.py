@@ -298,7 +298,9 @@ class ObservabilityService:
 
     @staticmethod
     def resolve_incidents(db: Session, dedup_key: str) -> int:
-        """Auto-resolve any open/ack incident whose underlying check now passes."""
+        """Auto-resolve any open/ack incident whose underlying check now passes.
+        Also clears any still-unread UserNotification for the same key —
+        Datadog-style auto-resolve: a fixed problem shouldn't keep nagging."""
         now = datetime.utcnow()
         rows = (
             db.query(ObservabilityIncident)
@@ -309,6 +311,12 @@ class ObservabilityService:
         for inc in rows:
             inc.status = "resolved"
             inc.resolved_at = now
+        if rows:
+            from app.models.user_notification import UserNotification
+            db.query(UserNotification).filter(
+                UserNotification.dedup_key == dedup_key,
+                UserNotification.read == False,  # noqa: E712
+            ).delete(synchronize_session=False)
         return len(rows)
 
     # ── folding the other detectors into the incident store ────────────────────
@@ -391,6 +399,33 @@ class ObservabilityService:
     # ── full scan (scheduler + manual trigger) ─────────────────────────────────
 
     @staticmethod
+    def _notify_incident_owners(db: Session, incidents: List[ObservabilityIncident]) -> None:
+        """Every ObservabilityIncident only ever reached admin-configured alert
+        channels (email/Slack/webhook) — never the end user actually looking at
+        the affected dataset. Give each dataset owner a UserNotification too."""
+        from app.services.user_notification_service import notify_user
+
+        ds_ids = {i.dataset_id for i in incidents if i.dataset_id}
+        if not ds_ids:
+            return
+        owners = dict(
+            db.query(Dataset.id, Dataset.owner_id).filter(Dataset.id.in_(ds_ids)).all()
+        )
+        for inc in incidents:
+            owner_id = owners.get(inc.dataset_id)
+            if not owner_id:
+                continue
+            notify_user(
+                db, owner_id,
+                level="warning" if inc.severity != "critical" else "error",
+                title=inc.title,
+                description=f"Trụ cột: {inc.pillar} · Nguồn: {inc.source}",
+                link=f"/observability?incident={inc.id}",
+                source="observability",
+                dedup_key=inc.dedup_key,
+            )
+
+    @staticmethod
     def scan_all(db: Session) -> Dict[str, int]:
         monitors = db.query(ObservabilityMonitor).filter(
             ObservabilityMonitor.is_active == True  # noqa: E712
@@ -413,11 +448,36 @@ class ObservabilityService:
         try:
             db.commit()
         except Exception as exc:
-            logger.error("[obs] scan commit failed: %s", exc)
+            logger.error("[obs] scan commit failed — retrying once: %s", exc)
             db.rollback()
-            new_incidents = []
+            try:
+                db.commit()
+            except Exception as exc2:
+                # A second failure means these incidents genuinely did not
+                # persist this round; dropping them silently used to hide a
+                # real breach entirely. Surface it as its own visible incident
+                # instead of just an error log line.
+                logger.error("[obs] scan commit failed twice, incidents lost: %s", exc2)
+                db.rollback()
+                try:
+                    meta = ObservabilityIncident(
+                        dataset_id=new_incidents[0].dataset_id if new_incidents else 0,
+                        source="quality", pillar="quality",
+                        dedup_key="observability:scan_commit_failed",
+                        title="Observability scan lỗi khi lưu kết quả",
+                        detail={"error": str(exc2)[:2000], "incidents_lost": len(new_incidents)},
+                        severity="critical", status="open",
+                        first_seen_at=datetime.utcnow(), last_seen_at=datetime.utcnow(),
+                    )
+                    db.add(meta)
+                    db.commit()
+                    new_incidents = [meta]
+                except Exception:  # noqa: BLE001 — best-effort, do not crash the scan
+                    db.rollback()
+                    new_incidents = []
 
-        # Fan newly-opened incidents out to alert channels (best-effort).
+        # Fan newly-opened incidents out to alert channels (best-effort) and to
+        # each affected dataset's owner (server-side notification feed).
         alerts_sent = 0
         if new_incidents:
             try:
@@ -425,6 +485,10 @@ class ObservabilityService:
                 alerts_sent = notify_new_incidents(db, new_incidents)
             except Exception as exc:
                 logger.warning("[obs] notify failed: %s", exc)
+            try:
+                ObservabilityService._notify_incident_owners(db, new_incidents)
+            except Exception as exc:
+                logger.warning("[obs] owner notify failed: %s", exc)
 
         result = {"monitors": len(monitors), "breached": breached,
                   "quality_folded": len(q_new), "anomaly_folded": len(a_new),

@@ -564,11 +564,15 @@ function NotificationsModal({
               {notifications.map((notification) => {
                 const { badgeClassName, icon, iconClassName } = getNotificationAppearance(notification.level);
 
+                const Wrapper = notification.link ? 'a' : 'div';
+
                 return (
-                  <div
+                  <Wrapper
                     key={notification.id}
+                    {...(notification.link ? { href: notification.link } : {})}
                     className={cn(
-                      'rounded-lg border bg-surface-1 p-3 transition-colors',
+                      'block rounded-lg border bg-surface-1 p-3 transition-colors',
+                      notification.link && 'cursor-pointer hover:bg-surface-2',
                       notification.read
                         ? 'border-[rgb(var(--border-line))]'
                         : 'border-brand/30 shadow-linear-sm',
@@ -595,7 +599,7 @@ function NotificationsModal({
                         </p>
                       </div>
                     </div>
-                  </div>
+                  </Wrapper>
                 );
               })}
             </div>

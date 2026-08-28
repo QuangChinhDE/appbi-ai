@@ -28,6 +28,42 @@ router = APIRouter(prefix="/users", tags=["users"])
 _SHAREABLE_RESULT_LIMIT = 25
 
 
+def _send_invite_email(db: Session, invited: User, invited_by: User) -> None:
+    """Best-effort invite email. `create_user` used to leave the invited user
+    with no signal at all that an account was created for them — only an
+    audit-log row admins could see. Never raises: a failed/unconfigured SMTP
+    must not block user creation."""
+    import logging
+    from app.services.quality_email_service import send_quality_report
+    from app.services.user_notification_service import notify_user
+
+    logger = logging.getLogger(__name__)
+    inviter_name = invited_by.full_name or invited_by.email
+    subject = "Bạn đã được mời vào AppBI"
+    html_body = (
+        f"<p>Xin chào {invited.full_name or invited.email},</p>"
+        f"<p><b>{inviter_name}</b> đã tạo tài khoản AppBI cho bạn với email "
+        f"<b>{invited.email}</b>.</p>"
+        f"<p>Đăng nhập để bắt đầu sử dụng.</p>"
+    )
+    text_body = f"{inviter_name} đã tạo tài khoản AppBI cho bạn ({invited.email}). Đăng nhập để bắt đầu."
+    try:
+        delivered = send_quality_report(
+            subject=subject, html_body=html_body, text_body=text_body,
+            primary_recipient=invited.email,
+        )
+        if not delivered:
+            logger.info("[users] invite email not delivered (SMTP unconfigured) to %s", invited.email)
+            notify_user(
+                db, invited_by.id,
+                level="warning", title="Email mời chưa được gửi",
+                description=f"Đã tạo tài khoản {invited.email} nhưng SMTP chưa cấu hình — hãy báo trực tiếp cho người dùng.",
+                source="invite",
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[users] invite email failed for %s: %s", invited.email, exc)
+
+
 def _normalize_email(email: str) -> str:
     return email.strip().lower()
 
@@ -192,6 +228,7 @@ def create_user(
         resource_id=str(user.id),
         details={"email": user.email, "auth_provider": user.auth_provider},
     )
+    _send_invite_email(db, user, admin)
     return _load_user_or_404(db, user.id)
 
 

@@ -2,33 +2,27 @@
 
 import { Toaster as SonnerToaster, toast as sonnerToast } from 'sonner';
 
-import { addNotification, type AppNotificationLevel } from '@/lib/notifications';
-
 type ToastOptions = Parameters<typeof sonnerToast.success>[1];
 
-function recordToast(level: AppNotificationLevel, title: unknown, options?: ToastOptions) {
-  addNotification({
-    level,
-    title,
-    description: options?.description,
-  });
-}
-
+/**
+ * Ephemeral, per-action feedback only — NOT the notification center. Toasts
+ * used to also write into the old localStorage-only notification store, which
+ * conflated "I just clicked save" with "something happened in the background
+ * that I need to know about." Background events (observability incidents,
+ * snapshot failures, invites) now reach the user via the server-backed feed
+ * in `@/lib/notifications` instead.
+ */
 export const toast = {
   success(title: unknown, options?: ToastOptions) {
-    recordToast('success', title, options);
     return sonnerToast.success(title as string, options);
   },
   error(title: unknown, options?: ToastOptions) {
-    recordToast('error', title, options);
     return sonnerToast.error(title as string, options);
   },
   info(title: unknown, options?: ToastOptions) {
-    recordToast('info', title, options);
     return sonnerToast.info(title as string, options);
   },
   warning(title: unknown, options?: ToastOptions) {
-    recordToast('warning', title, options);
     return sonnerToast.warning(title as string, options);
   },
 };

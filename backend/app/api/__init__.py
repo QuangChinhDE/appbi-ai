@@ -2,7 +2,7 @@
 API package initialization.
 """
 from fastapi import APIRouter
-from app.api import auth, datasources, charts, dashboards, datasets, users, shares, permissions, observability, public, personal_access_tokens, teams, integrations
+from app.api import auth, datasources, charts, dashboards, datasets, users, shares, permissions, observability, public, personal_access_tokens, teams, integrations, user_notifications
 from app.core.config import settings
 from app.routers import semantic
 
@@ -52,6 +52,9 @@ if settings.METADATA_CATALOG_ENABLED:
 
 # Observability — dataset health (incidents + semantic lineage + usage + alert channels)
 api_router.include_router(observability.router)
+
+# Per-user notification feed (bell icon) — personal-scoped, no module gate
+api_router.include_router(user_notifications.router)
 
 # Public unauthenticated endpoints (shared dashboard links)
 api_router.include_router(integrations.router)

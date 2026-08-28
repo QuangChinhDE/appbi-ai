@@ -206,12 +206,28 @@ def _execute_scheduled_run_locked(dataset_id: int, schedule_id: int) -> None:
             )
             if not delivered:
                 # Do not mark the schedule as errored just because SMTP is
-                # unconfigured — the monitoring run itself succeeded.
+                # unconfigured — the monitoring run itself succeeded. But the
+                # schedule owner previously had NO way to learn their report
+                # was never sent — surface it in their notification feed.
                 logger.info(
                     "[quality_scheduler] Email not delivered for dataset %s run %s",
                     dataset_id,
                     run_id,
                 )
+                if schedule.created_by_id:
+                    try:
+                        from app.services.user_notification_service import notify_user
+                        notify_user(
+                            db, schedule.created_by_id,
+                            level="warning",
+                            title=f"Báo cáo chất lượng '{dataset.name}' chưa gửi được",
+                            description="SMTP chưa cấu hình hoặc gửi thất bại — báo cáo không tới được người nhận đã cấu hình.",
+                            link=f"/datasets/{dataset_id}?tab=quality",
+                            source="quality_scheduler",
+                            dedup_key=f"quality_scheduler:smtp:{dataset_id}",
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning("[quality_scheduler] notify owner failed: %s", exc)
 
         db.commit()
     except Exception as exc:  # noqa: BLE001
