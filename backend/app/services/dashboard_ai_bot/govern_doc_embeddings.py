@@ -1284,6 +1284,19 @@ def _search_scoped_doc_chunks(
     return reranked[: max(1, k)]
 
 
+#: Below this, retrieval found nothing about the question and it is worth asking
+#: again in different words. The same floor the answerability verdict uses — see
+#: govern_doc_answerability for the sweep it came from, and why it is not the value
+#: that scores best on the tuning set.
+_EXPANSION_FLOOR = -4.5
+
+#: Extra retrieval passes one question may buy. Each is a query embedding, a vector
+#: scan and a rerank; a question needing five rephrasings is one the corpus does not
+#: answer, and paying for five is how a search becomes slow on exactly the questions
+#: that were never going to work.
+_MAX_EXTRA_PASSES = 3
+
+
 def search_doc_chunks(
     db: Session,
     question: str,
@@ -1322,40 +1335,73 @@ def search_doc_chunks(
         )
 
         from app.services.dashboard_ai_bot.govern_doc_query_plan import (
-            describe, glossary_variants, uncovered_clauses,
+            describe, uncovered_clauses,
         )
 
-        # Two reasons to look again, both read off the evidence rather than
-        # predicted: a PART of the question found nothing, or a term the glossary
-        # knows by another name found nothing under the name that was used.
-        missing = uncovered_clauses(question, rows) + glossary_variants(db, question, rows)
+        # WHEN TO LOOK AGAIN.
+        #
+        # This escalated on `uncovered_clauses` — a clause whose terms appear
+        # nowhere in the retrieved text. Measured over all 56 eval cases, it fired
+        # ZERO times: the rule counts a clause as covered when ANY of its terms
+        # appears ANYWHERE, and in business prose one common word always does. The
+        # feature existed and had never run.
+        #
+        # The trigger is now the relevance floor the answerability verdict uses —
+        # the cross-encoder's judgement, measured at 0.978 against 0.844 for term
+        # coverage. `uncovered_clauses` is kept as a SECOND, cheaper trigger for
+        # multi-part questions, where the floor cannot see that half of a question
+        # went unanswered because the other half scored well.
+        judged = [float(r["ce_logit"]) for r in rows if r.get("ce_logit") is not None]
+        weak = bool(judged) and max(judged) < _EXPANSION_FLOOR
+
+        from app.services.dashboard_ai_bot.govern_doc_expansion import expand
+
+        alternatives: list[dict] = []
+        if weak or not rows:
+            alternatives = expand(db, question, rows, evidence_is_weak=True)
+        # A part of a multi-part question with no evidence is still worth a pass,
+        # even when the question as a whole scored above the floor.
+        alternatives += [{"query": clause, "source": "clause",
+                          "why": "a part of the question that found no evidence"}
+                         for clause in uncovered_clauses(question, rows)]
+
         extra = 0
-        if missing:
-            # Retrieve for the parts that went unanswered and merge. Merged by
-            # chunk id and best score rather than re-fused: the clause passes are
-            # answering DIFFERENT questions, so their ranks are not comparable and
-            # RRF across them would average away the very evidence just found.
+        if alternatives:
+            # Merged by chunk id and best score rather than re-fused: the extra
+            # passes are answering DIFFERENT questions, so their ranks are not
+            # comparable and RRF across them would average away the very evidence
+            # just found.
             by_id = {row["chunk_id"]: row for row in rows}
-            for clause in missing:
+            for alternative in alternatives[:_MAX_EXTRA_PASSES]:
                 extra += 1
                 for row in _search_scoped_doc_chunks(
-                    db, clause, k=k, dashboard_id=dashboard_id,
+                    db, alternative["query"], k=k, dashboard_id=dashboard_id,
                     doc_ids=doc_ids, published_only=published_only,
-                    # RETRIEVED for the clause, JUDGED against the whole question.
+                    # RETRIEVED for the alternative, JUDGED against the whole
+                    # question — the verdict belongs to what the reader asked.
                     gate_question=question,
                 ):
                     current = by_id.get(row["chunk_id"])
                     if current is None or (row.get("rerank_score") or 0) > (current.get("rerank_score") or 0):
+                        # WHY this passage is here. Without it a reader debugging a
+                        # result cannot tell a direct hit from one reached through
+                        # a KPI's alias.
+                        row["reached_via"] = alternative
                         by_id[row["chunk_id"]] = row
             rows = sorted(
                 by_id.values(),
                 key=lambda r: (-(r.get("rerank_score") or 0.0), r["chunk_id"]),
             )[: k * 2]
             logger.info(
-                "govern_doc_query_plan: expanded for %s unanswered clause(s)", len(missing)
+                "govern_doc_expansion: %d extra pass(es) via %s",
+                extra, [a["source"] for a in alternatives[:_MAX_EXTRA_PASSES]],
             )
 
         plan = describe(question, rows, extra)
+        plan["expansions"] = [
+            {"query": a["query"], "source": a["source"], "why": a["why"]}
+            for a in alternatives[:_MAX_EXTRA_PASSES]
+        ]
         for row in rows:
             row["query_plan"] = plan
         return rows
