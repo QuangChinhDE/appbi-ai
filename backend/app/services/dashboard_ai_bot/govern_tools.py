@@ -940,7 +940,11 @@ def tool_describe_semantic_model(ctx: ToolContext, args: dict) -> dict:
         "fields": fields[:60],
         "note": (
             "These are field DEFINITIONS declared in the Semantic Layer, NOT "
-            "measurements. Read the chart data to get an actual figure."
+            "measurements. `formula` is how the field is computed and `unit` is "
+            "what a figure means once computed — quote them when asked how "
+            "something is calculated. A field with no formula here is a plain "
+            "column, not a derived one. Read the chart data to get an actual "
+            "figure."
         ),
     })
 
@@ -948,9 +952,12 @@ def tool_describe_semantic_model(ctx: ToolContext, args: dict) -> dict:
 DESCRIBE_SEMANTIC_TOOL_DEF: dict = {
     "name": "describe_semantic_model",
     "description": (
-        "The business meaning of the measures and dimensions behind this report: "
-        "display name, description, aliases. Use it when the QUESTION is about "
-        "what a field means, not when you are about to quote a figure — the "
+        "What the measures and dimensions behind this report MEAN and how they "
+        "are CALCULATED: display name, description, the formula the semantic "
+        "layer records, and the unit a figure is expressed in. Use it when the "
+        "QUESTION is about what a field means or how it is worked out — "
+        "answering that from the column name is a guess a later tool call "
+        "cannot repair. Not when you are about to quote a figure: the "
         "measuring tools (total_measure, rank_values, share_of) already return "
         "the aggregation and the unit alongside every number they produce, so "
         "calling this first to learn them costs an extra model round for "

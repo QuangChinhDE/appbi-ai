@@ -80,7 +80,7 @@ def assemble(db: Session, *, dataset_table_ids: list[int], question: str = "") -
         "aliases": [],       # ["GMV","doanh thu",...]
         "common_questions": [],
         "glossary": [],      # [{term, definition, synonyms}]
-        "measures": [],      # [{name, label, description}]
+        "measures": [],      # [{name, label, description, formula, unit, kind}]
         "datasets": [],      # [{name, description}]
     }
     if not dataset_table_ids:
@@ -201,8 +201,98 @@ def assemble(db: Session, *, dataset_table_ids: list[int], question: str = "") -
     return out
 
 
+#: How much of a formula to carry. Long enough for a ratio with a NULLIF guard,
+#: short enough that sixty of them do not crowd out the question.
+_MAX_FORMULA_CHARS = 180
+
+#: The measure types the engine wraps around a column, in the SQL a reader would
+#: recognise. `percent_of_total` is absent deliberately: it compiles to a window
+#: function, not a call, and naming it as one would be a lie a DA could act on.
+_AGGREGATIONS = {
+    "count": "COUNT({0})", "sum": "SUM({0})", "avg": "AVG({0})",
+    "min": "MIN({0})", "max": "MAX({0})",
+    "count_distinct": "COUNT(DISTINCT {0})",
+}
+
+
+def _formula_of(field: dict) -> str:
+    """The calculation, when there is one to state.
+
+    `sql` is present on every field in the model, but for a plain column it is the
+    column: `bc_key` -> `bc_key`. Repeating that back to an agent as "the formula"
+    would be noise dressed as an answer. A real calculation is either an
+    `expression` — the computed-measure form, which also carries `filters` and
+    `depends_on` — or a `sql` that says something the field name does not.
+    """
+    expression = str(field.get("expression") or "").strip()
+    if expression:
+        # Formula mode: the engine emits this as it stands, with no aggregation
+        # wrapped around it. Adding one here would describe a query nobody runs.
+        return expression[:_MAX_FORMULA_CHARS]
+    sql = str(field.get("sql") or "").strip()
+    name = str(field.get("name") or "").strip()
+    if not sql or sql.lower() == name.lower():
+        return ""
+    # The aggregation is half the calculation. Without it `review_count` reads as
+    # "*" — true, and useless. With it, "COUNT(*)".
+    aggregation = str(field.get("type") or "").strip().lower()
+    if aggregation in _AGGREGATIONS:
+        return _AGGREGATIONS[aggregation].format(sql)[:_MAX_FORMULA_CHARS]
+    return sql[:_MAX_FORMULA_CHARS]
+
+
+def _unit_of(field: dict) -> str:
+    """The unit, in words, when the model declares one.
+
+    "91.2" and "91.2%" are different answers, and the difference is recorded in
+    `format` — a dict the agent has never been shown.
+    """
+    unit = str(field.get("unit") or "").strip()
+    if unit:
+        return unit
+    fmt = field.get("format")
+    if not isinstance(fmt, dict):
+        return str(fmt or "").strip()
+    bits = []
+    if fmt.get("currency"):
+        bits.append(str(fmt["currency"]))
+    if fmt.get("prefix"):
+        bits.append("tiền tố " + str(fmt["prefix"]))
+    if fmt.get("suffix"):
+        bits.append("hậu tố " + str(fmt["suffix"]))
+    if fmt.get("kind") == "percent" or fmt.get("suffix") == "%":
+        bits.append("phần trăm")
+    if isinstance(fmt.get("decimals"), int):
+        bits.append("%d chữ số thập phân" % fmt["decimals"])
+    return ", ".join(dict.fromkeys(bits))[:60]
+
+
 def _semantic_fields(db: Session, dataset_ids: set[int]) -> list[dict]:
-    """Measure/dimension label+description from the semantic model, if present.
+    """What the semantic layer says a field MEANS and how it is CALCULATED.
+
+    WHAT THIS USED TO DROP
+    ----------------------
+    A field reached the agent only when it had BOTH a label and a description, and
+    what it carried was prose. Measured across the semantic model:
+
+        5721 fields, 135 hidden
+          161 have a description   <- everything the agent could see
+          304 have a real formula
+           70 declare a unit
+
+    So `avg_tasks_per_user`, whose formula is recorded exactly and whose format
+    says two decimals, was invisible — because nobody had written a sentence about
+    it. Asked what it means, an agent had to guess from the name, which is the one
+    thing the steering block tells it never to do.
+
+    Terminology and formulas are the floor: they are what a report answer has to
+    get right before any analysis is worth having. The rule is therefore whether a
+    field carries MEANING at all — a description, a calculation, or a unit — and
+    whichever of those exist travel together.
+
+    `hidden` is honoured now. A modeller who hid a field hid it from readers, and
+    an agent quoting it is a reader.
+
     Best-effort — schema differences across versions must never break a turn."""
     if not dataset_ids:
         return []
@@ -228,15 +318,27 @@ def _semantic_fields(db: Session, dataset_ids: set[int]) -> list[dict]:
             for m in coll:
                 if not isinstance(m, dict):
                     continue
+                if m.get("hidden"):
+                    continue
                 label = m.get("label") or m.get("name")
+                if not label:
+                    continue
                 desc = m.get("description")
-                if label and desc:
-                    fields.append({
-                        "name": m.get("name"),
-                        "label": label,
-                        "description": str(desc)[:250],
-                        "kind": coll_attr[:-1],
-                    })
+                formula = _formula_of(m)
+                unit = _unit_of(m)
+                if not (desc or formula or unit):
+                    continue
+                fields.append({
+                    "name": m.get("name"),
+                    "label": label,
+                    "description": str(desc)[:250] if desc else None,
+                    "formula": formula or None,
+                    "unit": unit or None,
+                    "kind": coll_attr[:-1],
+                })
+    # Richest first, so the cap below drops the barest fields rather than an
+    # arbitrary sixty. A described measure outranks a bare calculation.
+    fields.sort(key=lambda f: (f.get("description") is None, f.get("formula") is None))
     return fields[:60]
 
 
@@ -264,7 +366,15 @@ def format_block(assembled: dict) -> str:
     if assembled.get("measures"):
         lines.append("• Chỉ số/chiều đã định nghĩa (semantic layer):")
         for m in assembled["measures"]:
-            lines.append(f"   - [{m.get('kind')}] {m.get('label')}: {m.get('description')}")
+            # Whatever this field actually has. Printing "None" for a missing
+            # description taught the model that the field was undefined, when in
+            # fact its calculation was recorded right beside it.
+            parts = [p for p in (
+                m.get("description"),
+                f"công thức: {m['formula']}" if m.get("formula") else None,
+                f"đơn vị: {m['unit']}" if m.get("unit") else None,
+            ) if p]
+            lines.append(f"   - [{m.get('kind')}] {m.get('label')}: " + " — ".join(parts))
     if assembled.get("columns"):
         lines.append("• Ý nghĩa cột (data dictionary):")
         for c in assembled["columns"]:
