@@ -242,3 +242,62 @@ def test_a_validation_message_reaches_the_author_without_pydantic_noise():
         message = _first_message(exc)
     assert "KHI NÀO" in message
     assert "[type=" not in message and "input_value" not in message
+
+
+# ── lanes are siblings, not a chain ───────────────────────────────────────────
+
+def test_each_lane_starts_from_what_the_coordinator_was_handed():
+    """`_publish` moves `previous` on after every node, and a specialist reads it
+    before it reads anything else. So the second lane was shown the FIRST lane's
+    answer as "the result of the previous step".
+
+    Observed on a two-lane run. The revenue specialist failed to fetch and wrote
+    "Hiện tại, tôi không thể lấy được số liệu thực tế về doanh thu và điểm đánh
+    giá…"; the review specialist — its own tools, its own question — opened with
+    the same sentence. It was answering the lane beside it rather than the report.
+
+    A fan-out whose branches contaminate each other is a chain wearing a fan-out's
+    shape, and independence is the whole reason for choosing specialists at all.
+    """
+    import inspect
+
+    from app.services.agent_flows.runtime import executor
+
+    source = inspect.getsource(executor._run_coordinate)
+    body = source[source.index("for specialist in picked:"):]
+    assert 'state.set_var("previous", carried)' in body
+
+
+def test_the_planner_is_not_handed_the_previous_step_s_data():
+    """Ahead of a coordinator that is usually a `report_read`, and on a real
+    70-chart report that is tens of kilobytes of chart dumps. Measured: the
+    planning call alone took 8,216ms before this, on a decision whose entire input
+    is the roster's `when` lines. After: 1,102ms."""
+    import inspect
+
+    from app.services.agent_flows.runtime import executor
+
+    source = inspect.getsource(executor._run_coordinate)
+    plan_call = source[:source.index("plan = state.outputs.get")]
+    assert 'state.set_var("previous", "")' in plan_call
+    assert "finally:" in plan_call
+
+
+def test_a_container_does_not_claim_its_children_s_tool_calls():
+    """`tool_log[tools_before:]` is everything that happened WHILE a node ran, and
+    for a branching node that is everything its children did. So the inspector
+    listed the same calls twice:
+
+        CG doanh thu  | agent      | [get_chart_data × 3]
+        CG đánh giá   | agent      | [get_chart_data × 2]
+        Điều phối     | coordinate | [get_chart_data × 5]
+
+    A reader counting tool calls off that screen gets ten. The children own them.
+    """
+    import inspect
+
+    from app.services.agent_flows.runtime import executor
+
+    source = inspect.getsource(executor._run_node)
+    assert "is_container = " in source
+    assert "tool_calls=[] if is_container else" in source

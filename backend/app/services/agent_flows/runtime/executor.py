@@ -377,6 +377,19 @@ async def _run_node(
     began = time.monotonic()
     tokens_before = (state.prompt_tokens, state.completion_tokens)
     tools_before = len(state.tool_log)
+    # A CONTAINER MAKES NO TOOL CALLS OF ITS OWN.
+    #
+    # The window `tool_log[tools_before:]` is everything that happened WHILE this
+    # node ran, which for a branching node is everything its children did. So the
+    # inspector listed the same calls twice — once under the specialist that made
+    # them and again under the coordinator that contains it:
+    #
+    #     CG doanh thu   | agent      | [get_chart_data, get_chart_data, get_chart_data]
+    #     CG đánh giá    | agent      | [get_chart_data, get_chart_data]
+    #     Điều phối      | coordinate | [get_chart_data × 5]
+    #
+    # A reader counting tool calls off that screen gets ten. The children own them.
+    is_container = getattr(node, "type", "") in ROUTING_NODE_TYPES
     # WHAT THIS STEP CAN SEE, captured BEFORE it runs. Taken here rather than
     # after, because a node publishes into the same `vars` it reads from — read
     # it afterwards and you get the output mixed into the input.
@@ -424,7 +437,7 @@ async def _run_node(
                     # A step that spent tokens before it stopped still spent them.
                     prompt_tokens=state.prompt_tokens - tokens_before[0],
                     completion_tokens=state.completion_tokens - tokens_before[1],
-                    tool_calls=state.tool_log[tools_before:],
+                    tool_calls=[] if is_container else state.tool_log[tools_before:],
                 )
             )
             yield AgentEvent(
@@ -456,7 +469,7 @@ async def _run_node(
                     # looked free.
                     prompt_tokens=state.prompt_tokens - tokens_before[0],
                     completion_tokens=state.completion_tokens - tokens_before[1],
-                    tool_calls=state.tool_log[tools_before:],
+                    tool_calls=[] if is_container else state.tool_log[tools_before:],
                     output_preview=(
                         f"đã dùng {state.budget.tool_calls}/{state.budget.max_tool_calls} "
                         f"lượt công cụ và {state.budget.llm_calls}/"
@@ -485,7 +498,7 @@ async def _run_node(
             TraceStep(
                 key=node.key, type=node.type, name=label,
                 status="error", ms=ms, error=last_error,
-                tool_calls=state.tool_log[tools_before:],
+                tool_calls=[] if is_container else state.tool_log[tools_before:],
                 # Same reasoning as the budget path above, and it matters more here:
                 # `retry` means a failing step can pay for the same work several
                 # times over, and a row reading 0 tokens for three attempts hides
@@ -511,7 +524,7 @@ async def _run_node(
         TraceStep(
             key=node.key, type=node.type, name=label,
             status="skipped" if declined else "ok", ms=ms,
-            tool_calls=state.tool_log[tools_before:],
+            tool_calls=[] if is_container else state.tool_log[tools_before:],
             input_preview=input_before,
             output_preview=_preview(state.outputs.get(node.key)),
             prompt_tokens=state.prompt_tokens - tokens_before[0],
@@ -625,6 +638,30 @@ async def _run_if(
 #: answer, because `choice` refuses an empty answer and should.
 _NO_SPECIALIST = "khong_ai"
 
+#: Where a lane's assignment lives while that lane runs. A run variable rather than
+#: a node field because the specialists are ORDINARY nodes — the coordinator must be
+#: able to brief a body it did not write, including one an author built before this
+#: node type existed.
+_BRIEF_VAR = "specialist_brief"
+
+
+def _specialist_brief(specialist: Any) -> str:
+    """What to tell a lane about its own job, in the author's own words.
+
+    Says three things, and each is there because leaving it out changes the answer:
+    that OTHER specialists are running (so this one need not cover their ground),
+    what this one is for (the author's `when`), and that something downstream will
+    combine the parts (so a lane that answers only its slice is not producing a
+    half-answer for the viewer).
+    """
+    return (
+        "Bạn là MỘT trong nhiều chuyên gia đang cùng trả lời câu hỏi này.\n"
+        f"PHẦN VIỆC CỦA BẠN: {(specialist.when or '').strip()}\n"
+        "Chỉ trả lời đúng phần đó. Các phần khác đã có chuyên gia khác lo, và một "
+        "bước sau sẽ gộp tất cả lại — nên bạn không cần nhắc tới chúng. Nếu câu "
+        "hỏi không có phần nào thuộc về bạn, nói ngắn gọn là không có."
+    )
+
 
 def _picked_specialists(raw: Any, roster: list[Any], ceiling: int) -> list[Any]:
     """The specialists a plan names, in ROSTER order, deduplicated and capped.
@@ -720,10 +757,29 @@ async def _run_coordinate(
     )
 
     yield AgentEvent(type="status", text="Đang chọn chuyên gia…")
-    async for ev in _run_node(planner, state, rctx):
-        # The planner's own text is working-out, never the answer.
-        if ev.type != "text":
-            yield ev
+    # THE ROUTER DOES NOT NEED THE DATA. IT NEEDS THE QUESTION.
+    #
+    # Every agent node is handed `previous` — the last step's whole result. Ahead of
+    # a coordinator that is usually a `report_read`, and on a real 70-chart report
+    # that is tens of kilobytes of chart dumps. The planner was reading all of it to
+    # answer "which of these two specialists?".
+    #
+    # Measured on one run before this: the planning call alone took 8,216ms, on a
+    # question whose entire routing input is the roster's `when` lines. The run then
+    # ran out of time in the specialist and never reached the step that writes the
+    # answer.
+    #
+    # Set aside for the planner only, and restored immediately — the specialists
+    # that follow still get everything the step before the coordinator produced.
+    carried = state.vars.get("previous")
+    state.set_var("previous", "")
+    try:
+        async for ev in _run_node(planner, state, rctx):
+            # The planner's own text is working-out, never the answer.
+            if ev.type != "text":
+                yield ev
+    finally:
+        state.set_var("previous", carried)
 
     plan = state.outputs.get(planner.key)
     # READ, THEN TAKE IT OUT OF THE OUTPUTS.
@@ -764,14 +820,44 @@ async def _run_coordinate(
         return
 
     for specialist in picked:
-        with state.in_branch(specialist.name or specialist.key):
-            try:
-                async for ev in _run_body(specialist.body, state, rctx):
-                    yield ev
-            except BranchStopped:
-                # Scoped to this specialist. A filter inside one lane must not
-                # cancel the others — being independent lanes is the point.
-                continue
+        # LANES ARE SIBLINGS, NOT A CHAIN.
+        #
+        # Each specialist starts from what the coordinator was handed. Without
+        # this the second one is shown the FIRST one's answer as "the result of
+        # the previous step", because `_publish` moves `previous` on after every
+        # node — and a specialist reads that before it reads anything else.
+        #
+        # Observed on a two-lane run. The revenue specialist failed to fetch and
+        # wrote "Hiện tại, tôi không thể lấy được số liệu thực tế về doanh thu và
+        # điểm đánh giá…". The review specialist, which had its own tools and its
+        # own question, opened with the same sentence: it was answering the lane
+        # beside it rather than the report. A fan-out whose branches contaminate
+        # each other is a chain wearing a fan-out's shape, and the whole reason
+        # for choosing specialists is that they are independent.
+        state.set_var("previous", carried)
+        # AND TELL IT WHAT ITS JOB IS ON THIS QUESTION.
+        #
+        # Without this, every lane is handed the whole question and the whole
+        # report and does the whole job. Measured on "Doanh thu và điểm đánh giá
+        # của khách đang thế nào?": the revenue specialist answered revenue AND
+        # review, and the review specialist answered revenue AND review — two
+        # model calls, two sets of tool calls, one answer's worth of content.
+        #
+        # `when` already says what this specialist is for; it was only ever shown
+        # to the planner. Shown to the specialist too, it becomes the assignment,
+        # which is the half of "coordination" that is not routing.
+        state.set_var(_BRIEF_VAR, _specialist_brief(specialist))
+        try:
+            with state.in_branch(specialist.name or specialist.key):
+                try:
+                    async for ev in _run_body(specialist.body, state, rctx):
+                        yield ev
+                except BranchStopped:
+                    # Scoped to this specialist. A filter inside one lane must not
+                    # cancel the others — being independent lanes is the point.
+                    continue
+        finally:
+            state.set_var(_BRIEF_VAR, "")
 
 
 async def _run_switch(

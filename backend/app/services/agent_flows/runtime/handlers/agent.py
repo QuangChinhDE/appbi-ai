@@ -529,6 +529,16 @@ def _messages(node: AgentNode, state: RunState, rctx: Any) -> list[dict]:
 
     out: list[dict] = [*picked, {"role": "user", "content": rctx.inp.question.text()}]
 
+    # A LANE'S ASSIGNMENT, WHEN THIS NODE IS RUNNING INSIDE ONE.
+    #
+    # Set by the coordinator around each specialist body and cleared after, so a
+    # node outside one never sees it. Placed straight after the question because
+    # it narrows the question, and before the data because a specialist that reads
+    # the whole report first has already decided to answer all of it.
+    brief = str(state.vars.get("specialist_brief") or "").strip()
+    if brief:
+        out.append({"role": "user", "content": brief})
+
     # THE STEP THAT SYNTHESISES HAS TO SEE EVERYTHING THERE IS TO SYNTHESISE.
     #
     # Every node published its result into `previous`, and `previous` is
