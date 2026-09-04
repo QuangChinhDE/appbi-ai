@@ -1326,6 +1326,26 @@ def search_doc_chunks(
     # cannot get that wrong by forgetting an argument.
     if not authoring:
         published_only = True
+
+    # A NOTE ON WHAT IS DELIBERATELY *NOT* HERE.
+    #
+    # A shared cross-encoder deadline across the passes of one question was built
+    # and removed. The reasoning was that expansion runs up to four passes and each
+    # paid the reranker again; the measurement said otherwise, twice over. With one
+    # wallet of 1.6s, on three runs of a two-clause question:
+    #
+    #     lan 1: 1 pass,  SKIPPED after 1101ms of work,  0/6  rows scored
+    #     lan 2: 4 passes, 2 skipped,                    9/11 rows scored
+    #     lan 3: 4 passes, 2 skipped,                    7/11 rows scored
+    #
+    # It discarded work it had already paid for, and — worse — left whole result
+    # sets with no cross-encoder score at all. The relevance floor is what decides
+    # whether a question is answerable; unscored rows make that verdict blind, so
+    # the saving was being taken out of the one signal measured to be worth 0.978
+    # against 0.844 for its nearest alternative.
+    #
+    # The cost it was aimed at was never the reranker. See `embedding_service`:
+    # every query embedding opened a fresh TLS connection.
     try:
         authoring_scope(db) if authoring else restricted_scope(db)
         rows = _search_scoped_doc_chunks(
@@ -1372,6 +1392,25 @@ def search_doc_chunks(
             # comparable and RRF across them would average away the very evidence
             # just found.
             by_id = {row["chunk_id"]: row for row in rows}
+            # One request for every alternative, before any of them is searched.
+            #
+            # The passes below are sequential and each one embedded its own query,
+            # so a question that expanded three ways paid three round trips to
+            # OpenAI at 0.4-7.4 seconds each — measured at 63% of the time for one
+            # two-clause question, and the reason an analysis node reports a
+            # timeout rather than a slow answer. The alternatives are all known
+            # here and the embeddings endpoint takes a list, so they travel
+            # together and each pass then finds its vector already bought.
+            #
+            # Nothing below changes. A failure costs the batch, never the search.
+            try:
+                from app.services.embedding_service import EmbeddingService
+
+                EmbeddingService.prime_query_embeddings(
+                    [a["query"] for a in alternatives[:_MAX_EXTRA_PASSES]]
+                )
+            except Exception:  # noqa: BLE001 — a saving, never a gate
+                logger.debug("prime_query_embeddings failed", exc_info=True)
             for alternative in alternatives[:_MAX_EXTRA_PASSES]:
                 extra += 1
                 for row in _search_scoped_doc_chunks(
