@@ -379,7 +379,12 @@ export function BrainBuilder({
   const all = walkNodes(body.nodes);
   const counts = {
     nodes: all.length,
-    branches: all.filter((n) => n.type === 'if' || n.type === 'switch').length,
+    // A coordinator branches too — it just picks the lane with a model rather
+    // than a condition. Left out, the chip under the title said "1 branch" for a
+    // flow with three.
+    branches: all.filter(
+      (n) => n.type === 'if' || n.type === 'switch' || n.type === 'coordinate',
+    ).length,
     loops: all.filter((n) => n.type === 'loop').length,
   };
 

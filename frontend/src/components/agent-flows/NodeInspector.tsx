@@ -24,7 +24,7 @@ import { Button } from '@/components/ui/Button';
 import { cn } from '@/lib/utils';
 import { useI18n } from '@/providers/LanguageProvider';
 import {
-  MAX_LOOP_ITERATIONS, MAX_TOOL_CALLS,
+  MAX_LOOP_ITERATIONS, MAX_TOOL_CALLS, slugifyBrainKey,
   type Condition, type ConditionOp, type FlowNode, type FlowPath,
   type Attachable, type NodeSpec, type ProviderGroup, type SwitchCase,
   type ToolPack,
@@ -621,10 +621,26 @@ function NodeForm(props: InspectorProps & { node: FlowNode }) {
                   <Input
                     value={sp.name || ''}
                     placeholder={t('agentFlows.inspector.specialistName')}
-                    onChange={(e) => set({
-                      specialists: node.specialists.map((x, j) =>
-                        j === i ? { ...x, name: e.target.value } : x),
-                    } as Partial<FlowNode>)}
+                    onChange={(e) => {
+                      // THE KEY FOLLOWS THE NAME WHILE IT IS STILL THE DEFAULT.
+                      //
+                      // `chuyen_gia_1` is what the planner is shown beside each
+                      // `when`, and what the run trace records as the pick —
+                      // observed as `picked: ["chuyen_gia_1", "chuyen_gia_2"]`,
+                      // which tells an author reading their own run nothing at
+                      // all. There is no key field on purpose: two names for one
+                      // thing is how they drift.
+                      const name = e.target.value;
+                      const auto = /^chuyen_gia_\d+$/.test(sp.key);
+                      const slug = slugifyBrainKey(name);
+                      const taken = new Set(
+                        node.specialists.filter((_, j) => j !== i).map((x) => x.key));
+                      const nextKey = auto && slug && !taken.has(slug) ? slug : sp.key;
+                      set({
+                        specialists: node.specialists.map((x, j) =>
+                          j === i ? { ...x, name, key: nextKey } : x),
+                      } as Partial<FlowNode>);
+                    }}
                   />
                   <button
                     type="button"
@@ -786,7 +802,12 @@ function NodeForm(props: InspectorProps & { node: FlowNode }) {
       {/* ── common ───────────────────────────────────────────────────────── */}
       <div className="mt-4 border-t border-[rgb(var(--border-line))] pt-3">
         <SectionTitle>{t('agentFlows.inspector.resultSection')}</SectionTitle>
-        {node.type !== 'set_var' && node.type !== 'if' && node.type !== 'switch' && (
+        {/* `coordinate` joins `if`/`switch` here: what it publishes is a record of
+            which lane ran, not a finding, and naming bookkeeping as a variable
+            invites a later step to answer from it. `{{outputs.<key>}}` still
+            reaches it for an author who deliberately wants the route. */}
+        {node.type !== 'set_var' && node.type !== 'if' && node.type !== 'switch'
+          && node.type !== 'coordinate' && (
           <Field label="Output variable" hint={t('agentFlows.inspector.outputVariableHint')}>
             <Input value={node.output_var || ''}
               onChange={(e) => set({ output_var: e.target.value })} />
