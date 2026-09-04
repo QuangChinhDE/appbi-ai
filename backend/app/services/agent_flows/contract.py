@@ -1052,6 +1052,24 @@ class Flow(_Model):
                 "Flow này không gắn tri thức nào — nó chỉ đọc báo cáo đang mở. "
                 "Đúng nếu bạn muốn dùng nó cho mọi báo cáo."
             )
+        # A LANE THE PLANNER CAN PICK AND THAT THEN DOES NOTHING.
+        #
+        # Choosing a specialist with an empty body spends the planning call, records
+        # the pick in the trace, runs nothing, and leaves the answering step with
+        # less than it would have had from a flow with no coordinator at all. The
+        # canvas draws the lane whether or not anything is in it, so the mistake is
+        # invisible exactly where an author would look for it.
+        for node in self.all_nodes():
+            if not isinstance(node, CoordinateNode):
+                continue
+            empty = [s.name or s.key for s in node.specialists if not s.body]
+            if empty:
+                out.append(
+                    f"Bước điều phối “{node.name or node.key}”: chuyên gia "
+                    f"{', '.join(empty)} chưa có bước nào bên trong — chọn trúng "
+                    "cũng không chạy gì."
+                )
+
         answering = self.node(self.answering_key())
         if isinstance(answering, AgentNode) and answering.tools:
             out.append(

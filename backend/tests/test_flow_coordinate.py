@@ -206,3 +206,39 @@ def test_it_is_declared_as_costing_a_model_call():
     from app.services.agent_flows.runtime import nodes as node_registry
 
     assert node_registry.spec_for("coordinate").costs_llm is True
+
+
+def test_a_specialist_lane_with_no_steps_is_warned_about():
+    """Choosing it spends the planning call, records the pick, runs nothing, and
+    leaves the answering step with less than a flow with no coordinator at all.
+    The canvas draws the lane whether or not anything is in it."""
+    from app.services.agent_flows.contract import Flow, upgrade_body
+
+    body = {
+        "name": "t",
+        "nodes": [
+            {"key": "dp", "type": "coordinate", "name": "Điều phối", "specialists": [
+                {"key": "a", "name": "A", "when": "câu hỏi về doanh thu",
+                 "body": [{"key": "a1", "type": "agent", "prompt": "x"}]},
+                {"key": "b", "name": "B", "when": "câu hỏi về chi phí", "body": []},
+            ]},
+            {"key": "ans", "type": "agent", "prompt": "trả lời"},
+        ],
+    }
+    flow = Flow.model_validate(
+        {**upgrade_body(body, key="t", name="t"), "key": "t", "name": "t"})
+    assert any("chưa có bước nào bên trong" in w for w in flow.warnings())
+
+
+def test_a_validation_message_reaches_the_author_without_pydantic_noise():
+    """The prefix was stripped and the suffix was not, so an author saving a flow
+    read their own sentence with `[type=value_error, input_value='',
+    input_type=str]` welded to the end of it, in the title bar."""
+    from app.services.agent_flows.registry import _first_message
+
+    try:
+        Specialist(key="a", name="A", when="")
+    except Exception as exc:  # noqa: BLE001
+        message = _first_message(exc)
+    assert "KHI NÀO" in message
+    assert "[type=" not in message and "input_value" not in message

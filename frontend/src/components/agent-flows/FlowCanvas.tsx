@@ -373,6 +373,11 @@ function describe(node: FlowNode, t: (key: string, values?: Record<string, strin
         count: node.cases?.length || 0,
         fallback: node.has_fallback ? t('agentFlows.canvas.describe.fallbackSuffix') : '',
       });
+    case 'coordinate':
+      return t('agentFlows.canvas.describe.coordinate', {
+        count: node.specialists?.length || 0,
+        max: node.max_specialists ?? 3,
+      });
     case 'loop':
       return t('agentFlows.canvas.describe.loop', {
         over: node.over,
@@ -485,8 +490,36 @@ function NodeBlock({
     />
   );
 
-  if (node.type === 'if' || node.type === 'switch') {
-    const lanes = node.type === 'if'
+  if (node.type === 'if' || node.type === 'switch' || node.type === 'coordinate') {
+    const lanes = node.type === 'coordinate'
+      // Drawn as lanes like a Switch, because that is what it is on the canvas:
+      // parallel bodies, one per specialist. What differs is who chooses — a
+      // model reading the question rather than a condition the author typed —
+      // and the lane subtitle is that choice's only visible input, so it shows
+      // `when` rather than an operator and a value.
+      ? [
+          ...(node.specialists || []).map((s) => ({
+            key: s.key,
+            label: rest.t('agentFlows.canvas.lane.specialist'),
+            title: s.name || s.key,
+            sub: s.when || rest.t('agentFlows.canvas.lane.specialistNoWhen'),
+            tone: 'ok' as const,
+            body: s.body || [],
+            path: `${node.key}:specialist:${s.key}`,
+            selKey: `${node.key}:specialist:${s.key}`,
+          })),
+          ...((node.fallback || []).length ? [{
+            key: 'fallback',
+            label: rest.t('agentFlows.canvas.lane.fallback'),
+            title: rest.t('agentFlows.canvas.lane.fallback'),
+            sub: rest.t('agentFlows.canvas.lane.noSpecialist'),
+            tone: 'neutral' as const,
+            body: node.fallback || [],
+            path: `${node.key}:fallback:`,
+            selKey: `${node.key}:fallback:`,
+          }] : []),
+        ]
+      : node.type === 'if'
       ? node.paths.map((p) => ({
           key: p.key,
           label: p.kind === 'fallback' ? rest.t('agentFlows.canvas.lane.fallback') : rest.t('agentFlows.canvas.lane.condition'),

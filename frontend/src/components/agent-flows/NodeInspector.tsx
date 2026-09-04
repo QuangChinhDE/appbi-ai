@@ -582,6 +582,94 @@ function NodeForm(props: InspectorProps & { node: FlowNode }) {
         </>
       )}
 
+      {node.type === 'coordinate' && (
+        <>
+          <Field
+            label={t('agentFlows.inspector.coordinatePrompt')}
+            hint={t('agentFlows.inspector.coordinatePromptHint')}
+          >
+            <Textarea
+              rows={2}
+              value={node.prompt || ''}
+              onChange={(e) => set({ prompt: e.target.value } as Partial<FlowNode>)}
+              placeholder={t('agentFlows.inspector.coordinatePromptPlaceholder')}
+            />
+          </Field>
+          <Field
+            label={t('agentFlows.inspector.maxSpecialists')}
+            hint={t('agentFlows.inspector.maxSpecialistsHint')}
+          >
+            <Input
+              type="number" min={1} max={8}
+              value={node.max_specialists ?? 3}
+              onChange={(e) => set({ max_specialists: Number(e.target.value) } as Partial<FlowNode>)}
+            />
+          </Field>
+
+          {/* WHEN-TO-USE IS THE WHOLE INPUT TO THE ROUTING DECISION.
+              A classifier handed bare keys sent a plain lookup down the forecast
+              branch and never fired the lookup case once. So the field is edited
+              here, beside the specialist's name, and a blank one is called out
+              rather than left to fail quietly at run time. */}
+          <div className="mt-3 space-y-2">
+            {(node.specialists || []).map((sp, i) => (
+              <div
+                key={sp.key}
+                className="rounded-lg border border-[rgb(var(--border-line))] p-2.5 space-y-2"
+              >
+                <div className="flex items-center gap-2">
+                  <Input
+                    value={sp.name || ''}
+                    placeholder={t('agentFlows.inspector.specialistName')}
+                    onChange={(e) => set({
+                      specialists: node.specialists.map((x, j) =>
+                        j === i ? { ...x, name: e.target.value } : x),
+                    } as Partial<FlowNode>)}
+                  />
+                  <button
+                    type="button"
+                    title={t('agentFlows.inspector.removeSpecialist')}
+                    className="shrink-0 rounded p-1 text-text-tertiary hover:text-danger disabled:opacity-40"
+                    disabled={(node.specialists || []).length <= 2}
+                    onClick={() => set({
+                      specialists: node.specialists.filter((_, j) => j !== i),
+                    } as Partial<FlowNode>)}
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+                <Textarea
+                  rows={2}
+                  value={sp.when || ''}
+                  placeholder={t('agentFlows.inspector.specialistWhenPlaceholder')}
+                  onChange={(e) => set({
+                    specialists: node.specialists.map((x, j) =>
+                      j === i ? { ...x, when: e.target.value } : x),
+                  } as Partial<FlowNode>)}
+                />
+                {(sp.when || '').trim().length < 8 && (
+                  <p className="text-[10px] leading-tight text-warning">
+                    {t('agentFlows.inspector.specialistWhenRequired')}
+                  </p>
+                )}
+              </div>
+            ))}
+          </div>
+          <Button
+            variant="secondary" size="xs" className="mt-2"
+            onClick={() => set({
+              specialists: [...(node.specialists || []), {
+                key: `chuyen_gia_${(node.specialists || []).length + 1}`,
+                name: '', when: '', body: [],
+              }],
+            } as Partial<FlowNode>)}
+          >
+            <Plus className="h-3 w-3" /> {t('agentFlows.inspector.addSpecialist')}
+          </Button>
+          <HintText>{t('agentFlows.inspector.coordinateHint')}</HintText>
+        </>
+      )}
+
       {node.type === 'loop' && (
         <>
           <Field label={t('agentFlows.inspector.loopOver')} hint={t('agentFlows.inspector.loopOverHint')}>

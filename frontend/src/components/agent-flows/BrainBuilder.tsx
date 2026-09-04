@@ -36,7 +36,7 @@ import {
   replaceNode, saveBrain, validateFlow, walkNodes,
   type FlowBody, type FlowLinkUsage, type FlowNode, type FlowPath, type InsertTarget,
   type Attachable, type NodeSpec, type NodeType, type ProviderGroup,
-  type SwitchCase, type ToolPack,
+  type Specialist, type SwitchCase, type ToolPack,
   type ValidateResult,
 } from '@/lib/agentFlows';
 
@@ -291,10 +291,21 @@ export function BrainBuilder({
     if (owner?.type === 'switch' && group === 'fallback') {
       return { owner, isFallback: true, node: null };
     }
+    if (owner?.type === 'coordinate' && group === 'specialist') {
+      return {
+        owner,
+        specialist: (owner.specialists || []).find((s) => s.key === laneKey) || null,
+        node: null,
+      };
+    }
+    if (owner?.type === 'coordinate' && group === 'fallback') {
+      return { owner, isFallback: true, node: null };
+    }
     return { node: findNode(body.nodes, ownerKey) };
   }, [selected, body.nodes]) as {
     node: FlowNode | null; owner?: FlowNode; path?: FlowPath | null;
-    switchCase?: SwitchCase | null; isFallback?: boolean;
+    switchCase?: SwitchCase | null; specialist?: Specialist | null;
+    isFallback?: boolean;
   };
 
   const updateNode = (next: FlowNode) => mutate(replaceNode(body.nodes, next.key, next));
