@@ -1010,13 +1010,166 @@ READ_DOCUMENT_TOOL_DEF: dict = {
     },
 }
 
+EXPLAIN_MEASUREMENT_TOOL_DEF = {
+    "name": "explain_measurement",
+    "description": (
+        "Ask the company's documents what a MEASUREMENT means. Give it the result "
+        "of a target check — the measure's name and how it did against target — and "
+        "it returns the passages that define that metric, say how it is calculated, "
+        "and name the cases excluded from it. Use it when a figure missed its "
+        "target and the answer needs to say why that matters, not just that it "
+        "happened. Returns documents, never measurements."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "measure": {
+                "type": "string",
+                "description": "The measure's name, exactly as the target check "
+                               "reported it (e.g. 'on_time_rate').",
+            },
+            "status": {
+                "type": "string",
+                "description": "'below_target' or 'on_or_above_target', from the "
+                               "target check.",
+            },
+            "actual": {"type": "number", "description": "The measured value."},
+            "target": {"type": "number", "description": "The target it was compared with."},
+            "shortfall_pct": {
+                "type": "number",
+                "description": "How far below target, in percent, when it missed.",
+            },
+        },
+        "required": ["measure"],
+    },
+}
+
+
+def tool_explain_measurement(ctx: ToolContext, args: dict) -> dict:
+    """A number that missed its target, explained by what the business wrote down.
+
+    THE HALF THAT WAS MISSING
+    -------------------------
+    This pack's own docstring named it and deferred it: "the comparison tools and
+    the knowledge tools are granted separately and never meet... nothing tells a
+    comparison result that a relevant document exists." A flow could report
+    "on-time delivery 91.2% against a 92% target" and never reach the document
+    saying which orders are excluded from that rate.
+
+    Data says WHAT happened; documents say what it MEANS. This is the join.
+
+    TWO CHANNELS, AND THEY ARE NOT THE SAME KIND OF FACT
+    ----------------------------------------------------
+    * the metric's HOME DOCUMENT — somebody DECLARED that this document defines
+      this KPI. Retrieved directly and marked `metric_home`, because a declaration
+      outranks a good cosine and a reader should be able to tell them apart.
+    * ordinary retrieval, using the metric's own recorded synonyms — a chart column
+      called `on_time_rate` finds nothing in a corpus that says "tỷ lệ giao đúng
+      hẹn", and the metric record is the translation between them.
+
+    Scope is the same boundary as every other knowledge read: naming a metric does
+    not grant access to the document that defines it.
+    """
+    from app.services.dashboard_ai_bot import govern_doc_evidence_link as link
+
+    measure = str((args or {}).get("measure") or "").strip()
+    if not measure:
+        return _err("'measure' is required — take it from a target check result")
+
+    evidence = {
+        "measure": measure,
+        "status": str((args or {}).get("status") or "below_target"),
+        "actual": (args or {}).get("actual"),
+        "target": (args or {}).get("target"),
+        "shortfall_pct": (args or {}).get("shortfall_pct"),
+        "unit": None,
+    }
+    scope = _visible_doc_ids(ctx)
+    if not scope:
+        return _err(
+            "no documents are in this report's scope, so there is nothing to "
+            "explain the figure with."
+        )
+
+    plan = link.to_question(ctx.db, evidence)
+
+    from app.services.dashboard_ai_bot.govern_doc_embeddings import search_doc_chunks
+
+    rows = search_doc_chunks(ctx.db, plan["question"], k=6, doc_ids=scope) or []
+    # The declared definition, added on top and de-duplicated by chunk. It is a
+    # different KIND of evidence, so it is fetched even when similarity already
+    # found the same document.
+    home_rows = link.home_doc_passages(
+        ctx.db, plan["home_doc_id"], plan["question"], scope=scope, k=3)
+    seen = {r.get("chunk_id") for r in rows}
+    rows = home_rows + [r for r in rows if r.get("chunk_id") not in
+                        {h.get("chunk_id") for h in home_rows}]
+
+    hits = []
+    for row in rows[:8]:
+        hit = knowledge_hit.from_chunk(row)
+        hit["kind"] = "document_chunk"
+        # WHY this passage is here, in a word a trace can show.
+        hit["reached_by"] = row.get("reached_by") or "semantic"
+        hits.append(hit)
+
+    context = None
+    answerability = None
+    if rows:
+        try:
+            from app.services.dashboard_ai_bot import (
+                govern_doc_answerability as _ans,
+            )
+            from app.services.dashboard_ai_bot import govern_doc_conflict as _conf
+            from app.services.dashboard_ai_bot.govern_doc_context import assemble
+
+            context = assemble(ctx.db, rows)
+            conflict = _conf.detect(plan["question"], rows)
+            answerability = _ans.evaluate(
+                ctx.db, plan["question"], rows, conflict=conflict, doc_ids=scope,
+                # NO CLAUSE COVERAGE HERE. That verdict answers "did the evidence
+                # cover every part the USER asked", and there is no user question
+                # in this call — the query was composed from a measurement, and
+                # its aspects ("định nghĩa, cách tính, trường hợp loại trừ") are
+                # search hints, not things anyone asked separately. The clause
+                # splitter reads the commas and reports PARTIALLY_ANSWERABLE by
+                # construction on every single call.
+                check_clauses=False)
+        except Exception:  # noqa: BLE001 — the passages are usable without them
+            logger.warning("explain_measurement: assembly failed", exc_info=True)
+
+    return _ok({
+        # WHAT WAS ASKED, and why. A trace showing "the bot searched the documents"
+        # explains nothing; "it missed its target by 0.8 points and went looking
+        # for the rule" explains it.
+        "asked": plan["question"],
+        "reason": plan["reason"],
+        "grounded_in": plan["grounded_in"],
+        "metric": plan["metric"],
+        "home_doc_id": plan["home_doc_id"],
+        "results": hits,
+        "context": (context or {}).get("text") or None,
+        "citations": (context or {}).get("citations") or [],
+        "answerability": (answerability or {}).get("verdict"),
+        "abstain_text": (answerability or {}).get("abstain_text"),
+        "conflict": _conflict_payload(answerability),
+        "note": (
+            "These are DOCUMENTS explaining the metric, not measurements of it. "
+            "A figure quoted in this prose is a target or an example somebody "
+            "wrote, never this report's number — read the chart for that."
+        ),
+    })
+
+
 GOVERN_TOOL_DEFS: list[dict] = [
     SEARCH_KNOWLEDGE_TOOL_DEF,
     READ_DOCUMENT_TOOL_DEF,
     DESCRIBE_SEMANTIC_TOOL_DEF,
+    EXPLAIN_MEASUREMENT_TOOL_DEF,
 ]
 GOVERN_TOOLS = {
     "search_knowledge": tool_search_knowledge,
     "read_document": tool_read_document,
     "describe_semantic_model": tool_describe_semantic_model,
+    "explain_measurement": tool_explain_measurement,
 }
