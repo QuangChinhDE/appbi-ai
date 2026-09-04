@@ -116,6 +116,40 @@ def _granted_tools(flow: Flow) -> set[str]:
     return out
 
 
+#: What can actually open each kind of attached source. A source whose reader is
+#: not granted is a label the model can see and a body it cannot.
+READERS_BY_SOURCE: dict[str, tuple[str, ...]] = {
+    "document": ("search_knowledge", "read_document", "recall_knowledge"),
+    "metric": ("search_knowledge", "read_document", "explain_measurement",
+               "get_chart_glossary", "recall_knowledge"),
+    "term": ("search_knowledge", "get_chart_glossary", "recall_knowledge"),
+    "semantic": ("describe_semantic_model", "get_chart_glossary"),
+}
+
+
+def _unreadable_sources(flow: Flow, granted: set[str]) -> list[dict[str, Any]]:
+    """Attached sources no granted tool can open.
+
+    The author picked them in a picker that worked, and they show in the step's
+    source list, so nothing on the screen says the body is out of reach.
+    """
+    out: list[dict[str, Any]] = []
+    for node in flow.all_nodes():
+        for k in getattr(node, "knowledge", None) or []:
+            source = str(getattr(k, "source", "") or "")
+            readers = READERS_BY_SOURCE.get(source)
+            if readers is None or granted & set(readers):
+                continue
+            out.append({
+                "step": getattr(node, "key", None),
+                "source": source,
+                "ref": str(getattr(k, "ref", "") or ""),
+                "description": (getattr(k, "description", "") or "")[:120],
+                "needs_any_of": list(readers),
+            })
+    return out
+
+
 def coverage(flow: Flow) -> dict[str, Any]:
     """Which question classes this flow can answer, and which it cannot.
 
@@ -125,17 +159,35 @@ def coverage(flow: Flow) -> dict[str, Any]:
     already given.
     """
     granted = _granted_tools(flow)
-    has_knowledge = any(
-        getattr(n, "knowledge", None) for n in flow.all_nodes()
-    )
+    # ATTACHING A DOCUMENT IS NOT READING IT.
+    #
+    # This used to count any step with a knowledge source as covering the
+    # `definition` class, on the premise that such a step "can answer from the
+    # passages it was already given". It is not given any. On an Agent node
+    # `node.knowledge` does exactly two things: it sets the retrieval BOUNDARY for
+    # tools that search, and it adds one line to the prompt naming the source and
+    # repeating the author's own description of it. No passage is ever fetched.
+    #
+    # So a flow granted only `get_chart_data` and `inspect_filters`, with document
+    # 26 attached, was reported as able to answer definition questions. Asked "GMV
+    # có gồm phí ship không?" it answered:
+    #
+    #     "Theo tài liệu 26 — Quy ước tính GMV và phí vận chuyển của Olist,
+    #      GMV không bao gồm phí vận chuyển."      (tool calls: 1, inspect_filters)
+    #
+    # It had not opened the document. That sentence is the author's one-line
+    # description of the attachment, turned into a citation — and the document says
+    # nothing about shipping, while the semantic layer says GMV is
+    # `total_revenue + total_freight`, which is the opposite.
+    #
+    # There is no second route, so there is no special case: `definition` is
+    # covered when a tool can read a definition, and not otherwise.
+    unreadable = _unreadable_sources(flow, granted)
 
     covered: list[dict[str, Any]] = []
     gaps: list[dict[str, Any]] = []
     for qc in CLASSES:
         hit = sorted(granted & set(qc.any_of))
-        if qc.key == "definition" and not hit and has_knowledge:
-            # Bound documents answer this without a search tool.
-            hit = ["<knowledge>"]
         entry = {
             "key": qc.key,
             "label": qc.label_vi,
@@ -148,6 +200,11 @@ def coverage(flow: Flow) -> dict[str, Any]:
     return {
         "covered": covered,
         "gaps": gaps,
+        # Sources attached to a step that nothing in the flow can open. Reported
+        # separately from `gaps` because it is a different mistake: not "this flow
+        # cannot answer that kind of question", but "this flow was told about
+        # something it cannot read, and will answer from the label anyway".
+        "unreadable_sources": unreadable,
         # Said as a fraction rather than a grade: nine of nine is not a better flow
         # than four of nine, it is a broader one, and an author narrowing on purpose
         # should not be reading a score that says they are failing.

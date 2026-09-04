@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any, AsyncGenerator
@@ -800,6 +801,64 @@ def _verify_figures(state: RunState, answer: Answer) -> dict | None:
         return None
 
 
+#: Prose that claims a source. Deliberately narrow — it must match a CLAIM OF
+#: PROVENANCE and not ordinary analysis. "theo báo cáo" is absent on purpose: the
+#: report IS what the run reads, so attributing to it is usually true.
+_ATTRIBUTION_RE = re.compile(
+    r"(?:theo\s+tài\s+liệu"
+    r"|theo\s+quy\s+ước\s+(?:tại|trong)"
+    r"|\(\s*ngu[ồo]n\s*[:\d]"
+    r"|ngu[ồo]n\s*:\s*\S"
+    r"|\baccording to\s+(?:the\s+)?(?:document|source)"
+    r"|\bsource\s*:\s*\S)",
+    re.IGNORECASE,
+)
+
+
+def _flag_unsupported_attribution(state: RunState, answer: Answer) -> None:
+    """The answer claims a source and the run consulted none.
+
+    "CONSULTED NONE" IS NARROWER THAN "COLLECTED NO CITATIONS".
+    -----------------------------------------------------------
+    The first version of this fired on `not state.citations`, and immediately
+    produced a false positive worth keeping in mind. Granted
+    `describe_semantic_model`, the same GMV question answered correctly —
+    "GMV = Doanh thu + Phí vận chuyển", which is exactly what the semantic layer
+    records — and signed it "Nguồn: Báo cáo nội bộ". That attribution is TRUE. It
+    collected no document citations because the semantic layer is not a document,
+    and warning about it would teach an author to distrust a right answer.
+
+    So the test is whether any tool that can return a DEFINITION actually ran.
+    `inspect_filters` does not count: a run that inspected the filter state and
+    then cited document 26 has still cited something it never opened.
+
+    Only when nothing was consulted. Once real sources are in hand,
+    `verify_citations` above is the sharper instrument and firing here too would
+    report the same sentence twice.
+    """
+    from app.services.agent_flows.coverage import READERS_BY_SOURCE
+
+    if state.citations:
+        return
+    knowledge_tools = {t for tools in READERS_BY_SOURCE.values() for t in tools}
+    if any(set(step.tool_calls) & knowledge_tools for step in state.trace):
+        return
+    text = answer.plain_text()
+    if not _ATTRIBUTION_RE.search(text or ""):
+        return
+    logger.warning(
+        "[flow] answer attributes to a source but the run read none: %r",
+        (text or "")[:160],
+    )
+    state.notices.append(
+        Notice(
+            code="citations_unsupported",
+            text="Câu trả lời có dẫn nguồn nhưng bước này chưa đọc được nguồn nào "
+                 "— nội dung đó không tra được, hãy tự đối chiếu trước khi dùng.",
+        )
+    )
+
+
 def _verify_answer_citations(state: RunState, answer: Answer) -> dict | None:
     """Check every `[n]` in the answer against the sources the run actually read.
 
@@ -824,6 +883,26 @@ def _verify_answer_citations(state: RunState, answer: Answer) -> dict | None:
         for n in c.used if str(n).isdigit()
     })
     if not allowed:
+        # NO SOURCES READ IS WHERE AN INVENTED ONE DOES THE MOST DAMAGE.
+        #
+        # This returned early, so the one case with nothing to check against was
+        # the one case never checked. Both observed fabrications landed here.
+        # Attaching document 26 to a step granted no reading tool produced:
+        #
+        #     "Theo tài liệu 26 — Quy ước tính GMV và phí vận chuyển của Olist,
+        #      GMV không bao gồm phí vận chuyển."          (0 sources read)
+        #
+        # and once the prompt stopped inviting that, the same question produced:
+        #
+        #     "... (Nguồn: Investopedia) ... (Nguồn: Harvard Business Review)"
+        #                                                  (0 tool calls)
+        #
+        # Neither carries an `[n]` marker, so neither was ever a citation as far
+        # as this function was concerned — while both read to a viewer as one.
+        # The markers are not stripped here: there are none to strip, and cutting
+        # the model's own words over provenance is not this function's business.
+        # Saying plainly that nothing backs them is.
+        _flag_unsupported_attribution(state, answer)
         return None
     sources = [{"n": n} for n in allowed]
     text_seen = answer.plain_text()

@@ -559,6 +559,21 @@ def _previous_text(previous: Any) -> str:
     return ""
 
 
+def _knowledge_readers(node: AgentNode) -> list[str]:
+    """Tools granted to THIS step that can actually open its attached sources.
+
+    Per-step rather than per-flow: the sentence is written for one model, and a
+    reader granted three steps away cannot help the one being prompted here.
+    """
+    from app.services.agent_flows.coverage import READERS_BY_SOURCE
+
+    granted = {str(getattr(g, "tool", "") or "") for g in (node.tools or [])}
+    needed: set[str] = set()
+    for k in node.knowledge or []:
+        needed |= set(READERS_BY_SOURCE.get(str(getattr(k, "source", "") or ""), ()))
+    return sorted(granted & needed)
+
+
 def _system_prompt(node: AgentNode, state: RunState, rctx: Any) -> str:
     """Base prompt + the author's instructions (with variables resolved) + scope.
 
@@ -601,9 +616,35 @@ def _system_prompt(node: AgentNode, state: RunState, rctx: Any) -> str:
 
     sources = [f"- [{k.source}] {k.ref} — {k.description}" for k in node.knowledge]
     if sources:
-        parts.append(
-            "NGUỒN TRI THỨC BƯỚC NÀY ĐƯỢC TRA (và khi nào nên tra)\n" + "\n".join(sources)
-        )
+        # THESE ARE LABELS, NOT CONTENTS — AND THE MODEL HAS TO BE TOLD SO.
+        #
+        # An attachment does two things and neither is retrieval: it sets the
+        # BOUNDARY a search tool may look inside, and it puts this line in the
+        # prompt. The text after the dash is the AUTHOR'S own note about why the
+        # source is attached — not a sentence from it.
+        #
+        # Read as a heading over `- [document] 26 — Quy ước tính GMV và phí vận
+        # chuyển của Olist`, the old wording invited exactly one reading. Asked
+        # "GMV có gồm phí ship không?", a flow granted no reading tool answered
+        # "Theo tài liệu 26 — Quy ước tính GMV và phí vận chuyển của Olist, GMV
+        # không bao gồm phí vận chuyển" after one call to `inspect_filters`. The
+        # document says nothing about shipping; the description had become the
+        # citation, and the answer contradicted the semantic layer's own formula.
+        readable = _knowledge_readers(node)
+        if readable:
+            parts.append(
+                "NGUỒN TRI THỨC BƯỚC NÀY ĐƯỢC PHÉP TRA (tên nguồn, chưa phải nội "
+                "dung — phải gọi công cụ %s để đọc; chỉ trích dẫn những gì công cụ "
+                "trả về)\n%s" % ("/".join(readable), "\n".join(sources))
+            )
+        else:
+            parts.append(
+                "NGUỒN CHỈ ĐỂ THAM KHẢO TÊN — BƯỚC NÀY KHÔNG CÓ CÔNG CỤ ĐỂ MỞ "
+                "CHÚNG.\nPhần sau dấu gạch là ghi chú của người dựng luồng về lý "
+                "do đính kèm, KHÔNG phải trích từ nguồn. Không được trích dẫn, "
+                "tóm tắt hay suy ra nội dung của chúng. Nếu câu hỏi cần nội dung "
+                "này, hãy nói rõ là chưa tra được.\n" + "\n".join(sources)
+            )
     if node.output_format == "json":
         parts.append(_BLOCK_INSTRUCTIONS)
     elif node.key == rctx.answer_key:
