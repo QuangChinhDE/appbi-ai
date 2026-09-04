@@ -965,7 +965,13 @@ def test_a_reading_steps_result_reaches_the_step_that_answers():
         run(flow, question={"raw": "How is revenue?"}).get("answer") or "",
         ensure_ascii=False,
     )
-    assert "Result of the previous step" in shown, "bước đọc không tới được bước trả lời"
+    # Asserted on the DATA, not on the sentence that introduces it. This used to
+    # look for "Result of the previous step" — the wording of the single-step
+    # carry — and the answering node now receives every step's result under its
+    # own heading instead, because `previous` held only whichever step ran last.
+    # The rule under test is that the reading step's output reaches the step that
+    # answers; that is what these two lines check.
+    assert "read" in shown, "kết quả bước đọc không được gắn tên bước nào"
     assert "charts" in shown and "chart_id" in shown, "tới nơi nhưng rỗng ruột"
 
 

@@ -528,6 +528,30 @@ def _messages(node: AgentNode, state: RunState, rctx: Any) -> list[dict]:
         picked = []
 
     out: list[dict] = [*picked, {"role": "user", "content": rctx.inp.question.text()}]
+
+    # THE STEP THAT SYNTHESISES HAS TO SEE EVERYTHING THERE IS TO SYNTHESISE.
+    #
+    # Every node published its result into `previous`, and `previous` is
+    # overwritten by whoever ran last. So a flow with two specialists handed the
+    # writer exactly one of them. Measured, three agents in order:
+    #
+    #     thu tu goi: ['chuyen_gia_a', 'chuyen_gia_b', 'tong_hop']
+    #     tong hop nhan: "Result of the previous step: KQ-chuyen_gia_b"
+    #     nhac toi ket qua chuyen gia A? False
+    #
+    # A's work was computed, paid for, and silently dropped. The author sees every
+    # step green and an answer that quietly ignores half the flow — and the more
+    # specialists they add, the more of the run is discarded.
+    #
+    # Only the answering node gets the full set. That is where combining is the
+    # job; giving it to every node would restore the "full transcript to every
+    # step" cost this function exists to avoid.
+    if node.key and node.key == getattr(rctx, "answer_key", ""):
+        gathered = _all_step_results(state, rctx, skip=node.key)
+        if gathered:
+            out.append({"role": "user", "content": gathered})
+            return out
+
     carried = _previous_text(state.vars.get("previous"))
     if carried:
         out.append({
@@ -535,6 +559,51 @@ def _messages(node: AgentNode, state: RunState, rctx: Any) -> list[dict]:
             "content": f"Result of the previous step:\n\n{carried[:8000]}",
         })
     return out
+
+
+#: Per-step and total ceilings for what the synthesiser is handed. Bounded because
+#: this is the one place a flow's cost grows with the number of steps: eight
+#: specialists must not become eight full transcripts.
+_MAX_STEP_CHARS = 2000
+_MAX_GATHERED_CHARS = 8000
+
+
+def _all_step_results(state: RunState, rctx: Any, *, skip: str = "") -> str:
+    """Every step's result, in the order they ran, named so they can be told apart.
+
+    Named rather than concatenated: "the previous step said 91.2%" is unusable when
+    four steps spoke, and a synthesiser that cannot attribute a figure to the step
+    that produced it cannot cite it either.
+
+    Steps that produced nothing are left out. A blank line under a heading reads to
+    a model like an answer of "nothing", which is not the same as a step that was
+    skipped, and inventing that distinction here would be worse than omitting it.
+    """
+    names = {s.key: (s.name or s.key) for s in state.trace}
+    parts: list[str] = []
+    used = 0
+    for step in state.trace:
+        if step.key == skip:
+            continue
+        text = _previous_text(state.outputs.get(step.key))
+        if not text:
+            continue
+        block = "### %s\n%s" % (names.get(step.key, step.key), text[:_MAX_STEP_CHARS])
+        if used + len(block) > _MAX_GATHERED_CHARS:
+            parts.append(
+                "(Còn kết quả của các bước sau nữa nhưng đã vượt giới hạn ngữ "
+                "cảnh — trả lời bằng những gì đang có và nói rõ phần chưa gộp.)"
+            )
+            break
+        parts.append(block)
+        used += len(block)
+    if not parts:
+        return ""
+    return (
+        "Kết quả của các bước trước, theo thứ tự đã chạy. Tổng hợp TẤT CẢ, "
+        "không chỉ bước cuối; nếu hai bước mâu thuẫn thì nói rõ ra thay vì "
+        "chọn bừa một bên:\n\n" + "\n\n".join(parts)
+    )
 
 
 def _previous_text(previous: Any) -> str:
