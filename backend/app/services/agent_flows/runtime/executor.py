@@ -36,6 +36,8 @@ from dataclasses import dataclass, field
 from typing import Any, AsyncGenerator
 
 from app.services.agent_flows.contract import (
+    ROUTING_NODE_TYPES,
+    CoordinateNode,
     Flow,
     IfNode,
     LoopNode,
@@ -393,6 +395,9 @@ async def _run_node(
             elif isinstance(node, LoopNode):
                 async for ev in _run_loop(node, state, rctx):
                     yield ev
+            elif isinstance(node, CoordinateNode):
+                async for ev in _run_coordinate(node, state, rctx):
+                    yield ev
             elif isinstance(node, FilterNode):
                 _run_filter(node, state)
             else:
@@ -545,6 +550,21 @@ def _publish(node: Any, state: RunState) -> None:
         state.set_var(node.output_var, value)
         if node.run_policy != "every_turn":
             state.memory_set[node.output_var] = value
+    if getattr(node, "type", "") in ROUTING_NODE_TYPES:
+        # A ROUTING NODE MUST NOT CLOBBER `previous`.
+        #
+        # `previous` is what the next step is shown as "the result of the previous
+        # step", and a branch's result is a record of which way the run went. A
+        # Switch wrapping the only step that fetched anything therefore handed the
+        # step after it `{"matched": ["case_b"], "value": "..."}` in place of the
+        # data — the finding was computed inside the branch and then buried by the
+        # branch's own bookkeeping. Observed on a coordinator whose plan chose
+        # nobody: the answering step was shown `{"picked": [], "considered":
+        # ["chuyen_gia_doanh_thu", ...]}`, a list of internal keys and nothing else.
+        #
+        # `{{outputs.<key>}}` still reaches it, which is the deliberate way to ask
+        # which branch ran.
+        return
     state.set_var("previous", value)
 
 
@@ -599,6 +619,159 @@ async def _run_if(
         except BranchStopped:
             # The filter stopped THIS lane. Siblings after the IF still run.
             pass
+
+
+#: The planner's way of saying "none of these". A real choice rather than an empty
+#: answer, because `choice` refuses an empty answer and should.
+_NO_SPECIALIST = "khong_ai"
+
+
+def _picked_specialists(raw: Any, roster: list[Any], ceiling: int) -> list[Any]:
+    """The specialists a plan names, in ROSTER order, deduplicated and capped.
+
+    WHY THIS PARSES INSTEAD OF THE RUNTIME ENFORCING A `choice`
+    -----------------------------------------------------------
+    The planner started as a `choice` step, which is the runtime's own classifier
+    and refuses anything outside its list. It refuses one thing too many: a plan is
+    a SUBSET, and `choice` can only ever say one word. Measured on the first run,
+    "Lợi nhuận tháng này thế nào?" — a question that genuinely needs both the
+    revenue and the cost specialist — produced
+
+        model trả lời: "chuyen_gia_doanh_thu chuyen_gia_chi_phi"
+        bước phân loại không trả về giá trị hợp lệ
+
+    and the coordinator ran nobody at all. Enumerating combinations as choices
+    would be 2^n of them; asking each specialist yes/no would be n model calls,
+    which is the cost this node exists to avoid.
+
+    So the constraint moved here, and it is still a constraint in code rather than
+    a request in a prompt: the text is SCANNED for the roster's keys and nothing
+    else survives. Prose, apologies, invented keys and markdown all reduce to the
+    same thing — the set of real specialists the planner actually named. A plan
+    that names none is `khong_ai`, which is a legitimate answer and is handled by
+    the caller.
+
+    Roster order, not the order the planner listed them: the author arranged the
+    specialists on the canvas, and a run that reorders them for no reason is
+    harder to read against the design.
+    """
+    text = raw if isinstance(raw, str) else str((raw or {}).get("choice") or raw or "")
+    named = {
+        s.key for s in roster
+        if re.search(r"(?<![a-z0-9_])%s(?![a-z0-9_])" % re.escape(s.key), text)
+    }
+    return [s for s in roster if s.key in named][:ceiling]
+
+
+async def _run_coordinate(
+    node: CoordinateNode, state: RunState, rctx: RunContext
+) -> AsyncGenerator[AgentEvent, None]:
+    """One model call picks the specialists this question needs; they run.
+
+    WHAT THIS REPLACES
+    ------------------
+    Routing was `If`/`Switch` on conditions written by hand, or a `choice`
+    classifier feeding a Switch. Both need the author to enumerate the questions in
+    advance, and a viewer's question is the one thing that cannot be enumerated. So
+    in practice either every specialist ran on every question, or one hand-written
+    branch matched and the rest of the flow sat idle — sub-agents each doing their
+    own thing with nothing joining them up.
+
+    HOW THE CHOICE IS MADE, AND WHY IT IS NOT A PROMPT
+    ---------------------------------------------------
+    The planner is a `choice` agent — the runtime's own classifier, which ENFORCES
+    the answer instead of requesting it. That matters here for the same reason it
+    mattered there: asked in a prompt to "reply with the keys, comma separated", a
+    model answers in prose often enough that "a plan of nothing" and "a question
+    nobody could serve" become indistinguishable.
+
+    Each specialist is offered with its `when`, never its key alone. A classifier
+    handed bare keys — `tra_so`, `so_sanh`, `bat_thuong` — sent "GMV toàn kỳ là bao
+    nhiêu?" down the FORECAST branch and never once fired the lookup case. The
+    contract makes `when` required for exactly that reason.
+
+    NOTHING CHOSEN IS AN ANSWER, NOT AN ERROR
+    ------------------------------------------
+    A question none of the specialists fit is a real outcome, so this runs
+    `fallback` when there is one and otherwise publishes an empty plan and says so
+    in a notice. The answering step then has something honest to work from. The
+    alternative — running everything "just in case" — is what this node exists to
+    stop.
+    """
+    from app.services.agent_flows.contract import AgentNode
+
+    roster = node.specialists
+    planner = AgentNode(
+        key=f"{node.key}__planner",
+        name=f"{node.name or node.key} — chọn chuyên gia",
+        prompt=(
+            (node.prompt.strip() + "\n\n" if node.prompt.strip() else "")
+            + "Chọn (các) chuyên gia cần thiết để trả lời câu hỏi của người xem.\n\n"
+            + "\n".join(f"- {s.key}: {s.when}" for s in roster)
+            + f"\n\nTrả lời bằng CÁC KEY ở trên, cách nhau bởi dấu cách, tối đa "
+            f"{node.max_specialists}. Chỉ chọn người thực sự cần — mỗi chuyên gia "
+            f"thừa là một lượt gọi mô hình cho câu hỏi này. Nếu không ai phù hợp, "
+            f"trả lời '{_NO_SPECIALIST}'. Không giải thích gì thêm."
+        ),
+        provider=node.provider,
+        model=node.model,
+        api_key_enc=node.api_key_enc,
+        context_policy="question",
+    )
+
+    yield AgentEvent(type="status", text="Đang chọn chuyên gia…")
+    async for ev in _run_node(planner, state, rctx):
+        # The planner's own text is working-out, never the answer.
+        if ev.type != "text":
+            yield ev
+
+    plan = state.outputs.get(planner.key)
+    # READ, THEN TAKE IT OUT OF THE OUTPUTS.
+    #
+    # The answering step is handed every step's result, and the planner's result is
+    # the string "chi_phi doanh_thu" — a routing decision, not a finding. Leaving it
+    # in the gather puts a list of internal keys in front of the model that writes
+    # the answer. The TRACE keeps it, which is where an author looks to see why a
+    # specialist did or did not run.
+    state.outputs.pop(planner.key, None)
+
+    picked = _picked_specialists(plan, roster, node.max_specialists)
+    state.outputs[node.key] = {
+        "picked": [s.key for s in picked],
+        "considered": [s.key for s in roster],
+    }
+    yield AgentEvent(
+        type="branch_taken",
+        extra={"step": node.key,
+               "path": ", ".join(s.key for s in picked) or _NO_SPECIALIST},
+    )
+
+    if not picked:
+        state.notices.append(
+            Notice(
+                code="no_specialist_picked",
+                text=f"Bước “{node.name or node.key}” không chọn được chuyên gia nào "
+                     "phù hợp với câu hỏi này.",
+            )
+        )
+        if node.fallback:
+            with state.in_branch(_NO_SPECIALIST):
+                try:
+                    async for ev in _run_body(node.fallback, state, rctx):
+                        yield ev
+                except BranchStopped:
+                    pass
+        return
+
+    for specialist in picked:
+        with state.in_branch(specialist.name or specialist.key):
+            try:
+                async for ev in _run_body(specialist.body, state, rctx):
+                    yield ev
+            except BranchStopped:
+                # Scoped to this specialist. A filter inside one lane must not
+                # cancel the others — being independent lanes is the point.
+                continue
 
 
 async def _run_switch(

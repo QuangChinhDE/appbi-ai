@@ -1182,9 +1182,9 @@ def test_an_attached_source_that_matched_nothing_is_not_cited():
 
 
 # ── 16 · the node list is frozen, and the two halves must agree ───────────────
-#: The twelve. Changing this list is a deliberate act; the test below makes it one.
+#: The thirteen. Changing this list is a deliberate act; the test below makes it one.
 FROZEN_NODE_TYPES = {
-    "agent",                                   # AI
+    "agent", "coordinate",                     # AI
     "report_read", "knowledge", "web",         # data
     "if", "switch", "filter",                  # logic
     "loop", "stop", "delay",                   # flow
@@ -1204,9 +1204,13 @@ def _contract_node_types() -> set[str]:
     return out
 
 
-def test_the_node_list_is_exactly_the_frozen_twelve():
+def test_the_node_list_is_exactly_the_frozen_thirteen():
     """A freeze enforced by a list in a document is a freeze until someone forgets.
-    Adding a node is fine — updating this set is how you say you meant to."""
+    Adding a node is fine — updating this set is how you say you meant to.
+
+    `coordinate` was added deliberately: routing was static author-written
+    conditions, so either every specialist ran on every question or one hand-wired
+    branch matched and the rest of the flow sat idle."""
     assert _contract_node_types() == FROZEN_NODE_TYPES
 
 

@@ -567,6 +567,8 @@ def _messages(node: AgentNode, state: RunState, rctx: Any) -> list[dict]:
 _MAX_STEP_CHARS = 2000
 _MAX_GATHERED_CHARS = 8000
 
+from app.services.agent_flows.contract import ROUTING_NODE_TYPES as _ROUTING_TYPES
+
 
 def _all_step_results(state: RunState, rctx: Any, *, skip: str = "") -> str:
     """Every step's result, in the order they ran, named so they can be told apart.
@@ -583,7 +585,12 @@ def _all_step_results(state: RunState, rctx: Any, *, skip: str = "") -> str:
     parts: list[str] = []
     used = 0
     for step in state.trace:
-        if step.key == skip:
+        if step.key == skip or step.type in _ROUTING_TYPES:
+            # A routing step's "result" is a record of which way the run went —
+            # `{"picked": ["chuyen_gia_chi_phi"], "considered": [...]}`. Handing
+            # that to the model that writes the answer puts a list of internal
+            # node keys in front of it and calls it evidence. The TRACE keeps it,
+            # which is where an author looks to see why a lane did or did not run.
             continue
         text = _previous_text(state.outputs.get(step.key))
         if not text:
