@@ -1492,9 +1492,15 @@ def test_vector_recall_obeys_the_same_boundary_as_the_keyword_scan(monkeypatch):
     # raise inside the tool's try/except and the assertion below sees nothing at
     # all — which is how this test failed without saying why.
     def fake_retrieve(db, dashboard_id=None, question="", k=6, doc_ids=None,
-                      consumer="dashboard_bot"):
+                      consumer="dashboard_bot", report=None):
+        # `report` is the retriever's out-parameter for what it could NOT do —
+        # a failed query embedding, or a raise. The double has to accept it for
+        # the same reason it has to accept `consumer`: a signature it rejects
+        # turns into a TypeError swallowed by the tool, and this assertion then
+        # fails without saying why.
         seen["doc_ids"] = doc_ids
         seen["consumer"] = consumer
+        seen["accepts_report"] = True
         return []
 
     monkeypatch.setattr(gde, "retrieve_doc_chunks", fake_retrieve)
@@ -1514,6 +1520,10 @@ def test_vector_recall_obeys_the_same_boundary_as_the_keyword_scan(monkeypatch):
     )
     assert seen.get("consumer") == "agent_flow", (
         "nhật ký truy xuất phải phân biệt được Agent Flow với bot Dashboard"
+    )
+    assert seen.get("accepts_report"), (
+        "công cụ phải truyền `report` xuống, nếu không thì không ai biết lần tra "
+        "này có chạy đủ hay không"
     )
 
 

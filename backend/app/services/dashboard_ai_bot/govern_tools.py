@@ -471,6 +471,11 @@ def tool_search_knowledge(ctx: ToolContext, args: dict) -> dict:
 
     needles = _tokens(query)
     hits: list[dict] = []
+    #: What the retriever could NOT do this time. Filled by the search below and
+    #: read by the verdict: an empty result set is the one answer that cannot
+    #: carry its own explanation, and it is the answer a failed query embedding
+    #: most often produces.
+    search_report: dict = {}
 
     # ── embeddings first, keyword as the floor ───────────────────────────────
     #
@@ -526,6 +531,10 @@ def tool_search_knowledge(ctx: ToolContext, args: dict) -> dict:
                 k=limit,
                 doc_ids=doc_scope,
                 consumer="agent_flow",
+                # Filled by the retriever with what it could NOT do. Read below,
+                # where the verdict decides whether "nothing found" is a statement
+                # about the corpus or about this attempt.
+                report=search_report,
             ) or []:
                 if not isinstance(ch, dict):
                     continue
@@ -704,6 +713,11 @@ def tool_search_knowledge(ctx: ToolContext, args: dict) -> dict:
             answerability = _ans.evaluate(
                 ctx.db, query, retrieved_rows,
                 conflict=conflict, doc_ids=doc_scope,
+                # Passed rather than read off the rows, because the case that
+                # matters most has no rows: a search whose semantic half failed
+                # and whose keyword half matched nothing.
+                semantic_unavailable=bool(search_report.get("semantic_unavailable")),
+                retrieval_failed=bool(search_report.get("retrieval_failed")),
             )
         except Exception:  # noqa: BLE001 — a verdict is an addition, not a gate
             logger.warning("search_knowledge: answerability failed", exc_info=True)
@@ -725,6 +739,16 @@ def tool_search_knowledge(ctx: ToolContext, args: dict) -> dict:
         # with None for a non-conflict verdict, and a default only applies when a
         # key is absent. It raised on the first question that had no conflict.
         "conflict": _conflict_payload(answerability),
+        # WHETHER THIS SEARCH RAN WHOLE.
+        #
+        # True means the semantic half did not run — the query embedding did not
+        # come back — and what came back is keyword matches only. A model reading
+        # this must not tell the viewer the documents lack the answer; it has not
+        # been shown what the documents say.
+        "semantic_unavailable": bool(search_report.get("semantic_unavailable")),
+        # The search RAISED. Different from "found nothing" and from "ran without
+        # its semantic half", and the only one of the three that is a bug report.
+        "retrieval_failed": bool(search_report.get("retrieval_failed")),
         # What to tell the reader when there is nothing to answer from — one
         # wording, so every consumer says the same thing.
         "abstain_text": (answerability or {}).get("abstain_text"),

@@ -53,6 +53,7 @@ only here.
 from __future__ import annotations
 
 import logging
+from functools import partial
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -97,10 +98,40 @@ NO_EVIDENCE_TEXT = (
     "Chưa tìm thấy đủ thông tin trong nguồn tri thức được phép truy cập."
 )
 
+#: The same absence, when the SEARCH is what failed rather than the corpus.
+#:
+#: A query embedding that does not come back leaves the retriever with its
+#: keyword half only, and a keyword-only pass over Vietnamese prose misses most
+#: of what a question is asking. The rows it returns look exactly like a complete
+#: result set, so the verdict above would be reached honestly and be wrong about
+#: WHY — telling a reader the company has not written this down, when what
+#: actually happened is that the provider timed out.
+#:
+#: Two sentences because they are two different next actions: one is "write the
+#: policy", the other is "try again, and go and look at the embedding provider".
+DEGRADED_SEARCH_TEXT = (
+    "Lần tra này không dùng được tìm kiếm ngữ nghĩa (chỉ khớp được từ khoá), "
+    "nên chưa thể kết luận là nguồn tri thức không có thông tin — hãy thử lại."
+)
+
+#: And the third reason there is nothing: the search RAISED.
+#:
+#: `search_doc_chunks` swallows to `[]` so one bad question cannot take down a
+#: turn — right, and it made every internal failure indistinguishable from an
+#: unanswerable question. Observed while testing the flag above: one module
+#: missing from a deployment produced "chưa tìm thấy đủ thông tin trong nguồn tri
+#: thức" four times over, a claim about the company's documents caused by a bug.
+FAILED_SEARCH_TEXT = (
+    "Không tra được nguồn tri thức lần này do lỗi hệ thống — đây KHÔNG phải kết "
+    "luận là tài liệu không có thông tin. Hãy thử lại hoặc báo quản trị."
+)
+
 
 def evaluate(db: Any, question: str, rows: list[dict], *,
              conflict: dict | None = None, doc_ids: Any = None,
-             check_clauses: bool = True) -> dict:
+             check_clauses: bool = True,
+             semantic_unavailable: bool | None = None,
+             retrieval_failed: bool = False) -> dict:
     """What the evidence supports. Returns a verdict and the reasons behind it.
 
     `rows` are retrieval rows AFTER reranking — they carry `ce_logit` where the
@@ -122,6 +153,19 @@ def evaluate(db: Any, question: str, rows: list[dict], *,
       5. an ordinary covered clause beside a missing one — partial
     """
     evidence_ids = [r.get("chunk_id") for r in rows if r.get("chunk_id") is not None]
+
+    # HOW COMPLETE THE SEARCH WAS, bound to every verdict this call can reach.
+    #
+    # `functools.partial` rather than a keyword repeated at six return statements:
+    # the point of the flag is that a reader is never told "the documents do not
+    # cover this" by a search that only half ran, and a seventh branch added later
+    # must not be able to forget it. Read from the rows when the caller did not
+    # say, so a consumer that has rows and no plan still gets the truth.
+    degraded = bool(
+        semantic_unavailable if semantic_unavailable is not None
+        else any(r.get("semantic_unavailable") for r in rows or [])
+    )
+    _verdict = partial(_verdict_of, degraded=degraded, failed=bool(retrieval_failed))
 
     if not rows:
         return _verdict(NOT_ENOUGH_EVIDENCE, "no passage was retrieved at all",
@@ -274,10 +318,11 @@ def _quote(parts: list[str]) -> str:
     return ", ".join('"%s"' % p for p in parts[:3]) or "(nothing)"
 
 
-def _verdict(verdict: str, reason: str, *, basis: str, evidence_ids: list,
-             best_relevance: float | None = None, judged: int = 0,
-             covered: list[str] | None = None, missing: list[str] | None = None,
-             conflict: dict | None = None) -> dict:
+def _verdict_of(verdict: str, reason: str, *, basis: str, evidence_ids: list,
+                best_relevance: float | None = None, judged: int = 0,
+                covered: list[str] | None = None, missing: list[str] | None = None,
+                conflict: dict | None = None, degraded: bool = False,
+                failed: bool = False) -> dict:
     """The verdict plus everything needed to argue with it.
 
     `basis` names WHICH signal decided, because "NOT_ENOUGH_EVIDENCE" from a
@@ -297,5 +342,20 @@ def _verdict(verdict: str, reason: str, *, basis: str, evidence_ids: list,
         "conflict": conflict,
         # What a viewer should be told when there is nothing to say. Carried with
         # the verdict so every consumer says the same thing.
-        "abstain_text": NO_EVIDENCE_TEXT if verdict == NOT_ENOUGH_EVIDENCE else None,
+        # What a viewer should be told when there is nothing to say, and WHY there
+        # is nothing — the corpus, or the search. `basis` already separates an
+        # empty result from a low relevance floor; this separates both of those
+        # from a retrieval that did not run whole.
+        # Three different reasons a verdict can be "nothing to answer from", and
+        # three different next actions: write the document, try again in a minute,
+        # or go and read the log. One sentence for all three sent every reader to
+        # the first.
+        "abstain_text": (
+            (FAILED_SEARCH_TEXT if failed
+             else DEGRADED_SEARCH_TEXT if degraded
+             else NO_EVIDENCE_TEXT)
+            if verdict == NOT_ENOUGH_EVIDENCE else None
+        ),
+        "semantic_unavailable": degraded,
+        "retrieval_failed": failed,
     }
