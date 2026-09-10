@@ -469,6 +469,16 @@ def tool_search_knowledge(ctx: ToolContext, args: dict) -> dict:
         limit = 6
     limit = max(1, min(limit, MAX_HITS))
 
+    # A follow-up the model passed through verbatim. See `govern_doc_followup`
+    # for why this is a rule and not a model call, and for what happens when it
+    # fires on a question that was not a follow-up.
+    from app.services.dashboard_ai_bot.govern_doc_followup import (
+        resolve as resolve_followup,
+    )
+
+    query, followup_resolved = resolve_followup(
+        query, getattr(ctx, "prior_question", "") or "")
+
     needles = _tokens(query)
     hits: list[dict] = []
     #: What the retriever could NOT do this time. Filled by the search below and
@@ -723,6 +733,10 @@ def tool_search_knowledge(ctx: ToolContext, args: dict) -> dict:
             logger.warning("search_knowledge: answerability failed", exc_info=True)
     return _ok({
         "query": query,
+        # Said out loud when the query is not what the caller passed. A trace that
+        # shows a different search from the one the model asked for, with no note
+        # of why, is the kind of thing an author debugs for an hour.
+        "resolved_from_previous_turn": followup_resolved,
         "total_matches": len(merged),
         "returned": len(top),
         "results": top,

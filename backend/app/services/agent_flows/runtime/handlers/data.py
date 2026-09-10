@@ -343,6 +343,27 @@ async def run_knowledge(
     node: KnowledgeNode, state: RunState, rctx: Any
 ) -> AsyncGenerator[AgentEvent, None]:
     query = state.resolve_text(node.query) or rctx.inp.question.text()
+
+    # A FOLLOW-UP IS NOT A QUESTION ON ITS OWN.
+    #
+    # This step retrieves with the viewer's words verbatim, which is right until
+    # turn two. Measured on the live corpus: after "Tỷ lệ giao đúng hẹn được tính
+    # như thế nào?", the follow-up "Còn trường hợp loại trừ thì sao?" retrieved
+    # the Intelligence user guide and the report overview — and the relevance
+    # floor was satisfied, so the verdict said the evidence supported an answer.
+    # A wrong document, answered confidently.
+    #
+    # Only when the question OPENS by pointing at the previous one. Joining every
+    # turn was measured too and drags a genuine topic change onto the old subject.
+    from app.services.dashboard_ai_bot.govern_doc_followup import (
+        prior_user_question, resolve as resolve_followup,
+    )
+
+    if not state.resolve_text(node.query):
+        prior = prior_user_question(rctx.inp.conversation.history)
+        query, rewritten = resolve_followup(query, prior)
+        if rewritten:
+            logger.info("[flow] follow-up resolved against the previous question")
     yield AgentEvent(type="status", text="Đang tra tri thức…")
 
     previous_scope = getattr(rctx.ctx, "knowledge_scope", None)

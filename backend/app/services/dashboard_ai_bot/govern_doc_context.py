@@ -34,6 +34,7 @@ instruction to travel with the passages. So it does.
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -188,6 +189,22 @@ def assemble(db: Session, rows: list[dict], *,
             "trust_note": _TRUST_NOTE.get(trust, trust),
             "block_kind": row.get("block_kind"),
             "is_metric_home": bool(row.get("is_metric_home")),
+            # WHETHER THE PASSAGE IS STILL VOUCHED FOR.
+            #
+            # `review_date` and `last_verified_at` have been read at retrieval
+            # time for a while — the retriever selects them and the hit contract
+            # carries them — and neither reached the block the answering model
+            # reads. So a policy three months past the review its owner scheduled
+            # answered a question in exactly the same voice as one verified last
+            # week.
+            #
+            # NOT "never verified", which is 9 of the 10 published documents in
+            # this deployment: a warning on almost every answer is a warning
+            # nobody reads, and the authoring side already shows that gap on the
+            # Knowledge Hub's readiness score. An OVERDUE review is different —
+            # somebody promised to check this by a date, and the date has passed.
+            "review_overdue": _review_overdue(row.get("review_date")),
+            "review_date": row.get("review_date"),
             "text": entry_text,
             "section_text": section_text,
             "table_header": row.get("table_header"),
@@ -251,6 +268,30 @@ def cite_label(source: dict) -> str:
     return " › ".join(p for p in parts if p)
 
 
+def _review_overdue(review_date: Any) -> bool:
+    """Has a scheduled review come and gone?
+
+    False for a missing date: no promise was made, so none was broken. Shared
+    shape with `knowledge_hit._review_overdue`, which answers the same question
+    for the hit contract — the two are deliberately identical, and any drift
+    between them would show up as a passage flagged in one surface and not the
+    other.
+    """
+    if not review_date:
+        return False
+    from datetime import date, datetime
+
+    value = review_date
+    if isinstance(value, datetime):
+        value = value.date()
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value[:10]).date()
+        except ValueError:
+            return False
+    return isinstance(value, date) and value < date.today()
+
+
 def render(sources: list[dict]) -> str:
     """The evidence block, numbered, with the rules for using it.
 
@@ -273,6 +314,12 @@ def render(sources: list[dict]) -> str:
             header += " — ĐÂY LÀ TRANG ĐỊNH NGHĨA GỐC (SSOT) của chỉ số được hỏi"
         if source.get("trust") == "external":
             header += " — %s" % source["trust_note"]
+        if source.get("review_overdue"):
+            # Said on the source line rather than as a note at the end, because a
+            # model composing one sentence from three passages has to know WHICH
+            # of them is the stale one.
+            header += " — QUÁ HẠN RÀ SOÁT (hạn %s): nội dung có thể không còn " \
+                      "đúng, hãy nói rõ điều này nếu dùng" % source["review_date"]
         lines.append(header)
         lines.append(source["text"])
         if source.get("section_text"):

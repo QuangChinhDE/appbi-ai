@@ -63,6 +63,16 @@ async def run(
     # list only ever cuts inside it.
     previous_scope = getattr(rctx.ctx, "knowledge_scope", None)
     _apply_scope(rctx.ctx, node)
+    # The previous turn's question, for any tool this node calls that retrieves.
+    # Set here because this is already where the node's retrieval boundary is
+    # applied, and the two belong to the same question.
+    if hasattr(rctx.ctx, "prior_question"):
+        from app.services.dashboard_ai_bot.govern_doc_followup import (
+            prior_user_question,
+        )
+
+        rctx.ctx.prior_question = prior_user_question(
+            rctx.inp.conversation.history)
 
     system = _system_prompt(node, state, rctx)
     messages = _messages(node, state, rctx)

@@ -234,6 +234,14 @@ class ToolContext:
     #: intersects, so an author listing an id they are not entitled to gains
     #: nothing — the ceiling is not theirs to raise.
     knowledge_scope: dict[str, Any] = field(default_factory=dict)
+    #: What the viewer asked on the PREVIOUS turn, for tools that retrieve.
+    #:
+    #: A model writing a `search_knowledge` query has seen the conversation and
+    #: usually writes something standalone. Usually is not always, and when it
+    #: passes the viewer's own "còn ... thì sao?" straight through, the retriever
+    #: has no way to know what "còn" refers to. Set per run by the executor;
+    #: empty on turn one and on every path that has no conversation.
+    prior_question: str = ""
     #: The most rows a single read may return, set per run from the binding's
     #: `capabilities.max_rows_per_call`. None means fall back to `MAX_TOP_N`.
     #:
