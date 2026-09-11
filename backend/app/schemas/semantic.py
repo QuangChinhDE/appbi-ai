@@ -184,7 +184,25 @@ class MeasureDefinition(BaseModel):
                     used to anchor the measure's data.
     """
     name: str
-    type: Literal["count", "sum", "avg", "min", "max", "count_distinct", "percent_of_total"]
+    #: The aggregation wrapped around `sql`. `formula` is the odd one out and is
+    #: accepted rather than offered: when a measure has both `expression` and
+    #: `depends_on` the engine returns the formula as it stands and NEVER reads
+    #: this field (`semantic_query_engine._render_measure_formula`, reached before
+    #: any type branch), so the value is inert for exactly those measures.
+    #:
+    #: It had to be accepted because it is in the data and the schema refused it.
+    #: Four measures carry it — `gmv`, `aov`, `on_time_rate`, `pct_five_star`, the
+    #: four a report is actually built on — and all four compute correctly at run
+    #: time while making their whole view unsaveable from the builder: adding a
+    #: description to ANY measure in those views came back 422, "Input should be
+    #: 'count', 'sum', 'avg', …". A model that works and cannot be edited is worse
+    #: than one that fails loudly.
+    #:
+    #: Not offered in the builder's Aggregation dropdown, because formula-ness is
+    #: INFERRED from `depends_on` there and picking it by hand would be a second,
+    #: contradictory way to say the same thing.
+    type: Literal["count", "sum", "avg", "min", "max", "count_distinct",
+                  "percent_of_total", "formula"]
     sql: Optional[str] = None  # Column or simple SQL — value being aggregated
     expression: Optional[str] = None  # Advanced: full SQL expression aggregated by `type`
     filters: List[MeasureFilter] = Field(default_factory=list)
