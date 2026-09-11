@@ -99,6 +99,58 @@ PYEOF
 echo "==> Running Alembic migrations..."
 alembic upgrade head
 
+# ── Least-privilege runtime role, so row-level security actually runs ─────────
+#
+# Migration 0048 created `appbi_app` NOLOGIN and granted it SELECT/INSERT/UPDATE/
+# DELETE on every table and sequence, then stopped — it cannot create a role with
+# a password on a managed Postgres, and it must not crash-loop the container
+# trying. So the last step lives here, where a failure is a warning and the app
+# still starts.
+#
+# Without it the application connects as the schema owner, Postgres skips RLS for
+# a SUPERUSER/BYPASSRLS role, and the policies on `govern_doc_chunk` are written,
+# enabled, forced and never evaluated. `vector_store_health.rls_in_force` reports
+# which state you are in, and the Knowledge Hub shows it.
+#
+# Opt-in on purpose: set APP_DB_PASSWORD *and* DATABASE_URL_APP together, or
+# neither. Setting only the first provisions a role nothing connects as; that is
+# harmless, and the health endpoint still says RLS is off.
+if [ -n "${APP_DB_PASSWORD:-}" ]; then
+  echo "==> Provisioning least-privilege role appbi_app..."
+  python - <<'PYROLE' || echo "    (skipped: could not provision — RLS stays off, see /catalog/govern/vector-store-health)"
+import os
+import sys
+
+from sqlalchemy import create_engine, text
+
+from app.core.config import settings
+from app.core.database import prepare_database_url
+
+password = os.environ.get("APP_DB_PASSWORD", "")
+if not password:
+    sys.exit(0)
+engine = create_engine(prepare_database_url(settings.DATABASE_URL))
+with engine.begin() as conn:
+    # Idempotent: the role already exists from migration 0048 on a normal
+    # deployment, and CREATE covers the case where a DBA dropped it.
+    conn.execute(text("""
+        DO $$
+        BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'appbi_app') THEN
+                CREATE ROLE appbi_app NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE;
+            END IF;
+        END $$;
+    """))
+    conn.execute(text("ALTER ROLE appbi_app LOGIN PASSWORD :pw"), {"pw": password})
+    conn.execute(text("GRANT USAGE ON SCHEMA public TO appbi_app"))
+    conn.execute(text(
+        "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO appbi_app"))
+    conn.execute(text(
+        "GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO appbi_app"))
+print("    appbi_app ready (LOGIN, NOSUPERUSER, NOBYPASSRLS)")
+PYROLE
+fi
+
 # Ensure DATA_DIR is set BEFORE seed so Parquet paths resolve correctly
 export DATA_DIR="${DATA_DIR:-/app/.data}"
 

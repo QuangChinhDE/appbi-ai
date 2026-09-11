@@ -136,3 +136,31 @@ def test_the_health_report_can_say_whether_rls_is_really_on():
     source = inspect.getsource(GovernanceService.vector_store_health)
     assert "rls_in_force" in source
     assert "rolbypassrls" in source and "rolsuper" in source
+
+
+# ── the opt-in that makes the second layer real ───────────────────────────────
+
+def test_the_request_path_shares_the_owner_engine_until_told_otherwise():
+    """A deployment that does not opt in must behave exactly as before — one
+    connection, one role — so turning this on is a decision somebody makes, not
+    something that happens to them on upgrade."""
+    from app.core import database as db_mod
+
+    if not (getattr(db_mod.settings, "DATABASE_URL_APP", "") or "").strip():
+        assert db_mod.app_engine is db_mod.engine
+
+
+def test_sessions_are_bound_to_the_request_engine_not_the_owner_one():
+    """Both, or neither. A split where only `get_db` used the narrower role would
+    leave every scheduler and every direct `SessionLocal()` on the owner
+    connection, and "which factory am I supposed to use" gets answered wrong once
+    and then leaks."""
+    from app.core import database as db_mod
+
+    assert db_mod.SessionLocal.kw["bind"] is db_mod.app_engine
+
+
+def test_the_setting_exists_so_a_deployment_can_turn_rls_on():
+    from app.core.config import settings
+
+    assert hasattr(settings, "DATABASE_URL_APP")
