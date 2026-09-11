@@ -236,6 +236,16 @@ async def run_flow(
     # does not alter the answer; it says out loud how much of it traces back to
     # evidence, because a wrong number stated confidently is the failure this
     # module can least afford.
+    #
+    # THIS IS NOW THE SECOND LINE, NOT THE ONLY ONE. For its first four months it
+    # was the only one, and the result is measurable: of 269 runs, 32 shipped with
+    # `figures_unverified` attached. The system caught every one of them and
+    # shipped every one of them, because a check that runs after the answer is
+    # finished can only ever describe the problem. The answering node now runs the
+    # same verifier while the tool results are still in its message history and
+    # offers the model one correction round (`_retry_figures`). What reaches here
+    # is what survived that — an answer whose figures the model was given a chance
+    # to fix and did not, which is worth saying out loud.
     verification = _verify_figures(state, answer)
     if verification:
         yield AgentEvent(type="verification", extra={"verification": verification})

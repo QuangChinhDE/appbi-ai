@@ -66,7 +66,12 @@ async def run_report_read(
             )
         )
 
-    out: dict[str, Any] = {"charts": [], "filters": None}
+    # `scope` FIRST, and it is not a style preference. Downstream this dict is
+    # serialised and head-truncated at 2,000 characters before a model sees it, so
+    # a caveat written at the end is a caveat that is always cut — the one sentence
+    # that must survive, dropped by construction, leaving a partial reading looking
+    # like a complete one. Filled in below, once there is something to report.
+    out: dict[str, Any] = {"scope": {}, "charts": [], "filters": None}
     yield AgentEvent(type="status", text="Đang đọc báo cáo…")
 
     if node.include_filters:
@@ -170,6 +175,33 @@ async def run_report_read(
         # an empty context and letting it fill the gap.
         raise RuntimeError(
             "Không đọc được dữ liệu của bất kỳ biểu đồ nào trong phạm vi được cấp."
+        )
+
+    # HOW MUCH OF THE REPORT IS THIS?
+    #
+    # The context said "charts: [...]" and nothing else, so a step reading it saw
+    # six charts and no sign that sixty-four more existed. Asked which product
+    # category earned the most, the "số liệu" specialist answered 13,591,643.70 —
+    # the grand total off a KPI tile, no category named — without calling a single
+    # tool, because as far as it could tell it had the whole report in hand.
+    #
+    # Granting it `list_charts` did not change that answer. A tool is only reached
+    # by a model that knows it is missing something, and nothing here said so. The
+    # fix is not a better prompt, it is the context telling the truth about its own
+    # extent: N of M, and the sentence that names the way out.
+    #
+    # Two ways to end up partial and both are silent: the author pinned a chart
+    # list, or `planned = wanted[:20]` truncated a wide report. Same note covers
+    # them, because to the step reading it they are the same situation.
+    available = len(allowed) if allowed else len(rctx.inp.report.charts or [])
+    out["scope"].update({"read": len(out["charts"]), "available": available})
+    if available and len(out["charts"]) < available:
+        out["scope"]["partial"] = True
+        out["scope"]["note"] = (
+            f"Đây là {len(out['charts'])}/{available} biểu đồ của báo cáo — chỉ "
+            "những biểu đồ bước đọc được cấu hình sẵn. Nếu câu hỏi nhắc tới thứ "
+            "không có ở đây, ĐỪNG trả lời từ những biểu đồ này: gọi `list_charts` "
+            "với `query` là từ khoá trong câu hỏi để tìm đúng biểu đồ trước."
         )
 
     state.outputs[node.key] = out

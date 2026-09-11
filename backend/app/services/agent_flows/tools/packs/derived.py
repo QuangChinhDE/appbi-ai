@@ -160,9 +160,21 @@ def _resolve(
         # A single-value chart (a KPI tile) genuinely has no grouping column.
         # Reported as not_applicable so a flow can branch to a different tool
         # rather than treating it as a failure.
+        #
+        # AND THE BRANCH IS NAMED, because "branch to a different tool" was advice
+        # to the author of a flow and the model is the one holding the error. Given
+        # only the refusal, it reached for `total_measure` on the same KPI tile and
+        # reported the report's grand total as the highest-earning category.
         return R.err(
             f"chart {chart_id} has no grouping column to rank by",
             code="not_applicable",
+            recovery=(
+                "This chart is a single-value tile. To rank, find a chart that "
+                "breaks this measure down: call list_charts with a `query` of the "
+                "question's keywords, pick one whose dimensions include the "
+                "grouping you need, and retry with that chart_id. Do NOT answer a "
+                "ranking question from this tile's total."
+            ),
             detail={"columns": columns, "measure": columns[m_idx]},
         )
     return m_idx, d_idx, columns[m_idx], columns[d_idx]
@@ -172,7 +184,14 @@ def _load(ctx: ToolContext, args: dict) -> tuple[list[str], list[list], list] | 
     """Fetch a chart's FULL result set, or an error result."""
     chart_id = args.get("chart_id")
     if not isinstance(chart_id, int):
-        return R.err("chart_id (int) is required", code="bad_argument")
+        return R.err(
+            "chart_id (int) is required",
+            code="bad_argument",
+            recovery=(
+                "Call list_charts with a `query` of the question's keywords to "
+                "find the chart, then pass its chart_id here."
+            ),
+        )
     try:
         ctx.assert_chart_in_scope(chart_id)
     except ToolError as exc:

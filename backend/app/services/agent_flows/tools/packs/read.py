@@ -15,11 +15,17 @@ what the report can be asked.
 expensive to skip: an answer computed over filtered data and presented as if it
 were the whole business is wrong in a way that reads as confident.
 
-`list_charts` is the one tool in this pack whose payload is not small. It queries
-nothing, so on the warehouse axis it is genuinely cheap — and on a 70-chart report
-it returned ~15,600 tokens, which is the axis an agent actually spends. It now
-lists compactly and takes a `page`, and it says `scales_with_report` out loud so
-an author sizing a flow can see the half that used to be invisible.
+`list_charts` is the one tool in this pack whose payload is not small, and it was
+wrong on BOTH cost axes. On a 70-chart report it returned ~15,600 tokens while
+declaring itself cheap; compact listing and `page` fixed that half. The other half
+survived longer: it was documented as querying nothing, but by default it fetched
+every listed chart's data to report a row count — 37,720 ms measured, to produce
+~307 tokens the caller had not asked for. Row counts are opt-in now, so the
+warehouse claim is finally true.
+
+It is also the only tool that hands out a `chart_id`, and 20 of the 34 tools need
+one, so it is the gate every measuring question passes through. That is why it
+takes a `query`: an index you cannot search is one you have to read whole.
 
 `emit_reading_plan` is deliberately absent. It let the first-generation bot
 announce the steps it was about to take — a hardcoded pipeline narrating itself.
@@ -45,15 +51,18 @@ PACK = ToolPack(
             label_vi="Danh sách biểu đồ",
             label_en="List charts",
             description_vi=(
-                "Xem báo cáo có những biểu đồ nào và mỗi cái đo gì. Báo cáo lớn "
-                "thì truyền `page` để liệt kê từng trang — liệt kê cả 70 biểu đồ "
-                "tốn vài nghìn token mỗi lần gọi."
+                "Tìm biểu đồ theo từ khoá trong câu hỏi và lấy `chart_id` — thứ "
+                "mọi công cụ đo số đều cần. Truyền `query` để chỉ lấy biểu đồ "
+                "khớp; bỏ trống thì liệt kê cả báo cáo, tốn vài nghìn token."
             ),
             result_kind="catalogue",
             returns={
                 "charts": "mỗi biểu đồ: id, tên, loại, chỉ số và chiều nó dùng",
                 "pages": "các trang của báo cáo và mỗi trang có mấy biểu đồ",
-                "coverage": "liệt kê mấy trên tổng bao nhiêu, ở mức chi tiết nào",
+                "coverage": (
+                    "liệt kê mấy trên tổng bao nhiêu, ở mức chi tiết nào, và "
+                    "`query` có khớp biểu đồ nào không"
+                ),
                 "filters_applied": "điều kiện lọc đang áp cho toàn báo cáo",
             },
             payload="scales_with_report",

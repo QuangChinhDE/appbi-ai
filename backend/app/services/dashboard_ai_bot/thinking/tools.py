@@ -18,6 +18,7 @@ import ast
 import logging
 import math
 import operator as ops
+import re
 from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
@@ -49,6 +50,16 @@ from app.services.dashboard_ai_bot.tool_context import (
 # On-screen vocabulary helpers (_fields_block, _resolve_label) are imported
 # from tool_context so the normal/ variant shares one source of truth.
 
+#: Folding for the catalogue search. The canonical fold, not a local NFKD copy —
+#: that one left Vietnamese `đ` intact and "dung hen" then missed "đúng hẹn".
+_WORD_RE = re.compile(r"[0-9A-Za-zÀ-ỹ]+", re.UNICODE)
+
+
+def _fold(s: str) -> str:
+    from app.core.text_fold import fold_text
+
+    return fold_text(s)
+
 
 # Tool: list_charts ───────────────────────────────────────────────────────────
 
@@ -64,7 +75,27 @@ def tool_list_charts(ctx: ToolContext, args: dict) -> dict:
     # 0. Reporting 0 silently misled the LLM into thinking the dashboard
     # was empty when in fact we just hadn't checked yet. recon backfills
     # the real count from each parallel summary fetch when those succeed.
+    #
+    # WHETHER TO TOUCH THE WAREHOUSE AT ALL — the expensive half of this tool.
+    #
+    # MEASURED on a 70-chart report with a fresh context per call, which is how a
+    # real turn pays it, since the fetch cache is scoped to one turn:
+    #
+    #     fetching (the old default)   37,720 ms   ~2,957 tokens
+    #     metadata only                     1 ms   ~2,650 tokens
+    #
+    # Thirty-odd seconds bought ~307 tokens of `total_rows` — and `compact`, the
+    # default detail, discards `columns`, so the row count was the ONLY thing 70
+    # live queries produced. A flow's entire run budget is 45 seconds: one listing
+    # spent two thirds of it before the agent had chosen a chart, which is why the
+    # demo flow had to pin six chart ids by hand instead of letting the agent look.
+    #
+    # So the scan is opt-in. `light` stays because recon passes it, but the default
+    # is no longer "query every chart to answer which charts exist". A caller that
+    # wants counts asks for them, ideally after `query` has cut the list to the two
+    # or three charts the question is actually about.
     light = bool(args.get("light"))
+    fetch_rows = bool(args.get("with_row_counts")) and not light
 
     # WHICH charts, and HOW MUCH about each.
     #
@@ -103,12 +134,45 @@ def tool_list_charts(ctx: ToolContext, args: dict) -> dict:
                 + ", ".join(str(p.get("name") or p.get("id")) for p in (ctx.pages or []))
             )
 
+    # THE CATALOGUE WAS THE ONE INDEX YOU COULD NOT SEARCH.
+    #
+    # 20 of the 34 tools require a `chart_id`, and this is the only tool that hands
+    # one out — so lookup, ranking, share, trend, comparison and projection
+    # questions all enter through here, and the only way in was to read all 70
+    # charts and eyeball them. `describe_semantic_model` is searchable but returns
+    # fields, not chart ids; `get_chart_glossary` needs the id you came to find.
+    #
+    # Matching is on what a VIEWER would say — the chart's name, its description,
+    # and its on-screen measure and dimension labels — folded, so "giao dung hen"
+    # finds "Giao đúng hẹn". Ranked by how many of the question's words a chart
+    # answers to, because "tỷ lệ giao đúng hẹn" should put the chart that carries
+    # the whole phrase above one that merely says "tỷ lệ".
+    #
+    # A query that matches nothing returns the full listing rather than an empty
+    # one: a bad guess should cost the agent a listing, not the answer.
+    query = str(args.get("query") or "").strip()
+    query_used = None
+    query_missed = False
+    if query:
+        terms = {t for t in _WORD_RE.findall(_fold(query)) if len(t) > 1}
+        if terms:
+            scored = []
+            for chart_id in wanted:
+                hit = len(terms & _searchable_terms(ctx, chart_id))
+                if hit:
+                    scored.append((-hit, chart_id))
+            if scored:
+                wanted = [cid for _, cid in sorted(scored)]
+                query_used = query
+            else:
+                query_missed = True
+
     items = []
     for chart_id in wanted:
         meta = ctx.chart_meta.get(chart_id, {})
         columns: list[str] = []
         total_rows: int | None = None
-        if not light:
+        if fetch_rows:
             # Pull row count via the same fetch (cached for the turn)
             try:
                 data = _fetch_chart_data(ctx, chart_id)
@@ -177,6 +241,26 @@ def tool_list_charts(ctx: ToolContext, args: dict) -> dict:
             "Compact listing: name, type, measures and dimensions only — enough "
             "to choose a chart_id. Call get_chart_glossary for one chart's detail."
         )
+    # WHAT THE SEARCH DID, said out loud. A narrowed list looks exactly like a
+    # small report unless the listing admits it was filtered, and an agent that
+    # cannot tell the two apart concludes the chart it wants does not exist.
+    if query_used:
+        out["coverage"]["query"] = query_used
+        out["coverage"]["note"] = (
+            f"{len(items)}/{len(every)} charts match \"{query_used}\", best first. "
+            "Drop `query` to see every chart."
+        )
+    elif query_missed:
+        out["coverage"]["query_matched_nothing"] = query
+        out["coverage"]["note"] = (
+            f"No chart matches \"{query}\" — listing all {len(items)} instead. "
+            "The report may name this differently, or may not measure it at all."
+        )
+    if not fetch_rows:
+        out["coverage"]["row_counts"] = (
+            "not read — pass with_row_counts to count rows (one live query per "
+            "listed chart), or call get_chart_summary for the chart you chose"
+        )
     return _ok(out)
 
 
@@ -185,6 +269,24 @@ def tool_list_charts(ctx: ToolContext, args: dict) -> dict:
 #: tools are for, and they are given a `chart_id` from exactly this list.
 _COMPACT_KEEP = ("chart_id", "chart_name", "name", "chart_type", "description",
                  "total_rows")
+
+
+def _searchable_terms(ctx: ToolContext, chart_id: int) -> set[str]:
+    """The words this chart answers to, in the vocabulary a viewer would use.
+
+    Labels, not column names: a question is phrased in what the report says on
+    screen, so that is what it has to be matched against.
+    """
+    meta = ctx.chart_meta.get(chart_id, {})
+    parts = [str(meta.get("name") or ""), str(meta.get("description") or "")]
+    fields = _fields_block(meta) or {}
+    for key in ("measures", "dimensions"):
+        for f in fields.get(key) or []:
+            if isinstance(f, dict):
+                parts.append(str(f.get("label") or f.get("field") or ""))
+            else:
+                parts.append(str(f))
+    return {t for t in _WORD_RE.findall(_fold(" ".join(parts))) if len(t) > 1}
 
 
 def _compact_manifest(item: dict) -> dict:
@@ -969,15 +1071,33 @@ TOOL_DEFINITIONS: list[dict] = [
     {
         "name": "list_charts",
         "description": (
-            "List the dashboard's charts — name, type, and the measures and "
-            "dimensions each one shows — so you can pick the right chart_id. "
-            "Returns no row data; call a measuring tool with the chart_id you "
-            "chose. On a large report, pass `page` to list one page at a time: "
-            "the full listing of a 70-chart report is several thousand tokens."
+            "Find the charts a question is about and get their chart_id — the id "
+            "every measuring tool needs. ALWAYS pass `query` with the words from "
+            "the question (e.g. 'tỷ lệ giao đúng hẹn'): it searches chart names, "
+            "descriptions and on-screen measure and dimension labels, and returns "
+            "only the matches, best first. Omit `query` only to browse the whole "
+            "report. Returns no row data — call a measuring tool with the "
+            "chart_id you chose."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
+                "query": {
+                    "type": "string",
+                    "description": (
+                        "Words from the question. Accent-insensitive. Falls back "
+                        "to the full listing if nothing matches, and says so."
+                    ),
+                },
+                "with_row_counts": {
+                    "type": "boolean",
+                    "description": (
+                        "Also report how many rows each listed chart returns. "
+                        "Runs one live query PER listed chart — narrow with "
+                        "`query` or `page` first; on a 70-chart report the full "
+                        "listing costs ~35 seconds. Rarely needed to choose."
+                    ),
+                },
                 "page": {
                     "type": "string",
                     "description": (

@@ -819,6 +819,11 @@ _CHART_KEYED_TOOLS = frozenset({
     "forecast_measure",
 })
 
+#: The one tool that hands OUT a chart_id. Its counterpart above is the list of
+#: tools that need one, and a step wants exactly one of the two: an index it was
+#: given, or the ability to look one up.
+_CHART_LOOKUP_TOOL = "list_charts"
+
 
 
 
@@ -924,7 +929,31 @@ class Flow(_Model):
 
     # ── Reading the tree ──────────────────────────────────────────────────────
     def all_nodes(self) -> list[Any]:
-        """Every node anywhere in the tree, in document order."""
+        """Every node anywhere in the tree, in document order.
+
+        EVERY CONTAINER, INCLUDING THE NEWEST ONE.
+        -----------------------------------------
+        `coordinate` was added without being taught here, and this method is what
+        the flow knows about itself. Everything downstream reads it, so a lane's
+        contents were invisible to all of it at once:
+
+          * `warnings()` — every authoring check, on exactly the nodes a
+            coordinator exists to hold. A live run found the cost: the "số liệu"
+            specialist held `get_chart_data`, `total_measure` and `compare_periods`
+            — three tools that all require a `chart_id` — and nothing that can
+            produce one. The check for that case was already written and simply
+            never looked inside the lane. Asked which product category earned the
+            most, the flow answered "13,591,643.70" — the report's grand total, no
+            category named, no notice raised.
+          * `coverage.granted_tools()` — so the coverage report described a flow's
+            abilities while ignoring the tools its specialists were granted.
+          * `node_count` in the API and the registry, `unreachable_nodes()`,
+            `produced_vars()` / `referenced_vars()`, and the binding's loop-variable
+            scan.
+
+        The rule this encodes: a node that holds nodes must be walked here, and
+        adding one is not finished until it is.
+        """
         out: list[Any] = []
 
         def walk(nodes: list[Any]) -> None:
@@ -939,6 +968,10 @@ class Flow(_Model):
                     walk(n.fallback)
                 elif isinstance(n, LoopNode):
                     walk(n.body)
+                elif isinstance(n, CoordinateNode):
+                    for s in n.specialists:
+                        walk(s.body)
+                    walk(n.fallback)
 
         walk(list(self.nodes))
         return out
@@ -1090,23 +1123,41 @@ class Flow(_Model):
         # told the report contained no GMV — on a report whose GMV is 15,843,553.24.
         # Adding `{{ctx}}` to those four prompts took the same flow to zero failed
         # calls and the correct figure.
+        # TWO WAYS TO KNOW A CHART_ID, AND A STEP NEEDS ONE OF THEM.
+        #
+        # Being handed an index by a read step is the first. The second is being
+        # able to look one up — which only became a real answer once `list_charts`
+        # stopped costing 37 seconds and learned to take a `query`. A step that can
+        # search does not need to be handed anything.
+        #
+        # The guard used to be `if read_vars:` — so a flow with no read step at all,
+        # the case where a step is MOST certainly guessing, produced no warning
+        # whatsoever. Now the absence of a read step is just one more way to have
+        # neither source.
         read_vars = {
             n.output_var for n in self.all_nodes()
             if isinstance(n, ReportReadNode) and n.output_var
         }
-        if read_vars:
-            for n in self.agent_nodes():
-                keyed = sorted({t.tool for t in n.tools} & _CHART_KEYED_TOOLS)
-                if not keyed:
-                    continue
-                if node_referenced_vars(n) & read_vars:
-                    continue
-                out.append(
-                    f"Bước “{n.name or n.key}” được cấp công cụ cần chart_id "
-                    f"({', '.join(keyed[:3])}…) nhưng prompt không đọc "
-                    + " hoặc ".join("{{" + v + "}}" for v in sorted(read_vars))
-                    + " — nó sẽ phải đoán chart_id và gọi công cụ thất bại."
-                )
+        for n in self.agent_nodes():
+            granted = {t.tool for t in n.tools}
+            keyed = sorted(granted & _CHART_KEYED_TOOLS)
+            if not keyed:
+                continue
+            if _CHART_LOOKUP_TOOL in granted:
+                continue
+            if read_vars and (node_referenced_vars(n) & read_vars):
+                continue
+            handed = (
+                "prompt không đọc "
+                + " hoặc ".join("{{" + v + "}}" for v in sorted(read_vars))
+                if read_vars else "flow không có bước đọc báo cáo nào"
+            )
+            out.append(
+                f"Bước “{n.name or n.key}” được cấp công cụ cần chart_id "
+                f"({', '.join(keyed[:3])}…) nhưng {handed}, và cũng không được cấp "
+                f"`{_CHART_LOOKUP_TOOL}` để tự tìm — nó sẽ phải đoán chart_id, hoặc "
+                "đo nhầm biểu đồ mà không báo lỗi."
+            )
 
         for n in self.agent_nodes():
             named = _REPORT_NAME_RE.search(n.prompt)

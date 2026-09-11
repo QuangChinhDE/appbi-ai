@@ -2660,8 +2660,16 @@ def test_chart_keyed_tools_without_the_report_index_are_flagged():
     assert not flagged(flow("Trả lời. {{ctx}}", ["total_measure"]))
     # Tools that need no chart are not the subject.
     assert not flagged(flow("Trả lời.", ["search_knowledge"]))
-    # And with no read step there is no index to pass, so there is nothing to say.
-    assert not flagged(flow("Trả lời.", ["total_measure"], with_read=False))
+    # NO READ STEP USED TO BE THE SILENT CASE, on the reasoning that with no index
+    # to pass there was nothing actionable to say. That reasoning held only while a
+    # read step was the sole route to a chart_id. `list_charts` is now the other
+    # one — searchable, and no longer 37 seconds — so the most certain case of a
+    # step guessing has advice available to it, and gets it.
+    bare = flagged(flow("Trả lời.", ["total_measure"], with_read=False))
+    assert bare, "không có bước đọc là trường hợp chắc chắn đoán nhất, phải cảnh báo"
+    assert "list_charts" in bare[0], "phải nói cách lấy chart_id, không chỉ nói là thiếu"
+    # Granting the lookup answers it, with or without a read step.
+    assert not flagged(flow("Trả lời.", ["total_measure", "list_charts"], with_read=False))
 
 
 def test_a_run_advertises_only_the_fields_its_tools_will_serve():

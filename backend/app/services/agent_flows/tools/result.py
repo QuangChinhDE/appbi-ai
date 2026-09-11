@@ -175,17 +175,43 @@ def ok(
     return out
 
 
+#: What to DO about a failure, for the codes where the answer is always the same.
+#:
+#: An error result went back to the model saying exactly what was wrong and nothing
+#: about what to do instead, and the model did the only thing available to it: tried
+#: a neighbouring tool on the same wrong chart, then answered anyway. Observed live —
+#: `rank_values` refused a KPI tile with "chart 679 has no grouping column to rank
+#: by", and the run went on to report the report's grand total as the top product
+#: category, with no notice raised, because nothing had said "the chart you want is
+#: a different one, and here is how to find it".
+#:
+#: These stay in English. A tool result is a machine contract; the viewer-facing
+#: language is decided upstairs, and mixing the two here is the leak the error codes
+#: exist to prevent. Only codes with ONE correct recovery belong in this map —
+#: anything situational is passed explicitly at the call site.
+_DEFAULT_RECOVERY: dict[str, str] = {
+    "chart_out_of_scope": (
+        "Call list_charts with a `query` of the question's keywords to get the "
+        "chart_ids this link actually grants, then retry with one of those."
+    ),
+}
+
+
 def err(
     message: str,
     *,
     code: ErrorCode,
     retryable: bool = False,
     detail: dict[str, Any] | None = None,
+    recovery: str = "",
 ) -> dict[str, Any]:
-    """A failure a flow can branch on and a person can read.
+    """A failure a flow can branch on, a person can read, and a model can act on.
 
     `error` stays a plain string in the position it has always occupied, so
-    existing readers keep working; `error_code` is what a condition tests.
+    existing readers keep working; `error_code` is what a condition tests; and
+    `recovery` is the sentence that tells the caller what to try instead — the
+    part that was missing, and the reason a refused call became a wrong answer
+    rather than a second, better call.
     """
     out: dict[str, Any] = {
         "ok": False,
@@ -193,6 +219,9 @@ def err(
         "error_code": code,
         "retryable": retryable,
     }
+    hint = recovery or _DEFAULT_RECOVERY.get(code, "")
+    if hint:
+        out["recovery"] = hint
     if detail:
         out["detail"] = detail
     return out

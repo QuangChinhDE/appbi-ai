@@ -308,6 +308,55 @@ async def run(
         # (see `_looks_wrong_language`) and the correction costs one model call that
         # only happens when the answer is actually wrong — which, by then, is the
         # cheapest thing in the turn.
+        # ── FIGURES THAT TRACE BACK TO NOTHING THE RUN READ ───────────────────
+        #
+        # The run already detected these and did nothing about them.
+        # `_verify_figures` in the executor checks the FINISHED answer and appends
+        # a Notice, so across 269 real runs 32 of them — 12%, one answer in eight —
+        # shipped carrying a number absent from the evidence, each labelled "hãy
+        # đối chiếu lại" and sent anyway. One reported a total of 13.59M against
+        # data summing to 8.56M: every component figure right, the total invented.
+        # Detecting a fabricated number and then forwarding it with a disclaimer
+        # is not a check, it is a signature.
+        #
+        # It belongs HERE, because here the tool results are still in `messages`.
+        # The executor's copy runs after the run is over, when the only thing left
+        # to do is warn. Same verifier and same tolerance — the difference is that
+        # at this point the model can still fix it, by re-reading evidence it
+        # already has rather than recalling it.
+        #
+        # A figure the model derived CORRECTLY also fails this test, which is why
+        # the correction is offered rather than imposed: it may answer by showing
+        # the arithmetic instead of changing the number. So the replacement is
+        # accepted only when strictly fewer figures are unsupported afterwards —
+        # the same "only if actually better" rule as the language retry below,
+        # for the same reason. A rewrite that trades a wrong total for a wrong
+        # breakdown is not a correction.
+        if node.key == rctx.answer_key and text and not provider_error:
+            unsupported, supported = _figure_check(text, state)
+            if unsupported:
+                fixed = await _retry_figures(
+                    node, state, system, messages, text, unsupported,
+                    provider=provider, api_key=api_key, model=model,
+                )
+                if fixed and not _echoes_instruction(fixed):
+                    left, kept = _figure_check(fixed, state)
+                    # BOTH HALVES, because "fewer unsupported" alone is trivially
+                    # gamed: a reply that discards the analysis and says nothing
+                    # scores a perfect zero. A golden-test stub did exactly that —
+                    # it echoed the correction prompt back, which carried fewer
+                    # numbers than the answer it replaced and therefore "won" — and
+                    # a real model asked to remove a figure can wander into the
+                    # same shape. So a correction may drop figures that trace to
+                    # nothing and may not lose ones that trace to something.
+                    if len(left) < len(unsupported) and kept >= supported:
+                        logger.info(
+                            "[flow] %s: figure correction %d -> %d unsupported, "
+                            "%d supported kept", node.key, len(unsupported),
+                            len(left), kept,
+                        )
+                        text = fixed
+
         asked = getattr(getattr(rctx, "inp", None), "question", None)
         asked_text = asked.text() if hasattr(asked, "text") else ""
         if (
@@ -403,6 +452,102 @@ def _looks_wrong_language(text: str, locale: str, question: str = "") -> bool:
         _segment_is_wrong_language("\n".join(body), locale)
         or _segment_is_wrong_language("\n".join(follow), locale)
     )
+
+
+def _figure_check(text: str, state: RunState) -> tuple[list[float], int]:
+    """(figures that trace back to no tool result, count of figures that do).
+
+    Reuses the bot's verifier rather than writing a second number parser: it
+    already reads `1.258.681,34`, `8,4%` and `1,2 tỷ`, and two parsers would
+    disagree on exactly the cases worth catching.
+
+    Both numbers are returned because judging a rewrite needs both. What it
+    removed matters, and so does what it kept.
+    """
+    if not text or not state.evidence:
+        return [], 0
+    try:
+        from app.services.dashboard_ai_bot.verifier import verify_answer
+
+        result = verify_answer(text, state.evidence)
+        return list(result.unmatched), int(result.matched or 0)
+    except Exception:  # noqa: BLE001 — a broken check must not break the answer
+        logger.debug("[flow] figure check failed", exc_info=True)
+        return [], 0
+
+
+def _unsupported_figures(text: str, state: RunState) -> list[float]:
+    """Just the unsupported half, for callers that only decide on that."""
+    return _figure_check(text, state)[0]
+
+
+#: Phrases that exist ONLY in the correction instruction. An answer containing one
+#: is the instruction handed back rather than acted on — some providers do this with
+#: a long tool-result history, and a golden-test stub does it by design. Either way
+#: it is not a correction, and the first answer is the better of the two.
+_INSTRUCTION_MARKERS = ("Đối chiếu lại", "chọn một cách xử lý")
+
+
+def _echoes_instruction(text: str) -> bool:
+    return any(m in text for m in _INSTRUCTION_MARKERS)
+
+
+def _fmt_figure(value: float) -> str:
+    """As the answer would have written it, so the model recognises which one."""
+    return str(int(value)) if float(value).is_integer() else ("%g" % value)
+
+
+async def _retry_figures(
+    node: AgentNode, state: RunState, system: str, messages: list[dict], said: str,
+    unsupported: list[float], *, provider: str, api_key: str, model: str,
+) -> str:
+    """Name the figures that trace to nothing, and ask for one correction.
+
+    NAME THEM. The Notice this replaces said "một số con số có thể chưa khớp", and
+    a warning that vague produces a hedge — which is what the Notice already was.
+    The model is told which numbers failed and given the three honest ways out, so
+    that "I could not find this" is an available answer and not a failure.
+    """
+    shown = ", ".join(_fmt_figure(v) for v in unsupported[:8])
+    more = "" if len(unsupported) <= 8 else f" (và {len(unsupported) - 8} số khác)"
+    retry_messages = [
+        *messages,
+        {"role": "assistant", "content": said},
+        {
+            "role": "user",
+            "content": (
+                f"Đối chiếu lại: {shown}{more} — những con số này trong câu trả "
+                "lời trên không khớp với bất kỳ dữ liệu nào bạn vừa đọc được từ "
+                "công cụ.\nVới TỪNG số, chọn một cách xử lý:\n"
+                "1. Sửa lại đúng theo số có trong kết quả công cụ ở trên;\n"
+                "2. Nếu là số bạn tự tính (tổng, tỷ lệ, chênh lệch), ghi rõ phép "
+                "tính từ các số gốc để người đọc kiểm chứng được;\n"
+                "3. Nếu không lấy được từ dữ liệu đã đọc, bỏ con số đó đi và nói "
+                "thẳng là chưa có dữ liệu.\n"
+                "Giữ nguyên phần còn lại, kể cả các dòng [FOLLOWUP] (đúng số dòng, "
+                "vẫn bắt đầu bằng [FOLLOWUP]). Không thêm phân tích mới."
+            ),
+        },
+    ]
+    try:
+        state.budget.spend_llm()
+    except Exception:  # noqa: BLE001 — out of budget is not this step's failure
+        return ""
+    out = ""
+    try:
+        async for ev in _stream(
+            provider=provider, api_key=api_key, model=model,
+            system_prompt=system, messages=retry_messages, tools=[],
+        ):
+            if ev.type == "text":
+                out += ev.text
+            elif ev.type == "usage":
+                state.prompt_tokens += int(ev.extra.get("prompt_tokens") or 0)
+                state.completion_tokens += int(ev.extra.get("completion_tokens") or 0)
+    except Exception:  # noqa: BLE001 — a failed correction keeps the first answer
+        logger.warning("[flow] figure correction failed", exc_info=True)
+        return ""
+    return out.strip()
 
 
 async def _retry_language(
@@ -615,7 +760,21 @@ def _all_step_results(state: RunState, rctx: Any, *, skip: str = "") -> str:
         text = _previous_text(state.outputs.get(step.key))
         if not text:
             continue
-        block = "### %s\n%s" % (names.get(step.key, step.key), text[:_MAX_STEP_CHARS])
+        # TRUNCATION USED TO BE SILENT, which is the worst of the three options.
+        #
+        # A 6,000-character report reading arrived as 2,000 characters that simply
+        # stop — mid-array, mid-number — and a model reads that as the whole of what
+        # the step found. It answered a question about product categories from six
+        # KPI tiles and called the figure "được xác nhận là chính xác", because
+        # nothing in what it was handed suggested there was more.
+        body = text[:_MAX_STEP_CHARS]
+        if len(text) > _MAX_STEP_CHARS:
+            body += (
+                "\n… (kết quả của bước này đã bị cắt bớt để vừa ngữ cảnh — phần "
+                "thiếu KHÔNG phải là không có dữ liệu. Nếu câu hỏi cần thứ không "
+                "thấy ở đây, hãy gọi công cụ để lấy đúng thứ cần thay vì suy ra.)"
+            )
+        block = "### %s\n%s" % (names.get(step.key, step.key), body)
         if used + len(block) > _MAX_GATHERED_CHARS:
             parts.append(
                 "(Còn kết quả của các bước sau nữa nhưng đã vượt giới hạn ngữ "
