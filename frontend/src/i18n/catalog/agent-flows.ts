@@ -483,6 +483,7 @@ export const agentFlowsCatalog: ModuleCatalog = {
     'agentFlows.toolPicker.searchPlaceholder': 'Search a tool, or the question you need answered',
     'agentFlows.toolPicker.searchLabel': 'Search tools',
     'agentFlows.toolPicker.searchHits': '{{count}} matching tools',
+    'agentFlows.toolPicker.searchLoose': '{{count}} tools share some of those words',
     'agentFlows.toolPicker.searchEmpty': 'No tool matches. Try the words from the question instead of a tool name.',
 
     'agentFlows.library.category.all': 'All',
@@ -1111,6 +1112,7 @@ export const agentFlowsCatalog: ModuleCatalog = {
     'agentFlows.toolPicker.searchPlaceholder': 'Tìm công cụ, hoặc gõ câu hỏi cần trả lời',
     'agentFlows.toolPicker.searchLabel': 'Tìm công cụ',
     'agentFlows.toolPicker.searchHits': '{{count}} công cụ khớp',
+    'agentFlows.toolPicker.searchLoose': '{{count}} công cụ khớp một phần từ khoá',
     'agentFlows.toolPicker.searchEmpty': 'Không có công cụ nào khớp. Thử gõ từ trong câu hỏi thay vì tên công cụ.',
 
     'agentFlows.library.category.all': 'Tất cả',

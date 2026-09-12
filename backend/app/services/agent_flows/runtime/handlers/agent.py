@@ -259,7 +259,7 @@ async def run(
         if previous_scope is not None:
             rctx.ctx.knowledge_scope = previous_scope
 
-    text = collected.strip()
+    text = _plain_formulas(collected.strip())
     if provider_error and not text:
         # Raised, so the executor records `error`, honours `retry` and `on_error`,
         # and the Runs table shows which node actually failed.
@@ -452,6 +452,41 @@ def _looks_wrong_language(text: str, locale: str, question: str = "") -> bool:
         _segment_is_wrong_language("\n".join(body), locale)
         or _segment_is_wrong_language("\n".join(follow), locale)
     )
+
+
+#: LaTeX a chat bubble cannot render. Narrow on purpose — these are the forms a
+#: model actually emits for a formula, and anything broader would start rewriting
+#: prose that merely contains a backslash.
+_LATEX_FIXES = (
+    (re.compile(r"\\\[|\\\]|\\\(|\\\)"), ""),
+    (re.compile(r"\\text\s*\{([^{}]*)\}"), r"\1"),
+    (re.compile(r"\\mathrm\s*\{([^{}]*)\}"), r"\1"),
+    (re.compile(r"\\times"), "×"),
+    (re.compile(r"\\(?=[_%&#${}])"), ""),
+)
+
+
+def _plain_formulas(text: str) -> str:
+    """Formulas a viewer can read, not LaTeX source.
+
+    Asked how a KPI is calculated, a model answered with a display-math block —
+    `\\[`, `\\text{...}`, escaped underscores and all. The chat renders markdown,
+    not TeX, so every one of those characters reached the viewer verbatim. Found
+    by reading an answer in the product: the whole suite checks the FIGURES in an
+    answer and nothing had ever checked whether a person could read it.
+
+    A transform rather than an instruction, because this file already records what
+    happened the last three times an instruction was the whole mechanism — a large
+    English tool payload beat the prompt twice, and the language rule had to end up
+    being verified after the fact. Context can outvote a request; it cannot outvote
+    a regex.
+    """
+    if not text or "\\" not in text:
+        return text
+    for pattern, replacement in _LATEX_FIXES:
+        text = pattern.sub(replacement, text)
+    # The stripped delimiters leave their own blank lines behind.
+    return re.sub(r"\n{3,}", "\n\n", text).strip()
 
 
 def _figure_check(text: str, state: RunState) -> tuple[list[float], int]:

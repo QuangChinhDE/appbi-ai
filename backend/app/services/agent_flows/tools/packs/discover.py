@@ -167,21 +167,29 @@ def _terms(ctx: Any, query: str, wanted: set[str]) -> list[dict]:
     except Exception:  # noqa: BLE001 — vocabulary is never worth failing a search over
         logger.debug("[discover] glossary scope failed", exc_info=True)
         return []
+    # THE KEYS ARE THE RETRIEVER'S, NOT THE GLOSSARY TABLE'S.
+    #
+    # `_terms_in_scope` returns retrieval hits, not ORM rows: a term arrives as
+    # `{source_type: "term", title: ..., content: ..., synonyms: ...}`. Read as
+    # `term`/`name` — the column names — every result came back with a blank id
+    # and a blank label, which is worse than no result: a caller sees a hit it
+    # cannot act on. Found by searching real data, not by reading the signature.
     scored = []
     for t in rows or []:
-        hay = " ".join(str(t.get(k) or "") for k in ("term", "name", "definition", "description"))
+        hay = " ".join(str(t.get(k) or "") for k in
+                       ("title", "definition", "content", "synonyms"))
         s = _score(hay, wanted)
         if s:
             scored.append((-s, t))
-    scored.sort(key=lambda p: (p[0], str(p[1].get("term") or p[1].get("name") or "")))
+    scored.sort(key=lambda p: (p[0], str(p[1].get("title") or "")))
     out = []
     for _, t in scored[:_MAX_PER_KIND]:
-        name = t.get("term") or t.get("name") or ""
+        name = str(t.get("title") or "")
         out.append({
             "type": "term",
-            "id": t.get("fqn") or name,
+            "id": t.get("id") or name,
             "name": name,
-            "detail": (t.get("definition") or t.get("description") or "")[:160] or None,
+            "detail": (str(t.get("definition") or t.get("content") or ""))[:160] or None,
             "why": "glossary term whose name or definition matches",
             "use_with": "search_knowledge to read how it is used in documents",
         })

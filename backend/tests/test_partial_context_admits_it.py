@@ -223,3 +223,42 @@ def test_the_out_of_scope_hint_routes_to_the_asset_search_too():
 
     assert "search_business_assets" in hint
     assert "resolve_chart_candidates" in hint
+
+
+# ── an answer a person can actually read ────────────────────────────────────
+
+
+def test_latex_a_chat_bubble_cannot_render_is_turned_into_plain_text():
+    """Asked how a KPI is calculated, a model answered in display math.
+
+    The chat renders markdown, not TeX, so the backslashes and braces reached the
+    viewer verbatim — seen in the product, on a correct answer. The whole suite
+    checks the FIGURES in an answer; nothing had checked whether it was legible.
+    """
+    b = chr(92)
+    raw = (
+        "Công thức:\n\n"
+        + b + "[\n" + b + "text{avg_review_score} = " + b + "text{AVG}("
+        + b + "text{review" + b + "_score})\n" + b + "]\n\n"
+        "Hiện là 4.09."
+    )
+    out = A._plain_formulas(raw)
+
+    assert "avg_review_score = AVG(review_score)" in out
+    assert b not in out
+    assert "4.09" in out                       # the figure survives untouched
+
+
+def test_ordinary_prose_is_left_exactly_alone():
+    """The transform is narrow, and a false positive rewrites a correct answer."""
+    plain = "Doanh thu 1.000 đ, tỷ lệ 92% — không có công thức nào ở đây."
+
+    assert A._plain_formulas(plain) == plain
+    assert A._plain_formulas("") == ""
+
+
+def test_inline_math_and_escaped_characters_both_go():
+    b = chr(92)
+    out = A._plain_formulas(b + "(x" + b + "_1" + b + ") tăng 5" + b + "%")
+
+    assert out == "x_1 tăng 5%"

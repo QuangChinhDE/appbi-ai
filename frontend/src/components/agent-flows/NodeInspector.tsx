@@ -966,7 +966,7 @@ function ToolPicker({
    *
    *  AND across words rather than OR: two words should narrow, not widen. */
   const needles = foldSearch(query.trim()).split(/\s+/).filter(Boolean);
-  const matches = (hay: string) => needles.every((w) => hay.includes(w));
+  const hits = (hay: string) => needles.filter((w) => hay.includes(w)).length;
 
   /* WHAT A SEARCH DOES TO A PACK, in three states rather than two.
    *
@@ -978,16 +978,50 @@ function ToolPicker({
    *  Grants survive filtering — a hidden tool stays granted. The box narrows what
    *  is VISIBLE, never what is on, because a search that silently revoked a grant
    *  would be the most expensive kind of surprise in this panel. */
-  const shown = needles.length
-    ? packs
-        .map((pack) => {
-          if (matches(packHaystack(pack))) return pack;
-          const tools = pack.tools.filter((tool) => matches(toolHaystack(tool)));
-          return tools.length ? { ...pack, tools } : null;
-        })
-        .filter((p): p is ToolPack => p !== null)
+  /* PRECISE WHEN IT CAN BE, FORGIVING WHEN IT CANNOT.
+   *
+   *  Requiring every word was right until a real paraphrase hit it. The coverage
+   *  panel in the test drawer suggests "Số liệu cập nhật tới hôm nào?"; the tool
+   *  that answers it carries "Số liệu tính đến khi nào?". Same question, three
+   *  words in common, and an AND search found nothing — the product suggesting a
+   *  question its own picker could not resolve.
+   *
+   *  So: if anything matches EVERY word, show only those, because the author was
+   *  specific and deserves a short list. Otherwise fall back to whatever shares
+   *  the most words. The second mode is what makes a paraphrase work, and it can
+   *  only widen a result that would otherwise have been empty. */
+  const scorePack = (pack: ToolPack, min: number) => {
+    if (hits(packHaystack(pack)) >= min) return pack;
+    const tools = pack.tools
+      .map((tool) => ({ tool, n: hits(toolHaystack(tool)) }))
+      .filter((x) => x.n >= min)
+      .sort((a, b) => b.n - a.n)
+      .map((x) => x.tool);
+    return tools.length ? { ...pack, tools } : null;
+  };
+  const strict = needles.length
+    ? packs.map((p) => scorePack(p, needles.length)).filter((p): p is ToolPack => p !== null)
     : packs;
+  /* THE FALLBACK HAS TO CALIBRATE ITSELF.
+   *
+   *  A fixed floor of one word answered "so lieu cap nhat toi hom nao" with 35 of
+   *  36 tools — every tool containing "so" or "nao" — which is not a search
+   *  result, it is the list again. So the floor is the BEST score anything
+   *  achieved: if the closest tool shares three words, only the three-word
+   *  matches show. Short lists when the wording is close, and no tuning constant
+   *  to go stale as the catalogue grows. */
+  const best = needles.length
+    ? Math.max(0, ...packs.flatMap((p) => [
+        hits(packHaystack(p)), ...p.tools.map((tool) => hits(toolHaystack(tool))),
+      ]))
+    : 0;
+  const shown = !needles.length || strict.length
+    ? strict
+    : best > 0
+      ? packs.map((p) => scorePack(p, best)).filter((p): p is ToolPack => p !== null)
+      : [];
   const hitCount = shown.reduce((n, p) => n + p.tools.length, 0);
+  const loose = Boolean(needles.length) && !strict.length && hitCount > 0;
 
   return (
     <div className="space-y-2">
@@ -1004,9 +1038,11 @@ function ToolPicker({
       </div>
       {needles.length > 0 && (
         <p className="px-0.5 text-tiny text-text-tertiary">
-          {hitCount > 0
-            ? t('agentFlows.toolPicker.searchHits', { count: String(hitCount) })
-            : t('agentFlows.toolPicker.searchEmpty')}
+          {hitCount === 0
+            ? t('agentFlows.toolPicker.searchEmpty')
+            : loose
+              ? t('agentFlows.toolPicker.searchLoose', { count: String(hitCount) })
+              : t('agentFlows.toolPicker.searchHits', { count: String(hitCount) })}
         </p>
       )}
       {shown.map((pack) => {

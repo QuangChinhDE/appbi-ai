@@ -215,3 +215,38 @@ def test_resolving_without_either_argument_points_at_the_search(monkeypatch):
 def test_every_declared_kind_has_a_finder(kind):
     """A kind the schema offers and nothing implements is a silent empty result."""
     assert kind in D._FINDERS
+
+
+def test_a_term_result_carries_the_retriever_s_keys_not_the_table_s():
+    """`_terms_in_scope` returns retrieval hits, not glossary rows.
+
+    A term arrives as {source_type, title, content, synonyms, ...} — read as
+    `term`/`name` (the column names) it produced a hit with a blank id and a blank
+    label, which is worse than no hit: the caller sees a match it cannot act on.
+    Only searching real data showed it, so the shape is pinned here.
+    """
+    hit = {
+        "source_type": "term", "id": "nghiep_vu.danh_muc",
+        "title": "Danh mục sản phẩm",
+        "content": "Nhóm phân loại sản phẩm do sàn quy định.",
+        "synonyms": "danh mục, ngành hàng, category",
+    }
+    import types as _t
+
+    ctx = _FakeCtx([], set())
+    original_scope = D._terms.__globals__.get("_terms_in_scope")
+    mod = _t.ModuleType("fake_govern_tools")
+    mod._terms_in_scope = lambda *_a, **_k: [hit]
+    mod._metrics_in_scope = lambda *_a, **_k: []
+    import sys
+
+    sys.modules["app.services.dashboard_ai_bot.govern_tools"] = mod
+    try:
+        out = D._terms(ctx, "danh mục", D._terms_of("danh mục"))
+    finally:
+        del sys.modules["app.services.dashboard_ai_bot.govern_tools"]
+        assert original_scope is None or True
+
+    assert out and out[0]["name"] == "Danh mục sản phẩm"
+    assert out[0]["id"] == "nghiep_vu.danh_muc"
+    assert "Nhóm phân loại" in out[0]["detail"]
