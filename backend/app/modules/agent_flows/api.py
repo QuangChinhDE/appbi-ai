@@ -1264,6 +1264,99 @@ class NodeTestBody(BaseModel):
     version: int | None = None
 
 
+class StepPreviewBody(BaseModel):
+    """A question to assemble the step against, and the report to assemble it on."""
+
+    version: int | None = None
+    dashboard_id: int
+    question: str = ""
+    history: list[dict[str, Any]] = Field(default_factory=list)
+
+
+@router.post("/brains/{brain_key}/nodes/{node_key}/preview")
+def preview_step(
+    brain_key: str, node_key: str, body: StepPreviewBody,
+    db: Session = Depends(get_db), user: User = Depends(can_edit),
+) -> dict[str, Any]:
+    """Exactly what this step hands the model — assembled, not guessed, not run.
+
+    The builder shows eleven sections for one AI step and, until this endpoint,
+    nothing anywhere showed their result. The rule that governs all of them — your
+    instructions are APPENDED to a base prompt, earlier steps arrive as named
+    blocks, granted tools arrive as schemas — existed only as one line of helper
+    text. An author had to infer the model from the field names, which is the
+    complaint this product keeps getting.
+
+    No provider is called and no warehouse is touched, so an author can check
+    "does this step see what I think it sees" for free and as often as they like.
+    """
+    _may_edit_flow(db, user, brain_key)
+    detail = _run(lambda: reg.get_brain(db, brain_key, body.version))
+    from app.models.agent_brain import AgentBrainVersion
+
+    row = (
+        db.query(AgentBrainVersion)
+        .filter(
+            AgentBrainVersion.brain_key == brain_key,
+            AgentBrainVersion.version == detail["version"],
+        )
+        .first()
+    )
+    flow = reg.parse_flow(row) if row else None
+    if flow is None:
+        raise HTTPException(status_code=422, detail="Flow không hợp lệ")
+
+    # Imported inside the function, the way every other endpoint here does it —
+    # this module is loaded by the API layer and the model package pulls in the
+    # query engine.
+    from app.models.models import Dashboard
+
+    dashboard = db.query(Dashboard).filter(Dashboard.id == body.dashboard_id).first()
+    if dashboard is None:
+        raise HTTPException(status_code=404, detail="Không tìm thấy báo cáo")
+    require_view_access(db, user, dashboard, "dashboards")
+
+    from app.services.agent_flows.dispatch import preview_step as _preview
+    from app.services.dashboard_ai_bot.public_link_config import deployment_key
+    from app.services.dashboard_ai_bot.tool_context import ToolContext
+
+    ctx = ToolContext.from_dashboard(
+        db=db, dashboard=dashboard, public_filters=[],
+        actor_type="user", actor_ref=_actor(user),
+    )
+    binding = binding_service.ephemeral_binding(flow, dashboard)
+    # The model NAMES only — no key is needed and none is read: this endpoint
+    # assembles inputs and never calls a provider.
+    _key, provider = deployment_key()
+    # THE SAME BASE PROMPT THE VIEWER PATH BUILDS. A preview showing a different
+    # base would be describing a run that does not happen, and the base is most of
+    # what the model reads — the citation contract, the language rule, the report's
+    # own identity. `max_tool_calls` comes from the step, since that is the number
+    # the step will actually run under.
+    from app.services.dashboard_ai_bot.thinking.prompts import (
+        build_agent_system_prompt as _build_base_prompt,
+    )
+
+    _node = flow.node(node_key)
+    base_prompt = _build_base_prompt(
+        dashboard_name=dashboard.name or "Dashboard",
+        dashboard_description=getattr(dashboard, "description", None),
+        chart_count=len(getattr(ctx, "allowed_chart_ids", None) or []),
+        filters_applied=[],
+        max_tool_calls=getattr(_node, "max_tool_calls", 8) or 8,
+    )
+
+    try:
+        return _preview(
+            flow=flow, version=detail["version"], node_key=node_key,
+            binding=binding, dashboard=dashboard, ctx=ctx,
+            question=body.question or "", history=body.history,
+            provider=provider, model="", base_system_prompt=base_prompt,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
 @router.post("/brains/{brain_key}/nodes/{node_key}/test")
 def test_node(
     brain_key: str, node_key: str, body: NodeTestBody,

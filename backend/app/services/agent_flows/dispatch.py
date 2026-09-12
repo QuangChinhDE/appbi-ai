@@ -575,6 +575,129 @@ def _record_blocked(
 
 
 # ═══ The Studio path ══════════════════════════════════════════════════════════
+def _studio_input(
+    *,
+    flow: Flow,
+    version: int,
+    binding: AgentFlowBinding,
+    dashboard: Any,
+    ctx: Any,
+    question: str,
+    history: list[dict] | None,
+    provider: str,
+    model: str,
+    session_key: str,
+    memory: Any,
+) -> FlowInput:
+    """The envelope a studio turn runs on.
+
+    Extracted so the test path and the preview path cannot describe different runs.
+    It was inline in `run_preview`, and a preview that rebuilt it would be a second
+    definition of what a step receives — which is the one thing a screen called
+    "what the model sees" may not have.
+    """
+    report = build_report_info(dashboard, ctx)
+    binding_info = binding_service.build_binding_info(
+        binding, flow=flow, report=report,
+        link_token=getattr(binding, "link_token", "") or "", version=version, ctx=ctx,
+    )
+    ctx.allowed_chart_ids = (
+        set(ctx.allowed_chart_ids or set()) & set(binding_info.allowed_chart_ids)
+    )
+    contract = binding_service.contract_of(binding)
+    turns = [
+        Turn(role=h.get("role", "user"), content=str(h.get("content") or ""))
+        for h in (history or [])
+        if isinstance(h, dict) and h.get("role") in ("user", "assistant")
+    ]
+    return FlowInput(
+        request=RequestInfo(
+            id=new_run_id(), at=datetime.now(timezone.utc).isoformat(),
+            is_test=True, trigger="studio_test",
+        ),
+        question=QuestionInfo(
+            raw=question, normalized=question, turn_index=len(turns) // 2),
+        conversation=ConversationInfo(session_key=session_key, history=turns),
+        report=report,
+        binding=binding_info,
+        memory=memory or MemoryInfo(),
+        runtime=RuntimeInfo(
+            provider=provider or "", model=model or "",
+            budget=BudgetEnvelope(**contract.budget.model_dump()),
+        ),
+    )
+
+
+# Deliberately NOT async: this awaits nothing. It assembles inputs and returns
+# them, and marking it async would promise a suspension point that does not
+# exist — which is how the endpoint first shipped returning a coroutine.
+def preview_step(
+    *,
+    flow: Flow,
+    version: int,
+    node_key: str,
+    binding: AgentFlowBinding,
+    dashboard: Any,
+    ctx: Any,
+    question: str,
+    history: list[dict] | None = None,
+    provider: str = "",
+    model: str = "",
+    base_system_prompt: str = "",
+) -> dict:
+    """What ONE step will hand the model, for a question the author types.
+
+    NOTHING IS CALLED AND NOTHING IS SPENT. This assembles the inputs and stops —
+    no provider, no tools, no warehouse. That is the point: an author checking
+    "will this step see what I think it sees" should not have to pay for an answer
+    to find out, and should not have to read the answer backwards to guess.
+
+    It is built on the SAME envelope `run_preview` builds, through the same
+    binding_service calls, because a preview assembled a second way would describe
+    a run that does not exist. The one thing it does differently is stop early.
+    """
+    from app.services.agent_flows.runtime import executor
+    from app.services.agent_flows.runtime.handlers import agent as agent_handler
+    from app.services.agent_flows.runtime.state import Budget, RunState
+
+    node = flow.node(node_key)
+    if node is None:
+        raise ValueError(f"không có bước '{node_key}' trong flow này")
+    if getattr(node, "type", "") != "agent":
+        raise ValueError("chỉ bước AI mới có prompt để xem trước")
+
+    inp = _studio_input(
+        flow=flow, version=version, binding=binding, dashboard=dashboard, ctx=ctx,
+        question=question, history=history, provider=provider, model=model,
+        session_key="", memory=None,
+    )
+    state = RunState(
+        vars=inp.seed_vars(),
+        budget=Budget(
+            max_llm_calls=inp.runtime.budget.max_llm_calls,
+            max_tool_calls=inp.runtime.budget.max_tool_calls,
+            max_seconds=inp.runtime.budget.max_seconds,
+        ),
+    )
+    rctx = executor.RunContext(
+        inp=inp, flow=flow, ctx=ctx, api_key="",
+        base_system_prompt=base_system_prompt,
+        answer_key=flow.answering_key(), db=None,
+    )
+    out = agent_handler.preview(node, state, rctx)
+    # EARLIER STEPS HAVE NOT RUN, and the preview must not imply they have. A step
+    # that reads `{{dashboard_context}}` shows the placeholder unresolved here, and
+    # saying so is more useful than silently rendering an empty block — the author
+    # would read the gap as "this step gets nothing" rather than "this comes from
+    # the step above, at run time".
+    upstream = [
+        n.output_var for n in flow.all_nodes()
+        if getattr(n, "output_var", "") and n.key != node_key
+    ]
+    out["pending_upstream"] = sorted({v for v in upstream if v})
+    return out
+
+
 async def run_preview(
     db: Session,
     *,
@@ -725,11 +848,13 @@ async def run_for_chat_thread(
                   to read and answer from an empty result instead of refusing.
       binding     ephemeral, `id=0`, never saved. Charts are an explicit empty
                   allowlist, so `assert_chart_in_scope` refuses every id.
-      scope       `run_scope(viewer=user)` — the reader's own rights are a term here,
-                  because unlike a public viewer this reader HAS rights and must not
-                  borrow the author's where their own fall short.
-      actor       `CHAT_USER`, set by the caller. It is what makes `govern_tools`
-                  apply the reader's grants and what makes `remember_fact` refuse.
+      scope       `run_scope` — the SAME delegation the public path uses. Being
+                  shared the assistant is the whole gate; what it reads was decided
+                  by its author, and `share_disclosure()` says so when it is shared.
+      actor       `CHAT_USER`, set by the caller. It no longer changes what may be
+                  READ — it marks who is driving, which is what keeps `remember_fact`
+                  from letting a reader rewrite what the assistant knows, and what
+                  keeps one reader's cached tool results from serving another.
       permission  re-resolved every turn (`resolve_for_chat`), so an unshared flow,
                   an unpublished one, or one that has since grown a `report_read`
                   step stops the NEXT question rather than the next thread.
@@ -778,9 +903,7 @@ async def run_for_chat_thread(
     ctx.allowed_chart_ids = set()
     ctx.max_rows_per_call = binding_info.capabilities.max_rows_per_call
     ctx.max_result_tokens = binding_info.capabilities.max_result_tokens
-    ctx.knowledge_scope = run_scope(
-        db, row, flow, binding_info.knowledge.model_dump(), viewer=user
-    )
+    ctx.knowledge_scope = run_scope(db, row, flow, binding_info.knowledge.model_dump())
 
     fp = fingerprint(
         binding_id=0, version=row.version, filters=[], charts=[], locale=locale,

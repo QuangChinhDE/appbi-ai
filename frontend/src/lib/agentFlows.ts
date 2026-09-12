@@ -917,6 +917,42 @@ export async function testNode(key: string, nodeKey: string, body: {
   return data;
 }
 
+/** Exactly what one AI step hands the model — assembled by the backend from the
+ *  same three functions a real run uses, with no provider called. */
+export interface StepPreview {
+  step: { key: string; name: string; is_answering: boolean };
+  model: { provider: string; model: string };
+  system_prompt: {
+    full: string;
+    /** Which base this step receives. The answering step gets the full contract;
+     *  every other step gets a compact one. A real rule, and one an author had no
+     *  way to observe before this screen. */
+    base_kind: 'full' | 'compact' | 'classifier' | 'none';
+    shared_base_chars: number;
+    this_step_chars: number;
+    this_step: string;
+  };
+  messages: { role: string; content: string; chars: number }[];
+  tools: { name: string; description: string; arguments: string[]; required: string[] }[];
+  knowledge_scope: Record<string, unknown>;
+  budget: { max_tool_calls: number; max_llm_calls: number; max_seconds: number };
+  totals: { system_chars: number; message_chars: number; tool_count: number };
+  /** Variables an earlier step produces. They are unresolved here because nothing
+   *  upstream has run — saying so beats rendering an empty block the author would
+   *  read as "this step gets nothing". */
+  pending_upstream: string[];
+}
+
+export async function previewStep(key: string, nodeKey: string, body: {
+  dashboard_id: number; question?: string; version?: number;
+}): Promise<StepPreview> {
+  const { data } = await apiClient.post<StepPreview>(
+    `${BASE}/brains/${encodeURIComponent(key)}/nodes/${encodeURIComponent(nodeKey)}/preview`,
+    body);
+  return data;
+}
+
+
 // ── Bindings ────────────────────────────────────────────────────────────────
 export async function getBinding(linkId: number): Promise<Binding | null> {
   const { data } = await apiClient.get<{ binding: Binding | null }>(

@@ -585,6 +585,7 @@ export function BrainBuilder({
                   providers={providers}
                   attachable={attachable}
                   isAnswerNode={sel.node?.key === answerKey}
+                  brainKey={brainKey}
                   onChange={updateNode}
                   onChangePath={updatePath}
                   onChangeCase={updateCase}

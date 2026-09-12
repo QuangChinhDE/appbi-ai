@@ -56,7 +56,10 @@ const COST_TONE: Record<ToolSpec['cost_class'], string> = {
   external: 'bg-danger/10 text-danger border-danger/25',
 };
 
-const COST_HINT_KEY: Record<ToolSpec['cost_class'], string> = {
+/** Exported because the tool picker now shows the cost as a TOOLTIP on ordinary
+ *  tools and a chip only on the unusual ones — so it needs the same hint text
+ *  the chip uses, and a second copy would drift from it. */
+export const COST_HINT_KEY: Record<ToolSpec['cost_class'], string> = {
   cheap: 'agentFlows.costHint.cheap',
   data_query: 'agentFlows.costHint.dataQuery',
   expensive: 'agentFlows.costHint.expensive',
