@@ -215,7 +215,7 @@ overwriting a value you've set**. Key groups:
 | Security | `SECRET_KEY`, `DATASOURCE_ENCRYPTION_KEY` (auto-generated), `COOKIE_SECURE` |
 | First admin | `ADMIN_EMAIL`, `ADMIN_PASSWORD`, `ADMIN_NAME` |
 | Ports / URLs | `FRONTEND_PORT` (3000), `BACKEND_PORT` (8000), `NEXT_PUBLIC_API_URL`, `CORS_ORIGINS` |
-| Modules | `METADATA_CATALOG_ENABLED`, `GOVERN_ENABLED`, `OBSERVABILITY_ENABLED`, `WORKBOARDS_ENABLED` — **forced ON by `run`** |
+| Modules | `METADATA_CATALOG_ENABLED`, `GOVERN_ENABLED`, `OBSERVABILITY_ENABLED` — **forced ON by `run`**; `WORKBOARDS_ENABLED` — **off by default** (module hidden, not deleted — set `true` + restart the backend to restore it) |
 | AI providers | `OPENAI_API_KEY`, `GEMINI_API_KEY`, `ANTHROPIC_API_KEY` — *optional; at least one is needed for the AI Bot, AI summaries, and AI-compose. Knowledge documents choose from `OPENAI_EMBEDDING_MODELS` and keep that model for their vector index.* |
 | Auth | password login (on by default) and optional Google OAuth (`AUTH_GOOGLE_*`) |
 | Performance | `WEB_CONCURRENCY`, snapshot materialization, live-query cache limits |

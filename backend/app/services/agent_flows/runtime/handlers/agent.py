@@ -63,6 +63,16 @@ async def run(
     # list only ever cuts inside it.
     previous_scope = getattr(rctx.ctx, "knowledge_scope", None)
     _apply_scope(rctx.ctx, node)
+    # The previous turn's question, for any tool this node calls that retrieves.
+    # Set here because this is already where the node's retrieval boundary is
+    # applied, and the two belong to the same question.
+    if hasattr(rctx.ctx, "prior_question"):
+        from app.services.dashboard_ai_bot.govern_doc_followup import (
+            prior_user_question,
+        )
+
+        rctx.ctx.prior_question = prior_user_question(
+            rctx.inp.conversation.history)
 
     system = _system_prompt(node, state, rctx)
     messages = _messages(node, state, rctx)
@@ -298,6 +308,55 @@ async def run(
         # (see `_looks_wrong_language`) and the correction costs one model call that
         # only happens when the answer is actually wrong — which, by then, is the
         # cheapest thing in the turn.
+        # ── FIGURES THAT TRACE BACK TO NOTHING THE RUN READ ───────────────────
+        #
+        # The run already detected these and did nothing about them.
+        # `_verify_figures` in the executor checks the FINISHED answer and appends
+        # a Notice, so across 269 real runs 32 of them — 12%, one answer in eight —
+        # shipped carrying a number absent from the evidence, each labelled "hãy
+        # đối chiếu lại" and sent anyway. One reported a total of 13.59M against
+        # data summing to 8.56M: every component figure right, the total invented.
+        # Detecting a fabricated number and then forwarding it with a disclaimer
+        # is not a check, it is a signature.
+        #
+        # It belongs HERE, because here the tool results are still in `messages`.
+        # The executor's copy runs after the run is over, when the only thing left
+        # to do is warn. Same verifier and same tolerance — the difference is that
+        # at this point the model can still fix it, by re-reading evidence it
+        # already has rather than recalling it.
+        #
+        # A figure the model derived CORRECTLY also fails this test, which is why
+        # the correction is offered rather than imposed: it may answer by showing
+        # the arithmetic instead of changing the number. So the replacement is
+        # accepted only when strictly fewer figures are unsupported afterwards —
+        # the same "only if actually better" rule as the language retry below,
+        # for the same reason. A rewrite that trades a wrong total for a wrong
+        # breakdown is not a correction.
+        if node.key == rctx.answer_key and text and not provider_error:
+            unsupported, supported = _figure_check(text, state)
+            if unsupported:
+                fixed = await _retry_figures(
+                    node, state, system, messages, text, unsupported,
+                    provider=provider, api_key=api_key, model=model,
+                )
+                if fixed and not _echoes_instruction(fixed):
+                    left, kept = _figure_check(fixed, state)
+                    # BOTH HALVES, because "fewer unsupported" alone is trivially
+                    # gamed: a reply that discards the analysis and says nothing
+                    # scores a perfect zero. A golden-test stub did exactly that —
+                    # it echoed the correction prompt back, which carried fewer
+                    # numbers than the answer it replaced and therefore "won" — and
+                    # a real model asked to remove a figure can wander into the
+                    # same shape. So a correction may drop figures that trace to
+                    # nothing and may not lose ones that trace to something.
+                    if len(left) < len(unsupported) and kept >= supported:
+                        logger.info(
+                            "[flow] %s: figure correction %d -> %d unsupported, "
+                            "%d supported kept", node.key, len(unsupported),
+                            len(left), kept,
+                        )
+                        text = fixed
+
         asked = getattr(getattr(rctx, "inp", None), "question", None)
         asked_text = asked.text() if hasattr(asked, "text") else ""
         if (
@@ -393,6 +452,102 @@ def _looks_wrong_language(text: str, locale: str, question: str = "") -> bool:
         _segment_is_wrong_language("\n".join(body), locale)
         or _segment_is_wrong_language("\n".join(follow), locale)
     )
+
+
+def _figure_check(text: str, state: RunState) -> tuple[list[float], int]:
+    """(figures that trace back to no tool result, count of figures that do).
+
+    Reuses the bot's verifier rather than writing a second number parser: it
+    already reads `1.258.681,34`, `8,4%` and `1,2 tỷ`, and two parsers would
+    disagree on exactly the cases worth catching.
+
+    Both numbers are returned because judging a rewrite needs both. What it
+    removed matters, and so does what it kept.
+    """
+    if not text or not state.evidence:
+        return [], 0
+    try:
+        from app.services.dashboard_ai_bot.verifier import verify_answer
+
+        result = verify_answer(text, state.evidence)
+        return list(result.unmatched), int(result.matched or 0)
+    except Exception:  # noqa: BLE001 — a broken check must not break the answer
+        logger.debug("[flow] figure check failed", exc_info=True)
+        return [], 0
+
+
+def _unsupported_figures(text: str, state: RunState) -> list[float]:
+    """Just the unsupported half, for callers that only decide on that."""
+    return _figure_check(text, state)[0]
+
+
+#: Phrases that exist ONLY in the correction instruction. An answer containing one
+#: is the instruction handed back rather than acted on — some providers do this with
+#: a long tool-result history, and a golden-test stub does it by design. Either way
+#: it is not a correction, and the first answer is the better of the two.
+_INSTRUCTION_MARKERS = ("Đối chiếu lại", "chọn một cách xử lý")
+
+
+def _echoes_instruction(text: str) -> bool:
+    return any(m in text for m in _INSTRUCTION_MARKERS)
+
+
+def _fmt_figure(value: float) -> str:
+    """As the answer would have written it, so the model recognises which one."""
+    return str(int(value)) if float(value).is_integer() else ("%g" % value)
+
+
+async def _retry_figures(
+    node: AgentNode, state: RunState, system: str, messages: list[dict], said: str,
+    unsupported: list[float], *, provider: str, api_key: str, model: str,
+) -> str:
+    """Name the figures that trace to nothing, and ask for one correction.
+
+    NAME THEM. The Notice this replaces said "một số con số có thể chưa khớp", and
+    a warning that vague produces a hedge — which is what the Notice already was.
+    The model is told which numbers failed and given the three honest ways out, so
+    that "I could not find this" is an available answer and not a failure.
+    """
+    shown = ", ".join(_fmt_figure(v) for v in unsupported[:8])
+    more = "" if len(unsupported) <= 8 else f" (và {len(unsupported) - 8} số khác)"
+    retry_messages = [
+        *messages,
+        {"role": "assistant", "content": said},
+        {
+            "role": "user",
+            "content": (
+                f"Đối chiếu lại: {shown}{more} — những con số này trong câu trả "
+                "lời trên không khớp với bất kỳ dữ liệu nào bạn vừa đọc được từ "
+                "công cụ.\nVới TỪNG số, chọn một cách xử lý:\n"
+                "1. Sửa lại đúng theo số có trong kết quả công cụ ở trên;\n"
+                "2. Nếu là số bạn tự tính (tổng, tỷ lệ, chênh lệch), ghi rõ phép "
+                "tính từ các số gốc để người đọc kiểm chứng được;\n"
+                "3. Nếu không lấy được từ dữ liệu đã đọc, bỏ con số đó đi và nói "
+                "thẳng là chưa có dữ liệu.\n"
+                "Giữ nguyên phần còn lại, kể cả các dòng [FOLLOWUP] (đúng số dòng, "
+                "vẫn bắt đầu bằng [FOLLOWUP]). Không thêm phân tích mới."
+            ),
+        },
+    ]
+    try:
+        state.budget.spend_llm()
+    except Exception:  # noqa: BLE001 — out of budget is not this step's failure
+        return ""
+    out = ""
+    try:
+        async for ev in _stream(
+            provider=provider, api_key=api_key, model=model,
+            system_prompt=system, messages=retry_messages, tools=[],
+        ):
+            if ev.type == "text":
+                out += ev.text
+            elif ev.type == "usage":
+                state.prompt_tokens += int(ev.extra.get("prompt_tokens") or 0)
+                state.completion_tokens += int(ev.extra.get("completion_tokens") or 0)
+    except Exception:  # noqa: BLE001 — a failed correction keeps the first answer
+        logger.warning("[flow] figure correction failed", exc_info=True)
+        return ""
+    return out.strip()
 
 
 async def _retry_language(
@@ -528,6 +683,40 @@ def _messages(node: AgentNode, state: RunState, rctx: Any) -> list[dict]:
         picked = []
 
     out: list[dict] = [*picked, {"role": "user", "content": rctx.inp.question.text()}]
+
+    # A LANE'S ASSIGNMENT, WHEN THIS NODE IS RUNNING INSIDE ONE.
+    #
+    # Set by the coordinator around each specialist body and cleared after, so a
+    # node outside one never sees it. Placed straight after the question because
+    # it narrows the question, and before the data because a specialist that reads
+    # the whole report first has already decided to answer all of it.
+    brief = str(state.vars.get("specialist_brief") or "").strip()
+    if brief:
+        out.append({"role": "user", "content": brief})
+
+    # THE STEP THAT SYNTHESISES HAS TO SEE EVERYTHING THERE IS TO SYNTHESISE.
+    #
+    # Every node published its result into `previous`, and `previous` is
+    # overwritten by whoever ran last. So a flow with two specialists handed the
+    # writer exactly one of them. Measured, three agents in order:
+    #
+    #     thu tu goi: ['chuyen_gia_a', 'chuyen_gia_b', 'tong_hop']
+    #     tong hop nhan: "Result of the previous step: KQ-chuyen_gia_b"
+    #     nhac toi ket qua chuyen gia A? False
+    #
+    # A's work was computed, paid for, and silently dropped. The author sees every
+    # step green and an answer that quietly ignores half the flow — and the more
+    # specialists they add, the more of the run is discarded.
+    #
+    # Only the answering node gets the full set. That is where combining is the
+    # job; giving it to every node would restore the "full transcript to every
+    # step" cost this function exists to avoid.
+    if node.key and node.key == getattr(rctx, "answer_key", ""):
+        gathered = _all_step_results(state, rctx, skip=node.key)
+        if gathered:
+            out.append({"role": "user", "content": gathered})
+            return out
+
     carried = _previous_text(state.vars.get("previous"))
     if carried:
         out.append({
@@ -535,6 +724,72 @@ def _messages(node: AgentNode, state: RunState, rctx: Any) -> list[dict]:
             "content": f"Result of the previous step:\n\n{carried[:8000]}",
         })
     return out
+
+
+#: Per-step and total ceilings for what the synthesiser is handed. Bounded because
+#: this is the one place a flow's cost grows with the number of steps: eight
+#: specialists must not become eight full transcripts.
+_MAX_STEP_CHARS = 2000
+_MAX_GATHERED_CHARS = 8000
+
+from app.services.agent_flows.contract import ROUTING_NODE_TYPES as _ROUTING_TYPES
+
+
+def _all_step_results(state: RunState, rctx: Any, *, skip: str = "") -> str:
+    """Every step's result, in the order they ran, named so they can be told apart.
+
+    Named rather than concatenated: "the previous step said 91.2%" is unusable when
+    four steps spoke, and a synthesiser that cannot attribute a figure to the step
+    that produced it cannot cite it either.
+
+    Steps that produced nothing are left out. A blank line under a heading reads to
+    a model like an answer of "nothing", which is not the same as a step that was
+    skipped, and inventing that distinction here would be worse than omitting it.
+    """
+    names = {s.key: (s.name or s.key) for s in state.trace}
+    parts: list[str] = []
+    used = 0
+    for step in state.trace:
+        if step.key == skip or step.type in _ROUTING_TYPES:
+            # A routing step's "result" is a record of which way the run went —
+            # `{"picked": ["chuyen_gia_chi_phi"], "considered": [...]}`. Handing
+            # that to the model that writes the answer puts a list of internal
+            # node keys in front of it and calls it evidence. The TRACE keeps it,
+            # which is where an author looks to see why a lane did or did not run.
+            continue
+        text = _previous_text(state.outputs.get(step.key))
+        if not text:
+            continue
+        # TRUNCATION USED TO BE SILENT, which is the worst of the three options.
+        #
+        # A 6,000-character report reading arrived as 2,000 characters that simply
+        # stop — mid-array, mid-number — and a model reads that as the whole of what
+        # the step found. It answered a question about product categories from six
+        # KPI tiles and called the figure "được xác nhận là chính xác", because
+        # nothing in what it was handed suggested there was more.
+        body = text[:_MAX_STEP_CHARS]
+        if len(text) > _MAX_STEP_CHARS:
+            body += (
+                "\n… (kết quả của bước này đã bị cắt bớt để vừa ngữ cảnh — phần "
+                "thiếu KHÔNG phải là không có dữ liệu. Nếu câu hỏi cần thứ không "
+                "thấy ở đây, hãy gọi công cụ để lấy đúng thứ cần thay vì suy ra.)"
+            )
+        block = "### %s\n%s" % (names.get(step.key, step.key), body)
+        if used + len(block) > _MAX_GATHERED_CHARS:
+            parts.append(
+                "(Còn kết quả của các bước sau nữa nhưng đã vượt giới hạn ngữ "
+                "cảnh — trả lời bằng những gì đang có và nói rõ phần chưa gộp.)"
+            )
+            break
+        parts.append(block)
+        used += len(block)
+    if not parts:
+        return ""
+    return (
+        "Kết quả của các bước trước, theo thứ tự đã chạy. Tổng hợp TẤT CẢ, "
+        "không chỉ bước cuối; nếu hai bước mâu thuẫn thì nói rõ ra thay vì "
+        "chọn bừa một bên:\n\n" + "\n\n".join(parts)
+    )
 
 
 def _previous_text(previous: Any) -> str:
@@ -557,6 +812,21 @@ def _previous_text(previous: Any) -> str:
 
         return render_value(previous)
     return ""
+
+
+def _knowledge_readers(node: AgentNode) -> list[str]:
+    """Tools granted to THIS step that can actually open its attached sources.
+
+    Per-step rather than per-flow: the sentence is written for one model, and a
+    reader granted three steps away cannot help the one being prompted here.
+    """
+    from app.services.agent_flows.coverage import READERS_BY_SOURCE
+
+    granted = {str(getattr(g, "tool", "") or "") for g in (node.tools or [])}
+    needed: set[str] = set()
+    for k in node.knowledge or []:
+        needed |= set(READERS_BY_SOURCE.get(str(getattr(k, "source", "") or ""), ()))
+    return sorted(granted & needed)
 
 
 def _system_prompt(node: AgentNode, state: RunState, rctx: Any) -> str:
@@ -601,9 +871,35 @@ def _system_prompt(node: AgentNode, state: RunState, rctx: Any) -> str:
 
     sources = [f"- [{k.source}] {k.ref} — {k.description}" for k in node.knowledge]
     if sources:
-        parts.append(
-            "NGUỒN TRI THỨC BƯỚC NÀY ĐƯỢC TRA (và khi nào nên tra)\n" + "\n".join(sources)
-        )
+        # THESE ARE LABELS, NOT CONTENTS — AND THE MODEL HAS TO BE TOLD SO.
+        #
+        # An attachment does two things and neither is retrieval: it sets the
+        # BOUNDARY a search tool may look inside, and it puts this line in the
+        # prompt. The text after the dash is the AUTHOR'S own note about why the
+        # source is attached — not a sentence from it.
+        #
+        # Read as a heading over `- [document] 26 — Quy ước tính GMV và phí vận
+        # chuyển của Olist`, the old wording invited exactly one reading. Asked
+        # "GMV có gồm phí ship không?", a flow granted no reading tool answered
+        # "Theo tài liệu 26 — Quy ước tính GMV và phí vận chuyển của Olist, GMV
+        # không bao gồm phí vận chuyển" after one call to `inspect_filters`. The
+        # document says nothing about shipping; the description had become the
+        # citation, and the answer contradicted the semantic layer's own formula.
+        readable = _knowledge_readers(node)
+        if readable:
+            parts.append(
+                "NGUỒN TRI THỨC BƯỚC NÀY ĐƯỢC PHÉP TRA (tên nguồn, chưa phải nội "
+                "dung — phải gọi công cụ %s để đọc; chỉ trích dẫn những gì công cụ "
+                "trả về)\n%s" % ("/".join(readable), "\n".join(sources))
+            )
+        else:
+            parts.append(
+                "NGUỒN CHỈ ĐỂ THAM KHẢO TÊN — BƯỚC NÀY KHÔNG CÓ CÔNG CỤ ĐỂ MỞ "
+                "CHÚNG.\nPhần sau dấu gạch là ghi chú của người dựng luồng về lý "
+                "do đính kèm, KHÔNG phải trích từ nguồn. Không được trích dẫn, "
+                "tóm tắt hay suy ra nội dung của chúng. Nếu câu hỏi cần nội dung "
+                "này, hãy nói rõ là chưa tra được.\n" + "\n".join(sources)
+            )
     if node.output_format == "json":
         parts.append(_BLOCK_INSTRUCTIONS)
     elif node.key == rctx.answer_key:

@@ -85,6 +85,15 @@ MAX_LOOP_ITERATIONS = 25
 #: to the same number instead of guessing one and discovering the difference as a 422.
 MAX_TOOL_CALLS = 30
 
+#: Node types whose result records WHERE THE RUN WENT, not what it found.
+#:
+#: `{"matched": ["case_b"], "value": "so_sanh"}` and `{"picked": [...],
+#: "considered": [...]}` are bookkeeping. They belong in the trace, where an author
+#: looks to see why a lane ran; they are not evidence, and a step handed one of
+#: them as "the result of the previous step" is being shown a list of internal node
+#: keys and told it is data.
+ROUTING_NODE_TYPES = frozenset({"coordinate", "switch", "if", "filter"})
+
 _KEY_RE = re.compile(r"^[a-z][a-z0-9_]{0,39}$")
 
 
@@ -619,6 +628,100 @@ class SwitchNode(BaseNode):
         return v
 
 
+class Specialist(_Model):
+    """One sub-agent a coordinator may dispatch to.
+
+    `when` is not decoration and its absence is not a style problem. A classifier
+    handed a bare list of keys — `tra_so`, `so_sanh`, `bat_thuong` — sent "GMV toàn
+    kỳ là bao nhiêu?" down the FORECAST branch, and the lookup case never fired
+    once across four questions. Those are variable names, not descriptions. The
+    planner here reads `when`, so it is required.
+    """
+
+    key: str
+    name: str = ""
+    #: WHEN this specialist is the right one to run, in the words a viewer's
+    #: question would use.
+    when: str
+    body: list["Node"] = Field(default_factory=list)
+
+    @field_validator("key")
+    @classmethod
+    def _valid_key(cls, v: str) -> str:
+        if not _KEY_RE.match(v or ""):
+            raise ValueError("key của chuyên gia phải là chữ thường/số/gạch dưới")
+        return v
+
+    @field_validator("when")
+    @classmethod
+    def _says_when(cls, v: str) -> str:
+        v = (v or "").strip()
+        if len(v) < 8:
+            raise ValueError(
+                "mỗi chuyên gia phải nói rõ KHI NÀO nên dùng — planner đọc đúng "
+                "dòng này để chọn, danh sách tên trần thì nó chọn sai"
+            )
+        return v
+
+
+class CoordinateNode(BaseNode):
+    """One agent decides which specialists this question needs; they run; it combines.
+
+    WHY THIS EXISTS
+    ---------------
+    Routing was static: `If`/`Switch` on conditions the author wrote by hand, or a
+    `choice` classifier feeding a Switch. That works when the author can enumerate
+    the questions in advance, and a viewer's question is exactly the thing that
+    cannot be enumerated. What happened instead was that every specialist ran on
+    every question, or one hand-written branch matched and the rest of the flow sat
+    idle — sub-agents each doing their own thing with nothing joining them up.
+
+    PLAN, THEN FAN OUT. NOT A CONVERSATION.
+    ---------------------------------------
+    One model call picks the subset, they run, the answering step combines them.
+    The coordinator does NOT get to look at a result and go back for more: that
+    makes the cost of a single question unpredictable, and this product prices
+    every tool in the picker for a reason. A plan is one call, and an author can
+    read `max_specialists` and know the ceiling.
+
+    The trade is real and worth stating: a question whose second half only becomes
+    obvious after the first half is answered will be under-served here. `max_rounds`
+    is deliberately absent rather than defaulted to 1, so that adding it later is a
+    feature and not a change of contract.
+    """
+
+    type: Literal["coordinate"] = "coordinate"
+    #: What the planner is told it is choosing FOR. Appended to the planning prompt.
+    prompt: str = ""
+    provider: str = INHERIT
+    model: str = ""
+    api_key: str = ""
+    api_key_enc: str = ""
+    api_key_clear: bool = False
+    specialists: list[Specialist] = Field(default_factory=list)
+    #: The ceiling on one plan. Two specialists is the common case; the limit exists
+    #: so a planner that wants everything cannot turn one question into six.
+    max_specialists: int = Field(default=3, ge=1, le=8)
+    #: Run when the planner picks nothing — a question none of the specialists fit.
+    #: Empty means the coordinator simply produces nothing and the flow continues,
+    #: which is the honest outcome and lets the answering step say so.
+    fallback: list["Node"] = Field(default_factory=list)
+
+    @field_validator("specialists")
+    @classmethod
+    def _sane_specialists(cls, v: list[Specialist]) -> list[Specialist]:
+        if len(v) < 2:
+            raise ValueError(
+                "bước điều phối phải có ít nhất 2 chuyên gia để chọn giữa — "
+                "một chuyên gia thì gọi thẳng nó rẻ hơn"
+            )
+        keys = [s.key for s in v]
+        dupes = {k for k in keys if keys.count(k) > 1}
+        if dupes:
+            raise ValueError(f"trùng key chuyên gia: {', '.join(sorted(dupes))}")
+        return v
+
+
 class LoopNode(BaseNode):
     """Run a body once per item of a list.
 
@@ -661,6 +764,7 @@ Node = Annotated[
         IfNode,
         SwitchNode,
         LoopNode,
+        CoordinateNode,
     ],
     Field(discriminator="type"),
 ]
@@ -670,6 +774,8 @@ Case.model_rebuild()
 IfNode.model_rebuild()
 SwitchNode.model_rebuild()
 LoopNode.model_rebuild()
+Specialist.model_rebuild()
+CoordinateNode.model_rebuild()
 
 
 # ═══ What a flow needs from whatever link runs it ══════════════════════════════
@@ -712,6 +818,11 @@ _CHART_KEYED_TOOLS = frozenset({
     "project_to_period_end", "detect_seasonality", "analyze_trend",
     "forecast_measure",
 })
+
+#: The one tool that hands OUT a chart_id. Its counterpart above is the list of
+#: tools that need one, and a step wants exactly one of the two: an index it was
+#: given, or the ability to look one up.
+_CHART_LOOKUP_TOOL = "list_charts"
 
 
 
@@ -818,7 +929,31 @@ class Flow(_Model):
 
     # ── Reading the tree ──────────────────────────────────────────────────────
     def all_nodes(self) -> list[Any]:
-        """Every node anywhere in the tree, in document order."""
+        """Every node anywhere in the tree, in document order.
+
+        EVERY CONTAINER, INCLUDING THE NEWEST ONE.
+        -----------------------------------------
+        `coordinate` was added without being taught here, and this method is what
+        the flow knows about itself. Everything downstream reads it, so a lane's
+        contents were invisible to all of it at once:
+
+          * `warnings()` — every authoring check, on exactly the nodes a
+            coordinator exists to hold. A live run found the cost: the "số liệu"
+            specialist held `get_chart_data`, `total_measure` and `compare_periods`
+            — three tools that all require a `chart_id` — and nothing that can
+            produce one. The check for that case was already written and simply
+            never looked inside the lane. Asked which product category earned the
+            most, the flow answered "13,591,643.70" — the report's grand total, no
+            category named, no notice raised.
+          * `coverage.granted_tools()` — so the coverage report described a flow's
+            abilities while ignoring the tools its specialists were granted.
+          * `node_count` in the API and the registry, `unreachable_nodes()`,
+            `produced_vars()` / `referenced_vars()`, and the binding's loop-variable
+            scan.
+
+        The rule this encodes: a node that holds nodes must be walked here, and
+        adding one is not finished until it is.
+        """
         out: list[Any] = []
 
         def walk(nodes: list[Any]) -> None:
@@ -833,6 +968,10 @@ class Flow(_Model):
                     walk(n.fallback)
                 elif isinstance(n, LoopNode):
                     walk(n.body)
+                elif isinstance(n, CoordinateNode):
+                    for s in n.specialists:
+                        walk(s.body)
+                    walk(n.fallback)
 
         walk(list(self.nodes))
         return out
@@ -946,6 +1085,24 @@ class Flow(_Model):
                 "Flow này không gắn tri thức nào — nó chỉ đọc báo cáo đang mở. "
                 "Đúng nếu bạn muốn dùng nó cho mọi báo cáo."
             )
+        # A LANE THE PLANNER CAN PICK AND THAT THEN DOES NOTHING.
+        #
+        # Choosing a specialist with an empty body spends the planning call, records
+        # the pick in the trace, runs nothing, and leaves the answering step with
+        # less than it would have had from a flow with no coordinator at all. The
+        # canvas draws the lane whether or not anything is in it, so the mistake is
+        # invisible exactly where an author would look for it.
+        for node in self.all_nodes():
+            if not isinstance(node, CoordinateNode):
+                continue
+            empty = [s.name or s.key for s in node.specialists if not s.body]
+            if empty:
+                out.append(
+                    f"Bước điều phối “{node.name or node.key}”: chuyên gia "
+                    f"{', '.join(empty)} chưa có bước nào bên trong — chọn trúng "
+                    "cũng không chạy gì."
+                )
+
         answering = self.node(self.answering_key())
         if isinstance(answering, AgentNode) and answering.tools:
             out.append(
@@ -966,23 +1123,41 @@ class Flow(_Model):
         # told the report contained no GMV — on a report whose GMV is 15,843,553.24.
         # Adding `{{ctx}}` to those four prompts took the same flow to zero failed
         # calls and the correct figure.
+        # TWO WAYS TO KNOW A CHART_ID, AND A STEP NEEDS ONE OF THEM.
+        #
+        # Being handed an index by a read step is the first. The second is being
+        # able to look one up — which only became a real answer once `list_charts`
+        # stopped costing 37 seconds and learned to take a `query`. A step that can
+        # search does not need to be handed anything.
+        #
+        # The guard used to be `if read_vars:` — so a flow with no read step at all,
+        # the case where a step is MOST certainly guessing, produced no warning
+        # whatsoever. Now the absence of a read step is just one more way to have
+        # neither source.
         read_vars = {
             n.output_var for n in self.all_nodes()
             if isinstance(n, ReportReadNode) and n.output_var
         }
-        if read_vars:
-            for n in self.agent_nodes():
-                keyed = sorted({t.tool for t in n.tools} & _CHART_KEYED_TOOLS)
-                if not keyed:
-                    continue
-                if node_referenced_vars(n) & read_vars:
-                    continue
-                out.append(
-                    f"Bước “{n.name or n.key}” được cấp công cụ cần chart_id "
-                    f"({', '.join(keyed[:3])}…) nhưng prompt không đọc "
-                    + " hoặc ".join("{{" + v + "}}" for v in sorted(read_vars))
-                    + " — nó sẽ phải đoán chart_id và gọi công cụ thất bại."
-                )
+        for n in self.agent_nodes():
+            granted = {t.tool for t in n.tools}
+            keyed = sorted(granted & _CHART_KEYED_TOOLS)
+            if not keyed:
+                continue
+            if _CHART_LOOKUP_TOOL in granted:
+                continue
+            if read_vars and (node_referenced_vars(n) & read_vars):
+                continue
+            handed = (
+                "prompt không đọc "
+                + " hoặc ".join("{{" + v + "}}" for v in sorted(read_vars))
+                if read_vars else "flow không có bước đọc báo cáo nào"
+            )
+            out.append(
+                f"Bước “{n.name or n.key}” được cấp công cụ cần chart_id "
+                f"({', '.join(keyed[:3])}…) nhưng {handed}, và cũng không được cấp "
+                f"`{_CHART_LOOKUP_TOOL}` để tự tìm — nó sẽ phải đoán chart_id, hoặc "
+                "đo nhầm biểu đồ mà không báo lỗi."
+            )
 
         for n in self.agent_nodes():
             named = _REPORT_NAME_RE.search(n.prompt)

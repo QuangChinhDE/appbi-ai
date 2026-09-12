@@ -244,6 +244,44 @@ def tool_compare_to_target(ctx: ToolContext, args: dict) -> dict:
         ),
         "filters_applied": data["filters_applied"],
     }
+
+    # A MISSED TARGET IS A QUESTION, AND THE ANSWER MAY BE WRITTEN DOWN.
+    #
+    # The knowledge pack's docstring named this gap and deferred it: the comparison
+    # tools and the knowledge tools were granted separately and never met, so a
+    # flow could report "91.2% against a 92% target" and never reach the document
+    # saying which orders are excluded from that rate.
+    #
+    # A POINTER, not the passages. Retrieval costs an embedding, a vector scan and
+    # a rerank, and most target checks are not followed by "why" — so this says an
+    # explanation exists and `explain_measurement` fetches it when asked. The only
+    # cost here is one vocabulary lookup.
+    if gap < 0:
+        try:
+            from app.services.dashboard_ai_bot import govern_doc_evidence_link as _link
+
+            metric = _link._metric_for(ctx.db, payload["measure"])
+            if metric and metric.get("home_doc_id"):
+                payload["explanation_available"] = {
+                    "tool": "explain_measurement",
+                    "args": {
+                        "measure": payload["measure"],
+                        "status": payload["status"],
+                        "actual": payload["actual"],
+                        "target": payload["target"],
+                        "shortfall_pct": payload["shortfall_pct"],
+                    },
+                    "why": (
+                        "This measure is the governed KPI '%s', and a document is "
+                        "declared as its definition. Call explain_measurement to "
+                        "read how it is calculated and which cases are excluded "
+                        "before describing the shortfall."
+                        % (metric.get("display_name") or metric["name"])
+                    ),
+                }
+        except Exception:  # noqa: BLE001 — a pointer is never worth failing a check
+            pass
+
     return R.ok(
         payload,
         kind="comparison",

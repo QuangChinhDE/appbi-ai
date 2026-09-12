@@ -42,6 +42,24 @@ SPECS = [
         structural=True,
     ),
     NodeSpec(
+        type="coordinate",
+        label_vi="Điều phối chuyên gia",
+        label_en="Coordinate specialists",
+        description_vi=(
+            "Một agent đọc câu hỏi và chọn (các) chuyên gia cần chạy, thay vì "
+            "tác giả phải đoán trước bằng điều kiện. Bước trả lời gộp kết quả "
+            "của tất cả những ai đã chạy."
+        ),
+        category="ai",
+        icon="⌘",
+        structural=True,
+        # ONE PLANNING CALL, PLUS WHATEVER THE SPECIALISTS COST. Declared so the
+        # builder can price it the way it prices every other step: an author
+        # comparing this against four hand-wired branches deserves to see that the
+        # routing itself is not free.
+        costs_llm=True,
+    ),
+    NodeSpec(
         type="filter",
         label_vi="Filter",
         label_en="Filter",

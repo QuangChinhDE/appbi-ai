@@ -42,11 +42,12 @@ import {
   getDocSource, putDocSource, uploadDocSourceFile, syncDocSource, listGoogleDocsSources,
   getEmbeddingConfig, getEmbeddingProfiles, previewChunks, reembedDoc, resetEmbeddingModel,
   getDocHistory, getDocUsage, getDocVectors, queryDocVectors, getDocSnapshot, isSourceOwned,
-  getDocStructure,
+  getDocStructure, getVectorStoreHealth,
   type DocSourceKind, type DocSnapshot, type GoogleDocsSource,
   type KnowledgeDoc, type KnowledgeSpace, type KnowledgeDocWrite, type KnowledgeAsset, type ManagedMetric,
   type KnowledgeDocVersion, type DatasetLite, type GovernSearchResult, type RelatedDoc,
   type DocSourceInfo, type DocSyncSchedule, type EmbeddingConfig, type EmbeddingProfile, type ChunkPreviewResult, type DocHistory, type DocUsage, type DocVector, type VectorMatch, type DocStructure,
+  type VectorStoreHealth,
 } from '@/lib/catalog';
 import { AppModalShell } from '@/components/common/AppModalShell';
 import { OwnerBadge } from '@/components/common/OwnerBadge';
@@ -96,6 +97,46 @@ const DOC_TYPE_ICON: Record<string, ReactNode> = {
   ai_knowhow: <MessageCircleQuestion className="h-4 w-4" />,
   faq: <HelpCircle className="h-4 w-4" />, article: <FileText className="h-4 w-4" />,
 };
+
+// ── What the chunk store's guarantees are actually doing ─────────────────────
+/** Shown only when something is off, because a green badge nobody needs is how a
+ *  warning stops being read.
+ *
+ *  Two facts, both computed by the backend for months and displayed nowhere:
+ *
+ *  · `rls_in_force` — false whenever the app connects as a SUPERUSER/BYPASSRLS
+ *    role. The policy on `govern_doc_chunk` is written correctly and Postgres
+ *    skips it entirely, so document scoping rests on the query filter alone.
+ *  · `stale_index_docs` — documents the retriever REFUSES to search. They still
+ *    list and still look attached; the assistant simply stops finding them. That
+ *    is not hypothetical: after one migration invalidated the legacy hashes, five
+ *    of six documents on the main dashboard went unsearchable and "GMV là gì"
+ *    returned nothing, with no screen saying so. */
+function StoreHealthBanner({ health }: { health: VectorStoreHealth | null }) {
+  const { t } = useI18n();
+  if (!health) return null;
+  const stale = health.stale_index_docs ?? 0;
+  const rlsOff = health.rls_in_force === false;
+  if (!stale && !rlsOff) return null;
+  return (
+    <div className="mt-3 flex flex-col gap-1.5 rounded-md border border-dashed border-warning/40 bg-warning/5 p-2.5 text-tiny text-warning">
+      {stale > 0 && (
+        <div>
+          <b>{t('govern.storeHealth.staleTitle', { count: stale })}</b>{' '}
+          <span className="text-text-secondary">{t('govern.storeHealth.staleHelp')}</span>
+        </div>
+      )}
+      {rlsOff && (
+        <div>
+          <b>{t('govern.storeHealth.rlsTitle')}</b>{' '}
+          <span className="text-text-secondary">
+            {health.reason || t('govern.storeHealth.rlsHelp')}
+          </span>
+        </div>
+      )}
+    </div>
+  );
+}
 
 // ── AI-readiness helpers (shared by list + detail) ───────────────────────────
 function readyTone(score: number): string {
@@ -254,6 +295,19 @@ function ListScreen({ docs, spaces, loading, managed, onOpen, onNew, onOpenVocab
   const canAuthor = hasPermission(permData?.permissions, 'govern', 'edit');
   const [space, setSpace] = useState<string | null>(null);
   const [health, setHealth] = useState<HealthKey | null>(null);
+  // WHAT THE STORE'S GUARANTEES ARE ACTUALLY DOING.
+  //
+  // The endpoint existed and its docstring said it was "deliberately reachable by
+  // any user who can view Govern: a row-level-security policy that is silently
+  // inert is exactly the failure this endpoint exists to make impossible to
+  // miss". Nothing called it, so the failure stayed perfectly missable — and it
+  // is currently happening: the app connects as a SUPERUSER role, so Postgres
+  // skips the policy entirely.
+  //
+  // Non-blocking: a health read must never hold up the list, and a deployment
+  // whose backend predates the endpoint should degrade to showing nothing.
+  const [storeHealth, setStoreHealth] = useState<VectorStoreHealth | null>(null);
+  useEffect(() => { getVectorStoreHealth().then(setStoreHealth).catch(() => setStoreHealth(null)); }, []);
   const [q, setQ] = useState('');
   const [searchRes, setSearchRes] = useState<GovernSearchResult | null>(null);
   const [view, setView] = useState<'list' | 'graph'>('list');
@@ -308,6 +362,7 @@ function ListScreen({ docs, spaces, loading, managed, onOpen, onNew, onOpenVocab
       title={t('govern.page.title')}
       description={t('govern.page.description')}
       overview={(
+        <>
         <ModuleOverview
           stats={[
             { label: t('govern.stats.documents'), value: docs.length, helper: t('govern.stats.documentsHelper') },
@@ -317,6 +372,12 @@ function ListScreen({ docs, spaces, loading, managed, onOpen, onNew, onOpenVocab
             { label: t('govern.stats.spaces'), value: spaces.length, helper: t('govern.stats.spacesHelper') },
           ]}
         />
+        {/* Right under the numbers an operator already reads, because this is a
+            fact about whether those numbers can be trusted. There is no `banner`
+            slot on PageListLayout and inventing one would have been a prop the
+            layout silently ignores. */}
+        <StoreHealthBanner health={storeHealth} />
+        </>
       )}
       action={(
         <div className="flex min-w-max items-center gap-2">

@@ -50,6 +50,13 @@ if settings.METADATA_CATALOG_ENABLED:
     from app.modules.agent_flows.api import router as agent_flows_router
     api_router.include_router(agent_flows_router)
 
+    # Direct Chat: the READER's side of the same module — which assistants may I
+    # open, what did we say, ask the next thing. Registered after the Studio router
+    # so `/agent-flows/chat/*` is matched by its own prefix rather than by a
+    # `/agent-flows/{something}` route above it.
+    from app.modules.agent_flows.chat_api import router as agent_flows_chat_router
+    api_router.include_router(agent_flows_chat_router)
+
 # Observability — dataset health (incidents + semantic lineage + usage + alert channels)
 api_router.include_router(observability.router)
 

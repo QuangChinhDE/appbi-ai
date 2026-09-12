@@ -47,6 +47,7 @@ from app.models.governance import Glossary, GlossaryTerm, Classification, Classi
 from app.models.ai_chat_session import AiChatSession
 from app.models.ai_chat_turn_log import AiChatTurnLog
 from app.models.agent_brain import AgentBrainVersion
+from app.models.agent_flow_chat_thread import AgentFlowChatThread
 # Workboard models live under app.modules.workboards but are re-exported here
 # so SQLAlchemy metadata + alembic autogenerate always see them, regardless of
 # whether the workboards module router is enabled at runtime.

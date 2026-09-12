@@ -965,7 +965,13 @@ def test_a_reading_steps_result_reaches_the_step_that_answers():
         run(flow, question={"raw": "How is revenue?"}).get("answer") or "",
         ensure_ascii=False,
     )
-    assert "Result of the previous step" in shown, "bước đọc không tới được bước trả lời"
+    # Asserted on the DATA, not on the sentence that introduces it. This used to
+    # look for "Result of the previous step" — the wording of the single-step
+    # carry — and the answering node now receives every step's result under its
+    # own heading instead, because `previous` held only whichever step ran last.
+    # The rule under test is that the reading step's output reaches the step that
+    # answers; that is what these two lines check.
+    assert "read" in shown, "kết quả bước đọc không được gắn tên bước nào"
     assert "charts" in shown and "chart_id" in shown, "tới nơi nhưng rỗng ruột"
 
 
@@ -1176,9 +1182,9 @@ def test_an_attached_source_that_matched_nothing_is_not_cited():
 
 
 # ── 16 · the node list is frozen, and the two halves must agree ───────────────
-#: The twelve. Changing this list is a deliberate act; the test below makes it one.
+#: The thirteen. Changing this list is a deliberate act; the test below makes it one.
 FROZEN_NODE_TYPES = {
-    "agent",                                   # AI
+    "agent", "coordinate",                     # AI
     "report_read", "knowledge", "web",         # data
     "if", "switch", "filter",                  # logic
     "loop", "stop", "delay",                   # flow
@@ -1198,9 +1204,13 @@ def _contract_node_types() -> set[str]:
     return out
 
 
-def test_the_node_list_is_exactly_the_frozen_twelve():
+def test_the_node_list_is_exactly_the_frozen_thirteen():
     """A freeze enforced by a list in a document is a freeze until someone forgets.
-    Adding a node is fine — updating this set is how you say you meant to."""
+    Adding a node is fine — updating this set is how you say you meant to.
+
+    `coordinate` was added deliberately: routing was static author-written
+    conditions, so either every specialist ran on every question or one hand-wired
+    branch matched and the rest of the flow sat idle."""
     assert _contract_node_types() == FROZEN_NODE_TYPES
 
 
@@ -1482,9 +1492,15 @@ def test_vector_recall_obeys_the_same_boundary_as_the_keyword_scan(monkeypatch):
     # raise inside the tool's try/except and the assertion below sees nothing at
     # all — which is how this test failed without saying why.
     def fake_retrieve(db, dashboard_id=None, question="", k=6, doc_ids=None,
-                      consumer="dashboard_bot"):
+                      consumer="dashboard_bot", report=None):
+        # `report` is the retriever's out-parameter for what it could NOT do —
+        # a failed query embedding, or a raise. The double has to accept it for
+        # the same reason it has to accept `consumer`: a signature it rejects
+        # turns into a TypeError swallowed by the tool, and this assertion then
+        # fails without saying why.
         seen["doc_ids"] = doc_ids
         seen["consumer"] = consumer
+        seen["accepts_report"] = True
         return []
 
     monkeypatch.setattr(gde, "retrieve_doc_chunks", fake_retrieve)
@@ -1504,6 +1520,10 @@ def test_vector_recall_obeys_the_same_boundary_as_the_keyword_scan(monkeypatch):
     )
     assert seen.get("consumer") == "agent_flow", (
         "nhật ký truy xuất phải phân biệt được Agent Flow với bot Dashboard"
+    )
+    assert seen.get("accepts_report"), (
+        "công cụ phải truyền `report` xuống, nếu không thì không ai biết lần tra "
+        "này có chạy đủ hay không"
     )
 
 
@@ -2640,8 +2660,16 @@ def test_chart_keyed_tools_without_the_report_index_are_flagged():
     assert not flagged(flow("Trả lời. {{ctx}}", ["total_measure"]))
     # Tools that need no chart are not the subject.
     assert not flagged(flow("Trả lời.", ["search_knowledge"]))
-    # And with no read step there is no index to pass, so there is nothing to say.
-    assert not flagged(flow("Trả lời.", ["total_measure"], with_read=False))
+    # NO READ STEP USED TO BE THE SILENT CASE, on the reasoning that with no index
+    # to pass there was nothing actionable to say. That reasoning held only while a
+    # read step was the sole route to a chart_id. `list_charts` is now the other
+    # one — searchable, and no longer 37 seconds — so the most certain case of a
+    # step guessing has advice available to it, and gets it.
+    bare = flagged(flow("Trả lời.", ["total_measure"], with_read=False))
+    assert bare, "không có bước đọc là trường hợp chắc chắn đoán nhất, phải cảnh báo"
+    assert "list_charts" in bare[0], "phải nói cách lấy chart_id, không chỉ nói là thiếu"
+    # Granting the lookup answers it, with or without a read step.
+    assert not flagged(flow("Trả lời.", ["total_measure", "list_charts"], with_read=False))
 
 
 def test_a_run_advertises_only_the_fields_its_tools_will_serve():

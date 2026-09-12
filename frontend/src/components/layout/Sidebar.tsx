@@ -33,6 +33,7 @@ import {
   Trash2,
   X,
   Workflow,
+  MessagesSquare,
 } from 'lucide-react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
@@ -98,6 +99,11 @@ const NAV_GROUPS: NavGroup[] = [
     items: [
       { labelKey: 'sidebar.nav.knowledgeHub', href: '/govern', icon: <Landmark className="h-4 w-4" />, module: 'govern' },
       { labelKey: 'sidebar.nav.agentFlows', href: '/agent-flows', icon: <Workflow className="h-4 w-4" />, module: 'agent_flows' },
+      // Reading side of the same module: talking to a flow, rather than authoring
+      // one. Gated on the same key at `view`, which is the floor `usable_brains`
+      // already fails closed on; WHICH assistants appear is decided per user by
+      // sharing, and an empty list explains itself on the page.
+      { labelKey: 'sidebar.nav.aiChat', href: '/chat', icon: <MessagesSquare className="h-4 w-4" />, module: 'agent_flows' },
     ],
   },
   {

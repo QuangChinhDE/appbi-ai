@@ -54,7 +54,9 @@ class _Model(BaseModel):
 # ═══════════════════════════════════════════════════════════════════════════════
 # INPUT
 # ═══════════════════════════════════════════════════════════════════════════════
-Trigger = Literal["public_chat", "studio_test", "node_test", "replay", "scheduled"]
+Trigger = Literal[
+    "public_chat", "direct_chat", "studio_test", "node_test", "replay", "scheduled"
+]
 
 
 class RequestInfo(_Model):

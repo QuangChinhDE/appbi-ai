@@ -40,6 +40,10 @@ from fastapi.responses import FileResponse
 
 from app.services import pdf_export_service
 from app.services.embed_link_service import embed_policy_for_token, resolve_embed_grant
+#: The SSE wire format, shared with the authenticated Direct Chat route. Two
+#: copies of it would agree only until one of them gained an event, and the
+#: browser parser is a single implementation.
+from app.services.agent_flows.wire import event_to_envelope as _event_to_envelope
 from app.services.filter_layered_merge import (
     apply_link_scope_bounds,
     link_entry_has_value,
@@ -4601,121 +4605,3 @@ async def explore_dashboard_ai_agent(
             "X-Accel-Buffering": "no",
         },
     )
-
-
-def _event_to_envelope(ev) -> dict | None:
-    """Convert an AgentEvent into the wire envelope.
-
-    Hides internal fields and trims tool_result payloads to keep SSE small.
-    """
-    et = ev.type
-    if et == "text":
-        return {"type": "text", "text": ev.text}
-    if et == "sources":
-        # Web-search sources the answer drew on (title+url) → FE shows links.
-        return {"type": "sources", "sources": (ev.extra or {}).get("sources") or []}
-    if et == "route":
-        # Auto-router decision (which depth was chosen + why). Lets the FE
-        # show a read-only "đã chọn chế độ" chip instead of a toggle.
-        info = (ev.extra or {}).get("route") or {}
-        return {
-            "type": "route",
-            "mode": info.get("mode"),
-            "auto": bool(info.get("auto")),
-            "reasons": info.get("reasons") or [],
-        }
-    if et == "status":
-        return {"type": "status", "text": ev.text, "tool": ev.tool_name}
-    if et == "tool_result":
-        # Send only ok/error so the FE can flag failures without leaking the
-        # full payload (which can be large).
-        result = ev.tool_result or {}
-        return {
-            "type": "tool_result",
-            "tool": ev.tool_name,
-            "ok": bool(result.get("ok")),
-            "error": result.get("error") if not result.get("ok") else None,
-        }
-    if et == "reading_plan":
-        # Phase-15.71 — forward the analyst-style reading plan to the
-        # FE. The structured items are safe to send (already validated
-        # in tool_emit_reading_plan: chart_id ∈ allowed set, phase
-        # whitelisted, question is plain text).
-        extra = ev.extra or {}
-        return {
-            "type": "reading_plan",
-            "items": extra.get("items") or [],
-            "overall_goal": extra.get("overall_goal"),
-        }
-    if et == "plan_step":
-        # Phase 15.72 — per-step progress badge update. Lets the FE flip
-        # each plan step from pending → running → done as the agent
-        # works through it.
-        extra = ev.extra or {}
-        return {
-            "type": "plan_step",
-            "step_index": extra.get("step_index"),
-            "chart_id": extra.get("chart_id"),
-            "status": extra.get("status"),
-        }
-    if et == "insight":
-        # Phase 16 — one typed Insight extracted by the exploration engine
-        # (rung + statement + evidence chart ids + justification + action).
-        # Already sanitized in explorer._parse_insight (chart ids validated
-        # against the dashboard, strings capped).
-        return {"type": "insight", "insight": (ev.extra or {}).get("insight") or {}}
-    if et == "exploration_step":
-        # Phase 16 — exploration progress tick (stage + question metadata).
-        return {"type": "exploration_step", **(ev.extra or {})}
-    if et == "verification":
-        # P1-02 — how many of the answer's figures trace back to evidence.
-        # Coverage only; the unmatched VALUES stay server-side (they are the
-        # model's own invention, and echoing them to the viewer would present
-        # unsupported numbers a second time).
-        v = (ev.extra or {}).get("verification") or {}
-        return {
-            "type": "verification",
-            "coverage": v.get("coverage"),
-            "total_numbers": v.get("total_numbers"),
-            "matched": v.get("matched"),
-            "checked": bool(v.get("checked")),
-            # Entity names the answer used that the run never read. Unlike the
-            # unmatched VALUES (which stay server-side — echoing an invented figure
-            # shows it to the viewer twice), a name the evidence lacks is safe to
-            # surface and is the part a reader can act on.
-            "unknown_labels": v.get("unknown_labels") or [],
-        }
-    if et == "error":
-        return {"type": "error", "text": ev.text}
-    if et == "state":
-        return {"type": "state", "state": (ev.extra or {}).get("state") or {}}
-    if et == "cost":
-        # Running USD spend for the current question. Sent every round.
-        info = (ev.extra or {}).get("cost") or {}
-        return {"type": "cost", **info}
-    if et == "usage":
-        # Per-round token counts (informational; FE may ignore).
-        return {"type": "usage", **(ev.extra or {})}
-    if et in ("node_started", "node_completed", "branch_taken", "loop_iteration"):
-        # Agent Flow lifecycle. The builder's canvas lights up the path a run is
-        # actually taking, and the chat shows "đang chạy bước X" instead of a spinner
-        # with nothing behind it.
-        #
-        # `type` is written AFTER the spread on purpose: the payload carries the
-        # NODE's type, and spreading it last overwrote the EVENT's type — the wire
-        # then announced events called "report_read" and "if", which no client
-        # handles.
-        return {**(ev.extra or {}), "type": et}
-    if et == "result":
-        # THE TERMINATOR: the complete `FlowOutput` envelope.
-        #
-        # Without this branch the whole structured answer — typed blocks, citations,
-        # notices, execution path — was built, recorded, and then dropped on the way
-        # out, because this function only forwards types it knows and silently
-        # returns None for the rest. The bot would have kept rendering the streamed
-        # prose and nobody would have seen a block.
-        return {"type": "result", "envelope": (ev.extra or {}).get("envelope") or {}}
-    if et == "done":
-        return {"type": "done"}
-    # tool_call (and the explorer-internal _answer) never reach the FE
-    return None

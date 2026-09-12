@@ -777,6 +777,73 @@ def unpublish_brain_version(
     return _run(lambda: reg.unpublish_version(db, brain_key, version, _actor(user)))
 
 
+class DirectChatToggle(BaseModel):
+    enabled: bool
+
+
+@router.put("/brains/{brain_key}/direct-chat")
+def set_direct_chat(
+    brain_key: str, body: DirectChatToggle,
+    db: Session = Depends(get_db), user: User = Depends(can_edit),
+) -> dict[str, Any]:
+    """Opt this flow in (or out of) the Chat module.
+
+    An AUTHORING statement — "this flow also works with no report on screen" — so it
+    is gated at `edit`, not at publish. Who may then chat with it is a separate
+    question already answered by sharing.
+
+    Written to EVERY version row of the key, because it is a property of the flow. A
+    per-version value would mean enabling it on a draft did nothing until publish,
+    which reads as the setting being broken.
+
+    Refused when the flow could not answer anyway: a flow that reads a report returns
+    `{"charts": [], "read_ok": false}` without one and then answers from nothing, so
+    the honest place to stop it is here, with the reasons.
+    """
+    from app.models.agent_brain import AgentBrainVersion
+    from app.services.agent_flows import direct_chat
+
+    row = _may_edit_flow(db, user, brain_key)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Không tìm thấy flow")
+
+    reasons: list[str] = []
+    if body.enabled:
+        flow = reg.parse_flow(row)
+        if flow is None:
+            raise HTTPException(status_code=422, detail="Flow không hợp lệ")
+        reasons = direct_chat.ineligibility_reasons(flow)
+        if reasons:
+            raise HTTPException(status_code=409, detail=" ".join(reasons))
+
+    (
+        db.query(AgentBrainVersion)
+        .filter(AgentBrainVersion.brain_key == brain_key)
+        .update({"direct_chat_enabled": bool(body.enabled)}, synchronize_session=False)
+    )
+    db.commit()
+    return {"brain_key": brain_key, "direct_chat_enabled": bool(body.enabled)}
+
+
+@router.get("/brains/{brain_key}/direct-chat")
+def get_direct_chat(
+    brain_key: str,
+    db: Session = Depends(get_db), user: User = Depends(can_view),
+) -> dict[str, Any]:
+    """Whether this flow is in the Chat module, and — when it is not — why it could
+    not be even if the author asked."""
+    from app.services.agent_flows import direct_chat
+
+    row = _may_read_flow(db, user, brain_key)
+    flow = reg.parse_flow(row)
+    return {
+        "brain_key": brain_key,
+        "direct_chat_enabled": bool(getattr(row, "direct_chat_enabled", False)),
+        "eligible": bool(flow is not None and direct_chat.is_eligible(flow)),
+        "reasons": direct_chat.ineligibility_reasons(flow) if flow is not None else [],
+    }
+
+
 # ═══ Bindings — "define the data, then assign" ════════════════════════════════
 class BindingWrite(BaseModel):
     link_id: int

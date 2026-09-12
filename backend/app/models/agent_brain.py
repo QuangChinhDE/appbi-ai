@@ -92,6 +92,17 @@ class AgentBrainVersion(Base):
     #: pass can tell "shipped with the product" from "somebody built this".
     is_builtin = Column(Boolean, nullable=False, default=False)
 
+    #: May a signed-in user open this flow in the Chat module and talk to it with no
+    #: report on screen? OFF by default: most flows were written to read the report
+    #: they were bound to, and outside one they answer from nothing without saying so.
+    #:
+    #: Maintained as a property of the FLOW, not of this revision — toggling it
+    #: writes every version row of the `brain_key`. A per-version value would mean
+    #: "enabled" on a draft did nothing until publish, which is a trap rather than a
+    #: feature. Being on the version table anyway is a consequence of there being no
+    #: parent table; see this module's docstring for why there isn't one.
+    direct_chat_enabled = Column(Boolean, nullable=False, default=False)
+
     __table_args__ = (
         UniqueConstraint("brain_key", "version", name="uq_agent_brain_version"),
         Index("ix_agent_brain_key_status", "brain_key", "status"),

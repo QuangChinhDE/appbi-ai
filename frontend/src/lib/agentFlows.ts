@@ -43,7 +43,7 @@ export interface NodeSpec {
 }
 
 export type NodeType =
-  | 'agent' | 'report_read' | 'knowledge' | 'web'
+  | 'agent' | 'coordinate' | 'report_read' | 'knowledge' | 'web'
   | 'if' | 'switch' | 'loop' | 'filter'
   | 'set_var' | 'transform' | 'stop' | 'delay';
 
@@ -272,10 +272,44 @@ export interface LoopNode extends BaseNode {
   collect_into?: string;
 }
 
+/** One sub-agent a coordinator may dispatch to.
+ *
+ *  `when` is required by the contract and the reason is measured: a classifier
+ *  handed bare keys — `tra_so`, `so_sanh`, `bat_thuong` — sent "GMV toàn kỳ là bao
+ *  nhiêu?" down the FORECAST branch and never once fired the lookup case. Those are
+ *  variable names, not descriptions, and the planner reads this line to choose. */
+export interface Specialist {
+  key: string;
+  name?: string;
+  when: string;
+  body: FlowNode[];
+}
+
+/** One agent picks the specialists a question needs; they run; the answer combines.
+ *
+ *  Routing used to be `if`/`switch` on conditions the author wrote by hand, which
+ *  needs the questions enumerated in advance — the one thing a viewer's question
+ *  never is. */
+export interface CoordinateNode extends BaseNode {
+  type: 'coordinate';
+  prompt?: string;
+  provider?: string;
+  model?: string;
+  api_key?: string;
+  api_key_clear?: boolean;
+  specialists: Specialist[];
+  /** Ceiling on ONE plan. Each extra specialist is another model call for the
+   *  same question, so this is a cost control, not a preference. */
+  max_specialists?: number;
+  /** Runs when the plan names nobody. Empty is fine: the answering step then says
+   *  the question fitted none of them, which is the honest outcome. */
+  fallback?: FlowNode[];
+}
+
 export type FlowNode =
   | AgentNode | ReportReadNode | KnowledgeNode | WebNode
   | SetVarNode | TransformNode | StopNode | DelayNode
-  | FilterNode | IfNode | SwitchNode | LoopNode;
+  | FilterNode | IfNode | SwitchNode | LoopNode | CoordinateNode;
 
 /** What a flow needs from whichever link runs it.
  *  Prefer `metric`: a governed metric name is unique and resolves on every
@@ -930,6 +964,9 @@ export function walkNodes(nodes: FlowNode[]): FlowNode[] {
       else if (n.type === 'switch') {
         n.cases.forEach((c) => visit(c.body || []));
         visit(n.fallback || []);
+      } else if (n.type === 'coordinate') {
+        (n.specialists || []).forEach((sp) => visit(sp.body || []));
+        visit(n.fallback || []);
       } else if (n.type === 'loop') visit(n.body || []);
     }
   };
@@ -956,6 +993,15 @@ export function replaceNode(nodes: FlowNode[], key: string, next: FlowNode): Flo
         fallback: replaceNode(n.fallback || [], key, next),
       };
     }
+    if (n.type === 'coordinate') {
+      return {
+        ...n,
+        specialists: (n.specialists || []).map((sp) => ({
+          ...sp, body: replaceNode(sp.body || [], key, next),
+        })),
+        fallback: replaceNode(n.fallback || [], key, next),
+      };
+    }
     if (n.type === 'loop') return { ...n, body: replaceNode(n.body || [], key, next) };
     return n;
   });
@@ -972,6 +1018,15 @@ export function removeNode(nodes: FlowNode[], key: string): FlowNode[] {
         return {
           ...n,
           cases: n.cases.map((c) => ({ ...c, body: removeNode(c.body || [], key) })),
+          fallback: removeNode(n.fallback || [], key),
+        };
+      }
+      if (n.type === 'coordinate') {
+        return {
+          ...n,
+          specialists: (n.specialists || []).map((sp) => ({
+            ...sp, body: removeNode(sp.body || [], key),
+          })),
           fallback: removeNode(n.fallback || [], key),
         };
       }
@@ -1007,6 +1062,15 @@ export function insertNode(
           fallback: insertNode(n.fallback || [], target, node),
         };
       }
+      if (n.type === 'coordinate') {
+        return {
+          ...n,
+          specialists: (n.specialists || []).map((sp) => ({
+            ...sp, body: insertNode(sp.body || [], target, node),
+          })),
+          fallback: insertNode(n.fallback || [], target, node),
+        };
+      }
       if (n.type === 'loop') return { ...n, body: insertNode(n.body || [], target, node) };
       return n;
     }
@@ -1037,6 +1101,17 @@ export function insertNode(
       body.splice(Math.min(index, body.length), 0, node);
       return { ...n, fallback: body };
     }
+    if (n.type === 'coordinate' && group === 'specialist') {
+      return {
+        ...n,
+        specialists: (n.specialists || []).map((sp) => {
+          if (sp.key !== groupKey) return sp;
+          const body = [...(sp.body || [])];
+          body.splice(Math.min(index, body.length), 0, node);
+          return { ...sp, body };
+        }),
+      };
+    }
     if (n.type === 'loop' && group === 'body') {
       const body = [...(n.body || [])];
       body.splice(Math.min(index, body.length), 0, node);
@@ -1061,6 +1136,13 @@ export function locateNode(
     } else if (n.type === 'switch') {
       for (const c of n.cases) {
         const hit = locateNode(c.body || [], key, `${n.key}:case:${c.key}`);
+        if (hit) return hit;
+      }
+      const fb = locateNode(n.fallback || [], key, `${n.key}:fallback:`);
+      if (fb) return fb;
+    } else if (n.type === 'coordinate') {
+      for (const sp of n.specialists || []) {
+        const hit = locateNode(sp.body || [], key, `${n.key}:specialist:${sp.key}`);
         if (hit) return hit;
       }
       const fb = locateNode(n.fallback || [], key, `${n.key}:fallback:`);
@@ -1171,6 +1253,15 @@ export function blankNode(type: NodeType, nodes: FlowNode[], labels: BlankNodeLa
     case 'switch':
       return { ...base, type, value: '{{}}', mode: 'first_match', has_fallback: true,
         cases: [{ key: 'case_1', label: 'CASE 1', op: 'equals', value: '', body: [] }], fallback: [] };
+    case 'coordinate':
+      // Two lanes, because one specialist is not a coordination problem and the
+      // contract refuses it. Each starts with a blank `when` the author must fill:
+      // the planner reads that line and nothing else to choose.
+      return { ...base, type, prompt: '', provider: 'inherit', max_specialists: 3,
+        specialists: [
+          { key: 'chuyen_gia_1', name: '', when: '', body: [] },
+          { key: 'chuyen_gia_2', name: '', when: '', body: [] },
+        ], fallback: [] };
     case 'loop':
       return { ...base, type, over: '{{}}', item_var: 'item', max_iterations: 10, body: [],
         collect_into: uniqueKey(nodes, 'all_findings') };

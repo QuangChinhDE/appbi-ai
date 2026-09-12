@@ -373,6 +373,11 @@ function describe(node: FlowNode, t: (key: string, values?: Record<string, strin
         count: node.cases?.length || 0,
         fallback: node.has_fallback ? t('agentFlows.canvas.describe.fallbackSuffix') : '',
       });
+    case 'coordinate':
+      return t('agentFlows.canvas.describe.coordinate', {
+        count: node.specialists?.length || 0,
+        max: node.max_specialists ?? 3,
+      });
     case 'loop':
       return t('agentFlows.canvas.describe.loop', {
         over: node.over,
@@ -424,7 +429,20 @@ function RuleCard({
         </span>
         <b className="truncate text-tiny font-strong">{title}</b>
       </div>
-      <div className="px-2 py-1.5 text-tiny leading-snug text-text-secondary">{subtitle}</div>
+      {/* TWO LINES, ALWAYS — so lanes side by side start their bodies at the same
+          height. A Switch's subtitle is "equals <value>" and fits on one; a
+          specialist's is the author's own "when to use this one", which routinely
+          wraps. With the height free, one lane's card sat 14px lower than its
+          neighbour's and the row read as misaligned rather than parallel. Clamped
+          as well as floored: a long `when` must not push the lanes apart either. */}
+      <div className="px-2 py-1.5 text-tiny leading-snug text-text-secondary">
+        {/* The floor is on the TEXT, not on the padded box. `min-h` measured
+            against the box includes its own padding under `border-box`, so
+            2.6em resolved to 26px — the height of ONE line plus the padding,
+            which is what it was already. `leading-snug` is 1.375, so two lines
+            is 2.75em exactly and stays right if the type scale moves. */}
+        <div className="line-clamp-2 min-h-[2.75em]">{subtitle}</div>
+      </div>
     </button>
   );
 }
@@ -485,8 +503,36 @@ function NodeBlock({
     />
   );
 
-  if (node.type === 'if' || node.type === 'switch') {
-    const lanes = node.type === 'if'
+  if (node.type === 'if' || node.type === 'switch' || node.type === 'coordinate') {
+    const lanes = node.type === 'coordinate'
+      // Drawn as lanes like a Switch, because that is what it is on the canvas:
+      // parallel bodies, one per specialist. What differs is who chooses — a
+      // model reading the question rather than a condition the author typed —
+      // and the lane subtitle is that choice's only visible input, so it shows
+      // `when` rather than an operator and a value.
+      ? [
+          ...(node.specialists || []).map((s) => ({
+            key: s.key,
+            label: rest.t('agentFlows.canvas.lane.specialist'),
+            title: s.name || s.key,
+            sub: s.when || rest.t('agentFlows.canvas.lane.specialistNoWhen'),
+            tone: 'ok' as const,
+            body: s.body || [],
+            path: `${node.key}:specialist:${s.key}`,
+            selKey: `${node.key}:specialist:${s.key}`,
+          })),
+          ...((node.fallback || []).length ? [{
+            key: 'fallback',
+            label: rest.t('agentFlows.canvas.lane.fallback'),
+            title: rest.t('agentFlows.canvas.lane.fallback'),
+            sub: rest.t('agentFlows.canvas.lane.noSpecialist'),
+            tone: 'neutral' as const,
+            body: node.fallback || [],
+            path: `${node.key}:fallback:`,
+            selKey: `${node.key}:fallback:`,
+          }] : []),
+        ]
+      : node.type === 'if'
       ? node.paths.map((p) => ({
           key: p.key,
           label: p.kind === 'fallback' ? rest.t('agentFlows.canvas.lane.fallback') : rest.t('agentFlows.canvas.lane.condition'),

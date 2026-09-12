@@ -94,16 +94,19 @@ async def lifespan(app: FastAPI):
     schedule_token_cleanup()
 
     # Reclaim workboard webhook sync runs left running from a previous
-    # process — without this they'd be stuck in "running" forever.
-    try:
-        from app.modules.workboards.services.webhook_sync_service import (
-            reap_stuck_sync_runs,
-        )
-        reap_stuck_sync_runs()
-    except Exception as exc:  # pragma: no cover — best-effort startup hook
-        logging.getLogger(__name__).warning(
-            "Failed to reap stuck workboard sync runs on startup: %s", exc
-        )
+    # process — without this they'd be stuck in "running" forever. Skipped
+    # while the module is disabled: with the router unmounted no new sync run
+    # can be created, so there is nothing left for this to reclaim.
+    if settings.WORKBOARDS_ENABLED:
+        try:
+            from app.modules.workboards.services.webhook_sync_service import (
+                reap_stuck_sync_runs,
+            )
+            reap_stuck_sync_runs()
+        except Exception as exc:  # pragma: no cover — best-effort startup hook
+            logging.getLogger(__name__).warning(
+                "Failed to reap stuck workboard sync runs on startup: %s", exc
+            )
 
     yield
 

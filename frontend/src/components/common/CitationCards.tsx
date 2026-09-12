@@ -26,7 +26,7 @@
  * reader most needs and the one a plain link can never tell them.
  */
 import { useState } from 'react';
-import { ChevronDown, ChevronRight, FileText, AlertTriangle, Check, Loader2 } from 'lucide-react';
+import { ChevronDown, ChevronRight, ChevronUp, FileText, AlertTriangle, Check, Loader2 } from 'lucide-react';
 import { resolveCitation, type ResolvedCitation } from '@/lib/catalog';
 import { useI18n } from '@/providers/LanguageProvider';
 import { cn } from '@/lib/utils';
@@ -57,16 +57,53 @@ function parseRef(ref: string): { docId: number; block: number | null } | null {
   return { docId, block: Number.isFinite(block) ? block : null };
 }
 
-export function CitationCards({ citations }: { citations: AnswerCitation[] }) {
+export function CitationCards(
+  { citations, collapsible = false }: { citations: AnswerCitation[]; collapsible?: boolean },
+) {
   const { t } = useI18n();
   const docs = (citations || []).filter((c) => c.kind === 'document');
+  const [expanded, setExpanded] = useState(!collapsible);
   if (!docs.length) return null;
+
+  // COLLAPSED BY DEFAULT WHERE THE ANSWER IS THE PRODUCT.
+  //
+  // Six passages is six cards is roughly four hundred pixels — more than the
+  // answer they support, which inverts what the reader came for. Evidence has to
+  // be one click away, not in the way. Off by default so the Studio, where an
+  // author is checking the evidence itself, keeps showing it outright.
+  //
+  // Same shape as `StatusLog` on the public bot: a one-line summary that expands,
+  // rather than a scrollable box or a truncated list.
+  if (collapsible && !expanded) {
+    return (
+      <button
+        type="button"
+        onClick={() => setExpanded(true)}
+        className="mt-2 flex items-center gap-1.5 text-micro text-text-quaternary transition-colors hover:text-text-secondary"
+      >
+        <FileText className="h-3 w-3" />
+        <span>{t('citation.sources', { n: docs.length })}</span>
+        <ChevronDown className="h-3 w-3" />
+      </button>
+    );
+  }
 
   return (
     <div className="mt-3 space-y-1.5">
-      <p className="text-micro uppercase tracking-wide text-text-quaternary">
-        {t('citation.sources', { n: docs.length })}
-      </p>
+      {collapsible ? (
+        <button
+          type="button"
+          onClick={() => setExpanded(false)}
+          className="flex items-center gap-1.5 text-micro uppercase tracking-wide text-text-quaternary transition-colors hover:text-text-secondary"
+        >
+          <span>{t('citation.sources', { n: docs.length })}</span>
+          <ChevronUp className="h-3 w-3" />
+        </button>
+      ) : (
+        <p className="text-micro uppercase tracking-wide text-text-quaternary">
+          {t('citation.sources', { n: docs.length })}
+        </p>
+      )}
       {docs.map((c, i) => <CitationCard key={`${c.ref}-${i}`} citation={c} />)}
     </div>
   );

@@ -60,8 +60,24 @@ export function buildEdges(nodes: FlowNode[]): EdgeSpec[] {
   };
 
   const layoutNode = (n: FlowNode): Block => {
-    if (n.type === 'if' || n.type === 'switch') {
-      const lanes = n.type === 'if'
+    if (n.type === 'if' || n.type === 'switch' || n.type === 'coordinate') {
+      // A COORDINATOR'S LANES NEED THE SAME WIRES AS A SWITCH'S.
+      //
+      // `FlowCanvas` learned to DRAW the lanes and this did not learn to CONNECT
+      // them, so the specialists rendered as two cards floating either side of a
+      // line that ran straight past them — the picture said the flow ignores them,
+      // which is the opposite of what the node does. The lanes and the edges are
+      // computed in two places, and adding a branching node means teaching both.
+      const lanes = n.type === 'coordinate'
+        ? [
+            ...(n.specialists || []).map((s) => ({
+              key: s.key, body: s.body || [], path: `${n.key}:specialist:${s.key}`,
+            })),
+            ...((n.fallback || []).length
+              ? [{ key: 'fallback', body: n.fallback || [], path: `${n.key}:fallback:` }]
+              : []),
+          ]
+        : n.type === 'if'
         ? n.paths.map((p) => ({ key: p.key, body: p.body || [], path: `${n.key}:path:${p.key}` }))
         : [
             ...n.cases.map((c) => ({ key: c.key, body: c.body || [], path: `${n.key}:case:${c.key}` })),

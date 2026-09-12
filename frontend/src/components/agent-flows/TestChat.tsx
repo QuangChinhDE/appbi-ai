@@ -83,6 +83,17 @@ export function branchProbes(nodes: FlowNode[]): BranchProbe[] {
       if (n.has_fallback && (n.fallback || []).length) {
         out.push({ nodeKey: n.key, nodeName, pathLabel: 'fallback', hint: '' });
       }
+    } else if (n.type === 'coordinate') {
+      // The lanes a tester can see the run take. Without this the panel listed
+      // every branch in the flow EXCEPT the ones a model chooses — which are the
+      // ones worth watching, because nothing on the canvas predicts them.
+      for (const s of n.specialists || []) {
+        out.push({
+          nodeKey: n.key, nodeName,
+          pathLabel: s.name || s.key,
+          hint: (s.when || '').trim(),
+        });
+      }
     } else if (n.type === 'if') {
       for (const p of n.paths || []) {
         out.push({

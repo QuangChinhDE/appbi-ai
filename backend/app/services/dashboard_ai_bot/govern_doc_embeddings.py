@@ -461,12 +461,30 @@ def log_egress(db: Session, doc, *, outcome: str, model: str, chunks: int = 0,
 def authoring_scope(db: Session) -> None:
     """Let THIS transaction read chunks of documents that are not published.
 
-    Row-level security defaults `govern_doc_chunk` to published rows only, so a
-    retrieval path that forgets its filter returns nothing rather than drafts.
     The Knowledge Hub console legitimately needs the drafts — an author has to be
     able to inspect what was indexed before publishing — so it says so, once, per
     transaction. `SET LOCAL` is deliberate: a session-level SET would ride the
     pooled connection into the next request and quietly widen it.
+
+    WHAT ACTUALLY KEEPS DRAFTS OUT OF AN ANSWER, AND WHAT ONLY LOOKS LIKE IT DOES
+    ----------------------------------------------------------------------------
+    This used to name row-level security as the backstop: forget your filter, the
+    argument went, and the store hands back published rows or none. The policy is
+    real, is written correctly, and — in this deployment — never runs. Postgres skips RLS entirely for a SUPERUSER or
+    BYPASSRLS role, and the application connects as one. Measured: with no scope
+    set at all, the app's role reads 64 chunks, 31 of them belonging to
+    unpublished documents.
+
+    So the sentence above described a guarantee that was not in force, in the one
+    place a reader goes to find out what protects the data. What protects it is
+    `_scoped_chunk_filter`: it adds `d.status = 'Published'` and
+    `c.doc_id = ANY(:allowed)`, and it returns None — no query at all — when no
+    scope was named. That is fail-closed, and it is the ONLY line of defence
+    until the app connects as `appbi_app`, the least-privilege role migration
+    0048 created for exactly this and which nothing has ever used.
+
+    `vector_store_health()` reports `rls_in_force` so this is knowable rather
+    than assumed; the Knowledge Hub shows it.
     """
     _set_chunk_scope(db, "authoring")
 
@@ -478,6 +496,11 @@ def restricted_scope(db: Session) -> None:
     the same request would otherwise leave drafts visible to everything after it.
     Retrieval therefore does not merely *assume* a closed scope, it closes one —
     which is also the call any future consumer of this store should make first.
+
+    Worth knowing while RLS is bypassed (see `authoring_scope`): closing the
+    window is currently a statement of intent that costs nothing and protects
+    nothing on its own. It becomes real the moment the app connects as a role
+    that does not bypass row-level security, which is why it is still called.
     """
     _set_chunk_scope(db, "")
 
@@ -1068,8 +1091,15 @@ def _search_scoped_doc_chunks(
     doc_ids: set[int] | list[int] | None,
     published_only: bool,
     gate_question: str | None = None,
+    report: dict | None = None,
 ) -> list[dict]:
     """Hybrid retrieval across any number of document embedding models.
+
+    `report`, when given, is filled with what this pass could NOT do. It is an
+    out-parameter rather than a richer return type because the empty case is the
+    one that matters: a search whose vector half failed AND whose keyword half
+    matched nothing returns `[]`, and a bare empty list cannot say whether the
+    corpus is silent or the search was.
 
     Each model gets its own query vector and filtered ANN scan. Their ranks,
     plus one model-independent full-text rank, are merged with RRF so raw cosine
@@ -1118,6 +1148,8 @@ def _search_scoped_doc_chunks(
     vector_scores: dict[int, float] = {}
     vector_ids: set[int] = set()
 
+    unembedded_models: list[str] = []
+
     for model, model_doc_ids in groups.items():
         query_vector = EmbeddingService.generate_query_embedding(
             question or "", model=model
@@ -1125,6 +1157,24 @@ def _search_scoped_doc_chunks(
         if query_vector is None:
             # Keyword results for this model remain usable. One provider/model
             # failure must not take the whole multi-model search down.
+            #
+            # BUT IT MUST NOT PASS IN SILENCE EITHER.
+            #
+            # This `continue` is the whole of the old handling: the search lost
+            # its semantic half and returned a keyword-only result set that looks
+            # exactly like a complete one. The answerability verdict then runs on
+            # it and can say "chưa tìm thấy đủ thông tin trong nguồn tri thức" —
+            # blaming the corpus for a failed API call. The failure is now more
+            # likely, not less: a query embedding has a 12-second ceiling, so a
+            # slow provider lands here rather than in an error.
+            #
+            # Which is a different sentence to the reader and a different fix for
+            # the operator, so the run has to be able to tell them apart.
+            unembedded_models.append(str(model))
+            logger.warning(
+                "govern_doc_embeddings: no query vector for model %s — this "
+                "search is keyword-only", model,
+            )
             continue
         model_filter = (
             f"{sql_filter} AND c.model_version = :embedding_model "
@@ -1153,6 +1203,15 @@ def _search_scoped_doc_chunks(
     if metric_ids:
         ranked_lists.append(metric_ids)
     if not ranked_lists:
+        # NOTHING FOUND IS NOT THE SAME AS NOTHING ASKED.
+        #
+        # Reported before the early return, because this is exactly the shape a
+        # failed embedding takes when the keyword branch also comes back empty —
+        # and the verdict downstream would otherwise read it as "the documents do
+        # not cover this question".
+        if unembedded_models and report is not None:
+            report["semantic_unavailable"] = True
+            report["unembedded_models"] = list(unembedded_models)
         return []
     fused = _fuse_rrf(*ranked_lists)
     # Take the whole pool into stage two, then let the reranker cut to k.
@@ -1281,7 +1340,30 @@ def _search_scoped_doc_chunks(
         row["named_metrics"] = [
             m for m in named_metrics if m["home_doc_id"] == row["doc_id"]
         ]
+        # HOW COMPLETE THIS SEARCH WAS, carried by the rows it produced.
+        #
+        # A consumer holding rows has no other way to learn that half the
+        # retrieval did not run; the rows themselves look ordinary.
+        if unembedded_models:
+            row["semantic_unavailable"] = True
+            row["unembedded_models"] = list(unembedded_models)
+    if unembedded_models and report is not None:
+        report["semantic_unavailable"] = True
+        report["unembedded_models"] = list(unembedded_models)
     return reranked[: max(1, k)]
+
+
+#: Below this, retrieval found nothing about the question and it is worth asking
+#: again in different words. The same floor the answerability verdict uses — see
+#: govern_doc_answerability for the sweep it came from, and why it is not the value
+#: that scores best on the tuning set.
+_EXPANSION_FLOOR = -4.5
+
+#: Extra retrieval passes one question may buy. Each is a query embedding, a vector
+#: scan and a rerank; a question needing five rephrasings is one the corpus does not
+#: answer, and paying for five is how a search becomes slow on exactly the questions
+#: that were never going to work.
+_MAX_EXTRA_PASSES = 3
 
 
 def search_doc_chunks(
@@ -1293,6 +1375,7 @@ def search_doc_chunks(
     doc_ids: set[int] | list[int] | None = None,
     published_only: bool = True,
     authoring: bool = False,
+    report: dict | None = None,
 ) -> list[dict]:
     """Reusable multi-model search without retrieval telemetry.
 
@@ -1313,55 +1396,150 @@ def search_doc_chunks(
     # cannot get that wrong by forgetting an argument.
     if not authoring:
         published_only = True
+
+    # A NOTE ON WHAT IS DELIBERATELY *NOT* HERE.
+    #
+    # A shared cross-encoder deadline across the passes of one question was built
+    # and removed. The reasoning was that expansion runs up to four passes and each
+    # paid the reranker again; the measurement said otherwise, twice over. With one
+    # wallet of 1.6s, on three runs of a two-clause question:
+    #
+    #     lan 1: 1 pass,  SKIPPED after 1101ms of work,  0/6  rows scored
+    #     lan 2: 4 passes, 2 skipped,                    9/11 rows scored
+    #     lan 3: 4 passes, 2 skipped,                    7/11 rows scored
+    #
+    # It discarded work it had already paid for, and — worse — left whole result
+    # sets with no cross-encoder score at all. The relevance floor is what decides
+    # whether a question is answerable; unscored rows make that verdict blind, so
+    # the saving was being taken out of the one signal measured to be worth 0.978
+    # against 0.844 for its nearest alternative.
+    #
+    # The cost it was aimed at was never the reranker. See `embedding_service`:
+    # every query embedding opened a fresh TLS connection.
+    # The caller's dict when it passed one, so that a search returning NO rows
+    # can still say why. An empty list is the one answer that cannot carry a flag,
+    # and it is the answer a failed embedding most often produces.
+    report = report if report is not None else {}
     try:
         authoring_scope(db) if authoring else restricted_scope(db)
         rows = _search_scoped_doc_chunks(
             db, question, k=k, dashboard_id=dashboard_id,
             doc_ids=doc_ids, published_only=published_only,
-            gate_question=question,
+            gate_question=question, report=report,
         )
 
         from app.services.dashboard_ai_bot.govern_doc_query_plan import (
-            describe, glossary_variants, uncovered_clauses,
+            describe, uncovered_clauses,
         )
 
-        # Two reasons to look again, both read off the evidence rather than
-        # predicted: a PART of the question found nothing, or a term the glossary
-        # knows by another name found nothing under the name that was used.
-        missing = uncovered_clauses(question, rows) + glossary_variants(db, question, rows)
+        # WHEN TO LOOK AGAIN.
+        #
+        # This escalated on `uncovered_clauses` — a clause whose terms appear
+        # nowhere in the retrieved text. Measured over all 56 eval cases, it fired
+        # ZERO times: the rule counts a clause as covered when ANY of its terms
+        # appears ANYWHERE, and in business prose one common word always does. The
+        # feature existed and had never run.
+        #
+        # The trigger is now the relevance floor the answerability verdict uses —
+        # the cross-encoder's judgement, measured at 0.978 against 0.844 for term
+        # coverage. `uncovered_clauses` is kept as a SECOND, cheaper trigger for
+        # multi-part questions, where the floor cannot see that half of a question
+        # went unanswered because the other half scored well.
+        judged = [float(r["ce_logit"]) for r in rows if r.get("ce_logit") is not None]
+        weak = bool(judged) and max(judged) < _EXPANSION_FLOOR
+
+        from app.services.dashboard_ai_bot.govern_doc_expansion import expand
+
+        alternatives: list[dict] = []
+        if weak or not rows:
+            alternatives = expand(db, question, rows, evidence_is_weak=True)
+        # A part of a multi-part question with no evidence is still worth a pass,
+        # even when the question as a whole scored above the floor.
+        alternatives += [{"query": clause, "source": "clause",
+                          "why": "a part of the question that found no evidence"}
+                         for clause in uncovered_clauses(question, rows)]
+
         extra = 0
-        if missing:
-            # Retrieve for the parts that went unanswered and merge. Merged by
-            # chunk id and best score rather than re-fused: the clause passes are
-            # answering DIFFERENT questions, so their ranks are not comparable and
-            # RRF across them would average away the very evidence just found.
+        if alternatives:
+            # Merged by chunk id and best score rather than re-fused: the extra
+            # passes are answering DIFFERENT questions, so their ranks are not
+            # comparable and RRF across them would average away the very evidence
+            # just found.
             by_id = {row["chunk_id"]: row for row in rows}
-            for clause in missing:
+            # One request for every alternative, before any of them is searched.
+            #
+            # The passes below are sequential and each one embedded its own query,
+            # so a question that expanded three ways paid three round trips to
+            # OpenAI at 0.4-7.4 seconds each — measured at 63% of the time for one
+            # two-clause question, and the reason an analysis node reports a
+            # timeout rather than a slow answer. The alternatives are all known
+            # here and the embeddings endpoint takes a list, so they travel
+            # together and each pass then finds its vector already bought.
+            #
+            # Nothing below changes. A failure costs the batch, never the search.
+            try:
+                from app.services.embedding_service import EmbeddingService
+
+                EmbeddingService.prime_query_embeddings(
+                    [a["query"] for a in alternatives[:_MAX_EXTRA_PASSES]]
+                )
+            except Exception:  # noqa: BLE001 — a saving, never a gate
+                logger.debug("prime_query_embeddings failed", exc_info=True)
+            for alternative in alternatives[:_MAX_EXTRA_PASSES]:
                 extra += 1
                 for row in _search_scoped_doc_chunks(
-                    db, clause, k=k, dashboard_id=dashboard_id,
+                    db, alternative["query"], k=k, dashboard_id=dashboard_id,
                     doc_ids=doc_ids, published_only=published_only,
-                    # RETRIEVED for the clause, JUDGED against the whole question.
+                    # RETRIEVED for the alternative, JUDGED against the whole
+                    # question — the verdict belongs to what the reader asked.
                     gate_question=question,
                 ):
                     current = by_id.get(row["chunk_id"])
                     if current is None or (row.get("rerank_score") or 0) > (current.get("rerank_score") or 0):
+                        # WHY this passage is here. Without it a reader debugging a
+                        # result cannot tell a direct hit from one reached through
+                        # a KPI's alias.
+                        row["reached_via"] = alternative
                         by_id[row["chunk_id"]] = row
             rows = sorted(
                 by_id.values(),
                 key=lambda r: (-(r.get("rerank_score") or 0.0), r["chunk_id"]),
             )[: k * 2]
             logger.info(
-                "govern_doc_query_plan: expanded for %s unanswered clause(s)", len(missing)
+                "govern_doc_expansion: %d extra pass(es) via %s",
+                extra, [a["source"] for a in alternatives[:_MAX_EXTRA_PASSES]],
             )
 
         plan = describe(question, rows, extra)
+        plan["expansions"] = [
+            {"query": a["query"], "source": a["source"], "why": a["why"]}
+            for a in alternatives[:_MAX_EXTRA_PASSES]
+        ]
+        # WHETHER THIS SEARCH RAN WHOLE, on the plan every consumer already reads.
+        #
+        # The plan is how a reader learns what the retriever did; "it did half of
+        # it" belongs there beside how many passes it took.
+        plan["semantic_unavailable"] = bool(report.get("semantic_unavailable"))
+        if report.get("unembedded_models"):
+            plan["unembedded_models"] = report["unembedded_models"]
         for row in rows:
             row["query_plan"] = plan
         return rows
     except Exception:  # noqa: BLE001
+        # A CRASH IS NOT AN EMPTY CORPUS.
+        #
+        # Swallowing to `[]` keeps one bad question from taking down a turn, and
+        # that is right. What was wrong is that `[]` is also what a genuinely
+        # unanswerable question returns, so every internal failure reached the
+        # viewer as "chưa tìm thấy đủ thông tin trong nguồn tri thức" — a claim
+        # about the company's documents, made because of a bug in this file.
+        #
+        # Seen live while testing the flag below: one module missing from a
+        # deployment produced exactly that sentence, four times, with a traceback
+        # in the log nobody reading the answer would ever see.
         logger.warning("govern_doc_embeddings.search_doc_chunks failed", exc_info=True)
         db.rollback()
+        report["retrieval_failed"] = True
         return []
 
 
@@ -1372,8 +1550,12 @@ def retrieve_doc_chunks(
     k: int = 6,
     doc_ids: set[int] | list[int] | None = None,
     consumer: str = "dashboard_bot",
+    report: dict | None = None,
 ) -> list[dict]:
     """Search the published documents this report/flow is allowed to read.
+
+    `report` is forwarded to the search. A caller that wants to know whether the
+    retrieval ran whole has to be able to ask the function it actually called.
 
     `dashboard_id` is OPTIONAL because a dashboard is a way of naming a document
     scope, not the only one. An Agent Flow step carries its own grant, and
@@ -1394,6 +1576,7 @@ def retrieve_doc_chunks(
         doc_ids=doc_ids,
         published_only=True,
         authoring=False,
+        report=report,
     )
     chunk_ids = [row["chunk_id"] for row in out]
     log_retrieval(

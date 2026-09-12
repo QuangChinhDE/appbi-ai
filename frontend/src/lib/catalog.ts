@@ -348,6 +348,34 @@ export async function listGoogleDocsSources(): Promise<GoogleDocsSource[]> {
   return data.sources ?? [];
 }
 
+/** What the chunk store's guarantees are ACTUALLY doing, as facts rather than
+ *  intentions.
+ *
+ *  `rls_in_force` is false whenever the application connects as a SUPERUSER or
+ *  BYPASSRLS role — Postgres then skips row-level security entirely and a policy
+ *  can be perfectly written and enforce nothing. `stale_index_docs` counts the
+ *  documents the retriever refuses to search: they still list, still look
+ *  attached, and the assistant simply stops finding them.
+ *
+ *  Both were computed by the backend and shown on no screen, which is the same
+ *  as not knowing them. */
+export interface VectorStoreHealth {
+  rls_in_force?: boolean;
+  role_bypasses_rls?: boolean;
+  db_role?: string;
+  rls_enabled?: boolean;
+  policy_count?: number;
+  reason?: string;
+  stale_index_docs?: number | null;
+  stale_index_reasons?: Record<string, number>;
+  searchable?: boolean;
+}
+
+export async function getVectorStoreHealth(): Promise<VectorStoreHealth> {
+  const { data } = await apiClient.get<VectorStoreHealth>('/catalog/govern/vector-store-health');
+  return data;
+}
+
 export async function getDocSource(docId: number): Promise<DocSourceInfo> {
   const { data } = await apiClient.get<DocSourceInfo>(`/catalog/govern/knowledge/${docId}/source`);
   return data;

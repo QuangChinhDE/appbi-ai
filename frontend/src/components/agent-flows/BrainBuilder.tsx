@@ -36,7 +36,7 @@ import {
   replaceNode, saveBrain, validateFlow, walkNodes,
   type FlowBody, type FlowLinkUsage, type FlowNode, type FlowPath, type InsertTarget,
   type Attachable, type NodeSpec, type NodeType, type ProviderGroup,
-  type SwitchCase, type ToolPack,
+  type Specialist, type SwitchCase, type ToolPack,
   type ValidateResult,
 } from '@/lib/agentFlows';
 
@@ -291,10 +291,21 @@ export function BrainBuilder({
     if (owner?.type === 'switch' && group === 'fallback') {
       return { owner, isFallback: true, node: null };
     }
+    if (owner?.type === 'coordinate' && group === 'specialist') {
+      return {
+        owner,
+        specialist: (owner.specialists || []).find((s) => s.key === laneKey) || null,
+        node: null,
+      };
+    }
+    if (owner?.type === 'coordinate' && group === 'fallback') {
+      return { owner, isFallback: true, node: null };
+    }
     return { node: findNode(body.nodes, ownerKey) };
   }, [selected, body.nodes]) as {
     node: FlowNode | null; owner?: FlowNode; path?: FlowPath | null;
-    switchCase?: SwitchCase | null; isFallback?: boolean;
+    switchCase?: SwitchCase | null; specialist?: Specialist | null;
+    isFallback?: boolean;
   };
 
   const updateNode = (next: FlowNode) => mutate(replaceNode(body.nodes, next.key, next));
@@ -368,7 +379,12 @@ export function BrainBuilder({
   const all = walkNodes(body.nodes);
   const counts = {
     nodes: all.length,
-    branches: all.filter((n) => n.type === 'if' || n.type === 'switch').length,
+    // A coordinator branches too — it just picks the lane with a model rather
+    // than a condition. Left out, the chip under the title said "1 branch" for a
+    // flow with three.
+    branches: all.filter(
+      (n) => n.type === 'if' || n.type === 'switch' || n.type === 'coordinate',
+    ).length,
     loops: all.filter((n) => n.type === 'loop').length,
   };
 

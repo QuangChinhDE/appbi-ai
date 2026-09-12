@@ -76,6 +76,22 @@ class Settings(BaseSettings):
     
     # Database (Metadata Store)
     DATABASE_URL: str
+    #: The connection the REQUEST PATH uses, when it should differ from the one
+    #: that owns the schema.
+    #:
+    #: Migrations, and anything that creates a table, must run as the owner. A
+    #: request must not: Postgres skips row-level security entirely for a
+    #: SUPERUSER or BYPASSRLS role, so while the application connects as the owner
+    #: the policies on `govern_doc_chunk` and `govern_doc_block` are written,
+    #: enabled, forced — and never once evaluated.
+    #:
+    #: Empty (the default) keeps today's behaviour exactly: one connection, one
+    #: role, RLS inert, and `vector_store_health.rls_in_force` reporting false so
+    #: the Knowledge Hub says so out loud. Point this at `appbi_app` — the
+    #: least-privilege role migration 0048 created and granted, which has SELECT/
+    #: INSERT/UPDATE/DELETE on all 92 tables and every sequence, and no CREATE —
+    #: and the second layer starts working.
+    DATABASE_URL_APP: str = ""
     
     # Local application storage
     DATA_DIR: str = ".data"
@@ -106,8 +122,17 @@ class Settings(BaseSettings):
     AUTH_PASSWORD_LOGIN_ENABLED: bool = True
     AUTH_GOOGLE_ENABLED: bool = False
 
-    # Workboard mini-app builder module — bundled with the core stack.
-    WORKBOARDS_ENABLED: bool = True
+    # Workboard mini-app builder module — hidden, not deleted. OFF by default
+    # since 2026-09-10 (no live external end-users on any published Workboard
+    # portal at the time of this decision). Gates the /workboards, /workspaces
+    # admin routers (app/api/__init__.py) AND the public, unauthenticated
+    # /public/workspaces/{token}/workboards portal (app/api/public.py) — both
+    # become true 404s while off. Also removes "workboards" from the
+    # permission matrix (app/api/permissions.py) for every user, including
+    # admins. Existing workboard data/ORM models are untouched. Set true and
+    # restart the backend (no rebuild needed, unlike the frontend's
+    # NEXT_PUBLIC_* flags) to restore it exactly as it was.
+    WORKBOARDS_ENABLED: bool = False
 
     # ── Metadata Catalog / Governance (DB-backed) ───────────────────────
     # Default OFF — the catalog module is fully INERT until enabled (not even
@@ -136,6 +161,11 @@ class Settings(BaseSettings):
     # 0 = unlimited (the pre-v2 behaviour).
     AI_DEFAULT_BUDGET_USD_PER_DAY: float = 5.0
     AI_DEFAULT_TURNS_PER_HOUR: int = 120
+    # Direct Chat (signed-in users talking to a flow with no report) is metered per
+    # USER instead of per link: there is no link to hang a ceiling on, and the
+    # natural brake a public link has — somebody must find and open it — does not
+    # exist for a nav item every employee can click. 0 = unlimited.
+    DIRECT_CHAT_RUNS_PER_DAY: int = 100
     # Evidence ledger: persist one row per tool call so every number in an
     # answer can be traced back to the call that produced it.
     # ON by default. Verification is fail-closed, so an empty ledger would mean

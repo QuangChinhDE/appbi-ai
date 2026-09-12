@@ -61,6 +61,7 @@ def record(
     binding_id: int | None,
     store_content: bool = True,
     usd: float | None = None,
+    chat_thread_id: int | None = None,
 ) -> int | None:
     """Write one run across the three tables. Never raises into the caller.
 
@@ -73,8 +74,14 @@ def record(
             brain_key=brain_key,
             version=version,
             binding_id=binding_id,
+            chat_thread_id=chat_thread_id,
             link_token=inp.binding.link_token or None,
-            dashboard_id=inp.report.dashboard_id,
+            # `or None`, for the reason `binding_id` already has one: `ReportInfo.
+            # dashboard_id` is a plain int whose "no report" value is the sentinel 0,
+            # and a run row storing 0 reads as a dashboard that exists. The column is
+            # nullable so "no report" can be said honestly. Every real dashboard id is
+            # non-zero, so the public path is unaffected.
+            dashboard_id=inp.report.dashboard_id or None,
             session_key=inp.conversation.session_key or None,
             status=out.status,
             execution_path=(out.trace.path or "")[:255],

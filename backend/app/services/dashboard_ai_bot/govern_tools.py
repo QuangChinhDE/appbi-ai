@@ -53,6 +53,7 @@ import re
 from typing import Any
 
 from app.services.dashboard_ai_bot import knowledge_hit
+from app.services.agent_flows.tools.context import CHAT_USER
 from app.services.dashboard_ai_bot.tool_context import ToolContext, _err, _ok
 
 logger = logging.getLogger(__name__)
@@ -102,9 +103,20 @@ def _plain(text: str, limit: int) -> str:
 
 
 def _scope(ctx: ToolContext) -> tuple[set[int], set[int]]:
-    """(dataset_table_ids, dataset_ids) backing this dashboard."""
+    """(dataset_table_ids, dataset_ids) backing this dashboard.
+
+    Empty when there is no dashboard. Direct chat runs with `dashboard=None`, and
+    every tool body is wrapped in a catch-all that turns an exception into a failed
+    tool call the model then retries — so an unguarded `ctx.dashboard.id` here would
+    not surface as a clear error but as a step burning its tool budget on
+    `internal` failures. The same guard already exists on `_resolve_excluded_columns`
+    for the same reason.
+    """
     from app.models.dataset import DatasetTable
     from app.services.dashboard_ai_bot.knowledge_context import dashboard_table_ids
+
+    if getattr(ctx, "dashboard", None) is None:
+        return set(), set()
 
     tids = set(dashboard_table_ids(ctx.db, ctx.dashboard.id))
     dsids: set[int] = set()
@@ -165,6 +177,9 @@ def _visible_doc_ids(ctx: ToolContext) -> set[int]:
     """Documents this report is allowed to read, then narrowed to what this STEP
     was scoped to. See the module docstring for why the order matters: the
     entitlement is computed first and the author's list only cuts inside it."""
+    if getattr(ctx, "actor_type", "") == CHAT_USER:
+        return _chat_user_doc_ids(ctx)
+
     chosen = _authored_doc_ids(ctx)
     if chosen:
         # An EXPLICIT grant is the ceiling. It may reach outside this report — that
@@ -173,6 +188,53 @@ def _visible_doc_ids(ctx: ToolContext) -> set[int]:
         # draft is not something anyone chose to publish to a viewer.
         return chosen & _published_doc_ids(ctx)
     return _entitled_doc_ids(ctx)
+
+
+def _chat_user_doc_ids(ctx: ToolContext) -> set[int]:
+    """The direct-chat ceiling: attached ∩ published ∩ THIS USER'S own rights.
+
+    TWO THINGS DIFFER FROM EVERY OTHER CALLER, AND BOTH ARE THE POINT.
+
+    First, the reader's own rights are a term. Everywhere else the reader is either
+    anonymous (a public link, where delegation is the whole model) or the flow's own
+    author in the Studio. Direct chat is the first surface where an arbitrary
+    signed-in person drives a flow somebody else wrote, and `_published_doc_ids`
+    alone is every published document in the tenant — so without this term, sharing
+    a flow would hand its documents to anyone allowed to chat with it.
+
+    It cannot be enforced one layer up. `run_scope(viewer=...)` does narrow the
+    run's scope to the caller, but each node then OVERWRITES `ctx.knowledge_scope`
+    with its own declared attachments (`build_knowledge_scope`) rather than
+    intersecting — safe on the public path, where the ceiling is computed here
+    anyway, and exactly why the ceiling has to be computed here.
+
+    Second, attaching nothing means NOTHING, not everything. The fallback for an
+    unscoped step is `_entitled_doc_ids`, i.e. "whatever this report may read" —
+    and there is no report. An empty scope therefore denies rather than widening.
+    """
+    chosen = _authored_doc_ids(ctx)
+    if not chosen:
+        return set()
+    return chosen & _published_doc_ids(ctx) & _reader_doc_ids(ctx)
+
+
+def _reader_doc_ids(ctx: ToolContext) -> set[int]:
+    """Documents the signed-in caller may open, by the same filter the Documents
+    screen uses. Fails closed: an unresolvable actor reads nothing."""
+    email = str(getattr(ctx, "actor_ref", "") or "").strip()
+    if not email:
+        return set()
+    try:
+        from app.models.user import User
+        from app.services.agent_flows.permissions import attachable_documents
+
+        user = ctx.db.query(User).filter(User.email == email).first()
+        if user is None:
+            return set()
+        return attachable_documents(ctx.db, user)
+    except Exception:  # noqa: BLE001
+        logger.warning("[knowledge] reader scope unresolved for %r", email, exc_info=True)
+        return set()
 
 
 def _published_doc_ids(ctx: ToolContext) -> set[int]:
@@ -469,8 +531,23 @@ def tool_search_knowledge(ctx: ToolContext, args: dict) -> dict:
         limit = 6
     limit = max(1, min(limit, MAX_HITS))
 
+    # A follow-up the model passed through verbatim. See `govern_doc_followup`
+    # for why this is a rule and not a model call, and for what happens when it
+    # fires on a question that was not a follow-up.
+    from app.services.dashboard_ai_bot.govern_doc_followup import (
+        resolve as resolve_followup,
+    )
+
+    query, followup_resolved = resolve_followup(
+        query, getattr(ctx, "prior_question", "") or "")
+
     needles = _tokens(query)
     hits: list[dict] = []
+    #: What the retriever could NOT do this time. Filled by the search below and
+    #: read by the verdict: an empty result set is the one answer that cannot
+    #: carry its own explanation, and it is the answer a failed query embedding
+    #: most often produces.
+    search_report: dict = {}
 
     # ── embeddings first, keyword as the floor ───────────────────────────────
     #
@@ -526,6 +603,10 @@ def tool_search_knowledge(ctx: ToolContext, args: dict) -> dict:
                 k=limit,
                 doc_ids=doc_scope,
                 consumer="agent_flow",
+                # Filled by the retriever with what it could NOT do. Read below,
+                # where the verdict decides whether "nothing found" is a statement
+                # about the corpus or about this attempt.
+                report=search_report,
             ) or []:
                 if not isinstance(ch, dict):
                     continue
@@ -704,11 +785,20 @@ def tool_search_knowledge(ctx: ToolContext, args: dict) -> dict:
             answerability = _ans.evaluate(
                 ctx.db, query, retrieved_rows,
                 conflict=conflict, doc_ids=doc_scope,
+                # Passed rather than read off the rows, because the case that
+                # matters most has no rows: a search whose semantic half failed
+                # and whose keyword half matched nothing.
+                semantic_unavailable=bool(search_report.get("semantic_unavailable")),
+                retrieval_failed=bool(search_report.get("retrieval_failed")),
             )
         except Exception:  # noqa: BLE001 — a verdict is an addition, not a gate
             logger.warning("search_knowledge: answerability failed", exc_info=True)
     return _ok({
         "query": query,
+        # Said out loud when the query is not what the caller passed. A trace that
+        # shows a different search from the one the model asked for, with no note
+        # of why, is the kind of thing an author debugs for an hour.
+        "resolved_from_previous_turn": followup_resolved,
         "total_matches": len(merged),
         "returned": len(top),
         "results": top,
@@ -725,6 +815,16 @@ def tool_search_knowledge(ctx: ToolContext, args: dict) -> dict:
         # with None for a non-conflict verdict, and a default only applies when a
         # key is absent. It raised on the first question that had no conflict.
         "conflict": _conflict_payload(answerability),
+        # WHETHER THIS SEARCH RAN WHOLE.
+        #
+        # True means the semantic half did not run — the query embedding did not
+        # come back — and what came back is keyword matches only. A model reading
+        # this must not tell the viewer the documents lack the answer; it has not
+        # been shown what the documents say.
+        "semantic_unavailable": bool(search_report.get("semantic_unavailable")),
+        # The search RAISED. Different from "found nothing" and from "ran without
+        # its semantic half", and the only one of the three that is a bug report.
+        "retrieval_failed": bool(search_report.get("retrieval_failed")),
         # What to tell the reader when there is nothing to answer from — one
         # wording, so every consumer says the same thing.
         "abstain_text": (answerability or {}).get("abstain_text"),
@@ -940,7 +1040,11 @@ def tool_describe_semantic_model(ctx: ToolContext, args: dict) -> dict:
         "fields": fields[:60],
         "note": (
             "These are field DEFINITIONS declared in the Semantic Layer, NOT "
-            "measurements. Read the chart data to get an actual figure."
+            "measurements. `formula` is how the field is computed and `unit` is "
+            "what a figure means once computed — quote them when asked how "
+            "something is calculated. A field with no formula here is a plain "
+            "column, not a derived one. Read the chart data to get an actual "
+            "figure."
         ),
     })
 
@@ -948,9 +1052,12 @@ def tool_describe_semantic_model(ctx: ToolContext, args: dict) -> dict:
 DESCRIBE_SEMANTIC_TOOL_DEF: dict = {
     "name": "describe_semantic_model",
     "description": (
-        "The business meaning of the measures and dimensions behind this report: "
-        "display name, description, aliases. Use it when the QUESTION is about "
-        "what a field means, not when you are about to quote a figure — the "
+        "What the measures and dimensions behind this report MEAN and how they "
+        "are CALCULATED: display name, description, the formula the semantic "
+        "layer records, and the unit a figure is expressed in. Use it when the "
+        "QUESTION is about what a field means or how it is worked out — "
+        "answering that from the column name is a guess a later tool call "
+        "cannot repair. Not when you are about to quote a figure: the "
         "measuring tools (total_measure, rank_values, share_of) already return "
         "the aggregation and the unit alongside every number they produce, so "
         "calling this first to learn them costs an extra model round for "
@@ -1010,13 +1117,166 @@ READ_DOCUMENT_TOOL_DEF: dict = {
     },
 }
 
+EXPLAIN_MEASUREMENT_TOOL_DEF = {
+    "name": "explain_measurement",
+    "description": (
+        "Ask the company's documents what a MEASUREMENT means. Give it the result "
+        "of a target check — the measure's name and how it did against target — and "
+        "it returns the passages that define that metric, say how it is calculated, "
+        "and name the cases excluded from it. Use it when a figure missed its "
+        "target and the answer needs to say why that matters, not just that it "
+        "happened. Returns documents, never measurements."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "measure": {
+                "type": "string",
+                "description": "The measure's name, exactly as the target check "
+                               "reported it (e.g. 'on_time_rate').",
+            },
+            "status": {
+                "type": "string",
+                "description": "'below_target' or 'on_or_above_target', from the "
+                               "target check.",
+            },
+            "actual": {"type": "number", "description": "The measured value."},
+            "target": {"type": "number", "description": "The target it was compared with."},
+            "shortfall_pct": {
+                "type": "number",
+                "description": "How far below target, in percent, when it missed.",
+            },
+        },
+        "required": ["measure"],
+    },
+}
+
+
+def tool_explain_measurement(ctx: ToolContext, args: dict) -> dict:
+    """A number that missed its target, explained by what the business wrote down.
+
+    THE HALF THAT WAS MISSING
+    -------------------------
+    This pack's own docstring named it and deferred it: "the comparison tools and
+    the knowledge tools are granted separately and never meet... nothing tells a
+    comparison result that a relevant document exists." A flow could report
+    "on-time delivery 91.2% against a 92% target" and never reach the document
+    saying which orders are excluded from that rate.
+
+    Data says WHAT happened; documents say what it MEANS. This is the join.
+
+    TWO CHANNELS, AND THEY ARE NOT THE SAME KIND OF FACT
+    ----------------------------------------------------
+    * the metric's HOME DOCUMENT — somebody DECLARED that this document defines
+      this KPI. Retrieved directly and marked `metric_home`, because a declaration
+      outranks a good cosine and a reader should be able to tell them apart.
+    * ordinary retrieval, using the metric's own recorded synonyms — a chart column
+      called `on_time_rate` finds nothing in a corpus that says "tỷ lệ giao đúng
+      hẹn", and the metric record is the translation between them.
+
+    Scope is the same boundary as every other knowledge read: naming a metric does
+    not grant access to the document that defines it.
+    """
+    from app.services.dashboard_ai_bot import govern_doc_evidence_link as link
+
+    measure = str((args or {}).get("measure") or "").strip()
+    if not measure:
+        return _err("'measure' is required — take it from a target check result")
+
+    evidence = {
+        "measure": measure,
+        "status": str((args or {}).get("status") or "below_target"),
+        "actual": (args or {}).get("actual"),
+        "target": (args or {}).get("target"),
+        "shortfall_pct": (args or {}).get("shortfall_pct"),
+        "unit": None,
+    }
+    scope = _visible_doc_ids(ctx)
+    if not scope:
+        return _err(
+            "no documents are in this report's scope, so there is nothing to "
+            "explain the figure with."
+        )
+
+    plan = link.to_question(ctx.db, evidence)
+
+    from app.services.dashboard_ai_bot.govern_doc_embeddings import search_doc_chunks
+
+    rows = search_doc_chunks(ctx.db, plan["question"], k=6, doc_ids=scope) or []
+    # The declared definition, added on top and de-duplicated by chunk. It is a
+    # different KIND of evidence, so it is fetched even when similarity already
+    # found the same document.
+    home_rows = link.home_doc_passages(
+        ctx.db, plan["home_doc_id"], plan["question"], scope=scope, k=3)
+    seen = {r.get("chunk_id") for r in rows}
+    rows = home_rows + [r for r in rows if r.get("chunk_id") not in
+                        {h.get("chunk_id") for h in home_rows}]
+
+    hits = []
+    for row in rows[:8]:
+        hit = knowledge_hit.from_chunk(row)
+        hit["kind"] = "document_chunk"
+        # WHY this passage is here, in a word a trace can show.
+        hit["reached_by"] = row.get("reached_by") or "semantic"
+        hits.append(hit)
+
+    context = None
+    answerability = None
+    if rows:
+        try:
+            from app.services.dashboard_ai_bot import (
+                govern_doc_answerability as _ans,
+            )
+            from app.services.dashboard_ai_bot import govern_doc_conflict as _conf
+            from app.services.dashboard_ai_bot.govern_doc_context import assemble
+
+            context = assemble(ctx.db, rows)
+            conflict = _conf.detect(plan["question"], rows)
+            answerability = _ans.evaluate(
+                ctx.db, plan["question"], rows, conflict=conflict, doc_ids=scope,
+                # NO CLAUSE COVERAGE HERE. That verdict answers "did the evidence
+                # cover every part the USER asked", and there is no user question
+                # in this call — the query was composed from a measurement, and
+                # its aspects ("định nghĩa, cách tính, trường hợp loại trừ") are
+                # search hints, not things anyone asked separately. The clause
+                # splitter reads the commas and reports PARTIALLY_ANSWERABLE by
+                # construction on every single call.
+                check_clauses=False)
+        except Exception:  # noqa: BLE001 — the passages are usable without them
+            logger.warning("explain_measurement: assembly failed", exc_info=True)
+
+    return _ok({
+        # WHAT WAS ASKED, and why. A trace showing "the bot searched the documents"
+        # explains nothing; "it missed its target by 0.8 points and went looking
+        # for the rule" explains it.
+        "asked": plan["question"],
+        "reason": plan["reason"],
+        "grounded_in": plan["grounded_in"],
+        "metric": plan["metric"],
+        "home_doc_id": plan["home_doc_id"],
+        "results": hits,
+        "context": (context or {}).get("text") or None,
+        "citations": (context or {}).get("citations") or [],
+        "answerability": (answerability or {}).get("verdict"),
+        "abstain_text": (answerability or {}).get("abstain_text"),
+        "conflict": _conflict_payload(answerability),
+        "note": (
+            "These are DOCUMENTS explaining the metric, not measurements of it. "
+            "A figure quoted in this prose is a target or an example somebody "
+            "wrote, never this report's number — read the chart for that."
+        ),
+    })
+
+
 GOVERN_TOOL_DEFS: list[dict] = [
     SEARCH_KNOWLEDGE_TOOL_DEF,
     READ_DOCUMENT_TOOL_DEF,
     DESCRIBE_SEMANTIC_TOOL_DEF,
+    EXPLAIN_MEASUREMENT_TOOL_DEF,
 ]
 GOVERN_TOOLS = {
     "search_knowledge": tool_search_knowledge,
     "read_document": tool_read_document,
     "describe_semantic_model": tool_describe_semantic_model,
+    "explain_measurement": tool_explain_measurement,
 }

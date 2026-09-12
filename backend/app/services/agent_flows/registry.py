@@ -443,6 +443,9 @@ def save_draft(
             # the flow can read without anybody choosing that.
             owner_email=existing_owner or actor_email,
             created_by=actor_email,
+            # Carried, like ownership: it is a property of the flow, so cutting a new
+            # version must not silently drop a flow out of the Chat module.
+            direct_chat_enabled=bool(getattr(latest, "direct_chat_enabled", False)),
         )
         db.add(row)
         _assign_flow_id(db, row)
@@ -883,5 +886,18 @@ def _first_message(exc: Exception) -> str:
     for line in text.splitlines():
         line = line.strip()
         if line.startswith("Value error, "):
-            return line[len("Value error, "):]
-    return text.splitlines()[-1][:200] if text else "Cấu hình không hợp lệ"
+            # AND THE TAIL, WHICH IS THE OTHER HALF OF THE NOISE.
+            #
+            # The prefix was stripped and the suffix was not, so an author saving a
+            # flow read their own sentence with `[type=value_error, input_value='',
+            # input_type=str]` welded to the end of it, in the title bar. Pydantic
+            # appends that to every message; nothing above the API cares which
+            # validator fired or what Python type the empty field was.
+            return _drop_pydantic_tail(line[len("Value error, "):])
+    return _drop_pydantic_tail(text.splitlines()[-1])[:200] if text \
+        else "Cấu hình không hợp lệ"
+
+
+def _drop_pydantic_tail(line: str) -> str:
+    marker = line.rfind(" [type=")
+    return (line[:marker] if marker > 0 else line).strip()

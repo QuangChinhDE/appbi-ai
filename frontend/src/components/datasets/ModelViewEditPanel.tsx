@@ -2486,6 +2486,36 @@ function MeasureRow({
               </div>
             )}
           </div>
+          {/* Ý nghĩa — the field the model has always had and nobody could fill.
+              `description` is declared on MeasureDefinition, stored by the
+              backend and read by the AI's steering block, and there was no input
+              for it anywhere: 161 of 5721 semantic fields carry one. So a DA
+              could state exactly how a measure is computed and had nowhere to
+              say what it MEANS, and an agent asked "GMV có gồm phí ship không"
+              had to infer the answer from the column name.
+
+              The formula now travels to the AI on its own, so this is no longer
+              the difference between visible and invisible — it is the difference
+              between a calculation and a definition. */}
+          <div>
+            <div className="flex items-center justify-between mb-0.5">
+              <label className="text-[10px] text-text-tertiary uppercase font-medium">
+                Ý nghĩa
+              </label>
+              <span className="text-[10px] text-text-quaternary">AI đọc phần này khi được hỏi chỉ số nghĩa là gì</span>
+            </div>
+            <textarea
+              value={measure.description || ''}
+              onChange={(e) => onChange({ ...measure, description: e.target.value || undefined })}
+              rows={2}
+              className="w-full text-xs px-2 py-1.5 border border-[rgb(var(--border-line))] rounded-md resize-y focus:outline-none focus:ring-1 focus:ring-brand"
+              placeholder="vd: Tổng giá trị giao dịch, đã gồm phí ship. Không tính đơn đã huỷ."
+            />
+            <p className="mt-0.5 text-[10px] text-text-quaternary leading-tight">
+              Công thức đã tự động gửi cho AI. Viết ở đây điều công thức không nói được — đơn vị nghiệp vụ, cái gì bị loại trừ, khi nào không nên dùng.
+            </p>
+          </div>
+
           {/* SQL name (secondary) + Folder */}
           <div className="grid grid-cols-2 gap-2">
             <div>

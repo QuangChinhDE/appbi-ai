@@ -112,10 +112,15 @@ if is_placeholder "$(env_get ADMIN_PASSWORD)"; then
 fi
 
 # ── 4b. modules ON by default — force product-module flags to true ─────────
-# Per project policy: after `run`, every product module is enabled. This
-# OVERRIDES an existing false (unlike secrets, which are preserved). Datasource
-# sync is intentionally NOT here — it's a data-fetch mode, not a nav module.
-MODULE_FLAGS="WORKBOARDS_ENABLED NEXT_PUBLIC_WORKBOARDS_ENABLED METADATA_CATALOG_ENABLED GOVERN_ENABLED OBSERVABILITY_ENABLED"
+# Per project policy: after `run`, every product module is enabled — except
+# Workboards, hidden by default since 2026-09-10 (see WORKBOARDS_ENABLED in
+# backend/app/core/config.py). WORKBOARDS_ENABLED / NEXT_PUBLIC_WORKBOARDS_ENABLED
+# are deliberately excluded from this list, the same way HOME_MODULE_ENABLED
+# already is, so a false left in .env.example / .env is NOT overridden back to
+# true on every `run`. This OVERRIDES an existing false for the flags below
+# (unlike secrets, which are preserved). Datasource sync is intentionally NOT
+# here either — it's a data-fetch mode, not a nav module.
+MODULE_FLAGS="METADATA_CATALOG_ENABLED GOVERN_ENABLED OBSERVABILITY_ENABLED"
 modules_on=()
 for mf in $MODULE_FLAGS; do
   if [ "$(env_get "$mf")" != "true" ]; then env_set "$mf" "true"; modules_on+=("$mf"); fi
