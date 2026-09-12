@@ -53,7 +53,6 @@ import re
 from typing import Any
 
 from app.services.dashboard_ai_bot import knowledge_hit
-from app.services.agent_flows.tools.context import CHAT_USER
 from app.services.dashboard_ai_bot.tool_context import ToolContext, _err, _ok
 
 logger = logging.getLogger(__name__)
@@ -177,9 +176,6 @@ def _visible_doc_ids(ctx: ToolContext) -> set[int]:
     """Documents this report is allowed to read, then narrowed to what this STEP
     was scoped to. See the module docstring for why the order matters: the
     entitlement is computed first and the author's list only cuts inside it."""
-    if getattr(ctx, "actor_type", "") == CHAT_USER:
-        return _chat_user_doc_ids(ctx)
-
     chosen = _authored_doc_ids(ctx)
     if chosen:
         # An EXPLICIT grant is the ceiling. It may reach outside this report — that
@@ -188,53 +184,6 @@ def _visible_doc_ids(ctx: ToolContext) -> set[int]:
         # draft is not something anyone chose to publish to a viewer.
         return chosen & _published_doc_ids(ctx)
     return _entitled_doc_ids(ctx)
-
-
-def _chat_user_doc_ids(ctx: ToolContext) -> set[int]:
-    """The direct-chat ceiling: attached ∩ published ∩ THIS USER'S own rights.
-
-    TWO THINGS DIFFER FROM EVERY OTHER CALLER, AND BOTH ARE THE POINT.
-
-    First, the reader's own rights are a term. Everywhere else the reader is either
-    anonymous (a public link, where delegation is the whole model) or the flow's own
-    author in the Studio. Direct chat is the first surface where an arbitrary
-    signed-in person drives a flow somebody else wrote, and `_published_doc_ids`
-    alone is every published document in the tenant — so without this term, sharing
-    a flow would hand its documents to anyone allowed to chat with it.
-
-    It cannot be enforced one layer up. `run_scope(viewer=...)` does narrow the
-    run's scope to the caller, but each node then OVERWRITES `ctx.knowledge_scope`
-    with its own declared attachments (`build_knowledge_scope`) rather than
-    intersecting — safe on the public path, where the ceiling is computed here
-    anyway, and exactly why the ceiling has to be computed here.
-
-    Second, attaching nothing means NOTHING, not everything. The fallback for an
-    unscoped step is `_entitled_doc_ids`, i.e. "whatever this report may read" —
-    and there is no report. An empty scope therefore denies rather than widening.
-    """
-    chosen = _authored_doc_ids(ctx)
-    if not chosen:
-        return set()
-    return chosen & _published_doc_ids(ctx) & _reader_doc_ids(ctx)
-
-
-def _reader_doc_ids(ctx: ToolContext) -> set[int]:
-    """Documents the signed-in caller may open, by the same filter the Documents
-    screen uses. Fails closed: an unresolvable actor reads nothing."""
-    email = str(getattr(ctx, "actor_ref", "") or "").strip()
-    if not email:
-        return set()
-    try:
-        from app.models.user import User
-        from app.services.agent_flows.permissions import attachable_documents
-
-        user = ctx.db.query(User).filter(User.email == email).first()
-        if user is None:
-            return set()
-        return attachable_documents(ctx.db, user)
-    except Exception:  # noqa: BLE001
-        logger.warning("[knowledge] reader scope unresolved for %r", email, exc_info=True)
-        return set()
 
 
 def _published_doc_ids(ctx: ToolContext) -> set[int]:
@@ -249,8 +198,19 @@ def _published_doc_ids(ctx: ToolContext) -> set[int]:
 
 
 def _entitled_doc_ids(ctx: ToolContext) -> set[int]:
-    """Documents this report is allowed to read. See the module docstring."""
+    """Documents this report is allowed to read. See the module docstring.
+
+    NO REPORT MEANS NOTHING IS ENTITLED. This is the fallback for a step that
+    attached no documents of its own, and the entitlement it computes is "whatever
+    this dashboard's datasets reach". Direct chat has no dashboard, so there is
+    nothing for a document to be attached TO — the honest answer is the empty set,
+    and an unguarded `ctx.dashboard.id` below would instead raise inside a tool and
+    come back as a retryable `internal` error the model would burn its budget on.
+    """
     from app.models.governance import GovernDocAssetLink, GovernKnowledgeDoc
+
+    if getattr(ctx, "dashboard", None) is None:
+        return set()
 
     tids, dsids = _scope(ctx)
     dash_ref = str(ctx.dashboard.id)
@@ -1152,6 +1112,69 @@ EXPLAIN_MEASUREMENT_TOOL_DEF = {
 }
 
 
+def _fold_measure(name: str) -> str:
+    from app.core.text_fold import fold_text
+
+    return fold_text(str(name or "").strip())
+
+
+def _known_measure_names(ctx: ToolContext) -> dict[str, str]:
+    """Every name this report could legitimately be asked to explain.
+
+    Folded key -> the name as it is written, so a suggestion can be shown the way
+    the business spells it. Returns empty when neither store can be read, and the
+    caller treats empty as "cannot check" rather than "nothing exists" — a lookup
+    failure must not turn into an accusation that the caller invented a name.
+    """
+    out: dict[str, str] = {}
+    try:
+        for m in _metrics_in_scope(ctx):
+            for label in (m.name, m.display_name):
+                if label:
+                    out[_fold_measure(label)] = str(label)
+    except Exception:  # noqa: BLE001
+        logger.debug("explain_measurement: metric scope unavailable", exc_info=True)
+    try:
+        from app.services.dashboard_ai_bot.knowledge_context import _semantic_fields
+
+        _, dsids = _scope(ctx)
+        granted = _granted_dataset_ids(ctx)
+        for f in _semantic_fields(ctx.db, set(granted or dsids)) or []:
+            for label in (f.get("name"), f.get("label")):
+                if label:
+                    out.setdefault(_fold_measure(label), str(label))
+    except Exception:  # noqa: BLE001
+        logger.debug("explain_measurement: semantic fields unavailable", exc_info=True)
+    return out
+
+
+def _closest_measures(asked: str, known: dict[str, str], limit: int = 5) -> list[str]:
+    """Names worth suggesting — by shared words, then by prefix.
+
+    Deliberately not a fuzzy edit distance. The failures seen in practice are a
+    model reaching for a plausible business phrase, not a mistyped identifier, so
+    word overlap finds the intended metric where character distance would rank an
+    unrelated short name above it.
+    """
+    import re as _re
+
+    # LONGER THAN TWO, because Vietnamese business names are built from very
+    # common short words. At `len > 1`, "chi_so_khong_ton_tai" matched on "so" and
+    # "chi" and suggested "Số dòng hàng, Số kỳ trả góp TB" — five names sharing
+    # nothing with the question, which reads as a system that cannot tell what it
+    # holds. Better to suggest nothing than to suggest noise.
+    words = {w for w in _re.findall(r"[0-9a-z]+", _fold_measure(asked)) if len(w) > 2}
+    scored: list[tuple[int, str]] = []
+    for folded, written in known.items():
+        hay = {w for w in _re.findall(r"[0-9a-z]+", folded) if len(w) > 2}
+        hit = len(words & hay)
+        if not hit and not folded.startswith(_fold_measure(asked)[:4]):
+            continue
+        scored.append((-hit, written))
+    scored.sort()
+    return [name for _, name in scored[:limit]]
+
+
 def tool_explain_measurement(ctx: ToolContext, args: dict) -> dict:
     """A number that missed its target, explained by what the business wrote down.
 
@@ -1182,6 +1205,36 @@ def tool_explain_measurement(ctx: ToolContext, args: dict) -> dict:
     measure = str((args or {}).get("measure") or "").strip()
     if not measure:
         return _err("'measure' is required — take it from a target check result")
+
+    # DOES THIS MEASURE EXIST AT ALL?
+    #
+    # It used to go straight to retrieval, and retrieval always succeeds at
+    # returning nothing. Measured:
+    #
+    #     explain_measurement("ty_le_giao_dung_hen")  -> ok, ANSWERABLE, 6 passages
+    #     explain_measurement("chi_so_khong_ton_tai") -> ok, NOT_ENOUGH_EVIDENCE
+    #
+    # Both `ok`. So a typo, a hallucinated name and a genuinely undocumented KPI
+    # were one outcome, and the model reported all three the same way: "chưa có
+    # đủ thông tin trong tài liệu". That sentence sends a reader to write
+    # documentation for a metric that was never defined, and it hides the case
+    # where the model simply invented a name.
+    #
+    # The two are different answers and the caller can act on each: an unknown
+    # name is fixed by asking again with a real one, an undocumented metric is
+    # fixed by saying so. Only the first is stopped here — a known-but-silent
+    # metric still goes through retrieval and still comes back
+    # NOT_ENOUGH_EVIDENCE, which is now a claim that means something.
+    known = _known_measure_names(ctx)
+    if known and _fold_measure(measure) not in known:
+        close = _closest_measures(measure, known)
+        return _err(
+            f"'{measure}' is not a metric or field this report knows. "
+            + (f"Closest names: {', '.join(close)}. " if close else "")
+            + "Call search_business_assets with the words from the question to "
+            "find the real name, then ask again. Do NOT report this as a missing "
+            "document — nothing by this name is defined."
+        )
 
     evidence = {
         "measure": measure,

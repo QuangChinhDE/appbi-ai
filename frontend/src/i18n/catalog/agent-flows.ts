@@ -480,6 +480,10 @@ export const agentFlowsCatalog: ModuleCatalog = {
     'agentFlows.toolPicker.selfSufficient': 'ready-to-use number',
     'agentFlows.toolPicker.selfSufficientTitle': 'The result is a computed number. The model does not need to interpret it.\n\nNote: inside an AI step, the model still chooses the tool and writes the answer. Only a fixed tool call can truly avoid model usage.',
     'agentFlows.toolPicker.example': 'e.g. "{{example}}"',
+    'agentFlows.toolPicker.searchPlaceholder': 'Search a tool, or the question you need answered',
+    'agentFlows.toolPicker.searchLabel': 'Search tools',
+    'agentFlows.toolPicker.searchHits': '{{count}} matching tools',
+    'agentFlows.toolPicker.searchEmpty': 'No tool matches. Try the words from the question instead of a tool name.',
 
     'agentFlows.library.category.all': 'All',
     'agentFlows.library.category.ai': 'AI',
@@ -1104,6 +1108,10 @@ export const agentFlowsCatalog: ModuleCatalog = {
     'agentFlows.toolPicker.selfSufficient': 'trả số dùng ngay',
     'agentFlows.toolPicker.selfSufficientTitle': 'Kết quả là số đã tính xong. Không cần model diễn giải mới hiểu.\n\nLưu ý: trong một bước AI, model VẪN chọn công cụ và VẪN viết câu trả lời. Chỉ khi flow gọi công cụ này với tham số cố định thì mới thực sự không tốn lượt model nào.',
     'agentFlows.toolPicker.example': 'vd: "{{example}}"',
+    'agentFlows.toolPicker.searchPlaceholder': 'Tìm công cụ, hoặc gõ câu hỏi cần trả lời',
+    'agentFlows.toolPicker.searchLabel': 'Tìm công cụ',
+    'agentFlows.toolPicker.searchHits': '{{count}} công cụ khớp',
+    'agentFlows.toolPicker.searchEmpty': 'Không có công cụ nào khớp. Thử gõ từ trong câu hỏi thay vì tên công cụ.',
 
     'agentFlows.library.category.all': 'Tất cả',
     'agentFlows.library.category.ai': 'AI',

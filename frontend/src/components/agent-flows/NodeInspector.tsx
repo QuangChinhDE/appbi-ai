@@ -920,14 +920,100 @@ function toolLabel(tool: ToolPack['tools'][number], language: 'en' | 'vi') {
  *  wiring a result into the next node, which is a different moment from choosing
  *  what to grant, and putting it inline turned a scannable list into a datasheet.
  */
+/** Fold for searching: lowercase, accents removed, so "nguyen nhan" finds
+ *  "nguyên nhân". An author who types without diacritics is the common case, and
+ *  a search that fails them silently is worse than no search. */
+function foldSearch(s: string) {
+  return (s || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/đ/g, 'd')
+    .replace(/Đ/g, 'D')
+    .toLowerCase();
+}
+
+/** Everything about a tool an author might type at it.
+ *
+ *  `answers_vi` is in here and it is the point. Every tool carries example
+ *  questions, and an author looking for a tool thinks in questions — "vì sao
+ *  giảm", "top mấy" — long before they think in tool names. Matching names only
+ *  would make the box work for people who already know the answer. */
+function toolHaystack(tool: ToolPack['tools'][number]) {
+  return foldSearch([
+    tool.name, tool.label_vi, tool.label_en, tool.description_vi,
+    ...(tool.answers_vi || []),
+  ].filter(Boolean).join(' '));
+}
+
+function packHaystack(pack: ToolPack) {
+  return foldSearch([pack.key, pack.label_vi, pack.label_en, pack.purpose_vi]
+    .filter(Boolean).join(' '));
+}
+
 function ToolPicker({
   packs, granted, onToggle,
 }: { packs: ToolPack[]; granted: string[]; onToggle: (name: string, on: boolean) => void }) {
   const { t, language } = useI18n();
+  const [query, setQuery] = React.useState('');
+  /* EVERY WORD, NOT THE WHOLE PHRASE.
+   *
+   *  This was one `includes(needle)` on the joined query, and driving the panel
+   *  by hand found the hole immediately: `rank_values` carries the example
+   *  question "Danh mục nào doanh thu cao nhất?", and typing "danh muc nao cao
+   *  nhat" matched nothing — the words are all there, just not adjacent. An
+   *  author paraphrasing their own question is the normal case, so a contiguous
+   *  match makes the box work only for people who already know the wording.
+   *
+   *  AND across words rather than OR: two words should narrow, not widen. */
+  const needles = foldSearch(query.trim()).split(/\s+/).filter(Boolean);
+  const matches = (hay: string) => needles.every((w) => hay.includes(w));
+
+  /* WHAT A SEARCH DOES TO A PACK, in three states rather than two.
+   *
+   *  A pack whose OWN name matches ("chẩn đoán") keeps all its tools: the author
+   *  asked for the category, and hiding its contents behind a second match would
+   *  answer a category question with a fragment. A pack where only some tools
+   *  match shows those. A pack with neither disappears.
+   *
+   *  Grants survive filtering — a hidden tool stays granted. The box narrows what
+   *  is VISIBLE, never what is on, because a search that silently revoked a grant
+   *  would be the most expensive kind of surprise in this panel. */
+  const shown = needles.length
+    ? packs
+        .map((pack) => {
+          if (matches(packHaystack(pack))) return pack;
+          const tools = pack.tools.filter((tool) => matches(toolHaystack(tool)));
+          return tools.length ? { ...pack, tools } : null;
+        })
+        .filter((p): p is ToolPack => p !== null)
+    : packs;
+  const hitCount = shown.reduce((n, p) => n + p.tools.length, 0);
+
   return (
     <div className="space-y-2">
-      {packs.map((pack) => {
+      <div className="relative">
+        <input
+          id="agent-flow-tool-search"
+          type="search"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder={t('agentFlows.toolPicker.searchPlaceholder')}
+          aria-label={t('agentFlows.toolPicker.searchLabel')}
+          className="w-full rounded-md border border-[rgb(var(--border-line))] bg-surface px-2 py-1.5 text-tiny outline-none focus:border-accent focus:ring-1 focus:ring-accent/30"
+        />
+      </div>
+      {needles.length > 0 && (
+        <p className="px-0.5 text-tiny text-text-tertiary">
+          {hitCount > 0
+            ? t('agentFlows.toolPicker.searchHits', { count: String(hitCount) })
+            : t('agentFlows.toolPicker.searchEmpty')}
+        </p>
+      )}
+      {shown.map((pack) => {
         const names = pack.tools.map((t) => t.name);
+        // Counted over the tools ON SCREEN. While a search is active those are
+        // the only ones "select all" can reach, so a badge counting the whole
+        // pack would promise a bulk action the button does not perform.
         const onCount = names.filter((n) => granted.includes(n)).length;
         const allOn = onCount === names.length && names.length > 0;
         return (

@@ -191,8 +191,9 @@ def ok(
 #: anything situational is passed explicitly at the call site.
 _DEFAULT_RECOVERY: dict[str, str] = {
     "chart_out_of_scope": (
-        "Call list_charts with a `query` of the question's keywords to get the "
-        "chart_ids this link actually grants, then retry with one of those."
+        "Find a chart this link actually grants: search_business_assets with the "
+        "question's words, or resolve_chart_candidates when the question names a "
+        "governed metric. Then retry with a chart_id from those results."
     ),
 }
 

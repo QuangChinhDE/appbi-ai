@@ -230,10 +230,14 @@ def _load_packs() -> None:
     if _PACKS:
         return
     from app.services.agent_flows.tools.packs import (
-        compare, diagnose, external, knowledge, measure, project, read,
+        compare, diagnose, discover, external, knowledge, measure, project, read,
     )
 
-    for mod in (read, measure, compare, diagnose, project, knowledge, external):
+    # `discover` leads, because it is what a turn does first: work out WHICH
+    # asset the question is about. It was the missing step — 20 of these tools
+    # require a chart_id and, until this pack, one name-matching listing was the
+    # only thing that issued one.
+    for mod in (discover, read, measure, compare, diagnose, project, knowledge, external):
         register_pack(mod.PACK)
 
 

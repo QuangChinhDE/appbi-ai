@@ -168,12 +168,22 @@ def _resolve(
         return R.err(
             f"chart {chart_id} has no grouping column to rank by",
             code="not_applicable",
+            # POINTS AT THE STRONGEST ROUTE FIRST, and that ordering is the
+            # whole value of the hint. This said "call list_charts" because it was
+            # written before a resolver existed; a live run then followed it
+            # exactly — rank_values refused, the model listed charts by name,
+            # picked a KPI tile again and reported its total as the top category.
+            # A recovery hint is routing, so it goes stale when the routes change.
             recovery=(
-                "This chart is a single-value tile. To rank, find a chart that "
-                "breaks this measure down: call list_charts with a `query` of the "
-                "question's keywords, pick one whose dimensions include the "
-                "grouping you need, and retry with that chart_id. Do NOT answer a "
-                "ranking question from this tile's total."
+                "This chart is a single-value tile — it has no grouping column. "
+                "To rank, find a chart that breaks the measure down:\n"
+                "1. resolve_chart_candidates — pass the metric or measure name; it "
+                "follows the governed binding and finds charts whose TITLE does not "
+                "mention the metric.\n"
+                "2. search_business_assets — if you do not know the metric name, "
+                "search the question's words first.\n"
+                "Then retry with a chart_id whose match is 'measure'. Do NOT answer "
+                "a ranking question from this tile's total."
             ),
             detail={"columns": columns, "measure": columns[m_idx]},
         )
@@ -188,8 +198,9 @@ def _load(ctx: ToolContext, args: dict) -> tuple[list[str], list[list], list] | 
             "chart_id (int) is required",
             code="bad_argument",
             recovery=(
-                "Call list_charts with a `query` of the question's keywords to "
-                "find the chart, then pass its chart_id here."
+                "Find the chart first: search_business_assets with the question's "
+                "words, or resolve_chart_candidates when the question names a "
+                "governed metric. Then pass the chart_id here."
             ),
         )
     try:

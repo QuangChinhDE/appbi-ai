@@ -145,7 +145,10 @@ def test_an_out_of_scope_chart_says_how_to_find_a_valid_one():
     out = R.err("chart 999999 is not part of this dashboard", code="chart_out_of_scope")
 
     assert out["ok"] is False
-    assert "list_charts" in out["recovery"]
+    # A route is named. WHICH route is asserted by the routing tests at the
+    # bottom of this file — that pair moves when a better tool ships, and this
+    # one only cares that the refusal is not a dead end.
+    assert out["recovery"]
 
 
 def test_a_kpi_tile_refused_for_ranking_says_what_to_rank_instead():
@@ -178,7 +181,7 @@ def test_a_missing_chart_id_is_recoverable_rather_than_just_wrong():
     out = derived._load(None, {})
 
     assert out["error_code"] == "bad_argument"
-    assert "list_charts" in out["recovery"]
+    assert out["recovery"]
 
 
 def test_codes_with_no_single_right_answer_get_no_invented_one():
@@ -192,3 +195,31 @@ def test_codes_with_no_single_right_answer_get_no_invented_one():
                 code="not_applicable")
 
     assert "recovery" not in out
+
+
+# ── recovery hints are routing, and routing goes stale ──────────────────────
+
+
+def test_a_recovery_hint_points_at_the_strongest_route_available():
+    """The hint is routing, so adding a better route means updating the hints.
+
+    Caught live, and only by running the product: after `resolve_chart_candidates`
+    shipped, `rank_values` still refused a KPI tile with "call list_charts" —
+    written months earlier, when a name search was the only way to find a chart.
+    A weak model followed it exactly, listed charts by name, picked another KPI
+    tile and reported its total as the top product category. The tool existed, was
+    granted, and was never reached, because nothing pointed at it.
+    """
+    out = derived._load(None, {})
+
+    assert "search_business_assets" in out["recovery"]
+    assert "list_charts" not in out["recovery"]
+
+
+def test_the_out_of_scope_hint_routes_to_the_asset_search_too():
+    """Same rule, the other code — and this one is shared by every chart tool."""
+    hint = R.err("chart 999999 is not part of this dashboard",
+                 code="chart_out_of_scope")["recovery"]
+
+    assert "search_business_assets" in hint
+    assert "resolve_chart_candidates" in hint
