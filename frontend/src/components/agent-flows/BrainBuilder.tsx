@@ -435,14 +435,22 @@ export function BrainBuilder({
           ))}
         </div>
 
-        <div className="hidden items-center gap-1.5 xl:flex">
+        {/* SHOWN ONLY WHERE THERE IS ROOM FOR THEM.
+            These chips are a glance at the flow's size, not a control, and at
+            `xl` they did not fit: measured at 1440px the header overflowed by
+            50px and the estimate chip — the one without `whitespace-nowrap` —
+            absorbed the squeeze by wrapping into a four-line stack 64px tall,
+            inside a 40px row. Hiding the group below 2xl makes the header fit
+            exactly (measured: 50px of overflow to 0), and the nowrap below means
+            it can never stack again if the row gets crowded another way. */}
+        <div className="hidden items-center gap-1.5 2xl:flex">
           <Badge size="xs" variant="neutral">{counts.nodes} {t(counts.nodes === 1 ? 'agentFlows.common.step' : 'agentFlows.common.steps')}</Badge>
           {counts.branches > 0 && <Badge size="xs" variant="neutral">{counts.branches} {t(counts.branches === 1 ? 'agentFlows.common.branch' : 'agentFlows.common.branches')}</Badge>}
           {counts.loops > 0 && <Badge size="xs" variant="neutral">{counts.loops} loop</Badge>}
           {validation?.estimate && (
             <span
               title={t('agentFlows.builder.estimateTitle')}
-              className="cursor-help rounded-full border border-[rgb(var(--border-line))] bg-surface-2 px-2 py-px text-tiny text-text-tertiary"
+              className="cursor-help whitespace-nowrap rounded-full border border-[rgb(var(--border-line))] bg-surface-2 px-2 py-px text-tiny text-text-tertiary"
             >
               ≤ {validation.estimate.max_llm_calls} {t('agentFlows.common.modelCallPerQuestion')}
             </span>

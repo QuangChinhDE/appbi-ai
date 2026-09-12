@@ -1163,7 +1163,19 @@ export function DashboardAiBot({
 
   return (
     <ChartNamesContext.Provider value={chartNamesMap}>
-    <div className="flex w-[400px] min-w-[300px] flex-shrink-0 flex-col my-3 mr-3 overflow-hidden rounded-2xl border border-[rgb(var(--border-line))] bg-surface-1 shadow-[0_8px_32px_-12px_rgba(0,0,0,0.18),0_2px_6px_-2px_rgba(0,0,0,0.08)] backdrop-blur-sm">
+    {/* WIDTH THE SCREEN CAN ACTUALLY HOLD.
+        This was a hard `w-[400px] min-w-[300px] flex-shrink-0` inside a flex row
+        with `overflow-hidden`. Measured on a 390px phone: the panel ran from 24
+        to 424 — thirty-four pixels past the edge, clipped rather than scrolled,
+        so the close button and the right edge of every question bubble were
+        unreachable. A viewer could open the assistant and not close it.
+        `min(400px, 100vw - 24px)` keeps the desktop panel identical and lets the
+        phone have the whole screen; the side margin collapses with it so the
+        gutter does not eat the last readable inch. */}
+    <div
+      style={{ width: 'min(400px, calc(100vw - 24px))' }}
+      className="flex min-w-0 flex-shrink-0 flex-col my-3 mr-1.5 sm:mr-3 overflow-hidden rounded-2xl border border-[rgb(var(--border-line))] bg-surface-1 shadow-[0_8px_32px_-12px_rgba(0,0,0,0.18),0_2px_6px_-2px_rgba(0,0,0,0.08)] backdrop-blur-sm"
+    >
       {/* Header */}
       <div className="flex flex-shrink-0 items-center justify-between border-b border-[rgb(var(--border-line))]/60 bg-gradient-to-b from-surface-2 to-surface-1 px-4 py-3">
         <div className="flex items-center gap-2">
