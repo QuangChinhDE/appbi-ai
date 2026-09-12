@@ -95,7 +95,35 @@ def _score(haystack: str, wanted: set[str]) -> int:
 # ── the search ──────────────────────────────────────────────────────────────
 
 
-def _charts(ctx: Any, query: str, wanted: set[str]) -> list[dict]:
+class _Once:
+    """Work shared by the finders, done once per search.
+
+    MEASURED: `_metrics_in_scope` ran twice in one call — once for the metric
+    finder, once because the glossary needs the metric list to decide which terms a
+    report can reach — and cost 60ms of a 123ms search with SIX metrics in the
+    dictionary. It queries each metric's bindings, so that is ~5ms per metric, per
+    pass. The whole purpose of this pack is to be useful on a FULL dictionary, and
+    at a hundred metrics the duplicate pass alone is half a second.
+
+    A plain memo rather than a cache: it lives for one call and is thrown away, so
+    it cannot serve a later request a scope that was computed for a different one.
+    That distinction is the reason this is not on `ctx`.
+    """
+
+    def __init__(self, ctx: Any, query: str):
+        self._ctx = ctx
+        self._query = query
+        self._metrics: list[Any] | None = None
+
+    def metrics(self) -> list[Any]:
+        if self._metrics is None:
+            from app.services.dashboard_ai_bot.govern_tools import _metrics_in_scope
+
+            self._metrics = _metrics_in_scope(self._ctx, question=self._query)
+        return self._metrics
+
+
+def _charts(ctx: Any, query: str, wanted: set[str], once: _Once) -> list[dict]:
     """Charts, matched by the same code path `list_charts` uses.
 
     Called rather than reimplemented: two matchers would drift, and the one an
@@ -128,11 +156,9 @@ def _charts(ctx: Any, query: str, wanted: set[str]) -> list[dict]:
     return out
 
 
-def _metrics(ctx: Any, query: str, wanted: set[str]) -> list[dict]:
-    from app.services.dashboard_ai_bot.govern_tools import _metrics_in_scope
-
+def _metrics(ctx: Any, query: str, wanted: set[str], once: _Once) -> list[dict]:
     scored = []
-    for m in _metrics_in_scope(ctx, question=query):
+    for m in once.metrics():
         hay = " ".join(str(x or "") for x in (
             m.name, m.display_name, getattr(m, "definition", "") or "",
             getattr(m, "description", "") or "",
@@ -157,13 +183,14 @@ def _metrics(ctx: Any, query: str, wanted: set[str]) -> list[dict]:
     return out
 
 
-def _terms(ctx: Any, query: str, wanted: set[str]) -> list[dict]:
-    from app.services.dashboard_ai_bot.govern_tools import (
-        _metrics_in_scope, _terms_in_scope,
-    )
+def _terms(ctx: Any, query: str, wanted: set[str], once: _Once) -> list[dict]:
+    from app.services.dashboard_ai_bot.govern_tools import _terms_in_scope
 
     try:
-        rows = _terms_in_scope(ctx, _metrics_in_scope(ctx, question=query), query)
+        # The SAME metric list the metric finder used: a report reaches a term
+        # partly THROUGH its metrics, so recomputing the scope here would pay for
+        # the identical answer twice.
+        rows = _terms_in_scope(ctx, once.metrics(), query)
     except Exception:  # noqa: BLE001 — vocabulary is never worth failing a search over
         logger.debug("[discover] glossary scope failed", exc_info=True)
         return []
@@ -196,7 +223,7 @@ def _terms(ctx: Any, query: str, wanted: set[str]) -> list[dict]:
     return out
 
 
-def _fields(ctx: Any, query: str, wanted: set[str]) -> list[dict]:
+def _fields(ctx: Any, query: str, wanted: set[str], once: _Once) -> list[dict]:
     """Semantic fields — the layer that carries formulas and units."""
     from app.services.dashboard_ai_bot.govern_tools import tool_describe_semantic_model
 
@@ -228,7 +255,7 @@ def _fields(ctx: Any, query: str, wanted: set[str]) -> list[dict]:
     return out
 
 
-def _documents(ctx: Any, query: str, wanted: set[str]) -> list[dict]:
+def _documents(ctx: Any, query: str, wanted: set[str], once: _Once) -> list[dict]:
     """Documents matched on TITLE only — deliberately.
 
     Reading bodies here would duplicate `search_knowledge` at a fraction of its
@@ -290,6 +317,7 @@ def tool_search_business_assets(ctx: Any, args: dict) -> dict:
         )
 
     wanted = _terms_of(query)
+    once = _Once(ctx, query)
     results: list[dict] = []
     searched: list[str] = []
     failed: list[str] = []
@@ -298,7 +326,7 @@ def tool_search_business_assets(ctx: Any, args: dict) -> dict:
             continue
         searched.append(kind)
         try:
-            results.extend(_FINDERS[kind](ctx, query, wanted) or [])
+            results.extend(_FINDERS[kind](ctx, query, wanted, once) or [])
         except Exception:  # noqa: BLE001
             # ONE STORE BEING UNAVAILABLE IS NOT THE SEARCH FAILING.
             #

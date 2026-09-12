@@ -69,6 +69,19 @@ _STRIP_SPANS = [
     re.compile(r"\[(?:DESC|DIAG|PRED|PRESC|HIGH|MED|LOW|WEB)\]", re.IGNORECASE),
     re.compile(r"https?://\S+"),
     re.compile(r"`[^`]*`"),               # inline code / ids
+    # A QUOTED NAME IS A LABEL — which is what this list already says about
+    # citations. Answers cite their source by name, and report names carry digits:
+    # `"Olist · Điểm đánh giá TB · page-1"` yielded a claim of 1, that matched no
+    # evidence, and a CORRECT answer shipped under "1 con số không khớp".
+    #
+    # A false alarm is not the small half of this trade. The warning's whole value
+    # is that it means something, and it stops meaning anything the moment it fires
+    # on right answers — people learn to scroll past it, including the time it is
+    # catching a figure that really was invented.
+    #
+    # A letter is required inside, so a quoted FIGURE is still checked. Models
+    # quote names; they do not quote numbers.
+    re.compile(r"[\"“][^\"”]*[A-Za-zÀ-ỹ][^\"”]*[\"”]"),
 ]
 
 # Bare integers in this range read as years far more often than as figures.
@@ -155,6 +168,64 @@ def parse_number(raw: str) -> float | None:
     return -val if neg else val
 
 
+def _alternate_reading(raw: str) -> float | None:
+    """The OTHER defensible reading of an ambiguous token, or None.
+
+    `4.086` is four-point-oh-eight-six in English and four thousand and eighty-six
+    in Vietnamese. `parse_number` picks the Vietnamese one deliberately — reading a
+    thousands-grouped figure as a decimal understates it by 1000×, and that is the
+    worse mistake when the job is to READ a number.
+
+    Verification is a different job with a different asymmetry: the two errors here
+    are "warn about a correct answer" and "miss a wrong one", and a token that is
+    genuinely ambiguous is evidence of neither. Observed live — a model wrote 4.086
+    for a measured 4.0864 and the run shipped a correct answer labelled unverified.
+    So the verifier tries both readings and accepts the figure if EITHER is what was
+    measured; the parser keeps its single, stricter answer.
+
+    Only the one shape that is actually ambiguous: a single dot with exactly three
+    digits after it. Everything else has one reading and gets one.
+    """
+    s = (raw or "").strip().lstrip("+-")
+    if s.count(".") != 1 or "," in s:
+        return None
+    head, tail = s.split(".")
+    if not (head.isdigit() and tail.isdigit() and len(tail) == 3):
+        return None
+    if not head or (len(head) > 1 and head[0] == "0"):
+        return None
+    try:
+        return float(s)          # the en-US decimal reading
+    except ValueError:
+        return None
+
+
+def _claim_alternates(answer: str) -> dict[float, tuple[float, ...]]:
+    """value -> the other readings of the tokens that produced it.
+
+    Scans the same text `extract_answer_numbers` scans, through the same strip and
+    ordinal rules, so the two cannot disagree about which tokens are claims.
+    """
+    text = answer or ""
+    for pattern in _STRIP_SPANS:
+        text = pattern.sub(" ", text)
+    text = _ORDINAL_RE.sub(" ", text)
+    out: dict[float, list[float]] = {}
+    for m in _NUMBER_RE.finditer(text):
+        raw = m.group("num")
+        value = parse_number(raw)
+        other = _alternate_reading(raw)
+        if value is None or other is None:
+            continue
+        if m.group("sign"):
+            value, other = -value, -other
+        scale = (m.group("scale") or "").strip().lower()
+        if scale:
+            other *= _SCALE_WORDS.get(scale, 1.0)
+        out.setdefault(value, []).append(other)
+    return {k: tuple(v) for k, v in out.items()}
+
+
 def extract_answer_numbers(answer: str) -> list[float]:
     """Every figure the answer actually CLAIMS, in order of appearance."""
     text = answer or ""
@@ -233,7 +304,16 @@ def verify_answer(
             coverage=None, total_numbers=len(claimed), checked=False,
         )
 
-    unmatched = [v for v in claimed if not _matches(v, evidence_numbers, tolerance)]
+    # A figure counts as supported if EITHER reading of its token is what was
+    # measured — see `_alternate_reading` for why the verifier is more permissive
+    # about `4.086` than the parser is.
+    alternates = _claim_alternates(answer)
+    unmatched = [
+        v for v in claimed
+        if not _matches(v, evidence_numbers, tolerance)
+        and not any(_matches(a, evidence_numbers, tolerance)
+                    for a in alternates.get(v, ()))
+    ]
     matched = len(claimed) - len(unmatched)
     return VerificationResult(
         coverage=matched / len(claimed),

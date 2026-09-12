@@ -242,7 +242,9 @@ def test_a_term_result_carries_the_retriever_s_keys_not_the_table_s():
 
     sys.modules["app.services.dashboard_ai_bot.govern_tools"] = mod
     try:
-        out = D._terms(ctx, "danh mục", D._terms_of("danh mục"))
+        # `_Once` memoises the metric scope for one search — the finders share
+        # it, so they take it rather than each resolving the scope again.
+        out = D._terms(ctx, "danh mục", D._terms_of("danh mục"), D._Once(ctx, "danh mục"))
     finally:
         del sys.modules["app.services.dashboard_ai_bot.govern_tools"]
         assert original_scope is None or True
@@ -250,3 +252,48 @@ def test_a_term_result_carries_the_retriever_s_keys_not_the_table_s():
     assert out and out[0]["name"] == "Danh mục sản phẩm"
     assert out[0]["id"] == "nghiep_vu.danh_muc"
     assert "Nhóm phân loại" in out[0]["detail"]
+
+
+def test_the_metric_scope_is_resolved_once_per_search(monkeypatch):
+    """Two finders need it; resolving it twice cost half the search.
+
+    MEASURED with six metrics in the dictionary: `_metrics_in_scope` ran twice and
+    took 60ms of a 123ms call — it queries every metric's bindings, so roughly 5ms
+    per metric per pass. This pack exists to be useful on a FULL dictionary, where
+    the duplicate pass alone would be half a second.
+    """
+    calls = []
+
+    class _FakeGT:
+        @staticmethod
+        def _metrics_in_scope(ctx, question=""):
+            calls.append(question)
+            return []
+
+        @staticmethod
+        def _terms_in_scope(ctx, metrics, question):
+            return []
+
+    import sys
+
+    sys.modules["app.services.dashboard_ai_bot.govern_tools"] = _FakeGT
+    try:
+        ctx = _FakeCtx([], set())
+        once = D._Once(ctx, "doanh thu")
+        D._metrics(ctx, "doanh thu", D._terms_of("doanh thu"), once)
+        D._terms(ctx, "doanh thu", D._terms_of("doanh thu"), once)
+    finally:
+        del sys.modules["app.services.dashboard_ai_bot.govern_tools"]
+
+    assert calls == ["doanh thu"], "the metric scope must be resolved exactly once"
+
+
+def test_the_memo_does_not_outlive_one_search():
+    """It is a per-call memo, not a cache.
+
+    A cache on the context would eventually serve one request a scope computed for
+    another — and this scope IS the permission boundary, so a stale one is not a
+    stale answer, it is the wrong reader's answer.
+    """
+    ctx = _FakeCtx([], set())
+    assert D._Once(ctx, "a") is not D._Once(ctx, "a")
