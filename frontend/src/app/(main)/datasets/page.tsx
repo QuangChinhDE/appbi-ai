@@ -613,6 +613,7 @@ export default function DatasetsPage() {
           onClose={() => setIsCreateModalOpen(false)}
           onCreate={handleCreateDataset}
           isLoading={createMutation.isPending}
+          canViewWorkboards={hasPermission(permData?.permissions, 'workboards', 'view')}
         />
       )}
 
@@ -663,9 +664,10 @@ interface CreateDatasetModalProps {
   onClose: () => void;
   onCreate: (input: CreateDatasetInput) => void;
   isLoading: boolean;
+  canViewWorkboards: boolean;
 }
 
-function CreateDatasetModal({ onClose, onCreate, isLoading }: CreateDatasetModalProps) {
+function CreateDatasetModal({ onClose, onCreate, isLoading, canViewWorkboards }: CreateDatasetModalProps) {
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [purpose, setPurpose] = useState<DatasetPurpose>('reporting');
@@ -737,11 +739,13 @@ function CreateDatasetModal({ onClose, onCreate, isLoading }: CreateDatasetModal
                 title: 'Reporting / Analytics',
                 desc: 'For dashboards & charts. May be synced (materialized) to BigQuery snapshots.',
               },
-              {
-                value: 'operational' as DatasetPurpose,
-                title: 'Operational / Workboard',
-                desc: 'Live database for a Workboard app. Reads/writes stay on the source — NEVER synced to BigQuery.',
-              },
+              ...(canViewWorkboards
+                ? [{
+                    value: 'operational' as DatasetPurpose,
+                    title: 'Operational / Workboard',
+                    desc: 'Live database for a Workboard app. Reads/writes stay on the source — NEVER synced to BigQuery.',
+                  }]
+                : []),
             ]).map((opt) => (
               <button
                 key={opt.value}

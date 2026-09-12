@@ -443,6 +443,9 @@ def save_draft(
             # the flow can read without anybody choosing that.
             owner_email=existing_owner or actor_email,
             created_by=actor_email,
+            # Carried, like ownership: it is a property of the flow, so cutting a new
+            # version must not silently drop a flow out of the Chat module.
+            direct_chat_enabled=bool(getattr(latest, "direct_chat_enabled", False)),
         )
         db.add(row)
         _assign_flow_id(db, row)

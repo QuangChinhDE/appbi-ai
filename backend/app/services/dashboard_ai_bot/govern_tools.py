@@ -53,6 +53,7 @@ import re
 from typing import Any
 
 from app.services.dashboard_ai_bot import knowledge_hit
+from app.services.agent_flows.tools.context import CHAT_USER
 from app.services.dashboard_ai_bot.tool_context import ToolContext, _err, _ok
 
 logger = logging.getLogger(__name__)
@@ -102,9 +103,20 @@ def _plain(text: str, limit: int) -> str:
 
 
 def _scope(ctx: ToolContext) -> tuple[set[int], set[int]]:
-    """(dataset_table_ids, dataset_ids) backing this dashboard."""
+    """(dataset_table_ids, dataset_ids) backing this dashboard.
+
+    Empty when there is no dashboard. Direct chat runs with `dashboard=None`, and
+    every tool body is wrapped in a catch-all that turns an exception into a failed
+    tool call the model then retries — so an unguarded `ctx.dashboard.id` here would
+    not surface as a clear error but as a step burning its tool budget on
+    `internal` failures. The same guard already exists on `_resolve_excluded_columns`
+    for the same reason.
+    """
     from app.models.dataset import DatasetTable
     from app.services.dashboard_ai_bot.knowledge_context import dashboard_table_ids
+
+    if getattr(ctx, "dashboard", None) is None:
+        return set(), set()
 
     tids = set(dashboard_table_ids(ctx.db, ctx.dashboard.id))
     dsids: set[int] = set()
@@ -165,6 +177,9 @@ def _visible_doc_ids(ctx: ToolContext) -> set[int]:
     """Documents this report is allowed to read, then narrowed to what this STEP
     was scoped to. See the module docstring for why the order matters: the
     entitlement is computed first and the author's list only cuts inside it."""
+    if getattr(ctx, "actor_type", "") == CHAT_USER:
+        return _chat_user_doc_ids(ctx)
+
     chosen = _authored_doc_ids(ctx)
     if chosen:
         # An EXPLICIT grant is the ceiling. It may reach outside this report — that
@@ -173,6 +188,53 @@ def _visible_doc_ids(ctx: ToolContext) -> set[int]:
         # draft is not something anyone chose to publish to a viewer.
         return chosen & _published_doc_ids(ctx)
     return _entitled_doc_ids(ctx)
+
+
+def _chat_user_doc_ids(ctx: ToolContext) -> set[int]:
+    """The direct-chat ceiling: attached ∩ published ∩ THIS USER'S own rights.
+
+    TWO THINGS DIFFER FROM EVERY OTHER CALLER, AND BOTH ARE THE POINT.
+
+    First, the reader's own rights are a term. Everywhere else the reader is either
+    anonymous (a public link, where delegation is the whole model) or the flow's own
+    author in the Studio. Direct chat is the first surface where an arbitrary
+    signed-in person drives a flow somebody else wrote, and `_published_doc_ids`
+    alone is every published document in the tenant — so without this term, sharing
+    a flow would hand its documents to anyone allowed to chat with it.
+
+    It cannot be enforced one layer up. `run_scope(viewer=...)` does narrow the
+    run's scope to the caller, but each node then OVERWRITES `ctx.knowledge_scope`
+    with its own declared attachments (`build_knowledge_scope`) rather than
+    intersecting — safe on the public path, where the ceiling is computed here
+    anyway, and exactly why the ceiling has to be computed here.
+
+    Second, attaching nothing means NOTHING, not everything. The fallback for an
+    unscoped step is `_entitled_doc_ids`, i.e. "whatever this report may read" —
+    and there is no report. An empty scope therefore denies rather than widening.
+    """
+    chosen = _authored_doc_ids(ctx)
+    if not chosen:
+        return set()
+    return chosen & _published_doc_ids(ctx) & _reader_doc_ids(ctx)
+
+
+def _reader_doc_ids(ctx: ToolContext) -> set[int]:
+    """Documents the signed-in caller may open, by the same filter the Documents
+    screen uses. Fails closed: an unresolvable actor reads nothing."""
+    email = str(getattr(ctx, "actor_ref", "") or "").strip()
+    if not email:
+        return set()
+    try:
+        from app.models.user import User
+        from app.services.agent_flows.permissions import attachable_documents
+
+        user = ctx.db.query(User).filter(User.email == email).first()
+        if user is None:
+            return set()
+        return attachable_documents(ctx.db, user)
+    except Exception:  # noqa: BLE001
+        logger.warning("[knowledge] reader scope unresolved for %r", email, exc_info=True)
+        return set()
 
 
 def _published_doc_ids(ctx: ToolContext) -> set[int]:

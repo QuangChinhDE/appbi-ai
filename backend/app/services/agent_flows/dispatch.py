@@ -115,7 +115,7 @@ def build_report_info(dashboard: Any, ctx: Any) -> ReportInfo:
 
 
 def fingerprint(*, binding_id: int, version: int, filters: list[dict], charts: list[int],
-                locale: str, shape: str = "") -> str:
+                locale: str, shape: str = "", scope: dict[str, Any] | None = None) -> str:
     """What invalidates a session's memory.
 
     Change the filters, the version, the allowed charts or the language, and every
@@ -127,6 +127,16 @@ def fingerprint(*, binding_id: int, version: int, filters: list[dict], charts: l
     DRAFT they are editing under a version number that does not move. Without this,
     editing the step you are testing and re-running reused the old step's output as
     "still valid" — the silent skip, arrived at from the other direction.
+
+    `scope` exists for direct chat, where the READER has rights of their own and they
+    can be revoked mid-conversation. A fact established while a document was readable
+    must not be recalled after the grant behind it is gone — that is a leak with a
+    delay on it. The tool-result cache already keys on the knowledge scope for
+    exactly this reason; memory is the same argument with a longer lifetime.
+
+    Both default to nothing, so the hash a public link computes is byte-identical to
+    what it computed before either existed. That matters on deploy day: a changed
+    input here would reset every live session's memory at once.
     """
     payload = json.dumps(
         {
@@ -136,6 +146,7 @@ def fingerprint(*, binding_id: int, version: int, filters: list[dict], charts: l
             "c": sorted(charts or []),
             "l": locale,
             "s": shape,
+            **({"k": json.dumps(scope, sort_keys=True, default=str)} if scope else {}),
         },
         sort_keys=True,
     )
@@ -676,3 +687,200 @@ async def run_preview(
             if row_id:
                 ev.extra["run_row_id"] = row_id
         yield ev
+
+
+# ═══ The direct-chat path ═════════════════════════════════════════════════════
+async def run_for_chat_thread(
+    db: Session,
+    *,
+    thread_id: int,
+    user_id: Any,
+    ctx: Any,
+    question: str,
+    history: list[dict] | None = None,
+    api_key: str = "",
+    provider: str = "",
+    model: str = "",
+    base_system_prompt: str = "",
+    locale: str = "vi",
+) -> AsyncGenerator[AgentEvent, None]:
+    """One turn of a signed-in user talking to a flow, with no report and no link.
+
+    TAKES IDS, NOT ORM OBJECTS, and reloads both here. A streaming response runs its
+    body AFTER the request's dependencies have been torn down, so `get_db` has
+    already called `Session.close()` by the time this generator starts — which
+    DETACHES every instance the endpoint had loaded. A detached instance is readable
+    only while its attributes are still populated, and any `commit()` before the
+    stream (recording the thread as active, say) expires them all. The result is a
+    `DetachedInstanceError` on the first attribute read, from a line that merely says
+    `thread.brain_key`. Reloading inside the generator sidesteps the whole class of
+    bug: the session reopens a transaction on first use and everything read from here
+    is bound to it.
+
+    THE SAME ENGINE, A DIFFERENT CEILING. Everything downstream of the envelope is
+    byte-for-byte the public path. What differs is assembled here, and only here:
+
+      report      the `dashboard_id=0` sentinel. Not a stub Dashboard row — a fake
+                  one would make every report-reading tool believe it had something
+                  to read and answer from an empty result instead of refusing.
+      binding     ephemeral, `id=0`, never saved. Charts are an explicit empty
+                  allowlist, so `assert_chart_in_scope` refuses every id.
+      scope       `run_scope(viewer=user)` — the reader's own rights are a term here,
+                  because unlike a public viewer this reader HAS rights and must not
+                  borrow the author's where their own fall short.
+      actor       `CHAT_USER`, set by the caller. It is what makes `govern_tools`
+                  apply the reader's grants and what makes `remember_fact` refuse.
+      permission  re-resolved every turn (`resolve_for_chat`), so an unshared flow,
+                  an unpublished one, or one that has since grown a `report_read`
+                  step stops the NEXT question rather than the next thread.
+    """
+    from app.models.user import User
+    from app.services.agent_flows import direct_chat
+    from app.services.agent_flows.permissions import run_scope
+
+    run_id = new_run_id()
+    user = db.query(User).filter(User.id == user_id).first()
+    thread = direct_chat.get_thread(db, user, thread_id) if user is not None else None
+    if user is None or thread is None:
+        # Deleted, or the account went away, between the request being accepted and
+        # the stream starting. Nothing to record it against, so it is said and dropped.
+        out = blocked(run_id, direct_chat.BLOCK_MESSAGES["not_published"], "not_published")
+        yield AgentEvent(type="text", text=out.answer.plain_text())
+        yield AgentEvent(type="result", extra={"envelope": out.to_dict()})
+        yield AgentEvent(type="done")
+        return
+
+    direct_chat.touch(db, thread, title_from=question)
+    row, flow, problem = direct_chat.resolve_for_chat(db, user, thread.brain_key)
+
+    if problem or flow is None or row is None:
+        out = blocked(
+            run_id,
+            direct_chat.BLOCK_MESSAGES.get(
+                problem, direct_chat.BLOCK_MESSAGES["not_published"]
+            ),
+            problem or "not_published",
+        )
+        _record_chat_blocked(db, out, thread, question)
+        yield AgentEvent(type="text", text=out.answer.plain_text())
+        yield AgentEvent(type="result", extra={"envelope": out.to_dict()})
+        yield AgentEvent(type="done")
+        return
+
+    report = ReportInfo(dashboard_id=0)
+    binding = direct_chat.ephemeral_chat_binding(flow)
+    binding_info = binding_service.build_binding_info(
+        binding, flow=flow, report=report, link_token="", version=row.version, ctx=ctx,
+    )
+
+    # No charts, said twice. The contract's allowlist is empty and so is this, but
+    # the tool context is what `assert_chart_in_scope` actually reads.
+    ctx.allowed_chart_ids = set()
+    ctx.max_rows_per_call = binding_info.capabilities.max_rows_per_call
+    ctx.max_result_tokens = binding_info.capabilities.max_result_tokens
+    ctx.knowledge_scope = run_scope(
+        db, row, flow, binding_info.knowledge.model_dump(), viewer=user
+    )
+
+    fp = fingerprint(
+        binding_id=0, version=row.version, filters=[], charts=[], locale=locale,
+        scope=ctx.knowledge_scope,
+    )
+    token = direct_chat.session_token(thread.id)
+    memory, memory_notices = load_memory(
+        db, session_key=thread.session_key, token=token, fp=fp
+    )
+    contract = binding_service.contract_of(binding)
+
+    turns = [
+        Turn(role=h.get("role", "user"), content=str(h.get("content") or ""))
+        for h in (history or [])
+        if isinstance(h, dict) and h.get("role") in ("user", "assistant")
+    ]
+
+    inp = FlowInput(
+        request=RequestInfo(
+            id=run_id, at=datetime.now(timezone.utc).isoformat(),
+            locale=locale, trigger="direct_chat",
+        ),
+        question=QuestionInfo(raw=question, normalized=question, turn_index=len(turns) // 2),
+        conversation=ConversationInfo(session_key=thread.session_key, history=turns),
+        report=report,
+        filters=FiltersInfo(fingerprint=fp),
+        binding=binding_info,
+        memory=memory,
+        runtime=RuntimeInfo(
+            provider=provider or "",
+            model=model or "",
+            budget=BudgetEnvelope(**contract.budget.model_dump()),
+        ),
+    )
+
+    recorded = False
+    started = datetime.now(timezone.utc)
+    try:
+        async for ev in executor.run_flow(
+            inp, flow=flow, ctx=ctx, api_key=api_key,
+            base_system_prompt=base_system_prompt, db=db,
+        ):
+            if ev.type == "result":
+                out = FlowOutput.model_validate(ev.extra.get("envelope"))
+                out.notices = [*memory_notices, *out.notices]
+                ev.extra["envelope"] = out.to_dict()
+                save_memory(
+                    db, session_key=thread.session_key, token=token,
+                    fp=fp, out=out, flow=flow,
+                )
+                runs_service.record(
+                    db, inp=inp, out=out, brain_key=flow.key, version=row.version,
+                    binding_id=None, chat_thread_id=thread.id, store_content=True,
+                )
+                recorded = True
+            yield ev
+    finally:
+        # An abandoned turn is still a turn — and here it is also a LOST MESSAGE.
+        # On a public link this row is telemetry; in a chat the content row IS the
+        # transcript, so failing to write it means the user watched an answer arrive
+        # and then found the thread empty.
+        if not recorded:
+            elapsed = int((datetime.now(timezone.utc) - started).total_seconds() * 1000)
+            aborted = FlowOutput(
+                run_id=run_id,
+                status="failed",
+                answer=blocked(run_id, "").answer,
+                notices=[
+                    *memory_notices,
+                    Notice(
+                        code="turn_abandoned",
+                        text="Lượt hỏi kết thúc trước khi có câu trả lời — "
+                             "bạn đã rời trang, hoặc mô hình trả lời quá chậm.",
+                    ),
+                ],
+            )
+            aborted.usage.ms = elapsed
+            runs_service.record(
+                db, inp=inp, out=aborted, brain_key=flow.key, version=row.version,
+                binding_id=None, chat_thread_id=thread.id, store_content=True,
+            )
+
+
+def _record_chat_blocked(db: Session, out: FlowOutput, thread: Any, question: str) -> None:
+    """A refused chat turn is still a turn, and it is the one worth having: "this
+    flow answered nothing for a week because its share was revoked" is invisible
+    otherwise."""
+    from app.services.agent_flows.envelope import BindingInfo
+
+    inp = FlowInput(
+        request=RequestInfo(
+            id=out.run_id, at=datetime.now(timezone.utc).isoformat(),
+            trigger="direct_chat",
+        ),
+        question=QuestionInfo(raw=question, normalized=question),
+        conversation=ConversationInfo(session_key=thread.session_key or ""),
+        report=ReportInfo(dashboard_id=0),
+        binding=BindingInfo(id=0),
+    )
+    runs_service.record(
+        db, inp=inp, out=out, brain_key=thread.brain_key or "(none)",
+        version=None, binding_id=None, chat_thread_id=thread.id, store_content=True,
+    )

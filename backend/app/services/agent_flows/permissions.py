@@ -133,6 +133,8 @@ def run_scope(
     brain_row: AgentBrainVersion,
     brain: Brain,
     binding_scope: dict[str, list] | None = None,
+    *,
+    viewer: Any | None = None,
 ) -> dict[str, list]:
     """The knowledge scope a RUN of this brain may reach.
 
@@ -147,6 +149,14 @@ def run_scope(
     `binding_scope` is the third term and it can only NARROW. A link cannot grant a
     document the flow never attached — that would let whoever manages a public link
     borrow the author's reading rights for something the author never chose.
+
+    `viewer` is a FOURTH term, and it exists for direct chat only. A public viewer is
+    anonymous and has no rights of their own, which is why delegation is the whole
+    model there. A signed-in user does have rights, and borrowing the owner's where
+    their own fall short would make the Chat module a way to read documents nobody
+    granted them. So when a viewer is given, the scope narrows again to what THEY may
+    read. It can only ever subtract; passing None leaves the public path's behaviour
+    byte-for-byte unchanged.
 
     Fails CLOSED: an owner who cannot be resolved yields an empty scope, so the flow
     runs with no attached knowledge rather than with all of it.
@@ -177,6 +187,16 @@ def run_scope(
         for field in ("doc_ids", "dataset_ids", "metric_names"):
             allowed = set(binding_scope.get(field) or [])
             scope[field] = [x for x in scope[field] if x in allowed]
+
+    if viewer is not None:
+        # The signed-in caller's own rights, applied last so it cannot be widened by
+        # anything above it. `metric_names` is deliberately left alone: a metric is a
+        # name inside a dataset's governed catalogue and carries no separate grant,
+        # so it is already bounded by the dataset intersection on the line above.
+        viewer_docs = attachable_documents(db, viewer)
+        viewer_datasets = attachable_datasets(db, viewer)
+        scope["doc_ids"] = [x for x in scope["doc_ids"] if x in viewer_docs]
+        scope["dataset_ids"] = [x for x in scope["dataset_ids"] if x in viewer_datasets]
     return scope
 
 

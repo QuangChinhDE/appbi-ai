@@ -33,6 +33,11 @@ logger = logging.getLogger(__name__)
 MAX_ROWS_FOR_PACK = 200  # internal sample for stats, not exposed to LLM
 MAX_TOP_N = 50
 
+#: `ToolContext.actor_type` for the Chat module — a signed-in person talking to a
+#: flow with no report on screen. See the field's own comment for why this is a
+#: third value rather than reusing "user".
+CHAT_USER = "chat_user"
+
 
 # ── On-screen field semantics ──────────────────────────────────────────────
 #
@@ -216,9 +221,19 @@ class ToolContext:
     pages: list[dict[str, Any]] = field(default_factory=list)
     # WHO is driving this turn. "public_session" = anonymous viewer of a shared
     # link (the default and by far the common case); "user" = an authenticated
-    # in-app user. Governs whether a learning the bot is told may be written as
-    # truth directly or must go through the review ledger — an anonymous viewer
-    # must never be able to poison the memory every later viewer reads.
+    # in-app user; CHAT_USER = a signed-in person chatting with a flow SOMEBODY
+    # ELSE may have written, with no report on screen. Governs whether a learning
+    # the bot is told may be written as truth directly or must go through the
+    # review ledger — an anonymous viewer must never be able to poison the memory
+    # every later viewer reads.
+    #
+    # CHAT_USER is deliberately NOT "user". "user" today means the flow's own
+    # author testing in the Studio, and it carries two powers that must not follow
+    # a flow out to whoever it was shared with: writing institutional memory
+    # without review, and reading every published document the flow attached
+    # regardless of the reader's own grants. A third value keeps both decisions
+    # where they already live instead of adding a second identity concept beside
+    # this one.
     actor_type: str = "public_session"
     actor_ref: str | None = None
     # Columns the business excluded from AI via GovernAIScope, folded (no

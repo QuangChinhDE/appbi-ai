@@ -161,6 +161,11 @@ class Settings(BaseSettings):
     # 0 = unlimited (the pre-v2 behaviour).
     AI_DEFAULT_BUDGET_USD_PER_DAY: float = 5.0
     AI_DEFAULT_TURNS_PER_HOUR: int = 120
+    # Direct Chat (signed-in users talking to a flow with no report) is metered per
+    # USER instead of per link: there is no link to hang a ceiling on, and the
+    # natural brake a public link has — somebody must find and open it — does not
+    # exist for a nav item every employee can click. 0 = unlimited.
+    DIRECT_CHAT_RUNS_PER_DAY: int = 100
     # Evidence ledger: persist one row per tool call so every number in an
     # answer can be traced back to the call that produced it.
     # ON by default. Verification is fail-closed, so an empty ledger would mean

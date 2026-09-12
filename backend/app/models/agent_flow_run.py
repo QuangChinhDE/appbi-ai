@@ -56,6 +56,15 @@ class AgentFlowRun(Base):
     link_token = Column(String(64), nullable=True, index=True)
     dashboard_id = Column(Integer, nullable=True, index=True)
     session_key = Column(String(64), nullable=True, index=True)
+    #: Set instead of `binding_id` when the turn came from direct chat. Exactly one
+    #: of the two is ever non-NULL, which is what keeps every existing cost and
+    #: latency report working unchanged across both surfaces.
+    chat_thread_id = Column(
+        Integer,
+        ForeignKey("agent_flow_chat_threads.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
 
     #: ok | partial | blocked | failed | throttled
     status = Column(String(16), nullable=False, default="ok", index=True)
@@ -94,6 +103,10 @@ class AgentFlowRun(Base):
     __table_args__ = (
         Index("ix_agent_flow_runs_flow_time", "brain_key", "created_at"),
         Index("ix_agent_flow_runs_binding_time", "binding_id", "created_at"),
+        #: Loading a thread's transcript is "this thread's runs, oldest first", and
+        #: the per-user daily quota is "this user's threads' runs since midnight".
+        #: Both are this index.
+        Index("ix_agent_flow_runs_thread_time", "chat_thread_id", "created_at"),
     )
 
 
