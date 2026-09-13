@@ -92,16 +92,27 @@ class AgentBrainVersion(Base):
     #: pass can tell "shipped with the product" from "somebody built this".
     is_builtin = Column(Boolean, nullable=False, default=False)
 
-    #: May a signed-in user open this flow in the Chat module and talk to it with no
-    #: report on screen? OFF by default: most flows were written to read the report
-    #: they were bound to, and outside one they answer from nothing without saying so.
+    #: WHICH SURFACE THIS FLOW WAS BUILT FOR. `bot` or `chat`.
     #:
-    #: Maintained as a property of the FLOW, not of this revision — toggling it
+    #: The two surfaces hand a flow different things, and that is the whole reason
+    #: this is a type rather than a preference:
+    #:
+    #:   bot   an anonymous viewer on a report, so `dashboard_id` and the link's
+    #:         filters ALWAYS arrive. A step may assume there is a report, and the
+    #:         author may attach further sources on top of it.
+    #:   chat  a signed-in reader typing, so only text arrives. Nothing supplies
+    #:         "the report"; the author decides in advance what the assistant may
+    #:         reach, and the question only steers within that.
+    #:
+    #: So assigning a `chat` flow to a link is not a policy violation — it is a
+    #: step reading a field that was never sent. Both pickers refuse it.
+    #:
+    #: Maintained as a property of the FLOW, not of this revision — setting it
     #: writes every version row of the `brain_key`. A per-version value would mean
-    #: "enabled" on a draft did nothing until publish, which is a trap rather than a
+    #: a draft's type did nothing until publish, which is a trap rather than a
     #: feature. Being on the version table anyway is a consequence of there being no
     #: parent table; see this module's docstring for why there isn't one.
-    direct_chat_enabled = Column(Boolean, nullable=False, default=False)
+    flow_type = Column(String(8), nullable=False, default="bot", index=True)
 
     __table_args__ = (
         UniqueConstraint("brain_key", "version", name="uq_agent_brain_version"),

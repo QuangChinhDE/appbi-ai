@@ -339,6 +339,10 @@ export type BrainStatus = 'draft' | 'published' | 'archived';
 
 export interface BrainSummary {
   brain_key: string;
+  /** Which surface this flow was built for. Optional so a frontend deployed ahead
+   *  of the backend reads `undefined` and falls back to `bot`, which is what every
+   *  flow written before the type existed actually is. */
+  flow_type?: FlowType;
   /** What a link carries. Shared by every version of this flow, unlike a version
    *  row's own id. Every API call below still uses `brain_key`. */
   flow_id: number | null;
@@ -393,6 +397,12 @@ export interface ValidateResult {
   estimate?: { max_llm_calls: number; max_tool_calls: number };
   produced_vars?: string[];
   referenced_vars?: string[];
+  /** Why this SHAPE could not run with no report on screen. Returned for either
+   *  type, so the builder can state both readings at once: an author on a bot flow
+   *  sees what would have to change before switching, and an author on a chat flow
+   *  sees the moment they break it — in the builder, rather than at the chat door
+   *  where they are not standing. */
+  chat_blockers?: string[];
 }
 
 // ── Bindings ────────────────────────────────────────────────────────────────
@@ -724,10 +734,28 @@ export async function getBrain(key: string, version?: number): Promise<BrainDeta
   return data;
 }
 
+export type FlowType = 'bot' | 'chat';
+
 export async function saveBrain(body: {
   brain_key: string; name: string; description: string; body: FlowBody;
+  /** Read only when this save CREATES the flow. Later saves carry the type
+   *  forward; changing it goes through `setFlowType`, which can refuse. */
+  flow_type?: FlowType;
 }): Promise<BrainDetail> {
   const { data } = await apiClient.put<BrainDetail>(`${BASE}/brains`, body);
+  return data;
+}
+
+/** Which surface this flow is for.
+ *
+ *  Refused when a flow that reads a report is asked to become a chat flow — the
+ *  server returns the reasons, because the author is the one who can act on them.
+ */
+export async function setFlowType(key: string, flowType: FlowType): Promise<{
+  brain_key: string; flow_type: FlowType; reasons: string[];
+}> {
+  const { data } = await apiClient.put(
+    `${BASE}/brains/${encodeURIComponent(key)}/type`, { flow_type: flowType });
   return data;
 }
 
@@ -736,6 +764,10 @@ export async function saveBrain(body: {
  *  a version, so the act of checking changed the thing being checked. */
 export async function validateFlow(body: {
   brain_key: string; name: string; body: FlowBody;
+  /** Which surface to check against. Three of the review notes state a
+   *  consequence that only holds on a report, so a chat flow checked as a bot is
+   *  told the opposite of the truth. */
+  flow_type?: FlowType;
 }): Promise<ValidateResult> {
   const { data } = await apiClient.post<ValidateResult>(`${BASE}/validate`, body);
   return data;

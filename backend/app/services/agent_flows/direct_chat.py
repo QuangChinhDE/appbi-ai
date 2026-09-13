@@ -15,12 +15,18 @@ with no charts, which is every direct-chat contract by definition — it is aski
 "can this flow be assigned to this LINK", a different question with a different
 right answer.
 
-THE OPT-IN IS SEPARATE FROM THE CHECK
--------------------------------------
-Passing the check means "this flow CAN run without a report". `direct_chat_enabled`
-means "its author MEANT it to". Both are required, because a knowledge-only flow
-written as one link's FAQ assistant is technically runnable anywhere and was still
-never intended to be a company-wide chat bot.
+THE DECLARED TYPE IS THE GATE; THE CHECK IS THE SAFETY NET
+----------------------------------------------------------
+`flow_type == "chat"` is the author saying what they built, asked when the flow is
+created — so nobody discovers after building it that their assistant cannot be
+used. The same declaration refuses a chat flow on the LINK side, which until now
+had no check at all: `_usable_flow` asked only whether a flow was shared and
+published.
+
+`ineligibility_reasons` stays, with a narrower job. It no longer decides whether a
+flow MAY be a chat flow; it reports whether one that claims to be has been edited
+into something that cannot run, so the author hears it at the step rather than at
+the door.
 """
 from __future__ import annotations
 
@@ -63,14 +69,18 @@ def ineligibility_reasons(flow: Flow) -> list[str]:
             + ") — chat trực tiếp không có báo cáo nào để đọc."
         )
 
-    for node in flow.agent_nodes():
-        needs = sorted(set(node.tool_names()) & _CHART_KEYED_TOOLS)
-        if needs:
-            reasons.append(
-                f"Bước “{node.key}” được cấp công cụ cần biểu đồ ("
-                + ", ".join(needs)
-                + ")."
-            )
+    # CHART TOOLS ARE NO LONGER A REASON.
+    #
+    # They were banned because this surface had no charts: `allowed_chart_ids` was
+    # a hardcoded empty set, so every one of those calls came back
+    # `chart_out_of_scope`. That froze Chat at "documents only" by disqualifying 20
+    # of the 36 tools — the rule was right about the consequence and wrong about
+    # the cause, and the cause has been fixed.
+    #
+    # A chat flow now resolves its chart at run time from the datasets its author
+    # granted. The tool is HOW it does that; granting one is not evidence the flow
+    # cannot run. A flow that attached nothing still measures nothing, and says so
+    # through the tool's own refusal rather than through a blanket ban here.
 
     blocked_reqs = [
         r.label or r.key
@@ -104,7 +114,7 @@ def published_chat_brains(db: Session, user: Any) -> list[tuple[AgentBrainVersio
     rows = (
         usable_brains(db, user)
         .filter(AgentBrainVersion.status == "published")
-        .filter(AgentBrainVersion.direct_chat_enabled.is_(True))
+        .filter(AgentBrainVersion.flow_type == "chat")
         .order_by(AgentBrainVersion.name.asc())
         .all()
     )
@@ -147,7 +157,9 @@ def resolve_for_chat(
         # One code for "never yours", "no longer yours" and "no published version".
         # Telling them apart would tell a caller which flows exist.
         return None, None, "not_published"
-    if not bool(row.direct_chat_enabled):
+    if str(getattr(row, "flow_type", "") or "") != "chat":
+        # Not "disabled" — it was never this kind of flow. A bot flow arriving at
+        # the chat door means a stale thread, or a type changed under it.
         return row, None, "direct_chat_disabled"
 
     flow = reg.parse_flow(row)
@@ -163,7 +175,12 @@ BLOCK_MESSAGES = {
         "Trợ lý này hiện không còn hoạt động — flow chưa có bản phát hành, hoặc "
         "bạn không còn quyền dùng nó."
     ),
-    "direct_chat_disabled": "Trợ lý này đã được tắt chế độ chat trực tiếp.",
+    # It was never a chat assistant, which is a different thing from having been
+    # switched off — and the difference matters to whoever has to fix it.
+    "direct_chat_disabled": (
+        "Trợ lý này được tạo cho Bot trên báo cáo, nên không dùng được ở màn hình "
+        "chat."
+    ),
     "direct_chat_ineligible": (
         "Bản mới của trợ lý này cần một báo cáo để đọc, nên không chạy được ở màn "
         "hình chat."

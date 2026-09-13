@@ -438,10 +438,28 @@ async def run_for_link(
     # The payload ceiling travels the same way, for the same reason: a tool
     # body cannot see the binding and should not learn to.
     ctx.max_result_tokens = binding_info.capabilities.max_result_tokens
-    from app.services.agent_flows.permissions import run_scope
+    from app.services.agent_flows.permissions import chart_scope, run_scope
 
     ctx.knowledge_scope = run_scope(
         db, row, flow, binding_info.knowledge.model_dump()
+    )
+    # AND ALSO THESE. The line above is the report the viewer is on; this one is
+    # what its author attached on top of it — the only way a bot flow reaches past
+    # a single report, and the thing that lets `search_business_assets` answer
+    # "which report shows this" rather than "the one you are looking at".
+    #
+    # A UNION, deliberately, and it does not escape the ceiling: every dataset here
+    # already survived owner ∩ flow ∩ link inside `run_scope`, so a link that
+    # narrows its knowledge contract narrows these charts with it. It is also never
+    # automatic — a flow that attached no dataset reaches no extra charts, which
+    # was every flow in this deployment when the union was written.
+    #
+    # `adopt_scope` rather than a plain assignment, because the added charts are
+    # not on this report: their names and their column-hiding rules come from the
+    # charts and datasets themselves, not from the dashboard's tiles.
+    ctx.adopt_scope(
+        set(ctx.allowed_chart_ids or set()) | chart_scope(db, ctx.knowledge_scope),
+        ctx.knowledge_scope.get("dataset_ids") or [],
     )
 
     fp = fingerprint(
@@ -754,6 +772,23 @@ async def run_preview(
         link_token=getattr(link, "token", ""), version=version, ctx=ctx,
     )
     ctx.allowed_chart_ids = set(ctx.allowed_chart_ids or set()) & set(binding_info.allowed_chart_ids)
+    # THE SAME ADDON THE LIVE LINK GETS, so the Test button answers the question an
+    # author is actually asking it. Without this, attaching a dataset changed what a
+    # viewer could reach and changed nothing in the panel the author checks it in —
+    # and the honest reading of that gap is "the attachment did not work".
+    #
+    # Taken from the contract rather than re-derived: this path's contract is
+    # `knowledge.mode = flow_all`, so it already lists exactly what the flow
+    # attached, and the author testing is the owner whose rights those are.
+    from app.services.agent_flows.permissions import chart_scope as _chart_scope
+
+    _attached = list(binding_info.knowledge.dataset_ids or [])
+    if _attached:
+        ctx.adopt_scope(
+            set(ctx.allowed_chart_ids or set())
+            | _chart_scope(db, {"dataset_ids": _attached}),
+            _attached,
+        )
     contract = binding_service.contract_of(binding)
 
     turns = [
@@ -855,7 +890,7 @@ async def run_for_chat_thread(
     """
     from app.models.user import User
     from app.services.agent_flows import direct_chat
-    from app.services.agent_flows.permissions import run_scope
+    from app.services.agent_flows.permissions import chart_scope, run_scope
 
     run_id = new_run_id()
     user = db.query(User).filter(User.id == user_id).first()
@@ -892,12 +927,20 @@ async def run_for_chat_thread(
         binding, flow=flow, report=report, link_token="", version=row.version, ctx=ctx,
     )
 
-    # No charts, said twice. The contract's allowlist is empty and so is this, but
-    # the tool context is what `assert_chart_in_scope` actually reads.
-    ctx.allowed_chart_ids = set()
     ctx.max_rows_per_call = binding_info.capabilities.max_rows_per_call
     ctx.max_result_tokens = binding_info.capabilities.max_result_tokens
     ctx.knowledge_scope = run_scope(db, row, flow, binding_info.knowledge.model_dump())
+    # THE CHARTS THIS ASSISTANT WAS GRANTED — derived from the knowledge scope, not
+    # from a link. A chat flow that attached no dataset still measures nothing, so
+    # attaching remains the gate; what changed is that attaching now opens it.
+    #
+    # `adopt_scope` rather than a plain assignment: with no dashboard this context
+    # also has no chart NAMES and no column-exclusion rules, and a catalogue of
+    # charts called "Chart 412" is one no question can match.
+    ctx.adopt_scope(
+        chart_scope(db, ctx.knowledge_scope),
+        ctx.knowledge_scope.get("dataset_ids") or [],
+    )
 
     fp = fingerprint(
         binding_id=0, version=row.version, filters=[], charts=[], locale=locale,

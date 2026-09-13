@@ -212,7 +212,12 @@ def tool_list_charts(ctx: ToolContext, args: dict) -> dict:
         items = [_compact_manifest(it) for it in items]
 
     out = {
-        "dashboard_name": ctx.dashboard.name or "",
+        # `getattr`, because there is not always a report. Direct Chat builds this
+        # context with `dashboard=None` on purpose, and this line — the only one in
+        # the tool layer that assumed otherwise — raised AttributeError inside
+        # `search_business_assets`, which caught it, logged a warning and returned
+        # documents only. The assistant then said the figure did not exist.
+        "dashboard_name": getattr(ctx.dashboard, "name", "") or "",
         "dashboard_description": getattr(ctx.dashboard, "description", "") or "",
         "filters_applied": ctx.public_filters,
         # The report's page flow (DA's narrative). Read/overview FOLLOWING this

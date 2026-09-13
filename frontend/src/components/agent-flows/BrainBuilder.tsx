@@ -16,12 +16,13 @@
  * stopped being a question you could only answer by committing to the answer.
  */
 import {
-  AlertTriangle, ArrowLeft, Check, Loader2, Maximize2, Minus, Play, Plus,
-  Redo2, Save, Send, Undo2, X,
+  AlertTriangle, ArrowLeft, Check, LayoutDashboard, Loader2, Maximize2,
+  MessagesSquare, Minus, Play, Plus, Redo2, Save, Send, Undo2, X,
 } from 'lucide-react';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import React from 'react';
 
+import { AppModalShell } from '@/components/common/AppModalShell';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
 import { Textarea } from '@/components/ui/Input';
@@ -33,8 +34,9 @@ import {
   blankNode, branchCoverage, brainImpact, canDropInto, findNode, getBrain, insertNode,
   listAttachable, listNodeSpecs, listProviders, listToolPacks, moveNode,
   publishBrain, removeNode,
-  replaceNode, saveBrain, validateFlow, walkNodes,
-  type FlowBody, type FlowLinkUsage, type FlowNode, type FlowPath, type InsertTarget,
+  replaceNode, saveBrain, setFlowType, validateFlow, walkNodes,
+  type FlowBody, type FlowLinkUsage, type FlowNode, type FlowPath, type FlowType,
+  type InsertTarget,
   type Attachable, type NodeSpec, type NodeType, type ProviderGroup,
   type Specialist, type SwitchCase, type ToolPack,
   type ValidateResult,
@@ -112,6 +114,12 @@ export function BrainBuilder({
   const [selected, setSelected] = React.useState<string | null>(null);
   const [insertAt, setInsertAt] = React.useState<InsertTarget | null>(null);
   const [validation, setValidation] = React.useState<ValidateResult | null>(null);
+  // Which surface this flow was built for. Held here rather than read off `detail`
+  // each render because changing it is a round trip that can be REFUSED, and the
+  // header must not show the new value until the server has accepted it.
+  const [flowType, setType] = React.useState<FlowType>('bot');
+  const [typeOpen, setTypeOpen] = React.useState(false);
+  const [typeBusy, setTypeBusy] = React.useState(false);
 
   // UNDO IS A STACK OF WHOLE BODIES, not a log of operations.
   //
@@ -147,6 +155,7 @@ export function BrainBuilder({
       setVersion(detail.version);
       setStatus(detail.status);
       setPublishedVersion(detail.published_version ?? null);
+      setType(detail.flow_type ?? 'bot');
       setBody(detail.body || { nodes: [] });
       setSpecList(nodeSpecs);
       setSpecs(Object.fromEntries(nodeSpecs.map((s) => [s.type, s])));
@@ -169,12 +178,40 @@ export function BrainBuilder({
   React.useEffect(() => {
     if (!body.nodes.length) { setValidation(null); return; }
     const t = setTimeout(() => {
-      validateFlow({ brain_key: brainKey, name: name || brainKey, body })
+      // The type goes with it: the same flow is sound on one surface and broken on
+      // the other, so a check that does not know which one is being built cannot
+      // answer the question the badge is asking.
+      validateFlow({ brain_key: brainKey, name: name || brainKey, body, flow_type: flowType })
         .then(setValidation)
         .catch(() => undefined);
     }, 400);
     return () => clearTimeout(t);
-  }, [body, brainKey, name]);
+  }, [body, brainKey, name, flowType]);
+
+  /** Change which surface this flow is for.
+   *
+   *  The server is the one that decides — it re-reads the PUBLISHED shape and it
+   *  refuses while the flow is still assigned to report links, neither of which
+   *  the builder can see from the draft in front of it. So the local value only
+   *  moves after the call returns, and a refusal is shown verbatim: the server's
+   *  sentence names the links or the steps, and a generic "không đổi được" would
+   *  throw that away.
+   */
+  const applyType = React.useCallback(async (next: FlowType) => {
+    setTypeBusy(true);
+    try {
+      await setFlowType(brainKey, next);
+      setType(next);
+      setTypeOpen(false);
+      toast.success(t('agentFlows.builder.type.changed'));
+    } catch (e) {
+      const detail = (e as { response?: { data?: { detail?: string } } })
+        ?.response?.data?.detail;
+      toast.error(detail || t('agentFlows.builder.type.changeFailed'));
+    } finally {
+      setTypeBusy(false);
+    }
+  }, [brainKey, t]);
 
   // ── tree edits ────────────────────────────────────────────────────────────
   /** Every tree edit goes through here, so every tree edit is undoable. */
@@ -391,7 +428,20 @@ export function BrainBuilder({
   return (
     <div className="flex h-full flex-col overflow-hidden">
       {/* topbar */}
-      <div className="flex h-11 flex-shrink-0 items-center gap-2 border-b border-[rgb(var(--border-line))] bg-surface-1 px-4">
+      {/* THE HEADER SCROLLS; THE ACTIONS DO NOT.
+          Measured at 1024×768 — a window size people genuinely build in — this row
+          needed 1,104px inside a 958px container whose parent is `overflow-hidden`.
+          Save draft and Publish were simply CUT OFF: not shrunk, not wrapped,
+          gone, with nothing on screen to say a control existed. An author at that
+          width could edit a flow and could not save it.
+
+          Two changes, and only two. The row may scroll sideways, so nothing is
+          ever unreachable; and the action cluster is pinned to the right edge, so
+          the controls that matter most are the ones that never move. Shedding
+          elements at breakpoints was the alternative and it is the wrong shape: it
+          makes reachability depend on guessing every width in advance, which is
+          how this row lost its buttons in the first place. */}
+      <div className="flex h-11 flex-shrink-0 items-center gap-2 overflow-x-auto border-b border-[rgb(var(--border-line))] bg-surface-1 px-4">
         <button type="button" onClick={onBack}
           className="flex items-center gap-1 text-caption text-text-tertiary hover:text-text-primary">
           <ArrowLeft className="h-3.5 w-3.5" /> {t('agentFlows.title')}
@@ -403,13 +453,38 @@ export function BrainBuilder({
           onChange={(e) => { setName(e.target.value); setDirty(true); }}
           // Narrower than it was: the row now carries the tabs too, and the name
           // is the one element that can give up width without losing meaning.
-          className="h-7 w-[150px] flex-shrink border-transparent bg-transparent px-1.5 text-caption font-medium hover:border-[rgb(var(--border-line))] xl:w-[240px]"
+          className="h-7 w-[120px] flex-shrink-0 border-transparent bg-transparent px-1.5 text-caption font-medium hover:border-[rgb(var(--border-line))] lg:w-[150px] xl:w-[240px]"
         />
         <StatusBadge status={status} version={version} size="xs" />
+
+        {/* WHAT THIS FLOW IS FOR, NEXT TO WHAT IT IS CALLED.
+            It belongs in the identity cluster rather than beside the validity
+            badge: the type is not a verdict on the flow, it is half of what the
+            flow IS — it decides what the flow is handed, which picker lists it,
+            and whether a "read the report" step makes sense at all. An author who
+            cannot see it while building is the author who asks why their
+            assistant never appears in Chat.
+
+            It turns into a warning when the SHAPE has drifted out of the
+            declaration, which is the one combination that silently produces a
+            flow nobody can use. */}
+        <FlowTypeChip
+          flowType={flowType}
+          blockers={validation?.chat_blockers ?? []}
+          canEdit={canEdit}
+          onOpen={() => setTypeOpen(true)}
+        />
+
         {publishedVersion != null && publishedVersion !== version && (
           <span className="text-tiny text-text-tertiary">· {t('agentFlows.builder.runningVersion', { version: publishedVersion })}</span>
         )}
-        <span className="hidden text-tiny text-text-tertiary lg:inline">· {links.length} {t(links.length === 1 ? 'agentFlows.common.link' : 'agentFlows.common.links')}</span>
+        {/* Pushed from `lg` to `2xl`: the type chip took the room, and of the two
+            this is the one an author can also read on the Runs tab. Hidden entirely
+            on a chat flow — "0 links" reads as "not deployed yet" on a flow that
+            cannot have a link at all. */}
+        {flowType === 'bot' && (
+          <span className="hidden text-tiny text-text-tertiary 2xl:inline">· {links.length} {t(links.length === 1 ? 'agentFlows.common.link' : 'agentFlows.common.links')}</span>
+        )}
 
         {/* TABS AND CHIPS LIVE ON THE HEADER ROW, not a second bar below it.
             Two stacked bars cost 40px of every screen beneath them, and the
@@ -459,6 +534,11 @@ export function BrainBuilder({
 
         <div className="flex-1" />
 
+        {/* Pinned to the right edge of the SCROLL PORT, not the row, so the verdict
+            and the three buttons stay put while the identity and tabs scroll under
+            them. `bg-surface-1` is required, not cosmetic: without it the scrolled
+            row shows through. */}
+        <div className="sticky right-0 flex flex-shrink-0 items-center gap-2 bg-surface-1 pl-2">
         {validation && (
           validation.ok
             ? <Badge size="xs" variant="success" dot>{t('agentFlows.builder.valid')}</Badge>
@@ -500,6 +580,7 @@ export function BrainBuilder({
             <Send className="h-3 w-3" /> {t('agentFlows.builder.publish')}
           </Button>
         )}
+        </div>
       </div>
 
       {/* body */}
@@ -626,11 +707,22 @@ export function BrainBuilder({
       {publishOpen && (
         <PublishDialog
           version={version}
+          flowType={flowType}
           links={links}
           problems={validation?.blocking_problems || []}
           onCancel={() => setPublishOpen(false)}
           onConfirm={doPublish}
           busy={saving}
+        />
+      )}
+
+      {typeOpen && (
+        <FlowTypeDialog
+          current={flowType}
+          blockers={validation?.chat_blockers ?? []}
+          busy={typeBusy}
+          onClose={() => setTypeOpen(false)}
+          onPick={applyType}
         />
       )}
 
@@ -656,9 +748,9 @@ export function BrainBuilder({
  *  A link that would break is PINNED, not broken — stated up front so publishing
  *  stops being a thing authors avoid. */
 function PublishDialog({
-  version, links, problems, onCancel, onConfirm, busy,
+  version, flowType, links, problems, onCancel, onConfirm, busy,
 }: {
-  version: number; links: FlowLinkUsage[];
+  version: number; flowType: FlowType; links: FlowLinkUsage[];
   /** Defects the server will refuse on. Shown BEFORE the button: the check already
    *  existed and ran on every keystroke, and publishing was the one moment nobody
    *  consulted it — so a flow reading a variable no step writes went live and
@@ -698,7 +790,11 @@ function PublishDialog({
           ))}
           {!links.length && (
             <p className="py-4 text-center text-caption text-text-tertiary">
-              {t('agentFlows.publish.noLinks')}
+              {/* A chat flow has no links and is not waiting for one, so "no links
+                  yet" would read as an unfinished setup. */}
+              {t(flowType === 'chat'
+                ? 'agentFlows.publish.chatOnly'
+                : 'agentFlows.publish.noLinks')}
             </p>
           )}
           {!!problems.length && (
@@ -760,5 +856,142 @@ function IconBtn({
     >
       {children}
     </button>
+  );
+}
+
+/* ── which surface this flow is for ───────────────────────────────────────── */
+
+const TYPE_ICON = { bot: LayoutDashboard, chat: MessagesSquare } as const;
+
+/** The header chip. States the type, and warns when the flow has drifted out of
+ *  it — a chat flow that grew a report-reading step is still labelled Chat and can
+ *  no longer be used there, and nothing else on the screen would say so. */
+function FlowTypeChip({
+  flowType, blockers, canEdit, onOpen,
+}: {
+  flowType: FlowType; blockers: string[]; canEdit: boolean; onOpen: () => void;
+}) {
+  const { t } = useI18n();
+  const Icon = TYPE_ICON[flowType];
+  const broken = flowType === 'chat' && blockers.length > 0;
+
+  return (
+    <button
+      type="button"
+      onClick={canEdit ? onOpen : undefined}
+      disabled={!canEdit}
+      aria-label={t('agentFlows.builder.type.' + flowType + '.chip')}
+      title={broken ? blockers.join('\n\n') : t('agentFlows.builder.type.' + flowType + '.hint')}
+      className={cn(
+        'inline-flex flex-shrink-0 items-center gap-1 rounded-full border px-2 py-px text-tiny font-medium transition',
+        broken
+          ? 'border-warning/30 bg-warning/5 text-warning'
+          : 'border-[rgb(var(--border-line))] bg-surface-2 text-text-secondary',
+        canEdit ? 'hover:border-brand/40 hover:text-brand' : 'cursor-default',
+      )}
+    >
+      {broken ? <AlertTriangle className="h-3 w-3" /> : <Icon className="h-3 w-3" />}
+      {/* The words go first when the row is tight. The icon differs per type and
+          turns amber on drift, so the glance survives; `aria-label` carries the
+          full name for anyone who is not glancing. */}
+      <span className="hidden lg:inline">
+        {t('agentFlows.builder.type.' + flowType + '.chip')}
+      </span>
+    </button>
+  );
+}
+
+/** THE ONE SCREEN THAT EXPLAINS THE TWO SURFACES.
+ *
+ *  Both cards are always shown, each with a live verdict, because the question an
+ *  author actually has is comparative — "which of these am I building" — and a
+ *  dropdown of two labels answers a different, easier question. The Chat card
+ *  carries its blockers inline, so "why can I not pick that" is answered where the
+ *  picking happens rather than in a toast after a refusal.
+ */
+function FlowTypeDialog({
+  current, blockers, busy, onClose, onPick,
+}: {
+  current: FlowType;
+  blockers: string[];
+  busy: boolean;
+  onClose: () => void;
+  onPick: (next: FlowType) => void;
+}) {
+  const { t } = useI18n();
+  const [picked, setPicked] = React.useState<FlowType>(current);
+
+  return (
+    <AppModalShell
+      onClose={onClose}
+      title={t('agentFlows.builder.type.dialogTitle')}
+      description={t('agentFlows.builder.type.dialogDescription')}
+      icon={<MessagesSquare className="h-4 w-4" />}
+      maxWidthClass="max-w-lg"
+      closeDisabled={busy}
+      footer={(
+        <div className="flex items-center justify-end gap-2">
+          <Button variant="secondary" size="sm" disabled={busy} onClick={onClose}>
+            {t('agentFlows.list.create.cancel')}
+          </Button>
+          <Button
+            size="sm"
+            loading={busy}
+            disabled={picked === current || (picked === 'chat' && blockers.length > 0)}
+            onClick={() => onPick(picked)}
+          >
+            {t('agentFlows.builder.type.apply')}
+          </Button>
+        </div>
+      )}
+    >
+      <div className="space-y-2">
+        {(['bot', 'chat'] as const).map((kind) => {
+          const Icon = TYPE_ICON[kind];
+          // A bot flow is never refused: a report hands a flow strictly more than
+          // chat does, so anything that runs in Chat runs on a report.
+          const stops = kind === 'chat' ? blockers : [];
+          return (
+            <button
+              key={kind}
+              type="button"
+              onClick={() => setPicked(kind)}
+              aria-pressed={picked === kind}
+              className={cn(
+                'block w-full rounded-lg border p-3 text-left transition',
+                picked === kind
+                  ? 'border-brand bg-brand/5'
+                  : 'border-[rgb(var(--border-line))] hover:bg-surface-2',
+              )}
+            >
+              <span className="flex items-center gap-1.5 text-caption font-strong">
+                <Icon className="h-3.5 w-3.5 text-text-tertiary" />
+                {t('agentFlows.list.create.type.' + kind + '.name')}
+                {kind === current && (
+                  <Badge size="xs" variant="neutral">{t('agentFlows.builder.type.currently')}</Badge>
+                )}
+              </span>
+              <span className="mt-1 block text-tiny leading-snug text-text-tertiary">
+                {t('agentFlows.list.create.type.' + kind + '.what')}
+              </span>
+              <span className="mt-1 block text-tiny leading-snug text-text-quaternary">
+                {t('agentFlows.list.create.type.' + kind + '.gets')}
+              </span>
+              {stops.length > 0 && (
+                <span className="mt-2 block rounded-md border border-warning/25 bg-warning/5 p-2 text-tiny leading-snug text-warning">
+                  <span className="flex items-center gap-1 font-medium">
+                    <AlertTriangle className="h-3 w-3" />
+                    {t('agentFlows.builder.type.blockedHeading')}
+                  </span>
+                  <span className="mt-1 block">
+                    {stops.map((r) => <span key={r} className="mt-0.5 block">· {r}</span>)}
+                  </span>
+                </span>
+              )}
+            </button>
+          );
+        })}
+      </div>
+    </AppModalShell>
   );
 }

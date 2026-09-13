@@ -69,6 +69,26 @@ logger = logging.getLogger(__name__)
 #: by GMV" was the one question the knowledge node could not be pointed at.
 KnowledgeSourceKind = Literal["document", "semantic", "metric", "term"]
 
+#: Which surface a flow was built for — and therefore what it is HANDED.
+#:
+#:   bot   an anonymous viewer on a report. `dashboard_id` and the link's filters
+#:         always arrive, so a step may assume there is a report to read; the
+#:         author may attach further sources on top of that one.
+#:   chat  a signed-in reader typing. Only text arrives. Nothing supplies "the
+#:         report", so what the assistant may reach is decided by its author in
+#:         advance, and the question only steers inside that.
+#:
+#: Declared, never inferred. It used to be derived from a flow's SHAPE at the Chat
+#: door — which meant the author found out their assistant was unusable after
+#: building it, and meant nothing at all on the link side, where a chat-shaped flow
+#: could be assigned to a report with no check whatsoever.
+FlowType = Literal["bot", "chat"]
+
+#: The default for anything that predates the type or arrives without one. Every
+#: flow written before this existed was seeded `report_read → agent`, so it was
+#: written against a report whether or not anyone said so.
+DEFAULT_FLOW_TYPE: str = "bot"
+
 #: Total nodes anywhere in the tree. Not a quality opinion — depth is the author's
 #: call — but the point past which one turn's budget could not fund the flow.
 MAX_NODES = 40
@@ -819,10 +839,19 @@ _CHART_KEYED_TOOLS = frozenset({
     "forecast_measure",
 })
 
-#: The one tool that hands OUT a chart_id. Its counterpart above is the list of
-#: tools that need one, and a step wants exactly one of the two: an index it was
-#: given, or the ability to look one up.
-_CHART_LOOKUP_TOOL = "list_charts"
+#: The tools that hand OUT a chart_id. Their counterpart above is the list of tools
+#: that need one, and a step wants exactly one of the two: an index it was given, or
+#: the ability to look one up.
+#:
+#: This was a single name — `list_charts` — from before the discover pack existed,
+#: and the warning below therefore fired on every chat flow built the way the chat
+#: seed builds them: granted `search_business_assets` and `resolve_chart_candidates`,
+#: which is exactly how a step with no report finds a chart, and told it had no way
+#: to find one. A warning that fires on the recommended shape trains authors to
+#: ignore warnings.
+_CHART_LOOKUP_TOOLS = frozenset({
+    "list_charts", "resolve_chart_candidates", "search_business_assets",
+})
 
 
 
@@ -1071,19 +1100,33 @@ class Flow(_Model):
                 out.add(n.target.replace("[]", "").strip())
         return out
 
-    def warnings(self) -> list[str]:
+    def warnings(self, flow_type: str = DEFAULT_FLOW_TYPE) -> list[str]:
         """What this flow gives up, said plainly rather than prevented.
 
         There is no mandatory frame: no forced screening, no forced fact-check, no
         forced closing step. That was the author's explicit call. The honest
         counterpart is naming the consequence instead of hiding it or quietly
         re-adding the guarantee.
+
+        `flow_type` because three of these notes describe a consequence that only
+        holds on a report, and stated to a chat author they are not merely useless —
+        they are false, and two of them are REASSURING. A review note that reassures
+        an author their unusable flow is fine is worse than no note. The default is
+        `bot`, which is what every flow written before the type existed is.
         """
         out: list[str] = []
         if not self.bound_sources():
             out.append(
                 "Flow này không gắn tri thức nào — nó chỉ đọc báo cáo đang mở. "
                 "Đúng nếu bạn muốn dùng nó cho mọi báo cáo."
+                if flow_type == "bot" else
+                # The same absence, the opposite consequence. With no report there
+                # is no fallback to read: a chat flow with nothing attached reaches
+                # nothing at all, and will answer from the model's own memory
+                # without saying so.
+                "Flow này chưa gắn nguồn nào. Ở AI Chat không có báo cáo nào để đọc "
+                "thay, nên nó sẽ không tra cứu được gì — hãy gắn tài liệu, bộ dữ "
+                "liệu hoặc chỉ số cho bước trả lời."
             )
         # A LANE THE PLANNER CAN PICK AND THAT THEN DOES NOTHING.
         #
@@ -1103,8 +1146,17 @@ class Flow(_Model):
                     "cũng không chạy gì."
                 )
 
+        # A STEP THAT WRITES THE ANSWER AND CAN STILL FETCH FIGURES.
+        #
+        # The premise is that a number should have passed through an earlier step
+        # where it could be checked — so the note only makes sense when there IS an
+        # earlier step. On a one-step flow it fires on the only shape available,
+        # and the chat seed is exactly that: one agent that finds its source and
+        # answers. A note that fires on the recommended starting shape teaches
+        # authors that notes are noise.
         answering = self.node(self.answering_key())
-        if isinstance(answering, AgentNode) and answering.tools:
+        earlier = [n for n in self.all_nodes() if n.key != self.answering_key()]
+        if isinstance(answering, AgentNode) and answering.tools and earlier:
             out.append(
                 f"Bước trả lời “{answering.name or answering.key}” vẫn có công cụ. "
                 "Bước viết câu trả lời mà còn gọi được công cụ thì dễ đưa ra số "
@@ -1143,22 +1195,31 @@ class Flow(_Model):
             keyed = sorted(granted & _CHART_KEYED_TOOLS)
             if not keyed:
                 continue
-            if _CHART_LOOKUP_TOOL in granted:
+            if granted & _CHART_LOOKUP_TOOLS:
                 continue
             if read_vars and (node_referenced_vars(n) & read_vars):
                 continue
             handed = (
                 "prompt không đọc "
                 + " hoặc ".join("{{" + v + "}}" for v in sorted(read_vars))
-                if read_vars else "flow không có bước đọc báo cáo nào"
+                if read_vars
+                # On a chat flow the absence of a read step is not the oversight —
+                # it is the surface. What is missing is the lookup tool.
+                else ("flow không có bước đọc báo cáo nào" if flow_type == "bot"
+                      else "ở AI Chat không có bước đọc báo cáo")
             )
             out.append(
                 f"Bước “{n.name or n.key}” được cấp công cụ cần chart_id "
                 f"({', '.join(keyed[:3])}…) nhưng {handed}, và cũng không được cấp "
-                f"`{_CHART_LOOKUP_TOOL}` để tự tìm — nó sẽ phải đoán chart_id, hoặc "
+                f"công cụ tra cứu nào ({', '.join(sorted(_CHART_LOOKUP_TOOLS))}) "
+                "để tự tìm — nó sẽ phải đoán chart_id, hoặc "
                 "đo nhầm biểu đồ mà không báo lỗi."
             )
 
+        # NAMING ONE REPORT IN A PROMPT, and what to do instead — which differs by
+        # surface. A bot has an open report to refer to; a chat flow does not, so
+        # telling its author to say “báo cáo đang mở” would send them to a phrase
+        # that resolves to nothing.
         for n in self.agent_nodes():
             named = _REPORT_NAME_RE.search(n.prompt)
             if named:
@@ -1166,6 +1227,10 @@ class Flow(_Model):
                     f"Bước “{n.name or n.key}” nhắc tên một báo cáo cụ thể "
                     f"(“{named.group(1)}”). Flow dùng được cho nhiều link, nên prompt "
                     "nên nói “báo cáo đang mở”."
+                    if flow_type == "bot" else
+                    f"Bước “{n.name or n.key}” nhắc tên một báo cáo cụ thể "
+                    f"(“{named.group(1)}”). Ở AI Chat không có báo cáo nào đang mở — "
+                    "hãy để bước tự tìm đúng nguồn bằng công cụ tra cứu."
                 )
         for req in self.requirements.items:
             if req.kind == "chart":

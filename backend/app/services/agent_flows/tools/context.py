@@ -348,6 +348,77 @@ class ToolContext:
             excluded_columns=_resolve_excluded_columns(db, dashboard),
         )
 
+    def adopt_scope(self, chart_ids: set[int], dataset_ids: list[int]) -> None:
+        """Give a context its charts when there is no report to read them off.
+
+        `for_dashboard` builds `allowed_chart_ids`, `chart_meta`, `pages` and
+        `excluded_columns` in one pass from a dashboard's tiles. Direct Chat has no
+        dashboard — deliberately, so no report-reading tool believes otherwise — and
+        so it constructs this class directly and gets the empty defaults.
+
+        THAT WAS INVISIBLE UNTIL CHAT COULD REACH CHARTS AT ALL. With the allowlist
+        hardcoded empty, no tool ever looked at `chart_meta`, so nothing noticed it
+        was blank. Give chat a real chart scope and the gap surfaces as a chart
+        listing where every entry is called "Chart 412" with no measures, no
+        dimensions and nothing to match a question against — `_searchable_terms`
+        reads `chart_meta` too, so `list_charts(query=...)` scores every chart zero
+        and the assistant reports that the figure does not exist.
+
+        So the scope arrives in one call, and it carries the three things a
+        dashboard would otherwise have supplied:
+
+          allowed_chart_ids  what `assert_chart_in_scope` enforces.
+          chart_meta         the names and on-screen labels every catalogue and
+                             measuring tool reads, loaded from the charts
+                             themselves rather than from tile layout.
+          excluded_columns   the GovernAIScope hiding rules for those datasets.
+                             Skipping this would make Chat the one surface where a
+                             column marked hidden from the AI is readable.
+
+        `pages` stays empty on purpose: a page is a position in a report's
+        narrative, and there is no report. Every caller already treats it as
+        optional — and on a bot flow, where this is called to ADD the author's
+        attached datasets on top of a report, the dashboard's own pages are already
+        there and are left alone.
+        """
+        self.allowed_chart_ids = set(chart_ids or set())
+        if not self.allowed_chart_ids or self.db is None:
+            return
+
+        from app.models.models import Chart
+
+        rows = (
+            self.db.query(Chart)
+            .filter(Chart.id.in_(list(self.allowed_chart_ids)))
+            .all()
+        )
+        for chart in rows:
+            if chart.id in self.chart_meta:
+                continue
+            try:
+                fields = extract_chart_field_semantics(getattr(chart, "config", None))
+            except Exception:  # noqa: BLE001
+                logger.warning(
+                    "chat field-semantics extract failed chart_id=%s", chart.id
+                )
+                fields = {"measures": [], "dimensions": [], "label_by_field": {}}
+            self.chart_meta[chart.id] = {
+                # No `custom_title` here, and there cannot be one: a custom title is
+                # a property of a TILE on a report, and this chart is not on one.
+                "name": getattr(chart, "name", "") or f"Chart {chart.id}",
+                "chart_type": str(getattr(chart, "chart_type", "") or ""),
+                "description": getattr(chart, "description", None) or "",
+                "layout": {},
+                "fields": fields,
+            }
+
+        # UNION, never replace. On a report this context already carries the
+        # exclusions for the datasets behind its tiles; the attached datasets are
+        # additional, and a chart is hidden if EITHER source hides it.
+        self.excluded_columns = set(self.excluded_columns or set()) | (
+            _exclusions_for_datasets(self.db, dataset_ids)
+        )
+
     def assert_chart_in_scope(self, chart_id: int) -> None:
         if chart_id not in self.allowed_chart_ids:
             raise ToolError(f"chart_id {chart_id} is not part of this dashboard.")
@@ -404,6 +475,31 @@ def _resolve_excluded_columns(db: Session, dashboard: Dashboard) -> set[str]:
             "no column exclusion applied this turn",
             getattr(dashboard, "id", None),
             exc_info=True,
+        )
+        return set()
+
+
+def _exclusions_for_datasets(db: Session, dataset_ids: list[int]) -> set[str]:
+    """The same GovernAIScope rules as `_resolve_excluded_columns`, asked by dataset.
+
+    That one starts from a dashboard and walks tiles → charts → tables → datasets to
+    reach the same question. Direct Chat already knows the datasets, so it asks
+    directly. Fails OPEN with a loud log, exactly as its sibling does: a governance
+    lookup that breaks must not take the turn down with it, and must not quietly
+    look like "nothing is excluded".
+    """
+    ids = [int(x) for x in (dataset_ids or []) if str(x).strip().lstrip("-").isdigit()]
+    if db is None or not ids:
+        return set()
+    try:
+        from app.services.governance_ai_service import GovernanceAIService
+
+        cols, _measures = GovernanceAIService.scope_exclusions(db, set(ids))
+        return {fold_column(c) for c in cols}
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "chat: AI-scope resolve failed dataset_ids=%s — no column exclusion "
+            "applied this turn", ids, exc_info=True,
         )
         return set()
 

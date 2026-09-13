@@ -26,7 +26,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.models.agent_brain import AgentBrainVersion
-from app.services.agent_flows.contract import Flow, upgrade_body
+from app.services.agent_flows.contract import DEFAULT_FLOW_TYPE, Flow, upgrade_body
 from app.services.agent_flows.permissions import check_attachments, share_disclosure
 
 logger = logging.getLogger(__name__)
@@ -104,6 +104,11 @@ def _row_dict(row: AgentBrainVersion, *, include_body: bool = True) -> dict[str,
         "flow_id": row.flow_id,
         "version": row.version,
         "status": row.status,
+        # Which surface this flow was built for. On every summary rather than behind
+        # its own call, because it changes what the row MEANS: a list of assistants
+        # where half of them cannot be used where you are standing needs to say so
+        # in the list, not after the click.
+        "flow_type": str(getattr(row, "flow_type", "") or "bot"),
         "name": row.name,
         "description": row.description or "",
         "owner_email": row.owner_email,
@@ -124,7 +129,9 @@ def _row_dict(row: AgentBrainVersion, *, include_body: bool = True) -> dict[str,
             out["node_count"] = 0
             out["requirements"] = {"items": [], "capabilities": []}
         else:
-            out["warnings"] = flow.warnings()
+            out["warnings"] = flow.warnings(
+                str(getattr(row, "flow_type", "") or DEFAULT_FLOW_TYPE)
+            )
             out["reads"] = share_disclosure(flow)
             out["node_count"] = len(flow.all_nodes())
             out["requirements"] = flow.requirements.model_dump(mode="json")
@@ -390,6 +397,12 @@ def save_draft(
     description: str,
     body: dict,
     actor_email: str,
+    #: Which surface this flow is for. Honoured ONLY when creating the first
+    #: version — afterwards the type is carried from the previous one and changed
+    #: through its own endpoint, because changing it has to be able to REFUSE (a
+    #: flow that reads a report cannot become a chat flow) and a save is the wrong
+    #: place to discover that.
+    flow_type: str | None = None,
 ) -> dict[str, Any]:
     """Validate, check what it may attach, then UPSERT the open draft."""
     body = upgrade_body(body, key=brain_key, name=name)
@@ -443,9 +456,15 @@ def save_draft(
             # the flow can read without anybody choosing that.
             owner_email=existing_owner or actor_email,
             created_by=actor_email,
-            # Carried, like ownership: it is a property of the flow, so cutting a new
-            # version must not silently drop a flow out of the Chat module.
-            direct_chat_enabled=bool(getattr(latest, "direct_chat_enabled", False)),
+            # Carried, like ownership: it is a property of the flow, so cutting a
+            # new version must not silently change which surface it serves. The
+            # caller's value is honoured only when there is nothing to carry —
+            # which is exactly the moment the author is asked.
+            flow_type=(
+                str(getattr(latest, "flow_type", "") or DEFAULT_FLOW_TYPE)
+                if latest is not None
+                else (flow_type if flow_type in ("bot", "chat") else DEFAULT_FLOW_TYPE)
+            ),
         )
         db.add(row)
         _assign_flow_id(db, row)
