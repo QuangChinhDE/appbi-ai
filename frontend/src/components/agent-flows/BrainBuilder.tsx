@@ -667,6 +667,7 @@ export function BrainBuilder({
                   attachable={attachable}
                   isAnswerNode={sel.node?.key === answerKey}
                   brainKey={brainKey}
+                  flowType={flowType}
                   onChange={updateNode}
                   onChangePath={updatePath}
                   onChangeCase={updateCase}
@@ -730,6 +731,7 @@ export function BrainBuilder({
         <TestChat
           brainKey={brainKey}
           brainName={name || brainKey}
+          flowType={flowType}
           links={links}
           version={version}
           // Handed the live DRAFT, not the saved version: the branch you just added

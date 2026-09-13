@@ -245,18 +245,96 @@ def chart_scope(db: Session, knowledge_scope: dict[str, Any] | None) -> set[int]
         db.query(Chart.id).filter(Chart.dataset_table_id.in_(tables)).all()
     }
 
-def share_disclosure(brain: Brain) -> list[dict[str, str]]:
+def share_disclosure(brain: Brain, db: Session | None = None) -> list[dict[str, str]]:
     """What a share dialog must say out loud.
 
     Sharing this brain lends reading rights to everything in this list. An
     undisclosed delegation is a hole; a disclosed one is a feature, and the only
     difference is whether this text is on the screen.
+
+    NAMES, NOT IDS. This used to return `{"label": "Bộ dữ liệu", "ref": "111"}` —
+    true, and useless on a screen: nobody approving a share knows what dataset 111
+    is, and a disclosure nobody can read discloses nothing. Pass `db` and each row
+    carries the title the author saw when they attached it.
+
+    It also says how far a dataset REACHES. Attaching one now grants the charts
+    built on it, which is a much larger statement than "this flow can query a
+    table" — measured here, one dataset is 184 charts across 8 reports — and the
+    person clicking Share is the one who should see that number.
     """
-    labels = {"document": "Tài liệu", "semantic": "Bộ dữ liệu", "metric": "Chỉ số"}
-    return [
-        {"source": s.source, "label": labels.get(s.source, s.source), "ref": s.ref}
-        for s in brain.bound_sources()
-    ]
+    labels = {
+        "document": "Tài liệu", "semantic": "Bộ dữ liệu",
+        "metric": "Chỉ số", "term": "Thuật ngữ",
+    }
+    out: list[dict[str, str]] = []
+    sources = list(brain.bound_sources())
+    names = _source_names(db, sources) if db is not None else {}
+    charts = _chart_counts(db, sources) if db is not None else {}
+    for s in sources:
+        row = {
+            "source": s.source,
+            "label": labels.get(s.source, s.source),
+            "ref": s.ref,
+            "name": names.get((s.source, s.ref), s.ref),
+        }
+        reach = charts.get(s.ref) if s.source == "semantic" else None
+        if reach:
+            row["reach"] = f"{reach} biểu đồ"
+        out.append(row)
+    return out
+
+
+def _source_names(db: Session, sources: list) -> dict[tuple[str, str], str]:
+    """Title per attached source, in one query per store. Best-effort: a name that
+    cannot be resolved falls back to the ref rather than hiding the row — a
+    disclosure that drops a source because its title lookup failed is worse than
+    one showing an id."""
+    from app.models.dataset import Dataset
+    from app.models.governance import GovernKnowledgeDoc
+
+    out: dict[tuple[str, str], str] = {}
+    doc_ids = [int(s.ref) for s in sources if s.source == "document" and s.ref.isdigit()]
+    ds_ids = [int(s.ref) for s in sources if s.source == "semantic" and s.ref.isdigit()]
+    try:
+        if doc_ids:
+            for did, title in (
+                db.query(GovernKnowledgeDoc.id, GovernKnowledgeDoc.title)
+                .filter(GovernKnowledgeDoc.id.in_(doc_ids)).all()
+            ):
+                out[("document", str(did))] = str(title or did)
+        if ds_ids:
+            for dsid, name in (
+                db.query(Dataset.id, Dataset.name).filter(Dataset.id.in_(ds_ids)).all()
+            ):
+                out[("semantic", str(dsid))] = str(name or dsid)
+    except Exception:  # noqa: BLE001
+        logger.warning("[brain] share disclosure name lookup failed", exc_info=True)
+    return out
+
+
+def _chart_counts(db: Session, sources: list) -> dict[str, int]:
+    """How many charts each attached dataset reaches — the size of what sharing
+    lends, which is the part a disclosure most needs to state."""
+    ds_ids = [int(s.ref) for s in sources if s.source == "semantic" and s.ref.isdigit()]
+    if not ds_ids:
+        return {}
+    try:
+        from sqlalchemy import func
+
+        from app.models.dataset import DatasetTable
+        from app.models.models import Chart
+
+        rows = (
+            db.query(DatasetTable.dataset_id, func.count(Chart.id))
+            .join(Chart, Chart.dataset_table_id == DatasetTable.id)
+            .filter(DatasetTable.dataset_id.in_(ds_ids))
+            .group_by(DatasetTable.dataset_id)
+            .all()
+        )
+        return {str(dsid): int(n) for dsid, n in rows}
+    except Exception:  # noqa: BLE001
+        logger.warning("[brain] share disclosure chart count failed", exc_info=True)
+        return {}
 
 
 def _resolve_owner(db: Session, brain_row: AgentBrainVersion) -> Any | None:

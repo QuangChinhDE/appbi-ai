@@ -1356,7 +1356,11 @@ def test_unpublish_archives_an_unbound_published_version(monkeypatch):
     db = Db()
     audited = []
     monkeypatch.setattr(binding_service, "list_for_flow", lambda *_args: [])
-    monkeypatch.setattr(reg, "_row_dict", lambda current: {"status": current.status})
+    # `**_` because `_row_dict` now takes a session too: it resolves the NAMES of
+    # the sources a share would lend, and a disclosure showing ids discloses nothing.
+    monkeypatch.setattr(
+        reg, "_row_dict", lambda current, **_: {"status": current.status}
+    )
     monkeypatch.setattr(reg, "_audit", lambda *args: audited.append(args[1:]))
 
     result = reg.unpublish_version(db, "golden", 1, "owner@appbi.io")

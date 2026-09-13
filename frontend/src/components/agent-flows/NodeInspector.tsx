@@ -25,7 +25,7 @@ import { cn } from '@/lib/utils';
 import { useI18n } from '@/providers/LanguageProvider';
 import {
   MAX_LOOP_ITERATIONS, MAX_TOOL_CALLS, slugifyBrainKey,
-  type Condition, type ConditionOp, type FlowNode, type FlowPath,
+  type Condition, type ConditionOp, type FlowNode, type FlowPath, type FlowType,
   type Attachable, type NodeSpec, type ProviderGroup, type SwitchCase,
   type ToolPack,
   previewStep,
@@ -198,6 +198,9 @@ export interface InspectorProps {
   isAnswerNode: boolean;
   /** Needed to ask the server what this step will hand the model. */
   brainKey: string;
+  /** Which surface this flow is for. A chat flow has no report, so the preview
+   *  must not ask for one — asking was what made this panel unusable there. */
+  flowType: FlowType;
   onChange: (next: FlowNode) => void;
   onChangePath: (next: FlowPath) => void;
   onChangeCase: (next: SwitchCase) => void;
@@ -439,6 +442,7 @@ function NodeForm(props: InspectorProps & { node: FlowNode }) {
           {seeing && node && (
             <WhatTheAiSees
               brainKey={brainKey}
+              flowType={props.flowType}
               nodeKey={node.key}
               nodeName={node.name || node.key}
               onClose={() => setSeeing(false)}
@@ -1311,8 +1315,11 @@ function PackBlock({
  *  the same three functions a run uses and stops.
  */
 function WhatTheAiSees({
-  brainKey, nodeKey, nodeName, onClose,
-}: { brainKey: string; nodeKey: string; nodeName: string; onClose: () => void }) {
+  brainKey, flowType, nodeKey, nodeName, onClose,
+}: {
+  brainKey: string; flowType: FlowType; nodeKey: string; nodeName: string;
+  onClose: () => void;
+}) {
   const { t } = useI18n();
   const [question, setQuestion] = React.useState('Doanh thu tháng này bao nhiêu?');
   const [data, setData] = React.useState<StepPreview | null>(null);
@@ -1320,8 +1327,14 @@ function WhatTheAiSees({
   const [busy, setBusy] = React.useState(false);
 
   /* The report the author already chose in Test. Reusing it beats a second
-     picker: the question "what does this step see" has no answer without a
-     report, and making them choose one twice implies the two are different. */
+     picker: on a BOT flow the question "what does this step see" has no answer
+     without a report, and making them choose one twice implies the two are
+     different.
+
+     A chat flow needs none of this. It is not a bot flow missing its report — it
+     is a different surface, and the server assembles the preview from what the
+     flow attached, exactly as a real chat turn does. */
+  const needsReport = flowType === 'bot';
   const reportId = React.useMemo(() => {
     try {
       const raw = window.localStorage.getItem(`appbi.flowtest.${brainKey}`);
@@ -1331,20 +1344,23 @@ function WhatTheAiSees({
   }, [brainKey]);
 
   const load = React.useCallback(async () => {
-    if (!reportId) return;
+    if (needsReport && !reportId) return;
     setBusy(true);
     setError('');
     try {
-      setData(await previewStep(brainKey, nodeKey, { dashboard_id: reportId, question }));
+      setData(await previewStep(brainKey, nodeKey, {
+        ...(needsReport && reportId ? { dashboard_id: reportId } : {}),
+        question,
+      }));
     } catch (e) {
       const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
       setError(typeof detail === 'string' ? detail : t('agentFlows.seen.failed'));
     } finally {
       setBusy(false);
     }
-  }, [brainKey, nodeKey, question, reportId, t]);
+  }, [brainKey, needsReport, nodeKey, question, reportId, t]);
 
-  React.useEffect(() => { void load(); /* eslint-disable-next-line */ }, [reportId]);
+  React.useEffect(() => { void load(); /* eslint-disable-next-line */ }, [reportId, needsReport]);
 
   const sp = data?.system_prompt;
   const yours = sp ? sp.this_step_chars : 0;
@@ -1373,12 +1389,16 @@ function WhatTheAiSees({
               placeholder={t('agentFlows.seen.questionPlaceholder')}
               className="h-8 flex-1"
             />
-            <Button size="sm" variant="secondary" onClick={() => void load()} disabled={busy || !reportId}>
+            <Button size="sm" variant="secondary" onClick={() => void load()}
+                    disabled={busy || (needsReport && !reportId)}>
               {busy ? t('agentFlows.seen.loading') : t('agentFlows.seen.refresh')}
             </Button>
           </div>
-          {!reportId && (
+          {needsReport && !reportId && (
             <p className="mt-1.5 text-tiny text-warning">{t('agentFlows.seen.needReport')}</p>
+          )}
+          {!needsReport && (
+            <p className="mt-1.5 text-tiny text-text-tertiary">{t('agentFlows.seen.chatNote')}</p>
           )}
         </div>
 

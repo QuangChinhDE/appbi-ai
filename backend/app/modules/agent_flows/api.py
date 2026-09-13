@@ -1189,6 +1189,7 @@ async def test_flow(
         session_key=body.session_key,
         history=[t.model_dump() for t in body.history],
         api_key=api_key, provider=provider, model=model,
+        brain_row=row,
     ):
         if ev.type == "result":
             envelope = ev.extra.get("envelope")
@@ -1295,6 +1296,7 @@ async def test_flow_on_report(
         session_key=body.session_key,
         history=[t.model_dump() for t in body.history],
         api_key=api_key, provider=provider, model="",
+        brain_row=row,
     ):
         if ev.type == "result":
             envelope = ev.extra.get("envelope")
@@ -1321,6 +1323,117 @@ async def test_flow_on_report(
     }
 
 
+
+class ChatTestBody(_Conversational):
+    """A question, and nothing else — which is the whole point.
+
+    No `dashboard_id` and no `link_id`: those are the two things the chat surface
+    does not have, and requiring either is what made the Test button refuse on
+    exactly the flows whose behaviour is hardest to predict.
+    """
+
+    question: str
+    version: int | None = None
+
+
+@router.post("/brains/{brain_key}/test-as-chat")
+async def test_flow_as_chat(
+    brain_key: str, body: ChatTestBody,
+    db: Session = Depends(get_db), user: User = Depends(can_edit),
+) -> dict[str, Any]:
+    """Run the draft the way AI Chat will run it: a question, and no report.
+
+    WHY THIS EXISTS. The other two test endpoints need a link or a report. A chat
+    flow has neither and never will, so its author could not try it at all — they
+    had to publish and go to the Chat screen to find out whether it worked, which
+    is the "testing in front of viewers" problem the report endpoint was written to
+    remove, reintroduced on the other surface.
+
+    It is assembled through `direct_chat.ephemeral_chat_binding` and the same
+    scope derivation `run_for_chat_thread` uses, so the panel and the live turn
+    cannot drift apart: same binding shape, same knowledge scope, same charts.
+
+    `_may_edit_flow` is the only gate, and that is deliberate — a chat flow reads
+    what its OWNER may read, re-derived per turn by `run_scope`, so a test run by
+    an author who may edit the flow reaches exactly what a viewer of it would.
+    """
+    _may_edit_flow(db, user, brain_key)
+
+    detail = _run(lambda: reg.get_brain(db, brain_key, body.version))
+    from app.models.agent_brain import AgentBrainVersion
+
+    row = (
+        db.query(AgentBrainVersion)
+        .filter(
+            AgentBrainVersion.brain_key == brain_key,
+            AgentBrainVersion.version == detail["version"],
+        )
+        .first()
+    )
+    flow = reg.parse_flow(row) if row else None
+    if flow is None:
+        raise HTTPException(status_code=422, detail="Flow không hợp lệ, chưa test được")
+
+    from app.services.agent_flows import direct_chat
+    from app.services.agent_flows.dispatch import chat_base_prompt, run_preview
+    from app.services.agent_flows.permissions import chart_scope, run_scope
+    from app.services.dashboard_ai_bot.public_link_config import deployment_key
+    from app.services.dashboard_ai_bot.tool_context import ToolContext
+
+    # SHAPE FIRST, and reported rather than refused. A flow mid-build usually has
+    # something wrong with it — that is what mid-build means — so this says "it ran
+    # with X missing" instead of declining to run, exactly as the report test does.
+    blockers = direct_chat.ineligibility_reasons(flow)
+
+    ctx = ToolContext(
+        db=db, dashboard=None, public_filters=[],
+        actor_type="user", actor_ref=_actor(user),
+    )
+    binding = direct_chat.ephemeral_chat_binding(flow)
+    scope = run_scope(db, row, flow, None)
+    ctx.adopt_scope(chart_scope(db, scope), scope.get("dataset_ids") or [])
+
+    api_key, provider = deployment_key()
+    if not api_key:
+        raise HTTPException(
+            status_code=409,
+            detail="Máy chủ chưa có API key cho AI — chưa test được. "
+                   "Đặt OPENAI_API_KEY rồi thử lại.",
+        )
+
+    envelope: dict | None = None
+    run_row_id: int | None = None
+    async for ev in run_preview(
+        db, flow=flow, version=row.version, binding=binding,
+        link=SimpleNamespace(token="", appearance_config={}),
+        dashboard=None, ctx=ctx, question=body.question,
+        session_key=body.session_key,
+        history=[t.model_dump() for t in body.history],
+        api_key=api_key, provider=provider, model="",
+        base_system_prompt=chat_base_prompt(ctx),
+        brain_row=row,
+    ):
+        if ev.type == "result":
+            envelope = ev.extra.get("envelope")
+            run_row_id = ev.extra.get("run_row_id")
+
+    return {
+        "envelope": envelope,
+        "run_row_id": run_row_id,
+        # The same shape the report test returns, so the panel renders one way. What
+        # a chat flow can reach is named here because there is no report on screen
+        # to imply it — this list IS the scope, and an author reading a wrong figure
+        # needs to know which sources were even in play.
+        "scope": {
+            "doc_ids": len(scope.get("doc_ids") or []),
+            "dataset_ids": len(scope.get("dataset_ids") or []),
+            "metric_names": len(scope.get("metric_names") or []),
+            "charts": len(getattr(ctx, "allowed_chart_ids", None) or []),
+        },
+        "blockers": blockers,
+    }
+
+
 class NodeTestBody(BaseModel):
     link_id: int
     #: Variables to start from, so a node deep in a flow can be exercised without
@@ -1330,10 +1443,17 @@ class NodeTestBody(BaseModel):
 
 
 class StepPreviewBody(BaseModel):
-    """A question to assemble the step against, and the report to assemble it on."""
+    """A question to assemble the step against, and the report to assemble it on.
+
+    `dashboard_id` is OPTIONAL, and omitting it is not a degraded mode — it is the
+    chat surface, where there is no report and never will be. It used to be
+    required, which made this endpoint unreachable for a chat flow: the author with
+    the least ability to guess what their step receives was the one who could not
+    look.
+    """
 
     version: int | None = None
-    dashboard_id: int
+    dashboard_id: int | None = None
     question: str = ""
     history: list[dict[str, Any]] = Field(default_factory=list)
 
@@ -1376,20 +1496,44 @@ def preview_step(
     # query engine.
     from app.models.models import Dashboard
 
-    dashboard = db.query(Dashboard).filter(Dashboard.id == body.dashboard_id).first()
-    if dashboard is None:
-        raise HTTPException(status_code=404, detail="Không tìm thấy báo cáo")
-    require_view_access(db, user, dashboard, "dashboards")
-
+    from app.services.agent_flows import direct_chat
     from app.services.agent_flows.dispatch import preview_step as _preview
+    from app.services.agent_flows.permissions import chart_scope, run_scope
     from app.services.dashboard_ai_bot.public_link_config import deployment_key
     from app.services.dashboard_ai_bot.tool_context import ToolContext
 
-    ctx = ToolContext.from_dashboard(
-        db=db, dashboard=dashboard, public_filters=[],
-        actor_type="user", actor_ref=_actor(user),
-    )
-    binding = binding_service.ephemeral_binding(flow, dashboard)
+    # WHICH SURFACE THIS PREVIEW IS FOR — the flow's own declaration, not the
+    # caller's. A bot flow assembled with no report would show a step reading an
+    # empty report and call it the truth; a chat flow assembled against one would
+    # show it a report no viewer will ever supply. Either way the author is being
+    # shown a run that does not happen, which is the one thing this screen exists
+    # to prevent.
+    as_chat = str(getattr(row, "flow_type", "") or "bot") == "chat"
+
+    dashboard = None
+    if not as_chat:
+        dashboard = db.query(Dashboard).filter(Dashboard.id == body.dashboard_id).first()
+        if dashboard is None:
+            raise HTTPException(status_code=404, detail="Không tìm thấy báo cáo")
+        require_view_access(db, user, dashboard, "dashboards")
+
+    if as_chat:
+        ctx = ToolContext(
+            db=db, dashboard=None, public_filters=[],
+            actor_type="user", actor_ref=_actor(user),
+        )
+        binding = direct_chat.ephemeral_chat_binding(flow)
+        # The same scope a real chat turn gets, derived the same way, so the panel
+        # and the run cannot disagree about what the step can reach.
+        scope = run_scope(db, row, flow, None)
+        ctx.knowledge_scope = scope
+        ctx.adopt_scope(chart_scope(db, scope), scope.get("dataset_ids") or [])
+    else:
+        ctx = ToolContext.from_dashboard(
+            db=db, dashboard=dashboard, public_filters=[],
+            actor_type="user", actor_ref=_actor(user),
+        )
+        binding = binding_service.ephemeral_binding(flow, dashboard)
     # The model NAMES only — no key is needed and none is read: this endpoint
     # assembles inputs and never calls a provider.
     _key, provider = deployment_key()
@@ -1403,13 +1547,24 @@ def preview_step(
     )
 
     _node = flow.node(node_key)
-    base_prompt = _build_base_prompt(
-        dashboard_name=dashboard.name or "Dashboard",
-        dashboard_description=getattr(dashboard, "description", None),
-        chart_count=len(getattr(ctx, "allowed_chart_ids", None) or []),
-        filters_applied=[],
-        max_tool_calls=getattr(_node, "max_tool_calls", 8) or 8,
-    )
+    if as_chat:
+        # THE SAME FUNCTION THE RUN USES. Assembling a second one here is how this
+        # panel came to show a report-flavoured base prompt for a step that runs
+        # with no report — a screen whose entire purpose is to show what a run
+        # receives, describing a run that does not happen.
+        from app.services.agent_flows.dispatch import chat_base_prompt
+
+        base_prompt = chat_base_prompt(
+            ctx, max_tool_calls=getattr(_node, "max_tool_calls", 8) or 8
+        )
+    else:
+        base_prompt = _build_base_prompt(
+            dashboard_name=dashboard.name or "Dashboard",
+            dashboard_description=getattr(dashboard, "description", None),
+            chart_count=len(getattr(ctx, "allowed_chart_ids", None) or []),
+            filters_applied=[],
+            max_tool_calls=getattr(_node, "max_tool_calls", 8) or 8,
+        )
 
     try:
         return _preview(

@@ -689,9 +689,15 @@ def preview_step(
     binding_info = binding_service.build_binding_info(
         binding, flow=flow, report=report, link_token="", version=version, ctx=ctx,
     )
-    ctx.allowed_chart_ids = (
-        set(ctx.allowed_chart_ids or set()) & set(binding_info.allowed_chart_ids)
-    )
+    # The intersection is "what the LINK declared", so it only applies when there
+    # is one. On the chat surface there is no link and no report: the scope was
+    # already set from what the flow attached, and narrowing it by an allowlist
+    # that describes a report would empty it — showing the author a step that can
+    # reach nothing, on the exact screen they opened to find out what it reaches.
+    if dashboard is not None:
+        ctx.allowed_chart_ids = (
+            set(ctx.allowed_chart_ids or set()) & set(binding_info.allowed_chart_ids)
+        )
     inp = _studio_input(
         run_id=new_run_id(), question=question, history=history, session_key="",
         report=report, binding_info=binding_info, memory=None,
@@ -734,6 +740,14 @@ async def run_preview(
     link: Any,
     dashboard: Any,
     ctx: Any,
+    #: The flow's stored row. Optional only so older callers keep working; pass it,
+    #: because it is what lets a test read the SAME knowledge a run reads. Without
+    #: it `ctx.knowledge_scope` is never set, and an unset scope does not mean
+    #: "nothing" — on a report it falls through to everything that report may read,
+    #: which is WIDER than the live ceiling, and on the chat surface it falls
+    #: through to nothing at all, which is narrower. Both make the Test panel
+    #: describe a run that does not happen.
+    brain_row: Any = None,
     question: str,
     session_key: str = "",
     history: list[dict] | None = None,
@@ -771,6 +785,13 @@ async def run_preview(
         binding, flow=flow, report=report,
         link_token=getattr(link, "token", ""), version=version, ctx=ctx,
     )
+    if brain_row is not None:
+        from app.services.agent_flows.permissions import run_scope as _run_scope
+
+        ctx.knowledge_scope = _run_scope(
+            db, brain_row, flow, binding_info.knowledge.model_dump()
+        )
+
     ctx.allowed_chart_ids = set(ctx.allowed_chart_ids or set()) & set(binding_info.allowed_chart_ids)
     # THE SAME ADDON THE LIVE LINK GETS, so the Test button answers the question an
     # author is actually asking it. Without this, attaching a dataset changed what a
@@ -842,6 +863,39 @@ async def run_preview(
 
 
 # ═══ The direct-chat path ═════════════════════════════════════════════════════
+def chat_base_prompt(ctx: Any, *, max_tool_calls: int = 8) -> str:
+    """The shared base prompt for a step running with no report.
+
+    IT WAS NOT BEING BUILT AT ALL. `chat_api` calls `run_for_chat_thread` without
+    one, so `base_system_prompt` defaulted to `""` and every chat step ran with no
+    base — no citation contract, no answer-in-the-viewer's-language rule, no
+    analysis guardrails. Those are exactly the rules that stop an answer inventing
+    a figure, and Chat was the one surface running without them.
+
+    The builder's preview panel meanwhile DID build one, so it showed authors a
+    base prompt the run never received — and the report-flavoured base at that,
+    which opens "You are an AI Data Analyst embedded in a published BI dashboard".
+    Two different wrong answers to the same question; this is the one answer.
+
+    `surface="chat"` swaps only the opening and the context block. Everything after
+    them holds on either surface and is not duplicated.
+    """
+    from app.services.dashboard_ai_bot.thinking.prompts import build_agent_system_prompt
+
+    return build_agent_system_prompt(
+        dashboard_name="",
+        dashboard_description=None,
+        chart_count=len(getattr(ctx, "allowed_chart_ids", None) or []),
+        filters_applied=[],
+        max_tool_calls=max_tool_calls,
+        # A flow grants tools per NODE, so the prose narration is both a duplicate
+        # of the API's `tools` field and wrong for every node holding fewer tools
+        # than the product has. Same reason the link path drops it.
+        include_tools=False,
+        surface="chat",
+    )
+
+
 async def run_for_chat_thread(
     db: Session,
     *,
@@ -941,6 +995,9 @@ async def run_for_chat_thread(
         chart_scope(db, ctx.knowledge_scope),
         ctx.knowledge_scope.get("dataset_ids") or [],
     )
+    # Built HERE, not by the caller, because it needs the chart count and the scope
+    # is only known once `adopt_scope` has run. A caller may still override it.
+    base_system_prompt = base_system_prompt or chat_base_prompt(ctx)
 
     fp = fingerprint(
         binding_id=0, version=row.version, filters=[], charts=[], locale=locale,

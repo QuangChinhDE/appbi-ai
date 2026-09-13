@@ -43,6 +43,7 @@ import {
   saveBrain,
   type FlowType, slugifyBrainKey,
   type AuthoringPrompt,
+  type BrainDetail,
   type BrainSummary,
   type FlowBody,
   type FlowNode,
@@ -407,10 +408,65 @@ export function BrainList({
           resourceType="agent_brain"
           resourceId={shareTarget.brain_key}
           resourceName={shareTarget.name}
+          notice={<SharedReach brainKey={shareTarget.brain_key} />}
           onClose={() => setShareTarget(null)}
         />
       )}
     </>
+  );
+}
+
+/** WHAT SHARING THIS FLOW LENDS.
+ *
+ *  Sharing an Agent Flow is not like sharing a report. Whoever receives it can ask
+ *  it questions, and it answers using its AUTHOR's reading rights over everything
+ *  it attached — the recipient needs no access of their own to any of it. That is
+ *  the module's model on purpose (`permissions.run_scope`: "the reader is not a
+ *  term"), and the thing that keeps it honest is saying so here.
+ *
+ *  It matters more since an attached dataset started granting the charts built on
+ *  it: one dataset reaches 184 charts across 8 reports on this deployment, so
+ *  "shared a dataset with this assistant" is a far larger statement than it looks.
+ *  The count is shown for that reason.
+ *
+ *  Fetched when the dialog opens rather than carried on the list row: it needs the
+ *  flow BODY, and putting that on every row of the gallery would be a body per
+ *  card for a panel most people never open.
+ */
+function SharedReach({ brainKey }: { brainKey: string }) {
+  const { t } = useI18n();
+  const [reads, setReads] = React.useState<BrainDetail['reads'] | null>(null);
+
+  React.useEffect(() => {
+    let alive = true;
+    getBrain(brainKey)
+      .then((d) => { if (alive) setReads(d.reads || []); })
+      // Silent: a failed disclosure must not block sharing, and an empty panel
+      // says nothing false. The server-side `check_attachments` gate is what
+      // actually bounds the delegation.
+      .catch(() => { if (alive) setReads([]); });
+    return () => { alive = false; };
+  }, [brainKey]);
+
+  if (!reads?.length) return null;
+  return (
+    <div className="rounded-lg border border-warning/25 bg-warning/5 p-3">
+      <p className="text-caption leading-relaxed text-warning">
+        {t('agentFlows.list.share.lendsTitle')}
+      </p>
+      <ul className="mt-2 space-y-1">
+        {reads.map((r) => (
+          <li key={`${r.source}:${r.ref}`} className="flex items-center gap-1.5 text-tiny text-text-secondary">
+            <MetaChip muted>{r.label}</MetaChip>
+            <span className="min-w-0 truncate">{r.name || r.ref}</span>
+            {r.reach && <span className="flex-shrink-0 text-text-quaternary">· {r.reach}</span>}
+          </li>
+        ))}
+      </ul>
+      <p className="mt-2 text-tiny leading-relaxed text-text-tertiary">
+        {t('agentFlows.list.share.lendsHint')}
+      </p>
+    </div>
   );
 }
 

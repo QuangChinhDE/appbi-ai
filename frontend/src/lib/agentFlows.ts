@@ -362,7 +362,10 @@ export interface BrainSummary {
 export interface BrainDetail extends BrainSummary {
   body: FlowBody;
   warnings: string[];
-  reads: { source: string; label: string; ref: string }[];
+  /** What sharing this flow lends beyond itself: every source it attached, by
+   *  name, and for a dataset how many charts that reaches. `ref` is the raw id and
+   *  is only a fallback — a disclosure showing ids discloses nothing. */
+  reads: { source: string; label: string; ref: string; name?: string; reach?: string }[];
   node_count: number;
   requirements: FlowRequirements;
   answer_node?: string;
@@ -976,7 +979,9 @@ export interface StepPreview {
 }
 
 export async function previewStep(key: string, nodeKey: string, body: {
-  dashboard_id: number; question?: string; version?: number;
+  /** Omitted for a chat flow — there is no report, and the server assembles the
+   *  preview the way a chat turn is actually assembled. */
+  dashboard_id?: number; question?: string; version?: number;
 }): Promise<StepPreview> {
   const { data } = await apiClient.post<StepPreview>(
     `${BASE}/brains/${encodeURIComponent(key)}/nodes/${encodeURIComponent(nodeKey)}/preview`,
@@ -986,6 +991,33 @@ export async function previewStep(key: string, nodeKey: string, body: {
 
 
 // ── Bindings ────────────────────────────────────────────────────────────────
+export interface ChatTestResult {
+  envelope: unknown;
+  run_row_id?: number | null;
+  /** What the flow could reach this turn, counted. There is no report on screen to
+   *  imply it, so the panel states it: an author reading a wrong figure needs to
+   *  know which sources were even in play. */
+  scope: { doc_ids: number; dataset_ids: number; metric_names: number; charts: number };
+  /** Why this shape could not run with no report. Reported, not refused — a flow
+   *  mid-build usually has something wrong with it. */
+  blockers: string[];
+}
+
+/** Run a draft the way AI Chat will: a question, and no report.
+ *
+ *  The other two test calls need a link or a report, and a chat flow has neither —
+ *  which meant its author had to publish it and go to the Chat screen to find out
+ *  whether it worked.
+ */
+export async function testFlowAsChat(key: string, body: {
+  question: string; version?: number; session_key?: string;
+  history?: { role: 'user' | 'assistant'; content: string }[];
+}): Promise<ChatTestResult> {
+  const { data } = await apiClient.post<ChatTestResult>(
+    `${BASE}/brains/${encodeURIComponent(key)}/test-as-chat`, body);
+  return data;
+}
+
 export async function getBinding(linkId: number): Promise<Binding | null> {
   const { data } = await apiClient.get<{ binding: Binding | null }>(
     `${BASE}/bindings/link/${linkId}`);

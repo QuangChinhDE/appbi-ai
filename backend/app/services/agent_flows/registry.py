@@ -97,7 +97,9 @@ def flow_id_to_key(db: Session, flow_id: int) -> str | None:
     return row[0] if row else None
 
 
-def _row_dict(row: AgentBrainVersion, *, include_body: bool = True) -> dict[str, Any]:
+def _row_dict(
+    row: AgentBrainVersion, *, include_body: bool = True, db: Session | None = None,
+) -> dict[str, Any]:
     out: dict[str, Any] = {
         "brain_key": row.brain_key,
         # What a link carries. Callers keep using brain_key for every request.
@@ -132,7 +134,7 @@ def _row_dict(row: AgentBrainVersion, *, include_body: bool = True) -> dict[str,
             out["warnings"] = flow.warnings(
                 str(getattr(row, "flow_type", "") or DEFAULT_FLOW_TYPE)
             )
-            out["reads"] = share_disclosure(flow)
+            out["reads"] = share_disclosure(flow, db)
             out["node_count"] = len(flow.all_nodes())
             out["requirements"] = flow.requirements.model_dump(mode="json")
             out["answer_node"] = flow.answering_key()
@@ -330,7 +332,7 @@ def get_brain(db: Session, brain_key: str, version: int | None = None) -> dict[s
         )
     if row is None:
         raise BrainError(404, "Không tìm thấy flow")
-    out = _row_dict(row)
+    out = _row_dict(row, db=db)
     published = (
         db.query(AgentBrainVersion)
         .filter(
@@ -477,7 +479,7 @@ def save_draft(
         {"version": row.version, "action": action,
          "summary": _summarise(previous_body, flow.to_dict())},
     )
-    return _row_dict(row)
+    return _row_dict(row, db=db)
 
 
 def publish(
@@ -550,7 +552,7 @@ def publish(
         db, "AGENT_FLOW_PUBLISHED", brain_key, actor_email,
         {"version": version, "pinned_links": pinned},
     )
-    out = _row_dict(row)
+    out = _row_dict(row, db=db)
     out["pinned_links"] = pinned
     return out
 
@@ -683,7 +685,7 @@ def restore_to_draft(
         db, "AGENT_FLOW_RESTORED", brain_key, actor_email,
         {"from_version": version, "into_version": row.version},
     )
-    return _row_dict(row)
+    return _row_dict(row, db=db)
 
 
 def delete_version(db: Session, brain_key: str, version: int, actor_email: str = "") -> None:
@@ -789,7 +791,7 @@ def unpublish_version(
     db.commit()
     db.refresh(row)
     _audit(db, "AGENT_FLOW_UNPUBLISHED", brain_key, actor_email, {"version": version})
-    return _row_dict(row)
+    return _row_dict(row, db=db)
 
 
 def has_any_version(db: Session, brain_key: str) -> bool:

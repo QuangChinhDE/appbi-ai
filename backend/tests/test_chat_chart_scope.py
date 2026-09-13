@@ -51,6 +51,15 @@ class _Rows:
         self._seen.append(criteria)
         return self
 
+    # The disclosure's chart count joins and groups; a query stub that only knows
+    # `.filter().all()` would make that path unreachable from a test, which is the
+    # path most worth pinning.
+    def join(self, *_a, **_k):
+        return self
+
+    def group_by(self, *_a):
+        return self
+
     def all(self):
         return self._rows
 
@@ -179,3 +188,118 @@ def test_a_question_can_find_a_chart_with_no_report_open():
 
     assert out["ok"] is True
     assert out["data"]["charts"][0]["chart_id"] == 101
+
+
+# ── what the model is actually told ─────────────────────────────────────────
+
+
+def test_the_base_prompt_stops_claiming_there_is_a_dashboard():
+    """THE 95%.
+
+    Measured on a real chat step, the base prompt was 9,024 of the 9,459
+    characters the model read. The report base opens "You are an AI Data Analyst
+    embedded in a published BI dashboard", says the data is "already loaded for you
+    below", and states that filters bind every query — three sentences that are
+    false with no report, in the text that is almost everything the step is told.
+    """
+    from app.services.dashboard_ai_bot.thinking.prompts import build_agent_system_prompt
+
+    chat = build_agent_system_prompt(
+        dashboard_name="", dashboard_description=None, chart_count=184,
+        filters_applied=[], max_tool_calls=8, include_tools=False, surface="chat",
+    )
+
+    assert "published BI dashboard" not in chat
+    assert "already loaded for you" not in chat
+    assert "Charts you may measure: 184" in chat
+    # The two things that ARE true and that the step has to act on.
+    assert "every figure you give must" in chat
+    assert "WHICH of them a question is about" in chat
+
+
+def test_the_report_prompt_is_untouched_by_default():
+    """Every existing caller passes no `surface`, and must get exactly what it
+    always got."""
+    from app.services.dashboard_ai_bot.thinking.prompts import build_agent_system_prompt
+
+    kw = dict(dashboard_name="Olist", dashboard_description="x", chart_count=70,
+              filters_applied=[], max_tool_calls=8, include_tools=False)
+
+    assert build_agent_system_prompt(**kw) == build_agent_system_prompt(**kw, surface="report")
+    assert "published BI dashboard" in build_agent_system_prompt(**kw)
+
+
+def test_a_chat_turn_is_given_a_base_prompt_at_all():
+    """It was given NONE. `chat_api` calls `run_for_chat_thread` without one, so
+    `base_system_prompt` defaulted to "" and the citation contract, the
+    answer-in-the-viewer's-language rule and the analysis guardrails were all
+    absent — on the surface with the least other structure holding an answer down.
+    """
+    from app.services.agent_flows.dispatch import chat_base_prompt
+
+    ctx = ToolContext(db=None, dashboard=None, public_filters=[])
+    ctx.allowed_chart_ids = {1, 2, 3}
+
+    prompt = chat_base_prompt(ctx)
+
+    assert "Charts you may measure: 3" in prompt
+    assert "published BI dashboard" not in prompt
+    assert len(prompt) > 1000
+
+
+# ── what sharing this flow lends, said out loud ─────────────────────────────
+
+
+class _Src:
+    def __init__(self, source, ref):
+        self.source, self.ref = source, ref
+
+
+class _Flow:
+    def __init__(self, sources):
+        self._sources = sources
+
+    def bound_sources(self):
+        return self._sources
+
+
+def test_the_disclosure_names_sources_instead_of_numbering_them():
+    """A DISCLOSURE NOBODY CAN READ DISCLOSES NOTHING.
+
+    It used to return `{"label": "Bộ dữ liệu", "ref": "111"}`. True, and useless on
+    a share dialog: nobody approving a share knows what dataset 111 is, so the
+    delegation was technically stated and practically hidden.
+    """
+    flow = _Flow([_Src("semantic", "111"), _Src("document", "7")])
+    # Names first (documents, then datasets), then the chart count — the order
+    # `share_disclosure` asks in.
+    db = _DB([(7, "Quy ước GMV")], [(111, "Olist E-Commerce")], [(111, 184)])
+
+    rows = permissions.share_disclosure(flow, db)
+
+    by_ref = {r["ref"]: r for r in rows}
+    assert by_ref["111"]["name"] == "Olist E-Commerce"
+    assert by_ref["7"]["name"] == "Quy ước GMV"
+
+
+def test_the_disclosure_states_how_far_a_dataset_reaches():
+    """Attaching a dataset now grants the charts built on it — 184 across 8 reports
+    for this one. The person clicking Share is who should see that number."""
+    flow = _Flow([_Src("semantic", "111")])
+    db = _DB([(111, "Olist E-Commerce")], [(111, 184)])
+
+    row = permissions.share_disclosure(flow, db)[0]
+
+    assert row["reach"] == "184 biểu đồ"
+
+
+def test_a_disclosure_without_a_session_still_lists_every_source():
+    """Names are an improvement, not a precondition. Dropping a source because its
+    title could not be looked up would hide a delegation — the one outcome this
+    function exists to prevent."""
+    flow = _Flow([_Src("semantic", "111"), _Src("metric", "gmv")])
+
+    rows = permissions.share_disclosure(flow)
+
+    assert [r["ref"] for r in rows] == ["111", "gmv"]
+    assert all(r["name"] for r in rows)
