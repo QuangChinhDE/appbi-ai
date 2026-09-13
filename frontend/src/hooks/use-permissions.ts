@@ -8,6 +8,7 @@ export type ModuleKey =
   | 'datasets'
   | 'govern'
   | 'agent_flows'
+  | 'chat'
   | 'observability'
   | 'explore_charts'
   | 'dashboards'

@@ -55,13 +55,16 @@ router = APIRouter(
     prefix="/agent-flows/chat",
     tags=["agent-flows-chat"],
     # `module_floor` already returns a `Depends(...)` — see core/dependencies.py.
-    dependencies=[module_floor("agent_flows")],
+    dependencies=[module_floor("chat")],
 )
 
 #: The module floor, and nothing more. Chatting with a flow somebody shared with you
 #: is not an authoring power, so it must not demand `edit`; `usable_brains` is what
 #: decides WHICH flows, and it already fails closed on `none`.
-can_chat = require_permission("agent_flows", "view")
+#: ITS OWN KEY. This gated on `agent_flows` while AI Chat had no key of its own,
+#: which meant the only way to let somebody ask an assistant a question was to
+#: also let them into the flow builder.
+can_chat = require_permission("chat", "view")
 
 #: How long the stream may sit silent before it is declared dead, and how long one
 #: turn may run in total. Matched to the public bot's, because the thing being waited

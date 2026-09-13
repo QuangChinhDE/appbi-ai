@@ -45,6 +45,9 @@ _OPTIONAL_MODULES = {
     # produce dead-nav pointing at an unregistered router.
     "govern": settings.METADATA_CATALOG_ENABLED and settings.GOVERN_ENABLED,
     "agent_flows": settings.METADATA_CATALOG_ENABLED and settings.GOVERN_ENABLED,
+    # Same backend, same enablement: AI Chat runs the flows Agent Flows authors,
+    # so a deployment cannot have one without the other.
+    "chat": settings.METADATA_CATALOG_ENABLED and settings.GOVERN_ENABLED,
     # Intelligence group — same enablement as govern (same catalog backend).
     # Flow Studio — same catalog backend, but its OWN key: publishing a flow
     # changes AI behaviour on a live published report (deploy-sized blast
@@ -71,6 +74,13 @@ _ALL_MODULE_ALLOWED_LEVELS: Dict[str, List[str]] = {
     "datasets":          ["none", "view", "edit", "full"],
     "govern":            ["none", "view", "edit", "full"],
     "agent_flows":            ["none", "view", "edit", "full"],
+    # TWO LEVELS, LIKE `settings`, AND FOR THE SAME REASON: the others would be
+    # inert. On this surface a person reads only what is shared with them and
+    # owns only their own conversations — every query in `direct_chat` filters
+    # `user_id == user.id`. There is nothing for `edit` to add, and reading other
+    # people's conversations is an Agent Flows capability, on a flow you own.
+    # Offering four levels where two do nothing is offering a lie.
+    "chat":              ["none", "view"],
     "observability":     ["none", "view", "edit", "full"],
     "explore_charts":    ["none", "view", "edit", "full"],
     "dashboards":        ["none", "view", "edit", "full"],
@@ -92,6 +102,7 @@ PRESETS: Dict[str, Dict[str, str]] = {
         "datasets": "full",
         "govern": "full",
         "agent_flows": "full",
+        "chat": "view",
         "observability": "full",
         "explore_charts": "full",
         "dashboards": "full",
@@ -103,6 +114,7 @@ PRESETS: Dict[str, Dict[str, str]] = {
         "datasets": "edit",
         "govern": "edit",
         "agent_flows": "edit",
+        "chat": "view",
         "observability": "edit",
         "explore_charts": "edit",
         "dashboards": "edit",
@@ -114,6 +126,7 @@ PRESETS: Dict[str, Dict[str, str]] = {
         "datasets": "view",
         "govern": "view",
         "agent_flows": "view",
+        "chat": "view",
         "observability": "view",
         "explore_charts": "view",
         "dashboards": "view",
@@ -125,6 +138,9 @@ PRESETS: Dict[str, Dict[str, str]] = {
         "datasets": "none",
         "govern": "none",
         "agent_flows": "none",
+        # The one AI surface a minimal account plausibly wants: asking a published
+        # assistant a question is closer to reading a dashboard than to authoring.
+        "chat": "view",
         "observability": "none",
         "explore_charts": "none",
         "dashboards": "view",

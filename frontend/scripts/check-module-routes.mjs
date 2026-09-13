@@ -59,11 +59,45 @@ for (const { href, module } of navEntries) {
   }
 }
 
+/* ONE NAV ENTRY, ONE MODULE KEY.
+ *
+ * The admin matrix renders one row per module, so two nav entries sharing a key
+ * are two screens the matrix cannot tell apart — granting one silently grants the
+ * other, and there is no way to offer the lighter of the two on its own.
+ *
+ * AI Chat was that case for months: it rode on `agent_flows`, so the only way to
+ * let somebody ASK an assistant a question was to also let them into the flow
+ * builder, and the Settings row said "Agent Flows" while opening two things.
+ *
+ * If a future module genuinely wants two entries under one key, add the pair here
+ * on purpose — the same way the backend's route walk declares its identity-scoped
+ * exemptions — rather than letting it pass silently. */
+const SHARED_KEY_BY_DESIGN = new Set([
+  // '/some-route|some_module',
+]);
+
+const byModule = new Map();
+for (const { href, module } of navEntries) {
+  if (SHARED_KEY_BY_DESIGN.has(`${href}|${module}`)) continue;
+  if (!byModule.has(module)) byModule.set(module, []);
+  byModule.get(module).push(href);
+}
+for (const [module, hrefs] of byModule) {
+  if (hrefs.length > 1) {
+    problems.push(`module '${module}' is claimed by ${hrefs.length} nav entries `
+      + `(${hrefs.join(', ')}) — the Settings matrix has one row per module, so `
+      + 'granting it opens all of them and neither can be offered alone. Give the '
+      + 'second screen its own key, or declare the pair in SHARED_KEY_BY_DESIGN');
+  }
+}
+
 if (problems.length) {
   console.error('✗ module-routes: sidebar and moduleRoutes.ts disagree\n');
   for (const p of problems) console.error(`  · ${p}`);
-  console.error('\n  Fix: add the route to ROUTE_MODULES in src/lib/moduleRoutes.ts.');
+  console.error('\n  Fix: add the route to ROUTE_MODULES in src/lib/moduleRoutes.ts, '
+    + 'or give the screen its own module key.');
   process.exit(1);
 }
 
-console.log(`✓ module-routes: ${navEntries.length} nav entries, all mapped and agreeing`);
+console.log(`✓ module-routes: ${navEntries.length} nav entries, all mapped, `
+  + `agreeing, and one key each (${byModule.size} modules)`);

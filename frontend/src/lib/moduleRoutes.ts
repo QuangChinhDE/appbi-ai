@@ -34,7 +34,7 @@ export const ROUTE_MODULES: ReadonlyArray<readonly [string, ModuleKey]> = [
   // have no access at all, and the page was telling them to wait for a share.
   // Verified by calling: every one of the module's 7 chat endpoints answers 403
   // to that user, so nothing leaked — the page just lied about why it was empty.
-  ['/chat', 'agent_flows'],
+  ['/chat', 'chat'],
   ['/workboards', 'workboards'],
   ['/permissions', 'settings'],
 ] as const;

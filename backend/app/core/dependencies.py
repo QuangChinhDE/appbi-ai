@@ -55,6 +55,15 @@ MODULE_KEYS = (
     "datasets",
     "govern",
     "agent_flows",
+    # AI Chat: its own key, because it is its own nav item.
+    #
+    # It rode on `agent_flows` and was the ONLY place in the product where two
+    # sidebar entries shared one module key — so the admin matrix showed a row
+    # called "Agent Flows" that silently also opened a second screen, and there
+    # was no way to give somebody the reading side without the authoring side.
+    # That is the common case: most people should be able to ASK an assistant
+    # without being able to build or publish one.
+    "chat",
     "observability",
     "explore_charts",
     "dashboards",
@@ -247,9 +256,19 @@ def _normalize_permissions(user: User) -> dict:
     normalized = dict(perms)
 
     if _sanitize_permission_level(normalized.get("settings")) == "full":
+        from app.api.permissions import MODULE_ALLOWED_LEVELS
+
         for module in MODULE_KEYS:
             if module != "settings" and module not in perms:
-                normalized[module] = "full"
+                # CLAMPED to the module's own ceiling, not a flat "full". A module
+                # may legitimately offer fewer levels — `chat` is none/view,
+                # because "open it and talk to what is shared with you" has no
+                # meaningful edit or full above it — and handing such a module a
+                # level its own matrix cannot render is how a row appears with a
+                # value missing from its dropdown. Falls back to "full" for any
+                # module that has not declared a ceiling.
+                allowed = MODULE_ALLOWED_LEVELS.get(module) or ["full"]
+                normalized[module] = allowed[-1]
 
     caps = _get_permission_caps(user)
     if caps:
