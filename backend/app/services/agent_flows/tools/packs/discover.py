@@ -568,28 +568,43 @@ def tool_resolve_chart_candidates(ctx: Any, args: dict) -> dict:
 RESOLVE_CHARTS_DEF = {
     "name": "resolve_chart_candidates",
     "description": (
-        "Which charts on this report actually measure a given governed metric or "
-        "semantic field — followed through the governed binding, not by guessing "
-        "chart names. Use this whenever the question names a metric: it finds "
-        "charts whose TITLE says nothing about the metric (a chart named 'Đơn trễ "
-        "theo tháng' measures on-time delivery), which a name search cannot. "
-        "Returns chart_ids ranked by whether they plot the measure itself."
+        "Which charts actually measure a given field — followed through the "
+        "semantic binding, not by guessing chart names. Use this whenever the "
+        "question names a figure: it finds charts whose TITLE says nothing about "
+        "it (a chart named 'Đơn trễ theo tháng' measures on-time delivery), which "
+        "a name search cannot. Returns chart_ids ranked by whether they plot the "
+        "measure itself.\n"
+        "PASS `measure` — the field or figure name as the question says it. Pass "
+        "`metric` ONLY for a name search_business_assets returned as a governed "
+        "metric; any other value is refused, because a governed metric is a "
+        "registered entry, not a synonym."
     ),
     "input_schema": {
         "type": "object",
         "properties": {
-            "metric": {
-                "type": "string",
-                "description": (
-                    "A governed metric's name, as returned by "
-                    "search_business_assets."
-                ),
-            },
+            # `measure` FIRST, and it is not cosmetic. Schema order is what the
+            # model reads as "the normal way to call this", and it was reading
+            # `metric` — which is refused outright unless that exact name is
+            # registered in the Metrics Dictionary. Measured on this deployment,
+            # where no metric is registered: every `metric` call fails with
+            # "metric 'GMV' is not defined" while the same question answered
+            # correctly through `measure`. The chat seed grants this tool by
+            # default, so the first thing a new chat flow did was call it the one
+            # way that cannot work.
             "measure": {
                 "type": "string",
                 "description": (
-                    "A semantic measure/field name, when there is no governed "
-                    "metric for it."
+                    "PREFERRED. A measure or field name as the question phrases "
+                    "it — e.g. 'gmv', 'doanh thu', 'on-time rate'. Works without "
+                    "anything being registered first."
+                ),
+            },
+            "metric": {
+                "type": "string",
+                "description": (
+                    "A GOVERNED metric's exact name, only as returned by "
+                    "search_business_assets. Refused if that name is not "
+                    "registered — use `measure` instead."
                 ),
             },
         },

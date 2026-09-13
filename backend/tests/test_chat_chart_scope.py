@@ -303,3 +303,31 @@ def test_a_disclosure_without_a_session_still_lists_every_source():
 
     assert [r["ref"] for r in rows] == ["111", "gmv"]
     assert all(r["name"] for r in rows)
+
+
+# ── the argument the model was being steered at ─────────────────────────────
+
+
+def test_resolve_chart_candidates_offers_measure_before_metric():
+    """THE DEFAULT CALL HAD TO BE THE ONE THAT CAN WORK.
+
+    `metric` is refused outright unless that exact name is registered in the
+    Metrics Dictionary — measured on this deployment, where nothing is registered,
+    every `metric` call failed with "metric 'GMV' is not defined" while the same
+    question answered correctly through `measure`. The chat seed grants this tool
+    by default, so a new chat flow's first move was the one call that cannot
+    succeed.
+
+    Schema order is what a model reads as "the normal way to call this", so the
+    order is the fix, not a comment.
+    """
+    from app.services.agent_flows.tools import registry as R
+
+    spec = next(t for p in R.packs() for t in p.tools
+                if t.name == "resolve_chart_candidates")
+    props = list(spec.definition["input_schema"]["properties"])
+
+    assert props.index("measure") < props.index("metric")
+    assert "PREFERRED" in spec.definition["input_schema"]["properties"]["measure"]["description"]
+    # And the prose must say which one to reach for, not just describe both.
+    assert "PASS `measure`" in spec.definition["description"]

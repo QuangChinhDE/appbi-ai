@@ -402,14 +402,26 @@ def _recency_factor(last_seen: datetime | None) -> float:
 
 
 def retrieve(
-    db: Session, *, dashboard_id: int, question: str = "", limit: int = MAX_INJECT
+    db: Session, *, dashboard_id: int | None = None, question: str = "",
+    limit: int = MAX_INJECT, dashboard_ids: list[int] | None = None,
 ) -> list[AiBotKnowledge]:
     """Top validated learnings for this dashboard, ranked by
-    kind-priority → relevance(question) → confidence → recency."""
+    kind-priority → relevance(question) → confidence → recency.
+
+    `dashboard_ids` exists for a caller with no single report — AI Chat. A learned
+    fact is stored against the dashboard it was taught on, so a surface with no
+    dashboard had nothing to look up and `recall_knowledge` refused outright. Given
+    the reports its granted charts live on, it can look across all of them.
+    """
+    ids = [int(x) for x in (dashboard_ids or []) if isinstance(x, (int, float))]
+    if dashboard_id is not None:
+        ids.append(int(dashboard_id))
+    if not ids:
+        return []
     rows = (
         db.query(AiBotKnowledge)
         .filter(
-            AiBotKnowledge.dashboard_id == dashboard_id,
+            AiBotKnowledge.dashboard_id.in_(sorted(set(ids))),
             AiBotKnowledge.status == "validated",
         )
         .all()
@@ -716,16 +728,55 @@ def tool_remember_fact(ctx, args: dict) -> dict:
     })
 
 
+def _reports_behind_granted_charts(ctx) -> list[int]:
+    """The dashboards the charts in scope live on.
+
+    Institutional memory is stored per DASHBOARD, and AI Chat has none — so this
+    tool refused every call there with "no dashboard scope for knowledge", on the
+    surface where a reader is most likely to ask "what did we conclude about this
+    last time".
+
+    The reports are derived, never widened: a chart only reaches this context
+    because the flow's author attached the dataset it is built on, so the facts
+    read here were taught on reports this turn can already read the charts of.
+    """
+    allowed = sorted(getattr(ctx, "allowed_chart_ids", None) or set())
+    if not allowed or getattr(ctx, "db", None) is None:
+        return []
+    try:
+        from app.models.models import DashboardChart
+
+        return [
+            r[0] for r in
+            ctx.db.query(DashboardChart.dashboard_id)
+            .filter(DashboardChart.chart_id.in_(allowed))
+            .distinct().all()
+            if r[0] is not None
+        ]
+    except Exception:  # noqa: BLE001
+        logger.warning("[knowledge] could not resolve reports for recall", exc_info=True)
+        return []
+
+
 def tool_recall_knowledge(ctx, args: dict) -> dict:
     """Search the accumulated company knowledge base (beyond the top-K already
     injected into the prompt)."""
     from app.services.dashboard_ai_bot.tool_context import _ok, _err
 
     dash_id = getattr(ctx.dashboard, "id", None)
-    if not isinstance(dash_id, int):
-        return _err("no dashboard scope for knowledge.")
     q = str(args.get("query") or "")
-    rows = retrieve(ctx.db, dashboard_id=dash_id, question=q, limit=20)
+    if isinstance(dash_id, int):
+        rows = retrieve(ctx.db, dashboard_id=dash_id, question=q, limit=20)
+    else:
+        reports = _reports_behind_granted_charts(ctx)
+        if not reports:
+            # An honest empty, not a failure. "Nothing has been taught that this
+            # assistant can reach" is a true answer the model can relay; an error
+            # makes it retry, spend the budget, and then say the wrong thing.
+            return _ok({"count": 0, "items": [], "note":
+                        "Chưa có kiến thức nào được dạy trong phạm vi trợ lý này "
+                        "với tới."})
+        rows = retrieve(ctx.db, dashboard_ids=reports, question=q, limit=20)
     return _ok({
         "count": len(rows),
         "items": [
