@@ -26,7 +26,11 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
-from app.core.dependencies import get_current_user, require_permission
+from app.core.dependencies import (
+    get_current_user,
+    module_floor,
+    require_permission,
+)
 from app.models.user import User
 from app.services.agent_flows import chat_quota, direct_chat
 from app.services.agent_flows import dispatch
@@ -36,7 +40,23 @@ from app.services.dashboard_ai_bot.public_link_config import deployment_key
 
 logger = logging.getLogger("app.agent_flows.chat")
 
-router = APIRouter(prefix="/agent-flows/chat", tags=["agent-flows-chat"])
+#: A FLOOR ON THE ROUTER, not seven separate reminders.
+#:
+#: All seven endpoints below do carry `can_chat`, and an audit confirms it — but
+#: that is the shape that has already failed in this codebase: seven list
+#: endpoints across five modules answered `200 []` to a zero-permission user
+#: because each was gated individually and each could be forgotten once. A floor
+#: cannot be forgotten by the eighth endpoint somebody adds.
+#:
+#: `can_chat` stays on each handler. The floor is the cheaper question underneath
+#: ("may this person open the module at all"); the per-endpoint gate is what the
+#: handler's own contract states, and the two agreeing is the point.
+router = APIRouter(
+    prefix="/agent-flows/chat",
+    tags=["agent-flows-chat"],
+    # `module_floor` already returns a `Depends(...)` — see core/dependencies.py.
+    dependencies=[module_floor("agent_flows")],
+)
 
 #: The module floor, and nothing more. Chatting with a flow somebody shared with you
 #: is not an authoring power, so it must not demand `edit`; `usable_brains` is what
