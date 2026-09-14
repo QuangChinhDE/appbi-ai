@@ -1,0 +1,46 @@
+{
+  "answer_shape": {
+    "block_count": 1,
+    "citation_count": 0,
+    "figure_count": 0,
+    "has_answer": true
+  },
+  "citations": [],
+  "counts": {
+    "llm_calls": 1,
+    "steps": 3,
+    "tool_calls": 1
+  },
+  "execution_path": [
+    {
+      "key": "cid",
+      "status": "ok",
+      "type": "set_var"
+    },
+    {
+      "key": "goi",
+      "status": "ok",
+      "type": "tool"
+    },
+    {
+      "key": "answer",
+      "status": "ok",
+      "type": "agent"
+    }
+  ],
+  "fixture": "16_tool_node",
+  "memory_set_keys": [],
+  "notice_codes": [],
+  "status": "ok",
+  "step_outputs": {
+    "answer": "ok :: Kết quả của các bước trước, theo thứ tự đã chạy. Tổng hợp TẤT CẢ, không chỉ bước cuối; nếu hai bước mâu thuẫn thì nói rõ ra thay vì chọn bừa một bên:\n\n### Tinh tong\n{\"formatted\": \"1.234,5\", \"rows_coun",
+    "cid": "41.0",
+    "goi": "{\"formatted\": \"1.234,5\", \"rows_counted\": 70, \"value\": 1234.5}"
+  },
+  "tool_calls": [
+    {
+      "step": "goi",
+      "tool": "total_measure"
+    }
+  ]
+}

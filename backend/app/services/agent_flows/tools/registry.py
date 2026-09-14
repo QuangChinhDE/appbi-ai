@@ -236,11 +236,21 @@ class ToolSpec:
     def to_dict(self) -> dict[str, Any]:
         """For the builder's tool picker.
 
-        No callable and no input schema: a picker needs to know what a tool IS,
-        and shipping the argument schema would invite the frontend to start
-        reasoning about arguments. The OUTPUT contract is shipped, because that
-        is what an author needs in order to wire a tool's result into the next
-        node — the question the picker exists to answer.
+        No callable, and no raw JSON Schema: a picker needs to know what a tool
+        IS, and shipping the model-facing schema would invite the frontend to
+        start reasoning about arguments. The OUTPUT contract is shipped, because
+        that is what an author needs in order to wire a tool's result into the
+        next node — the question the picker exists to answer.
+
+        WHAT CHANGED WITH ToolNode, AND WHY IT IS NOT A REVERSAL.
+
+        A ToolNode's inspector has to RENDER one row per argument: an author
+        binding `chart_id` to a variable cannot type the argument name, because a
+        misspelling reaches a viewer. So `inputs` now ships a flat summary —
+        name, JSON type, required, one line of help — and nothing else. The
+        frontend renders it; it does not validate against it and does not infer
+        from it. The backend remains the only place an argument is judged, which
+        is the property the original decision was protecting.
         """
         return {
             "name": self.name,
@@ -256,7 +266,31 @@ class ToolSpec:
             "cacheable": self.cacheable,
             "self_sufficient": self.self_sufficient,
             "answers_vi": list(self.answers_vi),
+            "risk": self.risk,
+            "output_schema": self.output_schema,
+            "inputs": self.input_summary(),
         }
+
+    def input_summary(self) -> dict[str, dict[str, Any]]:
+        """One row per argument, for a form to render. Not a schema to reason with.
+
+        Flattened on purpose: `{name: {type, required, description}}` is what a
+        row needs and nothing more. Nested shapes, enums and defaults stay in the
+        model-facing schema, where the backend reads them.
+        """
+        schema = (self.definition or {}).get("input_schema")             or (self.definition or {}).get("parameters")             or ((self.definition or {}).get("function") or {}).get("parameters")             or {}
+        props = schema.get("properties") or {}
+        required = set(schema.get("required") or [])
+        out: dict[str, dict[str, Any]] = {}
+        for name, prop in props.items():
+            if not isinstance(prop, dict):
+                continue
+            out[name] = {
+                "type": prop.get("type") or "string",
+                "required": name in required,
+                "description": str(prop.get("description") or "")[:200],
+            }
+        return out
 
 
 @dataclass

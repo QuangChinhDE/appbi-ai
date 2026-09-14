@@ -791,9 +791,84 @@ class LoopNode(BaseNode):
         return v
 
 
+class ToolInput(_Model):
+    """One argument of a ToolNode, bound to a variable or to a literal.
+
+    WHY NOT `"chart_id": "{{sales_chart}}"`.
+
+    A template string is nicer to read and loses the type on the way through.
+    `integer` arrives as `"41"`, an object as `"[object Object]"`, a list as its
+    text, `None` as `""` — and the tool then refuses an argument the author
+    thought they had supplied. The builder still SHOWS `{{sales_chart}}`; what is
+    stored and what runs is this.
+
+    The second reason is the one that pays for itself: with the binding typed and
+    the tool's `output_schema` known, "the chart step's output does not fit this
+    tool's `chart_id`" is answerable when the flow is PUBLISHED, not when a viewer
+    is waiting.
+    """
+
+    source: Literal["variable", "literal"] = "literal"
+    #: Variable name when `source="variable"`. No braces: `sales_chart`.
+    ref: str = ""
+    #: The value itself when `source="literal"`. Typed as authored.
+    value: Any = None
+
+    @model_validator(mode="after")
+    def _one_of_the_two(self) -> "ToolInput":
+        if self.source == "variable" and not self.ref.strip():
+            raise ValueError("binding kiểu biến phải nêu tên biến")
+        if self.source == "variable" and "{" in self.ref:
+            raise ValueError(
+                "tên biến không kèm dấu ngoặc — ghi `doanh_thu`, không phải "
+                "`{{doanh_thu}}`"
+            )
+        return self
+
+
+class ToolNode(BaseNode):
+    """Call ONE tool with arguments the author decided. No model involved.
+
+    WHY THIS EXISTS.
+
+    Twenty of the tools need a `chart_id` and most questions an author builds a
+    flow for are already decided: "top 5 categories" does not need a model to work
+    out that `rank_values` is the tool. Today it costs a model round to choose the
+    tool and another to read the result — and every tool granted to an agent is
+    also schema text in every prompt of that step, which is why a catalogue of
+    hundreds cannot be reached through agents alone.
+
+    `ToolSpec.self_sufficient` has been documented as a LATENT property for exactly
+    this reason: real, checkable, and not spendable until a node could call a tool
+    directly. This is that node.
+
+    WHAT IT DELIBERATELY DOES NOT DO.
+
+    It does not call `spec.fn`. It goes through `registry.execute()`, so the
+    capability gate, the resource scope check, the payload ceiling, the cache and
+    the error taxonomy all apply without a line of them being restated here. A new
+    execution path is exactly how a gate gets bypassed, so this one takes the same
+    road as the old ones.
+    """
+
+    type: Literal["tool"] = "tool"
+    #: Registry name. Validated against the registry at publish time, not here —
+    #: the contract must stay importable without the tool package.
+    tool: str
+    inputs: dict[str, ToolInput] = Field(default_factory=dict)
+
+    @field_validator("tool")
+    @classmethod
+    def _named(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("bước công cụ phải chọn một công cụ")
+        return v.strip()
+
+
 Node = Annotated[
     Union[
         AgentNode,
+        ToolNode,
         ReportReadNode,
         KnowledgeNode,
         WebNode,

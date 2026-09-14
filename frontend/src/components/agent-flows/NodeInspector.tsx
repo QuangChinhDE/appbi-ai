@@ -30,6 +30,7 @@ import {
   type ToolPack,
   previewStep,
   type StepPreview,
+  type ToolInput,
 } from '@/lib/agentFlows';
 import { SectionTitle, HintText, CostChip, COST_HINT_KEY, KnowledgeAttachments } from './shared';
 
@@ -580,6 +581,41 @@ function NodeForm(props: InspectorProps & { node: FlowNode }) {
         </>
       )}
 
+      {node.type === 'tool' && (
+        <>
+          <Field label={t('agentFlows.inspector.tool.pick')}
+            hint={t('agentFlows.inspector.tool.pickHint')}>
+            <Select
+              value={node.tool || ''}
+              onChange={(v) => set({ tool: v, inputs: {} } as Partial<FlowNode>)}
+              options={[
+                { value: '', label: t('agentFlows.inspector.tool.none') },
+                ...toolPacks.flatMap((p) => p.tools.map((tl) => ({
+                  value: tl.name,
+                  label: `${(language === 'vi' ? tl.label_vi : tl.label_en) || tl.name}  ·  ${tl.name}`,
+                }))),
+              ]} />
+          </Field>
+
+          {/* ARGUMENTS COME FROM THE TOOL, not from free text. Each one is bound
+              to a variable or to a literal, and what is stored keeps its type —
+              which is what lets a mismatch be caught when the flow is published
+              rather than when a viewer is waiting. */}
+          {node.tool ? (
+            <ToolArguments
+              tool={node.tool}
+              packs={toolPacks}
+              value={node.inputs || {}}
+              onChange={(inputs) => set({ inputs } as Partial<FlowNode>)}
+            />
+          ) : (
+            <HintText>{t('agentFlows.inspector.tool.pickFirst')}</HintText>
+          )}
+
+          <HintText>{t('agentFlows.inspector.tool.hint')}</HintText>
+        </>
+      )}
+
       {node.type === 'report_read' && (() => {
         // `index` never calls either read tool - it describes each chart from the
         // configuration the run already holds. The two toggles under it are inert
@@ -1050,6 +1086,81 @@ const PAYLOAD_HINT_KEY: Record<string, string> = {
 
 function toolPackLabel(pack: ToolPack, language: 'en' | 'vi') {
   return (language === 'vi' ? pack.label_vi : pack.label_en) || pack.label_vi || pack.label_en;
+}
+
+
+/** The arguments of one tool, each bound to a variable or a literal.
+ *
+ *  The list of arguments is READ FROM THE TOOL rather than typed by the author:
+ *  a free-text argument name is a misspelling waiting to reach a viewer, and the
+ *  registry already knows what the tool takes. */
+function ToolArguments({
+  tool, packs, value, onChange,
+}: {
+  tool: string;
+  packs: ToolPack[];
+  value: Record<string, ToolInput>;
+  onChange: (v: Record<string, ToolInput>) => void;
+}) {
+  const { t } = useI18n();
+  const spec = packs.flatMap((p) => p.tools).find((s) => s.name === tool);
+  const args = Object.entries(spec?.inputs || {});
+
+  if (!spec) {
+    return <HintText>{t('agentFlows.inspector.tool.unknown')}</HintText>;
+  }
+  if (!args.length) {
+    return <HintText>{t('agentFlows.inspector.tool.noArgs')}</HintText>;
+  }
+
+  const bind = (name: string, next: ToolInput) =>
+    onChange({ ...value, [name]: next });
+
+  return (
+    <Field label={t('agentFlows.inspector.tool.args')}>
+      <div className="space-y-2 rounded-lg border border-[rgb(var(--border-line))] p-2.5">
+        {args.map(([name, meta]) => {
+          const cur = value[name] || { source: 'literal' as const, value: '' };
+          const required = Boolean(meta?.required);
+          return (
+            <div key={name} className="space-y-1">
+              <div className="flex items-baseline gap-1.5">
+                <code className="text-caption font-medium text-text-primary">{name}</code>
+                {required && (
+                  <span className="text-caption text-danger">
+                    {t('agentFlows.inspector.tool.required')}
+                  </span>
+                )}
+                <span className="text-caption text-text-tertiary">{meta?.type}</span>
+              </div>
+              <div className="flex gap-1.5">
+                <Select
+                  className="h-8 w-28 flex-shrink-0"
+                  value={cur.source}
+                  onChange={(v) => bind(name, v === 'variable'
+                    ? { source: 'variable', ref: cur.ref || '' }
+                    : { source: 'literal', value: cur.value ?? '' })}
+                  options={[
+                    { value: 'literal', label: t('agentFlows.inspector.tool.literal') },
+                    { value: 'variable', label: t('agentFlows.inspector.tool.variable') },
+                  ]} />
+                {cur.source === 'variable' ? (
+                  <Input
+                    value={cur.ref || ''}
+                    placeholder="ten_bien"
+                    onChange={(e) => bind(name, { source: 'variable', ref: e.target.value })} />
+                ) : (
+                  <Input
+                    value={String(cur.value ?? '')}
+                    onChange={(e) => bind(name, { source: 'literal', value: e.target.value })} />
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </Field>
+  );
 }
 
 function toolPackPurpose(pack: ToolPack, language: 'en' | 'vi') {

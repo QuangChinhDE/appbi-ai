@@ -43,7 +43,7 @@ export interface NodeSpec {
 }
 
 export type NodeType =
-  | 'agent' | 'coordinate' | 'report_read' | 'knowledge' | 'web'
+  | 'agent' | 'coordinate' | 'report_read' | 'knowledge' | 'web' | 'tool'
   | 'if' | 'switch' | 'loop' | 'filter'
   | 'set_var' | 'transform' | 'stop' | 'delay';
 
@@ -80,6 +80,14 @@ export interface ToolSpec {
    *  are the cheap ones, and the reason the catalogue can keep growing. */
   self_sufficient?: boolean;
   answers_vi?: string[];
+  /** How dangerous calling it is. `unknown` means nobody classified it yet, and
+   *  the backend refuses to run such a tool as an action. */
+  risk?: 'unknown' | 'read_only' | 'side_effect' | 'destructive';
+  /** JSON Schema of `result.data` — not of the envelope. */
+  output_schema?: Record<string, unknown>;
+  /** One row per argument, FOR RENDERING A FORM. Not a schema to validate
+   *  against: the backend is the only place an argument is judged. */
+  inputs?: Record<string, { type: string; required: boolean; description: string }>;
 }
 
 export interface ToolPack {
@@ -317,8 +325,30 @@ export interface CoordinateNode extends BaseNode {
   fallback?: FlowNode[];
 }
 
+/** One argument of a ToolNode, bound to a variable or to a literal.
+ *
+ *  NOT a template string. `"{{sales_chart}}"` reads nicely and loses the type on
+ *  the way through — an integer arrives as `"41"`, an object as
+ *  `"[object Object]"`, null as `""` — and the tool then refuses an argument the
+ *  author believes they supplied. The inspector still DISPLAYS `{{sales_chart}}`;
+ *  this is what is stored and what runs. */
+export interface ToolInput {
+  source: 'variable' | 'literal';
+  /** Variable name when source='variable'. No braces. */
+  ref?: string;
+  /** The value itself when source='literal'. Typed as authored. */
+  value?: unknown;
+}
+
+/** Call exactly one tool with arguments the author chose. No model. */
+export interface ToolNode extends BaseNode {
+  type: 'tool';
+  tool: string;
+  inputs?: Record<string, ToolInput>;
+}
+
 export type FlowNode =
-  | AgentNode | ReportReadNode | KnowledgeNode | WebNode
+  | AgentNode | ReportReadNode | KnowledgeNode | WebNode | ToolNode
   | SetVarNode | TransformNode | StopNode | DelayNode
   | FilterNode | IfNode | SwitchNode | LoopNode | CoordinateNode;
 
@@ -1345,6 +1375,9 @@ export function blankNode(type: NodeType, nodes: FlowNode[], labels: BlankNodeLa
     case 'agent':
       return { ...base, type, prompt: labels.agentPrompt || 'Describe what this step should do.', provider: 'inherit',
         max_tool_calls: 8, output_format: 'chat', context_policy: 'question', tools: [], knowledge: [] };
+    case 'tool':
+      return { ...base, type: 'tool', tool: '', inputs: {},
+        run_policy: 'every_turn' };
     case 'report_read':
       return { ...base, type, output_var: uniqueKey(nodes, 'dashboard_context'),
         include_summary: true, include_data: true, include_filters: true,

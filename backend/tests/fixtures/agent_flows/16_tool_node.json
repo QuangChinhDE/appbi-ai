@@ -1,0 +1,51 @@
+{
+  "covers": [
+    "tool node",
+    "typed binding",
+    "deterministic capability without a model"
+  ],
+  "flow": {
+    "answer_node": "answer",
+    "nodes": [
+      {
+        "key": "cid",
+        "type": "set_var",
+        "value": "41",
+        "value_type": "number",
+        "var": "chart"
+      },
+      {
+        "inputs": {
+          "chart_id": {
+            "ref": "chart",
+            "source": "variable"
+          }
+        },
+        "key": "goi",
+        "name": "Tinh tong",
+        "output_var": "tong",
+        "run_policy": "every_turn",
+        "tool": "total_measure",
+        "type": "tool"
+      },
+      {
+        "key": "answer",
+        "name": "Tra loi",
+        "prompt": "Tong: {{tong}}",
+        "type": "agent"
+      }
+    ]
+  },
+  "name": "16_tool_node",
+  "tools": {
+    "default": {
+      "data": {
+        "formatted": "1.234,5",
+        "rows_counted": 70,
+        "value": 1234.5
+      },
+      "kind": "value",
+      "ok": true
+    }
+  }
+}

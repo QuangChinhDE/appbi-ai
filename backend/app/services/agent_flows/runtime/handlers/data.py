@@ -18,7 +18,12 @@ import logging
 from typing import Any, AsyncGenerator
 from urllib.parse import urlparse
 
-from app.services.agent_flows.contract import KnowledgeNode, ReportReadNode, WebNode
+from app.services.agent_flows.contract import (
+    KnowledgeNode,
+    ReportReadNode,
+    ToolNode,
+    WebNode,
+)
 from app.services.agent_flows.envelope import Citation, Notice
 from app.services.agent_flows.runtime.nodes import NodeSpec
 from app.services.agent_flows.runtime.state import RunState
@@ -791,6 +796,82 @@ def _domain_ok(url: str, domains: list[str]) -> bool:
     return any(host == d.lower() or host.endswith("." + d.lower().lstrip(".")) for d in domains)
 
 
+
+# ═══ Call one tool, decided by the author ════════════════════════════════════
+async def run_tool(
+    node: ToolNode, state: RunState, rctx: Any
+) -> AsyncGenerator[AgentEvent, None]:
+    """One tool, arguments the author bound, no model.
+
+    THE SECURITY SHAPE OF THIS FUNCTION IS THE POINT.
+
+    It resolves bindings and calls `tool_registry.execute()`. It does not reach for
+    `spec.fn`, does not special-case a tool, and does not decide anything a gate
+    decides. Every invariant the agent path has — capability, resource scope,
+    payload ceiling, cache, error taxonomy — applies here because this takes the
+    same road, not because it repeats the checks.
+
+    `allowed=None` follows `_call` above: there is no per-step allowlist to
+    enforce, because the author picked THIS tool for THIS node and the node is the
+    grant. What still bounds it is the binding, narrowed before the first node ran.
+    """
+    args = _resolve_inputs(node, state)
+    yield AgentEvent(type="status", text=f"Đang chạy {node.tool}…")
+
+    state.budget.spend_tool()
+    result = tool_registry.execute(rctx.ctx, node.tool, args, allowed=None)
+    state.tool_log.append(
+        node.tool if result.get("ok")
+        else f"{node.tool}({result.get('error_code') or 'failed'})"
+    )
+    state.add_evidence(result)
+
+    if not result.get("ok"):
+        # RAISED, not swallowed. `on_error` on the node decides what happens next —
+        # the same choice every other step gets — and a step that failed must not
+        # publish a value the next step would read as data.
+        detail = result.get("detail") or result.get("error") or "công cụ lỗi"
+        raise RuntimeError(f"{node.tool}: {detail}")
+
+    # WHAT THE NEXT STEP READS IS `data`, NOT THE ENVELOPE.
+    #
+    # `ok` / `kind` / `coverage` are the platform's contract and `output_schema`
+    # describes `data`, so an author wiring `{{ranking.items}}` gets what the
+    # schema promised. Publishing the envelope instead would make every binding
+    # read `{{ranking.data.items}}` and make the schema a lie.
+    state.outputs[node.key] = result.get("data")
+    if node.output_var:
+        state.set_var(node.output_var, result.get("data"))
+        if node.run_policy != "every_turn":
+            state.memory_set[node.output_var] = result.get("data")
+
+
+def _resolve_inputs(node: ToolNode, state: RunState) -> dict:
+    """Typed bindings → tool arguments.
+
+    A variable binding keeps the variable's TYPE. That is the whole reason the
+    contract stores `{source, ref}` instead of `"{{x}}"`: an id stays an int, a
+    list stays a list, and a tool does not have to guess what a string was meant
+    to be.
+    """
+    out: dict = {}
+    for name, binding in (node.inputs or {}).items():
+        if binding.source == "literal":
+            out[name] = binding.value
+            continue
+        if binding.ref in state.vars:
+            out[name] = state.vars[binding.ref]
+            continue
+        # A MISSING VARIABLE IS NOT AN EMPTY ONE. Passing `None` would let the tool
+        # refuse for a reason that names the ARGUMENT instead of the BINDING, and
+        # an author would go looking at the tool.
+        raise RuntimeError(
+            f"bước “{node.name or node.key}” cần biến {{{{{binding.ref}}}}} cho "
+            f"tham số `{name}`, nhưng chưa bước nào tạo ra biến đó"
+        )
+    return out
+
+
 SPECS = [
     NodeSpec(
         type="report_read",
@@ -819,5 +900,15 @@ SPECS = [
         icon="🌐",
         handler=run_web,
         reaches_outside=True,
+    ),
+    NodeSpec(
+        type="tool",
+        label_vi="Gọi công cụ",
+        label_en="Call a tool",
+        description_vi="Chạy đúng một công cụ với tham số bạn chọn. "
+                       "Không gọi AI, không tốn token.",
+        category="data",
+        icon="⚙",
+        handler=run_tool,
     ),
 ]
