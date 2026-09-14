@@ -143,7 +143,11 @@ export function SectionTitle({
 }
 
 export function HintText({ children }: { children: React.ReactNode }) {
-  return <p className="text-tiny leading-relaxed text-text-tertiary">{children}</p>;
+  // `caption`, not `tiny`. Below caption the scale switches to weight 510 — those
+  // steps are label and badge styles — so a hint set in `tiny` came out small AND
+  // semibold. It is de-emphasised by colour instead, which is what the token is
+  // for, and is now the same size as the field it explains.
+  return <p className="text-caption leading-relaxed text-text-tertiary">{children}</p>;
 }
 
 /** A dated line, in the user's locale. Brains carry ISO strings; printing them raw

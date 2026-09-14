@@ -78,7 +78,7 @@ function Field({
   return (
     <div className="mt-3 first:mt-0">
       <label className="mb-1 block text-caption font-medium text-text-secondary">{label}</label>
-      {hint && <p className="mb-1 text-tiny leading-snug text-text-tertiary">{hint}</p>}
+      {hint && <p className="mb-1 text-caption leading-snug text-text-tertiary">{hint}</p>}
       {children}
     </div>
   );
@@ -111,7 +111,7 @@ function Toggle({
     <div className="flex items-center gap-2 border-t border-[rgb(var(--border-line))] py-2 first:border-t-0">
       <div className="min-w-0 flex-1">
         <b className="block text-caption font-medium">{title}</b>
-        {hint && <span className="mt-px block text-tiny text-text-tertiary">{hint}</span>}
+        {hint && <span className="mt-px block text-caption text-text-tertiary">{hint}</span>}
       </div>
       <button
         type="button"
@@ -147,14 +147,14 @@ function ConditionRows({
         return (
           <div key={i} className="mt-1.5 grid grid-cols-[1.2fr_0.8fr_1fr_28px] gap-1.5 first:mt-0">
             <Input value={c.left} onChange={(e) => set(i, { left: e.target.value })}
-              placeholder="{{available_metrics}}" className="h-8 text-tiny" />
+              placeholder="{{available_metrics}}" className="h-8 text-caption" />
             <Select value={c.op} onChange={(v) => set(i, { op: v as ConditionOp })} options={opOptions(t)} />
             <Input
               value={c.right || ''}
               disabled={unary}
               onChange={(e) => set(i, { right: e.target.value })}
               placeholder={unary ? '-' : t('agentFlows.inspector.value')}
-              className="h-8 text-tiny"
+              className="h-8 text-caption"
             />
             <button
               type="button"
@@ -425,7 +425,7 @@ function NodeForm(props: InspectorProps & { node: FlowNode }) {
                 {(node.choices || []).map((c, i) => (
                   <div key={i} className="flex items-start gap-1.5">
                     <Input
-                      className="w-[38%] font-mono text-tiny"
+                      className="w-[38%] font-mono text-caption"
                       value={c}
                       placeholder={t('agentFlows.inspector.choiceValue')}
                       onChange={(e) => {
@@ -523,7 +523,7 @@ function NodeForm(props: InspectorProps & { node: FlowNode }) {
               } as Partial<FlowNode>)}
             />
             {isAnswerNode && (node.tools || []).length > 0 && (
-              <p className="mt-2 rounded-md border border-warning/25 bg-warning/5 p-2 text-tiny text-warning">
+              <p className="mt-2 rounded-md border border-warning/25 bg-warning/5 p-2 text-caption text-warning">
                 {t('agentFlows.inspector.answerToolsWarning')}
               </p>
             )}
@@ -630,7 +630,7 @@ function NodeForm(props: InspectorProps & { node: FlowNode }) {
               placeholder="statista.com, thinkwithgoogle.com"
             />
           </Field>
-          <p className="mt-2 rounded-md border border-warning/25 bg-warning/5 p-2 text-tiny text-warning">
+          <p className="mt-2 rounded-md border border-warning/25 bg-warning/5 p-2 text-caption text-warning">
             {t('agentFlows.inspector.webGateHint')}
           </p>
         </>
@@ -1056,7 +1056,7 @@ function Advanced({
         <span className="min-w-0">
           <SectionTitle>{title}</SectionTitle>
           {!open && subtitle && (
-            <span className="block text-tiny leading-snug text-text-tertiary">{subtitle}</span>
+            <span className="block text-caption leading-snug text-text-tertiary">{subtitle}</span>
           )}
         </span>
         <span className="ml-2 flex-shrink-0 text-tiny text-text-tertiary">{open ? '−' : '+'}</span>
@@ -1183,7 +1183,7 @@ function ToolPicker({
         />
       </div>
       {needles.length > 0 && (
-        <p className="px-0.5 text-micro text-text-tertiary">
+        <p className="px-0.5 text-caption text-text-tertiary">
           {hitCount === 0
             ? t('agentFlows.toolPicker.searchEmpty')
             : loose
@@ -1239,13 +1239,19 @@ function ToolPicker({
                   </span>
                 )}
                 <button type="button"
-                  className="ml-auto text-tiny text-text-tertiary underline-offset-2 hover:underline"
+                  className="ml-auto text-micro text-text-tertiary underline-offset-2 hover:underline"
                   onClick={() => names.forEach((n) => onToggle(n, !allOn))}>
                   {allOn ? t('agentFlows.toolPicker.clearAll') : t('agentFlows.toolPicker.selectAll')}
                 </button>
               </div>
-              {toolPackPurpose(pack, language) && (
-                <p className="mt-0.5 text-micro leading-snug text-text-tertiary">{toolPackPurpose(pack, language)}</p>
+              {/* ONLY WHILE OPEN. This paragraph tells you how to choose AMONG the
+                  tools inside; it says nothing useful while you are scanning the
+                  list of packs. Rendered for all eight at rest it was most of the
+                  panel's text, which is what forced the type down to 10px in the
+                  first place — and the space it gives back is what pays for prose
+                  at a readable size. */}
+              {open && toolPackPurpose(pack, language) && (
+                <p className="mt-1 text-caption leading-snug text-text-tertiary">{toolPackPurpose(pack, language)}</p>
               )}
             </div>
             )}
@@ -1304,12 +1310,12 @@ function ToolPicker({
                         )}
                       </span>
                       {description && (
-                        <span className="block text-micro leading-snug text-text-tertiary">
+                        <span className="block text-caption leading-snug text-text-tertiary">
                           {description}
                         </span>
                       )}
                       {example && (
-                        <span className="block text-micro leading-snug text-text-tertiary/70">
+                        <span className="block text-caption leading-snug text-text-tertiary/70">
                           {t('agentFlows.toolPicker.example', { example })}
                         </span>
                       )}
@@ -1436,7 +1442,7 @@ function WhatTheAiSees({
         <div className="flex flex-shrink-0 items-start justify-between border-b border-[rgb(var(--border-line))] px-4 py-3">
           <div>
             <h2 className="text-body font-strong">{t('agentFlows.seen.title')}</h2>
-            <p className="text-tiny text-text-tertiary">
+            <p className="text-caption text-text-tertiary">
               {nodeName} · {t('agentFlows.seen.subtitle')}
             </p>
           </div>

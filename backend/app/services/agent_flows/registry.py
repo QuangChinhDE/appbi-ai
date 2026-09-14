@@ -928,25 +928,56 @@ _CONSTRAINT_VI = {
 }
 
 
+#: What an index under each container is called on screen. A flow nests — a
+#: specialist inside a coordinator, a branch inside an IF, a step inside a loop —
+#: and numbering every level "bước #N" produced paths like
+#: "bước #1 · specialists · bước #1 · when", where the two numbers mean different
+#: things.
+_INDEX_NOUN = {
+    "nodes": "bước",
+    "body": "bước con",
+    "specialists": "chuyên gia",
+    "paths": "nhánh",
+    "cases": "trường hợp",
+    "items": "mục",
+    "tools": "công cụ",
+    "knowledge": "nguồn",
+    "conditions": "điều kiện",
+}
+
+#: The union tags pydantic inserts to say which variant it matched. Dropped: an
+#: author reading "bước #1 · agent · max_tool_calls" would reasonably wonder what
+#: the middle word is for.
+_UNION_TAGS = {
+    "agent", "report_read", "knowledge", "web", "set_var", "transform", "stop",
+    "delay", "filter", "if", "switch", "loop", "coordinate",
+}
+
+
 def _field_path(loc: tuple) -> str:
     """`('nodes', 0, 'agent', 'max_tool_calls')` → `bước #1 · max_tool_calls`.
 
-    The union tag (`agent`, `report_read`, …) is dropped: pydantic puts it there to
-    say which variant it tried, and an author reading "bước #1 · agent ·
-    max_tool_calls" would reasonably wonder what the middle word is for.
+    Each index is named by the container it indexes, so a nested path reads as
+    "bước #1 · chuyên gia #1 · when" rather than the same noun three times.
     """
-    parts = [p for p in loc if p not in ("agent", "report_read", "knowledge", "web",
-                                         "set_var", "transform", "stop", "delay",
-                                         "filter", "if", "switch", "loop",
-                                         "coordinate")]
     out: list[str] = []
-    for i, part in enumerate(parts):
-        if part == "nodes" and i + 1 < len(parts) and isinstance(parts[i + 1], int):
-            continue
+    container: str | None = None
+    for part in loc:
         if isinstance(part, int):
-            out.append(f"bước #{part + 1}")
-        else:
-            out.append(str(part))
+            noun = _INDEX_NOUN.get(container or "", "mục")
+            # The container word itself was appended a moment ago; replace it with
+            # the numbered form rather than saying both.
+            if out and out[-1] == container:
+                out[-1] = f"{noun} #{part + 1}"
+            else:
+                out.append(f"{noun} #{part + 1}")
+            continue
+        name = str(part)
+        if name in _UNION_TAGS:
+            container = None
+            continue
+        container = name
+        out.append(name)
     return " · ".join(out)
 
 
@@ -978,8 +1009,15 @@ def _first_message(exc: Exception) -> str:
             kind = str(first.get("type") or "")
             ctx = first.get("ctx") or {}
             if kind == "value_error":
-                # A validator we wrote. Its message is already the sentence.
-                return _drop_pydantic_tail(str(first.get("msg") or ""))[:200]
+                # A validator we wrote. Its message is already the sentence — but
+                # pydantic prefixes `msg` with "Value error, ", which the old string
+                # scanner used to strip and this branch must too. Found by reading
+                # a real refusal in the builder: "Value error, mỗi chuyên gia phải
+                # nói rõ KHI NÀO nên dùng" is our sentence wearing pydantic's hat.
+                msg = str(first.get("msg") or "")
+                if msg.startswith("Value error, "):
+                    msg = msg[len("Value error, "):]
+                return _drop_pydantic_tail(msg)[:200]
             say = _CONSTRAINT_VI.get(kind)
             if say:
                 try:

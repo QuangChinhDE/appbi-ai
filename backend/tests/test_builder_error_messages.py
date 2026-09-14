@@ -106,3 +106,39 @@ def test_a_hand_written_validator_still_speaks_for_itself():
 
     assert "pydantic" not in msg
     assert msg != "Cấu hình không hợp lệ", "the specific message was swallowed"
+
+
+# ── two things a live refusal caught that the first pass did not ────────────
+
+
+def test_our_own_sentences_do_not_arrive_wearing_pydantic_s_prefix():
+    """FOUND BY READING A REAL REFUSAL IN THE BUILDER.
+
+    Pydantic prefixes `errors()[0]["msg"]` with "Value error, " for anything a
+    hand-written validator raises. The old string scanner stripped it; the
+    structured branch that replaced it did not, so a sentence written for authors
+    arrived as "Value error, mỗi chuyên gia phải nói rõ KHI NÀO nên dùng".
+    """
+    msg = _message({"nodes": [], "answer_node": ""})
+
+    assert not msg.startswith("Value error")
+    assert msg == "flow phải có ít nhất một bước"
+
+
+def test_a_nested_path_names_each_level_for_what_it_is():
+    """A flow nests — a specialist inside a coordinator, a step inside a loop — and
+    numbering every level "bước #N" produced "bước #1 · specialists · bước #1 ·
+    when", where the two numbers meant different things."""
+    body = {
+        "nodes": [
+            {"key": "co", "type": "coordinate",
+             "specialists": [{"key": "s1", "name": "A", "body": []}]},
+            {"key": "a", "type": "agent", "prompt": "x"},
+        ],
+        "answer_node": "a",
+    }
+
+    msg = _message(body)
+
+    assert msg == "bước #1 · chuyên gia #1 · when: thiếu giá trị"
+    assert "specialists" not in msg, "the container word is replaced by its count"
