@@ -1,0 +1,122 @@
+name: E2E (Playwright, full stack)
+
+# WHY A SEPARATE WORKFLOW.
+#
+# The contract suite runs in seconds against a SQLite file and is the right gate
+# for every push. This one stands up Postgres, the backend, and a Next.js build,
+# so it is slower and it fails for reasons the contract suite cannot see: a route
+# that moved, a page that throws in the browser, a flow that saves and comes back
+# without its bindings.
+#
+# It is NOT route-mocked. Browser, Next.js, API, database and the Agent Flow
+# runtime are all real; what these tests avoid is spending money on a model, and
+# they do it by exercising deterministic steps rather than by faking the backend.
+
+on:
+  push:
+    paths:
+      - "backend/**"
+      - "frontend/**"
+      - "e2e/**"
+      - ".github/workflows/e2e.yml"
+  pull_request:
+    paths:
+      - "backend/**"
+      - "frontend/**"
+      - "e2e/**"
+      - ".github/workflows/e2e.yml"
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: appbi
+          POSTGRES_PASSWORD: appbi
+          POSTGRES_DB: appbi
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready --health-interval 10s
+          --health-timeout 5s --health-retries 10
+
+    env:
+      DATABASE_URL: "postgresql://appbi:appbi@localhost:5432/appbi"
+      DB_HOST: localhost
+      DB_PORT: "5432"
+      DB_NAME: appbi
+      DB_USER: appbi
+      DB_PASSWORD: appbi
+      DATASOURCE_ENCRYPTION_KEY: ""
+      ENVIRONMENT: test
+      PYTHONPATH: ${{ github.workspace }}/backend
+      E2E_BASE_URL: http://localhost:3000
+      E2E_API_URL: http://localhost:8000
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11", cache: pip }
+      - name: Install backend dependencies
+        working-directory: backend
+        run: pip install -r requirements.txt
+
+      - name: Build the schema
+        working-directory: backend
+        run: alembic upgrade head
+
+      - name: Seed the E2E account
+        working-directory: backend
+        run: python scripts/ci/seed_e2e_user.py
+
+      - name: Start the backend
+        working-directory: backend
+        run: |
+          uvicorn app.main:app --host 0.0.0.0 --port 8000 &
+          for i in $(seq 1 60); do
+            curl -sf http://localhost:8000/health && break
+            sleep 2
+          done
+          curl -sf http://localhost:8000/health
+
+      - uses: actions/setup-node@v4
+        with: { node-version: "20", cache: npm, cache-dependency-path: frontend/package-lock.json }
+
+      - name: Build and start the frontend
+        working-directory: frontend
+        env:
+          NEXT_PUBLIC_API_URL: http://localhost:8000
+        run: |
+          npm ci
+          npm run build
+          npm run start -- --port 3000 &
+          for i in $(seq 1 60); do
+            curl -sf http://localhost:3000/login && break
+            sleep 2
+          done
+          curl -sf http://localhost:3000/login
+
+      - name: Install Playwright
+        working-directory: e2e
+        run: |
+          npm install --no-audit --no-fund
+          npx playwright install --with-deps chromium
+
+      - name: Run the suite
+        working-directory: e2e
+        run: npx playwright test
+
+      # A reviewer must be able to see what broke without reproducing it locally.
+      - name: Upload traces and screenshots
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-artifacts
+          path: |
+            e2e/test-results/
+            e2e/playwright-report/
+          retention-days: 14

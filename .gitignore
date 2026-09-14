@@ -212,7 +212,12 @@ backend/scripts/regression_*.py
 overview-snap.yml
 DA-Test/
 mobile/
-e2e/
+# `e2e/` is NOT ignored wholesale: the Playwright project is tracked code.
+# Its local-only parts (node_modules, .auth, .env, test-results, reports,
+# _*.mjs, shots) are ignored individually further up, and the specs, config
+# and package.json are re-included there. A bare `e2e/` here re-excluded the
+# whole directory AFTER those negations, so the suite could not be committed
+# at all — a later match wins.
 # Quarantined local screenshots/debug images moved out of repo root — rm anytime
 _local-shots/
 # OpenMetadata upstream clone (~382MB) — reference only; the OM stack pulls the
