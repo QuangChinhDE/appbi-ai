@@ -272,6 +272,30 @@ mô tả kiến trúc và vài câu trích ngắn từ tài liệu công khai đ
 
 ---
 
+## 18. Amend sau review — những gì tài liệu này nói chưa đủ
+
+Gap analysis được giữ nguyên làm **biên bản nghiên cứu**; hai tài liệu kia đã sửa. Ba
+chỗ tài liệu này nói đúng nhưng chưa đủ, ghi lại để không ai đọc nhầm:
+
+**§2 (runtime layers).** Câu *"policy thật sự đang rải rác: `data.py` check scope 2 chỗ
++ capability 3 chỗ"* dễ đọc thành "gom hết lên layer là xong". Không phải.
+Gom là để có **một nơi đọc policy và fail sớm**; gate ở registry/data layer là
+**enforcement boundary cuối cùng và không được rời đi**. Một hard invariant xuất hiện
+ở nhiều tầng là đúng; rời khỏi tầng thấp nhất là sai. Xem §3.8 của
+[target architecture](agent-flow-v3-target-architecture.md).
+
+**§7 (Skill).** Câu *"Skill invoke qua cùng Tool Registry"* đúng về **trải nghiệm của
+Agent**, sai nếu hiểu thành `ToolSpec(fn=run_another_flow)`. Skill là một FlowRun có
+child trace, budget inheritance, permission intersection và checkpoint — không phải một
+lời gọi hàm. Đúng là: **unified catalogue, specialized execution**.
+
+**§11 (checkpoint).** Tài liệu này nói checkpoint là gap về **state**. Đọc kỹ executor
+thì nó là gap về **control flow**: `_run_body()` chạy body lồng bằng đệ quy async
+generator, nên continuation hiện nay là Python call stack. Chi phí V3.5 cao hơn mô tả ở
+đây; xem cảnh báo và đường đi rẻ hơn ở migration plan.
+
+---
+
 *Đọc Dify: `api/core/workflow/workflow_entry.py`, `api/core/workflow/node_factory.py`,
 `dify-agent/` (cấu trúc + `docs/dify-agent/index.md` + `user-manual/ask-human-layer/index.md`),
 `LICENSE` — tất cả tại `6afe07f9`. Đọc AppBI: `runtime/executor.py`, `runtime/nodes.py`,

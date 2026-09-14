@@ -3,7 +3,11 @@
 Điều kiện của tài liệu này: **chứng minh không phá gì đang chạy.** Mỗi phase phải
 deploy và test độc lập được.
 
-**Baseline:** `demo @ 82a51b5` · P0 runtime `14c4c38`
+**Baseline:** `demo @ 2e541b7` · P0 runtime `14c4c38`
+
+> **Rev 2** — amend sau review. Ba thay đổi lớn: golden replay chuyển từ byte-for-byte
+> sang **canonical semantic**, fixture phải **tracked trong repo**, và roadmap là
+> **DAG** chứ không phải một hàng.
 
 ---
 
@@ -20,178 +24,219 @@ deploy và test độc lập được.
 | Tool đang đăng ký | 36 |
 | Suite CI đang chạy | 21 |
 
-25 bản flow đã lưu là thứ **không được đổi hành vi**. Đó là con số dùng để kiểm ở mỗi
-phase, không phải con số để trích dẫn.
-
 ---
 
 ## 1. Bốn bất biến của toàn bộ migration
 
-Kiểm ở **cuối mỗi phase**, không phải cuối dự án:
+Kiểm ở **cuối mỗi phase**:
 
 | # | Bất biến | Cách chứng minh |
 |---|---|---|
-| **I1** | P0 vẫn chạy | 5 suite P0 xanh: `test_tool_authorization_metadata`, `test_tool_capability_gates`, `test_tool_argument_contract`, `test_tool_result_ceiling`, `test_report_read_scope` |
-| **I2** | Flow đã lưu không đổi hành vi | **Golden replay** (§2) trên 25 brain version |
-| **I3** | `ToolSpec` cũ vẫn tương thích | 36 tool construct được; field mới đều có default |
+| **I1** | P0 vẫn chạy | 5 suite P0 xanh |
+| **I2** | Flow đã lưu không đổi hành vi | **Canonical replay** (§2) |
+| **I3** | `ToolSpec` cũ vẫn tương thích | 36 tool construct được; field mới có default |
 | **I4** | Bot/Chat không đổi behavior ngoài migration có chủ đích | `test_chat_chart_scope`, `test_agent_flow_golden`, + chạy thật 1 bot + 1 chat |
+| **I5** | **Hard gate không rời tầng dưới** | Xoá `_capability_refusal()` hoặc resource check ở registry ⇒ test đỏ, kể cả khi layer tương ứng đang xanh |
 
 ---
 
-## 2. Golden replay — hạ tầng phải làm TRƯỚC phase 1
+## 2. Golden Replay — canonical, không byte-for-byte
 
-Không có cái này thì "không phá gì" chỉ là lời nói.
+### 2.1 Vì sao đổi
+
+Rev 1 nói "so byte-for-byte, khác một dòng là chưa xong". Hai vấn đề:
+
+**(a) CI sẽ giòn vô lý.** Một run chứa timestamp, duration, run id, DB id, token
+estimate, provider metadata, thứ tự không mang nghĩa. So nguyên văn thì đỏ vì đồng hồ.
+
+**(b) Nguy hiểm hơn: snapshot toàn bộ hành vi hiện tại = đóng băng luôn bug hiện tại.**
+Một behaviour sai hôm nay sẽ trở thành điều kiện nghiệm thu của mọi phase sau.
+
+### 2.2 So cái gì — và không so cái gì
+
+Canonicalize **trước** khi compare.
+
+| SO (có nghĩa) | KHÔNG so (volatile) |
+|---|---|
+| `execution_path` — thứ tự node | timestamps |
+| node status (ok/skipped/reused/error) | duration / latency |
+| tool name + **thứ tự** gọi | run id, DB id |
+| tool arguments **đã normalize** | token estimate |
+| output variables | provider metadata |
+| notice **codes** (không phải text) | generated identifiers |
+| answer **structure** (có answer/citations/figures) | thứ tự không mang nghĩa (sort trước) |
+| **permission decisions** | cache hit/miss |
+| **evidence references** | |
+
+Sau normalize thì so chặt. Khác ⇒ phase chưa xong, và phải **giải thích được khác ở
+đâu vì sao** trước khi sửa (§6).
+
+### 2.3 Fixture phải nằm trong repo
+
+**Lỗ trong Rev 1:** 25 brain version nằm ở **DB local của một máy**. CI ở máy khác
+không có chúng — nên kế hoạch "verify trên 25 flow" không chạy được ở CI.
+
+Tách làm hai:
+
+| | Nguồn | Chạy ở đâu |
+|---|---|---|
+| **Canonical fixture** | JSON commit trong `backend/tests/fixtures/flows/` | **CI, mọi PR** |
+| **Local smoke** | 25 brain trong DB dev | máy dev, trước khi push |
+
+Canonical fixture phải phủ đủ hình dạng, không phải đủ số lượng:
 
 ```
-scripts/agent_flow_replay.py --snapshot   # trước khi đổi
-scripts/agent_flow_replay.py --verify     # sau khi đổi
+agent · tool · branch(if) · switch · loop · coordinate
+knowledge · report_read · bot surface · chat surface
+error path · reuse path · budget exhausted
 ```
 
-Với mỗi trong 25 brain version, chạy flow bằng **provider giả tất định** (đúng seam
-`test_agent_flow_golden` đang dùng — không tốn tiền, không phụ thuộc mạng) và ghi:
+Provider là stub tất định — đúng seam `test_agent_flow_golden` đang dùng: không tốn
+tiền, không phụ thuộc mạng.
+
+### 2.4 Replay ≠ Eval
 
 ```
-execution_path        thứ tự node đã chạy
-node statuses         ok / skipped / reused / error
-tool_log              tool nào được gọi, theo thứ tự
-output variables      giá trị từng biến
-notices               mã notice
-answer shape          có answer / citations / figures không
+Golden Replay   refactor có đổi runtime behaviour không?   stub model, mọi PR
+Agent Eval      Agent còn làm đúng việc không?             model thật, nightly
 ```
 
-`--verify` so byte-for-byte với snapshot. **Khác một dòng là phase đó chưa xong.**
-
-Đây là thứ duy nhất biến "zero behavior change" từ mong muốn thành điều kiện nghiệm thu.
+Hai thứ **không thay nhau**. Replay xanh không có nghĩa agent trả lời đúng; eval xanh
+không có nghĩa refactor không đổi hành vi.
 
 ---
 
-## 3. Phase
+## 3. Roadmap là DAG, không phải một hàng
 
-### V3.0 — Golden replay harness
+```
+                    V3.0 replay harness
+                            │
+                    V3.1 output_schema + risk
+                            │
+              ┌─────────────┼──────────────┐
+              ▼             ▼              ▼
+        V3.2 ToolNode  V3.8 MCP/HTTP   (Eval chạy song song)
+              │
+              ▼
+        V3.7 Skill  ──────── cần V3.1 + V3.2, KHÔNG cần HITL
+
+        V3.3 Runtime layers  ← nhánh độc lập
+              │
+              ▼
+        V3.4 AgentRuntime/Strategy
+
+        V3.5 Checkpoint      ← nhánh độc lập
+              │
+              ▼
+        V3.6 HITL
+```
+
+**Rev 1 xếp Skill sau HITL. Sai** — Skill chỉ phụ thuộc `output_schema` + ToolNode.
+Thứ tự thực thi quyết định bởi **dependency kỹ thuật + giá trị sản phẩm**, hai chuyện
+khác nhau. Nếu Skill có giá trị cao hơn HITL thì làm Skill trước.
+
+Ba nhánh (`ToolNode/Skill`, `Runtime/Agent`, `Checkpoint/HITL`) độc lập nhau — làm song
+song được nếu có người, miễn mỗi nhánh tự verify I1–I5.
+
+---
+
+## 4. Phase
+
+### V3.0 — Replay harness + canonical fixtures
 
 | | |
 |---|---|
-| Đổi gì | Chỉ thêm script + snapshot, **không đụng runtime** |
+| Đổi gì | Script + fixture JSON tracked. **Không đụng runtime** |
 | Rủi ro | Không |
-| Nghiệm thu | `--verify` xanh trên 25 brain ngay sau khi snapshot |
-| Deploy độc lập | Có — không có gì để deploy |
+| Nghiệm thu | `--verify` xanh trên fixture ngay sau snapshot; chạy được trên CI runner sạch |
+| Rollback | Xoá script |
 
-### V3.1 — `output_schema` (contract only)
+### V3.1 — `output_schema` + `risk` (contract only)
 
 | | |
 |---|---|
-| Đổi gì | `ToolSpec.output_schema` (default `None`), `risk` (default `"none"`), khai cho tool có node tiêu thụ tất định |
-| **Không** đổi | `returns` giữ nguyên. Không handler nào đọc `output_schema` ở phase này |
-| Rủi ro | Rất thấp — field mới có default, không ai đọc |
-| Nghiệm thu | I1–I4 + test: mọi tool có `output_schema` thì schema hợp lệ và khớp kết quả thật |
-| Deploy độc lập | Có |
+| Đổi gì | `output_schema` (default `None`), `risk` (default **`unknown`**), migrate 36 tool sang `risk="read_only"` |
+| **Không** đổi | `returns` giữ nguyên. Chưa handler nào đọc `output_schema` |
+| Vì sao migrate an toàn | Kiểm rồi: không tool nào ghi DB; 5 tool external đều là đọc web |
+| Nghiệm thu | I1–I5 + `output_schema` khớp `result.data` thật + tool mới không khai `risk` ⇒ CI đỏ |
 | Rollback | Xoá field |
 
 ### V3.2 — Generic `ToolNode`
 
 | | |
 |---|---|
-| Đổi gì | Node type thứ 14. `NodeSpec` mới + handler + inspector + i18n |
-| **Không** đổi | Không node nào hiện có thay đổi. Flow cũ không có ToolNode |
-| Rủi ro | Thấp về regression (thêm mới), **trung bình về security** — phải chứng minh không bypass gate |
-| Nghiệm thu | I1–I4 + **bộ test bypass**: ToolNode gọi tool ngoài scope → refuse; `read_rows=False` + tool `raw_rows` → refuse; vượt `max_result_tokens` → trim/refuse |
-| Deploy độc lập | Có |
-| Rollback | Gỡ khỏi `NodeSpec` registry → biến mất khỏi palette; flow đã dùng sẽ fail loud (`chưa hỗ trợ loại bước`) — chấp nhận được vì chưa ai publish |
+| Đổi gì | Node type thứ 14, inputs **typed** (`{source, ref/value}`) |
+| Rủi ro | Thấp về regression, **trung bình về security** |
+| Nghiệm thu | I1–I5 + **bộ test bypass**: tool ngoài scope → refuse; `read_rows=False` + `raw_rows` → refuse; vượt ceiling → trim/refuse; `risk=unknown` → refuse |
+| Rollback | Gỡ khỏi `NodeSpec` registry |
 
 ### V3.3 — Runtime Layer Stack (trích, không thêm)
 
 | | |
 |---|---|
-| Đổi gì | Trích wrapper trong `_run_node()` thành `RuntimeLayer` với `before_node` / `after_node`. Layer đầu tiên **đóng gói đúng code đang chạy** |
-| **Không** đổi | Không thêm concern mới. Không di chuyển check ở `data.py`/`agent.py` trong phase này |
-| Rủi ro | **Cao nhất trong V3** — đụng đường chạy của mọi node |
-| Nghiệm thu | I1–I4, và I2 là **bắt buộc byte-for-byte**. Nếu golden replay lệch một dòng thì revert, không "sửa cho khớp" |
-| Deploy độc lập | Có |
-| Rollback | Revert commit — không có migration DB |
+| Đổi gì | `_run_node()` → `RuntimeLayer.invoke(node, ctx, call_next)`. Layer đầu **đóng gói đúng code đang chạy** |
+| **Không** đổi | Không thêm concern. **Không xoá check nào ở `data.py`/`agent.py`/registry** — I5 |
+| Rủi ro | **Cao nhất** — đụng đường chạy mọi node |
+| Nghiệm thu | I1–I5; I2 canonical replay là điều kiện duy nhất. Lệch ⇒ **revert**, không "sửa cho khớp" |
+| Rollback | Revert commit, không có migration DB |
 
-Chỉ **sau khi** V3.3 ổn định mới di chuyển từng check rải rác vào layer, **mỗi PR một
-check**, mỗi lần verify lại golden.
+Sau khi ổn định mới di chuyển từng check vào layer — **mỗi PR một check, gate dưới giữ
+nguyên**, mỗi lần verify lại replay.
 
 ### V3.4 — `AgentRuntime` + `AgentStrategy`
 
 | | |
 |---|---|
-| Đổi gì | Tách vòng reasoning khỏi `handlers/agent.py` |
-| Strategy đầu | `tool_calling` = **code hiện tại chuyển chỗ, không sửa logic** |
-| Rủi ro | Cao — agent là node dùng nhiều nhất |
-| Nghiệm thu | I2 byte-for-byte là điều kiện **duy nhất** để phase này được coi là xong. Zero behavior change |
-| Deploy độc lập | Có |
+| Đổi gì | Tách vòng reasoning. Runtime sở hữu provider/tool/budget/retry/trace; Strategy chỉ quyết định |
+| Strategy đầu | `tool_calling` = code hiện tại **chuyển chỗ, không sửa logic** |
+| Nghiệm thu | I2 canonical replay là điều kiện **duy nhất**. Zero behavior change |
 | Rollback | Revert |
 
-Strategy thứ hai (`react`, …) là **phase riêng**, không đi cùng.
+Strategy thứ hai là phase riêng.
 
-### V3.5 — `RunCheckpoint`
+### V3.5 — `FlowRun` / `Attempt` / `RunCheckpoint`
 
 | | |
 |---|---|
-| Đổi gì | Migration: cột lifecycle trên `agent_flow_runs` + bảng checkpoint. `status` hiện là `ok/error` → thêm giá trị mới, **không đổi nghĩa giá trị cũ** |
-| Rủi ro | Trung bình — có migration DB, 291 run cũ phải đọc được nguyên vẹn |
-| Nghiệm thu | I1–I4 + Runs tab render đúng 291 run cũ + migration có `downgrade()` chạy được |
-| Deploy độc lập | Có, nhưng **migration phải forward-compatible**: backend cũ đọc được row mới |
-| Rollback | `alembic downgrade` — phải test trước khi merge, không phải sau |
+| **Cảnh báo chi phí** | `_run_body()` chạy body lồng bằng **đệ quy async generator** — continuation hiện là Python call stack, không serialize được. Đây là bài toán **control flow**, không phải schema DB |
+| Đường rẻ cần thẩm định trước | Resume = chạy lại từ đầu, node đã xong tái dùng output đã ghi (dùng `run_policy`/`_reuse()` đã có test), tới khi gặp node đang chờ |
+| Đổi gì | Migration: `Attempt` + `RunCheckpoint`; `FlowRun.status` thêm giá trị, **không đổi nghĩa giá trị cũ** |
+| Nghiệm thu | I1–I5 + Runs tab render đúng 291 run cũ + `downgrade()` chạy được + checkpoint round-trip qua loop lồng if |
+| Rollback | `alembic downgrade` — test **trước** khi merge |
+
+**Phase này bắt đầu bằng một spike đo chi phí, không bằng migration.**
 
 ### V3.6 — Human Input / Approval
 
 | | |
 |---|---|
-| Phụ thuộc | **V3.5.** Không bắt đầu trước |
-| Đổi gì | Tool `ask_human`; runtime chặn tool `risk != none`; endpoint resume |
-| Rủi ro | Cao — bề mặt mới nhận input từ người |
-| Nghiệm thu | I1–I4 + **sanitize test** (nội dung model sinh render trong markdown builder/chat) + **permission re-check lúc resume** (quyền thu hồi giữa chừng → run fail có lý do, không chạy tiếp) |
-| Deploy độc lập | Có |
+| Phụ thuộc | V3.5 |
+| Đổi gì | Tool `ask_human`; runtime chặn tool `risk` ∈ {side_effect, destructive}; endpoint resume tạo Attempt mới |
+| Nghiệm thu | I1–I5 + **sanitize test** (nội dung model sinh render trong markdown) + **permission re-check lúc resume** (quyền thu hồi giữa chừng ⇒ fail có lý do) + UI hiện **một** FlowRun không phải nhiều run |
 
 ### V3.7 — `Skill` / Subflow
 
 | | |
 |---|---|
-| Phụ thuộc | V3.1 (`output_schema`) + V3.2 (ToolNode) |
+| Phụ thuộc | V3.1 + V3.2 (**không** cần HITL) |
 | Rủi ro | **Cao nhất về security** |
-| Nghiệm thu trước feature | `max_depth`, cycle detection (chặn lúc đăng ký), budget inheritance, **permission intersection**, trace parent/child — mỗi cái một test, viết **trước** khi skill chạy được |
-| Deploy độc lập | Có |
+| Nghiệm thu **trước** feature | `max_depth`, cycle detection (chặn lúc đăng ký), budget inheritance, **permission intersection**, trace parent/child — mỗi cái một test |
+| Kiến trúc | `SkillCapability` + `SkillInvoker`, **không** nhét vào `ToolSpec.fn` |
 
-### V3.8 — MCP / HTTP vào cùng registry
+### V3.8 — MCP / HTTP vào cùng catalogue
 
 | | |
 |---|---|
 | Phụ thuộc | V3.1 |
-| Nguyên tắc | Một registry. Không hệ song song |
-| Nghiệm thu | Tool ngoài đi qua **đúng** `_capability_refusal()` và resource scope như tool native |
+| Nguyên tắc | Một **catalogue**, executor riêng. Không hệ song song |
+| Nghiệm thu | Tool ngoài đi qua **đúng** hard gate như tool native |
 
 ### Song song — Eval harness
 
-Không phải phase; chạy từ V3.1 và không chặn phase nào.
-
-15–20 câu, chấm bằng tiêu chí **tất định trước**: scope có bị vi phạm không · mọi số có
-trace được không · có từ chối khi nên từ chối không. Mở rộng sau khi ba tiêu chí đó ổn.
+Từ V3.1, không chặn phase nào. 15–20 câu, chấm bằng tiêu chí **tất định trước**: scope
+có bị vi phạm không · số có trace được không · có từ chối khi nên từ chối không.
 
 **Từ V3: bug production thành eval case, không chỉ thành pytest.**
-
----
-
-## 4. Thứ tự và phụ thuộc
-
-```
-V3.0 golden replay        ← trước tất cả
-   │
-V3.1 output_schema + risk
-   ├──────────────┬─────────────┐
-V3.2 ToolNode   V3.8 MCP/HTTP  (eval chạy song song từ đây)
-   │
-V3.3 Runtime layers
-   │
-V3.4 AgentStrategy
-   │
-V3.5 RunCheckpoint
-   │
-V3.6 HITL
-   │
-V3.7 Skill   ← cần cả V3.1 và V3.2
-```
 
 ---
 
@@ -199,26 +244,27 @@ V3.7 Skill   ← cần cả V3.1 và V3.2
 
 | Thứ | Cam kết |
 |---|---|
-| 25 brain version đã lưu | Chạy ra **cùng** execution_path, tool_log, output vars, notices |
+| 25 brain version | Cùng canonical execution: path, tool order, output vars, notice codes, permission decisions |
 | 2 binding | Không đổi schema, không đổi nghĩa |
 | 291 run cũ | Runs tab render nguyên vẹn sau V3.5 |
 | 10 chat thread | Không đổi |
-| 36 `ToolSpec` | Construct được không sửa; field mới đều có default |
+| 36 `ToolSpec` | Construct được không sửa; field mới có default |
 | 13 node type | Không type nào đổi hành vi |
 | 21 CI suite | Xanh ở mọi phase |
+| **Hard gate ở registry** | **Còn nguyên sau mọi phase** |
 
-**Nếu một phase buộc phải phá một dòng trong bảng này → phase đó thiết kế sai.**
+**Phase nào buộc phải phá một dòng ⇒ phase đó thiết kế sai.**
 
 ---
 
-## 6. Dừng lại khi nào
+## 6. Dừng lại và báo cáo khi
 
-Dừng và báo cáo, không tự đi tiếp, nếu:
-
-- Golden replay lệch mà **không giải thích được** lệch ở đâu và vì sao
-- Một phase cần đổi `Flow` contract theo kiểu flow cũ không validate
+- Canonical replay lệch mà **không giải thích được** lệch ở đâu và vì sao
+- Một phase cần đổi `Flow` contract kiểu flow cũ không validate
 - Một phase cần bỏ một dòng trong §16 của [gap analysis](agent-flow-v3-dify-gap-analysis.md)
+- Một phase đề nghị **xoá hard gate ở tầng dưới** vì "layer đã lo rồi"
 - Permission intersection của Skill chưa có test mà feature đã chạy được
+- Spike checkpoint cho thấy resume cần viết lại executor thành state machine
 
 ---
 
@@ -229,5 +275,5 @@ Agent inner layers · OTEL · tách microservice · Planner/Multi-Agent.
 
 ---
 
-*Số liệu §0 đếm trực tiếp trên DB local qua `information_schema` tại thời điểm viết.
-Không dùng làm source-of-truth cho test — test phải derive từ registry và từ DB lúc chạy.*
+*Số liệu §0 đếm trực tiếp qua `information_schema`. Không dùng làm source-of-truth cho
+test — test derive từ registry và từ canonical fixture tracked trong repo.*
