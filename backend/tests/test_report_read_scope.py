@@ -371,3 +371,80 @@ def test_a_listing_without_strength_is_trusted(selector):
 
     assert why == ""
     assert ordered == [686]
+
+
+# ── the status the REAL tool computes, not the one a fixture hands it ────────
+
+
+class _CatalogueCtx:
+    """The smallest context `list_charts` reads. No warehouse: it is metadata-only."""
+
+    dashboard = None
+    read_rows = True
+    web_search = True
+    allowed_chart_ids = {41, 42}
+    knowledge_scope: dict = {}
+    max_result_tokens = 4000
+    max_rows_per_call = 50
+    public_filters: list = []
+    pages: list = []
+    chart_meta = {
+        41: {"name": "Doanh thu theo danh mục", "chart_type": "BAR",
+             "measures": [{"field": "revenue"}],
+             "dimensions": [{"field": "category"}]},
+        42: {"name": "Tỷ lệ giao đúng hẹn", "chart_type": "LINE",
+             "measures": [{"field": "on_time_rate"}],
+             "dimensions": [{"field": "month"}]},
+    }
+
+
+def _selection(query: str) -> dict:
+    from app.services.agent_flows.tools.registry import execute
+
+    out = execute(_CatalogueCtx(), "list_charts", {"query": query}, use_cache=False)
+    assert out["ok"], out
+    return (out.get("data") or {}).get("selection") or {}
+
+
+def test_the_real_tool_reports_none_when_the_question_matches_nothing():
+    """FOUND BY A MUTATION THAT ESCAPED.
+
+    Every other test in this file hands `_charts_for_question` a fixture that
+    already contains a `selection` block, so they check the CALLER's rule and never
+    the code that decides `status`. Flipping `list_charts` to report `matched` on a
+    miss changed nothing and the suite stayed green — the fallback-is-not-a-match
+    invariant was guarded on one side only.
+    """
+    sel = _selection("cong thuc nau pho bo gia truyen")
+
+    assert sel.get("status") == "none", sel
+    assert sel.get("fallback_used") is True
+
+
+def test_the_real_tool_reports_matched_when_the_question_names_a_chart():
+    """The control. Without it the test above would pass on a tool that reports
+    `none` for everything."""
+    sel = _selection("doanh thu theo danh mục")
+
+    assert sel.get("status") == "matched", sel
+    assert sel.get("fallback_used") is False
+    assert 41 in (sel.get("selected_ids") or [])
+
+
+def test_the_real_tool_reports_ambiguous_on_a_weak_overlap():
+    """One shared token out of many is the shape that produced the "thời tiết sao
+    Hỏa" incident: enough for the ranker, not enough to act on."""
+    sel = _selection("bao nhieu thang nua thi xong du an xay dung nha may")
+
+    assert sel.get("status") in ("ambiguous", "none"), sel
+    assert sel.get("fallback_used") is True
+
+
+def test_an_explicit_listing_with_no_query_is_not_a_fallback():
+    from app.services.agent_flows.tools.registry import execute
+
+    out = execute(_CatalogueCtx(), "list_charts", {}, use_cache=False)
+    sel = (out.get("data") or {}).get("selection") or {}
+
+    assert sel.get("mode") == "explicit"
+    assert sel.get("fallback_used") is False
