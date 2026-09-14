@@ -200,7 +200,28 @@ def resolve_field_label(column: str, label_by_field: dict) -> str | None:
 
 
 class ToolError(Exception):
-    """User-facing tool error. The message is shown to the LLM."""
+    """User-facing tool error. The message is shown to the LLM.
+
+    `code` IS THE POINT OF THIS CLASS NOW.
+
+    The message is written for a reader; the code is what a caller branches on.
+    Until this existed, `result.classify()` inferred the code from stable English
+    fragments — and `assert_chart_in_scope` emits "is not part of this dashboard",
+    which matched none of them and fell through to the default `query_failed`.
+
+    That is not a cosmetic mislabel. `query_failed`'s documented recovery is
+    "retry the query", so a model refused a chart it may not read was told to try
+    again, and never saw the `chart_out_of_scope` recovery hint that would have
+    sent it to `search_business_assets`. Measured in a live run: seven consecutive
+    refusals, the whole tool budget, and a confident wrong answer.
+
+    A refusal that knows its own code should never have to be recognised by its
+    prose.
+    """
+
+    def __init__(self, message: str = "", *, code: str = "") -> None:
+        super().__init__(message)
+        self.code = code
 
 
 @dataclass
@@ -421,7 +442,10 @@ class ToolContext:
 
     def assert_chart_in_scope(self, chart_id: int) -> None:
         if chart_id not in self.allowed_chart_ids:
-            raise ToolError(f"chart_id {chart_id} is not part of this dashboard.")
+            raise ToolError(
+                f"chart_id {chart_id} is not part of this dashboard.",
+                code="chart_out_of_scope",
+            )
 
 
 def fold_column(name: Any) -> str:

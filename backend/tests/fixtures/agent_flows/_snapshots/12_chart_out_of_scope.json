@@ -27,7 +27,7 @@
   },
   "tool_calls": [
     {
-      "refused": "query_failed",
+      "refused": "chart_out_of_scope",
       "step": "answer",
       "tool": "get_chart_summary"
     }

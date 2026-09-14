@@ -180,6 +180,7 @@ backend/scripts/regression_*.py
 !backend/tests/test_i5_hard_gate_stays_lowest.py
 !backend/tests/test_tool_output_contract.py
 !backend/tests/test_tool_node.py
+!backend/tests/test_error_taxonomy_and_empty.py
 !backend/tests/replay_harness.py
 !backend/tests/fixtures/
 !backend/tests/fixtures/**

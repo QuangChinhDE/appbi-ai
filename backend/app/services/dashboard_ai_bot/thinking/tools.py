@@ -378,7 +378,7 @@ def tool_get_chart_summary(ctx: ToolContext, args: dict) -> dict:
     try:
         ctx.assert_chart_in_scope(chart_id)
     except ToolError as exc:
-        return _err(str(exc))
+        return _err(str(exc), code=getattr(exc, "code", "") or None)
 
     # Phase 15.72 — cross-turn LRU. Turn-2 with the same dashboard +
     # filters lands on cached pack instantly, avoiding the live SQL +
@@ -489,7 +489,7 @@ def tool_get_chart_data(ctx: ToolContext, args: dict) -> dict:
     try:
         ctx.assert_chart_in_scope(chart_id)
     except ToolError as exc:
-        return _err(str(exc))
+        return _err(str(exc), code=getattr(exc, "code", "") or None)
 
     # The run's ceiling, not this module's. A binding that grants more rows is
     # honoured; one that grants none falls back to the historical default.
@@ -632,7 +632,7 @@ def tool_compare_segments(ctx: ToolContext, args: dict) -> dict:
     try:
         ctx.assert_chart_in_scope(chart_id)
     except ToolError as exc:
-        return _err(str(exc))
+        return _err(str(exc), code=getattr(exc, "code", "") or None)
 
     try:
         data = _fetch_chart_data(ctx, chart_id)
@@ -916,7 +916,7 @@ def tool_benchmark_compare(ctx: ToolContext, args: dict) -> dict:
     try:
         ctx.assert_chart_in_scope(chart_id)
     except ToolError as exc:
-        return _err(str(exc))
+        return _err(str(exc), code=getattr(exc, "code", "") or None)
 
     # Deterministic report-side anchor.
     #
@@ -1654,7 +1654,7 @@ def execute_tool(ctx: ToolContext, name: str, args: dict | None) -> dict:
     try:
         return fn(ctx, args or {})
     except ToolError as exc:
-        return _err(str(exc))
+        return _err(str(exc), code=getattr(exc, "code", "") or None)
     except Exception as exc:
         # Don't leak stack traces to the LLM
         return _err(f"tool '{name}' raised {type(exc).__name__}: {str(exc)[:200]}")

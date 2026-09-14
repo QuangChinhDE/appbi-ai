@@ -262,27 +262,33 @@ def test_canonicalising_twice_gives_the_same_thing():
 # ── the known defect this phase found and deliberately did not fix ──────────
 
 
-def test_the_chart_scope_taxonomy_defect_is_recorded_not_hidden():
-    """FOUND WHILE BUILDING THE HARNESS, AND LEFT IN ON PURPOSE.
+def test_the_chart_scope_taxonomy_defect_is_fixed_and_stays_fixed():
+    """FOUND BY BUILDING THE HARNESS, FIXED BY USING IT.
 
-    `assert_chart_in_scope` refuses a chart outside the binding correctly, but
-    `result.classify()` maps its message to `query_failed` — because `_CODE_HINTS`
-    matches "not in scope" while the guard emits "is not part of this dashboard".
-    A model reading `query_failed` is told to retry a call that can never succeed,
-    and never sees the `chart_out_of_scope` recovery hint.
+    `assert_chart_in_scope` refused an out-of-binding chart correctly while
+    `result.classify()` mapped its message to `query_failed` — the guard emits
+    "is not part of this dashboard" and `_CODE_HINTS` matched "not in scope". A
+    model reading `query_failed` is told to retry a call that can never succeed and
+    never sees the `chart_out_of_scope` recovery hint.
 
-    V3.0's contract is that it changes no runtime behaviour, so the snapshot
-    records today's answer. This test exists so the wrong value is NAMED rather
-    than silently frozen — and when the taxonomy is fixed, the replay diff will
-    show exactly this one field moving and nothing else.
+    V3.0 recorded it rather than fixing it, so the baseline stayed a true "before".
+    The fix then produced exactly the diff the harness was built to produce:
+
+        tool_calls[0].refused: 'query_failed' -> 'chart_out_of_scope'
+
+    One field, in one fixture, and nothing else in sixteen. That is the harness
+    doing its job, and this test is what keeps the field where it landed.
     """
     fixture = next(f for f in FIXTURES if f["name"] == "12_chart_out_of_scope")
 
-    assert fixture.get("known_defect"), "the defect label was removed"
+    assert "known_defect" not in fixture, "the defect label outlived the defect"
+    assert fixture.get("fixed_defect"), "the record of what was fixed was removed"
+
     snap = H.read_snapshot(fixture["name"])
     assert snap is not None
     refusals = [c.get("refused") for c in snap["tool_calls"] if c.get("refused")]
-    assert "query_failed" in refusals, (
-        "the taxonomy defect appears to be fixed — good. Update this test and the "
-        "snapshot together, and say so in the commit."
+
+    assert "chart_out_of_scope" in refusals, refusals
+    assert "query_failed" not in refusals, (
+        "the scope refusal is being classified as a retryable query failure again"
     )

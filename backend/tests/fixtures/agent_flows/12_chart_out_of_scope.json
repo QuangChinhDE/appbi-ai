@@ -2,8 +2,14 @@
   "covers": [
     "resource scope",
     "chart outside binding",
-    "KNOWN DEFECT: taxonomy reports query_failed"
+    "taxonomy: chart_out_of_scope"
   ],
+  "fixed_defect": {
+    "fix": "ToolError carries `code`; assert_chart_in_scope raises it with chart_out_of_scope; 16 catch sites forward it; normalise() attaches the recovery hint for a body that already knows its code",
+    "replay_diff": "tool_calls[0].refused: query_failed -> chart_out_of_scope (one field, nothing else)",
+    "was": "assert_chart_in_scope refused correctly but result.classify() mapped its message to query_failed, because _CODE_HINTS matched 'not in scope' while the guard emits 'is not part of this dashboard'",
+    "why_it_mattered": "query_failed is documented retryable, so a model refused a chart it may never read was told to try again and never saw the chart_out_of_scope recovery hint"
+  },
   "flow": {
     "answer_node": "answer",
     "nodes": [
@@ -19,12 +25,6 @@
         "type": "agent"
       }
     ]
-  },
-  "known_defect": {
-    "cause": "_CODE_HINTS matches 'not in scope' and 'khong thuoc'; the guard emits 'is not part of this dashboard.' which matches nothing and falls through to the default",
-    "status": "snapshotted as-is on purpose. V3.0 must not change behaviour; this is the first item for the error-taxonomy fix, and the replay harness will prove that fix changes exactly this and nothing else",
-    "what": "assert_chart_in_scope refuses correctly, but result.classify() maps its message to query_failed instead of chart_out_of_scope",
-    "why_it_matters": "query_failed's documented recovery is 'retry the query', so a model retries a call that can never succeed, and the chart_out_of_scope recovery hint (search_business_assets / resolve_chart_candidates) never reaches it"
   },
   "name": "12_chart_out_of_scope",
   "provider": {
