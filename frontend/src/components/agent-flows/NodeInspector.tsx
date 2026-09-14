@@ -182,6 +182,69 @@ function ConditionRows({
   );
 }
 
+/** A bounded number box that never emits a value outside its own bounds.
+ *
+ *  WHAT IT REPLACES, AND WHY IT IS A COMPONENT RATHER THAN EIGHT FIXES.
+ *
+ *  Every number field here was `value={x ?? 8}` with
+ *  `onChange={(e) => set({ x: Number(e.target.value) })}`. `Number('')` is `0`, so
+ *  the instant somebody selected the contents to type a new number the model
+ *  received 0 — below every `min={1}` on this screen — and the flow went invalid
+ *  mid-keystroke. The server said so, correctly, and the builder printed the
+ *  refusal in its title bar. Eight boxes, one bug, so one component.
+ *
+ *  The text is held locally while it is being edited, which is what lets the box
+ *  be empty without the model being wrong. Only a parse that lands inside
+ *  [min, max] is committed; leaving the box snaps it back to the value that is
+ *  actually in the flow, so what is on screen and what will be saved cannot
+ *  disagree once focus moves on.
+ */
+function NumberField({
+  value, min, max, step, onCommit, className,
+}: {
+  value: number;
+  min: number;
+  max: number;
+  step?: string;
+  onCommit: (n: number) => void;
+  className?: string;
+}) {
+  const [text, setText] = React.useState(String(value));
+  const [editing, setEditing] = React.useState(false);
+
+  // Someone else changed it (undo, loading another step) — follow, unless the
+  // author is mid-keystroke in this very box.
+  React.useEffect(() => { if (!editing) setText(String(value)); }, [value, editing]);
+
+  return (
+    <Input
+      type="number"
+      min={min}
+      max={max}
+      step={step}
+      className={className}
+      value={text}
+      onFocus={() => setEditing(true)}
+      onChange={(e) => {
+        const next = e.target.value;
+        setText(next);
+        if (next.trim() === '') return;        // mid-edit, not a value yet
+        const n = Number(next);
+        if (Number.isFinite(n) && n >= min && n <= max) onCommit(n);
+      }}
+      onBlur={() => {
+        setEditing(false);
+        const n = Number(text);
+        const ok = text.trim() !== '' && Number.isFinite(n);
+        const clamped = ok ? Math.min(max, Math.max(min, n)) : value;
+        setText(String(clamped));
+        if (clamped !== value) onCommit(clamped);
+      }}
+    />
+  );
+}
+
+
 export interface InspectorProps {
   node: FlowNode | null;
   /** Set when the selection is a branch lane rather than a node. */
@@ -425,8 +488,8 @@ function NodeForm(props: InspectorProps & { node: FlowNode }) {
             title={t('agentFlows.inspector.maxToolCalls')}
             subtitle={t('agentFlows.adv.limitsSubtitle', { n: String(node.max_tool_calls ?? 8) })}
           >
-            <Input type="number" min={1} max={MAX_TOOL_CALLS} value={node.max_tool_calls ?? 8}
-              onChange={(e) => set({ max_tool_calls: Number(e.target.value) } as Partial<FlowNode>)} />
+            <NumberField min={1} max={MAX_TOOL_CALLS} value={node.max_tool_calls ?? 8}
+              onCommit={(n) => set({ max_tool_calls: n } as Partial<FlowNode>)} />
           </Advanced>
           {/* PUT IT WHERE THE PROMPT IS, not in a menu. The question this answers
               — "will this step see what I think it sees" — is the one an author
@@ -521,8 +584,8 @@ function NodeForm(props: InspectorProps & { node: FlowNode }) {
             </div>
           </Field>
           <Field label={t('agentFlows.inspector.maxRows')}>
-            <Input type="number" min={1} max={5000} value={node.max_rows ?? 200}
-              onChange={(e) => set({ max_rows: Number(e.target.value) } as Partial<FlowNode>)} />
+            <NumberField min={1} max={5000} value={node.max_rows ?? 200}
+              onCommit={(n) => set({ max_rows: n } as Partial<FlowNode>)} />
           </Field>
           <HintText>
             {t('agentFlows.inspector.reportReadHint')}
@@ -537,8 +600,8 @@ function NodeForm(props: InspectorProps & { node: FlowNode }) {
               onChange={(e) => set({ query: e.target.value } as Partial<FlowNode>)} />
           </Field>
           <Field label={t('agentFlows.inspector.topK')}>
-            <Input type="number" min={1} max={20} value={node.top_k ?? 5}
-              onChange={(e) => set({ top_k: Number(e.target.value) } as Partial<FlowNode>)} />
+            <NumberField min={1} max={20} value={node.top_k ?? 5}
+              onCommit={(n) => set({ top_k: n } as Partial<FlowNode>)} />
           </Field>
           {/* Attaching nothing is a real choice — it means "whatever this report is
               entitled to". The control sits under the query because an author picks
@@ -635,10 +698,10 @@ function NodeForm(props: InspectorProps & { node: FlowNode }) {
             label={t('agentFlows.inspector.maxSpecialists')}
             hint={t('agentFlows.inspector.maxSpecialistsHint')}
           >
-            <Input
-              type="number" min={1} max={8}
+            <NumberField
+              min={1} max={8}
               value={node.max_specialists ?? 3}
-              onChange={(e) => set({ max_specialists: Number(e.target.value) } as Partial<FlowNode>)}
+              onCommit={(n) => set({ max_specialists: n } as Partial<FlowNode>)}
             />
           </Field>
 
@@ -735,8 +798,8 @@ function NodeForm(props: InspectorProps & { node: FlowNode }) {
             label={t('agentFlows.inspector.maxIterations')}
             hint={t('agentFlows.inspector.maxIterationsHint')}
           >
-            <Input type="number" min={1} max={MAX_LOOP_ITERATIONS} value={node.max_iterations ?? 10}
-              onChange={(e) => set({ max_iterations: Number(e.target.value) } as Partial<FlowNode>)} />
+            <NumberField min={1} max={MAX_LOOP_ITERATIONS} value={node.max_iterations ?? 10}
+              onCommit={(n) => set({ max_iterations: n } as Partial<FlowNode>)} />
           </Field>
           <Field label={t('agentFlows.inspector.collectInto')}>
             <Input value={node.collect_into || ''}
@@ -829,8 +892,8 @@ function NodeForm(props: InspectorProps & { node: FlowNode }) {
             label={t('agentFlows.inspector.delaySeconds')}
             hint={t('agentFlows.inspector.delayHint')}
           >
-            <Input type="number" min={0} max={30} value={node.seconds ?? 1}
-              onChange={(e) => set({ seconds: Number(e.target.value) } as Partial<FlowNode>)} />
+            <NumberField min={0} max={30} value={node.seconds ?? 1}
+              onCommit={(n) => set({ seconds: n } as Partial<FlowNode>)} />
           </Field>
         </>
       )}
@@ -892,10 +955,10 @@ function NodeForm(props: InspectorProps & { node: FlowNode }) {
         </div>
         {node.retry && (
           <div className="mt-1.5 grid grid-cols-2 gap-1.5">
-            <Input type="number" min={1} max={5} value={node.retry.max_attempts}
-              onChange={(e) => set({ retry: { ...node.retry!, max_attempts: Number(e.target.value) } })} />
-            <Input type="number" min={0} max={30} step="0.5" value={node.retry.backoff_seconds}
-              onChange={(e) => set({ retry: { ...node.retry!, backoff_seconds: Number(e.target.value) } })} />
+            <NumberField min={1} max={5} value={node.retry.max_attempts}
+              onCommit={(n) => set({ retry: { ...node.retry!, max_attempts: n } })} />
+            <NumberField min={0} max={30} step="0.5" value={node.retry.backoff_seconds}
+              onCommit={(n) => set({ retry: { ...node.retry!, backoff_seconds: n } })} />
           </div>
         )}
       </div>
@@ -1116,11 +1179,11 @@ function ToolPicker({
           onChange={(e) => setQuery(e.target.value)}
           placeholder={t('agentFlows.toolPicker.searchPlaceholder')}
           aria-label={t('agentFlows.toolPicker.searchLabel')}
-          className="w-full rounded-md border border-[rgb(var(--border-line))] bg-surface px-2 py-1.5 text-tiny outline-none focus:border-accent focus:ring-1 focus:ring-accent/30"
+          className="w-full rounded-md border border-[rgb(var(--border-line))] bg-surface px-2 py-1.5 text-caption outline-none focus:border-accent focus:ring-1 focus:ring-accent/30"
         />
       </div>
       {needles.length > 0 && (
-        <p className="px-0.5 text-tiny text-text-tertiary">
+        <p className="px-0.5 text-micro text-text-tertiary">
           {hitCount === 0
             ? t('agentFlows.toolPicker.searchEmpty')
             : loose
@@ -1162,7 +1225,7 @@ function ToolPicker({
                   <span className="w-2 flex-shrink-0 text-tiny text-text-tertiary">
                     {open ? '−' : '+'}
                   </span>
-                  <b className="text-tiny font-strong">{toolPackLabel(pack, language)}</b>
+                  <b className="text-caption font-strong">{toolPackLabel(pack, language)}</b>
                 </button>
                 {onCount > 0 && (
                   <span className="rounded bg-accent/10 px-1 text-tiny text-accent">
@@ -1182,7 +1245,7 @@ function ToolPicker({
                 </button>
               </div>
               {toolPackPurpose(pack, language) && (
-                <p className="mt-0.5 text-tiny leading-snug text-text-tertiary">{toolPackPurpose(pack, language)}</p>
+                <p className="mt-0.5 text-micro leading-snug text-text-tertiary">{toolPackPurpose(pack, language)}</p>
               )}
             </div>
             )}
@@ -1225,7 +1288,7 @@ function ToolPicker({
                       onChange={(e) => onToggle(tool.name, e.target.checked)} />
                     <span className="min-w-0 flex-1">
                       <span className="flex flex-wrap items-center gap-1">
-                        <b className="text-tiny font-medium">{toolLabel(tool, language)}</b>
+                        <b className="text-caption font-medium">{toolLabel(tool, language)}</b>
                         {loud && <CostChip cost={tool.cost_class} />}
                         {bigPayload && tool.payload && (
                           <span
@@ -1241,12 +1304,12 @@ function ToolPicker({
                         )}
                       </span>
                       {description && (
-                        <span className="block text-tiny leading-snug text-text-tertiary">
+                        <span className="block text-micro leading-snug text-text-tertiary">
                           {description}
                         </span>
                       )}
                       {example && (
-                        <span className="block text-tiny leading-snug text-text-tertiary/70">
+                        <span className="block text-micro leading-snug text-text-tertiary/70">
                           {t('agentFlows.toolPicker.example', { example })}
                         </span>
                       )}

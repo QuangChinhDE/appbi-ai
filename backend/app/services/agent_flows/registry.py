@@ -901,8 +901,101 @@ def _summarise(old_body: Any, new_body: dict) -> str:
     return "Đã " + " và ".join(parts) + "."
 
 
+#: Pydantic's built-in constraint failures, said the way an author would say them.
+#: Only the ones a flow can actually produce — a missing key, a number out of
+#: range, a value outside a fixed set, a field of the wrong shape.
+_CONSTRAINT_VI = {
+    "missing": "thiếu giá trị",
+    "greater_than_equal": "phải ≥ {ge}",
+    "less_than_equal": "phải ≤ {le}",
+    "greater_than": "phải > {gt}",
+    "less_than": "phải < {lt}",
+    "string_too_short": "quá ngắn",
+    "string_too_long": "quá dài",
+    "int_parsing": "phải là số nguyên",
+    "int_type": "phải là số nguyên",
+    "float_parsing": "phải là số",
+    "bool_type": "phải là true/false",
+    "list_type": "phải là danh sách",
+    "dict_type": "phải là đối tượng",
+    "string_type": "phải là chữ",
+    "literal_error": "giá trị không nằm trong danh sách cho phép",
+    # Only reachable through a pasted draft: the builder's palette cannot produce a
+    # node type the executor does not have. Worth saying plainly anyway — that is
+    # exactly the path an outside model's confident JSON arrives by.
+    "union_tag_invalid": "loại bước không tồn tại",
+    "union_tag_not_found": "thiếu trường `type` (loại bước)",
+}
+
+
+def _field_path(loc: tuple) -> str:
+    """`('nodes', 0, 'agent', 'max_tool_calls')` → `bước #1 · max_tool_calls`.
+
+    The union tag (`agent`, `report_read`, …) is dropped: pydantic puts it there to
+    say which variant it tried, and an author reading "bước #1 · agent ·
+    max_tool_calls" would reasonably wonder what the middle word is for.
+    """
+    parts = [p for p in loc if p not in ("agent", "report_read", "knowledge", "web",
+                                         "set_var", "transform", "stop", "delay",
+                                         "filter", "if", "switch", "loop",
+                                         "coordinate")]
+    out: list[str] = []
+    for i, part in enumerate(parts):
+        if part == "nodes" and i + 1 < len(parts) and isinstance(parts[i + 1], int):
+            continue
+        if isinstance(part, int):
+            out.append(f"bước #{part + 1}")
+        else:
+            out.append(str(part))
+    return " · ".join(out)
+
+
 def _first_message(exc: Exception) -> str:
-    """Pydantic's repr is several lines of type noise; an author needs the sentence."""
+    """What is wrong with this flow, in a sentence an author can act on.
+
+    THIS USED TO RETURN A URL.
+    -------------------------
+    It scanned for a line starting with `Value error, ` — which only a hand-written
+    validator produces — and otherwise fell through to `text.splitlines()[-1]`.
+    The last line of a pydantic report is always
+    `For further information visit https://errors.pydantic.dev/…`, so EVERY
+    built-in constraint failure reached the author as a link to pydantic's website
+    and nothing else. Typing `0` into "max tool calls" put exactly that in the
+    builder's title bar, where the sentence "phải ≥ 1" belonged.
+
+    Reads `exc.errors()` rather than parsing the repr, because the structure is
+    already there: `loc` names the field, `type` names the constraint, `ctx`
+    carries its bound.
+    """
+    errors = getattr(exc, "errors", None)
+    if callable(errors):
+        try:
+            items = errors()
+        except Exception:  # noqa: BLE001 — a broken repr must not hide the error
+            items = []
+        if items:
+            first = items[0]
+            kind = str(first.get("type") or "")
+            ctx = first.get("ctx") or {}
+            if kind == "value_error":
+                # A validator we wrote. Its message is already the sentence.
+                return _drop_pydantic_tail(str(first.get("msg") or ""))[:200]
+            say = _CONSTRAINT_VI.get(kind)
+            if say:
+                try:
+                    say = say.format(**{k: v for k, v in ctx.items()})
+                except (KeyError, IndexError):
+                    pass
+            else:
+                say = _drop_pydantic_tail(str(first.get("msg") or kind))
+            where = _field_path(tuple(first.get("loc") or ()))
+            extra = ""
+            if kind in ("literal_error", "union_tag_invalid") and ctx.get("expected"):
+                extra = f" (cho phép: {ctx['expected']})"
+            if kind == "union_tag_invalid" and ctx.get("tag"):
+                extra = f" — nhận được '{ctx['tag']}'" + extra
+            return (f"{where}: {say}{extra}" if where else f"{say}{extra}")[:200]
+
     text = str(exc)
     for line in text.splitlines():
         line = line.strip()
@@ -915,8 +1008,11 @@ def _first_message(exc: Exception) -> str:
             # appends that to every message; nothing above the API cares which
             # validator fired or what Python type the empty field was.
             return _drop_pydantic_tail(line[len("Value error, "):])
-    return _drop_pydantic_tail(text.splitlines()[-1])[:200] if text \
-        else "Cấu hình không hợp lệ"
+    # NEVER the last line: that is pydantic's documentation URL, which is what this
+    # function used to return for every constraint failure.
+    lines = [l.strip() for l in text.splitlines() if l.strip()]
+    body = [l for l in lines if not l.startswith("For further information")]
+    return _drop_pydantic_tail(body[-1])[:200] if body else "Cấu hình không hợp lệ"
 
 
 def _drop_pydantic_tail(line: str) -> str:
