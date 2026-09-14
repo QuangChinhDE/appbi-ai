@@ -279,25 +279,96 @@ def create_thread(db: Session, user: Any, brain_key: str) -> AgentFlowChatThread
     return thread
 
 
+#: What a person may do with a conversation that is not theirs.
+#:
+#:   none   it is not theirs and nobody shared it
+#:   view   they may read the transcript
+#:   edit   they may read it AND ask the next question in it
+#:   owner  they started it: rename, delete, share
+ThreadAccess = str
+
+
+def _module_level(user: Any) -> str:
+    """This person's `chat` level, read the same way every gate reads it."""
+    from app.core.dependencies import _normalize_permissions, _sanitize_permission_level
+
+    return _sanitize_permission_level(_normalize_permissions(user).get("chat", "none"))
+
+
+def thread_access(db: Session, user: Any, thread: AgentFlowChatThread) -> ThreadAccess:
+    """How this person stands to this conversation.
+
+    THREE WAYS IN, AND THEY ARE NOT THE SAME.
+
+      owner   they started it. Rename, delete and share are theirs alone.
+      share   somebody handed it to them, at `view` or `edit`.
+      full    `chat: full` — the oversight level, which reads everything in the
+              workspace the way `full` does in every other module.
+
+    Deliberately NOT a way to run the flow. Asking the next question is checked
+    separately against the FLOW's own share (`resolve_for_chat`), so handing
+    somebody a conversation can never become a way around who may use the
+    assistant behind it.
+    """
+    if str(getattr(thread, "user_id", "")) == str(getattr(user, "id", "")):
+        return "owner"
+    if _module_level(user) == "full":
+        return "full"
+
+    from app.core.resource_shares import get_highest_share_for_resource
+    from app.models.resource_share import ResourceType
+
+    share = get_highest_share_for_resource(
+        db, user, ResourceType.CHAT_THREAD, str(thread.id)
+    )
+    if share is None:
+        return "none"
+    level = getattr(share.permission, "value", share.permission)
+    return "edit" if str(level) == "edit" else "view"
+
+
 def get_thread(db: Session, user: Any, thread_id: int) -> AgentFlowChatThread | None:
-    return (
+    """The conversation, if this person may READ it at all.
+
+    Callers that go on to WRITE — rename, delete, or ask the next question — must
+    additionally consult `thread_access`; reading is the weaker question and this
+    answers only that.
+    """
+    thread = (
         db.query(AgentFlowChatThread)
         .filter(
             AgentFlowChatThread.id == thread_id,
-            AgentFlowChatThread.user_id == user.id,
             AgentFlowChatThread.deleted_at.is_(None),
         )
         .first()
     )
+    if thread is None:
+        return None
+    return thread if thread_access(db, user, thread) != "none" else None
 
 
 def list_threads(
     db: Session, user: Any, brain_key: str | None = None, limit: int = 100
 ) -> list[AgentFlowChatThread]:
+    """Their own conversations, plus the ones shared with them.
+
+    `chat: full` sees every conversation in the workspace — the oversight level.
+    Ordered by last activity across all three sources, so a conversation somebody
+    just added to does not sit below a stale one of your own.
+    """
+    from sqlalchemy import or_
+
     q = db.query(AgentFlowChatThread).filter(
-        AgentFlowChatThread.user_id == user.id,
-        AgentFlowChatThread.deleted_at.is_(None),
+        AgentFlowChatThread.deleted_at.is_(None)
     )
+    if _module_level(user) != "full":
+        from app.core.resource_shares import get_shared_resource_ids_query
+        from app.models.resource_share import ResourceType
+
+        shared = get_shared_resource_ids_query(db, user, ResourceType.CHAT_THREAD)
+        ids = [int(r[0]) for r in shared.all() if str(r[0]).strip().isdigit()]
+        own = AgentFlowChatThread.user_id == user.id
+        q = q.filter(or_(own, AgentFlowChatThread.id.in_(ids)) if ids else own)
     if brain_key:
         q = q.filter(AgentFlowChatThread.brain_key == brain_key)
     return q.order_by(AgentFlowChatThread.last_active_at.desc()).limit(limit).all()

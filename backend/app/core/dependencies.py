@@ -392,6 +392,7 @@ _MODEL_TO_RESOURCE_TYPE = {
     # entry no share on a brain could ever be found, so object-level checks on a
     # flow silently fell through to "not shared".
     "AgentBrainVersion": ResourceType.AGENT_BRAIN,
+    "AgentFlowChatThread": ResourceType.CHAT_THREAD,
 }
 
 _MODEL_TO_MODULE = {
@@ -402,6 +403,7 @@ _MODEL_TO_MODULE = {
     "Workboard": "workboards",
     "GovernKnowledgeDoc": "govern",
     "AgentBrainVersion": "agent_flows",
+    "AgentFlowChatThread": "chat",
 }
 
 

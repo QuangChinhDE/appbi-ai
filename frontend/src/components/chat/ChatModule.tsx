@@ -125,6 +125,9 @@ export function ChatModule() {
         setDetail({
           ...th,
           brain_name: brains.find((b) => b.brain_key === brainKey)?.name || '',
+          // We just created it, so it is ours — stated rather than left undefined,
+          // because `access` is what decides whether the Share button renders.
+          access: 'owner' as const,
           readonly_reason: '',
           readonly_message: '',
           messages: [],

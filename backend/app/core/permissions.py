@@ -41,6 +41,7 @@ _RESOURCE_TO_MODULE: Dict[str, str] = {
     # grant. Missing from this map, `_owned_or_shared` returns nothing at all — the
     # brain list came back empty right after a brain was saved and published.
     "agent_brain": "agent_flows",
+    "chat_thread": "chat",
 }
 
 

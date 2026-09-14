@@ -958,7 +958,24 @@ async def run_for_chat_thread(
         yield AgentEvent(type="done")
         return
 
+    # MAY THIS PERSON ADD TO THIS CONVERSATION? Separate from whether they may
+    # read it: a conversation shared at `view` is a transcript to look at, and a
+    # reader typing into it would be writing in somebody else's record.
+    if direct_chat.thread_access(db, user, thread) not in ("owner", "edit", "full"):
+        out = blocked(
+            run_id,
+            "Cuộc trò chuyện này được chia sẻ cho bạn ở mức chỉ đọc.",
+            "thread_read_only",
+        )
+        yield AgentEvent(type="text", text=out.answer.plain_text())
+        yield AgentEvent(type="result", extra={"envelope": out.to_dict()})
+        yield AgentEvent(type="done")
+        return
+
     direct_chat.touch(db, thread, title_from=question)
+    # AND MAY THEY USE THE ASSISTANT? Checked against the FLOW's own share, not the
+    # conversation's — which is what stops handing somebody a conversation from
+    # becoming a way around who may run the flow behind it.
     row, flow, problem = direct_chat.resolve_for_chat(db, user, thread.brain_key)
 
     if problem or flow is None or row is None:

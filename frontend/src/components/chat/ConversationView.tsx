@@ -11,10 +11,11 @@
  * changed their mind.
  */
 import {
-  ArrowLeft, Bot, Check, FileText, Loader2, MessageSquarePlus, Pencil, Send, Trash2, X,
+  ArrowLeft, Bot, Check, FileText, Loader2, MessageSquarePlus, Pencil, Send, Share2, Trash2, X,
 } from 'lucide-react';
 import React from 'react';
 
+import { ShareDialog } from '@/components/common/ShareDialog';
 import { ChartNamesContext, RichMarkdown, extractFollowups } from '@/components/common/AiAnswer';
 import { CitationCards } from '@/components/common/CitationCards';
 import { AnswerBlocks } from '@/components/dashboards/AnswerBlocks';
@@ -75,6 +76,12 @@ export function ConversationView({
   }, [messages, status]);
 
   const readonly = Boolean(detail?.readonly_reason);
+  const [sharing, setSharing] = React.useState(false);
+  //: Somebody else's conversation, open because they shared it (or because this
+  //: account holds `chat: full`). Worth saying out loud: without it a reader can
+  //: mistake a colleague's transcript for their own and wonder why it cannot be
+  //: renamed.
+  const notMine = detail != null && detail.access !== 'owner';
 
   return (
     <div className="flex h-full min-h-0">
@@ -203,7 +210,46 @@ export function ConversationView({
               {brain?.name || detail?.brain_name || ''}
             </p>
           </div>
+
+          {/* SHARING A CONVERSATION IS NOT SHARING THE ASSISTANT.
+              This hands somebody THIS transcript. Whether they can then ask a
+              question in it is still decided by the flow's own share — which is
+              why a recipient can end up reading happily and seeing the input box
+              disabled, with the server's own sentence explaining it.
+
+              Owner only: `access` comes from the server, so the button and the
+              endpoint cannot disagree about who may share. */}
+          {detail?.access === 'owner' && (
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => setSharing(true)}
+              aria-label={t('chat.share')}
+            >
+              <Share2 className="h-3.5 w-3.5" /> {t('chat.share')}
+            </Button>
+          )}
         </header>
+
+        {sharing && detail && (
+          <ShareDialog
+            resourceType="chat_thread"
+            resourceId={detail.id}
+            resourceName={detail.title || t('chat.untitled')}
+            notice={
+              <p className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 p-3 text-caption leading-relaxed text-text-tertiary">
+                {t('chat.shareNotice')}
+              </p>
+            }
+            onClose={() => setSharing(false)}
+          />
+        )}
+
+        {notMine ? (
+          <div className="border-b border-[rgb(var(--border-line))] bg-surface-2 px-4 py-2 text-caption text-text-tertiary">
+            {detail?.access === 'full' ? t('chat.viewingAsAdmin') : t('chat.sharedWithYou')}
+          </div>
+        ) : null}
 
         {readonly ? (
           <div className="border-b border-warning/30 bg-warning/10 px-4 py-2 text-caption text-warning">

@@ -74,13 +74,21 @@ _ALL_MODULE_ALLOWED_LEVELS: Dict[str, List[str]] = {
     "datasets":          ["none", "view", "edit", "full"],
     "govern":            ["none", "view", "edit", "full"],
     "agent_flows":            ["none", "view", "edit", "full"],
-    # TWO LEVELS, LIKE `settings`, AND FOR THE SAME REASON: the others would be
-    # inert. On this surface a person reads only what is shared with them and
-    # owns only their own conversations — every query in `direct_chat` filters
-    # `user_id == user.id`. There is nothing for `edit` to add, and reading other
-    # people's conversations is an Agent Flows capability, on a flow you own.
-    # Offering four levels where two do nothing is offering a lie.
-    "chat":              ["none", "view"],
+    # FOUR LEVELS, and each one now buys something. This was `["none", "view"]`
+    # for exactly as long as a conversation was private and unshareable; once a
+    # person can hand their own conversation to a colleague, the generic ladder
+    # fits it without being bent:
+    #
+    #   view   open AI Chat, talk to assistants shared with you, keep your own
+    #          conversations, and READ conversations others shared with you
+    #   edit   the above, plus SHARE your own conversations — which is not a
+    #          style choice: `get_effective_permission` only lets an owner reach
+    #          `full` on their own row when the module level is `edit` or above,
+    #          and `require_share_access` demands `full`. At `view` a person
+    #          could not share the conversation they are holding.
+    #   full   read and manage EVERY conversation in the workspace — the
+    #          oversight level, the same thing `full` means everywhere else
+    "chat":              ["none", "view", "edit", "full"],
     "observability":     ["none", "view", "edit", "full"],
     "explore_charts":    ["none", "view", "edit", "full"],
     "dashboards":        ["none", "view", "edit", "full"],
@@ -102,7 +110,7 @@ PRESETS: Dict[str, Dict[str, str]] = {
         "datasets": "full",
         "govern": "full",
         "agent_flows": "full",
-        "chat": "view",
+        "chat": "full",
         "observability": "full",
         "explore_charts": "full",
         "dashboards": "full",
@@ -114,7 +122,7 @@ PRESETS: Dict[str, Dict[str, str]] = {
         "datasets": "edit",
         "govern": "edit",
         "agent_flows": "edit",
-        "chat": "view",
+        "chat": "edit",
         "observability": "edit",
         "explore_charts": "edit",
         "dashboards": "edit",
