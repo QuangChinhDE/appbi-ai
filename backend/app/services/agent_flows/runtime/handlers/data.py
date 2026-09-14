@@ -46,6 +46,77 @@ def _call(rctx: Any, state: RunState, tool: str, args: dict) -> Any:
     return result
 
 
+def _route_call(rctx: Any, state: RunState, tool: str, args: dict) -> Any:
+    """A tool call that decides WHICH data to read, not what the data says.
+
+    Budgeted and logged exactly like `_call` — an author reading the tool log must
+    see why a slot went — but deliberately NOT harvested into `state.evidence`.
+    A chart listing is a record of where the run went looking; its numbers are
+    chart ids, and putting those in the pile the figure checker matches against
+    would let "chart 1001" vouch for a claim of 1001. The same reason routing
+    steps are kept out of what the synthesiser is handed.
+    """
+    state.budget.spend_tool()
+    result = tool_registry.execute(rctx.ctx, tool, args, allowed=None)
+    state.tool_log.append(
+        tool if result.get("ok")
+        else f"{tool}({result.get('error_code') or 'failed'})"
+    )
+    return result
+
+
+def _charts_for_question(
+    node: ReportReadNode, state: RunState, rctx: Any, allowed: list[int]
+) -> tuple[list[int], str]:
+    """The allowed charts, reordered so the ones the question names come first.
+
+    Ranking is `list_charts`' own term match — the audited path that already backs
+    the picker and the discover pack — rather than a second implementation of
+    "which chart is this about" living in the runtime. Deterministic: no model is
+    consulted, which is the property that lets this step stay model-free.
+
+    Returns the ordered ids and a reason when the question matched nothing, so the
+    caller can say so instead of silently reading the report in id order and
+    calling it a match.
+    """
+    question = state.resolve_text(node.query) or rctx.inp.question.text()
+    if not question.strip():
+        return allowed, "no_question"
+    listing = _route_call(rctx, state, "list_charts",
+                          {"query": question, "detail": "compact"})
+    if not isinstance(listing, dict) or not listing.get("ok"):
+        return allowed, "lookup_failed"
+    # `_ok` wraps the payload: {"ok": true, "data": {...}}.
+    payload = listing.get("data") if isinstance(listing.get("data"), dict) else {}
+    coverage = payload.get("coverage") if isinstance(payload.get("coverage"), dict) else {}
+    if "query_matched_nothing" in coverage:
+        # `list_charts` falls back to the FULL listing when nothing matches, which
+        # is right for a model that can read the coverage note and decide. Taken at
+        # face value here it would turn "read what the question is about" into
+        # "read everything in id order" without a word.
+        return allowed, "no_match"
+    # A MATCH THIS TOOL CALLS A MATCH IS NOT ALWAYS ONE, and the step has no model
+    # to sanity-check it. One shared token is enough to rank a chart, so on a real
+    # report "thời tiết sao Hỏa hôm nay" matched four charts - "sao" from "Tỷ lệ 5
+    # sao", "thời" from "Dòng thời gian" - and would have read them as if they
+    # answered the question. Found by asking the feature an off-topic question
+    # rather than by reading it.
+    #
+    # Measured on report 67: real questions cover 0.40-1.00 of their own terms,
+    # off-topic ones 0.17-0.20. A third is the gap between those two groups.
+    terms = coverage.get("query_terms") or 0
+    best = coverage.get("query_best_hits") or 0
+    if terms and best * 3 < terms:
+        return allowed, "weak_match"
+    ranked = [
+        c.get("chart_id") for c in (payload.get("charts") or [])
+        if isinstance(c, dict) and isinstance(c.get("chart_id"), int)
+    ]
+    keep = set(allowed)
+    ordered = [c for c in ranked if c in keep]
+    return (ordered or allowed), ("" if ordered else "no_match")
+
+
 # ═══ Read the open report ═════════════════════════════════════════════════════
 async def run_report_read(
     node: ReportReadNode, state: RunState, rctx: Any
@@ -77,7 +148,23 @@ async def run_report_read(
     if node.include_filters:
         out["filters"] = _call(rctx, state, "inspect_filters", {})
 
-    planned = wanted[:20]
+    # BY THE QUESTION, WHEN THE AUTHOR ASKED FOR THAT. An explicit `chart_ids`
+    # list always wins: the author already answered "which charts", and a keyword
+    # match must not overrule them.
+    if node.match_question and not node.chart_ids:
+        wanted, why = _charts_for_question(node, state, rctx, wanted)
+        if why in ("no_match", "weak_match"):
+            state.notices.append(
+                Notice(
+                    code="read_question_unmatched",
+                    text=f"Bước “{node.name or node.key}” không tìm thấy biểu đồ nào "
+                         "khớp rõ câu hỏi, nên đọc theo thứ tự mặc định. Nếu báo cáo "
+                         "gọi thứ này bằng tên khác, hãy chỉ định danh sách biểu đồ "
+                         "cho bước này.",
+                )
+            )
+
+    planned = wanted[:node.max_charts]
     read_count = 0
     for chart_id in planned:
         # LEAVE THE ANSWERING STEP SOMETHING TO SPEND.
@@ -251,6 +338,7 @@ async def run_report_read(
             "với `query` là từ khoá trong câu hỏi để tìm đúng biểu đồ trước."
         )
 
+    _warn_if_overflowing(node, out, state)
     state.outputs[node.key] = out
 
 
@@ -302,6 +390,63 @@ def _degraded_by_reason(entries: list[dict]) -> dict[str, list]:
             if why:
                 out.setdefault(why, []).append(entry.get("chart_id"))
     return out
+
+
+#: What a step's result is cut to on its way into a prompt. Mirrors
+#: `_MAX_STEP_CHARS` / the `carried[:8000]` slice in the agent handler — imported
+#: rather than re-declared would be better, and is a circular import today.
+_DOWNSTREAM_CHARS = 2000
+
+
+def _warn_if_overflowing(node: ReportReadNode, out: dict, state: RunState) -> None:
+    """Tell the author when most of what this step fetched can never be read.
+
+    THE GAP THIS CLOSES IS AN AUTHOR'S MENTAL MODEL, and it was reported as one:
+    "tất cả các dòng đọc được sẽ trở thành context cho node llm tiếp theo". That is
+    the reasonable reading of a step called "read the report" with toggles for what
+    to include — and it is not what happens. A step's result is cut to 2,000
+    characters on its way into the answering step's prompt.
+
+    MEASURED on a 70-chart report, twenty charts planned:
+
+        summary + data, detail=full       71,650 chars    2.8% survives   7/20 charts
+        summary only,   detail=full       49,471 chars    4.0%            6/20
+        summary only,   detail=compact     8,244 chars   24.3%            7/20
+
+    So the toggles an author can see move the number by 8x, and every setting still
+    loses most of it — to a blind head-cut, which means WHICH charts survive is
+    decided by id order rather than by the question. An author cannot reason about
+    a ceiling nobody showed them; they tune the controls they can see, conclude the
+    step is wasteful, and switch things off. That is exactly what happened.
+
+    Reported once, with the real numbers and the two remedies that actually work:
+    match the question, or carry less per chart.
+    """
+    if not out.get("charts"):
+        return
+    from app.services.agent_flows.runtime.state import render_value
+
+    size = len(render_value(out))
+    if size <= _DOWNSTREAM_CHARS:
+        return
+    kept = max(1, round(len(out["charts"]) * _DOWNSTREAM_CHARS / size))
+    # Grouped the way the reader of this sentence writes numbers. Formatted per
+    # number, not by search-replacing the finished sentence — that also turns the
+    # commas in the prose into full stops.
+    vn = lambda n: f"{n:,}".replace(",", ".")
+    state.notices.append(
+        Notice(
+            code="read_exceeds_context",
+            text=(
+                f"Bước “{node.name or node.key}” đọc {len(out['charts'])} biểu đồ "
+                f"(~{vn(size)} ký tự) nhưng bước sau chỉ nhận được "
+                f"{vn(_DOWNSTREAM_CHARS)} ký tự đầu — khoảng {kept} biểu đồ đầu "
+                "danh sách, phần còn lại bị cắt. Bật “đọc theo câu hỏi”, giảm số "
+                "biểu đồ, hoặc chuyển mức chi tiết sang “chỉ mục” rồi để bước sau "
+                "gọi công cụ lấy đúng con số."
+            ),
+        )
+    )
 
 
 def _entry_has_data(entry: dict) -> bool:

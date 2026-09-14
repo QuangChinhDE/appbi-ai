@@ -188,6 +188,17 @@ export interface AgentNode extends BaseNode {
 export interface ReportReadNode extends BaseNode {
   type: 'report_read';
   chart_ids?: number[];
+  /** Read the charts the question is about instead of everything allowed. */
+  match_question?: boolean;
+  /** What to match on. Blank = the viewer's question. */
+  query?: string;
+  max_charts?: number;
+  /** How much of each chart to carry forward. The backend has always had this and
+   *  it is the single biggest lever on what the next step is handed - measured
+   *  49,471 chars at `full` against 8,244 at `compact` on the same twenty-chart
+   *  read - but until now no control existed for it, so every flow ran on the
+   *  default and authors tuned the toggles they could see instead. */
+  detail?: 'index' | 'compact' | 'full';
   include_summary?: boolean;
   include_data?: boolean;
   include_filters?: boolean;
@@ -1337,6 +1348,7 @@ export function blankNode(type: NodeType, nodes: FlowNode[], labels: BlankNodeLa
     case 'report_read':
       return { ...base, type, output_var: uniqueKey(nodes, 'dashboard_context'),
         include_summary: true, include_data: true, include_filters: true,
+        match_question: false, max_charts: 20, detail: 'compact',
         max_rows: 200, run_policy: 'when_stale' };
     case 'knowledge':
       return { ...base, type, query: '{{question}}', top_k: 5, knowledge: [],

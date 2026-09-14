@@ -153,9 +153,12 @@ def tool_list_charts(ctx: ToolContext, args: dict) -> dict:
     query = str(args.get("query") or "").strip()
     query_used = None
     query_missed = False
+    query_terms = 0
+    query_best = 0
     if query:
         terms = {t for t in _WORD_RE.findall(_fold(query)) if len(t) > 1}
         if terms:
+            query_terms = len(terms)
             scored = []
             for chart_id in wanted:
                 hit = len(terms & _searchable_terms(ctx, chart_id))
@@ -164,6 +167,9 @@ def tool_list_charts(ctx: ToolContext, args: dict) -> dict:
             if scored:
                 wanted = [cid for _, cid in sorted(scored)]
                 query_used = query
+                # `scored` is not sorted yet at this point - `sorted()` is applied
+                # to build `wanted` below - so take the max rather than the head.
+                query_best = max(-s for s, _ in scored)
             else:
                 query_missed = True
 
@@ -251,8 +257,18 @@ def tool_list_charts(ctx: ToolContext, args: dict) -> dict:
     # cannot tell the two apart concludes the chart it wants does not exist.
     if query_used:
         out["coverage"]["query"] = query_used
+        # HOW STRONG the match was, not just that there was one. A single shared
+        # token is a match by this tool's rule, and for a model reading the listing
+        # that is fine - it sees the names and judges. A caller with no model to
+        # judge (the `report_read` step picking charts by the viewer's question)
+        # has only this number: measured on a 70-chart report, a real question
+        # covers 0.40-1.00 of its own terms while "thoi tiet sao Hoa hom nay"
+        # covers 0.17 by colliding with "5 sao" and "thoi gian".
+        out["coverage"]["query_terms"] = query_terms
+        out["coverage"]["query_best_hits"] = query_best
         out["coverage"]["note"] = (
-            f"{len(items)}/{len(every)} charts match \"{query_used}\", best first. "
+            f"{len(items)}/{len(every)} charts match \"{query_used}\", best first "
+            f"(best chart matches {query_best} of {query_terms} terms). "
             "Drop `query` to see every chart."
         )
     elif query_missed:

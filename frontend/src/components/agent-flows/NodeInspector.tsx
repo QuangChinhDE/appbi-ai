@@ -105,10 +105,20 @@ function Select({
 }
 
 function Toggle({
-  on, onChange, title, hint,
-}: { on: boolean; onChange: (v: boolean) => void; title: string; hint?: string }) {
+  on, onChange, title, hint, disabled,
+}: {
+  on: boolean; onChange: (v: boolean) => void; title: string; hint?: string;
+  /** A switch that changes nothing must not look like one that does. `detail:
+   *  "index"` short-circuits before either read tool is called, so "chart summary"
+   *  and "chart data" are silently inert there - an author flipping them saw no
+   *  effect and no reason. */
+  disabled?: boolean;
+}) {
   return (
-    <div className="flex items-center gap-2 border-t border-[rgb(var(--border-line))] py-2 first:border-t-0">
+    <div className={cn(
+      'flex items-center gap-2 border-t border-[rgb(var(--border-line))] py-2 first:border-t-0',
+      disabled && 'opacity-50',
+    )}>
       <div className="min-w-0 flex-1">
         <b className="block text-caption font-medium">{title}</b>
         {hint && <span className="mt-px block text-caption text-text-tertiary">{hint}</span>}
@@ -117,10 +127,12 @@ function Toggle({
         type="button"
         role="switch"
         aria-checked={on}
+        disabled={disabled}
         onClick={() => onChange(!on)}
         className={cn(
           'h-[18px] w-[34px] flex-shrink-0 rounded-full p-0.5 transition',
           on ? 'bg-brand' : 'bg-surface-3',
+          disabled && 'cursor-not-allowed',
         )}
       >
         <span
@@ -568,30 +580,79 @@ function NodeForm(props: InspectorProps & { node: FlowNode }) {
         </>
       )}
 
-      {node.type === 'report_read' && (
+      {node.type === 'report_read' && (() => {
+        // `index` never calls either read tool - it describes each chart from the
+        // configuration the run already holds. The two toggles under it are inert
+        // in that mode, so they say so rather than lying quietly.
+        const indexed = (node.detail ?? 'compact') === 'index';
+        return (
         <>
+          {/* WHICH CHARTS, before how much of each. Reading everything the binding
+              allows is what this step did with no way to say otherwise, and on a
+              seventy-chart report that is twenty charts fetched so the first six or
+              seven can survive the cut into the next step. */}
+          <Field label={t('agentFlows.inspector.read.scope')}>
+            <div className="rounded-lg border border-[rgb(var(--border-line))] px-2.5">
+              <Toggle on={node.match_question === true}
+                title={t('agentFlows.inspector.read.matchQuestion')}
+                hint={t('agentFlows.inspector.read.matchQuestionHint')}
+                onChange={(v) => set({ match_question: v } as Partial<FlowNode>)} />
+            </div>
+          </Field>
+          {node.match_question && (
+            <Field label={t('agentFlows.inspector.read.matchOn')}
+              hint={t('agentFlows.inspector.read.matchOnHint')}>
+              <Textarea rows={2} value={node.query || ''}
+                onChange={(e) => set({ query: e.target.value } as Partial<FlowNode>)} />
+            </Field>
+          )}
+          <Field label={t('agentFlows.inspector.read.maxCharts')}
+            hint={t('agentFlows.inspector.read.maxChartsHint')}>
+            <NumberField min={1} max={50} value={node.max_charts ?? 20}
+              onCommit={(n) => set({ max_charts: n } as Partial<FlowNode>)} />
+          </Field>
+
+          <Field label={t('agentFlows.inspector.read.detail')}
+            hint={t('agentFlows.inspector.read.detail.' + (node.detail ?? 'compact') + 'Hint')}>
+            <Select value={node.detail ?? 'compact'}
+              onChange={(v) => set({ detail: v as 'index' | 'compact' | 'full' } as Partial<FlowNode>)}
+              options={[
+                { value: 'index', label: t('agentFlows.inspector.read.detail.index') },
+                { value: 'compact', label: t('agentFlows.inspector.read.detail.compact') },
+                { value: 'full', label: t('agentFlows.inspector.read.detail.full') },
+              ]} />
+          </Field>
+
           <Field label={t('agentFlows.inspector.readWhat')}>
             <div className="rounded-lg border border-[rgb(var(--border-line))] px-2.5">
-              <Toggle on={node.include_summary !== false} title={t('agentFlows.inspector.read.summary')}
-                hint={t('agentFlows.inspector.read.summaryHint')}
+              <Toggle on={node.include_summary !== false} disabled={indexed}
+                title={t('agentFlows.inspector.read.summary')}
+                hint={indexed ? t('agentFlows.inspector.read.indexIgnores')
+                              : t('agentFlows.inspector.read.summaryHint')}
                 onChange={(v) => set({ include_summary: v } as Partial<FlowNode>)} />
-              <Toggle on={node.include_data !== false} title={t('agentFlows.inspector.read.data')}
-                hint={t('agentFlows.inspector.read.dataHint')}
+              <Toggle on={node.include_data !== false} disabled={indexed}
+                title={t('agentFlows.inspector.read.data')}
+                hint={indexed ? t('agentFlows.inspector.read.indexIgnores')
+                              : t('agentFlows.inspector.read.dataHint')}
                 onChange={(v) => set({ include_data: v } as Partial<FlowNode>)} />
               <Toggle on={node.include_filters !== false} title={t('agentFlows.inspector.read.filters')}
                 hint={t('agentFlows.inspector.read.filtersHint')}
                 onChange={(v) => set({ include_filters: v } as Partial<FlowNode>)} />
             </div>
           </Field>
-          <Field label={t('agentFlows.inspector.maxRows')}>
-            <NumberField min={1} max={5000} value={node.max_rows ?? 200}
-              onCommit={(n) => set({ max_rows: n } as Partial<FlowNode>)} />
-          </Field>
+          {!indexed && node.include_data !== false && (
+            <Field label={t('agentFlows.inspector.maxRows')}
+              hint={t('agentFlows.inspector.read.maxRowsHint')}>
+              <NumberField min={1} max={5000} value={node.max_rows ?? 200}
+                onCommit={(n) => set({ max_rows: n } as Partial<FlowNode>)} />
+            </Field>
+          )}
           <HintText>
             {t('agentFlows.inspector.reportReadHint')}
           </HintText>
         </>
-      )}
+        );
+      })()}
 
       {node.type === 'knowledge' && (
         <>

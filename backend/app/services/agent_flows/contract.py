@@ -442,6 +442,27 @@ class ReportReadNode(BaseNode):
     type: Literal["report_read"] = "report_read"
     #: Which chart ids to read. Empty means every chart the binding allows.
     chart_ids: list[int] = Field(default_factory=list)
+
+    #: READ WHAT THE QUESTION IS ABOUT, NOT EVERYTHING.
+    #:
+    #: Without this the step is question-blind by construction: a fixed id list, or
+    #: every chart the binding allows. On a 70-chart report that is twenty charts
+    #: read in full — measured at 71,650 characters — of which 2,000 survive the
+    #: cut into the answering step. Ninety-seven per cent of the warehouse time and
+    #: the serialisation was spent on charts the question never mentioned, and
+    #: WHICH ninety-seven per cent was decided by chart id order.
+    #:
+    #: The `knowledge` step has always worked the other way — `query` or the
+    #: viewer's question — and the two steps sit side by side in the same flow. This
+    #: closes that asymmetry. Ranking is `list_charts`' own term match, not a second
+    #: implementation of it, and it stays deterministic: no model decides this.
+    match_question: bool = False
+    #: What to match charts against. Blank means the viewer's question.
+    query: str = ""
+    #: How many charts to read at most. Was a hard-coded `[:20]` no author could
+    #: see, let alone lower — on a report where reading four would have answered.
+    max_charts: int = Field(default=20, ge=1, le=50)
+
     include_summary: bool = True
     include_data: bool = True
     include_filters: bool = True

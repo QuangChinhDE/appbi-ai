@@ -36,6 +36,10 @@ def _read(pinned: list[int], granted: list[int]) -> dict:
     node = types.SimpleNamespace(
         key="doc", name="Đọc báo cáo", chart_ids=pinned, include_filters=False,
         include_summary=False, include_data=True, detail="compact", max_rows=50,
+        # `match_question` off and `max_charts` at the contract default: this test
+        # is about what a PARTIAL reading admits, so the selection must stay the
+        # one it was written against - every pinned chart, in the pinned order.
+        match_question=False, max_charts=20, query="",
     )
     budget = types.SimpleNamespace(tools_left=lambda: 99, spend_tool=lambda: None)
     state = types.SimpleNamespace(
