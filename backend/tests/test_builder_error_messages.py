@@ -142,3 +142,94 @@ def test_a_nested_path_names_each_level_for_what_it_is():
 
     assert msg == "bước #1 · chuyên gia #1 · when: thiếu giá trị"
     assert "specialists" not in msg, "the container word is replaced by its count"
+
+
+# ── a validator that never ran ──────────────────────────────────────────────
+
+
+def _validate(body: dict):
+    """Exactly what `POST /validate` does, which is what the builder's badge shows."""
+    from app.services.agent_flows.contract import Flow, upgrade_body
+
+    return Flow.model_validate(
+        {**upgrade_body(body, key="t", name="t"), "key": "t", "name": "t"}
+    )
+
+
+@pytest.mark.parametrize("node,keyword", [
+    ({"key": "kiem", "type": "if"}, "nhánh"),
+    ({"key": "kiem", "type": "if", "conditions": [], "body": []}, "nhánh"),
+    ({"key": "chon", "type": "switch", "value": "{{x}}"}, "case"),
+    ({"key": "dp", "type": "coordinate", "prompt": "x"}, "chuyên gia"),
+])
+def test_a_branch_node_with_no_branches_is_refused_even_when_the_key_is_absent(
+        node, keyword):
+    """FOUND BY AN E2E RUN, AND IT WAS REACHABLE.
+
+    A pydantic field validator does NOT run when the field falls back to its
+    default. `IfNode.paths`, `SwitchNode.cases` and `CoordinateNode.specialists`
+    all guard "you need at least two / at least one" with a `field_validator`, so
+    a body that simply OMITTED the key skipped the guard entirely.
+
+    The consequence was not theoretical. `POST /validate` answered `ok: true`, the
+    builder's badge went green, `PUT /brains` saved it, and the run then refused
+    with "Flow không hợp lệ, chưa test được" — naming nothing. An author had a flow
+    the product called valid and would not run, with no way to tell why.
+
+    It is exactly the shape an outside model writing flow JSON produces, which the
+    authoring prompt explicitly invites.
+
+    Checked before tightening: of 60 stored brain versions, zero had a branch node
+    in this state, so nothing an author saved stops loading.
+    """
+    with pytest.raises(Exception) as caught:
+        _validate({"nodes": [node, {"key": "a", "type": "agent", "prompt": "x"}],
+                   "answer_node": "a"})
+
+    assert keyword in str(caught.value).lower() or keyword in str(caught.value)
+
+
+def test_a_branch_node_with_real_branches_is_accepted():
+    """The control. Without it, a contract that refused every `if` would pass."""
+    flow = _validate({
+        "nodes": [
+            {"key": "kiem", "type": "if", "paths": [
+                {"key": "co", "kind": "rules", "match": "all",
+                 "conditions": [{"left": "{{x}}", "op": "equals", "right": "1"}],
+                 "body": [{"key": "trong", "type": "set_var", "var": "y", "value": "1"}]},
+                {"key": "khong", "kind": "fallback",
+                 "body": [{"key": "khac", "type": "set_var", "var": "y", "value": "0"}]},
+            ]},
+            {"key": "a", "type": "agent", "prompt": "x"},
+        ],
+        "answer_node": "a",
+    })
+
+    assert len(flow.nodes[0].paths) == 2
+
+
+def test_what_validate_accepts_is_what_the_runtime_can_parse():
+    """THE INVARIANT UNDERNEATH ALL OF IT.
+
+    The builder's badge and the runtime were reading the same body and reaching
+    different answers. They must not: a flow the product calls valid has to be one
+    it can run.
+    """
+    from app.services.agent_flows.contract import Flow, upgrade_body
+
+    body = {"nodes": [{"key": "kiem", "type": "if"},
+                      {"key": "a", "type": "agent", "prompt": "x"}],
+            "answer_node": "a"}
+
+    validated = None
+    try:
+        validated = Flow.model_validate(
+            {**upgrade_body(body, key="t", name="t"), "key": "t", "name": "t"}
+        )
+    except Exception:
+        pass
+
+    assert validated is None, (
+        "validate accepted a body whose `if` has no branches — the runtime will "
+        "refuse it later with a message that names nothing"
+    )

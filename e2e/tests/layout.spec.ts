@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { deleteFlow, sweepLeftovers } from './_helpers';
 
 /**
  * Layout faults a functional test cannot see.
@@ -100,4 +101,11 @@ test.describe('builder layout', () => {
     expect(overflow, 'a long Vietnamese name pushed the page sideways')
       .toBeLessThanOrEqual(2);
   });
+});
+
+// A suite must leave the database as it found it. Without this the flow list grows
+// by a row per test per run, and a spec that looks for its own row by name starts
+// failing because an earlier run pushed it out of view.
+test.afterAll(async ({ request }) => {
+  await sweepLeftovers(request);
 });

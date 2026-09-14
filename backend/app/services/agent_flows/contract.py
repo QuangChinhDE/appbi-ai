@@ -615,7 +615,18 @@ class IfNode(BaseNode):
     """Branch into named paths. The paths merge implicitly at the next sibling."""
 
     type: Literal["if"] = "if"
-    paths: list[Path] = Field(default_factory=list)
+    #: `validate_default=True` IS THE FIX, and the bug it closes was reachable.
+    #:
+    #: A pydantic field validator does NOT run when the field falls back to its
+    #: default. So a body that simply omitted this key — which is what an outside
+    #: model writing flow JSON produces, and what the authoring prompt invites —
+    #: validated GREEN, saved, and then failed at run time with "Flow không hợp lệ,
+    #: chưa test được", naming nothing. The builder's validity badge and the
+    #: runtime disagreed about the same body.
+    #:
+    #: Found by an E2E run, not by reading: the stored node came back as
+    #: `{"paths": []}` with the submitted keys silently dropped.
+    paths: list[Path] = Field(default_factory=list, validate_default=True)
 
     @field_validator("paths")
     @classmethod
@@ -653,7 +664,18 @@ class SwitchNode(BaseNode):
     type: Literal["switch"] = "switch"
     value: str
     mode: Literal["first_match", "all_match"] = "first_match"
-    cases: list[Case] = Field(default_factory=list)
+    #: `validate_default=True` IS THE FIX, and the bug it closes was reachable.
+    #:
+    #: A pydantic field validator does NOT run when the field falls back to its
+    #: default. So a body that simply omitted this key — which is what an outside
+    #: model writing flow JSON produces, and what the authoring prompt invites —
+    #: validated GREEN, saved, and then failed at run time with "Flow không hợp lệ,
+    #: chưa test được", naming nothing. The builder's validity badge and the
+    #: runtime disagreed about the same body.
+    #:
+    #: Found by an E2E run, not by reading: the stored node came back as
+    #: `{"paths": []}` with the submitted keys silently dropped.
+    cases: list[Case] = Field(default_factory=list, validate_default=True)
     fallback: list["Node"] = Field(default_factory=list)
     has_fallback: bool = True
 
@@ -739,7 +761,18 @@ class CoordinateNode(BaseNode):
     api_key: str = ""
     api_key_enc: str = ""
     api_key_clear: bool = False
-    specialists: list[Specialist] = Field(default_factory=list)
+    #: `validate_default=True` IS THE FIX, and the bug it closes was reachable.
+    #:
+    #: A pydantic field validator does NOT run when the field falls back to its
+    #: default. So a body that simply omitted this key — which is what an outside
+    #: model writing flow JSON produces, and what the authoring prompt invites —
+    #: validated GREEN, saved, and then failed at run time with "Flow không hợp lệ,
+    #: chưa test được", naming nothing. The builder's validity badge and the
+    #: runtime disagreed about the same body.
+    #:
+    #: Found by an E2E run, not by reading: the stored node came back as
+    #: `{"paths": []}` with the submitted keys silently dropped.
+    specialists: list[Specialist] = Field(default_factory=list, validate_default=True)
     #: The ceiling on one plan. Two specialists is the common case; the limit exists
     #: so a planner that wants everything cannot turn one question into six.
     max_specialists: int = Field(default=3, ge=1, le=8)

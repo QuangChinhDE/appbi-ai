@@ -8,12 +8,17 @@
   "citations": [],
   "counts": {
     "llm_calls": 1,
-    "steps": 3,
+    "steps": 4,
     "tool_calls": 0
   },
   "execution_path": [
     {
-      "key": "set",
+      "key": "dat",
+      "status": "ok",
+      "type": "set_var"
+    },
+    {
+      "key": "trong_nhanh",
       "status": "ok",
       "type": "set_var"
     },
@@ -30,14 +35,13 @@
   ],
   "fixture": "04_if_branch",
   "memory_set_keys": [],
-  "notice_codes": [
-    "branch_unmatched"
-  ],
-  "status": "partial",
+  "notice_codes": [],
+  "status": "ok",
   "step_outputs": {
-    "answer": "ok :: Kết quả của các bước trước, theo thứ tự đã chạy. Tổng hợp TẤT CẢ, không chỉ bước cuối; nếu hai bước mâu thuẫn thì nói rõ ra thay vì chọn bừa một bên:\n\n### set\nyes",
-    "nhanh": "{\"matched\": null}",
-    "set": "yes"
+    "answer": "ok :: Kết quả của các bước trước, theo thứ tự đã chạy. Tổng hợp TẤT CẢ, không chỉ bước cuối; nếu hai bước mâu thuẫn thì nói rõ ra thay vì chọn bừa một bên:\n\n### dat\nyes\n\n### trong_nhanh\nda_chay",
+    "dat": "yes",
+    "nhanh": "{\"matched\": \"co\", \"label\": \"Co du lieu\"}",
+    "trong_nhanh": "da_chay"
   },
   "tool_calls": []
 }

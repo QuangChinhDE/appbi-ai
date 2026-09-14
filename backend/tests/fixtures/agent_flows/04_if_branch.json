@@ -2,34 +2,56 @@
   "covers": [
     "if",
     "branch taken",
+    "branch not taken",
     "answer must be top level"
   ],
   "flow": {
     "answer_node": "answer",
     "nodes": [
       {
-        "key": "set",
+        "key": "dat",
         "type": "set_var",
         "value": "yes",
         "var": "co_du_lieu"
       },
       {
-        "body": [
-          {
-            "key": "trong_nhanh",
-            "type": "set_var",
-            "value": "da_chay",
-            "var": "ket"
-          }
-        ],
-        "conditions": [
-          {
-            "left": "{{co_du_lieu}}",
-            "op": "equals",
-            "right": "yes"
-          }
-        ],
         "key": "nhanh",
+        "paths": [
+          {
+            "body": [
+              {
+                "key": "trong_nhanh",
+                "type": "set_var",
+                "value": "da_chay",
+                "var": "ket"
+              }
+            ],
+            "conditions": [
+              {
+                "left": "{{co_du_lieu}}",
+                "op": "equals",
+                "right": "yes"
+              }
+            ],
+            "key": "co",
+            "kind": "rules",
+            "match": "all",
+            "name": "Co du lieu"
+          },
+          {
+            "body": [
+              {
+                "key": "nhanh_khac",
+                "type": "set_var",
+                "value": "bo_qua",
+                "var": "ket"
+              }
+            ],
+            "key": "khong",
+            "kind": "fallback",
+            "name": "Khong co"
+          }
+        ],
         "type": "if"
       },
       {
@@ -40,5 +62,6 @@
       }
     ]
   },
-  "name": "04_if_branch"
+  "name": "04_if_branch",
+  "note": "Uses the REAL IfNode shape — `paths`, each with its own conditions and body. The first version of this fixture used `conditions`/`body` on the node itself; pydantic dropped the unknown keys, `paths` fell back to its default, and the field validator never ran because a validator does not run on a default. So it stored an `if` with no branches and the fixture tested nothing."
 }

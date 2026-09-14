@@ -1,4 +1,5 @@
 import { expect, Page, test } from '@playwright/test';
+import { deleteFlow, sweepLeftovers } from './_helpers';
 
 /**
  * The builder as an author uses it, and the round trip underneath it.
@@ -172,4 +173,11 @@ test.describe('ToolNode end to end @critical', () => {
       expect(rank.output_schema).toBeTruthy();
       expect(Object.keys(rank.output_schema.properties ?? {})).toContain('items');
     });
+});
+
+// A suite must leave the database as it found it. Without this the flow list grows
+// by a row per test per run, and a spec that looks for its own row by name starts
+// failing because an earlier run pushed it out of view.
+test.afterAll(async ({ request }) => {
+  await sweepLeftovers(request);
 });
