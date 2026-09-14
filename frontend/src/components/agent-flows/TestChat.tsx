@@ -816,7 +816,7 @@ function TurnView({
           {!!(env.notices || []).length && (
             <ul className="mt-2 space-y-1">
               {env.notices!.map((n, i) => (
-                <li key={i} className="rounded-md border border-[rgb(var(--border-line))] bg-surface-2 px-2.5 py-1.5 text-tiny leading-5 text-text-secondary">
+                <li key={i} className="rounded-md border border-[rgb(var(--border-line))] bg-surface-2 px-2.5 py-1.5 text-caption leading-relaxed text-text-secondary">
                   {n.text}
                 </li>
               ))}

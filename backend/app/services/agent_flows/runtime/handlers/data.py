@@ -167,15 +167,7 @@ async def run_report_read(
         # not a place a flow author can look. Distinct reasons, because eight charts
         # on one broken table fail the same way eight times and repeating it says
         # nothing new.
-        reasons: list[str] = []
-        for c in out["charts"]:
-            if _entry_has_data(c):
-                continue
-            for key in ("summary", "data"):
-                payload = c.get(key)
-                why = payload.get("detail") or payload.get("error") if isinstance(payload, dict) else None
-                if why and why not in reasons:
-                    reasons.append(str(why))
+        reasons = _failure_reasons(out["charts"])
         because = f" Nguyên nhân: {' · '.join(reasons[:2])}" if reasons else ""
         state.notices.append(
             Notice(
@@ -183,6 +175,38 @@ async def run_report_read(
                 text=f"Không đọc được dữ liệu của {len(failed)} biểu đồ "
                      f"({', '.join(str(f) for f in failed[:4])}). Câu trả lời có thể thiếu."
                      + because,
+            )
+        )
+    # A CHART CAN BE READ AND STILL HAVE LOST A TOOL, AND THAT IS THE CASE THAT
+    # WAS REPORTED. The count above only sees charts that yielded NOTHING. Switch
+    # on `Chart data` beside `Chart summary` — which is what an author does when
+    # summaries start failing — and a chart whose summary broke still returns rows,
+    # so it is not unreadable, so nothing is said. The workaround silences the
+    # symptom and the cause together, and the run quietly starts paying raw rows
+    # into every downstream prompt where a digest used to go.
+    #
+    # Grouped BY REASON rather than by chart: eight charts sitting on one broken
+    # table produce one sentence, not eight.
+    degraded = _degraded_by_reason(out["charts"])
+    if degraded:
+        # DELIBERATELY NOT PUT IN `out`. `unreadable_chart_ids` belongs there
+        # because a downstream agent must know it is missing charts before it
+        # answers; this does not — the data arrived. Writing the reasons into the
+        # step output would spend downstream prompt tokens to report a problem
+        # about spending downstream prompt tokens.
+        parts = [
+            f"{len(ids)} biểu đồ ({', '.join(str(i) for i in ids[:4])}): {why}"
+            for why, ids in list(degraded.items())[:2]
+        ]
+        # NOT in the chat reader's notice map on purpose. The answer is correct;
+        # this is an author's maintenance note, so it surfaces in the builder and
+        # the Runs tab and stays out of the conversation.
+        state.notices.append(
+            Notice(
+                code="charts_degraded",
+                text="Câu trả lời vẫn đủ dữ liệu, nhưng có công cụ đọc bị lỗi và "
+                     "flow phải dùng đường dự phòng — tốn token hơn cho các bước "
+                     "sau. " + " · ".join(parts),
             )
         )
     if out["charts"] and not out["read_ok"]:
@@ -193,15 +217,8 @@ async def run_report_read(
         # shows in the builder, and "could not read any chart" with no cause is
         # exactly the dead end that sent one author hunting for a workaround
         # instead of a fix.
-        first_reason = ""
-        for c in out["charts"]:
-            for key in ("summary", "data"):
-                payload = c.get(key)
-                if isinstance(payload, dict) and not payload.get("ok"):
-                    first_reason = str(payload.get("detail") or payload.get("error") or "")
-                    break
-            if first_reason:
-                break
+        reasons = _failure_reasons(out["charts"])
+        first_reason = reasons[0] if reasons else ""
         raise RuntimeError(
             "Không đọc được dữ liệu của bất kỳ biểu đồ nào trong phạm vi được cấp."
             + (f" Nguyên nhân đầu tiên: {first_reason}" if first_reason else "")
@@ -235,6 +252,56 @@ async def run_report_read(
         )
 
     state.outputs[node.key] = out
+
+
+def _why(payload: Any) -> str:
+    """The reason ONE tool call failed, in the form a person can act on.
+
+    `detail` before `error`: `error` is the short English fragment the MODEL reads
+    from a tool contract ("failed to load chart 987: DataError"), while `detail`
+    carries the underlying message — which is the half that names the column, the
+    table or the value that actually broke.
+    """
+    if not isinstance(payload, dict) or payload.get("ok"):
+        return ""
+    return str(payload.get("detail") or payload.get("error") or "").strip()
+
+
+def _failure_reasons(entries: list[dict]) -> list[str]:
+    """Distinct reasons across every chart that yielded NOTHING.
+
+    Distinct, because eight charts sitting on one broken table fail the same way
+    eight times and the eighth repetition tells an author nothing the first did
+    not.
+    """
+    reasons: list[str] = []
+    for entry in entries:
+        if _entry_has_data(entry):
+            continue
+        for key in ("summary", "data"):
+            why = _why(entry.get(key))
+            if why and why not in reasons:
+                reasons.append(why)
+    return reasons
+
+
+def _degraded_by_reason(entries: list[dict]) -> dict[str, list]:
+    """Charts that DID come back, but only because a second tool covered for a
+    first that failed — keyed by reason, so one broken table is one sentence.
+
+    Invisible until now, and it is the case that gets reported: an author whose
+    summaries break switches on `Chart data` as a second path, the charts stop
+    counting as unreadable, and the cause disappears along with the symptom.
+    """
+    out: dict[str, list] = {}
+    for entry in entries:
+        if not _entry_has_data(entry):
+            continue  # named by `_failure_reasons`, with its own reason
+        for key in ("summary", "data"):
+            why = _why(entry.get(key))
+            if why:
+                out.setdefault(why, []).append(entry.get("chart_id"))
+    return out
 
 
 def _entry_has_data(entry: dict) -> bool:
