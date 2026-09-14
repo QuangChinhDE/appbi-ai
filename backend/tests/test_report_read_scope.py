@@ -107,18 +107,34 @@ class _FakeState:
 
 
 def _listing(charts, *, matched=True, question="doanh thu", terms=3, best=3):
-    """A `list_charts` reply. `terms`/`best` are the match strength it now reports:
-    how many terms the question had, and how many the best chart covered."""
+    """A `list_charts` reply, carrying the structured `selection` block.
+
+    `status` is what a deterministic caller branches on; `terms`/`best` travel
+    beside it so a caller that wants its own rule can still have one, and so the
+    decision is auditable in a trace rather than being a bare verdict.
+    """
     coverage = {"returned": len(charts), "total": len(charts)}
+    ids = list(charts)
     if matched:
         coverage["query"] = question
         coverage["query_terms"] = terms
         coverage["query_best_hits"] = best
+        status = "matched" if best * 3 >= terms else "ambiguous"
     else:
         coverage["query_matched_nothing"] = question
+        status = "none"
     return {"ok": True, "data": {
         "charts": [{"chart_id": c, "chart_name": f"Chart {c}"} for c in charts],
         "coverage": coverage,
+        "selection": {
+            "status": status,
+            "mode": "query",
+            "fallback_used": status in ("none", "ambiguous"),
+            "selected_ids": ids,
+            "query_terms": terms if matched else 0,
+            "best_hits": best if matched else 0,
+            "reason": "test fixture",
+        },
     }}
 
 

@@ -146,6 +146,7 @@ PACK = ToolPack(
             reaches_outside=True,
             deterministic=False,
             answers_vi=("Tỉ lệ này so với thị trường thế nào?",),
+            resource_refs={"chart_id": "chart", "metric": "metric"},
         ),
     ],
 )

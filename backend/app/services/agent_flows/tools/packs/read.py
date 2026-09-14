@@ -69,6 +69,7 @@ PACK = ToolPack(
             self_sufficient=True,
             answers_vi=("Báo cáo này có những biểu đồ nào?",
                         "Trang Doanh thu có gì?"),
+            data_exposure="metadata",
         ),
         spec(
             "inspect_filters",
@@ -87,6 +88,7 @@ PACK = ToolPack(
             self_sufficient=True,
             answers_vi=("Số liệu đang lọc theo gì?",
                         "Báo cáo đang xem khoảng nào?"),
+            data_exposure="metadata",
         ),
         local(
             "describe_time_coverage",
@@ -116,6 +118,7 @@ PACK = ToolPack(
             answers_vi=("Số liệu tính đến khi nào?",
                         "Dữ liệu có mới không?",
                         "Báo cáo này che khoảng thời gian nào?"),
+            resource_refs={"chart_id": "chart"},
         ),
         spec(
             "get_chart_glossary",
@@ -136,6 +139,8 @@ PACK = ToolPack(
             self_sufficient=True,
             answers_vi=("Cột doanh thu ở đây tính thế nào?",
                         "Biểu đồ này lấy từ bảng nào?"),
+            data_exposure="metadata",
+            resource_refs={"chart_id": "chart"},
         ),
         spec(
             "describe_semantic_model",
@@ -156,6 +161,7 @@ PACK = ToolPack(
             self_sufficient=True,
             answers_vi=("GMV ở đây định nghĩa thế nào?",
                         "Mô hình dữ liệu đằng sau báo cáo này ra sao?"),
+            data_exposure="metadata",
         ),
     ],
 )

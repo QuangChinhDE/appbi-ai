@@ -69,6 +69,7 @@ PACK = ToolPack(
                 "Top 5 khu vực bán tốt nhất?",
                 "Sản phẩm nào bán kém nhất?",
             ),
+            resource_refs={"chart_id": "chart"},
         ),
         local(
             "total_measure",
@@ -89,6 +90,7 @@ PACK = ToolPack(
             cost_class="data_query",
             self_sufficient=True,
             answers_vi=("Tổng doanh thu là bao nhiêu?", "Trung bình mỗi đơn bao nhiêu?"),
+            resource_refs={"chart_id": "chart"},
         ),
         local(
             "share_of",
@@ -109,6 +111,7 @@ PACK = ToolPack(
             cost_class="data_query",
             self_sufficient=True,
             answers_vi=("Ngành làm đẹp chiếm bao nhiêu %?", "Miền Bắc đóng góp bao nhiêu?"),
+            resource_refs={"chart_id": "chart"},
         ),
 
         # ── raw: flexible, capped, needs a model to interpret ────────────────
@@ -130,6 +133,7 @@ PACK = ToolPack(
             # `detail="index"` is the cheap way to survey many charts.
             payload="large",
             answers_vi=("Biểu đồ này đang nói gì?",),
+            resource_refs={"chart_id": "chart"},
         ),
         spec(
             "get_chart_data",
@@ -150,6 +154,8 @@ PACK = ToolPack(
             cost_class="data_query",
             payload="large",
             answers_vi=("Cho tôi xem chi tiết từng dòng",),
+            data_exposure="raw_rows",
+            resource_refs={"chart_id": "chart"},
         ),
         spec(
             "aggregate_chart_data",
@@ -164,6 +170,14 @@ PACK = ToolPack(
             cost_class="data_query",
             payload="scales_with_report",
             answers_vi=("Gộp doanh thu theo tháng giúp tôi",),
+            # A TABLE OF GROUPS, NOT OF RECORDS — stated rather than inherited.
+            # `result_kind="table"` is the row-level SHAPE, so a tool wearing it
+            # has to say which side of the line it is on; taking the `derived`
+            # default silently is exactly how a row-exposing tool would end up
+            # governed as though it were not. This one aggregates before it
+            # returns, so no record reaches the context.
+            data_exposure="derived",
+            resource_refs={"chart_id": "chart"},
         ),
         spec(
             "compute",

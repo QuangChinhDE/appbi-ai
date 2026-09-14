@@ -71,6 +71,7 @@ PACK = ToolPack(
             answers_vi=("Có kịp mục tiêu năm không?",
                         "Còn phải bán bao nhiêu mỗi tháng nữa?",
                         "Giữ đà này thì cuối quý được bao nhiêu?"),
+            resource_refs={"chart_id": "chart"},
         ),
         local(
             "detect_seasonality",
@@ -94,6 +95,7 @@ PACK = ToolPack(
             self_sufficient=True,
             answers_vi=("Doanh thu có theo mùa không?",
                         "Có chu kỳ lặp lại không?"),
+            resource_refs={"chart_id": "chart"},
         ),
         spec(
             "analyze_trend",
@@ -110,6 +112,7 @@ PACK = ToolPack(
             cost_class="data_query",
             self_sufficient=True,
             answers_vi=("Xu hướng mấy tháng qua thế nào?",),
+            resource_refs={"chart_id": "chart"},
         ),
         spec(
             "forecast_measure",
@@ -133,6 +136,7 @@ PACK = ToolPack(
             deterministic=False,
             self_sufficient=True,
             answers_vi=("Tháng tới dự kiến bao nhiêu?",),
+            resource_refs={"chart_id": "chart"},
         ),
     ],
 )

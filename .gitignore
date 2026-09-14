@@ -164,6 +164,18 @@ backend/scripts/regression_*.py
 # trace + the frozen node list). Tracked and CI-run for the same reason as
 # the suites above: a local-only test cannot protect a refactor.
 !backend/tests/test_agent_flow_golden.py
+!backend/tests/test_agent_tool_registry.py
+!backend/tests/test_tool_authorization_metadata.py
+!backend/tests/test_tool_capability_gates.py
+!backend/tests/test_tool_argument_contract.py
+!backend/tests/test_tool_result_ceiling.py
+!backend/tests/test_report_read_scope.py
+!backend/tests/test_chart_read_failure_reason.py
+!backend/tests/test_agent_flow_answer_contract.py
+!backend/tests/test_builder_error_messages.py
+!backend/tests/test_partial_context_admits_it.py
+!backend/tests/test_chat_chart_scope.py
+!backend/tests/test_discover_pack.py
 # Golden matrix — tracked so CI/reviewers can replay. BQ cases (ds55/56/65)
 # need a datasource → integration tier; the snowflake fixture seeds a local
 # Postgres and runs in CI.

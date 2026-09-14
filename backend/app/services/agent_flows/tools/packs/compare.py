@@ -71,6 +71,7 @@ PACK = ToolPack(
             answers_vi=("Có đạt mục tiêu không?",
                         "Còn thiếu bao nhiêu so với kế hoạch?",
                         "Tỉ lệ hoàn thành là bao nhiêu?"),
+            resource_refs={"chart_id": "chart"},
         ),
         spec(
             "compare_periods",
@@ -87,6 +88,7 @@ PACK = ToolPack(
             cost_class="data_query",
             self_sufficient=True,
             answers_vi=("Tháng này so tháng trước thế nào?", "Quý 2 tăng hay giảm?"),
+            resource_refs={"chart_id": "chart"},
         ),
         spec(
             "compare_segments",
@@ -102,6 +104,7 @@ PACK = ToolPack(
             cost_class="data_query",
             self_sufficient=True,
             answers_vi=("Miền Bắc so miền Nam ra sao?",),
+            resource_refs={"chart_id": "chart"},
         ),
         spec(
             "segment_compare",
@@ -117,6 +120,7 @@ PACK = ToolPack(
             cost_class="data_query",
             self_sufficient=True,
             answers_vi=("Nhóm này có bất thường so với phần còn lại không?",),
+            resource_refs={"chart_id": "chart"},
         ),
     ],
 )

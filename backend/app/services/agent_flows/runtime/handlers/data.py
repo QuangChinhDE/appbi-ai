@@ -88,30 +88,41 @@ def _charts_for_question(
         return allowed, "lookup_failed"
     # `_ok` wraps the payload: {"ok": true, "data": {...}}.
     payload = listing.get("data") if isinstance(listing.get("data"), dict) else {}
-    coverage = payload.get("coverage") if isinstance(payload.get("coverage"), dict) else {}
-    if "query_matched_nothing" in coverage:
-        # `list_charts` falls back to the FULL listing when nothing matches, which
-        # is right for a model that can read the coverage note and decide. Taken at
-        # face value here it would turn "read what the question is about" into
-        # "read everything in id order" without a word.
-        return allowed, "no_match"
-    # A MATCH THIS TOOL CALLS A MATCH IS NOT ALWAYS ONE, and the step has no model
-    # to sanity-check it. One shared token is enough to rank a chart, so on a real
-    # report "thời tiết sao Hỏa hôm nay" matched four charts - "sao" from "Tỷ lệ 5
-    # sao", "thời" from "Dòng thời gian" - and would have read them as if they
-    # answered the question. Found by asking the feature an off-topic question
-    # rather than by reading it.
+    selection = payload.get("selection") if isinstance(payload.get("selection"), dict) else {}
+    status = str(selection.get("status") or "")
+
+    # THE WHOLE POINT OF THE CONTRACT: a fallback listing is never a match here.
     #
-    # Measured on report 67: real questions cover 0.40-1.00 of their own terms,
-    # off-topic ones 0.17-0.20. A third is the gap between those two groups.
-    terms = coverage.get("query_terms") or 0
-    best = coverage.get("query_best_hits") or 0
-    if terms and best * 3 < terms:
-        return allowed, "weak_match"
+    # `list_charts` answers a miss with the FULL listing plus a note, which is
+    # right for a model — it reads the note and decides. This caller has no model,
+    # and the fallback listing is byte-shaped exactly like a successful one. It
+    # read "here is everything, sorry" as "here is what you asked for".
+    #
+    # `ambiguous` is refused for the same reason and is NOT a failure: one shared
+    # token is enough for this tool to rank a chart, so "thời tiết sao Hỏa hôm nay"
+    # matched four — "sao" from "Tỷ lệ 5 sao", "thời" from "Dòng thời gian". The
+    # step degrades to its default scope and says so; the run continues.
+    if status in ("none", "ambiguous"):
+        return allowed, "no_match" if status == "none" else "weak_match"
+    if status and status != "matched":
+        return allowed, "lookup_failed"
+    if not status:
+        # An older payload with no `selection` block. Trust it rather than refuse
+        # every match — but the coverage note is the one signal that survives.
+        coverage = payload.get("coverage") if isinstance(payload.get("coverage"), dict) else {}
+        if "query_matched_nothing" in coverage:
+            return allowed, "no_match"
+
     ranked = [
+        c for c in (selection.get("selected_ids") or [])
+        if isinstance(c, int)
+    ] or [
         c.get("chart_id") for c in (payload.get("charts") or [])
         if isinstance(c, dict) and isinstance(c.get("chart_id"), int)
     ]
+    # NEVER WIDENS. `list_charts` is scoped to the context, but a selector that let
+    # its output DEFINE scope would be a second implementation of entitlement, and
+    # this is the class of bug where being wrong is a leak rather than a bad answer.
     keep = set(allowed)
     ordered = [c for c in ranked if c in keep]
     return (ordered or allowed), ("" if ordered else "no_match")

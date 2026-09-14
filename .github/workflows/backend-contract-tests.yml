@@ -66,7 +66,19 @@ jobs:
             tests/test_distinct_self_target.py \
             tests/test_filter_layered_merge.py \
             tests/test_non_fanning_reachability.py \
-            tests/test_agent_flow_golden.py
+            tests/test_agent_flow_golden.py \
+            tests/test_agent_tool_registry.py \
+            tests/test_tool_authorization_metadata.py \
+            tests/test_tool_capability_gates.py \
+            tests/test_tool_argument_contract.py \
+            tests/test_tool_result_ceiling.py \
+            tests/test_report_read_scope.py \
+            tests/test_chart_read_failure_reason.py \
+            tests/test_agent_flow_answer_contract.py \
+            tests/test_builder_error_messages.py \
+            tests/test_partial_context_admits_it.py \
+            tests/test_chat_chart_scope.py \
+            tests/test_discover_pack.py
 
   # ── Tier 2: integration (golden replay on a real Postgres) ─────────────────
   integration-golden:

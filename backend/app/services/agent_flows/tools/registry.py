@@ -90,6 +90,20 @@ CostClass = Literal["cheap", "data_query", "expensive", "external"]
 PayloadSize = Literal["small", "medium", "large", "scales_with_report"]
 
 
+#: WHAT A RESULT EXPOSES, which is not the same as what the tool reads.
+#:
+#: `rank_values` reads every row of a chart to rank it; what comes back is an
+#: ordered list of figures. `get_chart_data` reads the same rows and hands them
+#: over. A capability written as "may not read rows" would disable the first,
+#: which is the whole analytical half of the product; the property that actually
+#: needs governing is whether ROW-LEVEL RECORDS reach a model's context.
+#:
+#:   metadata   — structure only: names, types, filters. No warehouse read.
+#:   derived    — figures computed OVER rows. Reads data, exposes conclusions.
+#:   raw_rows   — row-level records, as rows.
+DataExposure = Literal["metadata", "derived", "raw_rows"]
+
+
 @dataclass(frozen=True)
 class ToolSpec:
     """One tool, declared once."""
@@ -145,6 +159,24 @@ class ToolSpec:
     #: between two tools whose names both sound right.
     answers_vi: tuple[str, ...] = ()
 
+    # ── the two properties a gate reads ──────────────────────────────────────
+    #: See `DataExposure`. The default is the SAFE-TO-DEFAULT value: a tool that
+    #: forgot to declare is treated as computing over rows, never as exposing
+    #: them. Forgetting is still caught — `test_tool_authorization_metadata.py`
+    #: scans the pack sources and fails on any row-shaped tool that inherited it.
+    data_exposure: DataExposure = "derived"
+    #: WHICH ARGUMENTS NAME A GOVERNED RESOURCE — `{argument: resource type}`.
+    #:
+    #: Declared rather than inferred from the argument's NAME. A scope test that
+    #: greps for `chart_id` is a test that silently stops covering the tool whose
+    #: author called it `chart_a`, and silently never covered `doc_id` at all.
+    #: Security semantics belong in the declaration, not in a regex over it.
+    #:
+    #: This is also the seam a generic or MCP-supplied tool will arrive through:
+    #: such a tool has no pack author to remember the rule, so the rule has to be
+    #: something the registry can check.
+    resource_refs: dict[str, str] = field(default_factory=dict)
+
     def __post_init__(self) -> None:
         if self.cacheable and not self.deterministic:
             raise ValueError(
@@ -154,6 +186,15 @@ class ToolSpec:
         if self.reaches_outside and self.cacheable:
             raise ValueError(
                 f"tool '{self.name}': a tool that leaves AppBI must not be cacheable"
+            )
+        # Whether a `table`-shaped tool DECLARED its exposure rather than
+        # inheriting the default cannot be seen from here — a dataclass cannot
+        # tell a passed value from a default one. That check is a source scan in
+        # `test_tool_authorization_metadata.py`, which is also where tool #37
+        # turns CI red for forgetting.
+        if self.data_exposure not in ("metadata", "derived", "raw_rows"):
+            raise ValueError(
+                f"tool '{self.name}': data_exposure must be metadata|derived|raw_rows"
             )
 
     def to_dict(self) -> dict[str, Any]:
@@ -756,6 +797,44 @@ def _fence_untrusted(spec: "ToolSpec", out: dict) -> dict:
     return out
 
 
+def _capability_refusal(ctx: Any, spec: ToolSpec) -> dict | None:
+    """Refuse a tool the BINDING withheld, at the moment before it runs.
+
+    `allowed` answers a different question — "did the author grant this tool to
+    this step" — and answering only that left a gap with two live halves.
+
+    WEB. The external pack is hidden from the schema when the deployment has web
+    research off, and the node's own grant list is what `allowed` is built from.
+    So a model that names `web_search` anyway — some do, when a prompt mentions
+    one — passed `allowed` (the author DID grant it) and reached the body, on a
+    binding whose `capabilities.web_search` is false. The node handler checks the
+    capability before it builds the schema; nothing checked it before the call.
+
+    ROWS. `capabilities.read_rows` was read in exactly one place in the codebase,
+    the report-read node, and no tool could see it. It is not "may not read rows"
+    — every computing tool reads rows to compute, and a gate on reading would
+    disable `rank_values`, `total_measure` and every comparison. What it governs
+    is whether ROW-LEVEL RECORDS reach the model's context, which is
+    `spec.data_exposure == "raw_rows"`.
+
+    Both are read off the CONTEXT rather than the binding, because a tool body
+    cannot see the binding and should not learn to — the same reason
+    `max_rows_per_call` and `max_result_tokens` travel that way.
+    """
+    if spec.reaches_outside and getattr(ctx, "web_search", True) is False:
+        return R.err(
+            f"công cụ '{spec.name}' cần quyền tìm kiếm web, link này không bật",
+            code="not_granted",
+        )
+    if spec.data_exposure == "raw_rows" and getattr(ctx, "read_rows", True) is False:
+        return R.err(
+            f"công cụ '{spec.name}' trả về dữ liệu dòng thô, link này không cho "
+            "đưa dòng thô vào ngữ cảnh — dùng công cụ tính sẵn để lấy con số",
+            code="not_granted",
+        )
+    return None
+
+
 def execute(
     ctx: Any,
     name: str,
@@ -787,6 +866,10 @@ def execute(
     spec = tools.get(name)
     if spec is None:
         return R.err(f"không có công cụ tên '{name}'", code="unknown_tool")
+
+    denied = _capability_refusal(ctx, spec)
+    if denied is not None:
+        return denied
 
     args = args or {}
     key = None

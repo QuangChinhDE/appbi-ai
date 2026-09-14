@@ -653,6 +653,7 @@ PACK = ToolPack(
                 "Chúng ta có đo doanh thu theo danh mục không?",
                 "Có tài liệu nào nói về chính sách giao hàng?",
             ),
+            data_exposure="metadata",
         ),
         local(
             "resolve_chart_candidates",
@@ -682,6 +683,8 @@ PACK = ToolPack(
                 "Tỷ lệ giao đúng hẹn xem ở biểu đồ nào?",
                 "Biểu đồ nào đang đo GMV?",
             ),
+            data_exposure="metadata",
+            resource_refs={"metric": "metric"},
         ),
     ],
 )

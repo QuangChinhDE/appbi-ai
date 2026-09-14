@@ -255,15 +255,56 @@ def tool_list_charts(ctx: ToolContext, args: dict) -> dict:
     # WHAT THE SEARCH DID, said out loud. A narrowed list looks exactly like a
     # small report unless the listing admits it was filtered, and an agent that
     # cannot tell the two apart concludes the chart it wants does not exist.
+    # WHAT THE SELECTION WAS, as a structure rather than as a note to be read.
+    #
+    # This tool has two kinds of consumer. A model reads `note`, sees the chart
+    # names, and judges. Deterministic code — the `report_read` step choosing
+    # charts by the viewer's question — has no judgement to apply, and the listing
+    # returned after a MISS is byte-shaped exactly like the listing returned after
+    # a hit. It read a fallback as a perfect match, and nothing in the payload
+    # contradicted it.
+    #
+    # `status` is deliberately not a confidence score: nothing here is calibrated,
+    # and a number that looks calibrated invites callers to threshold on it as if
+    # it were. It is four states a caller can branch on, with the evidence
+    # (`query_terms`, `best_hits`) alongside so a caller that wants its own rule
+    # can still have one.
+    #
+    #   matched    — the question named something this report measures
+    #   ambiguous  — it matched, but weakly enough that acting on it is a guess
+    #   none       — nothing matched; what follows is a FALLBACK, not a result
+    #   failed     — the selection could not be attempted
+    if query:
+        if query_used and query_terms and query_best * 3 >= query_terms:
+            status = "matched"
+        elif query_used:
+            status = "ambiguous"
+        else:
+            status = "none"
+        out["selection"] = {
+            "status": status,
+            "mode": "query",
+            "fallback_used": status in ("none", "ambiguous"),
+            "selected_ids": [i.get("chart_id") for i in items
+                             if isinstance(i, dict) and i.get("chart_id") is not None],
+            "query_terms": query_terms,
+            "best_hits": query_best,
+            "reason": (
+                f"best chart matches {query_best} of {query_terms} query terms"
+                if query_used else f"no chart matches \"{query}\""
+            ),
+        }
+    else:
+        out["selection"] = {
+            "status": "matched", "mode": "explicit", "fallback_used": False,
+            "selected_ids": [i.get("chart_id") for i in items
+                             if isinstance(i, dict) and i.get("chart_id") is not None],
+            "query_terms": 0, "best_hits": 0,
+            "reason": "no query given — the whole listing is the answer",
+        }
+
     if query_used:
         out["coverage"]["query"] = query_used
-        # HOW STRONG the match was, not just that there was one. A single shared
-        # token is a match by this tool's rule, and for a model reading the listing
-        # that is fine - it sees the names and judges. A caller with no model to
-        # judge (the `report_read` step picking charts by the viewer's question)
-        # has only this number: measured on a 70-chart report, a real question
-        # covers 0.40-1.00 of its own terms while "thoi tiet sao Hoa hom nay"
-        # covers 0.17 by colliding with "5 sao" and "thoi gian".
         out["coverage"]["query_terms"] = query_terms
         out["coverage"]["query_best_hits"] = query_best
         out["coverage"]["note"] = (

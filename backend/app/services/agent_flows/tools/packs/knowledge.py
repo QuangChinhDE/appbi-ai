@@ -105,6 +105,10 @@ PACK = ToolPack(
                 "coverage": "đọc được bao nhiêu phần nếu tài liệu dài",
             },
             answers_vi=("Cho tôi nội dung tài liệu quy tắc tính",),
+            # Found by the metadata audit, not by reading: this tool's schema is
+            # built elsewhere than the pack, so a source scan for `doc_id` never
+            # saw it. Which is the argument for declaring rather than inferring.
+            resource_refs={"doc_id": "document"},
         ),
         spec(
             "recall_knowledge",

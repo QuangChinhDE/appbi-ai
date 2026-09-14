@@ -438,6 +438,13 @@ async def run_for_link(
     # The payload ceiling travels the same way, for the same reason: a tool
     # body cannot see the binding and should not learn to.
     ctx.max_result_tokens = binding_info.capabilities.max_result_tokens
+    # AND THE TWO THAT WERE LEFT OUT OF THIS BLOCK. `read_rows` was read in one
+    # place in the whole codebase — the report-read node — so a tool granted to an
+    # agent step ignored it entirely; `web_search` was checked when the schema was
+    # built but not when a call arrived. Both now reach the registry's call-time
+    # gate by the same route as the two above.
+    ctx.read_rows = binding_info.capabilities.read_rows
+    ctx.web_search = binding_info.capabilities.web_search
     from app.services.agent_flows.permissions import chart_scope, run_scope
 
     ctx.knowledge_scope = run_scope(
@@ -1000,6 +1007,9 @@ async def run_for_chat_thread(
 
     ctx.max_rows_per_call = binding_info.capabilities.max_rows_per_call
     ctx.max_result_tokens = binding_info.capabilities.max_result_tokens
+    # The chat surface declares `read_rows=False`, and until now nothing read it.
+    ctx.read_rows = binding_info.capabilities.read_rows
+    ctx.web_search = binding_info.capabilities.web_search
     ctx.knowledge_scope = run_scope(db, row, flow, binding_info.knowledge.model_dump())
     # THE CHARTS THIS ASSISTANT WAS GRANTED — derived from the knowledge scope, not
     # from a link. A chat flow that attached no dataset still measures nothing, so
