@@ -44,10 +44,17 @@ Theo Definition of Done của reviewer. Mọi con số dưới đây là output 
 
 ### 2.2 Lệnh CI unit-tier — chạy đúng lệnh trong workflow
 
-```
-DATABASE_URL="sqlite:///./ci_contract.db" python -m pytest -q <21 suites>
-→ 740 passed, 18 warnings in 10.63s
-```
+Chạy hai lần, trên hai bộ dependency:
+
+| môi trường | pytest | kết quả |
+|---|---|---|
+| Host (pytest 8.3.4, FastAPI 0.141.1) | 8.3.4 | **740 passed**, 0 failed, 10.63s |
+| **Container backend — đúng `requirements.txt` đã pin** (Python 3.11, pytest 7.4.4, FastAPI 0.109.0) | 7.4.4 | **738 passed, 2 skipped**, 0 failed, 10.11s |
+
+Bản pinned là môi trường gần CI nhất có sẵn tại chỗ. **2 skip nằm ở
+`test_locked_contract.py:275`** — FE structural guard bỏ qua vì container không
+mount `frontend/`; trên CI runner có checkout nên chúng sẽ chạy. **13 suite Agent
+Flow đóng góp 0 skip và 0 failure trên cả hai stack.**
 
 ### 2.3 Full backend collection
 
@@ -179,4 +186,28 @@ chat contract declares read_rows=False: True
 
 ---
 
-*Full regression đã chạy: backend 3012 passed / 44 baseline failed / 9 skipped; CI unit-tier 740 passed; tsc + qa + build sạch. Gate verify bằng chạy thật trên chat surface.*
+## 7. Push và CI
+
+| | |
+|---|---|
+| Commit code | `14c4c38` |
+| Commit track suite + báo cáo | `8aabe95` |
+| Remote | `53693fa..8aabe95 demo -> demo`, preflight pass |
+
+**Ghi chú về chẩn đoán sai của tôi.** Ba lần push đầu treo và tôi báo là lỗi
+network. Sai. Nguyên nhân là `git push 2>&1 | tail -N` — pipe giữ toàn bộ output
+tới khi lệnh kết thúc nên trông như đứng im — cộng với việc tôi chạy `git add`
+song song, tranh `.git/index.lock` với hook đang stash. Chạy không pipe và không
+có git khác chạy cùng thì push qua ngay, preflight pass (alembic 166 revisions
+single head, tsc sạch, import smoke sạch).
+
+**Chưa lấy được kết quả GitHub Actions từ máy này** — không có `gh` CLI và không
+có token, và tôi không đi tìm credential. Cần xem tại:
+`https://github.com/QuangChinhDE/appbi-ai/actions?query=branch%3Ademo`
+Workflow trigger theo path `backend/**`, cả hai commit đều chạm nên sẽ chạy.
+
+---
+
+*Full regression: backend 3012 passed / 44 baseline failed / 9 skipped. CI unit-tier
+740 passed (host) và 738 passed + 2 skipped (pinned stack). tsc + qa + build sạch.
+Gate verify bằng chạy thật trên chat surface, không phải bằng assert về code.*
