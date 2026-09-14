@@ -52,6 +52,76 @@ import { RunsTab } from './RunsTab';
 import { TestChat } from './TestChat';
 import { StatusBadge } from './shared';
 
+/** The inspector's width, dragged by the author and remembered per browser.
+ *
+ *  WHY IT IS NOT JUST A CONSTANT ANY MORE.
+ *
+ *  400px is right for naming a step and wrong for the two jobs that need room:
+ *  reading a prompt of several paragraphs, and choosing among 36 tools whose
+ *  descriptions are prose. It was the fixed width that pushed the tool picker's
+ *  type down to 10px in the first place — everything had to fit, so everything
+ *  got smaller. Letting the panel grow is the other half of making it readable.
+ *
+ *  Bounded on both sides: below ~320px the two-column rows inside collapse into
+ *  unreadable slivers, and past ~820px the canvas stops being a canvas. Stored in
+ *  `localStorage` because it is a per-person working preference, not a property of
+ *  the flow — two people editing the same flow want different widths, and neither
+ *  wants to set it again tomorrow.
+ */
+const INSPECTOR_MIN = 320;
+const INSPECTOR_MAX = 820;
+const INSPECTOR_KEY = 'appbi.agentFlows.inspectorWidth';
+
+function useInspectorWidth() {
+  const [width, setWidth] = React.useState(400);
+
+  React.useEffect(() => {
+    try {
+      const raw = Number(window.localStorage.getItem(INSPECTOR_KEY));
+      if (Number.isFinite(raw) && raw >= INSPECTOR_MIN && raw <= INSPECTOR_MAX) {
+        setWidth(raw);
+      }
+    } catch { /* private mode: the default is a fine answer */ }
+  }, []);
+
+  const commit = React.useCallback((next: number) => {
+    const clamped = Math.min(INSPECTOR_MAX, Math.max(INSPECTOR_MIN, Math.round(next)));
+    setWidth(clamped);
+    try { window.localStorage.setItem(INSPECTOR_KEY, String(clamped)); } catch { /* ignore */ }
+  }, []);
+
+  /** Drag from the panel's left edge. Pointer events rather than mouse, so a pen
+   *  or a touch screen works, and capture so the drag survives the pointer leaving
+   *  the 6px handle — which it does immediately, every time. */
+  const onPointerDown = React.useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    const handle = e.currentTarget;
+    handle.setPointerCapture(e.pointerId);
+    const startX = e.clientX;
+    const startWidth = width;
+    const move = (ev: PointerEvent) => commit(startWidth + (startX - ev.clientX));
+    const up = () => {
+      handle.releasePointerCapture(e.pointerId);
+      handle.removeEventListener('pointermove', move);
+      handle.removeEventListener('pointerup', up);
+    };
+    handle.addEventListener('pointermove', move);
+    handle.addEventListener('pointerup', up);
+  }, [width, commit]);
+
+  /** A drag handle nobody can reach with a keyboard is a control half the people
+   *  who need a wider panel cannot use. Arrows nudge, Home/End go to the bounds. */
+  const onKeyDown = React.useCallback((e: React.KeyboardEvent<HTMLDivElement>) => {
+    const step = e.shiftKey ? 80 : 20;
+    if (e.key === 'ArrowLeft') { e.preventDefault(); commit(width + step); }
+    if (e.key === 'ArrowRight') { e.preventDefault(); commit(width - step); }
+    if (e.key === 'Home') { e.preventDefault(); commit(INSPECTOR_MAX); }
+    if (e.key === 'End') { e.preventDefault(); commit(INSPECTOR_MIN); }
+  }, [width, commit]);
+
+  return { width, onPointerDown, onKeyDown, reset: () => commit(400) };
+}
+
 type Mode = 'design' | 'runs' | 'feedback' | 'activity';
 
 export function BrainBuilder({
@@ -136,6 +206,7 @@ export function BrainBuilder({
   const [viewport, setViewport] = React.useState({ top: 0, height: 1 });
   const canvasRef = React.useRef<HTMLElement | null>(null);
 
+  const inspector = useInspectorWidth();
   const [publishOpen, setPublishOpen] = React.useState(false);
   const [links, setLinks] = React.useState<FlowLinkUsage[]>([]);
   const [testOpen, setTestOpen] = React.useState(false);
@@ -634,7 +705,28 @@ export function BrainBuilder({
                 </IconBtn>
               </div>
             </main>
-            <aside className="flex w-[400px] flex-shrink-0 flex-col overflow-hidden border-l border-[rgb(var(--border-line))] bg-surface-1">
+            {/* The grab handle sits in the gap, not inside either side, so neither
+                the canvas nor the panel loses a column to it. */}
+            <div
+              role="separator"
+              aria-orientation="vertical"
+              aria-label={t('agentFlows.builder.resizeInspector')}
+              aria-valuenow={inspector.width}
+              aria-valuemin={INSPECTOR_MIN}
+              aria-valuemax={INSPECTOR_MAX}
+              tabIndex={0}
+              onPointerDown={inspector.onPointerDown}
+              onKeyDown={inspector.onKeyDown}
+              onDoubleClick={inspector.reset}
+              title={t('agentFlows.builder.resizeInspector')}
+              className="group relative w-1.5 flex-shrink-0 cursor-col-resize bg-[rgb(var(--border-line))] transition-colors hover:bg-brand focus:bg-brand focus:outline-none"
+            >
+              <span className="absolute inset-y-0 -left-1 -right-1" />
+            </div>
+            <aside
+              style={{ width: inspector.width }}
+              className="flex flex-shrink-0 flex-col overflow-hidden border-l border-[rgb(var(--border-line))] bg-surface-1"
+            >
               <div className="flex h-11 flex-shrink-0 items-center gap-2 border-b border-[rgb(var(--border-line))] px-3">
                 <b className="truncate text-caption font-strong">
                   {sel.path ? t('agentFlows.builder.selection.branch', { name: sel.path.name || sel.path.key })

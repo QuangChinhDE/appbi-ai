@@ -375,14 +375,24 @@ def tool_get_chart_summary(ctx: ToolContext, args: dict) -> dict:
         data = _fetch_chart_data(ctx, chart_id)
     except Exception as exc:
         logger.exception("dashboard_ai_bot get_chart_summary failed chart_id=%s", chart_id)
-        # The exception TEXT is not repeated: it comes from the shared chart
-        # service, which speaks the UI's language (Vietnamese here) because a
-        # person reads it in the app. Pasting it into a tool result puts a
-        # second language inside a machine contract that is otherwise English —
-        # found by the group-2 audit. The type is enough to act on; the full
-        # text is in the server log for whoever is debugging.
+        # `error` stays the short English fragment, because that is what the MODEL
+        # reads and a tool contract should not switch languages mid-sentence.
+        #
+        # But "the full text is in the server log for whoever is debugging" — what
+        # the old comment here said — assumed the person debugging can read the
+        # server log. A flow author cannot. Reported from the field: eight charts
+        # failed at once, the step said "could not read any chart in scope", the
+        # notice counted them, and the reason existed nowhere a person could
+        # reach; the author's only move was to switch on `Chart data` as a second
+        # path and pay for the rows in every downstream prompt.
+        #
+        # So the reason travels too, in `detail`, which the run trace shows and the
+        # read step folds into its notice.
         logger.warning("chart %s failed: %s", chart_id, exc)
-        return _err(f"failed to load chart {chart_id}: {type(exc).__name__}")
+        return _err(
+            f"failed to load chart {chart_id}: {type(exc).__name__}",
+            detail=f"{type(exc).__name__}: {exc}",
+        )
 
     try:
         pack = build_insight_pack(

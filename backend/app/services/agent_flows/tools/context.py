@@ -509,7 +509,7 @@ def _ok(data: Any) -> dict:
 
 
 def _err(message: str, *, code: str | None = None,
-         retryable: bool = False) -> dict:
+         retryable: bool = False, detail: str = "") -> dict:
     """A failure from a legacy tool body.
 
     `code` is optional and usually omitted: the registry infers the error code
@@ -526,6 +526,12 @@ def _err(message: str, *, code: str | None = None,
     if code:
         out["error_code"] = code
         out["retryable"] = retryable
+    if detail:
+        # FOR THE PERSON, NOT THE MODEL. `error` stays the short English fragment a
+        # tool contract is written in; `detail` carries the underlying reason in
+        # whatever language it arrived in, so the run trace can show an author WHY
+        # a read failed instead of only that it did.
+        out["detail"] = str(detail)[:300]
     return out
 
 

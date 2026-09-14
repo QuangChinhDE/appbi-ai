@@ -162,19 +162,49 @@ async def run_report_read(
     out["read_ok"] = len(failed) < len(out["charts"]) if out["charts"] else False
     if failed:
         out["unreadable_chart_ids"] = failed
+        # AND WHY. Counting the charts told an author that something broke and
+        # nothing about what — the reason was only ever in the server log, which is
+        # not a place a flow author can look. Distinct reasons, because eight charts
+        # on one broken table fail the same way eight times and repeating it says
+        # nothing new.
+        reasons: list[str] = []
+        for c in out["charts"]:
+            if _entry_has_data(c):
+                continue
+            for key in ("summary", "data"):
+                payload = c.get(key)
+                why = payload.get("detail") or payload.get("error") if isinstance(payload, dict) else None
+                if why and why not in reasons:
+                    reasons.append(str(why))
+        because = f" Nguyên nhân: {' · '.join(reasons[:2])}" if reasons else ""
         state.notices.append(
             Notice(
                 code="charts_unreadable",
                 text=f"Không đọc được dữ liệu của {len(failed)} biểu đồ "
-                     f"({', '.join(str(f) for f in failed[:4])}). Câu trả lời có thể thiếu.",
+                     f"({', '.join(str(f) for f in failed[:4])}). Câu trả lời có thể thiếu."
+                     + because,
             )
         )
     if out["charts"] and not out["read_ok"]:
         # Nothing at all came back. Raised so the node is recorded as an error and
         # the flow's own `on_error` decides — rather than handing a downstream agent
         # an empty context and letting it fill the gap.
+        # The reason goes in the raised message too: this is what the step row
+        # shows in the builder, and "could not read any chart" with no cause is
+        # exactly the dead end that sent one author hunting for a workaround
+        # instead of a fix.
+        first_reason = ""
+        for c in out["charts"]:
+            for key in ("summary", "data"):
+                payload = c.get(key)
+                if isinstance(payload, dict) and not payload.get("ok"):
+                    first_reason = str(payload.get("detail") or payload.get("error") or "")
+                    break
+            if first_reason:
+                break
         raise RuntimeError(
             "Không đọc được dữ liệu của bất kỳ biểu đồ nào trong phạm vi được cấp."
+            + (f" Nguyên nhân đầu tiên: {first_reason}" if first_reason else "")
         )
 
     # HOW MUCH OF THE REPORT IS THIS?
