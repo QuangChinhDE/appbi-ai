@@ -654,6 +654,7 @@ PACK = ToolPack(
                 "Có tài liệu nào nói về chính sách giao hàng?",
             ),
             data_exposure="metadata",
+            risk="read_only",
         ),
         local(
             "resolve_chart_candidates",
@@ -685,6 +686,7 @@ PACK = ToolPack(
             ),
             data_exposure="metadata",
             resource_refs={"metric": "metric"},
+            risk="read_only",
         ),
     ],
 )

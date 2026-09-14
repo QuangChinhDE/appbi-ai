@@ -103,6 +103,20 @@ PayloadSize = Literal["small", "medium", "large", "scales_with_report"]
 #:   raw_rows   — row-level records, as rows.
 DataExposure = Literal["metadata", "derived", "raw_rows"]
 
+#: WHAT CALLING IT DOES TO THE WORLD, which is not the same as what it returns.
+#:
+#: The default is `unknown` and that is the whole point of the field. A default of
+#: "safe" means the tool somebody adds next year and forgets to classify — the one
+#: that deletes a record, sends an email, writes to a workboard — is governed as
+#: harmless. Backwards compatibility must not become a fail-open default for the
+#: future, so today's 36 tools are migrated explicitly instead.
+#:
+#:   unknown      not classified yet. May not be run as an action.
+#:   read_only    reads. Changes nothing.
+#:   side_effect  changes something, reversibly.
+#:   destructive  changes something that cannot be undone.
+RiskClass = Literal["unknown", "read_only", "side_effect", "destructive"]
+
 
 @dataclass(frozen=True)
 class ToolSpec:
@@ -176,6 +190,23 @@ class ToolSpec:
     #: such a tool has no pack author to remember the rule, so the rule has to be
     #: something the registry can check.
     resource_refs: dict[str, str] = field(default_factory=dict)
+    #: See `RiskClass`. Fails CLOSED: a tool that does not classify itself is
+    #: `unknown`, and `unknown` is not permitted to act.
+    risk: RiskClass = "unknown"
+    #: JSON Schema of `result.data` — NOT of the envelope.
+    #:
+    #: `ok`, `kind`, `coverage` and `error_code` are the platform's contract: every
+    #: tool has them and no tool should restate them. What varies from tool to tool
+    #: is the payload, so that is what gets a schema, and a consumer wiring a
+    #: variable writes `{{ranking.items}}` rather than `{{ranking.data.items}}`.
+    #:
+    #: This does NOT replace `returns`. Two contracts, two readers: `returns` is a
+    #: sentence for an author choosing a tool and for a person reading a failed
+    #: run; `output_schema` is for a ToolNode wiring one step's output into the
+    #: next step's input without a model in between. Trying to make one field serve
+    #: both is why `returns` today has keys like `'actual / target'` — prose being
+    #: read as a schema.
+    output_schema: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.cacheable and not self.deterministic:
@@ -195,6 +226,11 @@ class ToolSpec:
         if self.data_exposure not in ("metadata", "derived", "raw_rows"):
             raise ValueError(
                 f"tool '{self.name}': data_exposure must be metadata|derived|raw_rows"
+            )
+        if self.risk not in ("unknown", "read_only", "side_effect", "destructive"):
+            raise ValueError(
+                f"tool '{self.name}': risk must be "
+                "unknown|read_only|side_effect|destructive"
             )
 
     def to_dict(self) -> dict[str, Any]:

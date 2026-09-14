@@ -42,6 +42,7 @@ PACK = ToolPack(
             self_sufficient=True,
             answers_vi=("Vì sao doanh thu giảm?", "Nhóm nào kéo số xuống?"),
             resource_refs={"chart_id": "chart"},
+            risk="read_only",
         ),
         spec(
             "detect_anomaly",
@@ -62,6 +63,7 @@ PACK = ToolPack(
             self_sufficient=True,
             answers_vi=("Có gì bất thường không?", "Ngày nào tụt hẳn?"),
             resource_refs={"chart_id": "chart"},
+            risk="read_only",
         ),
         spec(
             "smart_drilldown",
@@ -79,6 +81,7 @@ PACK = ToolPack(
             answers_vi=("Xem chi tiết riêng nhóm này",),
             data_exposure="raw_rows",
             resource_refs={"chart_id": "chart"},
+            risk="read_only",
         ),
         spec(
             "correlate_charts",
@@ -95,6 +98,7 @@ PACK = ToolPack(
             self_sufficient=True,
             answers_vi=("Hai chỉ số này có liên quan nhau không?",),
             resource_refs={"chart_a": "chart", "chart_b": "chart"},
+            risk="read_only",
         ),
         spec(
             "describe_distribution",
@@ -111,6 +115,7 @@ PACK = ToolPack(
             self_sufficient=True,
             answers_vi=("Doanh thu có tập trung vào vài khách không?",),
             resource_refs={"chart_id": "chart"},
+            risk="read_only",
         ),
     ],
 )

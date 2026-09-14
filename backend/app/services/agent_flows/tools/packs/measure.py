@@ -70,6 +70,8 @@ PACK = ToolPack(
                 "Sản phẩm nào bán kém nhất?",
             ),
             resource_refs={"chart_id": "chart"},
+            risk="read_only",
+            output_schema={"type": "object", "properties": {"items": {"type": "array", "description": "moi muc: rank, label, value, formatted, share_pct"}, "total": {"type": "number"}, "group_count": {"type": "integer"}}},
         ),
         local(
             "total_measure",
@@ -91,6 +93,8 @@ PACK = ToolPack(
             self_sufficient=True,
             answers_vi=("Tổng doanh thu là bao nhiêu?", "Trung bình mỗi đơn bao nhiêu?"),
             resource_refs={"chart_id": "chart"},
+            risk="read_only",
+            output_schema={"type": "object", "properties": {"value": {"type": "number"}, "formatted": {"type": "string"}, "rows_counted": {"type": "integer"}}},
         ),
         local(
             "share_of",
@@ -112,6 +116,8 @@ PACK = ToolPack(
             self_sufficient=True,
             answers_vi=("Ngành làm đẹp chiếm bao nhiêu %?", "Miền Bắc đóng góp bao nhiêu?"),
             resource_refs={"chart_id": "chart"},
+            risk="read_only",
+            output_schema={"type": "object", "properties": {"value": {"type": "number"}, "share_pct": {"type": "number"}, "rank": {"type": "integer"}, "matched_exactly": {"type": "boolean"}}},
         ),
 
         # ── raw: flexible, capped, needs a model to interpret ────────────────
@@ -134,6 +140,7 @@ PACK = ToolPack(
             payload="large",
             answers_vi=("Biểu đồ này đang nói gì?",),
             resource_refs={"chart_id": "chart"},
+            risk="read_only",
         ),
         spec(
             "get_chart_data",
@@ -156,6 +163,7 @@ PACK = ToolPack(
             answers_vi=("Cho tôi xem chi tiết từng dòng",),
             data_exposure="raw_rows",
             resource_refs={"chart_id": "chart"},
+            risk="read_only",
         ),
         spec(
             "aggregate_chart_data",
@@ -178,6 +186,7 @@ PACK = ToolPack(
             # returns, so no record reaches the context.
             data_exposure="derived",
             resource_refs={"chart_id": "chart"},
+            risk="read_only",
         ),
         spec(
             "compute",
@@ -191,6 +200,7 @@ PACK = ToolPack(
                 "citations": "số này lấy từ đâu",
             },
             answers_vi=("Tính tỉ lệ giữa hai số vừa đọc",),
+            risk="read_only",
         ),
     ],
 )

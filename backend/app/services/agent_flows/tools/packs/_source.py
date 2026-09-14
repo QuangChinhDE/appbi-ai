@@ -68,6 +68,8 @@ def spec(
     answers_vi: tuple[str, ...] = (),
     data_exposure: str = "derived",
     resource_refs: dict[str, str] | None = None,
+    risk: str = "unknown",
+    output_schema: dict[str, Any] | None = None,
 ) -> ToolSpec:
     """Declare a tool whose body still lives in the old package.
 
@@ -107,6 +109,8 @@ def spec(
         answers_vi=answers_vi,
         data_exposure=data_exposure,
         resource_refs=dict(resource_refs or {}),
+        risk=risk,
+        output_schema=dict(output_schema or {}),
     )
 
 
@@ -128,6 +132,8 @@ def local(
     answers_vi: tuple[str, ...] = (),
     data_exposure: str = "derived",
     resource_refs: dict[str, str] | None = None,
+    risk: str = "unknown",
+    output_schema: dict[str, Any] | None = None,
 ) -> ToolSpec:
     """Declare a tool written against the contract, body and schema supplied here.
 
@@ -157,4 +163,6 @@ def local(
         answers_vi=answers_vi,
         data_exposure=data_exposure,
         resource_refs=dict(resource_refs or {}),
+        risk=risk,
+        output_schema=dict(output_schema or {}),
     )

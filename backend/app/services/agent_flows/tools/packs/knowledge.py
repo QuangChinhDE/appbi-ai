@@ -66,6 +66,7 @@ PACK = ToolPack(
             },
             answers_vi=("Vì sao chỉ số này không đạt mục tiêu?",
                         "Chỉ số này loại trừ trường hợp nào?"),
+            risk="read_only",
         ),
         spec(
             "search_knowledge",
@@ -91,6 +92,7 @@ PACK = ToolPack(
             },
             answers_vi=("Doanh thu ở đây định nghĩa thế nào?",
                         "Công ty mình định nghĩa GMV ra sao?"),
+            risk="read_only",
         ),
         spec(
             "read_document",
@@ -109,6 +111,7 @@ PACK = ToolPack(
             # built elsewhere than the pack, so a source scan for `doc_id` never
             # saw it. Which is the argument for declaring rather than inferring.
             resource_refs={"doc_id": "document"},
+            risk="read_only",
         ),
         spec(
             "recall_knowledge",
@@ -121,6 +124,7 @@ PACK = ToolPack(
                 "citations": "nguồn",
             },
             answers_vi=("Trước đây đã kết luận gì về nhóm khách này?",),
+            risk="read_only",
         ),
     ],
 )

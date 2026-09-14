@@ -80,7 +80,8 @@ jobs:
             tests/test_chat_chart_scope.py \
             tests/test_discover_pack.py \
             tests/test_agent_flow_replay.py \
-            tests/test_i5_hard_gate_stays_lowest.py
+            tests/test_i5_hard_gate_stays_lowest.py \
+            tests/test_tool_output_contract.py
 
   # ── Tier 2: integration (golden replay on a real Postgres) ─────────────────
   integration-golden:
