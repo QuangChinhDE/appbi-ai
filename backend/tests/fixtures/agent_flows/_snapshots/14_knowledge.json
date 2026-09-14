@@ -1,0 +1,40 @@
+{
+  "answer_shape": {
+    "block_count": 1,
+    "citation_count": 0,
+    "figure_count": 0,
+    "has_answer": true
+  },
+  "citations": [],
+  "counts": {
+    "llm_calls": 1,
+    "steps": 2,
+    "tool_calls": 1
+  },
+  "execution_path": [
+    {
+      "key": "tri_thuc",
+      "status": "ok",
+      "type": "knowledge"
+    },
+    {
+      "key": "answer",
+      "status": "ok",
+      "type": "agent"
+    }
+  ],
+  "fixture": "14_knowledge",
+  "memory_set_keys": [],
+  "notice_codes": [],
+  "status": "ok",
+  "step_outputs": {
+    "answer": "ok :: Kết quả của các bước trước, theo thứ tự đã chạy. Tổng hợp TẤT CẢ, không chỉ bước cuối; nếu hai bước mâu thuẫn thì nói rõ ra thay vì chọn bừa một bên:\n\n### tri_thuc\n{\"ok\": true, \"kind\": \"table\", \"data\"",
+    "tri_thuc": "{\"ok\": true, \"kind\": \"table\", \"data\": {\"columns\": [\"category\", \"revenue\"], \"rows\": [[\"moveis\", 1200]]}}"
+  },
+  "tool_calls": [
+    {
+      "step": "tri_thuc",
+      "tool": "search_knowledge"
+    }
+  ]
+}

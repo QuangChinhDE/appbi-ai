@@ -1,0 +1,45 @@
+{
+  "covers": [
+    "capability decision",
+    "web withheld",
+    "I5 tripwire"
+  ],
+  "envelope": {
+    "binding": {
+      "capabilities": {
+        "read_rows": true,
+        "web_search": false
+      }
+    }
+  },
+  "flow": {
+    "answer_node": "answer",
+    "nodes": [
+      {
+        "key": "answer",
+        "name": "Tra loi",
+        "prompt": "Tra cuu ben ngoai",
+        "tools": [
+          {
+            "tool": "web_search"
+          }
+        ],
+        "type": "agent"
+      }
+    ]
+  },
+  "name": "11_capability_web_refused",
+  "provider": {
+    "tool_calls": [
+      {
+        "args": {
+          "query": "gdp"
+        },
+        "name": "web_search"
+      }
+    ]
+  },
+  "tools": {
+    "real": true
+  }
+}

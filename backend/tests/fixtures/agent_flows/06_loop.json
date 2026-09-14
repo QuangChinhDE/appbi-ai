@@ -1,0 +1,39 @@
+{
+  "covers": [
+    "loop",
+    "iteration"
+  ],
+  "flow": {
+    "answer_node": "answer",
+    "nodes": [
+      {
+        "key": "set",
+        "type": "set_var",
+        "value": "[\"x\", \"y\"]",
+        "value_type": "list",
+        "var": "ds"
+      },
+      {
+        "as_var": "muc",
+        "body": [
+          {
+            "key": "in",
+            "type": "set_var",
+            "value": "{{muc}}",
+            "var": "cuoi"
+          }
+        ],
+        "key": "lap",
+        "over": "{{ds}}",
+        "type": "loop"
+      },
+      {
+        "key": "answer",
+        "name": "Tra loi",
+        "prompt": "Tra loi: {{question}}",
+        "type": "agent"
+      }
+    ]
+  },
+  "name": "06_loop"
+}

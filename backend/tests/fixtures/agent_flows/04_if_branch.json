@@ -1,0 +1,44 @@
+{
+  "covers": [
+    "if",
+    "branch taken",
+    "answer must be top level"
+  ],
+  "flow": {
+    "answer_node": "answer",
+    "nodes": [
+      {
+        "key": "set",
+        "type": "set_var",
+        "value": "yes",
+        "var": "co_du_lieu"
+      },
+      {
+        "body": [
+          {
+            "key": "trong_nhanh",
+            "type": "set_var",
+            "value": "da_chay",
+            "var": "ket"
+          }
+        ],
+        "conditions": [
+          {
+            "left": "{{co_du_lieu}}",
+            "op": "equals",
+            "right": "yes"
+          }
+        ],
+        "key": "nhanh",
+        "type": "if"
+      },
+      {
+        "key": "answer",
+        "name": "Tra loi",
+        "prompt": "Ket: {{ket}}",
+        "type": "agent"
+      }
+    ]
+  },
+  "name": "04_if_branch"
+}

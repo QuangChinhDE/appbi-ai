@@ -1,0 +1,47 @@
+{
+  "answer_shape": {
+    "block_count": 1,
+    "citation_count": 0,
+    "figure_count": 0,
+    "has_answer": true
+  },
+  "citations": [],
+  "counts": {
+    "llm_calls": 1,
+    "steps": 4,
+    "tool_calls": 0
+  },
+  "execution_path": [
+    {
+      "key": "set",
+      "status": "ok",
+      "type": "set_var"
+    },
+    {
+      "key": "b1",
+      "status": "ok",
+      "type": "set_var"
+    },
+    {
+      "key": "chon",
+      "status": "ok",
+      "type": "switch"
+    },
+    {
+      "key": "answer",
+      "status": "ok",
+      "type": "agent"
+    }
+  ],
+  "fixture": "05_switch",
+  "memory_set_keys": [],
+  "notice_codes": [],
+  "status": "ok",
+  "step_outputs": {
+    "answer": "ok :: Kết quả của các bước trước, theo thứ tự đã chạy. Tổng hợp TẤT CẢ, không chỉ bước cuối; nếu hai bước mâu thuẫn thì nói rõ ra thay vì chọn bừa một bên:\n\n### set\nb\n\n### b1\nB",
+    "b1": "B",
+    "chon": "{\"matched\": [\"ca_b\"], \"value\": \"b\"}",
+    "set": "b"
+  },
+  "tool_calls": []
+}

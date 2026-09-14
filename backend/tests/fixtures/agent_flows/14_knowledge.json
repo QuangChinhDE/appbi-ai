@@ -1,0 +1,24 @@
+{
+  "covers": [
+    "knowledge node"
+  ],
+  "flow": {
+    "answer_node": "answer",
+    "nodes": [
+      {
+        "key": "tri_thuc",
+        "output_var": "tt",
+        "query": "dinh nghia doanh thu",
+        "run_policy": "every_turn",
+        "type": "knowledge"
+      },
+      {
+        "key": "answer",
+        "name": "Tra loi",
+        "prompt": "Dua tren {{tt}}",
+        "type": "agent"
+      }
+    ]
+  },
+  "name": "14_knowledge"
+}

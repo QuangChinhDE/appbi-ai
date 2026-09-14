@@ -176,6 +176,12 @@ backend/scripts/regression_*.py
 !backend/tests/test_partial_context_admits_it.py
 !backend/tests/test_chat_chart_scope.py
 !backend/tests/test_discover_pack.py
+!backend/tests/test_agent_flow_replay.py
+!backend/tests/test_i5_hard_gate_stays_lowest.py
+!backend/tests/replay_harness.py
+!backend/tests/fixtures/
+!backend/tests/fixtures/**
+!backend/scripts/agent_flow_replay.py
 # Golden matrix — tracked so CI/reviewers can replay. BQ cases (ds55/56/65)
 # need a datasource → integration tier; the snowflake fixture seeds a local
 # Postgres and runs in CI.

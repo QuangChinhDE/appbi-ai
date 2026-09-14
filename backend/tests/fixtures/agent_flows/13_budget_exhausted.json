@@ -1,0 +1,51 @@
+{
+  "covers": [
+    "budget exhaustion"
+  ],
+  "envelope": {
+    "runtime": {
+      "budget": {
+        "max_llm_calls": 2,
+        "max_seconds": 60,
+        "max_tool_calls": 4
+      },
+      "model": "gpt-4o-mini",
+      "provider": "openai"
+    }
+  },
+  "flow": {
+    "answer_node": "answer",
+    "nodes": [
+      {
+        "key": "set",
+        "type": "set_var",
+        "value": "[\"a\", \"b\", \"c\", \"d\", \"e\"]",
+        "value_type": "list",
+        "var": "ds"
+      },
+      {
+        "as_var": "m",
+        "body": [
+          {
+            "key": "b",
+            "name": "Tieu ngan sach",
+            "output_var": "r",
+            "prompt": "{{m}}",
+            "run_policy": "every_turn",
+            "type": "agent"
+          }
+        ],
+        "key": "lap",
+        "over": "{{ds}}",
+        "type": "loop"
+      },
+      {
+        "key": "answer",
+        "name": "Tra loi",
+        "prompt": "Tra loi: {{question}}",
+        "type": "agent"
+      }
+    ]
+  },
+  "name": "13_budget_exhausted"
+}

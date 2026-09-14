@@ -1,0 +1,17 @@
+{
+  "covers": [
+    "simple agent"
+  ],
+  "flow": {
+    "answer_node": "answer",
+    "nodes": [
+      {
+        "key": "answer",
+        "name": "Tra loi",
+        "prompt": "Tra loi: {{question}}",
+        "type": "agent"
+      }
+    ]
+  },
+  "name": "01_agent_only"
+}

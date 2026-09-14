@@ -1,0 +1,37 @@
+{
+  "covers": [
+    "tool usage",
+    "tool call order"
+  ],
+  "flow": {
+    "answer_node": "answer",
+    "nodes": [
+      {
+        "key": "answer",
+        "name": "Tra loi",
+        "prompt": "Xep hang giup toi",
+        "tools": [
+          {
+            "tool": "rank_values"
+          },
+          {
+            "tool": "total_measure"
+          }
+        ],
+        "type": "agent"
+      }
+    ]
+  },
+  "name": "03_agent_with_tool",
+  "provider": {
+    "tool_calls": [
+      {
+        "args": {
+          "chart_id": 41,
+          "top_n": 5
+        },
+        "name": "rank_values"
+      }
+    ]
+  }
+}

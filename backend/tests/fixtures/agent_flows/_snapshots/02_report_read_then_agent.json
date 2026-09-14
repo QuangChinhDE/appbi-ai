@@ -1,0 +1,55 @@
+{
+  "answer_shape": {
+    "block_count": 1,
+    "citation_count": 1,
+    "figure_count": 0,
+    "has_answer": true
+  },
+  "citations": [
+    {
+      "kind": "chart",
+      "ref": "41"
+    }
+  ],
+  "counts": {
+    "llm_calls": 2,
+    "steps": 2,
+    "tool_calls": 3
+  },
+  "execution_path": [
+    {
+      "key": "read",
+      "status": "ok",
+      "type": "report_read"
+    },
+    {
+      "key": "answer",
+      "status": "ok",
+      "type": "agent"
+    }
+  ],
+  "fixture": "02_report_read_then_agent",
+  "memory_set_keys": [],
+  "notice_codes": [
+    "figures_unverified"
+  ],
+  "status": "ok",
+  "step_outputs": {
+    "answer": "ok :: Kết quả của các bước trước, theo thứ tự đã chạy. Tổng hợp TẤT CẢ, không chỉ bước cuối; nếu hai bước mâu thuẫn thì nói rõ ra thay vì chọn bừa một bên:\n\n### read\n{\"scope\": {\"read\": 1, \"available\": 1}, \"",
+    "read": "{\"scope\": {\"read\": 1, \"available\": 1}, \"charts\": [{\"chart_id\": 41, \"title\": \"Doanh thu theo danh mục\", \"chart_type\": \"BAR\", \"summary\": {\"chart_name\": null, \"chart_type\": null, \"total_rows\": null, \"columns\": []}, \"data\": {\"ok\": true, \"kind\": \"table\", \"data\": {\"columns\": [\"category\", \"revenue\"], \"rows\": [\"… (lồng quá sâu, đã cắt)\"]}}, \"rows_ordered_by\": \"revenue\"}], \"filters\": {\"ok\": true, \"kind\": \"table\", \"data\": {\"columns\": [\"category\", \"revenue\"], \"rows\": [[\"moveis\", 1200]]}}, \"read_ok\": true}"
+  },
+  "tool_calls": [
+    {
+      "step": "read",
+      "tool": "inspect_filters"
+    },
+    {
+      "step": "read",
+      "tool": "get_chart_summary"
+    },
+    {
+      "step": "read",
+      "tool": "get_chart_data"
+    }
+  ]
+}

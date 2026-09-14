@@ -1,0 +1,43 @@
+{
+  "covers": [
+    "resource scope",
+    "chart outside binding",
+    "KNOWN DEFECT: taxonomy reports query_failed"
+  ],
+  "flow": {
+    "answer_node": "answer",
+    "nodes": [
+      {
+        "key": "answer",
+        "name": "Tra loi",
+        "prompt": "Doc bieu do 999",
+        "tools": [
+          {
+            "tool": "get_chart_summary"
+          }
+        ],
+        "type": "agent"
+      }
+    ]
+  },
+  "known_defect": {
+    "cause": "_CODE_HINTS matches 'not in scope' and 'khong thuoc'; the guard emits 'is not part of this dashboard.' which matches nothing and falls through to the default",
+    "status": "snapshotted as-is on purpose. V3.0 must not change behaviour; this is the first item for the error-taxonomy fix, and the replay harness will prove that fix changes exactly this and nothing else",
+    "what": "assert_chart_in_scope refuses correctly, but result.classify() maps its message to query_failed instead of chart_out_of_scope",
+    "why_it_matters": "query_failed's documented recovery is 'retry the query', so a model retries a call that can never succeed, and the chart_out_of_scope recovery hint (search_business_assets / resolve_chart_candidates) never reaches it"
+  },
+  "name": "12_chart_out_of_scope",
+  "provider": {
+    "tool_calls": [
+      {
+        "args": {
+          "chart_id": 999
+        },
+        "name": "get_chart_summary"
+      }
+    ]
+  },
+  "tools": {
+    "real": true
+  }
+}

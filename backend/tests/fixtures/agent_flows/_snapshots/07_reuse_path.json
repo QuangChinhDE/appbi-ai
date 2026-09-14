@@ -1,0 +1,49 @@
+{
+  "answer_shape": {
+    "block_count": 1,
+    "citation_count": 1,
+    "figure_count": 0,
+    "has_answer": true
+  },
+  "citations": [
+    {
+      "kind": "chart",
+      "ref": "41"
+    }
+  ],
+  "counts": {
+    "llm_calls": 2,
+    "steps": 2,
+    "tool_calls": 1
+  },
+  "execution_path": [
+    {
+      "key": "read",
+      "status": "ok",
+      "type": "report_read"
+    },
+    {
+      "key": "answer",
+      "status": "ok",
+      "type": "agent"
+    }
+  ],
+  "fixture": "07_reuse_path",
+  "memory_set_keys": [
+    "bao_cao"
+  ],
+  "notice_codes": [
+    "figures_unverified"
+  ],
+  "status": "ok",
+  "step_outputs": {
+    "answer": "ok :: Kết quả của các bước trước, theo thứ tự đã chạy. Tổng hợp TẤT CẢ, không chỉ bước cuối; nếu hai bước mâu thuẫn thì nói rõ ra thay vì chọn bừa một bên:\n\n### read\n{\"scope\": {\"read\": 1, \"available\": 1}, \"",
+    "read": "{\"scope\": {\"read\": 1, \"available\": 1}, \"charts\": [{\"chart_id\": 41, \"title\": \"Doanh thu theo danh mục\", \"chart_type\": \"BAR\", \"indexed\": true, \"measures\": [{\"field\": \"revenue\", \"label\": \"\"}], \"dimensions\": [{\"field\": \"category\", \"label\": \"\"}], \"how_to_read\": \"Dùng rank_values / total_measure / share_of với chart_id này để lấy số chính xác.\"}], \"filters\": {\"ok\": true, \"kind\": \"table\", \"data\": {\"columns\": [\"category\", \"revenue\"], \"rows\": [[\"moveis\", 1200]]}}, \"read_ok\": true}"
+  },
+  "tool_calls": [
+    {
+      "step": "read",
+      "tool": "inspect_filters"
+    }
+  ]
+}

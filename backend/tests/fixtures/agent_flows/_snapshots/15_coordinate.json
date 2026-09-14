@@ -1,0 +1,43 @@
+{
+  "answer_shape": {
+    "block_count": 1,
+    "citation_count": 0,
+    "figure_count": 0,
+    "has_answer": true
+  },
+  "citations": [],
+  "counts": {
+    "llm_calls": 2,
+    "steps": 3,
+    "tool_calls": 0
+  },
+  "execution_path": [
+    {
+      "key": "dieu_phoi__planner",
+      "status": "ok",
+      "type": "agent"
+    },
+    {
+      "key": "dieu_phoi",
+      "status": "ok",
+      "type": "coordinate"
+    },
+    {
+      "key": "answer",
+      "status": "ok",
+      "type": "agent"
+    }
+  ],
+  "fixture": "15_coordinate",
+  "memory_set_keys": [],
+  "notice_codes": [
+    "no_specialist_picked"
+  ],
+  "status": "ok",
+  "step_outputs": {
+    "answer": "ok :: Doanh thu thế nào?",
+    "dieu_phoi": "{\"picked\": [], \"considered\": [\"cg_a\", \"cg_b\"]}",
+    "dieu_phoi__planner": "ok :: Doanh thu thế nào?"
+  },
+  "tool_calls": []
+}

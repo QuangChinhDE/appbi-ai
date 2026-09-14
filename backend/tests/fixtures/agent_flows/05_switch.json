@@ -1,0 +1,66 @@
+{
+  "covers": [
+    "switch",
+    "case matched",
+    "fallback not taken"
+  ],
+  "flow": {
+    "answer_node": "answer",
+    "nodes": [
+      {
+        "key": "set",
+        "type": "set_var",
+        "value": "b",
+        "var": "loai"
+      },
+      {
+        "cases": [
+          {
+            "body": [
+              {
+                "key": "a1",
+                "type": "set_var",
+                "value": "A",
+                "var": "ket"
+              }
+            ],
+            "key": "ca_a",
+            "op": "equals",
+            "value": "a"
+          },
+          {
+            "body": [
+              {
+                "key": "b1",
+                "type": "set_var",
+                "value": "B",
+                "var": "ket"
+              }
+            ],
+            "key": "ca_b",
+            "op": "equals",
+            "value": "b"
+          }
+        ],
+        "fallback": [
+          {
+            "key": "f1",
+            "type": "set_var",
+            "value": "F",
+            "var": "ket"
+          }
+        ],
+        "key": "chon",
+        "type": "switch",
+        "value": "{{loai}}"
+      },
+      {
+        "key": "answer",
+        "name": "Tra loi",
+        "prompt": "Ket: {{ket}}",
+        "type": "agent"
+      }
+    ]
+  },
+  "name": "05_switch"
+}

@@ -1,0 +1,30 @@
+{
+  "covers": [
+    "error path",
+    "on_error continue"
+  ],
+  "flow": {
+    "answer_node": "answer",
+    "nodes": [
+      {
+        "key": "hong",
+        "name": "Se loi",
+        "on_error": "continue",
+        "output_var": "bo_qua",
+        "prompt": "x",
+        "run_policy": "every_turn",
+        "type": "agent"
+      },
+      {
+        "key": "answer",
+        "name": "Tra loi",
+        "prompt": "Tra loi: {{question}}",
+        "type": "agent"
+      }
+    ]
+  },
+  "name": "08_error_path",
+  "provider": {
+    "fail_times": 99
+  }
+}
