@@ -448,6 +448,43 @@ def backend_tests_reach_ci(rep: Report, files: list[str]) -> None:
                             f"absent, and their routes, permission keys and imports with them."
                         )
 
+    # THE TWO PROCESSES MUST AGREE ON THE SECRET, AND THEIR DEFAULTS DO NOT.
+    #
+    # `middleware.ts` VERIFIES the session JWT (jose `jwtVerify`) rather than just
+    # looking for the cookie, and falls back to 'change-this-in-production'. The
+    # backend signs with `settings.SECRET_KEY`, which falls back to
+    # 'dev-secret-key-change-in-production'. Different literals for the same
+    # secret, so a deployment that sets neither signs tokens the frontend rejects
+    # and bounces every authed page to /login.
+    #
+    # docker-compose hides this by handing all three services one value. The E2E
+    # job set neither, and 13 specs reported it as "flow list did not render" —
+    # a product symptom for a configuration cause, and the fifth time on this
+    # branch that a workflow ran a differently-shaped deployment than the one
+    # that ships.
+    mw = REPO_ROOT / "frontend" / "src" / "middleware.ts"
+    if mw.exists() and config_py.exists():
+        mw_body = mw.read_text(encoding="utf-8", errors="replace")
+        fe = re.search(r"process\.env\.SECRET_KEY\s*\?\?\s*['\"]([^'\"]+)['\"]", mw_body)
+        be = re.search(r"^\s+SECRET_KEY:\s*str\s*=\s*['\"]([^'\"]+)['\"]",
+                       config_py.read_text(encoding="utf-8", errors="replace"), re.M)
+        # Only a problem while the two disagree. Make the defaults equal and this
+        # check correctly stops caring.
+        if fe and be and fe.group(1) != be.group(1) and "jwtVerify" in mw_body:
+            wf_dir = REPO_ROOT / ".github" / "workflows"
+            for wf in sorted(wf_dir.glob("*.yml")) if wf_dir.exists() else []:
+                body = wf.read_text(encoding="utf-8", errors="replace")
+                # only workflows that run BOTH processes — one alone cannot mismatch
+                if not (re.search(r"uvicorn", body) and re.search(r"next start|npm run start", body)):
+                    continue
+                if not re.search(r"^\s*SECRET_KEY\s*:", body, re.M):
+                    rep.bad(
+                        f"{wf.name} runs the backend and the frontend without SECRET_KEY. "
+                        f"They default to different values ({be.group(1)!r} vs {fe.group(1)!r}), "
+                        f"so the middleware rejects every token the backend signs and each "
+                        f"authed page redirects to /login."
+                    )
+
     # A brand-new local suite is git-IGNORED, so it never shows in `git status`.
     # Advisory only: most stay local deliberately.
     newer = []

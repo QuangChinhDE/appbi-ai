@@ -57,6 +57,26 @@ jobs:
       DATASOURCE_ENCRYPTION_KEY: ""
       ENVIRONMENT: test
 
+      # ONE SECRET, OR THE FRONTEND CANNOT READ WHAT THE BACKEND SIGNED.
+      #
+      # `middleware.ts` does not merely look for the cookie, it VERIFIES the JWT
+      # (`jwtVerify`, jose). It falls back to 'change-this-in-production'; the
+      # backend falls back to 'dev-secret-key-change-in-production'. Two different
+      # literals for the same secret. With neither set — which is what this job
+      # did — the backend signed a perfectly good token and the Edge middleware
+      # rejected every one, so each authed page bounced to /login carrying only
+      # `refresh_token` (that cookie is scoped to the refresh endpoint, so it is
+      # never sent to a page route and cannot rescue the redirect either).
+      #
+      # 13 specs failed on that and reported it as "flow list did not render" and
+      # "Test button not found" — product symptoms for a configuration cause. The
+      # same suite passes locally in 11.6s because docker-compose hands all three
+      # services ONE `SECRET_KEY`.
+      #
+      # Job-level so it reaches all three: uvicorn, `next build` (the Edge bundle
+      # inlines it) and `next start`.
+      SECRET_KEY: e2e-secret-not-a-production-value
+
       # THE MODULE UNDER TEST HAS TO BE MOUNTED.
       #
       # `api/__init__.py` includes the Agent Flows router — and the Direct Chat
