@@ -110,14 +110,27 @@ jobs:
             tests/test_node_child_slots.py 2>&1 | tee /tmp/pytest-unit.log
       - name: Report the unit failure where it can be read
         if: failure()
+        # AS ANNOTATIONS, not a job summary.
+        #
+        # `$GITHUB_STEP_SUMMARY` does not reach the check-run payload — it comes
+        # back empty to anyone reading the API. `::error::` lines do, through
+        # /check-runs/{id}/annotations, with no token: that is how the Playwright
+        # job's failures became readable. Job logs remain admin-only, which is the
+        # whole reason this step exists.
         run: |
-          {
-            echo '### Unit suite failed'
-            echo
-            echo '```'
-            tail -n 60 /tmp/pytest-unit.log 2>/dev/null || echo '(no log captured)'
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
+          log=/tmp/pytest-unit.log
+          if [ ! -s "$log" ]; then
+            echo "::error::the unit step produced no log — it failed before pytest started"
+            exit 0
+          fi
+          # The short summary pytest prints at the end: one line per failure.
+          grep -E '^(FAILED|ERROR)' "$log" | head -n 25 | while IFS= read -r line; do
+            echo "::error::$line"
+          done
+          # And the counts, so "3 failed" is visible even if the names are cut.
+          tail -n 3 "$log" | while IFS= read -r line; do
+            [ -n "$line" ] && echo "::error::$line"
+          done
 
   # ── Tier 2: integration (golden replay on a real Postgres) ─────────────────
   integration-golden:
