@@ -1,7 +1,7 @@
 ---
 name: database-migrations
 description: Alembic migration rules for AppBI. Load when editing backend/alembic or backend/app/models.
-globs:
+paths:
   - "backend/alembic/**"
   - "backend/app/models/**"
 ---

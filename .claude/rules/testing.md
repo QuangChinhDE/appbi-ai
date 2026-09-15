@@ -1,7 +1,7 @@
 ---
 name: testing
 description: Which tests to run, when to add one, and when E2E is required. Load when writing or selecting tests.
-globs:
+paths:
   - "backend/tests/**"
   - "e2e/**"
   - "qa/**"
@@ -26,8 +26,8 @@ inventory.
 
 | Tier | Command | When |
 |---|---|---|
-| FAST | `bash scripts/ci/verify.sh fast` | in the coding loop, after edits |
-| TASK | `bash scripts/ci/verify.sh task` | before claiming anything is done |
+| FAST | `python scripts/ci/verify.py fast` | in the coding loop, after edits |
+| TASK | `python scripts/ci/verify.py task` | before claiming anything is done; runs the guardrail's required gates |
 | FULL | `bash scripts/ci/preflight.sh` + CI | pre-push; CI runs contract + golden + E2E |
 
 Never run the full Playwright suite after a single edit.
@@ -41,8 +41,7 @@ you add is **invisible to CI and lost on a fresh clone** unless you:
 2. add it to the pytest list in `.github/workflows/backend-contract-tests.yml`, and
 3. `git add -f` it.
 
-`bash scripts/ci/verify.sh task` checks 1 and 2 for you and fails if a new test is
-orphaned.
+`python scripts/ci/verify.py task` checks 1 and 2 for you.
 
 ## Bug fixes
 

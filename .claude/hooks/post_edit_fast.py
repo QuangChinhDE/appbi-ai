@@ -18,7 +18,7 @@ written:
       -> alembic_chain.py (~10s, stdlib, no DB). A missing parent revision is a
          boot-time 502, and it is cheaper to learn now than at push time.
 
-Everything heavier belongs to `scripts/ci/verify.sh` (fast/task tiers) and the
+Everything heavier belongs to `scripts/ci/verify.py` (fast/task tiers) and the
 Stop hook.
 
 CONTRACT

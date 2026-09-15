@@ -67,6 +67,19 @@ if [ -f frontend/package.json ]; then
   fi
 fi
 
+# 2c) Claude workflow config. The rules' frontmatter used `globs:`, which Claude
+# Code does not read, so every rule silently loaded in every session instead of
+# being path-scoped. The YAML parsed, nothing warned. Only a schema-aware check
+# finds that class, so it runs with the other commit-integrity gates.
+if [ -d .claude ]; then
+  section "Claude workflow config"
+  if [ -n "$PY" ]; then
+    "$PY" scripts/ci/check_claude_config.py || fail=1
+  else
+    echo "· skipped (no python on PATH)"
+  fi
+fi
+
 # 3) Backend import smoke — catches imports of deleted/renamed modules.
 if [ -f backend/app/main.py ] && [ -z "${PREFLIGHT_SKIP_BACKEND_IMPORT:-}" ]; then
   section "Backend import smoke"

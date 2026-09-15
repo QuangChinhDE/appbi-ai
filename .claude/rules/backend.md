@@ -1,7 +1,7 @@
 ---
 name: backend
 description: FastAPI layering, auth and error conventions for AppBI's backend. Load when editing backend/app.
-globs:
+paths:
   - "backend/**"
 ---
 

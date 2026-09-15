@@ -254,6 +254,7 @@ tests:
     run: "python scratchpad/golden_sql_harness.py  (+ committed baselines)"
     locks: "non-regression of every saved chart's generated SQL on Postgres + BigQuery"
   filter_matrix:
+    requires: postgres-fixture
     run: "python backend/scripts/regression_filter_matrix.py --verify --tag snowflake"
     locks: "fan-out→EXISTS, conformed-dim transitive filter, multi-hop, chasm fail-loud, cross-table measure re-anchor"
   locked_contract:
@@ -285,15 +286,18 @@ tests:
     run: "pytest backend/tests/test_phase15_error_contracts.py"
     locks: "ValueError→400, VN messages, two-path implicit-measure hint"
   explore_dashboard_parity:
+    requires: postgres-fixture
     run: "python backend/scripts/test_explore_dashboard_parity.py"
     locks: "preview SQL/data == dashboard tile"
   tsc:
     run: "cd frontend && npx tsc --noEmit"
     locks: "frontend type-safety (schema/prop changes)"
   browser_verify:
+    status: manual
     run: "rebuild FE standalone + docker cp + restart, then Playwright verify vs the RUNNING build (static audits miss runtime/build-staleness)"
     locks: "FE change actually renders/behaves in a real build (not just source)"
   import_smoke:
+    status: manual
     run: "docker cp <file> into backend + restart + hit the touched endpoint (lazy imports hide errors)"
     locks: "no import/attribute error on the touched runtime path"
 

@@ -29,7 +29,7 @@ reviewing against so they can be disputed.
 
 ```bash
 python scripts/ci/guardrail_check.py --diff
-bash scripts/ci/verify.sh task
+python scripts/ci/verify.py task
 ```
 
 These answer the mechanical questions (layering, protected subsystems, invariant removal,

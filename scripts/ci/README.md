@@ -49,14 +49,38 @@ loop. It looks at the **working tree**, works out which areas you touched, and r
 what applies.
 
 ```bash
-bash scripts/ci/verify.sh fast   # in the loop: typecheck + the QA contracts you touched
-bash scripts/ci/verify.sh task   # before calling anything done (adds the checks below)
+python scripts/ci/verify.py fast   # in the loop: typecheck + the QA contracts you touched
+python scripts/ci/verify.py task   # before calling anything done (adds the checks below)
 ```
+
+`verify.sh` still works as a thin wrapper. The logic moved to Python because the
+task-complete gate must not depend on a shell: on Windows/VS Code without Git Bash there
+is no `bash`, and the Stop hook's old response to that was to exit 0 — reporting a
+verified completion having verified nothing.
 
 | Tier | Runs |
 |---|---|
 | `fast` | frontend `tsc --noEmit`; the frontend QA contract for the area touched; alembic chain if a migration/model changed |
-| `task` | everything in `fast`, plus backend import smoke, the "backend tests reach CI" check, guardrail patch validation, and semantic-contract health when a backbone file changed |
+| `task` | everything in `fast`, plus backend import smoke, the "backend tests reach CI" check, `.claude/` config validation, guardrail patch validation, semantic-contract health when a backbone file changed, and **execution of the guardrail's required gates** |
+
+## Required gates are executed, not just named
+
+The task tier resolves the required-test set from `guardrail_rules.yaml` and runs every
+entry it can run here. Entries marked `status: missing` / `untracked` / `manual`, or that
+`requires:` a seeded database, are **not** run and are printed under `NOT VERIFIED` with
+the reason. A gate that did not run is never counted as coverage. `APPBI_VERIFY_WITH_DB=1`
+forces the database-backed ones.
+
+There is no second registry: commands, statuses and requirements all come from
+`guardrail_rules.yaml`.
+
+# check_claude_config.py — schema of the agent workflow
+
+Validates `.claude/settings.json` (hooks must use exec form, targets must exist), every
+`.claude/rules/*.md` frontmatter (must use `paths:`, and each glob must match a real file),
+and every skill's discoverability frontmatter. It exists because the rules used `globs:` —
+a key Claude Code does not read — so all five loaded unconditionally in every session while
+appearing to be path-scoped. The YAML parsed; nothing warned. Runs in preflight and CI.
 
 Non-zero exit means the task is not done. The `Stop` hook in `.claude/settings.json` runs
 the `task` tier and hands a failure back to Claude rather than letting a turn end red.

@@ -15,7 +15,9 @@ Layering is formalized in `scripts/guardrail/guardrail_rules.yaml` (`layers`).
 The ones that get violated in practice:
 
 - `backend/app/models/**` must not import services. Business logic lives in
-  `backend/app/services/**`; routers/`api/**` are thin — validate, authorize, delegate.
+  `backend/app/services/**`. Routers under `api/**` are NOT thin here (`api/datasets.py`
+  is ~6,950 lines) — put *new* logic in a service, and do not refactor a fat router as a
+  side effect. Detail: `.claude/rules/backend.md`.
 - The **public surface** (`frontend/src/app/d/[token]`, `app/embed/[token]`,
   `backend/app/api/public.py`) uses `publicClient` **only**. One authed call from a
   public page is a data-exposure bug, not a style issue.
@@ -93,11 +95,14 @@ of the nearest equivalent first — this codebase almost always already has one.
 
 You may not report a task complete until:
 
-1. `bash scripts/ci/verify.sh task` passes for the paths you changed (type check, the
-   applicable FE QA contracts, targeted tests, guardrail patch validation).
+1. `python scripts/ci/verify.py task` passes for the paths you changed. It resolves the
+   guardrail's required gates and runs the ones that can run here.
 2. Guardrail verdict is resolved: `block` must be fixed; `warn` means you ran the named
    tests; **`unknown` is not `safe`** — it means no rule covers it, so say so explicitly.
-3. You state what you changed, what you ran, what passed, and what residual risk remains.
+3. Every gate `verify.py` printed under `NOT VERIFIED` (missing / untracked / manual /
+   needs a warehouse) is named in your report as unverified. A gate that did not run is
+   never presented as coverage.
+4. You state what you changed, what you ran, what passed, and what residual risk remains.
 
 If a check fails, fix it. Reporting "done, but X is failing" is only acceptable when you
 also say plainly that the task is *not* complete.

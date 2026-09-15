@@ -60,6 +60,36 @@ Whether in-session or committed, the plan must name:
 - **Tests required, decided now** — which existing suites must still pass, and what new
   test locks the new behaviour. Naming the tests *after* writing the code produces tests
   shaped to the implementation instead of to the requirement.
+- **Gates that cannot be run** — if `verify.py` or the guardrail reports a required gate
+  as missing, untracked, manual, or needing a warehouse, say so in the plan. The person
+  approving it needs to know what will stay unverified.
+
+## 5a. For medium/large work: STOP and wait for approval
+
+**Do not start implementing.** Present the plan and end your turn.
+
+This applies to anything in the medium/large row of the sizing table: a new user-visible
+surface, a schema change, cross-layer work, or a protected subsystem. The cost of
+discovering a wrong assumption after the code exists is far higher than one round trip,
+and at that point the sunk work biases the conversation toward keeping it.
+
+What "present the plan" means:
+
+- the acceptance criteria you are building to, restated so they can be corrected
+- the file/layer list and the sequence
+- the risks and the tests
+- anything that will remain unverified
+- the open questions you want answered
+
+Then stop. Wait for the user to say to proceed. Silence is not approval, and a question
+answered is not approval of the whole plan. If the user changes the scope, revise the plan
+and present it again rather than absorbing the change mid-implementation.
+
+Resume at step 6 only after an explicit go-ahead.
+
+**Trivial and small changes skip this entirely** — a typo, a copy fix, a contained bug fix
+gets implemented and verified without a checkpoint. Asking for approval on those is
+bureaucracy, and bureaucracy is how a gate becomes something people route around.
 
 ## 6. Implement the smallest coherent change
 
@@ -69,7 +99,7 @@ past. If you discover a second problem, note it and finish the first.
 ## 7. Verify fast, in the loop
 
 ```bash
-bash scripts/ci/verify.sh fast
+python scripts/ci/verify.py fast
 ```
 
 Type check plus the QA contracts for what you touched. Seconds, not minutes. Run it
@@ -108,16 +138,20 @@ build is a recurring source of false green here.
 ## 12. Definition of Done
 
 ```bash
-bash scripts/ci/verify.sh task
+python scripts/ci/verify.py task
 ```
+
+The task tier resolves the guardrail's required gates and RUNS the ones that can run
+here. Read its summary: anything printed under `NOT VERIFIED` did not execute.
 
 Then report, concretely:
 
 - files changed, grouped by layer, and why each one had to change
 - checks run and their actual results
 - tests added and what they lock
-- residual risk — including anything the guardrail rated `unknown`, and anything you
-  could not verify
+- **every gate listed as UNVERIFIED or MANUAL, by name** — a gate that did not run is
+  never described as coverage
+- residual risk, including anything the guardrail rated `unknown`
 
 If a check fails, you are not done. Say so plainly rather than reporting completion with
 a caveat attached.

@@ -66,6 +66,9 @@ seed_test_users.py
 create_dashboard.py
 explore_datasets.py
 check_*.py
+# …but scripts/ci/ holds real gates, not one-offs. preflight.sh and CI call this
+# one, so an ignored copy would mean a gate that cannot run on a fresh clone.
+!scripts/ci/check_*.py
 fix_*.py
 add_*.py
 run.py

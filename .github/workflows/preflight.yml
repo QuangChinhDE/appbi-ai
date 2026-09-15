@@ -38,6 +38,10 @@ jobs:
           pip install PyYAML
           python scripts/ci/guardrail_check.py --health
 
+      # ── 1c. Claude workflow config (schema of .claude/) ───────────────────
+      - name: Claude workflow config (rules frontmatter, hooks, skills)
+        run: python scripts/ci/check_claude_config.py
+
       # ── 2. Frontend typecheck (uncommitted-provider / type breaks) ────────
       - uses: actions/setup-node@v4
         with:

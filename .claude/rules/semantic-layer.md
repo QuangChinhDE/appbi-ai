@@ -1,7 +1,7 @@
 ---
 name: semantic-layer
 description: Gates required before changing AppBI's protected semantic layer or public-link security. Load when editing those files.
-globs:
+paths:
   - "backend/app/services/semantic_*.py"
   - "backend/app/services/dataset_model_service.py"
   - "backend/app/services/dataset_calendar_service.py"
@@ -60,34 +60,29 @@ Then run every test the verdict names.
   treat it as needing human judgement. If the guardrail *should* have known, add the rule
   to `guardrail_rules.yaml` as part of the change.
 
-## Some required gates cannot currently be run — know which
+## Not every required gate can be run — ask, do not assume
 
-The guardrail names four gates for this subsystem (`golden_sql`, `galaxy_golden`,
-`distinct_cascade_bq`, `filter_matrix`). **Three of them do not exist in the repository.**
-Audited against git history: they were never committed, so they only ever ran on the
-machine that wrote them. Each is now marked `status: missing` in `guardrail_rules.yaml`.
+Some entries in this subsystem's required-test list name harnesses that are not in the
+repository. Which ones changes as gates are rebuilt, so **this file deliberately does not
+list them**. A hard-coded inventory here would be a second copy of
+`guardrail_rules.yaml` and would go stale the first time a gate is restored — it already
+did once.
 
+Get the current picture from the registry itself:
+
+```bash
+python scripts/ci/guardrail_check.py --health          # runnable vs known gaps, with status
+python scripts/ci/guardrail_check.py --files <paths>   # what THIS change requires
 ```
-backend/scripts/verify_distinct_cascade_bigquery.py   never committed
-backend/scripts/verify_galaxy_golden.py               never committed
-scratchpad/golden_sql_harness.py                      never committed
-backend/tests/test_semantic_query_engine_measures.py  never committed
-backend/tests/test_phase15_error_contracts.py         on disk, never committed
-```
 
-What **does** run: `filter_matrix` (`regression_filter_matrix.py`) and
-`explore_dashboard_parity`, both in CI on a seeded Postgres, plus the unit tier.
+`bash scripts/ci/verify.sh task` (or `python scripts/ci/verify.py task`) resolves the same
+registry, runs every required gate that can run here, and prints the rest as `UNVERIFIED`
+or `MANUAL` with the reason.
 
-So a `warn` verdict here can name a gate you cannot execute. When that happens, **say so
-explicitly in your report** — "the guardrail required `galaxy_golden`; that harness was
-never committed, so this change is unverified against it" — rather than quietly treating
-the change as covered. Treat the real coverage of this subsystem as thinner than the rule
-list suggests, and lean harder on reproducing the behaviour yourself.
-
-`python scripts/ci/guardrail_check.py --health` prints the current split, and CI runs it
-every push. A gap that is *declared* stays quiet; a test that goes missing **without** a
-`status:` line is reported as a regression and fails `--strict`. Restoring any of these
-means deleting its `status:` line and nothing else.
+**Never present an unrunnable gate as coverage.** If the guardrail required a gate that is
+`missing`, `untracked`, needs a warehouse, or is manual, name it in your report and say the
+change is unverified against it. Treat this subsystem's real coverage as thinner than the
+rule list implies, and lean harder on reproducing the behaviour yourself.
 
 ## Contract health
 

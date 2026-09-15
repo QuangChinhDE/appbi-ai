@@ -63,7 +63,7 @@ wrong reason (an import error, a fixture problem) proves nothing.
   rejects the bad shape. Postgres will happily run SQL BigQuery refuses.
 - User-visible flow that source cannot prove: an `e2e/tests/*.spec.ts` case.
 - A new backend test needs the allow-list wiring in `.claude/rules/testing.md`, or CI
-  never runs it. `verify.sh task` checks this.
+  never runs it. `verify.py task` checks this.
 
 Where a bug genuinely cannot be expressed as a test, say so explicitly and explain why.
 
@@ -83,8 +83,12 @@ behaviour you did not intend to change, until you can argue otherwise in writing
 
 ```bash
 python scripts/ci/guardrail_check.py --diff
-bash scripts/ci/verify.sh task
+python scripts/ci/verify.py task
 ```
+
+`verify.py task` runs the guardrail's required gates for the files you touched. Any gate
+it prints under `NOT VERIFIED` (missing harness, untracked, manual, or needing a seeded
+database) must be named in your report as unverified — not folded into "tests pass".
 
 ## 8. Record it
 

@@ -1,7 +1,7 @@
 ---
 name: frontend
 description: Next.js / TypeScript conventions for AppBI's frontend. Load when editing frontend/src.
-globs:
+paths:
   - "frontend/**"
 ---
 
