@@ -383,7 +383,16 @@ invariants:
     scope: ["frontend/src/components/agent-flows/TestChat.tsx",
             "frontend/src/components/chat/ConversationView.tsx",
             "frontend/src/components/dashboards/AnswerBlocks.tsx"]
-    added_patterns: ['\.map\(\s*\(?b\)?\s*=>\s*b\.markdown']
+    # SINGLE LINE, because a diff only carries the lines that CHANGED. The first
+    # attempt keyed on the full idiom `=> b.markdown).filter`, which spans two
+    # lines — the `.filter` is unchanged context and never reaches the matcher, so
+    # the guard silently passed a real reintroduction. Caught by mutation-testing
+    # it rather than by reading it.
+    #
+    # Safe to key this tightly now: the explanation in TestChat.tsx describes the
+    # bug in prose instead of quoting the code, so the guard no longer fires on the
+    # comment that documents it.
+    added_patterns: ['\.map\(\s*\(?\s*\w+\s*\)?\s*=>\s*\w+\.markdown\s*\)']
     severity: high
     message: >
       Studio, Direct Chat and the dashboard bot read the same blocks. A surface that

@@ -112,13 +112,13 @@ export function branchProbes(nodes: FlowNode[]): BranchProbe[] {
 type Envelope = {
   status?: string;
   trace?: { path: string; steps: TraceStepView[] };
-  /** THE FULL UNION, not `{markdown?}`.
+  /** THE FULL UNION, not a markdown-only shape.
    *
-   *  This was typed as markdown-only, which is what let the panel flatten the
-   *  answer to `.map(b => b.markdown)` without TypeScript objecting. `metric`,
-   *  `table`, `chart_ref` and `callout` carry no markdown, so they were filtered
-   *  out and an author checking a flow saw an em-dash for an answer a reader
-   *  would have seen rendered. */
+   *  Typing this as markdown-only is what let the panel rebuild the answer from
+   *  the markdown field alone without TypeScript objecting. `metric`, `table`,
+   *  `chart_ref` and `callout` carry none, so they were filtered out and an author
+   *  checking a flow saw an em-dash for an answer a reader would have seen
+   *  rendered. Widening it made the compiler reject the flatten immediately. */
   answer?: { blocks: AnswerBlock[] };
   notices?: { code: string; text: string }[];
   /** Which passages the answer was built from. The runtime has recorded these for
