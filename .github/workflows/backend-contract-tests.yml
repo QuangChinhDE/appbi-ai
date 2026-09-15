@@ -56,8 +56,16 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Run semantic-contract + engine unit tests (no BigQuery)
+        # THE FAILURE HAS TO BE READABLE BY WHOEVER SEES IT GO RED.
+        #
+        # Job logs need admin rights on this repository, so a red run showed
+        # "Process completed with exit code 1" and nothing else — which is how a
+        # pytest USAGE error (exit 4, the whole suite skipped) went unnoticed and
+        # looked the same as a real test failure. The job summary is readable
+        # without admin, so the tail of the run goes there on failure.
         run: |
-          python -m pytest -q \
+          set -o pipefail
+          python -m pytest -q --tb=short \
             tests/test_locked_contract.py \
             tests/test_phase2_filter_propagation.py \
             tests/test_phase4_symmetric_aggregates.py \
@@ -99,7 +107,17 @@ jobs:
             tests/test_govern_doc_evidence_link.py \
             tests/test_govern_knowledge_tools.py \
             tests/test_what_the_ai_sees.py \
-            tests/test_node_child_slots.py
+            tests/test_node_child_slots.py 2>&1 | tee /tmp/pytest-unit.log
+      - name: Report the unit failure where it can be read
+        if: failure()
+        run: |
+          {
+            echo '### Unit suite failed'
+            echo
+            echo '```'
+            tail -n 60 /tmp/pytest-unit.log 2>/dev/null || echo '(no log captured)'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
   # ── Tier 2: integration (golden replay on a real Postgres) ─────────────────
   integration-golden:
