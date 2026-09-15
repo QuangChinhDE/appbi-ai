@@ -39,6 +39,7 @@ import React from 'react';
 import { AppModalShell } from '@/components/common/AppModalShell';
 import { ChartNamesContext, RichMarkdown, extractFollowups } from '@/components/common/AiAnswer';
 import { CitationCards } from '@/components/common/CitationCards';
+import { AnswerBlocks } from '@/components/dashboards/AnswerBlocks';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
 import { Input, Textarea } from '@/components/ui/Input';
@@ -47,8 +48,8 @@ import { cn } from '@/lib/utils';
 import { useI18n } from '@/providers/LanguageProvider';
 import {
   listTestTargetReports, rateRun, testFlow, testFlowAsChat, testFlowOnReport, walkNodes,
-  type ChatTestResult, type FlowLinkUsage, type FlowNode, type FlowType,
-  type ReportTestResult, type TestTargetReport,
+  type AnswerBlock, type ChatTestResult, type FlowLinkUsage, type FlowNode,
+  type FlowType, type ReportTestResult, type TestTargetReport,
 } from '@/lib/agentFlows';
 
 /** One alternative a branching node can take, as something testable.
@@ -111,7 +112,14 @@ export function branchProbes(nodes: FlowNode[]): BranchProbe[] {
 type Envelope = {
   status?: string;
   trace?: { path: string; steps: TraceStepView[] };
-  answer?: { blocks: { type: string; markdown?: string }[] };
+  /** THE FULL UNION, not `{markdown?}`.
+   *
+   *  This was typed as markdown-only, which is what let the panel flatten the
+   *  answer to `.map(b => b.markdown)` without TypeScript objecting. `metric`,
+   *  `table`, `chart_ref` and `callout` carry no markdown, so they were filtered
+   *  out and an author checking a flow saw an em-dash for an answer a reader
+   *  would have seen rendered. */
+  answer?: { blocks: AnswerBlock[] };
   notices?: { code: string; text: string }[];
   /** Which passages the answer was built from. The runtime has recorded these for
    *  a while and nothing rendered them — an answer arrived with its evidence
@@ -140,6 +148,10 @@ type Turn = {
    *  and a verdict shown against a later turn's route would be a lie. */
   aimed?: string;
   answer: string;
+  /** The answer as the runtime produced it. The flattened `answer` above is still
+   *  used for the `[FOLLOWUP]` text convention and for a legacy envelope that
+   *  carries no blocks; where blocks exist they are what gets rendered. */
+  blocks?: AnswerBlock[];
   env?: Envelope;
   runId?: number;
   rating?: 'up' | 'down';
@@ -314,12 +326,17 @@ export function TestChat({
         }) as ReportTestResult;
       }
       const env = res.envelope as Envelope | undefined;
-      const answer = (env?.answer?.blocks || [])
-        .map((b) => b.markdown).filter(Boolean).join('\n\n');
+      const blocks = env?.answer?.blocks || [];
+      // TEXT ONLY, AND DELIBERATELY. This feeds the `[FOLLOWUP]` text convention
+      // and the fallback for a legacy envelope that carries no blocks. It is no
+      // longer "the answer" — `blocks` is, and it is what gets rendered.
+      const answer = blocks
+        .map((b) => (b.type === 'text' ? b.markdown : ''))
+        .filter(Boolean).join('\n\n');
       setReadiness(res.readiness);
       setReportInfo(res.report);
       setTurns((prev) => prev.map((tn, i) => (
-        i === at ? { ...tn, answer, env, runId: res.run_row_id ?? undefined } : tn
+        i === at ? { ...tn, answer, blocks, env, runId: res.run_row_id ?? undefined } : tn
       )));
       setOpenTurn(at);
     } catch (e: unknown) {
@@ -720,9 +737,30 @@ function TurnView({
           )}
 
           <div className="rounded-2xl rounded-bl-md border border-[rgb(var(--border-line))] bg-surface-1 px-3.5 py-2.5 text-caption leading-relaxed">
-            {answer.body
-              ? <RichMarkdown text={answer.body} />
-              : <span className="text-text-tertiary">—</span>}
+            {/* THE SAME RENDERER THE READER GETS.
+                The author's job on this screen is judging the answer, so it has to
+                BE the answer. Flattening to markdown dropped `metric`, `table`,
+                `chart_ref` and `callout` — which have no markdown — and printed an
+                em-dash while the run reported `ok`.
+                `onOpenChart` is deliberately omitted: there is no dashboard behind
+                this panel to open a chart in, and the renderer treats it as
+                optional. */}
+            {turn.blocks?.length ? (
+              <AnswerBlocks
+                blocks={turn.blocks}
+                renderMarkdown={(md) => <RichMarkdown text={md} />}
+                onAskFollowup={isLast && !busy ? onAsk : undefined}
+              />
+            ) : answer.body ? (
+              <RichMarkdown text={answer.body} />
+            ) : (
+              /* A run that produced NO blocks is a different fault from a run that
+                 produced blocks this panel could not show, and the author needs to
+                 tell them apart. The em-dash said neither. */
+              <span className="text-text-tertiary">
+                {t('agentFlows.test.noAnswerBlocks')}
+              </span>
+            )}
             {/* THE EVIDENCE, openable at the version it was cited from. Testing a
                 flow means checking WHERE its answers come from, and until now the
                 one screen built for that showed only the prose. */}
