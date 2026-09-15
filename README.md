@@ -269,6 +269,15 @@ automatically in the backend entrypoint.
 - **Push gate** — `.githooks/pre-push` runs a preflight (Alembic single-head check, frontend `tsc --noEmit`, backend import smoke) and blocks the push if anything fails. Enable it once with `git config core.hooksPath .githooks`.
 - **Local dev** — `docker-compose.dev.yml` provides development overrides; iterate against the running containers rather than rebuilding the world each change.
 - **Migrations** — additive, chained; create with Alembic and keep a single head.
+- **Coding-loop gate** — `bash scripts/ci/verify.sh fast` while working,
+  `bash scripts/ci/verify.sh task` before calling a change done. Path-aware: it runs only
+  the checks that apply to what you touched. See [`scripts/ci/README.md`](scripts/ci/README.md).
+- **Engineering guardrail** — `python scripts/ci/guardrail_check.py --diff` checks a change
+  against the architecture rules, protected subsystems and invariants in
+  `Skill-AppBI/appbi-guardrail-mcp/guardrail_rules.yaml`. Copy
+  [`.mcp.example.json`](.mcp.example.json) to use it interactively as well.
+- **AI assistants** — project instructions, scoped rules, skills and hooks live in
+  [`.claude/`](.claude/CLAUDE.md) and are committed, so they apply on every clone.
 
 ---
 

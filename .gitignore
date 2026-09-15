@@ -23,12 +23,29 @@ out/
 .DS_Store
 *.log
 
-# Claude AI / Copilot agent internal files
-.claude/
+# Claude AI / Copilot agent internal files.
+#
+# The agent's SHARED configuration is project infrastructure and must survive a
+# clone — instructions, scoped rules, skills and hooks are worth nothing if they
+# exist only on the machine that wrote them. Per-developer state (approved
+# permissions, session locks, caches) stays local. Note `.claude/*` rather than
+# `.claude/`: a file cannot be re-included while its parent directory is itself
+# excluded — the same reason the backend/tests block below is written this way.
+.claude/*
 CLAUDE.md
+!.claude/CLAUDE.md
+!.claude/settings.json
+!.claude/rules/
+!.claude/skills/
+!.claude/hooks/
 
-# Internal docs (not needed to run the project)
-docs/
+# Internal docs (not needed to run the project) — `docs/*` rather than `docs/`
+# so the one subtree below can be re-included; already-tracked docs are
+# unaffected either way.
+docs/*
+# …except the feature-artifact templates and the policy for using them, which
+# the workflow refers to and so must exist on a fresh clone.
+!docs/features/
 
 # Demo/test scripts (local only)
 seed_demo.py
@@ -90,8 +107,12 @@ ai-chat/UPGRADE_PLAN_V2.md
 ai-chat/WORKBOARDS_END_TO_END_DESIGN.md
 backend/README.md
 frontend/README.md
-# Serena MCP — machine-specific config (absolute paths/username) + local LSP cache; do not commit
+# Serena MCP — machine-specific config (absolute paths/username) + local LSP cache; do not commit.
+# `.mcp.example.json` IS committed: it carries only the repo-relative servers
+# (the engineering guardrail), so a fresh clone can register them without
+# inheriting anyone's absolute paths.
 .mcp.json
+!.mcp.example.json
 .vscode/mcp.json
 .serena/
 # E2E (Playwright) — local deps, secrets, run artifacts, saved auth session
@@ -117,13 +138,24 @@ e2e/_*.png
 # ── Local QA / test artifacts (screenshots, debug dumps, harnesses) — never push ──
 # Playwright-MCP working dir (page snapshots + screenshots written during testing)
 .playwright-mcp/
-# Loose root-level test screenshots + API response dumps (moved to .artifacts/test-screenshots/)
+# Loose root-level test screenshots + API response dumps.
+#
+# `.artifacts/` (ignored above) is where these belong, and the rules below are
+# the safety net for when a tool or a debugging session drops one at the root
+# anyway. The convention was declared here once and then not followed — 110
+# screenshots and two 300KB+ response dumps accumulated at the repo root, none
+# of them tracked but all of them in the way. They now live in
+# `.artifacts/screenshots/` and `.artifacts/debug-dumps/`.
 /*.png
 /*.jpg
 /*.jpeg
 /*.webp
 /*.gif
-/req*_resp.json
+/*.json
+!/.mcp.example.json
+# Manual-QA output dir: screenshots + HTML fixtures written during browser
+# testing. Nothing reads it; it belongs in .artifacts/qa-sessions/.
+/test-artifacts/
 # Codegraph MCP — local SQLite knowledge-graph cache + generated overview doc (tool artifacts)
 .codegraph/
 CODEGRAPH.md
@@ -235,6 +267,7 @@ backend/scripts/seed_phase16_*.sql
 backend/scripts/finalize_demo_*.py
 backend/scripts/verify_demo_*.py
 backend/scripts/update_workboard10_*.py
+backend/scripts/setup_qaqc_*.py
 
 # GCP service-account keys (NEVER commit — snapshot materialization write SA)
 base-testlab-*.json
