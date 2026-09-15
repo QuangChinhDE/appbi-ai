@@ -1929,7 +1929,13 @@ function MessageBubble({
             </div>
           </div>
         )}
-        {!isUser && suggestions.length > 0 && onPickSuggestion && (
+        {/* NOT ON TOP OF BLOCKS. `extractFollowups` falls back to scraping trailing
+            question lines out of prose — right for a prose-only answer, wrong for an
+            envelope that has a `followups` block and a text block rendered verbatim,
+            where it shows each question twice. Pre-existing here; found while fixing
+            the same line in the Studio test panel, which renders through the same
+            component. */}
+        {!isUser && !message.blocks?.length && suggestions.length > 0 && onPickSuggestion && (
           <div className="mt-2 flex flex-wrap gap-1.5 border-t border-[rgb(var(--border-line))]/40 pt-2">
             {suggestions.map((q, i) => (
               <button

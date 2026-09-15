@@ -769,8 +769,17 @@ function TurnView({
 
           {/* THE SUGGESTIONS A VIEWER WOULD SEE, and they work here too. Clicking
               one asks it — which is also the shortest path to a second turn, where
-              reuse and transcript-reading branches start to matter. */}
-          {isLast && !!answer.suggestions.length && (
+              reuse and transcript-reading branches start to matter.
+
+              ONLY WHEN THERE ARE NO BLOCKS. `extractFollowups` ends in a heuristic
+              that scrapes trailing question lines out of prose, written for answers
+              that were nothing but prose. An envelope with blocks says what its
+              follow-ups are — the `followups` block — and `AnswerBlocks` renders
+              those as chips itself. Running the heuristic as well showed every
+              question twice: once in the text block, which is rendered verbatim and
+              correctly, and once as a chip scraped back out of it. Observed in the
+              browser against a live model. */}
+          {isLast && !turn.blocks?.length && !!answer.suggestions.length && (
             <div className="mt-1.5 flex flex-wrap gap-1.5">
               {answer.suggestions.map((q, i) => (
                 <button

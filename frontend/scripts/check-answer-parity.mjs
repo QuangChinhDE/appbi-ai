@@ -114,6 +114,30 @@ if (/default:\s*\n?\s*return null;/.test(renderer)) {
      + ' which is exactly how this class of bug stays unnoticed.');
 }
 
+// ── 5. the prose heuristic does not stack on top of blocks ──────────────────
+//
+// `extractFollowups` ends in a FALLBACK that scrapes trailing question lines out
+// of prose. That is right for an answer that is only prose, and wrong for an
+// envelope with blocks: the text block is rendered verbatim — correctly — and the
+// heuristic then renders the same questions again as chips. Seen in the browser
+// against a live model: every follow-up appeared twice, once dead, once clickable.
+//
+// A surface may keep the legacy path for answers that have no blocks. What it may
+// not do is run both at once, so the chip row has to be guarded by the ABSENCE of
+// blocks.
+
+for (const [path, label] of SURFACES) {
+  const src = code(read(path));
+  if (!/extractFollowups/.test(src)) continue;          // no heuristic, nothing to guard
+  const row = /\{[^{}]*suggestions[^{}]*&&\s*\(/.exec(src);
+  if (!row) continue;                                    // renders no chip row of its own
+  if (!/blocks\?\.length|blocks\s*&&|blocks\.length/.test(row[0])) {
+    fail(`${label} (${path}) renders follow-up chips scraped from prose without checking`
+       + ' for blocks first. With blocks present the questions are already in the text'
+       + ' block, so each one is shown twice — once as dead prose and once as a chip.');
+  }
+}
+
 // ── report ──────────────────────────────────────────────────────────────────
 
 if (failures.length) {
