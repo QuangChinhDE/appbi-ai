@@ -1,55 +1,43 @@
 # Skill-AppBI
 
-This folder keeps the AppBI skill assets and the AppBI MCP package together in one place, but they are intentionally independent.
-
-## Structure
+MCP servers that sit alongside AppBI. They are not part of the running product —
+the stack in `docker-compose.yml` does not import anything here.
 
 ```text
 Skill-AppBI/
-├── excel-to-appbi-dashboard/   # Claude skill for generating AppBI Import Plan v1 HTML
-├── appbi-import-mcp/           # MCP package for importing HTML into AppBI
-└── excel-to-appbi-dashboard.zip
+└── appbi-guardrail-mcp/    read-only engineering guardrail for editing this codebase
 ```
 
-## Choose what you need
+## `appbi-guardrail-mcp`
 
-### 1. Skill only
+An engineering-safety advisor: architecture layering, protected subsystems, impact
+scope, required tests, and invariant checks on a diff — all answered from
+`guardrail_rules.yaml`, never invented. It reads; it never writes code, calls the
+AppBI API, or applies a fix.
 
-Use [excel-to-appbi-dashboard](d:/Appv2/appbi-ai/Skill-AppBI/excel-to-appbi-dashboard).
+It is **load-bearing for the development workflow**, not optional tooling:
 
-Use this when you want Claude to generate AppBI-compatible HTML/metadata but do not want to run an MCP server.
+- `scripts/ci/guardrail_check.py` imports `guardrail_core.py` directly
+- `scripts/ci/verify.sh task` runs it on the working diff
+- `.github/workflows/preflight.yml` runs `--health` on every push, so the rules
+  cannot quietly stop describing the code
+- `.claude/CLAUDE.md` and the scoped rules in `.claude/rules/` treat
+  `guardrail_rules.yaml` as the source of truth for documented invariants
 
-### 2. MCP only
+See [`appbi-guardrail-mcp/README.md`](appbi-guardrail-mcp/README.md) for the tool
+list, the verdict model (`block` / `warn` / `ok` / `unknown`), and how to extend
+the rules. To register it with an MCP client, copy
+[`.mcp.example.json`](../.mcp.example.json) at the repo root.
 
-Use [appbi-import-mcp](d:/Appv2/appbi-ai/Skill-AppBI/appbi-import-mcp).
+You do not need the MCP server for the gates to work — `scripts/ci/guardrail_check.py`
+runs the same rule base deterministically, which is what the hooks and CI use.
 
-Use this when you already have AppBI-compatible HTML and want Claude/Desktop or another MCP client to import it into AppBI.
+## Removed
 
-### 3. Both together
+`appbi-dashboard-mcp` and `appbi-workboard-mcp` were removed from the repository.
+They were never imported by the product, and they are recoverable from git history:
 
-Use the skill to generate the HTML, then use the MCP to validate/import it.
-
-## Configuration model
-
-The MCP package follows an env-based configuration style similar to n8n MCP setups:
-
-- AppBI base URL/domain is provided by the user
-- AppBI personal access token is provided by the user
-- configuration can point to either local or online AppBI
-
-Examples:
-
-- Local: `http://localhost:8000`
-- Online: `https://bi.example.com`
-
-The MCP package provides:
-
-- `setup-mcp.ps1` and `setup-mcp.sh` to generate `.env`
-- `.mcp.json.example` for env-driven MCP client configuration
-- `claude_desktop_config.sample.json` for Claude Desktop style wiring
-
-## Independence guarantee
-
-- The skill does not require the MCP package.
-- The MCP package does not require the skill to be installed.
-- They are stored under the same parent folder only for repository organization.
+```bash
+git log --oneline --diff-filter=D -- Skill-AppBI/appbi-dashboard-mcp
+git checkout <commit>^ -- Skill-AppBI/appbi-dashboard-mcp
+```

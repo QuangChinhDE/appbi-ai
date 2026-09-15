@@ -797,8 +797,9 @@ bắt buộc thuộc 1 view; engine tự pick join path qua resolver.
     DA đọc BE code thấy ngay FE side đang phòng thủ cái gì.
 
 - **2026-05-16 (Phase-12 MCP parity)**: MCP-dashboard sync với Phase-12 schema.
+  *(`appbi-dashboard-mcp` đã được gỡ khỏi repo; các path dưới đây chỉ còn trong git history.)*
   - **Blueprint pre-validator**: `commit_semantic_model` trong
-    [Skill-AppBI/appbi-dashboard-mcp/appbi_blueprint.py](../../../Skill-AppBI/appbi-dashboard-mcp/appbi_blueprint.py)
+    `Skill-AppBI/appbi-dashboard-mcp/appbi_blueprint.py`
     catch 4 lỗi Phase-12 trước khi gọi BE: scope='view' + non-empty
     source_columns; scope='dataset' + empty source_columns;
     source_columns[].view không tồn tại trong plan; source_columns[].field
@@ -807,10 +808,10 @@ bắt buộc thuộc 1 view; engine tự pick join path qua resolver.
   - **Schema docs**: `SEMANTIC_MODEL_PLAN_SHAPE` thêm 2 field `scope` +
     `source_columns` với example revenue_per_lead. Docstrings
     `create_semantic_view` / `update_semantic_view` trong
-    [Skill-AppBI/appbi-dashboard-mcp/appbi_semantic.py](../../../Skill-AppBI/appbi-dashboard-mcp/appbi_semantic.py)
+    `Skill-AppBI/appbi-dashboard-mcp/appbi_semantic.py`
     mention Phase-12 fields. TOOL_SURFACE.md có section riêng giải thích
     khi nào AI dùng scope='dataset'.
-  - **Chart docstring**: [appbi_chart.py](../../../Skill-AppBI/appbi-dashboard-mcp/appbi_chart.py)
+  - **Chart docstring**: `Skill-AppBI/appbi-dashboard-mcp/appbi_chart.py`
     note rằng engine có thể trả error tiếng Việt (Phase-11) khi field
     unreachable — forward verbatim, đừng translate.
   - **BE parity fix — gate router endpoint**: `PUT /semantic/views/{id}`

@@ -12,7 +12,7 @@ cites the knowledge it used, and stays usable by non-technical people.
 - **Backend** — FastAPI (Python), PostgreSQL + `pgvector`, Alembic migrations.
 - **Frontend** — Next.js (App Router, standalone output), TypeScript, a Linear-inspired design system.
 - **Delivery** — Docker Compose; one command brings the whole stack up.
-- **Automation** — three MCP servers let an AI assistant build dashboards and mini-apps for you.
+- **Automation** — an MCP guardrail keeps an AI assistant inside the architecture while it edits the codebase.
 
 ---
 
@@ -164,19 +164,19 @@ Two-layer access keeps it approachable:
 ## MCP — automated building for non-tech users
 
 [MCP](https://modelcontextprotocol.io) (Model Context Protocol) lets an AI assistant such as
-Claude operate AppBI through **controlled tools** instead of the user clicking through the UI.
-You describe what you want; the assistant discovers the data, designs, and **creates it for real**.
-Two guarantees hold across every server: the **backend is the single gatekeeper** (every write
-is validated by a backend endpoint — e.g. `/charts/dry-run-create` — before it commits), and
-**preview-then-confirm** (mutating tools return a plan and change nothing until `user_confirmed=true`).
+Claude work through **controlled tools** instead of guessing.
 
 | Server | Tools | What it does |
 |---|---|---|
-| [`appbi-dashboard-mcp`](Skill-AppBI/appbi-dashboard-mcp/) | ~164 (lean default ~91) | Discover data → design (in-chat) → materialize a full dashboard: dataset, model, measures, charts, filters. A blueprint (propose→commit) forces a design pass so metrics stay bound to the model. |
-| [`appbi-workboard-mcp`](Skill-AppBI/appbi-workboard-mcp/) | 60 | Build a working mini-app end-to-end: `Source → Dataset → Model → Workboard → Share`. Ships an in-MCP `bootstrap_personal_access_token` tool that mints a scoped PAT from an email + password on first run. |
 | [`appbi-guardrail-mcp`](Skill-AppBI/appbi-guardrail-mcp/) | 11 (read-only) | An engineering-safety advisor for editing the AppBI codebase — answers architecture/impact/invariant questions from `guardrail_rules.yaml`; never writes code or calls the API. |
 
-Each server has its own `README.md` with setup and the full tool list.
+Copy [`.mcp.example.json`](.mcp.example.json) to register it. The same rule base also runs
+deterministically via `scripts/ci/guardrail_check.py`, which is what the hooks and CI use —
+see [Development](#development).
+
+> Two earlier servers — `appbi-dashboard-mcp` (build a dashboard end-to-end) and
+> `appbi-workboard-mcp` (build a mini-app end-to-end) — were removed from the
+> repository. Neither was imported by the product; both remain in git history.
 
 ---
 
@@ -188,7 +188,7 @@ appbi-ai/
 │   └── app/            (runtime code — routes, services, semantic engine, AI bot)
 ├── frontend/           Next.js app (App Router, standalone build)
 │   └── src/            (runtime code — pages, components, i18n, lib)
-├── Skill-AppBI/        MCP servers (dashboard / workboard / guardrail)
+├── Skill-AppBI/        MCP guardrail (read-only architecture/invariant advisor)
 ├── scripts/            bootstrap-env.sh, db-init (pgvector provisioning), tooling
 ├── .githooks/          pre-push preflight gate (alembic + tsc + import smoke)
 ├── docker-compose.yml       base stack (db · backend · frontend)

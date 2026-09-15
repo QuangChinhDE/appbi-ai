@@ -93,8 +93,8 @@ install-docker-and-run.sh
 Skill-AppBI/old/
 Skill-AppBI/*.zip
 # MCP per-chat working logs — keep folder, ignore session subfolders
-Skill-AppBI/appbi-dashboard-mcp/logs/*
-!Skill-AppBI/appbi-dashboard-mcp/logs/.gitkeep
+# (appbi-dashboard-mcp / appbi-workboard-mcp were removed from the repo; their
+# venvs and logs live under .artifacts/removed-mcp/, which is ignored above.)
 dashboard_example/
 demo_dataset/
 example/
