@@ -1,7 +1,7 @@
 # AppBI Engineering Guardrail MCP
 
 A **read-only** MCP that keeps an AI (or a human) from breaking AppBI while
-editing code. It sits next to Serena / CodeGraph in `Skill-AppBI/` and answers
+editing code. It lives in `scripts/guardrail/` alongside the other repo tooling and answers
 **only** architecture / impact / invariant / regression-risk questions.
 
 > It does **NOT** create reports, generate dashboards, design or replace the
@@ -80,15 +80,18 @@ Register with your MCP client (`.mcp.json`, Claude, etc.):
 {
   "mcpServers": {
     "appbi-guardrail": {
-      "command": "pwsh",
-      "args": ["-File", "D:\\Appv2\\appbi-ai\\Skill-AppBI\\appbi-guardrail-mcp\\run-mcp.ps1"]
+      "command": "python",
+      "args": ["scripts/guardrail/appbi_guardrail_mcp.py"]
     }
   }
 }
 ```
 
-`APPBI_REPO_ROOT` defaults to two dirs above this folder (the AppBI repo). Set it
-if that is wrong. `APPBI_GUARDRAIL_RULES` overrides the rules file path.
+Or copy [`.mcp.example.json`](../../.mcp.example.json) at the repo root.
+
+`APPBI_REPO_ROOT` defaults to two dirs above this folder — i.e. the repo root, from
+`scripts/guardrail/`. Set it if that is wrong. `APPBI_GUARDRAIL_RULES` overrides the
+rules file path.
 
 ## Extending the rules — the only way to add knowledge
 

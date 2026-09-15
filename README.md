@@ -168,7 +168,7 @@ Claude work through **controlled tools** instead of guessing.
 
 | Server | Tools | What it does |
 |---|---|---|
-| [`appbi-guardrail-mcp`](Skill-AppBI/appbi-guardrail-mcp/) | 11 (read-only) | An engineering-safety advisor for editing the AppBI codebase — answers architecture/impact/invariant questions from `guardrail_rules.yaml`; never writes code or calls the API. |
+| [`guardrail`](scripts/guardrail/) | 11 (read-only) | An engineering-safety advisor for editing the AppBI codebase — answers architecture/impact/invariant questions from `guardrail_rules.yaml`; never writes code or calls the API. |
 
 Copy [`.mcp.example.json`](.mcp.example.json) to register it. The same rule base also runs
 deterministically via `scripts/ci/guardrail_check.py`, which is what the hooks and CI use —
@@ -188,8 +188,7 @@ appbi-ai/
 │   └── app/            (runtime code — routes, services, semantic engine, AI bot)
 ├── frontend/           Next.js app (App Router, standalone build)
 │   └── src/            (runtime code — pages, components, i18n, lib)
-├── Skill-AppBI/        MCP guardrail (read-only architecture/invariant advisor)
-├── scripts/            bootstrap-env.sh, db-init (pgvector provisioning), tooling
+├── scripts/            bootstrap-env.sh, db-init, ci (preflight/verify), guardrail (MCP advisor)
 ├── .githooks/          pre-push preflight gate (alembic + tsc + import smoke)
 ├── docker-compose.yml       base stack (db · backend · frontend)
 ├── docker-compose.dev.yml   local development overrides
@@ -274,7 +273,7 @@ automatically in the backend entrypoint.
   the checks that apply to what you touched. See [`scripts/ci/README.md`](scripts/ci/README.md).
 - **Engineering guardrail** — `python scripts/ci/guardrail_check.py --diff` checks a change
   against the architecture rules, protected subsystems and invariants in
-  `Skill-AppBI/appbi-guardrail-mcp/guardrail_rules.yaml`. Copy
+  `scripts/guardrail/guardrail_rules.yaml`. Copy
   [`.mcp.example.json`](.mcp.example.json) to use it interactively as well.
 - **AI assistants** — project instructions, scoped rules, skills and hooks live in
   [`.claude/`](.claude/CLAUDE.md) and are committed, so they apply on every clone.

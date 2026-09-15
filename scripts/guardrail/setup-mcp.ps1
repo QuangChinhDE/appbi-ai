@@ -13,13 +13,14 @@ if (-not (Test-Path $venvPython)) {
 & $venvPython -m pip install -r (Join-Path $PSScriptRoot 'requirements.txt')
 
 Write-Host ''
-Write-Host 'Setup complete. Register the MCP with your client, e.g. (.mcp.json / Claude):' -ForegroundColor Green
+Write-Host 'Setup complete. Register the MCP with your client — copy .mcp.example.json' -ForegroundColor Green
+Write-Host 'at the repo root, or add this entry to your .mcp.json:' -ForegroundColor Green
 Write-Host @'
 {
   "mcpServers": {
     "appbi-guardrail": {
-      "command": "pwsh",
-      "args": ["-File", "D:\\Appv2\\appbi-ai\\Skill-AppBI\\appbi-guardrail-mcp\\run-mcp.ps1"]
+      "command": "python",
+      "args": ["scripts/guardrail/appbi_guardrail_mcp.py"]
     }
   }
 }

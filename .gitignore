@@ -90,11 +90,9 @@ install-docker-and-run.sh
 # Release hygiene: local artifacts, sensitive backups, non-runtime references
 .artifacts/
 .env.bak.*
-Skill-AppBI/old/
-Skill-AppBI/*.zip
-# MCP per-chat working logs — keep folder, ignore session subfolders
-# (appbi-dashboard-mcp / appbi-workboard-mcp were removed from the repo; their
-# venvs and logs live under .artifacts/removed-mcp/, which is ignored above.)
+# (The MCP servers once under Skill-AppBI/ are gone: the two builder servers were
+# removed — their venvs/logs sit in .artifacts/removed-mcp/ — and the guardrail
+# moved to scripts/guardrail/, which needs no ignore rules of its own.)
 dashboard_example/
 demo_dataset/
 example/

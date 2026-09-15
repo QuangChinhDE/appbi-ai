@@ -5,9 +5,9 @@
     "or merge the entries below into the .mcp.json you already have.",
     "",
     "appbi-guardrail is the read-only engineering guardrail in",
-    "Skill-AppBI/appbi-guardrail-mcp: architecture layering, protected",
+    "scripts/guardrail: architecture layering, protected",
     "subsystems, impact scope, required tests, invariant checks on a diff. It",
-    "needs the 'mcp' and 'PyYAML' packages; Skill-AppBI/appbi-guardrail-mcp/",
+    "needs the 'mcp' and 'PyYAML' packages; scripts/guardrail/",
     "run-mcp.sh (or run-mcp.ps1) bootstraps a venv with them if your system",
     "python lacks them — point 'command' at that script instead if so.",
     "",
@@ -18,7 +18,7 @@
   "mcpServers": {
     "appbi-guardrail": {
       "command": "python",
-      "args": ["Skill-AppBI/appbi-guardrail-mcp/appbi_guardrail_mcp.py"]
+      "args": ["scripts/guardrail/appbi_guardrail_mcp.py"]
     }
   }
 }

@@ -11,7 +11,7 @@ Do not restate either here — read them when the task touches those concepts.
 
 ## Architecture boundaries you must not cross
 
-Layering is formalized in `Skill-AppBI/appbi-guardrail-mcp/guardrail_rules.yaml` (`layers`).
+Layering is formalized in `scripts/guardrail/guardrail_rules.yaml` (`layers`).
 The ones that get violated in practice:
 
 - `backend/app/models/**` must not import services. Business logic lives in
@@ -67,7 +67,7 @@ of the nearest equivalent first — this codebase almost always already has one.
 - Minimize blast radius. No unrelated cleanup, no drive-by refactors, no reformatting
   files you only touched incidentally.
 - **Commit runtime code.** A commit whose product change lives only in
-  `backend/scripts/**`, `DA-Test/**`, `scratchpad/**`, `Skill-AppBI/**` or a `*.spec.ts`
+  `backend/scripts/**`, `DA-Test/**`, `scratchpad/**`, `scripts/guardrail/**` or a `*.spec.ts`
   is not a product fix (`guardrail_rules.yaml: policy.commit_only_runtime`).
 - Migrations: additive, single head, parent committed. See `.claude/rules/database-migrations.md`.
 - SQL generation must be correct on **BigQuery and Postgres**. Postgres locally hides

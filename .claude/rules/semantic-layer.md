@@ -19,7 +19,7 @@ globs:
 # Protected subsystems
 
 Two subsystems are declared `protected` in
-`Skill-AppBI/appbi-guardrail-mcp/guardrail_rules.yaml`: **the semantic layer** (query
+`scripts/guardrail/guardrail_rules.yaml`: **the semantic layer** (query
 engine, model, join resolution, calendar, filters) and **public-link security**.
 
 The detailed invariants are **not duplicated here on purpose** — they live in that file,

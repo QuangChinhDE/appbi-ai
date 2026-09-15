@@ -24,7 +24,7 @@ _RULES_PATH = Path(os.getenv("APPBI_GUARDRAIL_RULES") or (_HERE / "guardrail_rul
 
 
 def _default_repo_root() -> Path:
-    # MCP lives at <repo>/Skill-AppBI/appbi-guardrail-mcp/ → repo is two up.
+    # This module lives at <repo>/scripts/guardrail/ → repo is two dirs up.
     env = os.getenv("APPBI_REPO_ROOT")
     if env:
         return Path(env).resolve()

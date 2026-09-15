@@ -522,7 +522,7 @@ policy:
   commit_only_runtime:
     # These paths are NOT runtime app code — flag if a "fix"/commit is ONLY here
     # (or MUST NOT be committed as product code).
-    non_runtime_globs: ["backend/scripts/**", "DA-Test/**", "**/*.spec.ts", "scratchpad/**", "Skill-AppBI/**", "**/seed_*.py", "**/verify_*.py"]
+    non_runtime_globs: ["backend/scripts/**", "DA-Test/**", "**/*.spec.ts", "scratchpad/**", "scripts/guardrail/**", "**/seed_*.py", "**/verify_*.py"]
     note: "Commits should carry runtime code (backend/app, frontend/src, deps). Test/seed/QA/docs are not runtime."
   high_blast_files:
     # Touching these is inherently high-risk regardless of the diff content.

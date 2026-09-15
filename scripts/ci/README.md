@@ -63,7 +63,7 @@ the `task` tier and hands a failure back to Claude rather than letting a turn en
 
 # guardrail_check.py — the guardrail, runnable
 
-`Skill-AppBI/appbi-guardrail-mcp` encodes this repo's architecture rules, protected
+`scripts/guardrail` encodes this repo's architecture rules, protected
 subsystems, impact map and test registry — but it only spoke MCP, so it could only help
 when an assistant happened to call it. `guardrail_core.py` is plain Python + PyYAML, so
 the same rule base runs in a script, a hook, or CI:

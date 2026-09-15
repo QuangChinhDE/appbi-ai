@@ -3,7 +3,7 @@
 
 WHY THIS EXISTS
 ---------------
-`Skill-AppBI/appbi-guardrail-mcp` already encodes the architecture rules, the
+`scripts/guardrail` already encodes the architecture rules, the
 protected subsystems, the impact map and the test registry — but it only speaks
 MCP, so it can only help when an AI assistant happens to call it. That makes the
 repo's best-encoded knowledge *advisory*.
@@ -37,7 +37,7 @@ import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-GUARDRAIL_DIR = REPO_ROOT / "Skill-AppBI" / "appbi-guardrail-mcp"
+GUARDRAIL_DIR = REPO_ROOT / "scripts" / "guardrail"
 
 
 def _load_core():
