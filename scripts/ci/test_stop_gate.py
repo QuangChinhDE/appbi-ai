@@ -90,8 +90,10 @@ def test_green_with_unverified_blocks_once_and_names_every_gate():
 def test_the_retry_after_an_unverified_block_is_allowed():
     """stop_hook_active=True means this hook already forced a continuation.
 
-    Without this the session would loop: the gates stay unverified no matter what
-    Claude writes, so the same block would fire forever.
+    Scoped to UNVERIFIED on purpose. A missing / manual / database-backed gate
+    stays unverified no matter what Claude writes, so insisting would loop with
+    no way to converge. A FAILED check has a way to converge — fix it — and is
+    therefore NOT released here.
     """
     payload = {"failed": [], "unverified": [["galaxy_golden", "missing"]], "passed": []}
     code, message = gate.decide(0, payload, "", stop_hook_active=True)
@@ -99,11 +101,49 @@ def test_the_retry_after_an_unverified_block_is_allowed():
     assert message == ""
 
 
-def test_a_failure_also_stops_blocking_on_the_retry():
-    # Same loop protection, so a genuinely stuck run can still end. Claude Code
-    # additionally overrides a Stop hook that blocks eight times in a row.
-    code, _ = gate.decide(1, {"failed": ["x"], "unverified": []}, "boom", stop_hook_active=True)
+def test_a_failure_still_blocks_on_the_retry():
+    """The correction this file exists to lock.
+
+    An earlier version checked `stop_hook_active` FIRST, so: verification fails,
+    the turn is blocked, Claude does not fix it, the second Stop carries
+    stop_hook_active=true, and the turn ends red. Loop protection was excusing a
+    real failure — and the test here asserted that as intended behaviour.
+
+    A failing deterministic check must block every time. The loop risk is the
+    platform's: Claude Code overrides a Stop hook after eight consecutive blocks
+    without progress (CLAUDE_CODE_STOP_HOOK_BLOCK_CAP raises it), so nothing is
+    trapped by keeping this strict.
+    """
+    code, message = gate.decide(1, {"failed": ["x"], "unverified": []}, "boom",
+                                stop_hook_active=True)
+    assert code == BLOCK
+    assert "keeps blocking" in message
+
+
+def test_failed_payload_on_a_zero_exit_still_blocks_on_retry():
+    code, _ = gate.decide(0, {"failed": ["locked_contract"], "unverified": []},
+                          "locked_contract FAILED", stop_hook_active=True)
+    assert code == BLOCK
+
+
+def test_a_failure_that_becomes_green_is_allowed():
+    """Blocking is tied to the CURRENT result, not to a latched state.
+
+    The hook re-runs verification on every Stop, so the moment the failure is
+    actually fixed the next attempt goes through — including on a retry.
+    """
+    code, message = gate.decide(0, {"failed": [], "unverified": [], "passed": ["x"]},
+                                "", stop_hook_active=True)
     assert code == ALLOW
+    assert message == ""
+
+
+def test_unparseable_json_still_blocks_on_retry():
+    # An unverifiable execution is infrastructure breakage, not a visibility
+    # stop, so it must not clear itself by being retried.
+    code, message = gate.decide(0, None, "garbage", stop_hook_active=True)
+    assert code == BLOCK
+    assert "infrastructure failure" in message
 
 
 def test_unparseable_json_blocks_rather_than_assuming_success():
@@ -202,3 +242,48 @@ def test_e2e_missing_verifier_blocks(tmp_path):
     result = run_hook(tmp_path / "does_not_exist.py")
     assert result.returncode == BLOCK
     assert "NOT a verified completion" in result.stderr
+
+
+def test_e2e_failed_still_blocks_on_the_retry(tmp_path):
+    """Case 4: a failure Claude did not fix must not slip through the retry."""
+    stub = write_stub(tmp_path, 1, {"failed": ["locked_contract"], "unverified": []},
+                      human="locked_contract FAILED")
+    first = run_hook(stub, stop_hook_active=False)
+    assert first.returncode == BLOCK
+    retry = run_hook(stub, stop_hook_active=True)
+    assert retry.returncode == BLOCK
+    assert "keeps blocking" in retry.stderr
+
+
+def test_e2e_failed_then_fixed_is_allowed(tmp_path):
+    """Case 5: the gate re-runs verification, so a real fix releases it.
+
+    Two different stubs stand in for "before the fix" and "after the fix" — the
+    hook holds no latched state, it just re-reads the current result.
+    """
+    failing = write_stub(tmp_path, 1, {"failed": ["locked_contract"], "unverified": []})
+    assert run_hook(failing, stop_hook_active=False).returncode == BLOCK
+
+    fixed_dir = tmp_path / "fixed"
+    fixed_dir.mkdir()
+    fixed = write_stub(fixed_dir, 0, {"failed": [], "unverified": [], "passed": ["locked_contract"]})
+    after = run_hook(fixed, stop_hook_active=True)
+    assert after.returncode == ALLOW
+    assert after.stderr.strip() == ""
+
+
+def test_e2e_missing_verifier_blocks_on_the_retry_too(tmp_path):
+    """Infrastructure breakage is not a visibility stop; retrying does not fix it."""
+    absent = tmp_path / "does_not_exist.py"
+    assert run_hook(absent, stop_hook_active=False).returncode == BLOCK
+    retry = run_hook(absent, stop_hook_active=True)
+    assert retry.returncode == BLOCK
+    assert "NOT a verified completion" in retry.stderr
+
+
+def test_e2e_malformed_output_blocks_on_the_retry_too(tmp_path):
+    stub = write_stub(tmp_path, 0, None)
+    assert run_hook(stub, stop_hook_active=False).returncode == BLOCK
+    retry = run_hook(stub, stop_hook_active=True)
+    assert retry.returncode == BLOCK
+    assert "infrastructure failure" in retry.stderr

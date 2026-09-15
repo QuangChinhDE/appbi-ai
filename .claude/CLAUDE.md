@@ -104,11 +104,15 @@ You may not report a task complete until:
    never presented as coverage.
 4. You state what you changed, what you ran, what passed, and what residual risk remains.
 
-The Stop hook enforces point 3 rather than trusting it. When nothing failed but required
-gates did not run, it blocks the turn **once** and puts their names and reasons on stderr —
-because Claude Code sends a hook's stdout to the debug log on exit 0, so that list would
-otherwise be invisible. That block is not a failure: add the named gates to your report as
-unverified and finish again. The retry is always allowed through.
+The Stop hook enforces points 1 and 3 rather than trusting them:
+
+- **Nothing failed, gates unverified** → blocks the turn **once**, listing their names and
+  reasons on stderr (Claude Code sends a hook's stdout to the debug log on exit 0, so that
+  list would otherwise be invisible). Not a failure: add the named gates to your report as
+  unverified and finish again — the retry is allowed.
+- **Verification failing** → blocks **every** time until it is green. A red check is not a
+  one-shot warning, and finishing is not unlocked by having been told once. Claude Code's
+  own cap on consecutive Stop blocks is the loop protection, not this hook.
 
 If a check fails, fix it. Reporting "done, but X is failing" is only acceptable when you
 also say plainly that the task is *not* complete.

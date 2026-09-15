@@ -27,6 +27,16 @@ Claude reads them, updates its final report, and the retry is allowed through �
 not a hard failure: a missing or manual gate must never become a wall that makes
 finishing impossible.
 
+THREE OUTCOMES, AND ONLY ONE OF THEM IS ONE-SHOT
+------------------------------------------------
+  GREEN       nothing failed, nothing unverified          -> allow
+  UNVERIFIED  nothing failed, gates did not run           -> block once, then allow
+  FAILED      verification red, or the result unreadable  -> block EVERY time
+
+The last row is the correction that matters. `stop_hook_active` must not excuse a
+real failing check: doing so let a red turn end simply because the hook had
+already fired once. See `decide()` for why the branch order encodes this.
+
 WHY IT DOES NOT SHELL OUT
 -------------------------
 This used to run `bash scripts/ci/verify.sh task` and, when `bash` was absent (a
@@ -40,9 +50,11 @@ stdin  : the hook payload JSON from Claude Code.
 exit 0 : let the turn end.
 exit 2 : block; stderr becomes the message shown to Claude.
 
-`stop_hook_active` is true when this hook already triggered a continuation, so it
-allows the stop through and no loop is possible. (Claude Code also overrides a
-Stop hook that blocks eight times in a row.)
+`stop_hook_active` is true when this hook already triggered a continuation. It
+releases the UNVERIFIED stop only; a failing check keeps blocking. The loop risk
+is the platform's job and it already does it: Claude Code overrides a Stop hook
+after it blocks eight times in a row without progress, raisable with
+CLAUDE_CODE_STOP_HOOK_BLOCK_CAP.
 
 EMERGENCY OVERRIDE
 ------------------
@@ -96,40 +108,61 @@ def decide(returncode: int, payload: dict | None, raw_output: str,
            stop_hook_active: bool) -> tuple[int, str]:
     """Pure decision: (exit_code, stderr_message). Unit-tested in scripts/ci.
 
-    Kept free of I/O so the three paths — green, failed, green-with-unverified —
-    can be asserted directly rather than inferred from a subprocess.
-    """
-    # Second call: this hook already blocked once. Let the turn end regardless,
-    # so a gate can never trap the session.
-    if stop_hook_active:
-        return ALLOW, ""
+    Kept free of I/O so every path can be asserted directly rather than inferred
+    from a subprocess.
 
+    THE ORDER OF THESE BRANCHES IS THE WHOLE POINT.
+
+    `stop_hook_active` gates ONLY the unverified case. An earlier version checked
+    it first, which waved a genuinely failing check through on the retry:
+    verification fails, the turn is blocked, Claude does not fix it, the second
+    Stop carries stop_hook_active=true, and the turn ends red. That is a
+    Definition-of-Done violation dressed up as loop protection — and a test in
+    this repo had encoded it as intended behaviour.
+
+    A real failure therefore blocks EVERY time until verification is actually
+    green. The loop risk belongs to the platform, which already handles it:
+    "Claude Code overrides a Stop hook after it blocks eight times in a row
+    without progress", raisable via CLAUDE_CODE_STOP_HOOK_BLOCK_CAP
+    (https://code.claude.com/docs/en/hooks-guide). Leaning on that cap keeps a
+    failing deterministic check from degrading into a one-shot warning.
+    """
+    # ── FAILED / infrastructure: block regardless of stop_hook_active ──
     if returncode != 0:
         return BLOCK, (
-            "Task-tier verification is failing, so this change is not done.\n"
-            "Fix what is reported below, then finish. Do not report completion "
-            "while this is red, and do not describe a gate that did not run as "
-            "covered.\n\n" + raw_output
+            "Task-tier verification is FAILING, so this change is not done.\n"
+            "This keeps blocking until verification is green - it is not a "
+            "one-shot warning. Fix what is reported below, then finish. Do not "
+            "report completion while this is red.\n\n" + raw_output
         )
 
     if payload is None:
         # Exit 0 but the structured result was unreadable: we cannot tell whether
-        # gates went unverified, and "probably fine" is the assumption this whole
-        # gate exists to remove.
+        # gates ran at all, and "probably fine" is the assumption this gate exists
+        # to remove. Infrastructure failure, not a visibility stop, so it does not
+        # clear itself on a retry.
         return BLOCK, (
             "Task-tier verification exited 0 but its --json result could not be "
-            "parsed, so it is unknown whether any required gate went unverified.\n"
-            "Run `python scripts/ci/verify.py task` yourself and report what it "
-            "says. Raw output follows.\n\n" + raw_output
+            "parsed, so it is UNKNOWN whether any required gate ran.\n"
+            "This is an infrastructure failure and keeps blocking. Run "
+            "`python scripts/ci/verify.py task` yourself and report what it says. "
+            f"To finish anyway, set APPBI_STOP_GATE_OVERRIDE={OVERRIDE_PHRASE}.\n\n"
+            + raw_output
         )
 
     if payload.get("failed"):
         return BLOCK, (
-            "Task-tier verification reported failures.\n\n" + raw_output
+            "Task-tier verification reported FAILED gates, so this change is not "
+            "done. This keeps blocking until they pass.\n\n" + raw_output
         )
 
+    # ── UNVERIFIED: a visibility stop, and the only one-shot branch ──
+    # A missing / manual / database-backed gate can stay unverified forever, so
+    # insisting would trap the session with no way to converge.
     unverified = payload.get("unverified") or []
     if unverified:
+        if stop_hook_active:
+            return ALLOW, ""
         return BLOCK, format_unverified(unverified)
 
     return ALLOW, ""
@@ -151,8 +184,6 @@ def main() -> int:
     stop_hook_active = bool(hook_input.get("stop_hook_active"))
 
     if not VERIFY.exists():
-        if stop_hook_active:
-            return ALLOW
         sys.stderr.write(
             f"Task-tier verification could not run: {VERIFY} is missing, so "
             "nothing about this change has been checked.\n"
@@ -169,8 +200,6 @@ def main() -> int:
             encoding="utf-8", errors="replace", timeout=870,
         )
     except subprocess.TimeoutExpired:
-        if stop_hook_active:
-            return ALLOW
         sys.stderr.write(
             "Task-tier verification timed out, so this change is UNVERIFIED.\n"
             "Run `python scripts/ci/verify.py task` yourself and report the "
@@ -178,8 +207,6 @@ def main() -> int:
         )
         return BLOCK
     except OSError as exc:
-        if stop_hook_active:
-            return ALLOW
         sys.stderr.write(
             f"Task-tier verification could not be started ({exc}), so nothing "
             "has been checked. This is NOT a verified completion.\n"

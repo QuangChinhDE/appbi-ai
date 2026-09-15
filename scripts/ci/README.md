@@ -85,19 +85,26 @@ appearing to be path-scoped. The YAML parsed; nothing warned. Runs in preflight 
 Non-zero exit means the task is not done. The `Stop` hook in `.claude/settings.json` runs
 `verify.py task --json` and decides from the structured result:
 
-| Result | Stop |
-|---|---|
-| nothing failed, nothing unverified | allowed |
-| something failed | blocked, with the failure output |
-| nothing failed but gates went unverified | blocked **once**, listing each gate and reason |
+| Result | Stop | On retry (`stop_hook_active=true`) |
+|---|---|---|
+| nothing failed, nothing unverified | allowed | allowed |
+| nothing failed, gates went unverified | blocked, listing each gate and reason | **allowed** |
+| verification failing | blocked, with the failure output | **still blocked** |
+| verifier missing / timeout / unreadable JSON | blocked | **still blocked** |
 
-The middle-of-the-road case exists because exit 0 is not the same as covered, and because
-a hook's stdout on exit 0 reaches only the debug log — so the NOT VERIFIED list has to
-travel on stderr with exit 2 or Claude never sees it. The retry (`stop_hook_active=true`)
-is always allowed, so a missing or manual gate can never make finishing impossible.
+Only the unverified row is one-shot. A missing, manual or database-backed gate can stay
+unverified forever, so insisting would trap the session with no way to converge. A failing
+check has a way to converge — fix it — so releasing it on the retry would let a red turn
+end, which is what an earlier version did. Loop protection is the platform's job: Claude
+Code overrides a Stop hook after eight consecutive blocks without progress
+(`CLAUDE_CODE_STOP_HOOK_BLOCK_CAP` raises it).
 
-Tested in `scripts/ci/test_stop_gate.py`: all-green allows, a failed gate blocks, and
-green-with-unverified blocks once then allows the retry.
+The unverified row exists at all because exit 0 is not the same as covered, and a hook's
+stdout on exit 0 reaches only the debug log — so the NOT VERIFIED list has to travel on
+stderr with exit 2 or Claude never sees it.
+
+`scripts/ci/test_stop_gate.py` (20 tests) proves each row, including failed-then-fixed
+being allowed and infrastructure breakage not clearing itself by being retried.
 
 # guardrail_check.py — the guardrail, runnable
 
