@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { deleteFlow, ensureFlowExists, sweepLeftovers } from './_helpers';
+import { deleteFlow, ensureFlowExists, openFlowList, sweepLeftovers } from './_helpers';
 
 /**
  * Layout faults a functional test cannot see.
@@ -17,8 +17,7 @@ test.describe('builder layout', () => {
   });
 
   test('the flow list does not scroll sideways', async ({ page }) => {
-    await page.goto('/agent-flows');
-    await expect(page.getByRole('heading', { name: /Agent Flows/i })).toBeVisible();
+    await openFlowList(page);
 
     const overflow = await page.evaluate(() => {
       const d = document.documentElement;
@@ -32,7 +31,7 @@ test.describe('builder layout', () => {
   });
 
   test('the builder canvas and inspector are both usable', async ({ page }) => {
-    await page.goto('/agent-flows');
+    await openFlowList(page);
     await page.locator('tbody tr button').first().click();
     await page.waitForURL(/flow=/, { timeout: 30_000 });
 
@@ -59,7 +58,7 @@ test.describe('builder layout', () => {
   test('no interactive control renders at zero size', async ({ page }) => {
     // A button with no box is a button nobody can press — invisible to a test
     // that only asks whether the handler works.
-    await page.goto('/agent-flows');
+    await openFlowList(page);
     await expect(page.locator('table, [role="table"]').first()).toBeVisible();
 
     const bad = await page.evaluate(() => {
@@ -95,7 +94,7 @@ test.describe('builder layout', () => {
     });
     expect(res.status(), await res.text()).toBeLessThan(400);
 
-    await page.goto('/agent-flows');
+    await openFlowList(page);
     await expect(page.getByText(longName.slice(0, 30)).first())
       .toBeVisible({ timeout: 30_000 });
 

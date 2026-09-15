@@ -83,3 +83,30 @@ export async function sweepLeftovers(request: any) {
   for (const b of mine) await deleteFlow(request, b.brain_key);
   return mine.length;
 }
+
+/**
+ * Open the flow list, and fail with the diagnosis rather than the symptom.
+ *
+ * "heading not found" is equally true of a login page, an error page, a redirect
+ * and a page that rendered fine but slowly — and CI is the one place where the
+ * screenshot cannot be fetched without a token, so the message IS the evidence.
+ * This reports the URL it landed on and whatever heading it did find, which is
+ * the difference between "the builder is broken" and "middleware sent us to
+ * /login".
+ */
+export async function openFlowList(page: any): Promise<void> {
+  await page.goto('/agent-flows');
+  await page.waitForLoadState('domcontentloaded').catch(() => {});
+
+  const url: string = page.url();
+  const heading = await page.locator('h1').first()
+    .innerText({ timeout: 5_000 }).catch(() => '(no h1 rendered)');
+  const body = await page.locator('body').innerText()
+    .catch(() => '') as string;
+
+  await expect(
+    page.getByRole('heading', { name: /Agent Flows/i }),
+    `flow list did not render — url=${url} · h1=${JSON.stringify(heading)} · `
+    + `body starts: ${JSON.stringify(body.replace(/\s+/g, ' ').slice(0, 160))}`,
+  ).toBeVisible();
+}

@@ -1,5 +1,5 @@
 import { expect, Page, test } from '@playwright/test';
-import { deleteFlow, ensureFlowExists, sweepLeftovers } from './_helpers';
+import { deleteFlow, ensureFlowExists, openFlowList, sweepLeftovers } from './_helpers';
 
 /**
  * The builder as an author uses it, and the round trip underneath it.
@@ -50,8 +50,7 @@ test.describe('builder lifecycle @critical', () => {
   test('the flow list loads with no page errors', async ({ page }) => {
     const seen = watchConsole(page);
 
-    await page.goto('/agent-flows');
-    await expect(page.getByRole('heading', { name: /Agent Flows/i })).toBeVisible();
+    await openFlowList(page);
     // Served by the API — an empty shell that renders is not a pass.
     await expect(page.locator('table, [role="table"]').first()).toBeVisible();
 
@@ -62,7 +61,7 @@ test.describe('builder lifecycle @critical', () => {
   test('the builder opens a flow with no page errors', async ({ page }) => {
     const seen = watchConsole(page);
 
-    await page.goto('/agent-flows');
+    await openFlowList(page);
     await page.locator('tbody tr button').first().click();
     await page.waitForURL(/flow=/, { timeout: 30_000 });
     // The canvas has mounted when a step is on it.
@@ -103,7 +102,7 @@ test.describe('builder lifecycle @critical', () => {
       answer_node: 'answer',
     });
 
-    await page.goto('/agent-flows');
+    await openFlowList(page);
     await expect(page.getByText('E2E reload').first()).toBeVisible({ timeout: 30_000 });
 
     await page.reload();
