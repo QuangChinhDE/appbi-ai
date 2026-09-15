@@ -44,6 +44,21 @@ jobs:
       # default so any import-time engine creation succeeds.
       DATABASE_URL: "sqlite:///./ci_contract.db"
       PYTHONPATH: ${{ github.workspace }}/backend
+
+      # THE MODULES THE SUITE ASSERTS ABOUT HAVE TO EXIST.
+      #
+      # `permissions._OPTIONAL_MODULES` gates `govern`, `agent_flows` and `chat`
+      # behind METADATA_CATALOG_ENABLED and GOVERN_ENABLED, and both default to a
+      # deployment that has them off. With the flags unset, `MODULE_ALLOWED_LEVELS`
+      # simply has no `chat` key and a test asserting its permission ladder fails
+      # with `KeyError: 'chat'` — not because the ladder is wrong, but because the
+      # module was compiled out from under it.
+      #
+      # `.env.example` and docker-compose both turn these on, so this is the
+      # configuration that ships. It is the same flag whose absence left the E2E
+      # job with no `/agent-flows/*` routes at all.
+      METADATA_CATALOG_ENABLED: "true"
+      GOVERN_ENABLED: "true"
     steps:
       - uses: actions/checkout@v4
 
