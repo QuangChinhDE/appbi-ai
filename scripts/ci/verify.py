@@ -349,6 +349,32 @@ def backend_tests_reach_ci(rep: Report, files: list[str]) -> None:
             print(f"    … and {len(unreferenced) - 10} more")
         print("  a suite in neither the allow-list nor a workflow is not coverage.")
 
+    # THE COMMAND ITSELF HAS TO BE RUNNABLE.
+    #
+    # Every check above asks whether a suite is LISTED. None of them asks whether
+    # the command that lists it parses. A continuation written as a literal
+    # backslash-n rather than a real newline produced
+    #
+    #     tests/test_what_the_ai_sees.py \n            tests/test_node_child_slots.py
+    #
+    # which pytest received as an argument it could not resolve and exited 4 — a
+    # usage error, not a test failure, so the suite never ran at all and every
+    # local gate stayed green. CI was the only thing that noticed.
+    for wf_name in ("backend-contract-tests.yml",):
+        path = REPO_ROOT / ".github" / "workflows" / wf_name
+        if not path.exists():
+            continue
+        text = path.read_text(encoding="utf-8", errors="replace")
+        for tok in re.findall(r"\S+", text):
+            if tok.startswith("\\") and len(tok) > 1:
+                rep.bad(f"{wf_name}: {tok!r} — a literal escape in a shell command; "
+                        "a line continuation must be a backslash at end of line")
+                break
+        for tok in set(re.findall(r"(tests/test_\w+\.py)", text)):
+            if not (REPO_ROOT / "backend" / tok).exists():
+                rep.bad(f"{wf_name} runs {tok}, which is not in the repository — "
+                        "pytest exits 4 and the whole suite is skipped")
+
     # A brand-new local suite is git-IGNORED, so it never shows in `git status`.
     # Advisory only: most stay local deliberately.
     newer = []
