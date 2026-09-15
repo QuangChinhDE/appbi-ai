@@ -69,6 +69,9 @@ check_*.py
 # …but scripts/ci/ holds real gates, not one-offs. preflight.sh and CI call this
 # one, so an ignored copy would mean a gate that cannot run on a fresh clone.
 !scripts/ci/check_*.py
+# Same for the workflow-gate tests: `test_*.py` is ignored globally, and a test
+# that vanishes on a fresh clone cannot protect the Stop hook.
+!scripts/ci/test_*.py
 fix_*.py
 add_*.py
 run.py

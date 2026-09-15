@@ -41,6 +41,10 @@ jobs:
       # ── 1c. Claude workflow config (schema of .claude/) ───────────────────
       - name: Claude workflow config (rules frontmatter, hooks, skills)
         run: python scripts/ci/check_claude_config.py
+      - name: Stop-hook decision tests (all-green / failed / unverified)
+        run: |
+          pip install pytest
+          python -m pytest -q scripts/ci/test_stop_gate.py
 
       # ── 2. Frontend typecheck (uncommitted-provider / type breaks) ────────
       - uses: actions/setup-node@v4

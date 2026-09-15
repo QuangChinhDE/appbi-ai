@@ -83,7 +83,21 @@ a key Claude Code does not read — so all five loaded unconditionally in every 
 appearing to be path-scoped. The YAML parsed; nothing warned. Runs in preflight and CI.
 
 Non-zero exit means the task is not done. The `Stop` hook in `.claude/settings.json` runs
-the `task` tier and hands a failure back to Claude rather than letting a turn end red.
+`verify.py task --json` and decides from the structured result:
+
+| Result | Stop |
+|---|---|
+| nothing failed, nothing unverified | allowed |
+| something failed | blocked, with the failure output |
+| nothing failed but gates went unverified | blocked **once**, listing each gate and reason |
+
+The middle-of-the-road case exists because exit 0 is not the same as covered, and because
+a hook's stdout on exit 0 reaches only the debug log — so the NOT VERIFIED list has to
+travel on stderr with exit 2 or Claude never sees it. The retry (`stop_hook_active=true`)
+is always allowed, so a missing or manual gate can never make finishing impossible.
+
+Tested in `scripts/ci/test_stop_gate.py`: all-green allows, a failed gate blocks, and
+green-with-unverified blocks once then allows the retry.
 
 # guardrail_check.py — the guardrail, runnable
 

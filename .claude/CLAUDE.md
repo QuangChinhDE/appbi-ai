@@ -104,6 +104,12 @@ You may not report a task complete until:
    never presented as coverage.
 4. You state what you changed, what you ran, what passed, and what residual risk remains.
 
+The Stop hook enforces point 3 rather than trusting it. When nothing failed but required
+gates did not run, it blocks the turn **once** and puts their names and reasons on stderr —
+because Claude Code sends a hook's stdout to the debug log on exit 0, so that list would
+otherwise be invisible. That block is not a failure: add the named gates to your report as
+unverified and finish again. The retry is always allowed through.
+
 If a check fails, fix it. Reporting "done, but X is failing" is only acceptable when you
 also say plainly that the task is *not* complete.
 

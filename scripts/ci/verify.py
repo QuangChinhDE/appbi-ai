@@ -387,10 +387,24 @@ def main() -> int:
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args()
 
+    # With --json the machine-readable payload owns stdout and the human log goes
+    # to stderr. Interleaving the two on one stream makes the JSON unparseable for
+    # any caller — and the Stop hook is exactly such a caller.
+    real_stdout = sys.stdout
+    if args.json:
+        sys.stdout = sys.stderr
+
+    def finish(code: int, payload: dict) -> int:
+        if args.json:
+            sys.stdout = real_stdout
+            print(json.dumps(payload, indent=2))
+        return code
+
     files = changed_files()
     if not files:
-        print(f"verify({args.tier}): working tree clean — nothing to verify.")
-        return 0
+        print(f"verify({args.tier}): working tree clean - nothing to verify.")
+        return finish(0, {"tier": args.tier, "clean": True, "passed": [],
+                          "failed": [], "unverified": [], "skipped": []})
 
     def touched(pattern: str) -> bool:
         return any(re.search(pattern, f) for f in files)
@@ -420,21 +434,20 @@ def main() -> int:
         print("  Report every line above as unverified. Do NOT present them as coverage.")
         print()
 
-    if args.json:
-        print(json.dumps({"tier": args.tier, "passed": rep.passed, "failed": rep.failed,
-                          "unverified": rep.unverified, "skipped": rep.skipped}, indent=2))
+    payload = {"tier": args.tier, "clean": False, "passed": rep.passed,
+               "failed": rep.failed, "unverified": rep.unverified, "skipped": rep.skipped}
 
     if rep.failed:
-        print(f"{RED}verify({args.tier}) FAILED — fix the above. The task is not done.{OFF}")
-        return 1
+        print(f"{RED}verify({args.tier}) FAILED - fix the above. The task is not done.{OFF}")
+        return finish(1, payload)
     if not rep.passed and not rep.unverified:
         print(f"verify({args.tier}): nothing applicable to the changed paths.")
-        return 0
+        return finish(0, payload)
     print(f"{GREEN}verify({args.tier}) passed{OFF}"
           + (f" - with {len(rep.unverified)} unverified gate(s)" if rep.unverified else ""))
     if args.tier == "fast":
-        print("  (fast tier only — run 'python scripts/ci/verify.py task' before calling it done)")
-    return 0
+        print("  (fast tier only - run 'python scripts/ci/verify.py task' before calling it done)")
+    return finish(0, payload)
 
 
 if __name__ == "__main__":
