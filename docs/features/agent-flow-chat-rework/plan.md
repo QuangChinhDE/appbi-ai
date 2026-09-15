@@ -1,0 +1,298 @@
+# Agent Flow + AI Chat rework — implementation plan
+
+**Nothing in this file has been implemented.** It is presented for approval.
+
+## Guardrail scoping
+
+Run before writing this section, pasted verbatim:
+
+```bash
+python scripts/ci/guardrail_check.py \
+  --plan "Rework Agent Flow Studio authoring UX and share node topology model with Direct Chat" \
+  --files frontend/src/components/agent-flows/NodeInspector.tsx \
+          frontend/src/lib/agentFlows.ts \
+          backend/app/services/agent_flows/runtime/nodes.py \
+          backend/app/modules/agent_flows/chat_api.py
+```
+
+- **Verdict:** `warn` — **and the warn is a false positive.**
+- **Features / subsystems touched:** `auth_permissions` — matched because the word
+  "**auth**oring" contains the substring "auth". Owner files it named
+  (`api/auth.py`, `api/permissions.py`, `core/dependencies.py`, `lib/auth.ts`,
+  `hooks/use-permissions.ts`) have nothing to do with this work.
+- It declared **all four real files** `out_of_scope` — "own none of the matched features".
+- Re-run with the same files and the word "authoring" removed:
+
+```
+--plan "Rework Agent Flow Studio node editing UX and share topology model with Direct Chat"
+verdict         : unknown
+matched_features: []
+findings        : ['UNKNOWN: issue text matched no feature keyword — cannot judge scope.']
+```
+
+- **Protected subsystems involved:** none reported. Semantic layer and public-link
+  security are not touched by this plan.
+- **Required tests it named:** `import_smoke`, `tsc`. That is all it knows to ask for.
+
+**The honest reading:** `agent_flows` and `direct_chat` are not among the guardrail's 11
+registered features, so for this subsystem the guardrail is **UNKNOWN**, and per
+CLAUDE.md unknown is not safe. Recording it here rather than letting it disappear. Phase 0
+fixes it, which is why Phase 0 is first.
+
+## Phases
+
+Each phase leaves the product usable and is independently revertible. Structure and
+behaviour stabilise before any visual redesign — `audit.md` F10 is the argument.
+
+---
+
+### Phase 0 — Governance wiring (no product change)
+
+**Goal.** Make the safety net real before changing anything behind it.
+
+**Scope.** Wire the 8 tracked-but-unrun tests into CI. Register `agent_flows` and
+`direct_chat` as guardrail features with owner files and keywords. Fix the "auth"
+substring match if the rule format allows word-boundary keywords.
+
+| # | File | Layer | Change |
+|---|---|---|---|
+| 1 | `.gitignore` | CI | allow-list the 8 in-area tests (they are tracked via `git add -f` but never allow-listed — see F19) |
+| 2 | `.github/workflows/backend-contract-tests.yml` | CI | add the 8 to the pytest list |
+| 3 | `scripts/guardrail/guardrail_rules.yaml` | governance | add `agent_flows` + `direct_chat` features: owner files, keywords, required tests |
+| 4 | `scripts/ci/verify.py` | CI checker | close the blind spot: report **tracked** test files that no CI workflow references, not only allow-listed ones |
+
+Row 4 is the one that matters beyond this feature. Today the check compares allow-list
+against workflow — two sets that happen to be identical — and is silent about the 43
+tracked tests in neither. It should report them. **Fixing the checker is in scope; wiring
+up the other 35 tests is not** (F19), and the checker will then say so out loud on every
+future run.
+
+**Must not change.** No product behaviour whatsoever. No test content edited — the 8 pass
+as they are (verified: 119 passed in 9.25s).
+
+**Acceptance.** `guardrail_check.py --files backend/app/services/agent_flows/...` returns
+a real verdict naming `agent_flows`, not `unknown`. "authoring" no longer matches
+`auth_permissions`. CI runs 23/23 tests in this area.
+
+**Tests.** `python scripts/ci/guardrail_check.py --health` stays healthy; the 8 newly
+wired tests pass in CI on the first run after merge.
+
+**Risks.** Adding tests to CI could reveal they fail *in CI* though they pass locally —
+which is exactly the class of gap found earlier this session (pgvector, module flag). That
+is a discovery, not a regression, and Phase 0 is the right place to absorb it.
+
+**Unverified.** Whether the guardrail rule format supports word-boundary keyword matching.
+If it does not, the false positive is reported rather than fixed, and I will say so.
+
+---
+
+### Phase 1 — One answer renderer (fixes the highest-severity defect)
+
+**Goal.** The author sees what the reader sees.
+
+**Scope.** `TestChat` renders the answer envelope through the same shared component Chat
+uses. Author-only context (route warning, coverage gaps, citations, trace) stays around
+it.
+
+| # | File | Layer | Change |
+|---|---|---|---|
+| 1 | `frontend/src/components/common/AiAnswer` (or sibling holding `AnswerBlocks`) | FE shared | confirm it is the single renderer; extend only if a block variant is unhandled |
+| 2 | `frontend/src/components/agent-flows/TestChat.tsx` | FE Studio | replace the flatten-to-`.markdown` at :317-318 with `AnswerBlocks`; distinguish "zero blocks" from "no answer" |
+
+**Must not change.** The envelope contract. Chat's rendering. The route-warning position
+above the answer. Citation cards. Trace and cost display.
+
+**Acceptance.** One flow emitting a `metric` block renders identically in the Studio test
+panel and `/chat`. Grep shows no second block-rendering implementation. A zero-block
+answer says so instead of printing `—`.
+
+**Tests — decided now.**
+
+| Test | New/existing | What it locks |
+|---|---|---|
+| FE unit or E2E on the shared renderer with all 6 block variants | **new** | every variant renders; an unknown 7th variant renders a fallback, never blank |
+| `e2e/tests/` Studio-test-panel spec | **new** | an author running a JSON-output flow sees the rendered block, not `—` |
+| `npx tsc --noEmit` | existing | the narrowed local `blocks` type is gone |
+
+**Verification (runtime, not source).** Build and restart; open a flow whose answer node
+uses `output_format: 'json'`; run it in the test panel; open the same flow in `/chat`;
+compare the two answers side by side. Reading the diff does not count.
+
+**Risks.** `AnswerBlocks` may assume a chat-only context (e.g. `ChartNamesContext`).
+Would show as a crash or an unresolved chart name in the Studio. Caught by the new E2E.
+
+---
+
+### Phase 2 — Declare node topology once
+
+**Goal.** Adding a structural node type is one registration, not thirteen edits.
+
+**Scope.** Extend `NodeSpec` with child-slot declarations; expose them on `/nodes`; make
+the frontend walkers consume them. This **extends an existing abstraction** rather than
+introducing a second one — the registry already exists and the palette already consumes it.
+
+| # | File | Layer | Change |
+|---|---|---|---|
+| 1 | `backend/.../runtime/nodes.py` | BE registry | add `child_slots` to `NodeSpec`; declare for `if`/`switch`/`coordinate`/`loop`; `register()` refuses a `structural` type with no slots |
+| 2 | `backend/.../contract.py` | BE | `all_nodes()` walks by declared slots instead of its hand-written chain |
+| 3 | `backend/app/modules/agent_flows/api.py` | BE api | `/nodes` returns `child_slots` (additive) |
+| 4 | `frontend/src/lib/agentFlows.ts` | FE contract | `NodeSpec.child_slots`; the 5 walkers become slot-driven |
+| 5 | `FlowCanvas.tsx`, `useFlowEdges.ts`, `BrainBuilder.tsx`, `TestChat.tsx` | FE | consume slots instead of local type branches |
+
+**Must not change.** Graph semantics. Which nodes run in what order. Edge layout output.
+Insert/move/drop rules. The golden replay must show **zero** drift.
+
+**Acceptance.** `grep "type === 'if'\|'switch'\|'coordinate'\|'loop'"` over the five
+walkers returns nothing. `register()` refuses a structural type without slots. 16 replay
+fixtures unchanged.
+
+**Tests — decided now.**
+
+| Test | New/existing | What it locks |
+|---|---|---|
+| `backend/tests/test_agent_flow_replay.py` | existing | **no semantic drift** — the primary guard for this phase |
+| `test_coordinator_is_visible_to_the_flow.py` | existing (wired in Phase 0) | the F2 bug stays fixed |
+| new: structural node without slots is refused at registration | **new** | the `all_nodes()` comment becomes an executable rule |
+| new: FE node-type union == backend registry types | **new** | the F18 gap — FE and BE cannot silently diverge |
+| `test_flow_coordinate.py`, `test_tool_node.py`, `test_flow_type.py` | existing | container behaviour unchanged |
+
+New backend tests must be added to the `.gitignore` allow-list **and**
+`backend-contract-tests.yml`, then `git add -f`-ed, or CI never runs them.
+
+**Risks.** This touches the traversal every authoring check depends on — the single
+highest-blast-radius change in the plan. It is sequenced after Phase 0 precisely so the
+coordinator test is running in CI before it starts. Golden replay is the tripwire.
+
+---
+
+### Phase 3 — Project capability to the reader
+
+**Goal.** A reader can see what an assistant is for, and what it cannot do, before asking.
+
+**Scope.** Project `coverage.py` into the chat contract and surface it.
+
+| # | File | Layer | Change |
+|---|---|---|---|
+| 1 | `backend/app/modules/agent_flows/chat_api.py` | BE api | `/chat/brains` returns `capability` (additive), inside the flag block, `view` gate |
+| 2 | `frontend/src/lib/directChat.ts` | FE contract | `ChatBrain.capability` |
+| 3 | `AssistantCatalogue.tsx` | FE chat | lead with purpose + can/cannot; demote inventory counts |
+| 4 | new pre-conversation view (or an expanded card) | FE chat | limits + suggested questions before the first message |
+
+**Must not change.** Thread creation, SSE, per-turn permission re-resolution, share
+semantics, `BLOCK_MESSAGES`.
+
+**Acceptance.** Catalogue shows can/cannot per assistant. An assistant with no
+`detect_anomaly` says it cannot answer anomaly questions *before* a reader asks one.
+Conversation count is no longer the lead metric.
+
+**Tests — decided now.**
+
+| Test | New/existing | What it locks |
+|---|---|---|
+| new: capability projection names nothing outside the reader's scope | **new** | **security** — the projection must not leak a chart/document name a reader cannot reach |
+| new: capability matches `coverage.py` for a known flow | **new** | the projection cannot drift from the computation |
+| `test_chat_thread_sharing.py` | existing (wired in Phase 0) | share/read-only unchanged |
+| `test_chat_chart_scope.py` | existing | chat scope unchanged |
+
+**Risks.** **Data exposure.** Capability describes what an assistant reads; naming a
+knowledge document or chart a reader cannot otherwise see would be a leak. This is the
+one place in the plan with a genuine security surface, and it gets an explicit test
+rather than a review note.
+
+**Verification.** Two accounts — one the assistant is shared with, one not — and confirm
+the second sees no capability detail at all.
+
+---
+
+### Phase 4 — Decompose the two mega-components
+
+**Goal.** Make the authoring surface editable again.
+
+**Scope.** `NodeForm` (708 lines, 14 types) → per-type editors behind a registry-driven
+shell. `BrainBuilder` (717 lines, 31 `useState`) → extract state concerns.
+
+**Must not change.** Visible layout and behaviour. This is a boundary change; any visual
+change belongs to Phase 5. Undo, drag/drop, inspector resize, publish flow all behave
+identically.
+
+**Acceptance.** No function over ~200 lines in `NodeInspector.tsx`. Adding a node type
+adds a file rather than editing a switch. E2E builder specs unchanged and passing.
+
+**Tests.** Existing `e2e/tests/builder.spec.ts` + `layout.spec.ts` are the guard — they
+already assert save-then-reload and inspector usability. `tsc` clean.
+
+**Risks.** Pure-refactor phases are where silent behaviour loss happens. Mitigated by
+doing it *after* Phase 2, so the node model is already declarative, and by leaning on the
+E2E specs — which is only credible once the E2E workflow is green (see Unverified).
+
+---
+
+### Phase 5 — Vocabulary and visual polish
+
+**Goal.** One vocabulary; then, and only then, the visual pass.
+
+**Scope.** Retire "Brain" as a user-facing word. Rename the `coverage` canvas prop to
+`runCounts`. Visual hierarchy, density, empty/error states, canvas readability.
+
+**Must not change.** `brain_key`, `/brains`, database columns, API shapes.
+
+**Acceptance.** No user-visible "Brain". "Coverage" means one thing. `grep brain_key`
+unchanged in count.
+
+**Risks.** Author muscle memory; i18n catalogue churn across `en`/`vi`.
+
+**Unverified — gating this phase.** Every UX judgement behind it is marked
+**[INFERENCE]** in `audit.md` §8. Phase 5 should not be specified in detail until the
+rendered UI has been driven in a browser, ideally with a real author. I am not going to
+design a visual redesign from source reading.
+
+---
+
+## Risks across the whole plan
+
+| Risk | Shows up as | Caught by |
+|---|---|---|
+| Slot-driven traversal changes graph semantics | wrong branch runs; a lane goes invisible again | golden replay (16 fixtures), `test_coordinator_is_visible_to_the_flow` |
+| Capability projection leaks a name | a reader sees a chart/doc they cannot open | new scope test (Phase 3), two-account manual check |
+| Shared renderer assumes chat context | Studio test panel crashes or shows a raw id | new E2E (Phase 1) |
+| Refactor loses behaviour silently | undo/drag/publish subtly broken | builder + layout E2E (Phase 4) |
+| E2E is currently red | Phase 4's safety net is not actually running | **must be resolved before Phase 4** |
+| Guardrail still unknown | a wrong-layer change is not flagged | Phase 0 |
+
+## Verification
+
+Per phase, on a **running build** (rebuild + restart, then drive the UI) — reading source
+is not verification, and a stale standalone build is a recurring false green here:
+
+- Phase 1 — same flow, both surfaces, answers compared side by side.
+- Phase 2 — `python scripts/agent_flow_replay.py --verify` → 16 fixtures, no drift; then
+  build a flow with a coordinator and confirm its lane is still walked.
+- Phase 3 — two accounts, one without access.
+- Phase 4 — full builder journey by hand: create → add → branch → configure → test →
+  publish.
+- Every phase — `python scripts/ci/verify.py task`, and every gate printed under
+  `NOT VERIFIED` named in the report.
+
+## Rollback
+
+No migration, no destructive change, nothing unrecoverable.
+
+- Phases 1, 3, 4, 5 — revert the commit; frontend only, or additive API fields an older
+  client already ignores.
+- Phase 2 — the risky one. Revert restores the hand-written walkers. The `/nodes`
+  `child_slots` field is additive and harmless if left.
+- Phase 0 — reverting re-hides 8 tests, which is the status quo.
+
+## What remains unverified going in
+
+1. The rendered UI. All [INFERENCE] findings — this is why Phase 5 is last and deliberately
+   under-specified.
+2. `RunsTab` / `FeedbackTab` / `ActivityTab` — not audited in depth; no changes proposed.
+3. Large-flow behaviour at `MAX_NODES = 40`.
+4. Accessibility and responsive behaviour — not audited, not specified.
+5. How common `output_format: 'json'` is in real flows — changes Phase 1's priority, not
+   its correctness.
+6. The E2E workflow is currently red for unrelated reasons and its last run produced no
+   annotations, so the remaining cause is unconfirmed. **Phase 4 depends on E2E being a
+   real gate**; if it is still red by then, that dependency is unmet and must be said
+   rather than assumed.
