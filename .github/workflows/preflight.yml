@@ -80,4 +80,14 @@ jobs:
           ENVIRONMENT: "test"
           SECRET_KEY: "ci-preflight-secret-key-not-used-in-production-please-do-not-copy"
           DATASOURCE_ENCRYPTION_KEY: "0j7eUt3wx+0UtT7hH5LnuMpLiDmTN7f1WaRtPyEcjPw="
+          # THE FLAGGED MODULES HAVE TO BE IMPORTED, OR THIS SMOKE TEST IS BLIND.
+          #
+          # `api/__init__.py` imports the agent_flows and metadata_catalog routers
+          # only `if settings.METADATA_CATALOG_ENABLED`, which DEFAULTS TO FALSE.
+          # Measured: with the flag unset, `import app.main` pulls in ZERO
+          # agent_flows router modules — so a broken import in the largest module
+          # in the repo passed the gate whose entire purpose is "lazy imports hide
+          # breakage until runtime".
+          METADATA_CATALOG_ENABLED: "true"
+          GOVERN_ENABLED: "true"
         run: python -c "import app.main"

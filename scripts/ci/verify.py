@@ -375,6 +375,62 @@ def backend_tests_reach_ci(rep: Report, files: list[str]) -> None:
                 rep.bad(f"{wf_name} runs {tok}, which is not in the repository — "
                         "pytest exits 4 and the whole suite is skipped")
 
+    # CI MUST RUN THE DEPLOYMENT THAT SHIPS.
+    #
+    # A feature flag whose shipped value differs from its code default silently
+    # changes the SHAPE of the app when a workflow forgets it — not one behaviour,
+    # the presence of whole modules. `METADATA_CATALOG_ENABLED` ships `true` and
+    # defaults to `False`, and that single gap produced four separate failures on
+    # this branch alone:
+    #
+    #   · the E2E job had no `/agent-flows/*` routes at all (every call 404)
+    #   · `MODULE_ALLOWED_LEVELS` had no `chat` key, so a permission test failed
+    #     with `KeyError: 'chat'` — the module was compiled out from under it
+    #   · `import app.main` in preflight loaded ZERO agent_flows router modules,
+    #     so the gate that exists to catch lazy-import breakage could not see the
+    #     largest module in the repository
+    #   · and each looked like a product bug rather than a configuration one
+    #
+    # So: any workflow that runs the backend must set every flag whose
+    # `.env.example` value disagrees with `config.py`. Advisory for other flags,
+    # failing for the ones that gate module registration.
+    env_example = (REPO_ROOT / ".env.example")
+    config_py = (REPO_ROOT / "backend" / "app" / "core" / "config.py")
+    if env_example.exists() and config_py.exists():
+        shipped = {
+            m.group(1): m.group(2).strip().lower()
+            for m in re.finditer(r"^([A-Z_]+_ENABLED)=(\w+)$",
+                                 env_example.read_text(encoding="utf-8", errors="replace"), re.M)
+        }
+        defaults = {
+            m.group(1): m.group(2).strip().lower()
+            for m in re.finditer(r"^\s+([A-Z_]+_ENABLED):\s*bool\s*=\s*(\w+)",
+                                 config_py.read_text(encoding="utf-8", errors="replace"), re.M)
+        }
+        drifted = sorted(
+            name for name, value in shipped.items()
+            if name in defaults and defaults[name] != value
+        )
+        if drifted:
+            wf_dir = REPO_ROOT / ".github" / "workflows"
+            for wf in sorted(wf_dir.glob("*.yml")) if wf_dir.exists() else []:
+                body = wf.read_text(encoding="utf-8", errors="replace")
+                # only workflows that actually start or import the backend
+                if not re.search(r"import app\.main|pytest|uvicorn", body):
+                    continue
+                for name in drifted:
+                    # A YAML KEY, not a substring. The flag name also appears in the
+                    # comment explaining why the flag is there, so `name in body`
+                    # reported it set when it had just been deleted — the third time
+                    # in this branch that a check has matched prose instead of code.
+                    if not re.search(rf"^\s*{re.escape(name)}\s*:", body, re.M):
+                        rep.bad(
+                            f"{wf.name} runs the backend without {name}. It ships as "
+                            f"{shipped[name]!r} and defaults to {defaults[name]!r}, so this "
+                            f"job tests a differently-shaped app — modules that ship are "
+                            f"absent, and their routes, permission keys and imports with them."
+                        )
+
     # A brand-new local suite is git-IGNORED, so it never shows in `git status`.
     # Advisory only: most stay local deliberately.
     newer = []
