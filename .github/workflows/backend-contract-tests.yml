@@ -94,7 +94,19 @@ jobs:
         working-directory: backend
     services:
       postgres:
-        image: postgres:15
+        # THE SAME IMAGE docker-compose.yml runs, and it has to be.
+        #
+        # This was `postgres:15`, which carries no pgvector, so
+        # `20260321_0006_add_column_stats_and_embeddings` died on
+        # `CREATE EXTENSION IF NOT EXISTS vector` and took every job that builds
+        # the schema with it — integration-golden here, and `Build the schema` in
+        # the E2E workflow. Both had been red since the extension was introduced,
+        # on every commit, for reasons that had nothing to do with the commit.
+        #
+        # A CI database on a different major version than the one that ships is
+        # its own latent bug, so this pins to compose rather than to
+        # `pgvector/pgvector:pg15`.
+        image: pgvector/pgvector:pg16
         env:
           POSTGRES_USER: appbi
           POSTGRES_PASSWORD: appbi

@@ -33,7 +33,11 @@ jobs:
 
     services:
       postgres:
-        image: postgres:15
+        # The same image docker-compose.yml runs. Stock `postgres:15` carries no
+        # pgvector, so `CREATE EXTENSION IF NOT EXISTS vector` failed and the
+        # `Build the schema` step never got as far as starting the app. See the
+        # longer note in backend-contract-tests.yml.
+        image: pgvector/pgvector:pg16
         env:
           POSTGRES_USER: appbi
           POSTGRES_PASSWORD: appbi
