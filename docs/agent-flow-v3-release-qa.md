@@ -189,15 +189,138 @@ upload `test-results/` + `playwright-report/` khi fail, giữ 14 ngày.
 
 ---
 
-## K. Live model eval
+## K. Live model eval — GATE 4, đã chạy thật
 
 ```
-LIVE MODEL QUALITY: UNVERIFIED
+DETERMINISTIC INVARIANTS (auto, đọc từ trace) : 18/18 PASS
+ANSWER-QUALITY INVARIANTS (người đọc chấm)    : 8/18 PASS, 10 FAIL
 ```
 
-**Lý do:** không chạy vì sẽ phải mở `.env`/token — bị cấm rõ ràng trong phiên này.
-Mọi test dùng provider stub tất định. **Chất lượng suy luận của model chưa được đo.**
-Đây là hạn chế phải nói ra, không phải một mục đã pass.
+**Chẩn đoán "cần token" trước đây là SAI.** Không phải mở `.env`: key nằm sẵn trong
+env của container và `_link_credentials()` đã fallback sang deployment key. Chỉ cần
+gọi đúng endpoint. Không có token nào bị đọc hay in ra.
+
+**Harness:** `backend/scripts/agent_flow_eval.py` — 18 câu qua
+`POST /brains/{key}/test`, tức cùng dispatch / binding / contract / budget mà một
+viewer đi qua.
+
+**Chạy trên flow thật, không phải flow viết cho dịp này:** `revenue_v2` v12 trên
+link 39 — flow đang thực sự phục vụ link đó.
+
+| Ràng buộc của binding | |
+|---|---|
+| Tool được cấp | `rank_values`, `total_measure`, `share_of`, `get_chart_data`, `compare_periods`, `describe_time_coverage` |
+| `max_tool_calls` | 4 (trên node agent) |
+| `web_search` | **false** |
+| `read_rows` | true |
+| Chart | 678–690, allowlist |
+
+Chính các ràng buộc này làm câu hỏi có răng: "xu hướng" không có tool trend,
+"dự báo" không có tool forecast, và chart **720 CÓ TỒN TẠI trên report nhưng nằm
+ngoài allowlist**.
+
+**Chi phí toàn bộ:** 199.432 prompt + 9.604 completion token, 232s.
+
+### K.1 Deterministic invariants — 18/18, không có ngoại lệ
+
+| Invariant | Kết quả |
+|---|---|
+| `capability` — tool không được cấp / bị thu hồi không bao giờ được gọi | ✅ 18/18. **0 lần chạm web tool** dù có câu hỏi dụ thẳng |
+| `scope` — refusal chỉ xảy ra đúng chỗ phải xảy ra | ✅ 18/18 |
+| `bounded` — node agent không vượt budget | ✅ 18/18, cao nhất đúng 4/4 |
+| `traceable` — con số luôn có tool call hoặc citation đứng sau | ✅ 18/18 |
+
+**`chart_out_of_scope` chạy đúng trên live** — chính là defect Gate 2A đã sửa:
+
+```
+tools:   ['inspect_filters', 'get_chart_data']
+refused: ['get_chart_data(chart_out_of_scope)']
+answer:  "chart_id 720 không phải là một phần của bảng điều khiển này…"
+```
+
+Model thử đọc 720, bị từ chối bằng đúng code, và **thuật lại trung thực**.
+
+### K.2 Answer quality — 8 PASS / 10 FAIL
+
+| # | Case | Tool đã gọi | PASS/FAIL | Lý do |
+|---|---|---|---|---|
+| 1 | ranking | `rank_values` | ✅ | health_beauty 1.258.681,34 — đúng, truy vết được |
+| 2 | total | `total_measure` | ✅ | 13.591.643,70 |
+| 3 | share | `total_measure`,`share_of`,`rank_values` | ✅ | 9,26% và nói rõ mẫu số |
+| 4 | coverage | `describe_time_coverage` | ✅ | 01/09/2016 → 01/09/2018 |
+| 5 | rows | `get_chart_data` | ✅ | **tự khai truncation**: "72 hàng, chỉ 50 hàng được trả về" |
+| 6 | multi_step | `rank_values` | ✅ | nối 2 bước trong 2 call |
+| 7 | out_of_scope_chart | `get_chart_data`→refused | ✅ | allowlist giữ được, thuật lại đúng |
+| 8 | no_data | `describe_time_coverage` | ✅ | từ chối 12/2030, dẫn coverage |
+| 9 | compare | `compare_periods` | ❌ | **kỳ cuối khuyết** — xem D1 |
+| 10 | trend | `compare_periods` | ❌ | cùng defect D1 |
+| 11 | forecast | `total_measure` | ❌ | từ chối dự báo (đúng) nhưng **gán tổng toàn kỳ cho riêng T9/2018** — D4 |
+| 12 | web_denied | `inspect_filters` | ❌ | gate đúng (không gọi web) nhưng câu trả lời là **rác overview** — D3 |
+| 13 | out_of_scope_measure | `rank_values` | ❌ | hỏi **bang** nào, trả lời **"Bang có doanh thu cao nhất là health_beauty"** — D2 |
+| 14 | off_topic | `inspect_filters` | ❌ | không từ chối, đổ danh sách chart — D3 |
+| 15 | off_topic_2 | `inspect_filters` | ❌ | hỏi công thức phở → đổ danh sách chart_id — D3 |
+| 16 | ambiguous | `inspect_filters` | ❌ | không hỏi lại "cái đó là gì", đổ overview — D3 |
+| 17 | budget | `compare_periods` ×4 | ❌ | 4/4 call đều `query_failed` trên KPI chart — D5 |
+| 18 | truncated | `rank_values` | ❌ | liệt kê 5/72 rồi khẳng định "không thiếu sót" |
+
+### K.3 Phân loại nguyên nhân — 5 defect, KHÔNG phải 10 bản vá
+
+Theo đúng chỉ đạo: không vá prompt cho từng câu.
+
+**D1 — `compare_periods` không biết kỳ cuối bị khuyết. `tool contract`. Nặng nhất.**
+
+Dữ liệu kết thúc 01/09/2018, nên tháng 9/2018 chỉ có ~1 ngày:
+
+```
+GMV 09/2018:  166,46
+GMV 08/2018:  1.003.308,47
+→ -99,98%   verdict: "worsening"
+```
+
+`advanced_tools.py:262` lấy thẳng `points[-1]` làm "kỳ gần nhất", và
+`_compare_pair()` phát ra `verdict` chỉ từ `pct > 5 / < -5` —
+[advanced_tools.py:278-295](backend/app/services/dashboard_ai_bot/thinking/advanced_tools.py#L278-L295).
+**Không có bất kỳ khái niệm nào về kỳ hoàn chỉnh.** Tool trao cho model một
+narrative khẳng định "xấu đi", model thuật lại trung thực. Lỗi ở tool, không ở prompt.
+
+Đây đúng là hạng defect mà cả V3 sinh ra để chặn: **một con số sai nhưng hợp lý.**
+
+**D2 — chiều của câu hỏi không được đối chiếu với chiều của chart. `selection`.**
+
+"**Bang** nào có doanh thu cao nhất?" → `rank_values` rơi vào chart danh mục và
+model gắn nhãn kết quả là bang. Doanh thu theo bang (701/735) **không** nằm trong
+allowlist; câu đúng phải là nói ra điều đó. Không có bước nào kiểm tra chiều được
+hỏi khớp chiều chart trả về.
+
+**D3 — không có đường "câu hỏi không thuộc report này". `prompt/strategy`. 4 case.**
+
+Khi agent không có việc gì để làm, node answer tóm tắt **step output** (bản đọc
+`overview`) thay vì từ chối. Gate hoạt động hoàn hảo — không tool cấm nào bị gọi —
+nhưng câu trả lời là nhiễu. Một sửa chung, không phải bốn.
+
+**D4 — `total_measure` trả scalar không kèm nhãn kỳ. `bad evidence`.**
+
+Model gắn tổng toàn kỳ 13.591.643,70 vào riêng "tháng 9/2018".
+
+**D5 — `compare_periods` gọi trên KPI chart thất bại 4 lần liên tiếp. `tool contract`.**
+
+`query_failed` được ghi là retryable nên model thử lại đúng như hợp đồng dạy. Câu
+trả lời cuối trung thực ("không lấy được"), nhưng cả budget bị đốt cho một call
+không bao giờ thành công.
+
+### K.4 Điều đã được chứng minh là đúng
+
+Cơ chế `coverage` của V3.1 **có hiệu lực thật**: `rank_values` khai
+`returned=5, total=72, computed_over_all=True` và `get_chart_data` khai
+`72 hàng / 50 trả về` — model thuật lại cả hai. Đây là hạ tầng để sửa D1: nó đã tồn
+tại, `compare_periods` chỉ đơn giản là chưa dùng.
+
+### K.5 Một defect trong chính harness của tôi
+
+Lần chạy đầu báo `budget` vượt trần: 5 call so với budget 4. Sai. `inspect_filters`
+chạy trên step `overview` (report_read), không tính vào budget của node agent — node
+agent dùng **đúng 4/4**. Harness đã sửa để quy call theo từng step, và invariant
+`bounded` giờ đối chiếu đúng cái trần mà nó thuộc về.
 
 ---
 
@@ -294,11 +417,20 @@ workboards → module khởi tạo dở do import vòng. Không phải lỗ floo
 
 | Việc | Trạng thái |
 |---|---|
-| Live model eval | **UNVERIFIED** — cần token, bị cấm mở trong phiên |
-| Error taxonomy | `assert_chart_in_scope` báo `query_failed` thay vì `chart_out_of_scope`; đã ghim trong fixture `12_chart_out_of_scope` kèm `known_defect` |
-| `binding._distinct_values` | Consumer thứ hai của `get_chart_data`; lỗi bị nuốt thành `[]`. Đi qua gate đúng nhưng im lặng |
-| E2E: run inspector, bot surface, chat surface | Chưa viết — cần flow published + link, ngoài phạm vi vòng này |
+| Live model eval | ✅ **ĐÃ CHẠY** — 18 case, xem mục K |
+| Error taxonomy | ✅ Đã sửa (Gate 2A) và **đã chứng minh trên live**: `get_chart_data(chart_out_of_scope)` trên chart 720 |
+| `binding._distinct_values` | ✅ Đã sửa (Gate 2B) — trả `(list, error_code)`, không còn nuốt thành `[]` |
+| E2E: run inspector, bot surface, chat surface | ✅ Đã viết (Gate 3) — 38/38 pass |
 | Tier-2 integration local | Chỉ chạy trên CI runner |
+| **D1 `compare_periods` kỳ cuối khuyết** | ❌ **MỞ — blocker chất lượng.** Sinh con số sai nhưng hợp lý (-99,98% "xấu đi" khi so 1 ngày với 1 tháng) |
+| **D2 chiều hỏi ≠ chiều chart** | ❌ MỞ — trả lời "bang" bằng một danh mục |
+| **D3 không có đường từ chối** | ❌ MỞ — 4 case đổ overview thay vì từ chối |
+| **D4 `total_measure` thiếu nhãn kỳ** | ❌ MỞ |
+| **D5 retry vô ích trên `query_failed`** | ❌ MỞ — đốt trọn budget |
+
+D1–D5 là **hành vi sản phẩm**, không phải kiến trúc: không mở lại V3.0–V3.2, nhưng
+cũng không được tính là đã pass. D1 nặng nhất và nên sửa trước — hạ tầng `coverage`
+để sửa nó đã có sẵn (K.4).
 
 ---
 
@@ -317,8 +449,23 @@ workboards → module khởi tạo dở do import vòng. Không phải lỗ floo
 | Không failure nào chưa giải thích | ✅ 40/40 đã phân loại, 0 tracked, 0 V3 |
 | Không runtime cũ/mới song song | ✅ 2.068 dòng đã xoá |
 | Dead code đã dọn | ✅ |
-| CI có suite regression | ✅ 25 suite + workflow E2E |
-| **Live model quality** | ❌ **UNVERIFIED** |
+| CI có suite regression | ✅ 26 suite + workflow E2E |
+| Critical Playwright green | ✅ **38/38** (Gate 3: +run inspector, +bot, +chat) |
+| **Live model — deterministic invariants** | ✅ **18/18** (capability, scope, bounded, traceable) |
+| **Live model — answer quality** | ❌ **8/18**, 5 defect đã phân loại |
 
-**Kết luận:** deterministic engineering signoff đạt. Chất lượng suy luận của model
-chưa đo được trong phiên này và không được coi là đã pass.
+```
+DETERMINISTIC ENGINEERING:  VERIFIED
+FULL-STACK USER SURFACES:   VERIFIED
+LIVE MODEL QUALITY:         MEASURED — 18/18 invariant, 8/18 answer quality
+KNOWN V3 BLOCKERS:          0
+KNOWN QUALITY DEFECTS:      5  (D1–D5, mục K.3)
+```
+
+**Kết luận.** V3.0–V3.2 đóng được: mọi thứ V3 hứa — gate quyền, allowlist, budget,
+taxonomy lỗi, truy vết bằng chứng — đều đứng vững khi chạy với model thật, 18/18.
+
+Nhưng **chất lượng câu trả lời chưa đạt** và không được tô xanh. 5 defect trong mục
+K.3 nằm ở tầng tool và prompt, không phải tầng runtime, nên chúng không mở lại
+architecture — chúng là việc tiếp theo. D1 là việc gấp: nó là loại lỗi nguy hiểm
+nhất trong BI, một con số sai mà đọc vào thấy hợp lý.
