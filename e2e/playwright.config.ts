@@ -32,8 +32,18 @@ export default defineConfig({
   workers: 1,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 1 : 0,
+  // `github` PUTS THE FAILURE WHERE IT CAN BE READ WITHOUT ADMIN RIGHTS.
+  //
+  // A failing run used to expose exactly one thing to anyone without write access
+  // to the repository: "Process completed with exit code 1." Job logs need admin
+  // (`Must have admin rights to Repository`) and the trace artifact needs a token,
+  // so which test failed and why was invisible to a reviewer reading the run —
+  // and the only way to find out was to rebuild CI's conditions locally.
+  //
+  // This reporter emits a `::error::` per failing test, which lands as a check
+  // annotation on the commit and is readable by anyone who can see the repo.
   reporter: process.env.CI
-    ? [['list'], ['html', { open: 'never' }], ['blob']]
+    ? [['github'], ['list'], ['html', { open: 'never' }], ['blob']]
     : [['list'], ['html', { open: 'never' }]],
 
   use: {
