@@ -246,7 +246,7 @@ features:
                "switch branch", "flow canvas", "node inspector", "flow builder",
                "answer envelope", "answer block", "answer blocks", "flow runtime",
                executor, run_flow, "tool node", report_read]
-    invariants: [agent_flow_answer_parity]
+    invariants: [agent_flow_container_topology, agent_flow_answer_parity]
     required_tests: [agent_flow_contract, agent_flow_replay, agent_flow_container]
 
   - id: direct_chat
@@ -279,7 +279,7 @@ tests:
     run: "pytest backend/tests/test_agent_flow_replay.py"
     locks: "16 canonical fixtures replay with no semantic drift — the tripwire for any runtime or traversal change"
   agent_flow_container:
-    run: "pytest backend/tests/test_coordinator_is_visible_to_the_flow.py backend/tests/test_flow_coordinate.py backend/tests/test_flow_synthesis_sees_all_steps.py backend/tests/test_flow_type.py"
+    run: "pytest backend/tests/test_coordinator_is_visible_to_the_flow.py backend/tests/test_flow_coordinate.py backend/tests/test_flow_synthesis_sees_all_steps.py backend/tests/test_flow_type.py backend/tests/test_node_child_slots.py"
     locks: "every container node is walked by all_nodes(); a coordinator's lane is visible to every authoring check"
   direct_chat_contract:
     run: "pytest backend/tests/test_chat_thread_sharing.py backend/tests/test_chat_chart_scope.py"
@@ -362,6 +362,22 @@ tests:
 invariants:
   # GROUNDED (verified L3017/3115/3218/3037). Guards the PRESENCE of the
   # de-correlation fix — a diff removing its markers undoes it.
+  - id: agent_flow_container_topology
+    label: "A container node's child slots are declared once and every traversal reads them"
+    scope: ["frontend/src/lib/agentFlows.ts",
+            "backend/app/services/agent_flows/contract.py",
+            "backend/app/services/agent_flows/runtime/nodes.py"]
+    removed_patterns: ['child_slots', 'CHILD_SLOTS']
+    severity: high
+    message: >
+      A node type that HOLDS other nodes must declare WHERE its children live, and
+      every traversal must read that declaration instead of re-deriving it. The cost
+      of the old way is on the record: `coordinate` was added without teaching
+      `all_nodes()`, a specialist's lane became invisible to every authoring check at
+      once, and asked which category earned the most the flow answered
+      "13,591,643.70" — the report's grand total, no category named, no notice.
+    tests: [agent_flow_container, agent_flow_replay]
+
   - id: agent_flow_answer_parity
     label: "The answer envelope has one renderer; no surface flattens blocks privately"
     scope: ["frontend/src/components/agent-flows/TestChat.tsx",

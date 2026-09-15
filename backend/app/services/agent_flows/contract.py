@@ -1007,6 +1007,62 @@ class FlowRequirements(_Model):
         return v
 
 
+# ═══ Where a container keeps its children ════════════════════════════════════
+#
+# ONE DECLARATION, AND EVERY TRAVERSAL READS IT.
+#
+# A node that holds other nodes used to be described by hand in every walker that
+# needed to know — `all_nodes()` here, and five more in `lib/agentFlows.ts`, plus
+# the canvas, the edge generator and the inspector. Each of those was a separate
+# chance to forget one, and forgetting one is not a cosmetic bug:
+#
+#   `coordinate` was added without being taught to `all_nodes()`. A specialist's
+#   lane became invisible to every authoring check at once — `warnings()`,
+#   `coverage.granted_tools()`, `node_count`, `unreachable_nodes()`,
+#   `produced_vars()`. A live run found the cost: the "số liệu" specialist held
+#   three tools that all need a `chart_id` and nothing that produces one; the
+#   check for exactly that case existed and simply never looked inside the lane.
+#   Asked which category earned the most, the flow answered "13,591,643.70" —
+#   the report's grand total, no category named, no notice raised.
+#
+# `register()` in runtime/nodes.py refuses a structural type that declares no
+# slots, so the rule that used to be a comment is now checked at import.
+
+#: `kind` says how to get from the attribute to a list of nodes.
+#:   "nodes"  the attribute IS a list of nodes            (loop.body, *.fallback)
+#:   "groups" a list of objects that each carry a `body`  (if.paths, switch.cases,
+#:                                                         coordinate.specialists)
+ChildSlot = tuple[str, str]
+
+CHILD_SLOTS: dict[str, tuple[ChildSlot, ...]] = {
+    "if": (("paths", "groups"),),
+    "switch": (("cases", "groups"), ("fallback", "nodes")),
+    "coordinate": (("specialists", "groups"), ("fallback", "nodes")),
+    "loop": (("body", "nodes"),),
+}
+
+
+def child_node_lists(node: Any) -> list[list[Any]]:
+    """Every list of child nodes this node holds, in declaration order.
+
+    Returns lists rather than a flat sequence so a caller that cares WHICH lane a
+    child sits in — the canvas, the edge generator — can keep that grouping, and a
+    caller that does not can simply chain them.
+    """
+    slots = CHILD_SLOTS.get(getattr(node, "type", ""))
+    if not slots:
+        return []
+    out: list[list[Any]] = []
+    for field, kind in slots:
+        value = getattr(node, field, None) or []
+        if kind == "nodes":
+            out.append(list(value))
+        else:
+            for group in value:
+                out.append(list(getattr(group, "body", None) or []))
+    return out
+
+
 # ═══ The flow ═════════════════════════════════════════════════════════════════
 class Flow(_Model):
     """A tree of nodes. One node's text becomes the answer."""
@@ -1117,19 +1173,8 @@ class Flow(_Model):
         def walk(nodes: list[Any]) -> None:
             for n in nodes:
                 out.append(n)
-                if isinstance(n, IfNode):
-                    for p in n.paths:
-                        walk(p.body)
-                elif isinstance(n, SwitchNode):
-                    for c in n.cases:
-                        walk(c.body)
-                    walk(n.fallback)
-                elif isinstance(n, LoopNode):
-                    walk(n.body)
-                elif isinstance(n, CoordinateNode):
-                    for s in n.specialists:
-                        walk(s.body)
-                    walk(n.fallback)
+                for group in child_node_lists(n):
+                    walk(group)
 
         walk(list(self.nodes))
         return out

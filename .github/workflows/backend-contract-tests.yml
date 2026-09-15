@@ -98,7 +98,7 @@ jobs:
             tests/test_govern_doc_citation.py \
             tests/test_govern_doc_evidence_link.py \
             tests/test_govern_knowledge_tools.py \
-            tests/test_what_the_ai_sees.py
+            tests/test_what_the_ai_sees.py \n            tests/test_node_child_slots.py
 
   # ── Tier 2: integration (golden replay on a real Postgres) ─────────────────
   integration-golden:

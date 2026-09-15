@@ -32,6 +32,7 @@ import { cn } from '@/lib/utils';
 import { useI18n } from '@/providers/LanguageProvider';
 import {
   blankNode, branchCoverage, brainImpact, canDropInto, findNode, getBrain, insertNode,
+  isBranching, isContainer,
   listAttachable, listNodeSpecs, listProviders, listToolPacks, moveNode,
   publishBrain, removeNode,
   replaceNode, saveBrain, setFlowType, validateFlow, walkNodes,
@@ -489,11 +490,10 @@ export function BrainBuilder({
     nodes: all.length,
     // A coordinator branches too — it just picks the lane with a model rather
     // than a condition. Left out, the chip under the title said "1 branch" for a
-    // flow with three.
-    branches: all.filter(
-      (n) => n.type === 'if' || n.type === 'switch' || n.type === 'coordinate',
-    ).length,
-    loops: all.filter((n) => n.type === 'loop').length,
+    // flow with three. Derived from the topology declaration now, so a fifteenth
+    // branching type counts itself.
+    branches: all.filter(isBranching).length,
+    loops: all.filter((n) => isContainer(n) && !isBranching(n)).length,
   };
 
   return (

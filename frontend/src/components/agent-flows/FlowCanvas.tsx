@@ -29,7 +29,7 @@ import { GripVertical, Plus } from 'lucide-react';
 
 import { cn } from '@/lib/utils';
 import { useI18n } from '@/providers/LanguageProvider';
-import type { FlowNode, InsertTarget, NodeSpec } from '@/lib/agentFlows';
+import { isBranching, isContainer, type FlowNode, type InsertTarget, type NodeSpec } from '@/lib/agentFlows';
 import { idBox, idInsert, idNode, idRule, useFlowEdges } from './useFlowEdges';
 import type { MiniRect } from './Minimap';
 
@@ -503,7 +503,12 @@ function NodeBlock({
     />
   );
 
-  if (node.type === 'if' || node.type === 'switch' || node.type === 'coordinate') {
+  // WHICH NODES HAVE LANES is topology and comes from the declaration; WHAT EACH
+  // LANE SAYS is per-type and stays here — a specialist shows its `when`, an if
+  // path shows how many conditions it matches. Only the first of those was a
+  // duplicate of the backend's model, and only the first is what went missing when
+  // `coordinate` was added.
+  if (isBranching(node)) {
     const lanes = node.type === 'coordinate'
       // Drawn as lanes like a Switch, because that is what it is on the canvas:
       // parallel bodies, one per specialist. What differs is who chooses — a
@@ -597,7 +602,8 @@ function NodeBlock({
     );
   }
 
-  if (node.type === 'loop') {
+  if (isContainer(node)) {
+    // The non-branching container: one body, drawn as a box.
     return (
       <>
         {card}
