@@ -491,20 +491,266 @@ Nothing is classified **REMOVE**. No evidence in this pass supports deleting a c
 
 ---
 
-## 8. WHAT I DID NOT VERIFY
+## 8. ROUND 2 — gaps closed, and what changed
 
-Stated plainly, because a gate that did not run is never coverage:
+Round 1 shipped with six areas unaudited and every UX claim marked [INFERENCE]. This
+round closed them by driving the running product. **Three round-1 findings changed
+materially**, including the one I had ranked highest.
 
-1. **The rendered UI.** Every UX judgement marked [INFERENCE] — visual hierarchy,
-   cognitive load, canvas readability at scale, whether validation feedback is *now*
-   good — is from source and history. I did not drive the browser this pass.
-2. **`RunsTab`, `FeedbackTab`, `ActivityTab`** — listed in the map, not audited in depth.
-3. **Large-flow behaviour.** `MAX_NODES = 40`. I did not build a 40-node flow to observe
-   canvas, minimap or inspector behaviour at that size.
-4. **Accessibility.** Not audited at all.
-5. **Responsive behaviour** of Studio and Chat. Not audited.
-6. **Whether authors actually use `output_format: 'json'`.** F6's severity depends on how
-   common that path is in real flows. The defect is proven; its *frequency* is not.
-7. **E2E status.** The repository's E2E workflow is currently red for reasons unrelated to
-   this audit (investigated earlier in this session; last run produced no annotations, so
-   the remaining cause is not confirmed).
+New marker: **[OBSERVED IN BROWSER]** — driven at `localhost:3000` against the live
+stack, measured via `getBoundingClientRect` rather than read off a screenshot.
+
+### F6 — REVISED. Real, reproduced, but not what I ranked it **[OBSERVED IN BROWSER]**
+
+Round 1 called this "highest severity" from code alone. Both halves of that needed testing.
+
+**Reproduced, end to end.** Flow `blocks_repro_tmp` (published, `output_format: 'json'`
+on its answer node), asked *"Trả lời bằng đúng một block metric cho tổng doanh thu,
+không có văn xuôi"*:
+
+| | |
+|---|---|
+| envelope | `block types: ['metric']`, no structure-dropped notice |
+| run status | **`ok`** — 4,136 tokens, 1 AI call |
+| Studio test panel | renders **`—`** |
+
+Evidence: `.artifacts/audit/F6-emdash-reproduced.png`. The author sees a *successful*
+run with an empty answer and nothing saying a block was dropped.
+
+**But the severity was wrong, and measuring usage is what showed it.** Real local data —
+25 brain versions, 53 agent nodes:
+
+| `output_format` | nodes |
+|---|---|
+| `chat` | 47 |
+| `json` | 4 |
+| `choice` | 2 |
+
+Two of ten flows use `json`. On `revenue_v2` — the flow actually bound to link 39 — the
+answer node was `json` in **v1, v2 and v4, then never again across v5–v12**.
+
+And the model does not reliably emit typed blocks anyway: asked normally, and even asked
+explicitly for *"một chỉ số và một bảng"*, the same flow returned a single `text` block
+carrying a markdown table. Only a question that names the block type produced `metric`.
+
+**Conclusion.** Correctness debt and a robustness gap, not an active user-facing bug:
+today nothing ships a typed-block answer. Whether the author abandoned `json` *because*
+the panel showed `—` is **[INFERENCE]** — the version history is consistent with it and
+does not prove it. **Reclassified from "highest severity" to "correctness, fix early
+because it is cheap", and Phase 1 is no longer justified by severity alone.**
+
+### F20 — An unknown block variant is silently dropped on *every* surface **[PROVEN]**
+
+`AnswerBlocks.tsx` ends its switch with `default: return null`, and opens with
+`if (!blocks?.length) return null`. So a seventh block variant added to the contract
+renders as nothing — silently — on Chat *and* the public bot, not only in the Studio.
+Round 1 attributed silent-drop to the Studio alone. That was too narrow.
+
+### F21 — Phase 1 is smaller than I planned: the renderer is already surface-agnostic **[PROVEN]**
+
+Round 1 listed "AnswerBlocks may assume a chat-only context" as a Phase 1 risk. It does
+not. `components/dashboards/AnswerBlocks.tsx` (201 lines) imports only React, icons, `cn`
+and the `AnswerBlock` type; `onOpenChart` is optional and `renderMarkdown` is injectable —
+which is exactly how Chat passes its own. **Two of the three surfaces already share it**
+(`DashboardAiBot`, `ConversationView`/`ChatModule`); the Studio is the only hold-out.
+
+### F22 — Run history stores prose, so RunsTab cannot be fixed by the renderer **[PROVEN]**
+
+`RunDetail.answer: string | null`. The run is persisted as text, with `citations` and
+`notices` beside it. `RunsTab.tsx:591` renders `RichMarkdown`, not blocks — **not** a
+second instance of the F6 bug, but a storage shape.
+
+So the shared renderer fixes TestChat (which *has* blocks and discards them) and **cannot**
+fix RunsTab without persisting blocks — a schema change this plan does not make. Stated as
+a deliberate non-goal rather than discovered mid-phase.
+
+### F23 — Runs / Feedback / Activity are a designed loop, not three tabs of data **[PROVEN]**
+
+The round-1 hypothesis ("merely separate tabs containing information") is **rejected**.
+
+- **RunsTab** answers four named questions (which questions fail, which node is slow, is
+  v6 better than v5, was the answer any good), excludes test runs by default, shows P95
+  latency, per-run tokens **and USD**, per-step tokens, and a three-pane
+  canvas/list/detail layout where selecting a step highlights its node.
+- **FeedbackTab** is deliberately the same data filtered — *"these are runs, filtered to
+  the ones somebody rated"* — reusing Runs' strip, filter row and table, and opening the
+  same three-pane trace. Its signal chips are **filters**, chosen over a bar chart because
+  *"a bar chart could only be looked at"*.
+- **ActivityTab** diffs versions server-side (*"'Flow changed' on every row is the same as
+  having no activity feed"*) and keeps *load-to-canvas* and *re-publish* apart on purpose.
+
+**The one real gap is the loop's last hop.** `RunsTab`'s canvas is deliberately read-only
+(*"a run is a record, not a place to edit the flow"*) and offers no "open this node in the
+builder". An author who identifies the responsible node must switch tabs and find it
+again by eye. `TestChat` does better — it keeps `runId` and offers `onOpenRun`.
+
+### F24 — Canvas layout at real sizes **[OBSERVED IN BROWSER]**
+
+Largest flow that genuinely exists is **24 nodes** (`full_coverage_probe`, draft) — there
+is no 40-node flow and I did not fabricate one. At **1440×900**:
+
+| | |
+|---|---|
+| canvas viewport | 668 × 846 |
+| canvas scroll height | **2,927px ≈ 3.5 screens** |
+| nodes visible at once | **6 of 24** |
+| node column width | 249px inside 668px — **55% of canvas width unused** |
+| inspector | **700px = 48.6% of the window**, showing an empty state |
+
+The canvas content carries a hard **`min-w-[860px]`**, which is the root cause of the
+horizontal clipping below.
+
+### F25 — A 3-specialist coordinator is clipped on every common laptop **[OBSERVED IN BROWSER]**
+
+`demo_olist_hoi_dap_3_tang`, three specialists, at 1440×900:
+
+| | |
+|---|---|
+| canvas visible / content | 658px / 860px → **202px overflow** |
+| lane 3 | x 637→876, **clipped by 152px — 64% hidden** |
+
+Measured across widths, inspector at its default 700px:
+
+| Viewport | Result |
+|---|---|
+| 1280×800 | **5 of 6 node cards clipped** (worst 326px); **2 of 3 lanes clipped** (worst 306px); inspector = **55%** of the window |
+| 1440×900 | third lane 64% hidden |
+| 1650×1000 | still 90px of overflow |
+| **1760×1000** | **first width with no horizontal scroll** |
+| 1920×1080 | comfortable |
+
+**Minimum usable viewport for a three-specialist coordinator ≈ 1740–1760px.** Common
+author laptops — 1366, 1440, 1536, 1600 — are all below it. This is the measured form of
+the historical `1e75e72 the coordinator's lanes, drawn like the branches they are`.
+
+### F26 — Accessibility: better than expected, with three real gaps **[OBSERVED IN BROWSER]**
+
+Round 1 guessed nothing here. Measured on the 24-node flow:
+
+**Holds up:**
+- Node cards are real `<button class="w-full text-left">` with `min-h-[44px]` — keyboard
+  reachable. (My first probe matched the title `<span>` and suggested otherwise; checking
+  the ancestor chain corrected it before it was written down.)
+- Visible focus: 2px solid brand outline `rgb(94,106,210)` from a global rule.
+- The inspector resize handle is a focusable `role="separator"` — not mouse-only.
+- **0 of 55** small buttons lack an accessible name; undo/redo state their shortcuts.
+
+**Gaps:**
+1. **No `aria-label` on any node card.** The accessible name is the concatenated card
+   text — `"▥1 · Đọc báo cáoĐọc Dashboardkhi đổiĐọc tóm tắt…"` — an icon glyph plus
+   run-together prose.
+2. **Selected state is visual only** — 0 cards carry `aria-pressed`/`aria-current`/
+   `aria-selected`, so which node is selected is not exposed to assistive tech.
+3. **99 tab stops to reach the last node** of a 24-node flow (first at 22, last at 99, of
+   105 focusables). No skip mechanism observed.
+4. **24 buttons below 24×24px** (WCAG 2.2 AA 2.5.8), including the 22×22 drag handle.
+
+**[UNVERIFIED]** whether node reordering is achievable by keyboard at all — the drag
+handle is a labelled button, but I did not establish that it supports a keyboard move.
+
+### F27 — Responsive: Chat is clean, the Studio has no adaptation **[OBSERVED IN BROWSER]**
+
+**AI Chat** — no horizontal overflow at 1440, **768 or 400**. It degrades gracefully and
+needs no work.
+
+**Agent Flow Studio** — the inspector is a fixed **700px at every width**. At 400×860 it
+is still 700px, 175% of the viewport, and the canvas is crushed to 344px with 851px of
+overflow. There is no breakpoint behaviour: the canvas absorbs the entire loss.
+
+Agent Flow is a desktop authoring tool and does not need a mobile layout. What it does
+need is a stated **minimum supported width** and inspector behaviour that respects it.
+
+**Corrected before recording:** I initially read the 1280 screenshot as showing the
+`Phản hồi` and `Hoạt động` tabs disappearing. Measuring the DOM showed all four tabs
+present, visible, and inside the viewport (`Hoạt động` ends at x=899). The screenshot was
+captured mid-layout. No tabs are lost.
+
+### F28 — Capability projection is NOT a safe projection as designed **[PROVEN]** — security
+
+Round 1 recommended projecting `coverage.py` to the Chat reader. Tested against the
+reader-safety constraints, the raw output **fails**, and the recommendation needed
+narrowing rather than keeping.
+
+`coverage()` returns `covered[]` / `gaps[]` (each with `key`, `label`, `example`,
+**`tools`**, **`pack`**) plus **`unreadable_sources[]`**, whose entries carry:
+
+```
+step          the internal node key            → author-only implementation detail
+source        the source kind
+ref           the document / dataset id        → identifier the reader may not access
+description   the author's own text
+needs_any_of  internal tool names              → tools outside the reader's ceiling
+```
+
+That is four of the five prohibitions in one field.
+
+**Worse, it would be actively wrong on chat.** Coverage is computed from the *flow's*
+grants. The chat surface runs with `dashboard_id=0` and an **explicitly empty chart
+allowlist**, so `assert_chart_in_scope` refuses every id. A flow granted `get_chart_data`
+would therefore advertise "can answer ranking questions" on a surface that has no report
+to rank. That is the fifth prohibition — *capabilities the current turn cannot exercise* —
+and it would mislead the reader in the direction of trusting the assistant more.
+
+**Revised recommendation: keep the idea, reject the mechanism.** A reader-safe capability
+summary must be *recomputed against the surface's effective ceiling*, not projected from
+the author's view, and must carry only static question-class metadata:
+
+| Field | Reader-safe? |
+|---|---|
+| `label`, `example` (from the fixed `CLASSES` list) | ✅ static, no user data |
+| `answerable` / `total` | ⚠️ as prose, not a score |
+| `tools`, `pack`, `needs_any_of` | ❌ strip — implementation detail |
+| `step`, `ref`, `unreadable_sources` | ❌ strip entirely — identifier leak |
+| "what it reads", by name | ❌ not from `bound_sources()`; needs a per-reader check |
+
+This makes the work **larger** than round 1 assumed — surface-aware recomputation, not a
+field mapping — and it moves later in the order accordingly.
+
+### F29 — Agent-Flow governance gap, measured deterministically **[PROVEN]**
+
+`scripts/ci/audit_test_reachability.py` (added this round; read-only, not wired to CI)
+classifies by **imports**, not filename — a filename regex misfiled two suites.
+
+```
+tracked backend test files : 72
+referenced by some runner  : 29
+NEVER referenced           : 43
+  Agent Flow / Direct Chat : 12      ← this rework
+  adjacent (Knowledge/RAG) : 18      ← own subsystem, separate
+  unrelated                : 13      ← separate follow-up
+```
+
+The 12 in-area ghosts — including `test_coordinator_is_visible_to_the_flow.py` (locks the
+F2 wrong-number bug) and `test_chat_thread_sharing.py` (read-only share enforcement) —
+**all pass locally: 198 passed in 15.68s**. A wiring gap, not broken tests.
+
+Round 1 said "43 of 72, fix 8". The deterministic split is **12 in scope, 31 out**, and
+the out-of-scope 31 are a separate repo-wide item, not this rework.
+
+---
+
+## 9. WHAT I DID NOT VERIFY
+
+Stated plainly, because a gate that did not run is never coverage. Round-1 items 1–6 are
+now **closed** (§8). What remains:
+
+1. **Keyboard node reordering.** The drag handle is a labelled 22×22 button; I did not
+   establish whether a keyboard move is possible. If it is not, reordering is mouse-only.
+2. **Minimap behaviour under interaction.** Present and rendering at 24 nodes; I did not
+   test drag-to-pan or click-to-jump.
+3. **A flow at `MAX_NODES = 40`.** The largest real flow is 24 nodes. Extrapolating the
+   measured 3.5 screens gives roughly 5.8 screens at 40, but that is arithmetic, not an
+   observation, and I did not fabricate a flow to make it one.
+4. **Coordinators beyond three specialists.** Three already overflow at 1440; I did not
+   measure four or more.
+5. **Whether `json` was abandoned on `revenue_v2` because of the `—`.** The version
+   history (v1, v2, v4 then never again) is consistent with it and does not prove it.
+   A question for whoever built that flow.
+6. **Screen-reader behaviour.** I measured ARIA attributes and focus outlines; I did not
+   run an actual screen reader.
+7. **The other 31 ghost tests.** Confirmed unreferenced; not run, not classified beyond
+   subsystem, and deliberately out of this rework.
+8. **E2E status.** The repository's E2E workflow is red for reasons unrelated to this
+   audit. The last instrumented run produced no annotations, so the remaining cause is
+   **not confirmed**. Phase 4 depends on E2E being a real gate; that dependency is
+   currently unmet.

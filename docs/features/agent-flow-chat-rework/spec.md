@@ -50,9 +50,10 @@ run counts.
 ### 2.2 The reader journey (what changes)
 
 **Choosing an assistant.** The catalogue leads with what each assistant is *for* and what
-it can *answer*, derived from `coverage.py`. Inventory numbers (conversations, sources)
-move to a secondary position or off the card entirely — they describe the module, not the
-assistant.
+it can *answer*, **recomputed against the chat surface's effective ceiling** (§4.1 — not
+projected from `coverage()`, which is the author's view and would be wrong here).
+Inventory numbers (conversations, sources) move to a secondary position or off the card
+entirely — they describe the module, not the assistant.
 
 For each assistant a reader sees, before committing to a conversation:
 
@@ -60,9 +61,12 @@ For each assistant a reader sees, before committing to a conversation:
 - what it can answer — the covered question classes, in reader language
 - what it cannot — the uncovered classes, stated plainly, because an assistant that
   cannot detect anomalies should say so rather than blame the data
-- what it reads — report and/or knowledge domains, by name, not by count
 - suggested questions, derived from covered classes
 - its trust state — whether answers carry citations
+
+**Not** in this contract: what it reads, named. `bound_sources()` carries document refs,
+and naming a source to a reader needs a per-reader permission check rather than a
+projection (F28). It gets its own phase, or it does not ship.
 
 **In conversation.** Unchanged in structure: thread, SSE, node/tool progress, terminal
 envelope, answer blocks, citations, notices. What changes is that a notice or a refusal
@@ -94,7 +98,7 @@ Additive only. Existing endpoints keep their shapes.
 
 | Method | Path | Auth / permission | Request | Response |
 |---|---|---|---|---|
-| GET | `/agent-flows/chat/brains` | signed-in; `agent_flows: view`; per-flow share re-resolved | — | **extended**: existing fields plus `capability: { purpose, can_answer[], cannot_answer[], reads: { report, knowledge[] }, suggested[], evidence: 'cited' \| 'uncited' }` |
+| GET | `/agent-flows/chat/brains` | signed-in; `agent_flows: view`; per-flow share re-resolved | — | **extended**: existing fields plus `capability: { purpose, can_answer[], cannot_answer[], suggested[], evidence }` — see the reader-safe contract below |
 | GET | `/agent-flows/nodes` | `agent_flows: view` | — | **extended**: each `NodeSpec` gains `child_slots: [{ name, kind: 'list' \| 'group', path }]`, empty for leaf types |
 
 Both are additive: an older client ignoring the new fields behaves exactly as today.
@@ -107,6 +111,32 @@ a chat endpoint additionally re-resolves per-turn eligibility and returns the ex
 **Gates**, per `.claude/rules/backend.md` — every endpoint of a gated module, including
 the ones that only read. `/chat/brains` is a read: `view`. Both endpoints live inside the
 `METADATA_CATALOG_ENABLED` block or they do not exist.
+
+### 4.1 The reader-safe capability contract (revised after F28)
+
+**`coverage()` output must never be serialised to a reader.** Tested against the
+reader-safety constraints it fails on two counts, so the round-1 "projection" is replaced
+by a narrower, surface-aware summary.
+
+| `coverage()` field | Reader | Why |
+|---|---|---|
+| `covered[].label`, `.example` | ✅ include | static strings from the fixed `CLASSES` list; no user data |
+| `answerable` / `total` | ⚠️ as prose | a score reads as a grade; "can answer X, not Y" does not |
+| `covered[].tools`, `.pack` | ❌ **strip** | internal tool and pack names — author-only implementation detail |
+| `unreadable_sources[]` | ❌ **strip entirely** | carries `step` (node key), **`ref` (document id)**, `description`, `needs_any_of` (tool names) |
+
+**And it must be recomputed, not projected.** `coverage()` reflects the *flow's* grants.
+The chat surface runs with `dashboard_id=0` and an explicitly empty chart allowlist, so
+`assert_chart_in_scope` refuses every id. A flow granted `get_chart_data` would otherwise
+advertise "can answer ranking" on a surface with no report — the one failure mode that
+makes a reader trust the assistant *more* than they should.
+
+So the contract is: **question classes answerable under the effective ceiling of the
+surface the reader is on**, carrying only static class metadata.
+
+"What it reads", by name, is **not** in this contract. `bound_sources()` carries refs, and
+naming a document requires a per-reader permission check rather than a projection of the
+author's view. Deferred to its own phase with its own test.
 
 ## 5. UI
 
@@ -154,12 +184,59 @@ Per-node-type editors become separate components behind one registry-driven shel
 visible layout does not change in the structural phases; this is a boundary change, and
 any visual change is a later phase.
 
-### 5.5 Canvas
+### 5.5 Canvas and the inspector — measured, so now specifiable
 
-No structural change in the early phases. The `coverage` prop is renamed `runCounts` at
-the same time as the vocabulary work. Large-flow readability is **not** specified here —
-`audit.md` §8 records that I did not verify behaviour at `MAX_NODES = 40`, and I am not
-specifying a fix for something I have not observed.
+Round 1 declined to specify this. Round 2 measured it (F24/F25/F27), so the constraints
+are stated as numbers rather than adjectives:
+
+| Observation | Value |
+|---|---|
+| Largest real flow | **24 nodes** (`full_coverage_probe`) — no 40-node flow exists |
+| Vertical scroll at 24 nodes, 1440×900 | **2,927px ≈ 3.5 screens**, 6 nodes visible |
+| Canvas width used by the node column | 249 of 668px — **55% unused** |
+| Canvas content hard floor | **`min-w-[860px]`** |
+| Inspector | **fixed 700px at every viewport**, including 400px |
+| 3-specialist coordinator at 1440 | third lane **64% clipped** |
+| 3-specialist coordinator at 1280 | 5/6 cards and 2/3 lanes clipped; inspector = 55% |
+| First width with no horizontal clipping | **≈1760px** |
+
+**What the target must satisfy** (the mechanism is the implementer's choice):
+
+1. A three-specialist coordinator is fully readable at the declared minimum width.
+2. The inspector does not hold a fixed 700px below that width — it yields, collapses, or
+   overlays deliberately, and the decision is visible in code rather than emergent.
+3. The canvas does not reserve 55% of its width while the node column is narrow.
+4. A 24-node flow is navigable without 3.5 screens of blind scrolling — a working
+   minimap, jump-to-node, or collapse. **Not** specified further until the minimum
+   viewport is decided (open question 6), because the answer changes the layout.
+
+### 5.6 Accessibility — the three measured gaps
+
+What already holds (F26): node cards are real buttons with 44px targets, focus is a
+visible 2px brand outline, the inspector resize handle is a focusable `role="separator"`,
+and every one of 55 small buttons has an accessible name.
+
+What must change:
+
+1. **Node cards get an `aria-label`.** Today the accessible name is concatenated card
+   text — `"▥1 · Đọc báo cáoĐọc Dashboardkhi đổi…"`.
+2. **Selected state becomes programmatic** (`aria-pressed` or `aria-current`), not visual
+   only.
+3. **Reaching the last node must not cost 99 tab stops** — a skip mechanism or a node
+   list.
+4. Targets below 24×24px (24 buttons, including the 22×22 drag handle) meet WCAG 2.2 AA
+   2.5.8, or the exception is stated deliberately.
+
+**[UNVERIFIED]** whether keyboard node reordering is possible at all; if it is not, that
+is a fifth item and needs its own decision.
+
+### 5.7 Responsive
+
+**AI Chat needs no work** — verified clean at 1440, 768 and 400 with no horizontal
+overflow. It is not a desktop-only surface and already behaves.
+
+**Agent Flow Studio is desktop-only and that is fine** — what is not fine is having no
+declared minimum and no behaviour at it. This spec does **not** invent a mobile layout.
 
 ## 6. Permissions
 
@@ -190,7 +267,8 @@ reader could not otherwise reach. This is an explicit test in `plan.md`.
 - **Coverage computation fails** — degrade to purpose + name, flagged. Never fabricate.
 - **A flow whose answer node emits zero blocks** — distinct from "no answer"; see §5.3.
 - **A block type the frontend does not know** (contract added a seventh variant) — render
-  a neutral fallback, never blank. Today's flatten-to-markdown makes this failure silent.
+  a neutral fallback, never blank. `AnswerBlocks` currently ends with `default: return
+  null`, so this is silent on **every** surface today, not only the Studio (F20).
 - **A structural node with an empty lane** — must remain walkable and countable; this is
   the `all_nodes()` class of bug and is covered by the new registry test.
 - **Deeply nested containers at `MAX_DEPTH = 4`** — slot-driven walkers must terminate
@@ -199,6 +277,13 @@ reader could not otherwise reach. This is an explicit test in `plan.md`.
   handled after the capability projection is added.
 - **Older client, newer server** — additive fields only; ignoring them yields today's
   behaviour.
+
+## 7b. Deliberate non-goal: run history answer parity
+
+`RunDetail.answer` is a `string`. Runs persist prose, not blocks, so the shared renderer
+**cannot** give RunsTab typed-block parity; that would need the envelope's blocks
+persisted — a schema change this plan does not make (F22). Stated here so it is a decision
+rather than a surprise discovered mid-phase.
 
 ## 8. Non-goals
 

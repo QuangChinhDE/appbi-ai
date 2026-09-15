@@ -39,6 +39,20 @@ registered features, so for this subsystem the guardrail is **UNKNOWN**, and per
 CLAUDE.md unknown is not safe. Recording it here rather than letting it disappear. Phase 0
 fixes it, which is why Phase 0 is first.
 
+## Revised phase order (round 2)
+
+The round-1 principle holds - *preserve proven runtime behaviour -> fix correctness and
+governance -> reduce structural fragility -> improve authoring information architecture ->
+visual polish last*. What moved:
+
+| | Round 1 | Round 2 | Why |
+|---|---|---|---|
+| Phase 0 governance | "first, and separately" | **BLOCKING before Phase 1** | 12 in-area tests never run; two lock the exact classes later phases risk |
+| Phase 1 shared renderer | "highest severity" | same position, **different justification** | reproduced but rare (4/53 nodes); kept early because it is *cheap* (F21), not urgent |
+| Capability projection | Phase 3, "a projection" | **re-scoped, harder** | F28: unsafe as designed; needs surface-aware recomputation, not field mapping |
+| Debugging loop | not planned | **new Phase 3.5, small** | F23: the loop is designed; only its last hop is missing |
+| Canvas / inspector / a11y | not specified | **new Phase 4.5, gated** | F24-F27 measured it; the fix depends on a product decision |
+
 ## Phases
 
 Each phase leaves the product usable and is independently revertible. Structure and
@@ -46,35 +60,44 @@ behaviour stabilise before any visual redesign — `audit.md` F10 is the argumen
 
 ---
 
-### Phase 0 — Governance wiring (no product change)
+### Phase 0 — Governance wiring (no product change) — **BLOCKING**
 
 **Goal.** Make the safety net real before changing anything behind it.
 
-**Scope.** Wire the 8 tracked-but-unrun tests into CI. Register `agent_flows` and
+**Blocking, not merely first.** `scripts/ci/audit_test_reachability.py` reports 12
+Agent Flow / Direct Chat tests referenced by no runner. They pass locally (198 tests).
+Two of them - `test_coordinator_is_visible_to_the_flow.py` and
+`test_chat_thread_sharing.py` - lock exactly what Phase 2 and the capability work risk
+breaking. Starting Phase 1 before this is starting without the net.
+
+**Scope.** Wire the 12 tracked-but-unrun in-area tests into CI. Register `agent_flows` and
 `direct_chat` as guardrail features with owner files and keywords. Fix the "auth"
 substring match if the rule format allows word-boundary keywords.
 
 | # | File | Layer | Change |
 |---|---|---|---|
-| 1 | `.gitignore` | CI | allow-list the 8 in-area tests (they are tracked via `git add -f` but never allow-listed — see F19) |
-| 2 | `.github/workflows/backend-contract-tests.yml` | CI | add the 8 to the pytest list |
+| 1 | `.gitignore` | CI | allow-list the **12** in-area tests (tracked via `git add -f`, never allow-listed - F19/F29) |
+| 2 | `.github/workflows/backend-contract-tests.yml` | CI | add the 12 to the pytest list |
 | 3 | `scripts/guardrail/guardrail_rules.yaml` | governance | add `agent_flows` + `direct_chat` features: owner files, keywords, required tests |
 | 4 | `scripts/ci/verify.py` | CI checker | close the blind spot: report **tracked** test files that no CI workflow references, not only allow-listed ones |
 
 Row 4 is the one that matters beyond this feature. Today the check compares allow-list
-against workflow — two sets that happen to be identical — and is silent about the 43
-tracked tests in neither. It should report them. **Fixing the checker is in scope; wiring
-up the other 35 tests is not** (F19), and the checker will then say so out loud on every
-future run.
+against workflow - two sets that happen to be identical - and is silent about the 43
+tracked tests in neither. It should report them. **Fixing the checker is in scope;
+wiring up the other 31 tests is not** (F19/F29), and the checker will then say so out
+loud on every future run.
 
-**Must not change.** No product behaviour whatsoever. No test content edited — the 8 pass
-as they are (verified: 119 passed in 9.25s).
+**Must not change.** No product behaviour whatsoever. No test content edited - the 12
+pass as they are (verified: 198 passed in 15.68s).
 
 **Acceptance.** `guardrail_check.py --files backend/app/services/agent_flows/...` returns
 a real verdict naming `agent_flows`, not `unknown`. "authoring" no longer matches
-`auth_permissions`. CI runs 23/23 tests in this area.
+`auth_permissions`. `audit_test_reachability.py` reports **0** in the Agent Flow
+bucket; the other 31 stay reported and out of scope.
 
-**Tests.** `python scripts/ci/guardrail_check.py --health` stays healthy; the 8 newly
+**Non-goals.** Wiring the 31 out-of-area ghost tests. Editing any test's content.
+
+**Tests.** `python scripts/ci/guardrail_check.py --health` stays healthy; the 12 newly
 wired tests pass in CI on the first run after merge.
 
 **Risks.** Adding tests to CI could reveal they fail *in CI* though they pass locally —
@@ -86,9 +109,18 @@ If it does not, the false positive is reported rather than fixed, and I will say
 
 ---
 
-### Phase 1 — One answer renderer (fixes the highest-severity defect)
+### Phase 1 — One answer renderer (correctness; cheap, not urgent)
 
 **Goal.** The author sees what the reader sees.
+
+**Re-justified.** Reproduced in the browser - run `ok`, answer renders the em-dash, no
+notice (`.artifacts/audit/F6-emdash-reproduced.png`). But 4 of 53 agent nodes use
+`json` and nothing currently ships a typed-block answer, so this is **correctness and
+robustness debt, not an active bug**. It stays early because F21 makes it small, and
+because F20 shows an unknown variant is dropped silently on *every* surface.
+
+**Non-goals.** RunsTab parity - run history stores prose, not blocks (F22); that needs
+a schema change this plan does not make.
 
 **Scope.** `TestChat` renders the answer envelope through the same shared component Chat
 uses. Author-only context (route warning, coverage gaps, citations, trace) stays around
@@ -96,7 +128,7 @@ it.
 
 | # | File | Layer | Change |
 |---|---|---|---|
-| 1 | `frontend/src/components/common/AiAnswer` (or sibling holding `AnswerBlocks`) | FE shared | confirm it is the single renderer; extend only if a block variant is unhandled |
+| 1 | `frontend/src/components/dashboards/AnswerBlocks.tsx` | FE shared | already the single renderer for 2 of 3 surfaces (201 lines, surface-agnostic); make `default:` a visible fallback instead of `null` |
 | 2 | `frontend/src/components/agent-flows/TestChat.tsx` | FE Studio | replace the flatten-to-`.markdown` at :317-318 with `AnswerBlocks`; distinguish "zero blocks" from "no answer" |
 
 **Must not change.** The envelope contract. Chat's rendering. The route-warning position
@@ -118,8 +150,11 @@ answer says so instead of printing `—`.
 uses `output_format: 'json'`; run it in the test panel; open the same flow in `/chat`;
 compare the two answers side by side. Reading the diff does not count.
 
-**Risks.** `AnswerBlocks` may assume a chat-only context (e.g. `ChartNamesContext`).
-Would show as a crash or an unresolved chart name in the Studio. Caught by the new E2E.
+**Risks.** Round 1 listed "AnswerBlocks may assume a chat-only context" - **measured
+and wrong** (F21): it imports only React, icons, `cn` and the type; `onOpenChart` is
+optional and `renderMarkdown` is injectable. Residual risk is low. The real one is that
+`default: return null` keeps an unknown variant silent; Phase 1 should turn that into a
+visible fallback while it is in the file.
 
 ---
 
@@ -165,11 +200,18 @@ coordinator test is running in CI before it starts. Golden replay is the tripwir
 
 ---
 
-### Phase 3 — Project capability to the reader
+### Phase 3 — A reader-safe capability summary (re-scoped after F28)
 
 **Goal.** A reader can see what an assistant is for, and what it cannot do, before asking.
 
-**Scope.** Project `coverage.py` into the chat contract and surface it.
+**Scope.** **Not a projection.** F28 proved the raw `coverage()` output leaks
+`unreadable_sources[].ref` (document ids), `step` (node keys) and tool names, and would
+advertise report-reading capability on a surface that has `dashboard_id=0` and an empty
+chart allowlist. This phase builds a **surface-aware recomputation** carrying only
+static question-class metadata - see `spec.md` section 4.1.
+
+**Non-goals.** Naming the sources an assistant reads; that needs a per-reader
+permission check and gets its own phase, or does not ship.
 
 | # | File | Layer | Change |
 |---|---|---|---|
@@ -189,7 +231,8 @@ Conversation count is no longer the lead metric.
 
 | Test | New/existing | What it locks |
 |---|---|---|
-| new: capability projection names nothing outside the reader's scope | **new** | **security** — the projection must not leak a chart/document name a reader cannot reach |
+| new: serialised payload carries no `tools`/`pack`/`needs_any_of`/`step`/`ref`/`unreadable_sources` | **new** | **security** - asserts the shape, not the intention |
+| new: chat capability excludes report-reading classes | **new** | proves the recomputation is real, not a copy of the author's view |
 | new: capability matches `coverage.py` for a known flow | **new** | the projection cannot drift from the computation |
 | `test_chat_thread_sharing.py` | existing (wired in Phase 0) | share/read-only unchanged |
 | `test_chat_chart_scope.py` | existing | chat scope unchanged |
@@ -201,6 +244,29 @@ rather than a review note.
 
 **Verification.** Two accounts — one the assistant is shared with, one not — and confirm
 the second sees no capability detail at all.
+
+---
+
+### Phase 3.5 — Close the debugging loop's last hop (new, small)
+
+**Goal.** From "this node is responsible" to "edit this node", without hunting for it.
+
+**Evidence.** F23: Runs / Feedback / Activity are a designed loop, not three tabs of data.
+The only missing joint is that `RunsTab`'s canvas is deliberately read-only and offers no
+route into the builder at that node. `TestChat` already does the equivalent (`onOpenRun`).
+
+**Scope.** An "open in builder" affordance from a selected step. Nothing else.
+
+**Must not change.** The read-only canvas stays read-only - *"a run is a record, not a
+place to edit the flow"* is a correct decision. This adds a door, not an editor.
+
+**Acceptance.** From a failed run, an author reaches the responsible node in the builder in
+one action.
+
+**Tests.** E2E: run a flow, open the run, jump to the node, confirm the builder opens with
+that node selected.
+
+**Risks.** Low. Additive navigation.
 
 ---
 
@@ -224,6 +290,36 @@ already assert save-then-reload and inspector usability. `tsc` clean.
 **Risks.** Pure-refactor phases are where silent behaviour loss happens. Mitigated by
 doing it *after* Phase 2, so the node model is already declarative, and by leaning on the
 E2E specs — which is only credible once the E2E workflow is green (see Unverified).
+
+---
+
+### Phase 4.5 — Canvas, inspector and accessibility (new; GATED)
+
+**Goal.** A coordinator is readable at the declared minimum width, and a 24-node flow is
+navigable.
+
+**GATED on open question 6** - the minimum supported viewport is a product decision and
+the layout fix depends on the answer. Do not start before it is answered.
+
+**Evidence, all measured.** 3.5 screens of scroll for 24 nodes with 6 visible; third
+specialist lane 64% clipped at 1440 and 2 of 3 lanes clipped at 1280; inspector fixed at
+700px even in a 400px viewport; `min-w-[860px]` on canvas content; no `aria-label` or
+selected-state on node cards; 99 tab stops to the last node; 24 sub-24px targets.
+
+**Scope.** Inspector width behaviour, canvas horizontal allocation, a navigation aid for
+long flows, and the four accessibility items in `spec.md` section 5.6.
+
+**Non-goals.** Chat responsive work - verified clean at 400px. A mobile Studio layout.
+
+**Must not change.** Graph semantics, the node model, run-overlay behaviour.
+
+**Acceptance.** As stated in `spec.md` sections 5.5 and 5.6, as numbers.
+
+**Risks.** The phase closest to a visual redesign and the easiest to let sprawl.
+Deliberately placed after the structural phases and behind a product decision.
+
+**UNVERIFIED going in.** Keyboard node reordering; minimap interaction; behaviour at
+`MAX_NODES = 40` (largest real flow is 24 nodes); coordinators beyond three specialists.
 
 ---
 

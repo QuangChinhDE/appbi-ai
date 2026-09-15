@@ -5,7 +5,9 @@
 **Date:** 2026-09-15
 
 Evidence for every claim here is in `audit.md`, with each finding marked
-**[PROVEN]** / **[HISTORY]** / **[INFERENCE]**.
+**[PROVEN]** / **[OBSERVED IN BROWSER]** / **[HISTORY]** / **[INFERENCE]**.
+Round 2 closed the six unaudited areas and **changed three round-1 findings**; see
+`audit.md` section 8.
 
 ## Problem
 
@@ -17,7 +19,15 @@ the answer envelope to `.markdown` and drops every other block type. The contrac
 through the shared `AnswerBlocks`; the Studio test panel renders none of the non-text
 ones, and when every block is non-text it prints `—`. An author using
 `output_format: 'json'` — which `handlers/agent.py:1210` exists to support — tests their
-flow, sees an em-dash, and has no way to learn why. **[PROVEN]**
+flow, sees an em-dash, and has no way to learn why.
+
+**Reproduced in the browser (round 2):** run status `ok`, 4,136 tokens, answer renders
+`-`, no notice that a block was dropped
+(`.artifacts/audit/F6-emdash-reproduced.png`). **But measured usage reclassifies it**:
+4 of 53 agent nodes use `json`, nothing currently ships a typed-block answer, and the
+model returns `text` unless explicitly asked for a block type. This is **correctness and
+robustness debt, not an active user-facing bug** - it stays early because it is cheap,
+not because users are hitting it. **[OBSERVED IN BROWSER]**
 
 **2. Adding a structural node means teaching ~13 places the same topology.** The backend
 `NodeSpec` records *that* a node is structural but not *where its children live*, so the
@@ -36,9 +46,10 @@ the author and never to the reader. The person asking the question is the one wh
 it. **[PROVEN]**
 
 **4. The guardrail does not know this subsystem exists.** `agent_flows` and `direct_chat`
-are not among its 11 registered features, and 8 of 23 tests in the area — including the
-one locking problem 2, and the one locking read-only chat-share enforcement — are tracked
-but absent from the CI workflow, so they never run. Under a plausible plan sentence the
+are not among its 11 registered features, and **12 Agent Flow / Direct Chat tests are
+committed but referenced by no runner** - including the one locking problem 2, and the one
+locking read-only chat-share enforcement. All 12 pass locally (198 tests); they simply
+never execute in CI. Under a plausible plan sentence the
 guardrail does not merely return `unknown`; the substring "auth" in "**auth**oring" makes
 it return `warn` against `auth_permissions` and declare every real file out of scope.
 **[PROVEN]**
@@ -65,8 +76,13 @@ a dozen walkers.
   `docs/agent-flow-v3-release-qa.md`, and mixing them in would violate "do not mix
   unrelated cleanup into the rework".
 - **The currently red E2E workflow.** A separate thread, unresolved, not caused by this.
-- `RunsTab`, `FeedbackTab`, `ActivityTab` behaviour — audited only to the level of the
-  system map. No changes proposed without evidence.
+- **Repo-wide CI coverage debt.** 43 committed tests are referenced by no runner; only
+  **12** are Agent Flow / Direct Chat. The other 31 (18 Knowledge/RAG, 13 unrelated) are a
+  separate follow-up, not this rework.
+- **Redesigning Runs / Feedback / Activity.** Round 2 audited them and found a designed
+  loop, not three tabs of data (F23). Only its last hop is missing.
+- **Choosing the minimum supported viewport.** Measured and reported (F25/F27); the
+  decision is the product owner's.
 
 ## Constraints
 
@@ -99,31 +115,72 @@ Checkable against the running system or a test.
 4. A test fails if a node type registered on the backend as structural has no child-slot
    declaration, or if the frontend node-type union and the backend registry disagree.
 5. The Chat assistant catalogue shows, for each assistant, what it can answer and what it
-   cannot — projected from `coverage.py` — and no longer leads with conversation count.
-6. A reader opening an assistant can see at least one suggested question derived from the
-   flow's actual capability, not free text typed by the author.
+   cannot, **recomputed against the chat surface's effective ceiling** - not projected
+   from `coverage()` output - and no longer leads with conversation count.
+6. The reader-facing capability payload contains **no** `tools`, `pack`, `needs_any_of`,
+   `step`, `ref` or `unreadable_sources` field, proven by a test that asserts the
+   serialised shape (F28).
+6b. A reader who cannot access a knowledge source never sees its name or ref, proven by a
+   two-account test.
 7. `agent_flows` and `direct_chat` exist as guardrail features with owner files, so
    `guardrail_check.py --files backend/app/services/agent_flows/...` returns a real
    verdict instead of `unknown` — and "authoring" no longer matches `auth_permissions`.
-8. All 23 backend tests in this area run in CI; the workflow lists the 8 currently missing.
+8. `scripts/ci/audit_test_reachability.py` reports **0** Agent Flow / Direct Chat tests
+   in the never-referenced bucket. The other 31 stay out of scope and are still reported.
 9. No change to `brain_key`, `/brains` paths, or any database column.
 10. The three dispatch entry points still call one `executor.run_flow`, verified by grep.
 
-## Open questions
+## Open questions — resolved in round 2
 
-Answers change the plan; I am not assuming them.
+1. **"Brain" -> "Assistant" in the Studio too?**
+   -> **NEEDS PRODUCT OWNER DECISION.** Evidence is in: the split already exists and is
+   inconsistent (Chat says Assistant, Studio and API say Brain; Flow 860 / Brain 122 /
+   Assistant 8 occurrences). Retiring the *word on screen* is safe; renaming `brain_key`,
+   `/brains` or columns is not, and stays out of scope either way. Not blocking - it lives
+   in the polish phase.
 
-1. **Does the "Brain" → "Assistant" vocabulary change extend to the Studio?** Retiring the
-   word on the Chat side is easy. Renaming `BrainList`/`BrainBuilder` on screen is a
-   larger surface and affects author muscle memory. My recommendation: yes, user-facing
-   only, in the polish phase — but it is your product call.
-2. **How common is `output_format: 'json'` in real flows?** F6 is proven; its *severity*
-   depends on frequency. If no shipped flow uses typed blocks, it drops from "highest
-   priority" to "correctness debt".
-3. **Should suggested questions be authored, derived, or both?** Derived cannot drift but
-   is generic; authored is specific but goes stale. My recommendation: derived by default,
-   with an optional author override.
-4. **Is the current validation feedback good enough?** `40b8fea` fixed the worst of it.
-   Whether it is now adequate is a browser question I have not answered.
-5. **Do you want the phase-0 CI/guardrail wiring done first and separately?** It is small,
-   independent, and makes every later phase safer — but it is not product work.
+2. **How common is `output_format: 'json'`?**
+   -> **ANSWERED from real local data.** 53 agent nodes across 25 brain versions:
+   **47 `chat`, 4 `json`, 2 `choice`**. Two of ten flows. On `revenue_v2` (bound to
+   link 39) the answer node was `json` in v1, v2, v4 - then `chat` for v5-v12.
+
+   **Why it changes the plan:** the shared renderer is still right, but **not because of
+   severity**. Nothing currently ships a typed-block answer, and the model returns a
+   single `text` block even when asked for a metric and a table - only an explicit
+   "answer with a metric block" produced one. So F6 is **correctness and robustness debt**,
+   not an active user-facing bug. It stays early because it is small (F21: the renderer is
+   already surface-agnostic, ~201 lines, two of three surfaces already use it), not
+   because users are hitting it. **It no longer justifies being Phase 1 on severity.**
+
+   **Why it does not change the recommendation itself:** the defect is real and silent
+   (run reports `ok`, answer renders the em-dash), F20 shows an unknown variant is dropped
+   on *every* surface, and leaving one of three surfaces on a private flatten is how the
+   drift happened in the first place.
+
+3. **Suggested questions - authored, derived, or both?**
+   -> **CAN DEFER**, and now depends on F28. Derived-from-coverage is unsafe as designed
+   (leaks tool names and document refs, and is wrong on chat where there is no report).
+   Whatever ships must be recomputed against the surface ceiling. Decide when that phase
+   is specified, not now.
+
+4. **Is validation feedback good enough now?**
+   -> **ANSWERED - yes, for this rework's purposes.** Observed in the test panel: coverage
+   gaps are listed per question class with examples ("Tra loi duoc 0/9 loai cau hoi", each
+   gap naming the missing tool group), and the `read_exceeds_context` notice is rendered
+   as actionable prose. Not a problem this rework needs to solve.
+
+5. **Phase 0 CI/guardrail wiring first and separately?**
+   -> **ANSWERED - yes, and it is now BLOCKING BEFORE PHASE 1.** The 12 in-area ghost
+   tests pass locally (198 tests) but never run in CI, and two of them lock the exact
+   failure classes the later phases risk re-introducing. Wiring them is small, has no
+   product change, and makes every later phase verifiable.
+
+## New open question from round 2
+
+6. **What is the minimum supported author viewport?**
+   -> **NEEDS PRODUCT OWNER DECISION, and it gates the canvas work.** Measured: a
+   three-specialist coordinator needs **~1760px** to avoid horizontal clipping with the
+   inspector at its default 700px. At 1440 the third lane is 64% hidden; at 1280, 5 of 6
+   node cards and 2 of 3 lanes are clipped. Either the product declares >=1760px and says
+   so, or the inspector stops being a fixed 700px. That is a product call, not a refactor,
+   and I am not making it inside an audit.
