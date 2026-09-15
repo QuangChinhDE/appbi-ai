@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import os
 import subprocess
 import sys
@@ -38,6 +39,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 GUARDRAIL_DIR = REPO_ROOT / "scripts" / "guardrail"
+STRICT = False
 
 
 def _load_core():
@@ -141,19 +143,66 @@ def cmd_files(core, files, plan, as_json: bool) -> int:
     return _verdict_exit(result.get("verdict", ""))
 
 
+def audit_test_registry(core) -> dict:
+    """Do the tests the guardrail demands actually exist, and survive a clone?
+
+    `check_rules_health()` validates invariant markers and the semantic-contract
+    inventory, but NOT the `tests:` registry — so an entry can name a file that
+    was deleted or was never committed and everything still reports healthy. That
+    matters most exactly where it is least visible: `distinct_cascade_bq`,
+    `galaxy_golden` and `golden_sql` are the required gates for the PROTECTED
+    semantic layer, so a missing one turns "run the golden gates" into advice
+    nobody can follow.
+
+    Untracked is its own failure: the file works on the machine that wrote it and
+    is absent on a fresh clone, which is the same trap `backend/tests/README.md`
+    documents for the allow-list.
+    """
+    rules = core.load_rules()
+    tracked = set(_git("ls-files").split())
+    missing, untracked, ok = [], [], []
+    for test_id, spec in (rules.get("tests") or {}).items():
+        run = (spec or {}).get("run", "")
+        match = re.search(r"([\w/.\-]+\.py)", run)
+        if not match:
+            continue  # not a python path (tsc, manual browser/import verification)
+        path = match.group(1)
+        if not (REPO_ROOT / path).exists():
+            missing.append((test_id, path))
+        elif path not in tracked:
+            untracked.append((test_id, path))
+        else:
+            ok.append((test_id, path))
+    return {"ok": ok, "missing": missing, "untracked": untracked}
+
+
 def cmd_health(core, as_json: bool) -> int:
     health = core.check_rules_health()
     contract = core.verify_semantic_contract()
+    registry = audit_test_registry(core)
     if as_json:
-        print(json.dumps({"health": health, "contract": contract}, indent=2))
+        print(json.dumps({"health": health, "contract": contract, "test_registry": registry}, indent=2))
     else:
-        print(f"rules health   : {health.get('status')}")
+        print(f"rules health     : {health.get('status')}")
         _bullets("issues:", health.get("issues"))
         print(f"semantic contract: {contract.get('status')}")
         _bullets("missing files:", contract.get("missing_files"))
         _bullets("missing symbols:", contract.get("missing_symbols"))
         _bullets("unregistered semantic files:", contract.get("unregistered_semantic_files"))
+        n_ok, n_miss, n_untr = (len(registry[k]) for k in ("ok", "missing", "untracked"))
+        print(f"test registry    : {n_ok} runnable, {n_miss} missing, {n_untr} untracked")
+        _bullets("MISSING - the guardrail demands a test that is not on disk:",
+                 [f"{t}: {p}" for t, p in registry["missing"]])
+        _bullets("UNTRACKED - present here, absent on a fresh clone:",
+                 [f"{t}: {p}" for t, p in registry["untracked"]])
+        if registry["missing"] or registry["untracked"]:
+            print("\n  A required gate that cannot be run is not a gate. Restore the file,")
+            print("  commit it, or correct the `tests:` entry in guardrail_rules.yaml.")
+            print("  (Reported, not fatal - pass --strict to fail on it.)")
+
     bad = health.get("status") not in ("healthy", "ok") or contract.get("status") not in ("ok", "healthy")
+    if STRICT and (registry["missing"] or registry["untracked"]):
+        bad = True
     return 1 if bad else 0
 
 
@@ -164,12 +213,17 @@ def main() -> int:
     ap.add_argument("--files", nargs="+", metavar="PATH", help="impact scope + required tests")
     ap.add_argument("--plan", metavar="TEXT", help="with --files: validate a fix plan")
     ap.add_argument("--health", action="store_true", help="rules health + semantic contract drift")
+    ap.add_argument("--strict", action="store_true",
+                    help="with --health: also fail when a registered test is missing/untracked")
     ap.add_argument("--json", action="store_true", help="machine-readable output")
     args = ap.parse_args()
 
     if not (args.diff or args.files or args.health):
         ap.print_help()
         return 3
+
+    global STRICT
+    STRICT = args.strict
 
     core = _load_core()
     rc = 0

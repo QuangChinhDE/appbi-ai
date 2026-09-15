@@ -39,6 +39,18 @@ When sources disagree, the higher one wins:
 5. **Docs** (`README.md`, `KNOWLEDGE_DOMAIN_MODEL.md`, `docs/**`) — intent; can lag code.
 6. **Claude memory** — a hint about where to look, never an authority. Verify before acting.
 
+## Running it locally — two modes, and they behave differently
+
+| | Command | Source changes |
+|---|---|---|
+| **Prod-style** | `./run.sh` (base `docker-compose.yml` only) | **baked into the image** — an edit does nothing until you rebuild, or `docker cp` the file in and restart the container |
+| **Dev** | `docker compose -f docker-compose.yml -f docker-compose.dev.yml up` | hot-reloaded — `./backend/app` and `./frontend` are bind-mounted, uvicorn runs `--reload`, Next.js polls |
+
+`run.sh` does **not** apply the dev override. This is the single most common source of
+"I fixed it but nothing changed": you edited source while a prod-style build was serving
+the old bundle. Before concluding a fix failed, confirm which mode is running
+(`docker ps` — dev containers are `appbi-backend-dev` / `appbi-frontend-dev`).
+
 ## Scoped rules — read the one for the area you are in
 
 | Working in | Read |

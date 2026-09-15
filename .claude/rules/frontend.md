@@ -18,9 +18,14 @@ Scope: `frontend/src/**`. Next.js App Router, TypeScript, standalone output.
   (`publicClient`, a plain axios/fetch with no credentials). A single authed call from a
   public page leaks data to a logged-out viewer and is a security bug.
   Guardrail invariant: `public_client_only`, `scope_bound_no_leak`.
-- Grouped endpoint modules live in `frontend/src/lib/api/*.ts` (`charts`, `dashboards`,
-  `datasources`, `public`, `workboards`, `workspace`, …). Add an endpoint to the existing
-  module for its resource; do not create a new client.
+- **Two call styles coexist, and both are legitimate** — verified, not assumed: ~44 files
+  import a grouped module from `@/lib/api/*` (`charts`, `dashboards`, `datasources`,
+  `public`, `workboards`, `workspace`, …), and ~30 call `apiClient` directly. The grouped
+  modules are thin wrappers *over* `apiClient`, not a separate client.
+  Follow the file you are in: if the resource already has a module in `lib/api/`, add your
+  endpoint there; a direct `apiClient` call in a component is not a violation to "fix".
+  What is never acceptable is a **third** client — a bare `axios.create` or `fetch` to the
+  API that skips cookie auth and the 401-refresh interceptor.
 
 ## Structure
 
@@ -30,8 +35,8 @@ Scope: `frontend/src/**`. Next.js App Router, TypeScript, standalone output.
 | Components | `src/components/<area>/**` |
 | Shared logic, clients, formatting | `src/lib/**` |
 | Types mirroring backend schemas | `src/types/**` |
-| Hooks | `src/hooks/**` · React Query via `@tanstack/react-query` |
-| i18n | `src/i18n/**` — EN + VI. User-visible strings go through it |
+| Hooks | `src/hooks/**`. React Query (`@tanstack/react-query`) is available and used in ~26 files — it is **not** the default; most surfaces fetch in `useEffect` or a page loader. Match the surrounding file rather than converting it |
+| i18n | `src/i18n/catalog/<module>.ts`, each exporting `{ en, vi }` merged into the global table (`messages.ts`, `AppLanguage = 'en' \| 'vi'`). User-visible strings go through it |
 
 ## Verifiable contracts — these are scripts, not opinions
 

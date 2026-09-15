@@ -12,17 +12,43 @@ Scope: `backend/app/**`. FastAPI, SQLAlchemy, PostgreSQL + pgvector.
 ## Layering (formalized in guardrail_rules.yaml: layers)
 
 ```
-api/**  routers/**     thin: validate → authorize → delegate → shape response
-services/**            business logic, SQL generation, the semantic engine
+api/**                 HTTP routers, mounted by api/__init__.py under /api/v1
+routers/**             one module only: semantic.py, the direct semantic API
+services/**            business logic, SQL generation, the semantic engine (~84 files)
 modules/**             self-contained features: agent_flows, metadata_catalog, workboards
-models/**              SQLAlchemy ORM only — must NOT import services
+models/**              SQLAlchemy ORM — verified: imports no service today. Keep it that way.
 schemas/**             Pydantic request/response contracts
 core/**                config, dependencies, security (high blast radius)
 ```
 
-- Never put business logic in a router. Never import a service from a model.
-- `backend/app/scripts/**` is tooling, not runtime. A product fix that lives only there
-  is not a product fix.
+**Routers here are not thin, and pretending otherwise will mislead you.**
+`api/datasets.py` is ~6,950 lines, `api/public.py` ~4,600, `api/dashboards.py` ~2,960.
+That is the real shape of this codebase. Two consequences:
+
+- Put **new** business logic in `services/**`, not in the router you happen to be editing.
+- Do **not** refactor an existing fat router as a side effect of an unrelated change.
+  Shrinking `datasets.py` is its own project with its own risk budget, not drive-by work.
+
+`backend/app/scripts/**` is tooling, not runtime. A product fix that lives only there is
+not a product fix.
+
+## Modules are behind feature flags
+
+`api/__init__.py` imports a module's router **only when its flag is on** (`core/config.py`):
+
+| Flag | Default | Gates |
+|---|---|---|
+| `WORKBOARDS_ENABLED` | `False` | `modules/workboards` — api, webhook_api, workspace_admin_api |
+| `METADATA_CATALOG_ENABLED` | `False` | `modules/metadata_catalog` **and** `modules/agent_flows` (api + chat_api) |
+| `GOVERN_ENABLED` | `True` | Intelligence modules; effective only when the catalog flag is on |
+| `OBSERVABILITY_ENABLED` | `True` | `api/observability.py` |
+| `PDF_EXPORT_ENABLED` | `False` | server-side render |
+
+So: a new endpoint on a flagged module must be registered **inside that flag's block**, or
+it silently does not exist. And an endpoint that 404s may simply be a flag that is off —
+check the flag before hunting for a routing bug. Registration order matters too:
+`agent_flows.chat_api` is mounted after the studio router so `/agent-flows/chat/*` is not
+swallowed by an `/agent-flows/{id}` route above it.
 
 ## Authorization
 
@@ -45,8 +71,14 @@ convenience. Changes here require the `public_link_security` gates.
 ## Errors
 
 Follow the established contract: `ValueError` → 400 with a user-facing (Vietnamese)
-message; keep messages actionable. It is locked by
-`backend/tests/test_phase15_error_contracts.py` — read it before changing an error shape.
+message; keep messages actionable. It is real and widespread — ~74 `except ValueError`
+handlers across `api/*.py`.
+
+**But it is not actually locked.** `backend/tests/test_phase15_error_contracts.py` exists
+on some machines and is neither tracked nor in CI, so it protects nothing on a fresh
+clone. Read it if you have it; do not assume a red test will catch you if you change an
+error shape. `python scripts/ci/guardrail_check.py --health` lists every registered test
+that cannot actually be run.
 
 ## Wrong-layer fixes
 

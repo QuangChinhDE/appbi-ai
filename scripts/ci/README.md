@@ -78,6 +78,14 @@ python scripts/ci/guardrail_check.py --health                      # rules healt
 Exit codes: `0` ok/warn · `1` block or drift · `2` **unknown — which is not the same as
 safe**: it means no rule covers the change.
 
-`--health` runs in CI (`preflight.yml`). It proves every invariant marker still exists in
-real source and reports `DRIFT` if a semantic backbone file or symbol was renamed, removed,
-or added without being registered — so the rules cannot quietly stop describing the code.
+`--health` runs in CI (`preflight.yml`). Three checks:
+
+1. **rules health** — every invariant marker still exists in real source, so no rule is
+   watching for a pattern that is gone.
+2. **semantic contract** — `DRIFT` if a backbone file or symbol was renamed, removed, or
+   added without being registered.
+3. **test registry** — whether each test the rules *demand* can actually be run. This one
+   was added after an audit found the registry naming four files that are not in the
+   repository, three of them required gates for the protected semantic layer, while health
+   still reported `healthy`. A gate nobody can run is not a gate; the difference is now
+   visible on every CI run. Reported but non-fatal by default — add `--strict` to fail.

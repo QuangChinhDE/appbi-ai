@@ -8,9 +8,9 @@ globs:
 
 # Migration rules
 
-167 revisions live in `backend/alembic/versions/`. Migrations run automatically in the
-backend entrypoint on every boot, so a broken chain is a production 502, not a local
-annoyance.
+Revisions live in `backend/alembic/versions/` (a long single chain — `alembic_chain.py`
+prints the current count and head). Migrations run automatically in the backend entrypoint
+on every boot, so a broken chain is a production 502, not a local annoyance.
 
 ## Hard rules
 
