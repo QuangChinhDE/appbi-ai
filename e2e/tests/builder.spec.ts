@@ -1,5 +1,5 @@
 import { expect, Page, test } from '@playwright/test';
-import { deleteFlow, sweepLeftovers } from './_helpers';
+import { deleteFlow, ensureFlowExists, sweepLeftovers } from './_helpers';
 
 /**
  * The builder as an author uses it, and the round trip underneath it.
@@ -40,6 +40,13 @@ async function saveDraft(request: any, key: string, name: string, body: unknown)
 }
 
 test.describe('builder lifecycle @critical', () => {
+  // The list and the builder both need a row to exist. On a developer's machine
+  // one always does; on a CI database it does not, and asserting on a table that
+  // was never going to be there reports the suite's assumption as a defect.
+  test.beforeAll(async ({ request }) => {
+    await ensureFlowExists(request);
+  });
+
   test('the flow list loads with no page errors', async ({ page }) => {
     const seen = watchConsole(page);
 

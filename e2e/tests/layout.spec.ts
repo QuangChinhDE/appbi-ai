@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { deleteFlow, sweepLeftovers } from './_helpers';
+import { deleteFlow, ensureFlowExists, sweepLeftovers } from './_helpers';
 
 /**
  * Layout faults a functional test cannot see.
@@ -11,6 +11,11 @@ import { deleteFlow, sweepLeftovers } from './_helpers';
  */
 
 test.describe('builder layout', () => {
+  // A layout test still needs something laid out. See `ensureFlowExists`.
+  test.beforeAll(async ({ request }) => {
+    await ensureFlowExists(request);
+  });
+
   test('the flow list does not scroll sideways', async ({ page }) => {
     await page.goto('/agent-flows');
     await expect(page.getByRole('heading', { name: /Agent Flows/i })).toBeVisible();

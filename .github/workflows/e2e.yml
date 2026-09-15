@@ -60,6 +60,26 @@ jobs:
       E2E_BASE_URL: http://localhost:3000
       E2E_API_URL: http://localhost:8000
 
+      # THE BROWSER TALKS TO THE APP THE WAY PRODUCTION DOES: same-origin.
+      #
+      # This job used to bake `NEXT_PUBLIC_API_URL: http://localhost:8000`, but
+      # the client's own default is `/api/v1` — the value is expected to ALREADY
+      # carry that prefix. Without it every call went to
+      # `http://localhost:8000/auth/me`, which is not a route, so the CORS
+      # preflight got a 404 instead of a 204 and the browser reported
+      #
+      #   blocked by CORS policy: Response to preflight request doesn't pass
+      #   access control check: It does not have HTTP ok status
+      #
+      # Relative also matches how the product actually ships (compose bakes
+      # `/api/v1`), so the suite exercises the same path a real deployment does
+      # rather than a cross-origin one that exists only in CI.
+      NEXT_PUBLIC_API_URL: /api/v1
+      # WHERE THAT SAME-ORIGIN PATH IS PROXIED TO. `middleware.ts` rewrites
+      # `/api/v1/*` to BACKEND_URL and falls back to `http://backend:8000/api/v1`
+      # — a docker-compose hostname that does not resolve on a GitHub runner.
+      BACKEND_URL: http://localhost:8000/api/v1
+
     steps:
       - uses: actions/checkout@v4
 
@@ -92,8 +112,9 @@ jobs:
 
       - name: Build and start the frontend
         working-directory: frontend
-        env:
-          NEXT_PUBLIC_API_URL: http://localhost:8000
+        # NEXT_PUBLIC_API_URL and BACKEND_URL come from the job env. A step-level
+        # `NEXT_PUBLIC_API_URL: http://localhost:8000` used to sit here and won
+        # over the job value, which is how the missing `/api/v1` prefix survived.
         run: |
           npm ci
           npm run build

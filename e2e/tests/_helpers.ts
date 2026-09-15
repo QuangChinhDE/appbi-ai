@@ -32,6 +32,48 @@ export async function deleteFlow(request: any, key: string) {
   }
 }
 
+/**
+ * Guarantee the flow list has something in it, and say which key it is.
+ *
+ * A TEST THAT NEEDS DATA HAS TO MAKE IT. Three specs here opened `/agent-flows`
+ * and asserted on a table or clicked `tbody tr button` — which works on any
+ * developer's machine, where the database has flows in it from ordinary use, and
+ * fails on a CI database built by `alembic upgrade head` thirty seconds earlier.
+ * The page is not broken when it renders "No brains yet"; that is the correct
+ * empty state, and the suite was reporting its own assumption as a product fault.
+ *
+ * Returns the key so a caller can delete exactly what it made, or '' if it could
+ * not make one.
+ *
+ * BEST EFFORT, DELIBERATELY. This runs in `beforeAll`, and a throw there fails
+ * every test in the describe — including the ones that needed no data at all. If
+ * the write route is broken, `security-forged.spec.ts` and the ToolNode
+ * round-trip say so directly; this is a precondition, not an assertion.
+ */
+export async function ensureFlowExists(
+  request: any, key = `e2e_seed_${Date.now()}`,
+): Promise<string> {
+  const res = await request.put(BRAINS, {
+    data: {
+      brain_key: key, name: 'E2E seed flow',
+      body: {
+        nodes: [
+          { key: 'dat', type: 'set_var', var: 'gia_tri', value: 'xin_chao' },
+          { key: 'answer', type: 'agent', name: 'Trả lời', prompt: '{{gia_tri}}' },
+        ],
+        answer_node: 'answer',
+      },
+    },
+  }).catch(() => null);
+
+  if (!res || res.status() >= 400) {
+    console.warn(`[e2e] could not seed a flow (${res ? res.status() : 'no response'});`
+      + ' specs that need a row will fail on their own assertion');
+    return '';
+  }
+  return key;
+}
+
 /** Remove every `e2e_*` flow left behind by any earlier run. */
 export async function sweepLeftovers(request: any) {
   const res = await request.get(BRAINS);
