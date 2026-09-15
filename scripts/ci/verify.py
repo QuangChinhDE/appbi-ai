@@ -316,6 +316,39 @@ def backend_tests_reach_ci(rep: Report, files: list[str]) -> None:
     else:
         rep.ok("every allow-listed suite exists and is run by CI")
 
+    # THE HOLE THE SENTENCE ABOVE DOES NOT COVER.
+    #
+    # The loop above walks the ALLOW-LIST. A file committed with `git add -f`,
+    # skipping both the allow-list and the workflow, is tracked, survives a fresh
+    # clone, looks like coverage in the tree — and is invisible here, so this
+    # section printed "ok" while 43 committed suites ran nowhere.
+    #
+    # Advisory, not fatal: several are deliberately local, and failing the build on
+    # somebody else's backlog is how a gate becomes something people route around.
+    # Naming them is the point.
+    tracked = [
+        Path(line).name for line in git("ls-files", "backend/tests").splitlines()
+        if re.search(r"^backend/tests/test_\w+\.py$", line)
+    ]
+    runners = [workflow]
+    for extra in (REPO_ROOT / ".github" / "workflows" / "e2e.yml",
+                  REPO_ROOT / ".github" / "workflows" / "preflight.yml",
+                  REPO_ROOT / "scripts" / "guardrail" / "guardrail_rules.yaml"):
+        if extra.exists():
+            runners.append(extra.read_text(encoding="utf-8", errors="replace"))
+    unreferenced = sorted(
+        name for name in tracked
+        if not any(f"tests/{name}" in text for text in runners)
+    )
+    if unreferenced:
+        print(f"  {len(unreferenced)} committed suite(s) referenced by no runner "
+              f"— tracked, never executed:")
+        for name in unreferenced[:10]:
+            print(f"    {name}")
+        if len(unreferenced) > 10:
+            print(f"    … and {len(unreferenced) - 10} more")
+        print("  a suite in neither the allow-list nor a workflow is not coverage.")
+
     # A brand-new local suite is git-IGNORED, so it never shows in `git status`.
     # Advisory only: most stay local deliberately.
     newer = []

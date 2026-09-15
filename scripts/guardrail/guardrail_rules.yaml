@@ -160,7 +160,7 @@ features:
   - id: join_resolution
     label: "Semantic join resolver (multi-hop, cardinality, role-play, chasm)"
     files: [backend/app/services/semantic_join_resolver.py]
-    keywords: [join, relationship, cardinality, snowflake, "many_to_one", chasm, "fan out"]
+    keywords: [join, joins, joined, relationship, cardinality, snowflake, "many_to_one", chasm, "fan out"]
     invariants: [model_autojoin_pk]
     required_tests: [galaxy_golden, filter_matrix, relationship_metadata]
 
@@ -185,7 +185,7 @@ features:
       - frontend/src/components/dashboards/ChartTile.tsx
       - frontend/src/components/dashboards/DashboardGrid.tsx
       - frontend/src/components/dashboards/DashboardCanvas.tsx
-    keywords: [dashboard, tile, chart render, "build screen", "khong align", "không align", flash, unfiltered, slicer default, draft, publish]
+    keywords: [dashboard, tile, tiles, chart render, "build screen", "khong align", "không align", flash, unfiltered, slicer default, draft, publish]
     invariants: [tile_fetch_seed_gate]
     required_tests: [tsc, browser_verify]
 
@@ -210,14 +210,16 @@ features:
   - id: auth_permissions
     label: "Auth / permissions"
     files: [backend/app/api/auth.py, backend/app/api/permissions.py, backend/app/core/dependencies.py, frontend/src/lib/auth.ts, frontend/src/hooks/use-permissions.ts]
-    keywords: [auth, login, token, permission, role, jwt, "access control"]
+    keywords: [auth, authentication, authorization, login, "sign in", token, tokens,
+               permission, permissions, role, roles, jwt, "access control", session]
     invariants: []
     required_tests: [import_smoke]
 
   - id: workboards
     label: "Workboards (mini-app) module"
     files: [backend/app/modules/workboards/**]
-    keywords: [workboard, screen, mini-app, "form", "RLS", "workspace", "cong"]
+    keywords: [workboard, workboards, screen, screens, mini-app, "form", "forms",
+               "RLS", "workspace", "cong"]
     invariants: []
     required_tests: [import_smoke]
 
@@ -228,11 +230,60 @@ features:
     invariants: []
     required_tests: [import_smoke]
 
+
+  - id: agent_flows
+    label: "Agent Flow Studio (authoring + runtime + node model)"
+    files:
+      - backend/app/services/agent_flows/**
+      - backend/app/modules/agent_flows/api.py
+      - frontend/src/lib/agentFlows.ts
+      - frontend/src/components/agent-flows/**
+    # Whole-word matched (guardrail_core._keyword_pattern). "flow" alone is far too
+    # common in this repo to be a signal, so the phrases carry the weight.
+    keywords: ["agent flow", "agent flows", agentflow, brain, brains, brain_key,
+               "node topology", "node registry", nodespec, "child slot", "child slots",
+               coordinator, "coordinate node", specialist, specialists,
+               "switch branch", "flow canvas", "node inspector", "flow builder",
+               "answer envelope", "answer block", "answer blocks", "flow runtime",
+               executor, run_flow, "tool node", report_read]
+    invariants: [agent_flow_answer_parity]
+    required_tests: [agent_flow_contract, agent_flow_replay, agent_flow_container]
+
+  - id: direct_chat
+    label: "Direct Chat (reader surface of Agent Flow)"
+    files:
+      - backend/app/services/agent_flows/direct_chat.py
+      - backend/app/modules/agent_flows/chat_api.py
+      - frontend/src/lib/directChat.ts
+      - frontend/src/components/chat/**
+    keywords: ["direct chat", "ai chat", "chat thread", "chat threads", assistant,
+               assistants, conversation, conversations, "thread access",
+               "thread sharing", "chat surface", "chat brain", "chat brains"]
+    invariants: [agent_flow_answer_parity]
+    required_tests: [direct_chat_contract]
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 4. TESTS REGISTRY — from DA-Test/Regression-Catalog.md §1. `run` is the exact
 #    command; `locks` is what a green run guarantees.
 # ─────────────────────────────────────────────────────────────────────────────
 tests:
+  # ── Agent Flow / Direct Chat ────────────────────────────────────────────────
+  # Registered 2026-09-15. Twelve suites in this area were committed with
+  # `git add -f` but never allow-listed and never referenced by a workflow, so they
+  # passed locally and ran nowhere. `scripts/ci/audit_test_reachability.py` is the
+  # inventory that found them.
+  agent_flow_contract:
+    run: "pytest backend/tests/test_agent_flow_answer_contract.py backend/tests/test_agent_tool_registry.py backend/tests/test_tool_output_contract.py"
+    locks: "the flow contract, the tool registry and the answer envelope shape"
+  agent_flow_replay:
+    run: "pytest backend/tests/test_agent_flow_replay.py"
+    locks: "16 canonical fixtures replay with no semantic drift — the tripwire for any runtime or traversal change"
+  agent_flow_container:
+    run: "pytest backend/tests/test_coordinator_is_visible_to_the_flow.py backend/tests/test_flow_coordinate.py backend/tests/test_flow_synthesis_sees_all_steps.py backend/tests/test_flow_type.py"
+    locks: "every container node is walked by all_nodes(); a coordinator's lane is visible to every authoring check"
+  direct_chat_contract:
+    run: "pytest backend/tests/test_chat_thread_sharing.py backend/tests/test_chat_chart_scope.py"
+    locks: "chat thread access levels, read-only shares, and the chat surface's chart scope"
   # `status: missing` = the harness this entry describes is NOT in the repository.
   # Verified 2026-09-15: these four were never committed (git log --diff-filter=AD
   # finds nothing), so they only ever existed on the machine that wrote them. The
@@ -311,6 +362,20 @@ tests:
 invariants:
   # GROUNDED (verified L3017/3115/3218/3037). Guards the PRESENCE of the
   # de-correlation fix — a diff removing its markers undoes it.
+  - id: agent_flow_answer_parity
+    label: "The answer envelope has one renderer; no surface flattens blocks privately"
+    scope: ["frontend/src/components/agent-flows/TestChat.tsx",
+            "frontend/src/components/chat/ConversationView.tsx",
+            "frontend/src/components/dashboards/AnswerBlocks.tsx"]
+    added_patterns: ['\.map\(\s*\(?b\)?\s*=>\s*b\.markdown']
+    severity: high
+    message: >
+      Studio, Direct Chat and the dashboard bot read the same blocks. A surface that
+      flattens them to `.markdown` shows its author a degraded copy of what the reader
+      gets — measured: a valid `metric` answer rendered as an em-dash while the run
+      reported `ok` and raised no notice.
+    tests: [agent_flow_contract]
+
   - id: distinct_decorrelation_semijoin
     label: "Distinct cascade must stay a de-correlated UNION-DISTINCT / INNER JOIN semi-join (BigQuery)"
     scope: ["backend/app/services/dataset_model_service.py"]
