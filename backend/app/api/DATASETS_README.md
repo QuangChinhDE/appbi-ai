@@ -280,14 +280,14 @@ Câu hỏi: "Tôi cần đặt tên hiển thị / chuyển kiểu cho 1 cột."
   `measure.label` (vd "Số người dùng") thay vì SQL identifier
   (`task_user_distinct`). Khi metric có `agg='auto'`, bỏ prefix "AUTO of"
   để tránh đọc nhầm thành bug. File:
-  [components/explore/ExploreChartConfig.tsx](../../frontend/src/components/explore/ExploreChartConfig.tsx),
-  [components/explore/ExploreEditor.tsx](../../frontend/src/components/explore/ExploreEditor.tsx).
+  [components/explore/ExploreChartConfig.tsx](../../../frontend/src/components/explore/ExploreChartConfig.tsx),
+  [components/explore/ExploreEditor.tsx](../../../frontend/src/components/explore/ExploreEditor.tsx).
 - ✅ **Layout canvas server-side**: positions lưu vào
   `Dataset.settings.model_layout` thay vì localStorage. Layout follow
   dataset, sync cross-browser/user.
   - Endpoints: `GET /datasets/{id}/model/layout`, `PUT /datasets/{id}/model/layout`.
   - Hooks: `useModelLayout`, `useSaveModelLayout` trong
-    [hooks/use-dataset-model.ts](../../frontend/src/hooks/use-dataset-model.ts).
+    [hooks/use-dataset-model.ts](../../../frontend/src/hooks/use-dataset-model.ts).
 - ✅ **Dual binding cleanup**: API `POST /views` reject khi nhận cả
   `dataset_table_id` lẫn `sql_table_name`. Legacy `sql_table_name`-only
   vẫn chấp nhận để không break external-table views.
@@ -311,12 +311,12 @@ Câu hỏi: "Tôi cần đặt tên hiển thị / chuyển kiểu cho 1 cột."
   - DuckDB/PostgreSQL → `date_trunc('month', CURRENT_DATE)` style.
   - BigQuery → `DATE_TRUNC(CURRENT_DATE(), MONTH)` style.
   - MySQL → `DATE_FORMAT(CURDATE(), '%Y-%m-01')` style.
-  - File: [services/semantic_query_engine_v2.py](../services/semantic_query_engine_v2.py).
+  - File: `semantic_query_engine_v2.py` (removed; the engine is `services/semantic_query_engine.py`).
 - ✅ **FE lineage probe consumer**: trước khi xóa column, FE gọi
   `/lineage/column/{table_id}/{column}` rồi hiện confirm dialog liệt
   kê semantic refs bị ảnh hưởng (`fetchColumnLineage` trong
-  [hooks/use-dataset-model.ts](../../frontend/src/hooks/use-dataset-model.ts);
-  consumer trong [app/(main)/datasets/[id]/page.tsx](../../frontend/src/app/(main)/datasets/[id]/page.tsx)).
+  [hooks/use-dataset-model.ts](../../../frontend/src/hooks/use-dataset-model.ts);
+  consumer trong [app/(main)/datasets/[id]/page.tsx](../../../frontend/src/app/(main)/datasets/[id]/page.tsx)).
 - ✅ **Dual-binding cleanup script + sửa Phase-4 guard**:
   [scripts/dedupe_view_binding.py](../../scripts/dedupe_view_binding.py)
   chỉ clear `sql_table_name` cho derived_table/calendar (legitimate
@@ -425,12 +425,12 @@ thầm. Đóng được ~80% feedback.
 
 - ✅ **11.1**: Đổi `ExploreColumnPanel` từ accordion grouped-by-view →
   flat list có search box + filter chip "by view" (mặc định all). File:
-  [components/explore/ExploreColumnPanel.tsx](../../../frontend/src/components/explore/ExploreColumnPanel.tsx)
+  `components/explore/ExploreColumnPanel.tsx` (component since removed)
   (lines 78-271).
 - ✅ **11.2**: Bỏ `disabled` state âm thầm cho view không reachable; thay
   bằng badge "⚠ cần join" + onClick mở `RelationshipDialog` pre-filled
   (from = base table, to = measure's table). File:
-  [ExploreColumnPanel.tsx](../../../frontend/src/components/explore/ExploreColumnPanel.tsx)
+  `ExploreColumnPanel.tsx` (component since removed)
   (207, 234) +
   [RelationshipDialog.tsx](../../../frontend/src/components/datasets/RelationshipDialog.tsx)
   (159-658).
@@ -528,7 +528,7 @@ bắt buộc thuộc 1 view; engine tự pick join path qua resolver.
   - Empty-state banner trong ExploreColumnPanel: khi dataset có ≥2 view
     nhưng không có active join nào, render warning banner "Dataset chưa
     có relationship nào" với CTA về Data Model tab. File:
-    [components/explore/ExploreColumnPanel.tsx](../../../frontend/src/components/explore/ExploreColumnPanel.tsx).
+    `components/explore/ExploreColumnPanel.tsx` (component since removed).
   - 13.1 (auto-suggest relationship) đã có sẵn từ Phase-3b qua
     `useDatasetModelJoinSuggestion` — RelationshipDialog auto-prefill
     cardinality khi user chọn xong from/to view.

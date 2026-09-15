@@ -63,7 +63,8 @@ DELETE /api/v1/charts/{id}
 Single source of truth: `ChartType` enum trong `backend/app/models/models.py`.
 FE selector phải sync qua `Record<ChartType, ChartTypeMeta>` (Phase-7
 refactor) → thêm enum value mới = TypeScript compile error tại
-[ChartTypeSelector.tsx](../../frontend/src/components/explore/ChartTypeSelector.tsx).
+[ExploreChartConfig.tsx](../../../frontend/src/components/explore/ExploreChartConfig.tsx)
+(the selector was merged into it; `ChartTypeSelector.tsx` no longer exists).
 
 ---
 

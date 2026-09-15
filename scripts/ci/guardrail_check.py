@@ -160,20 +160,25 @@ def audit_test_registry(core) -> dict:
     """
     rules = core.load_rules()
     tracked = set(_git("ls-files").split())
-    missing, untracked, ok = [], [], []
+    missing, untracked, ok, known = [], [], [], []
     for test_id, spec in (rules.get("tests") or {}).items():
-        run = (spec or {}).get("run", "")
+        spec = spec or {}
+        run = spec.get("run", "")
         match = re.search(r"([\w/.\-]+\.py)", run)
         if not match:
             continue  # not a python path (tsc, manual browser/import verification)
         path = match.group(1)
-        if not (REPO_ROOT / path).exists():
+        declared = spec.get("status")  # 'missing' / 'untracked' = audited, known gap
+        broken = not (REPO_ROOT / path).exists() or path not in tracked
+        if declared and broken:
+            known.append((test_id, path, declared))
+        elif not (REPO_ROOT / path).exists():
             missing.append((test_id, path))
         elif path not in tracked:
             untracked.append((test_id, path))
         else:
             ok.append((test_id, path))
-    return {"ok": ok, "missing": missing, "untracked": untracked}
+    return {"ok": ok, "missing": missing, "untracked": untracked, "known_gaps": known}
 
 
 def cmd_health(core, as_json: bool) -> int:
@@ -190,7 +195,11 @@ def cmd_health(core, as_json: bool) -> int:
         _bullets("missing symbols:", contract.get("missing_symbols"))
         _bullets("unregistered semantic files:", contract.get("unregistered_semantic_files"))
         n_ok, n_miss, n_untr = (len(registry[k]) for k in ("ok", "missing", "untracked"))
-        print(f"test registry    : {n_ok} runnable, {n_miss} missing, {n_untr} untracked")
+        n_known = len(registry["known_gaps"])
+        print(f"test registry    : {n_ok} runnable, {n_known} known gaps, "
+              f"{n_miss} missing, {n_untr} untracked")
+        _bullets("known gaps (declared in guardrail_rules.yaml, not coverage):",
+                 [f"{t}: {p} [{d}]" for t, p, d in registry["known_gaps"]])
         _bullets("MISSING - the guardrail demands a test that is not on disk:",
                  [f"{t}: {p}" for t, p in registry["missing"]])
         _bullets("UNTRACKED - present here, absent on a fresh clone:",

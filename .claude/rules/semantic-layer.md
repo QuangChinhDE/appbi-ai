@@ -63,24 +63,31 @@ Then run every test the verdict names.
 ## Some required gates cannot currently be run — know which
 
 The guardrail names four gates for this subsystem (`golden_sql`, `galaxy_golden`,
-`distinct_cascade_bq`, `filter_matrix`). As of now **three of them point at files that are
-not in the repository**, and `measure_render` is missing too:
+`distinct_cascade_bq`, `filter_matrix`). **Three of them do not exist in the repository.**
+Audited against git history: they were never committed, so they only ever ran on the
+machine that wrote them. Each is now marked `status: missing` in `guardrail_rules.yaml`.
 
 ```
-backend/scripts/verify_distinct_cascade_bigquery.py   missing
-backend/scripts/verify_galaxy_golden.py               missing
-scratchpad/golden_sql_harness.py                      missing
-backend/tests/test_semantic_query_engine_measures.py  missing
+backend/scripts/verify_distinct_cascade_bigquery.py   never committed
+backend/scripts/verify_galaxy_golden.py               never committed
+scratchpad/golden_sql_harness.py                      never committed
+backend/tests/test_semantic_query_engine_measures.py  never committed
+backend/tests/test_phase15_error_contracts.py         on disk, never committed
 ```
 
-`filter_matrix` (`backend/scripts/regression_filter_matrix.py`) and
-`explore_dashboard_parity` do exist and CI runs them.
+What **does** run: `filter_matrix` (`regression_filter_matrix.py`) and
+`explore_dashboard_parity`, both in CI on a seeded Postgres, plus the unit tier.
 
 So a `warn` verdict here can name a gate you cannot execute. When that happens, **say so
-explicitly in your report** — "the guardrail required `galaxy_golden`; that harness is not
-in the repo, so this change is unverified against it" — rather than quietly treating the
-change as covered. Run `python scripts/ci/guardrail_check.py --health` for the current
-list; it is checked on every CI run so this cannot rot silently.
+explicitly in your report** — "the guardrail required `galaxy_golden`; that harness was
+never committed, so this change is unverified against it" — rather than quietly treating
+the change as covered. Treat the real coverage of this subsystem as thinner than the rule
+list suggests, and lean harder on reproducing the behaviour yourself.
+
+`python scripts/ci/guardrail_check.py --health` prints the current split, and CI runs it
+every push. A gap that is *declared* stays quiet; a test that goes missing **without** a
+`status:` line is reported as a regression and fails `--strict`. Restoring any of these
+means deleting its `status:` line and nothing else.
 
 ## Contract health
 

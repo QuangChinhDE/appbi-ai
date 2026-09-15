@@ -226,13 +226,24 @@ features:
 #    command; `locks` is what a green run guarantees.
 # ─────────────────────────────────────────────────────────────────────────────
 tests:
+  # `status: missing` = the harness this entry describes is NOT in the repository.
+  # Verified 2026-09-15: these four were never committed (git log --diff-filter=AD
+  # finds nothing), so they only ever existed on the machine that wrote them. The
+  # entries are KEPT rather than deleted because they still document what the gate
+  # for that risk should be — but a gate nobody can run must not be presented as
+  # coverage. `scripts/ci/guardrail_check.py --health` treats a declared-missing
+  # entry as a known gap and an UNdeclared one as a regression, so restoring any of
+  # these means deleting its `status:` line and nothing else.
   distinct_cascade_bq:
+    status: missing
     run: "CI_FIXTURE_SEED=1 DB_HOST=appbi-db python backend/scripts/verify_distinct_cascade_bigquery.py"
     locks: "distinct cascade emits INNER JOIN semi-join on BigQuery — no correlated EXISTS / OR-of-INs / IN-over-aggregated; PG values correct"
   galaxy_golden:
+    status: missing
     run: "python backend/scripts/verify_galaxy_golden.py"
     locks: "14 golden numbers + 7 distinct-cascade + 4 public strict cascade (ds113 galaxy)"
   golden_sql:
+    status: missing
     run: "python scratchpad/golden_sql_harness.py  (+ committed baselines)"
     locks: "non-regression of every saved chart's generated SQL on Postgres + BigQuery"
   filter_matrix:
@@ -254,12 +265,14 @@ tests:
     run: "pytest backend/tests/test_phase4_symmetric_aggregates.py"
     locks: "Looker MD5 dedup per dialect + fallback"
   measure_render:
+    status: missing
     run: "pytest backend/tests/test_semantic_query_engine_measures.py"
     locks: "sql/expression/filters/where_sql, quote-escaping, NULL-safe, dataset-scope load"
   relationship_metadata:
     run: "pytest backend/tests/test_phase1_relationship_metadata.py"
     locks: "cardinality normalize, bidirectional edges, BFS path, ambiguity"
   error_contracts:
+    status: untracked
     run: "pytest backend/tests/test_phase15_error_contracts.py"
     locks: "ValueError→400, VN messages, two-path implicit-measure hint"
   explore_dashboard_parity:
