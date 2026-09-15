@@ -132,6 +132,11 @@ e2e/_*.png
 # Local-only helpers (node_modules, .env, .auth, _*.mjs, shots) stay ignored above.
 !e2e/tests/
 !e2e/tests/**/*.ts
+# …but not one-off debugging probes. These dump page text and console errors to
+# stdout while chasing a bug; they assert nothing, so committing them would add
+# specs to the suite that can never fail. `_helpers.ts` is real shared code, so
+# the pattern is `_probe*` rather than `_*`.
+e2e/tests/_probe*.ts
 !e2e/playwright.config.ts
 !e2e/package.json
 
