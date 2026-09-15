@@ -56,6 +56,20 @@ jobs:
       DB_PASSWORD: appbi
       DATASOURCE_ENCRYPTION_KEY: ""
       ENVIRONMENT: test
+
+      # THE MODULE UNDER TEST HAS TO BE MOUNTED.
+      #
+      # `api/__init__.py` includes the Agent Flows router — and the Direct Chat
+      # router with it — only `if settings.METADATA_CATALOG_ENABLED`, which
+      # defaults to False. This job never set it, so the backend came up without
+      # a single `/agent-flows/*` route and every call answered
+      # `{"detail":"Not Found"}`: `PUT /brains` 404, `GET /nodes` 404, and the
+      # builder page rendering an empty shell because nothing behind it existed.
+      #
+      # The suite was not finding bugs in Agent Flows; it was running against a
+      # deployment where Agent Flows was switched off. `.env.example` and
+      # docker-compose both turn it on, so CI now matches what ships.
+      METADATA_CATALOG_ENABLED: "true"
       PYTHONPATH: ${{ github.workspace }}/backend
       E2E_BASE_URL: http://localhost:3000
       E2E_API_URL: http://localhost:8000
