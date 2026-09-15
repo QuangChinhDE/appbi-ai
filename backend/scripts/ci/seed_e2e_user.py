@@ -12,9 +12,22 @@ permissions, and only the password hash is refreshed. So a local run against a r
 database does not create a second admin, and a CI run against an empty one does not
 fail on the second attempt.
 
-WHAT IT DOES NOT DO. It does not grant anything beyond what the role system gives a
-new account, and it does not touch any other row. Permission-shaped E2E scenarios
-create their own narrow accounts rather than widening this one.
+WHAT IT GRANTS, AND WHY IT HAS TO. A brand-new account holds nothing, so once the
+Agent Flows router was mounted the suite stopped getting 404s and started getting
+
+    {"detail":"Requires 'edit' permission on module 'agent_flows'"}
+
+on every write — a red suite that says nothing about the product, for the second
+time in a row. This version creates the account as an ADMINISTRATOR
+(`settings: full`, which `_normalize_permissions` back-fills into every module
+key), because that is what the developer account these specs were written against
+actually is. CI matching the machine the tests were written on is the point.
+
+It still never widens an account that already exists: the grant is applied only
+on the row it creates, so running this against a real database cannot promote a
+real user. And it does not weaken what the suite proves — `security-forged.spec.ts`
+asserts refusals for the UNAUTHENTICATED caller, which no grant here can affect.
+Permission-shaped scenarios still create their own narrow accounts.
 """
 from __future__ import annotations
 
@@ -53,6 +66,19 @@ def main() -> int:
                     try:
                         setattr(user, field, value)
                     except Exception:  # noqa: BLE001 — an Enum that wants its own member
+                        pass
+
+            # ADMINISTRATOR. `settings: full` is the one key the permission layer
+            # back-fills from — `_normalize_permissions` reads it and grants every
+            # other module implicitly — so this is the whole grant, not a list that
+            # goes stale the next time a module is added.
+            if hasattr(user, "permissions"):
+                user.permissions = {"settings": "full"}
+            for flag in ("is_superuser", "is_admin"):
+                if hasattr(user, flag):
+                    try:
+                        setattr(user, flag, True)
+                    except Exception:  # noqa: BLE001
                         pass
 
         db.commit()
