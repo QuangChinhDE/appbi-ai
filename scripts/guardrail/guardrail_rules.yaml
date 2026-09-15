@@ -115,7 +115,14 @@ protected:
       SMALLEST surgical change; never flip symmetric/propagation defaults; keep
       the SQL dialect-correct for BigQuery AND Postgres. Any change is
       behaviour-critical → run the golden gates.
-    required_tests: [golden_sql, galaxy_golden, distinct_cascade_bq, filter_matrix]
+    # measure_render + dialect_structural are listed FIRST because they are the
+    # ones that actually run: they need no warehouse and no fixture, so they
+    # execute in the unit tier on every push. golden_sql / galaxy_golden /
+    # distinct_cascade_bq remain declared (`status: missing`) — they describe the
+    # coverage this subsystem should have, and their absence is reported by
+    # `guardrail_check.py --health` rather than hidden.
+    required_tests: [measure_render, dialect_structural, filter_matrix,
+                     golden_sql, galaxy_golden, distinct_cascade_bq]
 
   - id: public_link_security
     label: "Public-link filter merge / access (data-exposure surface)"
@@ -265,9 +272,11 @@ tests:
     run: "pytest backend/tests/test_phase4_symmetric_aggregates.py"
     locks: "Looker MD5 dedup per dialect + fallback"
   measure_render:
-    status: missing
-    run: "pytest backend/tests/test_semantic_query_engine_measures.py"
-    locks: "sql/expression/filters/where_sql, quote-escaping, NULL-safe, dataset-scope load"
+    run: "pytest backend/tests/test_semantic_measure_render.py"
+    locks: "measure composition: agg wrapper, count_distinct, expression-over-sql, filters/where_sql CASE WHEN wrap + AND-join, quote escaping, BUG-018 unquoted numeric literal, ratio depends_on, circular/unknown fail-loud"
+  dialect_structural:
+    run: "pytest backend/tests/test_dialect_structural.py"
+    locks: "BigQuery-vs-Postgres SQL SHAPE without a warehouse: SAFE_CAST/FLOAT64 vs REGEXP guard, numeric literal never quoted, dialects provably diverge, symmetric-aggregate dialect allow-list, superseded engine flags stay OFF"
   relationship_metadata:
     run: "pytest backend/tests/test_phase1_relationship_metadata.py"
     locks: "cardinality normalize, bidirectional edges, BFS path, ambiguity"

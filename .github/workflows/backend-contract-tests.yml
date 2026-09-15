@@ -67,6 +67,8 @@ jobs:
             tests/test_filter_layered_merge.py \
             tests/test_non_fanning_reachability.py \
             tests/test_workboard_offline_relation_phase2.py \
+            tests/test_semantic_measure_render.py \
+            tests/test_dialect_structural.py \
             tests/test_agent_flow_golden.py \
             tests/test_agent_tool_registry.py \
             tests/test_tool_authorization_metadata.py \
