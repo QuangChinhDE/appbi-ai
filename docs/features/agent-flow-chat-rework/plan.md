@@ -1,6 +1,58 @@
 # Agent Flow + AI Chat rework — implementation plan
 
-**Nothing in this file has been implemented.** It is presented for approval.
+**Wave A (Phases 0, 1, 2) is IMPLEMENTED** on `feat/agent-flow-chat-rework`.
+Phases 3 onward are still proposals awaiting approval.
+
+| Phase | Status | Commit |
+|---|---|---|
+| 0 — Governance | **shipped** | `0e0ab44` |
+| 1 — Answer parity | **shipped** | `5d376fa` |
+| 2 — Node topology | **shipped** | `1507b96` |
+| — reviewer fix | **shipped** | `06d94b7` |
+| 3 — Reader-safe capability | proposed | — |
+| 3.5 — Debugging loop's last hop | proposed | — |
+| 4 — Decompose mega-components | proposed | — |
+| 4.5 — Canvas / a11y | proposed (unblocked: minimum viewport = 1280px) | — |
+| 5 — Vocabulary and polish | proposed | — |
+
+## Where Wave A departed from this plan
+
+Recorded because a plan that quietly stops matching the code is worse than none.
+
+1. **`register()` guards the opposite way round.** The plan said a structural type
+   with no child slots is refused. Implementing it caught `filter` — which is
+   `structural` because it has *no handler*, not because it holds nodes. The flag
+   conflates two things, so the guard now refuses a type that declares slots and is
+   NOT structural, and the real rule (every container declares its slots) moved to
+   `test_node_child_slots.py`, where it can introspect the models instead of
+   guessing from a flag.
+
+2. **Per-type presentation deliberately stayed per-type.** The plan implied the
+   canvas and inspector would read the declaration throughout. Only the *topology*
+   was duplicated — a specialist lane showing its `when` and an if-path showing its
+   condition count are real differences, and flattening them would have been the
+   oversized framework the plan warned against. The canvas and edge generator
+   dispatch on `isContainer`/`isBranching`; what each lane *says* is untouched.
+
+3. **The frontend keeps its own `CHILD_SLOTS`, cross-checked rather than served.**
+   The plan had the frontend consume `/nodes`. The builder also needs the
+   `containerPath` token (`path`/`case`/`specialist`/…), which is canvas routing the
+   backend has no notion of — so pushing it into the contract would have leaked a
+   frontend concern into the model layer. The two declarations are held in step by
+   `npm run qa:node-topology`, mutation-tested by deleting `coordinate` from the
+   backend table.
+
+4. **Phase 1's stated risk was wrong.** "AnswerBlocks may assume a chat-only
+   context" — it does not; it imports React, icons, `cn` and the type, and takes an
+   optional `onOpenChart`. The real residual risk was `default: return null`
+   silently dropping an unknown variant on every surface, which Phase 1 fixed while
+   it was in the file.
+
+5. **The `agent_flow_answer_parity` invariant needed two attempts.** Keyed on a
+   fragment it fired on the doc comment quoting the bug; tightened to the full
+   idiom it spanned two lines and a diff carries only changed lines, so it passed a
+   real reintroduction. Both caught by mutation-testing (`06d94b7`).
+
 
 ## Guardrail scoping
 
@@ -60,7 +112,7 @@ behaviour stabilise before any visual redesign — `audit.md` F10 is the argumen
 
 ---
 
-### Phase 0 — Governance wiring (no product change) — **BLOCKING**
+### Phase 0 — Governance wiring (no product change) — **SHIPPED** `0e0ab44`
 
 **Goal.** Make the safety net real before changing anything behind it.
 
@@ -109,7 +161,7 @@ If it does not, the false positive is reported rather than fixed, and I will say
 
 ---
 
-### Phase 1 — One answer renderer (correctness; cheap, not urgent)
+### Phase 1 — One answer renderer — **SHIPPED** `5d376fa`
 
 **Goal.** The author sees what the reader sees.
 
@@ -158,7 +210,7 @@ visible fallback while it is in the file.
 
 ---
 
-### Phase 2 — Declare node topology once
+### Phase 2 — Declare node topology once — **SHIPPED** `1507b96`
 
 **Goal.** Adding a structural node type is one registration, not thirteen edits.
 

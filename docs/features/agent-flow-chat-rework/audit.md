@@ -20,6 +20,26 @@ Every finding below carries one, and they are not interchangeable:
 
 ---
 
+## 0. WHAT WAVE A CHANGED (2026-09-15)
+
+The findings below describe the system **as audited**. Wave A has since fixed three
+of them on `feat/agent-flow-chat-rework`; each is annotated inline. Kept as written
+rather than rewritten, because an audit edited to match the fix stops being evidence
+of what was wrong.
+
+| Finding | Now |
+|---|---|
+| F6 the Studio test panel drops typed blocks | **fixed** `5d376fa` — verified in a browser with a real model: a metric renders as a tile where it printed an em-dash |
+| F20 an unknown variant is dropped silently on every surface | **fixed** `5d376fa` — marked fallback, salvages any text |
+| F1/F2 topology re-derived in 47 frontend branches | **fixed** `1507b96` — 25 branches in the five walkers → 0; declaration in `contract.CHILD_SLOTS` |
+| F16 guardrail returns `unknown`, misdirects on "authoring" | **fixed** `0e0ab44` — both features registered, whole-word matching |
+| F17/F29 12 in-area tests never run | **fixed** `0e0ab44` — Agent Flow ghosts 43 → 0 |
+| F19 `verify.py` blind spot | **fixed** `0e0ab44` — reports committed suites no runner references |
+| F7/F8 reader gets inventory, not capability | open — Phase 3, re-scoped by F28 |
+| F23 loop's last hop missing | open — Phase 3.5 |
+| F24-F27 canvas, a11y, responsive | open — Phase 4.5, unblocked at 1280px |
+| F22 run history stores prose | open by decision — needs a schema change |
+
 ## 1. CURRENT SYSTEM MAP
 
 ### 1.1 Shape and size
