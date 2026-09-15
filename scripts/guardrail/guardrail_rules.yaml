@@ -238,6 +238,13 @@ features:
       - backend/app/modules/agent_flows/api.py
       - frontend/src/lib/agentFlows.ts
       - frontend/src/components/agent-flows/**
+      # The ONE answer renderer, shared by the Studio test panel, the dashboard
+      # component chat, the public bot and Direct Chat. It sits under dashboards/
+      # for historical reasons and so matched no feature at all: editing the
+      # component four surfaces render through resolved `tsc` and nothing else.
+      # The parity INVARIANT still fired (it matches diff content, not paths) —
+      # what was missing is the required-test set, which is path-matched.
+      - frontend/src/components/dashboards/AnswerBlocks.tsx
     # Whole-word matched (guardrail_core._keyword_pattern). "flow" alone is far too
     # common in this repo to be a signal, so the phrases carry the weight.
     keywords: ["agent flow", "agent flows", agentflow, brain, brains, brain_key,
@@ -256,6 +263,9 @@ features:
       - backend/app/modules/agent_flows/chat_api.py
       - frontend/src/lib/directChat.ts
       - frontend/src/components/chat/**
+      # Chat renders its answers through the shared component too — see the note
+      # on the same path under `agent_flows`.
+      - frontend/src/components/dashboards/AnswerBlocks.tsx
     keywords: ["direct chat", "ai chat", "chat thread", "chat threads", assistant,
                assistants, conversation, conversations, "thread access",
                "thread sharing", "chat surface", "chat brain", "chat brains"]

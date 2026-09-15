@@ -54,6 +54,16 @@ import subprocess
 import sys
 from pathlib import Path
 
+# A verification gate must not be able to die while SAYING what it found. On a
+# Windows console stdout is cp1252, and any character outside it — an em dash
+# echoed from a child, a filename — would otherwise raise UnicodeEncodeError from
+# inside `print`. Degrade those to `?` instead of losing the whole run's verdict.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(errors="replace")  # type: ignore[union-attr]
+    except Exception:
+        pass
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 GUARDRAIL_DIR = REPO_ROOT / "scripts" / "guardrail"
 
@@ -95,7 +105,14 @@ class Report:
 
 
 def run(argv: list[str], cwd: Path, env: dict | None = None, timeout: int = 900):
-    full_env = {**os.environ, **(env or {})}
+    # PYTHONIOENCODING, because this decodes the child as UTF-8 and a Python child
+    # on Windows does NOT write UTF-8 — it writes the console codepage (cp1252
+    # here). Guardrail's own output contains em dashes and box-drawing characters,
+    # so the decode produced U+FFFD, and printing U+FFFD back out to a cp1252
+    # stdout raised UnicodeEncodeError and CRASHED THE GATE mid-run: no verdict,
+    # no summary, a traceback where the pass/fail line belongs. Telling the child
+    # which encoding to write makes the decode correct at the source.
+    full_env = {"PYTHONIOENCODING": "utf-8", **os.environ, **(env or {})}
     try:
         return subprocess.run(argv, cwd=cwd, env=full_env, capture_output=True,
                               text=True, encoding="utf-8", errors="replace",
