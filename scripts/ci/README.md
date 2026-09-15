@@ -38,3 +38,46 @@ bash scripts/ci/preflight.sh        # whole gate
 python scripts/ci/alembic_chain.py
 cd frontend && npm run typecheck
 ```
+
+---
+
+# verify.sh — the agent/dev loop gate (separate from preflight)
+
+`preflight.sh` answers *"does the committed tree build and boot"* and guards the push.
+`verify.sh` answers *"is the change I am making right now sound"* and guards the coding
+loop. It looks at the **working tree**, works out which areas you touched, and runs only
+what applies.
+
+```bash
+bash scripts/ci/verify.sh fast   # in the loop: typecheck + the QA contracts you touched
+bash scripts/ci/verify.sh task   # before calling anything done (adds the checks below)
+```
+
+| Tier | Runs |
+|---|---|
+| `fast` | frontend `tsc --noEmit`; the frontend QA contract for the area touched; alembic chain if a migration/model changed |
+| `task` | everything in `fast`, plus backend import smoke, the "backend tests reach CI" check, guardrail patch validation, and semantic-contract health when a backbone file changed |
+
+Non-zero exit means the task is not done. The `Stop` hook in `.claude/settings.json` runs
+the `task` tier and hands a failure back to Claude rather than letting a turn end red.
+
+# guardrail_check.py — the guardrail, runnable
+
+`Skill-AppBI/appbi-guardrail-mcp` encodes this repo's architecture rules, protected
+subsystems, impact map and test registry — but it only spoke MCP, so it could only help
+when an assistant happened to call it. `guardrail_core.py` is plain Python + PyYAML, so
+the same rule base runs in a script, a hook, or CI:
+
+```bash
+python scripts/ci/guardrail_check.py --plan "fix X" --files a.py   # right place? which tests?
+python scripts/ci/guardrail_check.py --diff                        # block / warn / ok / unknown
+python scripts/ci/guardrail_check.py --files a.py b.tsx            # impact + required tests
+python scripts/ci/guardrail_check.py --health                      # rules health + contract drift
+```
+
+Exit codes: `0` ok/warn · `1` block or drift · `2` **unknown — which is not the same as
+safe**: it means no rule covers the change.
+
+`--health` runs in CI (`preflight.yml`). It proves every invariant marker still exists in
+real source and reports `DRIFT` if a semantic backbone file or symbol was renamed, removed,
+or added without being registered — so the rules cannot quietly stop describing the code.

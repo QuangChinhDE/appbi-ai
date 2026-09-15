@@ -1,0 +1,24 @@
+{
+  "_comment": [
+    "Repo-relative MCP servers for AppBI. Copy this to .mcp.json (which is",
+    "git-ignored because it also holds machine-specific servers such as Serena),",
+    "or merge the entries below into the .mcp.json you already have.",
+    "",
+    "appbi-guardrail is the read-only engineering guardrail in",
+    "Skill-AppBI/appbi-guardrail-mcp: architecture layering, protected",
+    "subsystems, impact scope, required tests, invariant checks on a diff. It",
+    "needs the 'mcp' and 'PyYAML' packages; Skill-AppBI/appbi-guardrail-mcp/",
+    "run-mcp.sh (or run-mcp.ps1) bootstraps a venv with them if your system",
+    "python lacks them — point 'command' at that script instead if so.",
+    "",
+    "You do not need this server for the gates to work. The same rule base runs",
+    "deterministically via scripts/ci/guardrail_check.py, which is what the",
+    "hooks and CI use. This entry is for asking it questions in conversation."
+  ],
+  "mcpServers": {
+    "appbi-guardrail": {
+      "command": "python",
+      "args": ["Skill-AppBI/appbi-guardrail-mcp/appbi_guardrail_mcp.py"]
+    }
+  }
+}

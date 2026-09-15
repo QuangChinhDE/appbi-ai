@@ -1,0 +1,108 @@
+# AppBI — project instructions for Claude
+
+## What this is
+
+A governed BI platform where **AI is the output**. Data sources → semantic model →
+knowledge → reports/AI answers, with governance and observability across all layers.
+FastAPI + PostgreSQL/pgvector + Alembic; Next.js App Router + TypeScript; Docker Compose.
+
+Full description: `README.md`. Concept ownership and naming: `KNOWLEDGE_DOMAIN_MODEL.md`.
+Do not restate either here — read them when the task touches those concepts.
+
+## Architecture boundaries you must not cross
+
+Layering is formalized in `Skill-AppBI/appbi-guardrail-mcp/guardrail_rules.yaml` (`layers`).
+The ones that get violated in practice:
+
+- `backend/app/models/**` must not import services. Business logic lives in
+  `backend/app/services/**`; routers/`api/**` are thin — validate, authorize, delegate.
+- The **public surface** (`frontend/src/app/d/[token]`, `app/embed/[token]`,
+  `backend/app/api/public.py`) uses `publicClient` **only**. One authed call from a
+  public page is a data-exposure bug, not a style issue.
+- A backend/data/semantic problem is never fixed in the frontend. If the number is
+  wrong, the fix is where the number is produced.
+- Two subsystems are **protected** (`guardrail_rules.yaml: protected`): the semantic
+  layer and public-link security. Smallest surgical change, named gates required.
+
+## Source-of-truth hierarchy
+
+When sources disagree, the higher one wins:
+
+1. **Executable checks** — the tests and scripts in `scripts/ci/`, `backend/tests/`,
+   `frontend/scripts/`, `e2e/tests/`. What actually runs.
+2. **`guardrail_rules.yaml`** — formalized architecture/invariant contract, self-audited
+   (`check_rules_health`, `verify_semantic_contract`) and verified green.
+3. **Current code patterns** — an existing implementation of the same thing beats
+   inventing a second way.
+4. **`DA-Test/Regression-Catalog.md`** — every fixed bug, its root cause, and the test
+   that locks it (or a `GAP` marker meaning nothing locks it).
+5. **Docs** (`README.md`, `KNOWLEDGE_DOMAIN_MODEL.md`, `docs/**`) — intent; can lag code.
+6. **Claude memory** — a hint about where to look, never an authority. Verify before acting.
+
+## Scoped rules — read the one for the area you are in
+
+| Working in | Read |
+|---|---|
+| `frontend/**` | `.claude/rules/frontend.md` |
+| `backend/**` | `.claude/rules/backend.md` |
+| `backend/alembic/**`, `backend/app/models/**` | `.claude/rules/database-migrations.md` |
+| tests, `e2e/**`, `qa/**` | `.claude/rules/testing.md` |
+| semantic services, `api/public.py`, `app/d`, `app/embed` | `.claude/rules/semantic-layer.md` |
+
+## Required workflow
+
+- Trivial change (typo, copy, one-line style): implement, run the fast check, done.
+- Small feature / contained bug: short in-session plan first, then implement.
+- Medium or large feature: `docs/features/<feature>/{intent,spec,plan}.md` before code
+  (`docs/features/_TEMPLATE/`). Sizing policy: `.claude/rules/testing.md`.
+- Use the skills rather than improvising the sequence:
+  `/implement-feature`, `/fix-bug`, `/review-change`.
+
+Never start a medium/large feature by writing code. Inspect the existing implementation
+of the nearest equivalent first — this codebase almost always already has one.
+
+## Change discipline
+
+- Read the existing implementation before adding a parallel one. Reuse its abstractions.
+- Minimize blast radius. No unrelated cleanup, no drive-by refactors, no reformatting
+  files you only touched incidentally.
+- **Commit runtime code.** A commit whose product change lives only in
+  `backend/scripts/**`, `DA-Test/**`, `scratchpad/**`, `Skill-AppBI/**` or a `*.spec.ts`
+  is not a product fix (`guardrail_rules.yaml: policy.commit_only_runtime`).
+- Migrations: additive, single head, parent committed. See `.claude/rules/database-migrations.md`.
+- SQL generation must be correct on **BigQuery and Postgres**. Postgres locally hides
+  correlated-subquery and implicit-cast failures BigQuery rejects hard.
+- New backend test files are git-ignored by default and silently never run. The wiring is
+  in `.claude/rules/testing.md`.
+- Local artifacts — screenshots, response dumps, QA output — go in `.artifacts/`, never
+  the repo root.
+
+## Definition of Done
+
+You may not report a task complete until:
+
+1. `bash scripts/ci/verify.sh task` passes for the paths you changed (type check, the
+   applicable FE QA contracts, targeted tests, guardrail patch validation).
+2. Guardrail verdict is resolved: `block` must be fixed; `warn` means you ran the named
+   tests; **`unknown` is not `safe`** — it means no rule covers it, so say so explicitly.
+3. You state what you changed, what you ran, what passed, and what residual risk remains.
+
+If a check fails, fix it. Reporting "done, but X is failing" is only acceptable when you
+also say plainly that the task is *not* complete.
+
+## Learning rule
+
+If the same class of mistake is corrected more than once, saving it to personal memory is
+not enough — memory is not loaded for anyone else and is not enforced. Route it to the
+layer that can actually prevent recurrence, in this order of preference:
+
+| The mistake is… | Put it in |
+|---|---|
+| mechanically checkable on a diff/file | a check in `scripts/ci/` or an invariant in `guardrail_rules.yaml` |
+| behavioural | a test in `backend/tests/` (+ allow-list + workflow) or `e2e/tests/` |
+| area-specific judgement | the matching `.claude/rules/*.md` |
+| universal to every session | this file |
+| a bug worth remembering | a row in `DA-Test/Regression-Catalog.md` |
+
+Prefer the highest-enforcement layer that fits. Propose the change; do not silently widen
+rules on your own.

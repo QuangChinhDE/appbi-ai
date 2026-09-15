@@ -27,6 +27,17 @@ jobs:
       - name: Alembic chain (missing parent / multiple heads)
         run: python scripts/ci/alembic_chain.py
 
+      # ── 1b. Guardrail self-audit ──────────────────────────────────────────
+      # The guardrail's rules are only worth trusting while they still describe
+      # the code. `check_rules_health` proves every invariant marker still
+      # exists in real source; `verify_semantic_contract` reports DRIFT when a
+      # semantic backbone file/symbol was renamed or removed, or a new semantic
+      # service appeared unregistered. Both existed and ran nowhere.
+      - name: Guardrail rules health + semantic contract drift
+        run: |
+          pip install PyYAML
+          python scripts/ci/guardrail_check.py --health
+
       # ── 2. Frontend typecheck (uncommitted-provider / type breaks) ────────
       - uses: actions/setup-node@v4
         with:
@@ -39,6 +50,15 @@ jobs:
       - name: Frontend typecheck (tsc --noEmit)
         working-directory: frontend
         run: npx tsc --noEmit --incremental false
+
+      # ── 2b. Frontend QA contracts ─────────────────────────────────────────
+      # These three scripts already existed and were in no gate at all. The
+      # module-route one was written because a forgotten route silently showed
+      # a module shell to a user with no access — a check that only runs when
+      # someone remembers it would not have caught that either.
+      - name: Frontend QA contracts (module routes, theme, presentation)
+        working-directory: frontend
+        run: npm run qa
 
       # ── 3. Backend import smoke (deleted/renamed module) ──────────────────
       - name: Install backend deps
