@@ -104,9 +104,17 @@ export async function openFlowList(page: any): Promise<void> {
   const body = await page.locator('body').innerText()
     .catch(() => '') as string;
 
+  // WHICH COOKIES THE BROWSER ACTUALLY HOLDS. A redirect to /login has two very
+  // different causes and the URL alone cannot tell them apart: the session cookie
+  // never arrived, or it arrived and `middleware.ts` rejected it. Naming the
+  // cookies splits that in one run instead of one hypothesis at a time.
+  const cookies = await page.context().cookies().catch(() => []);
+  const names = (cookies as any[]).map((c) => `${c.name}@${c.domain}`).join(',');
+
   await expect(
     page.getByRole('heading', { name: /Agent Flows/i }),
     `flow list did not render — url=${url} · h1=${JSON.stringify(heading)} · `
-    + `body starts: ${JSON.stringify(body.replace(/\s+/g, ' ').slice(0, 160))}`,
+    + `cookies=[${names}] · `
+    + `body starts: ${JSON.stringify(body.replace(/\s+/g, ' ').slice(0, 120))}`,
   ).toBeVisible();
 }
