@@ -770,7 +770,17 @@ now **closed** (§8). What remains:
    run an actual screen reader.
 7. **The other 31 ghost tests.** Confirmed unreferenced; not run, not classified beyond
    subsystem, and deliberately out of this rework.
-8. **E2E status.** The repository's E2E workflow is red for reasons unrelated to this
-   audit. The last instrumented run produced no annotations, so the remaining cause is
-   **not confirmed**. Phase 4 depends on E2E being a real gate; that dependency is
-   currently unmet.
+8. **E2E status — RESOLVED 2026-09-15, and the audit's reading of it was wrong.**
+   This said the workflow was red "for reasons unrelated to this audit". It was red for
+   ONE reason, and a knowable one: `middleware.ts` verifies the session JWT and falls
+   back to `change-this-in-production`, the backend signs with a fallback of
+   `dev-secret-key-change-in-production`, and the E2E job set neither — so the Edge
+   middleware rejected every token the backend issued and each authed page redirected to
+   /login. The 13 failures reported it as "flow list did not render" and "Test button not
+   found", which is why it read as unrelated product noise. The same specs passed locally
+   in 11.6s throughout, because docker-compose gives all three services one `SECRET_KEY`.
+   Fixed in `73d4c7a`; the workflow is **green**, 35 specs, the first green run in 14+
+   attempts. Phase 4's dependency on E2E as a real gate is now met.
+   Worth keeping in view: the two differing defaults are themselves a latent defect for
+   any deployment that sets neither. `verify.py task` now makes that visible rather than
+   fixing it — changing a security default is a product decision, not a Wave A one.

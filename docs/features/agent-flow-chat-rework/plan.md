@@ -341,7 +341,7 @@ already assert save-then-reload and inspector usability. `tsc` clean.
 
 **Risks.** Pure-refactor phases are where silent behaviour loss happens. Mitigated by
 doing it *after* Phase 2, so the node model is already declarative, and by leaning on the
-E2E specs — which is only credible once the E2E workflow is green (see Unverified).
+E2E specs — credible as of 2026-09-15, when the workflow went green (`73d4c7a`).
 
 ---
 
@@ -404,7 +404,7 @@ design a visual redesign from source reading.
 | Capability projection leaks a name | a reader sees a chart/doc they cannot open | new scope test (Phase 3), two-account manual check |
 | Shared renderer assumes chat context | Studio test panel crashes or shows a raw id | new E2E (Phase 1) |
 | Refactor loses behaviour silently | undo/drag/publish subtly broken | builder + layout E2E (Phase 4) |
-| E2E is currently red | Phase 4's safety net is not actually running | **must be resolved before Phase 4** |
+| ~~E2E is currently red~~ | ~~Phase 4's safety net is not actually running~~ | **resolved 2026-09-15 — green, 35 specs (`73d4c7a`)** |
 | Guardrail still unknown | a wrong-layer change is not flagged | Phase 0 |
 
 ## Verification
@@ -440,7 +440,11 @@ No migration, no destructive change, nothing unrecoverable.
 4. Accessibility and responsive behaviour — not audited, not specified.
 5. How common `output_format: 'json'` is in real flows — changes Phase 1's priority, not
    its correctness.
-6. The E2E workflow is currently red for unrelated reasons and its last run produced no
-   annotations, so the remaining cause is unconfirmed. **Phase 4 depends on E2E being a
-   real gate**; if it is still red by then, that dependency is unmet and must be said
-   rather than assumed.
+6. ~~The E2E workflow is currently red for unrelated reasons...~~ **Closed 2026-09-15.**
+   Not unrelated and not unconfirmed: the frontend middleware verifies the session JWT
+   against `process.env.SECRET_KEY`, the backend signs with a different default, and the
+   job set neither — so every authed page redirected to /login and 13 specs reported it as
+   missing UI. Fixed in `73d4c7a`; green, 35 specs. Phase 4's dependency is met. The
+   lesson generalises past this entry: **five** defects on this branch were one shape — a
+   workflow running a differently-shaped deployment than the one that ships — and each
+   presented as a product bug. Two checks in `verify.py` now cover that shape.

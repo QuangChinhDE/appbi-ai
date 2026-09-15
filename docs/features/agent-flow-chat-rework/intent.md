@@ -75,7 +75,11 @@ a dozen walkers.
   They are tool/prompt-layer issues, tracked separately in
   `docs/agent-flow-v3-release-qa.md`, and mixing them in would violate "do not mix
   unrelated cleanup into the rework".
-- **The currently red E2E workflow.** A separate thread, unresolved, not caused by this.
+- ~~**The currently red E2E workflow.** A separate thread, unresolved, not caused by
+  this.~~ **Resolved 2026-09-15** (`73d4c7a`): one cause, a `SECRET_KEY` the E2E job gave
+  to neither process while the frontend and backend default to different literals. Not
+  caused by this rework, but not a separate thread either — it was blocking the rework's
+  own new specs. E2E is green, 35 specs.
 - **Repo-wide CI coverage debt.** 43 committed tests are referenced by no runner; only
   **12** are Agent Flow / Direct Chat. The other 31 (18 Knowledge/RAG, 13 unrelated) are a
   separate follow-up, not this rework.
