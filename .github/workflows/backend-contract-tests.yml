@@ -59,6 +59,19 @@ jobs:
       # job with no `/agent-flows/*` routes at all.
       METADATA_CATALOG_ENABLED: "true"
       GOVERN_ENABLED: "true"
+
+      # `app.main` calls `validate_security_settings()` AT IMPORT, and it only
+      # returns early when ENVIRONMENT is dev/development/test. The code defaults
+      # are ENVIRONMENT=production with an insecure SECRET_KEY and an empty
+      # DATASOURCE_ENCRYPTION_KEY, so any suite that imports app.main dies before
+      # its first assertion. `test_module_floor` must import it — it walks the
+      # route table rather than hand-listing endpoints — and that is how adding
+      # one suite turned this job red without a product change.
+      #
+      # Every other backend job already sets this: integration-golden below,
+      # e2e.yml, preflight.yml. docker-compose supplies it from .env, so the
+      # shipping deployment never sees it. This job was the exception.
+      ENVIRONMENT: test
     steps:
       - uses: actions/checkout@v4
 

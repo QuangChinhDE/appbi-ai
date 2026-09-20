@@ -479,6 +479,55 @@ def backend_tests_reach_ci(rep: Report, files: list[str]) -> None:
                             f"absent, and their routes, permission keys and imports with them."
                         )
 
+    # A JOB THAT IMPORTS THE APP MUST SURVIVE THE APP'S OWN STARTUP GATE.
+    #
+    # `app.main` calls `validate_security_settings()` at import, and it returns
+    # early ONLY when ENVIRONMENT is one of the values that function names. The
+    # code default is `production`, so a workflow that runs pytest without setting
+    # it gets a fatal on insecure defaults before any assertion runs. That is what
+    # happened the moment a suite importing `app.main` was added to the unit job:
+    # red CI, no product change.
+    #
+    # The two checks below cover `*_ENABLED` flags and the shared SECRET_KEY, and
+    # neither could see this — which is why it was the sixth defect of this shape.
+    # This one is derived from the guard itself rather than from a hard-coded name.
+    main_py = REPO_ROOT / "backend" / "app" / "main.py"
+    if config_py.exists() and main_py.exists() and             "validate_security_settings" in main_py.read_text(encoding="utf-8", errors="replace"):
+        cfg = config_py.read_text(encoding="utf-8", errors="replace")
+        safe = re.search(r"settings\.ENVIRONMENT\.lower\(\)\s+in\s*\(([^)]*)\)", cfg)
+        if safe:
+            allowed = re.findall(r"[\"']([^\"']+)[\"']", safe.group(1))
+            wf_dir = REPO_ROOT / ".github" / "workflows"
+            for wf in sorted(wf_dir.glob("*.yml")) if wf_dir.exists() else []:
+                body = wf.read_text(encoding="utf-8", errors="replace")
+                # PER JOB, not per file. The first version of this check scanned
+                # the whole workflow and stayed silent on the very defect it was
+                # written for, because a SIBLING job in the same file set the
+                # variable. `env:` is job-scoped; the check was not. That is the
+                # same mistake as a file-scoped guard on a transitive import.
+                after = body.split("\njobs:", 1)
+                if len(after) < 2:
+                    continue
+                for job in re.split(r"^  (?=[\w-]+:\s*$)", after[1], flags=re.M)[1:]:
+                    name = job.split(":", 1)[0].strip()
+                    if not re.search(r"pytest|import app\.main|uvicorn", job):
+                        continue
+                    found = re.search(r"^\s*ENVIRONMENT\s*:\s*[\"']?(\w+)", job, re.M)
+                    if not found:
+                        rep.bad(
+                            f"{wf.name} job {name!r} runs the backend without "
+                            f"ENVIRONMENT. `app.main` validates security settings at "
+                            f"import and only skips for {allowed}; the default is "
+                            f"production, so the import dies on insecure defaults "
+                            f"before any test runs."
+                        )
+                    elif found.group(1).lower() not in allowed:
+                        rep.bad(
+                            f"{wf.name} job {name!r} sets ENVIRONMENT="
+                            f"{found.group(1)!r}, not one of {allowed} — `app.main` "
+                            f"will refuse to import."
+                        )
+
     # THE TWO PROCESSES MUST AGREE ON THE SECRET, AND THEIR DEFAULTS DO NOT.
     #
     # `middleware.ts` VERIFIES the session JWT (jose `jwtVerify`) rather than just
