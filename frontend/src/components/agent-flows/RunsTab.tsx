@@ -28,7 +28,7 @@ import { useI18n } from '@/providers/LanguageProvider';
 import { authorNotices, conversationDetail, getBrain, listNodeSpecs, readerNotices, runDetail, runStats, type ConversationDetail, type FlowNode, type NodeSpec, type RunDetail, type RunSourceFilter, type RunStats, type RunStep } from '@/lib/agentFlows';
 import { FlowCanvas } from './FlowCanvas';
 import { ConversationsPanel } from './ConversationsPanel';
-import { noticeCandidates } from '@/lib/notices';
+import { noticeCandidates, noticeCandidatesHidden } from '@/lib/notices';
 import {
   RunStatusBadge, SourceFilter, Stat, StatStrip, formatWhen,
 } from './shared';
@@ -590,6 +590,9 @@ export function RunsTab({ brainKey }: { brainKey: string }) {
                             {noticeCandidates(n).map((c, k) => (
                               <li key={k}>· {c.chart_name || c.chart_id}{c.why ? ` — ${c.why}` : ''}</li>
                             ))}
+                            {noticeCandidatesHidden(n) > 0 && (
+                              <li className="italic">… còn {noticeCandidatesHidden(n)} khả năng nữa</li>
+                            )}
                           </ul>
                         )}
                         {!!n.remedies?.length && (

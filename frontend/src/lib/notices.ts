@@ -53,7 +53,21 @@ export interface NoticeCandidate {
  * advice was false until this existed: the notice carried the list and no surface
  * read `facts`, so the author was sent to look at something nothing displayed.
  */
+export const CANDIDATE_LIMIT = 6;
+
 export const noticeCandidates = (n: FlowNotice): NoticeCandidate[] => {
   const raw = (n.facts || {}).candidates;
-  return Array.isArray(raw) ? (raw as NoticeCandidate[]).slice(0, 6) : [];
+  return Array.isArray(raw) ? (raw as NoticeCandidate[]).slice(0, CANDIDATE_LIMIT) : [];
+};
+
+/**
+ * How many candidates were NOT rendered.
+ *
+ * The cap was silent: eight candidates, six shown, two gone. An author told to
+ * look at what the resolver was torn between was shown 75% of it and had no way
+ * to know.
+ */
+export const noticeCandidatesHidden = (n: FlowNotice): number => {
+  const raw = (n.facts || {}).candidates;
+  return Array.isArray(raw) ? Math.max(0, raw.length - CANDIDATE_LIMIT) : 0;
 };

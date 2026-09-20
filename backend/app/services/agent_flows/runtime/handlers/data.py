@@ -149,7 +149,7 @@ def _charts_for_question(
         text = (f"Bước “{node.name or node.key}” tìm được nhiều khả năng cho câu hỏi "
                 "nhưng không đủ căn cứ chọn một, nên đọc theo thứ tự báo cáo.")
         remedies = ["Viết rõ hơn câu hỏi hoặc ô “Khớp theo” của bước này.",
-                    "Xem các khả năng bên dưới để biết nó đang phân vân giữa những gì.",
+                    "Xem danh sách khả năng ở trên để biết nó đang phân vân giữa những gì.",
                     "Đặt bí danh/mô tả cho biểu đồ, hoặc khai báo chỉ số trong Từ điển "
                     "để câu hỏi nghiệp vụ trỏ đúng một thứ."]
     else:

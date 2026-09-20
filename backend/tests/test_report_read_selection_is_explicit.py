@@ -208,3 +208,15 @@ def test_selection_remedies_are_performable_too(monkeypatch):
         for banned in ("chỉ định danh sách biểu đồ", "chart_ids"):
             assert banned not in joined, (status, st.notices[0].remedies)
         assert st.notices[0].remedies, "a fallback with no advice at all helps nobody"
+
+
+def test_a_remedy_never_points_somewhere_the_list_is_not(monkeypatch):
+    """It said "bên dưới" (below) while the candidate list renders ABOVE the
+    remedies in both author surfaces. A remedy that misdirects is the same class
+    of defect as one that names a control that does not exist."""
+    _, _, st = select(monkeypatch, {"status": "ambiguous", "chart_ids": [],
+                                    "candidates": [{"chart_id": 101}],
+                                    "concepts": ["a", "b"]})
+    joined = " ".join(st.notices[0].remedies)
+    assert "bên dưới" not in joined, joined
+    assert "ở trên" in joined
