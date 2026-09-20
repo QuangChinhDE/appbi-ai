@@ -54,6 +54,57 @@ Recorded because a plan that quietly stops matching the code is worse than none.
    real reintroduction. Both caught by mutation-testing (`06d94b7`).
 
 
+## Correctness/foundation pass — what actually shipped (2026-09-20)
+
+Commits `c1a5c3c` (Wave 1), `a1c97c7` + `52add2a` (Wave 2), `1b78ea8` (CI + the
+defect CI found). Recorded here rather than in a new document.
+
+### Invariants now enforced, each with the test that locks it
+
+| Invariant | Locked by |
+|---|---|
+| A shaping step cannot change whether a tool succeeded | `test_read_status_survives_compaction.py` |
+| A diagnostic only recommends an action that applies to current state | `test_diagnostics_tell_the_truth.py` |
+| One definition of "all descendants"; Loop semantics stay explicit | `test_tree_validation_is_canonical.py` |
+| A nested credential behaves exactly like a top-level one | `test_nested_specialist_credentials.py` |
+| Authoring is strict; reading stored flows stays tolerant | `test_authoring_is_strict.py` |
+| Resolution may narrow scope, never widen it; ambiguity stays visible | `test_asset_resolution.py` |
+| Report order is never silently presented as question relevance | `test_report_read_selection_is_explicit.py` |
+| A green step either reaches the next model or its absence is recorded | `test_context_handoff.py` |
+| Absence of evidence is not evidence of support | `test_no_evidence_no_confident_number.py` |
+
+### Three things worth keeping in the record because they cost time
+
+**A green suite that could not see the feature.** Wave 2's resolver was handed the
+RunContext instead of the ToolContext and the whole question-matching path died at
+runtime — while its unit tests passed, because they stubbed both searches and
+passed `object()` as the context. Fixed by deleting the parameter that was wrong:
+the resolver takes an injected `call(name, args)` and there is no context to pass
+incorrectly. Found by driving the browser, not by reading the diff.
+
+**A Definition of Done that could not predict CI.** `verify.py task` resolves what
+to run from `guardrail_rules.yaml`; 23 of the 51 suites CI ran were named by no
+gate, so a green local run said nothing about 45% of the CI surface. 20 are now
+registered as `agent_flow_surface`; the remaining 3 are named by an advisory
+check. This is the same "two differently-shaped sets" family as the five
+deployment-shape defects, one level up.
+
+**A constant that outlived its twin.** `_DOWNSTREAM_CHARS = 2000` in the read
+handler mirrored `_MAX_STEP_CHARS` by hand. Wave 2 replaced the latter and the
+author-facing notice went on quoting a ceiling that no longer existed — exactly
+what the test guarding it predicted in its own docstring. One `HANDOFF_CHARS`
+now, in the module that owns the handoff.
+
+### Still open after this pass
+
+- `Notice.audience` is written by the backend and read by no UI, so author
+  maintenance advice still renders under "GHI CHÚ CHO NGƯỜI XEM".
+- The Report Read inspector exposes no chart-list control, while a remedy advises
+  setting one. The capability exists (stored flows carry `chart_ids`); the control
+  does not. By this repository's own rule, the missing UI is the bug.
+- Parallel specialist fan-out remains sequential by design; the preconditions are
+  listed under Wave 3 and none is implemented.
+
 ## Guardrail scoping
 
 Run before writing this section, pasted verbatim:
