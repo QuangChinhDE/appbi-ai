@@ -47,6 +47,7 @@ import { toast } from '@/lib/toast';
 import { cn } from '@/lib/utils';
 import { useI18n } from '@/providers/LanguageProvider';
 import { FlowNotice, authorNotices, listTestTargetReports, rateRun, readerNotices, testFlow, testFlowAsChat, testFlowOnReport, type AnswerBlock, type ChatTestResult, type FlowLinkUsage, type FlowNode, type FlowType, type ReportTestResult, type TestTargetReport, walkNodes } from '@/lib/agentFlows';
+import { noticeCandidates } from '@/lib/notices';
 
 /** One alternative a branching node can take, as something testable.
  *
@@ -877,6 +878,13 @@ function TurnView({
                 {authorNotices(env.notices).map((n, i) => (
                   <li key={i} className="text-caption leading-relaxed text-text-secondary">
                     {n.text}
+                    {!!noticeCandidates(n).length && (
+                      <ul className="mt-1 space-y-0.5 text-tiny text-text-tertiary">
+                        {noticeCandidates(n).map((c, k) => (
+                          <li key={k}>· {c.chart_name || c.chart_id}{c.why ? ` — ${c.why}` : ''}</li>
+                        ))}
+                      </ul>
+                    )}
                     {!!n.remedies?.length && (
                       <ul className="mt-1 list-disc pl-4 text-tiny text-text-tertiary">
                         {n.remedies.map((r, k) => <li key={k}>{r}</li>)}

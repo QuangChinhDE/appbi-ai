@@ -95,15 +95,64 @@ author-facing notice went on quoting a ceiling that no longer existed — exactl
 what the test guarding it predicted in its own docstring. One `HANDOFF_CHARS`
 now, in the module that owns the handoff.
 
-### Still open after this pass
+### Closure pass (2026-09-20) — the three blockers
 
-- `Notice.audience` is written by the backend and read by no UI, so author
-  maintenance advice still renders under "GHI CHÚ CHO NGƯỜI XEM".
-- The Report Read inspector exposes no chart-list control, while a remedy advises
-  setting one. The capability exists (stored flows carry `chart_ids`); the control
-  does not. By this repository's own rule, the missing UI is the bug.
-- Parallel specialist fan-out remains sequential by design; the preconditions are
-  listed under Wave 3 and none is implemented.
+**Notice audience is a boundary, not a style.** `reader_notices()` drops author
+diagnostics in both READER dispatch paths and in the stored-thread replay (which
+covers turns written before the field existed); `run_preview`, the author path,
+filters nothing. The frontend refuses them again. Four `{code,text}` copies became
+one `FlowNotice`; Studio Test and Runs show "what the reader sees" and "author
+diagnostics" as separate lists.
+
+**The unperformable remedy was removed, not built.** "Chỉ định danh sách biểu đồ"
+pointed at a control the builder does not have. No endpoint was added: a chart id
+belongs to one report while a flow is meant to stay reusable across bindings, so a
+picker persisting a raw id would bake hidden report-specific coupling into a
+portable object. `chart_ids` stays for compatibility. The remaining remedies are
+portable, and a test names the CONTROL that performs each one.
+
+**Two suites adopted by dependency tracing.** `test_verifier_false_alarms` guards
+the verifier Wave 2's evidence check calls; `test_module_floor` guards
+`module_floor('chat')`. `test_knowledge_hit_contract` was traced, has no import
+path from agent_flows, and stays in the repo-wide backlog rather than being
+adopted to tidy a count.
+
+**read_exceeds_context: re-measured, and the re-measurement found a real defect.**
+The reported shape is gone (8 charts compact = 1,793 chars against an 8,000
+ceiling). But the genuinely-oversized case exposed something the context module's
+own docstring denied: the reducer halved the BIGGEST array, which on a Report Read
+result is `charts` itself — a 13-chart read reached the answering step as ONE
+chart with every row intact. Bulk now goes before identity.
+
+**Found reviewing this pass's own diff:** a value import put `apiClient` in the
+public dashboard bundle (`public_client_only` is file-scoped and could not see
+it). Helpers moved to a dependency-free `lib/notices.ts`; `qa:public-bundle` now
+walks the import graph from both public entry points.
+
+### Still open, named
+
+- A PRE-EXISTING chain reaches the authed client from the public page:
+  `PublicDashboardView -> use-public-filter-distinct-values -> use-dataset-model
+  -> api-client`. Reported on every `qa:public-bundle` run; owned by the
+  dashboards/public-link area, not by Agent Flow.
+- Repo-wide test ownership debt: committed suites referenced by no runner, and
+  three suites CI runs whose owner is not clear. Named by the verifier every run.
+- `direct_chat_module_floor` cannot run on a machine whose FastAPI is newer than
+  the pinned 0.109.0; declared `requires: pinned-fastapi` and run by CI.
+
+### Wave 3 — DESIGN backlog, none implemented
+
+1. **Binding-aware explicit asset selection** — flow requirement / logical role,
+   resolved per binding to a physical chart, instead of a report-specific id
+   persisted on a portable flow. This is what the removed remedy needs.
+2. Reusable Subflow / Specialist.
+3. Safe parallel fan-out (preconditions unchanged: independent state writes,
+   deterministic merge, budget accounting, trace ordering, evidence merging,
+   cancellation/timeout).
+4. Durable checkpoint / background execution.
+5. Human Approval for side-effecting tools.
+6. Agentic builder.
+7. MCP / capability boundary.
 
 ## Guardrail scoping
 

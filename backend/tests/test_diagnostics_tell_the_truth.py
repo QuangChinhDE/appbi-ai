@@ -104,15 +104,17 @@ def test_the_diagnostic_is_addressed_to_the_author_not_the_reader():
     assert getattr(n, "audience", None) == "author"
 
 
-def test_the_advice_is_also_readable_without_a_structured_ui():
-    """`remedies` is for a UI that renders actions; not every UI does yet. An
-    author must never be shown a problem with no suggested action — that is what
-    structuring the advice without also saying it produced."""
+def test_the_advice_is_carried_once_in_remedies():
+    """CONTRACT CHANGED: the remedies used to be appended to `text` as well,
+    because no surface rendered the field. Studio Test and Runs both render it
+    now, so appending printed every remedy TWICE on screen — observed in the
+    browser. The field is the single home; the sentence states the problem."""
     n = notice_of(ReportReadNode(key="r", output_var="ctx", match_question=False,
                                  detail="full"))
     assert n.remedies, "no structured remedies"
     for r in n.remedies:
-        assert r in n.text, f"remedy missing from the readable text: {r!r}"
+        assert r not in n.text, f"remedy duplicated into the sentence: {r!r}"
+    assert n.text.strip(), "the sentence must still state the problem"
 
 
 def test_the_prose_still_never_carries_an_inapplicable_remedy():

@@ -562,8 +562,17 @@ class FlowOutput(_Model):
     trace: Trace = Field(default_factory=Trace)
     usage: Usage = Field(default_factory=Usage)
 
-    def to_dict(self) -> dict[str, Any]:
-        return self.model_dump(mode="json")
+    def to_dict(self, *, notices: list["Notice"] | None = None) -> dict[str, Any]:
+        """The envelope as JSON.
+
+        `notices` overrides what is SENT without touching what is recorded: a
+        reader surface passes `reader_notices(...)`, and the run row keeps the
+        full set so the author can still read their diagnostics in Runs.
+        """
+        out = self.model_dump(mode="json")
+        if notices is not None:
+            out["notices"] = [n.model_dump(mode="json") for n in notices]
+        return out
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

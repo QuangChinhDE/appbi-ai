@@ -37,3 +37,23 @@ export const readerNotices = (ns: FlowNotice[] | undefined): FlowNotice[] =>
 /** What an AUTHOR is told about their flow, as opposed to about the answer. */
 export const authorNotices = (ns: FlowNotice[] | undefined): FlowNotice[] =>
   (ns || []).filter(isAuthorNotice);
+
+/** A candidate the resolver weighed, as carried in `facts.candidates`. */
+export interface NoticeCandidate {
+  chart_id?: number;
+  chart_name?: string;
+  why?: string;
+  concept?: string;
+}
+
+/**
+ * The candidates behind an ambiguous selection.
+ *
+ * A remedy tells the author to look at what the resolver was torn between. That
+ * advice was false until this existed: the notice carried the list and no surface
+ * read `facts`, so the author was sent to look at something nothing displayed.
+ */
+export const noticeCandidates = (n: FlowNotice): NoticeCandidate[] => {
+  const raw = (n.facts || {}).candidates;
+  return Array.isArray(raw) ? (raw as NoticeCandidate[]).slice(0, 6) : [];
+};

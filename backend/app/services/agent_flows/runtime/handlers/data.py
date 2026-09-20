@@ -172,7 +172,7 @@ def _charts_for_question(
                    "candidates": candidates[:8],
                    "fell_back_to": "report_order"},
             remedies=remedies,
-            text=text + " " + " ".join(remedies),
+            text=text,
         )
     )
     return allowed, selection
@@ -530,18 +530,16 @@ def _warn_if_overflowing(node: ReportReadNode, out: dict, state: RunState) -> No
                 "explicit_chart_ids": len(node.chart_ids),
             },
             remedies=remedies,
-            # THE ADVICE GOES IN BOTH PLACES, and that is deliberate. `remedies`
-            # is for a UI that can render actions; the sentence is for every UI
-            # that cannot yet. Structuring it without also saying it left the
-            # author reading a problem with no suggested action — worse than the
-            # welded-in advice this replaced.
+            # REMEDIES LIVE IN `remedies`, ONCE. They were also appended to this
+            # sentence, from a time when no surface rendered the field; both
+            # author surfaces render it now, so appending printed every remedy
+            # twice on screen.
             text=(
                 f"Bước “{node.name or node.key}” đọc {len(out['charts'])} biểu đồ "
                 f"(~{vn(size)} ký tự), vượt ngân sách ngữ cảnh của bước trả lời "
                 f"(~{vn(_DOWNSTREAM_CHARS)} ký tự cho TẤT CẢ các bước cộng lại) nên "
                 "phần chi tiết trong mỗi biểu đồ sẽ bị lược bớt; nếu còn bước khác "
-                "cũng có kết quả thì phần dành cho bước này còn nhỏ hơn. "
-                + " ".join(remedies)
+                "cũng có kết quả thì phần dành cho bước này còn nhỏ hơn."
             ),
         )
     )

@@ -28,6 +28,7 @@ import { useI18n } from '@/providers/LanguageProvider';
 import { authorNotices, conversationDetail, getBrain, listNodeSpecs, readerNotices, runDetail, runStats, type ConversationDetail, type FlowNode, type NodeSpec, type RunDetail, type RunSourceFilter, type RunStats, type RunStep } from '@/lib/agentFlows';
 import { FlowCanvas } from './FlowCanvas';
 import { ConversationsPanel } from './ConversationsPanel';
+import { noticeCandidates } from '@/lib/notices';
 import {
   RunStatusBadge, SourceFilter, Stat, StatStrip, formatWhen,
 } from './shared';
@@ -584,6 +585,13 @@ export function RunsTab({ brainKey }: { brainKey: string }) {
                     {authorNotices(detail.notices).map((n, i) => (
                       <div key={i} className="mt-1 rounded-md border border-[rgb(var(--border-line))] bg-surface-2 p-2 text-caption leading-relaxed text-text-secondary">
                         {n.text}
+                        {!!noticeCandidates(n).length && (
+                          <ul className="mt-1 space-y-0.5 text-tiny text-text-tertiary">
+                            {noticeCandidates(n).map((c, k) => (
+                              <li key={k}>· {c.chart_name || c.chart_id}{c.why ? ` — ${c.why}` : ''}</li>
+                            ))}
+                          </ul>
+                        )}
                         {!!n.remedies?.length && (
                           <ul className="mt-1 list-disc pl-4 text-tiny text-text-tertiary">
                             {n.remedies.map((r, k) => <li key={k}>{r}</li>)}

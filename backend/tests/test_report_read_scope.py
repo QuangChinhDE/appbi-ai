@@ -289,11 +289,19 @@ def test_the_notice_names_a_remedy_that_exists():
     state = _FakeState()
 
     _warn_if_overflowing(_node(), big, state)
-    text = state.notices[0].text
+    note = state.notices[0]
+    # CONTRACT MOVED, not weakened: remedies live in `remedies`, once. They used
+    # to be appended to `text` as well — from a time when no surface rendered the
+    # field — and both author surfaces render it now, so the append printed every
+    # remedy twice on screen.
+    remedies = " ".join(note.remedies)
 
-    assert "đọc theo câu hỏi" in text     # match_question
-    assert "số biểu đồ" in text           # max_charts
-    assert "chỉ mục" in text              # detail=index
+    assert "đọc theo câu hỏi" in remedies     # match_question
+    assert "số biểu đồ" in remedies           # max_charts
+    assert "chỉ mục" in remedies              # detail=index
+    assert note.text.strip(), "the sentence must still state the problem"
+    for r in note.remedies:
+        assert r not in note.text, "remedy duplicated into the sentence"
 
 
 def test_no_notice_without_a_step_name_crashing():
