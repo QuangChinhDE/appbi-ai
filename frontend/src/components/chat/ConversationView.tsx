@@ -24,7 +24,7 @@ import { Input } from '@/components/ui/Input';
 import { cn } from '@/lib/utils';
 import { useI18n } from '@/providers/LanguageProvider';
 import type { ChatBrain, ChatMessage, ChatThread, ChatThreadDetail } from '@/lib/directChat';
-import { readerNotices } from '@/lib/agentFlows';
+import { readerNotices } from '@/lib/notices';
 
 const EMPTY_CHART_NAMES = new Map<number, string>();
 

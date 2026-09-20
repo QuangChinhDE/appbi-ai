@@ -317,7 +317,7 @@ tests:
     run: "pytest backend/tests/test_coordinator_is_visible_to_the_flow.py backend/tests/test_flow_coordinate.py backend/tests/test_flow_synthesis_sees_all_steps.py backend/tests/test_flow_type.py backend/tests/test_node_child_slots.py backend/tests/test_read_status_survives_compaction.py backend/tests/test_diagnostics_tell_the_truth.py backend/tests/test_tree_validation_is_canonical.py backend/tests/test_nested_specialist_credentials.py backend/tests/test_authoring_is_strict.py backend/tests/test_asset_resolution.py backend/tests/test_context_handoff.py backend/tests/test_report_read_selection_is_explicit.py backend/tests/test_no_evidence_no_confident_number.py"
     locks: "every container node is walked by all_nodes(); a coordinator's lane is visible to every authoring check"
   direct_chat_contract:
-    run: "pytest backend/tests/test_chat_thread_sharing.py backend/tests/test_chat_chart_scope.py"
+    run: "pytest backend/tests/test_chat_thread_sharing.py backend/tests/test_chat_chart_scope.py backend/tests/test_notice_audience_boundary.py"
     locks: "chat thread access levels, read-only shares, and the chat surface's chart scope"
   # `status: missing` = the harness this entry describes is NOT in the repository.
   # Verified 2026-09-15: these four were never committed (git log --diff-filter=AD

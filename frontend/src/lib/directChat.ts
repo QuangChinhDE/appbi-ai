@@ -9,7 +9,7 @@
 import { apiClient } from './api-client';
 import { parseSseStream } from './api/sse';
 import type { AnswerBlock, FlowOutputEnvelope } from './agentFlows';
-import { FlowNotice } from '@/lib/agentFlows';
+import type { FlowNotice } from '@/lib/notices';
 
 const BASE = '/agent-flows/chat';
 

@@ -26,7 +26,7 @@ import {
 import { BriefingWizard, type BriefingWizardResult } from './BriefingWizard';
 import type { AnswerBlock, FlowOutputEnvelope } from '@/lib/agentFlows';
 import { AnswerBlocks } from './AnswerBlocks';
-import { FlowNotice, readerNotices } from '@/lib/agentFlows';
+import { FlowNotice, readerNotices } from '@/lib/notices';
 
 // ── Constants ────────────────────────────────────────────────────────────────
 

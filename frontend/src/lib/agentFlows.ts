@@ -131,36 +131,14 @@ export interface Attachable {
 
 // ── Notices ─────────────────────────────────────────────────────────────────
 //
-// ONE definition, because there were four `{code, text}` copies and none of them
-// carried `audience` — so the field existed on every response and no surface
-// could act on it. The server already drops author notices at a reader boundary;
-// this is the second line, not the first.
+// Defined in `./notices` and re-exported here. It is a separate module because
+// this one imports `apiClient`, and a VALUE import of these helpers from a
+// component reachable by the public dashboard page would drag the authed client
+// into the public bundle. See the note in `notices.ts`.
+import type { FlowNotice } from './notices';
 
-export type NoticeAudience = 'reader' | 'author';
-
-export interface FlowNotice {
-  code: string;
-  text: string;
-  /** Absent on anything stored before the field existed. The backend default is
-   *  `reader`, and this mirrors it — treating "missing" as `author` would hide
-   *  working reader notices. */
-  audience?: NoticeAudience;
-  severity?: 'info' | 'warning' | 'error';
-  node_key?: string;
-  facts?: Record<string, unknown>;
-  remedies?: string[];
-}
-
-/** Author maintenance diagnostics — never shown on a reader surface. */
-export const isAuthorNotice = (n: FlowNotice): boolean => n.audience === 'author';
-
-/** What a READER may see. Defensive: the server filters already. */
-export const readerNotices = (ns: FlowNotice[] | undefined): FlowNotice[] =>
-  (ns || []).filter((n) => !isAuthorNotice(n));
-
-/** What an AUTHOR is told about their flow, as opposed to about the answer. */
-export const authorNotices = (ns: FlowNotice[] | undefined): FlowNotice[] =>
-  (ns || []).filter(isAuthorNotice);
+export type { FlowNotice, NoticeAudience } from './notices';
+export { authorNotices, isAuthorNotice, readerNotices } from './notices';
 
 // ── The flow tree ───────────────────────────────────────────────────────────
 export interface ToolGrant { tool: string; note?: string }
