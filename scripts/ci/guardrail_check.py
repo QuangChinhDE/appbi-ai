@@ -104,8 +104,57 @@ def _verdict_exit(verdict: str) -> int:
     return {"block": 1, "unknown": 2}.get((verdict or "").lower(), 0)
 
 
-def cmd_diff(core, staged: bool, as_json: bool) -> int:
-    diff = _git_diff(staged)
+def resolve_diff(staged: bool, diff_file: str | None,
+                 base: str | None, head: str | None) -> tuple[str, str]:
+    """Return (unified_diff, description_of_where_it_came_from).
+
+    The working tree is the right source for a coding session and the WRONG one
+    for CI: a PR checkout is clean, so `git diff` is empty and the guardrail
+    would report "no changes to validate" on a change it never saw. `--base/--head`
+    and `--diff-file` exist so the server side can hand it the actual change.
+    """
+    if diff_file:
+        text = Path(diff_file).read_text(encoding="utf-8", errors="replace")
+        return text, f"--diff-file {diff_file}"
+    if base or head:
+        base = base or "HEAD^"
+        head = head or "HEAD"
+        # Three-dot: changes introduced BY this branch, measured from the merge
+        # base, so commits landing on the target meanwhile are not blamed on it.
+        return _git("diff", f"{base}...{head}"), f"{base}...{head}"
+    return _git_diff(staged), "staged working tree" if staged else "working tree"
+
+
+def risky_unknown_files(core, diff: str) -> list[str]:
+    """Changed files that no layer claims AND sit where that matters.
+
+    `unknown` means the rule base does not describe the change. On docs or a
+    fixture that is fine, and failing every one of those would get the gate
+    switched off. On runtime code or on the protection system it is the exact case
+    worth stopping: a new module the engine has never seen, merged green because
+    "no rule covers it" was rendered as an annotation.
+
+    The remedy is to teach the rule base, not to widen the exemption list.
+    """
+    globs = (((core.load_rules().get("policy") or {}).get("unknown_policy") or {})
+             .get("blocking_globs") or [])
+    if not globs:
+        return []
+    risky = []
+    for path in core.changed_files_from_diff(diff):
+        if core.classify_file(path):
+            continue                      # a layer claims it; not unknown
+        if core.match_any(core.norm_path(path), globs):
+            risky.append(path)
+    return sorted(set(risky))
+
+
+def cmd_diff(core, staged: bool, as_json: bool,
+             diff_file: str | None = None,
+             base: str | None = None, head: str | None = None) -> int:
+    diff, source = resolve_diff(staged, diff_file, base, head)
+    if not as_json:
+        print(f"guardrail: reviewing {source}")
     if not diff.strip():
         print("guardrail: no changes to validate.")
         return 0
@@ -119,6 +168,15 @@ def cmd_diff(core, staged: bool, as_json: bool) -> int:
     _bullets("reasons:", result.get("reasons") or result.get("issues"))
     _bullets("protected subsystems touched:", result.get("protected"))
     _bullets("run these tests:", result.get("required_tests") or result.get("tests"))
+    risky = risky_unknown_files(core, diff)
+    if risky:
+        print("\nUNMAPPED ON A PATH WHERE THAT BLOCKS - no layer describes:")
+        for path in risky:
+            print(f"  - {path}")
+        print("  Teach the rule base what these are (a `layers` entry, plus a feature or")
+        print("  protected subsystem if warranted). Do not widen")
+        print("  `policy.unknown_policy.blocking_globs` to make this pass.")
+        return 1
     if verdict == "unknown":
         print("\nUNKNOWN is not SAFE — no rule covers this change. Say so in your report.")
     return _verdict_exit(verdict)
@@ -219,6 +277,11 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--diff", action="store_true", help="validate the git diff")
     ap.add_argument("--staged", action="store_true", help="with --diff: use the staged diff")
+    ap.add_argument("--diff-file", metavar="PATH",
+                    help="with --diff: read the unified diff from a file instead of git")
+    ap.add_argument("--base", metavar="REF",
+                    help="with --diff: review base...head (merge-base) instead of the working tree")
+    ap.add_argument("--head", metavar="REF", help="with --diff: the head ref (default HEAD)")
     ap.add_argument("--files", nargs="+", metavar="PATH", help="impact scope + required tests")
     ap.add_argument("--plan", metavar="TEXT", help="with --files: validate a fix plan")
     ap.add_argument("--health", action="store_true", help="rules health + semantic contract drift")
@@ -241,7 +304,8 @@ def main() -> int:
     if args.files:
         rc = max(rc, cmd_files(core, args.files, args.plan, args.json))
     if args.diff:
-        rc = max(rc, cmd_diff(core, args.staged, args.json))
+        rc = max(rc, cmd_diff(core, args.staged, args.json,
+                              args.diff_file, args.base, args.head))
     return rc
 
 

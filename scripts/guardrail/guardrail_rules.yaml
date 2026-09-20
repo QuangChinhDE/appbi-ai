@@ -57,6 +57,15 @@ layers:
     label: "Backend scripts / QA harnesses (NOT runtime; not committed as app code)"
     may_depend_on: ["*"]
 
+  - id: repo_infra
+    match: ["scripts/ci/**", "scripts/guardrail/**", ".github/**", ".githooks/**",
+            ".claude/**", ".opencodereview/**", "AGENTS.md"]
+    label: "Engineering infrastructure (gates, rule base, agent contract, CI)"
+    # Tooling legitimately reads every layer; the risk here is not import
+    # direction, it is the gates being weakened. That is what `protected:
+    # engineering_infrastructure` and check_protection_integrity.py cover.
+    may_depend_on: ["*"]
+
   - id: fe_lib
     match: ["frontend/src/lib/**"]
     label: "Frontend lib (api clients, filters, utils)"
@@ -136,6 +145,33 @@ protected:
       bound, no leak). The public FE must use publicClient ONLY (no authed
       calls). Verify logged-out.
     required_tests: [layered_merge, galaxy_golden]
+
+  - id: engineering_infrastructure
+    label: "The protection system itself (gates, rule base, agent contract, CI)"
+    files:
+      - scripts/ci/verify.py
+      - scripts/ci/guardrail_check.py
+      - scripts/ci/check_claude_config.py
+      - scripts/ci/check_protection_integrity.py
+      - scripts/ci/preflight.sh
+      - scripts/guardrail/guardrail_core.py
+      - scripts/guardrail/guardrail_rules.yaml
+      - .githooks/pre-push
+      - .claude/settings.json
+      - .claude/hooks/stop_gate.py
+      - .claude/hooks/post_edit_fast.py
+      - .claude/CLAUDE.md
+    directive: >
+      These files decide whether anything else is allowed to ship. An agent must
+      not weaken them to make its own change pass. Deleting a protected
+      subsystem, an invariant or a required gate, downgrading a runnable gate to
+      missing/untracked/manual, removing a verification step, or making the Stop
+      gate fail-open are all treated as weakening. Changes here are legitimate,
+      but they must be deliberate, declared, and reviewed - never a side effect
+      of an unrelated task. The trusted BASE copy of
+      check_protection_integrity.py inspects base..head, so editing the checker
+      in the same PR does not disable it.
+    required_tests: [agent_sdlc_meta, stop_gate_decision]
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 3. FEATURES — impact map. A changed file that owns a feature drags in that
@@ -277,6 +313,12 @@ features:
 #    command; `locks` is what a green run guarantees.
 # ─────────────────────────────────────────────────────────────────────────────
 tests:
+  agent_sdlc_meta:
+    run: "pytest scripts/ci/test_agent_sdlc.py"
+    locks: "provider-neutral SDLC: Claude+Codex adapters present and pointing at the same executable contract, server-side base..head diff sees the real changed files, architecture violations fail the gate, UNKNOWN is not reported safe, infrastructure failure is not reported pass, attempts to weaken the protection system are detected, and an ordinary clean change is not blocked"
+  stop_gate_decision:
+    run: "pytest scripts/ci/test_stop_gate.py"
+    locks: "Stop hook: green allows, FAILED blocks every time (including on retry), UNVERIFIED blocks once then allows, infrastructure failure never becomes green, override stays explicit"
   # ── Agent Flow / Direct Chat ────────────────────────────────────────────────
   # Registered 2026-09-15. Twelve suites in this area were committed with
   # `git add -f` but never allow-listed and never referenced by a workflow, so they
@@ -645,6 +687,35 @@ semantic_contract:
 # 6. PATCH-LEVEL POLICY — cross-cutting checks in validate_patch / explain_risk.
 # ─────────────────────────────────────────────────────────────────────────────
 policy:
+  # UNKNOWN IS NOT UNIFORMLY RISKY, AND TREATING IT THAT WAY GETS THE GATE TURNED OFF.
+  #
+  # An unmapped docs or fixture path is noise. An unmapped path under runtime code or
+  # under the protection system is the case that matters: an agent inventing a new
+  # module the rule engine has never heard of, merged green because "no rule covers
+  # it" was rendered as an annotation. Coverage must be extended, not bypassed.
+  #
+  # A changed file that matches one of these globs AND classifies to no layer makes
+  # the server gate FAIL. Everything else stays a warning.
+  unknown_policy:
+    blocking_globs:
+      - "backend/app/**"
+      - "backend/alembic/**"
+      - "frontend/src/**"
+      - "scripts/ci/**"
+      - "scripts/guardrail/**"
+      - ".github/workflows/**"
+      - ".githooks/**"
+      - ".claude/**"
+      - ".opencodereview/**"
+      - "AGENTS.md"
+      - "backend/tests/**"
+      - "e2e/tests/**"
+      - "qa/**"
+      - "backend/scripts/golden/**"
+    note: >
+      Fix by teaching the rule base what the new path is (a `layers` entry, and a
+      feature or protected subsystem if it deserves one) - not by deleting the path
+      from this list.
   commit_only_runtime:
     # These paths are NOT runtime app code — flag if a "fix"/commit is ONLY here
     # (or MUST NOT be committed as product code).
