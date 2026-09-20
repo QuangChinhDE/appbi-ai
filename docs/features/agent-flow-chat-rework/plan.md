@@ -140,6 +140,34 @@ walks the import graph from both public entry points.
 - `direct_chat_module_floor` cannot run on a machine whose FastAPI is newer than
   the pinned 0.109.0; declared `requires: pinned-fastapi` and run by CI.
 
+### Status
+
+**WAVE 1 FOUNDATION: CLOSED**
+**WAVE 2 FOUNDATION: CLOSED**
+
+Closed on code SHA `9c1303f` — preflight, unit and integration-golden all green.
+`integration-golden` RAN for the first time in this pass rather than being skipped
+behind a red `unit`, so the golden replay and the Explore/Dashboard parity gate
+are real coverage here and were not on the previous SHA.
+
+E2E did NOT run on `9c1303f`: `e2e.yml` is path-filtered and that commit touches
+only a workflow and `scripts/ci/verify.py`. It ran green on `4671e92`, which
+carries all of this pass's product code. Stated rather than blurred.
+
+Also not coverage, by name: `test_module_floor` cannot run on a machine whose
+FastAPI is newer than the pinned 0.109.0 (`requires: pinned-fastapi`) — CI runs
+it. The local-FastAPI theory for its local failure is neither confirmed nor
+refuted, because in CI it previously died earlier, at import.
+
+The closure pass produced six defects of its own, all found by driving the build
+or reviewing the diff, none by reading intentions: an authed client reaching the
+public bundle, author diagnostics discarded before being recorded, remedies
+printed twice, a candidate list nothing rendered, that list pointing the wrong
+way and hiding two of eight, and a unit job running the app's startup gate in
+production shape. Two of them were guards scoped wrongly — file-scoped where the
+thing guarded is job- or import-scoped. That is the pattern worth carrying
+forward: **a guard must be scoped to the thing it guards.**
+
 ### Wave 3 — DESIGN backlog, none implemented
 
 1. **Binding-aware explicit asset selection** — flow requirement / logical role,
