@@ -194,3 +194,17 @@ def test_resolution_lookups_appear_in_the_run_tool_log(monkeypatch):
     st = _wired_state()
     D._charts_for_question(node(), st, _RunCtx(object()), list(ALLOWED))
     assert any("list_charts" in entry for entry in st.tool_log), st.tool_log
+
+
+def test_selection_remedies_are_performable_too(monkeypatch):
+    """The same invariant as the overflow notice: the removed "specify a chart
+    list" advice pointed at a control the builder does not have, and must not
+    come back through this path either."""
+    for status in ("none", "ambiguous"):
+        _, _, st = select(monkeypatch, {"status": status, "chart_ids": [],
+                                        "candidates": [{"chart_id": 101}],
+                                        "concepts": ["mrr_active"]})
+        joined = " ".join(st.notices[0].remedies).lower()
+        for banned in ("chỉ định danh sách biểu đồ", "chart_ids"):
+            assert banned not in joined, (status, st.notices[0].remedies)
+        assert st.notices[0].remedies, "a fallback with no advice at all helps nobody"

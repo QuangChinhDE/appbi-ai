@@ -33,6 +33,7 @@ from app.services.agent_flows import registry as reg
 from app.services.agent_flows import runs as runs_service
 from app.services.agent_flows.contract import Flow
 from app.services.agent_flows.envelope import (
+    reader_notices,
     ChartInfo,
     ConversationInfo,
     FieldRef,
@@ -525,7 +526,9 @@ async def run_for_link(
         ):
             if ev.type == "result":
                 out = FlowOutput.model_validate(ev.extra.get("envelope"))
-                out.notices = [*memory_notices, *out.notices]
+                # READER BOUNDARY. Author diagnostics do not leave the server on a
+                # reader surface; the frontend refuses them again on the way in.
+                out.notices = reader_notices([*memory_notices, *out.notices])
                 ev.extra["envelope"] = out.to_dict()
                 save_memory(
                     db, session_key=session_key, token=getattr(link, "token", ""),
@@ -1069,7 +1072,9 @@ async def run_for_chat_thread(
         ):
             if ev.type == "result":
                 out = FlowOutput.model_validate(ev.extra.get("envelope"))
-                out.notices = [*memory_notices, *out.notices]
+                # READER BOUNDARY. Author diagnostics do not leave the server on a
+                # reader surface; the frontend refuses them again on the way in.
+                out.notices = reader_notices([*memory_notices, *out.notices])
                 ev.extra["envelope"] = out.to_dict()
                 save_memory(
                     db, session_key=thread.session_key, token=token,

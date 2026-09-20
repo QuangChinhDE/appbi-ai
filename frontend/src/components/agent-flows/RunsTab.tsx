@@ -25,11 +25,7 @@ import { Input } from '@/components/ui/Input';
 import { Badge } from '@/components/ui/Badge';
 import { cn } from '@/lib/utils';
 import { useI18n } from '@/providers/LanguageProvider';
-import {
-  conversationDetail, getBrain, listNodeSpecs, runDetail, runStats,
-  type ConversationDetail, type FlowNode, type NodeSpec, type RunSourceFilter,
-  type RunDetail, type RunStats, type RunStep,
-} from '@/lib/agentFlows';
+import { authorNotices, conversationDetail, getBrain, listNodeSpecs, readerNotices, runDetail, runStats, type ConversationDetail, type FlowNode, type NodeSpec, type RunDetail, type RunSourceFilter, type RunStats, type RunStep } from '@/lib/agentFlows';
 import { FlowCanvas } from './FlowCanvas';
 import { ConversationsPanel } from './ConversationsPanel';
 import {
@@ -569,13 +565,31 @@ export function RunsTab({ brainKey }: { brainKey: string }) {
                   {detail.question || t('agentFlows.common.none')}
                 </p>
 
-                {!!detail.notices.length && (
+                {/* The heading said "notes for the viewer" over a list that also
+                    held author diagnostics. Two lists, two truthful headings. */}
+                {!!readerNotices(detail.notices).length && (
                   <>
                     <Label className="mt-3">{t('agentFlows.runs.viewerNotes')}</Label>
-                    {detail.notices.map((n, i) => (
+                    {readerNotices(detail.notices).map((n, i) => (
                       <p key={i} className="mt-1 rounded-md border border-warning/20 bg-warning/5 p-2 text-caption leading-relaxed text-warning">
                         {n.text}
                       </p>
+                    ))}
+                  </>
+                )}
+
+                {!!authorNotices(detail.notices).length && (
+                  <>
+                    <Label className="mt-3">{t('agentFlows.runs.authorDiagnostics')}</Label>
+                    {authorNotices(detail.notices).map((n, i) => (
+                      <div key={i} className="mt-1 rounded-md border border-[rgb(var(--border-line))] bg-surface-2 p-2 text-caption leading-relaxed text-text-secondary">
+                        {n.text}
+                        {!!n.remedies?.length && (
+                          <ul className="mt-1 list-disc pl-4 text-tiny text-text-tertiary">
+                            {n.remedies.map((r, k) => <li key={k}>{r}</li>)}
+                          </ul>
+                        )}
+                      </div>
                     ))}
                   </>
                 )}

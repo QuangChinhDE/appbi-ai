@@ -129,6 +129,39 @@ export interface Attachable {
   terms: AttachableItem[];
 }
 
+// ── Notices ─────────────────────────────────────────────────────────────────
+//
+// ONE definition, because there were four `{code, text}` copies and none of them
+// carried `audience` — so the field existed on every response and no surface
+// could act on it. The server already drops author notices at a reader boundary;
+// this is the second line, not the first.
+
+export type NoticeAudience = 'reader' | 'author';
+
+export interface FlowNotice {
+  code: string;
+  text: string;
+  /** Absent on anything stored before the field existed. The backend default is
+   *  `reader`, and this mirrors it — treating "missing" as `author` would hide
+   *  working reader notices. */
+  audience?: NoticeAudience;
+  severity?: 'info' | 'warning' | 'error';
+  node_key?: string;
+  facts?: Record<string, unknown>;
+  remedies?: string[];
+}
+
+/** Author maintenance diagnostics — never shown on a reader surface. */
+export const isAuthorNotice = (n: FlowNotice): boolean => n.audience === 'author';
+
+/** What a READER may see. Defensive: the server filters already. */
+export const readerNotices = (ns: FlowNotice[] | undefined): FlowNotice[] =>
+  (ns || []).filter((n) => !isAuthorNotice(n));
+
+/** What an AUTHOR is told about their flow, as opposed to about the answer. */
+export const authorNotices = (ns: FlowNotice[] | undefined): FlowNotice[] =>
+  (ns || []).filter(isAuthorNotice);
+
 // ── The flow tree ───────────────────────────────────────────────────────────
 export interface ToolGrant { tool: string; note?: string }
 export interface KnowledgeAttachment {
@@ -623,7 +656,7 @@ export interface RunDetail {
   question: string | null;
   answer: string | null;
   citations: unknown[];
-  notices: { code: string; text: string }[];
+  notices: FlowNotice[];
   replayable: boolean;
   steps: RunStep[];
 }
@@ -680,7 +713,7 @@ export interface FlowOutputEnvelope {
   status: 'ok' | 'partial' | 'blocked' | 'failed';
   answer: { blocks: AnswerBlock[] };
   citations: { kind: string; ref: string; label?: string; url?: string; quote?: string }[];
-  notices: { code: string; text: string }[];
+  notices: FlowNotice[];
   trace: { path: string; steps: RunStep[] };
   usage: { llm_calls: number; tool_calls: number; prompt_tokens: number; completion_tokens: number; ms: number };
 }
@@ -1482,7 +1515,7 @@ export interface ConversationTurn {
   question: string | null;
   answer: string | null;
   citations: unknown[];
-  notices: { code: string; text: string }[];
+  notices: FlowNotice[];
   execution_path: string | null;
   blocked_reason: string | null;
   missing_requirements: unknown[];

@@ -26,6 +26,7 @@ import {
 import { BriefingWizard, type BriefingWizardResult } from './BriefingWizard';
 import type { AnswerBlock, FlowOutputEnvelope } from '@/lib/agentFlows';
 import { AnswerBlocks } from './AnswerBlocks';
+import { FlowNotice, readerNotices } from '@/lib/agentFlows';
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -236,7 +237,7 @@ interface ChatMessage extends AiChatMessage {
   /** Things the viewer should be told about the ANSWER — "bộ lọc đã đổi nên tôi
    *  tính lại từ đầu". Silently showing a different number from the one given two
    *  minutes ago is how a bot loses trust it cannot win back. */
-  notices?: { code: string; text: string }[];
+  notices?: FlowNotice[];
   /** Tool status notes accumulated while this assistant message was streaming. */
   statusLog?: { tool: string; text: string; ok?: boolean; error?: string | null }[];
   /** User rating for this assistant message. */
@@ -1834,9 +1835,11 @@ function MessageBubble({
         {!isUser && message.insights && message.insights.length > 0 && (
           <InsightLadderPanel insights={message.insights} />
         )}
-        {!isUser && !!message.notices?.length && (
+        {/* READER SURFACE — author diagnostics are refused here as well as at the
+            server boundary they are already dropped at. */}
+        {!isUser && !!readerNotices(message.notices).length && (
           <div className="mb-2 space-y-1">
-            {message.notices.map((n, i) => (
+            {readerNotices(message.notices).map((n, i) => (
               <p key={i} className="rounded-md border border-warning/25 bg-warning/5 px-2 py-1 text-tiny leading-5 text-warning">
                 {n.text}
               </p>

@@ -255,7 +255,7 @@ features:
                executor, run_flow, "tool node", report_read]
     invariants: [agent_flow_container_topology, agent_flow_answer_parity]
     required_tests: [agent_flow_contract, agent_flow_replay, agent_flow_container,
-                     agent_flow_surface]
+                     agent_flow_surface, agent_flow_evidence]
 
   - id: direct_chat
     label: "Direct Chat (reader surface of Agent Flow)"
@@ -271,7 +271,7 @@ features:
                assistants, conversation, conversations, "thread access",
                "thread sharing", "chat surface", "chat brain", "chat brains"]
     invariants: [agent_flow_answer_parity]
-    required_tests: [direct_chat_contract]
+    required_tests: [direct_chat_contract, direct_chat_module_floor]
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 4. TESTS REGISTRY — from DA-Test/Regression-Catalog.md §1. `run` is the exact
@@ -291,6 +291,21 @@ tests:
   # so the canonical Definition-of-Done command could not run them: the local gate
   # and the CI gate were checking differently-shaped sets. Classified by IMPORT
   # (they import app.services.agent_flows), not by filename.
+  # ADOPTED 2026-09-20 by dependency tracing, not by filename. Both were committed
+  # and referenced by no runner, and both guard something Waves 1-2 stand on.
+  agent_flow_evidence:
+    run: "pytest backend/tests/test_verifier_false_alarms.py"
+    locks: "the number verifier Agent Flow's evidence check calls at executor.py:1094 and agent.py:629 — a false alarm there re-flags correct answers, a missed one lets an invented figure through"
+  direct_chat_module_floor:
+    run: "pytest backend/tests/test_module_floor.py"
+    # Asserts every authed route refuses a caller holding nothing, by WALKING the
+    # route table. FastAPI >= 0.110 defers router inclusion, so on a machine whose
+    # FastAPI is newer than the pinned 0.109.0 the walk sees one route and the
+    # suite fails for an environment reason. CI installs the pin and runs it for
+    # real; `requires` makes that state explicit instead of a false red locally.
+    requires: pinned-fastapi
+    locks: "module_floor('chat') actually gating the Direct Chat router"
+
   agent_flow_surface:
     run: "pytest backend/tests/test_agent_flow_golden.py backend/tests/test_builder_error_messages.py backend/tests/test_chart_discovery_and_figure_correction.py backend/tests/test_chart_read_failure_reason.py backend/tests/test_discover_pack.py backend/tests/test_error_taxonomy_and_empty.py backend/tests/test_flow_attached_but_unreadable.py backend/tests/test_followup_and_freshness.py backend/tests/test_govern_doc_citation.py backend/tests/test_govern_doc_evidence_link.py backend/tests/test_govern_knowledge_tools.py backend/tests/test_i5_hard_gate_stays_lowest.py backend/tests/test_partial_context_admits_it.py backend/tests/test_report_read_scope.py backend/tests/test_tool_argument_contract.py backend/tests/test_tool_authorization_metadata.py backend/tests/test_tool_capability_gates.py backend/tests/test_tool_node.py backend/tests/test_tool_result_ceiling.py backend/tests/test_what_the_ai_sees.py"
     locks: "the wider Agent Flow surface CI already ran — tools, discovery, read failures, builder errors, knowledge citation"

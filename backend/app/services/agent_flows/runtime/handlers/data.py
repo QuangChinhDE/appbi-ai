@@ -133,16 +133,32 @@ def _charts_for_question(
 
     # THE REMEDY FOLLOWS FROM WHAT HAPPENED. Matching RAN to reach this branch, so
     # advising the author to switch it on is advice that changes nothing.
+    # EVERY REMEDY HERE MUST BE PERFORMABLE IN THE PRODUCT AS IT STANDS.
+    #
+    # "Chỉ định danh sách biểu đồ" was removed rather than fixed. `chart_ids` is
+    # kept for compatibility and advanced flows, but the builder deliberately has
+    # no picker for it: a chart id belongs to ONE report while a flow is meant to
+    # stay reusable across bindings, so a UI that persisted a raw id would bake
+    # hidden report-specific coupling into a portable object. Binding-aware asset
+    # selection is a Wave 3 design item; until it exists, advice to use it would
+    # be advice the author cannot follow.
+    #
+    # What is left is portable: sharpen the query, read the candidates the
+    # resolver already reports, or give the asset business vocabulary.
     if status == "ambiguous":
         text = (f"Bước “{node.name or node.key}” tìm được nhiều khả năng cho câu hỏi "
                 "nhưng không đủ căn cứ chọn một, nên đọc theo thứ tự báo cáo.")
-        remedies = ["Chỉ định danh sách biểu đồ cho bước này.",
-                    "Hỏi rõ hơn, hoặc thêm bí danh cho biểu đồ/chỉ số."]
+        remedies = ["Viết rõ hơn câu hỏi hoặc ô “Khớp theo” của bước này.",
+                    "Xem các khả năng bên dưới để biết nó đang phân vân giữa những gì.",
+                    "Đặt bí danh/mô tả cho biểu đồ, hoặc khai báo chỉ số trong Từ điển "
+                    "để câu hỏi nghiệp vụ trỏ đúng một thứ."]
     else:
         text = (f"Bước “{node.name or node.key}” đã tra theo câu hỏi nhưng không tìm "
                 "được biểu đồ hay chỉ số nào khớp, nên đọc theo thứ tự báo cáo.")
-        remedies = ["Chỉ định danh sách biểu đồ cho bước này.",
-                    "Thêm mô tả/bí danh cho biểu đồ, hoặc khai báo chỉ số trong Từ điển."]
+        remedies = ["Viết rõ hơn câu hỏi hoặc ô “Khớp theo” của bước này.",
+                    "Thêm mô tả/bí danh cho biểu đồ, hoặc khai báo chỉ số trong Từ điển.",
+                    "Nếu báo cáo thực sự không có dữ liệu này, hãy chấp nhận “không "
+                    "khớp” thay vì để bước đọc theo thứ tự báo cáo."]
 
     state.notices.append(
         Notice(
@@ -486,7 +502,7 @@ def _warn_if_overflowing(node: ReportReadNode, out: dict, state: RunState) -> No
     if not node.match_question and not node.chart_ids:
         remedies.append("Bật “đọc theo câu hỏi” để chọn biểu đồ theo nội dung hỏi.")
     if not node.chart_ids:
-        remedies.append("Giảm số biểu đồ, hoặc chỉ định danh sách biểu đồ cụ thể.")
+        remedies.append("Giảm số biểu đồ tối đa của bước này.")
     if node.detail == "full":
         remedies.append("Hạ mức chi tiết xuống “gọn”.")
     if node.detail in ("full", "compact"):

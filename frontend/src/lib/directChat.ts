@@ -9,6 +9,7 @@
 import { apiClient } from './api-client';
 import { parseSseStream } from './api/sse';
 import type { AnswerBlock, FlowOutputEnvelope } from './agentFlows';
+import { FlowNotice } from '@/lib/agentFlows';
 
 const BASE = '/agent-flows/chat';
 
@@ -41,7 +42,7 @@ export interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
   status?: string;
-  notices?: { code: string; text: string }[];
+  notices?: FlowNotice[];
   citations?: ChatCitation[];
   run_id?: number;
   rating?: string | null;

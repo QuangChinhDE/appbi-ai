@@ -433,7 +433,13 @@ def transcript(db: Session, thread: AgentFlowChatThread, limit: int = 50) -> lis
                 "role": "assistant",
                 "content": answer,
                 "status": run.status,
-                "notices": (content.notices if content else None) or [],
+                # Stored turns are replayed to a READER, including turns recorded
+                # before the audience boundary existed, so the filter runs here on
+                # plain dicts rather than trusting what was written.
+                "notices": [
+                    n for n in ((content.notices if content else None) or [])
+                    if (n or {}).get("audience", "reader") != "author"
+                ],
                 "citations": (content.citations if content else None) or [],
                 "run_id": run.id,
                 "rating": run.rating,

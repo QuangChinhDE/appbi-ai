@@ -126,3 +126,68 @@ def test_a_step_that_produced_nothing_is_not_reported_as_omitted():
     """An empty result is not a casualty of the budget."""
     out = C.compile_context([step("a", ""), step("b", "có nội dung")], budget_chars=2000)
     assert "a" not in out.omitted
+
+
+# ── reduction must drop BULK before it drops IDENTITY ───────────────────────
+#
+# REPRODUCED DEFECT. `_shrink_json` halved the biggest array repeatedly, and on a
+# Report Read result the biggest array is `charts` itself — so a 13-chart read
+# arrived at the answering step as ONE chart plus "… (12 mục nữa đã lược)", while
+# the rows inside them survived. Thirteen chart identities cost ~1,500 characters
+# of an 8,000 budget; the rows cost 38,000. It dropped the cheap half.
+#
+# The module docstring claimed identity fields "survive by construction" because
+# they are scalars. They are scalars INSIDE the elements that were deleted.
+
+def report_read_result(n_charts=13, rows_each=200):
+    return json.dumps({
+        "scope": {"read": n_charts},
+        "selection": {"mode": "question", "status": "exact"},
+        "charts": [{
+            "chart_id": 680 + i, "title": "Biểu đồ %d" % i, "read_status": "ok",
+            "rows": [{"k": "r%d" % r, "v": r} for r in range(rows_each)],
+        } for i in range(n_charts)],
+        "read_ok": True,
+    }, ensure_ascii=False)
+
+
+def kept_object(out):
+    return json.loads(out.text[out.text.find("{"):out.text.rfind("}") + 1])
+
+
+def test_every_chart_identity_survives_a_reduction_that_can_afford_them():
+    out = C.compile_context([step("read", report_read_result())], budget_chars=8000)
+    kept = kept_object(out)
+    ids = [c.get("chart_id") for c in kept["charts"] if isinstance(c, dict)]
+    assert len(ids) == 13, (
+        f"only {len(ids)} of 13 chart identities reached the answering step; the "
+        f"rows were kept instead. Identities cost ~1.5k of the 8k budget."
+    )
+
+
+def test_the_bulk_is_what_gets_dropped():
+    out = C.compile_context([step("read", report_read_result())], budget_chars=8000)
+    kept = kept_object(out)
+    total_rows = sum(len(c.get("rows") or []) for c in kept["charts"] if isinstance(c, dict))
+    assert total_rows < 13 * 200, "nothing was actually reduced"
+
+
+def test_identity_is_dropped_only_when_nothing_else_is_left():
+    """A budget too small for the identities themselves must still produce valid,
+    announced output rather than raising or emitting a fragment."""
+    out = C.compile_context([step("read", report_read_result())], budget_chars=600)
+    kept = kept_object(out)          # raises if the cut landed mid-object
+    # At this budget the identities genuinely do not fit. What must survive is the
+    # GROUNDING — and the admission that the rest is gone. A fragment would be the
+    # failure; dropping detail and saying so is the design.
+    assert kept["read_ok"] is True
+    assert (kept.get("selection") or {}).get("status") == "exact" or "_reduced" in kept
+    assert "_reduced" in kept or isinstance(kept.get("charts"), list)
+    assert out.reduced == ["read"]
+
+
+def test_scope_and_selection_are_never_the_thing_sacrificed():
+    out = C.compile_context([step("read", report_read_result())], budget_chars=8000)
+    kept = kept_object(out)
+    assert kept["selection"]["status"] == "exact"
+    assert kept["read_ok"] is True

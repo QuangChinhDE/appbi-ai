@@ -24,6 +24,7 @@ import { Input } from '@/components/ui/Input';
 import { cn } from '@/lib/utils';
 import { useI18n } from '@/providers/LanguageProvider';
 import type { ChatBrain, ChatMessage, ChatThread, ChatThreadDetail } from '@/lib/directChat';
+import { readerNotices } from '@/lib/agentFlows';
 
 const EMPTY_CHART_NAMES = new Map<number, string>();
 
@@ -346,7 +347,9 @@ function Bubble({ message }: { message: ChatMessage }) {
   }
 
   const { body } = extractFollowups(message.content || '');
-  const notices = (message.notices || []).filter((n) => NOTICE_KEYS[n.code] || n.text);
+  // READER SURFACE. The server already drops author diagnostics at its own
+  // boundary; refusing them here too means neither layer is trusted alone.
+  const notices = readerNotices(message.notices).filter((n) => NOTICE_KEYS[n.code] || n.text);
 
   return (
     <div className="space-y-2">

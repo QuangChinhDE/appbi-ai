@@ -128,6 +128,9 @@ jobs:
             tests/test_nested_specialist_credentials.py \
             tests/test_asset_resolution.py \
             tests/test_context_handoff.py \
+            tests/test_verifier_false_alarms.py \
+            tests/test_module_floor.py \
+            tests/test_notice_audience_boundary.py \
             tests/test_no_evidence_no_confident_number.py \
             tests/test_report_read_selection_is_explicit.py \
             tests/test_authoring_is_strict.py \

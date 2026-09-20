@@ -463,6 +463,21 @@ class Notice(_Model):
     remedies: list[str] = Field(default_factory=list)
 
 
+def reader_notices(notices: list["Notice"]) -> list["Notice"]:
+    """Only what a READER may be told.
+
+    `audience` is part of the runtime contract, not a rendering hint. Author
+    diagnostics name node keys, configuration and remedies — maintenance detail a
+    viewer cannot act on and should not see. Filtering only in the frontend would
+    leave it in the response body, so it is dropped at the reader boundary and
+    refused again at render: neither layer is trusted alone.
+
+    Author surfaces (Studio Test, Runs) call nothing here — they receive both and
+    present them apart.
+    """
+    return [n for n in notices if getattr(n, "audience", "reader") != "author"]
+
+
 class MemoryDelta(_Model):
     """What the run wants remembered for the next turn. Applied by the runtime to
     the SERVER-side store; never echoed to the client."""

@@ -314,3 +314,6 @@ backend/tests/.testdata/
 !backend/tests/test_context_handoff.py
 !backend/tests/test_report_read_selection_is_explicit.py
 !backend/tests/test_no_evidence_no_confident_number.py
+!backend/tests/test_verifier_false_alarms.py
+!backend/tests/test_module_floor.py
+!backend/tests/test_notice_audience_boundary.py

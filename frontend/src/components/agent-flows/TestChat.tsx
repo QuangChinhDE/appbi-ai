@@ -46,11 +46,7 @@ import { Input, Textarea } from '@/components/ui/Input';
 import { toast } from '@/lib/toast';
 import { cn } from '@/lib/utils';
 import { useI18n } from '@/providers/LanguageProvider';
-import {
-  listTestTargetReports, rateRun, testFlow, testFlowAsChat, testFlowOnReport, walkNodes,
-  type AnswerBlock, type ChatTestResult, type FlowLinkUsage, type FlowNode,
-  type FlowType, type ReportTestResult, type TestTargetReport,
-} from '@/lib/agentFlows';
+import { FlowNotice, authorNotices, listTestTargetReports, rateRun, readerNotices, testFlow, testFlowAsChat, testFlowOnReport, type AnswerBlock, type ChatTestResult, type FlowLinkUsage, type FlowNode, type FlowType, type ReportTestResult, type TestTargetReport, walkNodes } from '@/lib/agentFlows';
 
 /** One alternative a branching node can take, as something testable.
  *
@@ -120,7 +116,7 @@ type Envelope = {
    *  checking a flow saw an em-dash for an answer a reader would have seen
    *  rendered. Widening it made the compiler reject the flatten immediately. */
   answer?: { blocks: AnswerBlock[] };
-  notices?: { code: string; text: string }[];
+  notices?: FlowNotice[];
   /** Which passages the answer was built from. The runtime has recorded these for
    *  a while and nothing rendered them — an answer arrived with its evidence
    *  attached and the reader saw prose. */
@@ -858,16 +854,38 @@ function TurnView({
             )}
           </div>
 
-          {/* Notices explain an answer that would otherwise look unexplained — a
-              branch that matched nothing, a truncated read, a reset memory. */}
-          {!!(env.notices || []).length && (
+          {/* TWO AUDIENCES, TWO LISTS. Studio Test is an author surface that
+              PREVIEWS a reader answer, so it receives both kinds — and showing
+              them as one undifferentiated list told the author that maintenance
+              advice was something the viewer would read. */}
+          {!!readerNotices(env.notices).length && (
             <ul className="mt-2 space-y-1">
-              {env.notices!.map((n, i) => (
+              {readerNotices(env.notices).map((n, i) => (
                 <li key={i} className="rounded-md border border-[rgb(var(--border-line))] bg-surface-2 px-2.5 py-1.5 text-caption leading-relaxed text-text-secondary">
                   {n.text}
                 </li>
               ))}
             </ul>
+          )}
+
+          {!!authorNotices(env.notices).length && (
+            <div className="mt-2 rounded-lg border border-warning/25 bg-warning/5 p-2.5">
+              <p className="mb-1 text-micro font-emphasis uppercase tracking-wide text-warning">
+                {t('agentFlows.test.authorDiagnostics')}
+              </p>
+              <ul className="space-y-1.5">
+                {authorNotices(env.notices).map((n, i) => (
+                  <li key={i} className="text-caption leading-relaxed text-text-secondary">
+                    {n.text}
+                    {!!n.remedies?.length && (
+                      <ul className="mt-1 list-disc pl-4 text-tiny text-text-tertiary">
+                        {n.remedies.map((r, k) => <li key={k}>{r}</li>)}
+                      </ul>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </div>
           )}
 
           {open && (

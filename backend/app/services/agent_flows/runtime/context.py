@@ -18,11 +18,13 @@ TWO THINGS ARE SEPARATE HERE
 
 WHAT IT WILL NOT DO
 
-It will not cut inside an object. A JSON payload is reduced STRUCTURALLY — the
-biggest arrays lose their tails first, and the identity fields an answer actually
-cites (ids, titles, status, scope) are scalars and survive by construction. Prose
-is cut on a line boundary. A fragment ending mid-number reads to a model as a
-complete finding.
+It will not cut inside an object. A JSON payload is reduced STRUCTURALLY, and
+BULK GOES BEFORE IDENTITY: lists of rows lose their tails before lists of things
+an answer cites by id or name. An earlier version of this docstring claimed the
+identity fields "survive by construction because they are scalars" — they are
+scalars INSIDE the elements the reducer was deleting, and a 13-chart read reached
+the answering step as one chart with all its rows intact. Prose is cut on a line
+boundary. A fragment ending mid-number reads to a model as a complete finding.
 
 FAIRNESS IS DELIBERATE
 
@@ -95,33 +97,64 @@ class Projection:
 # ── reduction that respects boundaries ───────────────────────────────────────
 
 
+#: Keys that make a dict an ENTITY rather than a row: something an answer cites by
+#: name or id. A list of these is dropped last.
+_IDENTITY_KEYS = ("id", "chart_id", "doc_id", "metric", "title", "name", "chart_name")
+
+
+def _carries_identity(node: Any) -> bool:
+    """Is this a list of things an answer would cite, rather than bulk rows?"""
+    if not isinstance(node, list):
+        return False
+    return any(
+        isinstance(v, dict) and any(k in v for k in _IDENTITY_KEYS)
+        for v in node[:5]
+    )
+
+
 def _shrink_json(obj: Any, budget: int) -> tuple[Any, bool]:
-    """Halve the biggest list repeatedly until the object fits.
+    """Halve the biggest list repeatedly until the object fits, BULK FIRST.
 
     Structural, so what comes out is still valid JSON — the defect this replaces
     cut the serialised text at a character offset, mid-array and mid-number.
+
+    Bulk first, because "biggest" alone chose wrong. On a Report Read result the
+    biggest array is `charts`, so a 13-chart read reached the answering step as
+    ONE chart while every row inside it survived: it dropped ~1.5k of identities
+    to keep ~38k of rows. Lists whose elements carry an id or a name are the
+    evidence an answer cites; they are reduced only when nothing else is left.
     """
     reduced = False
-    for _ in range(40):
+    for _ in range(80):
         if len(json.dumps(obj, ensure_ascii=False)) <= budget:
             return obj, reduced
-        biggest, size = None, 0
+        bulk: list[Any] = []
+        entities: list[Any] = []
         stack: list[Any] = [obj]
         while stack:
             node = stack.pop()
             if isinstance(node, dict):
                 stack.extend(node.values())
             elif isinstance(node, list):
-                n = len(json.dumps(node, ensure_ascii=False))
-                if n > size and len(node) > 1:
-                    biggest, size = node, n
+                if len(node) > 1:
+                    (entities if _carries_identity(node) else bulk).append(node)
                 stack.extend(node)
-        if biggest is None:
+
+        def biggest(cands):
+            best, size = None, 0
+            for c in cands:
+                n = len(json.dumps(c, ensure_ascii=False))
+                if n > size:
+                    best, size = c, n
+            return best
+
+        target = biggest(bulk) or biggest(entities)
+        if target is None:
             return obj, True
-        keep = max(1, len(biggest) // 2)
-        dropped = len(biggest) - keep
-        del biggest[keep:]
-        biggest.append("… (%d mục nữa đã lược)" % dropped)
+        keep = max(1, len(target) // 2)
+        dropped = len(target) - keep
+        del target[keep:]
+        target.append("… (%d mục nữa đã lược)" % dropped)
         reduced = True
     return obj, True
 
@@ -133,12 +166,25 @@ def _reduce(text: str, budget: int) -> tuple[str, bool]:
     stripped = text.lstrip()
     if stripped[:1] in ("{", "["):
         try:
-            obj, was = _shrink_json(json.loads(stripped), budget)
+            parsed = json.loads(stripped)
+        except (ValueError, TypeError):
+            parsed = None
+        if parsed is not None:
+            obj, was = _shrink_json(parsed, budget)
             out = json.dumps(obj, ensure_ascii=False)
             if len(out) <= budget:
                 return out, was
-        except (ValueError, TypeError):
-            pass
+            # STILL TOO BIG — and falling through to the prose cut below would
+            # slice this JSON at a character offset and hand the model a fragment,
+            # which is the one thing this function exists to prevent. Degrade to a
+            # valid object holding the scalars instead: scope, status, read_ok —
+            # the grounding fields — and say the rest is gone.
+            if isinstance(obj, dict):
+                minimal = {k: v for k, v in obj.items()
+                           if not isinstance(v, (list, dict))}
+                minimal["_reduced"] = "chi tiết đã lược hết để vừa ngữ cảnh"
+                return json.dumps(minimal, ensure_ascii=False), True
+            return json.dumps([obj[0]] if obj else [], ensure_ascii=False), True
     room = max(0, budget - len(_TRUNCATED_NOTE) - 1)
     head = text[:room]
     cut = max(head.rfind("\n"), head.rfind(" "))

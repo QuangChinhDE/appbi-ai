@@ -122,3 +122,65 @@ def test_the_prose_still_never_carries_an_inapplicable_remedy():
     assert "chỉ mục" not in n.text
     assert "giảm số" not in n.text.lower()
     assert n.text.strip(), "an empty diagnostic says nothing"
+
+
+# ── every remedy must be performable in the product as it stands ─────────────
+#
+# A diagnostic that recommends an action the author cannot carry out is worse
+# than silence: it sends them looking for a control that does not exist. The
+# removed one was "chỉ định danh sách biểu đồ" — `chart_ids` is a real field, but
+# the builder deliberately exposes no picker for it, because a chart id belongs to
+# one report while a flow is meant to stay reusable across bindings. Binding-aware
+# asset selection is Wave 3.
+#
+# Each phrase below is allowed because a control exists for it TODAY:
+PERFORMABLE = {
+    "đọc theo câu hỏi": "Toggle in the Report Read inspector",
+    "Khớp theo": "Query field, shown when question matching is on",
+    "Giảm số biểu đồ tối đa": "max_charts NumberField",
+    "chi tiết": "detail Select (index / compact / full)",
+    "chỉ mục": "detail Select, `index` option",
+    "bí danh": "Governed metric / glossary, outside the flow builder but real",
+    "Từ điển": "Metrics dictionary",
+    "mô tả": "Chart description",
+    "khả năng bên dưới": "The candidate list carried in the same notice",
+    "chấp nhận": "A decision, not a control",
+    "bước sau gọi công cụ": "Tool grants on the answering step",
+    "mức gọn nhất": "A statement, not an action",
+    "xử lý ở": "A statement, not an action",
+}
+
+UNPERFORMABLE = ["chỉ định danh sách biểu đồ", "chart_ids", "danh sách biểu đồ cụ thể"]
+
+
+def _every_remedy():
+    out = []
+    for mq in (True, False):
+        for detail in ("index", "compact", "full"):
+            for ids in ([], [1, 2]):
+                node = ReportReadNode(key="r", output_var="ctx", match_question=mq,
+                                      detail=detail, chart_ids=ids)
+                st = state()
+                _warn_if_overflowing(node, big_out(), st)
+                for n in st.notices:
+                    out.extend(n.remedies)
+    return out
+
+
+def test_no_remedy_recommends_an_action_the_builder_cannot_perform():
+    for remedy in _every_remedy():
+        low = remedy.lower()
+        for banned in UNPERFORMABLE:
+            assert banned.lower() not in low, (
+                f"remedy recommends an action with no control: {remedy!r}"
+            )
+
+
+def test_every_remedy_maps_to_a_control_that_exists():
+    """The allow-list is the documentation: adding a remedy means naming the
+    control that performs it, which is the check this invariant needs."""
+    for remedy in _every_remedy():
+        assert any(k in remedy for k in PERFORMABLE), (
+            f"remedy matches no known control — add it to PERFORMABLE with the "
+            f"control that performs it, or do not offer it: {remedy!r}"
+        )
