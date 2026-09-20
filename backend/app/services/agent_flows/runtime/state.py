@@ -143,6 +143,11 @@ class RunState:
     #: the thing `carried` could not do.
     outputs: dict[str, Any] = field(default_factory=dict)
     trace: list[TraceStep] = field(default_factory=list)
+    #: WHAT THE ANSWERING MODEL ACTUALLY SAW — which upstream steps reached it,
+    #: which were reduced, which did not fit. A node's output and a node's
+    #: contribution to the next prompt are different things, and an author who
+    #: inspects the first and assumes the second has been wrong before.
+    context_coverage: dict[str, Any] = field(default_factory=dict)
     #: Human-readable route, e.g. ["Path A", "Loop×4", "MEDIUM"]. What the Runs
     #: table shows in its "Execution path" column.
     path: list[str] = field(default_factory=list)

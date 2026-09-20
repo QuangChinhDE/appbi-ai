@@ -123,11 +123,18 @@ def test_one_enormous_step_cannot_crowd_out_the_others():
 
 
 def test_a_truncated_gather_says_so_instead_of_ending_mid_thought():
+    """CONTRACT TIGHTENED (context compiler): the gather must not only SAY that
+    something did not fit, it must NAME the steps. The old wording — "vượt giới
+    hạn ngữ cảnh" — told a model that something was missing and told an author
+    nothing about which lane it was."""
     out = _gathered(_State(
         [(f"s{i}", f"Bước {i}", "y" * 1900) for i in range(12)]
         + [("tong_hop", "Tổng hợp", "")]
     ))
-    assert "vượt giới hạn ngữ cảnh" in out
+    assert "Ghi chú phạm vi" in out
+    assert "NÓI RÕ phần chưa gộp" in out
+    named = [f"s{i}" for i in range(12) if f"s{i}" in out.split("Ghi chú phạm vi")[-1]]
+    assert named, "the note must name the steps that were reduced or omitted"
 
 
 def test_a_flow_with_nothing_before_it_gathers_nothing():

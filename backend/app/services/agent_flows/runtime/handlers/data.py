@@ -70,70 +70,93 @@ def _route_call(rctx: Any, state: RunState, tool: str, args: dict) -> Any:
     return result
 
 
+def _selection_mode(node: ReportReadNode) -> str:
+    """How this node decides WHAT to read. Explicit beats question beats index.
+
+    Named rather than re-derived from a pair of booleans at each call site: an
+    author has to be able to answer "why those charts?", and so does the trace.
+    """
+    if node.chart_ids:
+        return "explicit"
+    if node.detail == "index":
+        return "report_index"
+    return "question" if node.match_question else "report_order"
+
+
 def _charts_for_question(
     node: ReportReadNode, state: RunState, rctx: Any, allowed: list[int]
-) -> tuple[list[int], str]:
-    """The allowed charts, reordered so the ones the question names come first.
+) -> tuple[list[int], dict]:
+    """Which charts the question is about, and the evidence for saying so.
 
-    Ranking is `list_charts`' own term match — the audited path that already backs
-    the picker and the discover pack — rather than a second implementation of
-    "which chart is this about" living in the runtime. Deterministic: no model is
-    consulted, which is the property that lets this step stay model-free.
+    Resolution is delegated to the ONE canonical resolver, which composes the
+    audited lexical path with the business vocabulary — governed metrics, glossary
+    terms, semantic fields — and the metric -> chart bridge. No second matcher
+    lives here.
 
-    Returns the ordered ids and a reason when the question matched nothing, so the
-    caller can say so instead of silently reading the report in id order and
-    calling it a match.
+    NO SILENT FALLBACK. Reading the report in its own order when the question
+    cannot be resolved stays allowed, because stored flows must keep working — but
+    it is RECORDED as a fallback. "Could not tell what the question refers to" and
+    "the first N charts are relevant" are different claims and only one is true.
     """
+    from app.services.agent_flows.resolver import resolve_charts
+
     question = state.resolve_text(node.query) or rctx.inp.question.text()
     if not question.strip():
-        return allowed, "no_question"
-    listing = _route_call(rctx, state, "list_charts",
-                          {"query": question, "detail": "compact"})
-    if not isinstance(listing, dict) or not listing.get("ok"):
-        return allowed, "lookup_failed"
-    # `_ok` wraps the payload: {"ok": true, "data": {...}}.
-    payload = listing.get("data") if isinstance(listing.get("data"), dict) else {}
-    selection = payload.get("selection") if isinstance(payload.get("selection"), dict) else {}
-    status = str(selection.get("status") or "")
+        return allowed, {"mode": "question", "status": "no_question",
+                         "fell_back_to": "report_order", "candidates": []}
 
-    # THE WHOLE POINT OF THE CONTRACT: a fallback listing is never a match here.
-    #
-    # `list_charts` answers a miss with the FULL listing plus a note, which is
-    # right for a model — it reads the note and decides. This caller has no model,
-    # and the fallback listing is byte-shaped exactly like a successful one. It
-    # read "here is everything, sorry" as "here is what you asked for".
-    #
-    # `ambiguous` is refused for the same reason and is NOT a failure: one shared
-    # token is enough for this tool to rank a chart, so "thời tiết sao Hỏa hôm nay"
-    # matched four — "sao" from "Tỷ lệ 5 sao", "thời" from "Dòng thời gian". The
-    # step degrades to its default scope and says so; the run continues.
-    if status in ("none", "ambiguous"):
-        return allowed, "no_match" if status == "none" else "weak_match"
-    if status and status != "matched":
-        return allowed, "lookup_failed"
-    if not status:
-        # An older payload with no `selection` block. Trust it rather than refuse
-        # every match — but the coverage note is the one signal that survives.
-        coverage = payload.get("coverage") if isinstance(payload.get("coverage"), dict) else {}
-        if "query_matched_nothing" in coverage:
-            return allowed, "no_match"
+    got = resolve_charts(rctx, question, allowed)
+    status = got.get("status") or "none"
+    ids = [c for c in (got.get("chart_ids") or []) if c in set(allowed)]
 
-    ranked = [
-        c for c in (selection.get("selected_ids") or [])
-        if isinstance(c, int)
-    ] or [
-        c.get("chart_id") for c in (payload.get("charts") or [])
-        if isinstance(c, dict) and isinstance(c.get("chart_id"), int)
-    ]
-    # NEVER WIDENS. `list_charts` is scoped to the context, but a selector that let
-    # its output DEFINE scope would be a second implementation of entitlement, and
-    # this is the class of bug where being wrong is a leak rather than a bad answer.
-    keep = set(allowed)
-    ordered = [c for c in ranked if c in keep]
-    return (ordered or allowed), ("" if ordered else "no_match")
+    # THIS DICT IS SERIALISED INTO THE ANSWERING PROMPT, so it carries the status
+    # and the ids and not the evidence prose. The full candidate reasoning goes to
+    # the author diagnostic below, which no model pays for.
+    candidates = got.get("candidates") or []
+    candidate_ids = [c.get("chart_id") for c in candidates
+                     if isinstance(c, dict) and isinstance(c.get("chart_id"), int)]
+    selection: dict[str, Any] = {"mode": "question", "status": status}
+    if status in ("exact", "semantic") and ids:
+        selection["selected_ids"] = ids
+        return ids, selection
+
+    # The fallback is the case a model MUST see: these charts were not chosen for
+    # the question, so an answer built on them cannot claim to be about it.
+    selection["fell_back_to"] = "report_order"
+    if candidate_ids:
+        selection["candidate_chart_ids"] = candidate_ids[:5]
+
+    # THE REMEDY FOLLOWS FROM WHAT HAPPENED. Matching RAN to reach this branch, so
+    # advising the author to switch it on is advice that changes nothing.
+    if status == "ambiguous":
+        text = (f"Bước “{node.name or node.key}” tìm được nhiều khả năng cho câu hỏi "
+                "nhưng không đủ căn cứ chọn một, nên đọc theo thứ tự báo cáo.")
+        remedies = ["Chỉ định danh sách biểu đồ cho bước này.",
+                    "Hỏi rõ hơn, hoặc thêm bí danh cho biểu đồ/chỉ số."]
+    else:
+        text = (f"Bước “{node.name or node.key}” đã tra theo câu hỏi nhưng không tìm "
+                "được biểu đồ hay chỉ số nào khớp, nên đọc theo thứ tự báo cáo.")
+        remedies = ["Chỉ định danh sách biểu đồ cho bước này.",
+                    "Thêm mô tả/bí danh cho biểu đồ, hoặc khai báo chỉ số trong Từ điển."]
+
+    state.notices.append(
+        Notice(
+            code="read_question_unmatched",
+            audience="author",
+            severity="warning",
+            node_key=node.key,
+            facts={"selection_status": status,
+                   "candidate_chart_ids": candidate_ids,
+                   "concepts": got.get("concepts") or [],
+                   "candidates": candidates[:8],
+                   "fell_back_to": "report_order"},
+            remedies=remedies,
+            text=text,
+        )
+    )
+    return allowed, selection
 
 
-# ═══ Read the open report ═════════════════════════════════════════════════════
 async def run_report_read(
     node: ReportReadNode, state: RunState, rctx: Any
 ) -> AsyncGenerator[AgentEvent, None]:
@@ -159,6 +182,9 @@ async def run_report_read(
     # that must survive, dropped by construction, leaving a partial reading looking
     # like a complete one. Filled in below, once there is something to report.
     out: dict[str, Any] = {"scope": {}, "charts": [], "filters": None}
+    # WHY THESE CHARTS — recorded, not implied. The trace and the authoring UI
+    # both have to answer it, and the answer differs per mode.
+    out["selection"] = {"mode": _selection_mode(node)}
     yield AgentEvent(type="status", text="Đang đọc báo cáo…")
 
     if node.include_filters:
@@ -168,17 +194,8 @@ async def run_report_read(
     # list always wins: the author already answered "which charts", and a keyword
     # match must not overrule them.
     if node.match_question and not node.chart_ids:
-        wanted, why = _charts_for_question(node, state, rctx, wanted)
-        if why in ("no_match", "weak_match"):
-            state.notices.append(
-                Notice(
-                    code="read_question_unmatched",
-                    text=f"Bước “{node.name or node.key}” không tìm thấy biểu đồ nào "
-                         "khớp rõ câu hỏi, nên đọc theo thứ tự mặc định. Nếu báo cáo "
-                         "gọi thứ này bằng tên khác, hãy chỉ định danh sách biểu đồ "
-                         "cho bước này.",
-                )
-            )
+        wanted, selection = _charts_for_question(node, state, rctx, wanted)
+        out["selection"] = selection
 
     planned = wanted[:node.max_charts]
     read_count = 0

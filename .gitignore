@@ -310,3 +310,6 @@ backend/tests/.testdata/
 !backend/tests/test_tree_validation_is_canonical.py
 !backend/tests/test_nested_specialist_credentials.py
 !backend/tests/test_authoring_is_strict.py
+!backend/tests/test_asset_resolution.py
+!backend/tests/test_context_handoff.py
+!backend/tests/test_report_read_selection_is_explicit.py

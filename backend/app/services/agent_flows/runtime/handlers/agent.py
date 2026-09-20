@@ -885,69 +885,46 @@ def _messages(node: AgentNode, state: RunState, rctx: Any) -> list[dict]:
     return out
 
 
-#: Per-step and total ceilings for what the synthesiser is handed. Bounded because
-#: this is the one place a flow's cost grows with the number of steps: eight
-#: specialists must not become eight full transcripts.
-_MAX_STEP_CHARS = 2000
-_MAX_GATHERED_CHARS = 8000
-
 from app.services.agent_flows.contract import ROUTING_NODE_TYPES as _ROUTING_TYPES
+
+#: What the synthesiser is handed, in characters. Bounded because this is the one
+#: place a flow's cost grows with the number of steps: eight specialists must not
+#: become eight full transcripts. The ALLOCATION of it is the context compiler's
+#: job — see `runtime/context.py` for why order must not decide who survives.
+_HANDOFF_CHARS = 8000
 
 
 def _all_step_results(state: RunState, rctx: Any, *, skip: str = "") -> str:
-    """Every step's result, in the order they ran, named so they can be told apart.
+    """Every step's result, projected into what this model can actually read.
 
-    Named rather than concatenated: "the previous step said 91.2%" is unusable when
-    four steps spoke, and a synthesiser that cannot attribute a figure to the step
-    that produced it cannot cite it either.
+    Projection, not truncation. The old version head-sliced each step at 2,000
+    characters and spent an 8,000-character total in run order, so a JSON result
+    could arrive cut mid-array and a third specialist could vanish because the
+    first was verbose — while the run reported three healthy steps.
 
-    Steps that produced nothing are left out. A blank line under a heading reads to
-    a model like an answer of "nothing", which is not the same as a step that was
-    skipped, and inventing that distinction here would be worse than omitting it.
+    Routing steps stay out: `{"picked": ["chuyen_gia_chi_phi"]}` is a record of
+    which way the run went, not evidence a number is right. The TRACE keeps it,
+    which is where an author looks to see why a lane ran.
     """
+    from app.services.agent_flows.runtime.context import StepView, compile_context
+
     names = {s.key: (s.name or s.key) for s in state.trace}
-    parts: list[str] = []
-    used = 0
-    for step in state.trace:
-        if step.key == skip or step.type in _ROUTING_TYPES:
-            # A routing step's "result" is a record of which way the run went —
-            # `{"picked": ["chuyen_gia_chi_phi"], "considered": [...]}`. Handing
-            # that to the model that writes the answer puts a list of internal
-            # node keys in front of it and calls it evidence. The TRACE keeps it,
-            # which is where an author looks to see why a lane did or did not run.
-            continue
-        text = _previous_text(state.outputs.get(step.key))
-        if not text:
-            continue
-        # TRUNCATION USED TO BE SILENT, which is the worst of the three options.
-        #
-        # A 6,000-character report reading arrived as 2,000 characters that simply
-        # stop — mid-array, mid-number — and a model reads that as the whole of what
-        # the step found. It answered a question about product categories from six
-        # KPI tiles and called the figure "được xác nhận là chính xác", because
-        # nothing in what it was handed suggested there was more.
-        body = text[:_MAX_STEP_CHARS]
-        if len(text) > _MAX_STEP_CHARS:
-            body += (
-                "\n… (kết quả của bước này đã bị cắt bớt để vừa ngữ cảnh — phần "
-                "thiếu KHÔNG phải là không có dữ liệu. Nếu câu hỏi cần thứ không "
-                "thấy ở đây, hãy gọi công cụ để lấy đúng thứ cần thay vì suy ra.)"
-            )
-        block = "### %s\n%s" % (names.get(step.key, step.key), body)
-        if used + len(block) > _MAX_GATHERED_CHARS:
-            parts.append(
-                "(Còn kết quả của các bước sau nữa nhưng đã vượt giới hạn ngữ "
-                "cảnh — trả lời bằng những gì đang có và nói rõ phần chưa gộp.)"
-            )
-            break
-        parts.append(block)
-        used += len(block)
-    if not parts:
+    views = [
+        StepView(key=step.key, name=names.get(step.key, step.key),
+                 text=_previous_text(state.outputs.get(step.key)) or "")
+        for step in state.trace
+        if step.key != skip and step.type not in _ROUTING_TYPES
+    ]
+    projection = compile_context(views, _HANDOFF_CHARS)
+    # WHAT THE MODEL SAW, kept where an author can find it. The Runs inspector
+    # cannot tell the truth about a handoff the runtime never recorded.
+    state.context_coverage = projection.coverage
+    if not projection.text:
         return ""
     return (
         "Kết quả của các bước trước, theo thứ tự đã chạy. Tổng hợp TẤT CẢ, "
         "không chỉ bước cuối; nếu hai bước mâu thuẫn thì nói rõ ra thay vì "
-        "chọn bừa một bên:\n\n" + "\n\n".join(parts)
+        "chọn bừa một bên:\n\n" + projection.text
     )
 
 
