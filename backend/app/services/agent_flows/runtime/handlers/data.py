@@ -220,6 +220,7 @@ async def run_report_read(
             continue
         if node.include_summary:
             entry["summary"] = _call(rctx, state, "get_chart_summary", {"chart_id": chart_id})
+            _note_status(entry, "summary", entry["summary"])
         if node.include_data and rctx.inp.binding.capabilities.read_rows:
             # ASK FOR THE TOP ROWS, NOT THE FIRST ROWS.
             #
@@ -239,6 +240,7 @@ async def run_report_read(
                 args["sort"] = "desc"
                 args["sort_by"] = measure
             entry["data"] = _call(rctx, state, "get_chart_data", args)
+            _note_status(entry, "data", entry["data"])
             entry["rows_ordered_by"] = measure or "(thứ tự của biểu đồ)"
             _flag_partial(entry, state, node)
         if node.detail == "compact":
@@ -446,23 +448,78 @@ def _warn_if_overflowing(node: ReportReadNode, out: dict, state: RunState) -> No
     if size <= _DOWNSTREAM_CHARS:
         return
     kept = max(1, round(len(out["charts"]) * _DOWNSTREAM_CHARS / size))
-    # Grouped the way the reader of this sentence writes numbers. Formatted per
-    # number, not by search-replacing the finished sentence — that also turns the
-    # commas in the prose into full stops.
     vn = lambda n: f"{n:,}".replace(",", ".")
+
+    # REMEDIES ARE DERIVED FROM STATE, NOT WRITTEN INTO THE SENTENCE.
+    #
+    # The invariant: a diagnostic may only recommend an action that is actually
+    # applicable right now. The fixed sentence used to end with "Bật 'đọc theo câu
+    # hỏi'" whether or not it was already on, so the product read as though it
+    # could not see its own configuration — and an author who follows advice that
+    # changes nothing stops trusting the next notice too.
+    remedies: list[str] = []
+    if not node.match_question and not node.chart_ids:
+        remedies.append("Bật “đọc theo câu hỏi” để chọn biểu đồ theo nội dung hỏi.")
+    if not node.chart_ids:
+        remedies.append("Giảm số biểu đồ, hoặc chỉ định danh sách biểu đồ cụ thể.")
+    if node.detail == "full":
+        remedies.append("Hạ mức chi tiết xuống “gọn”.")
+    if node.detail in ("full", "compact"):
+        remedies.append("Chuyển mức chi tiết sang “chỉ mục” rồi để bước sau gọi "
+                        "công cụ lấy đúng con số.")
+    if not remedies:
+        # Already at the tightest settings this node offers. Saying nothing
+        # actionable is honest; pretending there is a knob left is not.
+        remedies.append("Bước này đã ở mức gọn nhất; phần dư cần được xử lý ở "
+                        "bước sau (gọi công cụ lấy số) thay vì đọc thêm.")
+
     state.notices.append(
         Notice(
             code="read_exceeds_context",
+            audience="author",
+            severity="warning",
+            node_key=node.key,
+            facts={
+                "charts_read": len(out["charts"]),
+                "rendered_chars": size,
+                "downstream_chars": _DOWNSTREAM_CHARS,
+                "charts_expected_to_survive": kept,
+                "match_question": node.match_question,
+                "detail": node.detail,
+                "explicit_chart_ids": len(node.chart_ids),
+            },
+            remedies=remedies,
             text=(
                 f"Bước “{node.name or node.key}” đọc {len(out['charts'])} biểu đồ "
                 f"(~{vn(size)} ký tự) nhưng bước sau chỉ nhận được "
                 f"{vn(_DOWNSTREAM_CHARS)} ký tự đầu — khoảng {kept} biểu đồ đầu "
-                "danh sách, phần còn lại bị cắt. Bật “đọc theo câu hỏi”, giảm số "
-                "biểu đồ, hoặc chuyển mức chi tiết sang “chỉ mục” rồi để bước sau "
-                "gọi công cụ lấy đúng con số."
+                "danh sách, phần còn lại bị cắt."
             ),
         )
     )
+
+
+#: Where a chart entry's READ EXECUTION STATUS lives. Separate from the payload on
+#: purpose: the payload is shaped for the model (compacted, indexed, trimmed) and a
+#: shaping step must never be able to change whether the tool succeeded. Written
+#: once, at execution; read by every later stage.
+_STATUS = "read_status"
+
+
+def _note_status(entry: dict, key: str, payload: Any) -> None:
+    """Fold one part's outcome into the entry's rollup, as it is read.
+
+    One short string, not a per-part dict: this entry is serialised into the
+    downstream prompt, and `{"summary":"ok","data":"ok"}` on twenty charts spends
+    ~900 of the 2,000 characters the answering step receives. "partial" also says
+    something the model should act on — part of this chart is missing.
+    """
+    ok = isinstance(payload, dict) and bool(payload.get("ok"))
+    prev = entry.get(_STATUS)
+    if prev is None:
+        entry[_STATUS] = "ok" if ok else "failed"
+    elif (prev == "ok") != ok:
+        entry[_STATUS] = "partial"
 
 
 def _entry_has_data(entry: dict) -> bool:
@@ -478,6 +535,14 @@ def _entry_has_data(entry: dict) -> bool:
     """
     if entry.get("indexed"):
         return True
+    # THE RECORDED STATUS WINS. Sniffing the payload for `ok` made the verdict a
+    # property of the payload's SHAPE, so `_compact` — which replaces the summary
+    # with a presentation object that has no `ok` — turned a successful
+    # summary-only read into "could not read any chart".
+    status = entry.get(_STATUS)
+    if status:
+        return status in ("ok", "partial")
+    # Entries built elsewhere (stored traces, replay fixtures) carry no status.
     for key in ("summary", "data"):
         payload = entry.get(key)
         if isinstance(payload, dict) and payload.get("ok"):
@@ -543,6 +608,11 @@ def _compact(entry: dict) -> None:
     is what an answer actually cites; the rows themselves stay, because they are the
     evidence the figure check verifies against.
     """
+    # Stamp before reshaping: this function is about to destroy the only evidence
+    # that the read succeeded, and the invariant is that it may not.
+    for key in ("summary", "data"):
+        if key in entry:
+            _note_status(entry, key, entry.get(key))
     summary = (entry.get("summary") or {}).get("data") if isinstance(entry.get("summary"), dict) else None
     if not isinstance(summary, dict):
         return

@@ -122,6 +122,11 @@ jobs:
             tests/test_govern_doc_evidence_link.py \
             tests/test_govern_knowledge_tools.py \
             tests/test_what_the_ai_sees.py \
+            tests/test_read_status_survives_compaction.py \
+            tests/test_diagnostics_tell_the_truth.py \
+            tests/test_tree_validation_is_canonical.py \
+            tests/test_nested_specialist_credentials.py \
+            tests/test_authoring_is_strict.py \
             tests/test_node_child_slots.py 2>&1 | tee /tmp/pytest-unit.log
       - name: Report the unit failure where it can be read
         if: failure()

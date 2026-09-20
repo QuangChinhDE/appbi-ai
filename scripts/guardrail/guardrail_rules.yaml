@@ -289,7 +289,7 @@ tests:
     run: "pytest backend/tests/test_agent_flow_replay.py"
     locks: "16 canonical fixtures replay with no semantic drift — the tripwire for any runtime or traversal change"
   agent_flow_container:
-    run: "pytest backend/tests/test_coordinator_is_visible_to_the_flow.py backend/tests/test_flow_coordinate.py backend/tests/test_flow_synthesis_sees_all_steps.py backend/tests/test_flow_type.py backend/tests/test_node_child_slots.py"
+    run: "pytest backend/tests/test_coordinator_is_visible_to_the_flow.py backend/tests/test_flow_coordinate.py backend/tests/test_flow_synthesis_sees_all_steps.py backend/tests/test_flow_type.py backend/tests/test_node_child_slots.py backend/tests/test_read_status_survives_compaction.py backend/tests/test_diagnostics_tell_the_truth.py backend/tests/test_tree_validation_is_canonical.py backend/tests/test_nested_specialist_credentials.py backend/tests/test_authoring_is_strict.py"
     locks: "every container node is walked by all_nodes(); a coordinator's lane is visible to every authoring check"
   direct_chat_contract:
     run: "pytest backend/tests/test_chat_thread_sharing.py backend/tests/test_chat_chart_scope.py"

@@ -26,7 +26,10 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.models.agent_brain import AgentBrainVersion
-from app.services.agent_flows.contract import DEFAULT_FLOW_TYPE, Flow, upgrade_body
+from app.services.agent_flows.contract import (
+    DEFAULT_FLOW_TYPE, Flow, map_raw_children, raw_child_groups,
+    strict_authoring_errors, upgrade_body,
+)
 from app.services.agent_flows.permissions import check_attachments, share_disclosure
 
 logger = logging.getLogger(__name__)
@@ -169,18 +172,10 @@ def _redact_credentials(body: dict[str, Any]) -> dict[str, Any]:
             n.pop("api_key_enc", None)
             n.pop("api_key", None)
             n.pop("api_key_clear", None)
-            if isinstance(n.get("body"), list):
-                n["body"] = clean_nodes(n["body"])
-            if isinstance(n.get("fallback"), list):
-                n["fallback"] = clean_nodes(n["fallback"])
-            for group in ("paths", "cases"):
-                if isinstance(n.get(group), list):
-                    n[group] = [
-                        {**p, "body": clean_nodes(p.get("body"))}
-                        if isinstance(p, dict) else p
-                        for p in n[group]
-                    ]
-            out.append(n)
+            # Canonical traversal. The hand-written lane list here walked
+            # body/fallback/paths/cases and NOT `specialists`, so a credential on
+            # an Agent inside a Coordinate specialist was emitted by the API.
+            out.append(map_raw_children(n, clean_nodes))
         return out
 
     out = dict(body)
@@ -233,16 +228,7 @@ def _carry_credentials(db: Session, brain_key: str, body: dict[str, Any]) -> dic
                     n["api_key_enc"] = encrypt_value(fresh)
                 elif not n.get("api_key_enc"):
                     n["api_key_enc"] = previous.get(str(n.get("key")), "")
-            if isinstance(n.get("body"), list):
-                n["body"] = fold(n["body"])
-            if isinstance(n.get("fallback"), list):
-                n["fallback"] = fold(n["fallback"])
-            for group in ("paths", "cases"):
-                if isinstance(n.get(group), list):
-                    n[group] = [
-                        {**p, "body": fold(p.get("body"))} if isinstance(p, dict) else p
-                        for p in n[group]
-                    ]
+            n = map_raw_children(n, fold)
             out.append(n)
         return out
 
@@ -260,12 +246,8 @@ def _walk_raw(nodes: Any) -> list[dict]:
         if not isinstance(n, dict):
             continue
         found.append(n)
-        found.extend(_walk_raw(n.get("body")))
-        found.extend(_walk_raw(n.get("fallback")))
-        for group in ("paths", "cases"):
-            for p in n.get(group) or []:
-                if isinstance(p, dict):
-                    found.extend(_walk_raw(p.get("body")))
+        for group in raw_child_groups(n):
+            found.extend(_walk_raw(group))
     return found
 
 
@@ -412,6 +394,13 @@ def save_draft(
     # that will actually be stored — including `_credential_is_usable`, which must
     # see a carried-forward key the request never mentioned.
     body = _carry_credentials(db, brain_key, body)
+
+    # STRICT HERE, TOLERANT ON READ. The models ignore unknown fields so an older
+    # stored flow still loads; saving must not inherit that, or a misspelled field
+    # is dropped and the default runs under the author's own name.
+    unknown = strict_authoring_errors({**body, "key": brain_key, "name": name})
+    if unknown:
+        raise BrainError(422, " · ".join(unknown[:5]))
 
     try:
         flow = Flow.model_validate({**body, "key": brain_key, "name": name})

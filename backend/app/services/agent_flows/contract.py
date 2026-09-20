@@ -1042,6 +1042,72 @@ CHILD_SLOTS: dict[str, tuple[ChildSlot, ...]] = {
 }
 
 
+# ── The same topology, for RAW (unvalidated) bodies ──────────────────────────
+#
+# `CHILD_SLOTS` above is keyed on node TYPE and needs parsed models. The save and
+# API paths walk raw dicts BEFORE validation — redaction, carry-forward, key
+# scans — and each one used to hardcode its own list of lanes. Every one of them
+# walked body/fallback/paths/cases and none walked `specialists`, so an Agent
+# inside a Coordinate specialist had its stored ciphertext emitted by the API and
+# its credential wiped on every ordinary save.
+#
+# Shape-driven rather than type-driven ON PURPOSE: a raw body may be legacy or
+# malformed, and a redactor that skips what it does not recognise fails open. A
+# list of node-shaped dicts is a child list whatever the parent calls itself.
+
+def _is_raw_node(v: Any) -> bool:
+    return isinstance(v, dict) and "type" in v and "key" in v
+
+
+def _is_raw_lane(v: Any) -> bool:
+    """A branch/case/specialist: named, and holding a body."""
+    return isinstance(v, dict) and "key" in v and isinstance(v.get("body"), list)
+
+
+def _raw_slots(node: dict) -> list[tuple[str, int | None]]:
+    """(field, lane index or None) for every child node-list on this raw node."""
+    slots: list[tuple[str, int | None]] = []
+    for field, value in node.items():
+        if not isinstance(value, list) or not value:
+            continue
+        if any(_is_raw_node(v) for v in value):
+            slots.append((field, None))
+        elif all(_is_raw_lane(v) for v in value):
+            slots.extend((field, i) for i in range(len(value)))
+    return slots
+
+
+def raw_child_groups(node: dict) -> list[list]:
+    """Every child node-list of a raw node dict. Read-only."""
+    if not isinstance(node, dict):
+        return []
+    groups = []
+    for field, lane in _raw_slots(node):
+        if lane is None:
+            groups.append(node.get(field) or [])
+        else:
+            entry = node[field][lane]
+            groups.append((entry or {}).get("body") or [])
+    return groups
+
+
+def map_raw_children(node: dict, fn) -> dict:
+    """A copy of `node` with every child node-list replaced by `fn(list)`."""
+    if not isinstance(node, dict):
+        return node
+    out = dict(node)
+    for field, lane in _raw_slots(node):
+        if lane is None:
+            out[field] = fn(out.get(field) or [])
+        else:
+            lanes = list(out.get(field) or [])
+            entry = lanes[lane]
+            if isinstance(entry, dict):
+                lanes[lane] = {**entry, "body": fn(entry.get("body") or [])}
+            out[field] = lanes
+    return out
+
+
 def child_node_lists(node: Any) -> list[list[Any]]:
     """Every list of child nodes this node holds, in declaration order.
 
@@ -1109,21 +1175,24 @@ class Flow(_Model):
                         f"bước “{n.name or n.key}” nằm trong Loop nên không dùng được "
                         "chế độ nhớ qua lượt"
                     )
-                if isinstance(n, IfNode):
-                    for p in n.paths:
-                        walk(p.body, depth + 1, in_loop)
-                elif isinstance(n, SwitchNode):
-                    for c in n.cases:
-                        walk(c.body, depth + 1, in_loop)
-                    walk(n.fallback, depth + 1, in_loop)
-                elif isinstance(n, LoopNode):
+                # DISCOVERY IS CANONICAL, SEMANTICS STAY EXPLICIT.
+                #
+                # This used to branch on If/Switch/Loop by hand, which made it a
+                # SECOND definition of "all descendants" next to `all_nodes()` —
+                # and it did not know about `coordinate`, so every node inside a
+                # coordinator escaped the node ceiling, the duplicate-key check,
+                # the depth limit and the rule below. Children now come from
+                # CHILD_SLOTS; only the Loop's own meaning is written out here.
+                is_loop = isinstance(n, LoopNode)
+                if is_loop:
                     loops_on_path.append(depth)
                     if in_loop:
                         raise ValueError(
                             "chưa hỗ trợ Loop lồng trong Loop — chi phí nhân lên "
                             "theo cấp số nhân"
                         )
-                    walk(n.body, depth + 1, True)
+                for group in child_node_lists(n):
+                    walk(group, depth + 1, in_loop or is_loop)
 
         walk(list(self.nodes), 1, False)
 
@@ -1601,3 +1670,95 @@ _REPORT_NAME_RE = re.compile(
     r"(?:báo cáo|report|dashboard)\s+[\"“']?"
     r"([A-Z0-9][\w-]*(?:\s+[A-Z0-9][\w-]*){0,2})"
 )
+
+
+# ── Strict authoring boundary ────────────────────────────────────────────────
+#
+# Every model here is `extra="ignore"`, which is correct for READING a stored
+# body: a flow saved by an older build, carrying a field this one has retired,
+# must still load. It is wrong for AUTHORING. An author — or an AI writing a flow
+# through the API — can misspell `temperature`, and validation passes, the field
+# is dropped, the default runs, and what executes is not what was written.
+#
+# So the tolerance stays on the read path and the authoring path gets this check.
+# It runs on the RAW body, before validation, which is the only place the unknown
+# field still exists.
+
+#: Emitted by the API in a redacted body and round-tripped by the builder.
+#: Rejecting what we ourselves produced would make saving impossible.
+_AUTHORING_PASSTHROUGH = {"has_api_key"}
+
+
+def _node_classes() -> dict[str, Any]:
+    """type string -> model class, from the discriminated union itself."""
+    import typing
+    out: dict[str, Any] = {}
+    args = typing.get_args(Node)
+    union = args[0] if args else Node
+    for cls in typing.get_args(union):
+        field = getattr(cls, "model_fields", {}).get("type")
+        default = getattr(field, "default", None)
+        if isinstance(default, str):
+            out[default] = cls
+    return out
+
+
+def _lane_class(parent: Any, field: str) -> Any:
+    """The model behind `specialists` / `paths` / `cases` on this parent."""
+    import typing
+    ann = getattr(parent, "model_fields", {}).get(field)
+    for candidate in typing.get_args(getattr(ann, "annotation", None) or None):
+        if hasattr(candidate, "model_fields"):
+            return candidate
+    return None
+
+
+def strict_authoring_errors(raw: dict) -> list[str]:
+    """Unknown fields anywhere in a raw body, as messages an author can act on.
+
+    Reports the node key and the field; suggests nothing and corrects nothing —
+    a guessed correction is how intent gets rewritten silently.
+    """
+    if not isinstance(raw, dict):
+        return ["Body phải là một object"]
+
+    classes = _node_classes()
+    errors: list[str] = []
+
+    unknown_top = set(raw) - set(Flow.model_fields) - _AUTHORING_PASSTHROUGH
+    for field in sorted(unknown_top):
+        errors.append(f"Flow: trường không hợp lệ “{field}”")
+
+    def check_lane(parent_cls: Any, field: str, lane: Any) -> None:
+        cls = _lane_class(parent_cls, field)
+        if cls is None or not isinstance(lane, dict):
+            return
+        for bad in sorted(set(lane) - set(cls.model_fields) - _AUTHORING_PASSTHROUGH):
+            where = lane.get("key") or field
+            errors.append(f"“{where}” ({field}): trường không hợp lệ “{bad}”")
+
+    def check_nodes(nodes: Any) -> None:
+        if not isinstance(nodes, list):
+            return
+        for n in nodes:
+            if not isinstance(n, dict):
+                continue
+            kind = n.get("type")
+            cls = classes.get(kind) if isinstance(kind, str) else None
+            if cls is None:
+                errors.append(f"“{n.get('key') or '?'}”: loại bước không hợp lệ “{kind}”")
+                continue
+            for bad in sorted(set(n) - set(cls.model_fields) - _AUTHORING_PASSTHROUGH):
+                errors.append(
+                    f"“{n.get('key') or '?'}” ({kind}): trường không hợp lệ “{bad}”"
+                )
+            for field, lane_index in _raw_slots(n):
+                if lane_index is None:
+                    check_nodes(n.get(field))
+                else:
+                    lane = (n.get(field) or [])[lane_index]
+                    check_lane(cls, field, lane)
+                    check_nodes(lane.get("body") if isinstance(lane, dict) else None)
+
+    check_nodes(raw.get("nodes"))
+    return errors

@@ -305,3 +305,8 @@ thinking-state.md
 backend/tests/.pytest-fallback.db
 backend/tests/.testdata/
 !backend/tests/test_node_child_slots.py
+!backend/tests/test_read_status_survives_compaction.py
+!backend/tests/test_diagnostics_tell_the_truth.py
+!backend/tests/test_tree_validation_is_canonical.py
+!backend/tests/test_nested_specialist_credentials.py
+!backend/tests/test_authoring_is_strict.py

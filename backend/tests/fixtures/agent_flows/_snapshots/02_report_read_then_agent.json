@@ -36,7 +36,7 @@
   "status": "ok",
   "step_outputs": {
     "answer": "ok :: Kết quả của các bước trước, theo thứ tự đã chạy. Tổng hợp TẤT CẢ, không chỉ bước cuối; nếu hai bước mâu thuẫn thì nói rõ ra thay vì chọn bừa một bên:\n\n### read\n{\"scope\": {\"read\": 1, \"available\": 1}, \"",
-    "read": "{\"scope\": {\"read\": 1, \"available\": 1}, \"charts\": [{\"chart_id\": 41, \"title\": \"Doanh thu theo danh mục\", \"chart_type\": \"BAR\", \"summary\": {\"chart_name\": null, \"chart_type\": null, \"total_rows\": null, \"columns\": []}, \"data\": {\"ok\": true, \"kind\": \"table\", \"data\": {\"columns\": [\"category\", \"revenue\"], \"rows\": [\"… (lồng quá sâu, đã cắt)\"]}}, \"rows_ordered_by\": \"revenue\"}], \"filters\": {\"ok\": true, \"kind\": \"table\", \"data\": {\"columns\": [\"category\", \"revenue\"], \"rows\": [[\"moveis\", 1200]]}}, \"read_ok\": true}"
+    "read": "{\"scope\": {\"read\": 1, \"available\": 1}, \"charts\": [{\"chart_id\": 41, \"title\": \"Doanh thu theo danh mục\", \"chart_type\": \"BAR\", \"summary\": {\"chart_name\": null, \"chart_type\": null, \"total_rows\": null, \"columns\": []}, \"read_status\": \"ok\", \"data\": {\"ok\": true, \"kind\": \"table\", \"data\": {\"columns\": [\"category\", \"revenue\"], \"rows\": [\"… (lồng quá sâu, đã cắt)\"]}}, \"rows_ordered_by\": \"revenue\"}], \"filters\": {\"ok\": true, \"kind\": \"table\", \"data\": {\"columns\": [\"category\", \"revenue\"], \"rows\": [[\"moveis\", 1200]]}}, \"read_ok\": true}"
   },
   "tool_calls": [
     {
