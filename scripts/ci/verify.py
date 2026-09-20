@@ -160,14 +160,25 @@ def plan_command(test_id: str, spec: dict) -> tuple[list[str] | None, Path, dict
     if not cmd:
         return None, REPO_ROOT, {}, "no run command in the registry"
 
-    # pytest suites — the common case. Paths are repo-relative; run them from
-    # backend/ so `import app.*` resolves the way the suites expect.
+    # pytest suites under backend/ — run from backend/ so `import app.*` resolves
+    # the way those suites expect.
     m = re.fullmatch(r"pytest\s+(backend/\S+\.py(?:\s+backend/\S+\.py)*)", cmd)
     if m:
         rel = [p[len("backend/"):] for p in m.group(1).split()]
         env = {"PYTHONPATH": str(REPO_ROOT / "backend"),
                "DATABASE_URL": os.environ.get("DATABASE_URL", "sqlite:///./_verify_gate.db")}
         return [sys.executable, "-m", "pytest", "-q", *rel], REPO_ROOT / "backend", env, ""
+
+    # pytest suites anywhere else (scripts/ci/** holds the safety-system tests).
+    # Without this the meta-gates report UNVERIFIED purely because the pattern above
+    # only matched backend paths - a runnable gate wrongly counted as no coverage.
+    m = re.fullmatch(r"pytest\s+((?:\S+\.py)(?:\s+\S+\.py)*)", cmd)
+    if m:
+        rel = m.group(1).split()
+        missing = [r for r in rel if not (REPO_ROOT / r).exists()]
+        if missing:
+            return None, REPO_ROOT, {}, f"test file(s) not found: {', '.join(missing)}"
+        return [sys.executable, "-m", "pytest", "-q", *rel], REPO_ROOT, {}, ""
 
     # Plain `python <script.py> [args]` with no leading env assignments.
     m = re.fullmatch(r"python\s+(\S+\.py)(\s+.*)?", cmd)
