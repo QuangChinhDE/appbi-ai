@@ -90,6 +90,34 @@ CostClass = Literal["cheap", "data_query", "expensive", "external"]
 PayloadSize = Literal["small", "medium", "large", "scales_with_report"]
 
 
+#: WHAT A RESULT EXPOSES, which is not the same as what the tool reads.
+#:
+#: `rank_values` reads every row of a chart to rank it; what comes back is an
+#: ordered list of figures. `get_chart_data` reads the same rows and hands them
+#: over. A capability written as "may not read rows" would disable the first,
+#: which is the whole analytical half of the product; the property that actually
+#: needs governing is whether ROW-LEVEL RECORDS reach a model's context.
+#:
+#:   metadata   — structure only: names, types, filters. No warehouse read.
+#:   derived    — figures computed OVER rows. Reads data, exposes conclusions.
+#:   raw_rows   — row-level records, as rows.
+DataExposure = Literal["metadata", "derived", "raw_rows"]
+
+#: WHAT CALLING IT DOES TO THE WORLD, which is not the same as what it returns.
+#:
+#: The default is `unknown` and that is the whole point of the field. A default of
+#: "safe" means the tool somebody adds next year and forgets to classify — the one
+#: that deletes a record, sends an email, writes to a workboard — is governed as
+#: harmless. Backwards compatibility must not become a fail-open default for the
+#: future, so today's 36 tools are migrated explicitly instead.
+#:
+#:   unknown      not classified yet. May not be run as an action.
+#:   read_only    reads. Changes nothing.
+#:   side_effect  changes something, reversibly.
+#:   destructive  changes something that cannot be undone.
+RiskClass = Literal["unknown", "read_only", "side_effect", "destructive"]
+
+
 @dataclass(frozen=True)
 class ToolSpec:
     """One tool, declared once."""
@@ -145,6 +173,41 @@ class ToolSpec:
     #: between two tools whose names both sound right.
     answers_vi: tuple[str, ...] = ()
 
+    # ── the two properties a gate reads ──────────────────────────────────────
+    #: See `DataExposure`. The default is the SAFE-TO-DEFAULT value: a tool that
+    #: forgot to declare is treated as computing over rows, never as exposing
+    #: them. Forgetting is still caught — `test_tool_authorization_metadata.py`
+    #: scans the pack sources and fails on any row-shaped tool that inherited it.
+    data_exposure: DataExposure = "derived"
+    #: WHICH ARGUMENTS NAME A GOVERNED RESOURCE — `{argument: resource type}`.
+    #:
+    #: Declared rather than inferred from the argument's NAME. A scope test that
+    #: greps for `chart_id` is a test that silently stops covering the tool whose
+    #: author called it `chart_a`, and silently never covered `doc_id` at all.
+    #: Security semantics belong in the declaration, not in a regex over it.
+    #:
+    #: This is also the seam a generic or MCP-supplied tool will arrive through:
+    #: such a tool has no pack author to remember the rule, so the rule has to be
+    #: something the registry can check.
+    resource_refs: dict[str, str] = field(default_factory=dict)
+    #: See `RiskClass`. Fails CLOSED: a tool that does not classify itself is
+    #: `unknown`, and `unknown` is not permitted to act.
+    risk: RiskClass = "unknown"
+    #: JSON Schema of `result.data` — NOT of the envelope.
+    #:
+    #: `ok`, `kind`, `coverage` and `error_code` are the platform's contract: every
+    #: tool has them and no tool should restate them. What varies from tool to tool
+    #: is the payload, so that is what gets a schema, and a consumer wiring a
+    #: variable writes `{{ranking.items}}` rather than `{{ranking.data.items}}`.
+    #:
+    #: This does NOT replace `returns`. Two contracts, two readers: `returns` is a
+    #: sentence for an author choosing a tool and for a person reading a failed
+    #: run; `output_schema` is for a ToolNode wiring one step's output into the
+    #: next step's input without a model in between. Trying to make one field serve
+    #: both is why `returns` today has keys like `'actual / target'` — prose being
+    #: read as a schema.
+    output_schema: dict[str, Any] = field(default_factory=dict)
+
     def __post_init__(self) -> None:
         if self.cacheable and not self.deterministic:
             raise ValueError(
@@ -155,15 +218,39 @@ class ToolSpec:
             raise ValueError(
                 f"tool '{self.name}': a tool that leaves AppBI must not be cacheable"
             )
+        # Whether a `table`-shaped tool DECLARED its exposure rather than
+        # inheriting the default cannot be seen from here — a dataclass cannot
+        # tell a passed value from a default one. That check is a source scan in
+        # `test_tool_authorization_metadata.py`, which is also where tool #37
+        # turns CI red for forgetting.
+        if self.data_exposure not in ("metadata", "derived", "raw_rows"):
+            raise ValueError(
+                f"tool '{self.name}': data_exposure must be metadata|derived|raw_rows"
+            )
+        if self.risk not in ("unknown", "read_only", "side_effect", "destructive"):
+            raise ValueError(
+                f"tool '{self.name}': risk must be "
+                "unknown|read_only|side_effect|destructive"
+            )
 
     def to_dict(self) -> dict[str, Any]:
         """For the builder's tool picker.
 
-        No callable and no input schema: a picker needs to know what a tool IS,
-        and shipping the argument schema would invite the frontend to start
-        reasoning about arguments. The OUTPUT contract is shipped, because that
-        is what an author needs in order to wire a tool's result into the next
-        node — the question the picker exists to answer.
+        No callable, and no raw JSON Schema: a picker needs to know what a tool
+        IS, and shipping the model-facing schema would invite the frontend to
+        start reasoning about arguments. The OUTPUT contract is shipped, because
+        that is what an author needs in order to wire a tool's result into the
+        next node — the question the picker exists to answer.
+
+        WHAT CHANGED WITH ToolNode, AND WHY IT IS NOT A REVERSAL.
+
+        A ToolNode's inspector has to RENDER one row per argument: an author
+        binding `chart_id` to a variable cannot type the argument name, because a
+        misspelling reaches a viewer. So `inputs` now ships a flat summary —
+        name, JSON type, required, one line of help — and nothing else. The
+        frontend renders it; it does not validate against it and does not infer
+        from it. The backend remains the only place an argument is judged, which
+        is the property the original decision was protecting.
         """
         return {
             "name": self.name,
@@ -179,7 +266,31 @@ class ToolSpec:
             "cacheable": self.cacheable,
             "self_sufficient": self.self_sufficient,
             "answers_vi": list(self.answers_vi),
+            "risk": self.risk,
+            "output_schema": self.output_schema,
+            "inputs": self.input_summary(),
         }
+
+    def input_summary(self) -> dict[str, dict[str, Any]]:
+        """One row per argument, for a form to render. Not a schema to reason with.
+
+        Flattened on purpose: `{name: {type, required, description}}` is what a
+        row needs and nothing more. Nested shapes, enums and defaults stay in the
+        model-facing schema, where the backend reads them.
+        """
+        schema = (self.definition or {}).get("input_schema")             or (self.definition or {}).get("parameters")             or ((self.definition or {}).get("function") or {}).get("parameters")             or {}
+        props = schema.get("properties") or {}
+        required = set(schema.get("required") or [])
+        out: dict[str, dict[str, Any]] = {}
+        for name, prop in props.items():
+            if not isinstance(prop, dict):
+                continue
+            out[name] = {
+                "type": prop.get("type") or "string",
+                "required": name in required,
+                "description": str(prop.get("description") or "")[:200],
+            }
+        return out
 
 
 @dataclass
@@ -230,10 +341,14 @@ def _load_packs() -> None:
     if _PACKS:
         return
     from app.services.agent_flows.tools.packs import (
-        compare, diagnose, external, knowledge, measure, project, read,
+        compare, diagnose, discover, external, knowledge, measure, project, read,
     )
 
-    for mod in (read, measure, compare, diagnose, project, knowledge, external):
+    # `discover` leads, because it is what a turn does first: work out WHICH
+    # asset the question is about. It was the missing step — 20 of these tools
+    # require a chart_id and, until this pack, one name-matching listing was the
+    # only thing that issued one.
+    for mod in (discover, read, measure, compare, diagnose, project, knowledge, external):
         register_pack(mod.PACK)
 
 
@@ -752,6 +867,44 @@ def _fence_untrusted(spec: "ToolSpec", out: dict) -> dict:
     return out
 
 
+def _capability_refusal(ctx: Any, spec: ToolSpec) -> dict | None:
+    """Refuse a tool the BINDING withheld, at the moment before it runs.
+
+    `allowed` answers a different question — "did the author grant this tool to
+    this step" — and answering only that left a gap with two live halves.
+
+    WEB. The external pack is hidden from the schema when the deployment has web
+    research off, and the node's own grant list is what `allowed` is built from.
+    So a model that names `web_search` anyway — some do, when a prompt mentions
+    one — passed `allowed` (the author DID grant it) and reached the body, on a
+    binding whose `capabilities.web_search` is false. The node handler checks the
+    capability before it builds the schema; nothing checked it before the call.
+
+    ROWS. `capabilities.read_rows` was read in exactly one place in the codebase,
+    the report-read node, and no tool could see it. It is not "may not read rows"
+    — every computing tool reads rows to compute, and a gate on reading would
+    disable `rank_values`, `total_measure` and every comparison. What it governs
+    is whether ROW-LEVEL RECORDS reach the model's context, which is
+    `spec.data_exposure == "raw_rows"`.
+
+    Both are read off the CONTEXT rather than the binding, because a tool body
+    cannot see the binding and should not learn to — the same reason
+    `max_rows_per_call` and `max_result_tokens` travel that way.
+    """
+    if spec.reaches_outside and getattr(ctx, "web_search", True) is False:
+        return R.err(
+            f"công cụ '{spec.name}' cần quyền tìm kiếm web, link này không bật",
+            code="not_granted",
+        )
+    if spec.data_exposure == "raw_rows" and getattr(ctx, "read_rows", True) is False:
+        return R.err(
+            f"công cụ '{spec.name}' trả về dữ liệu dòng thô, link này không cho "
+            "đưa dòng thô vào ngữ cảnh — dùng công cụ tính sẵn để lấy con số",
+            code="not_granted",
+        )
+    return None
+
+
 def execute(
     ctx: Any,
     name: str,
@@ -783,6 +936,10 @@ def execute(
     spec = tools.get(name)
     if spec is None:
         return R.err(f"không có công cụ tên '{name}'", code="unknown_tool")
+
+    denied = _capability_refusal(ctx, spec)
+    if denied is not None:
+        return denied
 
     args = args or {}
     key = None

@@ -133,8 +133,6 @@ def run_scope(
     brain_row: AgentBrainVersion,
     brain: Brain,
     binding_scope: dict[str, list] | None = None,
-    *,
-    viewer: Any | None = None,
 ) -> dict[str, list]:
     """The knowledge scope a RUN of this brain may reach.
 
@@ -150,13 +148,14 @@ def run_scope(
     document the flow never attached — that would let whoever manages a public link
     borrow the author's reading rights for something the author never chose.
 
-    `viewer` is a FOURTH term, and it exists for direct chat only. A public viewer is
-    anonymous and has no rights of their own, which is why delegation is the whole
-    model there. A signed-in user does have rights, and borrowing the owner's where
-    their own fall short would make the Chat module a way to read documents nobody
-    granted them. So when a viewer is given, the scope narrows again to what THEY may
-    read. It can only ever subtract; passing None leaves the public path's behaviour
-    byte-for-byte unchanged.
+    THE READER IS NOT A TERM, ON EITHER SURFACE. A fourth intersection against the
+    signed-in reader's own grants was tried for Direct Chat and removed: it made the
+    same flow answer LESS to a named employee than to an anonymous stranger on a
+    public link, and it made "I shared this assistant with you" mean nothing until
+    somebody also shared every document behind it. Delegation is the model the whole
+    module is built on — sharing a brain lends its owner's reading rights — and
+    `share_disclosure()` exists so that lending is stated out loud at the moment it
+    happens. One rule for both surfaces.
 
     Fails CLOSED: an owner who cannot be resolved yields an empty scope, so the flow
     runs with no attached knowledge rather than with all of it.
@@ -187,31 +186,155 @@ def run_scope(
         for field in ("doc_ids", "dataset_ids", "metric_names"):
             allowed = set(binding_scope.get(field) or [])
             scope[field] = [x for x in scope[field] if x in allowed]
-
-    if viewer is not None:
-        # The signed-in caller's own rights, applied last so it cannot be widened by
-        # anything above it. `metric_names` is deliberately left alone: a metric is a
-        # name inside a dataset's governed catalogue and carries no separate grant,
-        # so it is already bounded by the dataset intersection on the line above.
-        viewer_docs = attachable_documents(db, viewer)
-        viewer_datasets = attachable_datasets(db, viewer)
-        scope["doc_ids"] = [x for x in scope["doc_ids"] if x in viewer_docs]
-        scope["dataset_ids"] = [x for x in scope["dataset_ids"] if x in viewer_datasets]
     return scope
 
 
-def share_disclosure(brain: Brain) -> list[dict[str, str]]:
+
+def chart_scope(db: Session, knowledge_scope: dict[str, Any] | None) -> set[int]:
+    """The charts a run may measure because of what the FLOW attached.
+
+    The companion to `run_scope`, one level down: that returns the datasets a run
+    may reach, this returns the charts built on them. Same ceiling, same three
+    terms — a dataset only appears in `knowledge_scope` after owner ∩ flow ∩ link
+    have all agreed, so narrowing a link's knowledge narrows these charts too.
+
+    WHO NEEDS IT, AND WHY IT IS NOT THE SAME QUESTION ON BOTH SURFACES
+    -----------------------------------------------------------------
+    chat  It is the WHOLE chart scope. There is no report and no link, so this set
+          was previously hardcoded empty — `assert_chart_in_scope` refused every
+          id and 20 of the 36 tools were dead on that surface. An assistant that
+          could read documents and never measure anything is not an assistant.
+
+    bot   It is ADDED to the link's own charts. A bot always starts with the report
+          the viewer is on; attaching a dataset is how its author says "and also
+          these", which is the only way a bot flow reaches past one report.
+
+    Scoped by DATASET rather than by report because that is the unit a question
+    lives in. Measured on this deployment: one dataset reaches 184 charts across 8
+    reports, where one report reaches 70 — and a question about revenue does not
+    know or care which report someone drew it on.
+
+    WHAT THIS WIDENS, SAID PLAINLY. On a public link the viewer is anonymous, so
+    attaching a dataset to a bot flow lets that viewer ask about charts on reports
+    they were never given. That is the same delegation the module already applies
+    to documents — attaching one exposes its content the same way — and it is
+    bounded the same way: `check_attachments` refuses to attach what the author
+    cannot read, `share_disclosure()` names every source out loud, and a link may
+    narrow the knowledge contract to drop it. It is never automatic: a flow that
+    attached no dataset reaches no extra charts, which is every flow that exists
+    at the time this was written.
+    """
+    ids = [
+        int(x) for x in ((knowledge_scope or {}).get("dataset_ids") or [])
+        if str(x).strip().lstrip("-").isdigit()
+    ]
+    if not ids:
+        return set()
+
+    from app.models.dataset import DatasetTable
+    from app.models.models import Chart
+
+    tables = [
+        t[0] for t in
+        db.query(DatasetTable.id).filter(DatasetTable.dataset_id.in_(ids)).all()
+    ]
+    if not tables:
+        return set()
+    return {
+        c[0] for c in
+        db.query(Chart.id).filter(Chart.dataset_table_id.in_(tables)).all()
+    }
+
+def share_disclosure(brain: Brain, db: Session | None = None) -> list[dict[str, str]]:
     """What a share dialog must say out loud.
 
     Sharing this brain lends reading rights to everything in this list. An
     undisclosed delegation is a hole; a disclosed one is a feature, and the only
     difference is whether this text is on the screen.
+
+    NAMES, NOT IDS. This used to return `{"label": "Bộ dữ liệu", "ref": "111"}` —
+    true, and useless on a screen: nobody approving a share knows what dataset 111
+    is, and a disclosure nobody can read discloses nothing. Pass `db` and each row
+    carries the title the author saw when they attached it.
+
+    It also says how far a dataset REACHES. Attaching one now grants the charts
+    built on it, which is a much larger statement than "this flow can query a
+    table" — measured here, one dataset is 184 charts across 8 reports — and the
+    person clicking Share is the one who should see that number.
     """
-    labels = {"document": "Tài liệu", "semantic": "Bộ dữ liệu", "metric": "Chỉ số"}
-    return [
-        {"source": s.source, "label": labels.get(s.source, s.source), "ref": s.ref}
-        for s in brain.bound_sources()
-    ]
+    labels = {
+        "document": "Tài liệu", "semantic": "Bộ dữ liệu",
+        "metric": "Chỉ số", "term": "Thuật ngữ",
+    }
+    out: list[dict[str, str]] = []
+    sources = list(brain.bound_sources())
+    names = _source_names(db, sources) if db is not None else {}
+    charts = _chart_counts(db, sources) if db is not None else {}
+    for s in sources:
+        row = {
+            "source": s.source,
+            "label": labels.get(s.source, s.source),
+            "ref": s.ref,
+            "name": names.get((s.source, s.ref), s.ref),
+        }
+        reach = charts.get(s.ref) if s.source == "semantic" else None
+        if reach:
+            row["reach"] = f"{reach} biểu đồ"
+        out.append(row)
+    return out
+
+
+def _source_names(db: Session, sources: list) -> dict[tuple[str, str], str]:
+    """Title per attached source, in one query per store. Best-effort: a name that
+    cannot be resolved falls back to the ref rather than hiding the row — a
+    disclosure that drops a source because its title lookup failed is worse than
+    one showing an id."""
+    from app.models.dataset import Dataset
+    from app.models.governance import GovernKnowledgeDoc
+
+    out: dict[tuple[str, str], str] = {}
+    doc_ids = [int(s.ref) for s in sources if s.source == "document" and s.ref.isdigit()]
+    ds_ids = [int(s.ref) for s in sources if s.source == "semantic" and s.ref.isdigit()]
+    try:
+        if doc_ids:
+            for did, title in (
+                db.query(GovernKnowledgeDoc.id, GovernKnowledgeDoc.title)
+                .filter(GovernKnowledgeDoc.id.in_(doc_ids)).all()
+            ):
+                out[("document", str(did))] = str(title or did)
+        if ds_ids:
+            for dsid, name in (
+                db.query(Dataset.id, Dataset.name).filter(Dataset.id.in_(ds_ids)).all()
+            ):
+                out[("semantic", str(dsid))] = str(name or dsid)
+    except Exception:  # noqa: BLE001
+        logger.warning("[brain] share disclosure name lookup failed", exc_info=True)
+    return out
+
+
+def _chart_counts(db: Session, sources: list) -> dict[str, int]:
+    """How many charts each attached dataset reaches — the size of what sharing
+    lends, which is the part a disclosure most needs to state."""
+    ds_ids = [int(s.ref) for s in sources if s.source == "semantic" and s.ref.isdigit()]
+    if not ds_ids:
+        return {}
+    try:
+        from sqlalchemy import func
+
+        from app.models.dataset import DatasetTable
+        from app.models.models import Chart
+
+        rows = (
+            db.query(DatasetTable.dataset_id, func.count(Chart.id))
+            .join(Chart, Chart.dataset_table_id == DatasetTable.id)
+            .filter(DatasetTable.dataset_id.in_(ds_ids))
+            .group_by(DatasetTable.dataset_id)
+            .all()
+        )
+        return {str(dsid): int(n) for dsid, n in rows}
+    except Exception:  # noqa: BLE001
+        logger.warning("[brain] share disclosure chart count failed", exc_info=True)
+        return {}
 
 
 def _resolve_owner(db: Session, brain_row: AgentBrainVersion) -> Any | None:

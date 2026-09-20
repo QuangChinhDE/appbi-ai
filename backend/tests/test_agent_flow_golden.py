@@ -1182,10 +1182,10 @@ def test_an_attached_source_that_matched_nothing_is_not_cited():
 
 
 # ── 16 · the node list is frozen, and the two halves must agree ───────────────
-#: The thirteen. Changing this list is a deliberate act; the test below makes it one.
+#: The fourteen. Changing this list is a deliberate act; the test below makes it one.
 FROZEN_NODE_TYPES = {
     "agent", "coordinate",                     # AI
-    "report_read", "knowledge", "web",         # data
+    "report_read", "knowledge", "web", "tool",  # data
     "if", "switch", "filter",                  # logic
     "loop", "stop", "delay",                   # flow
     "set_var", "transform",                    # utility
@@ -1210,7 +1210,15 @@ def test_the_node_list_is_exactly_the_frozen_thirteen():
 
     `coordinate` was added deliberately: routing was static author-written
     conditions, so either every specialist ran on every question or one hand-wired
-    branch matched and the rest of the flow sat idle."""
+    branch matched and the rest of the flow sat idle.
+
+    `tool` (V3.2) is the second deliberate addition. Twenty of the tools need a
+    `chart_id` and most questions an author builds a flow for are already decided;
+    reaching them through an agent costs a model round to choose the tool and
+    another to read the result, and puts every granted tool's schema in every
+    prompt of that step. This node spends `ToolSpec.self_sufficient`, which the
+    registry has documented as LATENT for exactly as long as no node could call a
+    tool directly."""
     assert _contract_node_types() == FROZEN_NODE_TYPES
 
 
@@ -1356,7 +1364,11 @@ def test_unpublish_archives_an_unbound_published_version(monkeypatch):
     db = Db()
     audited = []
     monkeypatch.setattr(binding_service, "list_for_flow", lambda *_args: [])
-    monkeypatch.setattr(reg, "_row_dict", lambda current: {"status": current.status})
+    # `**_` because `_row_dict` now takes a session too: it resolves the NAMES of
+    # the sources a share would lend, and a disclosure showing ids discloses nothing.
+    monkeypatch.setattr(
+        reg, "_row_dict", lambda current, **_: {"status": current.status}
+    )
     monkeypatch.setattr(reg, "_audit", lambda *args: audited.append(args[1:]))
 
     result = reg.unpublish_version(db, "golden", 1, "owner@appbi.io")

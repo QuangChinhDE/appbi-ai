@@ -1,0 +1,49 @@
+{
+  "answer_shape": {
+    "block_count": 1,
+    "citation_count": 0,
+    "figure_count": 0,
+    "has_answer": true
+  },
+  "citations": [],
+  "counts": {
+    "llm_calls": 2,
+    "steps": 4,
+    "tool_calls": 0
+  },
+  "execution_path": [
+    {
+      "key": "set",
+      "status": "ok",
+      "type": "set_var"
+    },
+    {
+      "key": "b",
+      "status": "ok",
+      "type": "agent"
+    },
+    {
+      "key": "b",
+      "status": "ok",
+      "type": "agent"
+    },
+    {
+      "key": "lap",
+      "status": "error",
+      "type": "loop"
+    }
+  ],
+  "fixture": "13_budget_exhausted",
+  "memory_set_keys": [],
+  "notice_codes": [
+    "budget_exhausted",
+    "answer_incomplete"
+  ],
+  "status": "partial",
+  "step_outputs": {
+    "b": "ok :: Result of the previous step:\n\nok :: Result of the previous step:\n\na, b, c, d, e",
+    "lap": "đã dùng 0/4 lượt công cụ và 2/2 lượt mô hình khi tới bước này",
+    "set": "[\"a\", \"b\", \"c\", \"d\", \"e\"]"
+  },
+  "tool_calls": []
+}

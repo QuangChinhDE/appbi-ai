@@ -438,10 +438,35 @@ async def run_for_link(
     # The payload ceiling travels the same way, for the same reason: a tool
     # body cannot see the binding and should not learn to.
     ctx.max_result_tokens = binding_info.capabilities.max_result_tokens
-    from app.services.agent_flows.permissions import run_scope
+    # AND THE TWO THAT WERE LEFT OUT OF THIS BLOCK. `read_rows` was read in one
+    # place in the whole codebase — the report-read node — so a tool granted to an
+    # agent step ignored it entirely; `web_search` was checked when the schema was
+    # built but not when a call arrived. Both now reach the registry's call-time
+    # gate by the same route as the two above.
+    ctx.read_rows = binding_info.capabilities.read_rows
+    ctx.web_search = binding_info.capabilities.web_search
+    from app.services.agent_flows.permissions import chart_scope, run_scope
 
     ctx.knowledge_scope = run_scope(
         db, row, flow, binding_info.knowledge.model_dump()
+    )
+    # AND ALSO THESE. The line above is the report the viewer is on; this one is
+    # what its author attached on top of it — the only way a bot flow reaches past
+    # a single report, and the thing that lets `search_business_assets` answer
+    # "which report shows this" rather than "the one you are looking at".
+    #
+    # A UNION, deliberately, and it does not escape the ceiling: every dataset here
+    # already survived owner ∩ flow ∩ link inside `run_scope`, so a link that
+    # narrows its knowledge contract narrows these charts with it. It is also never
+    # automatic — a flow that attached no dataset reaches no extra charts, which
+    # was every flow in this deployment when the union was written.
+    #
+    # `adopt_scope` rather than a plain assignment, because the added charts are
+    # not on this report: their names and their column-hiding rules come from the
+    # charts and datasets themselves, not from the dashboard's tiles.
+    ctx.adopt_scope(
+        set(ctx.allowed_chart_ids or set()) | chart_scope(db, ctx.knowledge_scope),
+        ctx.knowledge_scope.get("dataset_ids") or [],
     )
 
     fp = fingerprint(
@@ -575,6 +600,144 @@ def _record_blocked(
 
 
 # ═══ The Studio path ══════════════════════════════════════════════════════════
+def _studio_input(
+    *,
+    run_id: str,
+    question: str,
+    history: list[dict] | None,
+    session_key: str,
+    report: Any,
+    binding_info: Any,
+    memory: Any,
+    contract: Any,
+    provider: str,
+    model: str,
+) -> FlowInput:
+    """The ENVELOPE a studio turn runs on — one definition, two callers.
+
+    It takes the parts rather than computing them, because the two callers differ
+    legitimately in how the parts are obtained: a test loads session memory and
+    carries the link's token, a preview has neither. What must NOT differ is the
+    envelope itself. A preview assembled from a second definition would describe a
+    run that does not happen, and "what the AI sees" is the one screen that may not
+    be approximately right.
+
+    The first version of this function computed the parts too, and `run_preview`
+    went on building its own envelope beside it — a second definition shipped under
+    a docstring promising there was only one. Taking the parts is what makes the
+    sharing real instead of asserted.
+    """
+    turns = [
+        Turn(role=h.get("role", "user"), content=str(h.get("content") or ""))
+        for h in (history or [])
+        if isinstance(h, dict) and h.get("role") in ("user", "assistant")
+    ]
+    return FlowInput(
+        request=RequestInfo(
+            id=run_id, at=datetime.now(timezone.utc).isoformat(),
+            is_test=True, trigger="studio_test",
+        ),
+        question=QuestionInfo(
+            raw=question, normalized=question, turn_index=len(turns) // 2),
+        conversation=ConversationInfo(session_key=session_key, history=turns),
+        report=report,
+        binding=binding_info,
+        memory=memory or MemoryInfo(),
+        runtime=RuntimeInfo(
+            # Coerced at the boundary. The link's stored model is nullable and the
+            # envelope's types are fixed by design (L1: a field that is present
+            # always has the same type) — so the None-to-"" translation belongs
+            # here, once, rather than loosening the contract for every consumer.
+            provider=provider or "", model=model or "",
+            budget=BudgetEnvelope(**contract.budget.model_dump()),
+        ),
+    )
+
+
+# Deliberately NOT async: this awaits nothing. It assembles inputs and returns
+# them, and marking it async would promise a suspension point that does not
+# exist — which is how the endpoint first shipped returning a coroutine.
+def preview_step(
+    *,
+    flow: Flow,
+    version: int,
+    node_key: str,
+    binding: AgentFlowBinding,
+    dashboard: Any,
+    ctx: Any,
+    question: str,
+    history: list[dict] | None = None,
+    provider: str = "",
+    model: str = "",
+    base_system_prompt: str = "",
+) -> dict:
+    """What ONE step will hand the model, for a question the author types.
+
+    NOTHING IS CALLED AND NOTHING IS SPENT. This assembles the inputs and stops —
+    no provider, no tools, no warehouse. That is the point: an author checking
+    "will this step see what I think it sees" should not have to pay for an answer
+    to find out, and should not have to read the answer backwards to guess.
+
+    It is built on the SAME envelope `run_preview` builds, through the same
+    binding_service calls, because a preview assembled a second way would describe
+    a run that does not exist. The one thing it does differently is stop early.
+    """
+    from app.services.agent_flows.runtime import executor
+    from app.services.agent_flows.runtime.handlers import agent as agent_handler
+    from app.services.agent_flows.runtime.state import Budget, RunState
+
+    node = flow.node(node_key)
+    if node is None:
+        raise ValueError(f"không có bước '{node_key}' trong flow này")
+    if getattr(node, "type", "") != "agent":
+        raise ValueError("chỉ bước AI mới có prompt để xem trước")
+
+    report = build_report_info(dashboard, ctx)
+    binding_info = binding_service.build_binding_info(
+        binding, flow=flow, report=report, link_token="", version=version, ctx=ctx,
+    )
+    # The intersection is "what the LINK declared", so it only applies when there
+    # is one. On the chat surface there is no link and no report: the scope was
+    # already set from what the flow attached, and narrowing it by an allowlist
+    # that describes a report would empty it — showing the author a step that can
+    # reach nothing, on the exact screen they opened to find out what it reaches.
+    if dashboard is not None:
+        ctx.allowed_chart_ids = (
+            set(ctx.allowed_chart_ids or set()) & set(binding_info.allowed_chart_ids)
+        )
+    inp = _studio_input(
+        run_id=new_run_id(), question=question, history=history, session_key="",
+        report=report, binding_info=binding_info, memory=None,
+        contract=binding_service.contract_of(binding),
+        provider=provider, model=model,
+    )
+    state = RunState(
+        vars=inp.seed_vars(),
+        budget=Budget(
+            max_llm_calls=inp.runtime.budget.max_llm_calls,
+            max_tool_calls=inp.runtime.budget.max_tool_calls,
+            max_seconds=inp.runtime.budget.max_seconds,
+        ),
+    )
+    rctx = executor.RunContext(
+        inp=inp, flow=flow, ctx=ctx, api_key="",
+        base_system_prompt=base_system_prompt,
+        answer_key=flow.answering_key(), db=None,
+    )
+    out = agent_handler.preview(node, state, rctx)
+    # EARLIER STEPS HAVE NOT RUN, and the preview must not imply they have. A step
+    # that reads `{{dashboard_context}}` shows the placeholder unresolved here, and
+    # saying so is more useful than silently rendering an empty block — the author
+    # would read the gap as "this step gets nothing" rather than "this comes from
+    # the step above, at run time".
+    upstream = [
+        n.output_var for n in flow.all_nodes()
+        if getattr(n, "output_var", "") and n.key != node_key
+    ]
+    out["pending_upstream"] = sorted({v for v in upstream if v})
+    return out
+
+
 async def run_preview(
     db: Session,
     *,
@@ -584,6 +747,14 @@ async def run_preview(
     link: Any,
     dashboard: Any,
     ctx: Any,
+    #: The flow's stored row. Optional only so older callers keep working; pass it,
+    #: because it is what lets a test read the SAME knowledge a run reads. Without
+    #: it `ctx.knowledge_scope` is never set, and an unset scope does not mean
+    #: "nothing" — on a report it falls through to everything that report may read,
+    #: which is WIDER than the live ceiling, and on the chat surface it falls
+    #: through to nothing at all, which is narrower. Both make the Test panel
+    #: describe a run that does not happen.
+    brain_row: Any = None,
     question: str,
     session_key: str = "",
     history: list[dict] | None = None,
@@ -621,7 +792,31 @@ async def run_preview(
         binding, flow=flow, report=report,
         link_token=getattr(link, "token", ""), version=version, ctx=ctx,
     )
+    if brain_row is not None:
+        from app.services.agent_flows.permissions import run_scope as _run_scope
+
+        ctx.knowledge_scope = _run_scope(
+            db, brain_row, flow, binding_info.knowledge.model_dump()
+        )
+
     ctx.allowed_chart_ids = set(ctx.allowed_chart_ids or set()) & set(binding_info.allowed_chart_ids)
+    # THE SAME ADDON THE LIVE LINK GETS, so the Test button answers the question an
+    # author is actually asking it. Without this, attaching a dataset changed what a
+    # viewer could reach and changed nothing in the panel the author checks it in —
+    # and the honest reading of that gap is "the attachment did not work".
+    #
+    # Taken from the contract rather than re-derived: this path's contract is
+    # `knowledge.mode = flow_all`, so it already lists exactly what the flow
+    # attached, and the author testing is the owner whose rights those are.
+    from app.services.agent_flows.permissions import chart_scope as _chart_scope
+
+    _attached = list(binding_info.knowledge.dataset_ids or [])
+    if _attached:
+        ctx.adopt_scope(
+            set(ctx.allowed_chart_ids or set())
+            | _chart_scope(db, {"dataset_ids": _attached}),
+            _attached,
+        )
     contract = binding_service.contract_of(binding)
 
     turns = [
@@ -637,25 +832,10 @@ async def run_preview(
     )
     memory, memory_notices = load_memory(db, session_key=session_key, token=token, fp=fp)
 
-    inp = FlowInput(
-        request=RequestInfo(
-            id=run_id, at=datetime.now(timezone.utc).isoformat(),
-            is_test=True, trigger="studio_test",
-        ),
-        question=QuestionInfo(raw=question, normalized=question, turn_index=len(turns) // 2),
-        conversation=ConversationInfo(session_key=session_key, history=turns),
-        report=report,
-        binding=binding_info,
-        memory=memory,
-        runtime=RuntimeInfo(
-            # Coerced at the boundary. The link's stored model is nullable and the
-            # envelope's types are fixed by design (L1: a field that is present
-            # always has the same type) — so the None-to-"" translation belongs
-            # here, once, rather than loosening the contract for every consumer.
-            provider=provider or "",
-            model=model or "",
-            budget=BudgetEnvelope(**contract.budget.model_dump()),
-        ),
+    inp = _studio_input(
+        run_id=run_id, question=question, history=history, session_key=session_key,
+        report=report, binding_info=binding_info, memory=memory, contract=contract,
+        provider=provider, model=model,
     )
     async for ev in executor.run_flow(
         inp, flow=flow, ctx=ctx, api_key=api_key,
@@ -690,6 +870,39 @@ async def run_preview(
 
 
 # ═══ The direct-chat path ═════════════════════════════════════════════════════
+def chat_base_prompt(ctx: Any, *, max_tool_calls: int = 8) -> str:
+    """The shared base prompt for a step running with no report.
+
+    IT WAS NOT BEING BUILT AT ALL. `chat_api` calls `run_for_chat_thread` without
+    one, so `base_system_prompt` defaulted to `""` and every chat step ran with no
+    base — no citation contract, no answer-in-the-viewer's-language rule, no
+    analysis guardrails. Those are exactly the rules that stop an answer inventing
+    a figure, and Chat was the one surface running without them.
+
+    The builder's preview panel meanwhile DID build one, so it showed authors a
+    base prompt the run never received — and the report-flavoured base at that,
+    which opens "You are an AI Data Analyst embedded in a published BI dashboard".
+    Two different wrong answers to the same question; this is the one answer.
+
+    `surface="chat"` swaps only the opening and the context block. Everything after
+    them holds on either surface and is not duplicated.
+    """
+    from app.services.dashboard_ai_bot.thinking.prompts import build_agent_system_prompt
+
+    return build_agent_system_prompt(
+        dashboard_name="",
+        dashboard_description=None,
+        chart_count=len(getattr(ctx, "allowed_chart_ids", None) or []),
+        filters_applied=[],
+        max_tool_calls=max_tool_calls,
+        # A flow grants tools per NODE, so the prose narration is both a duplicate
+        # of the API's `tools` field and wrong for every node holding fewer tools
+        # than the product has. Same reason the link path drops it.
+        include_tools=False,
+        surface="chat",
+    )
+
+
 async def run_for_chat_thread(
     db: Session,
     *,
@@ -725,18 +938,20 @@ async def run_for_chat_thread(
                   to read and answer from an empty result instead of refusing.
       binding     ephemeral, `id=0`, never saved. Charts are an explicit empty
                   allowlist, so `assert_chart_in_scope` refuses every id.
-      scope       `run_scope(viewer=user)` — the reader's own rights are a term here,
-                  because unlike a public viewer this reader HAS rights and must not
-                  borrow the author's where their own fall short.
-      actor       `CHAT_USER`, set by the caller. It is what makes `govern_tools`
-                  apply the reader's grants and what makes `remember_fact` refuse.
+      scope       `run_scope` — the SAME delegation the public path uses. Being
+                  shared the assistant is the whole gate; what it reads was decided
+                  by its author, and `share_disclosure()` says so when it is shared.
+      actor       `CHAT_USER`, set by the caller. It no longer changes what may be
+                  READ — it marks who is driving, which is what keeps `remember_fact`
+                  from letting a reader rewrite what the assistant knows, and what
+                  keeps one reader's cached tool results from serving another.
       permission  re-resolved every turn (`resolve_for_chat`), so an unshared flow,
                   an unpublished one, or one that has since grown a `report_read`
                   step stops the NEXT question rather than the next thread.
     """
     from app.models.user import User
     from app.services.agent_flows import direct_chat
-    from app.services.agent_flows.permissions import run_scope
+    from app.services.agent_flows.permissions import chart_scope, run_scope
 
     run_id = new_run_id()
     user = db.query(User).filter(User.id == user_id).first()
@@ -750,7 +965,24 @@ async def run_for_chat_thread(
         yield AgentEvent(type="done")
         return
 
+    # MAY THIS PERSON ADD TO THIS CONVERSATION? Separate from whether they may
+    # read it: a conversation shared at `view` is a transcript to look at, and a
+    # reader typing into it would be writing in somebody else's record.
+    if direct_chat.thread_access(db, user, thread) not in ("owner", "edit", "full"):
+        out = blocked(
+            run_id,
+            "Cuộc trò chuyện này được chia sẻ cho bạn ở mức chỉ đọc.",
+            "thread_read_only",
+        )
+        yield AgentEvent(type="text", text=out.answer.plain_text())
+        yield AgentEvent(type="result", extra={"envelope": out.to_dict()})
+        yield AgentEvent(type="done")
+        return
+
     direct_chat.touch(db, thread, title_from=question)
+    # AND MAY THEY USE THE ASSISTANT? Checked against the FLOW's own share, not the
+    # conversation's — which is what stops handing somebody a conversation from
+    # becoming a way around who may run the flow behind it.
     row, flow, problem = direct_chat.resolve_for_chat(db, user, thread.brain_key)
 
     if problem or flow is None or row is None:
@@ -773,14 +1005,26 @@ async def run_for_chat_thread(
         binding, flow=flow, report=report, link_token="", version=row.version, ctx=ctx,
     )
 
-    # No charts, said twice. The contract's allowlist is empty and so is this, but
-    # the tool context is what `assert_chart_in_scope` actually reads.
-    ctx.allowed_chart_ids = set()
     ctx.max_rows_per_call = binding_info.capabilities.max_rows_per_call
     ctx.max_result_tokens = binding_info.capabilities.max_result_tokens
-    ctx.knowledge_scope = run_scope(
-        db, row, flow, binding_info.knowledge.model_dump(), viewer=user
+    # The chat surface declares `read_rows=False`, and until now nothing read it.
+    ctx.read_rows = binding_info.capabilities.read_rows
+    ctx.web_search = binding_info.capabilities.web_search
+    ctx.knowledge_scope = run_scope(db, row, flow, binding_info.knowledge.model_dump())
+    # THE CHARTS THIS ASSISTANT WAS GRANTED — derived from the knowledge scope, not
+    # from a link. A chat flow that attached no dataset still measures nothing, so
+    # attaching remains the gate; what changed is that attaching now opens it.
+    #
+    # `adopt_scope` rather than a plain assignment: with no dashboard this context
+    # also has no chart NAMES and no column-exclusion rules, and a catalogue of
+    # charts called "Chart 412" is one no question can match.
+    ctx.adopt_scope(
+        chart_scope(db, ctx.knowledge_scope),
+        ctx.knowledge_scope.get("dataset_ids") or [],
     )
+    # Built HERE, not by the caller, because it needs the chart count and the scope
+    # is only known once `adopt_scope` has run. A caller may still override it.
+    base_system_prompt = base_system_prompt or chat_base_prompt(ctx)
 
     fp = fingerprint(
         binding_id=0, version=row.version, filters=[], charts=[], locale=locale,

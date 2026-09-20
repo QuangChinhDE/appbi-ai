@@ -1,0 +1,25 @@
+{
+  "covers": [
+    "reuse",
+    "run_policy when_stale"
+  ],
+  "flow": {
+    "answer_node": "answer",
+    "nodes": [
+      {
+        "detail": "index",
+        "key": "read",
+        "output_var": "bao_cao",
+        "run_policy": "when_stale",
+        "type": "report_read"
+      },
+      {
+        "key": "answer",
+        "name": "Tra loi",
+        "prompt": "Tra loi: {{question}}",
+        "type": "agent"
+      }
+    ]
+  },
+  "name": "07_reuse_path"
+}

@@ -53,10 +53,20 @@ interface ShareDialogProps {
   resourceType: string;
   resourceId: number | string;
   resourceName: string;
+  /** What sharing THIS resource lends beyond itself, shown above the controls.
+   *
+   *  Most resources lend only themselves and pass nothing here. An Agent Flow does
+   *  not: sharing one lends its author's reading rights to every source the flow
+   *  attached — that is the module's delegation model, decided deliberately — and
+   *  a delegation nobody is told about is a hole, while a disclosed one is a
+   *  feature. The only difference is whether this text is on screen. */
+  notice?: React.ReactNode;
   onClose: () => void;
 }
 
-export function ShareDialog({ resourceType, resourceId, resourceName, onClose }: ShareDialogProps) {
+export function ShareDialog({
+  resourceType, resourceId, resourceName, notice, onClose,
+}: ShareDialogProps) {
   const { t } = useI18n();
   const [shares, setShares] = useState<ShareEntry[]>([]);
   const [users, setUsers] = useState<UserOption[]>([]);
@@ -272,6 +282,9 @@ export function ShareDialog({ resourceType, resourceId, resourceName, onClose }:
       size="lg"
     >
       <div className="space-y-5">
+        {/* ABOVE the controls, not below them: it has to be read before the click,
+            not found after it. */}
+        {notice}
         {error && (
           <p className="text-caption text-danger bg-danger/10 border border-danger/20 rounded-md px-3 py-2">
             {error}

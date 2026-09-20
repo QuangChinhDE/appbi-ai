@@ -26,7 +26,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.models.agent_brain import AgentBrainVersion
-from app.services.agent_flows.contract import Flow, upgrade_body
+from app.services.agent_flows.contract import DEFAULT_FLOW_TYPE, Flow, upgrade_body
 from app.services.agent_flows.permissions import check_attachments, share_disclosure
 
 logger = logging.getLogger(__name__)
@@ -97,13 +97,20 @@ def flow_id_to_key(db: Session, flow_id: int) -> str | None:
     return row[0] if row else None
 
 
-def _row_dict(row: AgentBrainVersion, *, include_body: bool = True) -> dict[str, Any]:
+def _row_dict(
+    row: AgentBrainVersion, *, include_body: bool = True, db: Session | None = None,
+) -> dict[str, Any]:
     out: dict[str, Any] = {
         "brain_key": row.brain_key,
         # What a link carries. Callers keep using brain_key for every request.
         "flow_id": row.flow_id,
         "version": row.version,
         "status": row.status,
+        # Which surface this flow was built for. On every summary rather than behind
+        # its own call, because it changes what the row MEANS: a list of assistants
+        # where half of them cannot be used where you are standing needs to say so
+        # in the list, not after the click.
+        "flow_type": str(getattr(row, "flow_type", "") or "bot"),
         "name": row.name,
         "description": row.description or "",
         "owner_email": row.owner_email,
@@ -124,8 +131,10 @@ def _row_dict(row: AgentBrainVersion, *, include_body: bool = True) -> dict[str,
             out["node_count"] = 0
             out["requirements"] = {"items": [], "capabilities": []}
         else:
-            out["warnings"] = flow.warnings()
-            out["reads"] = share_disclosure(flow)
+            out["warnings"] = flow.warnings(
+                str(getattr(row, "flow_type", "") or DEFAULT_FLOW_TYPE)
+            )
+            out["reads"] = share_disclosure(flow, db)
             out["node_count"] = len(flow.all_nodes())
             out["requirements"] = flow.requirements.model_dump(mode="json")
             out["answer_node"] = flow.answering_key()
@@ -323,7 +332,7 @@ def get_brain(db: Session, brain_key: str, version: int | None = None) -> dict[s
         )
     if row is None:
         raise BrainError(404, "Không tìm thấy flow")
-    out = _row_dict(row)
+    out = _row_dict(row, db=db)
     published = (
         db.query(AgentBrainVersion)
         .filter(
@@ -390,6 +399,12 @@ def save_draft(
     description: str,
     body: dict,
     actor_email: str,
+    #: Which surface this flow is for. Honoured ONLY when creating the first
+    #: version — afterwards the type is carried from the previous one and changed
+    #: through its own endpoint, because changing it has to be able to REFUSE (a
+    #: flow that reads a report cannot become a chat flow) and a save is the wrong
+    #: place to discover that.
+    flow_type: str | None = None,
 ) -> dict[str, Any]:
     """Validate, check what it may attach, then UPSERT the open draft."""
     body = upgrade_body(body, key=brain_key, name=name)
@@ -443,9 +458,15 @@ def save_draft(
             # the flow can read without anybody choosing that.
             owner_email=existing_owner or actor_email,
             created_by=actor_email,
-            # Carried, like ownership: it is a property of the flow, so cutting a new
-            # version must not silently drop a flow out of the Chat module.
-            direct_chat_enabled=bool(getattr(latest, "direct_chat_enabled", False)),
+            # Carried, like ownership: it is a property of the flow, so cutting a
+            # new version must not silently change which surface it serves. The
+            # caller's value is honoured only when there is nothing to carry —
+            # which is exactly the moment the author is asked.
+            flow_type=(
+                str(getattr(latest, "flow_type", "") or DEFAULT_FLOW_TYPE)
+                if latest is not None
+                else (flow_type if flow_type in ("bot", "chat") else DEFAULT_FLOW_TYPE)
+            ),
         )
         db.add(row)
         _assign_flow_id(db, row)
@@ -458,7 +479,7 @@ def save_draft(
         {"version": row.version, "action": action,
          "summary": _summarise(previous_body, flow.to_dict())},
     )
-    return _row_dict(row)
+    return _row_dict(row, db=db)
 
 
 def publish(
@@ -531,7 +552,7 @@ def publish(
         db, "AGENT_FLOW_PUBLISHED", brain_key, actor_email,
         {"version": version, "pinned_links": pinned},
     )
-    out = _row_dict(row)
+    out = _row_dict(row, db=db)
     out["pinned_links"] = pinned
     return out
 
@@ -664,7 +685,7 @@ def restore_to_draft(
         db, "AGENT_FLOW_RESTORED", brain_key, actor_email,
         {"from_version": version, "into_version": row.version},
     )
-    return _row_dict(row)
+    return _row_dict(row, db=db)
 
 
 def delete_version(db: Session, brain_key: str, version: int, actor_email: str = "") -> None:
@@ -770,7 +791,7 @@ def unpublish_version(
     db.commit()
     db.refresh(row)
     _audit(db, "AGENT_FLOW_UNPUBLISHED", brain_key, actor_email, {"version": version})
-    return _row_dict(row)
+    return _row_dict(row, db=db)
 
 
 def has_any_version(db: Session, brain_key: str) -> bool:
@@ -880,8 +901,139 @@ def _summarise(old_body: Any, new_body: dict) -> str:
     return "Đã " + " và ".join(parts) + "."
 
 
+#: Pydantic's built-in constraint failures, said the way an author would say them.
+#: Only the ones a flow can actually produce — a missing key, a number out of
+#: range, a value outside a fixed set, a field of the wrong shape.
+_CONSTRAINT_VI = {
+    "missing": "thiếu giá trị",
+    "greater_than_equal": "phải ≥ {ge}",
+    "less_than_equal": "phải ≤ {le}",
+    "greater_than": "phải > {gt}",
+    "less_than": "phải < {lt}",
+    "string_too_short": "quá ngắn",
+    "string_too_long": "quá dài",
+    "int_parsing": "phải là số nguyên",
+    "int_type": "phải là số nguyên",
+    "float_parsing": "phải là số",
+    "bool_type": "phải là true/false",
+    "list_type": "phải là danh sách",
+    "dict_type": "phải là đối tượng",
+    "string_type": "phải là chữ",
+    "literal_error": "giá trị không nằm trong danh sách cho phép",
+    # Only reachable through a pasted draft: the builder's palette cannot produce a
+    # node type the executor does not have. Worth saying plainly anyway — that is
+    # exactly the path an outside model's confident JSON arrives by.
+    "union_tag_invalid": "loại bước không tồn tại",
+    "union_tag_not_found": "thiếu trường `type` (loại bước)",
+}
+
+
+#: What an index under each container is called on screen. A flow nests — a
+#: specialist inside a coordinator, a branch inside an IF, a step inside a loop —
+#: and numbering every level "bước #N" produced paths like
+#: "bước #1 · specialists · bước #1 · when", where the two numbers mean different
+#: things.
+_INDEX_NOUN = {
+    "nodes": "bước",
+    "body": "bước con",
+    "specialists": "chuyên gia",
+    "paths": "nhánh",
+    "cases": "trường hợp",
+    "items": "mục",
+    "tools": "công cụ",
+    "knowledge": "nguồn",
+    "conditions": "điều kiện",
+}
+
+#: The union tags pydantic inserts to say which variant it matched. Dropped: an
+#: author reading "bước #1 · agent · max_tool_calls" would reasonably wonder what
+#: the middle word is for.
+_UNION_TAGS = {
+    "agent", "report_read", "knowledge", "web", "set_var", "transform", "stop",
+    "delay", "filter", "if", "switch", "loop", "coordinate",
+}
+
+
+def _field_path(loc: tuple) -> str:
+    """`('nodes', 0, 'agent', 'max_tool_calls')` → `bước #1 · max_tool_calls`.
+
+    Each index is named by the container it indexes, so a nested path reads as
+    "bước #1 · chuyên gia #1 · when" rather than the same noun three times.
+    """
+    out: list[str] = []
+    container: str | None = None
+    for part in loc:
+        if isinstance(part, int):
+            noun = _INDEX_NOUN.get(container or "", "mục")
+            # The container word itself was appended a moment ago; replace it with
+            # the numbered form rather than saying both.
+            if out and out[-1] == container:
+                out[-1] = f"{noun} #{part + 1}"
+            else:
+                out.append(f"{noun} #{part + 1}")
+            continue
+        name = str(part)
+        if name in _UNION_TAGS:
+            container = None
+            continue
+        container = name
+        out.append(name)
+    return " · ".join(out)
+
+
 def _first_message(exc: Exception) -> str:
-    """Pydantic's repr is several lines of type noise; an author needs the sentence."""
+    """What is wrong with this flow, in a sentence an author can act on.
+
+    THIS USED TO RETURN A URL.
+    -------------------------
+    It scanned for a line starting with `Value error, ` — which only a hand-written
+    validator produces — and otherwise fell through to `text.splitlines()[-1]`.
+    The last line of a pydantic report is always
+    `For further information visit https://errors.pydantic.dev/…`, so EVERY
+    built-in constraint failure reached the author as a link to pydantic's website
+    and nothing else. Typing `0` into "max tool calls" put exactly that in the
+    builder's title bar, where the sentence "phải ≥ 1" belonged.
+
+    Reads `exc.errors()` rather than parsing the repr, because the structure is
+    already there: `loc` names the field, `type` names the constraint, `ctx`
+    carries its bound.
+    """
+    errors = getattr(exc, "errors", None)
+    if callable(errors):
+        try:
+            items = errors()
+        except Exception:  # noqa: BLE001 — a broken repr must not hide the error
+            items = []
+        if items:
+            first = items[0]
+            kind = str(first.get("type") or "")
+            ctx = first.get("ctx") or {}
+            if kind == "value_error":
+                # A validator we wrote. Its message is already the sentence — but
+                # pydantic prefixes `msg` with "Value error, ", which the old string
+                # scanner used to strip and this branch must too. Found by reading
+                # a real refusal in the builder: "Value error, mỗi chuyên gia phải
+                # nói rõ KHI NÀO nên dùng" is our sentence wearing pydantic's hat.
+                msg = str(first.get("msg") or "")
+                if msg.startswith("Value error, "):
+                    msg = msg[len("Value error, "):]
+                return _drop_pydantic_tail(msg)[:200]
+            say = _CONSTRAINT_VI.get(kind)
+            if say:
+                try:
+                    say = say.format(**{k: v for k, v in ctx.items()})
+                except (KeyError, IndexError):
+                    pass
+            else:
+                say = _drop_pydantic_tail(str(first.get("msg") or kind))
+            where = _field_path(tuple(first.get("loc") or ()))
+            extra = ""
+            if kind in ("literal_error", "union_tag_invalid") and ctx.get("expected"):
+                extra = f" (cho phép: {ctx['expected']})"
+            if kind == "union_tag_invalid" and ctx.get("tag"):
+                extra = f" — nhận được '{ctx['tag']}'" + extra
+            return (f"{where}: {say}{extra}" if where else f"{say}{extra}")[:200]
+
     text = str(exc)
     for line in text.splitlines():
         line = line.strip()
@@ -894,8 +1046,11 @@ def _first_message(exc: Exception) -> str:
             # appends that to every message; nothing above the API cares which
             # validator fired or what Python type the empty field was.
             return _drop_pydantic_tail(line[len("Value error, "):])
-    return _drop_pydantic_tail(text.splitlines()[-1])[:200] if text \
-        else "Cấu hình không hợp lệ"
+    # NEVER the last line: that is pydantic's documentation URL, which is what this
+    # function used to return for every constraint failure.
+    lines = [l.strip() for l in text.splitlines() if l.strip()]
+    body = [l for l in lines if not l.startswith("For further information")]
+    return _drop_pydantic_tail(body[-1])[:200] if body else "Cấu hình không hợp lệ"
 
 
 def _drop_pydantic_tail(line: str) -> str:

@@ -50,8 +50,20 @@ export interface ChatMessage {
   blocks?: AnswerBlock[];
 }
 
+/** How this person stands to a conversation.
+ *
+ *  owner  they started it — rename, delete and share are theirs
+ *  edit   it was shared with them and they may ask the next question in it
+ *  view   it was shared with them to read
+ *  full   they hold `chat: full` and are reading somebody else's, for oversight
+ */
+export type ThreadAccess = 'owner' | 'edit' | 'view' | 'full';
+
 export interface ChatThreadDetail extends ChatThread {
   brain_name: string;
+  /** Drives the input box, the rename field and the Share button from ONE value
+   *  rather than three guesses about what the server would allow. */
+  access: ThreadAccess;
   /** Non-empty when the flow can no longer answer: unpublished, unshared, or it has
    *  since grown a step that needs a report. The thread stays readable. */
   readonly_reason: string;

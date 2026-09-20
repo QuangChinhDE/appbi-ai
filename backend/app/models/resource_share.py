@@ -23,6 +23,15 @@ class ResourceType(str, enum.Enum):
     #: sharing one DELEGATES its author's reading rights — and a bespoke mechanism
     #: for that would be a second answer to "who may use this".
     AGENT_BRAIN = "agent_brain"
+    #: ONE CONVERSATION in AI Chat. Not the assistant and not the flow behind it —
+    #: this transcript, so the person who held it can show it to somebody else.
+    #:
+    #: Deliberately separate from AGENT_BRAIN, which answers "who may USE this
+    #: flow". Sharing a conversation must never become a way around that: reading
+    #: the transcript is what this grants, and asking a NEW question in it still
+    #: goes through the flow's own share. `CHAT_SESSION` above is an older, unused
+    #: value and is not this — it was never wired to anything.
+    CHAT_THREAD = "chat_thread"
 
 
 class SharePermission(str, enum.Enum):

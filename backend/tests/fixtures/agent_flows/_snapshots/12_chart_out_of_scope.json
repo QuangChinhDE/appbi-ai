@@ -1,0 +1,35 @@
+{
+  "answer_shape": {
+    "block_count": 1,
+    "citation_count": 0,
+    "figure_count": 0,
+    "has_answer": true
+  },
+  "citations": [],
+  "counts": {
+    "llm_calls": 2,
+    "steps": 1,
+    "tool_calls": 1
+  },
+  "execution_path": [
+    {
+      "key": "answer",
+      "status": "ok",
+      "type": "agent"
+    }
+  ],
+  "fixture": "12_chart_out_of_scope",
+  "memory_set_keys": [],
+  "notice_codes": [],
+  "status": "ok",
+  "step_outputs": {
+    "answer": "ok :: Doanh thu thế nào?ok :: Doanh thu thế nào?"
+  },
+  "tool_calls": [
+    {
+      "refused": "chart_out_of_scope",
+      "step": "answer",
+      "tool": "get_chart_summary"
+    }
+  ]
+}

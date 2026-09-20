@@ -1,0 +1,56 @@
+{
+  "covers": [
+    "coordinate",
+    "specialists"
+  ],
+  "flow": {
+    "answer_node": "answer",
+    "nodes": [
+      {
+        "key": "dieu_phoi",
+        "name": "Dieu phoi",
+        "prompt": "Chon chuyen gia",
+        "specialists": [
+          {
+            "body": [
+              {
+                "key": "a1",
+                "name": "CG A",
+                "output_var": "ra",
+                "prompt": "Doanh thu",
+                "run_policy": "every_turn",
+                "type": "agent"
+              }
+            ],
+            "key": "cg_a",
+            "name": "Doanh thu",
+            "when": "hoi ve doanh thu"
+          },
+          {
+            "body": [
+              {
+                "key": "b1",
+                "name": "CG B",
+                "output_var": "rb",
+                "prompt": "Danh gia",
+                "run_policy": "every_turn",
+                "type": "agent"
+              }
+            ],
+            "key": "cg_b",
+            "name": "Danh gia",
+            "when": "hoi ve danh gia"
+          }
+        ],
+        "type": "coordinate"
+      },
+      {
+        "key": "answer",
+        "name": "Tra loi",
+        "prompt": "Tra loi: {{question}}",
+        "type": "agent"
+      }
+    ]
+  },
+  "name": "15_coordinate"
+}

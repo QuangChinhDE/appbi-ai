@@ -60,6 +60,7 @@ PACK = ToolPack(
             deterministic=False,
             answers_vi=("Ngành này thế giới đang ở mức nào?",
                         "Benchmark tỉ lệ giao đúng hẹn TMĐT là bao nhiêu?"),
+            risk="read_only",
         ),
         local(
             "browse_ai_answer",
@@ -87,6 +88,7 @@ PACK = ToolPack(
             self_sufficient=False,
             answers_vi=("Ngành SaaS B2B Việt Nam tăng trưởng bao nhiêu %/năm 2024?",
                         "Biên lợi nhuận gộp trung bình ngành TMĐT Brazil?"),
+            risk="read_only",
         ),
         spec(
             "web_search",
@@ -105,6 +107,7 @@ PACK = ToolPack(
             reaches_outside=True,
             deterministic=False,
             answers_vi=("Ngành này trung bình bao nhiêu?",),
+            risk="read_only",
         ),
         spec(
             "fetch_url",
@@ -122,6 +125,7 @@ PACK = ToolPack(
             reaches_outside=True,
             deterministic=False,
             answers_vi=("Đọc giúp tôi trang này",),
+            risk="read_only",
         ),
         spec(
             "benchmark_compare",
@@ -146,6 +150,8 @@ PACK = ToolPack(
             reaches_outside=True,
             deterministic=False,
             answers_vi=("Tỉ lệ này so với thị trường thế nào?",),
+            resource_refs={"chart_id": "chart", "metric": "metric"},
+            risk="read_only",
         ),
     ],
 )

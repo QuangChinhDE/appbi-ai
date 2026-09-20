@@ -1,0 +1,24 @@
+{
+  "covers": [
+    "retry path"
+  ],
+  "flow": {
+    "answer_node": "answer",
+    "nodes": [
+      {
+        "key": "answer",
+        "name": "Tra loi",
+        "prompt": "Tra loi: {{question}}",
+        "retry": {
+          "max_attempts": 2,
+          "on": "error"
+        },
+        "type": "agent"
+      }
+    ]
+  },
+  "name": "09_retry_then_ok",
+  "provider": {
+    "fail_times": 1
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "name": "appbi-e2e",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Full-stack Playwright suite: real browser, real Next.js, real API, real database.",
+  "scripts": {
+    "test": "playwright test",
+    "test:critical": "playwright test --grep @critical",
+    "test:headed": "playwright test --headed",
+    "report": "playwright show-report",
+    "install-browsers": "playwright install chromium"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.63.0"
+  }
+}

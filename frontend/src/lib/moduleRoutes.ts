@@ -26,6 +26,15 @@ export const ROUTE_MODULES: ReadonlyArray<readonly [string, ModuleKey]> = [
   ['/observability', 'observability'],
   ['/govern', 'govern'],
   ['/agent-flows', 'agent_flows'],
+  // AI CHAT LIVES IN THE SAME KEY, and leaving it out of this map was not a
+  // no-op. An unmapped route fails OPEN by design (see below), so a user holding
+  // `agent_flows: none` who typed /chat got the whole module shell — heading,
+  // counters, search box — over an empty list that explains itself as "an
+  // assistant appears here once it is shared with you". It never would: they
+  // have no access at all, and the page was telling them to wait for a share.
+  // Verified by calling: every one of the module's 7 chat endpoints answers 403
+  // to that user, so nothing leaked — the page just lied about why it was empty.
+  ['/chat', 'chat'],
   ['/workboards', 'workboards'],
   ['/permissions', 'settings'],
 ] as const;

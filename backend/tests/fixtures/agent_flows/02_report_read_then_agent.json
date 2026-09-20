@@ -1,0 +1,25 @@
+{
+  "covers": [
+    "report_read",
+    "variable publish"
+  ],
+  "flow": {
+    "answer_node": "answer",
+    "nodes": [
+      {
+        "detail": "compact",
+        "key": "read",
+        "output_var": "bao_cao",
+        "run_policy": "every_turn",
+        "type": "report_read"
+      },
+      {
+        "key": "answer",
+        "name": "Tra loi",
+        "prompt": "Dua tren {{bao_cao}}",
+        "type": "agent"
+      }
+    ]
+  },
+  "name": "02_report_read_then_agent"
+}

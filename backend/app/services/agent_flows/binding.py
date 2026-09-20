@@ -720,7 +720,7 @@ def build_binding_info(
             values=list(entry.values),
         )
         if not ref.values and key in needs_values and entry.kind == "dimension" and ctx is not None:
-            ref.values = _distinct_values(ctx, entry)
+            ref.values, ref.values_error = _distinct_values(ctx, entry)
         resolved[key] = ref
 
     return BindingInfo(
@@ -753,25 +753,42 @@ def _requirements_looped_over(flow: Flow) -> set[str]:
     return out
 
 
-def _distinct_values(ctx: Any, entry: ResolveEntry) -> list[Any]:
+def _distinct_values(ctx: Any, entry: ResolveEntry) -> tuple[list[Any], str]:
     """Read the values a Loop will walk, through the normal chart-data path.
 
     Not a bespoke query: the same tool an agent would call, so the report's public
     filters are already merged in — a loop over segments must walk the segments the
     VIEWER can see, not every segment in the warehouse.
+
+    RETURNS `(values, error_code)`, AND THE SECOND HALF IS THE FIX.
+
+    This used to `return []` on any failure. `get_chart_data` is a governed tool:
+    it refuses a chart outside the binding, it refuses when the link withholds raw
+    rows, and it fails when the warehouse does. Every one of those arrived at the
+    caller as an empty list — the same value a dimension with genuinely no values
+    produces — so a Loop ran zero times and the run reported success.
+
+    An empty code means the read succeeded and found nothing. A code means it did
+    not succeed, and nothing downstream may read the emptiness as data.
     """
     if not entry.chart_id or not entry.field:
-        return []
+        return [], ""
     try:
         from app.services.agent_flows.tools import registry as tool_registry
 
         result = tool_registry.execute(
             ctx, "get_chart_data", {"chart_id": entry.chart_id, "top_n": 200}, allowed=None
         )
-        return _column_values((result or {}).get("data"), entry.field)[:50]
     except Exception:  # noqa: BLE001
-        logger.warning("[binding] could not read values for %s", entry.field)
-        return []
+        logger.warning("[binding] reading values for %s raised", entry.field)
+        return [], "internal"
+
+    if not isinstance(result, dict) or not result.get("ok"):
+        code = str((result or {}).get("error_code") or "query_failed")
+        logger.warning("[binding] could not read values for %s: %s", entry.field, code)
+        return [], code
+
+    return _column_values(result.get("data"), entry.field)[:50], ""
 
 
 def _column_values(data: Any, field: str) -> list[Any]:

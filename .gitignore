@@ -23,12 +23,29 @@ out/
 .DS_Store
 *.log
 
-# Claude AI / Copilot agent internal files
-.claude/
+# Claude AI / Copilot agent internal files.
+#
+# The agent's SHARED configuration is project infrastructure and must survive a
+# clone — instructions, scoped rules, skills and hooks are worth nothing if they
+# exist only on the machine that wrote them. Per-developer state (approved
+# permissions, session locks, caches) stays local. Note `.claude/*` rather than
+# `.claude/`: a file cannot be re-included while its parent directory is itself
+# excluded — the same reason the backend/tests block below is written this way.
+.claude/*
 CLAUDE.md
+!.claude/CLAUDE.md
+!.claude/settings.json
+!.claude/rules/
+!.claude/skills/
+!.claude/hooks/
 
-# Internal docs (not needed to run the project)
-docs/
+# Internal docs (not needed to run the project) — `docs/*` rather than `docs/`
+# so the one subtree below can be re-included; already-tracked docs are
+# unaffected either way.
+docs/*
+# …except the feature-artifact templates and the policy for using them, which
+# the workflow refers to and so must exist on a fresh clone.
+!docs/features/
 
 # Demo/test scripts (local only)
 seed_demo.py
@@ -49,6 +66,12 @@ seed_test_users.py
 create_dashboard.py
 explore_datasets.py
 check_*.py
+# …but scripts/ci/ holds real gates, not one-offs. preflight.sh and CI call this
+# one, so an ignored copy would mean a gate that cannot run on a fresh clone.
+!scripts/ci/check_*.py
+# Same for the workflow-gate tests: `test_*.py` is ignored globally, and a test
+# that vanishes on a fresh clone cannot protect the Stop hook.
+!scripts/ci/test_*.py
 fix_*.py
 add_*.py
 run.py
@@ -73,11 +96,9 @@ install-docker-and-run.sh
 # Release hygiene: local artifacts, sensitive backups, non-runtime references
 .artifacts/
 .env.bak.*
-Skill-AppBI/old/
-Skill-AppBI/*.zip
-# MCP per-chat working logs — keep folder, ignore session subfolders
-Skill-AppBI/appbi-dashboard-mcp/logs/*
-!Skill-AppBI/appbi-dashboard-mcp/logs/.gitkeep
+# (The MCP servers once under Skill-AppBI/ are gone: the two builder servers were
+# removed — their venvs/logs sit in .artifacts/removed-mcp/ — and the guardrail
+# moved to scripts/guardrail/, which needs no ignore rules of its own.)
 dashboard_example/
 demo_dataset/
 example/
@@ -90,8 +111,12 @@ ai-chat/UPGRADE_PLAN_V2.md
 ai-chat/WORKBOARDS_END_TO_END_DESIGN.md
 backend/README.md
 frontend/README.md
-# Serena MCP — machine-specific config (absolute paths/username) + local LSP cache; do not commit
+# Serena MCP — machine-specific config (absolute paths/username) + local LSP cache; do not commit.
+# `.mcp.example.json` IS committed: it carries only the repo-relative servers
+# (the engineering guardrail), so a fresh clone can register them without
+# inheriting anyone's absolute paths.
 .mcp.json
+!.mcp.example.json
 .vscode/mcp.json
 .serena/
 # E2E (Playwright) — local deps, secrets, run artifacts, saved auth session
@@ -111,19 +136,35 @@ e2e/_*.png
 # Local-only helpers (node_modules, .env, .auth, _*.mjs, shots) stay ignored above.
 !e2e/tests/
 !e2e/tests/**/*.ts
+# …but not one-off debugging probes. These dump page text and console errors to
+# stdout while chasing a bug; they assert nothing, so committing them would add
+# specs to the suite that can never fail. `_helpers.ts` is real shared code, so
+# the pattern is `_probe*` rather than `_*`.
+e2e/tests/_probe*.ts
 !e2e/playwright.config.ts
 !e2e/package.json
 
 # ── Local QA / test artifacts (screenshots, debug dumps, harnesses) — never push ──
 # Playwright-MCP working dir (page snapshots + screenshots written during testing)
 .playwright-mcp/
-# Loose root-level test screenshots + API response dumps (moved to .artifacts/test-screenshots/)
+# Loose root-level test screenshots + API response dumps.
+#
+# `.artifacts/` (ignored above) is where these belong, and the rules below are
+# the safety net for when a tool or a debugging session drops one at the root
+# anyway. The convention was declared here once and then not followed — 110
+# screenshots and two 300KB+ response dumps accumulated at the repo root, none
+# of them tracked but all of them in the way. They now live in
+# `.artifacts/screenshots/` and `.artifacts/debug-dumps/`.
 /*.png
 /*.jpg
 /*.jpeg
 /*.webp
 /*.gif
-/req*_resp.json
+/*.json
+!/.mcp.example.json
+# Manual-QA output dir: screenshots + HTML fixtures written during browser
+# testing. Nothing reads it; it belongs in .artifacts/qa-sessions/.
+/test-artifacts/
 # Codegraph MCP — local SQLite knowledge-graph cache + generated overview doc (tool artifacts)
 .codegraph/
 CODEGRAPH.md
@@ -160,10 +201,33 @@ backend/scripts/regression_*.py
 !backend/tests/test_filter_layered_merge.py
 !backend/tests/test_workboard_offline_relation_phase2.py
 !backend/tests/test_non_fanning_reachability.py
+!backend/tests/test_semantic_measure_render.py
+!backend/tests/test_dialect_structural.py
 # Agent Flow runtime safety net (branch/loop/retry/budget/memory/binding/
 # trace + the frozen node list). Tracked and CI-run for the same reason as
 # the suites above: a local-only test cannot protect a refactor.
 !backend/tests/test_agent_flow_golden.py
+!backend/tests/test_agent_tool_registry.py
+!backend/tests/test_tool_authorization_metadata.py
+!backend/tests/test_tool_capability_gates.py
+!backend/tests/test_tool_argument_contract.py
+!backend/tests/test_tool_result_ceiling.py
+!backend/tests/test_report_read_scope.py
+!backend/tests/test_chart_read_failure_reason.py
+!backend/tests/test_agent_flow_answer_contract.py
+!backend/tests/test_builder_error_messages.py
+!backend/tests/test_partial_context_admits_it.py
+!backend/tests/test_chat_chart_scope.py
+!backend/tests/test_discover_pack.py
+!backend/tests/test_agent_flow_replay.py
+!backend/tests/test_i5_hard_gate_stays_lowest.py
+!backend/tests/test_tool_output_contract.py
+!backend/tests/test_tool_node.py
+!backend/tests/test_error_taxonomy_and_empty.py
+!backend/tests/replay_harness.py
+!backend/tests/fixtures/
+!backend/tests/fixtures/**
+!backend/scripts/agent_flow_replay.py
 # Golden matrix — tracked so CI/reviewers can replay. BQ cases (ds55/56/65)
 # need a datasource → integration tier; the snowflake fixture seeds a local
 # Postgres and runs in CI.
@@ -192,7 +256,12 @@ backend/scripts/regression_*.py
 overview-snap.yml
 DA-Test/
 mobile/
-e2e/
+# `e2e/` is NOT ignored wholesale: the Playwright project is tracked code.
+# Its local-only parts (node_modules, .auth, .env, test-results, reports,
+# _*.mjs, shots) are ignored individually further up, and the specs, config
+# and package.json are re-included there. A bare `e2e/` here re-excluded the
+# whole directory AFTER those negations, so the suite could not be committed
+# at all — a later match wins.
 # Quarantined local screenshots/debug images moved out of repo root — rm anytime
 _local-shots/
 # OpenMetadata upstream clone (~382MB) — reference only; the OM stack pulls the
@@ -209,6 +278,7 @@ backend/scripts/seed_phase16_*.sql
 backend/scripts/finalize_demo_*.py
 backend/scripts/verify_demo_*.py
 backend/scripts/update_workboard10_*.py
+backend/scripts/setup_qaqc_*.py
 
 # GCP service-account keys (NEVER commit — snapshot materialization write SA)
 base-testlab-*.json

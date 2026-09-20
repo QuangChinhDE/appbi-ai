@@ -573,7 +573,7 @@ export function RunsTab({ brainKey }: { brainKey: string }) {
                   <>
                     <Label className="mt-3">{t('agentFlows.runs.viewerNotes')}</Label>
                     {detail.notices.map((n, i) => (
-                      <p key={i} className="mt-1 rounded-md border border-warning/20 bg-warning/5 p-2 text-tiny text-warning">
+                      <p key={i} className="mt-1 rounded-md border border-warning/20 bg-warning/5 p-2 text-caption leading-relaxed text-warning">
                         {n.text}
                       </p>
                     ))}

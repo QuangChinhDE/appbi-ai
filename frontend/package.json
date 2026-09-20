@@ -7,7 +7,13 @@
     "build": "next build",
     "typecheck": "tsc --noEmit",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "qa:module-routes": "node scripts/check-module-routes.mjs",
+    "qa:theme": "node scripts/check-theme-presets.mjs",
+    "qa:presentation": "node scripts/check-presentation-contract.mjs",
+    "qa": "npm run qa:module-routes && npm run qa:theme && npm run qa:presentation",
+    "test:e2e": "npm --prefix ../e2e test",
+    "test:e2e:critical": "npm --prefix ../e2e run test:critical"
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.20.1",

@@ -69,6 +69,26 @@ logger = logging.getLogger(__name__)
 #: by GMV" was the one question the knowledge node could not be pointed at.
 KnowledgeSourceKind = Literal["document", "semantic", "metric", "term"]
 
+#: Which surface a flow was built for — and therefore what it is HANDED.
+#:
+#:   bot   an anonymous viewer on a report. `dashboard_id` and the link's filters
+#:         always arrive, so a step may assume there is a report to read; the
+#:         author may attach further sources on top of that one.
+#:   chat  a signed-in reader typing. Only text arrives. Nothing supplies "the
+#:         report", so what the assistant may reach is decided by its author in
+#:         advance, and the question only steers inside that.
+#:
+#: Declared, never inferred. It used to be derived from a flow's SHAPE at the Chat
+#: door — which meant the author found out their assistant was unusable after
+#: building it, and meant nothing at all on the link side, where a chat-shaped flow
+#: could be assigned to a report with no check whatsoever.
+FlowType = Literal["bot", "chat"]
+
+#: The default for anything that predates the type or arrives without one. Every
+#: flow written before this existed was seeded `report_read → agent`, so it was
+#: written against a report whether or not anyone said so.
+DEFAULT_FLOW_TYPE: str = "bot"
+
 #: Total nodes anywhere in the tree. Not a quality opinion — depth is the author's
 #: call — but the point past which one turn's budget could not fund the flow.
 MAX_NODES = 40
@@ -422,6 +442,27 @@ class ReportReadNode(BaseNode):
     type: Literal["report_read"] = "report_read"
     #: Which chart ids to read. Empty means every chart the binding allows.
     chart_ids: list[int] = Field(default_factory=list)
+
+    #: READ WHAT THE QUESTION IS ABOUT, NOT EVERYTHING.
+    #:
+    #: Without this the step is question-blind by construction: a fixed id list, or
+    #: every chart the binding allows. On a 70-chart report that is twenty charts
+    #: read in full — measured at 71,650 characters — of which 2,000 survive the
+    #: cut into the answering step. Ninety-seven per cent of the warehouse time and
+    #: the serialisation was spent on charts the question never mentioned, and
+    #: WHICH ninety-seven per cent was decided by chart id order.
+    #:
+    #: The `knowledge` step has always worked the other way — `query` or the
+    #: viewer's question — and the two steps sit side by side in the same flow. This
+    #: closes that asymmetry. Ranking is `list_charts`' own term match, not a second
+    #: implementation of it, and it stays deterministic: no model decides this.
+    match_question: bool = False
+    #: What to match charts against. Blank means the viewer's question.
+    query: str = ""
+    #: How many charts to read at most. Was a hard-coded `[:20]` no author could
+    #: see, let alone lower — on a report where reading four would have answered.
+    max_charts: int = Field(default=20, ge=1, le=50)
+
     include_summary: bool = True
     include_data: bool = True
     include_filters: bool = True
@@ -574,7 +615,18 @@ class IfNode(BaseNode):
     """Branch into named paths. The paths merge implicitly at the next sibling."""
 
     type: Literal["if"] = "if"
-    paths: list[Path] = Field(default_factory=list)
+    #: `validate_default=True` IS THE FIX, and the bug it closes was reachable.
+    #:
+    #: A pydantic field validator does NOT run when the field falls back to its
+    #: default. So a body that simply omitted this key — which is what an outside
+    #: model writing flow JSON produces, and what the authoring prompt invites —
+    #: validated GREEN, saved, and then failed at run time with "Flow không hợp lệ,
+    #: chưa test được", naming nothing. The builder's validity badge and the
+    #: runtime disagreed about the same body.
+    #:
+    #: Found by an E2E run, not by reading: the stored node came back as
+    #: `{"paths": []}` with the submitted keys silently dropped.
+    paths: list[Path] = Field(default_factory=list, validate_default=True)
 
     @field_validator("paths")
     @classmethod
@@ -612,7 +664,18 @@ class SwitchNode(BaseNode):
     type: Literal["switch"] = "switch"
     value: str
     mode: Literal["first_match", "all_match"] = "first_match"
-    cases: list[Case] = Field(default_factory=list)
+    #: `validate_default=True` IS THE FIX, and the bug it closes was reachable.
+    #:
+    #: A pydantic field validator does NOT run when the field falls back to its
+    #: default. So a body that simply omitted this key — which is what an outside
+    #: model writing flow JSON produces, and what the authoring prompt invites —
+    #: validated GREEN, saved, and then failed at run time with "Flow không hợp lệ,
+    #: chưa test được", naming nothing. The builder's validity badge and the
+    #: runtime disagreed about the same body.
+    #:
+    #: Found by an E2E run, not by reading: the stored node came back as
+    #: `{"paths": []}` with the submitted keys silently dropped.
+    cases: list[Case] = Field(default_factory=list, validate_default=True)
     fallback: list["Node"] = Field(default_factory=list)
     has_fallback: bool = True
 
@@ -698,7 +761,18 @@ class CoordinateNode(BaseNode):
     api_key: str = ""
     api_key_enc: str = ""
     api_key_clear: bool = False
-    specialists: list[Specialist] = Field(default_factory=list)
+    #: `validate_default=True` IS THE FIX, and the bug it closes was reachable.
+    #:
+    #: A pydantic field validator does NOT run when the field falls back to its
+    #: default. So a body that simply omitted this key — which is what an outside
+    #: model writing flow JSON produces, and what the authoring prompt invites —
+    #: validated GREEN, saved, and then failed at run time with "Flow không hợp lệ,
+    #: chưa test được", naming nothing. The builder's validity badge and the
+    #: runtime disagreed about the same body.
+    #:
+    #: Found by an E2E run, not by reading: the stored node came back as
+    #: `{"paths": []}` with the submitted keys silently dropped.
+    specialists: list[Specialist] = Field(default_factory=list, validate_default=True)
     #: The ceiling on one plan. Two specialists is the common case; the limit exists
     #: so a planner that wants everything cannot turn one question into six.
     max_specialists: int = Field(default=3, ge=1, le=8)
@@ -750,9 +824,84 @@ class LoopNode(BaseNode):
         return v
 
 
+class ToolInput(_Model):
+    """One argument of a ToolNode, bound to a variable or to a literal.
+
+    WHY NOT `"chart_id": "{{sales_chart}}"`.
+
+    A template string is nicer to read and loses the type on the way through.
+    `integer` arrives as `"41"`, an object as `"[object Object]"`, a list as its
+    text, `None` as `""` — and the tool then refuses an argument the author
+    thought they had supplied. The builder still SHOWS `{{sales_chart}}`; what is
+    stored and what runs is this.
+
+    The second reason is the one that pays for itself: with the binding typed and
+    the tool's `output_schema` known, "the chart step's output does not fit this
+    tool's `chart_id`" is answerable when the flow is PUBLISHED, not when a viewer
+    is waiting.
+    """
+
+    source: Literal["variable", "literal"] = "literal"
+    #: Variable name when `source="variable"`. No braces: `sales_chart`.
+    ref: str = ""
+    #: The value itself when `source="literal"`. Typed as authored.
+    value: Any = None
+
+    @model_validator(mode="after")
+    def _one_of_the_two(self) -> "ToolInput":
+        if self.source == "variable" and not self.ref.strip():
+            raise ValueError("binding kiểu biến phải nêu tên biến")
+        if self.source == "variable" and "{" in self.ref:
+            raise ValueError(
+                "tên biến không kèm dấu ngoặc — ghi `doanh_thu`, không phải "
+                "`{{doanh_thu}}`"
+            )
+        return self
+
+
+class ToolNode(BaseNode):
+    """Call ONE tool with arguments the author decided. No model involved.
+
+    WHY THIS EXISTS.
+
+    Twenty of the tools need a `chart_id` and most questions an author builds a
+    flow for are already decided: "top 5 categories" does not need a model to work
+    out that `rank_values` is the tool. Today it costs a model round to choose the
+    tool and another to read the result — and every tool granted to an agent is
+    also schema text in every prompt of that step, which is why a catalogue of
+    hundreds cannot be reached through agents alone.
+
+    `ToolSpec.self_sufficient` has been documented as a LATENT property for exactly
+    this reason: real, checkable, and not spendable until a node could call a tool
+    directly. This is that node.
+
+    WHAT IT DELIBERATELY DOES NOT DO.
+
+    It does not call `spec.fn`. It goes through `registry.execute()`, so the
+    capability gate, the resource scope check, the payload ceiling, the cache and
+    the error taxonomy all apply without a line of them being restated here. A new
+    execution path is exactly how a gate gets bypassed, so this one takes the same
+    road as the old ones.
+    """
+
+    type: Literal["tool"] = "tool"
+    #: Registry name. Validated against the registry at publish time, not here —
+    #: the contract must stay importable without the tool package.
+    tool: str
+    inputs: dict[str, ToolInput] = Field(default_factory=dict)
+
+    @field_validator("tool")
+    @classmethod
+    def _named(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("bước công cụ phải chọn một công cụ")
+        return v.strip()
+
+
 Node = Annotated[
     Union[
         AgentNode,
+        ToolNode,
         ReportReadNode,
         KnowledgeNode,
         WebNode,
@@ -819,10 +968,19 @@ _CHART_KEYED_TOOLS = frozenset({
     "forecast_measure",
 })
 
-#: The one tool that hands OUT a chart_id. Its counterpart above is the list of
-#: tools that need one, and a step wants exactly one of the two: an index it was
-#: given, or the ability to look one up.
-_CHART_LOOKUP_TOOL = "list_charts"
+#: The tools that hand OUT a chart_id. Their counterpart above is the list of tools
+#: that need one, and a step wants exactly one of the two: an index it was given, or
+#: the ability to look one up.
+#:
+#: This was a single name — `list_charts` — from before the discover pack existed,
+#: and the warning below therefore fired on every chat flow built the way the chat
+#: seed builds them: granted `search_business_assets` and `resolve_chart_candidates`,
+#: which is exactly how a step with no report finds a chart, and told it had no way
+#: to find one. A warning that fires on the recommended shape trains authors to
+#: ignore warnings.
+_CHART_LOOKUP_TOOLS = frozenset({
+    "list_charts", "resolve_chart_candidates", "search_business_assets",
+})
 
 
 
@@ -1071,19 +1229,33 @@ class Flow(_Model):
                 out.add(n.target.replace("[]", "").strip())
         return out
 
-    def warnings(self) -> list[str]:
+    def warnings(self, flow_type: str = DEFAULT_FLOW_TYPE) -> list[str]:
         """What this flow gives up, said plainly rather than prevented.
 
         There is no mandatory frame: no forced screening, no forced fact-check, no
         forced closing step. That was the author's explicit call. The honest
         counterpart is naming the consequence instead of hiding it or quietly
         re-adding the guarantee.
+
+        `flow_type` because three of these notes describe a consequence that only
+        holds on a report, and stated to a chat author they are not merely useless —
+        they are false, and two of them are REASSURING. A review note that reassures
+        an author their unusable flow is fine is worse than no note. The default is
+        `bot`, which is what every flow written before the type existed is.
         """
         out: list[str] = []
         if not self.bound_sources():
             out.append(
                 "Flow này không gắn tri thức nào — nó chỉ đọc báo cáo đang mở. "
                 "Đúng nếu bạn muốn dùng nó cho mọi báo cáo."
+                if flow_type == "bot" else
+                # The same absence, the opposite consequence. With no report there
+                # is no fallback to read: a chat flow with nothing attached reaches
+                # nothing at all, and will answer from the model's own memory
+                # without saying so.
+                "Flow này chưa gắn nguồn nào. Ở AI Chat không có báo cáo nào để đọc "
+                "thay, nên nó sẽ không tra cứu được gì — hãy gắn tài liệu, bộ dữ "
+                "liệu hoặc chỉ số cho bước trả lời."
             )
         # A LANE THE PLANNER CAN PICK AND THAT THEN DOES NOTHING.
         #
@@ -1103,8 +1275,17 @@ class Flow(_Model):
                     "cũng không chạy gì."
                 )
 
+        # A STEP THAT WRITES THE ANSWER AND CAN STILL FETCH FIGURES.
+        #
+        # The premise is that a number should have passed through an earlier step
+        # where it could be checked — so the note only makes sense when there IS an
+        # earlier step. On a one-step flow it fires on the only shape available,
+        # and the chat seed is exactly that: one agent that finds its source and
+        # answers. A note that fires on the recommended starting shape teaches
+        # authors that notes are noise.
         answering = self.node(self.answering_key())
-        if isinstance(answering, AgentNode) and answering.tools:
+        earlier = [n for n in self.all_nodes() if n.key != self.answering_key()]
+        if isinstance(answering, AgentNode) and answering.tools and earlier:
             out.append(
                 f"Bước trả lời “{answering.name or answering.key}” vẫn có công cụ. "
                 "Bước viết câu trả lời mà còn gọi được công cụ thì dễ đưa ra số "
@@ -1143,22 +1324,31 @@ class Flow(_Model):
             keyed = sorted(granted & _CHART_KEYED_TOOLS)
             if not keyed:
                 continue
-            if _CHART_LOOKUP_TOOL in granted:
+            if granted & _CHART_LOOKUP_TOOLS:
                 continue
             if read_vars and (node_referenced_vars(n) & read_vars):
                 continue
             handed = (
                 "prompt không đọc "
                 + " hoặc ".join("{{" + v + "}}" for v in sorted(read_vars))
-                if read_vars else "flow không có bước đọc báo cáo nào"
+                if read_vars
+                # On a chat flow the absence of a read step is not the oversight —
+                # it is the surface. What is missing is the lookup tool.
+                else ("flow không có bước đọc báo cáo nào" if flow_type == "bot"
+                      else "ở AI Chat không có bước đọc báo cáo")
             )
             out.append(
                 f"Bước “{n.name or n.key}” được cấp công cụ cần chart_id "
                 f"({', '.join(keyed[:3])}…) nhưng {handed}, và cũng không được cấp "
-                f"`{_CHART_LOOKUP_TOOL}` để tự tìm — nó sẽ phải đoán chart_id, hoặc "
+                f"công cụ tra cứu nào ({', '.join(sorted(_CHART_LOOKUP_TOOLS))}) "
+                "để tự tìm — nó sẽ phải đoán chart_id, hoặc "
                 "đo nhầm biểu đồ mà không báo lỗi."
             )
 
+        # NAMING ONE REPORT IN A PROMPT, and what to do instead — which differs by
+        # surface. A bot has an open report to refer to; a chat flow does not, so
+        # telling its author to say “báo cáo đang mở” would send them to a phrase
+        # that resolves to nothing.
         for n in self.agent_nodes():
             named = _REPORT_NAME_RE.search(n.prompt)
             if named:
@@ -1166,6 +1356,10 @@ class Flow(_Model):
                     f"Bước “{n.name or n.key}” nhắc tên một báo cáo cụ thể "
                     f"(“{named.group(1)}”). Flow dùng được cho nhiều link, nên prompt "
                     "nên nói “báo cáo đang mở”."
+                    if flow_type == "bot" else
+                    f"Bước “{n.name or n.key}” nhắc tên một báo cáo cụ thể "
+                    f"(“{named.group(1)}”). Ở AI Chat không có báo cáo nào đang mở — "
+                    "hãy để bước tự tìm đúng nguồn bằng công cụ tra cứu."
                 )
         for req in self.requirements.items:
             if req.kind == "chart":

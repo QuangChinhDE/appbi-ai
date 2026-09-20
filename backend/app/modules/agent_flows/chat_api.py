@@ -26,7 +26,11 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
-from app.core.dependencies import get_current_user, require_permission
+from app.core.dependencies import (
+    get_current_user,
+    module_floor,
+    require_permission,
+)
 from app.models.user import User
 from app.services.agent_flows import chat_quota, direct_chat
 from app.services.agent_flows import dispatch
@@ -36,12 +40,31 @@ from app.services.dashboard_ai_bot.public_link_config import deployment_key
 
 logger = logging.getLogger("app.agent_flows.chat")
 
-router = APIRouter(prefix="/agent-flows/chat", tags=["agent-flows-chat"])
+#: A FLOOR ON THE ROUTER, not seven separate reminders.
+#:
+#: All seven endpoints below do carry `can_chat`, and an audit confirms it — but
+#: that is the shape that has already failed in this codebase: seven list
+#: endpoints across five modules answered `200 []` to a zero-permission user
+#: because each was gated individually and each could be forgotten once. A floor
+#: cannot be forgotten by the eighth endpoint somebody adds.
+#:
+#: `can_chat` stays on each handler. The floor is the cheaper question underneath
+#: ("may this person open the module at all"); the per-endpoint gate is what the
+#: handler's own contract states, and the two agreeing is the point.
+router = APIRouter(
+    prefix="/agent-flows/chat",
+    tags=["agent-flows-chat"],
+    # `module_floor` already returns a `Depends(...)` — see core/dependencies.py.
+    dependencies=[module_floor("chat")],
+)
 
 #: The module floor, and nothing more. Chatting with a flow somebody shared with you
 #: is not an authoring power, so it must not demand `edit`; `usable_brains` is what
 #: decides WHICH flows, and it already fails closed on `none`.
-can_chat = require_permission("agent_flows", "view")
+#: ITS OWN KEY. This gated on `agent_flows` while AI Chat had no key of its own,
+#: which meant the only way to let somebody ask an assistant a question was to
+#: also let them into the flow builder.
+can_chat = require_permission("chat", "view")
 
 #: How long the stream may sit silent before it is declared dead, and how long one
 #: turn may run in total. Matched to the public bot's, because the thing being waited
@@ -75,6 +98,21 @@ def _thread_dict(t: Any) -> dict:
 
 
 # ═══ Which assistants may I open ══════════════════════════════════════════════
+def _require_owner(db: Session, user: Any, thread: Any, action: str) -> None:
+    """Renaming and deleting belong to the person who started the conversation.
+
+    Being given a conversation — even at `edit`, which lets you ask the next
+    question in it — does not make it yours to rename or throw away. `chat: full`
+    is oversight and manages anything, the way `full` does in every module.
+    """
+    if direct_chat.thread_access(db, user, thread) in ("owner", "full"):
+        return
+    raise HTTPException(
+        status_code=403,
+        detail=f"Chỉ người tạo cuộc trò chuyện mới {action} được.",
+    )
+
+
 @router.get("/brains")
 def list_chat_brains(
     db: Session = Depends(get_db),
@@ -142,15 +180,53 @@ def read_thread(
     if thread is None:
         raise HTTPException(status_code=404, detail="Không tìm thấy cuộc trò chuyện")
 
+    access = direct_chat.thread_access(db, user, thread)
+
     # The flow's CURRENT state, resolved now rather than remembered: a thread whose
     # flow was unpublished or has grown a report-reading step must open read-only,
     # and the client needs to know that before it renders an input box.
     row, _flow, problem = direct_chat.resolve_for_chat(db, user, thread.brain_key)
+
+    # TWO SEPARATE REASONS A CONVERSATION IS READ-ONLY, and conflating them would
+    # tell somebody to go fix the wrong thing.
+    #
+    #   the flow      unpublished, or shaped so it cannot run here — the author's
+    #                 problem, and `resolve_for_chat` already words it.
+    #   this person   they were handed the conversation to READ, or they can read
+    #                 it but may not use the assistant behind it. Sharing a
+    #                 transcript never grants the flow; that stays with the flow's
+    #                 own share, which is the one gate for "who may ask".
+    reason, message = problem or "", direct_chat.BLOCK_MESSAGES.get(problem, "") if problem else ""
+    if reason == "not_published" and access != "owner":
+        # THE VAGUE WORDING IS FOR STRANGERS, AND THIS PERSON IS NOT ONE.
+        #
+        # `resolve_for_chat` answers `not_published` for "never yours", "no longer
+        # yours" and "no published version" alike, on purpose: telling them apart
+        # would tell a caller which flows exist. But somebody reading a
+        # conversation that was deliberately shared with them already knows this
+        # assistant exists — its name is two fields above — so the vagueness
+        # protects nothing here and only sends them to ask the wrong question.
+        reason = "assistant_not_shared"
+        message = (
+            "Bạn đọc được cuộc trò chuyện này, nhưng trợ lý đứng sau nó chưa được "
+            "chia sẻ cho bạn — nên bạn chưa hỏi tiếp được."
+        )
+    if not reason and access in ("view", "full"):
+        reason = "shared_read_only" if access == "view" else "oversight_read_only"
+        message = (
+            "Bạn đang xem một cuộc trò chuyện được chia sẻ ở mức chỉ đọc."
+            if access == "view" else
+            "Bạn đang xem cuộc trò chuyện của người khác với quyền giám sát."
+        )
     return {
         **_thread_dict(thread),
         "brain_name": (row.name if row is not None else thread.brain_key),
-        "readonly_reason": problem or "",
-        "readonly_message": direct_chat.BLOCK_MESSAGES.get(problem, "") if problem else "",
+        #: `owner` · `edit` · `view` · `full` — what the client may offer. It drives
+        #: the input box, the rename field and the Share button in one value rather
+        #: than three guesses.
+        "access": access,
+        "readonly_reason": reason,
+        "readonly_message": message,
         "messages": direct_chat.transcript(db, thread),
     }
 
@@ -166,6 +242,7 @@ def rename_thread(
     thread = direct_chat.get_thread(db, user, thread_id)
     if thread is None:
         raise HTTPException(status_code=404, detail="Không tìm thấy cuộc trò chuyện")
+    _require_owner(db, user, thread, "đổi tên")
     thread.title = (body.title or "").strip()[:255] or None
     db.commit()
     return _thread_dict(thread)
@@ -181,6 +258,7 @@ def delete_thread(
     thread = direct_chat.get_thread(db, user, thread_id)
     if thread is None:
         raise HTTPException(status_code=404, detail="Không tìm thấy cuộc trò chuyện")
+    _require_owner(db, user, thread, "xoá")
     direct_chat.soft_delete(db, thread)
     return {"ok": True}
 

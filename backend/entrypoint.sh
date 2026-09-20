@@ -204,9 +204,14 @@ email    = os.environ.get("ADMIN_EMAIL", "admin@appbi.io")
 password = os.environ.get("ADMIN_PASSWORD", "123456")
 name     = os.environ.get("ADMIN_NAME", "Admin")
 
+# EVERY key in core.dependencies.MODULE_KEYS. A module missing here is a module
+# the first admin does not hold — survivable only because `_get_user_permissions`
+# back-fills a missing key for settings:full accounts, which is a safety net, not
+# a reason to leave the seed incomplete. `agent_flows` was already missing.
 full_perms = json.dumps({
     "data_sources": "full", "datasets": "full",
-    "govern": "full", "observability": "full",
+    "govern": "full", "agent_flows": "full", "chat": "view",
+    "observability": "full",
     "explore_charts": "full", "dashboards": "full",
     "workboards": "full", "settings": "full"
 })

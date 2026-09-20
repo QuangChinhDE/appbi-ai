@@ -431,6 +431,11 @@ class ValidateBody(BaseModel):
     brain_key: str = "draft"
     name: str = "Draft"
     body: dict = Field(default_factory=dict)
+    #: Which surface the author is building for. Three review notes state a
+    #: consequence that only holds on a report, so checking a chat flow against the
+    #: bot reading tells its author the opposite of the truth. Defaults to `bot`, so
+    #: a caller that has not been updated behaves exactly as before.
+    flow_type: Literal["bot", "chat"] = "bot"
 
 
 @router.post("/validate")
@@ -451,10 +456,12 @@ def validate_flow(body: ValidateBody, _: User = Depends(can_view)) -> dict[str, 
 
     from app.services.agent_flows.binding import estimate_cost
 
+    from app.services.agent_flows import direct_chat
+
     return {
         "ok": True,
         "errors": [],
-        "warnings": flow.warnings(),
+        "warnings": flow.warnings(body.flow_type),
         "blocking_problems": list(flow.blocking_problems()),
         "node_count": len(flow.all_nodes()),
         "answer_node": flow.answering_key(),
@@ -462,6 +469,12 @@ def validate_flow(body: ValidateBody, _: User = Depends(can_view)) -> dict[str, 
         "estimate": estimate_cost(flow),
         "produced_vars": sorted(flow.produced_vars()),
         "referenced_vars": sorted(flow.referenced_vars()),
+        # WHETHER THIS SHAPE COULD RUN WITH NO REPORT — sent on every check, for
+        # either type, so the builder can state both readings at once instead of
+        # one. An author on a bot flow learns what would have to change before
+        # switching; an author on a chat flow learns the moment they break it,
+        # rather than at the chat door where they are not standing.
+        "chat_blockers": direct_chat.ineligibility_reasons(flow),
     }
 
 
@@ -471,6 +484,10 @@ class BrainWrite(BaseModel):
     name: str
     description: str = ""
     body: dict = Field(default_factory=dict)
+    #: Only read when this save CREATES the flow. Every later save carries the
+    #: type forward; changing it goes through `PUT /brains/{key}/type`, which can
+    #: refuse.
+    flow_type: Literal["bot", "chat"] | None = None
 
 
 @router.get("/brains")
@@ -717,6 +734,7 @@ def save_brain(
     return _run(lambda: reg.save_draft(
         db, user, brain_key=body.brain_key, name=body.name,
         description=body.description, body=body.body, actor_email=_actor(user),
+        flow_type=body.flow_type,
     ))
 
 
@@ -777,28 +795,31 @@ def unpublish_brain_version(
     return _run(lambda: reg.unpublish_version(db, brain_key, version, _actor(user)))
 
 
-class DirectChatToggle(BaseModel):
-    enabled: bool
+class FlowTypeBody(BaseModel):
+    flow_type: Literal["bot", "chat"]
 
 
-@router.put("/brains/{brain_key}/direct-chat")
-def set_direct_chat(
-    brain_key: str, body: DirectChatToggle,
+@router.put("/brains/{brain_key}/type")
+def set_flow_type(
+    brain_key: str, body: FlowTypeBody,
     db: Session = Depends(get_db), user: User = Depends(can_edit),
 ) -> dict[str, Any]:
-    """Opt this flow in (or out of) the Chat module.
+    """Which surface this flow was built for.
 
-    An AUTHORING statement — "this flow also works with no report on screen" — so it
-    is gated at `edit`, not at publish. Who may then chat with it is a separate
-    question already answered by sharing.
+    An AUTHORING statement, so it is gated at `edit` rather than at publish. Who may
+    then use the flow is a separate question, already answered by sharing.
 
-    Written to EVERY version row of the key, because it is a property of the flow. A
-    per-version value would mean enabling it on a draft did nothing until publish,
+    Written to EVERY version row of the key, because the type belongs to the FLOW. A
+    per-version value would mean setting it on a draft did nothing until publish,
     which reads as the setting being broken.
 
-    Refused when the flow could not answer anyway: a flow that reads a report returns
-    `{"charts": [], "read_ok": false}` without one and then answers from nothing, so
-    the honest place to stop it is here, with the reasons.
+    CHANGING TO `chat` IS REFUSED WHEN THE FLOW CANNOT RUN AS ONE. A flow that reads
+    a report returns `{"charts": [], "read_ok": false}` without one and then answers
+    from nothing, so the honest place to stop it is here, holding the reasons — not
+    at the chat door, where the author is not present to read them.
+
+    Changing to `bot` is never refused: every chat flow runs on a report, because a
+    report is strictly more than chat is given.
     """
     from app.models.agent_brain import AgentBrainVersion
     from app.services.agent_flows import direct_chat
@@ -808,7 +829,7 @@ def set_direct_chat(
         raise HTTPException(status_code=404, detail="Không tìm thấy flow")
 
     reasons: list[str] = []
-    if body.enabled:
+    if body.flow_type == "chat":
         flow = reg.parse_flow(row)
         if flow is None:
             raise HTTPException(status_code=422, detail="Flow không hợp lệ")
@@ -816,13 +837,40 @@ def set_direct_chat(
         if reasons:
             raise HTTPException(status_code=409, detail=" ".join(reasons))
 
+        # AND NOT WHILE IT IS SERVING REPORTS.
+        #
+        # `_usable_flow` refuses to ASSIGN a chat flow to a link. Without this, the
+        # same flow could get there by the back door: assign it as a bot, then flip
+        # the type. The links would keep answering — a chat flow runs on a report
+        # perfectly well, because a report is strictly more than chat is handed —
+        # so nothing would break loudly. It would just mean "every link runs a bot
+        # flow" was true at the door and false everywhere else, which is the kind
+        # of invariant that is only ever discovered by the person it confuses.
+        #
+        # Named links rather than a count: "đang phục vụ 3 link" is a fact the
+        # author cannot act on without going to look for them.
+        serving = reg.impact(db, brain_key).get("links") or []
+        if serving:
+            where = ", ".join(
+                str(x.get("link_name") or x.get("token") or x.get("dashboard_id") or "?")
+                for x in serving[:5]
+            )
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Flow này đang phục vụ {len(serving)} link báo cáo ({where}"
+                    + ("…" if len(serving) > 5 else "")
+                    + "). Gỡ flow khỏi các link đó trước, rồi mới đổi sang AI Chat."
+                ),
+            )
+
     (
         db.query(AgentBrainVersion)
         .filter(AgentBrainVersion.brain_key == brain_key)
-        .update({"direct_chat_enabled": bool(body.enabled)}, synchronize_session=False)
+        .update({"flow_type": body.flow_type}, synchronize_session=False)
     )
     db.commit()
-    return {"brain_key": brain_key, "direct_chat_enabled": bool(body.enabled)}
+    return {"brain_key": brain_key, "flow_type": body.flow_type, "reasons": reasons}
 
 
 @router.get("/brains/{brain_key}/direct-chat")
@@ -838,7 +886,7 @@ def get_direct_chat(
     flow = reg.parse_flow(row)
     return {
         "brain_key": brain_key,
-        "direct_chat_enabled": bool(getattr(row, "direct_chat_enabled", False)),
+        "flow_type": str(getattr(row, "flow_type", "") or "bot"),
         "eligible": bool(flow is not None and direct_chat.is_eligible(flow)),
         "reasons": direct_chat.ineligibility_reasons(flow) if flow is not None else [],
     }
@@ -882,10 +930,20 @@ def _link_and_dashboard(db: Session, link_id: int, user: User):
 
 
 def _usable_flow(db: Session, user: User, brain_key: str) -> Flow:
-    """The flow, but only if it is shared with this user.
+    """The flow, but only if it is shared with this user AND built for a report.
 
     Assigning is a different question from authoring: the assigner needs the flow to
     have been shared with them, and gets no say over what it contains.
+
+    THE TYPE CHECK WAS MISSING ENTIRELY. This asked two questions — is it shared,
+    is it published — and a flow written for Chat could be assigned to a report link
+    with nothing to stop it. It would then run: a chat flow has no `report_read` and
+    no chart tools, so it would answer every question about the report from
+    documents alone, confidently and without ever mentioning that it had not looked.
+
+    The two surfaces hand a flow different things, which is what makes this a type
+    error rather than a preference. The Chat picker has always filtered; this side
+    now does too.
     """
     keys = {r.brain_key for r in perms.usable_brains(db, user).all()}
     if brain_key not in keys:
@@ -894,6 +952,13 @@ def _usable_flow(db: Session, user: User, brain_key: str) -> Flow:
     if resolved is None:
         raise HTTPException(
             status_code=409, detail="Flow này chưa có bản phát hành nào để gán"
+        )
+    row = resolved[0]
+    if str(getattr(row, "flow_type", "") or "bot") != "bot":
+        raise HTTPException(
+            status_code=409,
+            detail="Flow này được tạo cho AI Chat, không gán được vào báo cáo. "
+                   "Hãy chọn một flow loại Bot, hoặc đổi loại của flow này.",
         )
     return resolved[1]
 
@@ -1124,6 +1189,7 @@ async def test_flow(
         session_key=body.session_key,
         history=[t.model_dump() for t in body.history],
         api_key=api_key, provider=provider, model=model,
+        brain_row=row,
     ):
         if ev.type == "result":
             envelope = ev.extra.get("envelope")
@@ -1230,6 +1296,7 @@ async def test_flow_on_report(
         session_key=body.session_key,
         history=[t.model_dump() for t in body.history],
         api_key=api_key, provider=provider, model="",
+        brain_row=row,
     ):
         if ev.type == "result":
             envelope = ev.extra.get("envelope")
@@ -1256,12 +1323,258 @@ async def test_flow_on_report(
     }
 
 
+
+class ChatTestBody(_Conversational):
+    """A question, and nothing else — which is the whole point.
+
+    No `dashboard_id` and no `link_id`: those are the two things the chat surface
+    does not have, and requiring either is what made the Test button refuse on
+    exactly the flows whose behaviour is hardest to predict.
+    """
+
+    question: str
+    version: int | None = None
+
+
+@router.post("/brains/{brain_key}/test-as-chat")
+async def test_flow_as_chat(
+    brain_key: str, body: ChatTestBody,
+    db: Session = Depends(get_db), user: User = Depends(can_edit),
+) -> dict[str, Any]:
+    """Run the draft the way AI Chat will run it: a question, and no report.
+
+    WHY THIS EXISTS. The other two test endpoints need a link or a report. A chat
+    flow has neither and never will, so its author could not try it at all — they
+    had to publish and go to the Chat screen to find out whether it worked, which
+    is the "testing in front of viewers" problem the report endpoint was written to
+    remove, reintroduced on the other surface.
+
+    It is assembled through `direct_chat.ephemeral_chat_binding` and the same
+    scope derivation `run_for_chat_thread` uses, so the panel and the live turn
+    cannot drift apart: same binding shape, same knowledge scope, same charts.
+
+    `_may_edit_flow` is the only gate, and that is deliberate — a chat flow reads
+    what its OWNER may read, re-derived per turn by `run_scope`, so a test run by
+    an author who may edit the flow reaches exactly what a viewer of it would.
+    """
+    _may_edit_flow(db, user, brain_key)
+
+    detail = _run(lambda: reg.get_brain(db, brain_key, body.version))
+    from app.models.agent_brain import AgentBrainVersion
+
+    row = (
+        db.query(AgentBrainVersion)
+        .filter(
+            AgentBrainVersion.brain_key == brain_key,
+            AgentBrainVersion.version == detail["version"],
+        )
+        .first()
+    )
+    flow = reg.parse_flow(row) if row else None
+    if flow is None:
+        raise HTTPException(status_code=422, detail="Flow không hợp lệ, chưa test được")
+
+    from app.services.agent_flows import direct_chat
+    from app.services.agent_flows.dispatch import chat_base_prompt, run_preview
+    from app.services.agent_flows.permissions import chart_scope, run_scope
+    from app.services.dashboard_ai_bot.public_link_config import deployment_key
+    from app.services.dashboard_ai_bot.tool_context import ToolContext
+
+    # SHAPE FIRST, and reported rather than refused. A flow mid-build usually has
+    # something wrong with it — that is what mid-build means — so this says "it ran
+    # with X missing" instead of declining to run, exactly as the report test does.
+    blockers = direct_chat.ineligibility_reasons(flow)
+
+    ctx = ToolContext(
+        db=db, dashboard=None, public_filters=[],
+        actor_type="user", actor_ref=_actor(user),
+    )
+    binding = direct_chat.ephemeral_chat_binding(flow)
+    scope = run_scope(db, row, flow, None)
+    ctx.adopt_scope(chart_scope(db, scope), scope.get("dataset_ids") or [])
+
+    api_key, provider = deployment_key()
+    if not api_key:
+        raise HTTPException(
+            status_code=409,
+            detail="Máy chủ chưa có API key cho AI — chưa test được. "
+                   "Đặt OPENAI_API_KEY rồi thử lại.",
+        )
+
+    envelope: dict | None = None
+    run_row_id: int | None = None
+    async for ev in run_preview(
+        db, flow=flow, version=row.version, binding=binding,
+        link=SimpleNamespace(token="", appearance_config={}),
+        dashboard=None, ctx=ctx, question=body.question,
+        session_key=body.session_key,
+        history=[t.model_dump() for t in body.history],
+        api_key=api_key, provider=provider, model="",
+        base_system_prompt=chat_base_prompt(ctx),
+        brain_row=row,
+    ):
+        if ev.type == "result":
+            envelope = ev.extra.get("envelope")
+            run_row_id = ev.extra.get("run_row_id")
+
+    return {
+        "envelope": envelope,
+        "run_row_id": run_row_id,
+        # The same shape the report test returns, so the panel renders one way. What
+        # a chat flow can reach is named here because there is no report on screen
+        # to imply it — this list IS the scope, and an author reading a wrong figure
+        # needs to know which sources were even in play.
+        "scope": {
+            "doc_ids": len(scope.get("doc_ids") or []),
+            "dataset_ids": len(scope.get("dataset_ids") or []),
+            "metric_names": len(scope.get("metric_names") or []),
+            "charts": len(getattr(ctx, "allowed_chart_ids", None) or []),
+        },
+        "blockers": blockers,
+    }
+
+
 class NodeTestBody(BaseModel):
     link_id: int
     #: Variables to start from, so a node deep in a flow can be exercised without
     #: paying for everything before it.
     vars: dict = Field(default_factory=dict)
     version: int | None = None
+
+
+class StepPreviewBody(BaseModel):
+    """A question to assemble the step against, and the report to assemble it on.
+
+    `dashboard_id` is OPTIONAL, and omitting it is not a degraded mode — it is the
+    chat surface, where there is no report and never will be. It used to be
+    required, which made this endpoint unreachable for a chat flow: the author with
+    the least ability to guess what their step receives was the one who could not
+    look.
+    """
+
+    version: int | None = None
+    dashboard_id: int | None = None
+    question: str = ""
+    history: list[dict[str, Any]] = Field(default_factory=list)
+
+
+@router.post("/brains/{brain_key}/nodes/{node_key}/preview")
+def preview_step(
+    brain_key: str, node_key: str, body: StepPreviewBody,
+    db: Session = Depends(get_db), user: User = Depends(can_edit),
+) -> dict[str, Any]:
+    """Exactly what this step hands the model — assembled, not guessed, not run.
+
+    The builder shows eleven sections for one AI step and, until this endpoint,
+    nothing anywhere showed their result. The rule that governs all of them — your
+    instructions are APPENDED to a base prompt, earlier steps arrive as named
+    blocks, granted tools arrive as schemas — existed only as one line of helper
+    text. An author had to infer the model from the field names, which is the
+    complaint this product keeps getting.
+
+    No provider is called and no warehouse is touched, so an author can check
+    "does this step see what I think it sees" for free and as often as they like.
+    """
+    _may_edit_flow(db, user, brain_key)
+    detail = _run(lambda: reg.get_brain(db, brain_key, body.version))
+    from app.models.agent_brain import AgentBrainVersion
+
+    row = (
+        db.query(AgentBrainVersion)
+        .filter(
+            AgentBrainVersion.brain_key == brain_key,
+            AgentBrainVersion.version == detail["version"],
+        )
+        .first()
+    )
+    flow = reg.parse_flow(row) if row else None
+    if flow is None:
+        raise HTTPException(status_code=422, detail="Flow không hợp lệ")
+
+    # Imported inside the function, the way every other endpoint here does it —
+    # this module is loaded by the API layer and the model package pulls in the
+    # query engine.
+    from app.models.models import Dashboard
+
+    from app.services.agent_flows import direct_chat
+    from app.services.agent_flows.dispatch import preview_step as _preview
+    from app.services.agent_flows.permissions import chart_scope, run_scope
+    from app.services.dashboard_ai_bot.public_link_config import deployment_key
+    from app.services.dashboard_ai_bot.tool_context import ToolContext
+
+    # WHICH SURFACE THIS PREVIEW IS FOR — the flow's own declaration, not the
+    # caller's. A bot flow assembled with no report would show a step reading an
+    # empty report and call it the truth; a chat flow assembled against one would
+    # show it a report no viewer will ever supply. Either way the author is being
+    # shown a run that does not happen, which is the one thing this screen exists
+    # to prevent.
+    as_chat = str(getattr(row, "flow_type", "") or "bot") == "chat"
+
+    dashboard = None
+    if not as_chat:
+        dashboard = db.query(Dashboard).filter(Dashboard.id == body.dashboard_id).first()
+        if dashboard is None:
+            raise HTTPException(status_code=404, detail="Không tìm thấy báo cáo")
+        require_view_access(db, user, dashboard, "dashboards")
+
+    if as_chat:
+        ctx = ToolContext(
+            db=db, dashboard=None, public_filters=[],
+            actor_type="user", actor_ref=_actor(user),
+        )
+        binding = direct_chat.ephemeral_chat_binding(flow)
+        # The same scope a real chat turn gets, derived the same way, so the panel
+        # and the run cannot disagree about what the step can reach.
+        scope = run_scope(db, row, flow, None)
+        ctx.knowledge_scope = scope
+        ctx.adopt_scope(chart_scope(db, scope), scope.get("dataset_ids") or [])
+    else:
+        ctx = ToolContext.from_dashboard(
+            db=db, dashboard=dashboard, public_filters=[],
+            actor_type="user", actor_ref=_actor(user),
+        )
+        binding = binding_service.ephemeral_binding(flow, dashboard)
+    # The model NAMES only — no key is needed and none is read: this endpoint
+    # assembles inputs and never calls a provider.
+    _key, provider = deployment_key()
+    # THE SAME BASE PROMPT THE VIEWER PATH BUILDS. A preview showing a different
+    # base would be describing a run that does not happen, and the base is most of
+    # what the model reads — the citation contract, the language rule, the report's
+    # own identity. `max_tool_calls` comes from the step, since that is the number
+    # the step will actually run under.
+    from app.services.dashboard_ai_bot.thinking.prompts import (
+        build_agent_system_prompt as _build_base_prompt,
+    )
+
+    _node = flow.node(node_key)
+    if as_chat:
+        # THE SAME FUNCTION THE RUN USES. Assembling a second one here is how this
+        # panel came to show a report-flavoured base prompt for a step that runs
+        # with no report — a screen whose entire purpose is to show what a run
+        # receives, describing a run that does not happen.
+        from app.services.agent_flows.dispatch import chat_base_prompt
+
+        base_prompt = chat_base_prompt(
+            ctx, max_tool_calls=getattr(_node, "max_tool_calls", 8) or 8
+        )
+    else:
+        base_prompt = _build_base_prompt(
+            dashboard_name=dashboard.name or "Dashboard",
+            dashboard_description=getattr(dashboard, "description", None),
+            chart_count=len(getattr(ctx, "allowed_chart_ids", None) or []),
+            filters_applied=[],
+            max_tool_calls=getattr(_node, "max_tool_calls", 8) or 8,
+        )
+
+    try:
+        return _preview(
+            flow=flow, version=detail["version"], node_key=node_key,
+            binding=binding, dashboard=dashboard, ctx=ctx,
+            question=body.question or "", history=body.history,
+            provider=provider, model="", base_system_prompt=base_prompt,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @router.post("/brains/{brain_key}/nodes/{node_key}/test")

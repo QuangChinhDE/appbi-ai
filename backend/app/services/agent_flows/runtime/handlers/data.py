@@ -18,7 +18,12 @@ import logging
 from typing import Any, AsyncGenerator
 from urllib.parse import urlparse
 
-from app.services.agent_flows.contract import KnowledgeNode, ReportReadNode, WebNode
+from app.services.agent_flows.contract import (
+    KnowledgeNode,
+    ReportReadNode,
+    ToolNode,
+    WebNode,
+)
 from app.services.agent_flows.envelope import Citation, Notice
 from app.services.agent_flows.runtime.nodes import NodeSpec
 from app.services.agent_flows.runtime.state import RunState
@@ -44,6 +49,88 @@ def _call(rctx: Any, state: RunState, tool: str, args: dict) -> Any:
     # Everything the run READ, so the answer's figures can be checked against it.
     state.add_evidence(result)
     return result
+
+
+def _route_call(rctx: Any, state: RunState, tool: str, args: dict) -> Any:
+    """A tool call that decides WHICH data to read, not what the data says.
+
+    Budgeted and logged exactly like `_call` — an author reading the tool log must
+    see why a slot went — but deliberately NOT harvested into `state.evidence`.
+    A chart listing is a record of where the run went looking; its numbers are
+    chart ids, and putting those in the pile the figure checker matches against
+    would let "chart 1001" vouch for a claim of 1001. The same reason routing
+    steps are kept out of what the synthesiser is handed.
+    """
+    state.budget.spend_tool()
+    result = tool_registry.execute(rctx.ctx, tool, args, allowed=None)
+    state.tool_log.append(
+        tool if result.get("ok")
+        else f"{tool}({result.get('error_code') or 'failed'})"
+    )
+    return result
+
+
+def _charts_for_question(
+    node: ReportReadNode, state: RunState, rctx: Any, allowed: list[int]
+) -> tuple[list[int], str]:
+    """The allowed charts, reordered so the ones the question names come first.
+
+    Ranking is `list_charts`' own term match — the audited path that already backs
+    the picker and the discover pack — rather than a second implementation of
+    "which chart is this about" living in the runtime. Deterministic: no model is
+    consulted, which is the property that lets this step stay model-free.
+
+    Returns the ordered ids and a reason when the question matched nothing, so the
+    caller can say so instead of silently reading the report in id order and
+    calling it a match.
+    """
+    question = state.resolve_text(node.query) or rctx.inp.question.text()
+    if not question.strip():
+        return allowed, "no_question"
+    listing = _route_call(rctx, state, "list_charts",
+                          {"query": question, "detail": "compact"})
+    if not isinstance(listing, dict) or not listing.get("ok"):
+        return allowed, "lookup_failed"
+    # `_ok` wraps the payload: {"ok": true, "data": {...}}.
+    payload = listing.get("data") if isinstance(listing.get("data"), dict) else {}
+    selection = payload.get("selection") if isinstance(payload.get("selection"), dict) else {}
+    status = str(selection.get("status") or "")
+
+    # THE WHOLE POINT OF THE CONTRACT: a fallback listing is never a match here.
+    #
+    # `list_charts` answers a miss with the FULL listing plus a note, which is
+    # right for a model — it reads the note and decides. This caller has no model,
+    # and the fallback listing is byte-shaped exactly like a successful one. It
+    # read "here is everything, sorry" as "here is what you asked for".
+    #
+    # `ambiguous` is refused for the same reason and is NOT a failure: one shared
+    # token is enough for this tool to rank a chart, so "thời tiết sao Hỏa hôm nay"
+    # matched four — "sao" from "Tỷ lệ 5 sao", "thời" from "Dòng thời gian". The
+    # step degrades to its default scope and says so; the run continues.
+    if status in ("none", "ambiguous"):
+        return allowed, "no_match" if status == "none" else "weak_match"
+    if status and status != "matched":
+        return allowed, "lookup_failed"
+    if not status:
+        # An older payload with no `selection` block. Trust it rather than refuse
+        # every match — but the coverage note is the one signal that survives.
+        coverage = payload.get("coverage") if isinstance(payload.get("coverage"), dict) else {}
+        if "query_matched_nothing" in coverage:
+            return allowed, "no_match"
+
+    ranked = [
+        c for c in (selection.get("selected_ids") or [])
+        if isinstance(c, int)
+    ] or [
+        c.get("chart_id") for c in (payload.get("charts") or [])
+        if isinstance(c, dict) and isinstance(c.get("chart_id"), int)
+    ]
+    # NEVER WIDENS. `list_charts` is scoped to the context, but a selector that let
+    # its output DEFINE scope would be a second implementation of entitlement, and
+    # this is the class of bug where being wrong is a leak rather than a bad answer.
+    keep = set(allowed)
+    ordered = [c for c in ranked if c in keep]
+    return (ordered or allowed), ("" if ordered else "no_match")
 
 
 # ═══ Read the open report ═════════════════════════════════════════════════════
@@ -77,7 +164,23 @@ async def run_report_read(
     if node.include_filters:
         out["filters"] = _call(rctx, state, "inspect_filters", {})
 
-    planned = wanted[:20]
+    # BY THE QUESTION, WHEN THE AUTHOR ASKED FOR THAT. An explicit `chart_ids`
+    # list always wins: the author already answered "which charts", and a keyword
+    # match must not overrule them.
+    if node.match_question and not node.chart_ids:
+        wanted, why = _charts_for_question(node, state, rctx, wanted)
+        if why in ("no_match", "weak_match"):
+            state.notices.append(
+                Notice(
+                    code="read_question_unmatched",
+                    text=f"Bước “{node.name or node.key}” không tìm thấy biểu đồ nào "
+                         "khớp rõ câu hỏi, nên đọc theo thứ tự mặc định. Nếu báo cáo "
+                         "gọi thứ này bằng tên khác, hãy chỉ định danh sách biểu đồ "
+                         "cho bước này.",
+                )
+            )
+
+    planned = wanted[:node.max_charts]
     read_count = 0
     for chart_id in planned:
         # LEAVE THE ANSWERING STEP SOMETHING TO SPEND.
@@ -162,19 +265,66 @@ async def run_report_read(
     out["read_ok"] = len(failed) < len(out["charts"]) if out["charts"] else False
     if failed:
         out["unreadable_chart_ids"] = failed
+        # AND WHY. Counting the charts told an author that something broke and
+        # nothing about what — the reason was only ever in the server log, which is
+        # not a place a flow author can look. Distinct reasons, because eight charts
+        # on one broken table fail the same way eight times and repeating it says
+        # nothing new.
+        reasons = _failure_reasons(out["charts"])
+        because = f" Nguyên nhân: {' · '.join(reasons[:2])}" if reasons else ""
         state.notices.append(
             Notice(
                 code="charts_unreadable",
                 text=f"Không đọc được dữ liệu của {len(failed)} biểu đồ "
-                     f"({', '.join(str(f) for f in failed[:4])}). Câu trả lời có thể thiếu.",
+                     f"({', '.join(str(f) for f in failed[:4])}). Câu trả lời có thể thiếu."
+                     + because,
+            )
+        )
+    # A CHART CAN BE READ AND STILL HAVE LOST A TOOL, AND THAT IS THE CASE THAT
+    # WAS REPORTED. The count above only sees charts that yielded NOTHING. Switch
+    # on `Chart data` beside `Chart summary` — which is what an author does when
+    # summaries start failing — and a chart whose summary broke still returns rows,
+    # so it is not unreadable, so nothing is said. The workaround silences the
+    # symptom and the cause together, and the run quietly starts paying raw rows
+    # into every downstream prompt where a digest used to go.
+    #
+    # Grouped BY REASON rather than by chart: eight charts sitting on one broken
+    # table produce one sentence, not eight.
+    degraded = _degraded_by_reason(out["charts"])
+    if degraded:
+        # DELIBERATELY NOT PUT IN `out`. `unreadable_chart_ids` belongs there
+        # because a downstream agent must know it is missing charts before it
+        # answers; this does not — the data arrived. Writing the reasons into the
+        # step output would spend downstream prompt tokens to report a problem
+        # about spending downstream prompt tokens.
+        parts = [
+            f"{len(ids)} biểu đồ ({', '.join(str(i) for i in ids[:4])}): {why}"
+            for why, ids in list(degraded.items())[:2]
+        ]
+        # NOT in the chat reader's notice map on purpose. The answer is correct;
+        # this is an author's maintenance note, so it surfaces in the builder and
+        # the Runs tab and stays out of the conversation.
+        state.notices.append(
+            Notice(
+                code="charts_degraded",
+                text="Câu trả lời vẫn đủ dữ liệu, nhưng có công cụ đọc bị lỗi và "
+                     "flow phải dùng đường dự phòng — tốn token hơn cho các bước "
+                     "sau. " + " · ".join(parts),
             )
         )
     if out["charts"] and not out["read_ok"]:
         # Nothing at all came back. Raised so the node is recorded as an error and
         # the flow's own `on_error` decides — rather than handing a downstream agent
         # an empty context and letting it fill the gap.
+        # The reason goes in the raised message too: this is what the step row
+        # shows in the builder, and "could not read any chart" with no cause is
+        # exactly the dead end that sent one author hunting for a workaround
+        # instead of a fix.
+        reasons = _failure_reasons(out["charts"])
+        first_reason = reasons[0] if reasons else ""
         raise RuntimeError(
             "Không đọc được dữ liệu của bất kỳ biểu đồ nào trong phạm vi được cấp."
+            + (f" Nguyên nhân đầu tiên: {first_reason}" if first_reason else "")
         )
 
     # HOW MUCH OF THE REPORT IS THIS?
@@ -204,7 +354,115 @@ async def run_report_read(
             "với `query` là từ khoá trong câu hỏi để tìm đúng biểu đồ trước."
         )
 
+    _warn_if_overflowing(node, out, state)
     state.outputs[node.key] = out
+
+
+def _why(payload: Any) -> str:
+    """The reason ONE tool call failed, in the form a person can act on.
+
+    `detail` before `error`: `error` is the short English fragment the MODEL reads
+    from a tool contract ("failed to load chart 987: DataError"), while `detail`
+    carries the underlying message — which is the half that names the column, the
+    table or the value that actually broke.
+    """
+    if not isinstance(payload, dict) or payload.get("ok"):
+        return ""
+    return str(payload.get("detail") or payload.get("error") or "").strip()
+
+
+def _failure_reasons(entries: list[dict]) -> list[str]:
+    """Distinct reasons across every chart that yielded NOTHING.
+
+    Distinct, because eight charts sitting on one broken table fail the same way
+    eight times and the eighth repetition tells an author nothing the first did
+    not.
+    """
+    reasons: list[str] = []
+    for entry in entries:
+        if _entry_has_data(entry):
+            continue
+        for key in ("summary", "data"):
+            why = _why(entry.get(key))
+            if why and why not in reasons:
+                reasons.append(why)
+    return reasons
+
+
+def _degraded_by_reason(entries: list[dict]) -> dict[str, list]:
+    """Charts that DID come back, but only because a second tool covered for a
+    first that failed — keyed by reason, so one broken table is one sentence.
+
+    Invisible until now, and it is the case that gets reported: an author whose
+    summaries break switches on `Chart data` as a second path, the charts stop
+    counting as unreadable, and the cause disappears along with the symptom.
+    """
+    out: dict[str, list] = {}
+    for entry in entries:
+        if not _entry_has_data(entry):
+            continue  # named by `_failure_reasons`, with its own reason
+        for key in ("summary", "data"):
+            why = _why(entry.get(key))
+            if why:
+                out.setdefault(why, []).append(entry.get("chart_id"))
+    return out
+
+
+#: What a step's result is cut to on its way into a prompt. Mirrors
+#: `_MAX_STEP_CHARS` / the `carried[:8000]` slice in the agent handler — imported
+#: rather than re-declared would be better, and is a circular import today.
+_DOWNSTREAM_CHARS = 2000
+
+
+def _warn_if_overflowing(node: ReportReadNode, out: dict, state: RunState) -> None:
+    """Tell the author when most of what this step fetched can never be read.
+
+    THE GAP THIS CLOSES IS AN AUTHOR'S MENTAL MODEL, and it was reported as one:
+    "tất cả các dòng đọc được sẽ trở thành context cho node llm tiếp theo". That is
+    the reasonable reading of a step called "read the report" with toggles for what
+    to include — and it is not what happens. A step's result is cut to 2,000
+    characters on its way into the answering step's prompt.
+
+    MEASURED on a 70-chart report, twenty charts planned:
+
+        summary + data, detail=full       71,650 chars    2.8% survives   7/20 charts
+        summary only,   detail=full       49,471 chars    4.0%            6/20
+        summary only,   detail=compact     8,244 chars   24.3%            7/20
+
+    So the toggles an author can see move the number by 8x, and every setting still
+    loses most of it — to a blind head-cut, which means WHICH charts survive is
+    decided by id order rather than by the question. An author cannot reason about
+    a ceiling nobody showed them; they tune the controls they can see, conclude the
+    step is wasteful, and switch things off. That is exactly what happened.
+
+    Reported once, with the real numbers and the two remedies that actually work:
+    match the question, or carry less per chart.
+    """
+    if not out.get("charts"):
+        return
+    from app.services.agent_flows.runtime.state import render_value
+
+    size = len(render_value(out))
+    if size <= _DOWNSTREAM_CHARS:
+        return
+    kept = max(1, round(len(out["charts"]) * _DOWNSTREAM_CHARS / size))
+    # Grouped the way the reader of this sentence writes numbers. Formatted per
+    # number, not by search-replacing the finished sentence — that also turns the
+    # commas in the prose into full stops.
+    vn = lambda n: f"{n:,}".replace(",", ".")
+    state.notices.append(
+        Notice(
+            code="read_exceeds_context",
+            text=(
+                f"Bước “{node.name or node.key}” đọc {len(out['charts'])} biểu đồ "
+                f"(~{vn(size)} ký tự) nhưng bước sau chỉ nhận được "
+                f"{vn(_DOWNSTREAM_CHARS)} ký tự đầu — khoảng {kept} biểu đồ đầu "
+                "danh sách, phần còn lại bị cắt. Bật “đọc theo câu hỏi”, giảm số "
+                "biểu đồ, hoặc chuyển mức chi tiết sang “chỉ mục” rồi để bước sau "
+                "gọi công cụ lấy đúng con số."
+            ),
+        )
+    )
 
 
 def _entry_has_data(entry: dict) -> bool:
@@ -538,6 +796,82 @@ def _domain_ok(url: str, domains: list[str]) -> bool:
     return any(host == d.lower() or host.endswith("." + d.lower().lstrip(".")) for d in domains)
 
 
+
+# ═══ Call one tool, decided by the author ════════════════════════════════════
+async def run_tool(
+    node: ToolNode, state: RunState, rctx: Any
+) -> AsyncGenerator[AgentEvent, None]:
+    """One tool, arguments the author bound, no model.
+
+    THE SECURITY SHAPE OF THIS FUNCTION IS THE POINT.
+
+    It resolves bindings and calls `tool_registry.execute()`. It does not reach for
+    `spec.fn`, does not special-case a tool, and does not decide anything a gate
+    decides. Every invariant the agent path has — capability, resource scope,
+    payload ceiling, cache, error taxonomy — applies here because this takes the
+    same road, not because it repeats the checks.
+
+    `allowed=None` follows `_call` above: there is no per-step allowlist to
+    enforce, because the author picked THIS tool for THIS node and the node is the
+    grant. What still bounds it is the binding, narrowed before the first node ran.
+    """
+    args = _resolve_inputs(node, state)
+    yield AgentEvent(type="status", text=f"Đang chạy {node.tool}…")
+
+    state.budget.spend_tool()
+    result = tool_registry.execute(rctx.ctx, node.tool, args, allowed=None)
+    state.tool_log.append(
+        node.tool if result.get("ok")
+        else f"{node.tool}({result.get('error_code') or 'failed'})"
+    )
+    state.add_evidence(result)
+
+    if not result.get("ok"):
+        # RAISED, not swallowed. `on_error` on the node decides what happens next —
+        # the same choice every other step gets — and a step that failed must not
+        # publish a value the next step would read as data.
+        detail = result.get("detail") or result.get("error") or "công cụ lỗi"
+        raise RuntimeError(f"{node.tool}: {detail}")
+
+    # WHAT THE NEXT STEP READS IS `data`, NOT THE ENVELOPE.
+    #
+    # `ok` / `kind` / `coverage` are the platform's contract and `output_schema`
+    # describes `data`, so an author wiring `{{ranking.items}}` gets what the
+    # schema promised. Publishing the envelope instead would make every binding
+    # read `{{ranking.data.items}}` and make the schema a lie.
+    state.outputs[node.key] = result.get("data")
+    if node.output_var:
+        state.set_var(node.output_var, result.get("data"))
+        if node.run_policy != "every_turn":
+            state.memory_set[node.output_var] = result.get("data")
+
+
+def _resolve_inputs(node: ToolNode, state: RunState) -> dict:
+    """Typed bindings → tool arguments.
+
+    A variable binding keeps the variable's TYPE. That is the whole reason the
+    contract stores `{source, ref}` instead of `"{{x}}"`: an id stays an int, a
+    list stays a list, and a tool does not have to guess what a string was meant
+    to be.
+    """
+    out: dict = {}
+    for name, binding in (node.inputs or {}).items():
+        if binding.source == "literal":
+            out[name] = binding.value
+            continue
+        if binding.ref in state.vars:
+            out[name] = state.vars[binding.ref]
+            continue
+        # A MISSING VARIABLE IS NOT AN EMPTY ONE. Passing `None` would let the tool
+        # refuse for a reason that names the ARGUMENT instead of the BINDING, and
+        # an author would go looking at the tool.
+        raise RuntimeError(
+            f"bước “{node.name or node.key}” cần biến {{{{{binding.ref}}}}} cho "
+            f"tham số `{name}`, nhưng chưa bước nào tạo ra biến đó"
+        )
+    return out
+
+
 SPECS = [
     NodeSpec(
         type="report_read",
@@ -566,5 +900,15 @@ SPECS = [
         icon="🌐",
         handler=run_web,
         reaches_outside=True,
+    ),
+    NodeSpec(
+        type="tool",
+        label_vi="Gọi công cụ",
+        label_en="Call a tool",
+        description_vi="Chạy đúng một công cụ với tham số bạn chọn. "
+                       "Không gọi AI, không tốn token.",
+        category="data",
+        icon="⚙",
+        handler=run_tool,
     ),
 ]

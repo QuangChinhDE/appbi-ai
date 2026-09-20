@@ -20,7 +20,7 @@
  */
 import {
   AlertTriangle, Brain, Calendar, Check, ChevronRight, Copy, Layers, Link2, Loader2,
-  Plus, Share2, Trash2,
+  MessagesSquare, Plus, Share2, Trash2,
 } from 'lucide-react';
 import React from 'react';
 
@@ -40,8 +40,10 @@ import { cn } from '@/lib/utils';
 import { useI18n } from '@/providers/LanguageProvider';
 import {
   blankNode, deleteBrainVersion, getAuthoringPrompt, getBrain, importDraft, listBrains,
-  saveBrain, slugifyBrainKey,
+  saveBrain,
+  type FlowType, slugifyBrainKey,
   type AuthoringPrompt,
+  type BrainDetail,
   type BrainSummary,
   type FlowBody,
   type FlowNode,
@@ -131,29 +133,49 @@ export function BrainList({
   const liveCount = brains.filter((b) => b.publishedVersion !== null).length;
   const servingCount = brains.reduce((n, b) => n + (b.latest.link_count || 0), 0);
 
-  const create = async (name: string, description: string) => {
+  /** THE TYPE DECIDES THE SEED, because the two surfaces hand a flow different
+   *  things and a starting flow should already be shaped for what it will get.
+   *
+   *  bot   a report always arrives, so the flow opens by reading it.
+   *  chat  only text arrives. There is no "the report", so the flow opens by
+   *        working out which of the things its author granted the question is
+   *        about — which is what the discover tools are for.
+   *
+   *  Before this every flow was seeded `report_read → agent` regardless, so every
+   *  flow was born unable to run in Chat and nothing said so.
+   */
+  const create = async (name: string, description: string, flowType: FlowType) => {
     const key = slugifyBrainKey(name);
-    // Seeded with a flow that already runs: read the report, then answer. Two
-    // nodes rather than one, because "read the open report" is now a node of its
-    // own and costs nothing — a new flow should demonstrate that, not start with
-    // an agent doing everything.
-    const reader = blankNode('report_read', []);
-    const writer = blankNode('agent', [reader]);
+    const nodes: FlowNode[] = [];
+    let writer: FlowNode;
+
+    if (flowType === 'bot') {
+      const reader = blankNode('report_read', []);
+      writer = blankNode('agent', [reader]) as FlowNode;
+      nodes.push({ ...reader, name: t('agentFlows.list.seed.readerName') } as FlowNode);
+      nodes.push({
+        ...writer,
+        name: t('agentFlows.list.seed.writerName'),
+        prompt: t('agentFlows.list.seed.writerPrompt'),
+      } as FlowNode);
+    } else {
+      writer = blankNode('agent', []) as FlowNode;
+      nodes.push({
+        ...writer,
+        name: t('agentFlows.list.seed.chatWriterName'),
+        prompt: t('agentFlows.list.seed.chatWriterPrompt'),
+        // Granted rather than left to the author to find: without a way to work
+        // out WHICH asset a question is about, a chat flow has nothing to measure.
+        tools: [{ tool: 'search_business_assets' }, { tool: 'resolve_chart_candidates' }],
+      } as FlowNode);
+    }
+
     await saveBrain({
       brain_key: key,
       name: name.trim(),
       description: description.trim(),
-      body: {
-        nodes: [
-          { ...reader, name: t('agentFlows.list.seed.readerName') } as FlowNode,
-          {
-            ...writer,
-            name: t('agentFlows.list.seed.writerName'),
-            prompt: t('agentFlows.list.seed.writerPrompt'),
-          } as FlowNode,
-        ],
-        answer_node: writer.key,
-      },
+      flow_type: flowType,
+      body: { nodes, answer_node: writer.key },
     });
     setCreating(false);
     onOpen(key);
@@ -386,10 +408,65 @@ export function BrainList({
           resourceType="agent_brain"
           resourceId={shareTarget.brain_key}
           resourceName={shareTarget.name}
+          notice={<SharedReach brainKey={shareTarget.brain_key} />}
           onClose={() => setShareTarget(null)}
         />
       )}
     </>
+  );
+}
+
+/** WHAT SHARING THIS FLOW LENDS.
+ *
+ *  Sharing an Agent Flow is not like sharing a report. Whoever receives it can ask
+ *  it questions, and it answers using its AUTHOR's reading rights over everything
+ *  it attached — the recipient needs no access of their own to any of it. That is
+ *  the module's model on purpose (`permissions.run_scope`: "the reader is not a
+ *  term"), and the thing that keeps it honest is saying so here.
+ *
+ *  It matters more since an attached dataset started granting the charts built on
+ *  it: one dataset reaches 184 charts across 8 reports on this deployment, so
+ *  "shared a dataset with this assistant" is a far larger statement than it looks.
+ *  The count is shown for that reason.
+ *
+ *  Fetched when the dialog opens rather than carried on the list row: it needs the
+ *  flow BODY, and putting that on every row of the gallery would be a body per
+ *  card for a panel most people never open.
+ */
+function SharedReach({ brainKey }: { brainKey: string }) {
+  const { t } = useI18n();
+  const [reads, setReads] = React.useState<BrainDetail['reads'] | null>(null);
+
+  React.useEffect(() => {
+    let alive = true;
+    getBrain(brainKey)
+      .then((d) => { if (alive) setReads(d.reads || []); })
+      // Silent: a failed disclosure must not block sharing, and an empty panel
+      // says nothing false. The server-side `check_attachments` gate is what
+      // actually bounds the delegation.
+      .catch(() => { if (alive) setReads([]); });
+    return () => { alive = false; };
+  }, [brainKey]);
+
+  if (!reads?.length) return null;
+  return (
+    <div className="rounded-lg border border-warning/25 bg-warning/5 p-3">
+      <p className="text-caption leading-relaxed text-warning">
+        {t('agentFlows.list.share.lendsTitle')}
+      </p>
+      <ul className="mt-2 space-y-1">
+        {reads.map((r) => (
+          <li key={`${r.source}:${r.ref}`} className="flex items-center gap-1.5 text-tiny text-text-secondary">
+            <MetaChip muted>{r.label}</MetaChip>
+            <span className="min-w-0 truncate">{r.name || r.ref}</span>
+            {r.reach && <span className="flex-shrink-0 text-text-quaternary">· {r.reach}</span>}
+          </li>
+        ))}
+      </ul>
+      <p className="mt-2 text-tiny leading-relaxed text-text-tertiary">
+        {t('agentFlows.list.share.lendsHint')}
+      </p>
+    </div>
   );
 }
 
@@ -441,6 +518,13 @@ function BrainCard({
                 {row.publishedVersion !== null && b.status === 'draft' && (
                   <MetaChip tone="warning">{t('agentFlows.list.draftUnpublished', { version: b.version })}</MetaChip>
                 )}
+                {/* WHICH SURFACE, IN THE LIST. A gallery where half the entries
+                    cannot be used where you are standing has to say which half
+                    from the outside — otherwise the only way to find out is to
+                    open each one. */}
+                <MetaChip muted>
+                  {t('agentFlows.list.create.type.' + (b.flow_type ?? 'bot') + '.name')}
+                </MetaChip>
               </span>
             </span>
           </div>
@@ -456,10 +540,19 @@ function BrainCard({
             <Layers className="h-3 w-3" />
             {t('agentFlows.list.stepCount', { count: b.node_count ?? 0 })}
           </span>
-          <span className={`inline-flex items-center gap-1 ${links > 0 ? 'text-brand' : ''}`}>
-            <Link2 className="h-3 w-3" />
-            {links > 0 ? t('agentFlows.list.linksUsingCount', { count: links }) : t('agentFlows.list.noLinksUsing')}
-          </span>
+          {/* A chat flow cannot be attached to a report link, so "0 links" is not
+              a state it is in — it is a sentence that does not apply. */}
+          {(b.flow_type ?? 'bot') === 'chat' ? (
+            <span className="inline-flex items-center gap-1">
+              <MessagesSquare className="h-3 w-3" />
+              {t('agentFlows.list.usedInChat')}
+            </span>
+          ) : (
+            <span className={`inline-flex items-center gap-1 ${links > 0 ? 'text-brand' : ''}`}>
+              <Link2 className="h-3 w-3" />
+              {links > 0 ? t('agentFlows.list.linksUsingCount', { count: links }) : t('agentFlows.list.noLinksUsing')}
+            </span>
+          )}
           <span className="inline-flex items-center gap-1">
             <Calendar className="h-3 w-3" />
             {formatWhen(b.published_at || b.created_at, locale)}
@@ -540,11 +633,23 @@ function BrainTableRow({
           {row.publishedVersion !== null && b.status === 'draft' && (
             <MetaChip tone="warning">{t('agentFlows.list.draftVersion', { version: b.version })}</MetaChip>
           )}
+          {/* The table is the view that loads first, so the type has to be here
+              and not only on the cards. */}
+          <MetaChip muted>
+            {t('agentFlows.list.create.type.' + (b.flow_type ?? 'bot') + '.name')}
+          </MetaChip>
         </div>
       </td>
       <td className="app-list-cell text-caption tabular-nums text-text-secondary">{b.node_count ?? 0}</td>
       <td className="app-list-cell">
-        {links > 0 ? (
+        {/* "—" would read as "not used yet". A chat flow is not waiting for a link;
+            it cannot have one. */}
+        {(b.flow_type ?? 'bot') === 'chat' ? (
+          <span className="inline-flex items-center gap-1 text-caption text-text-tertiary">
+            <MessagesSquare className="h-3.5 w-3.5" />
+            {t('agentFlows.list.usedInChat')}
+          </span>
+        ) : links > 0 ? (
           <span className="inline-flex items-center gap-1 text-caption font-emphasis tabular-nums text-brand">
             <Link2 className="h-3.5 w-3.5" />
             {links}
@@ -600,11 +705,12 @@ function CreateBrainModal({
   onClose, onCreate, onCreateFromDraft,
 }: {
   onClose: () => void;
-  onCreate: (name: string, description: string) => Promise<void>;
+  onCreate: (name: string, description: string, flowType: FlowType) => Promise<void>;
   onCreateFromDraft: (d: ImportedDraft) => Promise<void>;
 }) {
   const { t } = useI18n();
   const [mode, setMode] = React.useState<'blank' | 'ai'>('blank');
+  const [flowType, setFlowType] = React.useState<FlowType>('bot');
   const [name, setName] = React.useState('');
   const [description, setDescription] = React.useState('');
   const [busy, setBusy] = React.useState(false);
@@ -629,7 +735,7 @@ function CreateBrainModal({
     setBusy(true);
     setError(null);
     try {
-      await onCreate(name, description);
+      await onCreate(name, description, flowType);
     } catch (e) {
       setError(detailMsg(e) || t('agentFlows.list.create.failed'));
       setBusy(false);
@@ -728,6 +834,45 @@ function CreateBrainModal({
             invalid={Boolean(error) && mode === 'blank' && !name.trim()}
           />
         </FieldGroup>
+
+        {/* WHICH SURFACE, ASKED BEFORE ANYTHING ELSE IS TYPED.
+            It decides the seed, both pickers, and what the flow may assume it is
+            handed — so it is a choice, not a setting found later. Every flow used
+            to be seeded for a report regardless, which meant every flow was born
+            unable to run in Chat with nothing on screen saying so. */}
+        {mode === 'blank' && (
+          <FieldGroup
+            label={t('agentFlows.list.create.typeLabel')}
+            description={t('agentFlows.list.create.typeHint')}
+          >
+            <div className="grid gap-2 sm:grid-cols-2">
+              {(['bot', 'chat'] as const).map((kind) => (
+                <button
+                  key={kind}
+                  type="button"
+                  onClick={() => setFlowType(kind)}
+                  aria-pressed={flowType === kind}
+                  className={cn(
+                    'rounded-lg border p-3 text-left transition',
+                    flowType === kind
+                      ? 'border-brand bg-brand/5'
+                      : 'border-[rgb(var(--border-line))] hover:bg-surface-2',
+                  )}
+                >
+                  <span className="block text-caption font-strong">
+                    {t(`agentFlows.list.create.type.${kind}.name`)}
+                  </span>
+                  <span className="mt-0.5 block text-tiny leading-snug text-text-tertiary">
+                    {t(`agentFlows.list.create.type.${kind}.what`)}
+                  </span>
+                  <span className="mt-1.5 block text-tiny leading-snug text-text-quaternary">
+                    {t(`agentFlows.list.create.type.${kind}.gets`)}
+                  </span>
+                </button>
+              ))}
+            </div>
+          </FieldGroup>
+        )}
 
         {mode === 'blank' && (
           <FieldGroup

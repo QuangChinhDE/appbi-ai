@@ -36,6 +36,10 @@ def _read(pinned: list[int], granted: list[int]) -> dict:
     node = types.SimpleNamespace(
         key="doc", name="Đọc báo cáo", chart_ids=pinned, include_filters=False,
         include_summary=False, include_data=True, detail="compact", max_rows=50,
+        # `match_question` off and `max_charts` at the contract default: this test
+        # is about what a PARTIAL reading admits, so the selection must stay the
+        # one it was written against - every pinned chart, in the pinned order.
+        match_question=False, max_charts=20, query="",
     )
     budget = types.SimpleNamespace(tools_left=lambda: 99, spend_tool=lambda: None)
     state = types.SimpleNamespace(
@@ -145,7 +149,10 @@ def test_an_out_of_scope_chart_says_how_to_find_a_valid_one():
     out = R.err("chart 999999 is not part of this dashboard", code="chart_out_of_scope")
 
     assert out["ok"] is False
-    assert "list_charts" in out["recovery"]
+    # A route is named. WHICH route is asserted by the routing tests at the
+    # bottom of this file — that pair moves when a better tool ships, and this
+    # one only cares that the refusal is not a dead end.
+    assert out["recovery"]
 
 
 def test_a_kpi_tile_refused_for_ranking_says_what_to_rank_instead():
@@ -178,7 +185,7 @@ def test_a_missing_chart_id_is_recoverable_rather_than_just_wrong():
     out = derived._load(None, {})
 
     assert out["error_code"] == "bad_argument"
-    assert "list_charts" in out["recovery"]
+    assert out["recovery"]
 
 
 def test_codes_with_no_single_right_answer_get_no_invented_one():
@@ -192,3 +199,70 @@ def test_codes_with_no_single_right_answer_get_no_invented_one():
                 code="not_applicable")
 
     assert "recovery" not in out
+
+
+# ── recovery hints are routing, and routing goes stale ──────────────────────
+
+
+def test_a_recovery_hint_points_at_the_strongest_route_available():
+    """The hint is routing, so adding a better route means updating the hints.
+
+    Caught live, and only by running the product: after `resolve_chart_candidates`
+    shipped, `rank_values` still refused a KPI tile with "call list_charts" —
+    written months earlier, when a name search was the only way to find a chart.
+    A weak model followed it exactly, listed charts by name, picked another KPI
+    tile and reported its total as the top product category. The tool existed, was
+    granted, and was never reached, because nothing pointed at it.
+    """
+    out = derived._load(None, {})
+
+    assert "search_business_assets" in out["recovery"]
+    assert "list_charts" not in out["recovery"]
+
+
+def test_the_out_of_scope_hint_routes_to_the_asset_search_too():
+    """Same rule, the other code — and this one is shared by every chart tool."""
+    hint = R.err("chart 999999 is not part of this dashboard",
+                 code="chart_out_of_scope")["recovery"]
+
+    assert "search_business_assets" in hint
+    assert "resolve_chart_candidates" in hint
+
+
+# ── an answer a person can actually read ────────────────────────────────────
+
+
+def test_latex_a_chat_bubble_cannot_render_is_turned_into_plain_text():
+    """Asked how a KPI is calculated, a model answered in display math.
+
+    The chat renders markdown, not TeX, so the backslashes and braces reached the
+    viewer verbatim — seen in the product, on a correct answer. The whole suite
+    checks the FIGURES in an answer; nothing had checked whether it was legible.
+    """
+    b = chr(92)
+    raw = (
+        "Công thức:\n\n"
+        + b + "[\n" + b + "text{avg_review_score} = " + b + "text{AVG}("
+        + b + "text{review" + b + "_score})\n" + b + "]\n\n"
+        "Hiện là 4.09."
+    )
+    out = A._plain_formulas(raw)
+
+    assert "avg_review_score = AVG(review_score)" in out
+    assert b not in out
+    assert "4.09" in out                       # the figure survives untouched
+
+
+def test_ordinary_prose_is_left_exactly_alone():
+    """The transform is narrow, and a false positive rewrites a correct answer."""
+    plain = "Doanh thu 1.000 đ, tỷ lệ 92% — không có công thức nào ở đây."
+
+    assert A._plain_formulas(plain) == plain
+    assert A._plain_formulas("") == ""
+
+
+def test_inline_math_and_escaped_characters_both_go():
+    b = chr(92)
+    out = A._plain_formulas(b + "(x" + b + "_1" + b + ") tăng 5" + b + "%")
+
+    assert out == "x_1 tăng 5%"

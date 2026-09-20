@@ -153,9 +153,12 @@ def tool_list_charts(ctx: ToolContext, args: dict) -> dict:
     query = str(args.get("query") or "").strip()
     query_used = None
     query_missed = False
+    query_terms = 0
+    query_best = 0
     if query:
         terms = {t for t in _WORD_RE.findall(_fold(query)) if len(t) > 1}
         if terms:
+            query_terms = len(terms)
             scored = []
             for chart_id in wanted:
                 hit = len(terms & _searchable_terms(ctx, chart_id))
@@ -164,6 +167,9 @@ def tool_list_charts(ctx: ToolContext, args: dict) -> dict:
             if scored:
                 wanted = [cid for _, cid in sorted(scored)]
                 query_used = query
+                # `scored` is not sorted yet at this point - `sorted()` is applied
+                # to build `wanted` below - so take the max rather than the head.
+                query_best = max(-s for s, _ in scored)
             else:
                 query_missed = True
 
@@ -212,7 +218,12 @@ def tool_list_charts(ctx: ToolContext, args: dict) -> dict:
         items = [_compact_manifest(it) for it in items]
 
     out = {
-        "dashboard_name": ctx.dashboard.name or "",
+        # `getattr`, because there is not always a report. Direct Chat builds this
+        # context with `dashboard=None` on purpose, and this line — the only one in
+        # the tool layer that assumed otherwise — raised AttributeError inside
+        # `search_business_assets`, which caught it, logged a warning and returned
+        # documents only. The assistant then said the figure did not exist.
+        "dashboard_name": getattr(ctx.dashboard, "name", "") or "",
         "dashboard_description": getattr(ctx.dashboard, "description", "") or "",
         "filters_applied": ctx.public_filters,
         # The report's page flow (DA's narrative). Read/overview FOLLOWING this
@@ -244,10 +255,61 @@ def tool_list_charts(ctx: ToolContext, args: dict) -> dict:
     # WHAT THE SEARCH DID, said out loud. A narrowed list looks exactly like a
     # small report unless the listing admits it was filtered, and an agent that
     # cannot tell the two apart concludes the chart it wants does not exist.
+    # WHAT THE SELECTION WAS, as a structure rather than as a note to be read.
+    #
+    # This tool has two kinds of consumer. A model reads `note`, sees the chart
+    # names, and judges. Deterministic code — the `report_read` step choosing
+    # charts by the viewer's question — has no judgement to apply, and the listing
+    # returned after a MISS is byte-shaped exactly like the listing returned after
+    # a hit. It read a fallback as a perfect match, and nothing in the payload
+    # contradicted it.
+    #
+    # `status` is deliberately not a confidence score: nothing here is calibrated,
+    # and a number that looks calibrated invites callers to threshold on it as if
+    # it were. It is four states a caller can branch on, with the evidence
+    # (`query_terms`, `best_hits`) alongside so a caller that wants its own rule
+    # can still have one.
+    #
+    #   matched    — the question named something this report measures
+    #   ambiguous  — it matched, but weakly enough that acting on it is a guess
+    #   none       — nothing matched; what follows is a FALLBACK, not a result
+    #   failed     — the selection could not be attempted
+    if query:
+        if query_used and query_terms and query_best * 3 >= query_terms:
+            status = "matched"
+        elif query_used:
+            status = "ambiguous"
+        else:
+            status = "none"
+        out["selection"] = {
+            "status": status,
+            "mode": "query",
+            "fallback_used": status in ("none", "ambiguous"),
+            "selected_ids": [i.get("chart_id") for i in items
+                             if isinstance(i, dict) and i.get("chart_id") is not None],
+            "query_terms": query_terms,
+            "best_hits": query_best,
+            "reason": (
+                f"best chart matches {query_best} of {query_terms} query terms"
+                if query_used else f"no chart matches \"{query}\""
+            ),
+        }
+    else:
+        out["selection"] = {
+            "status": "matched", "mode": "explicit", "fallback_used": False,
+            "selected_ids": [i.get("chart_id") for i in items
+                             if isinstance(i, dict) and i.get("chart_id") is not None],
+            "query_terms": 0, "best_hits": 0,
+            "reason": "no query given — the whole listing is the answer",
+        }
+
     if query_used:
         out["coverage"]["query"] = query_used
+        out["coverage"]["query_terms"] = query_terms
+        out["coverage"]["query_best_hits"] = query_best
         out["coverage"]["note"] = (
-            f"{len(items)}/{len(every)} charts match \"{query_used}\", best first. "
+            f"{len(items)}/{len(every)} charts match \"{query_used}\", best first "
+            f"(best chart matches {query_best} of {query_terms} terms). "
             "Drop `query` to see every chart."
         )
     elif query_missed:
@@ -316,7 +378,7 @@ def tool_get_chart_summary(ctx: ToolContext, args: dict) -> dict:
     try:
         ctx.assert_chart_in_scope(chart_id)
     except ToolError as exc:
-        return _err(str(exc))
+        return _err(str(exc), code=getattr(exc, "code", "") or None)
 
     # Phase 15.72 — cross-turn LRU. Turn-2 with the same dashboard +
     # filters lands on cached pack instantly, avoiding the live SQL +
@@ -370,14 +432,24 @@ def tool_get_chart_summary(ctx: ToolContext, args: dict) -> dict:
         data = _fetch_chart_data(ctx, chart_id)
     except Exception as exc:
         logger.exception("dashboard_ai_bot get_chart_summary failed chart_id=%s", chart_id)
-        # The exception TEXT is not repeated: it comes from the shared chart
-        # service, which speaks the UI's language (Vietnamese here) because a
-        # person reads it in the app. Pasting it into a tool result puts a
-        # second language inside a machine contract that is otherwise English —
-        # found by the group-2 audit. The type is enough to act on; the full
-        # text is in the server log for whoever is debugging.
+        # `error` stays the short English fragment, because that is what the MODEL
+        # reads and a tool contract should not switch languages mid-sentence.
+        #
+        # But "the full text is in the server log for whoever is debugging" — what
+        # the old comment here said — assumed the person debugging can read the
+        # server log. A flow author cannot. Reported from the field: eight charts
+        # failed at once, the step said "could not read any chart in scope", the
+        # notice counted them, and the reason existed nowhere a person could
+        # reach; the author's only move was to switch on `Chart data` as a second
+        # path and pay for the rows in every downstream prompt.
+        #
+        # So the reason travels too, in `detail`, which the run trace shows and the
+        # read step folds into its notice.
         logger.warning("chart %s failed: %s", chart_id, exc)
-        return _err(f"failed to load chart {chart_id}: {type(exc).__name__}")
+        return _err(
+            f"failed to load chart {chart_id}: {type(exc).__name__}",
+            detail=f"{type(exc).__name__}: {exc}",
+        )
 
     try:
         pack = build_insight_pack(
@@ -417,7 +489,7 @@ def tool_get_chart_data(ctx: ToolContext, args: dict) -> dict:
     try:
         ctx.assert_chart_in_scope(chart_id)
     except ToolError as exc:
-        return _err(str(exc))
+        return _err(str(exc), code=getattr(exc, "code", "") or None)
 
     # The run's ceiling, not this module's. A binding that grants more rows is
     # honoured; one that grants none falls back to the historical default.
@@ -560,7 +632,7 @@ def tool_compare_segments(ctx: ToolContext, args: dict) -> dict:
     try:
         ctx.assert_chart_in_scope(chart_id)
     except ToolError as exc:
-        return _err(str(exc))
+        return _err(str(exc), code=getattr(exc, "code", "") or None)
 
     try:
         data = _fetch_chart_data(ctx, chart_id)
@@ -844,7 +916,7 @@ def tool_benchmark_compare(ctx: ToolContext, args: dict) -> dict:
     try:
         ctx.assert_chart_in_scope(chart_id)
     except ToolError as exc:
-        return _err(str(exc))
+        return _err(str(exc), code=getattr(exc, "code", "") or None)
 
     # Deterministic report-side anchor.
     #
@@ -1582,7 +1654,7 @@ def execute_tool(ctx: ToolContext, name: str, args: dict | None) -> dict:
     try:
         return fn(ctx, args or {})
     except ToolError as exc:
-        return _err(str(exc))
+        return _err(str(exc), code=getattr(exc, "code", "") or None)
     except Exception as exc:
         # Don't leak stack traces to the LLM
         return _err(f"tool '{name}' raised {type(exc).__name__}: {str(exc)[:200]}")

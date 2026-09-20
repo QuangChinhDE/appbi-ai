@@ -158,6 +158,17 @@ class ResolvedRef(_Model):
     """
 
     kind: Literal["measure", "dimension", "chart", "document", "dataset", "metric", "value"]
+    #: WHY `values` IS EMPTY, when it is empty because something went wrong.
+    #:
+    #: Reading a dimension's values goes through `get_chart_data` like anything
+    #: else, so it can be refused — the chart is outside the binding, the link
+    #: withholds raw rows, the warehouse is down. That refusal used to be caught
+    #: and turned into `[]`, which is indistinguishable from "this dimension has
+    #: no values", and a Loop over it then ran zero times and reported success.
+    #:
+    #: Empty string means genuinely empty. A code here means the read FAILED and
+    #: nothing downstream should treat the emptiness as data.
+    values_error: str = ""
     chart_id: int | None = None
     field: str = ""
     label: str = ""

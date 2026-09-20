@@ -45,6 +45,9 @@ _OPTIONAL_MODULES = {
     # produce dead-nav pointing at an unregistered router.
     "govern": settings.METADATA_CATALOG_ENABLED and settings.GOVERN_ENABLED,
     "agent_flows": settings.METADATA_CATALOG_ENABLED and settings.GOVERN_ENABLED,
+    # Same backend, same enablement: AI Chat runs the flows Agent Flows authors,
+    # so a deployment cannot have one without the other.
+    "chat": settings.METADATA_CATALOG_ENABLED and settings.GOVERN_ENABLED,
     # Intelligence group — same enablement as govern (same catalog backend).
     # Flow Studio — same catalog backend, but its OWN key: publishing a flow
     # changes AI behaviour on a live published report (deploy-sized blast
@@ -71,6 +74,21 @@ _ALL_MODULE_ALLOWED_LEVELS: Dict[str, List[str]] = {
     "datasets":          ["none", "view", "edit", "full"],
     "govern":            ["none", "view", "edit", "full"],
     "agent_flows":            ["none", "view", "edit", "full"],
+    # FOUR LEVELS, and each one now buys something. This was `["none", "view"]`
+    # for exactly as long as a conversation was private and unshareable; once a
+    # person can hand their own conversation to a colleague, the generic ladder
+    # fits it without being bent:
+    #
+    #   view   open AI Chat, talk to assistants shared with you, keep your own
+    #          conversations, and READ conversations others shared with you
+    #   edit   the above, plus SHARE your own conversations — which is not a
+    #          style choice: `get_effective_permission` only lets an owner reach
+    #          `full` on their own row when the module level is `edit` or above,
+    #          and `require_share_access` demands `full`. At `view` a person
+    #          could not share the conversation they are holding.
+    #   full   read and manage EVERY conversation in the workspace — the
+    #          oversight level, the same thing `full` means everywhere else
+    "chat":              ["none", "view", "edit", "full"],
     "observability":     ["none", "view", "edit", "full"],
     "explore_charts":    ["none", "view", "edit", "full"],
     "dashboards":        ["none", "view", "edit", "full"],
@@ -92,6 +110,7 @@ PRESETS: Dict[str, Dict[str, str]] = {
         "datasets": "full",
         "govern": "full",
         "agent_flows": "full",
+        "chat": "full",
         "observability": "full",
         "explore_charts": "full",
         "dashboards": "full",
@@ -103,6 +122,7 @@ PRESETS: Dict[str, Dict[str, str]] = {
         "datasets": "edit",
         "govern": "edit",
         "agent_flows": "edit",
+        "chat": "edit",
         "observability": "edit",
         "explore_charts": "edit",
         "dashboards": "edit",
@@ -114,6 +134,7 @@ PRESETS: Dict[str, Dict[str, str]] = {
         "datasets": "view",
         "govern": "view",
         "agent_flows": "view",
+        "chat": "view",
         "observability": "view",
         "explore_charts": "view",
         "dashboards": "view",
@@ -125,6 +146,9 @@ PRESETS: Dict[str, Dict[str, str]] = {
         "datasets": "none",
         "govern": "none",
         "agent_flows": "none",
+        # The one AI surface a minimal account plausibly wants: asking a published
+        # assistant a question is closer to reading a dashboard than to authoring.
+        "chat": "view",
         "observability": "none",
         "explore_charts": "none",
         "dashboards": "view",

@@ -48,6 +48,47 @@ if [ -f frontend/package.json ]; then
   fi
 fi
 
+# 2b) Frontend QA contracts — three checks that already existed in
+# frontend/scripts/ and were wired into no gate. Plain node, no dependencies,
+# ~2s total, so there is no reason for them not to be here. The module-route one
+# catches a sidebar page left out of moduleRoutes.ts, which fails OPEN and so is
+# otherwise silent.
+if [ -f frontend/package.json ]; then
+  section "Frontend QA contracts"
+  if command -v node >/dev/null 2>&1; then
+    qa_fail=0
+    for s in check-module-routes.mjs check-theme-presets.mjs check-presentation-contract.mjs; do
+      [ -f "frontend/scripts/$s" ] || continue
+      ( cd frontend && node "scripts/$s" >/dev/null ) || { echo "  ✗ $s"; qa_fail=1; }
+    done
+    [ "$qa_fail" -eq 0 ] && echo "✓ module routes · theme presets · presentation contract" || fail=1
+  else
+    echo "· skipped (no node on PATH)"
+  fi
+fi
+
+# 2c) Claude workflow config. The rules' frontmatter used `globs:`, which Claude
+# Code does not read, so every rule silently loaded in every session instead of
+# being path-scoped. The YAML parsed, nothing warned. Only a schema-aware check
+# finds that class, so it runs with the other commit-integrity gates.
+if [ -d .claude ]; then
+  section "Claude workflow config"
+  if [ -n "$PY" ]; then
+    "$PY" scripts/ci/check_agent_config.py || fail=1
+    # The safety system itself: the Stop gate decision paths, and the meta-tests
+    # proving a change cannot weaken the protection without being caught.
+    if "$PY" -c "import pytest" >/dev/null 2>&1; then
+      "$PY" -m pytest -q scripts/ci/test_stop_gate.py scripts/ci/test_agent_sdlc.py >/dev/null || {
+        "$PY" -m pytest -q scripts/ci/test_stop_gate.py scripts/ci/test_agent_sdlc.py; fail=1; }
+      [ "$fail" -eq 0 ] && echo "✓ safety-system tests (stop gate + SDLC meta)"
+    else
+      echo "· safety-system tests skipped (pytest not installed)"
+    fi
+  else
+    echo "· skipped (no python on PATH)"
+  fi
+fi
+
 # 3) Backend import smoke — catches imports of deleted/renamed modules.
 if [ -f backend/app/main.py ] && [ -z "${PREFLIGHT_SKIP_BACKEND_IMPORT:-}" ]; then
   section "Backend import smoke"

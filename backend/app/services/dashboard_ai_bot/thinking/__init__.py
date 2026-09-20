@@ -11,7 +11,6 @@ sibling ``normal/`` folder; both share top-level infrastructure
 """
 from app.services.dashboard_ai_bot.thinking.agent import (
     build_proactive_recon,
-    run_agent_stream,
 )
 
-__all__ = ["build_proactive_recon", "run_agent_stream"]
+__all__ = ["build_proactive_recon"]

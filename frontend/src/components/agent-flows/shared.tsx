@@ -56,7 +56,10 @@ const COST_TONE: Record<ToolSpec['cost_class'], string> = {
   external: 'bg-danger/10 text-danger border-danger/25',
 };
 
-const COST_HINT_KEY: Record<ToolSpec['cost_class'], string> = {
+/** Exported because the tool picker now shows the cost as a TOOLTIP on ordinary
+ *  tools and a chip only on the unusual ones — so it needs the same hint text
+ *  the chip uses, and a second copy would drift from it. */
+export const COST_HINT_KEY: Record<ToolSpec['cost_class'], string> = {
   cheap: 'agentFlows.costHint.cheap',
   data_query: 'agentFlows.costHint.dataQuery',
   expensive: 'agentFlows.costHint.expensive',
@@ -140,7 +143,11 @@ export function SectionTitle({
 }
 
 export function HintText({ children }: { children: React.ReactNode }) {
-  return <p className="text-tiny leading-relaxed text-text-tertiary">{children}</p>;
+  // `caption`, not `tiny`. Below caption the scale switches to weight 510 — those
+  // steps are label and badge styles — so a hint set in `tiny` came out small AND
+  // semibold. It is de-emphasised by colour instead, which is what the token is
+  // for, and is now the same size as the field it explains.
+  return <p className="text-caption leading-relaxed text-text-tertiary">{children}</p>;
 }
 
 /** A dated line, in the user's locale. Brains carry ISO strings; printing them raw

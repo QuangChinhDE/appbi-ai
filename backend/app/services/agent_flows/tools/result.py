@@ -191,8 +191,9 @@ def ok(
 #: anything situational is passed explicitly at the call site.
 _DEFAULT_RECOVERY: dict[str, str] = {
     "chart_out_of_scope": (
-        "Call list_charts with a `query` of the question's keywords to get the "
-        "chart_ids this link actually grants, then retry with one of those."
+        "Find a chart this link actually grants: search_business_assets with the "
+        "question's words, or resolve_chart_candidates when the question names a "
+        "governed metric. Then retry with a chart_id from those results."
     ),
 }
 
@@ -280,6 +281,17 @@ def normalise(raw: Any, *, kind: ResultKind) -> dict[str, Any]:
         )
     if raw.get("ok") is False:
         if "error_code" in raw:
+            # A BODY THAT KNOWS ITS CODE STILL NEEDS THE RECOVERY HINT.
+            #
+            # This returned early, which was harmless while codes were only ever
+            # INFERRED here — `err()` attached the hint on the way past. Once
+            # `ToolError` started carrying its own code the early return began
+            # skipping that, so `chart_out_of_scope` arrived correctly labelled and
+            # with nothing telling the model where to go instead. The label is half
+            # the value; the hint is the other half.
+            hint = _DEFAULT_RECOVERY.get(str(raw.get("error_code") or ""), "")
+            if hint and not raw.get("recovery"):
+                return {**raw, "recovery": hint}
             return raw
         message = str(raw.get("error") or "tool failed")
         return err(message, code=classify(message), retryable=False)

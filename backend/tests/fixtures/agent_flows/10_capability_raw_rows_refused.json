@@ -1,0 +1,46 @@
+{
+  "covers": [
+    "capability decision",
+    "raw_rows refused",
+    "I5 tripwire"
+  ],
+  "envelope": {
+    "binding": {
+      "capabilities": {
+        "read_rows": false,
+        "web_search": false
+      }
+    }
+  },
+  "flow": {
+    "answer_node": "answer",
+    "nodes": [
+      {
+        "key": "answer",
+        "name": "Tra loi",
+        "prompt": "Cho xem tung dong",
+        "tools": [
+          {
+            "tool": "get_chart_data"
+          }
+        ],
+        "type": "agent"
+      }
+    ]
+  },
+  "name": "10_capability_raw_rows_refused",
+  "provider": {
+    "tool_calls": [
+      {
+        "args": {
+          "chart_id": 41,
+          "top_n": 5
+        },
+        "name": "get_chart_data"
+      }
+    ]
+  },
+  "tools": {
+    "real": true
+  }
+}

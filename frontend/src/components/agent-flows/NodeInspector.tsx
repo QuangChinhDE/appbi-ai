@@ -25,11 +25,14 @@ import { cn } from '@/lib/utils';
 import { useI18n } from '@/providers/LanguageProvider';
 import {
   MAX_LOOP_ITERATIONS, MAX_TOOL_CALLS, slugifyBrainKey,
-  type Condition, type ConditionOp, type FlowNode, type FlowPath,
+  type Condition, type ConditionOp, type FlowNode, type FlowPath, type FlowType,
   type Attachable, type NodeSpec, type ProviderGroup, type SwitchCase,
   type ToolPack,
+  previewStep,
+  type StepPreview,
+  type ToolInput,
 } from '@/lib/agentFlows';
-import { SectionTitle, HintText, CostChip, KnowledgeAttachments } from './shared';
+import { SectionTitle, HintText, CostChip, COST_HINT_KEY, KnowledgeAttachments } from './shared';
 
 const OPS: { value: ConditionOp; labelKey?: string; label?: string }[] = [
   { value: 'contains', labelKey: 'agentFlows.inspector.op.contains' },
@@ -76,7 +79,7 @@ function Field({
   return (
     <div className="mt-3 first:mt-0">
       <label className="mb-1 block text-caption font-medium text-text-secondary">{label}</label>
-      {hint && <p className="mb-1 text-tiny leading-snug text-text-tertiary">{hint}</p>}
+      {hint && <p className="mb-1 text-caption leading-snug text-text-tertiary">{hint}</p>}
       {children}
     </div>
   );
@@ -103,22 +106,34 @@ function Select({
 }
 
 function Toggle({
-  on, onChange, title, hint,
-}: { on: boolean; onChange: (v: boolean) => void; title: string; hint?: string }) {
+  on, onChange, title, hint, disabled,
+}: {
+  on: boolean; onChange: (v: boolean) => void; title: string; hint?: string;
+  /** A switch that changes nothing must not look like one that does. `detail:
+   *  "index"` short-circuits before either read tool is called, so "chart summary"
+   *  and "chart data" are silently inert there - an author flipping them saw no
+   *  effect and no reason. */
+  disabled?: boolean;
+}) {
   return (
-    <div className="flex items-center gap-2 border-t border-[rgb(var(--border-line))] py-2 first:border-t-0">
+    <div className={cn(
+      'flex items-center gap-2 border-t border-[rgb(var(--border-line))] py-2 first:border-t-0',
+      disabled && 'opacity-50',
+    )}>
       <div className="min-w-0 flex-1">
         <b className="block text-caption font-medium">{title}</b>
-        {hint && <span className="mt-px block text-tiny text-text-tertiary">{hint}</span>}
+        {hint && <span className="mt-px block text-caption text-text-tertiary">{hint}</span>}
       </div>
       <button
         type="button"
         role="switch"
         aria-checked={on}
+        disabled={disabled}
         onClick={() => onChange(!on)}
         className={cn(
           'h-[18px] w-[34px] flex-shrink-0 rounded-full p-0.5 transition',
           on ? 'bg-brand' : 'bg-surface-3',
+          disabled && 'cursor-not-allowed',
         )}
       >
         <span
@@ -145,14 +160,14 @@ function ConditionRows({
         return (
           <div key={i} className="mt-1.5 grid grid-cols-[1.2fr_0.8fr_1fr_28px] gap-1.5 first:mt-0">
             <Input value={c.left} onChange={(e) => set(i, { left: e.target.value })}
-              placeholder="{{available_metrics}}" className="h-8 text-tiny" />
+              placeholder="{{available_metrics}}" className="h-8 text-caption" />
             <Select value={c.op} onChange={(v) => set(i, { op: v as ConditionOp })} options={opOptions(t)} />
             <Input
               value={c.right || ''}
               disabled={unary}
               onChange={(e) => set(i, { right: e.target.value })}
               placeholder={unary ? '-' : t('agentFlows.inspector.value')}
-              className="h-8 text-tiny"
+              className="h-8 text-caption"
             />
             <button
               type="button"
@@ -180,6 +195,69 @@ function ConditionRows({
   );
 }
 
+/** A bounded number box that never emits a value outside its own bounds.
+ *
+ *  WHAT IT REPLACES, AND WHY IT IS A COMPONENT RATHER THAN EIGHT FIXES.
+ *
+ *  Every number field here was `value={x ?? 8}` with
+ *  `onChange={(e) => set({ x: Number(e.target.value) })}`. `Number('')` is `0`, so
+ *  the instant somebody selected the contents to type a new number the model
+ *  received 0 — below every `min={1}` on this screen — and the flow went invalid
+ *  mid-keystroke. The server said so, correctly, and the builder printed the
+ *  refusal in its title bar. Eight boxes, one bug, so one component.
+ *
+ *  The text is held locally while it is being edited, which is what lets the box
+ *  be empty without the model being wrong. Only a parse that lands inside
+ *  [min, max] is committed; leaving the box snaps it back to the value that is
+ *  actually in the flow, so what is on screen and what will be saved cannot
+ *  disagree once focus moves on.
+ */
+function NumberField({
+  value, min, max, step, onCommit, className,
+}: {
+  value: number;
+  min: number;
+  max: number;
+  step?: string;
+  onCommit: (n: number) => void;
+  className?: string;
+}) {
+  const [text, setText] = React.useState(String(value));
+  const [editing, setEditing] = React.useState(false);
+
+  // Someone else changed it (undo, loading another step) — follow, unless the
+  // author is mid-keystroke in this very box.
+  React.useEffect(() => { if (!editing) setText(String(value)); }, [value, editing]);
+
+  return (
+    <Input
+      type="number"
+      min={min}
+      max={max}
+      step={step}
+      className={className}
+      value={text}
+      onFocus={() => setEditing(true)}
+      onChange={(e) => {
+        const next = e.target.value;
+        setText(next);
+        if (next.trim() === '') return;        // mid-edit, not a value yet
+        const n = Number(next);
+        if (Number.isFinite(n) && n >= min && n <= max) onCommit(n);
+      }}
+      onBlur={() => {
+        setEditing(false);
+        const n = Number(text);
+        const ok = text.trim() !== '' && Number.isFinite(n);
+        const clamped = ok ? Math.min(max, Math.max(min, n)) : value;
+        setText(String(clamped));
+        if (clamped !== value) onCommit(clamped);
+      }}
+    />
+  );
+}
+
+
 export interface InspectorProps {
   node: FlowNode | null;
   /** Set when the selection is a branch lane rather than a node. */
@@ -194,6 +272,11 @@ export interface InspectorProps {
    *  not the thing enforcing the permission rule. Null while it loads. */
   attachable: Attachable | null;
   isAnswerNode: boolean;
+  /** Needed to ask the server what this step will hand the model. */
+  brainKey: string;
+  /** Which surface this flow is for. A chat flow has no report, so the preview
+   *  must not ask for one — asking was what made this panel unusable there. */
+  flowType: FlowType;
   onChange: (next: FlowNode) => void;
   onChangePath: (next: FlowPath) => void;
   onChangeCase: (next: SwitchCase) => void;
@@ -296,8 +379,10 @@ function CaseForm({ item, onChange }: { item: SwitchCase; onChange: (c: SwitchCa
 function NodeForm(props: InspectorProps & { node: FlowNode }) {
   const { attachable } = props;
   const { t, language } = useI18n();
-  const { node, spec, toolPacks, providers, isAnswerNode, onChange, onMakeAnswer } = props;
+  const { node, spec, toolPacks, providers, isAnswerNode, onChange, onMakeAnswer,
+    brainKey } = props;
   const set = (patch: Partial<FlowNode>) => onChange({ ...node, ...patch } as FlowNode);
+  const [seeing, setSeeing] = React.useState(false);
 
   return (
     <div className="p-3">
@@ -353,7 +438,7 @@ function NodeForm(props: InspectorProps & { node: FlowNode }) {
                 {(node.choices || []).map((c, i) => (
                   <div key={i} className="flex items-start gap-1.5">
                     <Input
-                      className="w-[38%] font-mono text-tiny"
+                      className="w-[38%] font-mono text-caption"
                       value={c}
                       placeholder={t('agentFlows.inspector.choiceValue')}
                       onChange={(e) => {
@@ -411,10 +496,34 @@ function NodeForm(props: InspectorProps & { node: FlowNode }) {
               )}
             </Field>
           )}
-          <Field label={t('agentFlows.inspector.maxToolCalls')}>
-            <Input type="number" min={1} max={MAX_TOOL_CALLS} value={node.max_tool_calls ?? 8}
-              onChange={(e) => set({ max_tool_calls: Number(e.target.value) } as Partial<FlowNode>)} />
-          </Field>
+          <Advanced
+            name="limits"
+            title={t('agentFlows.inspector.maxToolCalls')}
+            subtitle={t('agentFlows.adv.limitsSubtitle', { n: String(node.max_tool_calls ?? 8) })}
+          >
+            <NumberField min={1} max={MAX_TOOL_CALLS} value={node.max_tool_calls ?? 8}
+              onCommit={(n) => set({ max_tool_calls: n } as Partial<FlowNode>)} />
+          </Advanced>
+          {/* PUT IT WHERE THE PROMPT IS, not in a menu. The question this answers
+              — "will this step see what I think it sees" — is the one an author
+              has while looking at the instructions they just typed. */}
+          <Button
+            size="sm"
+            variant="secondary"
+            className="mt-2 w-full"
+            onClick={() => setSeeing(true)}
+          >
+            {t('agentFlows.seen.open')}
+          </Button>
+          {seeing && node && (
+            <WhatTheAiSees
+              brainKey={brainKey}
+              flowType={props.flowType}
+              nodeKey={node.key}
+              nodeName={node.name || node.key}
+              onClose={() => setSeeing(false)}
+            />
+          )}
           <div className="mt-4 border-t border-[rgb(var(--border-line))] pt-3">
             <SectionTitle>{t('agentFlows.inspector.grantedTools')}</SectionTitle>
             <ToolPicker
@@ -427,7 +536,7 @@ function NodeForm(props: InspectorProps & { node: FlowNode }) {
               } as Partial<FlowNode>)}
             />
             {isAnswerNode && (node.tools || []).length > 0 && (
-              <p className="mt-2 rounded-md border border-warning/25 bg-warning/5 p-2 text-tiny text-warning">
+              <p className="mt-2 rounded-md border border-warning/25 bg-warning/5 p-2 text-caption text-warning">
                 {t('agentFlows.inspector.answerToolsWarning')}
               </p>
             )}
@@ -442,8 +551,11 @@ function NodeForm(props: InspectorProps & { node: FlowNode }) {
               onChange={(knowledge) => set({ knowledge } as Partial<FlowNode>)}
             />
           </div>
-          <div className="mt-4 border-t border-[rgb(var(--border-line))] pt-3">
-            <SectionTitle>{t('agentFlows.inspector.model')}</SectionTitle>
+          <Advanced
+            name="model"
+            title={t('agentFlows.inspector.model')}
+            subtitle={t('agentFlows.adv.modelSubtitle')}
+          >
             <Select
               value={node.provider || 'inherit'}
               onChange={(v) => set({ provider: v as never, model: v === 'inherit' ? '' : node.model } as Partial<FlowNode>)}
@@ -465,34 +577,118 @@ function NodeForm(props: InspectorProps & { node: FlowNode }) {
             <HintText>
               {t('agentFlows.inspector.modelHint')}
             </HintText>
-          </div>
+          </Advanced>
         </>
       )}
 
-      {node.type === 'report_read' && (
+      {node.type === 'tool' && (
         <>
+          <Field label={t('agentFlows.inspector.tool.pick')}
+            hint={t('agentFlows.inspector.tool.pickHint')}>
+            <Select
+              value={node.tool || ''}
+              onChange={(v) => set({ tool: v, inputs: {} } as Partial<FlowNode>)}
+              options={[
+                { value: '', label: t('agentFlows.inspector.tool.none') },
+                ...toolPacks.flatMap((p) => p.tools.map((tl) => ({
+                  value: tl.name,
+                  label: `${(language === 'vi' ? tl.label_vi : tl.label_en) || tl.name}  ·  ${tl.name}`,
+                }))),
+              ]} />
+          </Field>
+
+          {/* ARGUMENTS COME FROM THE TOOL, not from free text. Each one is bound
+              to a variable or to a literal, and what is stored keeps its type —
+              which is what lets a mismatch be caught when the flow is published
+              rather than when a viewer is waiting. */}
+          {node.tool ? (
+            <ToolArguments
+              tool={node.tool}
+              packs={toolPacks}
+              value={node.inputs || {}}
+              onChange={(inputs) => set({ inputs } as Partial<FlowNode>)}
+            />
+          ) : (
+            <HintText>{t('agentFlows.inspector.tool.pickFirst')}</HintText>
+          )}
+
+          <HintText>{t('agentFlows.inspector.tool.hint')}</HintText>
+        </>
+      )}
+
+      {node.type === 'report_read' && (() => {
+        // `index` never calls either read tool - it describes each chart from the
+        // configuration the run already holds. The two toggles under it are inert
+        // in that mode, so they say so rather than lying quietly.
+        const indexed = (node.detail ?? 'compact') === 'index';
+        return (
+        <>
+          {/* WHICH CHARTS, before how much of each. Reading everything the binding
+              allows is what this step did with no way to say otherwise, and on a
+              seventy-chart report that is twenty charts fetched so the first six or
+              seven can survive the cut into the next step. */}
+          <Field label={t('agentFlows.inspector.read.scope')}>
+            <div className="rounded-lg border border-[rgb(var(--border-line))] px-2.5">
+              <Toggle on={node.match_question === true}
+                title={t('agentFlows.inspector.read.matchQuestion')}
+                hint={t('agentFlows.inspector.read.matchQuestionHint')}
+                onChange={(v) => set({ match_question: v } as Partial<FlowNode>)} />
+            </div>
+          </Field>
+          {node.match_question && (
+            <Field label={t('agentFlows.inspector.read.matchOn')}
+              hint={t('agentFlows.inspector.read.matchOnHint')}>
+              <Textarea rows={2} value={node.query || ''}
+                onChange={(e) => set({ query: e.target.value } as Partial<FlowNode>)} />
+            </Field>
+          )}
+          <Field label={t('agentFlows.inspector.read.maxCharts')}
+            hint={t('agentFlows.inspector.read.maxChartsHint')}>
+            <NumberField min={1} max={50} value={node.max_charts ?? 20}
+              onCommit={(n) => set({ max_charts: n } as Partial<FlowNode>)} />
+          </Field>
+
+          <Field label={t('agentFlows.inspector.read.detail')}
+            hint={t('agentFlows.inspector.read.detail.' + (node.detail ?? 'compact') + 'Hint')}>
+            <Select value={node.detail ?? 'compact'}
+              onChange={(v) => set({ detail: v as 'index' | 'compact' | 'full' } as Partial<FlowNode>)}
+              options={[
+                { value: 'index', label: t('agentFlows.inspector.read.detail.index') },
+                { value: 'compact', label: t('agentFlows.inspector.read.detail.compact') },
+                { value: 'full', label: t('agentFlows.inspector.read.detail.full') },
+              ]} />
+          </Field>
+
           <Field label={t('agentFlows.inspector.readWhat')}>
             <div className="rounded-lg border border-[rgb(var(--border-line))] px-2.5">
-              <Toggle on={node.include_summary !== false} title={t('agentFlows.inspector.read.summary')}
-                hint={t('agentFlows.inspector.read.summaryHint')}
+              <Toggle on={node.include_summary !== false} disabled={indexed}
+                title={t('agentFlows.inspector.read.summary')}
+                hint={indexed ? t('agentFlows.inspector.read.indexIgnores')
+                              : t('agentFlows.inspector.read.summaryHint')}
                 onChange={(v) => set({ include_summary: v } as Partial<FlowNode>)} />
-              <Toggle on={node.include_data !== false} title={t('agentFlows.inspector.read.data')}
-                hint={t('agentFlows.inspector.read.dataHint')}
+              <Toggle on={node.include_data !== false} disabled={indexed}
+                title={t('agentFlows.inspector.read.data')}
+                hint={indexed ? t('agentFlows.inspector.read.indexIgnores')
+                              : t('agentFlows.inspector.read.dataHint')}
                 onChange={(v) => set({ include_data: v } as Partial<FlowNode>)} />
               <Toggle on={node.include_filters !== false} title={t('agentFlows.inspector.read.filters')}
                 hint={t('agentFlows.inspector.read.filtersHint')}
                 onChange={(v) => set({ include_filters: v } as Partial<FlowNode>)} />
             </div>
           </Field>
-          <Field label={t('agentFlows.inspector.maxRows')}>
-            <Input type="number" min={1} max={5000} value={node.max_rows ?? 200}
-              onChange={(e) => set({ max_rows: Number(e.target.value) } as Partial<FlowNode>)} />
-          </Field>
+          {!indexed && node.include_data !== false && (
+            <Field label={t('agentFlows.inspector.maxRows')}
+              hint={t('agentFlows.inspector.read.maxRowsHint')}>
+              <NumberField min={1} max={5000} value={node.max_rows ?? 200}
+                onCommit={(n) => set({ max_rows: n } as Partial<FlowNode>)} />
+            </Field>
+          )}
           <HintText>
             {t('agentFlows.inspector.reportReadHint')}
           </HintText>
         </>
-      )}
+        );
+      })()}
 
       {node.type === 'knowledge' && (
         <>
@@ -501,8 +697,8 @@ function NodeForm(props: InspectorProps & { node: FlowNode }) {
               onChange={(e) => set({ query: e.target.value } as Partial<FlowNode>)} />
           </Field>
           <Field label={t('agentFlows.inspector.topK')}>
-            <Input type="number" min={1} max={20} value={node.top_k ?? 5}
-              onChange={(e) => set({ top_k: Number(e.target.value) } as Partial<FlowNode>)} />
+            <NumberField min={1} max={20} value={node.top_k ?? 5}
+              onCommit={(n) => set({ top_k: n } as Partial<FlowNode>)} />
           </Field>
           {/* Attaching nothing is a real choice — it means "whatever this report is
               entitled to". The control sits under the query because an author picks
@@ -531,7 +727,7 @@ function NodeForm(props: InspectorProps & { node: FlowNode }) {
               placeholder="statista.com, thinkwithgoogle.com"
             />
           </Field>
-          <p className="mt-2 rounded-md border border-warning/25 bg-warning/5 p-2 text-tiny text-warning">
+          <p className="mt-2 rounded-md border border-warning/25 bg-warning/5 p-2 text-caption text-warning">
             {t('agentFlows.inspector.webGateHint')}
           </p>
         </>
@@ -599,10 +795,10 @@ function NodeForm(props: InspectorProps & { node: FlowNode }) {
             label={t('agentFlows.inspector.maxSpecialists')}
             hint={t('agentFlows.inspector.maxSpecialistsHint')}
           >
-            <Input
-              type="number" min={1} max={8}
+            <NumberField
+              min={1} max={8}
               value={node.max_specialists ?? 3}
-              onChange={(e) => set({ max_specialists: Number(e.target.value) } as Partial<FlowNode>)}
+              onCommit={(n) => set({ max_specialists: n } as Partial<FlowNode>)}
             />
           </Field>
 
@@ -699,8 +895,8 @@ function NodeForm(props: InspectorProps & { node: FlowNode }) {
             label={t('agentFlows.inspector.maxIterations')}
             hint={t('agentFlows.inspector.maxIterationsHint')}
           >
-            <Input type="number" min={1} max={MAX_LOOP_ITERATIONS} value={node.max_iterations ?? 10}
-              onChange={(e) => set({ max_iterations: Number(e.target.value) } as Partial<FlowNode>)} />
+            <NumberField min={1} max={MAX_LOOP_ITERATIONS} value={node.max_iterations ?? 10}
+              onCommit={(n) => set({ max_iterations: n } as Partial<FlowNode>)} />
           </Field>
           <Field label={t('agentFlows.inspector.collectInto')}>
             <Input value={node.collect_into || ''}
@@ -793,15 +989,18 @@ function NodeForm(props: InspectorProps & { node: FlowNode }) {
             label={t('agentFlows.inspector.delaySeconds')}
             hint={t('agentFlows.inspector.delayHint')}
           >
-            <Input type="number" min={0} max={30} value={node.seconds ?? 1}
-              onChange={(e) => set({ seconds: Number(e.target.value) } as Partial<FlowNode>)} />
+            <NumberField min={0} max={30} value={node.seconds ?? 1}
+              onCommit={(n) => set({ seconds: n } as Partial<FlowNode>)} />
           </Field>
         </>
       )}
 
       {/* ── common ───────────────────────────────────────────────────────── */}
-      <div className="mt-4 border-t border-[rgb(var(--border-line))] pt-3">
-        <SectionTitle>{t('agentFlows.inspector.resultSection')}</SectionTitle>
+      <Advanced
+        name="result"
+        title={t('agentFlows.inspector.resultSection')}
+        subtitle={t('agentFlows.adv.resultSubtitle')}
+      >
         {/* `coordinate` joins `if`/`switch` here: what it publishes is a record of
             which lane ran, not a finding, and naming bookkeeping as a variable
             invites a later step to answer from it. `{{outputs.<key>}}` still
@@ -831,7 +1030,7 @@ function NodeForm(props: InspectorProps & { node: FlowNode }) {
             />
           </Field>
         )}
-      </div>
+      </Advanced>
 
       <div className="mt-4 border-t border-[rgb(var(--border-line))] pt-3">
         <SectionTitle>{t('agentFlows.inspector.errorSection')}</SectionTitle>
@@ -853,10 +1052,10 @@ function NodeForm(props: InspectorProps & { node: FlowNode }) {
         </div>
         {node.retry && (
           <div className="mt-1.5 grid grid-cols-2 gap-1.5">
-            <Input type="number" min={1} max={5} value={node.retry.max_attempts}
-              onChange={(e) => set({ retry: { ...node.retry!, max_attempts: Number(e.target.value) } })} />
-            <Input type="number" min={0} max={30} step="0.5" value={node.retry.backoff_seconds}
-              onChange={(e) => set({ retry: { ...node.retry!, backoff_seconds: Number(e.target.value) } })} />
+            <NumberField min={1} max={5} value={node.retry.max_attempts}
+              onCommit={(n) => set({ retry: { ...node.retry!, max_attempts: n } })} />
+            <NumberField min={0} max={30} step="0.5" value={node.retry.backoff_seconds}
+              onCommit={(n) => set({ retry: { ...node.retry!, backoff_seconds: n } })} />
           </div>
         )}
       </div>
@@ -887,6 +1086,81 @@ const PAYLOAD_HINT_KEY: Record<string, string> = {
 
 function toolPackLabel(pack: ToolPack, language: 'en' | 'vi') {
   return (language === 'vi' ? pack.label_vi : pack.label_en) || pack.label_vi || pack.label_en;
+}
+
+
+/** The arguments of one tool, each bound to a variable or a literal.
+ *
+ *  The list of arguments is READ FROM THE TOOL rather than typed by the author:
+ *  a free-text argument name is a misspelling waiting to reach a viewer, and the
+ *  registry already knows what the tool takes. */
+function ToolArguments({
+  tool, packs, value, onChange,
+}: {
+  tool: string;
+  packs: ToolPack[];
+  value: Record<string, ToolInput>;
+  onChange: (v: Record<string, ToolInput>) => void;
+}) {
+  const { t } = useI18n();
+  const spec = packs.flatMap((p) => p.tools).find((s) => s.name === tool);
+  const args = Object.entries(spec?.inputs || {});
+
+  if (!spec) {
+    return <HintText>{t('agentFlows.inspector.tool.unknown')}</HintText>;
+  }
+  if (!args.length) {
+    return <HintText>{t('agentFlows.inspector.tool.noArgs')}</HintText>;
+  }
+
+  const bind = (name: string, next: ToolInput) =>
+    onChange({ ...value, [name]: next });
+
+  return (
+    <Field label={t('agentFlows.inspector.tool.args')}>
+      <div className="space-y-2 rounded-lg border border-[rgb(var(--border-line))] p-2.5">
+        {args.map(([name, meta]) => {
+          const cur = value[name] || { source: 'literal' as const, value: '' };
+          const required = Boolean(meta?.required);
+          return (
+            <div key={name} className="space-y-1">
+              <div className="flex items-baseline gap-1.5">
+                <code className="text-caption font-medium text-text-primary">{name}</code>
+                {required && (
+                  <span className="text-caption text-danger">
+                    {t('agentFlows.inspector.tool.required')}
+                  </span>
+                )}
+                <span className="text-caption text-text-tertiary">{meta?.type}</span>
+              </div>
+              <div className="flex gap-1.5">
+                <Select
+                  className="h-8 w-28 flex-shrink-0"
+                  value={cur.source}
+                  onChange={(v) => bind(name, v === 'variable'
+                    ? { source: 'variable', ref: cur.ref || '' }
+                    : { source: 'literal', value: cur.value ?? '' })}
+                  options={[
+                    { value: 'literal', label: t('agentFlows.inspector.tool.literal') },
+                    { value: 'variable', label: t('agentFlows.inspector.tool.variable') },
+                  ]} />
+                {cur.source === 'variable' ? (
+                  <Input
+                    value={cur.ref || ''}
+                    placeholder="ten_bien"
+                    onChange={(e) => bind(name, { source: 'variable', ref: e.target.value })} />
+                ) : (
+                  <Input
+                    value={String(cur.value ?? '')}
+                    onChange={(e) => bind(name, { source: 'literal', value: e.target.value })} />
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </Field>
+  );
 }
 
 function toolPackPurpose(pack: ToolPack, language: 'en' | 'vi') {
@@ -920,21 +1194,211 @@ function toolLabel(tool: ToolPack['tools'][number], language: 'en' | 'vi') {
  *  wiring a result into the next node, which is a different moment from choosing
  *  what to grant, and putting it inline turned a scannable list into a datasheet.
  */
+/** A section an author opens when they need it, and never sees when they do not.
+ *
+ *  Measured before this existed: one AI step showed 59 controls across 11 sections
+ *  on a flat 3.2-screen scroll, with nothing marking which four a first flow
+ *  actually needs. The complaint this answers is not "too many settings" — the
+ *  settings are all real — it is that a beginner and an expert were shown the same
+ *  wall, so neither could tell where to start.
+ *
+ *  Open state is remembered per section name, not per step: an author who works in
+ *  the model picker wants it open on the NEXT step too, and re-opening it for every
+ *  node is the kind of small tax that makes a tool feel hostile.
+ */
+function Advanced({
+  name, title, subtitle, children,
+}: { name: string; title: string; subtitle?: string; children: React.ReactNode }) {
+  const key = `appbi.flowinspector.adv.${name}`;
+  const [open, setOpen] = React.useState(() => {
+    try { return window.localStorage.getItem(key) === '1'; } catch { return false; }
+  });
+  const toggle = () => setOpen((v) => {
+    try { window.localStorage.setItem(key, v ? '0' : '1'); } catch { /* private mode */ }
+    return !v;
+  });
+  return (
+    <div className="mt-4 border-t border-[rgb(var(--border-line))] pt-3">
+      <button
+        type="button"
+        onClick={toggle}
+        aria-expanded={open}
+        className="flex w-full items-center justify-between text-left"
+      >
+        <span className="min-w-0">
+          <SectionTitle>{title}</SectionTitle>
+          {!open && subtitle && (
+            <span className="block text-caption leading-snug text-text-tertiary">{subtitle}</span>
+          )}
+        </span>
+        <span className="ml-2 flex-shrink-0 text-tiny text-text-tertiary">{open ? '−' : '+'}</span>
+      </button>
+      {open && <div className="mt-2">{children}</div>}
+    </div>
+  );
+}
+
+/** Fold for searching: lowercase, accents removed, so "nguyen nhan" finds
+ *  "nguyên nhân". An author who types without diacritics is the common case, and
+ *  a search that fails them silently is worse than no search. */
+function foldSearch(s: string) {
+  return (s || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/đ/g, 'd')
+    .replace(/Đ/g, 'D')
+    .toLowerCase();
+}
+
+/** Everything about a tool an author might type at it.
+ *
+ *  `answers_vi` is in here and it is the point. Every tool carries example
+ *  questions, and an author looking for a tool thinks in questions — "vì sao
+ *  giảm", "top mấy" — long before they think in tool names. Matching names only
+ *  would make the box work for people who already know the answer. */
+function toolHaystack(tool: ToolPack['tools'][number]) {
+  return foldSearch([
+    tool.name, tool.label_vi, tool.label_en, tool.description_vi,
+    ...(tool.answers_vi || []),
+  ].filter(Boolean).join(' '));
+}
+
+function packHaystack(pack: ToolPack) {
+  return foldSearch([pack.key, pack.label_vi, pack.label_en, pack.purpose_vi]
+    .filter(Boolean).join(' '));
+}
+
 function ToolPicker({
   packs, granted, onToggle,
 }: { packs: ToolPack[]; granted: string[]; onToggle: (name: string, on: boolean) => void }) {
   const { t, language } = useI18n();
+  const [query, setQuery] = React.useState('');
+  /* EVERY WORD, NOT THE WHOLE PHRASE.
+   *
+   *  This was one `includes(needle)` on the joined query, and driving the panel
+   *  by hand found the hole immediately: `rank_values` carries the example
+   *  question "Danh mục nào doanh thu cao nhất?", and typing "danh muc nao cao
+   *  nhat" matched nothing — the words are all there, just not adjacent. An
+   *  author paraphrasing their own question is the normal case, so a contiguous
+   *  match makes the box work only for people who already know the wording.
+   *
+   *  AND across words rather than OR: two words should narrow, not widen. */
+  const needles = foldSearch(query.trim()).split(/\s+/).filter(Boolean);
+  const hits = (hay: string) => needles.filter((w) => hay.includes(w)).length;
+
+  /* WHAT A SEARCH DOES TO A PACK, in three states rather than two.
+   *
+   *  A pack whose OWN name matches ("chẩn đoán") keeps all its tools: the author
+   *  asked for the category, and hiding its contents behind a second match would
+   *  answer a category question with a fragment. A pack where only some tools
+   *  match shows those. A pack with neither disappears.
+   *
+   *  Grants survive filtering — a hidden tool stays granted. The box narrows what
+   *  is VISIBLE, never what is on, because a search that silently revoked a grant
+   *  would be the most expensive kind of surprise in this panel. */
+  /* PRECISE WHEN IT CAN BE, FORGIVING WHEN IT CANNOT.
+   *
+   *  Requiring every word was right until a real paraphrase hit it. The coverage
+   *  panel in the test drawer suggests "Số liệu cập nhật tới hôm nào?"; the tool
+   *  that answers it carries "Số liệu tính đến khi nào?". Same question, three
+   *  words in common, and an AND search found nothing — the product suggesting a
+   *  question its own picker could not resolve.
+   *
+   *  So: if anything matches EVERY word, show only those, because the author was
+   *  specific and deserves a short list. Otherwise fall back to whatever shares
+   *  the most words. The second mode is what makes a paraphrase work, and it can
+   *  only widen a result that would otherwise have been empty. */
+  const scorePack = (pack: ToolPack, min: number) => {
+    if (hits(packHaystack(pack)) >= min) return pack;
+    const tools = pack.tools
+      .map((tool) => ({ tool, n: hits(toolHaystack(tool)) }))
+      .filter((x) => x.n >= min)
+      .sort((a, b) => b.n - a.n)
+      .map((x) => x.tool);
+    return tools.length ? { ...pack, tools } : null;
+  };
+  const strict = needles.length
+    ? packs.map((p) => scorePack(p, needles.length)).filter((p): p is ToolPack => p !== null)
+    : packs;
+  /* THE FALLBACK HAS TO CALIBRATE ITSELF.
+   *
+   *  A fixed floor of one word answered "so lieu cap nhat toi hom nao" with 35 of
+   *  36 tools — every tool containing "so" or "nao" — which is not a search
+   *  result, it is the list again. So the floor is the BEST score anything
+   *  achieved: if the closest tool shares three words, only the three-word
+   *  matches show. Short lists when the wording is close, and no tuning constant
+   *  to go stale as the catalogue grows. */
+  const best = needles.length
+    ? Math.max(0, ...packs.flatMap((p) => [
+        hits(packHaystack(p)), ...p.tools.map((tool) => hits(toolHaystack(tool))),
+      ]))
+    : 0;
+  const shown = !needles.length || strict.length
+    ? strict
+    : best > 0
+      ? packs.map((p) => scorePack(p, best)).filter((p): p is ToolPack => p !== null)
+      : [];
+  const hitCount = shown.reduce((n, p) => n + p.tools.length, 0);
+  const loose = Boolean(needles.length) && !strict.length && hitCount > 0;
+
   return (
     <div className="space-y-2">
-      {packs.map((pack) => {
+      <div className="relative">
+        <input
+          id="agent-flow-tool-search"
+          type="search"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder={t('agentFlows.toolPicker.searchPlaceholder')}
+          aria-label={t('agentFlows.toolPicker.searchLabel')}
+          className="w-full rounded-md border border-[rgb(var(--border-line))] bg-surface px-2 py-1.5 text-caption outline-none focus:border-accent focus:ring-1 focus:ring-accent/30"
+        />
+      </div>
+      {needles.length > 0 && (
+        <p className="px-0.5 text-caption text-text-tertiary">
+          {hitCount === 0
+            ? t('agentFlows.toolPicker.searchEmpty')
+            : loose
+              ? t('agentFlows.toolPicker.searchLoose', { count: String(hitCount) })
+              : t('agentFlows.toolPicker.searchHits', { count: String(hitCount) })}
+        </p>
+      )}
+      {shown.map((pack) => {
         const names = pack.tools.map((t) => t.name);
+        /* A PACK WITH NOTHING GRANTED IS A HEADING, NOT A LIST.
+         *
+         * All eight packs rendered expanded, so the picker was 36 checkboxes tall
+         * on every step — the single largest block in a panel that already ran 3.2
+         * screens. Six of those eight are usually untouched, and an author scrolls
+         * past ninety rows to reach the setting under them.
+         *
+         * Collapsed means one line that still says what the pack is FOR, so the
+         * catalogue stays browsable; a search expands whatever matches, because a
+         * search is the author saying they want to look inside. */
+        const anyGranted = names.some((n) => granted.includes(n));
+        // Counted over the tools ON SCREEN. While a search is active those are
+        // the only ones "select all" can reach, so a badge counting the whole
+        // pack would promise a bulk action the button does not perform.
         const onCount = names.filter((n) => granted.includes(n)).length;
         const allOn = onCount === names.length && names.length > 0;
         return (
-          <div key={pack.key} className="rounded-lg border border-[rgb(var(--border-line))]">
-            <div className="border-b border-[rgb(var(--border-line))] bg-surface-2/40 px-2 py-1.5">
+          <PackBlock
+            key={pack.key}
+            openByDefault={anyGranted || needles.length > 0}
+            header={({ open, toggle }) => (
+            <div className="bg-surface-2/40 px-2 py-1.5">
               <div className="flex items-center gap-1.5">
-                <b className="text-tiny font-strong">{toolPackLabel(pack, language)}</b>
+                <button
+                  type="button"
+                  onClick={toggle}
+                  aria-expanded={open}
+                  className="flex min-w-0 items-center gap-1.5 text-left"
+                >
+                  <span className="w-2 flex-shrink-0 text-tiny text-text-tertiary">
+                    {open ? '−' : '+'}
+                  </span>
+                  <b className="text-caption font-strong">{toolPackLabel(pack, language)}</b>
+                </button>
                 {onCount > 0 && (
                   <span className="rounded bg-accent/10 px-1 text-tiny text-accent">
                     {onCount}/{names.length}
@@ -947,15 +1411,23 @@ function ToolPicker({
                   </span>
                 )}
                 <button type="button"
-                  className="ml-auto text-tiny text-text-tertiary underline-offset-2 hover:underline"
+                  className="ml-auto text-micro text-text-tertiary underline-offset-2 hover:underline"
                   onClick={() => names.forEach((n) => onToggle(n, !allOn))}>
                   {allOn ? t('agentFlows.toolPicker.clearAll') : t('agentFlows.toolPicker.selectAll')}
                 </button>
               </div>
-              {toolPackPurpose(pack, language) && (
-                <p className="mt-0.5 text-tiny leading-snug text-text-tertiary">{toolPackPurpose(pack, language)}</p>
+              {/* ONLY WHILE OPEN. This paragraph tells you how to choose AMONG the
+                  tools inside; it says nothing useful while you are scanning the
+                  list of packs. Rendered for all eight at rest it was most of the
+                  panel's text, which is what forced the type down to 10px in the
+                  first place — and the space it gives back is what pays for prose
+                  at a readable size. */}
+              {open && toolPackPurpose(pack, language) && (
+                <p className="mt-1 text-caption leading-snug text-text-tertiary">{toolPackPurpose(pack, language)}</p>
               )}
             </div>
+            )}
+          >
             <div className="p-1.5">
               {pack.tools.map((tool) => {
                 const on = granted.includes(tool.name);
@@ -964,22 +1436,39 @@ function ToolPicker({
                 const returns = language === 'vi' && tool.returns
                   ? Object.entries(tool.returns).map(([k, v]) => `${k}: ${v}`).join('\n')
                   : '';
+                /* A CHIP MARKS AN EXCEPTION, NOT A PROPERTY.
+                 *
+                 * Every tool carried three chips, so one panel rendered 75 of
+                 * them drawn from 9 distinct labels: "ready-to-use number" on 20
+                 * rows, "query" on 18, "light" on 11. Measured over the
+                 * catalogue, those are the NORMS — `cheap` + `data_query` is 81%
+                 * of tools and `self_sufficient` is 56%, a majority. A badge on
+                 * the majority distinguishes nothing; it only costs the author
+                 * the attention they need for the row that IS unusual.
+                 *
+                 * So a chip survives only where it changes a decision: the call
+                 * leaves AppBI, it runs several queries, its result is large, or
+                 * its size grows with the report. Nothing is lost — every fact
+                 * still reaches the author through the row's tooltip. */
+                const facts = [
+                  t(COST_HINT_KEY[tool.cost_class] || COST_HINT_KEY.cheap),
+                  tool.payload ? t(PAYLOAD_HINT_KEY[tool.payload]) : '',
+                  tool.self_sufficient ? t('agentFlows.toolPicker.selfSufficientTitle') : '',
+                  returns ? t('agentFlows.toolPicker.returnsTitle', { returns }) : '',
+                ].filter(Boolean).join('\n\n');
+                const loud = tool.cost_class === 'external' || tool.cost_class === 'expensive';
+                const bigPayload = tool.payload === 'large' || tool.payload === 'scales_with_report';
                 return (
                   <label key={tool.name}
-                    title={returns ? t('agentFlows.toolPicker.returnsTitle', { returns }) : undefined}
+                    title={facts || undefined}
                     className="flex cursor-pointer items-start gap-2 rounded-md px-1.5 py-1 hover:bg-surface-2">
                     <input type="checkbox" checked={on} className="mt-0.5"
                       onChange={(e) => onToggle(tool.name, e.target.checked)} />
                     <span className="min-w-0 flex-1">
                       <span className="flex flex-wrap items-center gap-1">
-                        <b className="text-tiny font-medium">{toolLabel(tool, language)}</b>
-                        <CostChip cost={tool.cost_class} />
-                        {/* The payload axis, shown only when it is worth acting
-                            on. A `small` result is the norm and a chip on every
-                            row would be noise; a result that grows with the
-                            report is the one an author has to size a flow
-                            around, and it had no representation at all. */}
-                        {tool.payload && tool.payload !== 'small' && (
+                        <b className="text-caption font-medium">{toolLabel(tool, language)}</b>
+                        {loud && <CostChip cost={tool.cost_class} />}
+                        {bigPayload && tool.payload && (
                           <span
                             title={t(PAYLOAD_HINT_KEY[tool.payload])}
                             className={cn(
@@ -991,23 +1480,14 @@ function ToolPicker({
                             {t(PAYLOAD_LABEL_KEY[tool.payload])}
                           </span>
                         )}
-                        {tool.self_sufficient && (
-                          <span
-                            title={
-                              t('agentFlows.toolPicker.selfSufficientTitle')
-                            }
-                            className="rounded border border-success/25 bg-success/5 px-1 text-tiny text-success">
-                            {t('agentFlows.toolPicker.selfSufficient')}
-                          </span>
-                        )}
                       </span>
                       {description && (
-                        <span className="block text-tiny leading-snug text-text-tertiary">
+                        <span className="block text-caption leading-snug text-text-tertiary">
                           {description}
                         </span>
                       )}
                       {example && (
-                        <span className="block text-tiny leading-snug text-text-tertiary/70">
+                        <span className="block text-caption leading-snug text-text-tertiary/70">
                           {t('agentFlows.toolPicker.example', { example })}
                         </span>
                       )}
@@ -1016,9 +1496,286 @@ function ToolPicker({
                 );
               })}
             </div>
-          </div>
+          </PackBlock>
         );
       })}
     </div>
   );
 }
+
+/** One tool pack: a heading that is always readable, and a body that is not always
+ *  open. Controlled by the picker rather than self-managed, because "has a grant"
+ *  and "matches the search" are the picker's facts — a self-opening block would
+ *  need both passed in anyway, and would then disagree with them after a toggle. */
+function PackBlock({
+  header, openByDefault, children,
+}: {
+  header: (o: { open: boolean; toggle: () => void }) => React.ReactNode;
+  openByDefault: boolean;
+  children: React.ReactNode;
+}) {
+  const [open, setOpen] = React.useState(openByDefault);
+  const wasDefault = React.useRef(openByDefault);
+  /* Follow the default when the REASON changes — a search starting, or the first
+     grant landing in an untouched pack — but never fight a deliberate toggle. */
+  React.useEffect(() => {
+    if (wasDefault.current !== openByDefault) {
+      wasDefault.current = openByDefault;
+      setOpen(openByDefault);
+    }
+  }, [openByDefault]);
+  return (
+    <div className="overflow-hidden rounded-lg border border-[rgb(var(--border-line))]">
+      {/* NOT a button around the header: the header already holds "select all",
+          and nesting interactive elements makes the inner one unreachable — the
+          kind of defect that passes a type-check and fails a keyboard. The
+          disclosure control is passed INTO the header instead, so it sits beside
+          that button rather than around it. */}
+      <div className="border-b border-[rgb(var(--border-line))]">
+        {header({ open, toggle: () => setOpen((v) => !v) })}
+      </div>
+      {open && children}
+    </div>
+  );
+}
+
+/** "What the AI sees" — the screen the builder never had.
+ *
+ *  An author configures eleven sections for one step and, until this, nothing
+ *  showed the result. The rule that governs all of them lived in a single line of
+ *  helper text: your instructions are APPENDED to a base prompt. So the model had
+ *  to be inferred from field names, and the product's standing complaint is that
+ *  nobody can tell how a flow will behave before running it.
+ *
+ *  The fact this screen exists to deliver is measurable and surprising: in the
+ *  answering step of the demo flow the author's 438 characters sit inside 8,976 —
+ *  five percent. In a specialist, 445 of 640 — seventy. Same product, same author,
+ *  opposite writing problems, and no way to know which one you were in.
+ *
+ *  Nothing is called and nothing is spent: the backend assembles the inputs with
+ *  the same three functions a run uses and stops.
+ */
+function WhatTheAiSees({
+  brainKey, flowType, nodeKey, nodeName, onClose,
+}: {
+  brainKey: string; flowType: FlowType; nodeKey: string; nodeName: string;
+  onClose: () => void;
+}) {
+  const { t } = useI18n();
+  const [question, setQuestion] = React.useState('Doanh thu tháng này bao nhiêu?');
+  const [data, setData] = React.useState<StepPreview | null>(null);
+  const [error, setError] = React.useState('');
+  const [busy, setBusy] = React.useState(false);
+
+  /* The report the author already chose in Test. Reusing it beats a second
+     picker: on a BOT flow the question "what does this step see" has no answer
+     without a report, and making them choose one twice implies the two are
+     different.
+
+     A chat flow needs none of this. It is not a bot flow missing its report — it
+     is a different surface, and the server assembles the preview from what the
+     flow attached, exactly as a real chat turn does. */
+  const needsReport = flowType === 'bot';
+  const reportId = React.useMemo(() => {
+    try {
+      const raw = window.localStorage.getItem(`appbi.flowtest.${brainKey}`);
+      const id = raw ? JSON.parse(raw)?.reportId : null;
+      return typeof id === 'number' ? id : null;
+    } catch { return null; }
+  }, [brainKey]);
+
+  const load = React.useCallback(async () => {
+    if (needsReport && !reportId) return;
+    setBusy(true);
+    setError('');
+    try {
+      setData(await previewStep(brainKey, nodeKey, {
+        ...(needsReport && reportId ? { dashboard_id: reportId } : {}),
+        question,
+      }));
+    } catch (e) {
+      const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+      setError(typeof detail === 'string' ? detail : t('agentFlows.seen.failed'));
+    } finally {
+      setBusy(false);
+    }
+  }, [brainKey, needsReport, nodeKey, question, reportId, t]);
+
+  React.useEffect(() => { void load(); /* eslint-disable-next-line */ }, [reportId, needsReport]);
+
+  const sp = data?.system_prompt;
+  const yours = sp ? sp.this_step_chars : 0;
+  const total = sp ? sp.this_step_chars + sp.shared_base_chars : 0;
+  const pct = total ? Math.round((yours / total) * 100) : 0;
+
+  return (
+    <div className="absolute inset-0 z-50 flex items-start justify-center bg-[rgb(8_9_10/0.12)] pt-10">
+      <div className="flex max-h-[86vh] w-[min(880px,94vw)] flex-col overflow-hidden rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 shadow-linear-lg">
+        <div className="flex flex-shrink-0 items-start justify-between border-b border-[rgb(var(--border-line))] px-4 py-3">
+          <div>
+            <h2 className="text-body font-strong">{t('agentFlows.seen.title')}</h2>
+            <p className="text-caption text-text-tertiary">
+              {nodeName} · {t('agentFlows.seen.subtitle')}
+            </p>
+          </div>
+          <Button size="sm" variant="ghost" onClick={onClose}>{t('common.close')}</Button>
+        </div>
+
+        <div className="flex-shrink-0 border-b border-[rgb(var(--border-line))] px-4 py-2.5">
+          <div className="flex items-center gap-2">
+            <Input
+              value={question}
+              onChange={(e) => setQuestion(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') void load(); }}
+              placeholder={t('agentFlows.seen.questionPlaceholder')}
+              className="h-8 flex-1"
+            />
+            <Button size="sm" variant="secondary" onClick={() => void load()}
+                    disabled={busy || (needsReport && !reportId)}>
+              {busy ? t('agentFlows.seen.loading') : t('agentFlows.seen.refresh')}
+            </Button>
+          </div>
+          {needsReport && !reportId && (
+            <p className="mt-1.5 text-tiny text-warning">{t('agentFlows.seen.needReport')}</p>
+          )}
+          {!needsReport && (
+            <p className="mt-1.5 text-tiny text-text-tertiary">{t('agentFlows.seen.chatNote')}</p>
+          )}
+        </div>
+
+        <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
+          {error && <p className="text-tiny text-danger">{error}</p>}
+          {data && sp && (
+            <div className="space-y-4">
+              {/* THE HEADLINE. One sentence and one bar: how much of what the model
+                  reads is yours. Everything else on this screen is the evidence. */}
+              <div className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 p-3">
+                <p className="text-caption">
+                  {t('agentFlows.seen.share', {
+                    yours: String(yours), total: String(total), pct: String(pct),
+                  })}
+                </p>
+                <div className="mt-2 flex h-2 overflow-hidden rounded-full bg-surface-1">
+                  <div className="bg-brand" style={{ width: `${Math.max(pct, 1)}%` }} />
+                  <div className="flex-1 bg-[rgb(var(--border-line))]" />
+                </div>
+                <p className="mt-2 text-tiny text-text-tertiary">
+                  {t(`agentFlows.seen.base.${sp.base_kind}`)}
+                </p>
+              </div>
+
+              <SeenSection title={t('agentFlows.seen.systemPrompt')} defaultOpen>
+                {/* The author's own words marked inside the whole, because the
+                    proportion is the lesson and a wall of text hides it. */}
+                <PromptWithYours full={sp.full} yours={sp.this_step} />
+              </SeenSection>
+
+              <SeenSection
+                title={t('agentFlows.seen.messages', { n: String(data.messages.length) })}
+                defaultOpen
+              >
+                <div className="space-y-1.5">
+                  {data.messages.map((m, i) => (
+                    <div key={i} className="rounded-md border border-[rgb(var(--border-line))] p-2">
+                      <div className="mb-1 flex items-center gap-2">
+                        <span className="rounded bg-surface-2 px-1.5 text-tiny uppercase tracking-wide text-text-tertiary">
+                          {m.role}
+                        </span>
+                        <span className="text-tiny text-text-quaternary">{m.chars} ký tự</span>
+                      </div>
+                      <pre className="whitespace-pre-wrap break-words font-mono text-tiny leading-relaxed text-text-secondary">
+                        {m.content}
+                      </pre>
+                    </div>
+                  ))}
+                </div>
+              </SeenSection>
+
+              <SeenSection title={t('agentFlows.seen.tools', { n: String(data.tools.length) })}>
+                {data.tools.length === 0 ? (
+                  <HintText>{t('agentFlows.seen.noTools')}</HintText>
+                ) : (
+                  <div className="space-y-1.5">
+                    {data.tools.map((tool) => (
+                      <div key={tool.name} className="rounded-md border border-[rgb(var(--border-line))] p-2">
+                        <div className="flex flex-wrap items-baseline gap-2">
+                          <b className="font-mono text-tiny">{tool.name}</b>
+                          {tool.required.length > 0 && (
+                            <span className="rounded bg-warning/10 px-1.5 text-tiny text-warning">
+                              {t('agentFlows.seen.requires', { args: tool.required.join(', ') })}
+                            </span>
+                          )}
+                        </div>
+                        <p className="mt-0.5 text-tiny leading-snug text-text-tertiary">
+                          {tool.description}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </SeenSection>
+
+              {data.pending_upstream.length > 0 && (
+                <SeenSection title={t('agentFlows.seen.pending')}>
+                  <HintText>{t('agentFlows.seen.pendingHint')}</HintText>
+                  <div className="mt-1.5 flex flex-wrap gap-1.5">
+                    {data.pending_upstream.map((v) => (
+                      <span key={v} className="rounded bg-surface-2 px-1.5 py-0.5 font-mono text-tiny">
+                        {`{{${v}}}`}
+                      </span>
+                    ))}
+                  </div>
+                </SeenSection>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SeenSection({
+  title, children, defaultOpen = false,
+}: { title: string; children: React.ReactNode; defaultOpen?: boolean }) {
+  const [open, setOpen] = React.useState(defaultOpen);
+  return (
+    <div className="rounded-lg border border-[rgb(var(--border-line))]">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full items-center justify-between px-3 py-2 text-left"
+      >
+        <b className="text-caption font-strong">{title}</b>
+        <span className="text-tiny text-text-tertiary">{open ? '−' : '+'}</span>
+      </button>
+      {open && <div className="border-t border-[rgb(var(--border-line))] p-3">{children}</div>}
+    </div>
+  );
+}
+
+/** The system prompt with the author's own instructions marked inside it.
+ *
+ *  Split rather than annotated: the backend hands back both the whole string and
+ *  the author's part, so the seam is found by locating one in the other. When the
+ *  step's prompt uses variables the resolved text will not match the raw one and
+ *  the highlight is skipped — showing the prompt unmarked is right, guessing at a
+ *  range is not. */
+function PromptWithYours({ full, yours }: { full: string; yours: string }) {
+  const at = yours.trim() ? full.indexOf(yours.trim()) : -1;
+  if (at < 0) {
+    return (
+      <pre className="max-h-[38vh] overflow-y-auto whitespace-pre-wrap break-words font-mono text-tiny leading-relaxed text-text-secondary">
+        {full}
+      </pre>
+    );
+  }
+  return (
+    <pre className="max-h-[38vh] overflow-y-auto whitespace-pre-wrap break-words font-mono text-tiny leading-relaxed text-text-secondary">
+      {full.slice(0, at)}
+      <mark className="rounded bg-brand/15 text-text-primary">{full.slice(at, at + yours.trim().length)}</mark>
+      {full.slice(at + yours.trim().length)}
+    </pre>
+  );
+}
+

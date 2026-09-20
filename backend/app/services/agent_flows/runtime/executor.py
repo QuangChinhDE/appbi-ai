@@ -929,6 +929,24 @@ async def _run_switch(
                 continue
 
 
+
+def _loop_source_error(node: Any, state: RunState) -> str:
+    """The reason a loop's collection is empty, when the reason is a failure.
+
+    `seed_vars` publishes each resolved requirement's full ref alongside its value
+    as `{key}__ref`, so the code the binding recorded is already in the run's
+    variables — this only has to find it. Returns "" when the collection is
+    genuinely empty, which is not a failure and must not be reported as one.
+    """
+    import re as _re
+
+    for name in _re.findall(r"\{\{\s*([a-zA-Z0-9_]+)", node.over or ""):
+        ref = state.vars.get(f"{name}__ref")
+        if isinstance(ref, dict) and ref.get("values_error"):
+            return str(ref["values_error"])
+    return ""
+
+
 async def _run_loop(
     node: LoopNode, state: RunState, rctx: RunContext
 ) -> AsyncGenerator[AgentEvent, None]:
@@ -946,11 +964,24 @@ async def _run_loop(
         # A loop over nothing is not an error, but it IS the difference between
         # "analysed every segment" and "analysed none" — and silently skipping it
         # produced a run that looked complete with a body that never executed.
+        #
+        # AND "NOTHING" HAS TWO CAUSES. A dimension with no values is one; a read
+        # that was REFUSED is the other, and until `values_error` existed they
+        # arrived here identically. A viewer told "there was no data to loop over"
+        # when the truth is "this link may not read that chart" has been given the
+        # wrong answer to a different question.
+        why = _loop_source_error(node, state)
         state.notices.append(
             Notice(
-                code="loop_empty",
-                text=f"Bước “{node.name or node.key}” không có dữ liệu để lặp "
-                     f"({node.over}), nên phần phân tích theo từng mục đã bị bỏ qua.",
+                code="loop_source_failed" if why else "loop_empty",
+                text=(
+                    f"Bước “{node.name or node.key}” không đọc được danh sách để lặp "
+                    f"({node.over}) — {why}. Đây KHÔNG phải là “không có dữ liệu”; "
+                    f"phần phân tích theo từng mục đã bị bỏ qua."
+                    if why else
+                    f"Bước “{node.name or node.key}” không có dữ liệu để lặp "
+                    f"({node.over}), nên phần phân tích theo từng mục đã bị bỏ qua."
+                ),
             )
         )
 

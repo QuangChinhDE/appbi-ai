@@ -1,0 +1,37 @@
+{
+  "answer_shape": {
+    "block_count": 1,
+    "citation_count": 0,
+    "figure_count": 0,
+    "has_answer": true
+  },
+  "citations": [],
+  "counts": {
+    "llm_calls": 2,
+    "steps": 2,
+    "tool_calls": 0
+  },
+  "execution_path": [
+    {
+      "key": "hong",
+      "status": "error",
+      "type": "agent"
+    },
+    {
+      "key": "answer",
+      "status": "error",
+      "type": "agent"
+    }
+  ],
+  "fixture": "08_error_path",
+  "memory_set_keys": [],
+  "notice_codes": [
+    "answer_incomplete"
+  ],
+  "status": "failed",
+  "step_outputs": {
+    "answer": "",
+    "hong": ""
+  },
+  "tool_calls": []
+}

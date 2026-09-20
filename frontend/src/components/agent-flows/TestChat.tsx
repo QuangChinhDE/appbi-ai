@@ -46,8 +46,9 @@ import { toast } from '@/lib/toast';
 import { cn } from '@/lib/utils';
 import { useI18n } from '@/providers/LanguageProvider';
 import {
-  listTestTargetReports, rateRun, testFlow, testFlowOnReport, walkNodes,
-  type FlowLinkUsage, type FlowNode, type ReportTestResult, type TestTargetReport,
+  listTestTargetReports, rateRun, testFlow, testFlowAsChat, testFlowOnReport, walkNodes,
+  type ChatTestResult, type FlowLinkUsage, type FlowNode, type FlowType,
+  type ReportTestResult, type TestTargetReport,
 } from '@/lib/agentFlows';
 
 /** One alternative a branching node can take, as something testable.
@@ -153,10 +154,13 @@ function newSessionKey(): string {
 }
 
 export function TestChat({
-  brainKey, brainName, links, version, nodes, onOpenRun, onClose,
+  brainKey, brainName, flowType, links, version, nodes, onOpenRun, onClose,
 }: {
   brainKey: string;
   brainName: string;
+  /** A chat flow has nothing to test AGAINST — that is the surface, not a missing
+   *  setup — so the whole target picker is replaced by one sentence. */
+  flowType: FlowType;
   links: FlowLinkUsage[];
   version: number;
   nodes: FlowNode[];
@@ -175,6 +179,8 @@ export function TestChat({
    *  uses an ad-hoc contract and is what you need before any link exists. Both are
    *  offered, in one list, because the choice is "against what", not "which mode". */
   const [target, setTarget] = React.useState<{ kind: 'report' | 'link'; id: number } | null>(null);
+  const asChat = flowType === 'chat';
+  const [chatScope, setChatScope] = React.useState<ChatTestResult['scope'] | null>(null);
   const reportId = target?.kind === 'report' ? target.id : null;
   const [reportFilter, setReportFilter] = React.useState('');
   const [reportError, setReportError] = React.useState<string | null>(null);
@@ -201,6 +207,9 @@ export function TestChat({
   );
 
   React.useEffect(() => {
+    // A chat flow runs against nothing, so there is nothing to list and no reason
+    // to spend a request asking for reports this author may see.
+    if (asChat) { setReports([]); return; }
     let alive = true;
     let remembered: { reportId?: number } = {};
     try {
@@ -244,7 +253,7 @@ export function TestChat({
         );
       });
     return () => { alive = false; };
-  }, [t, memKey, servedIds, links]);
+  }, [asChat, t, memKey, servedIds, links]);
 
   React.useEffect(() => {
     scroller.current?.scrollTo({ top: scroller.current.scrollHeight, behavior: 'smooth' });
@@ -276,7 +285,7 @@ export function TestChat({
 
   const send = async (override?: string) => {
     const question = (override ?? draft).trim();
-    if (!question || !target || busy) return;
+    if (!question || (!target && !asChat) || busy) return;
     const history = turns.flatMap((tn) => ([
       { role: 'user' as const, content: tn.question },
       ...(tn.answer ? [{ role: 'assistant' as const, content: tn.answer }] : []),
@@ -286,15 +295,24 @@ export function TestChat({
     const at = turns.length;
     setTurns((prev) => [...prev, { question, aimed: aimed ?? undefined, answer: '' }]);
     try {
-      const res = target.kind === 'report'
-        ? await testFlowOnReport(brainKey, {
-          dashboard_id: target.id, question, version,
+      let res: ReportTestResult;
+      if (asChat) {
+        const chat = await testFlowAsChat(brainKey, {
+          question, version, session_key: sessionKey, history,
+        });
+        setChatScope(chat.scope);
+        res = { envelope: chat.envelope, run_row_id: chat.run_row_id } as ReportTestResult;
+      } else if (target!.kind === 'report') {
+        res = await testFlowOnReport(brainKey, {
+          dashboard_id: target!.id, question, version,
           session_key: sessionKey, history,
-        })
-        : await testFlow(brainKey, {
-          link_id: target.id, question, version,
+        });
+      } else {
+        res = await testFlow(brainKey, {
+          link_id: target!.id, question, version,
           session_key: sessionKey, history,
         }) as ReportTestResult;
+      }
       const env = res.envelope as Envelope | undefined;
       const answer = (env?.answer?.blocks || [])
         .map((b) => b.markdown).filter(Boolean).join('\n\n');
@@ -367,6 +385,37 @@ export function TestChat({
       <div className="flex h-full min-h-0">
         {/* ── setup ─────────────────────────────────────────────────────────── */}
         <div className="w-[320px] flex-shrink-0 overflow-auto border-r border-[rgb(var(--border-line))] p-3.5">
+          {/* A CHAT FLOW HAS NO TARGET, and that is not a missing setup — it is
+              what the surface is. So instead of a picker that would be empty, the
+              column states what the flow can reach, which is the thing an author
+              cannot otherwise see on a screen with no report on it. */}
+          {asChat ? (
+            <>
+              <label className="mb-1 block text-caption font-medium text-text-secondary">
+                {t('agentFlows.test.chatTargetLabel')}
+              </label>
+              <p className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 p-2.5 text-caption leading-relaxed text-text-tertiary">
+                {t('agentFlows.test.chatTargetHint')}
+              </p>
+              {chatScope && (
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  <Badge size="xs" variant="neutral">
+                    {t('agentFlows.test.scopeDocs', { count: chatScope.doc_ids })}
+                  </Badge>
+                  <Badge size="xs" variant="neutral">
+                    {t('agentFlows.test.scopeDatasets', { count: chatScope.dataset_ids })}
+                  </Badge>
+                  <Badge size="xs" variant={chatScope.charts ? 'info' : 'neutral'}>
+                    {t('agentFlows.test.scopeCharts', { count: chatScope.charts })}
+                  </Badge>
+                  <Badge size="xs" variant="neutral">
+                    {t('agentFlows.test.scopeMetrics', { count: chatScope.metric_names })}
+                  </Badge>
+                </div>
+              )}
+            </>
+          ) : (
+          <>
           {/* LINKS FIRST, when there are any.
               A link carries the contract a viewer actually runs under — its resolved
               requirements, allowed charts, knowledge scope and budget — so a flow
@@ -454,6 +503,8 @@ export function TestChat({
           <p className="mt-1.5 text-tiny leading-5 text-text-tertiary">
             {t('agentFlows.test.reportHint')}
           </p>
+          </>
+          )}
 
           {/* AIM AT A PATH, NOT JUST AT THE FLOW. Picking a branch both fills a
               question aimed there and records the aim, which is what lets a turn
@@ -765,7 +816,7 @@ function TurnView({
           {!!(env.notices || []).length && (
             <ul className="mt-2 space-y-1">
               {env.notices!.map((n, i) => (
-                <li key={i} className="rounded-md border border-[rgb(var(--border-line))] bg-surface-2 px-2.5 py-1.5 text-tiny leading-5 text-text-secondary">
+                <li key={i} className="rounded-md border border-[rgb(var(--border-line))] bg-surface-2 px-2.5 py-1.5 text-caption leading-relaxed text-text-secondary">
                   {n.text}
                 </li>
               ))}

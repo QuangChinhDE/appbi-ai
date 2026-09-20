@@ -43,7 +43,7 @@ export interface NodeSpec {
 }
 
 export type NodeType =
-  | 'agent' | 'coordinate' | 'report_read' | 'knowledge' | 'web'
+  | 'agent' | 'coordinate' | 'report_read' | 'knowledge' | 'web' | 'tool'
   | 'if' | 'switch' | 'loop' | 'filter'
   | 'set_var' | 'transform' | 'stop' | 'delay';
 
@@ -80,6 +80,14 @@ export interface ToolSpec {
    *  are the cheap ones, and the reason the catalogue can keep growing. */
   self_sufficient?: boolean;
   answers_vi?: string[];
+  /** How dangerous calling it is. `unknown` means nobody classified it yet, and
+   *  the backend refuses to run such a tool as an action. */
+  risk?: 'unknown' | 'read_only' | 'side_effect' | 'destructive';
+  /** JSON Schema of `result.data` — not of the envelope. */
+  output_schema?: Record<string, unknown>;
+  /** One row per argument, FOR RENDERING A FORM. Not a schema to validate
+   *  against: the backend is the only place an argument is judged. */
+  inputs?: Record<string, { type: string; required: boolean; description: string }>;
 }
 
 export interface ToolPack {
@@ -188,6 +196,17 @@ export interface AgentNode extends BaseNode {
 export interface ReportReadNode extends BaseNode {
   type: 'report_read';
   chart_ids?: number[];
+  /** Read the charts the question is about instead of everything allowed. */
+  match_question?: boolean;
+  /** What to match on. Blank = the viewer's question. */
+  query?: string;
+  max_charts?: number;
+  /** How much of each chart to carry forward. The backend has always had this and
+   *  it is the single biggest lever on what the next step is handed - measured
+   *  49,471 chars at `full` against 8,244 at `compact` on the same twenty-chart
+   *  read - but until now no control existed for it, so every flow ran on the
+   *  default and authors tuned the toggles they could see instead. */
+  detail?: 'index' | 'compact' | 'full';
   include_summary?: boolean;
   include_data?: boolean;
   include_filters?: boolean;
@@ -306,8 +325,30 @@ export interface CoordinateNode extends BaseNode {
   fallback?: FlowNode[];
 }
 
+/** One argument of a ToolNode, bound to a variable or to a literal.
+ *
+ *  NOT a template string. `"{{sales_chart}}"` reads nicely and loses the type on
+ *  the way through — an integer arrives as `"41"`, an object as
+ *  `"[object Object]"`, null as `""` — and the tool then refuses an argument the
+ *  author believes they supplied. The inspector still DISPLAYS `{{sales_chart}}`;
+ *  this is what is stored and what runs. */
+export interface ToolInput {
+  source: 'variable' | 'literal';
+  /** Variable name when source='variable'. No braces. */
+  ref?: string;
+  /** The value itself when source='literal'. Typed as authored. */
+  value?: unknown;
+}
+
+/** Call exactly one tool with arguments the author chose. No model. */
+export interface ToolNode extends BaseNode {
+  type: 'tool';
+  tool: string;
+  inputs?: Record<string, ToolInput>;
+}
+
 export type FlowNode =
-  | AgentNode | ReportReadNode | KnowledgeNode | WebNode
+  | AgentNode | ReportReadNode | KnowledgeNode | WebNode | ToolNode
   | SetVarNode | TransformNode | StopNode | DelayNode
   | FilterNode | IfNode | SwitchNode | LoopNode | CoordinateNode;
 
@@ -339,6 +380,10 @@ export type BrainStatus = 'draft' | 'published' | 'archived';
 
 export interface BrainSummary {
   brain_key: string;
+  /** Which surface this flow was built for. Optional so a frontend deployed ahead
+   *  of the backend reads `undefined` and falls back to `bot`, which is what every
+   *  flow written before the type existed actually is. */
+  flow_type?: FlowType;
   /** What a link carries. Shared by every version of this flow, unlike a version
    *  row's own id. Every API call below still uses `brain_key`. */
   flow_id: number | null;
@@ -358,7 +403,10 @@ export interface BrainSummary {
 export interface BrainDetail extends BrainSummary {
   body: FlowBody;
   warnings: string[];
-  reads: { source: string; label: string; ref: string }[];
+  /** What sharing this flow lends beyond itself: every source it attached, by
+   *  name, and for a dataset how many charts that reaches. `ref` is the raw id and
+   *  is only a fallback — a disclosure showing ids discloses nothing. */
+  reads: { source: string; label: string; ref: string; name?: string; reach?: string }[];
   node_count: number;
   requirements: FlowRequirements;
   answer_node?: string;
@@ -393,6 +441,12 @@ export interface ValidateResult {
   estimate?: { max_llm_calls: number; max_tool_calls: number };
   produced_vars?: string[];
   referenced_vars?: string[];
+  /** Why this SHAPE could not run with no report on screen. Returned for either
+   *  type, so the builder can state both readings at once: an author on a bot flow
+   *  sees what would have to change before switching, and an author on a chat flow
+   *  sees the moment they break it — in the builder, rather than at the chat door
+   *  where they are not standing. */
+  chat_blockers?: string[];
 }
 
 // ── Bindings ────────────────────────────────────────────────────────────────
@@ -724,10 +778,28 @@ export async function getBrain(key: string, version?: number): Promise<BrainDeta
   return data;
 }
 
+export type FlowType = 'bot' | 'chat';
+
 export async function saveBrain(body: {
   brain_key: string; name: string; description: string; body: FlowBody;
+  /** Read only when this save CREATES the flow. Later saves carry the type
+   *  forward; changing it goes through `setFlowType`, which can refuse. */
+  flow_type?: FlowType;
 }): Promise<BrainDetail> {
   const { data } = await apiClient.put<BrainDetail>(`${BASE}/brains`, body);
+  return data;
+}
+
+/** Which surface this flow is for.
+ *
+ *  Refused when a flow that reads a report is asked to become a chat flow — the
+ *  server returns the reasons, because the author is the one who can act on them.
+ */
+export async function setFlowType(key: string, flowType: FlowType): Promise<{
+  brain_key: string; flow_type: FlowType; reasons: string[];
+}> {
+  const { data } = await apiClient.put(
+    `${BASE}/brains/${encodeURIComponent(key)}/type`, { flow_type: flowType });
   return data;
 }
 
@@ -736,6 +808,10 @@ export async function saveBrain(body: {
  *  a version, so the act of checking changed the thing being checked. */
 export async function validateFlow(body: {
   brain_key: string; name: string; body: FlowBody;
+  /** Which surface to check against. Three of the review notes state a
+   *  consequence that only holds on a report, so a chat flow checked as a bot is
+   *  told the opposite of the truth. */
+  flow_type?: FlowType;
 }): Promise<ValidateResult> {
   const { data } = await apiClient.post<ValidateResult>(`${BASE}/validate`, body);
   return data;
@@ -917,7 +993,72 @@ export async function testNode(key: string, nodeKey: string, body: {
   return data;
 }
 
+/** Exactly what one AI step hands the model — assembled by the backend from the
+ *  same three functions a real run uses, with no provider called. */
+export interface StepPreview {
+  step: { key: string; name: string; is_answering: boolean };
+  model: { provider: string; model: string };
+  system_prompt: {
+    full: string;
+    /** Which base this step receives. The answering step gets the full contract;
+     *  every other step gets a compact one. A real rule, and one an author had no
+     *  way to observe before this screen. */
+    base_kind: 'full' | 'compact' | 'classifier' | 'none';
+    shared_base_chars: number;
+    this_step_chars: number;
+    this_step: string;
+  };
+  messages: { role: string; content: string; chars: number }[];
+  tools: { name: string; description: string; arguments: string[]; required: string[] }[];
+  knowledge_scope: Record<string, unknown>;
+  budget: { max_tool_calls: number; max_llm_calls: number; max_seconds: number };
+  totals: { system_chars: number; message_chars: number; tool_count: number };
+  /** Variables an earlier step produces. They are unresolved here because nothing
+   *  upstream has run — saying so beats rendering an empty block the author would
+   *  read as "this step gets nothing". */
+  pending_upstream: string[];
+}
+
+export async function previewStep(key: string, nodeKey: string, body: {
+  /** Omitted for a chat flow — there is no report, and the server assembles the
+   *  preview the way a chat turn is actually assembled. */
+  dashboard_id?: number; question?: string; version?: number;
+}): Promise<StepPreview> {
+  const { data } = await apiClient.post<StepPreview>(
+    `${BASE}/brains/${encodeURIComponent(key)}/nodes/${encodeURIComponent(nodeKey)}/preview`,
+    body);
+  return data;
+}
+
+
 // ── Bindings ────────────────────────────────────────────────────────────────
+export interface ChatTestResult {
+  envelope: unknown;
+  run_row_id?: number | null;
+  /** What the flow could reach this turn, counted. There is no report on screen to
+   *  imply it, so the panel states it: an author reading a wrong figure needs to
+   *  know which sources were even in play. */
+  scope: { doc_ids: number; dataset_ids: number; metric_names: number; charts: number };
+  /** Why this shape could not run with no report. Reported, not refused — a flow
+   *  mid-build usually has something wrong with it. */
+  blockers: string[];
+}
+
+/** Run a draft the way AI Chat will: a question, and no report.
+ *
+ *  The other two test calls need a link or a report, and a chat flow has neither —
+ *  which meant its author had to publish it and go to the Chat screen to find out
+ *  whether it worked.
+ */
+export async function testFlowAsChat(key: string, body: {
+  question: string; version?: number; session_key?: string;
+  history?: { role: 'user' | 'assistant'; content: string }[];
+}): Promise<ChatTestResult> {
+  const { data } = await apiClient.post<ChatTestResult>(
+    `${BASE}/brains/${encodeURIComponent(key)}/test-as-chat`, body);
+  return data;
+}
+
 export async function getBinding(linkId: number): Promise<Binding | null> {
   const { data } = await apiClient.get<{ binding: Binding | null }>(
     `${BASE}/bindings/link/${linkId}`);
@@ -1234,9 +1375,13 @@ export function blankNode(type: NodeType, nodes: FlowNode[], labels: BlankNodeLa
     case 'agent':
       return { ...base, type, prompt: labels.agentPrompt || 'Describe what this step should do.', provider: 'inherit',
         max_tool_calls: 8, output_format: 'chat', context_policy: 'question', tools: [], knowledge: [] };
+    case 'tool':
+      return { ...base, type: 'tool', tool: '', inputs: {},
+        run_policy: 'every_turn' };
     case 'report_read':
       return { ...base, type, output_var: uniqueKey(nodes, 'dashboard_context'),
         include_summary: true, include_data: true, include_filters: true,
+        match_question: false, max_charts: 20, detail: 'compact',
         max_rows: 200, run_policy: 'when_stale' };
     case 'knowledge':
       return { ...base, type, query: '{{question}}', top_k: 5, knowledge: [],

@@ -66,7 +66,27 @@ jobs:
             tests/test_distinct_self_target.py \
             tests/test_filter_layered_merge.py \
             tests/test_non_fanning_reachability.py \
-            tests/test_agent_flow_golden.py
+            tests/test_workboard_offline_relation_phase2.py \
+            tests/test_semantic_measure_render.py \
+            tests/test_dialect_structural.py \
+            tests/test_agent_flow_golden.py \
+            tests/test_agent_tool_registry.py \
+            tests/test_tool_authorization_metadata.py \
+            tests/test_tool_capability_gates.py \
+            tests/test_tool_argument_contract.py \
+            tests/test_tool_result_ceiling.py \
+            tests/test_report_read_scope.py \
+            tests/test_chart_read_failure_reason.py \
+            tests/test_agent_flow_answer_contract.py \
+            tests/test_builder_error_messages.py \
+            tests/test_partial_context_admits_it.py \
+            tests/test_chat_chart_scope.py \
+            tests/test_discover_pack.py \
+            tests/test_agent_flow_replay.py \
+            tests/test_i5_hard_gate_stays_lowest.py \
+            tests/test_tool_output_contract.py \
+            tests/test_tool_node.py \
+            tests/test_error_taxonomy_and_empty.py
 
   # ── Tier 2: integration (golden replay on a real Postgres) ─────────────────
   integration-golden:
@@ -77,7 +97,19 @@ jobs:
         working-directory: backend
     services:
       postgres:
-        image: postgres:15
+        # THE SAME IMAGE docker-compose.yml runs, and it has to be.
+        #
+        # This was `postgres:15`, which carries no pgvector, so
+        # `20260321_0006_add_column_stats_and_embeddings` died on
+        # `CREATE EXTENSION IF NOT EXISTS vector` and took every job that builds
+        # the schema with it — integration-golden here, and `Build the schema` in
+        # the E2E workflow. Both had been red since the extension was introduced,
+        # on every commit, for reasons that had nothing to do with the commit.
+        #
+        # A CI database on a different major version than the one that ships is
+        # its own latent bug, so this pins to compose rather than to
+        # `pgvector/pgvector:pg15`.
+        image: pgvector/pgvector:pg16
         env:
           POSTGRES_USER: appbi
           POSTGRES_PASSWORD: appbi

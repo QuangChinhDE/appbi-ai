@@ -37,6 +37,130 @@ _COMPACT_BASE = (
 MAX_ROUNDS = 12
 
 
+def preview(node: AgentNode, state: RunState, rctx: Any) -> dict:
+    """Exactly what this step will hand the model, assembled the way a run does.
+
+    WHY THIS EXISTS
+    ---------------
+    An author configures eleven sections and a prompt, and nothing anywhere in the
+    product showed them the result. The rule that governs everything — the step's
+    instructions are APPENDED to a base prompt, prior steps arrive as named blocks,
+    tools arrive as schemas — lived in one line of helper text under a textarea.
+    So the mental model had to be inferred from field names, which is the complaint
+    the product keeps getting: not that there are too many controls, but that
+    nobody is told what they do.
+
+    IT CALLS THE SAME THREE FUNCTIONS THE RUN CALLS.
+    `_system_prompt`, `_messages` and `definitions_for` are the entire assembly; a
+    preview that rebuilt any of them would be a second definition, and a second
+    definition drifts. When it drifts, this screen becomes worse than nothing —
+    an author would trust it and be wrong.
+
+    What it cannot show is the model's REPLY, and it does not pretend to: no model
+    is called, nothing is spent, and every figure here is the input side only.
+    """
+    allowed = set(node.tool_names())
+    web_enabled = bool(rctx.inp.binding.capabilities.web_search)
+    schemas = tool_registry.definitions_for(allowed, web_enabled=web_enabled)
+
+    previous_scope = getattr(rctx.ctx, "knowledge_scope", None)
+    try:
+        _apply_scope(rctx.ctx, node)
+        system = _system_prompt(node, state, rctx)
+        messages = _messages(node, state, rctx)
+    finally:
+        # Same restore discipline as `run`: a preview must not leave the context
+        # holding a scope the next caller was never granted.
+        if previous_scope is not None:
+            rctx.ctx.knowledge_scope = previous_scope
+
+    def _fn(d: dict) -> dict:
+        return d.get("function") or d
+
+    tools = [{
+        "name": _fn(d).get("name"),
+        "description": (_fn(d).get("description") or "")[:400],
+        "arguments": sorted(
+            ((_fn(d).get("input_schema") or _fn(d).get("parameters") or {})
+             .get("properties") or {}).keys()
+        ),
+        "required": sorted(
+            (_fn(d).get("input_schema") or _fn(d).get("parameters") or {})
+            .get("required") or []
+        ),
+    } for d in schemas]
+
+    # WHERE THE SYSTEM PROMPT CAME FROM, split the way an author reasons about it:
+    # the part every step shares and the part THIS step added. Shown as one string
+    # too, because that is what the model actually receives and the seam is ours,
+    # not its.
+    base = (getattr(rctx, "base_system_prompt", "") or "").strip()
+    own = (node.prompt or "").strip()
+    # WHICH BASE THIS STEP GETS, named rather than implied by a character count.
+    # `_system_prompt` gives the FULL base only to the answering node and a compact
+    # one to every other step — a real rule, deliberate and documented there, that
+    # an author had no way to observe. Measured on the demo flow: the answering
+    # step's system prompt is 8,976 characters and a specialist's is 640. Seeing
+    # "your 438 characters sit inside 8,976" is the single most clarifying fact
+    # this screen can show, and it is wrong unless the base is named.
+    if node.output_format == "choice":
+        base_kind = "classifier"
+    elif node.key == rctx.answer_key:
+        base_kind = "full"
+    elif base:
+        base_kind = "compact"
+    else:
+        base_kind = "none"
+
+    provider, model = _resolve_model(node, rctx)
+    return {
+        "step": {"key": node.key, "name": node.name or node.key,
+                 "is_answering": node.key == rctx.answer_key},
+        "model": {"provider": provider, "model": model},
+        "system_prompt": {
+            "full": system,
+            # What the step actually received, not what was available to it.
+            "base_kind": base_kind,
+            "shared_base_chars": max(0, len(system) - len(own)),
+            "this_step_chars": len(own),
+            "this_step": own,
+        },
+        "messages": [{
+            "role": m.get("role"),
+            "content": _preview_text(m),
+            "chars": len(_preview_text(m)),
+        } for m in messages],
+        "tools": tools,
+        "knowledge_scope": dict(getattr(rctx.ctx, "knowledge_scope", None) or {}),
+        "budget": {
+            "max_tool_calls": node.max_tool_calls,
+            "max_llm_calls": rctx.inp.runtime.budget.max_llm_calls,
+            "max_seconds": rctx.inp.runtime.budget.max_seconds,
+        },
+        "totals": {
+            "system_chars": len(system),
+            "message_chars": sum(len(_preview_text(m)) for m in messages),
+            "tool_count": len(tools),
+        },
+    }
+
+
+def _preview_text(message: dict) -> str:
+    """One message as text, whatever shape the provider adapter wants it in."""
+    content = message.get("content")
+    if isinstance(content, str):
+        return content
+    if content is None and message.get("result") is not None:
+        import json as _json
+
+        return _json.dumps(message["result"], ensure_ascii=False)[:4000]
+    if content is None:
+        return ""
+    import json as _json
+
+    return _json.dumps(content, ensure_ascii=False)[:4000]
+
+
 async def run(
     node: AgentNode, state: RunState, rctx: Any
 ) -> AsyncGenerator[AgentEvent, None]:
@@ -259,7 +383,7 @@ async def run(
         if previous_scope is not None:
             rctx.ctx.knowledge_scope = previous_scope
 
-    text = collected.strip()
+    text = _plain_formulas(collected.strip())
     if provider_error and not text:
         # Raised, so the executor records `error`, honours `retry` and `on_error`,
         # and the Runs table shows which node actually failed.
@@ -452,6 +576,41 @@ def _looks_wrong_language(text: str, locale: str, question: str = "") -> bool:
         _segment_is_wrong_language("\n".join(body), locale)
         or _segment_is_wrong_language("\n".join(follow), locale)
     )
+
+
+#: LaTeX a chat bubble cannot render. Narrow on purpose — these are the forms a
+#: model actually emits for a formula, and anything broader would start rewriting
+#: prose that merely contains a backslash.
+_LATEX_FIXES = (
+    (re.compile(r"\\\[|\\\]|\\\(|\\\)"), ""),
+    (re.compile(r"\\text\s*\{([^{}]*)\}"), r"\1"),
+    (re.compile(r"\\mathrm\s*\{([^{}]*)\}"), r"\1"),
+    (re.compile(r"\\times"), "×"),
+    (re.compile(r"\\(?=[_%&#${}])"), ""),
+)
+
+
+def _plain_formulas(text: str) -> str:
+    """Formulas a viewer can read, not LaTeX source.
+
+    Asked how a KPI is calculated, a model answered with a display-math block —
+    `\\[`, `\\text{...}`, escaped underscores and all. The chat renders markdown,
+    not TeX, so every one of those characters reached the viewer verbatim. Found
+    by reading an answer in the product: the whole suite checks the FIGURES in an
+    answer and nothing had ever checked whether a person could read it.
+
+    A transform rather than an instruction, because this file already records what
+    happened the last three times an instruction was the whole mechanism — a large
+    English tool payload beat the prompt twice, and the language rule had to end up
+    being verified after the fact. Context can outvote a request; it cannot outvote
+    a regex.
+    """
+    if not text or "\\" not in text:
+        return text
+    for pattern, replacement in _LATEX_FIXES:
+        text = pattern.sub(replacement, text)
+    # The stripped delimiters leave their own blank lines behind.
+    return re.sub(r"\n{3,}", "\n\n", text).strip()
 
 
 def _figure_check(text: str, state: RunState) -> tuple[list[float], int]:

@@ -1,0 +1,161 @@
+name: E2E (Playwright, full stack)
+
+# WHY A SEPARATE WORKFLOW.
+#
+# The contract suite runs in seconds against a SQLite file and is the right gate
+# for every push. This one stands up Postgres, the backend, and a Next.js build,
+# so it is slower and it fails for reasons the contract suite cannot see: a route
+# that moved, a page that throws in the browser, a flow that saves and comes back
+# without its bindings.
+#
+# It is NOT route-mocked. Browser, Next.js, API, database and the Agent Flow
+# runtime are all real; what these tests avoid is spending money on a model, and
+# they do it by exercising deterministic steps rather than by faking the backend.
+
+on:
+  push:
+    paths:
+      - "backend/**"
+      - "frontend/**"
+      - "e2e/**"
+      - ".github/workflows/e2e.yml"
+  pull_request:
+    paths:
+      - "backend/**"
+      - "frontend/**"
+      - "e2e/**"
+      - ".github/workflows/e2e.yml"
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    services:
+      postgres:
+        # The same image docker-compose.yml runs. Stock `postgres:15` carries no
+        # pgvector, so `CREATE EXTENSION IF NOT EXISTS vector` failed and the
+        # `Build the schema` step never got as far as starting the app. See the
+        # longer note in backend-contract-tests.yml.
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: appbi
+          POSTGRES_PASSWORD: appbi
+          POSTGRES_DB: appbi
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready --health-interval 10s
+          --health-timeout 5s --health-retries 10
+
+    env:
+      DATABASE_URL: "postgresql://appbi:appbi@localhost:5432/appbi"
+      DB_HOST: localhost
+      DB_PORT: "5432"
+      DB_NAME: appbi
+      DB_USER: appbi
+      DB_PASSWORD: appbi
+      DATASOURCE_ENCRYPTION_KEY: ""
+      ENVIRONMENT: test
+
+      # THE MODULE UNDER TEST HAS TO BE MOUNTED.
+      #
+      # `api/__init__.py` includes the Agent Flows router — and the Direct Chat
+      # router with it — only `if settings.METADATA_CATALOG_ENABLED`, which
+      # defaults to False. This job never set it, so the backend came up without
+      # a single `/agent-flows/*` route and every call answered
+      # `{"detail":"Not Found"}`: `PUT /brains` 404, `GET /nodes` 404, and the
+      # builder page rendering an empty shell because nothing behind it existed.
+      #
+      # The suite was not finding bugs in Agent Flows; it was running against a
+      # deployment where Agent Flows was switched off. `.env.example` and
+      # docker-compose both turn it on, so CI now matches what ships.
+      METADATA_CATALOG_ENABLED: "true"
+      PYTHONPATH: ${{ github.workspace }}/backend
+      E2E_BASE_URL: http://localhost:3000
+      E2E_API_URL: http://localhost:8000
+
+      # THE BROWSER TALKS TO THE APP THE WAY PRODUCTION DOES: same-origin.
+      #
+      # This job used to bake `NEXT_PUBLIC_API_URL: http://localhost:8000`, but
+      # the client's own default is `/api/v1` — the value is expected to ALREADY
+      # carry that prefix. Without it every call went to
+      # `http://localhost:8000/auth/me`, which is not a route, so the CORS
+      # preflight got a 404 instead of a 204 and the browser reported
+      #
+      #   blocked by CORS policy: Response to preflight request doesn't pass
+      #   access control check: It does not have HTTP ok status
+      #
+      # Relative also matches how the product actually ships (compose bakes
+      # `/api/v1`), so the suite exercises the same path a real deployment does
+      # rather than a cross-origin one that exists only in CI.
+      NEXT_PUBLIC_API_URL: /api/v1
+      # WHERE THAT SAME-ORIGIN PATH IS PROXIED TO. `middleware.ts` rewrites
+      # `/api/v1/*` to BACKEND_URL and falls back to `http://backend:8000/api/v1`
+      # — a docker-compose hostname that does not resolve on a GitHub runner.
+      BACKEND_URL: http://localhost:8000/api/v1
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11", cache: pip }
+      - name: Install backend dependencies
+        working-directory: backend
+        run: pip install -r requirements.txt
+
+      - name: Build the schema
+        working-directory: backend
+        run: alembic upgrade head
+
+      - name: Seed the E2E account
+        working-directory: backend
+        run: python scripts/ci/seed_e2e_user.py
+
+      - name: Start the backend
+        working-directory: backend
+        run: |
+          uvicorn app.main:app --host 0.0.0.0 --port 8000 &
+          for i in $(seq 1 60); do
+            curl -sf http://localhost:8000/health && break
+            sleep 2
+          done
+          curl -sf http://localhost:8000/health
+
+      - uses: actions/setup-node@v4
+        with: { node-version: "20", cache: npm, cache-dependency-path: frontend/package-lock.json }
+
+      - name: Build and start the frontend
+        working-directory: frontend
+        # NEXT_PUBLIC_API_URL and BACKEND_URL come from the job env. A step-level
+        # `NEXT_PUBLIC_API_URL: http://localhost:8000` used to sit here and won
+        # over the job value, which is how the missing `/api/v1` prefix survived.
+        run: |
+          npm ci
+          npm run build
+          npm run start -- --port 3000 &
+          for i in $(seq 1 60); do
+            curl -sf http://localhost:3000/login && break
+            sleep 2
+          done
+          curl -sf http://localhost:3000/login
+
+      - name: Install Playwright
+        working-directory: e2e
+        run: |
+          npm install --no-audit --no-fund
+          npx playwright install --with-deps chromium
+
+      - name: Run the suite
+        working-directory: e2e
+        run: npx playwright test
+
+      # A reviewer must be able to see what broke without reproducing it locally.
+      - name: Upload traces and screenshots
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-artifacts
+          path: |
+            e2e/test-results/
+            e2e/playwright-report/
+          retention-days: 14

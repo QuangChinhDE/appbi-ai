@@ -163,7 +163,7 @@ def tool_compare_periods(ctx: ToolContext, args: dict) -> dict:
     try:
         ctx.assert_chart_in_scope(chart_id)
     except ToolError as exc:
-        return _err(str(exc))
+        return _err(str(exc), code=getattr(exc, "code", "") or None)
 
     mode = str(args.get("mode") or "auto").lower()
     if mode not in ("auto", "mom", "qoq", "yoy", "custom"):
@@ -333,7 +333,7 @@ def tool_describe_distribution(ctx: ToolContext, args: dict) -> dict:
     try:
         ctx.assert_chart_in_scope(chart_id)
     except ToolError as exc:
-        return _err(str(exc))
+        return _err(str(exc), code=getattr(exc, "code", "") or None)
 
     try:
         data = _fetch_chart_data(ctx, chart_id)
@@ -508,7 +508,7 @@ def tool_correlate_charts(ctx: ToolContext, args: dict) -> dict:
         ctx.assert_chart_in_scope(chart_a)
         ctx.assert_chart_in_scope(chart_b)
     except ToolError as exc:
-        return _err(str(exc))
+        return _err(str(exc), code=getattr(exc, "code", "") or None)
 
     try:
         data_a = _fetch_chart_data(ctx, chart_a)
@@ -688,7 +688,7 @@ def tool_detect_anomaly(ctx: ToolContext, args: dict) -> dict:
     try:
         ctx.assert_chart_in_scope(chart_id)
     except ToolError as exc:
-        return _err(str(exc))
+        return _err(str(exc), code=getattr(exc, "code", "") or None)
 
     method = str(args.get("method") or "zscore").lower()
     if method not in ("zscore", "iqr", "rolling", "changepoint"):
@@ -935,7 +935,7 @@ def tool_smart_drilldown(ctx: ToolContext, args: dict) -> dict:
     try:
         ctx.assert_chart_in_scope(chart_id)
     except ToolError as exc:
-        return _err(str(exc))
+        return _err(str(exc), code=getattr(exc, "code", "") or None)
 
     if not isinstance(top_n, int) or top_n <= 0:
         top_n = 10
@@ -1194,7 +1194,7 @@ def tool_aggregate_chart_data(ctx: ToolContext, args: dict) -> dict:
     try:
         ctx.assert_chart_in_scope(chart_id)
     except ToolError as exc:
-        return _err(str(exc))
+        return _err(str(exc), code=getattr(exc, "code", "") or None)
 
     group_by = args.get("group_by") or []
     if not isinstance(group_by, list) or not group_by:
@@ -1417,7 +1417,7 @@ def tool_explain_change(ctx: ToolContext, args: dict) -> dict:
     try:
         ctx.assert_chart_in_scope(chart_id)
     except ToolError as exc:
-        return _err(str(exc))
+        return _err(str(exc), code=getattr(exc, "code", "") or None)
     try:
         data = _fetch_chart_data(ctx, chart_id)
     except Exception as exc:
@@ -1534,7 +1534,7 @@ def tool_forecast_measure(ctx: ToolContext, args: dict) -> dict:
     try:
         ctx.assert_chart_in_scope(chart_id)
     except ToolError as exc:
-        return _err(str(exc))
+        return _err(str(exc), code=getattr(exc, "code", "") or None)
     try:
         data = _fetch_chart_data(ctx, chart_id)
     except Exception as exc:
@@ -1646,7 +1646,7 @@ def tool_analyze_trend(ctx: ToolContext, args: dict) -> dict:
     try:
         ctx.assert_chart_in_scope(chart_id)
     except ToolError as exc:
-        return _err(str(exc))
+        return _err(str(exc), code=getattr(exc, "code", "") or None)
     try:
         data = _fetch_chart_data(ctx, chart_id)
     except Exception as exc:
@@ -1741,7 +1741,7 @@ def tool_segment_compare(ctx: ToolContext, args: dict) -> dict:
     try:
         ctx.assert_chart_in_scope(chart_id)
     except ToolError as exc:
-        return _err(str(exc))
+        return _err(str(exc), code=getattr(exc, "code", "") or None)
     try:
         data = _fetch_chart_data(ctx, chart_id)
     except Exception as exc:
@@ -1860,7 +1860,7 @@ def tool_get_chart_glossary(ctx: ToolContext, args: dict) -> dict:
     try:
         ctx.assert_chart_in_scope(chart_id)
     except ToolError as exc:
-        return _err(str(exc))
+        return _err(str(exc), code=getattr(exc, "code", "") or None)
 
     from app.models.models import Chart
     from app.models.dataset import DatasetTable, Dataset

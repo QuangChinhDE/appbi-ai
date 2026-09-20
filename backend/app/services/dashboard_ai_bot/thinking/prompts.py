@@ -19,7 +19,10 @@ from __future__ import annotations
 from typing import Any
 
 
-AGENT_SYSTEM_PROMPT_TEMPLATE = """\
+#: The opening, for a step that IS sitting in a report. Everything after it —
+#: citation rules, the answer-in-the-viewer's-language rule, the analysis
+#: guardrails — is true on either surface and is not duplicated.
+REPORT_OPENING = """\
 You are an AI Data Analyst embedded in a published BI dashboard. Read
 the data already loaded for you below, then answer the user's question
 like a senior DA: lead with the conclusion, cite each number, suggest
@@ -32,7 +35,38 @@ Charts visible: {chart_count}
 Public filters: {filters_applied_block}
 
 The same filters bind every chart query you make — what the dashboard
-renders is exactly what you can read.
+renders is exactly what you can read.\
+"""
+
+#: The opening for AI Chat, where three of those sentences are FALSE.
+#:
+#: There is no dashboard, nothing is "already loaded below", and no filters bind
+#: anything. Measured on a real chat step: the base prompt is 9,024 of the 9,459
+#: characters the model reads — 95% — so a base that describes the wrong surface
+#: is not a detail, it is almost everything the model is told. It was reaching the
+#: right answer by ignoring its own briefing.
+#:
+#: What replaces it says the two things that ARE true and that the model must act
+#: on: nothing arrives unless it goes and finds it, and what it may find is a
+#: fixed set its author chose.
+CHAT_OPENING = """\
+You are an AI Data Analyst answering in a chat window. There is no report
+on screen and nothing has been loaded for you: every figure you give must
+come from a tool call you make first. Answer like a senior DA — lead with
+the conclusion, cite each number, suggest a next step.
+
+═══ WHAT YOU CAN REACH ═══
+Charts you may measure: {chart_count}
+{description_block}
+
+These were chosen by whoever built this assistant, and they are ALL you can
+reach — you cannot open a report, and there is no "current" report to assume.
+So work out WHICH of them a question is about before measuring anything, and
+if none of them covers it, say so plainly instead of answering from memory.\
+"""
+
+AGENT_SYSTEM_PROMPT_TEMPLATE = """\
+{opening_block}
 
 If the user asks to compare against the INDUSTRY / MARKET / COMPETITORS /
 a BENCHMARK (and the external tools are available), you MUST fetch real
@@ -251,6 +285,11 @@ def build_agent_system_prompt(
     briefing_block: str = "",
     conversation_state_block: str = "",
     include_tools: bool = True,
+    #: Which surface this step runs on. `report` keeps the prompt every caller has
+    #: always got; `chat` swaps the opening for one that is true when there is no
+    #: report. Defaults to `report`, so nothing changes for a caller that has not
+    #: been updated.
+    surface: str = "report",
 ) -> str:
     """The analyst's system prompt.
 
@@ -288,11 +327,14 @@ def build_agent_system_prompt(
     if conv_state_block_render:
         conv_state_block_render = "\n" + conv_state_block_render + "\n"
 
-    rendered = AGENT_SYSTEM_PROMPT_TEMPLATE.format(
+    opening = (CHAT_OPENING if surface == "chat" else REPORT_OPENING).format(
         dashboard_name=dashboard_name or "Dashboard",
         description_block=description_block,
         chart_count=chart_count,
         filters_applied_block=_format_filters(filters_applied),
+    )
+    rendered = AGENT_SYSTEM_PROMPT_TEMPLATE.format(
+        opening_block=opening,
         max_tool_calls=max_tool_calls,
         report_context_block=report_context_block_render,
         briefing_block=briefing_block_render,

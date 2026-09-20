@@ -1,0 +1,136 @@
+name: Change guardrail (server-side diff review)
+
+# WHY THIS WORKFLOW EXISTS
+#
+# Local hooks and `verify.py task` protect a coding session. They protect nothing
+# against an agent or a person who does not run them: a push bypasses every local
+# gate. `preflight.yml` runs on the server but only asks "does the committed tree
+# build" — it never looks at what the change actually DID.
+#
+# And `guardrail_check.py --diff` on its own is worse than useless in CI: a PR
+# checkout has a clean working tree, so it reviews an empty diff and reports
+# "no changes to validate" on a change it never saw. That is why the CLI grew
+# `--base/--head`, and why this workflow passes them.
+#
+# TWO LAYERS, AND THE ORDER MATTERS
+#
+#   1. trusted-protection — checks out the MERGE BASE and runs the BASE copy of
+#      check_protection_integrity.py, reading the head revision only as data via
+#      `git show`. No code, dependency or config from the pull request is executed
+#      here. A PR that rewrites the checker to pass itself never gets to run it.
+#
+#   2. diff-review — checks out the head and runs the head guardrail against the
+#      real base..head diff: architecture boundaries, protected subsystems,
+#      invariant risk, unmapped scope, required regression gates.
+#
+# Layer 2 runs head code by necessity (it is reviewing head's architecture against
+# head's rules). That is acceptable ONLY because layer 1 already proved head did
+# not weaken the rules it is about to be judged by.
+#
+# No rule logic lives in this file. It calls the executable rule engine and reports
+# what the engine said.
+
+on:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      base:
+        description: "Base ref to compare from"
+        required: true
+      head:
+        description: "Head ref to compare to"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  # ── Layer 1: the base contract inspects the change ────────────────────────
+  trusted-protection:
+    name: Protection integrity (checked from the merge base)
+    runs-on: ubuntu-latest
+    steps:
+      # Full history so the merge base and both revisions are reachable.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          # THE CRITICAL LINE: the workspace is the BASE revision, not the PR head.
+          # Everything executed in this job is code that was already on the target
+          # branch before this change existed.
+          ref: ${{ github.event.pull_request.base.sha || github.event.inputs.base }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # Pinned, and NOT from the PR's requirements file — a PR must not be able to
+      # influence what this job installs.
+      - name: Install the one dependency the checker needs
+        run: pip install "PyYAML==6.0.2"
+
+      - name: Fetch the head revision as data
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.inputs.head }}
+        run: git fetch --no-tags origin "$HEAD_SHA"
+
+      - name: Protection integrity (base contract vs head content)
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.inputs.base }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.inputs.head }}
+          # Removing a gate is legitimate but must be an owner decision, so this is
+          # a repository variable. A pull request cannot set it for itself.
+          APPBI_ALLOW_PROTECTION_REMOVAL: ${{ vars.APPBI_ALLOW_PROTECTION_REMOVAL }}
+        run: |
+          python scripts/ci/check_protection_integrity.py \
+            --base "$BASE_SHA" --head "$HEAD_SHA"
+
+  # ── Layer 2: the current rules review the actual change ───────────────────
+  diff-review:
+    name: Architecture / invariants / required gates on base..head
+    runs-on: ubuntu-latest
+    needs: trusted-protection
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.event.inputs.head }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install "PyYAML==6.0.2"
+
+      - name: Fetch the base revision
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.inputs.base }}
+        run: git fetch --no-tags origin "$BASE_SHA"
+
+      # Exit codes: 0 ok/warn · 1 block · 2 unknown.
+      # UNKNOWN is deliberately NOT success: it means no rule covers the change, which
+      # is a reason for review, not a clean bill of health. It is surfaced as a
+      # neutral annotation rather than a hard failure, because unmapped paths are
+      # common and turning every one into a red build would get the gate disabled.
+      - name: Guardrail review of the real diff
+        id: review
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.inputs.base }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.inputs.head }}
+        run: |
+          set +e
+          python scripts/ci/guardrail_check.py --diff --base "$BASE_SHA" --head "$HEAD_SHA" | tee review.txt
+          rc=${PIPESTATUS[0]}
+          set -e
+          {
+            echo "## Guardrail review"
+            echo '```'
+            cat review.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          case "$rc" in
+            0) echo "guardrail: ok/warn" ;;
+            2) echo "::warning title=Guardrail UNKNOWN::No rule covers part of this change. UNKNOWN is not SAFE - review it." ;;
+            *) echo "::error title=Guardrail BLOCK::This change violates a documented architecture rule or invariant."; exit 1 ;;
+          esac
+
+      - name: Gate registry status (what can and cannot be verified)
+        run: python scripts/ci/guardrail_check.py --health

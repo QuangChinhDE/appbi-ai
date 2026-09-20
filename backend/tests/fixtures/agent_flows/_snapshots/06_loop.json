@@ -1,0 +1,52 @@
+{
+  "answer_shape": {
+    "block_count": 1,
+    "citation_count": 0,
+    "figure_count": 0,
+    "has_answer": true
+  },
+  "citations": [],
+  "counts": {
+    "llm_calls": 1,
+    "steps": 5,
+    "tool_calls": 0
+  },
+  "execution_path": [
+    {
+      "key": "set",
+      "status": "ok",
+      "type": "set_var"
+    },
+    {
+      "key": "in",
+      "status": "ok",
+      "type": "set_var"
+    },
+    {
+      "key": "in",
+      "status": "ok",
+      "type": "set_var"
+    },
+    {
+      "key": "lap",
+      "status": "ok",
+      "type": "loop"
+    },
+    {
+      "key": "answer",
+      "status": "ok",
+      "type": "agent"
+    }
+  ],
+  "fixture": "06_loop",
+  "memory_set_keys": [],
+  "notice_codes": [],
+  "status": "ok",
+  "step_outputs": {
+    "answer": "ok :: Kết quả của các bước trước, theo thứ tự đã chạy. Tổng hợp TẤT CẢ, không chỉ bước cuối; nếu hai bước mâu thuẫn thì nói rõ ra thay vì chọn bừa một bên:\n\n### set\nx, y\n\n### lap\n,",
+    "in": "",
+    "lap": "[null, null]",
+    "set": "[\"x\", \"y\"]"
+  },
+  "tool_calls": []
+}
