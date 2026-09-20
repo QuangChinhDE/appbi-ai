@@ -39,12 +39,15 @@ jobs:
           python scripts/ci/guardrail_check.py --health
 
       # ── 1c. Claude workflow config (schema of .claude/) ───────────────────
-      - name: Claude workflow config (rules frontmatter, hooks, skills)
-        run: python scripts/ci/check_claude_config.py
-      - name: Stop-hook decision tests (all-green / failed / unverified)
+      # Provider-neutral: validates the Claude adapter (delegating to
+      # check_claude_config.py), AGENTS.md for Codex, that the adapters import one
+      # contract instead of keeping two, and that every path they promise exists.
+      - name: Agent contract + adapters (Claude + Codex)
+        run: python scripts/ci/check_agent_config.py
+      - name: Safety-system tests (Stop gate + provider-neutral SDLC)
         run: |
           pip install pytest
-          python -m pytest -q scripts/ci/test_stop_gate.py
+          python -m pytest -q scripts/ci/test_stop_gate.py scripts/ci/test_agent_sdlc.py
 
       # ── 2. Frontend typecheck (uncommitted-provider / type breaks) ────────
       - uses: actions/setup-node@v4
