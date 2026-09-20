@@ -119,3 +119,78 @@ def test_a_successful_match_says_nothing_to_the_author(monkeypatch):
     _, _, st = select(monkeypatch, {"status": "semantic", "chart_ids": [102],
                                     "candidates": [], "concepts": ["mrr_active"]})
     assert st.notices == [], "a working selection must not produce noise"
+
+
+# ── the wiring the stubbed tests could not see ──────────────────────────────
+#
+# THIS IS THE TEST THAT WAS MISSING. `test_asset_resolution.py` stubs both
+# searches and passes no context at all, so it stayed green while the whole
+# question-matching path died in the running build with
+# `'RunContext' object has no attribute 'allowed_chart_ids'` — the resolver was
+# handed the RunContext instead of the ToolContext inside it.
+#
+# A suite that can pass while the feature is dead at runtime is not coverage. This
+# exercises the real call path and asserts the three things the direct call broke.
+
+class _Budget:
+    def __init__(self):
+        self.spent = 0
+
+    def spend_tool(self):
+        self.spent += 1
+
+    def tools_left(self):
+        return 99
+
+
+class _RunCtx:
+    """Shaped like the real RunContext: the ToolContext lives at `.ctx`."""
+
+    def __init__(self, tool_ctx):
+        self.ctx = tool_ctx
+        self.inp = types.SimpleNamespace(
+            question=types.SimpleNamespace(text=lambda: "biến động mrr qua từng tháng"))
+
+
+def _wired_state():
+    st = state()
+    st.budget = _Budget()
+    st.tool_log = []
+    return st
+
+
+def test_the_resolver_is_given_the_tool_context_not_the_run_context(monkeypatch):
+    sentinel = object()
+    rctx = _RunCtx(sentinel)
+    seen = []
+
+    def fake_execute(ctx, name, args, **kw):
+        seen.append((ctx, name))
+        return {"ok": True, "kind": "catalogue", "data": {"results": []}}
+
+    monkeypatch.setattr(D.tool_registry, "execute", fake_execute)
+    D._charts_for_question(node(), _wired_state(), rctx, list(ALLOWED))
+
+    assert seen, "the resolver made no tool call at all"
+    for ctx, name in seen:
+        assert ctx is sentinel, (
+            f"{name} was called with {type(ctx).__name__}, not the ToolContext — "
+            "this is the exact defect that killed the feature in the running build"
+        )
+
+
+def test_resolution_lookups_are_counted_against_the_tool_budget(monkeypatch):
+    """Calling the tool functions directly bypassed budget accounting silently."""
+    monkeypatch.setattr(D.tool_registry, "execute",
+                        lambda ctx, name, args, **kw: {"ok": True, "data": {"results": []}})
+    st = _wired_state()
+    D._charts_for_question(node(), st, _RunCtx(object()), list(ALLOWED))
+    assert st.budget.spent > 0, "a lookup that costs a tool call was not charged for it"
+
+
+def test_resolution_lookups_appear_in_the_run_tool_log(monkeypatch):
+    monkeypatch.setattr(D.tool_registry, "execute",
+                        lambda ctx, name, args, **kw: {"ok": True, "data": {"results": []}})
+    st = _wired_state()
+    D._charts_for_question(node(), st, _RunCtx(object()), list(ALLOWED))
+    assert any("list_charts" in entry for entry in st.tool_log), st.tool_log

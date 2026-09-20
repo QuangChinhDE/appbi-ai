@@ -105,7 +105,12 @@ def _charts_for_question(
         return allowed, {"mode": "question", "status": "no_question",
                          "fell_back_to": "report_order", "candidates": []}
 
-    got = resolve_charts(rctx, question, allowed)
+    # Through `_route_call`, so these lookups are counted against the turn's tool
+    # budget and recorded in the run's tool log exactly like every other call.
+    got = resolve_charts(
+        question, allowed,
+        call=lambda tool, args: _route_call(rctx, state, tool, args),
+    )
     status = got.get("status") or "none"
     ids = [c for c in (got.get("chart_ids") or []) if c in set(allowed)]
 
@@ -151,7 +156,7 @@ def _charts_for_question(
                    "candidates": candidates[:8],
                    "fell_back_to": "report_order"},
             remedies=remedies,
-            text=text,
+            text=text + " " + " ".join(remedies),
         )
     )
     return allowed, selection
@@ -506,11 +511,16 @@ def _warn_if_overflowing(node: ReportReadNode, out: dict, state: RunState) -> No
                 "explicit_chart_ids": len(node.chart_ids),
             },
             remedies=remedies,
+            # THE ADVICE GOES IN BOTH PLACES, and that is deliberate. `remedies`
+            # is for a UI that can render actions; the sentence is for every UI
+            # that cannot yet. Structuring it without also saying it left the
+            # author reading a problem with no suggested action — worse than the
+            # welded-in advice this replaced.
             text=(
                 f"Bước “{node.name or node.key}” đọc {len(out['charts'])} biểu đồ "
                 f"(~{vn(size)} ký tự) nhưng bước sau chỉ nhận được "
                 f"{vn(_DOWNSTREAM_CHARS)} ký tự đầu — khoảng {kept} biểu đồ đầu "
-                "danh sách, phần còn lại bị cắt."
+                "danh sách, phần còn lại bị cắt. " + " ".join(remedies)
             ),
         )
     )

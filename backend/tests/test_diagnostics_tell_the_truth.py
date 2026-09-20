@@ -102,3 +102,23 @@ def test_the_diagnostic_is_addressed_to_the_author_not_the_reader():
     """Author maintenance advice must not be mixed into reader-facing notices."""
     n = notice_of(ReportReadNode(key="r", output_var="ctx", match_question=True, detail="compact"))
     assert getattr(n, "audience", None) == "author"
+
+
+def test_the_advice_is_also_readable_without_a_structured_ui():
+    """`remedies` is for a UI that renders actions; not every UI does yet. An
+    author must never be shown a problem with no suggested action — that is what
+    structuring the advice without also saying it produced."""
+    n = notice_of(ReportReadNode(key="r", output_var="ctx", match_question=False,
+                                 detail="full"))
+    assert n.remedies, "no structured remedies"
+    for r in n.remedies:
+        assert r in n.text, f"remedy missing from the readable text: {r!r}"
+
+
+def test_the_prose_still_never_carries_an_inapplicable_remedy():
+    n = notice_of(ReportReadNode(key="r", output_var="ctx", match_question=True,
+                                 detail="index", chart_ids=[1, 2]))
+    assert "đọc theo câu hỏi" not in n.text
+    assert "chỉ mục" not in n.text
+    assert "giảm số" not in n.text.lower()
+    assert n.text.strip(), "an empty diagnostic says nothing"

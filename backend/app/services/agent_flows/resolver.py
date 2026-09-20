@@ -44,9 +44,24 @@ semantic guess it cannot justify.
 """
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Any, Callable, Literal
 
 Status = Literal["exact", "semantic", "ambiguous", "none"]
+
+#: How this module reaches a tool: `call(name, args) -> normalised result`.
+#:
+#: INJECTED RATHER THAN IMPORTED, and the reason is a defect this shipped with for
+#: one commit. Calling the tool functions directly meant passing a context, the
+#: caller passed the RunContext instead of the ToolContext inside it, and the whole
+#: question-matching path died with `'RunContext' object has no attribute
+#: 'allowed_chart_ids'` — while the unit tests stayed green, because they stubbed
+#: both searches and never exercised a real context.
+#:
+#: Taking a `call` removes the parameter that was wrong. It also puts these calls
+#: back through `tool_registry.execute`, which is what counts them against the
+#: turn's tool budget and records them in the run's tool log; calling the functions
+#: directly silently bypassed both.
+Call = Callable[[str, dict], Any]
 
 #: Above this many distinct concepts behind the candidates, the question is not
 #: pointing at one thing. Two charts realising ONE metric is a ranked answer; two
@@ -54,11 +69,9 @@ Status = Literal["exact", "semantic", "ambiguous", "none"]
 _AMBIGUOUS_AT = 2
 
 
-def _lexical(ctx: Any, question: str) -> tuple[str, list[int]]:
+def _lexical(call: Call, question: str) -> tuple[str, list[int]]:
     """`list_charts`' own verdict. Its fallback listing is never a match."""
-    from app.services.dashboard_ai_bot.thinking.tools import tool_list_charts
-
-    res = tool_list_charts(ctx, {"query": question})
+    res = call("list_charts", {"query": question})
     if not isinstance(res, dict) or not res.get("ok"):
         return "lookup_failed", []
     data = res.get("data") if isinstance(res.get("data"), dict) else res
@@ -77,19 +90,14 @@ def _lexical(ctx: Any, question: str) -> tuple[str, list[int]]:
     return status, ids
 
 
-def _semantic(ctx: Any, question: str) -> list[dict]:
+def _semantic(call: Call, question: str) -> list[dict]:
     """Charts reached through a governed metric or a semantic field.
 
     Returns one entry per (concept, chart) so the caller can see how many
     DISTINCT concepts the question touched — which is what separates a ranked
     answer from an ambiguous one.
     """
-    from app.services.agent_flows.tools.packs.discover import (
-        tool_resolve_chart_candidates,
-        tool_search_business_assets,
-    )
-
-    found = tool_search_business_assets(ctx, {"query": question})
+    found = call("search_business_assets", {"query": question})
     if not isinstance(found, dict) or not found.get("ok"):
         return []
     data = found.get("data") if isinstance(found.get("data"), dict) else found
@@ -108,7 +116,7 @@ def _semantic(ctx: Any, question: str) -> list[dict]:
         if not ident:
             continue
         args = {"metric": ident} if kind == "metric" else {"measure": ident}
-        res = tool_resolve_chart_candidates(ctx, args)
+        res = call("resolve_chart_candidates", args)
         if not isinstance(res, dict) or not res.get("ok"):
             continue
         payload = res.get("data") if isinstance(res.get("data"), dict) else res
@@ -130,7 +138,7 @@ def _semantic(ctx: Any, question: str) -> list[dict]:
     return out
 
 
-def resolve_charts(ctx: Any, question: str, allowed: list[int]) -> dict:
+def resolve_charts(question: str, allowed: list[int], *, call: Call) -> dict:
     """Which charts this question is about, with the evidence for saying so.
 
     Returns `{status, chart_ids, candidates, concepts}` where status is
@@ -143,7 +151,7 @@ def resolve_charts(ctx: Any, question: str, allowed: list[int]) -> dict:
     if not question.strip() or not keep:
         return empty
 
-    lex_status, lex_ids = _lexical(ctx, question)
+    lex_status, lex_ids = _lexical(call, question)
     lex_ids = [c for c in lex_ids if c in keep]
     if lex_status == "matched" and lex_ids:
         return {"status": "exact", "chart_ids": lex_ids, "concepts": [],
@@ -152,7 +160,7 @@ def resolve_charts(ctx: Any, question: str, allowed: list[int]) -> dict:
 
     # The lexical pass could not tell. Ask the business vocabulary before giving
     # up — this is the step that was missing, not a second opinion on the first.
-    cands = [c for c in _semantic(ctx, question) if c["chart_id"] in keep]
+    cands = [c for c in _semantic(call, question) if c["chart_id"] in keep]
     if not cands:
         # An `ambiguous` lexical verdict is still ambiguity, not absence: the
         # caller may want to offer those candidates rather than say "no chart".

@@ -24,9 +24,9 @@ class Fake:
         self.bridge = bridge or {}
 
     def install(self, monkeypatch):
-        monkeypatch.setattr(resolver, "_lexical", lambda ctx, q: self.lexical)
+        monkeypatch.setattr(resolver, "_lexical", lambda call, q: self.lexical)
 
-        def semantic(ctx, q):
+        def semantic(call, q):
             out = []
             for asset in self.results:
                 for cand in self.bridge.get(asset["id"], []):
@@ -43,7 +43,11 @@ class Fake:
 
 def resolve(monkeypatch, fake, question="q", allowed=None):
     fake.install(monkeypatch)
-    return resolver.resolve_charts(object(), question, ALLOWED if allowed is None else allowed)
+    return resolver.resolve_charts(
+        question, ALLOWED if allowed is None else allowed,
+        call=lambda tool, args: (_ for _ in ()).throw(
+            AssertionError("both searches are stubbed; `call` must not be reached")),
+    )
 
 
 # ── the reported scenario ────────────────────────────────────────────────────
