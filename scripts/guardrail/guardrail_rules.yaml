@@ -153,6 +153,7 @@ protected:
       - scripts/ci/guardrail_check.py
       - scripts/ci/check_claude_config.py
       - scripts/ci/check_protection_integrity.py
+      - scripts/ci/check_agent_config.py
       - scripts/ci/preflight.sh
       - scripts/guardrail/guardrail_core.py
       - scripts/guardrail/guardrail_rules.yaml
@@ -160,6 +161,7 @@ protected:
       - .claude/settings.json
       - .claude/hooks/stop_gate.py
       - .claude/hooks/post_edit_fast.py
+      - AGENTS.md
       - .claude/CLAUDE.md
     directive: >
       These files decide whether anything else is allowed to ship. An agent must
