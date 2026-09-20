@@ -28,7 +28,7 @@ When sources disagree, the higher one wins. Agent instructions are **last** on p
    thing beats inventing a second way.
 4. **The regression catalog** at DA-Test/Regression-Catalog.md — every fixed bug, its
    root cause, and the test that locks it (`GAP` = nothing locks it). Note that
-   `DA-Test/` is gitignored: it is local-only, absent from a fresh clone and from CI,
+   that tree is gitignored: it is local-only, absent from a fresh clone and from CI,
    so consult it when you have it and do not assume it is there.
 5. **Docs** — `README.md`, `KNOWLEDGE_DOMAIN_MODEL.md`, `docs/**`. Intent; can lag code.
 6. **Agent instructions** — this file, `.claude/CLAUDE.md`, `.claude/rules/**`, and any

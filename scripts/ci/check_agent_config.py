@@ -38,6 +38,7 @@ from __future__ import annotations
 import re
 import subprocess
 import sys
+from functools import lru_cache
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -146,6 +147,31 @@ def _candidate_paths(text: str) -> set[str]:
     return found
 
 
+@lru_cache(maxsize=1)
+def tracked_paths() -> frozenset[str]:
+    """Every path git tracks, as the repo-relative POSIX strings git prints.
+
+    Deliberately NOT the filesystem: a developer's checkout also holds untracked
+    and gitignored files, so a filesystem check passes locally and fails in CI on
+    a fresh clone. That exact divergence is what this function exists to remove.
+    """
+    out = subprocess.run(["git", "-C", str(REPO_ROOT), "ls-files"],
+                         capture_output=True, text=True, encoding="utf-8",
+                         errors="replace")
+    return frozenset(out.stdout.split()) if out.returncode == 0 else frozenset()
+
+
+def path_is_in_the_repository(rel: str) -> bool:
+    """A file git tracks, or a directory git tracks something under."""
+    tracked = tracked_paths()
+    if not tracked:                      # not a git checkout (a tarball, say)
+        return (REPO_ROOT / rel).exists()
+    if rel in tracked:
+        return True
+    prefix = rel.rstrip("/") + "/"
+    return any(p.startswith(prefix) for p in tracked)
+
+
 def check_referenced_paths() -> None:
     for source in (AGENTS, CLAUDE_MD):
         if not source.exists():
@@ -157,8 +183,11 @@ def check_referenced_paths() -> None:
             concrete = candidate.split("*")[0].rstrip("/")
             if not concrete:
                 continue
-            if not (REPO_ROOT / concrete).exists():
-                fail(f"{rel} references `{candidate}`, which does not exist")
+            if not path_is_in_the_repository(concrete):
+                extra = (" (it exists here but git does not track it, so it is absent "
+                         "from a fresh clone and from CI)"
+                         if (REPO_ROOT / concrete).exists() else "")
+                fail(f"{rel} references `{candidate}`, which is not in the repository{extra}")
 
 
 def check_canonical_dod() -> None:

@@ -479,3 +479,69 @@ def test_no_override_still_blocks_a_removal(tmp_path):
         cwd=str(repo), capture_output=True, text=True, env=env, timeout=300)
     assert result.returncode == 1
     assert "REMOVAL_SHA" in result.stdout
+
+
+# ── 9. Local and CI must agree about what "exists" ────────────────────────
+def test_referenced_paths_are_checked_against_git_not_the_filesystem(tmp_path):
+    """The remote-only failure this locks out.
+
+    `check_agent_config.py` verified that every path the agent contract names
+    exists. It asked the FILESYSTEM, which on a developer's machine also contains
+    untracked and gitignored files - so AGENTS.md could cite a gitignored tree,
+    pass locally, and fail on CI's fresh clone. A gate that answers differently on
+    two machines is not a gate.
+
+    Proven by citing a path that exists on disk and is NOT tracked: the validator
+    must reject it, and say why.
+    """
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("cac", CI / "check_agent_config.py")
+    cac = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cac)
+
+    untracked = REPO_ROOT / "scripts" / "ci" / "_untracked_probe_dir"
+    untracked.mkdir(exist_ok=True)
+    try:
+        rel = "scripts/ci/_untracked_probe_dir"
+        assert (REPO_ROOT / rel).exists(), "fixture: the path must exist on disk"
+        assert not cac.path_is_in_the_repository(rel), (
+            "a path that exists on disk but is not tracked must NOT count as present - "
+            "that is exactly the local-passes/CI-fails divergence")
+        # and a genuinely tracked path still counts
+        assert cac.path_is_in_the_repository("scripts/ci/verify.py")
+        assert cac.path_is_in_the_repository("scripts/ci")   # tracked directory
+    finally:
+        untracked.rmdir()
+
+
+def test_the_agent_contract_validates_on_a_tracked_files_only_tree(tmp_path):
+    """End to end in CI's actual condition: export the tracked tree and validate it.
+
+    This is the check that would have caught the failure before it reached the
+    server, rather than after.
+
+    NOTE: it archives HEAD, not the working tree - deliberately, because HEAD is
+    what CI will clone. So while a fix is still uncommitted this test reports the
+    committed state and fails; that is the same contract as preflight, which also
+    judges HEAD rather than your dirty tree. Commit, then re-run.
+    """
+    export = tmp_path / "tracked"
+    export.mkdir()
+    archive = subprocess.run(["git", "-C", str(REPO_ROOT), "archive", "HEAD"],
+                             capture_output=True, timeout=300)
+    assert archive.returncode == 0, archive.stderr.decode(errors="replace")
+    tar = subprocess.run(["tar", "-x", "-C", str(export)], input=archive.stdout,
+                         capture_output=True, timeout=300)
+    assert tar.returncode == 0, tar.stderr.decode(errors="replace")
+
+    subprocess.run(["git", "init", "-q"], cwd=export, capture_output=True)
+    subprocess.run(["git", "add", "-A"], cwd=export, capture_output=True)
+    subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t",
+                    "commit", "-qm", "tracked"], cwd=export, capture_output=True)
+
+    result = subprocess.run([sys.executable, "scripts/ci/check_agent_config.py"],
+                            cwd=export, capture_output=True, text=True,
+                            encoding="utf-8", errors="replace", timeout=300)
+    assert result.returncode == 0, (
+        "the agent contract does not validate on a tracked-files-only tree - CI "
+        "will fail even though a local run passes:\n" + result.stdout + result.stderr)
