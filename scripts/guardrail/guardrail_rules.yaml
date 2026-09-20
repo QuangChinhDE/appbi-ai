@@ -254,7 +254,8 @@ features:
                "answer envelope", "answer block", "answer blocks", "flow runtime",
                executor, run_flow, "tool node", report_read]
     invariants: [agent_flow_container_topology, agent_flow_answer_parity]
-    required_tests: [agent_flow_contract, agent_flow_replay, agent_flow_container]
+    required_tests: [agent_flow_contract, agent_flow_replay, agent_flow_container,
+                     agent_flow_surface]
 
   - id: direct_chat
     label: "Direct Chat (reader surface of Agent Flow)"
@@ -285,11 +286,20 @@ tests:
   agent_flow_contract:
     run: "pytest backend/tests/test_agent_flow_answer_contract.py backend/tests/test_agent_tool_registry.py backend/tests/test_tool_output_contract.py"
     locks: "the flow contract, the tool registry and the answer envelope shape"
+  # REGISTERED 2026-09-20, after a red CI that a green `verify.py task` could not
+  # have predicted. These 20 suites were run by the workflow and named by NO gate,
+  # so the canonical Definition-of-Done command could not run them: the local gate
+  # and the CI gate were checking differently-shaped sets. Classified by IMPORT
+  # (they import app.services.agent_flows), not by filename.
+  agent_flow_surface:
+    run: "pytest backend/tests/test_agent_flow_golden.py backend/tests/test_builder_error_messages.py backend/tests/test_chart_discovery_and_figure_correction.py backend/tests/test_chart_read_failure_reason.py backend/tests/test_discover_pack.py backend/tests/test_error_taxonomy_and_empty.py backend/tests/test_flow_attached_but_unreadable.py backend/tests/test_followup_and_freshness.py backend/tests/test_govern_doc_citation.py backend/tests/test_govern_doc_evidence_link.py backend/tests/test_govern_knowledge_tools.py backend/tests/test_i5_hard_gate_stays_lowest.py backend/tests/test_partial_context_admits_it.py backend/tests/test_report_read_scope.py backend/tests/test_tool_argument_contract.py backend/tests/test_tool_authorization_metadata.py backend/tests/test_tool_capability_gates.py backend/tests/test_tool_node.py backend/tests/test_tool_result_ceiling.py backend/tests/test_what_the_ai_sees.py"
+    locks: "the wider Agent Flow surface CI already ran — tools, discovery, read failures, builder errors, knowledge citation"
+
   agent_flow_replay:
     run: "pytest backend/tests/test_agent_flow_replay.py"
     locks: "16 canonical fixtures replay with no semantic drift — the tripwire for any runtime or traversal change"
   agent_flow_container:
-    run: "pytest backend/tests/test_coordinator_is_visible_to_the_flow.py backend/tests/test_flow_coordinate.py backend/tests/test_flow_synthesis_sees_all_steps.py backend/tests/test_flow_type.py backend/tests/test_node_child_slots.py backend/tests/test_read_status_survives_compaction.py backend/tests/test_diagnostics_tell_the_truth.py backend/tests/test_tree_validation_is_canonical.py backend/tests/test_nested_specialist_credentials.py backend/tests/test_authoring_is_strict.py backend/tests/test_asset_resolution.py backend/tests/test_context_handoff.py backend/tests/test_report_read_selection_is_explicit.py"
+    run: "pytest backend/tests/test_coordinator_is_visible_to_the_flow.py backend/tests/test_flow_coordinate.py backend/tests/test_flow_synthesis_sees_all_steps.py backend/tests/test_flow_type.py backend/tests/test_node_child_slots.py backend/tests/test_read_status_survives_compaction.py backend/tests/test_diagnostics_tell_the_truth.py backend/tests/test_tree_validation_is_canonical.py backend/tests/test_nested_specialist_credentials.py backend/tests/test_authoring_is_strict.py backend/tests/test_asset_resolution.py backend/tests/test_context_handoff.py backend/tests/test_report_read_selection_is_explicit.py backend/tests/test_no_evidence_no_confident_number.py"
     locks: "every container node is walked by all_nodes(); a coordinator's lane is visible to every authoring check"
   direct_chat_contract:
     run: "pytest backend/tests/test_chat_thread_sharing.py backend/tests/test_chat_chart_scope.py"

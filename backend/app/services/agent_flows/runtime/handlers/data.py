@@ -432,10 +432,11 @@ def _degraded_by_reason(entries: list[dict]) -> dict[str, list]:
     return out
 
 
-#: What a step's result is cut to on its way into a prompt. Mirrors
-#: `_MAX_STEP_CHARS` / the `carried[:8000]` slice in the agent handler — imported
-#: rather than re-declared would be better, and is a circular import today.
-_DOWNSTREAM_CHARS = 2000
+#: The ceiling this step's result is measured against, imported from the module
+#: that owns the handoff. It used to be a local `2000` mirroring a constant in the
+#: agent handler; that constant was replaced and this copy was not, so the notice
+#: quoted a limit that no longer existed.
+from app.services.agent_flows.runtime.context import HANDOFF_CHARS as _DOWNSTREAM_CHARS
 
 
 def _warn_if_overflowing(node: ReportReadNode, out: dict, state: RunState) -> None:
@@ -469,7 +470,9 @@ def _warn_if_overflowing(node: ReportReadNode, out: dict, state: RunState) -> No
     size = len(render_value(out))
     if size <= _DOWNSTREAM_CHARS:
         return
-    kept = max(1, round(len(out["charts"]) * _DOWNSTREAM_CHARS / size))
+    # Reduction is STRUCTURAL now — the compiler shrinks the biggest arrays inside
+    # each chart, it does not keep "the first N charts and drop the rest". Saying
+    # the old thing would be a second lie on top of the old number.
     vn = lambda n: f"{n:,}".replace(",", ".")
 
     # REMEDIES ARE DERIVED FROM STATE, NOT WRITTEN INTO THE SENTENCE.
@@ -505,7 +508,7 @@ def _warn_if_overflowing(node: ReportReadNode, out: dict, state: RunState) -> No
                 "charts_read": len(out["charts"]),
                 "rendered_chars": size,
                 "downstream_chars": _DOWNSTREAM_CHARS,
-                "charts_expected_to_survive": kept,
+                "over_budget_by": size - _DOWNSTREAM_CHARS,
                 "match_question": node.match_question,
                 "detail": node.detail,
                 "explicit_chart_ids": len(node.chart_ids),
@@ -518,9 +521,11 @@ def _warn_if_overflowing(node: ReportReadNode, out: dict, state: RunState) -> No
             # welded-in advice this replaced.
             text=(
                 f"Bước “{node.name or node.key}” đọc {len(out['charts'])} biểu đồ "
-                f"(~{vn(size)} ký tự) nhưng bước sau chỉ nhận được "
-                f"{vn(_DOWNSTREAM_CHARS)} ký tự đầu — khoảng {kept} biểu đồ đầu "
-                "danh sách, phần còn lại bị cắt. " + " ".join(remedies)
+                f"(~{vn(size)} ký tự), vượt ngân sách ngữ cảnh của bước trả lời "
+                f"(~{vn(_DOWNSTREAM_CHARS)} ký tự cho TẤT CẢ các bước cộng lại) nên "
+                "phần chi tiết trong mỗi biểu đồ sẽ bị lược bớt; nếu còn bước khác "
+                "cũng có kết quả thì phần dành cho bước này còn nhỏ hơn. "
+                + " ".join(remedies)
             ),
         )
     )

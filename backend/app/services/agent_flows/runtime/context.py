@@ -43,6 +43,13 @@ import json
 from dataclasses import dataclass, field
 from typing import Any
 
+#: THE handoff ceiling. Lives here because this module owns the handoff; the read
+#: node and the answering node both import it rather than each keeping a copy that
+#: can drift. One did drift: the read node's author-facing notice kept saying
+#: "2.000 ký tự" after the ceiling moved, so it told authors a number that no
+#: longer existed.
+HANDOFF_CHARS = 8000
+
 #: Rough chars-per-token for the mixed Vietnamese/English/JSON this carries.
 #: Approximate ON PURPOSE and in ONE place; see the module docstring.
 _CHARS_PER_TOKEN = 3.5
@@ -58,7 +65,7 @@ _TRUNCATED_NOTE = (
 )
 
 
-def budget_chars(max_tokens: int | None = None, *, default: int = 8000) -> int:
+def budget_chars(max_tokens: int | None = None, *, default: int = HANDOFF_CHARS) -> int:
     """The handoff ceiling, in characters. One conversion, one place."""
     if not max_tokens or max_tokens <= 0:
         return default
@@ -191,8 +198,10 @@ def compile_context(steps: list[StepView], budget_chars: int) -> Projection:
         if out.omitted:
             note.append("chưa gộp được (vượt ngữ cảnh): " + ", ".join(out.omitted))
         blocks.append(
-            "(Ghi chú phạm vi — " + "; ".join(note) + ". Trả lời bằng những gì "
-            "đang có và NÓI RÕ phần chưa gộp; đừng suy ra phần không thấy.)"
+            "(Ghi chú phạm vi — " + "; ".join(note) + ". Phần thiếu KHÔNG phải "
+            "là không có dữ liệu. Trả lời bằng những gì đang có và NÓI RÕ phần "
+            "chưa gộp; nếu cần thứ không thấy ở đây thì gọi công cụ lấy đúng thứ "
+            "cần, đừng suy ra.)"
         )
 
     out.coverage = {"included": out.included, "reduced": out.reduced,

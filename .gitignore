@@ -313,3 +313,4 @@ backend/tests/.testdata/
 !backend/tests/test_asset_resolution.py
 !backend/tests/test_context_handoff.py
 !backend/tests/test_report_read_selection_is_explicit.py
+!backend/tests/test_no_evidence_no_confident_number.py

@@ -887,11 +887,9 @@ def _messages(node: AgentNode, state: RunState, rctx: Any) -> list[dict]:
 
 from app.services.agent_flows.contract import ROUTING_NODE_TYPES as _ROUTING_TYPES
 
-#: What the synthesiser is handed, in characters. Bounded because this is the one
-#: place a flow's cost grows with the number of steps: eight specialists must not
-#: become eight full transcripts. The ALLOCATION of it is the context compiler's
-#: job — see `runtime/context.py` for why order must not decide who survives.
-_HANDOFF_CHARS = 8000
+#: What the synthesiser is handed, in characters. Defined by the module that owns
+#: the handoff so the read node can warn against the same number this spends.
+from app.services.agent_flows.runtime.context import HANDOFF_CHARS as _HANDOFF_CHARS
 
 
 def _all_step_results(state: RunState, rctx: Any, *, skip: str = "") -> str:

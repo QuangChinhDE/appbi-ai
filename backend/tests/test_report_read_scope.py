@@ -93,6 +93,21 @@ def test_detail_is_the_control_the_builder_was_missing():
 # ── choosing charts by the question ─────────────────────────────────────────
 
 
+def _stub_node(*, query="", name="", **kw):
+    """A stand-in for ReportReadNode carrying every field the code reads.
+
+    A hand-built stub that omits a field does not test tolerance, it tests the
+    stub: `_warn_if_overflowing` derives its remedies from `match_question`,
+    `chart_ids` and `detail`, and a stub without them raised AttributeError while
+    the real node has all three. Defaults mirror the contract.
+    """
+    fields = {"query": query, "key": "doc", "name": name,
+              "match_question": False, "chart_ids": [], "detail": "compact",
+              "max_charts": 20}
+    fields.update(kw)
+    return type("N", (), fields)()
+
+
 class _FakeState:
     def __init__(self):
         self.notices = []
@@ -160,7 +175,7 @@ def selector(monkeypatch):
             scripted["result"] = result
 
         def run(self, allowed, *, query="", question="doanh thu theo tháng"):
-            node = type("N", (), {"query": query, "key": "doc", "name": ""})()
+            node = _stub_node(query=query)
             rctx = type("R", (), {})()
             rctx.ctx = object()
             rctx.inp = type("I", (), {})()
@@ -177,7 +192,7 @@ def test_the_question_reorders_the_allowed_charts(selector):
     ordered, why = selector.run([412, 687, 990])
 
     assert ordered == [990, 412]
-    assert why == ""
+    assert why["status"] in ("exact", "semantic")
     assert selector.calls[0]["tool"] == "list_charts"
     assert selector.calls[0]["args"]["query"] == "doanh thu theo tháng"
 
@@ -203,14 +218,14 @@ def test_a_question_that_matches_nothing_says_so(selector):
 
     ordered, why = selector.run([412, 687, 990])
 
-    assert why == "no_match"
+    assert why["status"] == "none" and why["fell_back_to"] == "report_order"
     assert ordered == [412, 687, 990], "falls back to the full scope, not to nothing"
 
 
 def test_an_empty_question_does_not_even_ask(selector):
     ordered, why = selector.run([412, 990], question="")
 
-    assert why == "no_question"
+    assert why["status"] == "no_question"
     assert ordered == [412, 990]
     assert selector.calls == [], "no tool budget spent deciding nothing"
 
@@ -231,14 +246,14 @@ def test_a_failed_lookup_falls_back_rather_than_reading_nothing(selector):
     ordered, why = selector.run([412, 990])
 
     assert ordered == [412, 990]
-    assert why == "lookup_failed"
+    assert why["status"] == "none" and why["fell_back_to"] == "report_order"
 
 
 # ── admitting what will not fit ─────────────────────────────────────────────
 
 
 def _node(name="Đọc báo cáo"):
-    return type("N", (), {"name": name, "key": "doc"})()
+    return _stub_node(name=name)
 
 
 def test_a_read_that_fits_says_nothing():
@@ -263,7 +278,7 @@ def test_a_read_that_cannot_fit_reports_the_real_numbers():
     note = state.notices[0]
     assert note.code == "read_exceeds_context"
     assert "20 biểu đồ" in note.text
-    assert "2.000 ký tự" in note.text, "the ceiling, in the reader's number format"
+    assert "8.000 ký tự" in note.text, "the ceiling, in the reader's number format"
 
 
 def test_the_notice_names_a_remedy_that_exists():
@@ -301,11 +316,16 @@ def test_an_empty_read_is_not_an_overflow():
 
 
 def test_the_downstream_ceiling_is_not_invented_here():
-    """It mirrors `_MAX_STEP_CHARS` in the agent handler. If that moves and this
-    does not, the notice starts lying — which is worse than not warning."""
-    from app.services.agent_flows.runtime.handlers.agent import _MAX_STEP_CHARS
+    """ORIGINALLY it mirrored `_MAX_STEP_CHARS` by hand, and the invariant in this
+    docstring came true: that constant was replaced by the context compiler's
+    budget and the mirrored copy was not, so the notice quoted a 2.000-character
+    limit that no longer existed. There is one source now, and this asserts both
+    users read it rather than that two numbers happen to be equal."""
+    from app.services.agent_flows.runtime.context import HANDOFF_CHARS
+    from app.services.agent_flows.runtime.handlers.agent import _HANDOFF_CHARS
 
-    assert _DOWNSTREAM_CHARS == _MAX_STEP_CHARS
+    assert _DOWNSTREAM_CHARS is HANDOFF_CHARS
+    assert _HANDOFF_CHARS is HANDOFF_CHARS
 
 
 # ── a match this tool calls a match is not always one ────────────────────────
@@ -325,7 +345,7 @@ def test_an_off_topic_question_is_not_treated_as_a_match(selector):
     ordered, why = selector.run([717, 724, 730, 742, 686],
                                 question="thời tiết sao Hỏa hôm nay")
 
-    assert why == "weak_match"
+    assert why["status"] in ("ambiguous", "none") and why["fell_back_to"] == "report_order"
     assert ordered == [717, 724, 730, 742, 686], "falls back to the full scope"
 
 
@@ -336,7 +356,7 @@ def test_a_question_whose_terms_are_mostly_covered_still_matches(selector):
 
     _, why = selector.run([686, 694, 700], question="đánh giá của khách hàng")
 
-    assert why == ""
+    assert why["status"] in ("exact", "semantic")
 
 
 def test_a_one_word_question_that_hits_is_a_match(selector):
@@ -346,17 +366,19 @@ def test_a_one_word_question_that_hits_is_a_match(selector):
 
     ordered, why = selector.run([693, 684, 678, 686], question="GMV")
 
-    assert why == ""
+    assert why["status"] in ("exact", "semantic")
     assert ordered == [693, 684, 678]
 
 
 def test_the_threshold_is_exactly_a_third(selector):
     """Stated as a test so moving it is a decision, not a drift."""
     selector.returns(_listing([1], terms=3, best=1))          # 1/3 - kept
-    assert selector.run([1, 2], question="q")[1] == ""
+    assert selector.run([1, 2], question="q")[1]["status"] in ("exact", "semantic")
 
     selector.returns(_listing([1], terms=4, best=1))          # 0.25 - rejected
-    assert selector.run([1, 2], question="q")[1] == "weak_match"
+    rejected = selector.run([1, 2], question="q")[1]
+    assert rejected["status"] in ("ambiguous", "none")
+    assert rejected["fell_back_to"] == "report_order"
 
 
 def test_a_listing_without_strength_is_trusted(selector):
@@ -369,7 +391,7 @@ def test_a_listing_without_strength_is_trusted(selector):
 
     ordered, why = selector.run([686, 700], question="doanh thu")
 
-    assert why == ""
+    assert why["status"] in ("exact", "semantic")
     assert ordered == [686]
 
 

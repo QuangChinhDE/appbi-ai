@@ -392,6 +392,37 @@ def backend_tests_reach_ci(rep: Report, files: list[str]) -> None:
                 rep.bad(f"{wf_name} runs {tok}, which is not in the repository — "
                         "pytest exits 4 and the whole suite is skipped")
 
+    # THE OTHER DIRECTION, AND IT IS THE ONE THAT BIT.
+    #
+    # Above, an allow-listed suite must be run by a workflow. This asks the
+    # reverse: a suite the WORKFLOW runs must be named by some gate in
+    # `guardrail_rules.yaml`, because this command resolves what to run from that
+    # registry and nowhere else. 23 of the 51 suites CI ran were named by no gate,
+    # so `verify.py task` could report green while CI was already red on one of
+    # them — the local gate and the CI gate were checking differently-shaped sets.
+    # That is the same family as every "a workflow runs a different deployment"
+    # defect on this branch, one level up.
+    #
+    # ADVISORY, not fatal: some suites legitimately belong to owners with no gate
+    # yet, and failing the build for them would make this the check people route
+    # around. It names them, which is what was missing.
+    wf_path = REPO_ROOT / ".github" / "workflows" / "backend-contract-tests.yml"
+    rules_path = GUARDRAIL_DIR / "guardrail_rules.yaml"
+    if wf_path.exists() and rules_path.exists():
+        ran = set(re.findall(r"tests/(test_\w+\.py)",
+                             wf_path.read_text(encoding="utf-8", errors="replace")))
+        gated = set(re.findall(r"backend/tests/(test_\w+\.py)",
+                               rules_path.read_text(encoding="utf-8", errors="replace")))
+        ungated = sorted(ran - gated)
+        if ungated:
+            print(f"  {len(ungated)} suite(s) CI runs are named by no guardrail gate "
+                  f"- this command cannot run them:")
+            for name in ungated[:10]:
+                print(f"    {name}")
+            if len(ungated) > 10:
+                print(f"    ... and {len(ungated) - 10} more")
+            print("  a green run here does not predict those.")
+
     # CI MUST RUN THE DEPLOYMENT THAT SHIPS.
     #
     # A feature flag whose shipped value differs from its code default silently

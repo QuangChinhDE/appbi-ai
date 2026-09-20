@@ -128,6 +128,7 @@ jobs:
             tests/test_nested_specialist_credentials.py \
             tests/test_asset_resolution.py \
             tests/test_context_handoff.py \
+            tests/test_no_evidence_no_confident_number.py \
             tests/test_report_read_selection_is_explicit.py \
             tests/test_authoring_is_strict.py \
             tests/test_node_child_slots.py 2>&1 | tee /tmp/pytest-unit.log

@@ -267,13 +267,28 @@ async def run_flow(
                 "[flow] %s: %s figure(s) in the answer are not in the evidence: %s",
                 flow.key, len(verification["unmatched"]), verification["unmatched"][:6],
             )
-            state.notices.append(
-                Notice(
-                    code="figures_unverified",
-                    text=f"{len(verification['unmatched'])} con số trong câu trả lời "
-                         "không khớp với dữ liệu đã đọc — hãy đối chiếu lại trước khi dùng.",
+            # TWO DIFFERENT FAULTS, TWO DIFFERENT SENTENCES. "Does not match the
+            # data read" is wrong when NOTHING was read — that reads as a
+            # reconciliation problem when the real one is that the answer has no
+            # source at all.
+            if verification.get("no_evidence"):
+                state.notices.append(
+                    Notice(
+                        code="figures_without_evidence",
+                        severity="error",
+                        text=f"Câu trả lời đưa ra {len(verification['unmatched'])} con "
+                             "số nhưng lượt này KHÔNG đọc được dữ liệu nào — các số này "
+                             "không có nguồn, đừng dùng để ra quyết định.",
+                    )
                 )
-            )
+            else:
+                state.notices.append(
+                    Notice(
+                        code="figures_unverified",
+                        text=f"{len(verification['unmatched'])} con số trong câu trả lời "
+                             "không khớp với dữ liệu đã đọc — hãy đối chiếu lại trước khi dùng.",
+                    )
+                )
 
     # THE OTHER HALF OF THE SAME CHECK.
     #
@@ -1075,10 +1090,11 @@ def _verify_figures(state: RunState, answer: Answer) -> dict | None:
     knows how to read `1.258.681,34`, `8,4%` and `1,2 tỷ`, and a second parser
     would disagree with the first on exactly the cases that matter.
     """
-    if not state.evidence:
-        return None
     try:
-        from app.services.dashboard_ai_bot.verifier import verify_answer
+        from app.services.dashboard_ai_bot.verifier import (
+            extract_answer_numbers,
+            verify_answer,
+        )
 
         # Every figure the viewer will SEE, not just the prose. `plain_text()`
         # drops table cells, and a fabricated number is just as wrong in a table
@@ -1093,7 +1109,27 @@ def _verify_figures(state: RunState, answer: Answer) -> dict | None:
                 parts.append(str(data.get("value")))
                 if data.get("delta"):
                     parts.append(str((data["delta"] or {}).get("value")))
-        out = verify_answer(" ".join(p for p in parts if p), state.evidence).to_dict()
+        text = " ".join(p for p in parts if p)
+        if not state.evidence:
+            # ABSENCE OF EVIDENCE IS NOT EVIDENCE OF SUPPORT.
+            #
+            # This used to `return None` here, so the numeric check switched
+            # itself off in the one case it exists for: the read failed, nothing
+            # reached the model, the model answered from its own memory of the
+            # domain — and with no ledger to contradict it, nothing was flagged
+            # and the run presented as healthy. A figure with an empty ledger
+            # behind it is unsupported by definition.
+            #
+            # `extract_answer_numbers` is the verifier's own parser, reused rather
+            # than reimplemented: it already knows `1.258.681,34`, `8,4%` and
+            # `1,2 tỷ`, and a second parser would disagree on the cases that matter.
+            figures = extract_answer_numbers(text)
+            if not figures:
+                return None  # an honest refusal has nothing to verify
+            return {"matched": 0, "unmatched": figures,
+                    "unknown_labels": _unknown_labels(state, answer),
+                    "no_evidence": True}
+        out = verify_answer(text, state.evidence).to_dict()
         out["unknown_labels"] = _unknown_labels(state, answer)
         return out
     except Exception:  # noqa: BLE001

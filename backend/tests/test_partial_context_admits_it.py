@@ -125,11 +125,27 @@ def test_a_cut_result_says_it_was_cut():
     absence of something is not evidence that it does not exist.
     """
     big = json.dumps({"charts": [{"chart_id": i, "pad": "x" * 200} for i in range(40)]})
-    assert len(big) > A._MAX_STEP_CHARS
+    assert len(big) > A._HANDOFF_CHARS
 
     gathered = A._all_step_results(_State({"doc": big}), None)
 
-    assert "bị cắt bớt" in gathered
+    # The invariant is unchanged; the MECHANISM is not. A JSON payload is now
+    # reduced structurally rather than head-sliced, so the marker differs — but
+    # the model must still be told that what is missing was removed, not absent.
+    assert "lược" in gathered
+    assert "KHÔNG phải là không có dữ liệu" in gathered
+
+
+def test_a_cut_PROSE_result_also_says_it_was_cut():
+    """The other reduction path. JSON shrinks structurally; prose is cut on a line
+    boundary and carries its own marker — both must announce themselves."""
+    big = "\n".join("dòng %d với nội dung dài vừa phải để vượt ngân sách" % i
+                     for i in range(600))
+    assert len(big) > A._HANDOFF_CHARS
+
+    gathered = A._all_step_results(_State({"doc": big}), None)
+
+    assert "lược bớt" in gathered
     assert "KHÔNG phải là không có dữ liệu" in gathered
 
 
