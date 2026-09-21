@@ -280,7 +280,63 @@ export function ConversationView({
                       </p>
                     ) : null}
                     <p className="text-caption text-text-tertiary">{t('chat.welcome.hint')}</p>
-                    <p className="mt-2 flex items-center gap-1 text-tiny text-text-quaternary">
+
+                    {/* BEFORE THE FIRST QUESTION, not after it comes back
+                        unanswered. An assistant with no anomaly tool should say
+                        so here rather than let a reader spend a turn finding
+                        out. Absent capability degrades to the line above; it is
+                        never rendered as "can answer nothing". */}
+                    {brain.capability?.can?.length ? (
+                      <div className="mt-3">
+                        <p className="text-tiny font-strong uppercase tracking-wider text-text-quaternary">
+                          {t('chat.welcome.canTitle')}
+                        </p>
+                        <div className="mt-1.5 flex flex-wrap gap-1.5">
+                          {brain.capability.can.map((c) => (
+                            <span key={c.key}
+                              className="rounded-md bg-surface-2 px-1.5 py-0.5 text-tiny text-text-secondary">
+                              {c.label}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    ) : null}
+
+                    {brain.capability?.cannot?.length ? (
+                      <div className="mt-3">
+                        <p className="text-tiny font-strong uppercase tracking-wider text-text-quaternary">
+                          {t('chat.welcome.cannotTitle')}
+                        </p>
+                        <div className="mt-1.5 flex flex-wrap gap-1.5">
+                          {brain.capability.cannot.map((c) => (
+                            <span key={c.key}
+                              className="rounded-md border border-dashed border-[rgb(var(--border-line))] px-1.5 py-0.5 text-tiny text-text-quaternary">
+                              {c.label}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    ) : null}
+
+                    {/* Derived from `can`, never authored, so a suggestion can
+                        never propose something the assistant cannot do. */}
+                    {!readonly && brain.capability?.suggested_questions?.length ? (
+                      <div className="mt-3.5 flex flex-wrap gap-1.5">
+                        {brain.capability.suggested_questions.map((q) => (
+                          // FILLS THE BOX, does not send. `onSend` takes no
+                          // argument, and handing it one is exactly the defect
+                          // `qa:handler-arity` exists to catch. It also reads
+                          // better: a suggestion the reader can edit before
+                          // asking is a prompt, not a decision made for them.
+                          <button key={q} type="button" onClick={() => onInputChange(q)}
+                            className="rounded-full border border-[rgb(var(--border-line))] px-2.5 py-1 text-tiny text-text-secondary transition hover:border-brand/40 hover:text-brand">
+                            {q}
+                          </button>
+                        ))}
+                      </div>
+                    ) : null}
+
+                    <p className="mt-3 flex items-center gap-1 text-tiny text-text-quaternary">
                       <FileText className="h-3 w-3" />
                       {t('chat.welcome.sources', { n: brain.knowledge_count })}
                     </p>

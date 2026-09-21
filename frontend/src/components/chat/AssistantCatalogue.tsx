@@ -63,8 +63,6 @@ export function AssistantCatalogue({
     );
   }, [brains, search]);
 
-  const totalSources = brains.reduce((n, b) => n + (b.knowledge_count || 0), 0);
-
   return (
     <PageListLayout
       title={t('chat.title')}
@@ -73,10 +71,13 @@ export function AssistantCatalogue({
         <ModuleOverview
           icon={MessagesSquare}
           title={t('chat.overviewTitle')}
+          // ONE MODULE-LEVEL FACT. The strip used to carry three inventory
+          // counts — assistants, conversations, sources — none of which helps a
+          // reader pick an assistant, and the middle one described their own
+          // usage back at them. The strip is not the place to describe an
+          // individual assistant, so it now says only how many they can reach.
           stats={[
             { label: t('chat.stat.assistants'), value: brains.length, helper: t('chat.stat.assistantsHelper') },
-            { label: t('chat.stat.conversations'), value: threads.length, helper: t('chat.stat.conversationsHelper') },
-            { label: t('chat.stat.knowledge'), value: totalSources },
           ]}
           storageKey="ai-chat-overview"
         />
@@ -246,6 +247,28 @@ function AssistantCard({
             <span className="text-text-quaternary">{t('chat.card.noDescription')}</span>
           )}
         </p>
+
+        {/* WHAT IT CAN ANSWER, above the inventory. A reader choosing an
+            assistant is asking "will this one answer my question", and the
+            previous lead — source count and conversation count — answered
+            "how much has it been used", which is a different question and not
+            theirs. Degrades to nothing rather than to an empty claim when the
+            backend could not compute a capability. */}
+        {brain.capability?.can?.length ? (
+          <div className="mb-2.5 flex flex-wrap gap-1.5">
+            {brain.capability.can.slice(0, 3).map((c) => (
+              <span key={c.key}
+                className="rounded-md bg-surface-2 px-1.5 py-0.5 text-tiny text-text-secondary">
+                {c.label}
+              </span>
+            ))}
+            {brain.capability.can.length > 3 ? (
+              <span className="px-1 py-0.5 text-tiny text-text-quaternary">
+                +{brain.capability.can.length - 3}
+              </span>
+            ) : null}
+          </div>
+        ) : null}
 
         <div className="flex flex-wrap items-center gap-3 text-tiny text-text-quaternary">
           <span className="flex items-center gap-1">

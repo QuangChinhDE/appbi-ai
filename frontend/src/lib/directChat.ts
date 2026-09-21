@@ -13,6 +13,25 @@ import type { FlowNotice } from '@/lib/notices';
 
 const BASE = '/agent-flows/chat';
 
+/** One question class an assistant can or cannot answer, in reader language.
+ *
+ *  Static metadata only. The backend recomputes this per SURFACE and never
+ *  projects the author's coverage view, which carries tool names, pack names,
+ *  node keys and document ids — see `reader_capability.py` for why that is a
+ *  separate computation rather than a filtered copy. */
+export interface CapabilityClass {
+  key: string;
+  label: string;
+  example: string;
+}
+
+export interface ReaderCapability {
+  surface: string;
+  can: CapabilityClass[];
+  cannot: CapabilityClass[];
+  suggested_questions: string[];
+}
+
 export interface ChatBrain {
   brain_key: string;
   name: string;
@@ -20,6 +39,10 @@ export interface ChatBrain {
   version: number;
   flow_id: number | null;
   knowledge_count: number;
+  /** Optional on purpose: an older backend, or one that could not compute it,
+   *  must degrade to name + purpose rather than render an assistant as
+   *  capability-less. */
+  capability?: ReaderCapability | null;
 }
 
 export interface ChatThread {
@@ -89,8 +112,14 @@ export type ChatEvent =
   | { type: 'result'; envelope: FlowOutputEnvelope }
   | { type: 'done' };
 
-export async function listChatBrains(): Promise<ChatBrain[]> {
-  const { data } = await apiClient.get<{ brains: ChatBrain[] }>(`${BASE}/brains`);
+export async function listChatBrains(lang?: string): Promise<ChatBrain[]> {
+  // `lang` reaches the capability labels, which are the only reader-facing
+  // strings the backend produces here — the question classes were written for
+  // the author's canvas in Vietnamese, and a reader on the English UI has to see
+  // English. Everything else on this screen is translated in the frontend.
+  const { data } = await apiClient.get<{ brains: ChatBrain[] }>(`${BASE}/brains`, {
+    params: lang ? { lang } : undefined,
+  });
   return data.brains || [];
 }
 
