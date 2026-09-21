@@ -67,7 +67,12 @@ async function pageOverflows(page: any): Promise<boolean> {
 }
 
 test.describe('authoring canvas @critical', () => {
-  test.beforeAll(async ({ request }) => {
+  // RE-SAVED PER TEST, not once. `sweepLeftovers` in another spec deletes every
+  // flow whose key starts with `e2e_`, which is the right thing for it to do and
+  // includes these — so a fixture created once is a fixture another file can
+  // delete out from under this one. `saveDraft` upserts, so re-saving costs a
+  // request and removes the whole class of failure.
+  test.beforeEach(async ({ request }) => {
     await saveDraft(request, KEY, 'E2E canvas a11y', LONG, 'chat');
     await saveDraft(request, `${KEY}_coord`, 'E2E coordinator', COORDINATOR, 'chat');
   });
