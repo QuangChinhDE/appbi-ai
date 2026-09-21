@@ -131,7 +131,12 @@ export function FlowCanvas(props: CanvasProps) {
       ref={stageRef}
       style={{ transform: `scale(${zoom})`, transformOrigin: 'top center' }}
       className={cn(
-        'relative flex min-w-[860px] flex-col items-center px-10 pb-24 pt-6',
+        // 640, not 860. The old floor was set when the inspector was a fixed
+        // 400px; at the declared 1280px minimum with the inspector widened it
+        // forced horizontal scrolling on a canvas that had room. The container
+        // scrolls internally, so a floor only decides when that starts — and a
+        // single column of cards is comfortable well below 860.
+        'relative flex min-w-[640px] flex-col items-center px-10 pb-24 pt-6',
         drag.key && 'select-none',
       )}
     >
@@ -284,7 +289,16 @@ function NodeCard({
           <GripVertical className="h-3.5 w-3.5" />
         </button>
       )}
-      <button type="button" onClick={onSelect} className="w-full text-left">
+      {/* NAMED AND STATEFUL. It used to be an unlabelled button wrapping a div,
+          so a screen reader read the card's text with no indication of what
+          activating it does or whether this is the step currently open in the
+          inspector. `aria-pressed` is the honest role here: selecting a node is a
+          toggle-like state, not navigation. */}
+      <button type="button" onClick={onSelect} className="w-full text-left"
+        aria-pressed={selected}
+        aria-label={`${title} — ${specLabel || node.type}`}
+        tabIndex={selected ? 0 : -1}
+        data-node-button={node.key}>
         <div className="flex min-h-[44px] items-center gap-2 border-b border-[rgb(var(--border-line))] px-2.5 py-1.5">
           <span className={cn(
             'flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-md text-small',
@@ -412,8 +426,15 @@ function RuleCard({
       ref={register(id)}
       data-edge-id={id}
       onClick={onClick}
+      // A lane header is the same kind of control as a node card: activating it
+      // opens that branch in the inspector. Same state, said the same way.
+      aria-pressed={selected}
+      aria-label={`${label} — ${title}`}
       className={cn(
-        'relative z-10 w-[280px] overflow-hidden rounded-lg border bg-surface-1 text-left transition',
+        // `w-[280px]` was a fixed width inside a grid column that can now be as
+        // narrow as 220px; `max-w-full` keeps the card inside its lane instead of
+        // overhanging the one beside it.
+        'relative z-10 w-[280px] max-w-full overflow-hidden rounded-lg border bg-surface-1 text-left transition',
         selected ? 'border-brand ring-[3px] ring-brand/10'
           : 'border-[rgb(var(--border-strong))] hover:border-brand/40',
       )}
@@ -574,7 +595,11 @@ function NodeBlock({
         <Gap short />
         <div
           className="relative grid w-full gap-8 pt-6"
-          style={{ gridTemplateColumns: `repeat(${Math.max(lanes.length, 1)}, minmax(0, 1fr))` }}
+          // `minmax(220px, 1fr)`, not `minmax(0, 1fr)`. Three specialists at
+          // 1280px with the inspector open divided the row into ~150px lanes and
+          // the cards inside them clipped. A floor turns that into the canvas's
+          // own horizontal scroll, which is the intentional kind.
+          style={{ gridTemplateColumns: `repeat(${Math.max(lanes.length, 1)}, minmax(220px, 1fr))` }}
         >
           {lanes.map((lane) => (
             <div key={lane.key} className="relative flex min-w-0 flex-col items-center">

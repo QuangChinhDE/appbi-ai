@@ -236,12 +236,75 @@ export function BrainBuilder({
 
   // ── tree edits ────────────────────────────────────────────────────────────
 
+  // Declared before the keyboard effect that uses it: Alt+Arrow reorders through
+  // exactly this function, so the drop path and the keyboard path cannot drift.
+  const onMoveNode = React.useCallback((key: string, target: InsertTarget) => {
+    const next = moveNode(body.nodes, key, target);
+    if (next !== body.nodes) mutate(next);
+  }, [body.nodes, mutate]);
+
   React.useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement | null;
       // Never steal Ctrl+Z from a field the author is typing in — the text field's
       // own undo is the one they mean there.
       if (target && /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName)) return;
+
+      // ROVING FOCUS ON THE CANVAS.
+      //
+      // Every node card used to be a tab stop, so reaching step 40 of a long flow
+      // meant tabbing past thirty-nine of them. Only the SELECTED card is a tab
+      // stop now, and the arrows move between cards from there — the pattern a
+      // toolbar or a tree view uses, and the reason the minimap can stay a
+      // pointer convenience rather than pretending to be keyboard-operable.
+      //
+      // Scoped to a focused node card: plain arrows anywhere else are scrolling,
+      // and stealing them would be worse than the problem.
+      const onCard = target?.closest?.('[data-node-button]') as HTMLElement | null;
+      if (onCard && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
+        const order = walkNodes(body.nodes).map((n) => n.key);
+        const here = order.indexOf(onCard.getAttribute('data-node-button') || '');
+        if (here < 0) return;
+
+        // ALT MOVES THE STEP; the bare arrow moves the selection. Drag has no
+        // keyboard equivalent otherwise, and claiming the canvas is operable
+        // without one would be claiming support that does not exist.
+        const key = onCard.getAttribute('data-node-button') || '';
+
+        // ALT MOVES THE STEP; the bare arrow moves the selection. Drag has no
+        // keyboard equivalent otherwise, and a canvas whose only way to reorder
+        // is a pointer is not operable — saying it is would be worse than the
+        // gap.
+        //
+        // BOUNDED TO REORDERING AMONG TOP-LEVEL SIBLINGS, deliberately. Moving a
+        // step INTO or OUT OF a branch is a different decision — which lane, at
+        // what depth — and guessing it from an arrow key would move steps
+        // somewhere the author did not ask for. It goes through the same
+        // `moveNode` a drop uses; there is no second mutation path.
+        if (e.altKey) {
+          e.preventDefault();
+          const top = body.nodes.findIndex((n) => n.key === key);
+          if (top < 0) return;                     // nested: drag it, for now
+          const to = top + (e.key === 'ArrowDown' ? 1 : -1);
+          if (to < 0 || to >= body.nodes.length) return;
+          onMoveNode(key, { containerPath: '', index: e.key === 'ArrowDown' ? to + 1 : to });
+          window.requestAnimationFrame(() => {
+            document.querySelector<HTMLElement>(`[data-node-button="${key}"]`)?.focus();
+          });
+          return;
+        }
+
+        e.preventDefault();
+        const next = order[here + (e.key === 'ArrowDown' ? 1 : -1)];
+        if (!next) return;
+        setSelected(next);
+        window.requestAnimationFrame(() => {
+          const el = document.querySelector<HTMLElement>(`[data-node-button="${next}"]`);
+          el?.focus();
+          el?.scrollIntoView({ block: 'nearest' });
+        });
+        return;
+      }
 
       if (!(e.ctrlKey || e.metaKey)) return;
       const k = e.key.toLowerCase();
@@ -250,12 +313,7 @@ export function BrainBuilder({
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [undo, redo]);
-
-  const onMoveNode = (key: string, target: InsertTarget) => {
-    const next = moveNode(body.nodes, key, target);
-    if (next !== body.nodes) mutate(next);
-  };
+  }, [undo, redo, body.nodes, onMoveNode]);
 
   const onInsert = (target: InsertTarget) => setInsertAt(target);
 
@@ -594,6 +652,13 @@ export function BrainBuilder({
                 onLayout={handleLayout}
               />
 
+              {/* A POINTER CONVENIENCE, and marked as one. It drags to scroll and
+                  has no keyboard operation; rather than bolt on a fake one, the
+                  equivalent navigation lives on the canvas itself — arrows move
+                  between steps from the selected card, which is reachable by
+                  Tab. Announcing this to a screen reader would offer a control
+                  that cannot be used. */}
+              <div aria-hidden>
               <Minimap
                 rects={miniRects.map((r) => ({ ...r, selected: r.key === `n:${selected}` }))}
                 viewport={viewport}
@@ -607,6 +672,7 @@ export function BrainBuilder({
                   }
                 }}
               />
+              </div>
 
               <div className="absolute bottom-4 left-4 z-30 flex items-center gap-0.5 rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 p-0.5 shadow-linear-sm">
                 <IconBtn onClick={() => stepZoom(-0.1)} label={t('agentFlows.builder.zoomOut')}>
