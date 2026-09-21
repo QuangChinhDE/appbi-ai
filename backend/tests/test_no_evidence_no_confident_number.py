@@ -198,3 +198,31 @@ def test_a_resolved_read_produces_no_grounding_block_at_all():
                                              "selected_ids": [681]}}
     assert "grounding" not in E._verify_figures(
         state, answer("Tổng doanh thu là 13.591.643,70."))
+
+
+def test_an_answer_with_no_figures_is_not_told_to_cross_check_figures():
+    """FALSE POSITIVE FOUND IN THE BROWSER (runs 451/452). An off-domain question
+    read zero charts and the answer contained no numbers at all — and the run
+    still told the viewer "the numbers in the answer are in the data that was
+    read, but that data was not selected for your question". Both halves false,
+    stacked on top of a correct refusal, so the reader saw two contradictory
+    warnings.
+
+    The brief's rule says "when the answer makes NUMERICAL CLAIMS"; I had dropped
+    that condition."""
+    state = _State(evidence=[42.0])
+    state.evidence_sources = {"overview"}
+    state.question_grounding = {"overview": {"status": "none", "unsupported": True}}
+    got = E._verify_figures(
+        state, answer("Báo cáo này không có dữ liệu về thời tiết."))
+    assert not (got or {}).get("grounding", {}).get("all_evidence_unresolved"), (
+        "an answer with no figures cannot have ungrounded figures"
+    )
+
+
+def test_an_answer_that_does_cite_numbers_is_still_flagged():
+    state = _State(evidence=[13591643.7])
+    state.evidence_sources = {"overview"}
+    state.question_grounding = {"overview": {"status": "none", "unsupported": True}}
+    got = E._verify_figures(state, answer("Tổng doanh thu là 13.591.643,70."))
+    assert got["grounding"]["all_evidence_unresolved"] is True

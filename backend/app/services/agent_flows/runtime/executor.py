@@ -1173,9 +1173,17 @@ def _verify_figures(state: RunState, answer: Answer) -> dict | None:
             # or knowledge step answered is not punished for a read step that
             # resolved to nothing, which is the explicit guard on this rule.
             sources = set(getattr(state, "evidence_sources", None) or set())
+            # AND THE ANSWER MUST ACTUALLY CITE NUMBERS. Without this the flag
+            # fired on a correct refusal — zero charts read, no figure in the
+            # answer — and told the viewer to cross-check figures that did not
+            # exist, stacked on top of the honest "this report cannot answer
+            # that". Two contradictory warnings, one of them false on its face.
+            cites_numbers = bool(out.get("matched") or out.get("unmatched"))
             out["grounding"] = {
                 "unresolved_steps": unresolved,
-                "all_evidence_unresolved": bool(sources) and sources <= set(unresolved),
+                "all_evidence_unresolved": (
+                    cites_numbers and bool(sources) and sources <= set(unresolved)
+                ),
             }
         return out
     except Exception:  # noqa: BLE001
