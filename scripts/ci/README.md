@@ -134,3 +134,52 @@ safe**: it means no rule covers the change.
    repository, three of them required gates for the protected semantic layer, while health
    still reported `healthy`. A gate nobody can run is not a gate; the difference is now
    visible on every CI run. Reported but non-fatal by default — add `--strict` to fail.
+
+
+---
+
+# The provider-neutral layer
+
+`AGENTS.md` at the repo root is the canonical **agent instruction entrypoint** — Codex
+reads it directly, and `.claude/CLAUDE.md` imports it with `@../AGENTS.md` plus the parts
+specific to how Claude Code works. One file, so the two adapters cannot drift.
+
+It is an entrypoint, **not** the authority. Executable checks decide PASS/FAIL; agent
+instructions are last in the source-of-truth order.
+
+## check_agent_config.py
+
+Sits on top of `check_claude_config.py` (which keeps doing the Claude schema). It proves
+AGENTS.md exists and fits Codex's 32 KiB `project_doc_max_bytes`, that the Claude adapter
+imports it rather than copying it, that every path both files promise exists, and that
+both name the same Definition-of-Done command.
+
+## check_protection_integrity.py — run from the MERGE BASE
+
+The gates live in the repository, so an agent can edit them. This compares `base..head`
+for a protected subsystem, invariant or registry entry that disappeared, a runnable gate
+downgraded to missing/untracked/manual, a deleted protection-critical file, a removed CI
+verification step, and a Stop gate made fail-open.
+
+**CI runs the BASE copy of it and reads the head revision only as data (`git show`).** A
+pull request that rewrites the checker never gets to run its own audit. Nothing from the
+PR head is executed in that job — not code, not dependencies, not config.
+
+Deliberate weakening stays possible but must be visible: a status downgrade needs a
+`status_reason:` on the entry, and a removal needs `APPBI_ALLOW_PROTECTION_REMOVAL=1`,
+a repository variable only the owner can set.
+
+Mechanical checks only. A rewritten-but-equivalent gate is a judgement call for review.
+
+## change-guardrail.yml — server-side diff review
+
+`guardrail_check.py --diff` on a CI checkout reviews nothing: the working tree is clean.
+That is why the CLI takes `--base/--head` (three-dot, so only what this branch introduced
+is judged) and `--diff-file`.
+
+Two jobs, in order: `trusted-protection` (base contract, head as data) then `diff-review`
+(head rules against the real diff). The second runs head code by necessity; it is only
+acceptable because the first already proved head did not weaken the rules.
+
+Exit codes: `0` ok/warn · `1` block (red) · `2` UNKNOWN, surfaced as a neutral annotation
+because no rule covers it — **UNKNOWN is not SAFE**, it is a reason to review.

@@ -1,0 +1,72 @@
+{
+  "_comment": [
+    "AppBI-specific review rules for OpenCodeReview (alibaba/open-code-review).",
+    "",
+    "A generic reviewer looks for NPEs and SQL injection. Those matter, but they are",
+    "not what breaks THIS product. What breaks it is a silently wrong number, a",
+    "public link that starts answering authenticated questions, and a gate weakened",
+    "so a change can pass. These rules aim the model at that.",
+    "",
+    "Deliberately NOT ignoring test and golden diffs: in AppBI the semantic golden",
+    "tests and contract tests ARE part of the business contract. A deleted assertion",
+    "is a product change wearing a test-file costume.",
+    "",
+    "Schema (verified against upstream .opencodereview/rule.json at v1.12.6):",
+    "  rules[].path               glob the rule applies to",
+    "  rules[].rule               natural-language instruction for the reviewer",
+    "  rules[].merge_system_rule  keep the built-in ruleset as well as this one",
+    "",
+    "This is ADVISORY. Deterministic AppBI gates are the merge authority.",
+    "",
+    "SECURITY: GHSA-wwg6-qfxw-xffj was a path traversal in how THIS file is read",
+    "(a rule path could escape the repo and leak host files to the LLM). Fixed in",
+    "1.11.1; the workflow pins 1.12.6. Keep every `path` below repo-relative."
+  ],
+  "rules": [
+    {
+      "path": "backend/app/services/semantic_*.py",
+      "merge_system_rule": true,
+      "rule": "PROTECTED SUBSYSTEM: the semantic query engine. The failure mode here is a silently WRONG NUMBER, not a crash, so review for correctness of the value produced, not just for exceptions.\n\nFlag as high risk:\n- any change to JOIN construction, fan-out handling, EXISTS rewriting, grain validation or measure isolation that could change an aggregate's value\n- a filter that stops being applied, or is applied at a different grain\n- SQL that is valid on PostgreSQL but invalid on BigQuery: correlated subqueries, implicit casts, comparing a numeric column against a quoted string literal. CI runs Postgres only, so BigQuery-invalid SQL ships green.\n- flipping a default for symmetric aggregates or filter propagation\n\nAsk explicitly: does this change what any existing chart returns? If the answer is not a confident no, say so."
+    },
+    {
+      "path": "backend/app/services/{dataset_model_service,dataset_calendar_service,filter_propagation,type_override_service,chart_contracts,chart_semantic_service,chart_service}.py",
+      "merge_system_rule": true,
+      "rule": "PROTECTED SUBSYSTEM: semantic model, filters and chart contracts. Same standard as the query engine: a wrong number is worse than an error.\n\nWatch for: the distinct-value cascade regaining a correlated subquery or an OR-of-INs (BigQuery rejects both); a filter silently dropped rather than failing loud; type coercion removed so a numeric column is compared against a quoted string; calendar/date handling that changes which rows fall in a period."
+    },
+    {
+      "path": "backend/app/api/public.py",
+      "merge_system_rule": true,
+      "rule": "UNAUTHENTICATED DATA-EXPOSURE SURFACE. Anything reachable here is reachable by someone with only a link.\n\nFlag: locked or hidden filters no longer enforced server-side; a scope bound widened or removed; any path where a public request can reach data outside the shared dashboard; a new endpoint without the same filter-merge treatment as its neighbours. Treat a relaxed check as a security finding, not a style one."
+    },
+    {
+      "path": "frontend/src/app/{d,embed}/**",
+      "merge_system_rule": true,
+      "rule": "PUBLIC FRONTEND. These pages must use the public client only (`@/lib/api/public`). Flag ANY import of `@/lib/api-client` / `apiClient`, or a bare axios/fetch call to the API: an authenticated call from a public page leaks data to a logged-out viewer. Also flag anything that renders data the server did not scope."
+    },
+    {
+      "path": "backend/app/{api,modules}/**",
+      "merge_system_rule": true,
+      "rule": "AUTHORIZATION BOUNDARY. Every endpoint, including read-only ones, must be gated at the router with `require_permission` / `module_floor` / `require_view_access` / `require_edit_access` / `require_full_access` from `app.core.dependencies`.\n\nFlag: a new or modified endpoint with no gate; a gate weakened (edit downgraded to view); a module endpoint registered OUTSIDE its feature-flag block, or a gate that depends on the frontend hiding a button. Hiding the UI is not access control."
+    },
+    {
+      "path": "backend/tests/**",
+      "merge_system_rule": true,
+      "rule": "TESTS ARE PART OF THE BUSINESS CONTRACT HERE - do not treat a test diff as low risk.\n\nFlag as HIGH risk: a deleted or weakened assertion; an assertion changed to match new behaviour without the behaviour change being justified; `skip`/`xfail`/`fixme` added; a golden or baseline value re-captured without a stated reason; a test narrowed so it no longer covers the case it was written for.\n\nThe question is always: would this test still have caught the bug it was written for? If a test is being changed to make a change pass, that is the finding."
+    },
+    {
+      "path": "{e2e/tests/**,qa/**,backend/scripts/{regression,verify}_*.py,backend/scripts/golden/**}",
+      "merge_system_rule": true,
+      "rule": "REGRESSION AND GOLDEN CONTRACT. Same standard as backend/tests: weakening or deleting coverage is a product risk, not housekeeping. Flag re-captured golden baselines without a rationale, removed cases, and specs turned into no-ops."
+    },
+    {
+      "path": "{scripts/ci/**,scripts/guardrail/**,.github/workflows/**,.githooks/**,.claude/**,AGENTS.md}",
+      "merge_system_rule": true,
+      "rule": "THE PROTECTION SYSTEM ITSELF. These files decide whether anything else may ship, so a change here can disable the review that would have objected to the rest of the PR.\n\nFlag: a removed protected subsystem, invariant, or required gate; a runnable gate downgraded to missing/untracked/manual; a deleted or short-circuited verification step; a hook made fail-open; a CI job that no longer runs its check; an exit code changed so a failure returns success.\n\nImproving a gate is good work. Weakening one so THIS pull request passes is the finding. If the change both edits a gate and benefits from that edit, say so explicitly."
+    },
+    {
+      "path": "backend/alembic/versions/**",
+      "merge_system_rule": true,
+      "rule": "MIGRATIONS RUN AUTOMATICALLY AT BOOT, so a bad one is a production outage rather than a local error.\n\nFlag: a `down_revision` pointing at a revision not present in the same change; a second head; a destructive operation (drop/rename/type narrowing) on something running code still reads; a privileged statement such as CREATE ROLE or an extension install, which crash-loops against a managed Postgres; a model field changed with no migration, or the reverse."
+    }
+  ]
+}

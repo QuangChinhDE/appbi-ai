@@ -74,14 +74,15 @@ fi
 if [ -d .claude ]; then
   section "Claude workflow config"
   if [ -n "$PY" ]; then
-    "$PY" scripts/ci/check_claude_config.py || fail=1
-    # The Stop hook decides whether a turn may end; its three paths are tested.
+    "$PY" scripts/ci/check_agent_config.py || fail=1
+    # The safety system itself: the Stop gate decision paths, and the meta-tests
+    # proving a change cannot weaken the protection without being caught.
     if "$PY" -c "import pytest" >/dev/null 2>&1; then
-      "$PY" -m pytest -q scripts/ci/test_stop_gate.py >/dev/null || {
-        "$PY" -m pytest -q scripts/ci/test_stop_gate.py; fail=1; }
-      [ "$fail" -eq 0 ] && echo "✓ stop-gate decision tests"
+      "$PY" -m pytest -q scripts/ci/test_stop_gate.py scripts/ci/test_agent_sdlc.py >/dev/null || {
+        "$PY" -m pytest -q scripts/ci/test_stop_gate.py scripts/ci/test_agent_sdlc.py; fail=1; }
+      [ "$fail" -eq 0 ] && echo "✓ safety-system tests (stop gate + SDLC meta)"
     else
-      echo "· stop-gate tests skipped (pytest not installed)"
+      echo "· safety-system tests skipped (pytest not installed)"
     fi
   else
     echo "· skipped (no python on PATH)"
