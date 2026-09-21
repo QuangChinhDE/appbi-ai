@@ -200,6 +200,45 @@ production shape. Two of them were guards scoped wrongly — file-scoped where t
 thing guarded is job- or import-scoped. That is the pattern worth carrying
 forward: **a guard must be scoped to the thing it guards.**
 
+### WAVE 2 SEMANTIC RELEVANCE: CLOSED (code SHA `c798ec5`)
+
+Four fail-open paths closed after the weather fix, each found by driving the
+product rather than by reading the diff.
+
+- **A broken resolver no longer reads the report.** `lookup_failed` degraded to
+  report order — fail-open with a label. It now reads zero and reports
+  `resolution_unavailable`: neither "these charts are relevant" nor "this report
+  cannot answer you", because the resolver reached neither conclusion.
+- **Grounding changes the verdict.** It was recorded and consumed by nothing, and
+  the provenance to consume it safely did not exist: `evidence` is a flat list of
+  floats. `evidence_sources` is the smallest contract that distinguishes an
+  unresolved read from another capability that genuinely answered.
+- **The reader-notice path was severed by a TYPE.** The backend has emitted
+  `{type: "result", envelope}` since typed answers existed; the public SSE union
+  never listed it, so `applyEvent` had no branch and `onResult` — declared,
+  passed, documented — was never called. Every notice reached the browser and was
+  discarded one function short of the state that renders it.
+- **Cross-lingual resolution proven on the real path**, stubbing only the two tool
+  calls. It caught a regression from my own strength threshold: "giá trị đơn hàng
+  trung bình" cleared the bar against two metrics sharing "trung bình" and was
+  refused as ambiguous. A strictly-dominant concept now wins; a genuine tie stays
+  ambiguous. No threshold was lowered, and no vocabulary gap was found.
+
+Two of the six defects in this pass were mine, introduced by the previous fix: the
+threshold regression above, and a grounding warning that fired on an answer with
+no numbers and told a viewer to cross-check figures that did not exist.
+
+Browser: VI and EN off-domain read 0 charts, contain no Olist figure, and the
+notice is painted (hit-tested, not merely present). In-domain control answers
+91.89% with its citation and `notices: []` at API and DOM.
+
+NOT browser-verified: the no-numbers suppression landed in `c798ec5`, after the
+control ran on `7c5101f`. It is locked by unit test only.
+
+Out of scope, reported: the public bot's send BUTTON is dead — `onSend` is typed
+`() => void`, so React passes the MouseEvent into the `override` parameter and
+`.trim` throws. Predates this work (`ceca97c`); the Enter path is unaffected.
+
 ### Wave 3 — DESIGN backlog, none implemented
 
 1. **Binding-aware explicit asset selection** — flow requirement / logical role,
