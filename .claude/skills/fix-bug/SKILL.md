@@ -8,6 +8,53 @@ description: Diagnose and fix a bug in AppBI. Use when something is broken, wron
 The rule this repository learned the hard way: **a fix without a failing test first is a
 guess, and a fix in the layer where the symptom appears is usually the wrong fix.**
 
+## Visible progress protocol
+
+When `/fix-bug` runs interactively, do not work silently from start to finish. A
+long bug hunt looks identical to a stalled one, and the person watching cannot
+tell which they have without asking.
+
+Emit ONE short user-visible update at each phase boundary:
+
+```
+[1/6] REPRODUCING   what failure is being reproduced
+[2/6] ROOT CAUSE    did reproduction succeed, and the one-sentence causal chain
+[3/6] RED TEST      the regression test name, and that it fails for the right reason
+[4/6] IMPLEMENTING  the canonical layer/files changing, and the invariant restored
+[5/6] VERIFYING     which targeted checks are running, and whether the regression is green
+[6/6] REVIEW / CI   review result, commit SHA, remote CI state
+```
+
+**Rules**
+
+- Two to three concise lines per update. Factual status only — never private
+  reasoning.
+- Send the update BEFORE starting a long browser, test or CI phase, not after. Its
+  whole job is to cover the silence.
+- Do not narrate file reads, searches, commands, tool calls or hypotheses, and do
+  not repeat what you have already reported. Visibility, not narration.
+- If new evidence contradicts the working hypothesis, say so in one update rather
+  than quietly changing course.
+- Never announce a phase complete before its evidence exists. "[3/6] RED TEST" means
+  you watched it fail, not that you wrote it.
+- While waiting on remote CI, say exactly:
+
+  ```
+  [6/6] CI — pushed <sha>; waiting for <checks>
+  ```
+
+  so a silent gap is never mistaken for a stalled one.
+
+The last line of every `/fix-bug` task is exactly one of:
+
+```
+DONE — <commit SHA> — <short verification summary>
+BLOCKED — <exact blocker> — <decision/input required>
+```
+
+The nine steps below are unchanged; this protocol says when to speak while working
+through them.
+
 ## 1. Reproduce it
 
 Do not start from the report. Start from the failure, observed by you.
