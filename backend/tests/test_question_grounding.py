@@ -496,3 +496,27 @@ def test_reuse_restores_nothing_it_was_not_given():
     node.type = "set_var"
     E._reuse(node, state, rctx)
     assert state.question_grounding == {}
+
+
+def test_a_reused_read_brings_its_citations_back():
+    """The last piece of the same provenance. Without it the Runs tab told the
+    author "câu trả lời không dẫn nguồn nào" on every reused turn — on answers
+    whose text carries `[chart:683]` — because `history.no_citation` is derived
+    from `content.citations`, which reuse left empty."""
+    from app.services.agent_flows.runtime import executor as E
+
+    node, state, rctx = _reuse_fixture(READ_OUTPUT)
+    E._reuse(node, state, rctx)
+    refs = [(c.kind, c.ref) for c in state.citations]
+    assert ("chart", "41") in refs
+    assert state.citations[0].label == "Doanh thu"
+
+
+def test_reuse_does_not_duplicate_a_citation_already_present():
+    from app.services.agent_flows.runtime import executor as E
+    from app.services.agent_flows.envelope import Citation
+
+    node, state, rctx = _reuse_fixture(READ_OUTPUT)
+    state.citations.append(Citation(kind="chart", ref="41", label="Doanh thu"))
+    E._reuse(node, state, rctx)
+    assert len([c for c in state.citations if c.ref == "41"]) == 1

@@ -46,6 +46,7 @@ from app.services.agent_flows.contract import (
 )
 from app.services.agent_flows.envelope import (
     Answer,
+    Citation,
     FlowInput,
     FlowOutput,
     MemoryDelta,
@@ -609,6 +610,16 @@ def _reuse(node: Any, state: RunState, rctx: RunContext) -> Any:
     if getattr(node, "type", "") == "report_read":
         state.evidence_source = node.key
         state.add_evidence(value)
+        # The same charts it cited when it ran. `history.no_citation` is derived
+        # from the recorded citations, so leaving these behind put "câu trả lời
+        # không dẫn nguồn nào" on the author's screen for every reused turn —
+        # including answers whose own text carries `[chart:683]`.
+        for entry in (value.get("charts") or []) if isinstance(value, dict) else []:
+            ref = str((entry or {}).get("id") or "")
+            if ref and not any(c.ref == ref for c in state.citations):
+                state.citations.append(
+                    Citation(kind="chart", ref=ref, label=(entry.get("title") or ""))
+                )
         selection = (value or {}).get("selection") if isinstance(value, dict) else None
         if isinstance(selection, dict):
             # Carried forward too, or the Wave-2 relevance rule quietly stops
