@@ -184,14 +184,15 @@ def _charts_for_question(
     # resolver already reports, or give the asset business vocabulary.
     if status == "ambiguous":
         text = (f"Bước “{node.name or node.key}” tìm được nhiều khả năng cho câu hỏi "
-                "nhưng không đủ căn cứ chọn một, nên đọc theo thứ tự báo cáo.")
+                "nhưng không đủ căn cứ chọn một, nên không đọc biểu đồ nào.")
         remedies = ["Viết rõ hơn câu hỏi hoặc ô “Khớp theo” của bước này.",
                     "Xem danh sách khả năng ở trên để biết nó đang phân vân giữa những gì.",
                     "Đặt bí danh/mô tả cho biểu đồ, hoặc khai báo chỉ số trong Từ điển "
                     "để câu hỏi nghiệp vụ trỏ đúng một thứ."]
     else:
         text = (f"Bước “{node.name or node.key}” đã tra theo câu hỏi nhưng không tìm "
-                "được biểu đồ hay chỉ số nào khớp, nên đọc theo thứ tự báo cáo.")
+                "được biểu đồ hay chỉ số nào khớp, nên không đọc biểu đồ nào — báo "
+                "cáo này không có dữ liệu cho câu hỏi đó.")
         remedies = ["Viết rõ hơn câu hỏi hoặc ô “Khớp theo” của bước này.",
                     "Thêm mô tả/bí danh cho biểu đồ, hoặc khai báo chỉ số trong Từ điển.",
                     "Nếu báo cáo thực sự không có dữ liệu này, hãy chấp nhận “không "
@@ -219,11 +220,15 @@ def _charts_for_question(
             audience="author",
             severity="warning",
             node_key=node.key,
+            # THE FACTS MUST MATCH WHAT HAPPENED. `fell_back_to: report_order`
+            # survived the change that stopped the fallback, so an author
+            # debugging a zero-chart read was told the step read in report order.
+            # A diagnostic that lies is the defect Wave 1 closed.
             facts={"selection_status": status,
+                   "charts_read": 0,
                    "candidate_chart_ids": candidate_ids,
                    "concepts": got.get("concepts") or [],
-                   "candidates": candidates[:8],
-                   "fell_back_to": "report_order"},
+                   "candidates": candidates[:8]},
             remedies=remedies,
             text=text,
         )
@@ -363,7 +368,18 @@ async def run_report_read(
         c.get("chart_id") for c in out["charts"]
         if not _entry_has_data(c)
     ]
-    out["read_ok"] = len(failed) < len(out["charts"]) if out["charts"] else False
+    # NO-MATCH IS NOT EMPTY DATA. Reading nothing because the question resolved to
+    # nothing is a complete outcome; reading nothing because every chart failed is
+    # a fault. Both end with an empty list, and collapsing them sends an author
+    # hunting a data problem that does not exist.
+    _resolved_to_nothing = bool(
+        (out.get("selection") or {}).get("unsupported")
+        or (out.get("selection") or {}).get("needs_clarification")
+    )
+    if out["charts"]:
+        out["read_ok"] = len(failed) < len(out["charts"])
+    else:
+        out["read_ok"] = _resolved_to_nothing
     if failed:
         out["unreadable_chart_ids"] = failed
         # AND WHY. Counting the charts told an author that something broke and

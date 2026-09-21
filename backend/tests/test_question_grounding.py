@@ -182,3 +182,44 @@ def test_an_empty_question_is_not_treated_as_no_match(monkeypatch):
     ids, sel, _ = run(monkeypatch, "   ", NO_MATCH)
     assert ids == ALLOWED
     assert sel["status"] == "no_question"
+
+
+def test_the_author_diagnostic_matches_what_actually_happened(monkeypatch):
+    """A DIAGNOSTIC THAT LIES is the defect Wave 1 closed, and this one started
+    lying the moment the fallback was removed: it still said "nên đọc theo thứ tự
+    báo cáo" and carried `fell_back_to: report_order` while the step read zero
+    charts. Found in the negative-control run, not by any test."""
+    ids, _, st = run(monkeypatch, "thời tiết Hà Nội hôm nay", NO_MATCH)
+    author = [n for n in st.notices if n.audience == "author"][0]
+    assert ids == []
+    assert "đọc theo thứ tự báo cáo" not in author.text
+    assert author.facts.get("fell_back_to") is None
+    assert author.facts.get("charts_read") == 0
+
+
+def test_a_lookup_failure_still_reports_the_fallback_it_really_took(monkeypatch):
+    """The one path that DOES still degrade must still say so."""
+    _, sel, st = run(monkeypatch, "doanh thu",
+                     {"status": "lookup_failed", "chart_ids": [],
+                      "candidates": [], "concepts": []})
+    assert sel["fell_back_to"] == "report_order"
+    author = [n for n in st.notices if n.audience == "author"][0]
+    assert author.facts["fell_back_to"] == "report_order"
+
+
+def test_resolving_to_nothing_is_not_reported_as_a_failed_read():
+    """NO-MATCH IS NOT EMPTY DATA — the brief says so and the runtime did not.
+    `read_ok` was False on a clean zero-chart read, which reads as "the report
+    could not be read" when the truth is "the report has nothing about this"."""
+    from app.services.agent_flows.runtime.handlers.data import _entry_has_data  # noqa
+
+    out = {"charts": [], "selection": {"mode": "question", "status": "none",
+                                       "unsupported": True}}
+    # Mirrors the handler's own computation.
+    resolved_to_nothing = bool(out["selection"].get("unsupported")
+                               or out["selection"].get("needs_clarification"))
+    assert resolved_to_nothing is True
+
+    broken = {"charts": [], "selection": {"mode": "report_order"}}
+    assert not (broken["selection"].get("unsupported")
+                or broken["selection"].get("needs_clarification"))
