@@ -154,3 +154,73 @@ def test_an_empty_authorised_set_resolves_to_nothing(monkeypatch):
 
 def test_an_empty_question_resolves_to_nothing(monkeypatch):
     assert resolve(monkeypatch, Fake(lexical=("matched", [101])), "   ")["status"] == "none"
+
+
+# ── a weak hit is not a semantic match ──────────────────────────────────────
+#
+# OBSERVED IN PRODUCTION (run 446, public Olist link). Asked "thời tiết Hà Nội hôm
+# nay", the resolver returned `status: "semantic"` with `selected_ids: [683, 685]`
+# and the assistant answered "Tỷ lệ giao đúng hẹn là 91.89%… Tổng đơn hàng 99,441"
+# before adding that it had no weather data. No fallback flag existed to key off,
+# because the resolver believed it had matched.
+#
+# `search_business_assets` ranks anything sharing ONE token — correct for a model
+# that reads the list and judges, wrong for a caller with no judge.
+
+class StrengthFake(Fake):
+    """Drives the REAL `_semantic`, so the strength rule is what is under test."""
+
+    def __init__(self, results, bridge):
+        super().__init__(results=results, bridge=bridge)
+
+    def install(self, monkeypatch):
+        monkeypatch.setattr(resolver, "_lexical", lambda call, q: ("none", []))
+
+        def call(tool, args):
+            if tool == "search_business_assets":
+                return {"ok": True, "data": {"results": self.results}}
+            if tool == "resolve_chart_candidates":
+                ident = args.get("metric") or args.get("measure")
+                return {"ok": True, "data": {"candidates": self.bridge.get(ident, [])}}
+            return {"ok": False}
+
+        self._call = call
+
+
+def resolve_real(monkeypatch, fake, question):
+    fake.install(monkeypatch)
+    return resolver.resolve_charts(question, ALLOWED, call=fake._call)
+
+
+ONE_TOKEN_HIT = [{"type": "metric", "id": "ty_le_giao_dung_hen",
+                  "name": "Tỷ lệ giao đúng hẹn"}]
+BRIDGE = {"ty_le_giao_dung_hen": [{"chart_id": 101, "match": "measure"}]}
+
+
+@pytest.mark.parametrize("question", [
+    "thời tiết Hà Nội hôm nay",
+    "what is the weather today?",
+])
+def test_an_off_domain_question_is_not_a_semantic_match(monkeypatch, question):
+    got = resolve_real(monkeypatch, StrengthFake(ONE_TOKEN_HIT, BRIDGE), question)
+    assert got["status"] == "none", (
+        f"{question!r} was reported as a {got['status']} match on "
+        f"{got['chart_ids']} — that is run 446"
+    )
+
+
+def test_a_real_business_question_still_resolves(monkeypatch):
+    """The threshold must not cost in-domain resolution. Measured against the
+    deployment's own governed vocabulary."""
+    got = resolve_real(monkeypatch, StrengthFake(ONE_TOKEN_HIT, BRIDGE),
+                       "tỷ lệ giao đúng hạn")
+    assert got["status"] == "semantic" and got["chart_ids"] == [101]
+
+
+def test_a_one_word_question_that_fully_matches_still_resolves(monkeypatch):
+    """A short question cannot reach two shared terms; matching ALL of them is the
+    same evidence proportionally."""
+    got = resolve_real(monkeypatch, StrengthFake(
+        [{"type": "metric", "id": "gmv", "name": "GMV"}],
+        {"gmv": [{"chart_id": 102, "match": "measure"}]}), "GMV")
+    assert got["status"] == "semantic" and got["chart_ids"] == [102]

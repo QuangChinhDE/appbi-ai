@@ -148,6 +148,12 @@ class RunState:
     #: contribution to the next prompt are different things, and an author who
     #: inspects the first and assumes the second has been wrong before.
     context_coverage: dict[str, Any] = field(default_factory=dict)
+    #: WHY THE EVIDENCE IS HERE — per read step. Numeric verification asks whether
+    #: a figure exists in the evidence; it cannot ask whether the evidence answers
+    #: the question. Recorded so a run can tell "selected for this question" from
+    #: "read through an explicit report-overview mode" from "unresolved", which
+    #: are three different grounds for the same set of numbers.
+    question_grounding: dict[str, Any] = field(default_factory=dict)
     #: Human-readable route, e.g. ["Path A", "Loop×4", "MEDIUM"]. What the Runs
     #: table shows in its "Execution path" column.
     path: list[str] = field(default_factory=list)

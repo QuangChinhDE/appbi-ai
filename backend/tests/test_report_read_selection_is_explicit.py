@@ -38,6 +38,15 @@ def state():
     return types.SimpleNamespace(notices=[], resolve_text=lambda v: v)
 
 
+def notice_for(st, audience):
+    """Pick by AUDIENCE, not by position. A reader notice now precedes the author
+    diagnostic, and `notices[0]` silently became the wrong one."""
+    for n in st.notices:
+        if n.audience == audience:
+            return n
+    raise AssertionError(f"no {audience} notice in {[n.code for n in st.notices]}")
+
+
 def select(monkeypatch, resolution, n=None, st=None):
     monkeypatch.setattr(resolver, "resolve_charts", lambda *a, **k: resolution)
     st = st or state()
@@ -55,14 +64,22 @@ def test_a_semantic_match_is_reported_as_a_match(monkeypatch):
     assert sel.get("fell_back_to") in (None, "")
 
 
-def test_no_match_falls_back_but_never_calls_it_a_match(monkeypatch):
+def test_no_match_reads_nothing_rather_than_falling_back(monkeypatch):
+    """CONTRACT CORRECTED — and this test previously encoded the defect.
+
+    It asserted `ids == ALLOWED` under the banner "compatibility: stored flows
+    must keep reading", which made "the question resolved to nothing" mean "read
+    the whole report". A black-box user test then found the consequence: an Olist
+    assistant answered "thời tiết Hà Nội hôm nay" with GMV, orders and AOV.
+
+    Labelling the fallback was not enough. Full behaviour lives in
+    `test_question_grounding.py`; this keeps the lock where the old claim was."""
     ids, sel, _ = select(monkeypatch, {"status": "none", "chart_ids": [],
                                        "candidates": [], "concepts": []})
-    assert ids == ALLOWED, "compatibility: stored flows must keep reading"
+    assert ids == [], "question mode must not promote report order into relevance"
     assert sel["status"] == "none"
-    assert sel["fell_back_to"] == "report_order", (
-        "the fallback must be visible, or report order becomes semantic relevance"
-    )
+    assert sel.get("fell_back_to") is None
+    assert sel["unsupported"] is True
 
 
 def test_ambiguous_keeps_the_candidates_for_the_author(monkeypatch):
@@ -74,10 +91,10 @@ def test_ambiguous_keeps_the_candidates_for_the_author(monkeypatch):
                                                        {"chart_id": 102, "why": "metric churn"}],
                                         "concepts": ["mrr_active", "churn_rate"]})
     assert sel["status"] == "ambiguous"
-    assert sel["fell_back_to"] == "report_order"
+    assert ids == [] and sel.get("fell_back_to") is None
     assert sel["candidate_chart_ids"] == [101, 102]
     assert "why" not in repr(sel), "evidence prose must not ride into the prompt"
-    assert len(st.notices[0].facts["candidates"]) == 2
+    assert len(notice_for(st, "author").facts["candidates"]) == 2
 
 
 def test_an_explicit_chart_list_is_never_second_guessed(monkeypatch):
@@ -98,7 +115,7 @@ def test_notice_says_matching_ran_and_failed(monkeypatch):
     _, _, st = select(monkeypatch, {"status": "none", "chart_ids": [],
                                     "candidates": [], "concepts": []})
     assert st.notices, "a failed selection must be reported"
-    n = st.notices[0]
+    n = notice_for(st, "author")
     blob = " ".join([n.text] + list(n.remedies))
     assert "Bật “đọc theo câu hỏi”" not in blob, (
         "matching is already on — recommending it is the reported defect"
@@ -111,7 +128,7 @@ def test_an_ambiguous_notice_offers_the_candidates_it_found(monkeypatch):
     _, _, st = select(monkeypatch, {"status": "ambiguous", "chart_ids": [],
                                     "candidates": [{"chart_id": 101}, {"chart_id": 102}],
                                     "concepts": ["mrr_active", "churn_rate"]})
-    n = st.notices[0]
+    n = notice_for(st, "author")
     assert n.facts.get("candidate_chart_ids") == [101, 102]
 
 
@@ -204,10 +221,10 @@ def test_selection_remedies_are_performable_too(monkeypatch):
         _, _, st = select(monkeypatch, {"status": status, "chart_ids": [],
                                         "candidates": [{"chart_id": 101}],
                                         "concepts": ["mrr_active"]})
-        joined = " ".join(st.notices[0].remedies).lower()
+        joined = " ".join(notice_for(st, "author").remedies).lower()
         for banned in ("chỉ định danh sách biểu đồ", "chart_ids"):
-            assert banned not in joined, (status, st.notices[0].remedies)
-        assert st.notices[0].remedies, "a fallback with no advice at all helps nobody"
+            assert banned not in joined, (status, notice_for(st, "author").remedies)
+        assert notice_for(st, "author").remedies, "a fallback with no advice at all helps nobody"
 
 
 def test_a_remedy_never_points_somewhere_the_list_is_not(monkeypatch):
@@ -217,6 +234,6 @@ def test_a_remedy_never_points_somewhere_the_list_is_not(monkeypatch):
     _, _, st = select(monkeypatch, {"status": "ambiguous", "chart_ids": [],
                                     "candidates": [{"chart_id": 101}],
                                     "concepts": ["a", "b"]})
-    joined = " ".join(st.notices[0].remedies)
+    joined = " ".join(notice_for(st, "author").remedies)
     assert "bên dưới" not in joined, joined
     assert "ở trên" in joined

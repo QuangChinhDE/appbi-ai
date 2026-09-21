@@ -317,3 +317,4 @@ backend/tests/.testdata/
 !backend/tests/test_verifier_false_alarms.py
 !backend/tests/test_module_floor.py
 !backend/tests/test_notice_audience_boundary.py
+!backend/tests/test_question_grounding.py

@@ -46,7 +46,9 @@ from __future__ import annotations
 
 from typing import Any, Callable, Literal
 
-Status = Literal["exact", "semantic", "ambiguous", "none"]
+from app.services.agent_flows.tools.packs.discover import _score, _terms_of
+
+Status = Literal["exact", "semantic", "ambiguous", "none", "lookup_failed"]
 
 #: How this module reaches a tool: `call(name, args) -> normalised result`.
 #:
@@ -115,6 +117,23 @@ def _semantic(call: Call, question: str) -> list[dict]:
         ident = asset.get("id") or asset.get("name") or ""
         if not ident:
             continue
+        # HOW STRONG IS THIS, ACTUALLY?
+        #
+        # `search_business_assets` returns anything sharing ONE token, which is
+        # right for a model that reads the list and judges. This caller has no
+        # judge, and it treated every hit as a semantic match: asked "thời tiết Hà
+        # Nội hôm nay", it reported `status: "semantic"` on two Olist charts and
+        # the answer opened with 91.89% and 99,441 before admitting it had no
+        # weather data. One incidental word is not a match.
+        #
+        # Scored with the discover pack's own scorer, not a second one. Two shared
+        # terms, or every term of a short question — measured against the real
+        # governed vocabulary: "số đơn hàng" scores 3, "tỷ lệ giao đúng hạn" 4,
+        # "doanh thu theo tháng" 2, both weather questions 0.
+        hay = " ".join(str(asset.get(k) or "") for k in ("id", "name", "detail"))
+        strength = _score(hay, _terms_of(question))
+        if strength < 2 and strength != len(_terms_of(question)):
+            continue
         args = {"metric": ident} if kind == "metric" else {"measure": ident}
         res = call("resolve_chart_candidates", args)
         if not isinstance(res, dict) or not res.get("ok"):
@@ -168,6 +187,15 @@ def resolve_charts(question: str, allowed: list[int], *, call: Call) -> dict:
             return {"status": "ambiguous", "chart_ids": [], "concepts": [],
                     "candidates": [{"chart_id": c, "via": "name",
                                     "why": "one shared word only"} for c in lex_ids]}
+        if lex_status == "lookup_failed":
+            # A BROKEN LOOKUP IS NOT AN ANSWER ABOUT THE DOMAIN.
+            #
+            # Folding it into `none` would turn a transient tool failure into
+            # "this report has no data for that question" — told to the viewer,
+            # with the read skipped. The caller degrades to its default scope
+            # instead, which is what it did before question matching existed.
+            return {"status": "lookup_failed", "chart_ids": [], "candidates": [],
+                    "concepts": []}
         return empty
 
     concepts = sorted({c["concept"] for c in cands if c["concept"]})

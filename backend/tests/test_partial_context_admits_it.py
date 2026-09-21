@@ -44,6 +44,8 @@ def _read(pinned: list[int], granted: list[int]) -> dict:
     budget = types.SimpleNamespace(tools_left=lambda: 99, spend_tool=lambda: None)
     state = types.SimpleNamespace(
         outputs={}, notices=[], citations=[], tool_log=[], budget=budget,
+        # Mirrors RunState. A stub that omits a field tests the stub.
+        question_grounding={},
     )
     rctx = types.SimpleNamespace(inp=types.SimpleNamespace(
         binding=types.SimpleNamespace(

@@ -32,6 +32,7 @@ class _State:
     def __init__(self, evidence=None):
         self.evidence = evidence or []
         self.evidence_labels = set()
+        self.question_grounding = {}
         self.notices = []
         self.citations = []
         self.outputs = {}
@@ -115,3 +116,45 @@ def test_the_empty_ledger_case_is_marked_so_the_reader_is_told_the_right_thing()
     The flag is what lets the run say the honest one."""
     got = E._verify_figures(_State(evidence=[]), answer("Khoảng 12.000 đơn hàng."))
     assert got.get("no_evidence") is True
+
+
+# ── relevance is a separate question from existence ─────────────────────────
+
+def test_a_verified_figure_from_unresolved_evidence_is_not_silently_healthy():
+    """EVIDENCE TRUTH IS NOT QUESTION RELEVANCE.
+
+    The reported case: an Olist assistant asked "thời tiết Hà Nội hôm nay"
+    answered with GMV and orders. Every figure existed in the evidence, so the
+    numeric check passed and the run looked healthy. It was not: the evidence had
+    never been selected for that question.
+
+    The verifier is NOT turned into a relevance judge — it still only asks whether
+    a number exists. What changes is that the run carries WHY the evidence is
+    there, so "the numbers check out" can no longer stand alone."""
+    state = _State(evidence=[13591643.7])
+    state.question_grounding = {"overview": {"mode": "question", "status": "none",
+                                             "unsupported": True}}
+    got = E._verify_figures(state, answer("Tổng doanh thu là 13.591.643,70."))
+
+    assert not got.get("unmatched"), "the figure genuinely is in the evidence"
+    assert got["grounding"]["unresolved_steps"] == ["overview"], (
+        "a verified number from evidence that answered no question must not look "
+        "like a grounded answer"
+    )
+
+
+def test_a_resolved_read_leaves_no_grounding_flag():
+    state = _State(evidence=[13591643.7])
+    state.question_grounding = {"overview": {"mode": "question", "status": "semantic",
+                                             "selected_ids": [681]}}
+    got = E._verify_figures(state, answer("Tổng doanh thu là 13.591.643,70."))
+    assert "grounding" not in got
+
+
+def test_an_explicit_report_overview_is_grounded_by_design():
+    """`report_order` mode is an author saying "summarise this report". Its
+    evidence answers the configured intent, so it is not unresolved."""
+    state = _State(evidence=[13591643.7])
+    state.question_grounding = {"overview": {"mode": "report_order"}}
+    got = E._verify_figures(state, answer("Tổng doanh thu là 13.591.643,70."))
+    assert "grounding" not in got

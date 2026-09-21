@@ -125,11 +125,48 @@ def _charts_for_question(
         selection["selected_ids"] = ids
         return ids, selection
 
-    # The fallback is the case a model MUST see: these charts were not chosen for
-    # the question, so an answer built on them cannot claim to be about it.
-    selection["fell_back_to"] = "report_order"
+    # EVIDENCE TRUTH IS NOT QUESTION RELEVANCE.
+    #
+    # This used to return the whole allowed list and merely LABEL it
+    # `fell_back_to: report_order`. Observability is not correctness: the step
+    # still handed the answering model six charts of unrelated evidence, which it
+    # summarised. Asked "thời tiết Hà Nội hôm nay", an Olist assistant replied
+    # with GMV, orders, AOV and ratings — every figure real, every figure
+    # answering a question nobody asked.
+    #
+    # In QUESTION mode the author asked for charts THE QUESTION selects. Nothing
+    # selected means nothing to read. Explicit report-overview flows never reach
+    # here: they run in `report_order` / `report_index` / `explicit` mode, so
+    # compatibility needs no new setting — the existing toggle already says which
+    # behaviour was asked for.
+    if status == "lookup_failed":
+        # The resolver could not run, so it has said nothing about the domain.
+        # Degrade to the default scope — the behaviour before question matching
+        # existed — rather than telling a viewer the report cannot answer them.
+        selection["fell_back_to"] = "report_order"
+        state.notices.append(
+            Notice(
+                code="read_question_unmatched", audience="author", severity="warning",
+                node_key=node.key,
+                facts={"selection_status": status, "fell_back_to": "report_order"},
+                remedies=["Xem lượt tool của bước này để biết tra cứu hỏng ở đâu."],
+                text=f"Bước “{node.name or node.key}” không tra cứu được để chọn biểu "
+                     "đồ theo câu hỏi, nên đọc theo thứ tự báo cáo.",
+            )
+        )
+        return allowed, selection
+
     if candidate_ids:
         selection["candidate_chart_ids"] = candidate_ids[:5]
+    if status == "ambiguous":
+        # "Which of these?" — not "I cannot". Different states, different
+        # downstream behaviour; merging them loses the useful half.
+        selection["needs_clarification"] = True
+    else:
+        # NOT the same as an empty read. "The report has nothing about this" is a
+        # fact about capability; "the read returned nothing" is a fact about data,
+        # and it sends an author hunting a problem that is not there.
+        selection["unsupported"] = True
 
     # THE REMEDY FOLLOWS FROM WHAT HAPPENED. Matching RAN to reach this branch, so
     # advising the author to switch it on is advice that changes nothing.
@@ -160,6 +197,22 @@ def _charts_for_question(
                     "Nếu báo cáo thực sự không có dữ liệu này, hãy chấp nhận “không "
                     "khớp” thay vì để bước đọc theo thứ tự báo cáo."]
 
+    # THE READER IS TOLD TOO, deterministically. Expecting the model to infer
+    # "I was given nothing, so I should refuse" is the prompt-only fix this
+    # explicitly is not: the runtime knows the answer is out of scope, so the
+    # runtime says so.
+    state.notices.append(
+        Notice(
+            code=("read_question_ambiguous" if status == "ambiguous"
+                  else "read_question_unsupported"),
+            audience="reader",
+            severity="info",
+            text=("Câu hỏi có thể hiểu theo nhiều cách với báo cáo này — bạn muốn "
+                  "xem cụ thể phần nào?" if status == "ambiguous" else
+                  "Báo cáo này không có dữ liệu cho câu hỏi đó, nên trợ lý chưa "
+                  "trả lời được."),
+        )
+    )
     state.notices.append(
         Notice(
             code="read_question_unmatched",
@@ -175,7 +228,9 @@ def _charts_for_question(
             text=text,
         )
     )
-    return allowed, selection
+    # Nothing resolved, so nothing is read. The step succeeds: "no chart in this
+    # report is about that" is an answer, not a failure.
+    return [], selection
 
 
 async def run_report_read(
@@ -217,6 +272,12 @@ async def run_report_read(
     if node.match_question and not node.chart_ids:
         wanted, selection = _charts_for_question(node, state, rctx, wanted)
         out["selection"] = selection
+
+    # PROPAGATED DETERMINISTICALLY. The answering step's own output cannot say
+    # whether its evidence was relevant; this can. Numeric verification asks
+    # whether a figure exists in the evidence — a necessary question that is
+    # not sufficient, because unrelated figures exist too.
+    state.question_grounding[node.key] = dict(out["selection"])
 
     planned = wanted[:node.max_charts]
     read_count = 0

@@ -218,15 +218,20 @@ def test_a_question_that_matches_nothing_says_so(selector):
 
     ordered, why = selector.run([412, 687, 990])
 
-    assert why["status"] == "none" and why["fell_back_to"] == "report_order"
-    assert ordered == [412, 687, 990], "falls back to the full scope, not to nothing"
+    # CONTRACT CORRECTED. This used to end "falls back to the full scope, not to
+    # nothing" — and that fallback is exactly how an unrelated question became an
+    # Olist summary. A miss now reads nothing and says the report does not support
+    # the question.
+    assert why["status"] == "none"
+    assert why["unsupported"] is True
+    assert ordered == [], "a miss must read nothing, not the whole report"
 
 
 def test_an_empty_question_does_not_even_ask(selector):
     ordered, why = selector.run([412, 990], question="")
 
     assert why["status"] == "no_question"
-    assert ordered == [412, 990]
+    assert ordered == [412, 990], "no question to resolve is not a failed match"
     assert selector.calls == [], "no tool budget spent deciding nothing"
 
 
@@ -245,8 +250,12 @@ def test_a_failed_lookup_falls_back_rather_than_reading_nothing(selector):
 
     ordered, why = selector.run([412, 990])
 
-    assert ordered == [412, 990]
-    assert why["status"] == "none" and why["fell_back_to"] == "report_order"
+    assert ordered == [412, 990], "a broken lookup degrades, it does not refuse"
+    # A BROKEN LOOKUP IS NOT A VERDICT ABOUT THE DOMAIN. Folding it into
+    # `none` would skip the read and tell a viewer the report cannot answer
+    # them, on a transient tool failure.
+    assert why["status"] == "lookup_failed"
+    assert why["fell_back_to"] == "report_order"
 
 
 # ── admitting what will not fit ─────────────────────────────────────────────
@@ -353,8 +362,13 @@ def test_an_off_topic_question_is_not_treated_as_a_match(selector):
     ordered, why = selector.run([717, 724, 730, 742, 686],
                                 question="thời tiết sao Hỏa hôm nay")
 
-    assert why["status"] in ("ambiguous", "none") and why["fell_back_to"] == "report_order"
-    assert ordered == [717, 724, 730, 742, 686], "falls back to the full scope"
+    # THIS TEST NAMED THE BUG AND THEN LOCKED IT AS CORRECT. Its docstring says a
+    # weather question matched four charts on "sao" and "thời", and it went on to
+    # assert that reading all five was the right outcome. A user asked the shipped
+    # assistant the same kind of question and got GMV, orders and AOV back.
+    assert why["status"] in ("ambiguous", "none")
+    assert why.get("fell_back_to") is None
+    assert ordered == [], "a weather question must read no Olist charts"
 
 
 def test_a_question_whose_terms_are_mostly_covered_still_matches(selector):
@@ -386,7 +400,9 @@ def test_the_threshold_is_exactly_a_third(selector):
     selector.returns(_listing([1], terms=4, best=1))          # 0.25 - rejected
     rejected = selector.run([1, 2], question="q")[1]
     assert rejected["status"] in ("ambiguous", "none")
-    assert rejected["fell_back_to"] == "report_order"
+    assert rejected.get("fell_back_to") is None, (
+        "a weak match must not promote report order into relevance"
+    )
 
 
 def test_a_listing_without_strength_is_trusted(selector):

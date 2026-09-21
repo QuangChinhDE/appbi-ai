@@ -1131,6 +1131,20 @@ def _verify_figures(state: RunState, answer: Answer) -> dict | None:
                     "no_evidence": True}
         out = verify_answer(text, state.evidence).to_dict()
         out["unknown_labels"] = _unknown_labels(state, answer)
+        # EVIDENCE TRUTH IS NOT QUESTION RELEVANCE.
+        #
+        # `verify_answer` asks whether a figure exists in the evidence. It cannot
+        # ask whether that evidence answers the question, and unrelated figures
+        # exist too — an Olist assistant asked about the weather returned GMV and
+        # orders, every number verifiable, the whole answer wrong. The read step
+        # already recorded WHY its evidence is there; carrying that here is what
+        # stops "the numbers check out" from meaning "the answer is sound".
+        unresolved = sorted(
+            key for key, g in (state.question_grounding or {}).items()
+            if g.get("unsupported") or g.get("needs_clarification")
+        )
+        if unresolved:
+            out["grounding"] = {"unresolved_steps": unresolved}
         return out
     except Exception:  # noqa: BLE001
         logger.debug("[flow] figure verification failed", exc_info=True)
