@@ -18,6 +18,24 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # HISTORY, because this job now runs a history-dependent gate.
+          #
+          # The merge that brought demo's protection layer here also wired
+          # `test_agent_sdlc.py` into the step below, and one of its cases asks
+          # the guardrail what changed between base and head. `actions/checkout`
+          # defaults to `fetch-depth: 1`, so `git merge-base HEAD HEAD~1` cannot
+          # resolve, the test falls back to the literal string `HEAD~1`, and
+          # `guardrail_check.py --diff` answers "no changes to validate" in plain
+          # text — which the test then tries to parse as JSON.
+          #
+          # The history-dependent gate was wired into the one workflow that does
+          # not fetch history; `change-guardrail.yml` and `semantic-review.yml`,
+          # written for base..head comparison, both already set this. Giving the
+          # gate the repository shape it was written against is the fix — making
+          # the test tolerate a shallow clone would only teach it to pass where
+          # it cannot look.
+          fetch-depth: 0
 
       # ── 1. Alembic revision graph (no DB needed) ──────────────────────────
       - uses: actions/setup-python@v5
