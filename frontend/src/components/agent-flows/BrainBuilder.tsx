@@ -53,77 +53,11 @@ import { RunsTab } from './RunsTab';
 import { TestChat } from './TestChat';
 import { StatusBadge } from './shared';
 
-/** The inspector's width, dragged by the author and remembered per browser.
- *
- *  WHY IT IS NOT JUST A CONSTANT ANY MORE.
- *
- *  400px is right for naming a step and wrong for the two jobs that need room:
- *  reading a prompt of several paragraphs, and choosing among 36 tools whose
- *  descriptions are prose. It was the fixed width that pushed the tool picker's
- *  type down to 10px in the first place — everything had to fit, so everything
- *  got smaller. Letting the panel grow is the other half of making it readable.
- *
- *  Bounded on both sides: below ~320px the two-column rows inside collapse into
- *  unreadable slivers, and past ~820px the canvas stops being a canvas. Stored in
- *  `localStorage` because it is a per-person working preference, not a property of
- *  the flow — two people editing the same flow want different widths, and neither
- *  wants to set it again tomorrow.
- */
-const INSPECTOR_MIN = 320;
-const INSPECTOR_MAX = 820;
-const INSPECTOR_KEY = 'appbi.agentFlows.inspectorWidth';
-
-function useInspectorWidth() {
-  const [width, setWidth] = React.useState(400);
-
-  React.useEffect(() => {
-    try {
-      const raw = Number(window.localStorage.getItem(INSPECTOR_KEY));
-      if (Number.isFinite(raw) && raw >= INSPECTOR_MIN && raw <= INSPECTOR_MAX) {
-        setWidth(raw);
-      }
-    } catch { /* private mode: the default is a fine answer */ }
-  }, []);
-
-  const commit = React.useCallback((next: number) => {
-    const clamped = Math.min(INSPECTOR_MAX, Math.max(INSPECTOR_MIN, Math.round(next)));
-    setWidth(clamped);
-    try { window.localStorage.setItem(INSPECTOR_KEY, String(clamped)); } catch { /* ignore */ }
-  }, []);
-
-  /** Drag from the panel's left edge. Pointer events rather than mouse, so a pen
-   *  or a touch screen works, and capture so the drag survives the pointer leaving
-   *  the 6px handle — which it does immediately, every time. */
-  const onPointerDown = React.useCallback((e: React.PointerEvent<HTMLDivElement>) => {
-    e.preventDefault();
-    const handle = e.currentTarget;
-    handle.setPointerCapture(e.pointerId);
-    const startX = e.clientX;
-    const startWidth = width;
-    const move = (ev: PointerEvent) => commit(startWidth + (startX - ev.clientX));
-    const up = () => {
-      handle.releasePointerCapture(e.pointerId);
-      handle.removeEventListener('pointermove', move);
-      handle.removeEventListener('pointerup', up);
-    };
-    handle.addEventListener('pointermove', move);
-    handle.addEventListener('pointerup', up);
-  }, [width, commit]);
-
-  /** A drag handle nobody can reach with a keyboard is a control half the people
-   *  who need a wider panel cannot use. Arrows nudge, Home/End go to the bounds. */
-  const onKeyDown = React.useCallback((e: React.KeyboardEvent<HTMLDivElement>) => {
-    const step = e.shiftKey ? 80 : 20;
-    if (e.key === 'ArrowLeft') { e.preventDefault(); commit(width + step); }
-    if (e.key === 'ArrowRight') { e.preventDefault(); commit(width - step); }
-    if (e.key === 'Home') { e.preventDefault(); commit(INSPECTOR_MAX); }
-    if (e.key === 'End') { e.preventDefault(); commit(INSPECTOR_MIN); }
-  }, [width, commit]);
-
-  return { width, onPointerDown, onKeyDown, reset: () => commit(400) };
-}
 
 type Mode = 'design' | 'runs' | 'feedback' | 'activity';
+
+import { useFlowHistory } from './builder/useFlowHistory';
+import { useInspectorWidth, INSPECTOR_MIN, INSPECTOR_MAX } from './builder/useInspectorWidth';
 
 export function BrainBuilder({
   brainKey, onBack, canEdit, canPublish,
@@ -212,15 +146,10 @@ export function BrainBuilder({
   const [typeOpen, setTypeOpen] = React.useState(false);
   const [typeBusy, setTypeBusy] = React.useState(false);
 
-  // UNDO IS A STACK OF WHOLE BODIES, not a log of operations.
-  //
-  // A tree edit can touch several places at once — dragging a branch moves a whole
-  // subtree, deleting an IF takes its lanes with it — and an inverse-operation log
-  // has to be right about every one of those. Snapshots are bigger and always
-  // correct, and a flow is a few kilobytes.
-  const past = React.useRef<FlowBody[]>([]);
-  const future = React.useRef<FlowBody[]>([]);
-  const [, setHistoryTick] = React.useState(0);
+  // Undo/redo lives in `useFlowHistory`, with the snapshot-not-oplog reasoning
+  // that goes with it. `mutate` is still the only way a tree edit reaches the
+  // body, which is what makes every tree edit undoable.
+  const { mutate, undo, redo, canUndo, canRedo } = useFlowHistory(setBody, setDirty);
 
   const [zoom, setZoom] = React.useState(1);
   const [miniRects, setMiniRects] = React.useState<MiniRect[]>([]);
@@ -306,38 +235,6 @@ export function BrainBuilder({
   }, [brainKey, t]);
 
   // ── tree edits ────────────────────────────────────────────────────────────
-  /** Every tree edit goes through here, so every tree edit is undoable. */
-  const mutate = (nodes: FlowNode[]) => {
-    setBody((b) => {
-      past.current = [...past.current.slice(-49), b];
-      future.current = [];
-      return { ...b, nodes };
-    });
-    setDirty(true);
-    setHistoryTick((n) => n + 1);
-  };
-
-  const undo = React.useCallback(() => {
-    setBody((b) => {
-      const prev = past.current.pop();
-      if (!prev) return b;
-      future.current = [...future.current, b];
-      return prev;
-    });
-    setDirty(true);
-    setHistoryTick((n) => n + 1);
-  }, []);
-
-  const redo = React.useCallback(() => {
-    setBody((b) => {
-      const next = future.current.pop();
-      if (!next) return b;
-      past.current = [...past.current, b];
-      return next;
-    });
-    setDirty(true);
-    setHistoryTick((n) => n + 1);
-  }, []);
 
   React.useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -345,6 +242,7 @@ export function BrainBuilder({
       // Never steal Ctrl+Z from a field the author is typing in — the text field's
       // own undo is the one they mean there.
       if (target && /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName)) return;
+
       if (!(e.ctrlKey || e.metaKey)) return;
       const k = e.key.toLowerCase();
       if (k === 'z' && !e.shiftKey) { e.preventDefault(); undo(); }
@@ -353,6 +251,11 @@ export function BrainBuilder({
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [undo, redo]);
+
+  const onMoveNode = (key: string, target: InsertTarget) => {
+    const next = moveNode(body.nodes, key, target);
+    if (next !== body.nodes) mutate(next);
+  };
 
   const onInsert = (target: InsertTarget) => setInsertAt(target);
 
@@ -372,11 +275,6 @@ export function BrainBuilder({
     (key: string, containerPath: string) => canDropInto(body.nodes, key, containerPath),
     [body.nodes],
   );
-
-  const onMoveNode = (key: string, target: InsertTarget) => {
-    const next = moveNode(body.nodes, key, target);
-    if (next !== body.nodes) mutate(next);
-  };
 
   const stepZoom = (delta: number) =>
     setZoom((z) => Math.round(Math.max(0.5, Math.min(1.3, z + delta)) * 100) / 100);
@@ -650,10 +548,10 @@ export function BrainBuilder({
         )}
         {canEdit && (
           <div className="mr-1 flex items-center gap-0.5">
-            <IconBtn onClick={undo} label={t('agentFlows.builder.undo')} disabled={!past.current.length}>
+            <IconBtn onClick={undo} label={t('agentFlows.builder.undo')} disabled={!canUndo}>
               <Undo2 className="h-3.5 w-3.5" />
             </IconBtn>
-            <IconBtn onClick={redo} label={t('agentFlows.builder.redo')} disabled={!future.current.length}>
+            <IconBtn onClick={redo} label={t('agentFlows.builder.redo')} disabled={!canRedo}>
               <Redo2 className="h-3.5 w-3.5" />
             </IconBtn>
           </div>
