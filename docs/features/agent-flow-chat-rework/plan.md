@@ -1,7 +1,9 @@
 # Agent Flow + AI Chat rework — implementation plan
 
-**Wave A (Phases 0, 1, 2) is IMPLEMENTED** on `feat/agent-flow-chat-rework`.
-Phases 3 onward are still proposals awaiting approval.
+**ALL PHASES ARE IMPLEMENTED** on `feat/agent-flow-chat-rework`. The table below
+is the record; each row's commit is the one that shipped it, and the phase sections
+further down are kept as written, with superseded measurements marked rather than
+deleted.
 
 | Phase | Status | Commit |
 |---|---|---|
@@ -9,11 +11,11 @@ Phases 3 onward are still proposals awaiting approval.
 | 1 — Answer parity | **shipped** | `5d376fa` |
 | 2 — Node topology | **shipped** | `1507b96` |
 | — reviewer fix | **shipped** | `06d94b7` |
-| 3 — Reader-safe capability | proposed | — |
+| 3 — Reader-safe capability | **shipped** | `28d6fa8` |
 | 3.5 — Debugging loop's last hop | **shipped** | `a8b1594` |
-| 4 — Decompose mega-components | proposed | — |
-| 4.5 — Canvas / a11y | proposed (unblocked: minimum viewport = 1280px) | — |
-| 5 — Vocabulary and polish | proposed | — |
+| 4 — Decompose mega-components | **shipped** | `4a8b244` |
+| 4.5 — Canvas / a11y | **shipped** | `4e603f8` (+ `41bc2f7`) |
+| 5 — Vocabulary and polish | **shipped** | `0ded5e5` |
 
 ## Where Wave A departed from this plan
 
@@ -552,10 +554,31 @@ navigable.
 **GATED on open question 6** - the minimum supported viewport is a product decision and
 the layout fix depends on the answer. Do not start before it is answered.
 
-**Evidence, all measured.** 3.5 screens of scroll for 24 nodes with 6 visible; third
-specialist lane 64% clipped at 1440 and 2 of 3 lanes clipped at 1280; inspector fixed at
-700px even in a 400px viewport; `min-w-[860px]` on canvas content; no `aria-label` or
-selected-state on node cards; 99 tab stops to the last node; 24 sub-24px targets.
+**Evidence as measured WHEN THIS WAS WRITTEN — several items were superseded before
+the phase shipped, and are kept here only so the measurements are not read as current
+facts.** 3.5 screens of scroll for 24 nodes with 6 visible; third specialist lane 64%
+clipped at 1440 and 2 of 3 lanes clipped at 1280; ~~inspector fixed at 700px even in a
+400px viewport~~ (superseded: the inspector has been resizable, persisted and
+keyboard-operable since the Wave-A work, bounded 320–820px); `min-w-[860px]` on canvas
+content; no `aria-label` or selected-state on node cards; 99 tab stops to the last node;
+24 sub-24px targets.
+
+**What actually shipped, re-measured on the running build.** The canvas floor is 640px
+and lane columns have a 220px minimum, so three specialists stay ≥220px wide at 1280
+and the canvas scrolls internally rather than clipping. Node cards and lane headers
+carry `aria-label` and `aria-pressed`. The 99 tab stops are 1: roving focus, with the
+first step seeded as the tab stop so the keyboard can enter the list cold, arrows moving
+between steps and Alt+Arrow reordering a top-level step through the same `moveNode` a
+drop uses. The minimap stays pointer-only and is marked `aria-hidden` rather than
+claiming a keyboard operation it does not have. Header overflow at 1280: 90px → 0, so
+all four builder tabs are reachable at the declared minimum.
+
+**Known limitations, stated rather than closed.** Keyboard reorder is bounded to
+top-level siblings — moving a step into a branch is a decision about which lane and what
+depth, and an arrow key cannot express it. Mouse drag-reorder is pointer-driven and was
+verified through the keyboard path only. Several author-facing strings in `RunsTab` and
+the backend's validation messages are Vietnamese-only on an English UI; that is a
+pre-existing i18n gap, outside these four phases, and it is not fixed here.
 
 **Scope.** Inspector width behaviour, canvas horizontal allocation, a navigation aid for
 long flows, and the four accessibility items in `spec.md` section 5.6.
