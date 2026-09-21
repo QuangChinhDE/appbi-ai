@@ -1115,7 +1115,22 @@ def _status_after_verification(status: str, verification: dict | None) -> str:
     """
     if status != "ok" or not verification:
         return status
-    if (verification.get("grounding") or {}).get("all_evidence_unresolved"):
+    grounding = verification.get("grounding") or {}
+    if grounding.get("all_evidence_unresolved"):
+        return "partial"
+    # AND THE WORSE CASE, WHICH THE RULE ABOVE COULD NOT SEE. `_verify_figures`
+    # returns early on an empty ledger, and that branch reports `no_evidence`
+    # rather than `all_evidence_unresolved` — so a run that read NOTHING and
+    # stated figures anyway fell straight through. Found on the running stack:
+    # three turns shipped 7, 3 and 9 sourceless numbers under a Runs header
+    # reading "100% answered, 0 errors".
+    #
+    # Bounded to runs that ATTEMPTED a read. A flow with no read step promised no
+    # data, and downgrading it over an incidental number would empty `partial` of
+    # meaning — `test_a_matching_branch_stays_a_clean_success` says so, and it is
+    # right. `unmatched` is required too: the same branch returns None when a
+    # sourceless answer states no numbers, because a clean refusal is healthy.
+    if grounding.get("no_evidence_after_read") and verification.get("unmatched"):
         return "partial"
     return status
 
@@ -1165,7 +1180,23 @@ def _verify_figures(state: RunState, answer: Answer) -> dict | None:
                 return None  # an honest refusal has nothing to verify
             return {"matched": 0, "unmatched": figures,
                     "unknown_labels": _unknown_labels(state, answer),
-                    "no_evidence": True}
+                    "no_evidence": True,
+                    # DID THIS RUN TRY TO READ, OR DOES IT SIMPLY NOT READ?
+                    #
+                    # Both arrive here with an empty ledger and they are not the
+                    # same fault. A flow that read a report and got nothing, then
+                    # stated figures anyway, has numbers with no source. A flow
+                    # with no read step at all never promised any — punishing an
+                    # incidental "0" in its answer would make `partial` mean
+                    # nothing, which a golden case already guards.
+                    #
+                    # `question_grounding` is written by every report-read step at
+                    # entry, before it knows what it will find, so its emptiness
+                    # is exactly "no read was attempted". Existing provenance,
+                    # used as designed — no new heuristic.
+                    "grounding": {
+                        "no_evidence_after_read": bool(state.question_grounding),
+                    }}
         out = verify_answer(text, state.evidence).to_dict()
         out["unknown_labels"] = _unknown_labels(state, answer)
         # EVIDENCE TRUTH IS NOT QUESTION RELEVANCE.

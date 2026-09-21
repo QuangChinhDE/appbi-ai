@@ -350,3 +350,71 @@ def test_no_verification_leaves_the_status_alone():
     from app.services.agent_flows.runtime import executor as E
 
     assert E._status_after_verification("ok", None) == "ok"
+
+
+# ── the case the browser found: figures with NO evidence at all ────────────
+#
+# Runs 464, 465 and 466 on the live stack shipped answers stating 7, 3 and 9
+# figures while the run read no data whatsoever, and all three were recorded
+# `ok` — the Runs header read "100% answered, 0 errors" above three turns whose
+# numbers had no source, which is the exact operator-deception the invariant
+# exists to prevent.
+#
+# `_verify_figures` returns EARLY on an empty ledger, and that early return
+# reported `no_evidence` rather than `all_evidence_unresolved`, so the downgrade
+# never saw it. "Read nothing" is strictly worse than "read something from an
+# unresolved step", and it was the one left unpunished.
+#
+# The bound matters as much as the rule. A flow with no read step at all also
+# arrives with an empty ledger and has promised no data; downgrading it over an
+# incidental number would make `partial` meaningless, which
+# `test_a_matching_branch_stays_a_clean_success` in the golden suite already
+# guards — a first version of this fix broke it, and the test was right.
+
+def test_figures_with_no_evidence_after_a_read_downgrade_the_run():
+    from app.services.agent_flows.runtime import executor as E
+
+    verification = {"matched": 0, "unmatched": [7.0, 3.0, 9.0],
+                    "unknown_labels": [], "no_evidence": True,
+                    "grounding": {"no_evidence_after_read": True}}
+    assert E._status_after_verification("ok", verification) == "partial", (
+        "an answer stating figures while the read returned nothing is not healthy"
+    )
+
+
+def test_a_flow_that_never_reads_is_not_downgraded_by_an_incidental_number():
+    """The bound. No read step means no data was promised, so a number in the
+    prose is not an ungrounded claim about the report."""
+    from app.services.agent_flows.runtime import executor as E
+
+    verification = {"matched": 0, "unmatched": [0.0], "unknown_labels": [],
+                    "no_evidence": True,
+                    "grounding": {"no_evidence_after_read": False}}
+    assert E._status_after_verification("ok", verification) == "ok"
+
+
+def test_the_empty_ledger_branch_reports_whether_a_read_was_attempted():
+    """Locks the two halves together. The original defect was not a wrong rule —
+    it was a rule reading a key the producing branch never set, which no test
+    caught because each side was asserted on its own."""
+    import inspect
+
+    from app.services.agent_flows.runtime import executor as E
+
+    produced = inspect.getsource(E._verify_figures)
+    assert "no_evidence_after_read" in produced, (
+        "the empty-ledger branch must say whether a read was attempted"
+    )
+    assert "state.question_grounding" in produced, (
+        "that answer comes from existing provenance — every report-read step "
+        "records itself at entry — not from a new heuristic"
+    )
+    assert "no_evidence_after_read" in inspect.getsource(E._status_after_verification)
+
+
+def test_a_refusal_with_no_figures_is_still_ok():
+    """`_verify_figures` returns None when an evidence-free answer states no
+    numbers, and None must never downgrade: a clean refusal is a healthy run."""
+    from app.services.agent_flows.runtime import executor as E
+
+    assert E._status_after_verification("ok", None) == "ok"
