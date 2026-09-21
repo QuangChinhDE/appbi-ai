@@ -1593,6 +1593,9 @@ function ChatView({
   inputRef: React.RefObject<HTMLTextAreaElement>;
   onInputChange: (v: string) => void;
   onKeyDown: (e: React.KeyboardEvent<HTMLTextAreaElement>) => void;
+  /** Takes no argument ON PURPOSE — see the call site. Typed `() => void` while
+   *  the implementation accepted `(override?: string)`, so TypeScript could not
+   *  see a MouseEvent being passed into a string parameter. */
   onSend: () => void;
   onStop: () => void;
   onPickSuggestion: (q: string) => void;
@@ -1714,7 +1717,12 @@ function ChatView({
             </button>
           ) : (
             <button
-              onClick={onSend}
+              // NOT `onClick={() => onSend()}`. React hands the click handler its
+              // MouseEvent, `handleSend(override?: string)` took it as `override`,
+              // and `override.trim()` threw — the send BUTTON on this bot has
+              // been dead since `ceca97c`. The Enter path calls `handleSend()`
+              // with no argument, which is why only the button was broken.
+              onClick={() => onSend()}
               disabled={!inputText.trim() || !!reconError}
               className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg bg-brand text-white shadow-sm transition-all hover:bg-brand/90 hover:shadow-md disabled:cursor-not-allowed disabled:opacity-40 disabled:shadow-none"
               aria-label={t('dashboards.aiBot.sendAria')}

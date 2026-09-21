@@ -247,6 +247,7 @@ async def run_flow(
     # is what survived that — an answer whose figures the model was given a chance
     # to fix and did not, which is worth saying out loud.
     verification = _verify_figures(state, answer)
+    status = _status_after_verification(status, verification)
     if verification:
         yield AgentEvent(type="verification", extra={"verification": verification})
         if verification.get("unknown_labels"):
@@ -1097,6 +1098,26 @@ def _final_answer(state: RunState, rctx: RunContext) -> Answer:
                 return text_answer(candidate)
         return Answer()
     return text_answer(str(value))
+
+
+def _status_after_verification(status: str, verification: dict | None) -> str:
+    """`ok` must mean the designed path ran AND the numbers are grounded.
+
+    Status was final before `_verify_figures` ran, and nothing afterwards touched
+    it — so an answer stating a figure whose every contributing source resolved to
+    nothing was stored `ok`, and an operator reading the flow's success rate
+    counted it as a working answer.
+
+    Not driven by "a notice exists": `all_evidence_unresolved` already requires
+    the answer to CITE figures and EVERY contributing step to be unresolved, so a
+    flow whose other capability genuinely answered is untouched. A run that is
+    already `partial` or `failed` is never promoted.
+    """
+    if status != "ok" or not verification:
+        return status
+    if (verification.get("grounding") or {}).get("all_evidence_unresolved"):
+        return "partial"
+    return status
 
 
 def _verify_figures(state: RunState, answer: Answer) -> dict | None:

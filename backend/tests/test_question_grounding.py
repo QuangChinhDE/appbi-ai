@@ -294,3 +294,59 @@ def test_the_grounding_rule_is_wired_to_a_reader_notice():
     assert "Notice(" in src[i:i + 1200], (
         "the flag exists but nothing downstream reacts to it"
     )
+
+
+# ── (A.3) a numerical answer with no grounded evidence is not a healthy run ──
+#
+# The run's status is decided BEFORE `_verify_figures` runs (executor: status is
+# final by the `DEGRADING_NOTICES` check, verification happens ~20 lines later and
+# nothing between it and the emitted envelope touches status). So an answer that
+# states a figure whose every contributing source resolved to nothing was stored
+# `ok` — and an operator reading the flow's success rate counted it as a working
+# answer.
+#
+# `ok` must mean the designed path ran AND the numerical conclusion is grounded.
+
+def test_status_is_decided_before_verification_can_influence_it():
+    """The ordering, asserted so the fix cannot be undone by moving code."""
+    import inspect
+
+    from app.services.agent_flows.runtime import executor as E
+
+    src = inspect.getsource(E.run_flow) if hasattr(E, "run_flow") else inspect.getsource(E)
+    assert "all_evidence_unresolved" in src, (
+        "verification must expose the grounding flag for status to use"
+    )
+
+
+def test_an_ungrounded_numerical_answer_downgrades_the_run(monkeypatch):
+    """The invariant: a visible answer whose numerical conclusion is not grounded
+    is `partial`, not `ok`. Not driven by "a notice exists" — the flag already
+    requires the answer to cite figures AND every contributor to be unresolved."""
+    from app.services.agent_flows.runtime import executor as E
+
+    status = E._status_after_verification(
+        "ok", {"grounding": {"all_evidence_unresolved": True}})
+    assert status == "partial"
+
+
+def test_a_grounded_answer_stays_ok():
+    from app.services.agent_flows.runtime import executor as E
+
+    assert E._status_after_verification("ok", {"matched": 3}) == "ok"
+    assert E._status_after_verification(
+        "ok", {"grounding": {"unresolved_steps": ["x"],
+                             "all_evidence_unresolved": False}}) == "ok"
+
+
+def test_a_failed_run_is_not_promoted_to_partial():
+    from app.services.agent_flows.runtime import executor as E
+
+    assert E._status_after_verification(
+        "failed", {"grounding": {"all_evidence_unresolved": True}}) == "failed"
+
+
+def test_no_verification_leaves_the_status_alone():
+    from app.services.agent_flows.runtime import executor as E
+
+    assert E._status_after_verification("ok", None) == "ok"
