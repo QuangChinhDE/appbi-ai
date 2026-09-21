@@ -540,3 +540,24 @@ def test_reuse_does_not_duplicate_a_citation_already_present():
     state.citations.append(Citation(kind="chart", ref="41", label="Doanh thu"))
     E._reuse(node, state, rctx)
     assert len([c for c in state.citations if c.ref == "41"]) == 1
+
+
+def test_a_reused_read_of_several_charts_cites_each_one_once():
+    """The live flow reads exactly one chart, so the browser run could not
+    exercise this. One citation per chart, and re-entering the same turn adds
+    none."""
+    from app.services.agent_flows.runtime import executor as E
+
+    value = {
+        "selection": {"mode": "question", "matched_chart_ids": [41, 42]},
+        "charts": [
+            {"chart_id": 41, "title": "Doanh thu"},
+            {"chart_id": 42, "title": "Đơn hàng"},
+            {"chart_id": 41, "title": "Doanh thu"},   # the same chart twice
+        ],
+    }
+    node, state, rctx = _reuse_fixture(value)
+    E._reuse(node, state, rctx)
+    assert [(c.kind, c.ref) for c in state.citations] == [
+        ("chart", "41"), ("chart", "42"),
+    ]
