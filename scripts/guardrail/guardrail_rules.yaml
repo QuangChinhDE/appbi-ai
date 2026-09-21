@@ -22,6 +22,22 @@ layers:
     label: "Backend entrypoint / app wiring"
     may_depend_on: ["*"]           # composition root may wire everything
 
+  # TESTS ARE A LAYER TOO, and saying so is what stops every new spec from
+  # blocking. `e2e/tests/**` and `backend/tests/**` are both on
+  # `policy.unknown_policy.blocking_globs` — deliberately, because an unmapped
+  # file there is usually a new surface nobody classified. But NO layer claimed
+  # them, so `classify_file` returned None for every test file and an uncommitted
+  # new spec blocked the gate until it was committed, which is the wrong moment
+  # to find out. Declaring the layer is the remedy the policy note itself names;
+  # widening `blocking_globs` would have been the one it forbids.
+  #
+  # `may_depend_on: ["*"]` because a test exists to reach across layers: that is
+  # what makes it a test and not another module.
+  - id: tests
+    match: ["backend/tests/**", "e2e/tests/**", "qa/**", "scripts/ci/test_*.py"]
+    label: "Tests (backend suites, Playwright specs, QA harnesses)"
+    may_depend_on: ["*"]
+
   - id: be_core
     match: ["backend/app/core/**"]
     label: "Backend core (config, database, dependencies, crypto)"
@@ -352,7 +368,7 @@ tests:
     run: "pytest backend/tests/test_agent_flow_replay.py"
     locks: "16 canonical fixtures replay with no semantic drift — the tripwire for any runtime or traversal change"
   agent_flow_container:
-    run: "pytest backend/tests/test_coordinator_is_visible_to_the_flow.py backend/tests/test_flow_coordinate.py backend/tests/test_flow_synthesis_sees_all_steps.py backend/tests/test_flow_type.py backend/tests/test_node_child_slots.py backend/tests/test_read_status_survives_compaction.py backend/tests/test_diagnostics_tell_the_truth.py backend/tests/test_tree_validation_is_canonical.py backend/tests/test_nested_specialist_credentials.py backend/tests/test_authoring_is_strict.py backend/tests/test_asset_resolution.py backend/tests/test_context_handoff.py backend/tests/test_report_read_selection_is_explicit.py backend/tests/test_no_evidence_no_confident_number.py backend/tests/test_question_grounding.py backend/tests/test_reuse_evidence_equivalence.py backend/tests/test_cross_lingual_resolution.py"
+    run: "pytest backend/tests/test_coordinator_is_visible_to_the_flow.py backend/tests/test_flow_coordinate.py backend/tests/test_flow_synthesis_sees_all_steps.py backend/tests/test_flow_type.py backend/tests/test_node_child_slots.py backend/tests/test_read_status_survives_compaction.py backend/tests/test_diagnostics_tell_the_truth.py backend/tests/test_tree_validation_is_canonical.py backend/tests/test_nested_specialist_credentials.py backend/tests/test_authoring_is_strict.py backend/tests/test_asset_resolution.py backend/tests/test_context_handoff.py backend/tests/test_report_read_selection_is_explicit.py backend/tests/test_no_evidence_no_confident_number.py backend/tests/test_question_grounding.py backend/tests/test_reuse_evidence_equivalence.py backend/tests/test_time_axis_contract.py backend/tests/test_cross_lingual_resolution.py"
     locks: "every container node is walked by all_nodes(); a coordinator's lane is visible to every authoring check"
   direct_chat_contract:
     run: "pytest backend/tests/test_chat_thread_sharing.py backend/tests/test_chat_chart_scope.py backend/tests/test_notice_audience_boundary.py backend/tests/test_reader_capability_boundary.py"

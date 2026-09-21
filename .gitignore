@@ -320,4 +320,5 @@ backend/tests/.testdata/
 !backend/tests/test_question_grounding.py
 !backend/tests/test_reuse_evidence_equivalence.py
 !backend/tests/test_reader_capability_boundary.py
+!backend/tests/test_time_axis_contract.py
 !backend/tests/test_cross_lingual_resolution.py
