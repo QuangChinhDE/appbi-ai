@@ -456,12 +456,32 @@ def _reuse_fixture(stored):
     return node, RunState(), rctx
 
 
+#: THE SHAPE THE HANDLER ACTUALLY STORES. A first version of this fixture said
+#: `"id"`, and the citation code written against it looked right, passed its
+#: test, and appended nothing on the running stack — `data.py` builds
+#: `{"chart_id": chart_id}` and there is no `id` key anywhere. A fixture that is
+#: not the real payload tests the fixture.
 READ_OUTPUT = {
     "selection": {"mode": "question", "matched_chart_ids": [41]},
-    "charts": [{"id": 41, "title": "Doanh thu",
+    "charts": [{"chart_id": 41, "title": "Doanh thu",
                 "data": {"columns": ["category", "revenue"],
                          "rows": [["moveis", 1200], ["beleza", 980]]}}],
 }
+
+
+def test_the_fixture_is_the_shape_the_read_handler_builds():
+    """Locks the fixture to the producer. This is the test that was missing when
+    the citation restore shipped reading a key that never exists."""
+    import inspect
+
+    from app.services.agent_flows.runtime.handlers import data as D
+
+    src = inspect.getsource(D)
+    assert 'entry: dict[str, Any] = {"chart_id": chart_id}' in src, (
+        "the read handler no longer keys chart entries by `chart_id` — update "
+        "READ_OUTPUT and everything in _reuse that reads it, together"
+    )
+    assert all("chart_id" in c for c in READ_OUTPUT["charts"])
 
 
 def test_a_reused_read_puts_its_numbers_back_in_the_ledger():

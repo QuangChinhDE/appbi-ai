@@ -615,8 +615,14 @@ def _reuse(node: Any, state: RunState, rctx: RunContext) -> Any:
         # không dẫn nguồn nào" on the author's screen for every reused turn —
         # including answers whose own text carries `[chart:683]`.
         for entry in (value.get("charts") or []) if isinstance(value, dict) else []:
-            ref = str((entry or {}).get("id") or "")
-            if ref and not any(c.ref == ref for c in state.citations):
+            # `chart_id`, which is the only key the handler writes
+            # (`data.py`: `entry: dict[str, Any] = {"chart_id": chart_id}`). A
+            # first version read `id`, matched the test fixture it was written
+            # beside, and appended nothing at all on the running stack.
+            ref = str((entry or {}).get("chart_id") or "")
+            if ref and not any(
+                c.ref == ref and c.kind == "chart" for c in state.citations
+            ):
                 state.citations.append(
                     Citation(kind="chart", ref=ref, label=(entry.get("title") or ""))
                 )
