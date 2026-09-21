@@ -595,6 +595,26 @@ def _reuse(node: Any, state: RunState, rctx: RunContext) -> Any:
     state.outputs[node.key] = value
     state.set_var(node.output_var, value)
     state.memory_set[node.output_var] = value
+    # AND ITS PROVENANCE, NOT ONLY ITS VALUE.
+    #
+    # Hydrating the variable puts last turn's data in front of the model; leaving
+    # the ledger empty meant the verifier then judged the answer against nothing
+    # and told the viewer their figures had no source — about data it had just
+    # been shown. Live runs 471, 472 and 475 carried exactly that notice while
+    # their read step read `reused`.
+    #
+    # A reused read genuinely read; it read on an earlier turn. The ledger must
+    # describe what the model can see, or every verdict built on it is wrong in
+    # one direction or the other.
+    if getattr(node, "type", "") == "report_read":
+        state.evidence_source = node.key
+        state.add_evidence(value)
+        selection = (value or {}).get("selection") if isinstance(value, dict) else None
+        if isinstance(selection, dict):
+            # Carried forward too, or the Wave-2 relevance rule quietly stops
+            # applying on every follow-up turn: a selection that resolved to
+            # nothing would come back looking clean.
+            state.question_grounding[node.key] = dict(selection)
     return value
 
 

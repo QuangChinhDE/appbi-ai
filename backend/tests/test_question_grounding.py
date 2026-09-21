@@ -418,3 +418,81 @@ def test_a_refusal_with_no_figures_is_still_ok():
     from app.services.agent_flows.runtime import executor as E
 
     assert E._status_after_verification("ok", None) == "ok"
+
+
+# ── the reuse path: the model saw data the ledger never heard about ──────────
+#
+# The bound above ("was a read attempted this turn") still read `ok` on the live
+# runs it was written for — 471, 472 and 475, all carrying "lượt này KHÔNG đọc
+# được dữ liệu nào". Their report_read step is `reused`: `run_policy=when_stale`
+# and the value was already in memory, so `_run_node` returns before the handler
+# body ever runs.
+#
+# `_reuse` HYDRATES the node's variable, deliberately — a reused node that left
+# `{{overview}}` empty is the failure mode that makes cached control flow
+# untrustworthy. So the model is shown last turn's data and answers from it.
+# What did not come back was the PROVENANCE: no evidence, no grounding. The
+# verifier then compared an answer against an empty ledger and told the viewer
+# their numbers had no source, when the source was on the screen in front of it.
+#
+# So the status rule was never the root cause. A ledger that omits what the model
+# was shown produces a wrong verdict in both directions, and "downgrade it too"
+# would only have spread that verdict further.
+
+def _reuse_fixture(stored):
+    """The shapes `_reuse` actually touches — nothing more, so the test does not
+    quietly depend on unrelated executor plumbing."""
+    import types
+
+    from app.services.agent_flows.runtime.state import RunState
+
+    node = types.SimpleNamespace(
+        key="overview", type="report_read", run_policy="when_stale",
+        output_var="overview",
+    )
+    memory = types.SimpleNamespace(reusable_nodes=["overview"],
+                                   vars={"overview": stored})
+    rctx = types.SimpleNamespace(inp=types.SimpleNamespace(memory=memory))
+    return node, RunState(), rctx
+
+
+READ_OUTPUT = {
+    "selection": {"mode": "question", "matched_chart_ids": [41]},
+    "charts": [{"id": 41, "title": "Doanh thu",
+                "data": {"columns": ["category", "revenue"],
+                         "rows": [["moveis", 1200], ["beleza", 980]]}}],
+}
+
+
+def test_a_reused_read_puts_its_numbers_back_in_the_ledger():
+    """What the model can see is what the verifier must check against."""
+    from app.services.agent_flows.runtime import executor as E
+
+    node, state, rctx = _reuse_fixture(READ_OUTPUT)
+    assert E._reuse(node, state, rctx) is not None
+    assert 1200.0 in state.evidence and 980.0 in state.evidence, (
+        "the reused value is hydrated into the prompt; omitting it from the "
+        "ledger makes the verifier call sourced numbers sourceless"
+    )
+    assert "overview" in state.evidence_sources
+
+
+def test_a_reused_read_puts_its_grounding_back_too():
+    """Otherwise a reused selection that resolved to nothing looks clean, and the
+    Wave-2 relevance rule silently stops applying on every follow-up turn."""
+    from app.services.agent_flows.runtime import executor as E
+
+    node, state, rctx = _reuse_fixture(READ_OUTPUT)
+    E._reuse(node, state, rctx)
+    assert state.question_grounding.get("overview", {}).get("mode") == "question"
+
+
+def test_reuse_restores_nothing_it_was_not_given():
+    """A reused node whose stored value carries no selection must not invent one,
+    and a non-read node must not start claiming to be evidence."""
+    from app.services.agent_flows.runtime import executor as E
+
+    node, state, rctx = _reuse_fixture({"text": "hello"})
+    node.type = "set_var"
+    E._reuse(node, state, rctx)
+    assert state.question_grounding == {}
