@@ -173,7 +173,7 @@ protected:
       of an unrelated task. The trusted BASE copy of
       check_protection_integrity.py inspects base..head, so editing the checker
       in the same PR does not disable it.
-    required_tests: [agent_sdlc_meta, stop_gate_decision]
+    required_tests: [agent_sdlc_meta, stop_gate_decision, guardrail_diff_range]
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 3. FEATURES — impact map. A changed file that owns a feature drags in that
@@ -362,6 +362,9 @@ tests:
   agent_sdlc_meta:
     run: "pytest scripts/ci/test_agent_sdlc.py"
     locks: "provider-neutral SDLC: adapters point at one executable contract, the server-side base..head diff sees the real changed files, architecture violations fail the gate, UNKNOWN is not reported safe, infrastructure failure is not reported pass, attempts to weaken the protection system are detected, and an ordinary clean change is not blocked"
+  guardrail_diff_range:
+    run: "pytest scripts/ci/test_guardrail_diff_range.py"
+    locks: "the guardrail tells an EMPTY diff from one it could not resolve: a real zero-change range is allowed, an unresolvable base/head or a git failure returns unknown and a non-zero exit, and --json stays valid JSON in every state"
   stop_gate_decision:
     run: "pytest scripts/ci/test_stop_gate.py"
     locks: "Stop hook: green allows, FAILED blocks every time (including on retry), UNVERIFIED blocks once then allows, infrastructure failure never becomes green, override stays explicit"
