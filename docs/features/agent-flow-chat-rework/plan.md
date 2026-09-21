@@ -143,7 +143,39 @@ walks the import graph from both public entry points.
 ### Status
 
 **WAVE 1 FOUNDATION: CLOSED**
-**WAVE 2 FOUNDATION: CLOSED**
+**WAVE 2 FOUNDATION: CLOSED** — reopened once and re-closed on `16afd34`.
+
+REOPENED 2026-09-21 by a black-box user test, after being marked closed on
+`9c1303f`. Asked "thời tiết Hà Nội hôm nay", the Olist assistant answered with
+GMV, orders, AOV and ratings. Every figure was real; the answer was wrong.
+
+What I had got wrong: question mode resolved `none`, LABELLED the fallback
+`fell_back_to: report_order`, and then read the whole allowed list. I had mistaken
+observability for correctness — and two of my own tests locked the defect as the
+contract, one asserting `ids == ALLOWED`, one whose docstring reads "FOUND BY
+ASKING THE FEATURE A QUESTION ABOUT THE WEATHER" before asserting that reading all
+five charts was right.
+
+The capture found a SECOND cause the fallback hid: for the same question the
+resolver returned `status: "semantic"` on two unrelated charts, because it
+accepted any `search_business_assets` hit and that tool ranks anything sharing one
+token.
+
+EVIDENCE TRUTH IS NOT QUESTION RELEVANCE. Question mode now reads nothing on
+none/ambiguous, semantic matches need real term overlap, a broken lookup stays its
+own state and still degrades, and grounding reaches verification so numbers that
+exist cannot alone make an answer look sound. Explicit report-overview modes were
+untouched and needed no new setting.
+
+Verified: 448/449 read 0 charts and contain no Olist figure; 450 still answers
+91.89% with its citation. CI green on code SHA `16afd34` — unit,
+integration-golden, preflight and E2E all ran.
+
+Still open, named: the `read_question_unsupported` reader notice is emitted and
+rendered by no consumer on the public `/d/[token]` surface (the answer prose
+refuses correctly in both languages, so the reader is not misled, but the
+deterministic belt is dead weight there); the Vietnamese refusal blames
+"fragmented data" where the English one names the real reason.
 
 Closed on code SHA `9c1303f` — preflight, unit and integration-golden all green.
 `integration-golden` RAN for the first time in this pass rather than being skipped
