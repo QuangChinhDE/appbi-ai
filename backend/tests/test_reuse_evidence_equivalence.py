@@ -64,18 +64,30 @@ def _envelope() -> dict:
     }
 
 
+# THE SHAPES THE REAL TOOLS RETURN, and the `chart_id` in them is not decoration.
+# A first version of this file wrote these by hand and left it out, which made
+# `test_a_claim_equal_to_a_chart_id_is_not_verified...` green against a payload
+# the product never produces — the third time in this area that a stub and the
+# code it tests agreed about something neither had checked with the producer.
+# `tools.py` (`get_chart_data`) returns `_ok({"chart_id": ..., "columns": ...})`
+# and `insight_pack.to_dict()` opens with `"chart_id"`; `_ok` wraps both as
+# `{"ok": True, "data": {...}}`, putting the id two levels down — well inside
+# `add_evidence`'s depth budget.
 SUMMARY_RESULT = {
-    "ok": True, "kind": "summary",
-    "data": {"rows": 2, "columns": [
-        {"name": "category", "kind": "text"},
-        {"name": "revenue", "kind": "number", "min": 980, "max": 1200},
-    ]},
+    "ok": True,
+    "data": {"chart_id": CHART_ID, "chart_name": "Doanh thu",
+             "related": [{"chart_id": 88, "chart_name": "Đơn hàng"}],
+             "columns": [
+                 {"name": "category", "kind": "text"},
+                 {"name": "revenue", "kind": "number", "min": 980, "max": 1200},
+             ]},
 }
 
 DATA_RESULT = {
-    "ok": True, "kind": "table",
-    "data": {"columns": ["category", "revenue"],
-             "rows": [["moveis", 1200], ["beleza", 980]]},
+    "ok": True,
+    "data": {"chart_id": CHART_ID, "columns": ["category", "revenue"],
+             "rows": [["moveis", 1200], ["beleza", 980]],
+             "row_count": 2},
 }
 
 
@@ -94,14 +106,14 @@ def _stub_registry(monkeypatch):
     monkeypatch.setattr(tool_registry, "execute", execute)
 
 
-def _read(monkeypatch) -> tuple[RunState, dict]:
+def _read(monkeypatch, detail: str = "full") -> tuple[RunState, dict]:
     """Run the REAL read handler once. Returns the state it built and the value it
     published — the same value `memory.vars` carries into the next turn."""
     _stub_registry(monkeypatch)
     node = ReportReadNode.model_validate({
         "key": "overview", "type": "report_read", "output_var": "bao_cao",
         "chart_ids": [CHART_ID], "include_summary": True, "include_data": True,
-        "detail": "full",
+        "detail": detail,
     })
     state = RunState()
     rctx = SimpleNamespace(inp=FlowInput.model_validate(_envelope()),
@@ -129,6 +141,15 @@ def _reuse(stored: dict) -> RunState:
 @pytest.fixture()
 def original(monkeypatch):
     return _read(monkeypatch)
+
+
+#: EVERY SHAPING MODE, because equivalence held for exactly one of them. `compact`
+#: rewrites `entry["summary"]` to a reduced dict AFTER `_call` harvested the full
+#: one, and `index` keeps a KPI's single figure and throws the rest of the result
+#: away — so a turn that answered from `top_share_pct` on turn 1 could not verify
+#: the same sentence on turn 2, which is the symptom this whole area exists to
+#: remove. Testing only `full` is how that stayed invisible.
+DETAILS = ["full", "compact", "index"]
 
 
 # ── what the stored payload actually contains ───────────────────────────────
@@ -219,3 +240,52 @@ def test_a_claim_equal_to_a_real_figure_still_verifies_after_reuse(original):
     reused = _reuse(stored)
     got = verify_answer("Moveis đạt 1200.", reused.evidence).to_dict()
     assert got["matched"] >= 1 and not got["unmatched"]
+
+
+# ── and it has to hold in EVERY shaping mode ────────────────────────────────
+
+@pytest.mark.parametrize("detail", DETAILS)
+def test_the_ledger_is_equivalent_in_every_detail_mode(monkeypatch, detail):
+    state, stored = _read(monkeypatch, detail)
+    reused = _reuse(stored)
+    missing = sorted(set(state.evidence) - set(reused.evidence))
+    assert not missing, (
+        f"detail={detail}: {missing} were evidence when the read ran and are gone "
+        "after reuse — the same figure verifies on turn 1 and not on turn 2"
+    )
+
+
+@pytest.mark.parametrize("detail", DETAILS)
+def test_reuse_never_invents_a_label_the_read_did_not_see(monkeypatch, detail):
+    """The direction that matters for correctness. A label the original never had
+    would let a reused turn ACCEPT an entity nobody read."""
+    state, stored = _read(monkeypatch, detail)
+    reused = _reuse(stored)
+    assert reused.evidence_labels - state.evidence_labels == set()
+
+
+def test_labels_survive_reuse_when_the_payload_still_carries_them(monkeypatch):
+    state, stored = _read(monkeypatch, "full")
+    reused = _reuse(stored)
+    assert state.evidence_labels - reused.evidence_labels == set()
+
+
+def test_compaction_narrows_the_restorable_labels_and_that_is_stated(monkeypatch):
+    """A KNOWN, BOUNDED LIMIT, asserted so it is a decision rather than a surprise.
+
+    `_compact` rewrites `entry["summary"]` AFTER `_call` has harvested the full
+    one, keeping a few example values and dropping the long tail — that is its
+    entire purpose, measured at ~4,300 tokens for three charts. Reuse restores
+    what was STORED, so under `detail="compact"` the label set narrows.
+
+    It narrows, it never widens (the test above), so the failure mode is a reused
+    turn flagging a long-tail entity the first turn accepted — not accepting one
+    nobody read. Closing it would mean storing what compaction exists to discard;
+    the honest move is to bound it and say so rather than assert an equivalence
+    the payload cannot support.
+    """
+    state, stored = _read(monkeypatch, "compact")
+    reused = _reuse(stored)
+    assert reused.evidence_labels <= state.evidence_labels
+    # The numbers, which are what the figure checker runs on, are NOT narrowed.
+    assert not set(state.evidence) - set(reused.evidence)

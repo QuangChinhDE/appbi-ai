@@ -57,6 +57,15 @@ class BudgetExhausted(Exception):
     """
 
 
+#: Dict keys whose numeric value identifies a record rather than measuring
+#: anything. Evidence is the pile an answer's figures are checked against, so a
+#: primary key in it is a false witness: it can only ever agree by coincidence.
+_IDENTIFIER_KEYS = frozenset({
+    "id", "chart_id", "dashboard_id", "doc_id", "dataset_id", "dataset_table_id",
+    "link_id", "binding_id", "run_id", "version", "flow_version",
+})
+
+
 @dataclass
 class Budget:
     """Ceilings for the WHOLE run.
@@ -238,7 +247,27 @@ class RunState:
                 self.evidence_labels.add(payload.strip().lower())
             return
         if isinstance(payload, dict):
-            for v in payload.values():
+            for k, v in payload.items():
+                # AN IDENTIFIER IS NOT A MEASUREMENT.
+                #
+                # `_route_call` in the read handler already refuses to harvest a
+                # chart listing for this reason — "chart 1001" must not vouch for
+                # a claim of 1001. But the DATA tools echo the id back inside
+                # their own result: `get_chart_data` returns
+                # `_ok({"chart_id": ..., "columns": ..., "rows": ...})` and an
+                # insight pack opens with `chart_id` plus a `related` list of
+                # other charts' ids. Those go through `_call`, so the ids landed
+                # in the ledger anyway and the invariant held only where nobody
+                # had looked. Observed: a one-chart read put 41 and 88 in the
+                # pile the figure checker matches against.
+                #
+                # Keyed on what the value IS, not on a list of field names that
+                # happened to be numeric: these keys name a row in a table, and a
+                # row number cannot support a statement about the world. Titles
+                # and names are deliberately NOT here — they are labels, and
+                # `_unknown_labels` needs them.
+                if isinstance(v, (int, float)) and k in _IDENTIFIER_KEYS:
+                    continue
                 self.add_evidence(v, depth=depth + 1)
             return
         if isinstance(payload, (list, tuple)):

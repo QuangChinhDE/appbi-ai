@@ -47,9 +47,8 @@ TOKEN = "e2e-agent-flow-binding-fixture"
 BRAIN_KEY = "e2e_fixture_bound_flow"
 CHART = "E2E Agent Flow fixture chart"
 
-#: A report flow with NO data requirements, so `preflight` has nothing to
-#: resolve beyond the chart scope. The spec reads the binding, not what a run of
-#: this flow would answer.
+#: A flow with NO data requirements, so `preflight` has nothing to resolve beyond
+#: the chart scope. The spec reads the binding, not what a run of this would say.
 BODY = {
     "nodes": [
         {"key": "tra_loi", "type": "agent", "name": "Trả lời",
@@ -114,16 +113,24 @@ def main() -> int:
         # Reuse a published version if this script already made one. Publishing
         # again on every run would leave v2, v3, v4 behind on a machine where the
         # seed is run more than once, which is not what "idempotent" promised.
+        # `get_brain` returns the row's own `version` and `status`; there is no
+        # `published_version` key, and reading one — as a first version did —
+        # made this guard dead code that published v2, v3, v4 on successive runs
+        # while its comment claimed the opposite.
         try:
-            existing = reg.get_brain(db, BRAIN_KEY)
+            existing = reg.get_brain(db, BRAIN_KEY) or {}
         except Exception:
             existing = {}
-        version = int((existing or {}).get("published_version") or 0)
+        published = str(existing.get("status") or "").lower() == "published"
+        version = int(existing.get("version") or 0) if published else 0
         if not version:
             reg.save_draft(
                 db, user, brain_key=BRAIN_KEY, name="E2E bound flow",
                 description="Fixture", body=BODY, actor_email=EMAIL,
-                flow_type="report",
+                # `save_draft` accepts only "bot"/"chat" and falls back to the
+            # default otherwise; a report link wants the default, and naming a
+            # type it would discard only reads as though it did something.
+            flow_type=None,
             )
             db.commit()
             detail = reg.get_brain(db, BRAIN_KEY)
