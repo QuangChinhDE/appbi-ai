@@ -138,6 +138,32 @@ for (const [path, label] of SURFACES) {
   }
 }
 
+// ── 6. the terminal envelope must actually be consumed ──────────────────────
+//
+// The backend has emitted `{type: "result", envelope}` since typed answers
+// existed. The public SSE union did not list it, so `applyEvent` had no branch,
+// `onResult` was declared and passed and never called, and every notice the
+// runtime produced for a reader was thrown away one function short of the state
+// that renders it. A negative control found it: the notice was in the response
+// body and nowhere on the page.
+
+{
+  const bot = code(read('components/dashboards/DashboardAiBot.tsx'));
+  if (/onResult\?\./.test(bot) === false) {
+    fail('DashboardAiBot declares `onResult` but never calls it — the terminal '
+       + 'envelope, and every notice in it, is dropped.');
+  }
+  if (!/ev\.type === 'result'/.test(bot)) {
+    fail("DashboardAiBot's event handler has no `result` branch, so the typed "
+       + 'envelope never reaches message state.');
+  }
+  const api = code(read('lib/api/public.ts'));
+  if (!/type: 'result'/.test(api)) {
+    fail("the public SSE union does not list `result`, so a handler for it is "
+       + 'unreachable by construction — which is how this was missed.');
+  }
+}
+
 // ── report ──────────────────────────────────────────────────────────────────
 
 if (failures.length) {

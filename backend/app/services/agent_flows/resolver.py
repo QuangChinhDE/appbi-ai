@@ -152,6 +152,7 @@ def _semantic(call: Call, question: str) -> list[dict]:
                 "chart_name": cand.get("chart_name") or "",
                 "via": kind,
                 "concept": str(ident),
+                "strength": strength,
                 "why": f"{kind} “{asset.get('name') or ident}” is plotted by this chart",
             })
     return out
@@ -205,6 +206,28 @@ def resolve_charts(question: str, allowed: list[int], *, call: Call) -> dict:
             ids.append(c["chart_id"])
 
     if len(concepts) >= _AMBIGUOUS_AT:
+        # A CLEAR WINNER IS NOT AMBIGUITY.
+        #
+        # "giá trị đơn hàng trung bình" reaches two governed metrics — average
+        # order value AND average review score, which share "trung bình" — and
+        # refusing an ordinary BI question because a weaker concept also cleared
+        # the bar would be a regression caused by the bar itself. One concept
+        # matching strictly more of the question than every other is evidence,
+        # already computed; a genuine tie stays ambiguous.
+        best: dict[str, int] = {}
+        for c in cands:
+            key = c.get("concept") or ""
+            best[key] = max(best.get(key, 0), int(c.get("strength") or 0))
+        ranked = sorted(best.items(), key=lambda kv: -kv[1])
+        if len(ranked) > 1 and ranked[0][1] > ranked[1][1]:
+            winner = ranked[0][0]
+            won = [c for c in cands if c.get("concept") == winner]
+            ids = []
+            for c in won:
+                if c["chart_id"] not in ids:
+                    ids.append(c["chart_id"])
+            return {"status": "semantic", "chart_ids": ids, "candidates": won,
+                    "concepts": [winner]}
         return {"status": "ambiguous", "chart_ids": [], "candidates": cands,
                 "concepts": concepts}
     return {"status": "semantic", "chart_ids": ids, "candidates": cands,

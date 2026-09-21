@@ -33,6 +33,7 @@ class _State:
         self.evidence = evidence or []
         self.evidence_labels = set()
         self.question_grounding = {}
+        self.evidence_sources = set()
         self.notices = []
         self.citations = []
         self.outputs = {}
@@ -158,3 +159,42 @@ def test_an_explicit_report_overview_is_grounded_by_design():
     state.question_grounding = {"overview": {"mode": "report_order"}}
     got = E._verify_figures(state, answer("Tổng doanh thu là 13.591.643,70."))
     assert "grounding" not in got
+
+
+# ── grounding must actually change the verdict, not just be recorded ────────
+
+def test_numbers_from_only_unresolved_evidence_are_flagged():
+    """`grounding.unresolved_steps` existed and changed nothing. The rule needs
+    provenance the run did not have: `evidence` is a flat list of floats, so
+    "which step produced this figure" was unanswerable. `evidence_sources` is the
+    smallest contract that makes the distinction safe."""
+    state = _State(evidence=[13591643.7])
+    state.evidence_sources = {"overview"}
+    state.question_grounding = {"overview": {"mode": "question", "status": "none",
+                                             "unsupported": True}}
+    got = E._verify_figures(state, answer("Tổng doanh thu là 13.591.643,70."))
+
+    assert not got.get("unmatched"), "the figure exists in the evidence"
+    assert got["grounding"]["unresolved_steps"] == ["overview"]
+    assert got["grounding"]["all_evidence_unresolved"] is True
+
+
+def test_a_valid_capability_alongside_an_unresolved_read_is_not_punished():
+    """The brief's explicit guard: one unresolved source must not condemn a run
+    where another authorised capability genuinely answered."""
+    state = _State(evidence=[13591643.7])
+    state.evidence_sources = {"overview", "tra_cuu_web"}
+    state.question_grounding = {"overview": {"status": "none", "unsupported": True}}
+    got = E._verify_figures(state, answer("Tổng doanh thu là 13.591.643,70."))
+
+    assert got["grounding"]["unresolved_steps"] == ["overview"]
+    assert got["grounding"]["all_evidence_unresolved"] is False
+
+
+def test_a_resolved_read_produces_no_grounding_block_at_all():
+    state = _State(evidence=[13591643.7])
+    state.evidence_sources = {"overview"}
+    state.question_grounding = {"overview": {"status": "semantic",
+                                             "selected_ids": [681]}}
+    assert "grounding" not in E._verify_figures(
+        state, answer("Tổng doanh thu là 13.591.643,70."))

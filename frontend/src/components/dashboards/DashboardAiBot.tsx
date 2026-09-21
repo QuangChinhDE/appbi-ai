@@ -1418,6 +1418,19 @@ function applyEvent(
     if (ev.state) ops.updateState(ev.state);
     return;
   }
+  if (ev.type === 'result') {
+    // THE TERMINATOR, and it was being dropped here.
+    //
+    // The backend emits `{type: "result", envelope}` with the typed blocks,
+    // citations and NOTICES; `onResult` was declared, passed in, and never
+    // called, because this function only acts on the types it lists. So a
+    // runtime notice — "this report has no data for that question" — reached the
+    // browser in the response body and was thrown away one function short of the
+    // message state that renders it.
+    const envelope = (ev as { envelope?: FlowOutputEnvelope }).envelope;
+    if (envelope) ops.onResult?.(envelope);
+    return;
+  }
   if (ev.type === 'cost' || ev.type === 'usage') {
     // Internal cost/usage telemetry — hidden from the user.
     return;

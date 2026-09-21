@@ -140,21 +140,36 @@ def _charts_for_question(
     # compatibility needs no new setting — the existing toggle already says which
     # behaviour was asked for.
     if status == "lookup_failed":
-        # The resolver could not run, so it has said nothing about the domain.
-        # Degrade to the default scope — the behaviour before question matching
-        # existed — rather than telling a viewer the report cannot answer them.
-        selection["fell_back_to"] = "report_order"
+        # FAIL CLOSED, WITHOUT CLAIMING A VERDICT.
+        #
+        # Two different wrong answers were available here. Reading the report in
+        # id order says "these charts are relevant" on no evidence — the same
+        # fail-open the weather fix closed for `none`, with a nicer label. Calling
+        # it `unsupported` says "this report cannot answer you" on no evidence
+        # either; the resolver never reached that conclusion, it broke.
+        #
+        # So: read nothing, and say the resolution was UNAVAILABLE. Other
+        # authorised capabilities in the flow are untouched and may still answer.
+        selection["resolution_unavailable"] = True
+        state.notices.append(
+            Notice(
+                code="read_resolution_unavailable", audience="reader", severity="info",
+                text="Hiện chưa xác định được phần dữ liệu liên quan trong báo cáo, "
+                     "nên trợ lý chưa trả lời từ báo cáo này.",
+            )
+        )
         state.notices.append(
             Notice(
                 code="read_question_unmatched", audience="author", severity="warning",
                 node_key=node.key,
-                facts={"selection_status": status, "fell_back_to": "report_order"},
+                facts={"selection_status": status, "charts_read": 0},
                 remedies=["Xem lượt tool của bước này để biết tra cứu hỏng ở đâu."],
                 text=f"Bước “{node.name or node.key}” không tra cứu được để chọn biểu "
-                     "đồ theo câu hỏi, nên đọc theo thứ tự báo cáo.",
+                     "đồ theo câu hỏi, nên không đọc biểu đồ nào — đọc theo thứ tự "
+                     "báo cáo sẽ là đoán mò về mức liên quan.",
             )
         )
-        return allowed, selection
+        return [], selection
 
     if candidate_ids:
         selection["candidate_chart_ids"] = candidate_ids[:5]
@@ -265,6 +280,7 @@ async def run_report_read(
     out: dict[str, Any] = {"scope": {}, "charts": [], "filters": None}
     # WHY THESE CHARTS — recorded, not implied. The trace and the authoring UI
     # both have to answer it, and the answer differs per mode.
+    state.evidence_source = node.key
     out["selection"] = {"mode": _selection_mode(node)}
     yield AgentEvent(type="status", text="Đang đọc báo cáo…")
 
@@ -375,6 +391,7 @@ async def run_report_read(
     _resolved_to_nothing = bool(
         (out.get("selection") or {}).get("unsupported")
         or (out.get("selection") or {}).get("needs_clarification")
+        or (out.get("selection") or {}).get("resolution_unavailable")
     )
     if out["charts"]:
         out["read_ok"] = len(failed) < len(out["charts"])

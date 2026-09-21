@@ -250,12 +250,15 @@ def test_a_failed_lookup_falls_back_rather_than_reading_nothing(selector):
 
     ordered, why = selector.run([412, 990])
 
-    assert ordered == [412, 990], "a broken lookup degrades, it does not refuse"
+    # SUPERSEDED. Degrading was still fail-open: it asserted relevance on no
+    # evidence. Reading nothing is not a refusal either — see the status below.
+    assert ordered == [], "a broken lookup must not guess at relevance"
     # A BROKEN LOOKUP IS NOT A VERDICT ABOUT THE DOMAIN. Folding it into
     # `none` would skip the read and tell a viewer the report cannot answer
     # them, on a transient tool failure.
     assert why["status"] == "lookup_failed"
-    assert why["fell_back_to"] == "report_order"
+    assert why["resolution_unavailable"] is True
+    assert why.get("fell_back_to") is None
 
 
 # ── admitting what will not fit ─────────────────────────────────────────────

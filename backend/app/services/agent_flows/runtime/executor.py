@@ -262,6 +262,22 @@ async def run_flow(
                          "các mục này — có thể báo cáo đang giới hạn số dòng.",
                 )
             )
+        # GROUNDING CHANGES THE VERDICT, not just the record. A figure that exists
+        # in the evidence is verified; an answer whose ENTIRE evidence came from a
+        # step whose question never resolved is not grounded, and saying nothing
+        # lets it ship looking healthy.
+        if (verification.get("grounding") or {}).get("all_evidence_unresolved"):
+            state.notices.append(
+                Notice(
+                    code="answer_not_grounded_in_question",
+                    audience="reader",
+                    severity="warning",
+                    text="Các số trong câu trả lời có trong dữ liệu đã đọc, nhưng phần "
+                         "dữ liệu đó không được chọn theo câu hỏi của bạn — hãy đối "
+                         "chiếu lại trước khi dùng.",
+                )
+            )
+
         if verification.get("unmatched"):
             logger.warning(
                 "[flow] %s: %s figure(s) in the answer are not in the evidence: %s",
@@ -1142,9 +1158,25 @@ def _verify_figures(state: RunState, answer: Answer) -> dict | None:
         unresolved = sorted(
             key for key, g in (state.question_grounding or {}).items()
             if g.get("unsupported") or g.get("needs_clarification")
+            or g.get("resolution_unavailable")
         )
         if unresolved:
-            out["grounding"] = {"unresolved_steps": unresolved}
+            # THE SMALLEST RULE THE PROVENANCE SUPPORTS.
+            #
+            # Recording `unresolved_steps` changed nothing on its own. The useful
+            # question is whether the answer's numbers COULD have come from a
+            # source that genuinely answered — and that needs to know which steps
+            # produced evidence, which `evidence` (a flat list of floats) cannot
+            # say. `evidence_sources` can.
+            #
+            # Flagged only when EVERY contributor is unresolved. A flow whose web
+            # or knowledge step answered is not punished for a read step that
+            # resolved to nothing, which is the explicit guard on this rule.
+            sources = set(getattr(state, "evidence_sources", None) or set())
+            out["grounding"] = {
+                "unresolved_steps": unresolved,
+                "all_evidence_unresolved": bool(sources) and sources <= set(unresolved),
+            }
         return out
     except Exception:  # noqa: BLE001
         logger.debug("[flow] figure verification failed", exc_info=True)

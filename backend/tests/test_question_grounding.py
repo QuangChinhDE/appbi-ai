@@ -197,14 +197,19 @@ def test_the_author_diagnostic_matches_what_actually_happened(monkeypatch):
     assert author.facts.get("charts_read") == 0
 
 
-def test_a_lookup_failure_still_reports_the_fallback_it_really_took(monkeypatch):
-    """The one path that DOES still degrade must still say so."""
+def test_a_lookup_failure_reports_the_degraded_state_it_really_is(monkeypatch):
+    """SUPERSEDED CONTRACT. This asserted that a broken lookup still degrades to
+    report order and says so — honest about a behaviour that was itself fail-open.
+    It now reads nothing and reports resolution as unavailable, which is neither
+    "these charts are relevant" nor "this report cannot answer you"."""
     _, sel, st = run(monkeypatch, "doanh thu",
                      {"status": "lookup_failed", "chart_ids": [],
                       "candidates": [], "concepts": []})
-    assert sel["fell_back_to"] == "report_order"
+    assert sel.get("fell_back_to") is None
+    assert sel["resolution_unavailable"] is True
     author = [n for n in st.notices if n.audience == "author"][0]
-    assert author.facts["fell_back_to"] == "report_order"
+    assert author.facts.get("fell_back_to") is None
+    assert author.facts["charts_read"] == 0
 
 
 def test_resolving_to_nothing_is_not_reported_as_a_failed_read():
@@ -223,3 +228,69 @@ def test_resolving_to_nothing_is_not_reported_as_a_failed_read():
     broken = {"charts": [], "selection": {"mode": "report_order"}}
     assert not (broken["selection"].get("unsupported")
                 or broken["selection"].get("needs_clarification"))
+
+
+# ── (1) a broken resolver must fail CLOSED ──────────────────────────────────
+#
+# The weather fix closed `none` and `ambiguous` and left `lookup_failed` falling
+# back to report order — on the reasoning that a transient tool failure should not
+# be reported as "out of domain". True, and it still reads the whole report for a
+# question nobody resolved. The engine has NO evidence those charts are relevant;
+# it merely has no evidence they are not. Fail-open either way.
+
+LOOKUP_FAILED = {"status": "lookup_failed", "chart_ids": [],
+                 "candidates": [], "concepts": []}
+
+
+def test_a_resolver_failure_reads_no_question_selected_charts(monkeypatch):
+    ids, sel, _ = run(monkeypatch, "thời tiết Hà Nội hôm nay", LOOKUP_FAILED)
+    assert ids == [], (
+        "the resolver failed, so nothing is known about relevance — reading the "
+        "report in id order is a guess with a fallback label on it"
+    )
+    assert sel.get("fell_back_to") is None
+
+
+def test_a_resolver_failure_is_not_an_out_of_domain_verdict(monkeypatch):
+    """The resolver never reached a conclusion, so claiming one would be a lie in
+    the other direction."""
+    _, sel, _ = run(monkeypatch, "doanh thu theo tháng", LOOKUP_FAILED)
+    assert sel["status"] == "lookup_failed"
+    assert sel["resolution_unavailable"] is True
+    assert sel.get("unsupported") is not True
+
+
+def test_both_audiences_are_told_what_actually_broke(monkeypatch):
+    _, _, st = run(monkeypatch, "doanh thu theo tháng", LOOKUP_FAILED)
+    author = [n for n in st.notices if n.audience == "author"]
+    reader = [n for n in st.notices if n.audience == "reader"]
+    assert author and "tra cứu" in author[0].text.lower()
+    assert author[0].facts.get("selection_status") == "lookup_failed"
+    assert author[0].facts.get("charts_read") == 0
+    assert reader and reader[0].code == "read_resolution_unavailable"
+
+
+def test_a_resolver_failure_never_becomes_a_report_summary(monkeypatch):
+    """The regression the brief names: no path from a broken lookup to a summary
+    of an unrelated report."""
+    for question in ("thời tiết Hà Nội hôm nay", "what is the weather today?"):
+        ids, sel, _ = run(monkeypatch, question, LOOKUP_FAILED)
+        assert ids == [] and sel.get("fell_back_to") is None, question
+
+
+# ── (2) grounding is a health signal, not just a record ─────────────────────
+
+def test_the_grounding_rule_is_wired_to_a_reader_notice():
+    """`unresolved_steps` was recorded and acted on by nothing. The run must SAY
+    that its numbers, though real, were not selected for the question."""
+    import inspect
+
+    from app.services.agent_flows.runtime import executor as E
+
+    src = inspect.getsource(E)
+    assert "all_evidence_unresolved" in src
+    assert "answer_not_grounded_in_question" in src
+    i = src.index("all_evidence_unresolved")
+    assert "Notice(" in src[i:i + 1200], (
+        "the flag exists but nothing downstream reacts to it"
+    )

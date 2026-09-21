@@ -355,6 +355,12 @@ export type AiAgentEvent =
   | { type: 'cost'; usd: number; cap_usd: number; remaining_usd: number; over_cap: boolean; near_cap?: boolean; rounds?: number; prompt_tokens?: number; completion_tokens?: number }
   | { type: 'usage'; prompt_tokens: number; completion_tokens: number }
   | { type: 'error'; text: string }
+  // THE TERMINAL ENVELOPE. The backend has emitted this since typed answers
+  // existed (`wire.event_to_envelope`, branch `result`); the union never listed
+  // it, so every consumer's type said the event could not happen and the handler
+  // that would have used it was unreachable by construction. Typed blocks,
+  // citations and notices were arriving and being discarded.
+  | { type: 'result'; envelope: unknown }
   | { type: 'done' };
 
 // ── Briefing Wizard types ────────────────────────────────────────────────────

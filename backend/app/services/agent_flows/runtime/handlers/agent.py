@@ -345,6 +345,10 @@ async def run(
                     call.tool_name if result.get("ok")
                     else f"{call.tool_name}({result.get('error_code') or 'failed'})"
                 )
+                # An agent's OWN tool calls are its own capability answering —
+                # named so a grounding rule can tell them from a read step whose
+                # question never resolved.
+                state.evidence_source = node.key
                 state.add_evidence(result)
                 _collect_citation(state, call.tool_name, call.tool_args, result)
                 yield AgentEvent(

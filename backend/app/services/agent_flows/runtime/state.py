@@ -154,6 +154,15 @@ class RunState:
     #: "read through an explicit report-overview mode" from "unresolved", which
     #: are three different grounds for the same set of numbers.
     question_grounding: dict[str, Any] = field(default_factory=dict)
+    #: WHICH STEPS PRODUCED EVIDENCE. `evidence` is a flat list of numbers, so
+    #: "did this figure come from the step whose question never resolved" was
+    #: unanswerable — and without it, a grounding rule could only punish every run
+    #: with any unresolved source, including ones another capability answered
+    #: correctly. The smallest contract that makes the distinction safe.
+    evidence_sources: set[str] = field(default_factory=set)
+    #: The step currently producing evidence. Set by a handler at entry; read by
+    #: `add_evidence`, so call sites do not each have to remember to report.
+    evidence_source: str = ""
     #: Human-readable route, e.g. ["Path A", "Loop×4", "MEDIUM"]. What the Runs
     #: table shows in its "Execution path" column.
     path: list[str] = field(default_factory=list)
@@ -212,6 +221,8 @@ class RunState:
         cells, and the check is "did this figure come from somewhere", not a full
         index of the warehouse.
         """
+        if depth == 0 and self.evidence_source:
+            self.evidence_sources.add(self.evidence_source)
         if depth > 6 or len(self.evidence) > 20000:
             return
         if isinstance(payload, bool):
