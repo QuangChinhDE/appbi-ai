@@ -37,7 +37,14 @@ import {
 // conversations and feedback views render the same statuses, and three copies
 // would eventually disagree about what colour `partial` is.
 
-export function RunsTab({ brainKey }: { brainKey: string }) {
+export function RunsTab(
+  { brainKey, onOpenNode }: {
+    brainKey: string;
+    /** Open the node that produced a trace step in the Builder. Supplied by the
+     *  Builder, which owns navigation — Runs stays read-only and does not route. */
+    onOpenNode?: (nodeKey: string) => void;
+  },
+) {
   const { t, locale } = useI18n();
   const router = useRouter();
   const pathname = usePathname();
@@ -442,6 +449,17 @@ export function RunsTab({ brainKey }: { brainKey: string }) {
                     {selectedStep.name || selectedStep.key}
                   </b>
                   <div className="flex-1" />
+                  {/* THE LAST HOP OF THE DEBUGGING LOOP. Reading which step went
+                      wrong and then hunting that node by eye is where the trail
+                      went cold. This NAVIGATES only — no editing control joins
+                      Runs, and the canvas here stays read-only. */}
+                  {onOpenNode && (
+                    <button type="button" onClick={() => onOpenNode(selectedStep.key)}
+                      data-testid="open-in-builder"
+                      className="rounded border border-[rgb(var(--border-line))] px-2 py-0.5 text-tiny text-text-secondary transition hover:border-brand/40 hover:text-brand">
+                      {t('agentFlows.runs.openInBuilder')}
+                    </button>
+                  )}
                   <button type="button" onClick={() => setOpenStep(null)}
                     className="text-tiny text-text-tertiary hover:text-text-secondary">
                     ← Cả run

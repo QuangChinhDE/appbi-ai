@@ -161,6 +161,15 @@ export function BrainBuilder({
   const openRun = React.useCallback(
     (runId: number) => goTab('runs', { run: String(runId) }), [goTab],
   );
+  /** Runs -> the node that produced a trace step, open in the Builder.
+   *
+   *  Closes the debugging loop: an author reading "which step went wrong" had to
+   *  find that node again by eye. Built on `goTab` and the existing `selected`
+   *  state rather than a second navigation model — the only new thing is one URL
+   *  parameter. */
+  const openNodeInBuilder = React.useCallback(
+    (nodeKey: string) => goTab('design', { node: nodeKey }), [goTab],
+  );
   const [loading, setLoading] = React.useState(true);
   const [saving, setSaving] = React.useState(false);
   const [dirty, setDirty] = React.useState(false);
@@ -183,6 +192,17 @@ export function BrainBuilder({
   const [coverage, setCoverage] = React.useState<Record<string, number>>({});
 
   const [selected, setSelected] = React.useState<string | null>(null);
+  // ?node=<key> selects it, once. Consumed rather than kept: leaving it in the URL
+  // would fight every later click, and a stale parameter re-selecting a node on
+  // refresh is the kind of ghost that gets blamed on the canvas.
+  const nodeParam = searchParams?.get('node') || '';
+  React.useEffect(() => {
+    if (!nodeParam) return;
+    setSelected(nodeParam);
+    const q = new URLSearchParams(searchParams?.toString() || '');
+    q.delete('node');
+    router.replace(q.toString() ? `${pathname}?${q.toString()}` : pathname);
+  }, [nodeParam, router, pathname, searchParams]);
   const [insertAt, setInsertAt] = React.useState<InsertTarget | null>(null);
   const [validation, setValidation] = React.useState<ValidateResult | null>(null);
   // Which surface this flow was built for. Held here rather than read off `detail`
@@ -773,7 +793,7 @@ export function BrainBuilder({
           </div>
         )}
 
-        {mode === 'runs' && <RunsTab brainKey={brainKey} />}
+        {mode === 'runs' && <RunsTab brainKey={brainKey} onOpenNode={openNodeInBuilder} />}
         {mode === 'feedback' && (
           <FeedbackTab
             brainKey={brainKey}
