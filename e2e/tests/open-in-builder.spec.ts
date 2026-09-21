@@ -177,7 +177,13 @@ test.describe('Open in Builder @critical', () => {
     // and tripped on "Lưu nháp", which lives in the Builder's shared header above
     // the tab switch and has been on all four tabs since 74f7dca. It was never a
     // Runs control, so the assertion was wrong rather than the product.
-    const runs = page.locator('[data-testid="runs-tab"], main').last();
+    //
+    // `main` and nothing else: an earlier line here read
+    // `'[data-testid="runs-tab"], main'`, and no such testid exists in the
+    // frontend. The union still passed — through its second arm — while reading
+    // as though the scope were the Runs pane itself, which is the kind of dead
+    // arm somebody later tightens a test around and finds nothing holding it.
+    const runs = page.locator('main').last();
     await expect(runs.getByRole('button', { name: /Thêm bước|Add step/i })).toHaveCount(0);
     await expect(runs.getByRole('button', { name: /Xóa bước|Delete step/i })).toHaveCount(0);
     // And the one control this feature DID add is navigation, not editing.
