@@ -123,7 +123,11 @@ export function BrainBuilder({
   // can say "loading" rather than "nothing to attach" — the two look identical
   // in an empty dropdown and mean opposite things.
   const [attachable, setAttachable] = React.useState<Attachable | null>(null);
-  const [coverage, setCoverage] = React.useState<Record<string, number>>({});
+  // RUN COUNTS per node, not question coverage. Two different product
+  // concepts were both called `coverage`: this one counts how often a branch
+  // ran, and the one on the Test tab is which question CLASSES the flow can
+  // answer. A reader of either screen had to know which was meant.
+  const [runCounts, setRunCounts] = React.useState<Record<string, number>>({});
 
   const [selected, setSelected] = React.useState<string | null>(null);
   // ?node=<key> selects it, once. Consumed rather than kept: leaving it in the URL
@@ -184,7 +188,7 @@ export function BrainBuilder({
       setProviders(provs);
       setDirty(false);
       brainImpact(brainKey).then((i) => setLinks(i.links)).catch(() => undefined);
-      branchCoverage(brainKey).then(setCoverage).catch(() => undefined);
+      branchCoverage(brainKey).then(setRunCounts).catch(() => undefined);
     } catch {
       toast.error(t('agentFlows.builder.loadFailed'));
     } finally {
@@ -645,7 +649,7 @@ export function BrainBuilder({
                 answerKey={answerKey}
                 onSelect={setSelected}
                 onInsert={onInsert}
-                coverage={coverage}
+                runCounts={runCounts}
                 zoom={zoom}
                 onMove={canEdit ? onMoveNode : undefined}
                 canDropInto={dropGuard}

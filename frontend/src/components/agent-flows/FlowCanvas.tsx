@@ -40,8 +40,11 @@ export interface CanvasProps {
   answerKey: string;
   onSelect: (key: string) => void;
   onInsert: (target: InsertTarget) => void;
-  /** node key → runs in the coverage window. `0` marks a branch nobody reaches. */
-  coverage?: Record<string, number>;
+  /** node key → how many times it RAN in the window. `0` marks a branch nobody
+   *  reaches. Named for what it counts: `coverage` also means "which question
+   *  classes can this flow answer" on the Test tab, and one word for two
+   *  product concepts made both of them ambiguous. */
+  runCounts?: Record<string, number>;
   running?: Record<string, 'running' | 'done' | 'error' | 'skipped' | 'reused'>;
   zoom?: number;
   /** Dragging is owned by the parent so undo can capture the move as one step. */
@@ -248,18 +251,18 @@ function InsertPoint({
 }
 
 function NodeCard({
-  node, spec, selected, isAnswer, onSelect, width, coverage, runState, register, drag, setDrag,
+  node, spec, selected, isAnswer, onSelect, width, runCount, runState, register, drag, setDrag,
   draggable,
 }: {
   node: FlowNode; spec?: NodeSpec; selected: boolean; isAnswer: boolean;
-  onSelect: () => void; width: string; coverage?: number; runState?: string;
+  onSelect: () => void; width: string; runCount?: number; runState?: string;
   register: SharedProps['register']; drag: DragState;
   setDrag: (d: DragState) => void; draggable: boolean;
 }) {
   const { t, language } = useI18n();
   const specLabel = spec ? specText(spec, 'label', language) : '';
   const title = node.name || specLabel || node.type;
-  const never = coverage === 0;
+  const never = runCount === 0;
   return (
     <div
       ref={register(idNode(node.key))}
@@ -506,7 +509,7 @@ function Body({
 function NodeBlock({
   node, containerPath, ...rest
 }: SharedProps & { node: FlowNode; containerPath: string }) {
-  const { specs, selectedKey, answerKey, onSelect, onInsert, coverage, running, register, drag, setDrag } = rest;
+  const { specs, selectedKey, answerKey, onSelect, onInsert, runCounts, running, register, drag, setDrag } = rest;
   const spec = specs[node.type];
   const width = containerPath ? '280px' : '360px';
 
@@ -517,7 +520,7 @@ function NodeBlock({
       isAnswer={node.key === answerKey}
       onSelect={() => onSelect(node.key)}
       width={width}
-      coverage={coverage?.[node.key]}
+      runCount={runCounts?.[node.key]}
       runState={running?.[node.key]}
       register={register} drag={drag} setDrag={setDrag}
       draggable={!!rest.onMove}
