@@ -292,6 +292,8 @@ export function BrainBuilder({
           const to = top + (e.key === 'ArrowDown' ? 1 : -1);
           if (to < 0 || to >= body.nodes.length) return;
           onMoveNode(key, { containerPath: '', index: e.key === 'ArrowDown' ? to + 1 : to });
+          // Same reason: focus follows the step that moved, immediately, so a
+          // second Alt+Arrow keeps moving the same step.
           window.requestAnimationFrame(() => {
             document.querySelector<HTMLElement>(`[data-node-button="${key}"]`)?.focus();
           });
@@ -302,11 +304,14 @@ export function BrainBuilder({
         const next = order[here + (e.key === 'ArrowDown' ? 1 : -1)];
         if (!next) return;
         setSelected(next);
-        window.requestAnimationFrame(() => {
-          const el = document.querySelector<HTMLElement>(`[data-node-button="${next}"]`);
-          el?.focus();
-          el?.scrollIntoView({ block: 'nearest' });
-        });
+        // FOCUS MOVES NOW, not on the next frame. Deferring it dropped keys held
+        // down: the press after this one landed on a card that had just stopped
+        // being the tab stop, so focus fell to the body and the rest of the run
+        // went nowhere. Every card is rendered, so the element already exists;
+        // only the scroll needs to wait for layout.
+        const el = document.querySelector<HTMLElement>(`[data-node-button="${next}"]`);
+        el?.focus();
+        window.requestAnimationFrame(() => el?.scrollIntoView({ block: 'nearest' }));
         return;
       }
 
@@ -493,18 +498,32 @@ export function BrainBuilder({
           makes reachability depend on guessing every width in advance, which is
           how this row lost its buttons in the first place. */}
       <div className="flex h-11 flex-shrink-0 items-center gap-2 overflow-x-auto border-b border-[rgb(var(--border-line))] bg-surface-1 px-4">
-        <button type="button" onClick={onBack}
-          className="flex items-center gap-1 text-caption text-text-tertiary hover:text-text-primary">
-          <ArrowLeft className="h-3.5 w-3.5" /> {t('agentFlows.title')}
+        {/* THE ARROW KEEPS ITS MEANING WITHOUT THE WORDS. At the declared 1280px
+            minimum the row overflowed by ~124px even on a valid flow, and the
+            tabs — navigation — scrolled under the sticky verdict group, leaving
+            "Activity" unreachable at the width the product names as its floor.
+            The label is the first thing on this row that costs width and carries
+            no information the icon does not. */}
+        <button type="button" onClick={onBack} aria-label={t('agentFlows.title')}
+          className="flex flex-shrink-0 items-center gap-1 text-caption text-text-tertiary hover:text-text-primary">
+          <ArrowLeft className="h-3.5 w-3.5" />
+          {/* `2xl`, not `xl`: Tailwind's `xl` is min-width 1280, so it MATCHES at
+              exactly 1280 — the label stayed visible at the one width that
+              needed it gone, and the tabs stayed under the sticky group. */}
+          <span className="hidden 2xl:inline">{t('agentFlows.title')}</span>
         </button>
-        <span className="text-text-quaternary">/</span>
+        <span className="hidden text-text-quaternary 2xl:inline">/</span>
         <Input
           value={name}
           disabled={!canEdit}
           onChange={(e) => { setName(e.target.value); setDirty(true); }}
           // Narrower than it was: the row now carries the tabs too, and the name
           // is the one element that can give up width without losing meaning.
-          className="h-7 w-[120px] flex-shrink-0 border-transparent bg-transparent px-1.5 text-caption font-medium hover:border-[rgb(var(--border-line))] lg:w-[150px] xl:w-[240px]"
+          // The 240px step moved from `xl` to `2xl` because Tailwind's `xl` is
+          // min-width 1280 — it applied at exactly the declared minimum, and the
+          // 90px it took was the whole of the header's overflow there, which put
+          // the "Activity" tab under the sticky action group.
+          className="h-7 w-[120px] flex-shrink-0 border-transparent bg-transparent px-1.5 text-caption font-medium hover:border-[rgb(var(--border-line))] lg:w-[150px] 2xl:w-[240px]"
         />
         <StatusBadge status={status} version={version} size="xs" />
 
@@ -543,6 +562,9 @@ export function BrainBuilder({
             ones that need the height. The chips are the first thing dropped as
             the window narrows: they are context, while the tabs are navigation
             and the validation badge is a warning. */}
+        {/* `order-last` below xl: when the row is tight the tabs move to the end,
+            next to the sticky verdict group, so the thing that scrolls out of
+            sight is the identity cluster — context — rather than navigation. */}
         <div className="ml-2 inline-flex flex-shrink-0 items-center gap-0.5 rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 p-0.5">
           {([
             ['design', 'agentFlows.builder.tab.design'],
@@ -593,7 +615,18 @@ export function BrainBuilder({
         {validation && (
           validation.ok
             ? <Badge size="xs" variant="success" dot>{t('agentFlows.builder.valid')}</Badge>
-            : <Badge size="xs" variant="danger">{validation.errors[0] || t('agentFlows.builder.invalid')}</Badge>
+            : (
+              // BOUNDED. The verdict lives in the sticky right group, so a long
+              // error — and validation messages name the step and the reason —
+              // grew that group until it covered the tab strip, and "Activity"
+              // became unreachable at 1280. The full sentence is still one hover
+              // away, and the Design tab shows it in full beside the step.
+              <Badge size="xs" variant="danger" title={validation.errors[0] || ''}>
+                <span className="block max-w-[200px] truncate 2xl:max-w-none">
+                  {validation.errors[0] || t('agentFlows.builder.invalid')}
+                </span>
+              </Badge>
+            )
         )}
         {!!validation?.warnings.length && (
           <span
@@ -646,6 +679,10 @@ export function BrainBuilder({
                 nodes={body.nodes}
                 specs={specs}
                 selectedKey={selected}
+                // The door into the roving list: with nothing selected the
+                // FIRST step is the canvas's tab stop, so Tab reaches a step
+                // and the arrows take it from there.
+                focusKey={body.nodes[0]?.key ?? null}
                 answerKey={answerKey}
                 onSelect={setSelected}
                 onInsert={onInsert}

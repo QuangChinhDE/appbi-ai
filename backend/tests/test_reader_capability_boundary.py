@@ -146,7 +146,14 @@ def test_an_assistant_that_can_answer_nothing_suggests_nothing():
     assert len(cap["cannot"]) == len(CLASSES)
 
 
-@pytest.mark.parametrize("lang, probe", [("vi", "Xếp hạng"), ("en", "Rank things")])
+@pytest.mark.parametrize("lang, probe", [
+    ("vi", "Xếp hạng"), ("en", "Rank things"),
+    # A FULL LOCALE MEANS THE SAME LANGUAGE. The frontend's `useI18n()` exposes
+    # both `language` ('en') and `locale` ('en-US'), and the first version of the
+    # caller passed the locale — so an English reader was served Vietnamese
+    # labels, in the browser, on the one string the server produces for them.
+    ("en-US", "Rank things"), ("vi-VN", "Xếp hạng"),
+])
 def test_both_languages_are_served(lang, probe):
     """The class list is Vietnamese-only because it was written for the author's
     canvas; a reader-facing string has to exist in both."""

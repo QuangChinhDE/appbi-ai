@@ -40,6 +40,14 @@ export interface CanvasProps {
   answerKey: string;
   onSelect: (key: string) => void;
   onInsert: (target: InsertTarget) => void;
+  /** The step that is the canvas's single tab stop when NOTHING is selected.
+   *
+   *  Roving focus needs a door. Without this every card was `tabindex="-1"` on a
+   *  freshly loaded flow, so Tab walked past the drag handles and insert points
+   *  and never reached a step — the arrows worked, but only for someone who had
+   *  already clicked. A keyboard-only author could not enter the list at all. */
+  focusKey?: string | null;
+
   /** node key → how many times it RAN in the window. `0` marks a branch nobody
    *  reaches. Named for what it counts: `coverage` also means "which question
    *  classes can this flow answer" on the Test tab, and one word for two
@@ -251,10 +259,10 @@ function InsertPoint({
 }
 
 function NodeCard({
-  node, spec, selected, isAnswer, onSelect, width, runCount, runState, register, drag, setDrag,
+  node, spec, selected, isTabStop, isAnswer, onSelect, width, runCount, runState, register, drag, setDrag,
   draggable,
 }: {
-  node: FlowNode; spec?: NodeSpec; selected: boolean; isAnswer: boolean;
+  node: FlowNode; spec?: NodeSpec; selected: boolean; isTabStop?: boolean; isAnswer: boolean;
   onSelect: () => void; width: string; runCount?: number; runState?: string;
   register: SharedProps['register']; drag: DragState;
   setDrag: (d: DragState) => void; draggable: boolean;
@@ -282,6 +290,12 @@ function NodeCard({
         <button
           type="button"
           aria-label={t('agentFlows.canvas.dragHandle')}
+          // NOT A TAB STOP. It only responds to a pointer, and Tab landing on it
+          // ahead of the step card is what made the canvas look keyboard-hostile:
+          // the author arrived somewhere that does nothing and had no way
+          // forward. Alt+Arrow on the card is the keyboard equivalent of this
+          // control.
+          tabIndex={-1}
           onPointerDown={(e) => {
             e.preventDefault();
             e.stopPropagation();
@@ -300,7 +314,7 @@ function NodeCard({
       <button type="button" onClick={onSelect} className="w-full text-left"
         aria-pressed={selected}
         aria-label={`${title} — ${specLabel || node.type}`}
-        tabIndex={selected ? 0 : -1}
+        tabIndex={selected || isTabStop ? 0 : -1}
         data-node-button={node.key}>
         <div className="flex min-h-[44px] items-center gap-2 border-b border-[rgb(var(--border-line))] px-2.5 py-1.5">
           <span className={cn(
@@ -510,6 +524,7 @@ function NodeBlock({
   node, containerPath, ...rest
 }: SharedProps & { node: FlowNode; containerPath: string }) {
   const { specs, selectedKey, answerKey, onSelect, onInsert, runCounts, running, register, drag, setDrag } = rest;
+  void onInsert;
   const spec = specs[node.type];
   const width = containerPath ? '280px' : '360px';
 
@@ -517,6 +532,7 @@ function NodeBlock({
     <NodeCard
       node={node} spec={spec}
       selected={selectedKey === node.key}
+      isTabStop={(selectedKey || rest.focusKey) === node.key}
       isAnswer={node.key === answerKey}
       onSelect={() => onSelect(node.key)}
       width={width}

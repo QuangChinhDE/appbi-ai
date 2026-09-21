@@ -130,6 +130,60 @@ test.describe('authoring canvas @critical', () => {
     expect(labels.filter((l) => !l.trim()), 'unlabelled step buttons').toEqual([]);
   });
 
+  test('the keyboard can ENTER the step list on a freshly loaded flow', async ({ page }) => {
+    // THE DOOR, and it was missing. Roving focus was implemented correctly but
+    // every card was `tabindex="-1"` until something was selected BY MOUSE, so a
+    // keyboard-only author tabbed past drag handles and insert points and never
+    // reached a step at all. Found by driving it, not by reading it.
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await openBuilder(page, KEY);
+
+    const stops = await page.locator('[data-node-button][tabindex="0"]').count();
+    expect(stops, 'no step is reachable by Tab before anything is selected').toBe(1);
+
+    await page.locator('[data-node-button="buoc_1"]').focus();
+    await page.keyboard.press('ArrowDown');
+    await expect(page.locator('[data-node-button="buoc_2"]'))
+      .toHaveAttribute('aria-pressed', 'true');
+  });
+
+  test('the drag handle is not a tab stop ahead of the step it belongs to',
+    async ({ page }) => {
+      await page.setViewportSize({ width: 1280, height: 800 });
+      await openBuilder(page, KEY);
+      // SCOPED TO THE CANVAS. A broader `[aria-label*="Drag"]` also matched the
+      // inspector's resize handle — which is `tabindex="0"` and correctly so, it
+      // takes arrow keys — and the test then failed on a control that works.
+      const handles = await page
+        .locator('[data-node-button]')
+        .locator('xpath=..')
+        .locator('button[aria-label*="kéo"], button[aria-label*="Drag to reorder"]')
+        .evaluateAll((els: Element[]) => els.map((e) => e.getAttribute('tabindex')));
+      expect(handles.length).toBeGreaterThan(0);
+      expect(handles.every((v) => v === '-1'), 'a pointer-only handle is a tab stop')
+        .toBe(true);
+    });
+
+  for (const vp of VIEWPORTS) {
+    test(`every builder tab is reachable at ${vp.name}`, async ({ page }) => {
+      // At 1280 the header overflowed and "Activity" sat under the sticky verdict
+      // group — navigation scrolled out of reach at the width the product names
+      // as its minimum.
+      await page.setViewportSize({ width: vp.width, height: vp.height });
+      await openBuilder(page, KEY);
+      for (const label of ['Design', 'Runs', 'Feedback', 'Activity']) {
+        const tab = page.getByRole('button', { name: label, exact: true });
+        await expect(tab).toBeVisible();
+        const covered = await tab.evaluate((el: HTMLElement) => {
+          const r = el.getBoundingClientRect();
+          const top = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+          return !el.contains(top);
+        });
+        expect(covered, `the "${label}" tab is covered by another control`).toBe(false);
+      }
+    });
+  }
+
   test('reaching step 24 does not take 24 tab stops', async ({ page }) => {
     await page.setViewportSize({ width: 1280, height: 800 });
     await openBuilder(page, KEY);

@@ -36,7 +36,7 @@ import { AssistantCatalogue } from './AssistantCatalogue';
 import { ConversationView } from './ConversationView';
 
 export function ChatModule() {
-  const { t, locale } = useI18n();
+  const { t, language } = useI18n();
   const router = useRouter();
   const params = useSearchParams();
   const { data: permData } = usePermissions();
@@ -70,7 +70,11 @@ export function ChatModule() {
 
   React.useEffect(() => {
     let alive = true;
-    listChatBrains(locale)
+    // `language` ('en'|'vi'), NOT `locale` ('en-US'|'vi-VN'). Passing the locale
+    // made the backend's `lang == "en"` check miss, so an English reader saw
+    // Vietnamese capability chips — the labels are the one reader-facing
+    // string the server produces here.
+    listChatBrains(language)
       .then((rows) => { if (alive) setBrains(rows); })
       .catch(() => { if (alive) setBrains([]); })
       .finally(() => { if (alive) setLoadingBrains(false); });
@@ -78,7 +82,7 @@ export function ChatModule() {
     // Re-fetched on a language switch: the capability labels come from the
     // backend, so leaving this out would show Vietnamese classes on an English UI
     // until the next reload.
-  }, [locale]);
+  }, [language]);
 
   // ALL threads, always — the catalogue shows a per-assistant count, and fetching
   // per assistant would be one request per card.

@@ -98,7 +98,11 @@ def capability(flow: Flow, *, surface: str = "chat", lang: str = "vi") -> dict[s
     cannot: list[dict[str, str]] = []
     for qc in CLASSES:
         label, example = (qc.label_vi, qc.example_vi)
-        if lang == "en":
+        # `startswith`, because a caller that sends a full locale ("en-US") means
+        # English. An exact match sent an English reader Vietnamese labels, and a
+        # boundary that only accepts one spelling of a language tag is a trap the
+        # next caller falls into too.
+        if str(lang or "").lower().startswith("en"):
             label, example = _EN.get(qc.key, (qc.label_vi, qc.example_vi))
         entry = {"key": qc.key, "label": label, "example": example}
         (can if effective & set(qc.any_of) else cannot).append(entry)

@@ -328,7 +328,15 @@ export function ConversationView({
                           // `qa:handler-arity` exists to catch. It also reads
                           // better: a suggestion the reader can edit before
                           // asking is a prompt, not a decision made for them.
-                          <button key={q} type="button" onClick={() => onInputChange(q)}
+                          <button key={q} type="button"
+                            onClick={() => {
+                              onInputChange(q);
+                              // FOCUS FOLLOWS, or the reader has to click twice:
+                              // once to choose the question and once to reach the
+                              // box they were just handed.
+                              document.querySelector<HTMLTextAreaElement>(
+                                '[data-chat-input]')?.focus();
+                            }}
                             className="rounded-full border border-[rgb(var(--border-line))] px-2.5 py-1 text-tiny text-text-secondary transition hover:border-brand/40 hover:text-brand">
                             {q}
                           </button>
@@ -367,6 +375,7 @@ export function ConversationView({
               }}
               disabled={readonly || streaming}
               rows={1}
+              data-chat-input
               placeholder={readonly ? t('chat.placeholderReadonly') : t('chat.placeholder')}
               className={cn(
                 'min-h-[42px] max-h-40 flex-1 resize-y rounded-lg border border-[rgb(var(--border-line))]',
