@@ -77,6 +77,16 @@ jobs:
       # inlines it) and `next start`.
       SECRET_KEY: e2e-secret-not-a-production-value
 
+      # THIS DEPLOYMENT CONFIGURES NO MODEL, AND SAYS SO RATHER THAN BEING GUESSED.
+      #
+      # A spec that needs a provider used to discover that by probing and reading a
+      # status code, which only worked while there was also no LINK to run against —
+      # once one is seeded the endpoint answers 200 with a failed run, and the guard
+      # stops firing. Declaring it here keeps the precondition where the decision is
+      # actually made. Spending on a vendor to turn a skip into a pass would buy a
+      # number, not coverage.
+      E2E_NO_MODEL: "1"
+
       # THE MODULE UNDER TEST HAS TO BE MOUNTED.
       #
       # `api/__init__.py` includes the Agent Flows router — and the Direct Chat
@@ -130,6 +140,16 @@ jobs:
       - name: Seed the E2E account
         working-directory: backend
         run: python scripts/ci/seed_e2e_user.py
+
+      # A link with an ACTIVE binding, which `surfaces.spec.ts` needs and a
+      # freshly migrated database does not have. Without it that spec skipped
+      # itself on every run — and a skip that reports as a suite property rather
+      # than a missing fixture is how coverage quietly disappears. It seeds no
+      # model credential: the four provider-dependent specs stay skipped on
+      # purpose.
+      - name: Seed a bound public link
+        working-directory: backend
+        run: python scripts/ci/seed_e2e_binding.py
 
       - name: Start the backend
         working-directory: backend

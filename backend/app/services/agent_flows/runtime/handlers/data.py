@@ -662,6 +662,63 @@ def _note_status(entry: dict, key: str, payload: Any) -> None:
         entry[_STATUS] = "partial"
 
 
+def restore_report_read_provenance(value: Any, state: RunState, *,
+                                   node_key: str) -> None:
+    """Put back what the ORIGINAL read put in — and only that.
+
+    A node with `run_policy="when_stale"` is skipped on a later turn and its
+    stored value is hydrated into the prompt, so the model answers from data this
+    turn never fetched. The ledger the figure checker reads has to describe that
+    data, or every verdict built on it is wrong in one direction or the other.
+
+    IT LIVES HERE, NEXT TO THE PRODUCER, BECAUSE THE TWO HAVE TO CORRESPOND.
+    Above, exactly three things reach `state.evidence`, all through `_call`:
+    `inspect_filters`, and per chart its `summary` and `data` tool results — plus
+    the single figure `_index` keeps from a KPI tile, which is the only part of
+    that `_call` result the stored entry carries. Everything else in the output is
+    routing: it was fetched with `_route_call`, or computed here, and `_route_call`
+    says why it must stay out — a chart id of 1001 vouching for a claim of 1001.
+
+    So this walks the data-bearing sub-payloads rather than the whole dict. The
+    first version handed `state.add_evidence` the entire stored value, which was
+    wrong twice over: it harvested `charts[].chart_id`, `scope.read` and
+    `scope.available`, and it still MISSED the real numbers — rows sit seven
+    levels down and `add_evidence` stops at six, so the reused ledger held the
+    metadata and nothing else.
+    """
+    if not isinstance(value, dict):
+        return
+    state.evidence_source = node_key
+    if value.get("filters") is not None:
+        state.add_evidence(value["filters"])
+    for entry in value.get("charts") or []:
+        if not isinstance(entry, dict):
+            continue
+        for field in ("summary", "data"):
+            if entry.get(field) is not None:
+                state.add_evidence(entry[field])
+        if "value" in entry:
+            state.add_evidence(entry["value"])
+            if entry.get("value_of"):
+                state.add_evidence(entry["value_of"])
+        # The same charts it cited when it ran. `history.no_citation` is derived
+        # from the recorded citations, so without these the author is told a
+        # reused turn cites nothing — about an answer carrying `[chart:683]`.
+        ref = str(entry.get("chart_id") or "")
+        if ref and not any(
+            c.ref == ref and c.kind == "chart" for c in state.citations
+        ):
+            state.citations.append(
+                Citation(kind="chart", ref=ref, label=(entry.get("title") or ""))
+            )
+    # Carried forward too, or the relevance rule quietly stops applying on every
+    # follow-up turn: a selection that resolved to nothing would come back looking
+    # clean.
+    selection = value.get("selection")
+    if isinstance(selection, dict):
+        state.question_grounding[node_key] = dict(selection)
+
+
 def _entry_has_data(entry: dict) -> bool:
     """Did this chart yield anything usable?
 

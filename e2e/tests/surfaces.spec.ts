@@ -85,6 +85,25 @@ test.describe('published bot surface @critical', () => {
       // the auth in front of it, which `security-forged.spec.ts` covers.
       const linkId = await usableLink(request);
       test.skip(!linkId, 'no link with a binding on this deployment');
+      // THE ONE ASSERTION HERE THAT ONLY A PROVIDER CAN SATISFY.
+      //
+      // `expect(['ok','partial']).toContain(env.status)` is a claim about a run
+      // that answered. With no model credential the answering step errors and the
+      // run comes back `failed` — a true verdict about a deployment that
+      // configures no model, and nothing this spec can seed its way around. The
+      // old guard read `run.status() >= 500`, which only ever fired because there
+      // was no link either; the endpoint answers 200 with a failed run, so once a
+      // link is seeded that guard stops working. `e2e.yml` now declares the
+      // condition instead of this file inferring it from a status code.
+      //
+      // WHAT COVERS THE REST DETERMINISTICALLY, stubbed vendor, no spend:
+      // `test_agent_flow_golden.py` (trace order, per-step status, which step owns
+      // which tool call) and `test_tool_capability_gates.py` /
+      // `test_report_read_scope.py` (a tool refused outside the binding's scope).
+      // WHAT STAYS UNVERIFIED IN CI: the live provider round-trip — a published
+      // brain on a real link coming back `ok`/`partial` through a real model.
+      test.skip(process.env.E2E_NO_MODEL === '1',
+        'this deployment configures no model credential (e2e.yml: E2E_NO_MODEL)');
 
       const key = `e2e_bot_${Date.now()}`;
       const save = await request.put(BRAINS, {

@@ -318,4 +318,5 @@ backend/tests/.testdata/
 !backend/tests/test_module_floor.py
 !backend/tests/test_notice_audience_boundary.py
 !backend/tests/test_question_grounding.py
+!backend/tests/test_reuse_evidence_equivalence.py
 !backend/tests/test_cross_lingual_resolution.py

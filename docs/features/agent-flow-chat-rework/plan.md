@@ -10,7 +10,7 @@ Phases 3 onward are still proposals awaiting approval.
 | 2 — Node topology | **shipped** | `1507b96` |
 | — reviewer fix | **shipped** | `06d94b7` |
 | 3 — Reader-safe capability | proposed | — |
-| 3.5 — Debugging loop's last hop | proposed | — |
+| 3.5 — Debugging loop's last hop | **shipped** | `a8b1594` |
 | 4 — Decompose mega-components | proposed | — |
 | 4.5 — Canvas / a11y | proposed (unblocked: minimum viewport = 1280px) | — |
 | 5 — Vocabulary and polish | proposed | — |

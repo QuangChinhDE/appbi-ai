@@ -46,7 +46,6 @@ from app.services.agent_flows.contract import (
 )
 from app.services.agent_flows.envelope import (
     Answer,
-    Citation,
     FlowInput,
     FlowOutput,
     MemoryDelta,
@@ -57,6 +56,9 @@ from app.services.agent_flows.envelope import (
     text_answer,
 )
 from app.services.agent_flows.runtime import nodes as node_registry
+from app.services.agent_flows.runtime.handlers.data import (
+    restore_report_read_provenance,
+)
 from app.services.agent_flows.runtime.state import (
     Budget,
     BudgetExhausted,
@@ -599,39 +601,17 @@ def _reuse(node: Any, state: RunState, rctx: RunContext) -> Any:
     # AND ITS PROVENANCE, NOT ONLY ITS VALUE.
     #
     # Hydrating the variable puts last turn's data in front of the model; leaving
-    # the ledger empty meant the verifier then judged the answer against nothing
-    # and told the viewer their figures had no source — about data it had just
-    # been shown. Live runs 471, 472 and 475 carried exactly that notice while
-    # their read step read `reused`.
+    # the ledger empty meant the verifier judged the answer against nothing and
+    # told the viewer their figures had no source — about data it had just been
+    # shown. Live runs 471, 472 and 475 carried exactly that notice while their
+    # read step read `reused`.
     #
-    # A reused read genuinely read; it read on an earlier turn. The ledger must
-    # describe what the model can see, or every verdict built on it is wrong in
-    # one direction or the other.
+    # The restore itself lives beside the read handler, because it has to mirror
+    # what that handler counts as evidence: the same sub-payloads, and none of the
+    # routing metadata `_route_call` keeps out. Done here, out of sight of the
+    # producer, it drifted twice.
     if getattr(node, "type", "") == "report_read":
-        state.evidence_source = node.key
-        state.add_evidence(value)
-        # The same charts it cited when it ran. `history.no_citation` is derived
-        # from the recorded citations, so leaving these behind put "câu trả lời
-        # không dẫn nguồn nào" on the author's screen for every reused turn —
-        # including answers whose own text carries `[chart:683]`.
-        for entry in (value.get("charts") or []) if isinstance(value, dict) else []:
-            # `chart_id`, which is the only key the handler writes
-            # (`data.py`: `entry: dict[str, Any] = {"chart_id": chart_id}`). A
-            # first version read `id`, matched the test fixture it was written
-            # beside, and appended nothing at all on the running stack.
-            ref = str((entry or {}).get("chart_id") or "")
-            if ref and not any(
-                c.ref == ref and c.kind == "chart" for c in state.citations
-            ):
-                state.citations.append(
-                    Citation(kind="chart", ref=ref, label=(entry.get("title") or ""))
-                )
-        selection = (value or {}).get("selection") if isinstance(value, dict) else None
-        if isinstance(selection, dict):
-            # Carried forward too, or the Wave-2 relevance rule quietly stops
-            # applying on every follow-up turn: a selection that resolved to
-            # nothing would come back looking clean.
-            state.question_grounding[node.key] = dict(selection)
+        restore_report_read_provenance(value, state, node_key=node.key)
     return value
 
 
