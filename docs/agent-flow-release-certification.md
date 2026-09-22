@@ -15,6 +15,172 @@ the probes that produced them.
 
 ---
 
+---
+
+## AUTHORITATIVE CURRENT RELEASE REGISTER
+
+**This section is the current truth. Everything from §11b down is audit history,
+labelled HISTORICAL / SUPERSEDED where a later session moved it.**
+
+Current HEAD: `088e064de6f926c1ea032dc7d927cc081d69e23c` (branch `feat/agent-flow-chat-rework`)
+
+Why this section exists: §11b recorded B1/B3/B5 as closed while §12 still listed
+them as open blockers, and the final verdict still counted five open failures.
+Three statements, one repository. A release decision read off any one of them is
+a decision read off a document disagreeing with itself.
+
+### Correctness blockers
+
+**B1 — a partial period reported as a collapse. CLOSED.**
+`_trim_partial_edges` no longer asserts a calendar fact from magnitude. A
+business that genuinely collapsed produces the identical value series, so the
+first fix would have hidden a real collapse and reported a calm figure between
+the two healthy months before it. `partial_last` now means PROVEN, from a
+declared filter ceiling that stops before the bucket's period ends; an
+unexplained low edge reports `edge_completeness: suspected_incomplete` and
+offers the reader both readings; `observed_latest` is unconditional, so a low
+final value cannot leave the payload by being low.
+Locked by `test_partial_period_comparison.py` — 30 cases, 22 red against the
+previous commit.
+Live D1 on this HEAD: compares 1,003,308.47 against 1,058,728.03 (−5.23%) and
+states "có một giá trị bất thường thấp là 166.46 … không thể so sánh đáng tin
+cậy". The edge is preserved, described, and not the headline.
+
+**B2 — a category answered as a state. OPEN. Tool contract closed; live
+behaviour still reproduces.**
+Fixed and locked at the tool layer: `discover._fields()` serialises `field_kind`,
+`resolve_chart_candidates` accepts `dimension` as an independent concept,
+candidates report `measure_match` / `dimension_match` / `complete`, `exact` means
+"satisfied everything that was asked", and the resolver resolves the PAIR rather
+than sending a dimension in as a measure.
+Locked by `test_dimension_is_not_a_measure.py` — 13 cases, 11 red against the
+previous commit.
+Live D2 on this HEAD still answers: "Bang có doanh thu cao nhất là
+**health_beauty**". See open item 1 for why the fix does not reach it.
+
+**B3 — two definitions of "time-like field". CLOSED.**
+One definition in `packs/_timefield.py`, shared by `coverage` and
+`project_ahead`. The two had drifted apart in BOTH directions — coverage still
+carried the "nam" inside "name" substring bug AND had never learned
+`month|quarter|week|year`, so it did not recognise `year_month`. 5 of 16 corpus
+columns were classified differently.
+Locked by `test_time_axis_contract.py`. A third definition survives on purpose —
+open item 3.
+
+**B4 — unrelated evidence becomes the answer. CLOSED.**
+`_note_capability_gap`: a capability skipped as unavailable, plus no step that
+resolved the question, plus an answer citing figures, produces a reader notice
+naming which step could not run and downgrades the run from `ok` to `partial`.
+Built entirely from records the run already keeps — `state.skipped` and the
+report-read selection mode — with no relevance judge and no reading of the
+question text.
+Locked by `test_capability_serviced_the_intent.py` — 10 cases, half of them for
+what must survive: web off while the report genuinely answered, one step
+servicing when another did not, a branch skipped for a condition rather than a
+capability, and an answer that states no figures.
+Stated cost: a pure overview flow carrying a Web node is marked `partial` when
+web is off, because its read never matched the question either.
+
+**B5 — a dead retry drains the budget. CLOSED.**
+The guard held and the budget was spent anyway: `spend_tool()` sat two lines
+above the refusal check, so a request the runtime had already declined still
+cost a call. Spending now happens inside the executor handed to the retry policy,
+so a call that does not reach `tool_registry.execute` does not reach the budget.
+And making the repeat free removed its cost, not its loop — after two ignored
+recoveries the tools come off the table and the model is asked to answer with
+what it has.
+Locked by `test_dead_retry_costs_nothing.py` — 9 integration cases asserting
+registry execution count, tool budget spent, model rounds and final answer;
+3 red against the previous commit.
+
+**B6 — unit/time/scope asserted without provenance. CLOSED for UNIT, TIME,
+SCOPE and AGGREGATION.**
+One rule rather than five: a qualifier may be stated only if it appears in the
+evidence. `qualifiers.py` plus one correction round at the answering node, in the
+same place and with the same "only if actually better" acceptance as
+`_retry_figures`, because there the tool results are still in the message history.
+Locked by `test_qualifier_provenance.py` — 21 cases, half for the false
+positives. DIMENSION is deliberately not enforced here — open item 2.
+
+### Open, with the exact next step
+
+1. **B2 live path.** The tool contract is correct and locked; the live failure is
+   upstream of it. On `revenue_v2` / link 39 the `overview` step reads by REPORT
+   ORDER, not by question, so `_charts_for_question` — and with it the paired
+   measure+dimension resolution — never runs. The answering agent then calls
+   `rank_values` on a category chart and the answer labels the result "Bang".
+   Next step: route the direct-agent path through the same resolution, so an
+   agent ranking on a chart whose dimension is not the one asked about is refused
+   or caveated. This is a selection-time fix. A text rule at answer time would be
+   a second, weaker opinion about the same thing.
+
+2. **DIMENSION qualifier.** Excluded from `qualifiers.py` on purpose. The evidence
+   blob contains the governed field's label whenever `search_business_assets`
+   ran, so "does the word appear in the evidence" cannot separate *mentioned*
+   from *measured*. It belongs with item 1.
+
+3. **A third definition of "time-like field".**
+   `dashboard_ai_bot.thinking.advanced_tools._looks_like_datetime` is a substring
+   test over a different token list: it does not recognise `created_at`, and it
+   carries `day` / `tuan` / `quy`, which the canonical one does not. It gates
+   `compare_periods`, so folding it in would change that tool's acceptance in the
+   same pass that changed its edge handling. Recorded rather than merged quietly.
+
+4. **`dashboard_ai_bot` has no guardrail feature mapping.**
+   `guardrail_check.py --files backend/app/services/dashboard_ai_bot/thinking/advanced_tools.py`
+   returns `ok` with no features touched and no required tests. The file that
+   produces every analytical number is `unknown` coverage, which is not safe
+   coverage. The `agent_flows` feature globs cover `services/agent_flows/` only,
+   while the tool BODIES still live in `dashboard_ai_bot` behind the `_source.py`
+   seam — the same shape as the answer-renderer gap already fixed in that file
+   with a comment explaining it.
+
+### Live eval on this HEAD
+
+    PASS 10  ·  WARN 8  ·  FAIL 0   of 18 cases        (balanced)
+
+One verdict per scenario, and the counts sum to the case count. The previous
+harness printed `AUTO INVARIANTS: n/m clean` beside a per-subcheck listing —
+two scoreboards with two denominators, and no number that meant "how many
+scenarios passed". Locked by `test_eval_accounting.py`.
+
+Auto invariants 18/18 clean: no scope violation, no ungranted tool, no withheld
+capability called, no run blocked, no figure without a source.
+
+The 8 WARNs are the engine reporting its own distrust, which is the behaviour
+these fixes added: `figures_unverified`, `qualifier_unverified`, and two runs
+that ended `partial`. Worth reading rather than counting: `coverage` answered
+"01/09/2016 đến 01/09/2018" where `describe_time_coverage` returned 2016-09-04
+to 2018-10-17. Wrong — caught, flagged and downgraded, rather than shipped as a
+clean PASS.
+
+### Pre-release hardening — all 13 carried forward
+
+24 of 36 tools with no semantic oracle · 6 of 36 with no `output_schema` ·
+certification machinery gitignored · `agent_flow_eval` manual · Tool-node
+identity on the canvas · raw node keys shown to authors · Vietnamese in the
+English author surface · answer language vs question language · the green unit
+tier hiding counts · PR-only gates that never run on this branch ·
+`search_knowledge` relevance floor · internal tool vocabulary leaking to readers ·
+live-eval one-verdict-per-case (now CLOSED — see above).
+
+### Deferred to Wave 3 — all seven carried forward
+
+Binding-aware logical asset selection · reusable Subflow/Specialist · safe
+parallel fan-out · durable checkpoint/background execution · human-in-the-loop ·
+agentic builder · MCP/plugin boundary.
+
+### Current verdict
+
+    NOT READY FOR RELEASE — READY FOR UAT
+
+B1, B3, B4, B5 and B6 are closed, each with a test that fails against the commit
+before it. B2 is closed at the tool layer and open at the live path, and the rule
+for this session was that B2 does not close until live D2 stops returning a
+category as a state. It still does.
+
+---
+
 ## 1. Exact SHA certified
 
     97db3f90313691e8f98f0f3fe0132a771868f97d
@@ -330,7 +496,7 @@ Also on the record: 3 suites CI runs are named by no guardrail gate
 `test_workboard_offline_relation_phase2`), and 29 committed backend suites are
 referenced by no runner at all. Neither set is Agent Flow.
 
-## 11b. Pre-release closure session — what moved, and two corrections
+## 11b. Pre-release closure session — what moved, and two corrections (HISTORICAL / SUPERSEDED)
 
 Certified SHA `97db3f9`; this section covers the fixes made after it.
 
@@ -359,9 +525,12 @@ future omission.
 exercise its fixture in normal CI" — the contract now has 13 deterministic cases
 that run on every push, with the real-dashboard control kept alongside.
 
-## 12. Confirmed release blockers
+## 12. Confirmed release blockers — HISTORICAL / SUPERSEDED
 
-Each reproduced on this SHA with evidence above. None fixed here.
+**Superseded by the AUTHORITATIVE CURRENT RELEASE REGISTER at the top of this
+document.** Kept because it records how each blocker was first reproduced, which
+is the evidence the fixes were later written against. As first recorded on SHA
+97db3f9, where none of them was fixed:
 
 1. **B1 — `compare_periods` presents a partial final period as a real latest
    period** (D1). Every mode. Reaches the reader as "-99.98%, worsening". The
@@ -400,7 +569,10 @@ Each reproduced on this SHA with evidence above. None fixed here.
   unrelated query. Scope is correct — every hit was the report's own attached
   document — but relevance is not filtered.
 
-## RELEASE VERDICT
+## RELEASE VERDICT — HISTORICAL / SUPERSEDED
+
+**Superseded by “Current verdict” in the register at the top of this document.**
+This is the verdict as it stood on SHA 97db3f9, before any of the five was fixed.
 
     READY_FOR_UAT
 
