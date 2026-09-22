@@ -96,6 +96,24 @@ layers:
     label: "Frontend shared types"
     may_depend_on: ["fe_types"]
 
+  # THE MESSAGE CATALOGS, which no layer described.
+  #
+  # Found by the PR gate, which is the first thing on this branch to run
+  # `--diff --base ...` across the whole range: `frontend/src/i18n/catalog/
+  # agent-flows.ts` sits on `policy.unknown_policy.blocking_globs`, matched no
+  # layer, and the guardrail exited BLOCK. Its own message named the remedy —
+  # teach the rule base what these are, and do NOT widen `blocking_globs` to
+  # make it pass.
+  #
+  # A catalog is a CONTRACTS LEAF like `fe_types`: every file here is a literal
+  # map of keys to strings, importing only the `ModuleCatalog` type from its own
+  # index. Nothing else may be imported into it, which is what keeps a
+  # translation from acquiring behaviour.
+  - id: fe_i18n
+    match: ["frontend/src/i18n/**"]
+    label: "Frontend message catalogs (i18n)"
+    may_depend_on: ["fe_i18n", "fe_types"]
+
   - id: fe_stores
     match: ["frontend/src/stores/**", "frontend/src/providers/**"]
     label: "Frontend stores / providers"
