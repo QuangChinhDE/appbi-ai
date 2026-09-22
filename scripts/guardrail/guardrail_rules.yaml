@@ -299,6 +299,35 @@ features:
       # The parity INVARIANT still fired (it matches diff content, not paths) —
       # what was missing is the required-test set, which is path-matched.
       - frontend/src/components/dashboards/AnswerBlocks.tsx
+      # THE TOOL BODIES THEMSELVES, which do not live under `agent_flows/`.
+      #
+      # `tools/packs/_source.py` is an explicit seam: the packs DECLARE what a
+      # tool is — name, cost, result kind, what it returns — while the body is
+      # still imported from `dashboard_ai_bot`, because that data path carries
+      # dozens of hard-won corrections and rewriting it from a clean sheet means
+      # finding those failures again in production.
+      #
+      # The seam was never reflected here, so the file that produces every
+      # analytical number in the product could be edited while the guardrail
+      # reported `ok`, 0 features touched and 0 required tests. Measured on all
+      # six of these files before this entry existed. `unknown` is not `safe`,
+      # and the same shape is already documented above for AnswerBlocks.tsx.
+      #
+      # Scoped to the ANALYTICAL SURFACE and no wider: the tool bodies, the data
+      # path every tool reads through, the governed scope/semantic helpers, the
+      # figure verifier and the external tool body. Deliberately NOT included —
+      # `events.py` (an event dataclass), `providers/**` (LLM adapters),
+      # `guard.py`, `prompts.py`, `govern_doc_*` — those are runtime support, and
+      # claiming them would make Agent Flow the owner of code it only consumes.
+      - backend/app/services/dashboard_ai_bot/thinking/tools.py
+      - backend/app/services/dashboard_ai_bot/thinking/advanced_tools.py
+      - backend/app/services/dashboard_ai_bot/tool_context.py
+      - backend/app/services/dashboard_ai_bot/govern_tools.py
+      - backend/app/services/dashboard_ai_bot/verifier.py
+      - backend/app/services/dashboard_ai_bot/web_search.py
+      # Found by the computed invariant in `scripts/ci/test_tool_bodies_are_guarded.py` on its
+      # first run — `recall_knowledge` lives here, and a hand-written list had missed it.
+      - backend/app/services/dashboard_ai_bot/knowledge.py
     # Whole-word matched (guardrail_core._keyword_pattern). "flow" alone is far too
     # common in this repo to be a signal, so the phrases carry the weight.
     keywords: ["agent flow", "agent flows", agentflow, brain, brains, brain_key,
@@ -381,6 +410,9 @@ tests:
   guardrail_diff_range:
     run: "pytest scripts/ci/test_guardrail_diff_range.py"
     locks: "the guardrail tells an EMPTY diff from one it could not resolve: a real zero-change range is allowed, an unresolvable base/head or a git failure returns unknown and a non-zero exit, and --json stays valid JSON in every state"
+  tool_bodies_are_guarded:
+    run: "pytest scripts/ci/test_tool_bodies_are_guarded.py"
+    locks: "every file defining a registered tool is claimed by a guardrail feature and pulls in at least one required test, derived from the registry rather than a list; the seam under dashboard_ai_bot is named; runtime support (events.py) is deliberately NOT claimed"
   ci_wiring_is_real:
     run: "pytest scripts/ci/test_ci_wiring_is_real.py"
     locks: "an allow-listed backend suite is actually PASSED TO PYTEST, not merely present somewhere in the workflow file: the per-line argument rule, a collapsed line continuation named with its line number, 'present mid-line' distinguished from 'absent', an allow-listed file that does not exist, and this repository's own workflow checked for the same collapse"
