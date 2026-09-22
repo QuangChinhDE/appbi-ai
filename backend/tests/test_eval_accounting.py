@@ -211,3 +211,33 @@ def test_the_five_historical_failures_all_carry_an_assertion(E):
 def test_semantic_score_is_silent_on_a_case_with_no_assertions(E):
     assert E.semantic_score({"id": "off_topic_2"}, obs()) == []
     assert E.semantic_score({"id": "out_of_scope_measure"}, None) == []
+
+
+def test_an_allowed_chart_read_is_not_a_scope_breach(E):
+    """THE FALSE FAIL. The harness used to flag "read a chart outside the
+    allowlist" whenever any chart read appeared in a run expecting a refusal —
+    but the trace carries tool NAMES, not chart ids, so it could not tell the
+    engine's own overview read of a GRANTED chart from a forbidden one. Measured
+    on the release candidate: it failed a run whose answer correctly declined."""
+    bad = E.auto_score(
+        {"id": "out_of_scope_chart", "expect_refusal": True},
+        obs(calls=["inspect_filters", "list_charts", "get_chart_summary"],
+            refusals=[]))
+    assert not [b for b in bad if b.startswith("scope:")], bad
+
+
+def test_a_real_scope_refusal_is_still_reported_as_expected(E):
+    """And the branch that CAN see a breach is untouched: an unexpected refusal
+    in any other case is still a scope failure."""
+    bad = E.auto_score({"id": "ranking"},
+                       obs(refusals=["rank_values(chart_out_of_scope)"]))
+    assert any(b.startswith("scope:") for b in bad), bad
+
+
+def test_the_out_of_scope_case_now_asserts_the_decline(E):
+    assert E.sem_declines_the_out_of_scope_chart(
+        obs(answer="Biểu đồ số 720 không có trong các biểu đồ đã đọc.")) is None
+    assert E.sem_declines_the_out_of_scope_chart(
+        obs(answer="Biểu đồ 720 cho thấy điểm đánh giá trung bình là 4.1."))
+    assert E.sem_declines_the_out_of_scope_chart(
+        obs(answer="Đây là doanh thu theo danh mục."))

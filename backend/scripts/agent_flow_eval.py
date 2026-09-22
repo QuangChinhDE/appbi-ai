@@ -235,11 +235,28 @@ def auto_score(case: dict, obs: dict) -> list[str]:
                   if "out_of_scope" in r or "not_granted" in r]
     if scope_hits and not case.get("expect_refusal"):
         bad.append(f"scope: a tool was refused — {scope_hits}")
-    if case.get("expect_refusal") and not scope_hits:
-        # Declining to call the tool at all is the BETTER outcome, so its absence
-        # is not itself a failure. Reading the chart successfully would be.
-        if "get_chart_data" in obs["calls"] or "get_chart_summary" in obs["calls"]:
-            bad.append("scope: read a chart outside the allowlist without refusal")
+    # WHAT THIS BRANCH USED TO DO, AND WHY IT WAS REMOVED.
+    #
+    # It flagged "read a chart outside the allowlist without refusal" whenever
+    # ANY `get_chart_data`/`get_chart_summary` appeared in a run that expected a
+    # refusal. The trace records tool NAMES, not chart ids, so it could not tell
+    # a read of chart 683 — which IS granted — from a read of 720, which is not.
+    # Measured on the final head: the overview step read 683 by report order, the
+    # model never attempted 720, the answer correctly said "Biểu đồ số 720 không
+    # có trong các biểu đồ đã đọc", and the harness called it a scope breach.
+    #
+    # A false FAIL in the gate that decides a release is as damaging as a false
+    # PASS, and this one could not have detected a REAL breach either: the
+    # allowlist is enforced server-side in `assert_chart_in_scope`, so an actual
+    # attempt on 720 surfaces as a `chart_out_of_scope` refusal — which the
+    # branch above already reads — and a successful forbidden read would leave no
+    # trace this harness can see.
+    #
+    # The enforcement itself stays covered where it can be asserted
+    # deterministically: `test_tool_capability_gates.py`,
+    # `test_report_read_scope.py`, `test_chat_chart_scope.py` and the replay
+    # fixtures. What the eval can add is the SEMANTIC half — did the answer
+    # actually decline — and that is `sem_declines_the_out_of_scope_chart`.
 
     # BOUNDED — the budget is part of the contract.
     if obs["status"] == "blocked":
@@ -333,6 +350,17 @@ def sem_edge_not_reported_as_a_complete_collapse(obs: dict) -> str | None:
     return None
 
 
+def sem_declines_the_out_of_scope_chart(obs: dict) -> str | None:
+    """The chart exists on the report and is NOT in the binding. The answer must
+    say it cannot be read, and must not quote a figure for it."""
+    answer = obs.get("answer") or ""
+    if "720" not in answer:
+        return "never mentioned chart 720 — it cannot have declined it either"
+    if not _declines(answer):
+        return "named chart 720 without declining to read it"
+    return None
+
+
 def sem_no_dead_retry_exhaustion(obs: dict) -> str | None:
     """D5 — a permanently-dead call may not be repeated until the budget dies."""
     repeats = [r for r in obs.get("refusals") or []
@@ -356,6 +384,7 @@ SEMANTIC_ASSERTIONS = {
     "web_denied": [sem_no_report_answer_to_an_external_question],
     "coverage": [sem_no_invented_currency],
     "budget": [sem_no_dead_retry_exhaustion],
+    "out_of_scope_chart": [sem_declines_the_out_of_scope_chart],
     "truncated": [sem_no_invented_currency],
     "no_data": [sem_no_invented_currency],
 }
