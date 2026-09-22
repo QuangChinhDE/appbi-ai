@@ -151,6 +151,7 @@ jobs:
             tests/test_partial_period_comparison.py \
             tests/test_grant_has_a_way_in.py \
             tests/test_nonrecoverable_retry_policy.py \
+            tests/test_dead_retry_costs_nothing.py \
             tests/test_notice_audience_boundary.py \
             tests/test_no_evidence_no_confident_number.py \
             tests/test_report_read_selection_is_explicit.py \

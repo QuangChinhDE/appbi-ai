@@ -175,6 +175,14 @@ _FINAL_ERROR_CODES = frozenset({
 })
 
 
+#: How many ignored recoveries a node tolerates before it stops offering tools.
+#:
+#: Two, because the measured failure was six identical calls and one explanation
+#: can plausibly be missed in a batch the model had already committed to. Two
+#: cannot: by then the model has seen the reason, named, twice.
+_MAX_IGNORED_RECOVERIES = 2
+
+
 def _is_final_refusal(result: dict) -> bool:
     """Is this a refusal that a second identical call cannot change?
 
@@ -284,6 +292,9 @@ async def run(
     #: deferred past the budget ceiling, and the first version of this shadowed it
     #: and handed a list where a dict was expected.
     final_refusals: dict[str, str] = {}
+    #: How many times this node has handed back `already_refused` — that is, how
+    #: many times it explained a dead request and the model asked for it anyway.
+    ignored_recoveries = 0
     #: Provider adapters report a refused key or a bad model as an `error` EVENT
     #: rather than an exception. Without capturing it the node finished with empty
     #: text and was recorded `ok` — so the trace said every step succeeded while the
@@ -399,9 +410,22 @@ async def run(
                                  "trả lời bằng dữ liệu đã có và nói rõ phần chưa kiểm được",
                     },
                 })
-            for call in runnable:
+            # BUDGET IS SPENT WHERE THE WORK HAPPENS, NOT WHERE IT IS ANNOUNCED.
+            #
+            # The retry policy stopped the second identical call from reaching the
+            # registry, and the accounting stayed where it was — two lines above
+            # the guard — so a request the runtime had already refused still cost
+            # a tool call. The protection existed and the thing it was protecting
+            # was spent anyway. Spending inside the executor makes the two
+            # inseparable: a call that does not reach `tool_registry.execute` does
+            # not reach the budget either.
+            def _execute(name: str, args: Any) -> dict:
+                nonlocal calls_made
                 state.budget.spend_tool()
                 calls_made += 1
+                return tool_registry.execute(rctx.ctx, name, args, allowed=allowed)
+
+            for call in runnable:
                 yield AgentEvent(type="status", text=f"Đang dùng {call.tool_name}…")
                 # ARGUMENTS THE PROVIDER COULD NOT PARSE ARE NOT ARGUMENTS.
                 #
@@ -411,6 +435,11 @@ async def run(
                 # parse error instead lets it correct the call on the next round.
                 malformed = (call.extra or {}).get("malformed_args")
                 if malformed:
+                    # Still charged: this IS a new attempt by the model, just a
+                    # broken one. Only a request the runtime has already answered
+                    # is free.
+                    state.budget.spend_tool()
+                    calls_made += 1
                     result = {
                         "ok": False,
                         "error_code": "bad_tool_arguments",
@@ -424,10 +453,10 @@ async def run(
                     # again, and asking again is what burned six of this step's
                     # model calls on one guessed chart id.
                     result = _call_with_retry_policy(
-                        call.tool_name, call.tool_args, final_refusals,
-                        lambda name, args: tool_registry.execute(
-                            rctx.ctx, name, args, allowed=allowed),
+                        call.tool_name, call.tool_args, final_refusals, _execute,
                     )
+                    if result.get("error_code") == "already_refused":
+                        ignored_recoveries += 1
                 # Named in the run history, success or not. A refused call is the
                 # most interesting row in an audit and the easiest one to lose.
                 state.tool_log.append(
@@ -456,6 +485,34 @@ async def run(
                     # about a report it had never actually been shown.
                     "result": result,
                 })
+
+            # A RECOVERY THE MODEL WILL NOT READ IS NOT A RECOVERY.
+            #
+            # Not spending the budget on a dead repeat fixed the cost and not the
+            # loop: the model that asked six times for the same unreachable chart
+            # id can now ask sixty, each answer free, until MAX_ROUNDS runs out
+            # and the node ends `failed` having produced nothing. So after the
+            # runtime has explained the same dead request twice and been ignored,
+            # the tools come off the table and the model is asked to answer with
+            # what it has.
+            #
+            # Counted per NODE and only for repeats, so a corrected call still
+            # gets through: changing an argument runs the tool, and a first
+            # refusal of anything costs nothing here. This is the same mechanism
+            # the budget ceiling uses a few lines above — the model is told, not
+            # cut off mid-thought.
+            if ignored_recoveries >= _MAX_IGNORED_RECOVERIES and schemas:
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        "You have repeated a request that was already refused "
+                        "for a reason that will not change. No further tool "
+                        "calls are available for this step. Answer with what you "
+                        "already have, and say plainly what you could not check "
+                        "and why. Reply in the language of the user's question."
+                    ),
+                })
+                schemas = []
         # THE LANGUAGE CONSTRAINT HAS TO SIT NEXT TO THE DECISION.
         #
         # It is already in the system prompt, and that was not enough. A tool result
