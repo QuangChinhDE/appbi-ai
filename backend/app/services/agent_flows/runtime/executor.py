@@ -299,14 +299,28 @@ async def run_flow(
         # its own is not.
         _gap = (verification.get("grounding") or {})
         if _gap.get("dimension_gap"):
-            _want = str(_gap.get("dimension_requested") or "").rsplit(".", 1)[-1]
+            # A READER IS NOT SHOWN A COLUMN PATH.
+            #
+            # The first version printed the raw field, so a viewer on the public
+            # link read "Câu hỏi của bạn hỏi theo 'customer_state'" — an internal
+            # identifier on a business surface, which is the reader-vocabulary
+            # leak this project already tracks. Seen in the browser on the very
+            # run that proved the rest of this notice works.
+            #
+            # `dimension_label` is the chart's own on-screen label where the
+            # runtime has one; the raw field stays in `grounding` for the trace,
+            # where an author is the reader and the identifier is the useful
+            # thing.
+            _want = (str(_gap.get("dimension_label") or "").strip()
+                     or str(_gap.get("dimension_requested") or "")
+                     .rsplit(".", 1)[-1].replace("_", " ").strip())
             state.notices.append(
                 Notice(
                     code="requested_breakdown_unavailable",
                     audience="reader",
                     severity="warning",
                     text=(
-                        f"Câu hỏi của bạn hỏi theo '{_want}', nhưng báo cáo này "
+                        f"Câu hỏi của bạn hỏi theo “{_want}”, nhưng báo cáo này "
                         "không có biểu đồ nào tách số liệu theo chiều đó — phần "
                         "trả lời bên dưới KHÔNG phải câu trả lời cho chiều bạn hỏi."
                     ),
@@ -1278,6 +1292,7 @@ def _note_dimension_gap(state: RunState, out: dict) -> None:
         return
     out.setdefault("grounding", {}).update({
         "dimension_requested": gap.get("requested"),
+        "dimension_label": gap.get("label") or "",
         "dimension_gap": True,
     })
 

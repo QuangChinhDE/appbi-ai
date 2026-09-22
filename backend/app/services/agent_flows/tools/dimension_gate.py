@@ -226,6 +226,23 @@ def _question_names_this_chart_dimension(ctx: Any, chart_id: int) -> bool:
     return False
 
 
+def dimension_label(ctx: Any, field_ref: str) -> str:
+    """The on-screen label for a dimension, for surfaces a READER looks at.
+
+    A column path is the right thing to show an author in a trace and the wrong
+    thing to show a viewer in a notice. Where the runtime already extracted a
+    label from the chart, that is what a person recognises.
+    """
+    want = field_key(field_ref)
+    for meta in (getattr(ctx, "chart_meta", None) or {}).values():
+        for d in ((meta or {}).get("fields") or {}).get("dimensions") or []:
+            if isinstance(d, dict) and field_key(d.get("field")) == want:
+                label = str(d.get("label") or "").strip()
+                if label:
+                    return label
+    return want.replace("_", " ").strip()
+
+
 def _chart_dimensions(ctx: Any, chart_id: int) -> list[str]:
     meta = (getattr(ctx, "chart_meta", None) or {}).get(chart_id) or {}
     fields = meta.get("fields") or {}
@@ -272,6 +289,7 @@ def refusal(ctx: Any, tool_name: str, args: dict | None) -> dict | None:
             "không có biểu đồ nào, hãy nói thẳng là báo cáo này không tách được số "
             f"liệu theo '{want_key}' — đừng thay bằng một chiều khác."
         ),
-        detail={"requested_dimension": want_key, "chart_dimensions": have,
-                "chart_id": chart_id},
+        detail={"requested_dimension": want_key,
+                "requested_label": dimension_label(ctx, wanted),
+                "chart_dimensions": have, "chart_id": chart_id},
     )

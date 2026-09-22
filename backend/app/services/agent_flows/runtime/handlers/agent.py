@@ -197,9 +197,14 @@ def _note_dimension_outcome(state: RunState, result: Any) -> None:
     if not isinstance(result, dict):
         return
     if result.get("error_code") == "dimension_mismatch":
-        wanted = str((result.get("detail") or {}).get("requested_dimension") or "")
+        detail = result.get("detail") or {}
+        wanted = str(detail.get("requested_dimension") or "")
         if wanted and not state.dimension_gap:
-            state.dimension_gap = {"requested": wanted, "satisfied": False}
+            state.dimension_gap = {
+                "requested": wanted,
+                "label": str(detail.get("requested_label") or ""),
+                "satisfied": False,
+            }
         return
     if result.get("ok") is not True or not state.dimension_gap:
         return

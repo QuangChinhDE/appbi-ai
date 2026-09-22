@@ -579,8 +579,11 @@ def test_a_refusal_opens_a_gap_naming_the_requested_dimension():
         "ok": False, "error_code": "dimension_mismatch",
         "detail": {"requested_dimension": "customer_state"},
     })
-    assert state.dimension_gap == {"requested": "customer_state",
-                                   "satisfied": False}
+    assert state.dimension_gap["requested"] == "customer_state"
+    assert state.dimension_gap["satisfied"] is False
+    assert "label" in state.dimension_gap, (
+        "the gap must carry a reader-facing label as well as the column path"
+    )
 
 
 def test_a_grouped_result_on_the_requested_dimension_closes_the_gap():
@@ -680,3 +683,45 @@ def test_rows_from_a_chart_with_no_grouping_are_never_gated(undeclared):
     ctx.chart_meta[684]["fields"] = {"measures": [], "dimensions": []}
     res = _run(ctx, "get_chart_data", chart_id=684)
     assert res.get("error_code") != "dimension_mismatch", res
+
+
+# ── 7. what a READER is shown ───────────────────────────────────────────────
+
+def test_the_refusal_carries_a_human_label_not_only_a_column_path(undeclared):
+    """SEEN IN THE BROWSER. The first version of the reader notice printed the
+    raw field, so a viewer on the public link read "Câu hỏi của bạn hỏi theo
+    'customer_state'" — an internal identifier on a business surface. The column
+    path stays in the trace, where an author is the reader."""
+    ctx = undeclared([684, 685, 686, 687], "Bang nào có doanh thu cao nhất?")
+    res = _run(ctx, "rank_values", chart_id=CATEGORY_CHART)
+    detail = res.get("detail") or {}
+    assert detail.get("requested_dimension") == "customer_state", detail
+    label = detail.get("requested_label") or ""
+    assert label, detail
+    assert "_" not in label and "dataset_table" not in label, (
+        f"the reader-facing label is still an identifier: {label!r}"
+    )
+
+
+def test_the_reader_notice_never_prints_a_column_path():
+    from app.services.agent_flows.runtime import executor as EX
+    from app.services.agent_flows.runtime.state import RunState
+
+    state = RunState()
+    state.dimension_gap = {"requested": "dataset_table_441.customer_state",
+                           "label": "Customer state", "satisfied": False}
+    out: dict = {}
+    EX._note_dimension_gap(state, out)
+    assert out["grounding"]["dimension_label"] == "Customer state"
+
+
+def test_a_gap_with_no_label_still_reads_as_words():
+    """The fallback has to be readable too — `customer_state` becomes
+    `customer state`, never the raw path."""
+    from app.services.agent_flows.tools import dimension_gate as G
+
+    class Bare:
+        chart_meta: dict = {}
+
+    assert G.dimension_label(Bare(), "dataset_table_441.customer_state") \
+        == "customer state"

@@ -177,8 +177,10 @@ as well.
 sees the trace: capability, scope, budget, traceability. It cannot see a
 substituted concept. Run 2 marked `out_of_scope_measure` PASS while the answer
 read "Danh mục có doanh thu cao nhất là health_beauty" — a different question
-answered without a caveat, which that case's own judge calls a FAIL. This is why
-B2 below is OPEN despite a green row.
+answered without a caveat, which that case's own judge calls a FAIL. That gap is
+now closed on both sides: B2's dimension gate stops the substitution at the tool
+boundary, and the eval carries explicit per-case semantic assertions so a clean
+trace can no longer carry a wrong answer to a PASS.
 
 The WARNs are the engine reporting its own distrust, which is what these fixes
 added: `figures_unverified`, `qualifier_unverified`, and runs ending `partial`.
