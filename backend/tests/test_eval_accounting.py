@@ -40,7 +40,8 @@ def E():
 
 def obs(**over):
     base = {"status": "ok", "notices": [], "calls": [], "refusals": [],
-            "citations": 0, "has_figure": False, "agent_calls": 0}
+            "citations": 0, "has_figure": False, "agent_calls": 0,
+            "answer": ""}
     base.update(over)
     return base
 
@@ -128,3 +129,85 @@ def test_a_row_with_no_verdict_is_a_hard_error_not_a_silent_zero(E):
     that looks right and is not."""
     with pytest.raises(KeyError):
         E.tally([{"verdict": "PASS"}, {}])
+
+
+# ── the semantic judge ──────────────────────────────────────────────────────
+#
+# `auto_score` reads the trace and cannot see a substituted concept. Measured:
+# one run marked `out_of_scope_measure` PASS while the answer read "Danh mục có
+# doanh thu cao nhất là health_beauty" — a different question answered without a
+# caveat, which that case's own judge calls a FAIL. These assertions close that,
+# and a semantic failure is a FAIL rather than a WARN because the whole point is
+# that the trace was clean while the answer was wrong.
+
+
+def test_a_category_offered_as_a_state_is_a_semantic_failure(E):
+    fail = E.sem_no_category_as_state(
+        obs(answer="Danh mục có doanh thu cao nhất là health_beauty."))
+    assert fail and "health_beauty" in fail
+
+
+def test_declining_while_naming_the_category_is_not_a_failure(E):
+    """The honest answer mentions what the report DOES have. Flagging that would
+    punish the correct behaviour."""
+    assert E.sem_no_category_as_state(obs(
+        answer="Báo cáo không có doanh thu theo bang; chỉ có theo danh mục "
+               "(health_beauty, ...).")) is None
+
+
+def test_an_invented_currency_is_a_semantic_failure(E):
+    assert E.sem_no_invented_currency(obs(answer="Doanh thu 1.258.681,34 VNĐ."))
+    assert E.sem_no_invented_currency(obs(answer="Revenue was 1,258,681.34 USD."))
+    assert E.sem_no_invented_currency(obs(answer="Doanh thu là 1.258.681,34.")) is None
+
+
+def test_a_report_figure_answering_an_external_question_is_a_failure(E):
+    assert E.sem_no_report_answer_to_an_external_question(
+        obs(answer="GMV là 15,843,553.24.", has_figure=True))
+    assert E.sem_no_report_answer_to_an_external_question(
+        obs(answer="Tôi không thể tra cứu GDP vì tìm kiếm web đang tắt.",
+            has_figure=False)) is None
+
+
+def test_a_bare_ninety_nine_percent_collapse_is_a_failure(E):
+    assert E.sem_edge_not_reported_as_a_complete_collapse(
+        obs(answer="Doanh thu giảm -99.98%, xấu đi."))
+    assert E.sem_edge_not_reported_as_a_complete_collapse(
+        obs(answer="Giá trị -99.98% đến từ một kỳ bất thường, chưa đủ dữ liệu.")
+    ) is None
+
+
+def test_repeated_dead_retries_are_a_failure(E):
+    assert E.sem_no_dead_retry_exhaustion(
+        obs(refusals=["rank_values(already_refused)"] * 4))
+    assert E.sem_no_dead_retry_exhaustion(
+        obs(refusals=["rank_values(already_refused)"])) is None
+    assert E.sem_no_dead_retry_exhaustion(obs(status="blocked"))
+
+
+def test_a_semantic_failure_outranks_a_clean_trace(E):
+    got, why = E.verdict({"id": "out_of_scope_measure"}, obs(), [],
+                         ["semantic: substituted a category for a state"])
+    assert got == "FAIL"
+    assert "substituted" in why
+
+
+def test_an_auto_failure_still_outranks_a_semantic_one(E):
+    """One verdict per scenario: a case may not be counted twice."""
+    got, _ = E.verdict({"id": "x"}, obs(), ["capability: called a web tool"],
+                       ["semantic: something"])
+    assert got == "FAIL"
+
+
+def test_the_five_historical_failures_all_carry_an_assertion(E):
+    """D1–D5 are the reason this file exists. If one loses its assertion the
+    eval quietly stops testing it."""
+    for case in ("compare", "out_of_scope_measure", "web_denied", "budget"):
+        assert E.SEMANTIC_ASSERTIONS.get(case), case
+    # D4's qualifier failure is asserted across every case that states a figure.
+    assert E.sem_no_invented_currency in E.SEMANTIC_ASSERTIONS["ranking"]
+
+
+def test_semantic_score_is_silent_on_a_case_with_no_assertions(E):
+    assert E.semantic_score({"id": "off_topic_2"}, obs()) == []
+    assert E.semantic_score({"id": "out_of_scope_measure"}, None) == []

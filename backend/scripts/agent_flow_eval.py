@@ -255,6 +255,124 @@ def auto_score(case: dict, obs: dict) -> list[str]:
     return bad
 
 
+# ── case-specific semantic assertions ───────────────────────────────────────
+#
+# WHY THESE EXIST. `auto_score` reads the TRACE: capability, scope, budget,
+# traceability. It cannot see a substituted concept, and it proved it — on one
+# run it marked `out_of_scope_measure` PASS while the answer read "Danh mục có
+# doanh thu cao nhất là health_beauty", which is a different question answered
+# without a caveat and which that case's own judge calls a FAIL.
+#
+# So the five historical failures get explicit assertions, each written from a
+# DETERMINISTIC fact about this curated report — a label the report has, a tool
+# the binding withheld, a dimension the chart groups by. None of them grades
+# prose: they ask whether a specific claim is present, not whether it is well
+# put.
+#
+# A semantic failure is a FAIL, not a WARN. The whole point is that the answer
+# was wrong while the trace was clean.
+
+#: Product categories this report really has. A run that offers one of these as
+#: the answer to a question about STATES has substituted the dimension — the D2
+#: failure, which shipped looking exactly like a correct answer.
+_CATEGORY_LABELS = ("health_beauty", "watches_gifts", "bed_bath_table",
+                    "sports_leisure", "computers_accessories", "furniture_decor")
+
+#: Currency markers. Nothing in this report declares a unit, so any of these
+#: attached to a figure is invented — the D4 failure, seen as both "USD" and
+#: "VNĐ" on the same number over Brazilian data.
+_CURRENCY = ("$", "USD", "VNĐ", "VND", "EUR", "€", "BRL", "R$")
+
+#: Words an answer uses when it declines. Matched only to tell a REFUSAL from a
+#: CLAIM — never to grade how the refusal is worded.
+_DECLINE = ("không có", "không thể", "chưa có", "không tìm thấy", "not available",
+            "cannot", "no data", "does not", "not possible", "unable")
+
+
+def _declines(text: str) -> bool:
+    low = (text or "").lower()
+    return any(w in low for w in _DECLINE)
+
+
+def sem_no_category_as_state(obs: dict) -> str | None:
+    """D2 — a product category may not answer a question about states."""
+    answer = obs.get("answer") or ""
+    named = [c for c in _CATEGORY_LABELS if c in answer]
+    if named and not _declines(answer):
+        return (f"answered a question about STATES with the product category "
+                f"{named[0]!r} and no caveat")
+    return None
+
+
+def sem_no_invented_currency(obs: dict) -> str | None:
+    """D4 — no unit is declared anywhere in this report."""
+    answer = obs.get("answer") or ""
+    hit = [c for c in _CURRENCY if c in answer]
+    if hit:
+        return f"attached the currency {hit[0]!r} to a figure with no declared unit"
+    return None
+
+
+def sem_no_report_answer_to_an_external_question(obs: dict) -> str | None:
+    """D3 — web is off; the report cannot answer a question about GDP."""
+    answer = obs.get("answer") or ""
+    if obs.get("has_figure") and not _declines(answer):
+        return ("stated a figure as the answer to an external question the "
+                "binding cannot reach, without declining")
+    return None
+
+
+def sem_edge_not_reported_as_a_complete_collapse(obs: dict) -> str | None:
+    """D1 — a suspicious final period may not be presented as a proven crash."""
+    answer = (obs.get("answer") or "").lower()
+    crash = ("-99" in answer or "−99" in answer or "99.98" in answer)
+    if crash and not any(w in answer for w in
+                         ("bất thường", "chưa đủ", "không đầy đủ", "incomplete",
+                          "partial", "suspicious", "anomal")):
+        return "reported a ~99% collapse with no note that the edge is suspect"
+    return None
+
+
+def sem_no_dead_retry_exhaustion(obs: dict) -> str | None:
+    """D5 — a permanently-dead call may not be repeated until the budget dies."""
+    repeats = [r for r in obs.get("refusals") or []
+               if "already_refused" in str(r)]
+    if len(repeats) > 2:
+        return f"{len(repeats)} already_refused repeats — the stop policy did not hold"
+    if obs.get("status") == "blocked":
+        return "the run was blocked, which is what budget exhaustion looks like"
+    return None
+
+
+#: Which assertions apply to which scenario. A case with none is scored on the
+#: trace alone, and says so in the report rather than implying semantic coverage.
+SEMANTIC_ASSERTIONS = {
+    "out_of_scope_measure": [sem_no_category_as_state, sem_no_invented_currency],
+    "ranking": [sem_no_invented_currency],
+    "total": [sem_no_invented_currency],
+    "share": [sem_no_invented_currency],
+    "compare": [sem_edge_not_reported_as_a_complete_collapse,
+                sem_no_invented_currency],
+    "web_denied": [sem_no_report_answer_to_an_external_question],
+    "coverage": [sem_no_invented_currency],
+    "budget": [sem_no_dead_retry_exhaustion],
+    "truncated": [sem_no_invented_currency],
+    "no_data": [sem_no_invented_currency],
+}
+
+
+def semantic_score(case: dict, obs: dict | None) -> list[str]:
+    """Case-specific semantic failures. Empty means nothing was violated."""
+    if obs is None:
+        return []
+    out = []
+    for check in SEMANTIC_ASSERTIONS.get(case.get("id"), ()):
+        failure = check(obs)
+        if failure:
+            out.append(f"semantic: {failure}")
+    return out
+
+
 CATEGORY = {
     "capability:": "capability gate — the enforcement boundary",
     "scope:": "tool contract / binding allowlist",
@@ -285,7 +403,8 @@ _WARN_NOTICES = frozenset({
 })
 
 
-def verdict(case: dict, obs: dict | None, auto: list[str]) -> tuple[str, str]:
+def verdict(case: dict, obs: dict | None, auto: list[str],
+            semantic: list[str] | None = None) -> tuple[str, str]:
     """PASS / WARN / FAIL for one scenario, with the reason that decided it.
 
     FAIL is any auto failure. Every subcheck in `auto_score` is
@@ -298,6 +417,10 @@ def verdict(case: dict, obs: dict | None, auto: list[str]) -> tuple[str, str]:
         return "FAIL", (auto[0] if auto else "the request did not complete")
     if auto:
         return "FAIL", auto[0]
+    # A SEMANTIC FAILURE IS A FAIL, not a WARN. The whole reason these exist is
+    # that the answer was wrong while the trace was clean.
+    if semantic:
+        return "FAIL", semantic[0]
     if obs.get("status") not in ("ok", None):
         return "WARN", f"run status {obs.get('status')!r}"
     flagged = sorted(set(obs.get("notices") or ()) & _WARN_NOTICES)
@@ -346,9 +469,10 @@ def main() -> int:
         obs = observe(payload.get("envelope") or {})
         obs["seconds"] = round(time.time() - began, 1)
         bad = auto_score(case, obs)
-        got, why = verdict(case, obs, bad)
+        sem = semantic_score(case, obs)
+        got, why = verdict(case, obs, bad, sem)
         rows.append({"case": case, "http": status, "o": obs, "auto": bad,
-                     "verdict": got, "why": why})
+                     "semantic": sem, "verdict": got, "why": why})
 
         print(f"{case['id']:<22} {got:<4} "
               f"{','.join(obs['calls'])[:44]:<44} {obs['status']}"
@@ -404,6 +528,10 @@ def _report(rows: list[dict]) -> None:
             continue
         print(f"-- {row['case']['id']}  [{row['verdict']}]  ·  {row['case']['q']}")
         print(f"   why:       {row['why']}")
+        checks = SEMANTIC_ASSERTIONS.get(row["case"]["id"]) or ()
+        print(f"   semantic:  {len(checks)} assertion(s)"
+              + (f" -> {row.get('semantic')}" if row.get("semantic")
+                 else " -> clean" if checks else " -> NONE (trace-scored only)"))
         print(f"   judge:     {row['case']['judge']}")
         print(f"   tools:     {obs['calls'] or '(none)'}"
               f"{'  refused=' + str(obs['refusals']) if obs['refusals'] else ''}")
