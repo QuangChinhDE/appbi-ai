@@ -137,22 +137,46 @@ positives. DIMENSION is deliberately not enforced here — open item 2.
 
 ### Live eval on this HEAD
 
-    PASS 10  ·  WARN 8  ·  FAIL 0   of 18 cases        (balanced)
+Two runs of the SAME code, so the spread is the model and not the build:
 
-One verdict per scenario, and the counts sum to the case count. The previous
-harness printed `AUTO INVARIANTS: n/m clean` beside a per-subcheck listing —
-two scoreboards with two denominators, and no number that meant "how many
-scenarios passed". Locked by `test_eval_accounting.py`.
+    run 1    PASS 10  ·  WARN  8  ·  FAIL 0   of 18        (balanced)
+    run 2    PASS  6  ·  WARN 12  ·  FAIL 0   of 18        (balanced)
 
-Auto invariants 18/18 clean: no scope violation, no ungranted tool, no withheld
-capability called, no run blocked, no figure without a source.
+Auto invariants 18/18 clean in both: no scope violation, no ungranted tool, no
+withheld capability called, no run blocked, no figure without a source.
 
-The 8 WARNs are the engine reporting its own distrust, which is the behaviour
-these fixes added: `figures_unverified`, `qualifier_unverified`, and two runs
-that ended `partial`. Worth reading rather than counting: `coverage` answered
-"01/09/2016 đến 01/09/2018" where `describe_time_coverage` returned 2016-09-04
-to 2018-10-17. Wrong — caught, flagged and downgraded, rather than shipped as a
-clean PASS.
+**Seven of eighteen cases changed verdict between the two runs.** A single live
+run is therefore evidence, not a release verdict, and the accounting fix in §7
+does not change that — it makes each run internally consistent, not repeatable.
+Anything decided from one run should be decided from the case's own answer text
+as well.
+
+**And a PASS from this harness does not settle a human-read judge.** `auto_score`
+sees the trace: capability, scope, budget, traceability. It cannot see a
+substituted concept. Run 2 marked `out_of_scope_measure` PASS while the answer
+read "Danh mục có doanh thu cao nhất là health_beauty" — a different question
+answered without a caveat, which that case's own judge calls a FAIL. This is why
+B2 below is OPEN despite a green row.
+
+The WARNs are the engine reporting its own distrust, which is what these fixes
+added: `figures_unverified`, `qualifier_unverified`, and runs ending `partial`.
+
+Reviewing the first run found TWO FALSE POSITIVES in the B6 qualifier rule, both
+fixed and locked:
+
+  - `no_data` answered "Báo cáo không chứa bất kỳ dữ liệu nào cho tháng 12 năm
+    2030" — the CORRECT refusal — and was flagged, charged an LLM correction
+    round, and given a reader notice about a figure it never stated. Naming a
+    period is not claiming it: the rule now needs a number in the same sentence
+    that is not part of the period's own digits.
+  - `coverage` wrote "tháng 09 năm 2016" where `describe_time_coverage` had
+    returned "2016-09-04". Same month, two spellings, reported as unsourced.
+    Comparison is on the canonical `YYYY-MM` now, and a quarter matches any of
+    its three months.
+
+After the fix `coverage` and `out_of_scope_chart` are clean and `no_data` is
+still flagged — correctly: that run's answer claimed the charts "chỉ ghi lại dữ
+liệu đến tháng 2 năm 2017", which is false and appears in no tool result.
 
 ### Pre-release hardening — all 13 carried forward
 

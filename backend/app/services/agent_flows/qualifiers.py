@@ -68,18 +68,95 @@ _COVERAGE_CLAIM = re.compile(
     re.IGNORECASE,
 )
 
-#: A named period attached to a figure. Months in both languages, quarters, and ISO
-#: `YYYY-MM`. Years alone are excluded: "2018" appears in too many innocent places.
+#: A named period. Months in both languages, quarters, and ISO `YYYY-MM`, each
+#: with an OPTIONAL trailing year, because the year is what makes a period
+#: comparable with the evidence. Years alone are excluded: "2018" appears in too
+#: many innocent places.
+_MONTHS_EN = ("january", "february", "march", "april", "may", "june", "july",
+              "august", "september", "october", "november", "december")
+_YEAR_TAIL = r"(?:\s*(?:năm|nam|of)?\s*(\d{4}))?"
 _PERIOD = re.compile(
-    r"\b(?:tháng\s*(?:0?[1-9]|1[0-2])"
-    r"|quý\s*[1-4]"
-    r"|Q[1-4]\s*/?\s*\d{4}"
-    r"|\d{4}-(?:0?[1-9]|1[0-2])"
-    r"|(?:January|February|March|April|May|June|July|August|September|October|"
-    r"November|December)"
+    r"\b(?:tháng\s*(?:0?[1-9]|1[0-2])" + _YEAR_TAIL +
+    r"|thang\s*(?:0?[1-9]|1[0-2])" + _YEAR_TAIL +
+    r"|quý\s*[1-4]" + _YEAR_TAIL +
+    r"|Q[1-4]\s*[/-]?\s*(\d{4})"
+    r"|(\d{4})-(?:0?[1-9]|1[0-2])"
+    r"|(?:" + "|".join(_MONTHS_EN) + r")" + _YEAR_TAIL +
     r")\b",
     re.IGNORECASE,
 )
+
+#: The month inside whatever form the answer wrote it in.
+_MONTH_NUM = re.compile(r"(?:tháng|thang)\s*(0?[1-9]|1[0-2])", re.IGNORECASE)
+_ISO_MONTH = re.compile(r"\d{4}-(0?[1-9]|1[0-2])\b")
+_QUARTER_NUM = re.compile(r"(?:quý|quy|Q)\s*[/-]?\s*([1-4])", re.IGNORECASE)
+
+#: Any number. Used to ask whether a period has a FIGURE attached to it — which
+#: is what makes naming it a scope claim rather than a mention.
+_ANY_NUMBER = re.compile(r"\d[\d.,]*")
+
+
+def _month_of(text: str) -> int | None:
+    """The month number this period names, whatever form it is written in."""
+    low = text.lower()
+    m = _ISO_MONTH.search(low) or _MONTH_NUM.search(low)
+    if m:
+        return int(m.group(1))
+    for i, name in enumerate(_MONTHS_EN, start=1):
+        if name in low:
+            return i
+    q = _QUARTER_NUM.search(low)
+    if q:
+        return (int(q.group(1)) - 1) * 3 + 1
+    return None
+
+
+def _canonical_period(text: str) -> str | None:
+    """`tháng 09 năm 2016`, `September 2016`, `2016-09` -> `2016-09`.
+
+    WITHOUT THIS THE RULE COMPARED SPELLINGS, NOT PERIODS. Measured: the answer
+    wrote "tháng 09 năm 2016" and `describe_time_coverage` had returned
+    "2016-09-04", so the folded token `thang 09` was not in the evidence and a
+    correctly sourced period was reported as unsourced. The rule is about
+    provenance; a rendering difference is not a provenance failure.
+
+    Returns None when no YEAR is attached, because `tháng 9` on its own names no
+    specific period and cannot be matched against evidence.
+    """
+    low = text.lower()
+    year = re.search(r"\b(\d{4})\b", low)
+    if not year:
+        return None
+    y = year.group(1)
+
+    m = _ISO_MONTH.search(low) or _MONTH_NUM.search(low)
+    if m:
+        return f"{y}-{int(m.group(1)):02d}"
+    for i, name in enumerate(_MONTHS_EN, start=1):
+        if name in low:
+            return f"{y}-{i:02d}"
+    q = _QUARTER_NUM.search(low)
+    if q:
+        return f"{y}-{(int(q.group(1)) - 1) * 3 + 1:02d}"
+    return None
+
+
+def _period_hints(raw: str) -> list[str]:
+    """Every canonical `YYYY-MM` that would show the evidence reaches this period.
+
+    A QUARTER IS THREE MONTHS, and evidence for any one of them is evidence the
+    run saw that part of the calendar. Matching only the first month made "quý 3
+    năm 2016" unsourced against coverage starting 2016-09-04 — a quarter the data
+    genuinely reaches, reported as one it does not.
+    """
+    canonical = _canonical_period(raw)
+    if canonical is None:
+        return []
+    if not _QUARTER_NUM.search(raw.lower()) or _MONTH_NUM.search(raw.lower()):
+        return [canonical]
+    year, month = canonical.split("-")
+    start = int(month)
+    return [f"{year}-{m:02d}" for m in range(start, start + 3)]
 
 #: Words that assert a SUM.
 _SUM_WORD = re.compile(
@@ -181,19 +258,59 @@ def check_qualifiers(text: str, results: list[Any], tools_called: list[str]
                 ),
             })
 
-    # SCOPE — an all-time figure given a month's name. The evidence has to contain the
-    # period, as a row label, a filter value or coverage output; if the run never saw
-    # September, the answer cannot be about September.
-    for period in dict.fromkeys(m.group(0) for m in _PERIOD.finditer(text)):
-        if _fold(period) not in _fold(blob):
+    # SCOPE — an all-time figure given a month's name. The evidence has to contain
+    # the period, as a row label, a filter value or coverage output; if the run
+    # never saw September, the answer cannot be about September.
+    #
+    # TWO THINGS THIS LEARNED THE HARD WAY, both measured on the live suite:
+    #
+    #   1. NAMING A PERIOD IS NOT CLAIMING IT. "Báo cáo không chứa bất kỳ dữ liệu
+    #      nào cho tháng 12 năm 2030" is the CORRECT refusal, and the first version
+    #      flagged it, spent an LLM correction round on it and attached a reader
+    #      notice telling the viewer to double-check a figure the answer never
+    #      gave. So the period must have a figure attached — a number that is not
+    #      part of the period's own digits, in the same sentence.
+    #
+    #   2. A SPELLING IS NOT A PERIOD. The answer wrote "tháng 09 năm 2016" where
+    #      the coverage tool had returned "2016-09-04", and the folded token did
+    #      not appear in the evidence. Both name the same month. Comparison is on
+    #      the canonical `YYYY-MM`.
+    folded_blob = _fold(blob)
+    for sentence in re.split(r"[.!?\n]+", text):
+        for match in _PERIOD.finditer(sentence):
+            raw = match.group(0)
+            rest = sentence[:match.start()] + sentence[match.end():]
+            if not _ANY_NUMBER.search(rest):
+                continue                      # mentioned, not measured
+            hints = _period_hints(raw)
+            canonical = hints[0] if hints else None
+            if hints:
+                if _fold(raw) in folded_blob or any(h in folded_blob for h in hints):
+                    continue
+            else:
+                # NO YEAR, WHICH IS THE HISTORICAL FAILURE ITSELF — "September
+                # revenue" attached to an all-time scalar names no year either.
+                # So it is still checked, against the month alone: an ISO month
+                # segment or the same month written out. Only when the evidence
+                # contains neither is the period unsourced.
+                month = _month_of(raw)
+                if month is None:
+                    continue
+                if any(hint in folded_blob for hint in (
+                        f"-{month:02d}", f"thang {month}", f"thang {month:02d}")):
+                    continue
+                canonical = f"tháng {month}, không rõ năm"
+            if any(v["kind"] == "scope" and v["claim"] == raw for v in found):
+                continue
             found.append({
                 "kind": "scope",
-                "claim": period,
+                "claim": raw,
                 "why": (
-                    f"Câu trả lời gán số liệu cho “{period}”, nhưng kỳ này không "
-                    "xuất hiện trong bất kỳ kết quả công cụ nào — không có dòng, "
-                    "bộ lọc hay thông tin phạm vi nào nói tới nó. Số đang có là số "
-                    "chưa lọc theo kỳ; hãy bỏ tên kỳ hoặc nói rõ đó là số toàn kỳ."
+                    f"Câu trả lời gán số liệu cho “{raw}” ({canonical}), nhưng kỳ "
+                    "này không xuất hiện trong bất kỳ kết quả công cụ nào — không "
+                    "có dòng, bộ lọc hay thông tin phạm vi nào nói tới nó. Số đang "
+                    "có là số chưa lọc theo kỳ; hãy bỏ tên kỳ hoặc nói rõ đó là số "
+                    "toàn kỳ."
                 ),
             })
 

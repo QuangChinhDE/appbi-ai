@@ -221,3 +221,59 @@ def test_reused_evidence_still_carries_its_qualifiers():
     v = check("Dữ liệu trải dài từ 2016 đến 2018.", [MONTHLY_ROWS, prior],
               tools=["describe_time_coverage"])
     assert v == []
+
+
+# ── the two false positives the live suite found ────────────────────────────
+#
+# BOTH WERE THIS FILE'S OWN RULE MISFIRING, found by running the 18 live cases
+# after the first version shipped. Each cost an LLM correction round and attached
+# a reader notice telling the viewer to double-check something the answer had not
+# claimed — which is the failure mode this module's docstring says to fear.
+
+def test_naming_a_period_to_deny_it_is_not_a_scope_claim():
+    """MEASURED on the `no_data` case. The answer is the CORRECT refusal:
+
+        "Báo cáo không chứa bất kỳ dữ liệu nào cho tháng 12 năm 2030."
+
+    It attaches no figure to that month — it says there is none. The first
+    version flagged it, so the rule now needs a number in the same sentence that
+    is not part of the period's own digits.
+    """
+    v = check("Báo cáo không chứa bất kỳ dữ liệu nào cho tháng 12 năm 2030. "
+              "Dữ liệu mới nhất có sẵn là từ năm 2017.", [NO_UNIT])
+    assert "scope" not in kinds(v), (
+        f"a correct refusal was flagged: {v}"
+    )
+
+
+def test_a_period_written_in_prose_matches_the_same_period_in_iso():
+    """MEASURED on the `coverage` case. The answer wrote "tháng 09 năm 2016" and
+    `describe_time_coverage` had returned "2016-09-04". Same month, two
+    spellings, and the first version reported a correctly sourced period as
+    unsourced. A rendering difference is not a provenance failure."""
+    v = check("Dữ liệu được thu thập từ ngày 01 tháng 09 năm 2016.",
+              [COVERAGE], tools=["describe_time_coverage"])
+    assert "scope" not in kinds(v), (
+        f"a period present in the evidence as ISO was reported missing: {v}"
+    )
+
+
+def test_a_period_the_evidence_really_does_not_reach_is_still_flagged():
+    """The control for the case above. Coverage ends 2018-10-17; an answer that
+    says the data stops in September 2018 is wrong, and softening the comparison
+    must not have cost the rule that catch."""
+    v = check("Dữ liệu kéo dài đến ngày 01 tháng 09 năm 2018.",
+              [COVERAGE], tools=["describe_time_coverage"])
+    assert "scope" in kinds(v)
+
+
+def test_an_english_month_written_with_its_year_is_matched_canonically():
+    v = check("September 2016 revenue was 1,234.", [COVERAGE],
+              tools=["describe_time_coverage"])
+    assert "scope" not in kinds(v)
+
+
+def test_a_quarter_resolves_to_the_month_it_starts_in():
+    v = check("Doanh thu quý 3 năm 2016 là 1.234.", [COVERAGE],
+              tools=["describe_time_coverage"])
+    assert "scope" not in kinds(v)
