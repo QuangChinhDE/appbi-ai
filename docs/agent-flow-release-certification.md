@@ -22,7 +22,7 @@ the probes that produced them.
 **This section is the current truth. Everything from §11b down is audit history,
 labelled HISTORICAL / SUPERSEDED where a later session moved it.**
 
-Current HEAD: `c6f5c9450df26ec741a9eabd4b2ec75d5558d3a0` (branch `feat/agent-flow-chat-rework`)
+Current HEAD: `ce89b6728e4f266f771325e927f24e6ea7d324ac` (branch `feat/agent-flow-chat-rework`)
 
 Why this section exists: §11b recorded B1/B3/B5 as closed while §12 still listed
 them as open blockers, and the final verdict still counted five open failures.
