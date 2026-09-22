@@ -288,12 +288,24 @@ Not fixed here, by instruction.
 | A, C, D, E — the 6 generic tool suites | `backend-contract-tests.yml` job `unit` | push on `backend/**` | **yes** |
 | `test_tool_node.py`, `test_govern_knowledge_tools.py`, `test_i5_hard_gate_stays_lowest.py` | same | push | **yes** |
 | B, F, G — valid-call + semantic on real data | `.artifacts/cert/*_probe.py` | run by hand in the backend container | **no — certification evidence only** |
-| `test_time_axis_contract.py` (the F2 lock) | tracked, allow-listed, in the workflow list | push | **runs, then SKIPS in CI** — dashboard 67 is not seeded there. Local/manual evidence only until the fixture is seeded |
+| `test_time_axis_contract.py` (the F2 lock) | tracked, allow-listed, in the workflow list | push | **SKIPS in CI** — no `dashboards` table in that tier. Local/manual evidence only until the fixture is seeded. See the correction below |
 | H — live model | `backend/scripts/agent_flow_eval.py` | by hand, needs a model key | **no — referenced by no workflow** |
 | tool-choice pressure | `.artifacts/cert/tool_pressure.py` | by hand, needs a model key | **no** |
 | builder journeys, canvas a11y, pointer drag | `e2e.yml` | push on `frontend/**`, `e2e/**`, `backend/**` | **yes** |
 | protection layer (`agent_sdlc_meta`, `stop_gate_decision`, `guardrail_diff_range`) | `preflight.yml` | every push | **yes** |
 | `change-guardrail.yml`, `semantic-review.yml` | — | `pull_request` only | **NOT COVERED — never executed on this branch.** They will run for the first time when a PR is opened |
+
+**Correction, recorded because CI caught it and this document had it wrong.**
+The first version of that lock guarded with `db.get(Dashboard, 67) is None` and
+this section claimed it would "run, then skip" in CI. It did neither: CI's unit
+tier runs on `sqlite:///./ci_contract.db`, an empty file with no schema, because
+that tier deliberately runs no migrations — so the SELECT raised
+`OperationalError: no such table: dashboards` before `pytest.skip` was reached,
+and three setup ERRORS turned a green tier red on a commit that changed no
+product code. "Absent" has two shapes, no such ROW and no such TABLE, and the
+guard only knew one. It now checks the table first. The claim in this document
+was a prediction presented as a fact, which is the failure mode this whole
+exercise exists to catch; it is fixed rather than quietly deleted.
 
 Also on the record: 3 suites CI runs are named by no guardrail gate
 (`test_filter_entry_schemas`, `test_non_fanning_reachability`,

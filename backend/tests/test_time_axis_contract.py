@@ -74,11 +74,36 @@ def live(request):
         pytest.skip(f"backend app not importable here: {exc}")
 
     db = SessionLocal()
-    dash = db.get(Dashboard, 67)
-    if dash is None:
-        db.close()
-        pytest.skip("dashboard 67 (the Olist certification fixture) is not seeded here")
     request.addfinalizer(db.close)
+
+    # ABSENT COMES IN TWO SHAPES, AND THE FIRST VERSION ONLY KNEW ONE.
+    #
+    # `db.get(Dashboard, 67) is None` is the "no such ROW" answer, and it can
+    # only be given by a database that HAS the table. CI's unit tier runs on
+    # `sqlite:///./ci_contract.db` — an empty file with no schema, deliberately,
+    # because that tier runs no migrations — so the SELECT raised
+    # `OperationalError: no such table: dashboards` before `pytest.skip` was
+    # reached, and three setup ERRORS turned the whole tier red on a commit that
+    # changed no product code.
+    #
+    # The table check goes first, because "no schema" is the shape CI actually
+    # presents and a guard that cannot see it is not a guard.
+    try:
+        from sqlalchemy import inspect as sa_inspect
+
+        if not sa_inspect(db.bind).has_table("dashboards"):
+            pytest.skip("no `dashboards` table here — this tier runs no migrations")
+    except pytest.skip.Exception:
+        raise
+    except Exception as exc:                                    # noqa: BLE001
+        pytest.skip(f"cannot inspect the database here: {exc}")
+
+    try:
+        dash = db.get(Dashboard, 67)
+    except Exception as exc:                                    # noqa: BLE001
+        pytest.skip(f"dashboard lookup is not possible here: {exc}")
+    if dash is None:
+        pytest.skip("dashboard 67 (the Olist certification fixture) is not seeded here")
     return db, dash
 
 
