@@ -307,6 +307,24 @@ guard only knew one. It now checks the table first. The claim in this document
 was a prediction presented as a fact, which is the failure mode this whole
 exercise exists to catch; it is fixed rather than quietly deleted.
 
+**CI state of the certification commits.** `f38d9a9` — all three workflows green:
+Preflight success, backend-contract **both** tiers success (`integration-golden`
+ran, including the golden-replay and Explore/Dashboard parity gates), E2E
+**58 passed / 0 failed / 0 skipped**. The E2E red on the previous commit was in
+"Build and start the frontend" and is settled as transient: the same step passed
+here with no frontend file changed between the two, and Preflight ran `npm ci`
+and `tsc --noEmit` green on both SHAs.
+
+**And a coverage gap found while reading that verdict, worth more than the
+verdict.** The `unit` tier prints its pytest counts only from a step guarded by
+`if: failure()`. On a GREEN run no annotation carries them, `output.summary` is
+empty, and job logs need admin rights — so a green tier proves "nothing errored"
+and proves nothing about **how many tests ran**. An accident that silently
+deselected a whole file would read exactly like today's run. That is why the three
+skips in `test_time_axis_contract.py` above are stated as INFERRED — from the
+step's zero exit plus the fact that every path through the new guard ends in
+`pytest.skip` — and not as a number anyone read.
+
 Also on the record: 3 suites CI runs are named by no guardrail gate
 (`test_filter_entry_schemas`, `test_non_fanning_reachability`,
 `test_workboard_offline_relation_phase2`), and 29 committed backend suites are
@@ -347,6 +365,8 @@ Each reproduced on this SHA with evidence above. None fixed here.
 - `test_time_axis_contract.py` skips in CI until dashboard 67 (or an equivalent
   fixture) is seeded there.
 - `change-guardrail` and `semantic-review` have never executed on this branch.
+- A green `unit` tier reports no test counts anywhere readable (§11), so
+  silent deselection of a whole suite is indistinguishable from success.
 - `search_knowledge` returns weak vector matches (similarity 0.27) for an
   unrelated query. Scope is correct — every hit was the report's own attached
   document — but relevance is not filtered.
