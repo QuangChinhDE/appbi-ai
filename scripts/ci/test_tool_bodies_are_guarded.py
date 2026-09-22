@@ -140,3 +140,47 @@ def test_runtime_support_is_deliberately_not_claimed(core):
         "widening of the ownership boundary and should be a deliberate, "
         "documented change rather than a side effect."
     )
+
+
+# ── the certification source of truth is owned too ──────────────────────────
+#
+# `scripts/cert/tool_certification.yaml` decides whether a tool counts as
+# semantically VERIFIED: a tier can be lowered, an oracle reference deleted, a
+# MANUAL_REQUIRED reason rewritten. Before it was mapped, editing it matched no
+# feature and pulled in no test at all — the file with the most authority over
+# the certification was the least protected thing in it.
+
+CERT_SSOT = "scripts/cert/tool_certification.yaml"
+
+
+def test_the_certification_declaration_is_owned_by_a_feature(core):
+    assert (REPO / CERT_SSOT).exists(), f"the SSOT moved: {CERT_SSOT}"
+    features = core.get_impact_scope([CERT_SSOT]).get("features") or []
+    assert features, (
+        "the file that decides whether tools are VERIFIED belongs to no feature, "
+        "so changing it requires no test"
+    )
+
+
+def test_changing_the_declaration_requires_the_certification_gates(core):
+    """THE MUTATION CONTROL FOR §2. Ownership without the right gate is a label:
+    the two tests that can actually catch a bad declaration must be pulled in."""
+    tests = core.get_required_tests([CERT_SSOT]).get("required_tests") or []
+    ids = {t.get("id") for t in tests}
+    runs = " ".join(str(t.get("run") or "") for t in tests)
+
+    assert "tier1_oracles_execute" in ids, (
+        f"editing the declaration does not require the oracle-execution gate: {ids}"
+    )
+    assert "test_tool_certification_matrix.py" in runs, (
+        "editing the declaration does not require the matrix test that checks "
+        f"set-identity, states, reasons and node ids: {sorted(ids)}"
+    )
+
+
+def test_the_declaration_is_classified_rather_than_unknown(core):
+    """`unknown` is not `safe`, and an unknown-layer file on a blocking path is
+    what made the PR gate BLOCK earlier on this branch."""
+    layer = core.classify_file(CERT_SSOT)
+    assert layer, f"{CERT_SSOT} matches no layer"
+    assert layer.get("id") == "repo_infra", layer
