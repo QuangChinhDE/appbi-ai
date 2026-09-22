@@ -282,6 +282,24 @@ async def run_flow(
                 )
             )
 
+        # THE CAPABILITY THE QUESTION NEEDED WAS NOT AVAILABLE, and nothing else
+        # demonstrably answered it. The reader is told which, because "the web
+        # step was skipped" is actionable and "these numbers may be unrelated" on
+        # its own is not.
+        _gap = (verification.get("grounding") or {})
+        if _gap.get("capability_gap"):
+            state.notices.append(
+                Notice(
+                    code="capability_unavailable_for_question",
+                    audience="reader",
+                    severity="warning",
+                    text="Bước cần cho câu hỏi này không chạy được (tìm kiếm web "
+                         "đang tắt), và không bước nào khớp câu hỏi của bạn với báo "
+                         "cáo. Các số dưới đây lấy từ báo cáo theo cấu hình sẵn — "
+                         "chúng có thể không trả lời điều bạn hỏi.",
+                )
+            )
+
         if verification.get("unmatched"):
             logger.warning(
                 "[flow] %s: %s figure(s) in the answer are not in the evidence: %s",
@@ -1135,6 +1153,11 @@ def _status_after_verification(status: str, verification: dict | None) -> str:
     grounding = verification.get("grounding") or {}
     if grounding.get("all_evidence_unresolved"):
         return "partial"
+    # A CAPABILITY THE RUN NEEDED WAS OFF AND NOTHING ELSE ANSWERED THE QUESTION.
+    # The figures are real; what is missing is any evidence that they are about
+    # what was asked. `ok` would report this run as a working answer.
+    if grounding.get("capability_gap"):
+        return "partial"
     # AND THE WORSE CASE, WHICH THE RULE ABOVE COULD NOT SEE. `_verify_figures`
     # returns early on an empty ledger, and that branch reports `no_evidence`
     # rather than `all_evidence_unresolved` — so a run that read NOTHING and
@@ -1150,6 +1173,60 @@ def _status_after_verification(status: str, verification: dict | None) -> str:
     if grounding.get("no_evidence_after_read") and verification.get("unmatched"):
         return "partial"
     return status
+
+
+#: Reasons a node was skipped because a CAPABILITY was not available, as opposed
+#: to a branch that simply did not run. Only `web_disabled` is written today; the
+#: set is named so the next one is added here rather than matched by string.
+_CAPABILITY_SKIPS = frozenset({"web_disabled"})
+
+
+def _note_capability_gap(state: RunState, out: dict, *, cites_numbers: bool) -> None:
+    """Did a capability the run needed go missing, and did anything else answer?
+
+    THE FAILURE. Web search disabled, the viewer asks for Vietnam's GDP, and the
+    flow has a report read that succeeded at reading the report. Every figure in
+    the answer is verifiable against the evidence, `all_evidence_unresolved` does
+    not fire because nothing RESOLVED to nothing, and the viewer gets an Olist
+    summary as the answer to a question about GDP.
+
+    Existing provenance answers "where did this number come from?". Nothing
+    answered "did any capability actually service what was asked?", and those are
+    different questions — the first is about the figure, the second about the run.
+
+    WHAT COUNTS AS SERVICING, and why it is not an inference from prose: a
+    report-read step in `question` mode RESOLVED the viewer's question to charts.
+    That is a decision the resolver already made and already recorded, on the way
+    in, before it knew what it would find. Any other mode — `explicit`,
+    `report_order`, `report_index` — is the AUTHOR having chosen the charts, which
+    says nothing about this particular question.
+
+    THE COST OF THAT, STATED. A pure overview flow ("tóm tắt báo cáo") that also
+    carries a Web node will be marked `partial` when the web capability is off,
+    because its read never matched the question either. The notice it produces is
+    true — the external step did not run, and the figures come from charts chosen
+    in advance — so the trade is a caveat on an overview against silence on the
+    GDP answer. If that proves noisy, the fix is a viewer-side overview signal,
+    not a looser rule here.
+    """
+    skipped = sorted(
+        key for key, why in (getattr(state, "skipped", None) or {}).items()
+        if str(why) in _CAPABILITY_SKIPS
+    )
+    if not skipped:
+        return
+    serviced = any(
+        g.get("mode") == "question"
+        and not (g.get("unsupported") or g.get("needs_clarification")
+                 or g.get("resolution_unavailable"))
+        for g in (state.question_grounding or {}).values()
+        if isinstance(g, dict)
+    )
+    out.setdefault("grounding", {}).update({
+        "capability_unavailable": skipped,
+        "capability_serviced_intent": serviced,
+        "capability_gap": bool(cites_numbers and not serviced),
+    })
 
 
 def _verify_figures(state: RunState, answer: Answer) -> dict | None:
@@ -1229,6 +1306,11 @@ def _verify_figures(state: RunState, answer: Answer) -> dict | None:
             if g.get("unsupported") or g.get("needs_clarification")
             or g.get("resolution_unavailable")
         )
+        # AND THE ANSWER MUST ACTUALLY CITE NUMBERS — hoisted, because the
+        # capability rule below needs the same test. A clean refusal that states
+        # no figure is healthy and must not be flagged by either rule.
+        cites_numbers = bool(out.get("matched") or out.get("unmatched"))
+        _note_capability_gap(state, out, cites_numbers=cites_numbers)
         if unresolved:
             # THE SMALLEST RULE THE PROVENANCE SUPPORTS.
             #
@@ -1242,18 +1324,17 @@ def _verify_figures(state: RunState, answer: Answer) -> dict | None:
             # or knowledge step answered is not punished for a read step that
             # resolved to nothing, which is the explicit guard on this rule.
             sources = set(getattr(state, "evidence_sources", None) or set())
-            # AND THE ANSWER MUST ACTUALLY CITE NUMBERS. Without this the flag
-            # fired on a correct refusal — zero charts read, no figure in the
-            # answer — and told the viewer to cross-check figures that did not
-            # exist, stacked on top of the honest "this report cannot answer
-            # that". Two contradictory warnings, one of them false on its face.
-            cites_numbers = bool(out.get("matched") or out.get("unmatched"))
-            out["grounding"] = {
+            # `cites_numbers` is computed above. Without it this flag fired on a
+            # correct refusal — zero charts read, no figure in the answer — and
+            # told the viewer to cross-check figures that did not exist, stacked
+            # on top of the honest "this report cannot answer that". Two
+            # contradictory warnings, one of them false on its face.
+            out.setdefault("grounding", {}).update({
                 "unresolved_steps": unresolved,
                 "all_evidence_unresolved": (
                     cites_numbers and bool(sources) and sources <= set(unresolved)
                 ),
-            }
+            })
         return out
     except Exception:  # noqa: BLE001
         logger.debug("[flow] figure verification failed", exc_info=True)
