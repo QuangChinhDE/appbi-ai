@@ -322,4 +322,6 @@ backend/tests/.testdata/
 !backend/tests/test_reader_capability_boundary.py
 !backend/tests/test_time_axis_contract.py
 !backend/tests/test_partial_period_comparison.py
+!backend/tests/test_grant_has_a_way_in.py
+!backend/tests/test_nonrecoverable_retry_policy.py
 !backend/tests/test_cross_lingual_resolution.py

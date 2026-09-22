@@ -161,6 +161,80 @@ def _preview_text(message: dict) -> str:
     return _json.dumps(content, ensure_ascii=False)[:4000]
 
 
+#: Refusals that describe the REQUEST rather than the moment. Asking again with
+#: the same arguments cannot change any of these answers: the chart is still out
+#: of scope, the tool is still ungranted, the argument is still the wrong type.
+#:
+#: Measured before this existed: a grant with no discovery tool produced
+#: `rank_values(chart_out_of_scope)` six times in a row until the model-call
+#: budget was gone, on two of three questions. The refusal was correct every
+#: time; repeating it was what cost the answer.
+_FINAL_ERROR_CODES = frozenset({
+    "chart_out_of_scope", "not_granted", "bad_argument", "bad_tool_arguments",
+    "not_applicable", "no_data", "doc_out_of_scope", "unsupported_dimension",
+})
+
+
+def _is_final_refusal(result: dict) -> bool:
+    """Is this a refusal that a second identical call cannot change?
+
+    `retryable` comes first because the TOOL knows: `result.err()` has carried
+    that flag since the error taxonomy landed, and a tool that marks a scope
+    error retryable means it. The code list is the fallback for results that do
+    not set it.
+    """
+    if not isinstance(result, dict) or result.get("ok") is not False:
+        return False
+    if "retryable" in result:
+        return not bool(result["retryable"])
+    return str(result.get("error_code") or "") in _FINAL_ERROR_CODES
+
+
+def _retry_key(tool_name: str, args: Any) -> str:
+    """Identity of a REQUEST, not of a call.
+
+    Sorted, so re-ordering the same arguments is the same request; serialised
+    with `default=str`, so an unserialisable argument degrades to a stable-enough
+    string instead of raising inside the loop.
+    """
+    import json as _j
+
+    try:
+        body = _j.dumps(args or {}, sort_keys=True, ensure_ascii=False, default=str)
+    except Exception:                                           # noqa: BLE001
+        body = str(args)
+    return f"{tool_name}::{body}"
+
+
+def _call_with_retry_policy(tool_name: str, args: Any, seen: dict, execute) -> dict:
+    """Run the tool unless this exact request has already been finally refused.
+
+    Returns the tool's own result, or — for a repeat — a refusal that NAMES the
+    original reason. Handing back the same error a second time would tell the
+    model "no" without telling it what to change, which is how the loop got
+    stuck in the first place; `recovery` is what makes the next call different.
+    """
+    key = _retry_key(tool_name, args)
+    previous = seen.get(key)
+    if previous:
+        return {
+            "ok": False,
+            "error_code": "already_refused",
+            "error": (
+                f"công cụ '{tool_name}' đã bị từ chối với đúng tham số này "
+                f"({previous}) — gọi lại y hệt sẽ cho cùng kết quả. Hãy đổi tham "
+                "số, dùng công cụ khác, hoặc trả lời bằng những gì đã có và nói "
+                "rõ phần không lấy được."
+            ),
+            "retryable": False,
+        }
+    result = execute(tool_name, args)
+    if _is_final_refusal(result):
+        seen[key] = str(result.get("error_code") or "refused")
+    return result
+
+
+
 async def run(
     node: AgentNode, state: RunState, rctx: Any
 ) -> AsyncGenerator[AgentEvent, None]:
@@ -202,6 +276,14 @@ async def run(
     messages = _messages(node, state, rctx)
     collected = ""
     calls_made = 0
+    #: Requests this step has already had finally refused, so it does not spend
+    #: a second call discovering the same 'no'. Per STEP, not per run: a later
+    #: step may legitimately have different grants.
+    #:
+    #: NOT `refused` — that name is already taken a few lines down for the calls
+    #: deferred past the budget ceiling, and the first version of this shadowed it
+    #: and handed a list where a dict was expected.
+    final_refusals: dict[str, str] = {}
     #: Provider adapters report a refused key or a bad model as an `error` EVENT
     #: rather than an exception. Without capturing it the node finished with empty
     #: text and was recorded `ok` — so the trace said every step succeeded while the
@@ -336,8 +418,15 @@ async def run(
                                  "Hãy gọi lại công cụ với JSON đúng định dạng.",
                     }
                 else:
-                    result = tool_registry.execute(
-                        rctx.ctx, call.tool_name, call.tool_args, allowed=allowed
+                    # THROUGH THE RETRY POLICY, not straight to the registry. A
+                    # refusal that describes the request — out of scope, not
+                    # granted, wrong argument type — cannot change by being asked
+                    # again, and asking again is what burned six of this step's
+                    # model calls on one guessed chart id.
+                    result = _call_with_retry_policy(
+                        call.tool_name, call.tool_args, final_refusals,
+                        lambda name, args: tool_registry.execute(
+                            rctx.ctx, name, args, allowed=allowed),
                     )
                 # Named in the run history, success or not. A refused call is the
                 # most interesting row in an audit and the easiest one to lose.

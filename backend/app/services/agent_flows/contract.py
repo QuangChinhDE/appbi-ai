@@ -966,6 +966,11 @@ _CHART_KEYED_TOOLS = frozenset({
     "explain_change", "detect_anomaly", "smart_drilldown", "describe_distribution",
     "project_to_period_end", "detect_seasonality", "analyze_trend",
     "forecast_measure",
+    # Added after the drift lock in `test_grant_has_a_way_in.py` named it: it
+    # requires `chart_id` like the rest and was missing, so a grant containing
+    # only it was warned about by nothing. This is the failure mode a
+    # hand-written list has, which is why the lock exists.
+    "benchmark_compare",
 })
 
 #: The tools that hand OUT a chart_id. Their counterpart above is the list of tools
@@ -1358,6 +1363,7 @@ class Flow(_Model):
         `bot`, which is what every flow written before the type existed is.
         """
         out: list[str] = []
+
         if not self.bound_sources():
             out.append(
                 "Flow này không gắn tri thức nào — nó chỉ đọc báo cáo đang mở. "
