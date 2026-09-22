@@ -22,7 +22,7 @@ the probes that produced them.
 **This section is the current truth. Everything from §11b down is audit history,
 labelled HISTORICAL / SUPERSEDED where a later session moved it.**
 
-Current HEAD: `088e064de6f926c1ea032dc7d927cc081d69e23c` (branch `feat/agent-flow-chat-rework`)
+Current HEAD: `c6f5c9450df26ec741a9eabd4b2ec75d5558d3a0` (branch `feat/agent-flow-chat-rework`)
 
 Why this section exists: §11b recorded B1/B3/B5 as closed while §12 still listed
 them as open blockers, and the final verdict still counted five open failures.
@@ -193,6 +193,32 @@ live-eval one-verdict-per-case (now CLOSED — see above).
 Binding-aware logical asset selection · reusable Subflow/Specialist · safe
 parallel fan-out · durable checkpoint/background execution · human-in-the-loop ·
 agentic builder · MCP/plugin boundary.
+
+### Remote CI
+
+Split across two commits because GitHub's workflows are path-filtered, and the
+split is the honest reading rather than a convenience:
+
+| | `64e37bc` — every product change | `c6f5c94` — CI wiring only |
+|---|---|---|
+| preflight | **success** | **success** |
+| e2e | **success** | not triggered (no e2e-filtered path) |
+| unit | **failure** | **success** |
+| integration-golden | skipped | **success** |
+
+The `unit` failure on `64e37bc` was NOT a test failure. An edit had collapsed
+four `\` line continuations in `backend-contract-tests.yml` into literal
+backslash-n, so the shell received a bare `n` as an argument, pytest answered
+`file or directory not found: n`, and the tier ran ZERO tests and exited 4 —
+three of this session's five new suites among them.
+
+`verify.py`'s wiring check had reported those suites correctly wired, because it
+asked whether the filename appeared anywhere in the workflow FILE rather than
+whether pytest was given it as an ARGUMENT. That check is now per line, names a
+collapsed continuation with its line number, and distinguishes "present mid-line"
+from "absent". Locked by `scripts/ci/test_ci_wiring_is_real.py` (gate
+`ci_wiring_is_real`, in preflight local and CI), one of whose cases asserts this
+repository's own workflow is free of the same collapse.
 
 ### Current verdict
 
