@@ -330,6 +330,35 @@ Also on the record: 3 suites CI runs are named by no guardrail gate
 `test_workboard_offline_relation_phase2`), and 29 committed backend suites are
 referenced by no runner at all. Neither set is Agent Flow.
 
+## 11b. Pre-release closure session — what moved, and two corrections
+
+Certified SHA `97db3f9`; this section covers the fixes made after it.
+
+| item | state | evidence |
+|---|---|---|
+| **B1** partial final period | **CLOSED** (`6023383`) | `compare_periods` now runs the same `_trim_partial_edges` its sibling `analyze_trend` already used. Real report, before → after: `2018-09 166.46 vs 2018-08 1,003,308.47 = -99.98%` → `2018-08 vs 2018-07 = -5.23%`, with `2018-09` named in `excluded_periods`. YoY -99.98% → +50.15%. 13 deterministic cases, including one asserting the two tools exclude the SAME labels. |
+| **B3** categorical-as-time | **CLOSED** (`8428648`) | The cause was a substring match: `nam` (year) sits inside `name`, so `product_category_name_english` read as a time axis. `product_name_lenght` failed identically. Tokens are now bounded to whole segments of the column path. 13 deterministic cases run in the normal unit tier — the previous lock needed dashboard 67 and skipped. |
+| **B5** non-recoverable retry | **CLOSED** (`dca4606`) | The agent loop now reads the `retryable` flag the error contract has always carried. A second identical call after a final refusal is answered without reaching the registry, naming the original reason. 19 cases; golden replay byte-identical. |
+| B2, B4, B6 | **OPEN** | unchanged; see §12 |
+
+**Correction 1 — the authoring warning was already shipped.** §7 recorded "a
+builder warning when a grant contains no way to resolve a chart id" as a product
+action to take. It exists: the exact 3-tool grant that failed certification is
+flagged today, and the note clears the moment any lookup tool is added. The
+certification missed an existing mechanism and proposed rebuilding it.
+
+**Correction 2 — and looking for it found a real defect.** That warning reads a
+hand-written `_CHART_KEYED_TOOLS`, deliberately: `contract.py` is the schema layer
+and importing the tool registry there would make a flow's shape depend on which
+packs are installed. Sound, with one failure mode. A drift test comparing the list
+against the registry immediately found `benchmark_compare` absent — a grant of
+that tool alone was warned about by nothing. Added, and the lock now names any
+future omission.
+
+**Also closed from §12's hardening list:** "test_time_axis_contract does not
+exercise its fixture in normal CI" — the contract now has 13 deterministic cases
+that run on every push, with the real-dashboard control kept alongside.
+
 ## 12. Confirmed release blockers
 
 Each reproduced on this SHA with evidence above. None fixed here.
