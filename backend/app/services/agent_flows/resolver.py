@@ -104,7 +104,25 @@ def _semantic(call: Call, question: str) -> list[dict]:
         return []
     data = found.get("data") if isinstance(found.get("data"), dict) else found
 
-    out: list[dict] = []
+    # WHAT THE QUESTION NAMED, BY WHAT KIND OF THING IT IS.
+    #
+    # This loop used to send every surviving asset to `resolve_chart_candidates`
+    # as a `measure`, because `search_business_assets` published field results
+    # typed only `"field"` — the semantic `kind` was read and dropped on the way
+    # out. So a DIMENSION was resolved as a measure, any chart mentioning it
+    # matched, and "bang nào có doanh thu cao nhất?" came back with
+    # `health_beauty`: a product category presented as a state.
+    #
+    # Now the kinds are kept apart, and when the question named both a measure
+    # and a breakdown the pair is resolved TOGETHER — a chart answers it only by
+    # having both.
+    measures: list[tuple[dict, str, int]] = []      # (asset, ident, strength)
+    dimensions: list[tuple[dict, str, int]] = []
+    #: Dimensions that matched on one token only — usable as the second half of a
+    #: pair, never on their own. See the note at the threshold below.
+    weak_dimensions: list[tuple[dict, str, int]] = []
+    metrics: list[tuple[dict, str, int]] = []
+
     for asset in (data.get("results") or []):
         if not isinstance(asset, dict):
             continue
@@ -132,12 +150,47 @@ def _semantic(call: Call, question: str) -> list[dict]:
         # "doanh thu theo tháng" 2, both weather questions 0.
         hay = " ".join(str(asset.get(k) or "") for k in ("id", "name", "detail"))
         strength = _score(hay, _terms_of(question))
-        if strength < 2 and strength != len(_terms_of(question)):
+        terms = _terms_of(question)
+        strong = strength >= 2 or (strength and strength == len(terms))
+        is_dimension = str(asset.get("field_kind") or "").lower() == "dimension"
+
+        # A BREAKDOWN IS NAMED IN ONE WORD, AND THAT IS NORMAL.
+        #
+        # The threshold above exists because `search_business_assets` returns
+        # anything sharing ONE token, and one incidental word is not a match —
+        # asked "thời tiết Hà Nội hôm nay" the resolver used to report `semantic`
+        # on two Olist charts. But a dimension almost never earns two tokens:
+        # "bang nào có doanh thu cao nhất" gives `customer_state` exactly one.
+        # Holding dimensions to the measure's threshold deleted the very half
+        # this pass exists to keep, and the pairing below silently degraded back
+        # to a measure-only match — the original bug, reintroduced by its own fix.
+        #
+        # So a weak dimension is kept ONLY for pairing, where `both` has to hold.
+        # Requiring the chart to plot the measure AND carry the breakdown is a far
+        # stronger test than token overlap, and it is the test that actually
+        # decides. On its own — a dimension-only question — the full threshold
+        # still applies, so one incidental word still cannot resolve anything.
+        if not strong and not (is_dimension and strength >= 1):
             continue
-        args = {"metric": ident} if kind == "metric" else {"measure": ident}
+
+        if kind == "metric":
+            metrics.append((asset, ident, strength))
+        elif is_dimension:
+            (dimensions if strong else weak_dimensions).append(
+                (asset, ident, strength))
+        else:
+            # `measure` and `unknown` alike: a field whose kind the semantic
+            # layer never declared is treated as it always was, so an
+            # undeclared model keeps working exactly as before.
+            measures.append((asset, ident, strength))
+
+    out: list[dict] = []
+
+    def _collect(args: dict, *, accept: set[str], via: str, concept: str,
+                 strength: int, why: str) -> None:
         res = call("resolve_chart_candidates", args)
         if not isinstance(res, dict) or not res.get("ok"):
-            continue
+            return
         payload = res.get("data") if isinstance(res.get("data"), dict) else res
         for cand in (payload.get("candidates") or payload.get("charts") or []):
             if not isinstance(cand, dict) or not isinstance(cand.get("chart_id"), int):
@@ -145,16 +198,62 @@ def _semantic(call: Call, question: str) -> list[dict]:
             # `same_table` is explicitly NOT a match. A chart on the same table may
             # plot something else entirely, and presenting it at the same
             # confidence is how a caller picks a plausible wrong chart.
-            if cand.get("match") != "measure":
+            if cand.get("match") not in accept:
                 continue
             out.append({
                 "chart_id": cand["chart_id"],
                 "chart_name": cand.get("chart_name") or "",
-                "via": kind,
-                "concept": str(ident),
+                "via": via,
+                "concept": concept,
                 "strength": strength,
-                "why": f"{kind} “{asset.get('name') or ident}” is plotted by this chart",
+                "why": why,
             })
+
+    # BOTH HALVES, OR NEITHER. When the question named a figure and a breakdown,
+    # only `both` counts: a chart that plots the right measure against the wrong
+    # dimension is not an answer to the question that was asked, and accepting it
+    # is the exact substitution this pass exists to stop.
+    paired = False
+    pairable = dimensions + weak_dimensions
+    if pairable and (measures or metrics):
+        for m_asset, m_ident, m_strength in (measures or metrics):
+            for d_asset, d_ident, d_strength in pairable:
+                args = {"dimension": d_ident}
+                args["metric" if not measures else "measure"] = m_ident
+                _collect(
+                    args, accept={"both"}, via="measure+dimension",
+                    concept=f"{m_ident}×{d_ident}",
+                    strength=max(m_strength, d_strength),
+                    why=(
+                        f"this chart plots “{m_asset.get('name') or m_ident}” "
+                        f"broken down by “{d_asset.get('name') or d_ident}”"
+                    ),
+                )
+                paired = True
+
+    # A question that named only one of the two is answered by the one it named.
+    if not paired:
+        for asset, ident, strength in metrics:
+            _collect(
+                {"metric": ident}, accept={"measure", "both"}, via="metric",
+                concept=str(ident), strength=strength,
+                why=f"metric “{asset.get('name') or ident}” is plotted by this chart",
+            )
+        for asset, ident, strength in measures:
+            _collect(
+                {"measure": ident}, accept={"measure", "both"}, via="field",
+                concept=str(ident), strength=strength,
+                why=f"field “{asset.get('name') or ident}” is plotted by this chart",
+            )
+        for asset, ident, strength in dimensions:
+            _collect(
+                {"dimension": ident}, accept={"dimension", "both"}, via="field",
+                concept=str(ident), strength=strength,
+                why=(
+                    f"this chart is broken down by "
+                    f"“{asset.get('name') or ident}”"
+                ),
+            )
     return out
 
 

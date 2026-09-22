@@ -240,16 +240,32 @@ def _fields(ctx: Any, query: str, wanted: set[str], once: _Once) -> list[dict]:
     scored.sort(key=lambda p: (p[0], str(p[1].get("name") or "")))
     out = []
     for _, f in scored[:_MAX_PER_KIND]:
+        # THE KIND WAS READ AND THROWN AWAY, AND THAT WAS THE BUG.
+        #
+        # `use_with` below has always branched on it, so this function KNEW
+        # whether it was looking at a measure or a dimension — and then published
+        # a result whose only type was `"field"`. Every reader downstream had to
+        # guess, and every reader guessed "measure": the resolver sent
+        # `product_category_name_english` to `resolve_chart_candidates` as a
+        # measure, got a category chart back, and answered "which STATE has the
+        # highest revenue?" with `health_beauty`.
+        #
+        # Serialised, so the distinction survives the tool boundary instead of
+        # dying inside a sentence of English prose.
+        kind = str(f.get("kind") or "").strip().lower() or "unknown"
         out.append({
             "type": "field",
+            "field_kind": kind,
             "id": f.get("name"),
             "name": f.get("label") or f.get("name") or "",
             "detail": f.get("formula") or f.get("description") or None,
             "why": "semantic field whose name, label or description matches",
             "use_with": (
-                "resolve_chart_candidates to find charts built on it"
-                if f.get("kind") == "measure" else
-                "a grouping dimension — name it in rank_values or aggregate_chart_data"
+                "resolve_chart_candidates(measure=...) to find charts built on it"
+                if kind == "measure" else
+                "resolve_chart_candidates(dimension=...) to find charts broken "
+                "down by it, or name it as the grouping in rank_values or "
+                "aggregate_chart_data"
             ),
         })
     return out
@@ -401,7 +417,13 @@ SEARCH_ASSETS_DEF = {
 # ── metric / field -> the charts that realise it ────────────────────────────
 
 
-def _charts_on_table(ctx: Any, table_id: int, measure: str | None) -> list[dict]:
+#: Strongest first. `both` leads whenever both concepts were asked for; when only
+#: one was, its own match is the best available and the other never occurs.
+_MATCH_RANK = {"both": 0, "measure": 1, "dimension": 1, "same_table": 3}
+
+
+def _charts_on_table(ctx: Any, table_id: int, measure: str | None,
+                     dimension: str | None = None) -> list[dict]:
     """Charts in THIS step's scope built on a table, best match first.
 
     `ctx.allowed_chart_ids` is the boundary and it is applied here rather than
@@ -421,27 +443,49 @@ def _charts_on_table(ctx: Any, table_id: int, measure: str | None) -> list[dict]
         .all()
     )
     out = []
-    needle = (measure or "").strip()
+    m_needle = (measure or "").strip()
+    d_needle = (dimension or "").strip()
     for c in rows:
         blob = c.config if isinstance(c.config, str) else _json.dumps(
             c.config or {}, ensure_ascii=False
         )
-        uses = bool(needle) and needle in blob
+        m_hit = bool(m_needle) and m_needle in blob
+        d_hit = bool(d_needle) and d_needle in blob
+        # THE DISTINCTION THE CALLER HAS TO SEE.
+        #
+        # "Same table" and "same measure" are not the same claim. A chart on the
+        # same table may plot something else entirely — counting orders is not
+        # measuring on-time delivery — and presenting both at one confidence is
+        # how a caller picks a plausible wrong chart.
+        #
+        # AND "SAME MEASURE" IS NOT "ANSWERS THE QUESTION". Asked which STATE has
+        # the highest revenue, every revenue chart on the table matches the
+        # measure, including the one broken down by product category — which is
+        # how `health_beauty` came back as the name of a state. When the caller
+        # names a dimension too, satisfying one half is a weak match and saying
+        # WHICH half is the whole point.
+        if m_needle and d_needle:
+            match = ("both" if m_hit and d_hit else
+                     "measure" if m_hit else
+                     "dimension" if d_hit else "same_table")
+        elif d_needle:
+            match = "dimension" if d_hit else "same_table"
+        else:
+            match = "measure" if m_hit else "same_table"
+        # SATISFIED EVERYTHING THAT WAS ASKED — which is not the same as
+        # "matched the measure". Asked for a measure alone, matching it IS the
+        # complete answer; asked for both, matching one half is not.
+        complete = (m_hit or not m_needle) and (d_hit or not d_needle)
         out.append({
             "chart_id": c.id,
             "chart_name": c.name or f"Chart {c.id}",
-            # THE DISTINCTION THE CALLER HAS TO SEE.
-            #
-            # "Same table" and "same measure" are not the same claim. A chart on
-            # the same table may plot something else entirely — counting orders is
-            # not measuring on-time delivery — and presenting both at one
-            # confidence is how a caller picks a plausible wrong chart. Sorted so
-            # the exact ones lead, and labelled so a weak match is a decision
-            # rather than an accident.
-            "match": "measure" if uses else "same_table",
-            "confidence": "high" if uses else "low",
+            "match": match,
+            "measure_match": m_hit,
+            "dimension_match": d_hit,
+            "complete": complete,
+            "confidence": "high" if complete else "low",
         })
-    out.sort(key=lambda r: (r["match"] != "measure", r["chart_id"]))
+    out.sort(key=lambda r: (not r["complete"], _MATCH_RANK[r["match"]], r["chart_id"]))
     return out
 
 
@@ -449,9 +493,17 @@ def tool_resolve_chart_candidates(ctx: Any, args: dict) -> dict:
     """From a governed metric or a semantic field, the charts that realise it."""
     metric_name = str(args.get("metric") or "").strip()
     measure = str(args.get("measure") or "").strip()
-    if not metric_name and not measure:
+    # A QUESTION CAN NAME TWO INDEPENDENT THINGS. "Which state has the highest
+    # revenue" names a measure AND a breakdown, and a chart answers it only if it
+    # has both. Before this argument existed the breakdown had nowhere to go, so
+    # the tool matched on revenue alone and handed back a chart broken down by
+    # product category — which is how a category became the name of a state.
+    dimension = str(args.get("dimension") or "").strip()
+    if not metric_name and not measure and not dimension:
         return R.err(
-            "pass either `metric` (a governed metric name) or `measure` (a semantic field name)",
+            "pass `metric` (a governed metric name), `measure` (a semantic field "
+            "name), `dimension` (a breakdown field name), or a measure together "
+            "with a dimension",
             code="bad_argument",
             recovery="Call search_business_assets first; its results carry the id to pass here.",
         )
@@ -515,17 +567,20 @@ def tool_resolve_chart_candidates(ctx: Any, args: dict) -> dict:
         from app.services.dashboard_ai_bot.govern_tools import _scope
 
         tids, _ = _scope(ctx)
-        tables = [(t, measure) for t in sorted(tids)]
-        resolved_via = "semantic_field"
+        tables = [(t, measure or None) for t in sorted(tids)]
+        resolved_via = "semantic_field" if measure else "dimension"
 
     seen: dict[int, dict] = {}
     for tid, meas in tables:
-        for row in _charts_on_table(ctx, tid, meas):
+        for row in _charts_on_table(ctx, tid, meas, dimension):
             prev = seen.get(row["chart_id"])
-            if prev is None or (prev["match"] != "measure" and row["match"] == "measure"):
+            better = (not row["complete"], _MATCH_RANK[row["match"]])
+            if prev is None or better < (not prev["complete"],
+                                         _MATCH_RANK[prev["match"]]):
                 seen[row["chart_id"]] = row
     ranked = sorted(
-        seen.values(), key=lambda r: (r["match"] != "measure", r["chart_id"])
+        seen.values(),
+        key=lambda r: (not r["complete"], _MATCH_RANK[r["match"]], r["chart_id"]),
     )
     # CAPPED, because this list is as long as the report is wide. On the demo
     # report an unbounded answer was 18 candidates and 656 tokens against a
@@ -533,13 +588,17 @@ def tool_resolve_chart_candidates(ctx: Any, args: dict) -> dict:
     # tool's own pack docstring complains was missing elsewhere. Exact matches
     # sort first, so the cap drops the weakest rows.
     candidates = ranked[:_MAX_CANDIDATES]
-    exact = [c for c in candidates if c["match"] == "measure"]
+    # EXACT MEANS "SATISFIES EVERYTHING THAT WAS ASKED", not "matched the
+    # measure". With a dimension in play those are different sets, and calling
+    # the second one exact is what let a half-match be reported as a resolution.
+    exact = [c for c in candidates if c["complete"]]
 
     out: dict[str, Any] = {
         "candidates": candidates,
         "coverage": {
             "resolved_via": resolved_via,
             "asked": metric_name or measure,
+            "asked_dimension": dimension or None,
             "total": len(ranked),
             "returned": len(candidates),
             "exact": len(exact),
@@ -553,8 +612,25 @@ def tool_resolve_chart_candidates(ctx: Any, args: dict) -> dict:
     if not candidates:
         out["coverage"]["note"] = (
             "No chart on this report is built on the data behind "
-            f"'{metric_name or measure}'. The figure is not on this report — say "
-            "so rather than measuring a different chart."
+            f"'{metric_name or measure or dimension}'. The figure is not on this "
+            "report — say so rather than measuring a different chart."
+        )
+    elif not exact and dimension and (metric_name or measure):
+        # THE HISTORICAL WRONG ANSWER, NAMED. Half a match used to be reported as
+        # a match, so "which state has the highest revenue" was answered from a
+        # chart broken down by product category.
+        out["coverage"]["note"] = (
+            f"No chart on this report shows '{metric_name or measure}' broken "
+            f"down by '{dimension}'. The ones listed match only one half — check "
+            "`measure_match` and `dimension_match` before using any of them, and "
+            "do NOT substitute a different breakdown for the one that was asked "
+            "about."
+        )
+    elif not exact and dimension:
+        out["coverage"]["note"] = (
+            f"No chart on this report is broken down by '{dimension}'; the ones "
+            "listed only share its source table. Check with get_chart_glossary "
+            "before quoting a number from them."
         )
     elif not exact:
         out["coverage"]["note"] = (
@@ -597,6 +673,23 @@ RESOLVE_CHARTS_DEF = {
                     "PREFERRED. A measure or field name as the question phrases "
                     "it — e.g. 'gmv', 'doanh thu', 'on-time rate'. Works without "
                     "anything being registered first."
+                ),
+            },
+            # A DIMENSION IS NOT A SMALL MEASURE.
+            #
+            # Passing a breakdown through `measure` matched any chart whose
+            # config mentioned it and reported that as a resolution, so "which
+            # state has the highest revenue" resolved to a chart broken down by
+            # product category and the answer named `health_beauty` as a state.
+            # Named separately, a chart has to satisfy BOTH before it is exact.
+            "dimension": {
+                "type": "string",
+                "description": (
+                    "The BREAKDOWN the question asks for — 'state', 'danh mục', "
+                    "'tháng'. Pass it alongside `measure` when the question asks "
+                    "which X has the most Y: only a chart that has both is a "
+                    "real answer, and the result says which half each candidate "
+                    "matched."
                 ),
             },
             "metric": {
