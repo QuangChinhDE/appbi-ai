@@ -223,6 +223,20 @@ def tool_compare_periods(ctx: ToolContext, args: dict) -> dict:
     if len(points) < 2:
         return _err("need at least 2 time points to compare")
 
+    # AN INCOMPLETE EDGE PERIOD IS NOT A PERIOD THE BUSINESS HAD.
+    #
+    # `analyze_trend` on this same series already drops contiguous low-outlier
+    # buckets at either end — a launch month, a data cutoff — and reports them in
+    # `excluded_periods`. This tool did not ask, so it compared the cutoff stub as
+    # the latest period: measured on the Olist report, 2018-09 = 166.46 against
+    # 2018-08 = 1,003,308.47, reported as "-99.98%, worsening" in every mode. Two
+    # tools giving two answers about the same edge of the same chart.
+    #
+    # The same canonical helper, so there is one notion of "incomplete" and not a
+    # second one written here. `custom` is deliberately below this: a caller who
+    # names both periods has said which ones they mean.
+    core, excluded, partial_first, partial_last = _trim_partial_edges(points)
+
     if mode == "custom":
         period_a = str(args.get("period_a") or "")
         period_b = str(args.get("period_b") or "")
@@ -243,6 +257,11 @@ def tool_compare_periods(ctx: ToolContext, args: dict) -> dict:
         return _ok(_attach_delta_unit(
             ctx, chart_id, columns[measure_idx],
             _compare_pair(a_val, b_val, period_a, period_b, columns[measure_idx])))
+
+    # COMPLETE PERIODS from here on. The partial edge is not hidden — it is
+    # named in the payload below — but it is not the headline `current` either.
+    if len(core) >= 2:
+        points = core
 
     # AUTO / MoM / QoQ / YoY all reduce to "compare last with N steps back".
     if mode in ("auto", "mom"):
@@ -272,6 +291,22 @@ def tool_compare_periods(ctx: ToolContext, args: dict) -> dict:
     recent_avg = statistics.fmean(y for _, y in points[-recent_n:])
     base_payload["recent_avg_last_3"] = _round(recent_avg)
     base_payload["points_used"] = len(points)
+    # SAID, NOT SWALLOWED. Dropping the incomplete bucket silently would trade a
+    # wrong answer for a missing one: a reader asking "how are we doing this
+    # month so far" still needs to know the bucket exists and why it is not the
+    # comparison. Same field names `analyze_trend` uses, so a caller reading both
+    # does not have to learn two vocabularies.
+    base_payload["excluded_periods"] = excluded
+    base_payload["partial_first"] = partial_first
+    base_payload["partial_last"] = partial_last
+    if partial_last and excluded:
+        last = next((e for e in excluded if e.get("edge") == "last"), None)
+        if last:
+            base_payload["note_partial"] = (
+                f"Kỳ {last['label']} chưa đủ dữ liệu ({last['value']}) nên KHÔNG "
+                "được dùng làm kỳ hiện tại — so sánh này dùng các kỳ đã đủ. Nếu "
+                "cần số liệu tới thời điểm hiện tại, hỏi riêng về kỳ đó."
+            )
     return _ok(_attach_delta_unit(ctx, chart_id, columns[measure_idx], base_payload))
 
 
