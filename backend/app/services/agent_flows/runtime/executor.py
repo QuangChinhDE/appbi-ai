@@ -117,6 +117,17 @@ async def run_flow(
 ) -> AsyncGenerator[AgentEvent, None]:
     """Run `flow` against `inp`. The last event is always `result`."""
     started = time.monotonic()
+    # THE QUESTION HAS TO REACH THE TOOL BOUNDARY.
+    #
+    # Set on the ONE backbone every dispatch site goes through, rather than in
+    # each of `run_for_link`, `run_preview` and `run_for_chat_thread` — three
+    # copies is three chances for a surface to be silently ungated. The
+    # dimension gate in `tools/registry.execute` reads it to tell a grouped call
+    # that answers the question from one that answers a different one.
+    try:
+        ctx.question = inp.question.text()
+    except Exception:                                           # noqa: BLE001
+        pass
     state = RunState(
         vars=inp.seed_vars(),
         budget=Budget(
@@ -287,6 +298,20 @@ async def run_flow(
         # step was skipped" is actionable and "these numbers may be unrelated" on
         # its own is not.
         _gap = (verification.get("grounding") or {})
+        if _gap.get("dimension_gap"):
+            _want = str(_gap.get("dimension_requested") or "").rsplit(".", 1)[-1]
+            state.notices.append(
+                Notice(
+                    code="requested_breakdown_unavailable",
+                    audience="reader",
+                    severity="warning",
+                    text=(
+                        f"Câu hỏi của bạn hỏi theo '{_want}', nhưng báo cáo này "
+                        "không có biểu đồ nào tách số liệu theo chiều đó — phần "
+                        "trả lời bên dưới KHÔNG phải câu trả lời cho chiều bạn hỏi."
+                    ),
+                )
+            )
         if _gap.get("capability_gap"):
             state.notices.append(
                 Notice(
@@ -1158,6 +1183,10 @@ def _status_after_verification(status: str, verification: dict | None) -> str:
     # what was asked. `ok` would report this run as a working answer.
     if grounding.get("capability_gap"):
         return "partial"
+    # THE BREAKDOWN THAT WAS ASKED FOR NEVER ARRIVED. `ok` would record this run
+    # as a working answer to a question it did not answer.
+    if grounding.get("dimension_gap"):
+        return "partial"
     # AND THE WORSE CASE, WHICH THE RULE ABOVE COULD NOT SEE. `_verify_figures`
     # returns early on an empty ledger, and that branch reports `no_evidence`
     # rather than `all_evidence_unresolved` — so a run that read NOTHING and
@@ -1226,6 +1255,30 @@ def _note_capability_gap(state: RunState, out: dict, *, cites_numbers: bool) -> 
         "capability_unavailable": skipped,
         "capability_serviced_intent": serviced,
         "capability_gap": bool(cites_numbers and not serviced),
+    })
+
+
+def _note_dimension_gap(state: RunState, out: dict) -> None:
+    """The question asked for a breakdown this report never delivered.
+
+    THE HALF THE TOOL GATE COULD NOT REACH. Refusing the wrong chart stopped the
+    substitution — "Bang nào có doanh thu cao nhất?" no longer came back as a
+    product category — and two of three live runs then answered about monthly GMV
+    instead, which is neither the answer nor an admission that the report cannot
+    give it. A refusal at the tool boundary cannot make the answer honest; it can
+    only stop one dishonest route.
+
+    So the gap travels to the verdict. `state.dimension_gap` is written from two
+    structured facts — the refusal's `requested_dimension` and the `dimension` a
+    successful grouped result states — and never from the answer's prose. This
+    does not re-resolve anything; it reports what the run already decided.
+    """
+    gap = getattr(state, "dimension_gap", None) or {}
+    if not gap or gap.get("satisfied"):
+        return
+    out.setdefault("grounding", {}).update({
+        "dimension_requested": gap.get("requested"),
+        "dimension_gap": True,
     })
 
 
@@ -1311,6 +1364,7 @@ def _verify_figures(state: RunState, answer: Answer) -> dict | None:
         # no figure is healthy and must not be flagged by either rule.
         cites_numbers = bool(out.get("matched") or out.get("unmatched"))
         _note_capability_gap(state, out, cites_numbers=cites_numbers)
+        _note_dimension_gap(state, out)
         if unresolved:
             # THE SMALLEST RULE THE PROVENANCE SUPPORTS.
             #

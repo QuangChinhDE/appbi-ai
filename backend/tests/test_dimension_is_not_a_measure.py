@@ -43,7 +43,34 @@ if not os.environ.get("DATA_DIR"):
     os.environ["DATA_DIR"] = ".testdata"
 
 from app.services.agent_flows import resolver as RS  # noqa: E402
+from app.services.agent_flows.tools.context import (  # noqa: E402
+    extract_chart_field_semantics,
+)
 from app.services.agent_flows.tools.packs import discover as D  # noqa: E402
+
+
+def _role(measure: str, dimension: str) -> dict:
+    """A chart config in the shape the DATABASE stores it.
+
+    THE FIRST VERSION OF THIS FILE USED `{"measures": [...], "dimensions": [...]}`
+    and passed against a matcher that was wrong on every real report. A real
+    config puts the grouping key in `roleConfig.dimension` and carries the
+    dataset's whole filterable column list in `baseFilters` — so a substring
+    search over the blob matched every column on every chart, and this fixture
+    was too tidy to notice. Measured on report 67, revenue-by-category came back
+    as a complete answer to a question about states.
+    """
+    return {
+        "chartType": "BAR",
+        "queryMode": "role",
+        "roleConfig": {"metrics": [{"field": measure, "agg": "auto"}],
+                       "dimension": dimension},
+        "baseFilters": [
+            {"field": "dataset_table_441.customer_state", "op": "in", "values": []},
+            {"field": "dataset_table_445.product_category_name_english",
+             "op": "in", "values": []},
+        ],
+    }
 
 
 # ── the report these cases run against ──────────────────────────────────────
@@ -53,12 +80,14 @@ from app.services.agent_flows.tools.packs import discover as D  # noqa: E402
 
 CHARTS = {
     684: {"name": "Doanh thu theo bang",
-          "config": {"measures": ["revenue"], "dimensions": ["customer_state"]}},
+          "config": _role("dataset_table_438.revenue",
+                          "dataset_table_441.customer_state")},
     686: {"name": "Doanh thu theo danh muc",
-          "config": {"measures": ["revenue"],
-                     "dimensions": ["product_category_name_english"]}},
+          "config": _role("dataset_table_438.revenue",
+                          "dataset_table_445.product_category_name_english")},
     690: {"name": "So don theo bang",
-          "config": {"measures": ["order_count"], "dimensions": ["customer_state"]}},
+          "config": _role("dataset_table_437.order_count",
+                          "dataset_table_441.customer_state")},
 }
 
 #: What the governed semantic model declares. `kind` is the fact that used to be
@@ -103,6 +132,14 @@ class _Ctx:
         self.allowed_chart_ids = set(allowed)
         self.db = _Db([_Chart(c, CHARTS[c]) for c in allowed])
         self.knowledge_scope = {}
+        self.question = ""
+        # Built by the runtime's own extractor from the same configs, so the
+        # matcher under test sees what it sees live.
+        self.chart_meta = {
+            c: {"name": CHARTS[c]["name"],
+                "fields": extract_chart_field_semantics(CHARTS[c]["config"])}
+            for c in allowed
+        }
 
 
 @pytest.fixture()

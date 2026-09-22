@@ -46,17 +46,46 @@ Live D1 on this HEAD: compares 1,003,308.47 against 1,058,728.03 (−5.23%) and
 states "có một giá trị bất thường thấp là 166.46 … không thể so sánh đáng tin
 cậy". The edge is preserved, described, and not the headline.
 
-**B2 — a category answered as a state. OPEN. Tool contract closed; live
-behaviour still reproduces.**
-Fixed and locked at the tool layer: `discover._fields()` serialises `field_kind`,
-`resolve_chart_candidates` accepts `dimension` as an independent concept,
-candidates report `measure_match` / `dimension_match` / `complete`, `exact` means
-"satisfied everything that was asked", and the resolver resolves the PAIR rather
-than sending a dimension in as a measure.
-Locked by `test_dimension_is_not_a_measure.py` — 13 cases, 11 red against the
-previous commit.
-Live D2 on this HEAD still answers: "Bang có doanh thu cao nhất là
-**health_beauty**". See open item 1 for why the fix does not reach it.
+**B2 — a category answered as a state. CLOSED.**
+TWO causes, and the first invalidated this entry's own previous "closed at the
+tool layer".
+
+(a) `_charts_on_table` decided `measure_match` / `dimension_match` by substring
+over `json.dumps(chart.config)`. A real config carries the dataset's whole column
+list in `baseFilters`, so on report 67
+`resolve_chart_candidates(measure=total_revenue, dimension=customer_state)`
+returned 684 (GMV by month), 685 (orders by status) and 686 (revenue by CATEGORY)
+as `complete`, reported the one chart genuinely grouped by state (687) as
+incomplete, and returned the IDENTICAL set for
+`dimension=product_category_name_english`. The unit test passed because its
+fixture was a tidy hand-built config — a fixture agreeing with the code about a
+payload neither had checked with the producer. The matcher now reads the
+structured grouping key from `roleConfig`, via `chart_meta[id]["fields"]`.
+
+(b) nothing gated the DIRECT agent path. The report-read step runs in
+report-order mode, which is a valid authoring choice, so the answering Agent
+called `rank_values` on a chart it picked itself. `tools/dimension_gate.py`
+refuses a grouped call whose chart groups by something other than the requested
+dimension — `dimension_mismatch`, non-retryable, with a `resolve_chart_candidates`
+recovery — one line after the capability gate in `registry.execute`.
+
+Two things measured on the way that changed the design: the deployment declares
+24 semantic fields and EVERY ONE is `kind="measure"`, so a gate waiting for a
+declared dimension would never fire and the requested dimension falls back to the
+breakdowns the authorised charts offer; and once the grouped tools were gated the
+model read ROWS from the monthly chart and answered with a MONTH, so
+`get_chart_data` is gated too. An unsatisfied gap now reaches the verdict as
+`partial` plus a reader notice, because a refusal at the tool boundary can stop
+one dishonest route and cannot make the answer honest.
+
+Locked by `test_requested_dimension_is_not_substituted.py` — 41 cases, both
+mutation controls proven red (guard bypassed; matcher reverted to the blob).
+`test_dimension_is_not_a_measure.py` and `test_discover_pack.py` were moved onto
+the real config shape rather than left certifying themselves.
+
+LIVE D2, 6 consecutive runs plus the eval's own `out_of_scope_measure` case: all
+seven decline honestly — "báo cáo không có biểu đồ phân tích doanh thu theo bang"
+— and not one returns a product category or a month.
 
 **B3 — two definitions of "time-like field". CLOSED.**
 One definition in `packs/_timefield.py`, shared by `coverage` and
@@ -65,7 +94,7 @@ carried the "nam" inside "name" substring bug AND had never learned
 `month|quarter|week|year`, so it did not recognise `year_month`. 5 of 16 corpus
 columns were classified differently.
 Locked by `test_time_axis_contract.py`. A third definition survives on purpose —
-open item 3.
+open item 1.
 
 **B4 — unrelated evidence becomes the answer. CLOSED.**
 `_note_capability_gap`: a capability skipped as unavailable, plus no step that
@@ -99,34 +128,27 @@ One rule rather than five: a qualifier may be stated only if it appears in the
 evidence. `qualifiers.py` plus one correction round at the answering node, in the
 same place and with the same "only if actually better" acceptance as
 `_retry_figures`, because there the tool results are still in the message history.
-Locked by `test_qualifier_provenance.py` — 21 cases, half for the false
-positives. DIMENSION is deliberately not enforced here — open item 2.
+Locked by `test_qualifier_provenance.py` — 26 cases, half for the false
+positives, two of which were found by reading the live suite after the first
+version shipped.
+
+DIMENSION is deliberately not enforced here and no longer needs to be: it is
+decided at the tool boundary by B2's dimension gate, from the chart's grouping
+key and the tool result's own `dimension`, which is a structured fact. A text
+rule layered on top would be a second, weaker opinion about the same thing —
+and the evidence blob names a field whenever `search_business_assets` ran, so
+"does the word appear" could never separate *mentioned* from *measured*.
 
 ### Open, with the exact next step
 
-1. **B2 live path.** The tool contract is correct and locked; the live failure is
-   upstream of it. On `revenue_v2` / link 39 the `overview` step reads by REPORT
-   ORDER, not by question, so `_charts_for_question` — and with it the paired
-   measure+dimension resolution — never runs. The answering agent then calls
-   `rank_values` on a category chart and the answer labels the result "Bang".
-   Next step: route the direct-agent path through the same resolution, so an
-   agent ranking on a chart whose dimension is not the one asked about is refused
-   or caveated. This is a selection-time fix. A text rule at answer time would be
-   a second, weaker opinion about the same thing.
-
-2. **DIMENSION qualifier.** Excluded from `qualifiers.py` on purpose. The evidence
-   blob contains the governed field's label whenever `search_business_assets`
-   ran, so "does the word appear in the evidence" cannot separate *mentioned*
-   from *measured*. It belongs with item 1.
-
-3. **A third definition of "time-like field".**
+1. **A third definition of "time-like field".**
    `dashboard_ai_bot.thinking.advanced_tools._looks_like_datetime` is a substring
    test over a different token list: it does not recognise `created_at`, and it
    carries `day` / `tuan` / `quy`, which the canonical one does not. It gates
    `compare_periods`, so folding it in would change that tool's acceptance in the
    same pass that changed its edge handling. Recorded rather than merged quietly.
 
-4. **`dashboard_ai_bot` has no guardrail feature mapping.**
+2. **`dashboard_ai_bot` has no guardrail feature mapping.**
    `guardrail_check.py --files backend/app/services/dashboard_ai_bot/thinking/advanced_tools.py`
    returns `ok` with no features touched and no required tests. The file that
    produces every analytical number is `unknown` coverage, which is not safe
@@ -222,12 +244,16 @@ repository's own workflow is free of the same collapse.
 
 ### Current verdict
 
-    NOT READY FOR RELEASE — READY FOR UAT
+    READY FOR HARDENING
 
-B1, B3, B4, B5 and B6 are closed, each with a test that fails against the commit
-before it. B2 is closed at the tool layer and open at the live path, and the rule
-for this session was that B2 does not close until live D2 stops returning a
-category as a state. It still does.
+All six correctness blockers are closed, each with a test that fails against the
+commit before it. The rule for B2 was that it does not close until live D2 stops
+returning a category as a state: across six consecutive live runs plus the eval's
+own case it now declines honestly every time.
+
+Not READY_FOR_RELEASE. The hardening register below is unchanged and unstarted,
+and it contains items — live-eval nondeterminism, the human-read semantic judge,
+answer-language consistency — that a release decision needs.
 
 ---
 

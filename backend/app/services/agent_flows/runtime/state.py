@@ -198,6 +198,17 @@ class RunState:
     #: inferring means guessing which shapes mean "skipped", and a guess in the
     #: trace is worse than no trace.
     skipped: dict[str, str] = field(default_factory=dict)
+    #: A breakdown the question asked for that no tool call ever delivered.
+    #:
+    #: ``{"requested": "<field>", "satisfied": bool}``, written when the dimension
+    #: gate refuses a grouped call and cleared when a grouped call succeeds on the
+    #: dimension that was asked for. Measured: once the gate started refusing the
+    #: category chart, two of three live runs stopped substituting a category —
+    #: and then answered about monthly GMV instead, which is neither the answer
+    #: nor an admission that the report cannot give it. The refusal fixed the
+    #: wrong answer and left a wandering one, so the fact has to survive to the
+    #: answer step where it can be said out loud.
+    dimension_gap: dict[str, Any] = field(default_factory=dict)
     #: Set by a Stop node, or by the executor when the budget runs out.
     stopped: bool = False
     stop_message: str = ""

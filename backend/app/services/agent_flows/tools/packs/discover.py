@@ -422,6 +422,43 @@ SEARCH_ASSETS_DEF = {
 _MATCH_RANK = {"both": 0, "measure": 1, "dimension": 1, "same_table": 3}
 
 
+def field_key(ref: str) -> str:
+    """The comparable name inside a qualified field reference.
+
+    `dataset_table_441.customer_state` and `customer_state` are the same field
+    said two ways — the first is how a chart stores it, the second how a question
+    and the semantic model name it. Table-qualified prefixes and the `__…__`
+    joins a date dimension carries are stripped, then folded.
+    """
+    text = str(ref or "").strip()
+    if not text:
+        return ""
+    return _fold(text.rsplit(".", 1)[-1])
+
+
+def _field_matches(needle: str, entries: Any) -> bool:
+    """Does one of these chart fields refer to the field the caller named?
+
+    Matched on the field's own name and on its on-screen label, because a
+    Vietnamese author asks for `Bang` and the warehouse column is
+    `customer_state`; the semantic layer is what connects them, and the label is
+    the connection it publishes.
+    """
+    want = field_key(needle)
+    if not want:
+        return False
+    for entry in entries or []:
+        if not isinstance(entry, dict):
+            if field_key(entry) == want:
+                return True
+            continue
+        if field_key(entry.get("field")) == want:
+            return True
+        if _fold(str(entry.get("label") or "")) == _fold(needle):
+            return True
+    return False
+
+
 def _charts_on_table(ctx: Any, table_id: int, measure: str | None,
                      dimension: str | None = None) -> list[dict]:
     """Charts in THIS step's scope built on a table, best match first.
@@ -430,8 +467,6 @@ def _charts_on_table(ctx: Any, table_id: int, measure: str | None,
     trusted to a caller: this is the one tool whose whole job is to produce ids
     other tools will act on.
     """
-    import json as _json
-
     from app.models.models import Chart
 
     allowed = set(getattr(ctx, "allowed_chart_ids", None) or set())
@@ -446,11 +481,33 @@ def _charts_on_table(ctx: Any, table_id: int, measure: str | None,
     m_needle = (measure or "").strip()
     d_needle = (dimension or "").strip()
     for c in rows:
-        blob = c.config if isinstance(c.config, str) else _json.dumps(
-            c.config or {}, ensure_ascii=False
-        )
-        m_hit = bool(m_needle) and m_needle in blob
-        d_hit = bool(d_needle) and d_needle in blob
+        # THE GROUPING KEY, NOT A SUBSTRING OF THE CONFIG.
+        #
+        # This used to ask whether the column name appeared anywhere in
+        # `json.dumps(chart.config)`. A real chart config carries the dataset's
+        # whole column vocabulary — `baseFilters` alone lists every filterable
+        # column — so EVERY chart of a dataset "matched" EVERY column. Measured
+        # on report 67:
+        #
+        #   resolve_chart_candidates(measure=total_revenue, dimension=customer_state)
+        #     684 GMV by month        -> both, complete
+        #     685 orders by status    -> both, complete
+        #     686 revenue by CATEGORY -> both, complete
+        #     687 orders by STATE     -> dimension, NOT complete
+        #
+        # The only chart that genuinely groups by state was the only one not
+        # reported complete, and asking for `product_category_name_english`
+        # returned the identical set. A matcher that answers the same for two
+        # different questions is not matching anything.
+        #
+        # `roleConfig` is where the chart says what it plots, and the runtime
+        # already extracts it into `chart_meta[id]["fields"]`. Borrowed rather
+        # than re-derived: a second opinion about what a chart measures is a
+        # second place for it to be wrong.
+        fields = (getattr(ctx, "chart_meta", None) or {}).get(c.id) or {}
+        fields = fields.get("fields") or {}
+        m_hit = bool(m_needle) and _field_matches(m_needle, fields.get("measures"))
+        d_hit = bool(d_needle) and _field_matches(d_needle, fields.get("dimensions"))
         # THE DISTINCTION THE CALLER HAS TO SEE.
         #
         # "Same table" and "same measure" are not the same claim. A chart on the

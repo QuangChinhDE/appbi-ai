@@ -184,6 +184,31 @@ _FINAL_ERROR_CODES = frozenset({
 _MAX_IGNORED_RECOVERIES = 2
 
 
+def _note_dimension_outcome(state: RunState, result: Any) -> None:
+    """Record whether the requested breakdown was refused, and later delivered.
+
+    Two structured facts, no prose: the gate's refusal names the dimension the
+    question asked for, and every grouped tool result states the dimension it
+    grouped by. A gap opens on the first refusal and closes only when a result
+    arrives grouped by that same field.
+    """
+    from app.services.agent_flows.tools.dimension_gate import field_key
+
+    if not isinstance(result, dict):
+        return
+    if result.get("error_code") == "dimension_mismatch":
+        wanted = str((result.get("detail") or {}).get("requested_dimension") or "")
+        if wanted and not state.dimension_gap:
+            state.dimension_gap = {"requested": wanted, "satisfied": False}
+        return
+    if result.get("ok") is not True or not state.dimension_gap:
+        return
+    data = result.get("data") if isinstance(result.get("data"), dict) else {}
+    got = field_key(str(data.get("dimension") or ""))
+    if got and got == field_key(str(state.dimension_gap.get("requested") or "")):
+        state.dimension_gap["satisfied"] = True
+
+
 def _is_final_refusal(result: dict) -> bool:
     """Is this a refusal that a second identical call cannot change?
 
@@ -458,6 +483,14 @@ async def run(
                     )
                     if result.get("error_code") == "already_refused":
                         ignored_recoveries += 1
+                # DID THE BREAKDOWN THE QUESTION ASKED FOR EVER ARRIVE?
+                #
+                # The gate refuses a grouped call on the wrong dimension; nothing
+                # yet recorded whether the RIGHT one ever ran. Both halves are in
+                # the tool result — the refusal carries `requested_dimension`, and
+                # a successful grouped result states the `dimension` it grouped
+                # by — so the answer step can be told the difference.
+                _note_dimension_outcome(state, result)
                 # Named in the run history, success or not. A refused call is the
                 # most interesting row in an audit and the easiest one to lose.
                 state.tool_log.append(
