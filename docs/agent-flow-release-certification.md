@@ -22,7 +22,7 @@ the probes that produced them.
 **This section is the current truth. Everything from §11b down is audit history,
 labelled HISTORICAL / SUPERSEDED where a later session moved it.**
 
-Current HEAD: `ce89b6728e4f266f771325e927f24e6ea7d324ac` (branch `feat/agent-flow-chat-rework`)
+Current HEAD: see the branch tip; this register was last revised in the pre-release hardening session (branch `feat/agent-flow-chat-rework`)
 
 Why this section exists: §11b recorded B1/B3/B5 as closed while §12 still listed
 them as open blockers, and the final verdict still counted five open failures.
@@ -148,15 +148,6 @@ and the evidence blob names a field whenever `search_business_assets` ran, so
    `compare_periods`, so folding it in would change that tool's acceptance in the
    same pass that changed its edge handling. Recorded rather than merged quietly.
 
-2. **`dashboard_ai_bot` has no guardrail feature mapping.**
-   `guardrail_check.py --files backend/app/services/dashboard_ai_bot/thinking/advanced_tools.py`
-   returns `ok` with no features touched and no required tests. The file that
-   produces every analytical number is `unknown` coverage, which is not safe
-   coverage. The `agent_flows` feature globs cover `services/agent_flows/` only,
-   while the tool BODIES still live in `dashboard_ai_bot` behind the `_source.py`
-   seam — the same shape as the answer-renderer gap already fixed in that file
-   with a comment explaining it.
-
 ### Live eval on this HEAD
 
 Two runs of the SAME code, so the spread is the model and not the build:
@@ -202,15 +193,54 @@ After the fix `coverage` and `out_of_scope_chart` are clean and `no_data` is
 still flagged — correctly: that run's answer claimed the charts "chỉ ghi lại dữ
 liệu đến tháng 2 năm 2017", which is false and appears in no tool result.
 
-### Pre-release hardening — all 13 carried forward
+### Pre-release hardening — after the hardening session
 
-24 of 36 tools with no semantic oracle · 6 of 36 with no `output_schema` ·
-certification machinery gitignored · `agent_flow_eval` manual · Tool-node
-identity on the canvas · raw node keys shown to authors · Vietnamese in the
-English author surface · answer language vs question language · the green unit
-tier hiding counts · PR-only gates that never run on this branch ·
-`search_knowledge` relevance floor · internal tool vocabulary leaking to readers ·
-live-eval one-verdict-per-case (now CLOSED — see above).
+**CLOSED**
+
+| item | evidence |
+|---|---|
+| Certification machinery local/gitignored | `scripts/cert/tool_certification.yaml` is the tracked source; `test_tool_certification_matrix.py` enforces `set(declared) == set(all_tools())`, three known states, a reason on every MANUAL_REQUIRED, and that every VERIFIED names a test file that exists. Raw live transcripts stay gitignored — evidence of one run, not a contract. |
+| Semantic oracle coverage | 12/36 → **23/36 VERIFIED**, 13 MANUAL_REQUIRED each with a stated reason, **0 FAILED, 0 TIER-1 tools manual**. `test_analytical_tool_semantics.py` adds 27 property assertions over 16 analytical tools — orderings, sums that must close, a planted outlier found and a flat series clean, a flat series projecting to itself, identical series correlating at 1, contributors adding back to the change. |
+| Live-eval semantic judge | `agent_flow_eval.py` carries per-case assertions for D1–D5; a semantic failure is a FAIL, and a case with no assertion prints "NONE — trace-scored only" rather than implying coverage. Locked by `test_eval_accounting.py`. |
+| `dashboard_ai_bot` guardrail feature mapping | Seven analytical source files mapped to `agent_flows`. Mutation control: appending one line to `advanced_tools.py` now yields WARN plus all five gate groups; before, `ok` and nothing. Locked by `test_tool_bodies_are_guarded.py`, which derives the corpus from the REGISTRY — and found `knowledge.py`, which a hand-written list had missed. |
+| Stale contradiction in this document | The line claiming B2 was open "despite a green row" is gone; the register and the verdict agree. |
+
+**OPEN — carried to the next session, none of them release-blocking**
+
+| item | state | note |
+|---|---|---|
+| `output_schema` completeness | OPEN | 6/36, re-measured on this HEAD. Not attempted; adding a generic `{"type":"object"}` would raise the count and prove nothing. |
+| Automated/scheduled Agent Eval | OPEN | still manual. |
+| Tool node shows selected tool on canvas | OPEN | Measured in the browser at this SHA: canvas cards DO carry icon, author label, node TYPE, purpose and output variable — richer than recorded. The specific Tool-node case was not exercised (the flow inspected has none). |
+| Raw node keys shown to authors | PARTIAL | No raw keys on the canvas or the Runs list at this SHA. The step-DETAIL view was not exercised — the flow inspected has no runs. |
+| English author i18n gaps | OPEN | Not audited this session. |
+| Answer-language consistency | OPEN, **better characterised** | On a FRESH thread an English question gets an English answer and a Vietnamese one gets Vietnamese — verified live and in the browser. The failure is a FOLLOW-UP effect: in a thread whose earlier turns were Vietnamese, an English question inherited Vietnamese. The fix belongs at the per-turn language decision, not the prompt. |
+| Backend unit CI test-count observability | OPEN | conclusion visible, counts not. Locally the CI list is 70 suites / 1670 passed / 5 skipped. |
+| PR-only change-guardrail | OPEN | runs on the PR this session opens. |
+| PR-only semantic-review | OPEN | runs on the PR this session opens. |
+| `search_knowledge` relevance floor | OPEN | not measured this session; unchanged. |
+| Reader-facing internal tool vocabulary | PARTIAL | One instance found and fixed — the new breakdown notice printed `customer_state` at a viewer on the public link; it now shows the on-screen label and keeps the column path in the trace. The wider surface was not swept. |
+| Third time-field detector in `advanced_tools` | OPEN | `_looks_like_datetime` still differs from the canonical `_timefield`; corpus test not yet written. |
+| Live-eval nondeterminism / human judge | PARTIAL | The semantic judge closes the "clean trace, wrong answer" half. Run-to-run variance is unquantified — no clean same-SHA repeated full-eval measurement exists. |
+
+### Current-SHA browser UAT
+
+Driven against the running stack at this SHA.
+
+**VERIFIED_CURRENT_SHA** — login · dashboards list · AI Chat catalogue · public
+link render with pages and filters · Open AI Assistant · Enter-to-send · **B2
+negative control in Vietnamese: no category offered as a state, the new notice
+renders, the answer stays Vietnamese, no identifier leaked** · English question
+on a fresh thread answered in English with the correct category · follow-up in an
+existing thread · Agent Flows list · builder opens · canvas cards showing author
+label, node type, purpose and output variable · Runs tab · 1280×800, 1440×900 and
+1920×1080 with no horizontal overflow.
+
+**NOT_VERIFIED at this SHA** — pointer move · keyboard move · undo/redo ·
+validate · test-panel run · Open in Builder · save draft · publish · reload ·
+Tool-node identity after reload · Switch/Loop/Coordinator interaction ·
+share/read-only · history reload · Dashboard-bot click-Send · citation rendering.
+These were verified at an older SHA and are not claimed here.
 
 ### Deferred to Wave 3 — all seven carried forward
 
