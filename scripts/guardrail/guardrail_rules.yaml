@@ -381,6 +381,9 @@ tests:
   guardrail_diff_range:
     run: "pytest scripts/ci/test_guardrail_diff_range.py"
     locks: "the guardrail tells an EMPTY diff from one it could not resolve: a real zero-change range is allowed, an unresolvable base/head or a git failure returns unknown and a non-zero exit, and --json stays valid JSON in every state"
+  ci_wiring_is_real:
+    run: "pytest scripts/ci/test_ci_wiring_is_real.py"
+    locks: "an allow-listed backend suite is actually PASSED TO PYTEST, not merely present somewhere in the workflow file: the per-line argument rule, a collapsed line continuation named with its line number, 'present mid-line' distinguished from 'absent', an allow-listed file that does not exist, and this repository's own workflow checked for the same collapse"
   stop_gate_decision:
     run: "pytest scripts/ci/test_stop_gate.py"
     locks: "Stop hook: green allows, FAILED blocks every time (including on retry), UNVERIFIED blocks once then allows, infrastructure failure never becomes green, override stays explicit"

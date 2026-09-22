@@ -331,12 +331,40 @@ def backend_tests_reach_ci(rep: Report, files: list[str]) -> None:
     gitignore = (REPO_ROOT / ".gitignore").read_text(encoding="utf-8", errors="replace")
     workflow_path = REPO_ROOT / ".github" / "workflows" / "backend-contract-tests.yml"
     workflow = workflow_path.read_text(encoding="utf-8", errors="replace") if workflow_path.exists() else ""
+    # PRESENT IN THE FILE IS NOT THE SAME AS PASSED TO PYTEST.
+    #
+    # This used to ask `f"tests/{name}" not in workflow` — a substring test over
+    # the whole file. MEASURED: an edit collapsed four `\` line continuations into
+    # literal `\n` characters, so one line read
+    #
+    #     tests/a.py \n            tests/b.py \n            tests/c.py \
+    #
+    # Every name was "in the workflow" and the check went green. The shell saw a
+    # bare `n` as an argument, pytest answered `file or directory not found: n`,
+    # and the whole unit tier ran ZERO tests and exited 4 — three suites believed
+    # to be gates, running nothing, reported as wired.
+    #
+    # A pytest argument is a line. So the test is now per LINE.
+    workflow_lines = [ln.strip() for ln in workflow.splitlines()]
     broken = []
     for name in re.findall(r"^!backend/tests/(test_[A-Za-z0-9_]+\.py)$", gitignore, re.M):
         if not (REPO_ROOT / "backend" / "tests" / name).exists():
             broken.append(f"{name} — allow-listed but the file does not exist")
-        elif f"tests/{name}" not in workflow:
-            broken.append(f"{name} — allow-listed (so committed) but CI never runs it")
+        elif not any(ln.startswith(f"tests/{name}") for ln in workflow_lines):
+            where = " (present mid-line — not an argument)" if f"tests/{name}" in workflow else ""
+            broken.append(
+                f"{name} — allow-listed (so committed) but CI never runs it{where}")
+
+    # AND NAME THE SIGNATURE, so the next person does not have to rediscover it.
+    # A `run:` block here never needs a literal backslash-n; its presence means an
+    # editor ate a newline, and every argument after it on that line is lost.
+    for number, line in enumerate(workflow.splitlines(), start=1):
+        if "\\n" in line:
+            broken.append(
+                f"{workflow_path.name}:{number} contains a literal \\n — a collapsed "
+                "line continuation. Everything after it on this line is passed to "
+                "the shell as one mangled argument, not as separate test paths."
+            )
     if broken:
         for line in broken:
             print(f"    {line}")
