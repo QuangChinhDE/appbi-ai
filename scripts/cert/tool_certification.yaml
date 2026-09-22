@@ -1,0 +1,150 @@
+# Agent Flow — tool certification declaration.
+#
+# WHY THIS FILE IS TRACKED. The certification used to live in `.artifacts/cert/`,
+# which is gitignored, so the only durable record of what had been proven was a
+# Markdown report nobody could re-derive. A reviewer could read the conclusion and
+# not the method. This file is the method's SOURCE: what each tool is, what tier
+# of risk it carries, and whether a deterministic SEMANTIC oracle exists for it.
+#
+# WHAT IT IS NOT. Not a substitute for the tests. The tests are named here and
+# `backend/tests/test_tool_certification_matrix.py` checks that the named files
+# exist, that every registered tool appears exactly once, and that no tool sits in
+# a silent untested state. Raw live-model transcripts stay gitignored — they are
+# evidence of one run, not a contract.
+#
+# STATES
+#   VERIFIED         a deterministic test asserts a property of the tool's MEANING
+#                    — an ordering, an identity, a sum that must close, a refusal
+#                    that must happen. `ok=True` is never sufficient.
+#   MANUAL_REQUIRED  no such property can be asserted without a provider, a
+#                    warehouse or a human reading the output. Every one carries a
+#                    reason, and the reason must explain why the tool cannot
+#                    silently misstate a number.
+#   FAILED           a semantic oracle exists and the tool does not satisfy it.
+#
+# TIERS
+#   1  correctness-sensitive internal analytical tool — it produces or transforms
+#      a number a reader will act on. MUST be VERIFIED.
+#   2  discovery / metadata / knowledge — it produces ids, names, scope or text.
+#      Oracles are structural, relevance- or scope-shaped.
+#   3  external / provider-dependent — the CONTENT cannot be deterministic, but
+#      permission, scope and result boundaries still are.
+
+version: 1
+
+tools:
+
+  # ── TIER 1 — the numbers ───────────────────────────────────────────────────
+  rank_values:            {tier: 1, semantic_oracle: VERIFIED, by: [test_analytical_tool_semantics.py, test_requested_dimension_is_not_substituted.py]}
+  share_of:               {tier: 1, semantic_oracle: VERIFIED, by: [test_analytical_tool_semantics.py]}
+  total_measure:          {tier: 1, semantic_oracle: VERIFIED, by: [test_analytical_tool_semantics.py]}
+  aggregate_chart_data:   {tier: 1, semantic_oracle: VERIFIED, by: [test_analytical_tool_semantics.py]}
+  compute:                {tier: 1, semantic_oracle: VERIFIED, by: [test_analytical_tool_semantics.py]}
+  compare_periods:        {tier: 1, semantic_oracle: VERIFIED, by: [test_partial_period_comparison.py, test_time_axis_contract.py]}
+  compare_segments:       {tier: 1, semantic_oracle: VERIFIED, by: [test_analytical_tool_semantics.py]}
+  segment_compare:        {tier: 1, semantic_oracle: VERIFIED, by: [test_analytical_tool_semantics.py]}
+  compare_to_target:      {tier: 1, semantic_oracle: VERIFIED, by: [test_analytical_tool_semantics.py]}
+  analyze_trend:          {tier: 1, semantic_oracle: VERIFIED, by: [test_analytical_tool_semantics.py, test_partial_period_comparison.py]}
+  detect_anomaly:         {tier: 1, semantic_oracle: VERIFIED, by: [test_analytical_tool_semantics.py]}
+  detect_seasonality:     {tier: 1, semantic_oracle: VERIFIED, by: [test_time_axis_contract.py]}
+  describe_distribution:  {tier: 1, semantic_oracle: VERIFIED, by: [test_analytical_tool_semantics.py]}
+  correlate_charts:       {tier: 1, semantic_oracle: VERIFIED, by: [test_analytical_tool_semantics.py]}
+  explain_change:         {tier: 1, semantic_oracle: VERIFIED, by: [test_analytical_tool_semantics.py]}
+  forecast_measure:       {tier: 1, semantic_oracle: VERIFIED, by: [test_analytical_tool_semantics.py, test_time_axis_contract.py]}
+  project_to_period_end:  {tier: 1, semantic_oracle: VERIFIED, by: [test_analytical_tool_semantics.py]}
+  smart_drilldown:        {tier: 1, semantic_oracle: VERIFIED, by: [test_analytical_tool_semantics.py]}
+  describe_time_coverage: {tier: 1, semantic_oracle: VERIFIED, by: [test_qualifier_provenance.py]}
+  get_chart_data:         {tier: 1, semantic_oracle: VERIFIED, by: [test_requested_dimension_is_not_substituted.py, test_tool_result_ceiling.py]}
+
+  # ── TIER 2 — ids, names, scope, text ──────────────────────────────────────
+  resolve_chart_candidates: {tier: 2, semantic_oracle: VERIFIED, by: [test_requested_dimension_is_not_substituted.py, test_dimension_is_not_a_measure.py, test_asset_resolution.py]}
+  search_business_assets:   {tier: 2, semantic_oracle: VERIFIED, by: [test_requested_dimension_is_not_substituted.py, test_cross_lingual_resolution.py, test_discover_pack.py]}
+  list_charts:              {tier: 2, semantic_oracle: VERIFIED, by: [test_report_read_selection_is_explicit.py, test_cross_lingual_resolution.py]}
+
+  describe_semantic_model:
+    tier: 2
+    semantic_oracle: MANUAL_REQUIRED
+    reason: >
+      Returns the governed model as the business declared it. There is no
+      property to assert that is not simply the declaration itself — a test would
+      restate the fixture. It states no number, so it cannot misstate one;
+      downstream misuse of `kind` is covered by the dimension oracles.
+  explain_measurement:
+    tier: 2
+    semantic_oracle: MANUAL_REQUIRED
+    reason: >
+      Returns a written definition authored by a human. Correctness is editorial.
+      That it only returns definitions that EXIST is locked by
+      test_explain_measurement_knows_what_exists.py; it computes nothing.
+  get_chart_glossary:
+    tier: 2
+    semantic_oracle: MANUAL_REQUIRED
+    reason: >
+      Field labels and descriptions as configured. No computation, no number.
+      Scope is enforced by the shared chart gate, which is asserted for every
+      chart tool in test_tool_capability_gates.py.
+  get_chart_summary:
+    tier: 2
+    semantic_oracle: MANUAL_REQUIRED
+    reason: >
+      Prose describing a chart. Asserting its wording would be grading language,
+      which the eval deliberately does not do. The figures it quotes are checked
+      where they are USED, by the answer verifier.
+  inspect_filters:
+    tier: 2
+    semantic_oracle: MANUAL_REQUIRED
+    reason: >
+      Echoes the already-merged public filters. The merge itself is the protected
+      public-link subsystem with its own gates; re-asserting it here would be a
+      second opinion about someone else's contract.
+  read_document:
+    tier: 2
+    semantic_oracle: MANUAL_REQUIRED
+    reason: >
+      Returns stored document content verbatim. Entitlement — which is the part
+      that can cause harm — is locked by test_govern_knowledge_tools.py and
+      test_knowledge_hit_contract.py.
+  recall_knowledge:
+    tier: 2
+    semantic_oracle: MANUAL_REQUIRED
+    reason: >
+      Returns institutional memory entries. What may be written and by whom is
+      governed by the review ledger; retrieval quality is a ranking judgement, and
+      the relevance floor is an open, measured, non-blocking item.
+  search_knowledge:
+    tier: 2
+    semantic_oracle: MANUAL_REQUIRED
+    reason: >
+      Embedding retrieval. Relevance is a ranking judgement over a model that can
+      be swapped; a pinned threshold would test the embedding, not the tool.
+      Scope and citation are locked by test_govern_doc_citation.py. Tracked as the
+      `search_knowledge relevance floor` hardening item.
+
+  # ── TIER 3 — outside AppBI ────────────────────────────────────────────────
+  web_search:
+    tier: 3
+    semantic_oracle: MANUAL_REQUIRED
+    reason: >
+      Live web results change hourly. The capability gate — that it cannot run at
+      all on a binding with web_search off — is deterministic and locked in
+      test_tool_capability_gates.py and the replay fixtures.
+  research_web:
+    tier: 3
+    semantic_oracle: MANUAL_REQUIRED
+    reason: "Same as web_search: provider content is not assertable; the capability gate is."
+  fetch_url:
+    tier: 3
+    semantic_oracle: MANUAL_REQUIRED
+    reason: "Returns whatever the URL serves. Reachability and the capability gate are the assertable parts."
+  browse_ai_answer:
+    tier: 3
+    semantic_oracle: MANUAL_REQUIRED
+    reason: "A provider's own answer. Nothing about its content is stable enough to assert."
+  benchmark_compare:
+    tier: 3
+    semantic_oracle: MANUAL_REQUIRED
+    reason: >
+      Compares an internal figure against an EXTERNAL benchmark the provider
+      supplies, so the comparison is only as stable as that source. Its error
+      taxonomy is locked by test_error_taxonomy_and_empty.py and its
+      chart-keyed-ness by the contract registry-drift lock.

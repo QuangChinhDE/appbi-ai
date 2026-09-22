@@ -327,6 +327,8 @@ backend/tests/.testdata/
 !backend/tests/test_dead_retry_costs_nothing.py
 !backend/tests/test_dimension_is_not_a_measure.py
 !backend/tests/test_requested_dimension_is_not_substituted.py
+!backend/tests/test_analytical_tool_semantics.py
+!backend/tests/test_tool_certification_matrix.py
 !backend/tests/test_capability_serviced_the_intent.py
 !backend/tests/test_qualifier_provenance.py
 !backend/tests/test_eval_accounting.py
