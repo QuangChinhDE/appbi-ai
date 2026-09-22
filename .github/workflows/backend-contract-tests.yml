@@ -83,6 +83,16 @@ jobs:
       - name: Install backend dependencies
         run: pip install -r requirements.txt
 
+      # A TIER-1 ORACLE THAT SKIPS IS NOT COVERAGE.
+      #
+      # Its own step, before the suite, so the failure reads as "share_of's
+      # oracle skipped" rather than being one skipped line inside a 70-suite run
+      # that still exits 0. The declaration names node ids; this runs exactly
+      # those and fails on missing/skipped/errored/failed.
+      - name: Every tier-1 semantic oracle actually runs
+        working-directory: ${{ github.workspace }}
+        run: python scripts/ci/check_tier1_oracles.py
+
       - name: Run semantic-contract + engine unit tests (no BigQuery)
         # THE FAILURE HAS TO BE READABLE BY WHOEVER SEES IT GO RED.
         #

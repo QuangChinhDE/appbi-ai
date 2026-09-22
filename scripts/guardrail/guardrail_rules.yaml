@@ -74,7 +74,8 @@ layers:
     may_depend_on: ["*"]
 
   - id: repo_infra
-    match: ["scripts/ci/**", "scripts/guardrail/**", ".github/**", ".githooks/**",
+    match: ["scripts/ci/**", "scripts/guardrail/**", "scripts/cert/**",
+            ".github/**", ".githooks/**",
             ".claude/**", ".opencodereview/**", "AGENTS.md"]
     label: "Engineering infrastructure (gates, rule base, agent contract, CI)"
     # Tooling legitimately reads every layer; the risk here is not import
@@ -346,6 +347,16 @@ features:
       # Found by the computed invariant in `scripts/ci/test_tool_bodies_are_guarded.py` on its
       # first run — `recall_knowledge` lives here, and a hand-written list had missed it.
       - backend/app/services/dashboard_ai_bot/knowledge.py
+      # THE CERTIFICATION SOURCE OF TRUTH.
+      #
+      # `scripts/cert/tool_certification.yaml` decides whether a tool counts as
+      # semantically VERIFIED. A file with that authority must not be editable
+      # without the gate that checks it: before this entry it matched no feature,
+      # so downgrading a tier or deleting an oracle reference pulled in no test
+      # at all. Listing it here makes `agent_flow_container` (which carries
+      # `test_tool_certification_matrix.py`) and `tier1_oracles_execute`
+      # required on any change to it.
+      - scripts/cert/**
     # Whole-word matched (guardrail_core._keyword_pattern). "flow" alone is far too
     # common in this repo to be a signal, so the phrases carry the weight.
     keywords: ["agent flow", "agent flows", agentflow, brain, brains, brain_key,
@@ -356,7 +367,7 @@ features:
                executor, run_flow, "tool node", report_read]
     invariants: [agent_flow_container_topology, agent_flow_answer_parity]
     required_tests: [agent_flow_contract, agent_flow_replay, agent_flow_container,
-                     agent_flow_surface, agent_flow_evidence]
+                     agent_flow_surface, agent_flow_evidence, tier1_oracles_execute]
 
   - id: direct_chat
     label: "Direct Chat (reader surface of Agent Flow)"
@@ -428,6 +439,9 @@ tests:
   guardrail_diff_range:
     run: "pytest scripts/ci/test_guardrail_diff_range.py"
     locks: "the guardrail tells an EMPTY diff from one it could not resolve: a real zero-change range is allowed, an unresolvable base/head or a git failure returns unknown and a non-zero exit, and --json stays valid JSON in every state"
+  tier1_oracles_execute:
+    run: "python scripts/ci/check_tier1_oracles.py"
+    locks: "every TIER-1 tool's declared semantic oracle NODE actually runs and passes — a missing, skipped, errored or failed node fails the gate, because a test file existing is not an oracle executing and `pytest.skip` on a refused valid fixture turns a product regression into a green suite"
   tool_bodies_are_guarded:
     run: "pytest scripts/ci/test_tool_bodies_are_guarded.py"
     locks: "every file defining a registered tool is claimed by a guardrail feature and pulls in at least one required test, derived from the registry rather than a list; the seam under dashboard_ai_bot is named; runtime support (events.py) is deliberately NOT claimed"

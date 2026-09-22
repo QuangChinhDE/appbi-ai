@@ -24,6 +24,15 @@ between the rows and the claim is real code.
 
 DELIBERATELY NOT HERE. Wording, phrasing, and any figure copied from one
 observed run — a test that pins "1,258,681.34" pins the fixture, not the tool.
+
+AND NO SKIP-GUARDS. The first version wrapped each call in "if the tool declined,
+skip" — defensive while the payload shapes were being learned, and a loophole
+once they were known: a product change that started refusing a VALID fixture
+would turn a PASS into a SKIP, the suite would stay green, and the certification
+matrix would go on calling the tool VERIFIED because a file containing an oracle
+still existed. Every fixture here is valid by construction, so a refusal is a
+FAILURE and a missing payload field is a FAILURE — an oracle that measures
+nothing must say so.
 """
 from __future__ import annotations
 
@@ -260,8 +269,10 @@ def test_a_projection_of_a_flat_series_is_that_flat_value(stub):
     projects to the thing that is not changing."""
     stub(MONTHS_FLAT, dim="year_month")
     res = ADV.tool_forecast_measure(Ctx(), {"chart_id": 1, "horizon": 1})
-    if res.get("ok") is not True:
-        pytest.skip(f"forecast declined this series: {res.get('error_code')}")
+    assert res.get("ok") is True, (
+        f"a twelve-point flat monthly series is a VALID forecast input and was "
+        f"refused: {res}"
+    )
     data = res["data"]
     projection = data.get("projection") or []
     values = [p.get("value") for p in projection if isinstance(p, dict)]
@@ -278,12 +289,15 @@ def test_attainment_is_actual_over_target(stub):
     res = TGT.tool_compare_to_target(
         Ctx(), {"chart_id": 1, "target": 5000.0,
                 "measure": "dataset_table_2.revenue"})
-    if res.get("ok") is not True:
-        pytest.skip(f"compare_to_target declined: {res.get('error_code')}")
+    assert res.get("ok") is True, (
+        f"a named measure and a numeric target is a VALID call and was refused: {res}"
+    )
     data = res["data"]
     pct = data.get("attainment_pct")
-    if pct is None:
-        pytest.skip(f"no attainment field: {sorted(data)}")
+    assert pct is not None, (
+        f"no attainment on a successful comparison — the oracle would measure "
+        f"nothing: {sorted(data)}"
+    )
     assert abs(pct - (CATEGORY_TOTAL / 5000.0 * 100)) < 0.5, (pct, data)
 
 
@@ -298,8 +312,10 @@ def test_two_identical_series_correlate_at_one(stub):
     ctx.allowed_chart_ids = {1, 2}
     res = ADV.tool_correlate_charts(ctx, {"chart_a": 1, "chart_b": 2,
                                           "on": "year_month"})
-    if res.get("ok") is not True:
-        pytest.skip(f"correlate declined: {res.get('error') or res}")
+    assert res.get("ok") is True, (
+        f"two distinct authorised charts over a shared time axis is a VALID "
+        f"correlation and was refused: {res}"
+    )
     data = res["data"]
     assert abs(data["pearson"] - 1.0) < 0.001, data["pearson"]
     assert abs(data["spearman"] - 1.0) < 0.001, data["spearman"]
@@ -314,8 +330,10 @@ def test_a_correlation_never_claims_more_points_than_it_had(stub):
     ctx.allowed_chart_ids = {1, 2}
     res = ADV.tool_correlate_charts(ctx, {"chart_a": 1, "chart_b": 2,
                                           "on": "year_month"})
-    if res.get("ok") is not True:
-        pytest.skip(f"correlate declined a short series: {res.get('error') or res}")
+    assert res.get("ok") is True, (
+        f"four shared points is short but VALID; refusing it hides the very "
+        f"claim n_points exists to qualify: {res}"
+    )
     assert res["data"]["n_common"] <= 4, res["data"]
 
 
@@ -347,8 +365,10 @@ def test_a_segment_against_the_rest_adds_back_to_the_whole(stub):
     res = ADV.tool_segment_compare(Ctx(), {
         "chart_id": 1, "value": "health_beauty",
         "dimension": "dataset_table_1.category"})
-    if res.get("ok") is not True:
-        pytest.skip(f"segment_compare declined: {res.get('error') or res}")
+    assert res.get("ok") is True, (
+        f"a segment that exists on the chart's own dimension is a VALID call "
+        f"and was refused: {res}"
+    )
     data = res["data"]
     # `value` is the segment's NAME; the number is `metric`.
     seg = (data.get("segment") or {}).get("metric")
@@ -368,12 +388,12 @@ def test_comparing_two_segments_reports_their_real_difference(stub):
     res = LEG.tool_compare_segments(Ctx(), {
         "chart_id": 1, "dimension": "dataset_table_1.category",
         "segment_a": "health_beauty", "segment_b": "watches"})
-    if res.get("ok") is not True:
-        pytest.skip(f"compare_segments declined: {res.get('error') or res}")
+    assert res.get("ok") is True, (
+        f"two segments that both exist is a VALID call and was refused: {res}"
+    )
     data = res["data"]
     delta = data.get("delta")
-    if delta is None:
-        pytest.skip(f"payload shape: {sorted(data)}")
+    assert delta is not None, f"no delta on a successful comparison: {sorted(data)}"
     assert abs(delta - (1200.0 - 900.0)) < 0.01, data
     pct = data.get("pct_change_vs_b")
     if pct is not None:
@@ -386,12 +406,15 @@ def test_a_period_end_projection_is_run_rate_times_the_periods_left(stub):
     stub([(f"2024-{m:02d}", 1000.0) for m in range(1, 4)], dim="year_month")
     res = PA.tool_project_to_period_end(
         Ctx(), {"chart_id": 1, "remaining_periods": 3})
-    if res.get("ok") is not True:
-        pytest.skip(f"project_to_period_end declined: {res.get('error') or res}")
+    assert res.get("ok") is True, (
+        f"three elapsed periods and three remaining is a VALID projection and "
+        f"was refused: {res}"
+    )
     data = res["data"]
     projected = data.get("projected_total")
-    if projected is None:
-        pytest.skip(f"payload shape: {sorted(data)}")
+    assert projected is not None, (
+        f"no projected_total on a successful projection: {sorted(data)}"
+    )
     assert abs(projected - 6000.0) < 1.0, data
     assert abs(data.get("to_date", 3000.0) - 3000.0) < 1.0, data
 
@@ -400,12 +423,13 @@ def test_a_drilldown_returns_only_rows_matching_what_it_filtered(stub):
     res = ADV.tool_smart_drilldown(Ctx(), {
         "chart_id": 1, "column": "dataset_table_1.category",
         "match": "health_beauty"})
-    if res.get("ok") is not True:
-        pytest.skip(f"smart_drilldown declined: {res.get('error') or res}")
+    assert res.get("ok") is True, (
+        f"drilling on a value the chart's own dimension contains is a VALID "
+        f"call and was refused: {res}"
+    )
     data = res["data"]
     rows = data.get("rows") or []
-    if not rows:
-        pytest.skip(f"payload shape: {sorted(data)}")
+    assert rows, f"a successful drilldown returned no rows: {sorted(data)}"
     def cells(row):
         return [str(v) for v in (row.values() if isinstance(row, dict) else row)]
 
@@ -439,8 +463,10 @@ def test_contributors_to_a_change_add_up_to_the_change(monkeypatch):
         "split_column": "year_month",
         "breakdown": "dataset_table_1.category",
         "value_a": "2024-02", "value_b": "2024-01"})
-    if res.get("ok") is not True:
-        pytest.skip(f"explain_change declined: {res.get('error') or res}")
+    assert res.get("ok") is True, (
+        f"a split column, a breakdown column and two states that all exist is a "
+        f"VALID call and was refused: {res}"
+    )
     data = res["data"]
     contributors = data["top_contributors"]
     total = data["total_delta"]

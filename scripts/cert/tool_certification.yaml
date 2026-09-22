@@ -22,6 +22,12 @@
 #                    silently misstate a number.
 #   FAILED           a semantic oracle exists and the tool does not satisfy it.
 #
+# `oracle_nodes` is REQUIRED on every tier-1 entry and names pytest NODE IDS, not
+# files. A file existing is not an oracle executing: a case guarded by
+# `pytest.skip` when the tool declines turns a product regression into a green
+# suite. `scripts/ci/check_tier1_oracles.py` runs exactly these nodes and fails
+# if any is missing, skipped, errored or failed.
+#
 # TIERS
 #   1  correctness-sensitive internal analytical tool — it produces or transforms
 #      a number a reader will act on. MUST be VERIFIED.
@@ -35,26 +41,26 @@ version: 1
 tools:
 
   # ── TIER 1 — the numbers ───────────────────────────────────────────────────
-  rank_values:            {tier: 1, semantic_oracle: VERIFIED, by: [test_analytical_tool_semantics.py, test_requested_dimension_is_not_substituted.py]}
-  share_of:               {tier: 1, semantic_oracle: VERIFIED, by: [test_analytical_tool_semantics.py]}
-  total_measure:          {tier: 1, semantic_oracle: VERIFIED, by: [test_analytical_tool_semantics.py]}
-  aggregate_chart_data:   {tier: 1, semantic_oracle: VERIFIED, by: [test_analytical_tool_semantics.py]}
-  compute:                {tier: 1, semantic_oracle: VERIFIED, by: [test_analytical_tool_semantics.py]}
-  compare_periods:        {tier: 1, semantic_oracle: VERIFIED, by: [test_partial_period_comparison.py, test_time_axis_contract.py]}
-  compare_segments:       {tier: 1, semantic_oracle: VERIFIED, by: [test_analytical_tool_semantics.py]}
-  segment_compare:        {tier: 1, semantic_oracle: VERIFIED, by: [test_analytical_tool_semantics.py]}
-  compare_to_target:      {tier: 1, semantic_oracle: VERIFIED, by: [test_analytical_tool_semantics.py]}
-  analyze_trend:          {tier: 1, semantic_oracle: VERIFIED, by: [test_analytical_tool_semantics.py, test_partial_period_comparison.py]}
-  detect_anomaly:         {tier: 1, semantic_oracle: VERIFIED, by: [test_analytical_tool_semantics.py]}
-  detect_seasonality:     {tier: 1, semantic_oracle: VERIFIED, by: [test_time_axis_contract.py]}
-  describe_distribution:  {tier: 1, semantic_oracle: VERIFIED, by: [test_analytical_tool_semantics.py]}
-  correlate_charts:       {tier: 1, semantic_oracle: VERIFIED, by: [test_analytical_tool_semantics.py]}
-  explain_change:         {tier: 1, semantic_oracle: VERIFIED, by: [test_analytical_tool_semantics.py]}
-  forecast_measure:       {tier: 1, semantic_oracle: VERIFIED, by: [test_analytical_tool_semantics.py, test_time_axis_contract.py]}
-  project_to_period_end:  {tier: 1, semantic_oracle: VERIFIED, by: [test_analytical_tool_semantics.py]}
-  smart_drilldown:        {tier: 1, semantic_oracle: VERIFIED, by: [test_analytical_tool_semantics.py]}
-  describe_time_coverage: {tier: 1, semantic_oracle: VERIFIED, by: [test_qualifier_provenance.py]}
-  get_chart_data:         {tier: 1, semantic_oracle: VERIFIED, by: [test_requested_dimension_is_not_substituted.py, test_tool_result_ceiling.py]}
+  rank_values:            {tier: 1, semantic_oracle: VERIFIED, by: [test_analytical_tool_semantics.py, test_requested_dimension_is_not_substituted.py], oracle_nodes: ["tests/test_analytical_tool_semantics.py::test_a_rankings_shares_are_consistent_with_its_own_total"]}
+  share_of:               {tier: 1, semantic_oracle: VERIFIED, by: [test_analytical_tool_semantics.py], oracle_nodes: ["tests/test_analytical_tool_semantics.py::test_a_share_agrees_with_part_over_whole"]}
+  total_measure:          {tier: 1, semantic_oracle: VERIFIED, by: [test_analytical_tool_semantics.py], oracle_nodes: ["tests/test_analytical_tool_semantics.py::test_a_total_equals_the_sum_of_the_rows_it_read"]}
+  aggregate_chart_data:   {tier: 1, semantic_oracle: VERIFIED, by: [test_analytical_tool_semantics.py], oracle_nodes: ["tests/test_analytical_tool_semantics.py::test_an_aggregation_partitions_its_input"]}
+  compute:                {tier: 1, semantic_oracle: VERIFIED, by: [test_analytical_tool_semantics.py], oracle_nodes: ["tests/test_analytical_tool_semantics.py::test_compute_evaluates_its_own_expression"]}
+  compare_periods:        {tier: 1, semantic_oracle: VERIFIED, by: [test_partial_period_comparison.py, test_time_axis_contract.py], oracle_nodes: ["tests/test_partial_period_comparison.py::test_the_note_says_which_of_the_two_it_is"]}
+  compare_segments:       {tier: 1, semantic_oracle: VERIFIED, by: [test_analytical_tool_semantics.py], oracle_nodes: ["tests/test_analytical_tool_semantics.py::test_comparing_two_segments_reports_their_real_difference"]}
+  segment_compare:        {tier: 1, semantic_oracle: VERIFIED, by: [test_analytical_tool_semantics.py], oracle_nodes: ["tests/test_analytical_tool_semantics.py::test_a_segment_against_the_rest_adds_back_to_the_whole"]}
+  compare_to_target:      {tier: 1, semantic_oracle: VERIFIED, by: [test_analytical_tool_semantics.py], oracle_nodes: ["tests/test_analytical_tool_semantics.py::test_attainment_is_actual_over_target"]}
+  analyze_trend:          {tier: 1, semantic_oracle: VERIFIED, by: [test_analytical_tool_semantics.py, test_partial_period_comparison.py], oracle_nodes: ["tests/test_analytical_tool_semantics.py::test_a_rising_series_is_called_rising"]}
+  detect_anomaly:         {tier: 1, semantic_oracle: VERIFIED, by: [test_analytical_tool_semantics.py], oracle_nodes: ["tests/test_analytical_tool_semantics.py::test_a_planted_outlier_is_found"]}
+  detect_seasonality:     {tier: 1, semantic_oracle: VERIFIED, by: [test_time_axis_contract.py], oracle_nodes: ["tests/test_time_axis_contract.py::test_seasonality_refuses_a_categorical_chart_end_to_end"]}
+  describe_distribution:  {tier: 1, semantic_oracle: VERIFIED, by: [test_analytical_tool_semantics.py], oracle_nodes: ["tests/test_analytical_tool_semantics.py::test_a_distribution_is_internally_ordered"]}
+  correlate_charts:       {tier: 1, semantic_oracle: VERIFIED, by: [test_analytical_tool_semantics.py], oracle_nodes: ["tests/test_analytical_tool_semantics.py::test_two_identical_series_correlate_at_one"]}
+  explain_change:         {tier: 1, semantic_oracle: VERIFIED, by: [test_analytical_tool_semantics.py], oracle_nodes: ["tests/test_analytical_tool_semantics.py::test_contributors_to_a_change_add_up_to_the_change"]}
+  forecast_measure:       {tier: 1, semantic_oracle: VERIFIED, by: [test_analytical_tool_semantics.py, test_time_axis_contract.py], oracle_nodes: ["tests/test_analytical_tool_semantics.py::test_a_projection_of_a_flat_series_is_that_flat_value"]}
+  project_to_period_end:  {tier: 1, semantic_oracle: VERIFIED, by: [test_analytical_tool_semantics.py], oracle_nodes: ["tests/test_analytical_tool_semantics.py::test_a_period_end_projection_is_run_rate_times_the_periods_left"]}
+  smart_drilldown:        {tier: 1, semantic_oracle: VERIFIED, by: [test_analytical_tool_semantics.py], oracle_nodes: ["tests/test_analytical_tool_semantics.py::test_a_drilldown_returns_only_rows_matching_what_it_filtered"]}
+  describe_time_coverage: {tier: 1, semantic_oracle: VERIFIED, by: [test_qualifier_provenance.py], oracle_nodes: ["tests/test_qualifier_provenance.py::test_the_same_range_is_fine_once_the_coverage_tool_has_run"]}
+  get_chart_data:         {tier: 1, semantic_oracle: VERIFIED, by: [test_requested_dimension_is_not_substituted.py, test_tool_result_ceiling.py], oracle_nodes: ["tests/test_requested_dimension_is_not_substituted.py::test_rows_from_a_chart_grouped_by_something_else_are_refused"]}
 
   # ── TIER 2 — ids, names, scope, text ──────────────────────────────────────
   resolve_chart_candidates: {tier: 2, semantic_oracle: VERIFIED, by: [test_requested_dimension_is_not_substituted.py, test_dimension_is_not_a_measure.py, test_asset_resolution.py]}

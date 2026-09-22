@@ -171,3 +171,80 @@ def test_the_tier_one_set_is_not_quietly_shrinking(declared):
     assert not demoted, (
         f"these produce numbers a reader acts on and are no longer tier 1: {demoted}"
     )
+
+
+# ── a file existing is not an oracle executing ──────────────────────────────
+#
+# THE LOOPHOLE THE RULES ABOVE LEAVE OPEN. They check that a VERIFIED tool names
+# a test FILE and that the file is there. A case guarded by
+#
+#     if res.get("ok") is not True:
+#         pytest.skip("the tool declined")
+#
+# turns a product regression into a green suite: the call starts being refused,
+# the case skips, pytest still exits 0, and the matrix goes on calling the tool
+# VERIFIED. So every tier-1 entry must name the NODE that proves it, and
+# `scripts/ci/check_tier1_oracles.py` runs exactly those nodes and fails on a
+# missing, skipped, errored or failed one.
+
+def test_every_tier_one_tool_names_the_nodes_that_prove_it(declared):
+    bare = sorted(n for n, v in declared.items()
+                  if v.get("tier") == 1 and not (v.get("oracle_nodes") or []))
+    assert not bare, (
+        "tier-1 tools naming a test FILE but no test NODE. A file existing is "
+        f"not an oracle executing: {bare}"
+    )
+
+
+def test_declared_oracle_nodes_look_like_node_ids(declared):
+    """A path with no `::` is a file, and a file is what this rule replaced."""
+    wrong = {}
+    for name, entry in declared.items():
+        for node in entry.get("oracle_nodes") or []:
+            if "::" not in str(node) or not str(node).startswith("tests/"):
+                wrong.setdefault(name, []).append(node)
+    assert not wrong, f"not pytest node ids under tests/: {wrong}"
+
+
+def test_every_declared_oracle_node_exists_in_its_file(declared):
+    """A node id that does not resolve reads as coverage and is not. The runner
+    catches it too, but catching it here names the tool rather than the id."""
+    missing = {}
+    for name, entry in declared.items():
+        for node in entry.get("oracle_nodes") or []:
+            path, _, func = str(node).partition("::")
+            fname = path.split("/")[-1]
+            target = TESTS / fname
+            if not target.exists():
+                missing.setdefault(name, []).append(f"{node} (no such file)")
+                continue
+            if f"def {func}(" not in target.read_text(encoding="utf-8"):
+                missing.setdefault(name, []).append(f"{node} (no such test)")
+    assert not missing, f"declared oracle nodes that do not resolve: {missing}"
+
+
+def test_a_tier_one_oracle_carries_no_skip_guard(declared):
+    """The specific shape that produced this rule. A tier-1 oracle may not
+    contain `pytest.skip` at all: its fixtures are valid by construction, so a
+    refusal is a failure and a missing field is a failure."""
+    guarded = {}
+    for name, entry in declared.items():
+        if entry.get("tier") != 1:
+            continue
+        for node in entry.get("oracle_nodes") or []:
+            path, _, func = str(node).partition("::")
+            target = TESTS / path.split("/")[-1]
+            if not target.exists():
+                continue
+            text = target.read_text(encoding="utf-8")
+            start = text.find(f"def {func}(")
+            if start < 0:
+                continue
+            nxt = text.find("\ndef ", start + 1)
+            body = text[start: nxt if nxt > 0 else len(text)]
+            if "pytest.skip" in body:
+                guarded.setdefault(name, []).append(node)
+    assert not guarded, (
+        "tier-1 oracles containing a skip guard — a refused valid fixture would "
+        f"go green instead of red: {guarded}"
+    )
