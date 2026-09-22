@@ -328,4 +328,5 @@ backend/tests/.testdata/
 !backend/tests/test_dimension_is_not_a_measure.py
 !backend/tests/test_capability_serviced_the_intent.py
 !backend/tests/test_qualifier_provenance.py
+!backend/tests/test_eval_accounting.py
 !backend/tests/test_cross_lingual_resolution.py

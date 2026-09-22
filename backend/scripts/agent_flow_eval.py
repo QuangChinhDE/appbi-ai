@@ -263,6 +263,61 @@ CATEGORY = {
 }
 
 
+# ── one verdict per scenario ────────────────────────────────────────────────
+#
+# THE HARNESS COULD NOT BE USED AS A VERDICT, because it did not give one. It
+# printed "AUTO INVARIANTS: n/m clean" and then a separate per-subcheck listing,
+# so the same case appeared as clean for one property and broken for another and
+# there was no number that added up. A release decision read off that is a
+# decision read off two different denominators.
+#
+# Now every case lands in exactly one bucket, and the bucket counts sum to the
+# case count. The subchecks are unchanged and still printed — they are the
+# EVIDENCE for the verdict, not a second scoreboard beside it.
+
+#: Notices that mean the run itself is telling the reader not to trust it. A
+#: scenario carrying one has not failed an invariant, and it has not cleanly
+#: passed either.
+_WARN_NOTICES = frozenset({
+    "figures_unverified", "answer_not_grounded_in_question", "labels_unverified",
+    "qualifier_unverified", "capability_unavailable_for_question",
+    "read_truncated", "partial_context",
+})
+
+
+def verdict(case: dict, obs: dict | None, auto: list[str]) -> tuple[str, str]:
+    """PASS / WARN / FAIL for one scenario, with the reason that decided it.
+
+    FAIL is any auto failure. Every subcheck in `auto_score` is
+    correctness-critical by construction — an ungranted tool, a scope breach, a
+    blocked run, a figure with no source — so there is no "failed but only a
+    little". A transport error is a FAIL too: a case that did not run did not
+    pass.
+    """
+    if obs is None:
+        return "FAIL", (auto[0] if auto else "the request did not complete")
+    if auto:
+        return "FAIL", auto[0]
+    if obs.get("status") not in ("ok", None):
+        return "WARN", f"run status {obs.get('status')!r}"
+    flagged = sorted(set(obs.get("notices") or ()) & _WARN_NOTICES)
+    if flagged:
+        return "WARN", "notice: " + ", ".join(flagged)
+    return "PASS", "invariants clean, no warning notice"
+
+
+def tally(rows: list[dict]) -> dict:
+    """The counts, and the arithmetic that has to hold for them to mean anything."""
+    counts = {"PASS": 0, "WARN": 0, "FAIL": 0}
+    for row in rows:
+        counts[row["verdict"]] += 1
+    counts["total"] = len(rows)
+    counts["balanced"] = (
+        counts["PASS"] + counts["WARN"] + counts["FAIL"] == counts["total"]
+    )
+    return counts
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--link", type=int, default=39)
@@ -280,19 +335,24 @@ def main() -> int:
         began = time.time()
         status, payload = ask(token, args.brain, args.link, case["q"])
         if not isinstance(payload, dict):
+            auto = [f"http: {status}"]
             rows.append({"case": case, "http": status, "error": str(payload)[:300],
-                         "o": None, "auto": [f"http: {status}"]})
+                         "o": None, "auto": auto,
+                         "verdict": verdict(case, None, auto)[0],
+                         "why": verdict(case, None, auto)[1]})
             print(f"{case['id']:<22} HTTP {status}  {str(payload)[:70]}")
             continue
 
         obs = observe(payload.get("envelope") or {})
         obs["seconds"] = round(time.time() - began, 1)
         bad = auto_score(case, obs)
-        rows.append({"case": case, "http": status, "o": obs, "auto": bad})
+        got, why = verdict(case, obs, bad)
+        rows.append({"case": case, "http": status, "o": obs, "auto": bad,
+                     "verdict": got, "why": why})
 
-        print(f"{case['id']:<22} {'ok ' if not bad else 'BAD'} "
+        print(f"{case['id']:<22} {got:<4} "
               f"{','.join(obs['calls'])[:44]:<44} {obs['status']}"
-              f"{'  <- ' + bad[0] if bad else ''}")
+              f"{'  <- ' + why if got != 'PASS' else ''}")
 
     _report(rows)
     if args.out:
@@ -309,7 +369,17 @@ def _report(rows: list[dict]) -> None:
     prompt = sum((r["o"] or {}).get("prompt_tokens", 0) for r in rows)
     completion = sum((r["o"] or {}).get("completion_tokens", 0) for r in rows)
 
-    print(f"AUTO INVARIANTS: {len(rows) - len(broken)}/{len(rows)} clean")
+    counts = tally(rows)
+    print(f"VERDICT   PASS {counts['PASS']}  ·  WARN {counts['WARN']}  ·  "
+          f"FAIL {counts['FAIL']}   of {counts['total']} cases")
+    # THE ARITHMETIC, STATED. One verdict per scenario is the whole point; a
+    # total that does not add up means a case was counted twice or not at all,
+    # and a release decision read off that is worthless.
+    if not counts["balanced"]:
+        print("  !! the verdicts do not sum to the case count — do not use this "
+              "run as a release verdict")
+    print(f"AUTO INVARIANTS: {len(rows) - len(broken)}/{len(rows)} clean "
+          "(the EVIDENCE for the verdicts above, not a second scoreboard)")
     print(f"TOKENS: {prompt:,} prompt + {completion:,} completion")
 
     if broken:
@@ -332,7 +402,8 @@ def _report(rows: list[dict]) -> None:
         if obs is None:
             print(f"-- {row['case']['id']}: HTTP {row['http']} {row.get('error', '')}\n")
             continue
-        print(f"-- {row['case']['id']}  ·  {row['case']['q']}")
+        print(f"-- {row['case']['id']}  [{row['verdict']}]  ·  {row['case']['q']}")
+        print(f"   why:       {row['why']}")
         print(f"   judge:     {row['case']['judge']}")
         print(f"   tools:     {obs['calls'] or '(none)'}"
               f"{'  refused=' + str(obs['refusals']) if obs['refusals'] else ''}")
