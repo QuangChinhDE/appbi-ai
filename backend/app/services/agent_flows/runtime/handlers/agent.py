@@ -13,8 +13,9 @@ import re
 from typing import Any, AsyncGenerator
 
 from app.services.agent_flows.contract import AgentNode
-from app.services.agent_flows.envelope import Answer
+from app.services.agent_flows.envelope import Answer, Notice
 from app.services.agent_flows.models_catalogue import INHERIT
+from app.services.agent_flows.qualifiers import check_qualifiers
 from app.services.agent_flows.runtime.nodes import NodeSpec
 from app.services.agent_flows.runtime.state import RunState
 from app.services.agent_flows.tools import registry as tool_registry
@@ -631,6 +632,66 @@ async def run(
                         )
                         text = fixed
 
+        # THE WORDS AROUND THE NUMBER ARE CLAIMS TOO.
+        #
+        # `_figure_check` above asks whether the digits trace to evidence. It passes
+        # "1.258.681,34 USD doanh thu tháng 9" as readily as "1.258.681,34", and
+        # measured on this deployment the same figure was published once as USD and
+        # once as VNĐ over BRAZILIAN data, with no currency declared anywhere. Both
+        # answers verified clean.
+        #
+        # Same place, same shape, same "only if actually better" acceptance rule —
+        # the tool results are still in `messages`, so the model can fix a qualifier
+        # by re-reading rather than recalling.
+        if node.key == rctx.answer_key and text and not provider_error:
+            tool_results: list[Any] = [
+                m.get("result") for m in messages if m.get("role") == "tool"
+            ]
+            # EARLIER STEPS COUNT AS EVIDENCE. A range established by
+            # `describe_time_coverage` in a previous node is a real source, and
+            # treating it as absent would flag a correct answer.
+            prior = _all_step_results(state, rctx, skip=node.key)
+            if prior:
+                tool_results.append(prior)
+            tools_called = sorted({
+                *(str(m.get("name") or "") for m in messages if m.get("role") == "tool"),
+                *(t for step in state.trace for t in (step.tool_calls or [])),
+            })
+            violations = check_qualifiers(text, tool_results, tools_called)
+            if violations:
+                _, supported_before = _figure_check(text, state)
+                fixed = await _retry_qualifiers(
+                    node, state, system, messages, text, violations,
+                    provider=provider, api_key=api_key, model=model,
+                )
+                if fixed and not _echoes_instruction(fixed):
+                    left = check_qualifiers(fixed, tool_results, tools_called)
+                    _, supported_after = _figure_check(fixed, state)
+                    # A rewrite that drops the analysis to lose a qualifier is not a
+                    # correction — the same trap the figure retry already learned.
+                    if len(left) < len(violations) and supported_after >= supported_before:
+                        logger.info(
+                            "[flow] %s: qualifier correction %d -> %d unsupported",
+                            node.key, len(violations), len(left),
+                        )
+                        text = fixed
+                        violations = left
+                if violations:
+                    state.notices.append(
+                        Notice(
+                            code="qualifier_unverified",
+                            audience="reader",
+                            severity="warning",
+                            text=(
+                                "Câu trả lời nêu "
+                                + ", ".join(
+                                    f"“{v['claim']}”" for v in violations[:3])
+                                + " nhưng dữ liệu đã đọc không khẳng định điều đó — "
+                                "hãy đối chiếu lại trước khi dùng."
+                            ),
+                        )
+                    )
+
         asked = getattr(getattr(rctx, "inp", None), "question", None)
         asked_text = asked.text() if hasattr(asked, "text") else ""
         if (
@@ -855,6 +916,54 @@ async def _retry_figures(
                 state.completion_tokens += int(ev.extra.get("completion_tokens") or 0)
     except Exception:  # noqa: BLE001 — a failed correction keeps the first answer
         logger.warning("[flow] figure correction failed", exc_info=True)
+        return ""
+    return out.strip()
+
+
+async def _retry_qualifiers(
+    node: AgentNode, state: RunState, system: str, messages: list[dict], said: str,
+    violations: list[dict], *, provider: str, api_key: str, model: str,
+) -> str:
+    """Name the unsourced qualifiers and ask for one correction.
+
+    NAME THEM, like the figure retry does, and for the same reason: "một số chi tiết
+    có thể chưa chính xác" produces a hedge, which is what the notice already was.
+    Each violation carries the sentence explaining what to change, written where the
+    rule that found it lives — so the model is told which claim, and why it fails.
+    """
+    listed = chr(10).join(f"- {v['why']}" for v in violations[:5])
+    retry_messages = [
+        *messages,
+        {"role": "assistant", "content": said},
+        {
+            "role": "user",
+            "content": (
+                "Những chi tiết sau trong câu trả lời trên KHÔNG có trong dữ liệu "
+                f"bạn vừa đọc:{chr(10)}{listed}{chr(10)}"
+                "Sửa lại từng điểm: bỏ phần không có căn cứ, hoặc nói rõ là dữ liệu "
+                "không cho biết điều đó. GIỮ NGUYÊN mọi con số đã đúng và phần phân "
+                "tích còn lại, kể cả các dòng [FOLLOWUP] (đúng số dòng, vẫn bắt đầu "
+                "bằng [FOLLOWUP]). Không thêm phân tích mới, không bỏ bớt kết quả."
+            ),
+        },
+    ]
+    try:
+        state.budget.spend_llm()
+    except Exception:  # noqa: BLE001 — out of budget is not this step's failure
+        return ""
+    out = ""
+    try:
+        async for ev in _stream(
+            provider=provider, api_key=api_key, model=model,
+            system_prompt=system, messages=retry_messages, tools=[],
+        ):
+            if ev.type == "text":
+                out += ev.text
+            elif ev.type == "usage":
+                state.prompt_tokens += int(ev.extra.get("prompt_tokens") or 0)
+                state.completion_tokens += int(ev.extra.get("completion_tokens") or 0)
+    except Exception:  # noqa: BLE001 — a failed correction keeps the first answer
+        logger.warning("[flow] qualifier correction failed", exc_info=True)
         return ""
     return out.strip()
 
