@@ -247,3 +247,82 @@ def test_seasonality_still_runs_on_a_stubbed_time_series(monkeypatch):
     res = P.tool_detect_seasonality(Ctx(), {"chart_id": 1})
     assert res.get("ok") is True, res
     assert res["data"]["time_dimension"] == "year_month"
+
+
+# ── one definition, not three ───────────────────────────────────────────────
+#
+# THE SECOND HALF OF THE SAME DEFECT, found by review after the fix above landed.
+#
+# The segment rule was applied to `project_ahead` alone. `coverage` — which
+# decides which column a report's date range is read from, and which charts to
+# try first — kept its own substring copy. Measured side by side, the two had
+# drifted apart in BOTH directions at once:
+#
+#     product_category_name_english   coverage=MATCH   project_ahead=-
+#     year_month                      coverage=-       project_ahead=MATCH
+#     product_name_lenght             coverage=MATCH   project_ahead=-
+#
+# `coverage` still had the "nam"-inside-"name" bug AND had never learned
+# `month|quarter|week|year`, so it did not recognise the commonest month column
+# in the reports it scans. Two answers to one question is the defect; these cases
+# hold them to one.
+
+ALL_CORPUS = DETERMINISTIC_TIME + DETERMINISTIC_NOT_TIME
+
+
+@pytest.mark.parametrize("column", ALL_CORPUS)
+def test_coverage_and_seasonality_classify_a_name_identically(column):
+    from app.services.agent_flows.tools.packs.coverage import _DATE_NAME as COV
+    from app.services.agent_flows.tools.packs.project_ahead import _DATE_NAME as SEA
+
+    assert bool(COV.search(column)) == bool(SEA.search(column)), (
+        f"{column!r}: the date-range tool and the seasonality tool disagree about "
+        "whether this is a time field. A report readable by one would not be "
+        "readable by the other."
+    )
+
+
+def test_they_are_the_same_definition_and_not_two_that_happen_to_agree():
+    """Agreement reached by coincidence drifts again on the next edit."""
+    from app.services.agent_flows.tools.packs import coverage, project_ahead
+    from app.services.agent_flows.tools.packs._timefield import TIME_NAME_RX
+
+    assert coverage._DATE_NAME is TIME_NAME_RX
+    assert project_ahead._DATE_NAME is TIME_NAME_RX
+
+
+def test_coverage_no_longer_reads_a_product_category_as_its_date_column():
+    """The name half of the regression, at the function that uses it."""
+    from app.services.agent_flows.tools.packs.coverage import _date_column
+
+    columns = ["product_category_name_english", "revenue"]
+    rows = [[f"cat_{i}", 100.0 + i] for i in range(20)]
+    assert _date_column(columns, rows) is None
+
+
+def test_coverage_now_recognises_year_month_which_its_old_rule_missed():
+    from app.services.agent_flows.tools.packs.coverage import _date_column
+
+    columns = ["year_month", "revenue"]
+    rows = [[f"2018-{m:02d}", 100.0 + m] for m in range(1, 11)]
+    assert _date_column(columns, rows) == 0
+
+
+def test_the_stronger_value_parsing_is_untouched():
+    """The name rule is a hint; coverage's own date parsing still has the final
+    say, and tightening the hint must not have cost it."""
+    from datetime import date
+
+    from app.services.agent_flows.tools.packs.coverage import _as_date, _date_column
+
+    assert _as_date("2018-10-17") == date(2018, 10, 17)
+    assert _as_date("2018-10-17T03:22:00") == date(2018, 10, 17)
+    assert _as_date("2018-10") == date(2018, 10, 1)
+    assert _as_date("17/10/2018") == date(2018, 10, 17)
+    assert _as_date(2016) == date(2016, 1, 1)
+    assert _as_date("health_beauty") is None
+
+    # A column whose NAME says nothing but whose values are dates is still found.
+    columns = ["key", "revenue"]
+    rows = [[f"2018-{m:02d}", 100.0 + m] for m in range(1, 11)]
+    assert _date_column(columns, rows) == 0
