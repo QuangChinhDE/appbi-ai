@@ -45,9 +45,27 @@ from app.services.dashboard_ai_bot.tool_context import (
 
 #: Column names that mark a time axis. Same vocabulary the coverage tool uses, so
 #: a report readable by one is readable by the other.
+#:
+#: BOUNDED TO WHOLE SEGMENTS, because the first version matched a SUBSTRING and
+#: "nam" — the Vietnamese for year — lives inside the English word "name". So
+#: `product_category_name_english` was read as a time axis and
+#: `detect_seasonality` reported repeating cycles over alphabetical order, with
+#: the category column named as its `time_dimension`. Two more columns failed the
+#: same way (`product_name_lenght`, `ky_thuat`), which is why the fix is the rule
+#: rather than an exception for one Olist column.
+#:
+#: A column name is a path of segments — `schema.table__col_name` — so the token
+#: has to sit at a segment edge: start/end of string, or next to `_`, `.`, `-`,
+#: a space or a digit. `year_month` and `thang_ban_hang` still match; `name` and
+#: `kythuat` no longer do.
+_DATE_TOKENS = (
+    "date", "ngay", "ngày", "thang", "tháng", "nam", "năm", "time", "timestamp",
+    "at", "dt", "period", "ky", "kỳ", "month", "quarter", "week", "year",
+)
+_SEG = r"(?:^|[^0-9A-Za-zÀ-ỹ])"
 _DATE_NAME = re.compile(
-    r"(date|ngay|ngày|thang|tháng|nam|năm|time|timestamp|_at|_dt|period|ky|kỳ|"
-    r"month|quarter|week|year)", re.IGNORECASE)
+    _SEG + r"(?:" + "|".join(_DATE_TOKENS) + r")(?=$|[^0-9A-Za-zÀ-ỹ])",
+    re.IGNORECASE)
 
 #: Seasonal cycle lengths worth testing, by what a period usually is. Testing
 #: every lag up to n/2 finds a "pattern" in noise; these are the cycles a business

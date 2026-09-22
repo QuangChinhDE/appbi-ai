@@ -150,3 +150,100 @@ def test_seasonality_still_works_on_a_real_time_axis(live):
                     {"chart_id": TIME_CHART}, allowed=None)
     assert res.get("ok") is True, res
     assert "year_month" in str(((res.get("data") or {}).get("time_dimension") or ""))
+
+
+# ── the deterministic half, which runs in CI ────────────────────────────────
+#
+# The cases above need the real Olist report and skip where it is absent, which
+# made the whole contract skippable. These do not: they stub the warehouse and
+# exercise the axis decision itself, so the rule is enforced on every push.
+#
+# THE DEFECT, once it was traced: `_DATE_NAME` matched a SUBSTRING.
+# `product_category_name_english` contains "nam" — the Vietnamese for year —
+# inside the word "name". So a product-category column was read as a time axis,
+# and `detect_seasonality` reported cycles over alphabetical order. Two more
+# columns fail the same way: `product_name_lenght` ("nam" in "name") and
+# `ky_thuat` ("ky" in "kythuat"). A whitelist of one Olist column would have
+# fixed none of them.
+
+DETERMINISTIC_TIME = [
+    "order_date", "created_at", "year_month", "purchase_month",
+    "date_dim.year_quarter", "thang_ban_hang", "nam_tai_chinh", "week_start",
+]
+
+#: NOT in the list below, and the reason is worth writing down: `ky_thuat`
+#: (technique) really does carry `ky` as a whole segment, and `kỳ` means period.
+#: A name-only rule cannot separate it from `ky_bao_cao` (reporting period)
+#: without semantics it does not have. Asserting either answer would be asserting
+#: a guess, so it is left out rather than used to bend the rule.
+DETERMINISTIC_NOT_TIME = [
+    "product_category_name_english",   # "nam" inside "name"
+    "product_name_lenght",             # same
+    "customer_state", "seller_city", "payment_type", "review_score",
+    "order_status", "thanh_pho",
+]
+
+
+@pytest.mark.parametrize("column", DETERMINISTIC_TIME)
+def test_a_real_time_column_is_recognised(column):
+    from app.services.agent_flows.tools.packs.project_ahead import _DATE_NAME
+
+    assert _DATE_NAME.search(column), (
+        f"{column!r} is a time column and the axis detector no longer sees it — "
+        "tightening the rule must not cost the tool its actual job"
+    )
+
+
+@pytest.mark.parametrize("column", DETERMINISTIC_NOT_TIME)
+def test_a_column_that_merely_contains_a_time_word_is_not_a_time_axis(column):
+    from app.services.agent_flows.tools.packs.project_ahead import _DATE_NAME
+
+    assert not _DATE_NAME.search(column), (
+        f"{column!r} was read as a time axis. This is the substring bug: 'nam' "
+        "lives inside 'name' and 'ky' inside 'kythuat', so a product-category "
+        "column became a `time_dimension` and seasonality was reported over "
+        "alphabetical order."
+    )
+
+
+def test_seasonality_refuses_a_categorical_chart_end_to_end(monkeypatch):
+    """The axis rule is necessary; this proves it is also sufficient — the tool
+    refuses rather than inventing a `time_dimension`."""
+    from app.services.agent_flows.tools.packs import project_ahead as P
+
+    monkeypatch.setattr(P, "_fetch_chart_data", lambda ctx, cid, **kw: {
+        "columns": ["product_category_name_english", "revenue"],
+        "rows": [[f"cat_{i}", 100.0 + i] for i in range(30)],
+    })
+
+    class Ctx:
+        chart_meta: dict = {}
+
+        def assert_chart_in_scope(self, chart_id):
+            return None
+
+    res = P.tool_detect_seasonality(Ctx(), {"chart_id": 1})
+    assert res.get("ok") is False, (
+        f"a categorical chart produced a seasonality result: {res}"
+    )
+    assert "time axis" in str(res.get("error", "")).lower()
+
+
+def test_seasonality_still_runs_on_a_stubbed_time_series(monkeypatch):
+    from app.services.agent_flows.tools.packs import project_ahead as P
+
+    monkeypatch.setattr(P, "_fetch_chart_data", lambda ctx, cid, **kw: {
+        "columns": ["year_month", "revenue"],
+        "rows": [[f"2024-{m:02d}", 1000.0 + (m % 4) * 300] for m in range(1, 13)]
+              + [[f"2025-{m:02d}", 1100.0 + (m % 4) * 300] for m in range(1, 13)],
+    })
+
+    class Ctx:
+        chart_meta: dict = {}
+
+        def assert_chart_in_scope(self, chart_id):
+            return None
+
+    res = P.tool_detect_seasonality(Ctx(), {"chart_id": 1})
+    assert res.get("ok") is True, res
+    assert res["data"]["time_dimension"] == "year_month"
