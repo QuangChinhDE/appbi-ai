@@ -193,6 +193,113 @@ After the fix `coverage` and `out_of_scope_chart` are clean and `no_data` is
 still flagged — correctly: that run's answer claimed the charts "chỉ ghi lại dữ
 liệu đến tháng 2 năm 2017", which is false and appears in no tool result.
 
+### Release closure session — evidence, with the states kept apart
+
+`workflow success` is not `semantic review passed`. `a test file exists` is not
+`an oracle executed`. Those two conversions are how a release register becomes
+decorative, so they are spelled out below rather than summarised.
+
+| | value |
+|---|---|
+| Branch head | `3f98d9ad3403ce915aacda775393ddc86c88ed7f` |
+| PR merge ref | `508775080d78bc589520a3901b7c0bd562dcf16a` (PR #1, mergeable, clean) |
+| Base | `f58cc63588c4f9f2a67b592ca0f44df2fd86d813` |
+
+**Tier-1 semantic oracle execution — PASS, and now proven by execution.**
+20 tier-1 tools, 20 declared oracle NODES, all run and pass. The declaration used
+to name test FILES, and a file existing is not an oracle executing: 13 cases in
+`test_analytical_tool_semantics.py` were wrapped in "if the tool declined, skip",
+so a product regression would have turned a PASS into a SKIP with the suite still
+green. All 13 skip-guards are gone — a refused valid fixture is now a FAILURE.
+`scripts/ci/check_tier1_oracles.py` runs the declared nodes from a JUnit report
+and fails on missing, skipped, errored or failed. Its own first version scraped
+`-rs` text and its mutation control caught it reporting success while a skip was
+happening; three controls hold now (clean → 20/20; reintroduced skip → SKIPPED
+exit 1; unresolvable node → MISSING exit 1). Registered as `tier1_oracles_execute`
+and run as its own CI step — observed `success` in the PR run.
+
+**36-tool matrix — 36/36 declared · 23 VERIFIED · 13 MANUAL_REQUIRED · 0 FAILED ·
+0 tier-1 manual.** The declaration is guardrail-owned: `scripts/cert/**` is
+classified `repo_infra` and belongs to the `agent_flows` feature, so editing it
+requires both the matrix test and the oracle-execution gate. Mutation-controlled.
+
+**output_schema — 6/36. Unchanged, deliberately.** Honest debt until stable result
+shapes are defined; a generic `{"type":"object"}` would raise the count and prove
+nothing.
+
+**Dependency security — classified from the LOCKFILE, which is what `npm ci`
+installs.** Local `node_modules` disagreed with it (axios 1.19.0 vs 1.13.2, next
+14.2.35 vs 14.2.33), so the lockfile is the only honest basis.
+
+| package | severity | classification | note |
+|---|---|---|---|
+| `next@14.2.33` | **CRITICAL** | **PRODUCTION_RUNTIME — RELEASE BLOCKER** | Two unauthenticated RCEs (path traversal on Windows-hosted servers; Image Optimization API with AVIF), both fixed only in `>=15.5.24`. `/d/{token}` and `/embed/{token}` are unauthenticated Next-served surfaces. npm's fix is `16.3.6` — two majors. Not a narrow fix. |
+| `axios@1.13.2 → 1.20.0` | HIGH | **FIXED** | Prototype-pollution gadgets enabling credential injection, request hijacking and MITM via `config.proxy`; used on the public client. `npm update axios --package-lock-only` inside the declared `^1.6.5`; `package.json` untouched; carried `form-data` 4.0.5 → 4.0.6. Verified on a clean `npm ci`: tsc clean, production build succeeds. |
+| `postcss@8.5.6`, `nanoid@3.3.11` | HIGH | DEV_BUILD_ONLY | PostCSS runs at build time; `nanoid` is reached only through it. |
+| `uglify-js@1.2.3` (CRITICAL), `jStat@1.0.6`, `vows@0.7.0`, `diff@1.0.8` | CRITICAL/HIGH | TRANSITIVE_NOT_REACHABLE | Chain is `formulajs → jStat → {uglify-js, vows → diff}` — a maths library's own minifier and test runner, never executed by the application. |
+| `lodash@4.17.21` | HIGH | UNKNOWN, leaning not reachable | Reached via `recharts`, `dagre`, `graphlib`, which call it with their own arguments; the advisories need attacker-controlled paths or templates. 4.17.21 is the newest 4.x. Not audited further. |
+| `@next/eslint-plugin-next`, `eslint-config-next`, `glob`, `brace-expansion`, `browserslist`, `flatted`, `js-yaml`, `minimatch`, `picomatch` | HIGH | DEV_BUILD_ONLY | Not in the production tree per the lockfile. |
+
+Totals after the axios fix: 23 findings (2 critical, 16 high, 4 moderate, 1 low),
+down from 26.
+
+**Live eval on the final head — no semantic FAIL.**
+
+    run 1   PASS 6 · WARN 12 · FAIL 0   of 18     (balanced)
+    run 2   PASS 8 · WARN 10 · FAIL 0   of 18     (balanced)
+    run 3   PASS 5 · WARN 13 · FAIL 0   of 18     (balanced)
+
+18/18 auto invariants clean in every run. **Same-SHA nondeterminism is now
+measured rather than unknown: 4 of 18 cases changed verdict across the three runs
+— `ranking`, `web_denied`, `off_topic`, `truncated` — every change PASS↔WARN,
+never into FAIL, and no case-specific semantic assertion failed in any run.**
+
+The first run of the session reported a FAIL on `out_of_scope_chart` that was not
+one: the harness flagged any chart read in a refusal-expecting run, and the only
+read was the overview step on chart 683, which is granted. Chart 720 was never
+attempted and the answer declined it correctly. A false FAIL in the gate that
+decides a release is as damaging as a false PASS; the branch is replaced by a
+semantic assertion that the answer names 720 and declines it, with enforcement
+still covered by the deterministic scope suites.
+
+**Knowledge smoke — safe.** Irrelevant query ("cách trồng thanh long ruột đỏ")
+→ honest decline, no confident answer from weak hits. Relevant query ("Olist là
+gì…") → grounded answer with inline citations. The invariant holds. One instance
+of the known relevance-floor debt observed: the decline still rendered
+"Sources (6)" beside it — attached is not relevant, and the citation block does
+not yet say so.
+
+**Browser UAT — PARTIAL, unchanged from the hardening session.** Verified at the
+current candidate: the B2 negative control in Vietnamese, the reader notice
+rendering without an identifier leak, an English question answered in English on
+a fresh thread, the public link, the builder canvas, the Runs tab, and three
+viewports. Still NOT verified at this SHA: undo/redo, validate, test panel,
+save/publish/reload, Tool-node identity after reload, Switch/Loop/Coordinator
+authoring, Runs → Open in Builder after a real run, share/read-only, history
+reload, Dashboard-bot click-Send, citation rendering.
+
+**Test counts — kept apart, because the two environments are not the same.**
+
+| | value |
+|---|---|
+| Branch head, local, exactly the CI suite list | **70 suites · 1677 passed · 5 skipped** |
+| PR merge ref, GitHub Actions | **NOT OBSERVABLE** — the unit job writes its summary only on failure, and job logs need admin. This is the open "backend unit CI test-count observability" item, now with a concrete consequence: a number quoted for the merge ref cannot be verified by the person reading the PR. |
+
+**CI on the branch head** — `preflight` PASS · `unit` PASS · `integration-golden`
+PASS · `e2e` PASS · `Protection integrity` PASS.
+
+**change-guardrail — PASS (no BLOCK).** It blocked once earlier on this branch,
+correctly: `frontend/src/i18n/catalog/agent-flows.ts` sat on a blocking glob with
+no layer describing it. Fixed by teaching the rule base (`fe_i18n`), not by
+widening `blocking_globs`.
+
+**semantic-review — NOT VERIFIED.** The workflow conclusion is `success` and the
+reviewer did not run. Step-level evidence from the PR run: `Is the reviewer
+configured?` success → `Report NOT VERIFIED when it cannot run` success →
+`OpenCodeReview` **skipped**. `OCR_LLM_TOKEN` is absent. This is not a pass, and
+it is recorded as missing coverage rather than converted into one.
+
+
 ### Pre-release hardening — after the hardening session
 
 **CLOSED**
@@ -283,9 +390,21 @@ commit before it. The rule for B2 was that it does not close until live D2 stops
 returning a category as a state: across six consecutive live runs plus the eval's
 own case it now declines honestly every time.
 
-Not READY_FOR_RELEASE. The hardening register below is unchanged and unstarted,
-and it contains items — live-eval nondeterminism, the human-read semantic judge,
-answer-language consistency — that a release decision needs.
+Not READY_FOR_RELEASE, and the reasons are two specific ones rather than a
+general reservation:
+
+1. **`next@14.2.33` carries two unauthenticated RCEs** reachable from the
+   unauthenticated public link surface. The fix is two major versions up, which
+   is a planned upgrade and not a closure-session change.
+2. **The semantic review never ran.** `OCR_LLM_TOKEN` is absent, the workflow
+   reports `success` while its reviewer step is `skipped`, and that is missing
+   coverage rather than a pass.
+
+Everything else the release rule asks for is met: B1–B6 closed, D1–D5 not
+reproducing, every tier-1 tool with a non-skipped oracle that PASSES, zero FAILED
+tools, the certification source guardrail-owned, the knowledge smoke safe, no
+semantic FAIL in three same-SHA live runs, push and PR CI green, and
+change-guardrail with no BLOCK. Browser UAT remains partial and is listed above.
 
 ---
 
