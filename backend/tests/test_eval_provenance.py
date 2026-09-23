@@ -54,6 +54,26 @@ SHA_X = "a" * 40
 SHA_Y = "b" * 40
 
 
+def _probe(E, monkeypatch, body):
+    """Drive `deployment_identity()` against a stubbed health response."""
+    import json
+
+    class _Resp:
+        def __init__(self, payload):
+            self._b = json.dumps(payload).encode()
+
+        def read(self):
+            return self._b
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr(E.U, "urlopen", lambda url, timeout=0: _Resp(body))
+    return E.deployment_identity()
+
 def _deployed(sha, *, reachable=True, error=None):
     return {"reachable": reachable, "sha": sha, "code_version": "v1", "error": error}
 
@@ -102,16 +122,33 @@ def test_an_unreachable_health_endpoint_is_reported_as_unknown_not_as_a_match(E)
     assert "unreachable" in p["reason"]
 
 
-def test_the_literal_string_unknown_is_not_a_commit(E):
-    """`/api/v1/health` answers `"unknown"` today. It must not be compared."""
-    assert E.provenance(SHA_X, _deployed("unknown"))["state"] in ("unknown",) or True
-    # The probe normalises it away before provenance sees it; assert the probe's
-    # contract directly rather than the string surviving into a comparison.
-    import inspect
+def test_the_literal_string_unknown_is_not_a_commit(E, monkeypatch):
+    """`/api/v1/health` answers "unknown" when nothing set GIT_SHA.
 
-    src = inspect.getsource(E.deployment_identity)
-    assert '"unknown"' in src, "the probe must treat the literal 'unknown' as absent"
+    This used to end in a clause that made the assertion unfailable. It now
+    drives the real probe against a stubbed health response, so a regression
+    that lets the literal string through to a comparison turns red here.
+    """
+    dep = _probe(E, monkeypatch, {"status": "healthy", "git_sha": "unknown",
+                                  "code_version": "v1"})
+    assert dep["reachable"] is True
+    assert dep["sha"] is None, "the literal unknown survived as a commit"
 
+    p = E.provenance(SHA_X, dep)
+    assert p["state"] == "unknown"
+    assert p["attributable_to"] is None
+
+
+def test_a_blank_git_sha_is_also_absent(E, monkeypatch):
+    assert _probe(E, monkeypatch, {"git_sha": "   "})["sha"] is None
+
+
+def test_a_real_git_sha_is_carried_through(E, monkeypatch):
+    """The positive control: without it the two above pass on a broken probe."""
+    dep = _probe(E, monkeypatch, {"git_sha": SHA_Y, "code_version": "v2"})
+    assert dep["sha"] == SHA_Y
+    assert dep["code_version"] == "v2"
+    assert E.provenance(SHA_Y, dep)["state"] == "verified"
 
 def test_the_target_identity_carries_no_credential(E, monkeypatch):
     """`EVAL_API_URL` may carry userinfo, and the artifact is uploaded."""

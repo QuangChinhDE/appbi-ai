@@ -139,23 +139,40 @@ def looks_like_period_value(value: Any) -> bool:
     return bool(_PERIOD_VALUE_RX.match(text) or _BARE_PERIOD_RX.match(text))
 
 
-def values_look_like_time(values: Iterable[Any], *, min_hits: int = 1) -> bool:
-    """True if the sampled VALUES carry period labels.
+def values_look_like_time(values: Iterable[Any], *, min_ratio: float = 0.6) -> bool:
+    """Do the sampled VALUES actually look like a period axis?
 
-    `min_hits=1` matches what the analytical tools already did — one recognisable
-    period in a sample is enough to say the axis is temporal, and a stricter
-    ratio would reject a series whose sample happens to start with nulls.
+    ONE HIT IS NOT EVIDENCE. This used to return True on the first recognisable
+    label, which is what the analytical tools did before the semantic was
+    unified — and it means
+
+        ["engineering", "2024", "support", "finance"]
+
+    becomes a time axis because one category happens to be a bare year. A column
+    with a `ky_*` or `quy_*` name and one numeric-looking value would then reach
+    time-series arithmetic, which is the whole failure this tier exists to stop.
+
+    THE RULE: a MAJORITY of the sampled non-empty values must read as periods.
+    The threshold is 0.6 rather than 1.0 because a genuine axis carries noise —
+    an "Unknown", an "Other", a stray blank label — and demanding purity would
+    refuse real series. It is not 0.5: a bare majority is what a half-categorical
+    column looks like. At three sampled values it accepts two and refuses one,
+    which is the smallest series where the distinction is meaningful.
+
+    Empty and null values are DROPPED rather than counted against the series, so
+    a sparse axis is not punished for being sparse.
     """
-    hits = 0
-    for value in values:
-        if value is None or value == "":
-            continue
-        if looks_like_period_value(value):
-            hits += 1
-            if hits >= min_hits:
-                return True
-    return False
-
+    sampled = [v for v in values if v is not None and str(v).strip() != ""]
+    if not sampled:
+        return False
+    hits = sum(1 for v in sampled if looks_like_period_value(v))
+    if hits == 0:
+        return False
+    if len(sampled) == 1:
+        # A single value can only speak for itself; it is not a pattern, but
+        # refusing it would break a legitimately one-row chart.
+        return True
+    return hits / len(sampled) >= min_ratio
 
 def accept_as_time_axis(name: str | None, values: Iterable[Any] | None = None) -> bool:
     """The question an analytical tool actually has: may I do time maths on this?

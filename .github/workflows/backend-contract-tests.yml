@@ -179,6 +179,7 @@ jobs:
             tests/test_reader_diagnostics_are_product_facing.py \
             tests/test_canonical_time_semantics.py \
             tests/test_time_axis_needs_more_than_a_name.py \
+            tests/test_time_axis_at_the_tool_boundary.py \
             tests/test_no_evidence_no_confident_number.py \
             tests/test_report_read_selection_is_explicit.py \
             tests/test_authoring_is_strict.py \

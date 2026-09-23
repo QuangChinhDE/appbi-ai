@@ -17,7 +17,11 @@ All tools share the ``ToolContext`` defined in ``tools.py`` and reuse
 """
 from __future__ import annotations
 
-from app.services.time_semantics import looks_like_time_name
+from app.services.time_semantics import (
+    looks_like_period_value,
+    looks_like_time_name,
+    values_look_like_time,
+)
 
 import datetime as _dt
 import logging
@@ -74,15 +78,20 @@ def _looks_like_datetime(name: str) -> bool:
 
 
 # A date/period VALUE: 2024, 2024-06, 2024-06-15, 2024/06, Q1 2024, etc.
-_PERIOD_VALUE_RX = re.compile(
-    r"^\s*(?:Q[1-4][\s\-/]?\d{4}|\d{4}(?:[\-/](?:0?[1-9]|1[0-2]))?(?:[\-/]\d{1,2})?|\d{4})\s*$",
-    re.IGNORECASE,
-)
-
-
 def _looks_like_period_label(value: str) -> bool:
-    """True if a dimension VALUE looks like a calendar period label."""
-    return bool(_PERIOD_VALUE_RX.match(str(value or "")))
+    """Delegates to the ONE period-value semantic.
+
+    This carried its own regex, narrower than the canonical one: it did not
+    accept a bare `Q1` or `quy 2`. So the NAME question was unified while the
+    VALUE question still had two answers, and two tools could disagree about the
+    same column for the opposite reason to before.
+
+    The STRONGER parsers below — `_LBL_*` and `_period_end`, which resolve a
+    label to an actual calendar date — stay exactly where they are. They are not
+    a second definition of "does this look like a period"; they are an operation
+    that needs more than the answer to that question.
+    """
+    return looks_like_period_value(value)
 
 
 #: The last calendar day of each month, indexed 1..12. February is handled by the
@@ -346,7 +355,9 @@ def tool_compare_periods(ctx: ToolContext, args: dict) -> dict:
                 sample_labels.append(str(r[dim_idx]))
             if len(sample_labels) >= 8:
                 break
-        any_date_like = any(_looks_like_period_label(s) for s in sample_labels)
+        # A MAJORITY, not the first hit. One category that happens to be a
+        # bare year does not make a categorical axis temporal.
+        any_date_like = values_look_like_time(sample_labels)
         if not any_date_like:
             return _err(
                 f"chart's dimension '{columns[dim_idx]}' is categorical "
@@ -947,7 +958,7 @@ def tool_detect_anomaly(ctx: ToolContext, args: dict) -> dict:
         if not _looks_like_datetime(columns[dim_idx]):
             labels = [str(r[dim_idx]) for r in rows
                       if dim_idx < len(r) and r[dim_idx] is not None][:8]
-            if not any(_looks_like_period_label(s) for s in labels):
+            if not values_look_like_time(labels):
                 return _err(
                     f"chart's dimension '{columns[dim_idx]}' is not a time axis "
                     f"(e.g. {', '.join(labels[:5]) or 'n/a'}) - {method} needs a "
@@ -1794,7 +1805,7 @@ def tool_forecast_measure(ctx: ToolContext, args: dict) -> dict:
                 labels.append(str(r[dim_idx]))
             if len(labels) >= 8:
                 break
-        if not any(_looks_like_period_label(s) for s in labels):
+        if not values_look_like_time(labels):
             return _err(
                 f"chart's dimension '{columns[dim_idx]}' is not a time axis "
                 f"(e.g. {', '.join(labels[:5]) or 'n/a'}) — forecasting needs a "
@@ -1899,7 +1910,7 @@ def tool_analyze_trend(ctx: ToolContext, args: dict) -> dict:
     if measure_idx is None or dim_idx is None:
         return _err("need a numeric measure and a dimension")
     labels = [str(r[dim_idx]) for r in rows if dim_idx < len(r) and r[dim_idx] is not None][:8]
-    if not _looks_like_datetime(columns[dim_idx]) and not any(_looks_like_period_label(s) for s in labels):
+    if not _looks_like_datetime(columns[dim_idx]) and not values_look_like_time(labels):
         return _err(f"dimension '{columns[dim_idx]}' is not a time axis — trend analysis needs a time series.")
 
     srt = sorted(rows, key=lambda r: ("" if dim_idx >= len(r) or r[dim_idx] is None else str(r[dim_idx])))
