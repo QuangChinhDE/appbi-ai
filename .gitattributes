@@ -3,6 +3,12 @@
 # inside the (Linux) container. Pin them regardless of any dev's core.autocrlf.
 *.sh            text eol=lf
 run.sh          text eol=lf
+# Workflow YAML carries shell scripts, and the runner is Linux. Pinned for
+# the same reason *.sh is - and was not, so a workflow committed from Windows
+# shipped CR into every embedded script.
+*.yml           text eol=lf
+*.yaml          text eol=lf
+
 backend/entrypoint.sh text eol=lf
 
 # PowerShell is happiest with CRLF on Windows.

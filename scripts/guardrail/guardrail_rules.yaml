@@ -209,7 +209,7 @@ protected:
       check_protection_integrity.py inspects base..head, so editing the checker
       in the same PR does not disable it.
     required_tests: [agent_sdlc_meta, stop_gate_decision, guardrail_diff_range,
-                     protection_approval_is_one_commit]
+                     protection_approval_is_one_commit, product_gate_is_a_real_boundary]
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 3. FEATURES — impact map. A changed file that owns a feature drags in that
@@ -440,6 +440,9 @@ tests:
   canonical_time_semantics:
     run: "pytest backend/tests/test_canonical_time_semantics.py backend/tests/test_time_axis_needs_more_than_a_name.py"
     locks: "ONE name-level answer to 'is this column a time axis': the segment-edge rule kills the substring bugs (`day` inside `holiday`, `nam` inside `name`), the token union keeps created_at/dt/period/quarter AND tuan/quy, the ambiguous ky_*/quy_* verdicts are pinned as decisions, and every implementation - coverage, project_ahead, advanced_tools, insight_pack - returns the same verdict for the same name; AND that a name which only SUGGESTS time (ky_*, quy_*) cannot buy a time-series calculation on its own - compare_periods, analyze_trend, forecast_measure, detect_anomaly, project_ahead and insight_pack all require value evidence before treating it as an axis"
+  product_gate_is_a_real_boundary:
+    run: "pytest scripts/ci/test_product_gate_is_a_real_boundary.py"
+    locks: "every PR carries ONE always-present product status: the classify job maps the diff onto suites BEFORE anything runs, the heavy suites are CALLED and not copied, and the sentinel fails when a suite the diff needed concluded anything other than success - skipped included, because skipped is what a job that disappeared looks like and must never read as irrelevant"
   protection_approval_is_one_commit:
     run: "pytest scripts/ci/test_protection_approval_is_one_commit.py"
     locks: "the owner-approval hatch is a COMMIT and not a switch: unset blocks, `true`/`1`/`*`/a branch name block, the exact head SHA permits a declared removal, a later push invalidates it, and it never excuses a protected subsystem losing a required gate. Also that change-guardrail.yml exports exactly the variable the checker reads - the two disagreed, so the hatch had never opened"

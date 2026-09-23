@@ -25,13 +25,18 @@ on:
       # role-slot regression is caught even though the rest of the diff is FE.
       - "frontend/src/components/explore/**"
       - "frontend/src/lib/explore-query.ts"
-  pull_request:
-    paths:
-      - "backend/**"
-      - ".github/workflows/backend-contract-tests.yml"
-      - "frontend/src/components/explore/**"
-      - "frontend/src/lib/explore-query.ts"
-
+  # CALLED BY `product-gate.yml` ON PULL REQUESTS.
+  #
+  # The `pull_request` trigger moved there. It is not a reorganisation for its
+  # own sake: the filter below lives at the WORKFLOW level, so on an irrelevant
+  # PR this produced no check run at all, and a branch-protection rule cannot
+  # require a check that may never appear. `product-gate` classifies the diff
+  # first and calls this when it is relevant, so there is one always-present
+  # status and the expensive suites still skip the diffs they do not concern.
+  #
+  # The push trigger and its paths are unchanged, so pushing to a branch still
+  # pays only for what it touched.
+  workflow_call:
 jobs:
   # ── Tier 1: unit (no external DB) ──────────────────────────────────────────
   unit:

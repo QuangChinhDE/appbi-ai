@@ -19,13 +19,18 @@ on:
       - "frontend/**"
       - "e2e/**"
       - ".github/workflows/e2e.yml"
-  pull_request:
-    paths:
-      - "backend/**"
-      - "frontend/**"
-      - "e2e/**"
-      - ".github/workflows/e2e.yml"
-
+  # CALLED BY `product-gate.yml` ON PULL REQUESTS.
+  #
+  # The `pull_request` trigger moved there. It is not a reorganisation for its
+  # own sake: the filter below lives at the WORKFLOW level, so on an irrelevant
+  # PR this produced no check run at all, and a branch-protection rule cannot
+  # require a check that may never appear. `product-gate` classifies the diff
+  # first and calls this when it is relevant, so there is one always-present
+  # status and the expensive suites still skip the diffs they do not concern.
+  #
+  # The push trigger and its paths are unchanged, so pushing to a branch still
+  # pays only for what it touched.
+  workflow_call:
 jobs:
   e2e:
     runs-on: ubuntu-latest

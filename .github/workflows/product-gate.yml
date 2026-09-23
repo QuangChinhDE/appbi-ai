@@ -1,0 +1,206 @@
+# The one status that is present on EVERY pull request and means "this diff's
+# suites ran and passed".
+#
+# THE HOLE THIS CLOSES.
+#
+# `demo` requires `preflight`, the architecture gate and protection integrity.
+# It cannot require `unit`, `integration-golden` or `e2e`, because those
+# workflows were path-filtered AT THE WORKFLOW LEVEL: a PR touching only docs or
+# `.github/**` produces no check run for them at all, and a required check that
+# never appears leaves the PR "Expected" forever. So a product PR could sit there
+# with every required check green and a red backend suite beside it.
+#
+# Marking them required anyway is not the fix, and neither is making every
+# docs-only PR pay for Postgres and Playwright.
+#
+# HOW IT WORKS.
+#
+#   classify      always runs, reads the diff, answers "is the backend relevant?
+#                 is E2E relevant?" — cheap, no services, no checkout of deps
+#   backend/e2e   the EXISTING workflows, called with `workflow_call` so the
+#                 seventy-suite command is not duplicated anywhere. They still
+#                 keep their own `push` triggers and path filters; this is an
+#                 additional entry point, not a replacement.
+#   product-gate  always runs, `needs` all of the above with `if: always()`,
+#                 and is the single stable required status.
+#
+# WHAT THE SENTINEL REFUSES TO DO.
+#
+# Call a suite irrelevant because it did not run. `classify` decides relevance
+# BEFORE anything executes, and the sentinel compares the two: a suite that
+# `classify` marked relevant must have concluded `success`. `skipped`,
+# `cancelled`, `failure` and the empty string are all failures for a relevant
+# suite. That asymmetry is the whole point — the failure mode being designed
+# against is a required gate going green because an expected job disappeared.
+name: Product gate
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  classify:
+    name: Which suites does this diff need?
+    runs-on: ubuntu-latest
+    outputs:
+      backend: ${{ steps.map.outputs.backend }}
+      e2e: ${{ steps.map.outputs.e2e }}
+      changed: ${{ steps.map.outputs.changed }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Map the changed paths onto suites
+        id: map
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          # THE RANGE HAS TO RESOLVE OR THIS IS NOT A CLASSIFICATION.
+          # An unresolvable base is the one case where guessing is worse than
+          # running everything: "I could not tell" must not read as "nothing is
+          # relevant", which is exactly how a gate goes green for free.
+          if ! git rev-parse --verify "$BASE^{commit}" >/dev/null 2>&1; then
+            echo "::warning::base $BASE does not resolve — treating every suite as relevant"
+            echo "backend=true" >> "$GITHUB_OUTPUT"
+            echo "e2e=true" >> "$GITHUB_OUTPUT"
+            echo "changed=<unresolvable base>" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          files=$(git diff --name-only "$BASE...$HEAD")
+          if [ -z "$files" ]; then
+            echo "::warning::empty diff — treating every suite as relevant"
+            files="<empty diff>"
+            backend=true; e2e=true
+          else
+            backend=false; e2e=false
+            # The map is the union of what those workflows already filter on,
+            # plus the two places a RUNTIME contract lives outside `backend/`.
+            while IFS= read -r f; do
+              # THE PATTERNS ARE ON ONE LINE EACH, deliberately. A backslash
+              # continuation followed by CR+LF is not a continuation to bash,
+              # and a workflow whose correctness depends on its line endings
+              # breaks the first time someone edits it on Windows.
+              case "$f" in
+                backend/*|.github/workflows/backend-contract-tests.yml|.github/workflows/product-gate.yml|frontend/src/components/explore/*|frontend/src/lib/explore-query.ts|scripts/guardrail/guardrail_rules.yaml|scripts/cert/*)
+                  backend=true ;;
+              esac
+              case "$f" in
+                backend/*|frontend/*|e2e/*|.github/workflows/e2e.yml|.github/workflows/product-gate.yml)
+                  e2e=true ;;
+              esac
+            done <<< "$files"
+          fi
+          echo "backend=$backend" >> "$GITHUB_OUTPUT"
+          echo "e2e=$e2e" >> "$GITHUB_OUTPUT"
+          {
+            echo "changed<<EOF"
+            echo "$files" | head -n 60
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo "### Product gate — what this diff needs"
+            echo ""
+            echo "| suite | relevant |"
+            echo "|---|---|"
+            echo "| backend semantic contract + integration-golden | \`$backend\` |"
+            echo "| end-to-end | \`$e2e\` |"
+            echo ""
+            echo "<details><summary>changed paths</summary>"
+            echo ""
+            echo '```'
+            echo "$files" | head -n 60
+            echo '```'
+            echo ""
+            echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # THE SEVENTY-SUITE COMMAND LIVES IN ONE PLACE AND IS CALLED FROM HERE.
+  # `backend-contract-tests.yml` keeps its own push trigger and path filter; this
+  # is a second entry point onto the same jobs, not a copy of them.
+  backend:
+    name: Backend semantic contract
+    needs: classify
+    if: needs.classify.outputs.backend == 'true'
+    uses: ./.github/workflows/backend-contract-tests.yml
+
+  e2e:
+    name: End-to-end
+    needs: classify
+    if: needs.classify.outputs.e2e == 'true'
+    uses: ./.github/workflows/e2e.yml
+
+  product-gate:
+    name: Product gate
+    runs-on: ubuntu-latest
+    needs: [classify, backend, e2e]
+    # ALWAYS. A gate that only runs when its dependencies succeeded is not a
+    # gate, it is a summary of the happy path.
+    if: always()
+    steps:
+      - name: Every suite this diff needed must have passed
+        env:
+          NEEDED_BACKEND: ${{ needs.classify.outputs.backend }}
+          NEEDED_E2E: ${{ needs.classify.outputs.e2e }}
+          RESULT_CLASSIFY: ${{ needs.classify.result }}
+          RESULT_BACKEND: ${{ needs.backend.result }}
+          RESULT_E2E: ${{ needs.e2e.result }}
+        run: |
+          python3 - <<'PY'
+          import os, sys
+
+          rows, failures = [], []
+
+          # If the classification itself did not succeed, nothing below it can be
+          # trusted — including the "not relevant" answers.
+          if os.environ["RESULT_CLASSIFY"] != "success":
+              failures.append(
+                  "classification did not succeed "
+                  f"({os.environ['RESULT_CLASSIFY']!r}); relevance is unknown, so "
+                  "no suite can be called irrelevant"
+              )
+
+          for label, needed_key, result_key in (
+              ("backend semantic contract + integration-golden", "NEEDED_BACKEND", "RESULT_BACKEND"),
+              ("end-to-end", "NEEDED_E2E", "RESULT_E2E"),
+          ):
+              needed = os.environ.get(needed_key) == "true"
+              result = os.environ.get(result_key) or "(did not run)"
+              if not needed:
+                  rows.append((label, "not relevant", result, "ok"))
+                  continue
+              if result == "success":
+                  rows.append((label, "REQUIRED", result, "ok"))
+                  continue
+              # Relevant and anything other than success — skipped included, and
+              # skipped is the dangerous one: it is what a disappeared job looks
+              # like, and it must never read as "irrelevant".
+              rows.append((label, "REQUIRED", result, "FAILED"))
+              failures.append(f"{label}: required for this diff but concluded {result!r}")
+
+          summary = os.environ.get("GITHUB_STEP_SUMMARY")
+          out = open(summary, "a", encoding="utf-8") if summary else sys.stdout
+          print("## Product gate", file=out)
+          print(file=out)
+          print("| suite | required for this diff | conclusion | |", file=out)
+          print("|---|---|---|---|", file=out)
+          for label, needed, result, verdict in rows:
+              print(f"| {label} | {needed} | `{result}` | {verdict} |", file=out)
+          print(file=out)
+          if failures:
+              print("**This diff's suites did not all pass.**", file=out)
+              for f in failures:
+                  print(f"- {f}", file=out)
+          else:
+              print("Every suite this diff needed concluded `success`.", file=out)
+          if out is not sys.stdout:
+              out.close()
+
+          for f in failures:
+              print(f"::error title=Product gate::{f}")
+          sys.exit(1 if failures else 0)
+          PY
