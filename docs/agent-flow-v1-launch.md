@@ -18,7 +18,7 @@ not repeated here.
 | session A | complete — foundation merged, contract locked, journeys walked |
 | session A commit | `736b71a7f4892b7e8b27664b94962827458b2cd6` |
 | session B | **P0-1 closed**; P1-1, P1-2, P1-3 carried forward |
-| session B commit | `f13287cd183a949d6060f5e2fdabf2f1920836ab` |
+| session B commit | `48e424f94f5fad5af2ad63d9af3e9cc275df84ea` (+ this row's own correction) |
 | next | **V1-B continued** — see the last section |
 
 PR #2 merged the platform foundation. Verified by content on demo, not by the
