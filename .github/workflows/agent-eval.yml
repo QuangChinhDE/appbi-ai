@@ -120,13 +120,16 @@ jobs:
           # THE HARNESS SHA - what this script was checked out at. It is NOT the
           # commit the verdict belongs to; the deployment decides that, and the
           # harness asks it over /api/v1/health before scoring anything.
+          # A FALLBACK ONLY. The harness reads the real checked-out HEAD with
+          # `git rev-parse`; `github.sha` is not that commit when a dispatch
+          # checked out a different ref.
           EVAL_COMMIT_SHA: ${{ github.sha }}
           # What this run is meant to be evidence FOR. A dispatch naming a ref is
           # asking about THAT commit, so a deployment running a different one
           # makes the run unusable as an answer and it stops before spending a
           # model call. The nightly requests nothing: it measures whatever is
           # deployed and records the deployment SHA as the tested one.
-          EVAL_REQUESTED_SHA: ${{ github.event.inputs.ref }}
+          EVAL_REQUESTED_REF: ${{ github.event.inputs.ref }}
         run: |
           set -o pipefail
           BRAIN="${{ github.event.inputs.brain }}"

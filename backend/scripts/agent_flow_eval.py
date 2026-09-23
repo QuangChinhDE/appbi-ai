@@ -151,6 +151,29 @@ CASES: list[dict] = [
 ]
 
 
+def resolve_ref(ref: str | None) -> str | None:
+    """Resolve a workflow input to the commit it actually names.
+
+    `workflow_dispatch` accepts a branch, a tag, a short SHA or a full SHA, and
+    the raw string was compared against the deployment SHA as if it were already
+    one. Dispatching with `ref = demo` therefore reported a MISMATCH against the
+    very commit `demo` points at — a false provenance failure on a correct run.
+
+    Resolution happens here, against the checkout the harness is running from,
+    which is the same tree the workflow checked out at that ref.
+    """
+    text = (ref or "").strip()
+    if not text:
+        return None
+    try:
+        import subprocess
+        out = subprocess.run(["git", "rev-parse", f"{text}^{{commit}}"],
+                             capture_output=True, text=True, timeout=15)
+        sha = out.stdout.strip()
+        return sha if out.returncode == 0 and len(sha) == 40 else None
+    except Exception:  # noqa: BLE001 - metadata must never fail a run
+        return None
+
 def target_identity() -> str:
     """The deployment being evaluated, with no credential in it.
 
@@ -194,7 +217,8 @@ def deployment_identity() -> dict:
     return out
 
 
-def provenance(requested: str | None, deployment: dict) -> dict:
+def provenance(requested: str | None, deployment: dict,
+               requested_ref: str | None = None) -> dict:
     """Whether this run may be read as evidence FOR a particular commit.
 
     Four outcomes, and only one of them is a product signal:
@@ -213,6 +237,13 @@ def provenance(requested: str | None, deployment: dict) -> dict:
     """
     dep = (deployment.get("sha") or "").lower()
     req = (requested or "").strip().lower()
+    if requested_ref and not req:
+        # A ref was asked for and could not be resolved to a commit. That is
+        # not 'nothing was requested' - answering the nightly question would
+        # silently substitute a different question.
+        return {"state": "unresolved",
+                "reason": f"could not resolve {requested_ref!r} to a commit",
+                "attributable_to": None}
     if not deployment.get("reachable"):
         return {"state": "unknown", "reason": "deployment health endpoint unreachable",
                 "attributable_to": None}
@@ -561,6 +592,8 @@ def main() -> int:
     ap.add_argument("--brain", default="revenue_v2")
     ap.add_argument("--only", default="")
     ap.add_argument("--out", default="")
+    ap.add_argument("--requested-ref", default=os.environ.get("EVAL_REQUESTED_REF", ""),
+                    help="the literal workflow input: a branch, tag or SHA. Resolved here; empty means measure whatever is deployed")
     ap.add_argument("--requested-sha", default=os.environ.get("EVAL_REQUESTED_SHA", ""),
                     help="the commit this run is meant to be evidence FOR; "
                          "empty means measure whatever is deployed")
@@ -573,25 +606,44 @@ def main() -> int:
     # evidence about a different artifact, so it is settled first and the
     # scenarios are not run at all when the caller asked for attribution.
     deployment = deployment_identity()
-    prov = provenance(args.requested_sha, deployment)
-    print(f"target {target_identity() or '?'} · deployment "
-          f"{(deployment.get('sha') or 'unknown')[:12]} · provenance {prov['state']}"
-          f" — {prov['reason']}")
-    if prov["state"] == "mismatch" and args.require_provenance:
-        print("EVAL TARGET / PROVENANCE FAILURE — not a product semantic result.")
+    # THE REF IS NOT A SHA. `demo` resolves to a commit; comparing the string
+    # against the deployment reported a mismatch on a correct run.
+    requested_ref = (args.requested_ref or "").strip()
+    requested_sha = (args.requested_sha or "").strip() or resolve_ref(requested_ref)
+    harness_sha = _git_sha() or os.environ.get("EVAL_COMMIT_SHA")
+    prov = provenance(requested_sha, deployment, requested_ref=requested_ref)
+    where = target_identity() or "?"
+    asked = requested_ref or "(nothing - measuring what is deployed)"
+    if requested_ref and requested_sha:
+        asked = requested_ref + " -> " + requested_sha[:12]
+    print("target      " + where)
+    print("harness     " + (harness_sha or "?")[:12])
+    print("requested   " + asked)
+    print("deployment  " + (deployment.get("sha") or "unknown")[:12])
+    print("provenance  " + prov["state"] + " - " + prov["reason"])
+
+    # REQUIRE MEANS REQUIRE. A requested commit that cannot be CONFIRMED as the
+    # one serving is not a weaker result, it is a different question answered.
+    # `unknown` used to score the scenarios and warn, which is the green-shaped
+    # NOT VERIFIED this whole change exists to remove.
+    needs_attribution = bool(requested_ref or args.requested_sha)
+    blocking = prov["state"] in ("mismatch", "unknown", "unresolved")
+    if blocking and (args.require_provenance or needs_attribution):
+        print("EVAL TARGET / PROVENANCE FAILURE - not a product semantic result.")
+        print("No model was called. This run is evidence about nothing.")
         if args.out:
             with open(args.out, "w", encoding="utf-8") as handle:
                 json.dump({"schema": "agent-flow-eval/2",
                            "provenance": prov,
-                           "harness_sha": os.environ.get("EVAL_COMMIT_SHA") or _git_sha(),
-                           "requested_sha": args.requested_sha or None,
+                           "harness_sha": harness_sha,
+                           "requested_ref": requested_ref or None,
+                           "requested_sha_resolved": requested_sha,
                            "deployment_sha": deployment.get("sha"),
                            "target": target_identity(),
                            "counts": {"PASS": 0, "WARN": 0, "FAIL": 0, "total": 0},
                            "balanced": True,
                            "cases": []}, handle, ensure_ascii=False, indent=2)
         return 2
-
     token = login()
     cases = [c for c in CASES if not args.only or args.only in c["id"]]
     print(f"brain {args.brain} · link {args.link} · {len(cases)} cases\n")
@@ -637,15 +689,19 @@ def main() -> int:
             #   requested_sha  what the caller wanted evidence about
             #   deployment_sha what actually answered the questions
             # `commit_sha` used to be the first and was read as the third.
-            "harness_sha": os.environ.get("EVAL_COMMIT_SHA") or _git_sha(),
-            "requested_sha": args.requested_sha or None,
+            # FOUR COMMITS, AND THEY ARE NOT INTERCHANGEABLE.
+            #   harness_sha            the actual checked-out HEAD running this
+            #   requested_ref          the literal input: a branch, tag or SHA
+            #   requested_sha_resolved what that ref resolves to
+            #   deployment_sha         what actually answered the questions
+            "harness_sha": harness_sha,
+            "requested_ref": requested_ref or None,
+            "requested_sha_resolved": requested_sha,
             "deployment_sha": deployment.get("sha"),
             "deployment_code_version": deployment.get("code_version"),
             "target": target_identity(),
             "provenance": prov,
-            # The commit this run may be cited FOR. None when nothing can be.
-            "commit_sha": prov.get("attributable_to"),
-            "brain": args.brain,
+            "commit_sha": prov.get("attributable_to"),            "brain": args.brain,
             "link": args.link,
             # Reported by the server, NAMES ONLY, and null when it did not
             # say - an invented model name makes a run traceable to nothing,

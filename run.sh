@@ -57,6 +57,25 @@ elif command -v python3 >/dev/null 2>&1 || command -v python >/dev/null 2>&1; th
 else bad "need openssl or python on PATH to generate secrets"; missing=1; fi
 [ "$missing" = "0" ] || { echo; echo "Environment check failed — fix the [FAIL] items above and re-run."; exit 1; }
 
+# ── which commit is about to be served ───────────────────────────────────────
+#
+# `/api/v1/health` has reported `git_sha` for a while and has always answered
+# "unknown", because nothing set it. Anything that checks a deployment - a smoke
+# test, the nightly Agent Eval - could then only attribute its verdict to
+# whatever IT checked out, which may be a different build entirely.
+#
+# An externally supplied value wins: real deployment infrastructure knows the
+# artifact it is shipping better than this script does. Otherwise, and only
+# inside a git checkout, the current HEAD is used. Nothing is derived from the
+# working tree: a dirty checkout still reports the commit it is based on, which
+# is true, rather than a hash of local edits, which would identify nothing.
+if [ -z "${GIT_SHA:-}" ] && command -v git >/dev/null 2>&1; then
+  GIT_SHA="$(git rev-parse HEAD 2>/dev/null || true)"
+fi
+export GIT_SHA
+[ -n "${GIT_SHA:-}" ] && ok "commit ${GIT_SHA:0:12} (reported by /api/v1/health)" \
+  || say "no commit id available - /api/v1/health will report 'unknown'"
+
 # ── choose compose profile: bundled local db unless an external DATABASE_URL ──
 COMPOSE=(docker compose)
 USE_LOCAL_DB=0
