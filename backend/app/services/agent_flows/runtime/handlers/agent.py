@@ -184,6 +184,11 @@ _FINAL_ERROR_CODES = frozenset({
 _MAX_IGNORED_RECOVERIES = 2
 
 
+from app.services.agent_flows.reader_diagnostics import (
+    tool_label as _reader_tool_label,
+)
+
+
 def _note_dimension_outcome(state: RunState, result: Any) -> None:
     """Record whether the requested breakdown was refused, and later delivered.
 
@@ -457,7 +462,13 @@ async def run(
                 return tool_registry.execute(rctx.ctx, name, args, allowed=allowed)
 
             for call in runnable:
-                yield AgentEvent(type="status", text=f"Đang dùng {call.tool_name}…")
+                # The reader sees this line. `tool_name` is an internal id
+                # (`rank_values`); the registry label is the product's own word
+                # for the same thing. The id stays in the trace below.
+                yield AgentEvent(
+                    type="status",
+                    text=f"Đang dùng {_reader_tool_label(call.tool_name)}…",
+                )
                 # ARGUMENTS THE PROVIDER COULD NOT PARSE ARE NOT ARGUMENTS.
                 #
                 # They used to arrive as `{}` and the call went ahead, so the tool

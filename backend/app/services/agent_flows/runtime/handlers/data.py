@@ -14,6 +14,10 @@ having a second set of bugs.
 """
 from __future__ import annotations
 
+from app.services.agent_flows.reader_diagnostics import (
+    tool_label as _reader_tool_label,
+)
+
 import logging
 from typing import Any, AsyncGenerator
 from urllib.parse import urlparse
@@ -1083,7 +1087,8 @@ async def run_tool(
     grant. What still bounds it is the binding, narrowed before the first node ran.
     """
     args = _resolve_inputs(node, state)
-    yield AgentEvent(type="status", text=f"Đang chạy {node.tool}…")
+    # Same reader boundary as the agent loop: the product label, not the id.
+    yield AgentEvent(type="status", text=f"Đang chạy {_reader_tool_label(node.tool)}…")
 
     state.budget.spend_tool()
     result = tool_registry.execute(rctx.ctx, node.tool, args, allowed=None)
