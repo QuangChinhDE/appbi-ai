@@ -30,7 +30,7 @@ jobs:
           # text — which the test then tries to parse as JSON.
           #
           # The history-dependent gate was wired into the one workflow that does
-          # not fetch history; `change-guardrail.yml` and `semantic-review.yml`,
+          # not fetch history; `change-guardrail.yml`,
           # written for base..head comparison, both already set this. Giving the
           # gate the repository shape it was written against is the fix — making
           # the test tolerate a shallow clone would only teach it to pass where

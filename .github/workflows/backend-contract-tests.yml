@@ -171,10 +171,66 @@ jobs:
             tests/test_eval_accounting.py \
             tests/test_notice_audience_boundary.py \
             tests/test_reader_diagnostics_are_product_facing.py \
+            tests/test_canonical_time_semantics.py \
             tests/test_no_evidence_no_confident_number.py \
             tests/test_report_read_selection_is_explicit.py \
             tests/test_authoring_is_strict.py \
-            tests/test_node_child_slots.py 2>&1 | tee /tmp/pytest-unit.log
+            tests/test_node_child_slots.py --junitxml=/tmp/unit.xml 2>&1 | tee /tmp/pytest-unit.log
+      # WHAT ACTUALLY RAN, ON A GREEN RUN TOO.
+      #
+      # The step below reports failures. Nothing reported SUCCESS, so a
+      # reviewer reading a green run could not answer the only question that
+      # matters about it: what did it execute? That is not pedantry here - a
+      # pytest usage error exits 4 with zero tests collected, and once did,
+      # and the tier looked exactly as green as a real 1,700-test run.
+      #
+      # Counts come from the JUnit report, never from a hardcoded expected
+      # number: an expectation that has to be edited whenever a suite is added
+      # is an expectation that gets edited to whatever the run produced.
+      - name: Say what actually ran
+        if: always()
+        run: |
+          python - <<'PY'
+          import os, pathlib, sys, xml.etree.ElementTree as ET
+
+          summary = os.environ.get('GITHUB_STEP_SUMMARY')
+          out = open(summary, 'a', encoding='utf-8') if summary else sys.stdout
+          path = pathlib.Path('/tmp/unit.xml')
+          if not path.exists():
+              print('## Backend semantic-contract - NO REPORT', file=out)
+              print(file=out)
+              print('pytest produced no JUnit file, so it did not get as far as', file=out)
+              print('running tests. This tier is NOT VERIFIED.', file=out)
+              print('::error title=semantic-contract::no JUnit report - pytest never ran')
+              sys.exit(1)
+
+          root = ET.parse(path).getroot()
+          suites = [root] if root.tag == 'testsuite' else list(root)
+          total = sum(int(s.get('tests', 0)) for s in suites)
+          failures = sum(int(s.get('failures', 0)) for s in suites)
+          errors = sum(int(s.get('errors', 0)) for s in suites)
+          skipped = sum(int(s.get('skipped', 0)) for s in suites)
+          seconds = sum(float(s.get('time', 0) or 0) for s in suites)
+          passed = total - failures - errors - skipped
+
+          print('## Backend semantic-contract', file=out)
+          print(file=out)
+          print('| collected | passed | failed | errors | skipped | duration |', file=out)
+          print('|---:|---:|---:|---:|---:|---:|', file=out)
+          print(f'| {total} | {passed} | {failures} | {errors} | {skipped} |'
+                f' {seconds:.1f}s |', file=out)
+          if out is not sys.stdout:
+              out.close()
+
+          # ZERO COLLECTED IS NOT SUCCESS. This is the case the tier was
+          # blind to, and the one a green tick hides most completely.
+          if total == 0:
+              print('::error title=semantic-contract::0 tests collected - the suite did not run')
+              sys.exit(1)
+          print(f'::notice title=semantic-contract::{total} collected, {passed} passed,'
+                f' {failures} failed, {errors} errors, {skipped} skipped in {seconds:.1f}s')
+          PY
+
       - name: Report the unit failure where it can be read
         if: failure()
         # AS ANNOTATIONS, not a job summary.

@@ -52,7 +52,7 @@ from datetime import date, datetime
 from typing import Any
 
 from app.services.agent_flows.tools import result as R
-from app.services.agent_flows.tools.packs._timefield import TIME_NAME_RX
+from app.services.time_semantics import TIME_NAME_RX
 from app.services.dashboard_ai_bot.tool_context import ToolContext, _fetch_chart_data
 
 #: How many charts to read looking for dates. The scan stops as soon as it has a

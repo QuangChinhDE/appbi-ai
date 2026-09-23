@@ -76,7 +76,7 @@ layers:
   - id: repo_infra
     match: ["scripts/ci/**", "scripts/guardrail/**", "scripts/cert/**",
             ".github/**", ".githooks/**",
-            ".claude/**", ".opencodereview/**", "AGENTS.md"]
+            ".claude/**", "AGENTS.md"]
     label: "Engineering infrastructure (gates, rule base, agent contract, CI)"
     # Tooling legitimately reads every layer; the risk here is not import
     # direction, it is the gates being weakened. That is what `protected:
@@ -436,6 +436,9 @@ tests:
   agent_sdlc_meta:
     run: "pytest scripts/ci/test_agent_sdlc.py"
     locks: "provider-neutral SDLC: adapters point at one executable contract, the server-side base..head diff sees the real changed files, architecture violations fail the gate, UNKNOWN is not reported safe, infrastructure failure is not reported pass, attempts to weaken the protection system are detected, and an ordinary clean change is not blocked"
+  canonical_time_semantics:
+    run: "pytest backend/tests/test_canonical_time_semantics.py"
+    locks: "ONE name-level answer to 'is this column a time axis': the segment-edge rule kills the substring bugs (`day` inside `holiday`, `nam` inside `name`), the token union keeps created_at/dt/period/quarter AND tuan/quy, the ambiguous ky_*/quy_* verdicts are pinned as decisions, and every implementation - coverage, project_ahead, advanced_tools, insight_pack - returns the same verdict for the same name"
   guardrail_diff_range:
     run: "pytest scripts/ci/test_guardrail_diff_range.py"
     locks: "the guardrail tells an EMPTY diff from one it could not resolve: a real zero-change range is allowed, an unresolvable base/head or a git failure returns unknown and a non-zero exit, and --json stays valid JSON in every state"
@@ -821,7 +824,6 @@ policy:
       - ".github/workflows/**"
       - ".githooks/**"
       - ".claude/**"
-      - ".opencodereview/**"
       - "AGENTS.md"
       - "backend/tests/**"
       - "e2e/tests/**"

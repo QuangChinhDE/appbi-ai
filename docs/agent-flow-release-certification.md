@@ -29,6 +29,28 @@ them as open blockers, and the final verdict still counted five open failures.
 Three statements, one repository. A release decision read off any one of them is
 a decision read off a document disagreeing with itself.
 
+### Platform foundation — closed this session
+
+Tested SHA: `cd2a4e4eea2dfb467d40316596944b46ead0beed` (demo, the PR #1 merge),
+on branch `hardening/agent-flow-platform-foundation`.
+
+| item | state | evidence |
+|---|---|---|
+| Branch protection on `demo` | **CLOSED** | `demo` was not protected at all. It now requires a PR, `enforce_admins` is on so there is no normal bypass, force-push and deletion are refused, stale reviews are dismissed and a branch must be up to date. Required checks are the three that run on EVERY pull request: `preflight`, `Architecture / invariants / required gates on base..head`, `Protection integrity (checked from the merge base)`. |
+| Canonical time semantics | **CLOSED** | Four implementations, not the three the register recorded — `insight_pack._looks_like_datetime_name` was a fourth. All now delegate to `app/services/time_semantics`, on neutral ground so `dashboard_ai_bot` does not import Agent Flow product code to ask a generic question. `packs/_timefield.py` is gone. Locked by `test_canonical_time_semantics.py` (gate `canonical_time_semantics`): 71 cases, **19 red against the previous commit**. |
+| Live Agent Eval | **CLOSED** | `.github/workflows/agent-eval.yml` — nightly plus `workflow_dispatch`, the whole 18-scenario set (`--only` deliberately unset), a JSON artifact with a run header carrying commit SHA, provider and model NAMES, and the PASS/WARN/FAIL accounting with its balance check. It has **no `pull_request` trigger**, which is structural: a workflow that never runs on a PR cannot contribute a green-shaped status to one. |
+| CI green-run accounting | **CLOSED** | The unit tier emits `--junitxml` and a `Say what actually ran` step publishes collected / passed / failed / errors / skipped / duration from that report — never from a hardcoded expectation. `0 collected` now fails the step; that case exits 4 and used to look exactly as green as a 1,700-test run. |
+| Semantic-review truth | **CLOSED by retirement** | `semantic-review.yml` and `.opencodereview/rule.json` are removed. `OCR_LLM_TOKEN` was never configured, so the reviewer step was `skipped` on every run while the job concluded `success` — a check that reported green for doing nothing. Its purpose is covered by the deterministic semantic-contract suites (blocking, per PR) and the live Agent Eval (nightly, real model). It was not protection-critical and was never a required check, so nothing weakened. |
+
+**Why the time-token union rather than the intersection.** `advanced_tools` was
+the only implementation carrying `day`, `tuan` and `quy`, and it was also the one
+with the substring bug that made `day` fire on `holiday_flag`, `payday` and
+`monday`. Segment-edge matching is what lets those tokens be kept at all, so the
+union is safe where the substring version was not. `ky_*` and `quy_*` stay
+knowingly ambiguous — `ky_bao_cao` is a reporting period and `ky_thuat` is
+engineering — and both verdicts are pinned in the corpus as decisions rather than
+accidents. A name is a hint; the value-level and calendar checks each tool does
+are strictly stronger and were not touched.
 ### Correctness blockers
 
 **B1 — a partial period reported as a collapse. CLOSED.**
@@ -383,28 +405,32 @@ repository's own workflow is free of the same collapse.
 
 ### Current verdict
 
-    READY FOR HARDENING
+    READY FOR TYPED COMPOSABILITY HARDENING
 
 All six correctness blockers are closed, each with a test that fails against the
-commit before it. The rule for B2 was that it does not close until live D2 stops
-returning a category as a state: across six consecutive live runs plus the eval's
-own case it now declines honestly every time.
+commit before it. The two reasons this document previously gave for withholding
+a release verdict are both gone:
 
-Not READY_FOR_RELEASE, and the reasons are two specific ones rather than a
-general reservation:
+1. **`next@14.2.33`'s two unauthenticated RCEs** — closed. `15.5.26` carries both
+   fixes; React stayed on 18.3.1 because `next@15.5` accepts `^18.2.0`, and the
+   async-request-API migration was measured to be a no-op for this repository
+   rather than assumed.
+2. **The semantic review never ran** — closed by retiring it. A permanently
+   unconfigured advisory job that reports `success` is worse than no job: it is
+   read as coverage.
 
-1. **`next@14.2.33` carries two unauthenticated RCEs** reachable from the
-   unauthenticated public link surface. The fix is two major versions up, which
-   is a planned upgrade and not a closure-session change.
-2. **The semantic review never ran.** `OCR_LLM_TOKEN` is absent, the workflow
-   reports `success` while its reviewer step is `skipped`, and that is missing
-   coverage rather than a pass.
+A third, found in pilot UAT and closed since: the public dashboard bot showed an
+anonymous reader the MODEL's error — tool id, chart id and raw column names — in
+`view details`. The reader now gets the reason in the product's own words while
+the author's trace keeps every identifier.
 
-Everything else the release rule asks for is met: B1–B6 closed, D1–D5 not
-reproducing, every tier-1 tool with a non-skipped oracle that PASSES, zero FAILED
-tools, the certification source guardrail-owned, the knowledge smoke safe, no
-semantic FAIL in three same-SHA live runs, push and PR CI green, and
-change-guardrail with no BLOCK. Browser UAT remains partial and is listed above.
+Still NOT `READY_FOR_RELEASE`, and the remaining items are product hardening
+rather than correctness: `output_schema` at 6/36, Tool-node canvas identity,
+English author i18n, answer-language consistency on follow-up turns,
+`search_knowledge` relevance floor, the wider reader-vocabulary sweep (the AI
+Chat citation chip still renders `chart:701`; an embed-API link's auto-generated
+name is used as the `/d` page heading), and live-eval run-to-run variance, which
+the nightly workflow will now measure instead of leaving unquantified.
 
 ---
 

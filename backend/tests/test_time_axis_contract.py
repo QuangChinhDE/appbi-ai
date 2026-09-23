@@ -285,7 +285,7 @@ def test_coverage_and_seasonality_classify_a_name_identically(column):
 def test_they_are_the_same_definition_and_not_two_that_happen_to_agree():
     """Agreement reached by coincidence drifts again on the next edit."""
     from app.services.agent_flows.tools.packs import coverage, project_ahead
-    from app.services.agent_flows.tools.packs._timefield import TIME_NAME_RX
+    from app.services.time_semantics import TIME_NAME_RX
 
     assert coverage._DATE_NAME is TIME_NAME_RX
     assert project_ahead._DATE_NAME is TIME_NAME_RX

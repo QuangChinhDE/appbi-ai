@@ -1,0 +1,212 @@
+# Live Agent Eval — the 18 historical hard scenarios, against a real model.
+#
+# WHY THIS IS NOT A PR CHECK, AND MUST NOT BECOME ONE.
+#
+# Deterministic semantic CI (`backend-contract-tests`) is the blocking per-PR
+# correctness gate: same input, same verdict, every time. This is the other kind
+# of signal — a real model answering real questions against real data, where the
+# same commit can score differently twice. Wiring that into merge would make the
+# gate flaky and teach everyone to re-run it until it goes green, which is how a
+# gate stops meaning anything.
+#
+# It therefore has NO `pull_request` trigger. That is deliberate and structural:
+# a workflow that never runs on a PR cannot contribute a green-shaped status to
+# one. `semantic-review` is the cautionary example — its conclusion read
+# `success` on every run while the reviewer step was skipped for want of a
+# credential, and it took a step-level read to discover that "green" meant
+# "nothing happened".
+#
+# WHEN IT IS NOT CONFIGURED IT FAILS, ON PURPOSE.
+#
+# The alternative — succeed with a note saying NOT RUN — is the same lie in a
+# politer voice. A nightly that is red because nobody configured it is a fact
+# about the repository, and the way to make it green is to configure it or to
+# turn the schedule off deliberately.
+#
+# WHAT IT NEEDS (none of it is read or printed as a value):
+#   secrets.EVAL_API_URL   a reachable AppBI API that HAS the evaluation report
+#   secrets.EVAL_EMAIL     an account that can open that report
+#   secrets.EVAL_PASSWORD  its password
+#   vars.EVAL_LINK         public-link id to evaluate   (default 39)
+#   vars.EVAL_BRAIN        flow key to evaluate         (default revenue_v2)
+#
+# The report and its data are NOT seeded here. The 18 scenarios are written
+# against a real Olist report; a synthetic CI fixture would answer them all with
+# "no data" and score a perfect, meaningless run. So this measures a deployment
+# that has the data, which is also the thing whose behaviour anyone cares about.
+name: Live Agent Eval
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Commit or branch to check out and report as the tested SHA"
+        required: false
+        default: ""
+      brain:
+        description: "Flow key (default: vars.EVAL_BRAIN or revenue_v2)"
+        required: false
+        default: ""
+      link:
+        description: "Public link id (default: vars.EVAL_LINK or 39)"
+        required: false
+        default: ""
+  schedule:
+    # 19:00 UTC = 02:00 Asia/Ho_Chi_Minh, after the working day the run reflects.
+    - cron: "0 19 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: agent-eval-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  live-eval:
+    name: Live Agent Eval (18 scenarios, real model)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.ref || github.sha }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # THE CONFIGURATION CHECK IS ITS OWN STEP so the failure names the missing
+      # thing instead of surfacing as a connection error forty lines later.
+      # Presence only — no value is echoed, and `set -u` would print one.
+      - name: Is the evaluation target configured?
+        env:
+          API: ${{ secrets.EVAL_API_URL }}
+          EMAIL: ${{ secrets.EVAL_EMAIL }}
+          PASSWORD: ${{ secrets.EVAL_PASSWORD }}
+        run: |
+          missing=""
+          [ -n "$API" ] || missing="$missing EVAL_API_URL"
+          [ -n "$EMAIL" ] || missing="$missing EVAL_EMAIL"
+          [ -n "$PASSWORD" ] || missing="$missing EVAL_PASSWORD"
+          if [ -n "$missing" ]; then
+            {
+              echo "## Live Agent Eval — NOT RUN / NOT VERIFIED"
+              echo ""
+              echo "Missing repository secret(s):**$missing**"
+              echo ""
+              echo "No model was called and no scenario was scored. This run says"
+              echo "nothing about the commit under it."
+              echo ""
+              echo "To make it run: set the secrets above. To stop it asking:"
+              echo "remove the \`schedule:\` trigger in a commit, so the decision"
+              echo "is recorded rather than muted."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::error title=Live Agent Eval NOT RUN::missing secret(s):$missing"
+            exit 1
+          fi
+          echo "configured (names checked, no value read)"
+
+      - name: Install backend dependencies
+        working-directory: backend
+        run: pip install -r requirements.txt
+
+      - name: Run the 18 historical scenarios
+        working-directory: backend
+        env:
+          EVAL_API_URL: ${{ secrets.EVAL_API_URL }}
+          EVAL_EMAIL: ${{ secrets.EVAL_EMAIL }}
+          EVAL_PASSWORD: ${{ secrets.EVAL_PASSWORD }}
+          # The SHA the verdict belongs to. `github.sha` on a schedule is the
+          # branch tip, which is what a nightly is measuring.
+          EVAL_COMMIT_SHA: ${{ github.event.inputs.ref && github.event.inputs.ref || github.sha }}
+        run: |
+          set -o pipefail
+          BRAIN="${{ github.event.inputs.brain }}"
+          [ -n "$BRAIN" ] || BRAIN="${{ vars.EVAL_BRAIN }}"
+          [ -n "$BRAIN" ] || BRAIN="revenue_v2"
+          LINK="${{ github.event.inputs.link }}"
+          [ -n "$LINK" ] || LINK="${{ vars.EVAL_LINK }}"
+          [ -n "$LINK" ] || LINK="39"
+          # THE WHOLE SET, not a convenient subset: `--only` is left unset on
+          # purpose. A nightly that quietly drops the hard cases is a nightly
+          # that always passes.
+          python scripts/agent_flow_eval.py \
+            --brain "$BRAIN" --link "$LINK" \
+            --out "$GITHUB_WORKSPACE/agent-eval.json" 2>&1 | tee eval-console.log
+
+      # THE SUMMARY IS THE PRODUCT. A reviewer should not have to open an
+      # artifact to learn whether the run found anything.
+      - name: Publish the accounting
+        if: always()
+        run: |
+          python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json, os, pathlib
+          path = pathlib.Path(os.environ["GITHUB_WORKSPACE"]) / "agent-eval.json"
+          if not path.exists():
+              print("## Live Agent Eval — NO RESULT FILE")
+              print()
+              print("The harness did not finish. Treat this run as NOT VERIFIED.")
+              raise SystemExit(0)
+          d = json.loads(path.read_text(encoding="utf-8"))
+          c = d.get("counts") or {}
+          print("## Live Agent Eval")
+          print()
+          print(f"- commit: `{d.get('commit_sha')}`")
+          print(f"- flow: `{d.get('brain')}` · link `{d.get('link')}`")
+          print(f"- provider/model: `{d.get('provider') or 'not reported'}` / "
+                f"`{d.get('model') or 'not reported'}`")
+          print(f"- generated: {d.get('generated_at')}")
+          print()
+          print("| PASS | WARN | FAIL | total |")
+          print("|---:|---:|---:|---:|")
+          print(f"| {c.get('PASS')} | {c.get('WARN')} | {c.get('FAIL')} | {c.get('total')} |")
+          print()
+          if not d.get("balanced"):
+              print("**The verdicts do not sum to the case count. Do not read a "
+                    "release decision off this run.**")
+              print()
+          fails = [x for x in (d.get("cases") or []) if x.get("verdict") == "FAIL"]
+          if fails:
+              print("### FAIL, by scenario")
+              print()
+              for x in fails:
+                  print(f"- `{x.get('case')}` — {x.get('why')}")
+          else:
+              print("No scenario failed.")
+          PY
+
+      # Raw transcripts are evidence of ONE run, not a contract. They stay an
+      # artifact with a retention window and never enter the repository.
+      - name: Upload the machine-readable result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-eval-${{ github.run_id }}
+          path: |
+            agent-eval.json
+            backend/eval-console.log
+          retention-days: 30
+          if-no-files-found: warn
+
+      # A FAIL is a release signal, not a broken pipeline. The job goes red so
+      # the nightly is worth reading.
+      - name: Fail the run when a scenario failed
+        if: always()
+        run: |
+          python - <<'PY'
+          import json, os, pathlib, sys
+          path = pathlib.Path(os.environ["GITHUB_WORKSPACE"]) / "agent-eval.json"
+          if not path.exists():
+              print("::error title=Live Agent Eval::no result file — NOT VERIFIED")
+              sys.exit(1)
+          d = json.loads(path.read_text(encoding="utf-8"))
+          c = d.get("counts") or {}
+          if not d.get("balanced"):
+              print("::error title=Live Agent Eval::verdicts do not sum to the case count")
+              sys.exit(1)
+          if c.get("FAIL"):
+              print(f"::error title=Live Agent Eval::{c['FAIL']} scenario(s) FAILED")
+              sys.exit(1)
+          print(f"PASS {c.get('PASS')} · WARN {c.get('WARN')} · FAIL 0 of {c.get('total')}")
+          PY

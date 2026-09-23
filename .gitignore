@@ -334,3 +334,4 @@ backend/tests/.testdata/
 !backend/tests/test_eval_accounting.py
 !backend/tests/test_cross_lingual_resolution.py
 !backend/tests/test_reader_diagnostics_are_product_facing.py
+!backend/tests/test_canonical_time_semantics.py

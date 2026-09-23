@@ -38,7 +38,7 @@ from typing import Any
 
 from app.services.agent_flows.tools import result as R
 from app.services.agent_flows.tools.packs import measure_meta
-from app.services.agent_flows.tools.packs._timefield import TIME_NAME_RX
+from app.services.time_semantics import TIME_NAME_RX
 from app.services.dashboard_ai_bot.tool_context import (
     ToolContext, ToolError, _fetch_chart_data,
 )

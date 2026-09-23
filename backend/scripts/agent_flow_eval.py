@@ -47,6 +47,7 @@ wearing an invariant's clothes, and the first paraphrase would make it lie.
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
 import json
 import os
 import re
@@ -208,6 +209,11 @@ def observe(env: dict) -> dict:
         "prompt_tokens": usage.get("prompt_tokens") or 0,
         "completion_tokens": usage.get("completion_tokens") or 0,
         "ms": usage.get("ms"),
+        # NAMES ONLY. The envelope carries a provider name and never a key,
+        # and this harness must not become the first place a credential is
+        # written to a CI artifact.
+        "provider": usage.get("provider") or env.get("provider") or None,
+        "model": usage.get("model") or env.get("model") or None,
         "answer": answer,
         "has_figure": bool(_FIGURE.search(answer)),
     }
@@ -509,11 +515,52 @@ def main() -> int:
 
     _report(rows)
     if args.out:
+        # A BARE LIST OF CASES CANNOT BE COMPARED TO ANOTHER RUN. Two runs
+        # differ by commit, by model and by the accounting itself, and a
+        # nightly signal is worth nothing if a verdict cannot be attributed.
+        # The header carries what identifies the run; `cases` keeps the shape
+        # that was already here.
+        counts = tally(rows)
+        header = {
+            "schema": "agent-flow-eval/1",
+            "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "commit_sha": os.environ.get("EVAL_COMMIT_SHA") or _git_sha(),
+            "brain": args.brain,
+            "link": args.link,
+            # Reported by the server, NAMES ONLY, and null when it did not
+            # say - an invented model name makes a run traceable to nothing,
+            # and this artifact must never be where a credential first lands.
+            "provider": _first(rows, "provider"),
+            "model": _first(rows, "model"),
+            "counts": {k: counts[k] for k in ("PASS", "WARN", "FAIL", "total")},
+            "balanced": counts["balanced"],
+        }
         with open(args.out, "w", encoding="utf-8") as handle:
-            json.dump([{**r, "case": r["case"]["id"]} for r in rows], handle,
-                      ensure_ascii=False, indent=2)
-        print(f"\nwritten to {args.out}")
+            json.dump({**header,
+                       "cases": [{**r, "case": r["case"]["id"]} for r in rows]},
+                      handle, ensure_ascii=False, indent=2)
+        print(f"written to {args.out}")
     return 0
+
+
+def _first(rows: list[dict], key: str):
+    """The first non-null value any case reported, or None."""
+    for row in rows:
+        value = (row.get("o") or {}).get(key)
+        if value:
+            return str(value)
+    return None
+
+
+def _git_sha():
+    """The commit under evaluation, so a verdict can be attributed."""
+    try:
+        import subprocess
+        out = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True,
+                             text=True, timeout=10)
+        return out.stdout.strip() or None
+    except Exception:  # noqa: BLE001 - metadata must never fail a run
+        return None
 
 
 def _report(rows: list[dict]) -> None:

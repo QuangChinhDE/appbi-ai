@@ -17,6 +17,8 @@ All tools share the ``ToolContext`` defined in ``tools.py`` and reuse
 """
 from __future__ import annotations
 
+from app.services.time_semantics import looks_like_time_name
+
 import datetime as _dt
 import logging
 import math
@@ -53,12 +55,22 @@ def _to_number(value: Any) -> float | None:
         return None
 
 
-_DATETIME_HINTS = ("date", "time", "month", "week", "year", "day", "ngay", "thang", "tuan", "quy")
-
-
 def _looks_like_datetime(name: str) -> bool:
-    n = (name or "").lower()
-    return any(h in n for h in _DATETIME_HINTS)
+    """Delegates to the ONE name-level time semantic.
+
+    This used to be a substring test over its own token list, and it disagreed
+    with `coverage`/`project_ahead` in both directions: it fired on `holiday_flag`
+    and `payday` because `day` is a substring of both, and it did not recognise
+    `created_at`, `dt`, `period`, `quarter` or `ky_*` at all. `compare_periods`,
+    `analyze_trend`, forecast and seasonality all gate on this, so a column one
+    tool charted as an axis another had already called categorical.
+
+    Its two genuinely useful tokens — `tuan` and `quy` — moved INTO the canonical
+    list rather than being dropped. The VALUE-level checks in this module
+    (`_looks_like_period_label` and the calendar validation each tool does) are
+    strictly stronger and stay exactly where they are.
+    """
+    return looks_like_time_name(name)
 
 
 # A date/period VALUE: 2024, 2024-06, 2024-06-15, 2024/06, Q1 2024, etc.
