@@ -52,7 +52,7 @@ from datetime import date, datetime
 from typing import Any
 
 from app.services.agent_flows.tools import result as R
-from app.services.agent_flows.tools.packs._timefield import TIME_NAME_RX
+from app.services.time_semantics import TIME_NAME_CANDIDATE_RX
 from app.services.dashboard_ai_bot.tool_context import ToolContext, _fetch_chart_data
 
 #: How many charts to read looking for dates. The scan stops as soon as it has a
@@ -70,7 +70,12 @@ MAX_CHARTS_SCANNED = 4
 #: so it read `product_category_name_english` as a date column and did NOT read
 #: `year_month` as one — wrong in both directions at once. The value parsing
 #: below is unchanged and still has the final say.
-_DATE_NAME = TIME_NAME_RX
+# CANDIDATES, not verdicts. This module scores columns by name and then
+# PARSES their values, requiring most to be real dates before it trusts one.
+# That value gate is strictly stronger than any name rule, so an ambiguous
+# name like `ky_bao_cao` is safe to consider here and would be unsafe in a
+# tool that did time maths straight off the name.
+_DATE_NAME = TIME_NAME_CANDIDATE_RX
 
 #: Accepted written forms, widest first. Year-only is last because "2016" also
 #: parses as an integer measure, and treating a revenue column as a date would be
