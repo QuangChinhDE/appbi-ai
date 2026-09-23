@@ -65,7 +65,7 @@ jobs:
       - name: Stop-hook decision tests (all-green / failed / unverified)
         run: |
           pip install pytest
-          python -m pytest -q scripts/ci/test_stop_gate.py scripts/ci/test_agent_sdlc.py scripts/ci/test_guardrail_diff_range.py scripts/ci/test_ci_wiring_is_real.py scripts/ci/test_tool_bodies_are_guarded.py
+          python -m pytest -q scripts/ci/test_stop_gate.py scripts/ci/test_agent_sdlc.py scripts/ci/test_guardrail_diff_range.py scripts/ci/test_ci_wiring_is_real.py scripts/ci/test_tool_bodies_are_guarded.py scripts/ci/test_protection_approval_is_one_commit.py
 
       # ── 2. Frontend typecheck (uncommitted-provider / type breaks) ────────
       - uses: actions/setup-node@v4

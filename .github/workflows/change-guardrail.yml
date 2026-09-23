@@ -79,7 +79,13 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.inputs.head }}
           # Removing a gate is legitimate but must be an owner decision, so this is
           # a repository variable. A pull request cannot set it for itself.
-          APPBI_ALLOW_PROTECTION_REMOVAL: ${{ vars.APPBI_ALLOW_PROTECTION_REMOVAL }}
+          # THE SUFFIX IS THE SECURITY PROPERTY, and it had to match and did not.
+          # The checker reads `APPBI_ALLOW_PROTECTION_REMOVAL_SHA`: the approval
+          # IS a commit, so it expires the moment the head moves. This exported
+          # the name without `_SHA`, so the variable never reached the process
+          # and the hatch had never once opened - an owner who set it would have
+          # watched the gate block anyway, with nothing saying why.
+          APPBI_ALLOW_PROTECTION_REMOVAL_SHA: ${{ vars.APPBI_ALLOW_PROTECTION_REMOVAL_SHA }}
         run: |
           python scripts/ci/check_protection_integrity.py \
             --base "$BASE_SHA" --head "$HEAD_SHA"
