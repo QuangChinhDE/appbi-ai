@@ -17,7 +17,9 @@ not repeated here.
 | branch | `release/agent-flow-v1-candidate` |
 | session A | complete — foundation merged, contract locked, journeys walked |
 | session A commit | `736b71a7f4892b7e8b27664b94962827458b2cd6` |
-| next | **V1-B** (see the last section) |
+| session B | **P0-1 closed**; P1-1, P1-2, P1-3 carried forward |
+| session B commit | `f13287cd183a949d6060f5e2fdabf2f1920836ab` |
+| next | **V1-B continued** — see the last section |
 
 PR #2 merged the platform foundation. Verified by content on demo, not by the
 merge message: canonical time semantics, Product gate, Product gate
@@ -134,22 +136,40 @@ Walked unauthenticated on `/d/{token}` against the `revenue_v2` flow.
 
 ## P0 / P1 LAUNCH WORK
 
-### P0-1 — a published flow has no in-product route to becoming usable
+### P0-1 — publish → live — **CLOSED** (session B)
 
-**Evidence.** The flow header shows `Bot on a report · 1 link`. That text is not a
-link, not a button, and has no affordance; `[...document.querySelectorAll('button,a')]`
-matching `/link/i` inside the builder returns an empty list. A flow becomes
-reachable only by opening a *dashboard's* share/public-link settings and choosing
-the flow there. Nothing in the builder says so.
+**What was wrong.** The builder acknowledged the binding only as the text
+`· 1 link` — not a link, not a button, hidden below 2xl. An author who had just
+published had no way to learn they were one step short of a working product, or
+where that step lives.
 
-**Journey.** Author: publish → *(nothing)*. The core job ends one step short of
-value.
+**What it now does.** A state strip sits under the builder header on report
+flows, with three truthful states:
 
-**Acceptance.** From a published flow, an author can reach the place that makes it
-live, and the builder states what Publish does and does not do. Reusing the
-existing binding mechanism — no second binding architecture.
+| state | shown |
+|---|---|
+| draft, never published | *Chưa xuất bản. Xuất bản trước khi gắn vào báo cáo.* |
+| published, unattached | *Đã xuất bản · Chưa dùng trên báo cáo nào. Người xem chưa gặp được trợ lý này.* + **Gắn vào báo cáo** → `/dashboards` |
+| attached | *Đang chạy trên N báo cáo* · the report's own name + **Mở báo cáo** → `/dashboards/{id}` |
 
-**Session.** V1-B.
+Two qualifiers are added only because the backend can prove them: `đã gắn,
+nhưng link hoặc trợ lý đang tắt` when `link_active` or `bot_enabled` is off, and
+`bản nháp mới hơn bản đang chạy` when the draft has moved past the published
+version. A flow bound to a switched-off link is neither live nor unattached, and
+calling it live would be the kind of confident wrong answer this product exists
+to avoid.
+
+**No second binding system.** The dashboard's public link stays the source of
+truth. The strip reads `GET /brains/{key}/impact`, which the builder already
+fetched and then rendered as a word count, and routes the author to the surface
+that owns the decision. It creates nothing and mutates nothing, so it cannot
+drift from the real state and cannot be used to get round the permission checks
+on that path.
+
+**Observed.** Bound flow: `live` · `Olist Public` · CTA → `/dashboards/67`.
+Unattached published flow: `attention` · CTA → `/dashboards`. Verified in the
+running build at 1920 and 1280 with no horizontal overflow. No link id, binding
+id or version id appears as a product label.
 
 ### P1-1 — no first-success path
 
@@ -301,16 +321,27 @@ configured deployment.
 
 ---
 
-## NEXT SESSION — V1-B
+## NEXT SESSION — V1-B continued
 
-Start from this branch at `736b71a7f4892b7e8b27664b94962827458b2cd6`.
+Start from this branch at the session-B commit recorded in CURRENT STATE.
 
-Implement, in this order:
+P0-1 is closed. The three remaining author items are unchanged and were not
+started, so no half-finished work is in the tree:
 
-1. **P0-1** — a route from a published flow to making it live, reusing the
-   existing binding mechanism.
-2. **P1-1** — one product-native starter flow.
-3. **P1-2** — the Tool node names its tool on the canvas.
-4. **P1-3** — Vietnamese on the create dialog and the starter path.
+1. **P1-1** — one product-native starter (`Trợ lý BI cho báo cáo`). The extension
+   point is the New-flow modal in `AgentFlowsPage`/`BrainList`; creation already
+   produces a two-node flow, so the starter is a richer default body plus a
+   third choice beside *Tự dựng* and *Nhờ AI viết giúp*.
+2. **P1-2** — the Tool node names its tool on the canvas. `FlowCanvas` line ~272
+   computes `node.name || specLabel || node.type`, where `specLabel` is the NODE
+   TYPE label. The tool catalogue is **not** in the canvas tree today: `specs` is
+   `Record<string, NodeSpec>` keyed by node type. The work is to pass the tool
+   catalogue the inspector already uses into `FlowCanvas` and insert the registry
+   label between `node.name` and `specLabel`. Do not build a second label map.
+3. **P1-3** — Vietnamese on the create dialog and the starter path, through the
+   existing `i18n/catalog/agent-flows.ts`. The activation strip added in session B
+   already carries both locales.
 
-Do not start P1-4 or P1-5; those are V1-C. Do not open the V2 list.
+Then the V1 author golden E2E, once the starter exists to anchor it.
+
+Do not start P1-4 or P1-5; those are V1-C and V1-D.

@@ -20,6 +20,7 @@ import {
   MessagesSquare, Minus, Play, Plus, Redo2, Save, Send, Undo2, X,
 } from 'lucide-react';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
+import { FlowActivation } from './FlowActivation';
 import React from 'react';
 
 import { AppModalShell } from '@/components/common/AppModalShell';
@@ -666,6 +667,21 @@ export function BrainBuilder({
         )}
         </div>
       </div>
+
+      {/* WHERE IT ENDS UP, not just that it saved.
+          Publish writes a version. It does NOT make the assistant reachable: a
+          reader meets it only through a report's public link, configured on the
+          dashboard. The builder used to say "· 1 link" in text that was not a
+          link, not a button, and hidden below 2xl — so an author who had just
+          published had no way to learn they were one step short, or where that
+          step lives. The data was already fetched; only the answer was missing. */}
+      {flowType === 'bot' && (
+        <FlowActivation
+          links={links}
+          publishedVersion={publishedVersion}
+          draftVersion={version}
+        />
+      )}
 
       {/* body */}
       <div className="relative min-h-0 flex-1">
