@@ -73,6 +73,16 @@ services:
       DB_PASSWORD: ${DB_PASSWORD:-appbi}
       DB_NAME: ${DB_NAME:-appbi}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://localhost:3001,http://frontend:3000}
+      # WHICH COMMIT IS ACTUALLY SERVING. `/api/v1/health` has reported
+      # `git_sha` from this for a while and has always said "unknown",
+      # because nothing set it. An eval or a smoke test that cannot read
+      # the running commit can only attribute its verdict to whatever it
+      # checked out, which may be a different build entirely.
+      #
+      # Defaulted to empty, so a deployment that does not set it behaves
+      # exactly as it does today: health reports "unknown", and the
+      # consumers treat that as NOT VERIFIED rather than as a match.
+      GIT_SHA: ${GIT_SHA:-}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       SECRET_KEY: ${SECRET_KEY:-change-this-in-production}
       COOKIE_SECURE: ${COOKIE_SECURE:-true}

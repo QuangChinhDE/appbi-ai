@@ -151,6 +151,85 @@ CASES: list[dict] = [
 ]
 
 
+def target_identity() -> str:
+    """The deployment being evaluated, with no credential in it.
+
+    `EVAL_API_URL` may carry userinfo. The artifact records scheme, host and
+    port and nothing else, because a run must be attributable without being a
+    place a password first lands.
+    """
+    try:
+        import urllib.parse as _p
+        parts = _p.urlsplit(API)
+        host = parts.hostname or ""
+        port = f":{parts.port}" if parts.port else ""
+        return f"{parts.scheme}://{host}{port}" if host else ""
+    except Exception:  # noqa: BLE001 - metadata must never fail a run
+        return ""
+
+
+def deployment_identity() -> dict:
+    """Ask the RUNNING deployment which commit it is.
+
+    THE BUG THIS CLOSES. The harness checked out SHA X and wrote
+    `commit_sha = X`, while every model call went to `EVAL_API_URL`, which may
+    be serving SHA Y. The artifact then claimed to have evaluated X. A verdict
+    attributed to the wrong artifact is worse than no verdict: it is evidence
+    for a commit that was never exercised.
+
+    `/api/v1/health` already reports `git_sha` from the build environment. It
+    answers `"unknown"` when the deployment does not populate it, and that is
+    reported as unknown rather than quietly replaced by the checkout.
+    """
+    out = {"reachable": False, "sha": None, "code_version": None, "error": None}
+    try:
+        with U.urlopen(f"{API}/api/v1/health", timeout=20) as resp:
+            body = json.loads(resp.read().decode("utf-8"))
+        out["reachable"] = True
+        sha = str(body.get("git_sha") or "").strip()
+        out["sha"] = None if sha.lower() in ("", "unknown") else sha
+        out["code_version"] = body.get("code_version")
+    except Exception as exc:  # noqa: BLE001
+        out["error"] = type(exc).__name__
+    return out
+
+
+def provenance(requested: str | None, deployment: dict) -> dict:
+    """Whether this run may be read as evidence FOR a particular commit.
+
+    Four outcomes, and only one of them is a product signal:
+
+      verified    a commit was requested and the deployment is running it
+      deployed    nothing specific was requested - the nightly measures
+                  whatever is deployed, and the deployment SHA IS the
+                  tested SHA
+      unknown     the deployment will not say which commit it runs, so the
+                  scenarios are still scored but attribute to nothing
+      mismatch    a commit was requested and a DIFFERENT one is serving
+
+    A mismatch is an EVAL TARGET failure, never a product semantic FAIL: the
+    thing under test is not the artifact that was asked about, so its answers
+    say nothing about that artifact either way.
+    """
+    dep = (deployment.get("sha") or "").lower()
+    req = (requested or "").strip().lower()
+    if not deployment.get("reachable"):
+        return {"state": "unknown", "reason": "deployment health endpoint unreachable",
+                "attributable_to": None}
+    if not dep:
+        return {"state": "unknown",
+                "reason": "deployment does not report git_sha (set GIT_SHA at deploy time)",
+                "attributable_to": None}
+    if not req:
+        return {"state": "deployed", "reason": "no commit requested; measuring what is deployed",
+                "attributable_to": dep}
+    if dep == req or dep.startswith(req) or req.startswith(dep):
+        return {"state": "verified", "reason": "deployment is running the requested commit",
+                "attributable_to": dep}
+    return {"state": "mismatch",
+            "reason": f"requested {req[:12]} but the deployment is running {dep[:12]}",
+            "attributable_to": dep}
+
 def login() -> str:
     req = U.Request(f"{API}/api/v1/auth/login",
                     data=json.dumps({"email": EMAIL, "password": PASSWORD}).encode(),
@@ -482,7 +561,36 @@ def main() -> int:
     ap.add_argument("--brain", default="revenue_v2")
     ap.add_argument("--only", default="")
     ap.add_argument("--out", default="")
+    ap.add_argument("--requested-sha", default=os.environ.get("EVAL_REQUESTED_SHA", ""),
+                    help="the commit this run is meant to be evidence FOR; "
+                         "empty means measure whatever is deployed")
+    ap.add_argument("--require-provenance", action="store_true",
+                    help="exit non-zero when the run cannot be attributed to "
+                         "the requested commit")
     args = ap.parse_args()
+
+    # PROVENANCE BEFORE SCORING. A mismatched target makes every verdict below
+    # evidence about a different artifact, so it is settled first and the
+    # scenarios are not run at all when the caller asked for attribution.
+    deployment = deployment_identity()
+    prov = provenance(args.requested_sha, deployment)
+    print(f"target {target_identity() or '?'} · deployment "
+          f"{(deployment.get('sha') or 'unknown')[:12]} · provenance {prov['state']}"
+          f" — {prov['reason']}")
+    if prov["state"] == "mismatch" and args.require_provenance:
+        print("EVAL TARGET / PROVENANCE FAILURE — not a product semantic result.")
+        if args.out:
+            with open(args.out, "w", encoding="utf-8") as handle:
+                json.dump({"schema": "agent-flow-eval/2",
+                           "provenance": prov,
+                           "harness_sha": os.environ.get("EVAL_COMMIT_SHA") or _git_sha(),
+                           "requested_sha": args.requested_sha or None,
+                           "deployment_sha": deployment.get("sha"),
+                           "target": target_identity(),
+                           "counts": {"PASS": 0, "WARN": 0, "FAIL": 0, "total": 0},
+                           "balanced": True,
+                           "cases": []}, handle, ensure_ascii=False, indent=2)
+        return 2
 
     token = login()
     cases = [c for c in CASES if not args.only or args.only in c["id"]]
@@ -522,9 +630,21 @@ def main() -> int:
         # that was already here.
         counts = tally(rows)
         header = {
-            "schema": "agent-flow-eval/1",
+            "schema": "agent-flow-eval/2",
             "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-            "commit_sha": os.environ.get("EVAL_COMMIT_SHA") or _git_sha(),
+            # THREE DIFFERENT COMMITS, AND THEY ARE NOT INTERCHANGEABLE.
+            #   harness_sha    what this script was checked out at
+            #   requested_sha  what the caller wanted evidence about
+            #   deployment_sha what actually answered the questions
+            # `commit_sha` used to be the first and was read as the third.
+            "harness_sha": os.environ.get("EVAL_COMMIT_SHA") or _git_sha(),
+            "requested_sha": args.requested_sha or None,
+            "deployment_sha": deployment.get("sha"),
+            "deployment_code_version": deployment.get("code_version"),
+            "target": target_identity(),
+            "provenance": prov,
+            # The commit this run may be cited FOR. None when nothing can be.
+            "commit_sha": prov.get("attributable_to"),
             "brain": args.brain,
             "link": args.link,
             # Reported by the server, NAMES ONLY, and null when it did not

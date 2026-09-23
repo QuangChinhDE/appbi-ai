@@ -117,9 +117,16 @@ jobs:
           EVAL_API_URL: ${{ secrets.EVAL_API_URL }}
           EVAL_EMAIL: ${{ secrets.EVAL_EMAIL }}
           EVAL_PASSWORD: ${{ secrets.EVAL_PASSWORD }}
-          # The SHA the verdict belongs to. `github.sha` on a schedule is the
-          # branch tip, which is what a nightly is measuring.
-          EVAL_COMMIT_SHA: ${{ github.event.inputs.ref && github.event.inputs.ref || github.sha }}
+          # THE HARNESS SHA - what this script was checked out at. It is NOT the
+          # commit the verdict belongs to; the deployment decides that, and the
+          # harness asks it over /api/v1/health before scoring anything.
+          EVAL_COMMIT_SHA: ${{ github.sha }}
+          # What this run is meant to be evidence FOR. A dispatch naming a ref is
+          # asking about THAT commit, so a deployment running a different one
+          # makes the run unusable as an answer and it stops before spending a
+          # model call. The nightly requests nothing: it measures whatever is
+          # deployed and records the deployment SHA as the tested one.
+          EVAL_REQUESTED_SHA: ${{ github.event.inputs.ref }}
         run: |
           set -o pipefail
           BRAIN="${{ github.event.inputs.brain }}"
@@ -131,8 +138,12 @@ jobs:
           # THE WHOLE SET, not a convenient subset: `--only` is left unset on
           # purpose. A nightly that quietly drops the hard cases is a nightly
           # that always passes.
+          # `--require-provenance` only bites when a ref was requested: it turns
+          # "the deployment is running something else" into a refusal rather
+          # than a scoreboard nobody can cite.
           python scripts/agent_flow_eval.py \
             --brain "$BRAIN" --link "$LINK" \
+            --require-provenance \
             --out "$GITHUB_WORKSPACE/agent-eval.json" 2>&1 | tee eval-console.log
 
       # THE SUMMARY IS THE PRODUCT. A reviewer should not have to open an
@@ -152,7 +163,13 @@ jobs:
           c = d.get("counts") or {}
           print("## Live Agent Eval")
           print()
-          print(f"- commit: `{d.get('commit_sha')}`")
+          prov = d.get("provenance") or {}
+          print(f"- provenance: **{prov.get('state')}** - {prov.get('reason')}")
+          print(f"- attributable to: `{d.get('commit_sha') or 'nothing'}`")
+          print(f"- harness `{(d.get('harness_sha') or '?')[:12]}`"
+                f" · requested `{(d.get('requested_sha') or 'none')[:12]}`"
+                f" · deployment `{(d.get('deployment_sha') or 'unknown')[:12]}`")
+          print(f"- target: `{d.get('target') or 'not recorded'}`")
           print(f"- flow: `{d.get('brain')}` · link `{d.get('link')}`")
           print(f"- provider/model: `{d.get('provider') or 'not reported'}` / "
                 f"`{d.get('model') or 'not reported'}`")
@@ -205,8 +222,19 @@ jobs:
           if not d.get("balanced"):
               print("::error title=Live Agent Eval::verdicts do not sum to the case count")
               sys.exit(1)
+          prov = (d.get("provenance") or {}).get("state")
+          if prov == "mismatch":
+              # NOT a product result: the artifact under test is not the one
+              # asked about, so the scenarios say nothing about it either way.
+              print("::error title=Live Agent Eval::EVAL TARGET / PROVENANCE"
+                    " FAILURE - the deployment is not running the requested commit")
+              sys.exit(1)
           if c.get("FAIL"):
               print(f"::error title=Live Agent Eval::{c['FAIL']} scenario(s) FAILED")
               sys.exit(1)
+          if prov == "unknown":
+              print("::warning title=Live Agent Eval::scenarios scored, but the"
+                    " deployment does not report git_sha - this run attributes to"
+                    " no commit. Set GIT_SHA at deploy time.")
           print(f"PASS {c.get('PASS')} · WARN {c.get('WARN')} · FAIL 0 of {c.get('total')}")
           PY

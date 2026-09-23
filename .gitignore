@@ -336,3 +336,4 @@ backend/tests/.testdata/
 !backend/tests/test_reader_diagnostics_are_product_facing.py
 !backend/tests/test_canonical_time_semantics.py
 !backend/tests/test_time_axis_needs_more_than_a_name.py
+!backend/tests/test_eval_provenance.py
