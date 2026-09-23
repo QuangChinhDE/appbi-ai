@@ -161,22 +161,45 @@ def test_the_name_hint_still_accepts_the_names_that_settle_it():
         assert at._looks_like_datetime(name) is False, name
 
 
-def test_detect_anomaly_gained_the_value_fallback_the_others_already_had():
+def test_detect_anomaly_can_accept_an_axis_proven_only_by_its_values():
     """`rolling`/`changepoint` refused on the name with no way to prove otherwise.
 
-    Making the name hint strong-only would have COST capability here — a chart
-    with a `ky_bao_cao` axis over real periods would start failing — so the same
-    value fallback the other three carry was added rather than left missing.
+    Asserted by CALLING the tool. The previous version read the function source
+    for a helper name, which proves a line exists and not that it is reachable —
+    and it broke the moment the helper was renamed, which is the clearest
+    demonstration that it was testing the wrong thing.
     """
-    import inspect
+    from unittest.mock import patch
 
     from app.services.dashboard_ai_bot.thinking import advanced_tools as at
 
-    src = inspect.getsource(at.tool_detect_anomaly)
-    assert "_looks_like_period_label" in src or "values_look_like_time" in src, (
-        "detect_anomaly must be able to accept an ambiguous axis on value evidence"
-    )
+    class _Ctx:
+        chart_meta: dict = {}
+        allowed_chart_ids = {1}
 
+        def assert_chart_in_scope(self, chart_id):
+            return None
+
+    def _chart(labels):
+        return {"columns": ["ky_bao_cao", "dataset_table_2.revenue"],
+                "rows": [[l, 1000.0 + n * 41] for n, l in enumerate(labels)],
+                "filters_applied": []}
+
+    def _run(labels, method):
+        with patch.object(at, "_fetch_chart_data", lambda c, i, **k: _chart(labels)):
+            with patch.object(at, "_attach_delta_unit", lambda c, i, m, q: q):
+                return at.tool_detect_anomaly(_Ctx(), {"chart_id": 1, "method": method})
+
+    months = ["2024-%02d" % m for m in range(1, 13)]
+    for method in ("rolling", "changepoint"):
+        result = _run(months, method)
+        assert result.get("ok") is not False, (
+            "detect_anomaly:%s refused an axis its VALUES prove: %s"
+            % (method, str(result)[:160])
+        )
+
+    refused = _run(CATEGORICAL, "rolling")
+    assert refused.get("ok") is False, "categorical values were accepted"
 
 def test_insight_pack_does_not_label_a_technical_column_datetime():
     from app.services.dashboard_ai_bot.insight_pack import _classify_column

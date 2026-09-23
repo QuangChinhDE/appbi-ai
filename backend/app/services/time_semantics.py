@@ -139,6 +139,89 @@ def looks_like_period_value(value: Any) -> bool:
     return bool(_PERIOD_VALUE_RX.match(text) or _BARE_PERIOD_RX.match(text))
 
 
+#: What the VALUES establish, independently of the name.
+TimeValueClass = Literal["supports", "inconclusive", "contradicts"]
+
+#: A digit. EVERY calendar label carries one - a year, a month number, a quarter
+#: number, a week number. `2024-01`, `Q1`, `Jan 2024`, `Tháng 1`, `FY24 P3`,
+#: `2024-W01` all do. `engineering`, `sales`, `health_beauty` and `nho` do not,
+#: and no localisation of a period label removes its number.
+#:
+#: That is the whole rule, and it is deliberately the only one: "this parser did
+#: not understand it" and "this cannot be a period" are different claims, and
+#: collapsing them is what made a categorical column acceptable under a strong
+#: name. Absence of any digit is the narrow, explainable evidence that a label is
+#: not temporal.
+_HAS_DIGIT_RX = re.compile(r"[0-9]")
+
+
+def classify_time_values(values: Iterable[Any]) -> TimeValueClass:
+    """What the sampled VALUES say about whether this is a time axis.
+
+    THREE ANSWERS, BECAUSE TWO WERE NOT ENOUGH. The previous contract let a
+    STRONG name short-circuit the values entirely, so
+
+        order_date = ["engineering", "sales", "support", "finance"]
+
+    went into time-series arithmetic. The defence offered for that was real -
+    `Tháng 1`, `Jan 2024` and `FY24 P3` are legitimate period labels this module
+    cannot parse, and refusing them would be worse - but it argued from the wrong
+    premise. "Not parsed" is INCONCLUSIVE. "Contains no number at all" is
+    CONTRADICTS. A strong name may override the first; nothing overrides the
+    second.
+
+    A SINGLE SAMPLE IS INCONCLUSIVE. One value is not a pattern, and `["2024"]`
+    used to be accepted as an axis. A tool that legitimately works on one row
+    can still act on a strong name, which is what the decision table allows.
+    """
+    sampled = [v for v in values if v is not None and str(v).strip() != ""]
+    if not sampled:
+        return "inconclusive"
+    if len(sampled) == 1:
+        return "inconclusive"
+    supports = sum(1 for v in sampled if looks_like_period_value(v))
+    contradicts = sum(1 for v in sampled
+                      if not _HAS_DIGIT_RX.search(str(v)))
+    total = len(sampled)
+    # The same 0.6 majority the value rule already used: a genuine axis carries
+    # noise, and a bare majority is what a half-and-half column looks like.
+    if supports / total >= 0.6:
+        return "supports"
+    if contradicts / total >= 0.6:
+        return "contradicts"
+    return "inconclusive"
+
+
+def may_do_time_maths(name: str | None, values: Iterable[Any] | None = None, *,
+                      value_discovery: bool = True) -> bool:
+    """May a tool run calendar arithmetic over this column?
+
+    THE DECISION TABLE, in one place so no tool carries its own version:
+
+        name       values         verdict
+        STRONG     supports       accept
+        STRONG     inconclusive   accept - the name is the evidence, and this is
+                                  where `Tháng 1` and `FY24 P3` survive
+        STRONG     contradicts    REFUSE - a number-free axis is not a calendar
+        AMBIGUOUS  supports       accept - the values paid for it
+        AMBIGUOUS  inconclusive   refuse
+        AMBIGUOUS  contradicts    refuse
+        NONE       supports       accept only with `value_discovery`, which is
+                                  how a column named `key` full of dates works
+        NONE       anything else  refuse
+    """
+    name_class = classify_time_name(name)
+    if values is None:
+        return name_class == "strong"
+    value_class = classify_time_values(values)
+    if value_class == "contradicts":
+        return False
+    if name_class == "strong":
+        return True
+    if name_class == "ambiguous":
+        return value_class == "supports"
+    return value_discovery and value_class == "supports"
+
 def values_look_like_time(values: Iterable[Any], *, min_ratio: float = 0.6) -> bool:
     """Do the sampled VALUES actually look like a period axis?
 

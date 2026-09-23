@@ -18,8 +18,10 @@ All tools share the ``ToolContext`` defined in ``tools.py`` and reuse
 from __future__ import annotations
 
 from app.services.time_semantics import (
+    classify_time_values,
     looks_like_period_value,
     looks_like_time_name,
+    may_do_time_maths,
     values_look_like_time,
 )
 
@@ -344,7 +346,7 @@ def tool_compare_periods(ctx: ToolContext, args: dict) -> dict:
     dim_idx = _detect_dim_idx(columns, rows, measure_idx, prefer_datetime=True)
     if measure_idx is None or dim_idx is None:
         return _err("need at least one dimension and one numeric column")
-    if not _looks_like_datetime(columns[dim_idx]) and mode != "custom":
+    if mode != "custom":
         # Peek at the actual dimension labels. If none look date-like, period
         # comparison simply doesn't apply to this chart — say so definitively
         # instead of pushing the model toward mode='custom', which sends it
@@ -355,17 +357,20 @@ def tool_compare_periods(ctx: ToolContext, args: dict) -> dict:
                 sample_labels.append(str(r[dim_idx]))
             if len(sample_labels) >= 8:
                 break
-        # A MAJORITY, not the first hit. One category that happens to be a
-        # bare year does not make a categorical axis temporal.
-        any_date_like = values_look_like_time(sample_labels)
-        if not any_date_like:
+        # VALUES ARE CONSULTED EVEN UNDER A STRONG NAME. A column called
+        # `order_date` holding department names is a broken chart, not a
+        # calendar, and `custom` periods cannot rescue it either.
+        if classify_time_values(sample_labels) == "contradicts":
             return _err(
                 f"chart's dimension '{columns[dim_idx]}' is categorical "
                 f"(e.g. {', '.join(sample_labels[:5]) or 'n/a'}), not a time "
                 "axis — period-over-period comparison is not applicable to this "
                 "chart. Do not retry with custom periods."
             )
-        return _err(
+        if looks_like_time_name(columns[dim_idx]):
+            pass  # the name settles the GRAIN; automatic modes may proceed
+        else:
+            return _err(
             f"chart's dimension '{columns[dim_idx]}' does not look like a "
             "time series; use mode='custom' with explicit period_a/period_b "
             f"chosen from the available labels: {', '.join(sample_labels)}"
@@ -955,15 +960,17 @@ def tool_detect_anomaly(ctx: ToolContext, args: dict) -> dict:
         # rather than only removing the `ky_thuat` false positive.
         if dim_idx is None:
             return _err(f"{method} requires a time dimension")
-        if not _looks_like_datetime(columns[dim_idx]):
-            labels = [str(r[dim_idx]) for r in rows
-                      if dim_idx < len(r) and r[dim_idx] is not None][:8]
-            if not values_look_like_time(labels):
-                return _err(
-                    f"chart's dimension '{columns[dim_idx]}' is not a time axis "
-                    f"(e.g. {', '.join(labels[:5]) or 'n/a'}) - {method} needs a "
-                    "time series."
-                )
+        # THE VALUES ARE READ WHATEVER THE NAME SAYS. A strong name settles an
+        # unparsed label like `FY24 P3`; it does not settle a column of
+        # department names.
+        labels = [str(r[dim_idx]) for r in rows
+                  if dim_idx < len(r) and r[dim_idx] is not None][:12]
+        if not may_do_time_maths(columns[dim_idx], labels):
+            return _err(
+                f"chart's dimension '{columns[dim_idx]}' is not a time axis "
+                f"(e.g. {', '.join(labels[:5]) or 'n/a'}) - {method} needs a "
+                "time series."
+            )
         sorted_rows = sorted(rows, key=lambda r: str(r[dim_idx]) if dim_idx < len(r) and r[dim_idx] is not None else "")
         points = [
             (str(r[dim_idx]), _to_number(r[measure_idx]))
@@ -1798,19 +1805,20 @@ def tool_forecast_measure(ctx: ToolContext, args: dict) -> dict:
     dim_idx = _detect_dim_idx(columns, rows, measure_idx, prefer_datetime=True)
     if measure_idx is None or dim_idx is None:
         return _err("need at least one dimension and one numeric column")
-    if not _looks_like_datetime(columns[dim_idx]):
-        labels = []
-        for r in rows:
-            if dim_idx < len(r) and r[dim_idx] is not None:
-                labels.append(str(r[dim_idx]))
-            if len(labels) >= 8:
-                break
-        if not values_look_like_time(labels):
-            return _err(
-                f"chart's dimension '{columns[dim_idx]}' is not a time axis "
-                f"(e.g. {', '.join(labels[:5]) or 'n/a'}) — forecasting needs a "
-                "time series. Do not retry; tell the user this chart can't be projected."
-            )
+    labels = []
+    for r in rows:
+        if dim_idx < len(r) and r[dim_idx] is not None:
+            labels.append(str(r[dim_idx]))
+        if len(labels) >= 12:
+            break
+    # Same rule as the others: a strong name carries an unparsed period label,
+    # and nothing carries a column with no numbers in it at all.
+    if not may_do_time_maths(columns[dim_idx], labels):
+        return _err(
+            f"chart's dimension '{columns[dim_idx]}' is not a time axis "
+            f"(e.g. {', '.join(labels[:5]) or 'n/a'}) — forecasting needs a "
+            "time series. Do not retry; tell the user this chart can't be projected."
+        )
 
     sorted_rows = sorted(
         rows,
@@ -1909,8 +1917,8 @@ def tool_analyze_trend(ctx: ToolContext, args: dict) -> dict:
     dim_idx = _detect_dim_idx(columns, rows, measure_idx, prefer_datetime=True)
     if measure_idx is None or dim_idx is None:
         return _err("need a numeric measure and a dimension")
-    labels = [str(r[dim_idx]) for r in rows if dim_idx < len(r) and r[dim_idx] is not None][:8]
-    if not _looks_like_datetime(columns[dim_idx]) and not values_look_like_time(labels):
+    labels = [str(r[dim_idx]) for r in rows if dim_idx < len(r) and r[dim_idx] is not None][:12]
+    if not may_do_time_maths(columns[dim_idx], labels):
         return _err(f"dimension '{columns[dim_idx]}' is not a time axis — trend analysis needs a time series.")
 
     srt = sorted(rows, key=lambda r: ("" if dim_idx >= len(r) or r[dim_idx] is None else str(r[dim_idx])))

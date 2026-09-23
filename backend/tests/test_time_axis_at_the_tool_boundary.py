@@ -34,10 +34,10 @@ by its VALUES whatever the column is called, which is how a column named `key`
 full of dates stays usable. `detect_anomaly` in `rolling`/`changepoint` mode does
 the same.
 
-A STRONG name, by contrast, short-circuits the value check in all of them, and
-that is pinned as the contract rather than treated as a gap: requiring proof
-there would refuse `Tháng 1`, `Jan 2024` and fiscal labels this module cannot
-parse, which are far commoner than an `order_date` column full of departments.
+A STRONG name carries an axis whose labels the parser does NOT understand —
+`Jan 2024`, `FY24 P3`, `2024-W01` — and does NOT carry one whose labels contain
+no number at all. Those are different claims, and an earlier version of this file
+collapsed them and protected the wrong one.
 """
 from __future__ import annotations
 
@@ -211,47 +211,96 @@ def test_a_strange_name_with_real_dates_is_accepted_by_value_discovery(
     )
 
 
-# ── what a STRONG name does, stated rather than assumed ────────────────────
+# ── C, D, E — a STRONG name does NOT rescue contradictory values ───────────
 
 @pytest.mark.parametrize("tool,args", TIME_TOOLS, ids=TOOL_IDS)
-def test_a_strong_name_short_circuits_the_value_check_by_design(serve, tool, args):
-    """A strong name is accepted WITHOUT reading the values, and that is the
-    contract — not an oversight this session should close.
+@pytest.mark.parametrize("dim", ["order_date", "created_at", "year_month"])
+def test_a_strong_name_is_refused_over_values_that_contradict_it(serve, tool, args, dim):
+    """The contract this file previously protected, and should not have.
 
-    The tempting assertion is the opposite: that `order_date` holding department
-    names should be refused. It is tempting because such a chart is broken. But
-    requiring value proof on a strong name would refuse legitimate axes whose
-    labels this module cannot parse — `Tháng 1`, `Jan 2024`, a fiscal label like
-    `FY24 P3` — and those are far more common than a column called `order_date`
-    full of departments. The name rule would stop being a hint and become a
-    second, weaker gate in front of the real one.
-
-    So the value check exists for the case where the name does NOT settle it,
-    which is exactly where the original bug lived. This test pins that boundary
-    so a future change cannot quietly move it in either direction.
+    It asserted that `order_date` holding department names was acceptable,
+    defending it with a real risk — `Tháng 1`, `Jan 2024` and `FY24 P3` are
+    legitimate labels the parser does not understand, and refusing them would be
+    worse. That defence argued from the wrong premise. "The parser did not
+    understand this" is INCONCLUSIVE; "this contains no number at all" is
+    CONTRADICTS. A strong name overrides the first and nothing overrides the
+    second, so both concerns are served at once.
     """
-    serve(CATEGORICAL, "order_date")
+    serve(CATEGORICAL, dim)
     result = _call(tool, args)
-    assert not _refused(result), (
-        f"{tool} now refuses a STRONG name over categorical values. That may be "
-        "an improvement, but it is a contract change: localized and fiscal period "
-        "labels would be refused with it. Decide deliberately, do not let this "
-        "test be edited to match."
+    assert _refused(result), (
+        f"{tool} ran calendar mathematics over {dim!r} holding "
+        f"{CATEGORICAL[:3]}…; got {str(result)[:200]}"
     )
 
 
-def test_the_value_rule_is_what_refuses_an_ambiguous_name(serve):
-    """The same tool, the same values, two names — only the name differs.
+# ── B — an unparsed label is not a contradiction ──────────────────────────
 
-    This is the cleanest statement of the tier: `analyze_trend` accepts
-    categorical values under a STRONG name and refuses them under an AMBIGUOUS
-    one, because only the second consults the values at all.
+#: Legitimate period labels this module does NOT parse. They must not be
+#: mistaken for categories: every one carries a number, which is the evidence
+#: that separates "unfamiliar" from "not a calendar".
+UNPARSED_PERIODS = {
+    "english month": ["Jan 2024", "Feb 2024", "Mar 2024", "Apr 2024",
+                      "May 2024", "Jun 2024"],
+    "english long": ["January 2024", "February 2024", "March 2024",
+                     "April 2024", "May 2024", "June 2024"],
+    "fiscal period": ["FY24 P1", "FY24 P2", "FY24 P3", "FY24 P4",
+                      "FY24 P5", "FY24 P6"],
+    "iso week": ["2024-W01", "2024-W02", "2024-W03", "2024-W04",
+                 "2024-W05", "2024-W06"],
+    "week label": ["Week 1 2024", "Week 2 2024", "Week 3 2024",
+                   "Week 4 2024", "Week 5 2024", "Week 6 2024"],
+}
+
+
+@pytest.mark.parametrize("tool,args", TIME_TOOLS, ids=TOOL_IDS)
+@pytest.mark.parametrize("label", sorted(UNPARSED_PERIODS))
+def test_an_unfamiliar_period_label_under_a_strong_name_still_works(
+        serve, tool, args, label):
+    serve(UNPARSED_PERIODS[label], "order_date")
+    result = _call(tool, args)
+    assert not _refused(result), (
+        f"{tool} refused {label} labels under a STRONG name. Unparsed is not "
+        f"categorical: {str(result)[:200]}"
+    )
+
+
+def test_the_evidence_classes_are_what_separate_those_two_cases():
+    """The bounded rule, asserted directly so its reason is visible.
+
+    Not a fixture-fitted heuristic: every calendar label carries a number — a
+    year, a month, a quarter, a week — and no localisation removes it. Absence
+    of any digit is the narrow evidence that a label is not temporal.
     """
-    serve(CATEGORICAL, "order_date")
-    assert not _refused(_call("tool_analyze_trend", {"chart_id": 1}))
-    serve(CATEGORICAL, "ky_thuat")
-    assert _refused(_call("tool_analyze_trend", {"chart_id": 1}))
+    from app.services.time_semantics import classify_time_values
 
+    assert classify_time_values(MONTHS) == "supports"
+    assert classify_time_values(QUARTERS) == "supports"
+    for label, labels in UNPARSED_PERIODS.items():
+        assert classify_time_values(labels) == "inconclusive", label
+    assert classify_time_values(CATEGORICAL) == "contradicts"
+    assert classify_time_values(SIZES) == "contradicts"
+    assert classify_time_values(CATEGORICAL_WITH_ONE_YEAR) == "contradicts"
+
+
+def test_a_single_sample_is_not_a_pattern():
+    """`["2024"]` used to be accepted as an axis."""
+    from app.services.time_semantics import classify_time_values
+
+    assert classify_time_values(["2024"]) == "inconclusive"
+    assert classify_time_values(["engineering"]) == "inconclusive"
+
+
+def test_the_same_values_split_on_the_name(serve):
+    """One tool, one set of values, two names — the cleanest statement of the tier."""
+    serve(UNPARSED_PERIODS["fiscal period"], "order_date")
+    assert not _refused(_call("tool_analyze_trend", {"chart_id": 1})), (
+        "a STRONG name should carry an unparsed period label"
+    )
+    serve(UNPARSED_PERIODS["fiscal period"], "ky_bao_cao")
+    assert _refused(_call("tool_analyze_trend", {"chart_id": 1})), (
+        "an AMBIGUOUS name has nothing to stand on when the values are unparsed"
+    )
 
 # ── the tool that is deliberately stricter ─────────────────────────────────
 
