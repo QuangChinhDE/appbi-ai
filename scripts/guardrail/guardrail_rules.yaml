@@ -209,7 +209,8 @@ protected:
       check_protection_integrity.py inspects base..head, so editing the checker
       in the same PR does not disable it.
     required_tests: [agent_sdlc_meta, stop_gate_decision, guardrail_diff_range,
-                     protection_approval_is_one_commit, product_gate_is_a_real_boundary]
+                     protection_approval_is_one_commit, product_gate_is_a_real_boundary,
+                     product_gate_root_of_trust]
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 3. FEATURES — impact map. A changed file that owns a feature drags in that
@@ -440,6 +441,9 @@ tests:
   canonical_time_semantics:
     run: "pytest backend/tests/test_canonical_time_semantics.py backend/tests/test_time_axis_needs_more_than_a_name.py backend/tests/test_time_axis_at_the_tool_boundary.py"
     locks: "ONE name-level answer to 'is this column a time axis': the segment-edge rule kills the substring bugs (`day` inside `holiday`, `nam` inside `name`), the token union keeps created_at/dt/period/quarter AND tuan/quy, the ambiguous ky_*/quy_* verdicts are pinned as decisions, and every implementation - coverage, project_ahead, advanced_tools, insight_pack - returns the same verdict for the same name; AND that a name which only SUGGESTS time (ky_*, quy_*) cannot buy a time-series calculation on its own - compare_periods, analyze_trend, forecast_measure, detect_anomaly, project_ahead and insight_pack all require value evidence before treating it as an axis; that the VALUE semantic is canonical too - advanced_tools no longer carries its own period regex - and that a MAJORITY of sampled values must read as periods, so one accidental year among categories is not a time axis; asserted at the TOOL boundary with real chart payloads, not by inspecting source"
+  product_gate_root_of_trust:
+    run: "pytest scripts/ci/test_product_gate_root_of_trust.py"
+    locks: "the status branch protection requires is itself protection-critical, and the BASE checker verifies the head Product Gate structurally by reading it AS DATA: ten weakenings are caught - deletion, a dropped sentinel, a dropped backend/E2E/classifier dependency, a removed always-run path, skipped accepted for a relevant suite, a swallowed classification failure, success no longer required, and the gate path-filtered - while a comment, a renamed display string and reordered jobs are not"
   product_gate_is_a_real_boundary:
     run: "pytest scripts/ci/test_product_gate_is_a_real_boundary.py"
     locks: "every PR carries ONE always-present product status: the classify job maps the diff onto suites BEFORE anything runs, the heavy suites are CALLED and not copied, and the sentinel fails when a suite the diff needed concluded anything other than success - skipped included, because skipped is what a job that disappeared looks like and must never read as irrelevant"

@@ -51,6 +51,28 @@ knowingly ambiguous — `ky_bao_cao` is a reporting period and `ky_thuat` is
 engineering — and both verdicts are pinned in the corpus as decisions rather than
 accidents. A name is a hint; the value-level and calendar checks each tool does
 are strictly stronger and were not touched.
+### Product Gate root of trust — the bootstrap, stated
+
+`Product gate` is a required status on `demo`, and from this change its
+workflow is protection-critical: the BASE copy of
+`check_protection_integrity.py` reads the head's `product-gate.yml` AS DATA and
+verifies it structurally — the pull_request entry, the classifier, both
+reusable-workflow calls, the sentinel's dependencies, its always-run path, and
+that a relevant suite must conclude `success` while `skipped` may not pass.
+
+**PR #2 cannot be protected by that code, because its base predates it.** This
+is the one-time bootstrap and it is not a hidden exception. What covers this
+merge instead:
+
+- human review of the gate and of this PR,
+- the Product Gate having actually executed on the PR head, not merely being
+  configured,
+- `preflight`, the architecture gate, protection integrity, backend unit,
+  integration-golden and E2E all green on that head.
+
+Every merge after this one is covered by the base copy. A future PR that
+weakens `product-gate.yml` is caught there, and the exact-SHA owner approval
+remains the only way past it — unchanged, and not broadened for this.
 ### Correctness blockers
 
 **B1 — a partial period reported as a collapse. CLOSED.**

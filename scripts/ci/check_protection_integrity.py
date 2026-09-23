@@ -57,6 +57,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+NEWLINE = chr(10)
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 RULES_PATH = "scripts/guardrail/guardrail_rules.yaml"
 SETTINGS_PATH = ".claude/settings.json"
@@ -84,7 +86,21 @@ PROTECTION_CRITICAL_WORKFLOWS = [
     ".github/workflows/preflight.yml",
     ".github/workflows/backend-contract-tests.yml",
     ".github/workflows/change-guardrail.yml",
+    # The status branch protection requires on `demo`. Without it here, a PR could
+    # weaken the gate AND the head-side tests that check the gate in one change,
+    # and the only thing left to object would be the thing being edited.
+    ".github/workflows/product-gate.yml",
 ]
+
+#: The Product Gate's structural contract, checked from the BASE copy against the
+#: HEAD workflow READ AS DATA — never imported, never executed.
+#:
+#: WHAT IS PINNED AND WHAT IS NOT. Invariants, not formatting: a renamed display
+#: string, a reordered job or a new comment must pass, because a checker that
+#: fails on cosmetics gets routed around within a week. What must not pass is the
+#: gate losing its always-run path, dropping a suite it depends on, or learning to
+#: treat `skipped` as success for a suite the classifier called relevant.
+PRODUCT_GATE_PATH = ".github/workflows/product-gate.yml"
 
 # Commands a CI workflow must keep invoking. Matched as substrings of the whole
 # workflow text, so reordering or renaming a step is fine and deleting the call is not.
@@ -193,6 +209,92 @@ def compare_rule_base(base_rules: dict, head_rules: dict, allow_removal: bool) -
             notes.append(f"gate `{name}` was RESTORED to runnable (was `{base_status}`)")
 
 
+def check_product_gate_contract(head: str) -> None:
+    """Read the head's Product Gate and verify it is still a gate.
+
+    Structural, because the alternative is either a byte comparison — which fails
+    on a comment — or running the head's own logic to decide whether the head
+    weakened it, which is the seam this exists to close.
+    """
+    text = show(head, PRODUCT_GATE_PATH)
+    if text is None:
+        return  # a deleted workflow is already reported by compare_files
+    data = load_yaml(text)
+    if not isinstance(data, dict):
+        finding(f"`{PRODUCT_GATE_PATH}` does not parse - the required status "
+                "cannot be produced by a workflow that will not load")
+        return
+
+    triggers = data.get("on") or data.get(True) or {}
+    if "pull_request" not in triggers:
+        finding("product-gate no longer runs on `pull_request` - the required "
+                "status would never appear and every PR would hang on it")
+    pr = triggers.get("pull_request") or {}
+    if isinstance(pr, dict) and (pr.get("paths") or pr.get("paths-ignore")):
+        finding("product-gate is now path-filtered - the always-present status "
+                "is the whole point, and a filtered one leaves PRs Expected")
+
+    jobs = data.get("jobs")
+    if not isinstance(jobs, dict):
+        finding("product-gate has no jobs")
+        return
+
+    # The sentinel is whichever job depends on the others and runs regardless.
+    sentinel_name, sentinel = None, None
+    for name, job in jobs.items():
+        if not isinstance(job, dict):
+            continue
+        needs = job.get("needs") or []
+        needs = [needs] if isinstance(needs, str) else list(needs)
+        if len(needs) >= 3 and "steps" in job:
+            sentinel_name, sentinel = name, job
+            break
+    if sentinel is None:
+        finding("product-gate has no final job depending on the classifier and "
+                "the suites - nothing aggregates the result")
+        return
+
+    needs = sentinel.get("needs") or []
+    needs = [needs] if isinstance(needs, str) else list(needs)
+    callers = {name: str((job or {}).get("uses") or "")
+               for name, job in jobs.items() if isinstance(job, dict)}
+    backend_jobs = [n for n, u in callers.items() if "backend-contract-tests" in u]
+    e2e_jobs = [n for n, u in callers.items() if u.endswith("e2e.yml")]
+    if not backend_jobs:
+        finding("product-gate no longer calls the backend contract workflow")
+    elif not any(n in needs for n in backend_jobs):
+        finding("the product-gate sentinel no longer depends on the backend suite")
+    if not e2e_jobs:
+        finding("product-gate no longer calls the E2E workflow")
+    elif not any(n in needs for n in e2e_jobs):
+        finding("the product-gate sentinel no longer depends on the E2E suite")
+
+    classifiers = [n for n, job in jobs.items()
+                   if isinstance(job, dict) and "steps" in job and n != sentinel_name
+                   and (job.get("outputs") or {})]
+    if not classifiers:
+        finding("product-gate has no job producing a changed-surface "
+                "classification - relevance would be decided nowhere")
+    elif not any(n in needs for n in classifiers):
+        finding("the product-gate sentinel no longer depends on the classifier")
+
+    if "always()" not in str(sentinel.get("if") or ""):
+        finding("the product-gate sentinel is no longer always-run - it would be "
+                "skipped by a failing dependency and report nothing")
+
+    body = NEWLINE.join(str((step or {}).get("run") or "")
+                        for step in sentinel.get("steps") or [])
+    if "success" not in body:
+        finding("the product-gate sentinel no longer requires a relevant suite "
+                "to have concluded `success`")
+    if "skipped" not in body:
+        finding("the product-gate sentinel no longer distinguishes `skipped` - a "
+                "job that disappeared would read as an irrelevant one")
+    if "RESULT_CLASSIFY" not in body and "classify" not in body:
+        finding("the product-gate sentinel no longer checks that the "
+                "classification itself succeeded - a failed classifier could "
+                "become `nothing is relevant`")
+
 def compare_files(base: str, head: str, allow_removal: bool) -> None:
     for path in PROTECTION_CRITICAL_FILES:
         existed = show(base, path) is not None
@@ -281,6 +383,7 @@ def main() -> int:
 
     compare_rule_base(base_rules or {}, head_rules or {}, allow_removal)
     compare_files(args.base, args.head, allow_removal)
+    check_product_gate_contract(args.head)
     compare_stop_hook(args.base, args.head)
 
     if args.json:
