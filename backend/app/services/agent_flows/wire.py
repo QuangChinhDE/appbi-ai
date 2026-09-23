@@ -12,12 +12,19 @@ The rules this encodes are unchanged from the public bot:
   something to show a viewer mid-flight.
 * `tool_result` carries ok/error only. The payload can be enormous and is already
   reflected in the answer.
+* The tool NAME and the error TEXT are the reader's, not the model's. Both
+  surfaces below stream to a person - one of them an anonymous viewer on a public
+  link - so `reader_diagnostics` builds them from the registry label and the
+  structured `error_code`/`detail`. The technical message that names the tool id,
+  the chart id and the raw field keeps going to the author's trace untouched.
 * `verification` publishes coverage and unknown LABELS, never the unmatched VALUES:
   echoing an invented figure would show it to the reader a second time.
 """
 from __future__ import annotations
 
 from typing import Any
+
+from app.services.agent_flows.reader_diagnostics import reader_error, tool_label
 
 
 def event_to_envelope(ev: Any) -> dict | None:
@@ -42,16 +49,16 @@ def event_to_envelope(ev: Any) -> dict | None:
             "reasons": info.get("reasons") or [],
         }
     if et == "status":
-        return {"type": "status", "text": ev.text, "tool": ev.tool_name}
+        return {"type": "status", "text": ev.text, "tool": tool_label(ev.tool_name)}
     if et == "tool_result":
         # Send only ok/error so the FE can flag failures without leaking the
         # full payload (which can be large).
         result = ev.tool_result or {}
         return {
             "type": "tool_result",
-            "tool": ev.tool_name,
+            "tool": tool_label(ev.tool_name),
             "ok": bool(result.get("ok")),
-            "error": result.get("error") if not result.get("ok") else None,
+            "error": reader_error(result) or None,
         }
     if et == "reading_plan":
         # Phase-15.71 — forward the analyst-style reading plan to the

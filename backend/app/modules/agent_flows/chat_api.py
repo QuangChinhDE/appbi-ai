@@ -32,7 +32,7 @@ from app.core.dependencies import (
     require_permission,
 )
 from app.models.user import User
-from app.services.agent_flows import chat_quota, direct_chat
+from app.services.agent_flows import chat_quota, direct_chat, reader_capability
 from app.services.agent_flows import dispatch
 from app.services.agent_flows.tools.context import CHAT_USER, ToolContext
 from app.services.agent_flows.wire import event_to_envelope
@@ -115,6 +115,7 @@ def _require_owner(db: Session, user: Any, thread: Any, action: str) -> None:
 
 @router.get("/brains")
 def list_chat_brains(
+    lang: str = "vi",
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
     _: Any = Depends(can_chat),
@@ -133,6 +134,12 @@ def list_chat_brains(
             "version": row.version,
             "flow_id": row.flow_id,
             "knowledge_count": len(flow.bound_sources()),
+            # ADDITIVE, and RECOMPUTED for this surface rather than projected from
+            # the author's coverage view. `coverage()` describes the FLOW's grants
+            # and carries tool names, pack names, node keys and document ids —
+            # none of it the reader's business — and Chat refuses tools the flow
+            # was granted, so the author's answer would also be the wrong answer.
+            "capability": reader_capability.capability(flow, surface="chat", lang=lang),
         })
     return {"brains": out}
 

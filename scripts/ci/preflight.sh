@@ -78,8 +78,8 @@ if [ -d .claude ]; then
     # The safety system itself: the Stop gate decision paths, and the meta-tests
     # proving a change cannot weaken the protection without being caught.
     if "$PY" -c "import pytest" >/dev/null 2>&1; then
-      "$PY" -m pytest -q scripts/ci/test_stop_gate.py scripts/ci/test_agent_sdlc.py >/dev/null || {
-        "$PY" -m pytest -q scripts/ci/test_stop_gate.py scripts/ci/test_agent_sdlc.py; fail=1; }
+      "$PY" -m pytest -q scripts/ci/test_stop_gate.py scripts/ci/test_agent_sdlc.py scripts/ci/test_guardrail_diff_range.py scripts/ci/test_ci_wiring_is_real.py scripts/ci/test_tool_bodies_are_guarded.py >/dev/null || {
+        "$PY" -m pytest -q scripts/ci/test_stop_gate.py scripts/ci/test_agent_sdlc.py scripts/ci/test_guardrail_diff_range.py scripts/ci/test_ci_wiring_is_real.py scripts/ci/test_tool_bodies_are_guarded.py; fail=1; }
       [ "$fail" -eq 0 ] && echo "✓ safety-system tests (stop gate + SDLC meta)"
     else
       echo "· safety-system tests skipped (pytest not installed)"

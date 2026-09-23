@@ -32,6 +32,7 @@ import { cn } from '@/lib/utils';
 import { useI18n } from '@/providers/LanguageProvider';
 import {
   blankNode, branchCoverage, brainImpact, canDropInto, findNode, getBrain, insertNode,
+  isBranching, isContainer,
   listAttachable, listNodeSpecs, listProviders, listToolPacks, moveNode,
   publishBrain, removeNode,
   replaceNode, saveBrain, setFlowType, validateFlow, walkNodes,
@@ -52,77 +53,11 @@ import { RunsTab } from './RunsTab';
 import { TestChat } from './TestChat';
 import { StatusBadge } from './shared';
 
-/** The inspector's width, dragged by the author and remembered per browser.
- *
- *  WHY IT IS NOT JUST A CONSTANT ANY MORE.
- *
- *  400px is right for naming a step and wrong for the two jobs that need room:
- *  reading a prompt of several paragraphs, and choosing among 36 tools whose
- *  descriptions are prose. It was the fixed width that pushed the tool picker's
- *  type down to 10px in the first place — everything had to fit, so everything
- *  got smaller. Letting the panel grow is the other half of making it readable.
- *
- *  Bounded on both sides: below ~320px the two-column rows inside collapse into
- *  unreadable slivers, and past ~820px the canvas stops being a canvas. Stored in
- *  `localStorage` because it is a per-person working preference, not a property of
- *  the flow — two people editing the same flow want different widths, and neither
- *  wants to set it again tomorrow.
- */
-const INSPECTOR_MIN = 320;
-const INSPECTOR_MAX = 820;
-const INSPECTOR_KEY = 'appbi.agentFlows.inspectorWidth';
-
-function useInspectorWidth() {
-  const [width, setWidth] = React.useState(400);
-
-  React.useEffect(() => {
-    try {
-      const raw = Number(window.localStorage.getItem(INSPECTOR_KEY));
-      if (Number.isFinite(raw) && raw >= INSPECTOR_MIN && raw <= INSPECTOR_MAX) {
-        setWidth(raw);
-      }
-    } catch { /* private mode: the default is a fine answer */ }
-  }, []);
-
-  const commit = React.useCallback((next: number) => {
-    const clamped = Math.min(INSPECTOR_MAX, Math.max(INSPECTOR_MIN, Math.round(next)));
-    setWidth(clamped);
-    try { window.localStorage.setItem(INSPECTOR_KEY, String(clamped)); } catch { /* ignore */ }
-  }, []);
-
-  /** Drag from the panel's left edge. Pointer events rather than mouse, so a pen
-   *  or a touch screen works, and capture so the drag survives the pointer leaving
-   *  the 6px handle — which it does immediately, every time. */
-  const onPointerDown = React.useCallback((e: React.PointerEvent<HTMLDivElement>) => {
-    e.preventDefault();
-    const handle = e.currentTarget;
-    handle.setPointerCapture(e.pointerId);
-    const startX = e.clientX;
-    const startWidth = width;
-    const move = (ev: PointerEvent) => commit(startWidth + (startX - ev.clientX));
-    const up = () => {
-      handle.releasePointerCapture(e.pointerId);
-      handle.removeEventListener('pointermove', move);
-      handle.removeEventListener('pointerup', up);
-    };
-    handle.addEventListener('pointermove', move);
-    handle.addEventListener('pointerup', up);
-  }, [width, commit]);
-
-  /** A drag handle nobody can reach with a keyboard is a control half the people
-   *  who need a wider panel cannot use. Arrows nudge, Home/End go to the bounds. */
-  const onKeyDown = React.useCallback((e: React.KeyboardEvent<HTMLDivElement>) => {
-    const step = e.shiftKey ? 80 : 20;
-    if (e.key === 'ArrowLeft') { e.preventDefault(); commit(width + step); }
-    if (e.key === 'ArrowRight') { e.preventDefault(); commit(width - step); }
-    if (e.key === 'Home') { e.preventDefault(); commit(INSPECTOR_MAX); }
-    if (e.key === 'End') { e.preventDefault(); commit(INSPECTOR_MIN); }
-  }, [width, commit]);
-
-  return { width, onPointerDown, onKeyDown, reset: () => commit(400) };
-}
 
 type Mode = 'design' | 'runs' | 'feedback' | 'activity';
+
+import { useFlowHistory } from './builder/useFlowHistory';
+import { useInspectorWidth, INSPECTOR_MIN, INSPECTOR_MAX } from './builder/useInspectorWidth';
 
 export function BrainBuilder({
   brainKey, onBack, canEdit, canPublish,
@@ -160,6 +95,15 @@ export function BrainBuilder({
   const openRun = React.useCallback(
     (runId: number) => goTab('runs', { run: String(runId) }), [goTab],
   );
+  /** Runs -> the node that produced a trace step, open in the Builder.
+   *
+   *  Closes the debugging loop: an author reading "which step went wrong" had to
+   *  find that node again by eye. Built on `goTab` and the existing `selected`
+   *  state rather than a second navigation model — the only new thing is one URL
+   *  parameter. */
+  const openNodeInBuilder = React.useCallback(
+    (nodeKey: string) => goTab('design', { node: nodeKey }), [goTab],
+  );
   const [loading, setLoading] = React.useState(true);
   const [saving, setSaving] = React.useState(false);
   const [dirty, setDirty] = React.useState(false);
@@ -179,9 +123,24 @@ export function BrainBuilder({
   // can say "loading" rather than "nothing to attach" — the two look identical
   // in an empty dropdown and mean opposite things.
   const [attachable, setAttachable] = React.useState<Attachable | null>(null);
-  const [coverage, setCoverage] = React.useState<Record<string, number>>({});
+  // RUN COUNTS per node, not question coverage. Two different product
+  // concepts were both called `coverage`: this one counts how often a branch
+  // ran, and the one on the Test tab is which question CLASSES the flow can
+  // answer. A reader of either screen had to know which was meant.
+  const [runCounts, setRunCounts] = React.useState<Record<string, number>>({});
 
   const [selected, setSelected] = React.useState<string | null>(null);
+  // ?node=<key> selects it, once. Consumed rather than kept: leaving it in the URL
+  // would fight every later click, and a stale parameter re-selecting a node on
+  // refresh is the kind of ghost that gets blamed on the canvas.
+  const nodeParam = searchParams?.get('node') || '';
+  React.useEffect(() => {
+    if (!nodeParam) return;
+    setSelected(nodeParam);
+    const q = new URLSearchParams(searchParams?.toString() || '');
+    q.delete('node');
+    router.replace(q.toString() ? `${pathname}?${q.toString()}` : pathname);
+  }, [nodeParam, router, pathname, searchParams]);
   const [insertAt, setInsertAt] = React.useState<InsertTarget | null>(null);
   const [validation, setValidation] = React.useState<ValidateResult | null>(null);
   // Which surface this flow was built for. Held here rather than read off `detail`
@@ -191,15 +150,10 @@ export function BrainBuilder({
   const [typeOpen, setTypeOpen] = React.useState(false);
   const [typeBusy, setTypeBusy] = React.useState(false);
 
-  // UNDO IS A STACK OF WHOLE BODIES, not a log of operations.
-  //
-  // A tree edit can touch several places at once — dragging a branch moves a whole
-  // subtree, deleting an IF takes its lanes with it — and an inverse-operation log
-  // has to be right about every one of those. Snapshots are bigger and always
-  // correct, and a flow is a few kilobytes.
-  const past = React.useRef<FlowBody[]>([]);
-  const future = React.useRef<FlowBody[]>([]);
-  const [, setHistoryTick] = React.useState(0);
+  // Undo/redo lives in `useFlowHistory`, with the snapshot-not-oplog reasoning
+  // that goes with it. `mutate` is still the only way a tree edit reaches the
+  // body, which is what makes every tree edit undoable.
+  const { mutate, undo, redo, canUndo, canRedo } = useFlowHistory(setBody, setDirty);
 
   const [zoom, setZoom] = React.useState(1);
   const [miniRects, setMiniRects] = React.useState<MiniRect[]>([]);
@@ -234,7 +188,7 @@ export function BrainBuilder({
       setProviders(provs);
       setDirty(false);
       brainImpact(brainKey).then((i) => setLinks(i.links)).catch(() => undefined);
-      branchCoverage(brainKey).then(setCoverage).catch(() => undefined);
+      branchCoverage(brainKey).then(setRunCounts).catch(() => undefined);
     } catch {
       toast.error(t('agentFlows.builder.loadFailed'));
     } finally {
@@ -285,38 +239,13 @@ export function BrainBuilder({
   }, [brainKey, t]);
 
   // ── tree edits ────────────────────────────────────────────────────────────
-  /** Every tree edit goes through here, so every tree edit is undoable. */
-  const mutate = (nodes: FlowNode[]) => {
-    setBody((b) => {
-      past.current = [...past.current.slice(-49), b];
-      future.current = [];
-      return { ...b, nodes };
-    });
-    setDirty(true);
-    setHistoryTick((n) => n + 1);
-  };
 
-  const undo = React.useCallback(() => {
-    setBody((b) => {
-      const prev = past.current.pop();
-      if (!prev) return b;
-      future.current = [...future.current, b];
-      return prev;
-    });
-    setDirty(true);
-    setHistoryTick((n) => n + 1);
-  }, []);
-
-  const redo = React.useCallback(() => {
-    setBody((b) => {
-      const next = future.current.pop();
-      if (!next) return b;
-      past.current = [...past.current, b];
-      return next;
-    });
-    setDirty(true);
-    setHistoryTick((n) => n + 1);
-  }, []);
+  // Declared before the keyboard effect that uses it: Alt+Arrow reorders through
+  // exactly this function, so the drop path and the keyboard path cannot drift.
+  const onMoveNode = React.useCallback((key: string, target: InsertTarget) => {
+    const next = moveNode(body.nodes, key, target);
+    if (next !== body.nodes) mutate(next);
+  }, [body.nodes, mutate]);
 
   React.useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -324,6 +253,68 @@ export function BrainBuilder({
       // Never steal Ctrl+Z from a field the author is typing in — the text field's
       // own undo is the one they mean there.
       if (target && /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName)) return;
+
+      // ROVING FOCUS ON THE CANVAS.
+      //
+      // Every node card used to be a tab stop, so reaching step 40 of a long flow
+      // meant tabbing past thirty-nine of them. Only the SELECTED card is a tab
+      // stop now, and the arrows move between cards from there — the pattern a
+      // toolbar or a tree view uses, and the reason the minimap can stay a
+      // pointer convenience rather than pretending to be keyboard-operable.
+      //
+      // Scoped to a focused node card: plain arrows anywhere else are scrolling,
+      // and stealing them would be worse than the problem.
+      const onCard = target?.closest?.('[data-node-button]') as HTMLElement | null;
+      if (onCard && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
+        const order = walkNodes(body.nodes).map((n) => n.key);
+        const here = order.indexOf(onCard.getAttribute('data-node-button') || '');
+        if (here < 0) return;
+
+        // ALT MOVES THE STEP; the bare arrow moves the selection. Drag has no
+        // keyboard equivalent otherwise, and claiming the canvas is operable
+        // without one would be claiming support that does not exist.
+        const key = onCard.getAttribute('data-node-button') || '';
+
+        // ALT MOVES THE STEP; the bare arrow moves the selection. Drag has no
+        // keyboard equivalent otherwise, and a canvas whose only way to reorder
+        // is a pointer is not operable — saying it is would be worse than the
+        // gap.
+        //
+        // BOUNDED TO REORDERING AMONG TOP-LEVEL SIBLINGS, deliberately. Moving a
+        // step INTO or OUT OF a branch is a different decision — which lane, at
+        // what depth — and guessing it from an arrow key would move steps
+        // somewhere the author did not ask for. It goes through the same
+        // `moveNode` a drop uses; there is no second mutation path.
+        if (e.altKey) {
+          e.preventDefault();
+          const top = body.nodes.findIndex((n) => n.key === key);
+          if (top < 0) return;                     // nested: drag it, for now
+          const to = top + (e.key === 'ArrowDown' ? 1 : -1);
+          if (to < 0 || to >= body.nodes.length) return;
+          onMoveNode(key, { containerPath: '', index: e.key === 'ArrowDown' ? to + 1 : to });
+          // Same reason: focus follows the step that moved, immediately, so a
+          // second Alt+Arrow keeps moving the same step.
+          window.requestAnimationFrame(() => {
+            document.querySelector<HTMLElement>(`[data-node-button="${key}"]`)?.focus();
+          });
+          return;
+        }
+
+        e.preventDefault();
+        const next = order[here + (e.key === 'ArrowDown' ? 1 : -1)];
+        if (!next) return;
+        setSelected(next);
+        // FOCUS MOVES NOW, not on the next frame. Deferring it dropped keys held
+        // down: the press after this one landed on a card that had just stopped
+        // being the tab stop, so focus fell to the body and the rest of the run
+        // went nowhere. Every card is rendered, so the element already exists;
+        // only the scroll needs to wait for layout.
+        const el = document.querySelector<HTMLElement>(`[data-node-button="${next}"]`);
+        el?.focus();
+        window.requestAnimationFrame(() => el?.scrollIntoView({ block: 'nearest' }));
+        return;
+      }
+
       if (!(e.ctrlKey || e.metaKey)) return;
       const k = e.key.toLowerCase();
       if (k === 'z' && !e.shiftKey) { e.preventDefault(); undo(); }
@@ -331,7 +322,7 @@ export function BrainBuilder({
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [undo, redo]);
+  }, [undo, redo, body.nodes, onMoveNode]);
 
   const onInsert = (target: InsertTarget) => setInsertAt(target);
 
@@ -351,11 +342,6 @@ export function BrainBuilder({
     (key: string, containerPath: string) => canDropInto(body.nodes, key, containerPath),
     [body.nodes],
   );
-
-  const onMoveNode = (key: string, target: InsertTarget) => {
-    const next = moveNode(body.nodes, key, target);
-    if (next !== body.nodes) mutate(next);
-  };
 
   const stepZoom = (delta: number) =>
     setZoom((z) => Math.round(Math.max(0.5, Math.min(1.3, z + delta)) * 100) / 100);
@@ -489,11 +475,10 @@ export function BrainBuilder({
     nodes: all.length,
     // A coordinator branches too — it just picks the lane with a model rather
     // than a condition. Left out, the chip under the title said "1 branch" for a
-    // flow with three.
-    branches: all.filter(
-      (n) => n.type === 'if' || n.type === 'switch' || n.type === 'coordinate',
-    ).length,
-    loops: all.filter((n) => n.type === 'loop').length,
+    // flow with three. Derived from the topology declaration now, so a fifteenth
+    // branching type counts itself.
+    branches: all.filter(isBranching).length,
+    loops: all.filter((n) => isContainer(n) && !isBranching(n)).length,
   };
 
   return (
@@ -513,18 +498,32 @@ export function BrainBuilder({
           makes reachability depend on guessing every width in advance, which is
           how this row lost its buttons in the first place. */}
       <div className="flex h-11 flex-shrink-0 items-center gap-2 overflow-x-auto border-b border-[rgb(var(--border-line))] bg-surface-1 px-4">
-        <button type="button" onClick={onBack}
-          className="flex items-center gap-1 text-caption text-text-tertiary hover:text-text-primary">
-          <ArrowLeft className="h-3.5 w-3.5" /> {t('agentFlows.title')}
+        {/* THE ARROW KEEPS ITS MEANING WITHOUT THE WORDS. At the declared 1280px
+            minimum the row overflowed by ~124px even on a valid flow, and the
+            tabs — navigation — scrolled under the sticky verdict group, leaving
+            "Activity" unreachable at the width the product names as its floor.
+            The label is the first thing on this row that costs width and carries
+            no information the icon does not. */}
+        <button type="button" onClick={onBack} aria-label={t('agentFlows.title')}
+          className="flex flex-shrink-0 items-center gap-1 text-caption text-text-tertiary hover:text-text-primary">
+          <ArrowLeft className="h-3.5 w-3.5" />
+          {/* `2xl`, not `xl`: Tailwind's `xl` is min-width 1280, so it MATCHES at
+              exactly 1280 — the label stayed visible at the one width that
+              needed it gone, and the tabs stayed under the sticky group. */}
+          <span className="hidden 2xl:inline">{t('agentFlows.title')}</span>
         </button>
-        <span className="text-text-quaternary">/</span>
+        <span className="hidden text-text-quaternary 2xl:inline">/</span>
         <Input
           value={name}
           disabled={!canEdit}
           onChange={(e) => { setName(e.target.value); setDirty(true); }}
           // Narrower than it was: the row now carries the tabs too, and the name
           // is the one element that can give up width without losing meaning.
-          className="h-7 w-[120px] flex-shrink-0 border-transparent bg-transparent px-1.5 text-caption font-medium hover:border-[rgb(var(--border-line))] lg:w-[150px] xl:w-[240px]"
+          // The 240px step moved from `xl` to `2xl` because Tailwind's `xl` is
+          // min-width 1280 — it applied at exactly the declared minimum, and the
+          // 90px it took was the whole of the header's overflow there, which put
+          // the "Activity" tab under the sticky action group.
+          className="h-7 w-[120px] flex-shrink-0 border-transparent bg-transparent px-1.5 text-caption font-medium hover:border-[rgb(var(--border-line))] lg:w-[150px] 2xl:w-[240px]"
         />
         <StatusBadge status={status} version={version} size="xs" />
 
@@ -563,6 +562,9 @@ export function BrainBuilder({
             ones that need the height. The chips are the first thing dropped as
             the window narrows: they are context, while the tabs are navigation
             and the validation badge is a warning. */}
+        {/* `order-last` below xl: when the row is tight the tabs move to the end,
+            next to the sticky verdict group, so the thing that scrolls out of
+            sight is the identity cluster — context — rather than navigation. */}
         <div className="ml-2 inline-flex flex-shrink-0 items-center gap-0.5 rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 p-0.5">
           {([
             ['design', 'agentFlows.builder.tab.design'],
@@ -613,7 +615,18 @@ export function BrainBuilder({
         {validation && (
           validation.ok
             ? <Badge size="xs" variant="success" dot>{t('agentFlows.builder.valid')}</Badge>
-            : <Badge size="xs" variant="danger">{validation.errors[0] || t('agentFlows.builder.invalid')}</Badge>
+            : (
+              // BOUNDED. The verdict lives in the sticky right group, so a long
+              // error — and validation messages name the step and the reason —
+              // grew that group until it covered the tab strip, and "Activity"
+              // became unreachable at 1280. The full sentence is still one hover
+              // away, and the Design tab shows it in full beside the step.
+              <Badge size="xs" variant="danger" title={validation.errors[0] || ''}>
+                <span className="block max-w-[200px] truncate 2xl:max-w-none">
+                  {validation.errors[0] || t('agentFlows.builder.invalid')}
+                </span>
+              </Badge>
+            )
         )}
         {!!validation?.warnings.length && (
           <span
@@ -630,10 +643,10 @@ export function BrainBuilder({
         )}
         {canEdit && (
           <div className="mr-1 flex items-center gap-0.5">
-            <IconBtn onClick={undo} label={t('agentFlows.builder.undo')} disabled={!past.current.length}>
+            <IconBtn onClick={undo} label={t('agentFlows.builder.undo')} disabled={!canUndo}>
               <Undo2 className="h-3.5 w-3.5" />
             </IconBtn>
-            <IconBtn onClick={redo} label={t('agentFlows.builder.redo')} disabled={!future.current.length}>
+            <IconBtn onClick={redo} label={t('agentFlows.builder.redo')} disabled={!canRedo}>
               <Redo2 className="h-3.5 w-3.5" />
             </IconBtn>
           </div>
@@ -666,16 +679,27 @@ export function BrainBuilder({
                 nodes={body.nodes}
                 specs={specs}
                 selectedKey={selected}
+                // The door into the roving list: with nothing selected the
+                // FIRST step is the canvas's tab stop, so Tab reaches a step
+                // and the arrows take it from there.
+                focusKey={body.nodes[0]?.key ?? null}
                 answerKey={answerKey}
                 onSelect={setSelected}
                 onInsert={onInsert}
-                coverage={coverage}
+                runCounts={runCounts}
                 zoom={zoom}
                 onMove={canEdit ? onMoveNode : undefined}
                 canDropInto={dropGuard}
                 onLayout={handleLayout}
               />
 
+              {/* A POINTER CONVENIENCE, and marked as one. It drags to scroll and
+                  has no keyboard operation; rather than bolt on a fake one, the
+                  equivalent navigation lives on the canvas itself — arrows move
+                  between steps from the selected card, which is reachable by
+                  Tab. Announcing this to a screen reader would offer a control
+                  that cannot be used. */}
+              <div aria-hidden>
               <Minimap
                 rects={miniRects.map((r) => ({ ...r, selected: r.key === `n:${selected}` }))}
                 viewport={viewport}
@@ -689,6 +713,7 @@ export function BrainBuilder({
                   }
                 }}
               />
+              </div>
 
               <div className="absolute bottom-4 left-4 z-30 flex items-center gap-0.5 rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 p-0.5 shadow-linear-sm">
                 <IconBtn onClick={() => stepZoom(-0.1)} label={t('agentFlows.builder.zoomOut')}>
@@ -773,7 +798,7 @@ export function BrainBuilder({
           </div>
         )}
 
-        {mode === 'runs' && <RunsTab brainKey={brainKey} />}
+        {mode === 'runs' && <RunsTab brainKey={brainKey} onOpenNode={openNodeInBuilder} />}
         {mode === 'feedback' && (
           <FeedbackTab
             brainKey={brainKey}

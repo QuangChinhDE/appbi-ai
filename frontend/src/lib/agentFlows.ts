@@ -129,6 +129,17 @@ export interface Attachable {
   terms: AttachableItem[];
 }
 
+// ── Notices ─────────────────────────────────────────────────────────────────
+//
+// Defined in `./notices` and re-exported here. It is a separate module because
+// this one imports `apiClient`, and a VALUE import of these helpers from a
+// component reachable by the public dashboard page would drag the authed client
+// into the public bundle. See the note in `notices.ts`.
+import type { FlowNotice } from './notices';
+
+export type { FlowNotice, NoticeAudience } from './notices';
+export { authorNotices, isAuthorNotice, readerNotices } from './notices';
+
 // ── The flow tree ───────────────────────────────────────────────────────────
 export interface ToolGrant { tool: string; note?: string }
 export interface KnowledgeAttachment {
@@ -623,7 +634,7 @@ export interface RunDetail {
   question: string | null;
   answer: string | null;
   citations: unknown[];
-  notices: { code: string; text: string }[];
+  notices: FlowNotice[];
   replayable: boolean;
   steps: RunStep[];
 }
@@ -680,7 +691,7 @@ export interface FlowOutputEnvelope {
   status: 'ok' | 'partial' | 'blocked' | 'failed';
   answer: { blocks: AnswerBlock[] };
   citations: { kind: string; ref: string; label?: string; url?: string; quote?: string }[];
-  notices: { code: string; text: string }[];
+  notices: FlowNotice[];
   trace: { path: string; steps: RunStep[] };
   usage: { llm_calls: number; tool_calls: number; prompt_tokens: number; completion_tokens: number; ms: number };
 }
@@ -1093,6 +1104,165 @@ export async function deleteBinding(linkId: number): Promise<void> {
   await apiClient.delete(`${BASE}/bindings/link/${linkId}`);
 }
 
+// ── Where a container keeps its children ────────────────────────────────────
+//
+// ONE DECLARATION, READ BY EVERY WALKER.
+//
+// This used to be written out by hand in five functions in this file and seven
+// more across the canvas, the edge generator, the inspector and the test panel —
+// forty-seven branches, each a separate chance to teach eleven systems about a new
+// node type and forget the twelfth. That is not hypothetical: `coordinate` was
+// added without being taught to the backend's `all_nodes()`, a specialist's lane
+// became invisible to every authoring check at once, and asked which product
+// category earned the most the flow answered "13,591,643.70" — the report's grand
+// total, no category named, no notice raised.
+//
+// The backend declares the same topology in `contract.CHILD_SLOTS` and serves it
+// on `/nodes` as `child_slots`. `npm run qa:node-topology` asserts the two agree,
+// so this table cannot quietly drift from the models it describes.
+
+/** How to get from a container's field to a list of nodes. */
+export type ChildSlot = {
+  /** The property on the node. */
+  field: 'paths' | 'cases' | 'specialists' | 'fallback' | 'body';
+  /** `nodes` — the field IS a list of nodes.
+   *  `groups` — a list of lanes that each carry a `body`. */
+  kind: 'nodes' | 'groups';
+  /** The token this lane uses inside a `containerPath` (`<key>:<token>:<laneKey>`),
+   *  which is how an insert point on the canvas names its own destination. FE-only:
+   *  the backend has no notion of canvas routing. */
+  token: 'path' | 'case' | 'specialist' | 'fallback' | 'body';
+  /** Draw this lane even when it is empty, so an author can drop a step into it.
+   *
+   *  A switch RESERVES its fallback — an empty "everything else" lane is still a
+   *  branch of the flow, and `has_fallback: false` is how an author says they do
+   *  not want one. A coordinator has no such switch, so its fallback appears only
+   *  once it holds something. Declared rather than inferred from the value, because
+   *  `has_fallback === undefined` means "reserved" on a switch and has no meaning
+   *  at all elsewhere. */
+  reserveWhenEmpty?: boolean;
+};
+
+export const CHILD_SLOTS: Partial<Record<NodeType, ChildSlot[]>> = {
+  if: [{ field: 'paths', kind: 'groups', token: 'path' }],
+  switch: [
+    { field: 'cases', kind: 'groups', token: 'case' },
+    { field: 'fallback', kind: 'nodes', token: 'fallback', reserveWhenEmpty: true },
+  ],
+  coordinate: [
+    { field: 'specialists', kind: 'groups', token: 'specialist' },
+    { field: 'fallback', kind: 'nodes', token: 'fallback' },
+  ],
+  loop: [{ field: 'body', kind: 'nodes', token: 'body' }],
+};
+
+/** One lane of children, with enough context to rebuild the node around it. */
+export type ChildLane = {
+  slot: ChildSlot;
+  /** The lane's own key — a path/case/specialist key, or '' for `fallback`/`body`. */
+  laneKey: string;
+  nodes: FlowNode[];
+};
+
+/** The node types that hold other nodes. A TYPE-level convenience only — the
+ *  runtime answer always comes from `CHILD_SLOTS`, which is the declaration a new
+ *  container has to join to be walked at all. */
+export type ContainerNode = IfNode | SwitchNode | CoordinateNode | LoopNode;
+export type BranchingNode = IfNode | SwitchNode | CoordinateNode;
+
+export function isContainer(node: FlowNode): node is ContainerNode {
+  return !!CHILD_SLOTS[node.type];
+}
+
+/** A container whose lanes are ALTERNATIVES — one of them runs.
+ *
+ *  The distinction is in the declaration rather than a list of type names: a
+ *  branching container has a `groups` slot (named lanes to choose between), a loop
+ *  has only `nodes` (one body, run repeatedly). `coordinate` counts, and leaving it
+ *  out is how the chip under the title said "1 branch" for a flow with three. */
+export function isBranching(node: FlowNode): node is BranchingNode {
+  return (CHILD_SLOTS[node.type] || []).some((s) => s.kind === 'groups');
+}
+
+/** Every lane of child nodes this node holds, in declaration order. */
+export function childLanes(node: FlowNode): ChildLane[] {
+  const slots = CHILD_SLOTS[node.type];
+  if (!slots) return [];
+  const out: ChildLane[] = [];
+  for (const slot of slots) {
+    const value = (node as unknown as Record<string, unknown>)[slot.field];
+    if (slot.kind === 'nodes') {
+      out.push({ slot, laneKey: '', nodes: (value as FlowNode[]) || [] });
+    } else {
+      for (const lane of (value as { key: string; body?: FlowNode[] }[]) || []) {
+        out.push({ slot, laneKey: lane.key, nodes: lane.body || [] });
+      }
+    }
+  }
+  return out;
+}
+
+/** A lane as the canvas and the edge generator want it: a key, its body, and the
+ *  `containerPath` an insert point inside it would use.
+ *
+ *  BOTH OF THEM USED TO BUILD THIS THEMSELVES, and `useFlowEdges` still carries the
+ *  note about what that cost: "`FlowCanvas` learned to DRAW the lanes and this did
+ *  not learn to CONNECT them, so the specialists rendered as two cards floating
+ *  either side of a line that ran straight past them — the picture said the flow
+ *  ignores them, which is the opposite of what the node does."
+ *
+ *  A `fallback` lane is shown when it has content, or when the node carries
+ *  `has_fallback` and has not turned it off — a switch reserves its fallback lane
+ *  even while empty, so an author can drop a step into it. */
+export function laneViews(
+  node: FlowNode,
+): { key: string; body: FlowNode[]; path: string }[] {
+  return childLanes(node).flatMap((lane) => {
+    if (lane.slot.reserveWhenEmpty) {
+      // Reserved unless the author turned it off.
+      const off = (node as unknown as { has_fallback?: boolean }).has_fallback === false;
+      if (off && lane.nodes.length === 0) return [];
+    } else if (lane.slot.kind === 'nodes' && lane.nodes.length === 0) {
+      // Not reserved: an empty lane is not a lane.
+      return [];
+    }
+    return [{
+      key: lane.slot.kind === 'groups' ? lane.laneKey : lane.slot.token,
+      body: lane.nodes,
+      path: `${node.key}:${lane.slot.token}:${lane.laneKey}`,
+    }];
+  });
+}
+
+/** Rebuild a node with each of its lanes passed through `fn`.
+ *
+ *  Immutable, because React state updates and the undo stack both hold snapshots.
+ *  The shape-preserving part is the point: a caller says what to do to a list of
+ *  nodes and never has to know that `if` keeps them under `paths[].body` while
+ *  `loop` keeps them under `body`. */
+export function mapChildLanes(
+  node: FlowNode, fn: (nodes: FlowNode[], lane: ChildLane) => FlowNode[],
+): FlowNode {
+  const slots = CHILD_SLOTS[node.type];
+  if (!slots) return node;
+  const next: Record<string, unknown> = { ...(node as unknown as Record<string, unknown>) };
+  for (const slot of slots) {
+    const value = next[slot.field];
+    if (slot.kind === 'nodes') {
+      const nodes = (value as FlowNode[]) || [];
+      next[slot.field] = fn(nodes, { slot, laneKey: '', nodes });
+    } else {
+      next[slot.field] = ((value as { key: string; body?: FlowNode[] }[]) || []).map(
+        (lane) => ({
+          ...lane,
+          body: fn(lane.body || [], { slot, laneKey: lane.key, nodes: lane.body || [] }),
+        }),
+      );
+    }
+  }
+  return next as unknown as FlowNode;
+}
+
 // ── Tree helpers ────────────────────────────────────────────────────────────
 /** Every node in the tree, in document order. The canvas, the validity badge and
  *  the key-uniqueness check all need this and must not each walk it differently. */
@@ -1101,14 +1271,7 @@ export function walkNodes(nodes: FlowNode[]): FlowNode[] {
   const visit = (list: FlowNode[]) => {
     for (const n of list) {
       out.push(n);
-      if (n.type === 'if') n.paths.forEach((p) => visit(p.body || []));
-      else if (n.type === 'switch') {
-        n.cases.forEach((c) => visit(c.body || []));
-        visit(n.fallback || []);
-      } else if (n.type === 'coordinate') {
-        (n.specialists || []).forEach((sp) => visit(sp.body || []));
-        visit(n.fallback || []);
-      } else if (n.type === 'loop') visit(n.body || []);
+      for (const lane of childLanes(n)) visit(lane.nodes);
     }
   };
   visit(nodes || []);
@@ -1124,56 +1287,14 @@ export function findNode(nodes: FlowNode[], key: string): FlowNode | null {
 export function replaceNode(nodes: FlowNode[], key: string, next: FlowNode): FlowNode[] {
   return (nodes || []).map((n) => {
     if (n.key === key) return next;
-    if (n.type === 'if') {
-      return { ...n, paths: n.paths.map((p) => ({ ...p, body: replaceNode(p.body || [], key, next) })) };
-    }
-    if (n.type === 'switch') {
-      return {
-        ...n,
-        cases: n.cases.map((c) => ({ ...c, body: replaceNode(c.body || [], key, next) })),
-        fallback: replaceNode(n.fallback || [], key, next),
-      };
-    }
-    if (n.type === 'coordinate') {
-      return {
-        ...n,
-        specialists: (n.specialists || []).map((sp) => ({
-          ...sp, body: replaceNode(sp.body || [], key, next),
-        })),
-        fallback: replaceNode(n.fallback || [], key, next),
-      };
-    }
-    if (n.type === 'loop') return { ...n, body: replaceNode(n.body || [], key, next) };
-    return n;
+    return mapChildLanes(n, (lane) => replaceNode(lane, key, next));
   });
 }
 
 export function removeNode(nodes: FlowNode[], key: string): FlowNode[] {
   return (nodes || [])
     .filter((n) => n.key !== key)
-    .map((n) => {
-      if (n.type === 'if') {
-        return { ...n, paths: n.paths.map((p) => ({ ...p, body: removeNode(p.body || [], key) })) };
-      }
-      if (n.type === 'switch') {
-        return {
-          ...n,
-          cases: n.cases.map((c) => ({ ...c, body: removeNode(c.body || [], key) })),
-          fallback: removeNode(n.fallback || [], key),
-        };
-      }
-      if (n.type === 'coordinate') {
-        return {
-          ...n,
-          specialists: (n.specialists || []).map((sp) => ({
-            ...sp, body: removeNode(sp.body || [], key),
-          })),
-          fallback: removeNode(n.fallback || [], key),
-        };
-      }
-      if (n.type === 'loop') return { ...n, body: removeNode(n.body || [], key) };
-      return n;
-    });
+    .map((n) => mapChildLanes(n, (lane) => removeNode(lane, key)));
 }
 
 /** Where a new node goes. A container path is `<nodeKey>:<group>:<index>` — e.g.
@@ -1190,75 +1311,20 @@ export function insertNode(
     next.splice(Math.min(index, next.length), 0, node);
     return next;
   }
-  const [ownerKey, group, groupKey] = containerPath.split(':');
+  const [ownerKey, token, laneKey] = containerPath.split(':');
   return (nodes || []).map((n) => {
+    // Not the owner: keep descending, every lane, without naming any of them.
     if (n.key !== ownerKey) {
-      if (n.type === 'if') {
-        return { ...n, paths: n.paths.map((p) => ({ ...p, body: insertNode(p.body || [], target, node) })) };
-      }
-      if (n.type === 'switch') {
-        return {
-          ...n,
-          cases: n.cases.map((c) => ({ ...c, body: insertNode(c.body || [], target, node) })),
-          fallback: insertNode(n.fallback || [], target, node),
-        };
-      }
-      if (n.type === 'coordinate') {
-        return {
-          ...n,
-          specialists: (n.specialists || []).map((sp) => ({
-            ...sp, body: insertNode(sp.body || [], target, node),
-          })),
-          fallback: insertNode(n.fallback || [], target, node),
-        };
-      }
-      if (n.type === 'loop') return { ...n, body: insertNode(n.body || [], target, node) };
-      return n;
+      return mapChildLanes(n, (lane) => insertNode(lane, target, node));
     }
-    if (n.type === 'if' && group === 'path') {
-      return {
-        ...n,
-        paths: n.paths.map((p) => {
-          if (p.key !== groupKey) return p;
-          const body = [...(p.body || [])];
-          body.splice(Math.min(index, body.length), 0, node);
-          return { ...p, body };
-        }),
-      };
-    }
-    if (n.type === 'switch' && group === 'case') {
-      return {
-        ...n,
-        cases: n.cases.map((c) => {
-          if (c.key !== groupKey) return c;
-          const body = [...(c.body || [])];
-          body.splice(Math.min(index, body.length), 0, node);
-          return { ...c, body };
-        }),
-      };
-    }
-    if (n.type === 'switch' && group === 'fallback') {
-      const body = [...(n.fallback || [])];
+    // The owner: splice into the ONE lane the path names.
+    return mapChildLanes(n, (lane, ctx) => {
+      if (ctx.slot.token !== token) return lane;
+      if (ctx.slot.kind === 'groups' && ctx.laneKey !== laneKey) return lane;
+      const body = [...lane];
       body.splice(Math.min(index, body.length), 0, node);
-      return { ...n, fallback: body };
-    }
-    if (n.type === 'coordinate' && group === 'specialist') {
-      return {
-        ...n,
-        specialists: (n.specialists || []).map((sp) => {
-          if (sp.key !== groupKey) return sp;
-          const body = [...(sp.body || [])];
-          body.splice(Math.min(index, body.length), 0, node);
-          return { ...sp, body };
-        }),
-      };
-    }
-    if (n.type === 'loop' && group === 'body') {
-      const body = [...(n.body || [])];
-      body.splice(Math.min(index, body.length), 0, node);
-      return { ...n, body };
-    }
-    return n;
+      return body;
+    });
   });
 }
 
@@ -1269,27 +1335,8 @@ export function locateNode(
   for (let i = 0; i < (nodes || []).length; i += 1) {
     const n = nodes[i];
     if (n.key === key) return { containerPath, index: i };
-    if (n.type === 'if') {
-      for (const p of n.paths) {
-        const hit = locateNode(p.body || [], key, `${n.key}:path:${p.key}`);
-        if (hit) return hit;
-      }
-    } else if (n.type === 'switch') {
-      for (const c of n.cases) {
-        const hit = locateNode(c.body || [], key, `${n.key}:case:${c.key}`);
-        if (hit) return hit;
-      }
-      const fb = locateNode(n.fallback || [], key, `${n.key}:fallback:`);
-      if (fb) return fb;
-    } else if (n.type === 'coordinate') {
-      for (const sp of n.specialists || []) {
-        const hit = locateNode(sp.body || [], key, `${n.key}:specialist:${sp.key}`);
-        if (hit) return hit;
-      }
-      const fb = locateNode(n.fallback || [], key, `${n.key}:fallback:`);
-      if (fb) return fb;
-    } else if (n.type === 'loop') {
-      const hit = locateNode(n.body || [], key, `${n.key}:body:`);
+    for (const lane of childLanes(n)) {
+      const hit = locateNode(lane.nodes, key, `${n.key}:${lane.slot.token}:${lane.laneKey}`);
       if (hit) return hit;
     }
   }
@@ -1446,7 +1493,7 @@ export interface ConversationTurn {
   question: string | null;
   answer: string | null;
   citations: unknown[];
-  notices: { code: string; text: string }[];
+  notices: FlowNotice[];
   execution_path: string | null;
   blocked_reason: string | null;
   missing_requirements: unknown[];

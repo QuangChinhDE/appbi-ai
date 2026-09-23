@@ -942,6 +942,19 @@ def execute(
         return denied
 
     args = args or {}
+    # AND THE QUESTION'S OWN BREAKDOWN, for tools whose result IS per-group.
+    #
+    # Measured: asked which STATE had the highest revenue, the answering Agent
+    # called `rank_values` on the revenue-by-CATEGORY chart. The ranking was
+    # correct for categories and became an answer about states. The selection
+    # step that would have caught it had run in report-order mode, which is a
+    # valid authoring choice — so the last place anything can tell the difference
+    # is here, one line after the capability gate, for the same reason.
+    from app.services.agent_flows.tools import dimension_gate
+
+    mismatched = dimension_gate.refusal(ctx, name, args)
+    if mismatched is not None:
+        return mismatched
     key = None
     if use_cache and spec.cacheable:
         key = _cache_key(ctx, name, args)

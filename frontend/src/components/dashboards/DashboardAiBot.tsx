@@ -26,6 +26,7 @@ import {
 import { BriefingWizard, type BriefingWizardResult } from './BriefingWizard';
 import type { AnswerBlock, FlowOutputEnvelope } from '@/lib/agentFlows';
 import { AnswerBlocks } from './AnswerBlocks';
+import { FlowNotice, readerNotices } from '@/lib/notices';
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -236,7 +237,7 @@ interface ChatMessage extends AiChatMessage {
   /** Things the viewer should be told about the ANSWER — "bộ lọc đã đổi nên tôi
    *  tính lại từ đầu". Silently showing a different number from the one given two
    *  minutes ago is how a bot loses trust it cannot win back. */
-  notices?: { code: string; text: string }[];
+  notices?: FlowNotice[];
   /** Tool status notes accumulated while this assistant message was streaming. */
   statusLog?: { tool: string; text: string; ok?: boolean; error?: string | null }[];
   /** User rating for this assistant message. */
@@ -1417,6 +1418,19 @@ function applyEvent(
     if (ev.state) ops.updateState(ev.state);
     return;
   }
+  if (ev.type === 'result') {
+    // THE TERMINATOR, and it was being dropped here.
+    //
+    // The backend emits `{type: "result", envelope}` with the typed blocks,
+    // citations and NOTICES; `onResult` was declared, passed in, and never
+    // called, because this function only acts on the types it lists. So a
+    // runtime notice — "this report has no data for that question" — reached the
+    // browser in the response body and was thrown away one function short of the
+    // message state that renders it.
+    const envelope = (ev as { envelope?: FlowOutputEnvelope }).envelope;
+    if (envelope) ops.onResult?.(envelope);
+    return;
+  }
   if (ev.type === 'cost' || ev.type === 'usage') {
     // Internal cost/usage telemetry — hidden from the user.
     return;
@@ -1579,6 +1593,9 @@ function ChatView({
   inputRef: React.RefObject<HTMLTextAreaElement>;
   onInputChange: (v: string) => void;
   onKeyDown: (e: React.KeyboardEvent<HTMLTextAreaElement>) => void;
+  /** Takes no argument ON PURPOSE — see the call site. Typed `() => void` while
+   *  the implementation accepted `(override?: string)`, so TypeScript could not
+   *  see a MouseEvent being passed into a string parameter. */
   onSend: () => void;
   onStop: () => void;
   onPickSuggestion: (q: string) => void;
@@ -1700,7 +1717,12 @@ function ChatView({
             </button>
           ) : (
             <button
-              onClick={onSend}
+              // NOT `onClick={() => onSend()}`. React hands the click handler its
+              // MouseEvent, `handleSend(override?: string)` took it as `override`,
+              // and `override.trim()` threw — the send BUTTON on this bot has
+              // been dead since `ceca97c`. The Enter path calls `handleSend()`
+              // with no argument, which is why only the button was broken.
+              onClick={() => onSend()}
               disabled={!inputText.trim() || !!reconError}
               className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg bg-brand text-white shadow-sm transition-all hover:bg-brand/90 hover:shadow-md disabled:cursor-not-allowed disabled:opacity-40 disabled:shadow-none"
               aria-label={t('dashboards.aiBot.sendAria')}
@@ -1834,9 +1856,11 @@ function MessageBubble({
         {!isUser && message.insights && message.insights.length > 0 && (
           <InsightLadderPanel insights={message.insights} />
         )}
-        {!isUser && !!message.notices?.length && (
+        {/* READER SURFACE — author diagnostics are refused here as well as at the
+            server boundary they are already dropped at. */}
+        {!isUser && !!readerNotices(message.notices).length && (
           <div className="mb-2 space-y-1">
-            {message.notices.map((n, i) => (
+            {readerNotices(message.notices).map((n, i) => (
               <p key={i} className="rounded-md border border-warning/25 bg-warning/5 px-2 py-1 text-tiny leading-5 text-warning">
                 {n.text}
               </p>
@@ -1929,7 +1953,13 @@ function MessageBubble({
             </div>
           </div>
         )}
-        {!isUser && suggestions.length > 0 && onPickSuggestion && (
+        {/* NOT ON TOP OF BLOCKS. `extractFollowups` falls back to scraping trailing
+            question lines out of prose — right for a prose-only answer, wrong for an
+            envelope that has a `followups` block and a text block rendered verbatim,
+            where it shows each question twice. Pre-existing here; found while fixing
+            the same line in the Studio test panel, which renders through the same
+            component. */}
+        {!isUser && !message.blocks?.length && suggestions.length > 0 && onPickSuggestion && (
           <div className="mt-2 flex flex-wrap gap-1.5 border-t border-[rgb(var(--border-line))]/40 pt-2">
             {suggestions.map((q, i) => (
               <button

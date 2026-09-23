@@ -56,6 +56,9 @@ from app.services.agent_flows.envelope import (
     text_answer,
 )
 from app.services.agent_flows.runtime import nodes as node_registry
+from app.services.agent_flows.runtime.handlers.data import (
+    restore_report_read_provenance,
+)
 from app.services.agent_flows.runtime.state import (
     Budget,
     BudgetExhausted,
@@ -114,6 +117,17 @@ async def run_flow(
 ) -> AsyncGenerator[AgentEvent, None]:
     """Run `flow` against `inp`. The last event is always `result`."""
     started = time.monotonic()
+    # THE QUESTION HAS TO REACH THE TOOL BOUNDARY.
+    #
+    # Set on the ONE backbone every dispatch site goes through, rather than in
+    # each of `run_for_link`, `run_preview` and `run_for_chat_thread` — three
+    # copies is three chances for a surface to be silently ungated. The
+    # dimension gate in `tools/registry.execute` reads it to tell a grouped call
+    # that answers the question from one that answers a different one.
+    try:
+        ctx.question = inp.question.text()
+    except Exception:                                           # noqa: BLE001
+        pass
     state = RunState(
         vars=inp.seed_vars(),
         budget=Budget(
@@ -247,6 +261,7 @@ async def run_flow(
     # is what survived that — an answer whose figures the model was given a chance
     # to fix and did not, which is worth saying out loud.
     verification = _verify_figures(state, answer)
+    status = _status_after_verification(status, verification)
     if verification:
         yield AgentEvent(type="verification", extra={"verification": verification})
         if verification.get("unknown_labels"):
@@ -262,18 +277,95 @@ async def run_flow(
                          "các mục này — có thể báo cáo đang giới hạn số dòng.",
                 )
             )
+        # GROUNDING CHANGES THE VERDICT, not just the record. A figure that exists
+        # in the evidence is verified; an answer whose ENTIRE evidence came from a
+        # step whose question never resolved is not grounded, and saying nothing
+        # lets it ship looking healthy.
+        if (verification.get("grounding") or {}).get("all_evidence_unresolved"):
+            state.notices.append(
+                Notice(
+                    code="answer_not_grounded_in_question",
+                    audience="reader",
+                    severity="warning",
+                    text="Các số trong câu trả lời có trong dữ liệu đã đọc, nhưng phần "
+                         "dữ liệu đó không được chọn theo câu hỏi của bạn — hãy đối "
+                         "chiếu lại trước khi dùng.",
+                )
+            )
+
+        # THE CAPABILITY THE QUESTION NEEDED WAS NOT AVAILABLE, and nothing else
+        # demonstrably answered it. The reader is told which, because "the web
+        # step was skipped" is actionable and "these numbers may be unrelated" on
+        # its own is not.
+        _gap = (verification.get("grounding") or {})
+        if _gap.get("dimension_gap"):
+            # A READER IS NOT SHOWN A COLUMN PATH.
+            #
+            # The first version printed the raw field, so a viewer on the public
+            # link read "Câu hỏi của bạn hỏi theo 'customer_state'" — an internal
+            # identifier on a business surface, which is the reader-vocabulary
+            # leak this project already tracks. Seen in the browser on the very
+            # run that proved the rest of this notice works.
+            #
+            # `dimension_label` is the chart's own on-screen label where the
+            # runtime has one; the raw field stays in `grounding` for the trace,
+            # where an author is the reader and the identifier is the useful
+            # thing.
+            _want = (str(_gap.get("dimension_label") or "").strip()
+                     or str(_gap.get("dimension_requested") or "")
+                     .rsplit(".", 1)[-1].replace("_", " ").strip())
+            state.notices.append(
+                Notice(
+                    code="requested_breakdown_unavailable",
+                    audience="reader",
+                    severity="warning",
+                    text=(
+                        f"Câu hỏi của bạn hỏi theo “{_want}”, nhưng báo cáo này "
+                        "không có biểu đồ nào tách số liệu theo chiều đó — phần "
+                        "trả lời bên dưới KHÔNG phải câu trả lời cho chiều bạn hỏi."
+                    ),
+                )
+            )
+        if _gap.get("capability_gap"):
+            state.notices.append(
+                Notice(
+                    code="capability_unavailable_for_question",
+                    audience="reader",
+                    severity="warning",
+                    text="Bước cần cho câu hỏi này không chạy được (tìm kiếm web "
+                         "đang tắt), và không bước nào khớp câu hỏi của bạn với báo "
+                         "cáo. Các số dưới đây lấy từ báo cáo theo cấu hình sẵn — "
+                         "chúng có thể không trả lời điều bạn hỏi.",
+                )
+            )
+
         if verification.get("unmatched"):
             logger.warning(
                 "[flow] %s: %s figure(s) in the answer are not in the evidence: %s",
                 flow.key, len(verification["unmatched"]), verification["unmatched"][:6],
             )
-            state.notices.append(
-                Notice(
-                    code="figures_unverified",
-                    text=f"{len(verification['unmatched'])} con số trong câu trả lời "
-                         "không khớp với dữ liệu đã đọc — hãy đối chiếu lại trước khi dùng.",
+            # TWO DIFFERENT FAULTS, TWO DIFFERENT SENTENCES. "Does not match the
+            # data read" is wrong when NOTHING was read — that reads as a
+            # reconciliation problem when the real one is that the answer has no
+            # source at all.
+            if verification.get("no_evidence"):
+                state.notices.append(
+                    Notice(
+                        code="figures_without_evidence",
+                        severity="error",
+                        text=f"Câu trả lời đưa ra {len(verification['unmatched'])} con "
+                             "số nhưng lượt này KHÔNG đọc được dữ liệu nào — các số này "
+                             "không có nguồn, đừng dùng để ra quyết định.",
+                    )
                 )
-            )
+            else:
+                state.notices.append(
+                    Notice(
+                        code="figures_unverified",
+                        text=f"{len(verification['unmatched'])} con số trong câu trả lời "
+                             "không khớp với dữ liệu đã đọc — hãy đối chiếu lại trước khi dùng.",
+                    )
+                )
 
     # THE OTHER HALF OF THE SAME CHECK.
     #
@@ -563,6 +655,20 @@ def _reuse(node: Any, state: RunState, rctx: RunContext) -> Any:
     state.outputs[node.key] = value
     state.set_var(node.output_var, value)
     state.memory_set[node.output_var] = value
+    # AND ITS PROVENANCE, NOT ONLY ITS VALUE.
+    #
+    # Hydrating the variable puts last turn's data in front of the model; leaving
+    # the ledger empty meant the verifier judged the answer against nothing and
+    # told the viewer their figures had no source — about data it had just been
+    # shown. Live runs 471, 472 and 475 carried exactly that notice while their
+    # read step read `reused`.
+    #
+    # The restore itself lives beside the read handler, because it has to mirror
+    # what that handler counts as evidence: the same sub-payloads, and none of the
+    # routing metadata `_route_call` keeps out. Done here, out of sight of the
+    # producer, it drifted twice.
+    if getattr(node, "type", "") == "report_read":
+        restore_report_read_provenance(value, state, node_key=node.key)
     return value
 
 
@@ -1068,6 +1174,129 @@ def _final_answer(state: RunState, rctx: RunContext) -> Answer:
     return text_answer(str(value))
 
 
+def _status_after_verification(status: str, verification: dict | None) -> str:
+    """`ok` must mean the designed path ran AND the numbers are grounded.
+
+    Status was final before `_verify_figures` ran, and nothing afterwards touched
+    it — so an answer stating a figure whose every contributing source resolved to
+    nothing was stored `ok`, and an operator reading the flow's success rate
+    counted it as a working answer.
+
+    Not driven by "a notice exists": `all_evidence_unresolved` already requires
+    the answer to CITE figures and EVERY contributing step to be unresolved, so a
+    flow whose other capability genuinely answered is untouched. A run that is
+    already `partial` or `failed` is never promoted.
+    """
+    if status != "ok" or not verification:
+        return status
+    grounding = verification.get("grounding") or {}
+    if grounding.get("all_evidence_unresolved"):
+        return "partial"
+    # A CAPABILITY THE RUN NEEDED WAS OFF AND NOTHING ELSE ANSWERED THE QUESTION.
+    # The figures are real; what is missing is any evidence that they are about
+    # what was asked. `ok` would report this run as a working answer.
+    if grounding.get("capability_gap"):
+        return "partial"
+    # THE BREAKDOWN THAT WAS ASKED FOR NEVER ARRIVED. `ok` would record this run
+    # as a working answer to a question it did not answer.
+    if grounding.get("dimension_gap"):
+        return "partial"
+    # AND THE WORSE CASE, WHICH THE RULE ABOVE COULD NOT SEE. `_verify_figures`
+    # returns early on an empty ledger, and that branch reports `no_evidence`
+    # rather than `all_evidence_unresolved` — so a run that read NOTHING and
+    # stated figures anyway fell straight through. Found on the running stack:
+    # three turns shipped 7, 3 and 9 sourceless numbers under a Runs header
+    # reading "100% answered, 0 errors".
+    #
+    # Bounded to runs that ATTEMPTED a read. A flow with no read step promised no
+    # data, and downgrading it over an incidental number would empty `partial` of
+    # meaning — `test_a_matching_branch_stays_a_clean_success` says so, and it is
+    # right. `unmatched` is required too: the same branch returns None when a
+    # sourceless answer states no numbers, because a clean refusal is healthy.
+    if grounding.get("no_evidence_after_read") and verification.get("unmatched"):
+        return "partial"
+    return status
+
+
+#: Reasons a node was skipped because a CAPABILITY was not available, as opposed
+#: to a branch that simply did not run. Only `web_disabled` is written today; the
+#: set is named so the next one is added here rather than matched by string.
+_CAPABILITY_SKIPS = frozenset({"web_disabled"})
+
+
+def _note_capability_gap(state: RunState, out: dict, *, cites_numbers: bool) -> None:
+    """Did a capability the run needed go missing, and did anything else answer?
+
+    THE FAILURE. Web search disabled, the viewer asks for Vietnam's GDP, and the
+    flow has a report read that succeeded at reading the report. Every figure in
+    the answer is verifiable against the evidence, `all_evidence_unresolved` does
+    not fire because nothing RESOLVED to nothing, and the viewer gets an Olist
+    summary as the answer to a question about GDP.
+
+    Existing provenance answers "where did this number come from?". Nothing
+    answered "did any capability actually service what was asked?", and those are
+    different questions — the first is about the figure, the second about the run.
+
+    WHAT COUNTS AS SERVICING, and why it is not an inference from prose: a
+    report-read step in `question` mode RESOLVED the viewer's question to charts.
+    That is a decision the resolver already made and already recorded, on the way
+    in, before it knew what it would find. Any other mode — `explicit`,
+    `report_order`, `report_index` — is the AUTHOR having chosen the charts, which
+    says nothing about this particular question.
+
+    THE COST OF THAT, STATED. A pure overview flow ("tóm tắt báo cáo") that also
+    carries a Web node will be marked `partial` when the web capability is off,
+    because its read never matched the question either. The notice it produces is
+    true — the external step did not run, and the figures come from charts chosen
+    in advance — so the trade is a caveat on an overview against silence on the
+    GDP answer. If that proves noisy, the fix is a viewer-side overview signal,
+    not a looser rule here.
+    """
+    skipped = sorted(
+        key for key, why in (getattr(state, "skipped", None) or {}).items()
+        if str(why) in _CAPABILITY_SKIPS
+    )
+    if not skipped:
+        return
+    serviced = any(
+        g.get("mode") == "question"
+        and not (g.get("unsupported") or g.get("needs_clarification")
+                 or g.get("resolution_unavailable"))
+        for g in (state.question_grounding or {}).values()
+        if isinstance(g, dict)
+    )
+    out.setdefault("grounding", {}).update({
+        "capability_unavailable": skipped,
+        "capability_serviced_intent": serviced,
+        "capability_gap": bool(cites_numbers and not serviced),
+    })
+
+
+def _note_dimension_gap(state: RunState, out: dict) -> None:
+    """The question asked for a breakdown this report never delivered.
+
+    THE HALF THE TOOL GATE COULD NOT REACH. Refusing the wrong chart stopped the
+    substitution — "Bang nào có doanh thu cao nhất?" no longer came back as a
+    product category — and two of three live runs then answered about monthly GMV
+    instead, which is neither the answer nor an admission that the report cannot
+    give it. A refusal at the tool boundary cannot make the answer honest; it can
+    only stop one dishonest route.
+
+    So the gap travels to the verdict. `state.dimension_gap` is written from two
+    structured facts — the refusal's `requested_dimension` and the `dimension` a
+    successful grouped result states — and never from the answer's prose. This
+    does not re-resolve anything; it reports what the run already decided.
+    """
+    gap = getattr(state, "dimension_gap", None) or {}
+    if not gap or gap.get("satisfied"):
+        return
+    out.setdefault("grounding", {}).update({
+        "dimension_requested": gap.get("requested"),
+        "dimension_label": gap.get("label") or "",
+        "dimension_gap": True,
+    })
+
+
 def _verify_figures(state: RunState, answer: Answer) -> dict | None:
     """Check the answer's numbers against the run's own tool output.
 
@@ -1075,10 +1304,11 @@ def _verify_figures(state: RunState, answer: Answer) -> dict | None:
     knows how to read `1.258.681,34`, `8,4%` and `1,2 tỷ`, and a second parser
     would disagree with the first on exactly the cases that matter.
     """
-    if not state.evidence:
-        return None
     try:
-        from app.services.dashboard_ai_bot.verifier import verify_answer
+        from app.services.dashboard_ai_bot.verifier import (
+            extract_answer_numbers,
+            verify_answer,
+        )
 
         # Every figure the viewer will SEE, not just the prose. `plain_text()`
         # drops table cells, and a fabricated number is just as wrong in a table
@@ -1093,8 +1323,87 @@ def _verify_figures(state: RunState, answer: Answer) -> dict | None:
                 parts.append(str(data.get("value")))
                 if data.get("delta"):
                     parts.append(str((data["delta"] or {}).get("value")))
-        out = verify_answer(" ".join(p for p in parts if p), state.evidence).to_dict()
+        text = " ".join(p for p in parts if p)
+        if not state.evidence:
+            # ABSENCE OF EVIDENCE IS NOT EVIDENCE OF SUPPORT.
+            #
+            # This used to `return None` here, so the numeric check switched
+            # itself off in the one case it exists for: the read failed, nothing
+            # reached the model, the model answered from its own memory of the
+            # domain — and with no ledger to contradict it, nothing was flagged
+            # and the run presented as healthy. A figure with an empty ledger
+            # behind it is unsupported by definition.
+            #
+            # `extract_answer_numbers` is the verifier's own parser, reused rather
+            # than reimplemented: it already knows `1.258.681,34`, `8,4%` and
+            # `1,2 tỷ`, and a second parser would disagree on the cases that matter.
+            figures = extract_answer_numbers(text)
+            if not figures:
+                return None  # an honest refusal has nothing to verify
+            return {"matched": 0, "unmatched": figures,
+                    "unknown_labels": _unknown_labels(state, answer),
+                    "no_evidence": True,
+                    # DID THIS RUN TRY TO READ, OR DOES IT SIMPLY NOT READ?
+                    #
+                    # Both arrive here with an empty ledger and they are not the
+                    # same fault. A flow that read a report and got nothing, then
+                    # stated figures anyway, has numbers with no source. A flow
+                    # with no read step at all never promised any — punishing an
+                    # incidental "0" in its answer would make `partial` mean
+                    # nothing, which a golden case already guards.
+                    #
+                    # `question_grounding` is written by every report-read step at
+                    # entry, before it knows what it will find, so its emptiness
+                    # is exactly "no read was attempted". Existing provenance,
+                    # used as designed — no new heuristic.
+                    "grounding": {
+                        "no_evidence_after_read": bool(state.question_grounding),
+                    }}
+        out = verify_answer(text, state.evidence).to_dict()
         out["unknown_labels"] = _unknown_labels(state, answer)
+        # EVIDENCE TRUTH IS NOT QUESTION RELEVANCE.
+        #
+        # `verify_answer` asks whether a figure exists in the evidence. It cannot
+        # ask whether that evidence answers the question, and unrelated figures
+        # exist too — an Olist assistant asked about the weather returned GMV and
+        # orders, every number verifiable, the whole answer wrong. The read step
+        # already recorded WHY its evidence is there; carrying that here is what
+        # stops "the numbers check out" from meaning "the answer is sound".
+        unresolved = sorted(
+            key for key, g in (state.question_grounding or {}).items()
+            if g.get("unsupported") or g.get("needs_clarification")
+            or g.get("resolution_unavailable")
+        )
+        # AND THE ANSWER MUST ACTUALLY CITE NUMBERS — hoisted, because the
+        # capability rule below needs the same test. A clean refusal that states
+        # no figure is healthy and must not be flagged by either rule.
+        cites_numbers = bool(out.get("matched") or out.get("unmatched"))
+        _note_capability_gap(state, out, cites_numbers=cites_numbers)
+        _note_dimension_gap(state, out)
+        if unresolved:
+            # THE SMALLEST RULE THE PROVENANCE SUPPORTS.
+            #
+            # Recording `unresolved_steps` changed nothing on its own. The useful
+            # question is whether the answer's numbers COULD have come from a
+            # source that genuinely answered — and that needs to know which steps
+            # produced evidence, which `evidence` (a flat list of floats) cannot
+            # say. `evidence_sources` can.
+            #
+            # Flagged only when EVERY contributor is unresolved. A flow whose web
+            # or knowledge step answered is not punished for a read step that
+            # resolved to nothing, which is the explicit guard on this rule.
+            sources = set(getattr(state, "evidence_sources", None) or set())
+            # `cites_numbers` is computed above. Without it this flag fired on a
+            # correct refusal — zero charts read, no figure in the answer — and
+            # told the viewer to cross-check figures that did not exist, stacked
+            # on top of the honest "this report cannot answer that". Two
+            # contradictory warnings, one of them false on its face.
+            out.setdefault("grounding", {}).update({
+                "unresolved_steps": unresolved,
+                "all_evidence_unresolved": (
+                    cites_numbers and bool(sources) and sources <= set(unresolved)
+                ),
+            })
         return out
     except Exception:  # noqa: BLE001
         logger.debug("[flow] figure verification failed", exc_info=True)

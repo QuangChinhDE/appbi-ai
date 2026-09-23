@@ -13,8 +13,9 @@ import re
 from typing import Any, AsyncGenerator
 
 from app.services.agent_flows.contract import AgentNode
-from app.services.agent_flows.envelope import Answer
+from app.services.agent_flows.envelope import Answer, Notice
 from app.services.agent_flows.models_catalogue import INHERIT
+from app.services.agent_flows.qualifiers import check_qualifiers
 from app.services.agent_flows.runtime.nodes import NodeSpec
 from app.services.agent_flows.runtime.state import RunState
 from app.services.agent_flows.tools import registry as tool_registry
@@ -161,6 +162,123 @@ def _preview_text(message: dict) -> str:
     return _json.dumps(content, ensure_ascii=False)[:4000]
 
 
+#: Refusals that describe the REQUEST rather than the moment. Asking again with
+#: the same arguments cannot change any of these answers: the chart is still out
+#: of scope, the tool is still ungranted, the argument is still the wrong type.
+#:
+#: Measured before this existed: a grant with no discovery tool produced
+#: `rank_values(chart_out_of_scope)` six times in a row until the model-call
+#: budget was gone, on two of three questions. The refusal was correct every
+#: time; repeating it was what cost the answer.
+_FINAL_ERROR_CODES = frozenset({
+    "chart_out_of_scope", "not_granted", "bad_argument", "bad_tool_arguments",
+    "not_applicable", "no_data", "doc_out_of_scope", "unsupported_dimension",
+})
+
+
+#: How many ignored recoveries a node tolerates before it stops offering tools.
+#:
+#: Two, because the measured failure was six identical calls and one explanation
+#: can plausibly be missed in a batch the model had already committed to. Two
+#: cannot: by then the model has seen the reason, named, twice.
+_MAX_IGNORED_RECOVERIES = 2
+
+
+from app.services.agent_flows.reader_diagnostics import (
+    tool_label as _reader_tool_label,
+)
+
+
+def _note_dimension_outcome(state: RunState, result: Any) -> None:
+    """Record whether the requested breakdown was refused, and later delivered.
+
+    Two structured facts, no prose: the gate's refusal names the dimension the
+    question asked for, and every grouped tool result states the dimension it
+    grouped by. A gap opens on the first refusal and closes only when a result
+    arrives grouped by that same field.
+    """
+    from app.services.agent_flows.tools.dimension_gate import field_key
+
+    if not isinstance(result, dict):
+        return
+    if result.get("error_code") == "dimension_mismatch":
+        detail = result.get("detail") or {}
+        wanted = str(detail.get("requested_dimension") or "")
+        if wanted and not state.dimension_gap:
+            state.dimension_gap = {
+                "requested": wanted,
+                "label": str(detail.get("requested_label") or ""),
+                "satisfied": False,
+            }
+        return
+    if result.get("ok") is not True or not state.dimension_gap:
+        return
+    data = result.get("data") if isinstance(result.get("data"), dict) else {}
+    got = field_key(str(data.get("dimension") or ""))
+    if got and got == field_key(str(state.dimension_gap.get("requested") or "")):
+        state.dimension_gap["satisfied"] = True
+
+
+def _is_final_refusal(result: dict) -> bool:
+    """Is this a refusal that a second identical call cannot change?
+
+    `retryable` comes first because the TOOL knows: `result.err()` has carried
+    that flag since the error taxonomy landed, and a tool that marks a scope
+    error retryable means it. The code list is the fallback for results that do
+    not set it.
+    """
+    if not isinstance(result, dict) or result.get("ok") is not False:
+        return False
+    if "retryable" in result:
+        return not bool(result["retryable"])
+    return str(result.get("error_code") or "") in _FINAL_ERROR_CODES
+
+
+def _retry_key(tool_name: str, args: Any) -> str:
+    """Identity of a REQUEST, not of a call.
+
+    Sorted, so re-ordering the same arguments is the same request; serialised
+    with `default=str`, so an unserialisable argument degrades to a stable-enough
+    string instead of raising inside the loop.
+    """
+    import json as _j
+
+    try:
+        body = _j.dumps(args or {}, sort_keys=True, ensure_ascii=False, default=str)
+    except Exception:                                           # noqa: BLE001
+        body = str(args)
+    return f"{tool_name}::{body}"
+
+
+def _call_with_retry_policy(tool_name: str, args: Any, seen: dict, execute) -> dict:
+    """Run the tool unless this exact request has already been finally refused.
+
+    Returns the tool's own result, or — for a repeat — a refusal that NAMES the
+    original reason. Handing back the same error a second time would tell the
+    model "no" without telling it what to change, which is how the loop got
+    stuck in the first place; `recovery` is what makes the next call different.
+    """
+    key = _retry_key(tool_name, args)
+    previous = seen.get(key)
+    if previous:
+        return {
+            "ok": False,
+            "error_code": "already_refused",
+            "error": (
+                f"công cụ '{tool_name}' đã bị từ chối với đúng tham số này "
+                f"({previous}) — gọi lại y hệt sẽ cho cùng kết quả. Hãy đổi tham "
+                "số, dùng công cụ khác, hoặc trả lời bằng những gì đã có và nói "
+                "rõ phần không lấy được."
+            ),
+            "retryable": False,
+        }
+    result = execute(tool_name, args)
+    if _is_final_refusal(result):
+        seen[key] = str(result.get("error_code") or "refused")
+    return result
+
+
+
 async def run(
     node: AgentNode, state: RunState, rctx: Any
 ) -> AsyncGenerator[AgentEvent, None]:
@@ -202,6 +320,17 @@ async def run(
     messages = _messages(node, state, rctx)
     collected = ""
     calls_made = 0
+    #: Requests this step has already had finally refused, so it does not spend
+    #: a second call discovering the same 'no'. Per STEP, not per run: a later
+    #: step may legitimately have different grants.
+    #:
+    #: NOT `refused` — that name is already taken a few lines down for the calls
+    #: deferred past the budget ceiling, and the first version of this shadowed it
+    #: and handed a list where a dict was expected.
+    final_refusals: dict[str, str] = {}
+    #: How many times this node has handed back `already_refused` — that is, how
+    #: many times it explained a dead request and the model asked for it anyway.
+    ignored_recoveries = 0
     #: Provider adapters report a refused key or a bad model as an `error` EVENT
     #: rather than an exception. Without capturing it the node finished with empty
     #: text and was recorded `ok` — so the trace said every step succeeded while the
@@ -317,10 +446,29 @@ async def run(
                                  "trả lời bằng dữ liệu đã có và nói rõ phần chưa kiểm được",
                     },
                 })
-            for call in runnable:
+            # BUDGET IS SPENT WHERE THE WORK HAPPENS, NOT WHERE IT IS ANNOUNCED.
+            #
+            # The retry policy stopped the second identical call from reaching the
+            # registry, and the accounting stayed where it was — two lines above
+            # the guard — so a request the runtime had already refused still cost
+            # a tool call. The protection existed and the thing it was protecting
+            # was spent anyway. Spending inside the executor makes the two
+            # inseparable: a call that does not reach `tool_registry.execute` does
+            # not reach the budget either.
+            def _execute(name: str, args: Any) -> dict:
+                nonlocal calls_made
                 state.budget.spend_tool()
                 calls_made += 1
-                yield AgentEvent(type="status", text=f"Đang dùng {call.tool_name}…")
+                return tool_registry.execute(rctx.ctx, name, args, allowed=allowed)
+
+            for call in runnable:
+                # The reader sees this line. `tool_name` is an internal id
+                # (`rank_values`); the registry label is the product's own word
+                # for the same thing. The id stays in the trace below.
+                yield AgentEvent(
+                    type="status",
+                    text=f"Đang dùng {_reader_tool_label(call.tool_name)}…",
+                )
                 # ARGUMENTS THE PROVIDER COULD NOT PARSE ARE NOT ARGUMENTS.
                 #
                 # They used to arrive as `{}` and the call went ahead, so the tool
@@ -329,6 +477,11 @@ async def run(
                 # parse error instead lets it correct the call on the next round.
                 malformed = (call.extra or {}).get("malformed_args")
                 if malformed:
+                    # Still charged: this IS a new attempt by the model, just a
+                    # broken one. Only a request the runtime has already answered
+                    # is free.
+                    state.budget.spend_tool()
+                    calls_made += 1
                     result = {
                         "ok": False,
                         "error_code": "bad_tool_arguments",
@@ -336,15 +489,34 @@ async def run(
                                  "Hãy gọi lại công cụ với JSON đúng định dạng.",
                     }
                 else:
-                    result = tool_registry.execute(
-                        rctx.ctx, call.tool_name, call.tool_args, allowed=allowed
+                    # THROUGH THE RETRY POLICY, not straight to the registry. A
+                    # refusal that describes the request — out of scope, not
+                    # granted, wrong argument type — cannot change by being asked
+                    # again, and asking again is what burned six of this step's
+                    # model calls on one guessed chart id.
+                    result = _call_with_retry_policy(
+                        call.tool_name, call.tool_args, final_refusals, _execute,
                     )
+                    if result.get("error_code") == "already_refused":
+                        ignored_recoveries += 1
+                # DID THE BREAKDOWN THE QUESTION ASKED FOR EVER ARRIVE?
+                #
+                # The gate refuses a grouped call on the wrong dimension; nothing
+                # yet recorded whether the RIGHT one ever ran. Both halves are in
+                # the tool result — the refusal carries `requested_dimension`, and
+                # a successful grouped result states the `dimension` it grouped
+                # by — so the answer step can be told the difference.
+                _note_dimension_outcome(state, result)
                 # Named in the run history, success or not. A refused call is the
                 # most interesting row in an audit and the easiest one to lose.
                 state.tool_log.append(
                     call.tool_name if result.get("ok")
                     else f"{call.tool_name}({result.get('error_code') or 'failed'})"
                 )
+                # An agent's OWN tool calls are its own capability answering —
+                # named so a grounding rule can tell them from a read step whose
+                # question never resolved.
+                state.evidence_source = node.key
                 state.add_evidence(result)
                 _collect_citation(state, call.tool_name, call.tool_args, result)
                 yield AgentEvent(
@@ -363,6 +535,34 @@ async def run(
                     # about a report it had never actually been shown.
                     "result": result,
                 })
+
+            # A RECOVERY THE MODEL WILL NOT READ IS NOT A RECOVERY.
+            #
+            # Not spending the budget on a dead repeat fixed the cost and not the
+            # loop: the model that asked six times for the same unreachable chart
+            # id can now ask sixty, each answer free, until MAX_ROUNDS runs out
+            # and the node ends `failed` having produced nothing. So after the
+            # runtime has explained the same dead request twice and been ignored,
+            # the tools come off the table and the model is asked to answer with
+            # what it has.
+            #
+            # Counted per NODE and only for repeats, so a corrected call still
+            # gets through: changing an argument runs the tool, and a first
+            # refusal of anything costs nothing here. This is the same mechanism
+            # the budget ceiling uses a few lines above — the model is told, not
+            # cut off mid-thought.
+            if ignored_recoveries >= _MAX_IGNORED_RECOVERIES and schemas:
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        "You have repeated a request that was already refused "
+                        "for a reason that will not change. No further tool "
+                        "calls are available for this step. Answer with what you "
+                        "already have, and say plainly what you could not check "
+                        "and why. Reply in the language of the user's question."
+                    ),
+                })
+                schemas = []
         # THE LANGUAGE CONSTRAINT HAS TO SIT NEXT TO THE DECISION.
         #
         # It is already in the system prompt, and that was not enough. A tool result
@@ -480,6 +680,66 @@ async def run(
                             len(left), kept,
                         )
                         text = fixed
+
+        # THE WORDS AROUND THE NUMBER ARE CLAIMS TOO.
+        #
+        # `_figure_check` above asks whether the digits trace to evidence. It passes
+        # "1.258.681,34 USD doanh thu tháng 9" as readily as "1.258.681,34", and
+        # measured on this deployment the same figure was published once as USD and
+        # once as VNĐ over BRAZILIAN data, with no currency declared anywhere. Both
+        # answers verified clean.
+        #
+        # Same place, same shape, same "only if actually better" acceptance rule —
+        # the tool results are still in `messages`, so the model can fix a qualifier
+        # by re-reading rather than recalling.
+        if node.key == rctx.answer_key and text and not provider_error:
+            tool_results: list[Any] = [
+                m.get("result") for m in messages if m.get("role") == "tool"
+            ]
+            # EARLIER STEPS COUNT AS EVIDENCE. A range established by
+            # `describe_time_coverage` in a previous node is a real source, and
+            # treating it as absent would flag a correct answer.
+            prior = _all_step_results(state, rctx, skip=node.key)
+            if prior:
+                tool_results.append(prior)
+            tools_called = sorted({
+                *(str(m.get("name") or "") for m in messages if m.get("role") == "tool"),
+                *(t for step in state.trace for t in (step.tool_calls or [])),
+            })
+            violations = check_qualifiers(text, tool_results, tools_called)
+            if violations:
+                _, supported_before = _figure_check(text, state)
+                fixed = await _retry_qualifiers(
+                    node, state, system, messages, text, violations,
+                    provider=provider, api_key=api_key, model=model,
+                )
+                if fixed and not _echoes_instruction(fixed):
+                    left = check_qualifiers(fixed, tool_results, tools_called)
+                    _, supported_after = _figure_check(fixed, state)
+                    # A rewrite that drops the analysis to lose a qualifier is not a
+                    # correction — the same trap the figure retry already learned.
+                    if len(left) < len(violations) and supported_after >= supported_before:
+                        logger.info(
+                            "[flow] %s: qualifier correction %d -> %d unsupported",
+                            node.key, len(violations), len(left),
+                        )
+                        text = fixed
+                        violations = left
+                if violations:
+                    state.notices.append(
+                        Notice(
+                            code="qualifier_unverified",
+                            audience="reader",
+                            severity="warning",
+                            text=(
+                                "Câu trả lời nêu "
+                                + ", ".join(
+                                    f"“{v['claim']}”" for v in violations[:3])
+                                + " nhưng dữ liệu đã đọc không khẳng định điều đó — "
+                                "hãy đối chiếu lại trước khi dùng."
+                            ),
+                        )
+                    )
 
         asked = getattr(getattr(rctx, "inp", None), "question", None)
         asked_text = asked.text() if hasattr(asked, "text") else ""
@@ -709,6 +969,54 @@ async def _retry_figures(
     return out.strip()
 
 
+async def _retry_qualifiers(
+    node: AgentNode, state: RunState, system: str, messages: list[dict], said: str,
+    violations: list[dict], *, provider: str, api_key: str, model: str,
+) -> str:
+    """Name the unsourced qualifiers and ask for one correction.
+
+    NAME THEM, like the figure retry does, and for the same reason: "một số chi tiết
+    có thể chưa chính xác" produces a hedge, which is what the notice already was.
+    Each violation carries the sentence explaining what to change, written where the
+    rule that found it lives — so the model is told which claim, and why it fails.
+    """
+    listed = chr(10).join(f"- {v['why']}" for v in violations[:5])
+    retry_messages = [
+        *messages,
+        {"role": "assistant", "content": said},
+        {
+            "role": "user",
+            "content": (
+                "Những chi tiết sau trong câu trả lời trên KHÔNG có trong dữ liệu "
+                f"bạn vừa đọc:{chr(10)}{listed}{chr(10)}"
+                "Sửa lại từng điểm: bỏ phần không có căn cứ, hoặc nói rõ là dữ liệu "
+                "không cho biết điều đó. GIỮ NGUYÊN mọi con số đã đúng và phần phân "
+                "tích còn lại, kể cả các dòng [FOLLOWUP] (đúng số dòng, vẫn bắt đầu "
+                "bằng [FOLLOWUP]). Không thêm phân tích mới, không bỏ bớt kết quả."
+            ),
+        },
+    ]
+    try:
+        state.budget.spend_llm()
+    except Exception:  # noqa: BLE001 — out of budget is not this step's failure
+        return ""
+    out = ""
+    try:
+        async for ev in _stream(
+            provider=provider, api_key=api_key, model=model,
+            system_prompt=system, messages=retry_messages, tools=[],
+        ):
+            if ev.type == "text":
+                out += ev.text
+            elif ev.type == "usage":
+                state.prompt_tokens += int(ev.extra.get("prompt_tokens") or 0)
+                state.completion_tokens += int(ev.extra.get("completion_tokens") or 0)
+    except Exception:  # noqa: BLE001 — a failed correction keeps the first answer
+        logger.warning("[flow] qualifier correction failed", exc_info=True)
+        return ""
+    return out.strip()
+
+
 async def _retry_language(
     node: AgentNode, state: RunState, system: str, messages: list[dict], said: str,
     *, provider: str, api_key: str, model: str, locale: str,
@@ -885,69 +1193,44 @@ def _messages(node: AgentNode, state: RunState, rctx: Any) -> list[dict]:
     return out
 
 
-#: Per-step and total ceilings for what the synthesiser is handed. Bounded because
-#: this is the one place a flow's cost grows with the number of steps: eight
-#: specialists must not become eight full transcripts.
-_MAX_STEP_CHARS = 2000
-_MAX_GATHERED_CHARS = 8000
-
 from app.services.agent_flows.contract import ROUTING_NODE_TYPES as _ROUTING_TYPES
+
+#: What the synthesiser is handed, in characters. Defined by the module that owns
+#: the handoff so the read node can warn against the same number this spends.
+from app.services.agent_flows.runtime.context import HANDOFF_CHARS as _HANDOFF_CHARS
 
 
 def _all_step_results(state: RunState, rctx: Any, *, skip: str = "") -> str:
-    """Every step's result, in the order they ran, named so they can be told apart.
+    """Every step's result, projected into what this model can actually read.
 
-    Named rather than concatenated: "the previous step said 91.2%" is unusable when
-    four steps spoke, and a synthesiser that cannot attribute a figure to the step
-    that produced it cannot cite it either.
+    Projection, not truncation. The old version head-sliced each step at 2,000
+    characters and spent an 8,000-character total in run order, so a JSON result
+    could arrive cut mid-array and a third specialist could vanish because the
+    first was verbose — while the run reported three healthy steps.
 
-    Steps that produced nothing are left out. A blank line under a heading reads to
-    a model like an answer of "nothing", which is not the same as a step that was
-    skipped, and inventing that distinction here would be worse than omitting it.
+    Routing steps stay out: `{"picked": ["chuyen_gia_chi_phi"]}` is a record of
+    which way the run went, not evidence a number is right. The TRACE keeps it,
+    which is where an author looks to see why a lane ran.
     """
+    from app.services.agent_flows.runtime.context import StepView, compile_context
+
     names = {s.key: (s.name or s.key) for s in state.trace}
-    parts: list[str] = []
-    used = 0
-    for step in state.trace:
-        if step.key == skip or step.type in _ROUTING_TYPES:
-            # A routing step's "result" is a record of which way the run went —
-            # `{"picked": ["chuyen_gia_chi_phi"], "considered": [...]}`. Handing
-            # that to the model that writes the answer puts a list of internal
-            # node keys in front of it and calls it evidence. The TRACE keeps it,
-            # which is where an author looks to see why a lane did or did not run.
-            continue
-        text = _previous_text(state.outputs.get(step.key))
-        if not text:
-            continue
-        # TRUNCATION USED TO BE SILENT, which is the worst of the three options.
-        #
-        # A 6,000-character report reading arrived as 2,000 characters that simply
-        # stop — mid-array, mid-number — and a model reads that as the whole of what
-        # the step found. It answered a question about product categories from six
-        # KPI tiles and called the figure "được xác nhận là chính xác", because
-        # nothing in what it was handed suggested there was more.
-        body = text[:_MAX_STEP_CHARS]
-        if len(text) > _MAX_STEP_CHARS:
-            body += (
-                "\n… (kết quả của bước này đã bị cắt bớt để vừa ngữ cảnh — phần "
-                "thiếu KHÔNG phải là không có dữ liệu. Nếu câu hỏi cần thứ không "
-                "thấy ở đây, hãy gọi công cụ để lấy đúng thứ cần thay vì suy ra.)"
-            )
-        block = "### %s\n%s" % (names.get(step.key, step.key), body)
-        if used + len(block) > _MAX_GATHERED_CHARS:
-            parts.append(
-                "(Còn kết quả của các bước sau nữa nhưng đã vượt giới hạn ngữ "
-                "cảnh — trả lời bằng những gì đang có và nói rõ phần chưa gộp.)"
-            )
-            break
-        parts.append(block)
-        used += len(block)
-    if not parts:
+    views = [
+        StepView(key=step.key, name=names.get(step.key, step.key),
+                 text=_previous_text(state.outputs.get(step.key)) or "")
+        for step in state.trace
+        if step.key != skip and step.type not in _ROUTING_TYPES
+    ]
+    projection = compile_context(views, _HANDOFF_CHARS)
+    # WHAT THE MODEL SAW, kept where an author can find it. The Runs inspector
+    # cannot tell the truth about a handoff the runtime never recorded.
+    state.context_coverage = projection.coverage
+    if not projection.text:
         return ""
     return (
         "Kết quả của các bước trước, theo thứ tự đã chạy. Tổng hợp TẤT CẢ, "
         "không chỉ bước cuối; nếu hai bước mâu thuẫn thì nói rõ ra thay vì "
-        "chọn bừa một bên:\n\n" + "\n\n".join(parts)
+        "chọn bừa một bên:\n\n" + projection.text
     )
 
 

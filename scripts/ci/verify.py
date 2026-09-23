@@ -54,6 +54,16 @@ import subprocess
 import sys
 from pathlib import Path
 
+# A verification gate must not be able to die while SAYING what it found. On a
+# Windows console stdout is cp1252, and any character outside it — an em dash
+# echoed from a child, a filename — would otherwise raise UnicodeEncodeError from
+# inside `print`. Degrade those to `?` instead of losing the whole run's verdict.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(errors="replace")  # type: ignore[union-attr]
+    except Exception:
+        pass
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 GUARDRAIL_DIR = REPO_ROOT / "scripts" / "guardrail"
 
@@ -95,7 +105,14 @@ class Report:
 
 
 def run(argv: list[str], cwd: Path, env: dict | None = None, timeout: int = 900):
-    full_env = {**os.environ, **(env or {})}
+    # PYTHONIOENCODING, because this decodes the child as UTF-8 and a Python child
+    # on Windows does NOT write UTF-8 — it writes the console codepage (cp1252
+    # here). Guardrail's own output contains em dashes and box-drawing characters,
+    # so the decode produced U+FFFD, and printing U+FFFD back out to a cp1252
+    # stdout raised UnicodeEncodeError and CRASHED THE GATE mid-run: no verdict,
+    # no summary, a traceback where the pass/fail line belongs. Telling the child
+    # which encoding to write makes the decode correct at the source.
+    full_env = {"PYTHONIOENCODING": "utf-8", **os.environ, **(env or {})}
     try:
         return subprocess.run(argv, cwd=cwd, env=full_env, capture_output=True,
                               text=True, encoding="utf-8", errors="replace",
@@ -314,18 +331,278 @@ def backend_tests_reach_ci(rep: Report, files: list[str]) -> None:
     gitignore = (REPO_ROOT / ".gitignore").read_text(encoding="utf-8", errors="replace")
     workflow_path = REPO_ROOT / ".github" / "workflows" / "backend-contract-tests.yml"
     workflow = workflow_path.read_text(encoding="utf-8", errors="replace") if workflow_path.exists() else ""
+    # PRESENT IN THE FILE IS NOT THE SAME AS PASSED TO PYTEST.
+    #
+    # This used to ask `f"tests/{name}" not in workflow` — a substring test over
+    # the whole file. MEASURED: an edit collapsed four `\` line continuations into
+    # literal `\n` characters, so one line read
+    #
+    #     tests/a.py \n            tests/b.py \n            tests/c.py \
+    #
+    # Every name was "in the workflow" and the check went green. The shell saw a
+    # bare `n` as an argument, pytest answered `file or directory not found: n`,
+    # and the whole unit tier ran ZERO tests and exited 4 — three suites believed
+    # to be gates, running nothing, reported as wired.
+    #
+    # A pytest argument is a line. So the test is now per LINE.
+    workflow_lines = [ln.strip() for ln in workflow.splitlines()]
     broken = []
     for name in re.findall(r"^!backend/tests/(test_[A-Za-z0-9_]+\.py)$", gitignore, re.M):
         if not (REPO_ROOT / "backend" / "tests" / name).exists():
             broken.append(f"{name} — allow-listed but the file does not exist")
-        elif f"tests/{name}" not in workflow:
-            broken.append(f"{name} — allow-listed (so committed) but CI never runs it")
+        elif not any(ln.startswith(f"tests/{name}") for ln in workflow_lines):
+            where = " (present mid-line — not an argument)" if f"tests/{name}" in workflow else ""
+            broken.append(
+                f"{name} — allow-listed (so committed) but CI never runs it{where}")
+
+    # AND NAME THE SIGNATURE, so the next person does not have to rediscover it.
+    # A `run:` block here never needs a literal backslash-n; its presence means an
+    # editor ate a newline, and every argument after it on that line is lost.
+    for number, line in enumerate(workflow.splitlines(), start=1):
+        if "\\n" in line:
+            broken.append(
+                f"{workflow_path.name}:{number} contains a literal \\n — a collapsed "
+                "line continuation. Everything after it on this line is passed to "
+                "the shell as one mangled argument, not as separate test paths."
+            )
     if broken:
         for line in broken:
             print(f"    {line}")
         rep.bad("allow-list and CI workflow disagree")
     else:
         rep.ok("every allow-listed suite exists and is run by CI")
+
+    # THE HOLE THE SENTENCE ABOVE DOES NOT COVER.
+    #
+    # The loop above walks the ALLOW-LIST. A file committed with `git add -f`,
+    # skipping both the allow-list and the workflow, is tracked, survives a fresh
+    # clone, looks like coverage in the tree — and is invisible here, so this
+    # section printed "ok" while 43 committed suites ran nowhere.
+    #
+    # Advisory, not fatal: several are deliberately local, and failing the build on
+    # somebody else's backlog is how a gate becomes something people route around.
+    # Naming them is the point.
+    tracked = [
+        Path(line).name for line in git("ls-files", "backend/tests").splitlines()
+        if re.search(r"^backend/tests/test_\w+\.py$", line)
+    ]
+    runners = [workflow]
+    for extra in (REPO_ROOT / ".github" / "workflows" / "e2e.yml",
+                  REPO_ROOT / ".github" / "workflows" / "preflight.yml",
+                  REPO_ROOT / "scripts" / "guardrail" / "guardrail_rules.yaml"):
+        if extra.exists():
+            runners.append(extra.read_text(encoding="utf-8", errors="replace"))
+    unreferenced = sorted(
+        name for name in tracked
+        if not any(f"tests/{name}" in text for text in runners)
+    )
+    if unreferenced:
+        print(f"  {len(unreferenced)} committed suite(s) referenced by no runner "
+              f"— tracked, never executed:")
+        for name in unreferenced[:10]:
+            print(f"    {name}")
+        if len(unreferenced) > 10:
+            print(f"    … and {len(unreferenced) - 10} more")
+        print("  a suite in neither the allow-list nor a workflow is not coverage.")
+
+    # THE COMMAND ITSELF HAS TO BE RUNNABLE.
+    #
+    # Every check above asks whether a suite is LISTED. None of them asks whether
+    # the command that lists it parses. A continuation written as a literal
+    # backslash-n rather than a real newline produced
+    #
+    #     tests/test_what_the_ai_sees.py \n            tests/test_node_child_slots.py
+    #
+    # which pytest received as an argument it could not resolve and exited 4 — a
+    # usage error, not a test failure, so the suite never ran at all and every
+    # local gate stayed green. CI was the only thing that noticed.
+    for wf_name in ("backend-contract-tests.yml",):
+        path = REPO_ROOT / ".github" / "workflows" / wf_name
+        if not path.exists():
+            continue
+        text = path.read_text(encoding="utf-8", errors="replace")
+        for tok in re.findall(r"\S+", text):
+            if tok.startswith("\\") and len(tok) > 1:
+                rep.bad(f"{wf_name}: {tok!r} — a literal escape in a shell command; "
+                        "a line continuation must be a backslash at end of line")
+                break
+        for tok in set(re.findall(r"(tests/test_\w+\.py)", text)):
+            if not (REPO_ROOT / "backend" / tok).exists():
+                rep.bad(f"{wf_name} runs {tok}, which is not in the repository — "
+                        "pytest exits 4 and the whole suite is skipped")
+
+    # THE OTHER DIRECTION, AND IT IS THE ONE THAT BIT.
+    #
+    # Above, an allow-listed suite must be run by a workflow. This asks the
+    # reverse: a suite the WORKFLOW runs must be named by some gate in
+    # `guardrail_rules.yaml`, because this command resolves what to run from that
+    # registry and nowhere else. 23 of the 51 suites CI ran were named by no gate,
+    # so `verify.py task` could report green while CI was already red on one of
+    # them — the local gate and the CI gate were checking differently-shaped sets.
+    # That is the same family as every "a workflow runs a different deployment"
+    # defect on this branch, one level up.
+    #
+    # ADVISORY, not fatal: some suites legitimately belong to owners with no gate
+    # yet, and failing the build for them would make this the check people route
+    # around. It names them, which is what was missing.
+    wf_path = REPO_ROOT / ".github" / "workflows" / "backend-contract-tests.yml"
+    rules_path = GUARDRAIL_DIR / "guardrail_rules.yaml"
+    if wf_path.exists() and rules_path.exists():
+        ran = set(re.findall(r"tests/(test_\w+\.py)",
+                             wf_path.read_text(encoding="utf-8", errors="replace")))
+        gated = set(re.findall(r"backend/tests/(test_\w+\.py)",
+                               rules_path.read_text(encoding="utf-8", errors="replace")))
+        ungated = sorted(ran - gated)
+        if ungated:
+            print(f"  {len(ungated)} suite(s) CI runs are named by no guardrail gate "
+                  f"- this command cannot run them:")
+            for name in ungated[:10]:
+                print(f"    {name}")
+            if len(ungated) > 10:
+                print(f"    ... and {len(ungated) - 10} more")
+            print("  a green run here does not predict those.")
+
+    # CI MUST RUN THE DEPLOYMENT THAT SHIPS.
+    #
+    # A feature flag whose shipped value differs from its code default silently
+    # changes the SHAPE of the app when a workflow forgets it — not one behaviour,
+    # the presence of whole modules. `METADATA_CATALOG_ENABLED` ships `true` and
+    # defaults to `False`, and that single gap produced four separate failures on
+    # this branch alone:
+    #
+    #   · the E2E job had no `/agent-flows/*` routes at all (every call 404)
+    #   · `MODULE_ALLOWED_LEVELS` had no `chat` key, so a permission test failed
+    #     with `KeyError: 'chat'` — the module was compiled out from under it
+    #   · `import app.main` in preflight loaded ZERO agent_flows router modules,
+    #     so the gate that exists to catch lazy-import breakage could not see the
+    #     largest module in the repository
+    #   · and each looked like a product bug rather than a configuration one
+    #
+    # So: any workflow that runs the backend must set every flag whose
+    # `.env.example` value disagrees with `config.py`. Advisory for other flags,
+    # failing for the ones that gate module registration.
+    env_example = (REPO_ROOT / ".env.example")
+    config_py = (REPO_ROOT / "backend" / "app" / "core" / "config.py")
+    if env_example.exists() and config_py.exists():
+        shipped = {
+            m.group(1): m.group(2).strip().lower()
+            for m in re.finditer(r"^([A-Z_]+_ENABLED)=(\w+)$",
+                                 env_example.read_text(encoding="utf-8", errors="replace"), re.M)
+        }
+        defaults = {
+            m.group(1): m.group(2).strip().lower()
+            for m in re.finditer(r"^\s+([A-Z_]+_ENABLED):\s*bool\s*=\s*(\w+)",
+                                 config_py.read_text(encoding="utf-8", errors="replace"), re.M)
+        }
+        drifted = sorted(
+            name for name, value in shipped.items()
+            if name in defaults and defaults[name] != value
+        )
+        if drifted:
+            wf_dir = REPO_ROOT / ".github" / "workflows"
+            for wf in sorted(wf_dir.glob("*.yml")) if wf_dir.exists() else []:
+                body = wf.read_text(encoding="utf-8", errors="replace")
+                # only workflows that actually start or import the backend
+                if not re.search(r"import app\.main|pytest|uvicorn", body):
+                    continue
+                for name in drifted:
+                    # A YAML KEY, not a substring. The flag name also appears in the
+                    # comment explaining why the flag is there, so `name in body`
+                    # reported it set when it had just been deleted — the third time
+                    # in this branch that a check has matched prose instead of code.
+                    if not re.search(rf"^\s*{re.escape(name)}\s*:", body, re.M):
+                        rep.bad(
+                            f"{wf.name} runs the backend without {name}. It ships as "
+                            f"{shipped[name]!r} and defaults to {defaults[name]!r}, so this "
+                            f"job tests a differently-shaped app — modules that ship are "
+                            f"absent, and their routes, permission keys and imports with them."
+                        )
+
+    # A JOB THAT IMPORTS THE APP MUST SURVIVE THE APP'S OWN STARTUP GATE.
+    #
+    # `app.main` calls `validate_security_settings()` at import, and it returns
+    # early ONLY when ENVIRONMENT is one of the values that function names. The
+    # code default is `production`, so a workflow that runs pytest without setting
+    # it gets a fatal on insecure defaults before any assertion runs. That is what
+    # happened the moment a suite importing `app.main` was added to the unit job:
+    # red CI, no product change.
+    #
+    # The two checks below cover `*_ENABLED` flags and the shared SECRET_KEY, and
+    # neither could see this — which is why it was the sixth defect of this shape.
+    # This one is derived from the guard itself rather than from a hard-coded name.
+    main_py = REPO_ROOT / "backend" / "app" / "main.py"
+    if config_py.exists() and main_py.exists() and             "validate_security_settings" in main_py.read_text(encoding="utf-8", errors="replace"):
+        cfg = config_py.read_text(encoding="utf-8", errors="replace")
+        safe = re.search(r"settings\.ENVIRONMENT\.lower\(\)\s+in\s*\(([^)]*)\)", cfg)
+        if safe:
+            allowed = re.findall(r"[\"']([^\"']+)[\"']", safe.group(1))
+            wf_dir = REPO_ROOT / ".github" / "workflows"
+            for wf in sorted(wf_dir.glob("*.yml")) if wf_dir.exists() else []:
+                body = wf.read_text(encoding="utf-8", errors="replace")
+                # PER JOB, not per file. The first version of this check scanned
+                # the whole workflow and stayed silent on the very defect it was
+                # written for, because a SIBLING job in the same file set the
+                # variable. `env:` is job-scoped; the check was not. That is the
+                # same mistake as a file-scoped guard on a transitive import.
+                after = body.split("\njobs:", 1)
+                if len(after) < 2:
+                    continue
+                for job in re.split(r"^  (?=[\w-]+:\s*$)", after[1], flags=re.M)[1:]:
+                    name = job.split(":", 1)[0].strip()
+                    if not re.search(r"pytest|import app\.main|uvicorn", job):
+                        continue
+                    found = re.search(r"^\s*ENVIRONMENT\s*:\s*[\"']?(\w+)", job, re.M)
+                    if not found:
+                        rep.bad(
+                            f"{wf.name} job {name!r} runs the backend without "
+                            f"ENVIRONMENT. `app.main` validates security settings at "
+                            f"import and only skips for {allowed}; the default is "
+                            f"production, so the import dies on insecure defaults "
+                            f"before any test runs."
+                        )
+                    elif found.group(1).lower() not in allowed:
+                        rep.bad(
+                            f"{wf.name} job {name!r} sets ENVIRONMENT="
+                            f"{found.group(1)!r}, not one of {allowed} — `app.main` "
+                            f"will refuse to import."
+                        )
+
+    # THE TWO PROCESSES MUST AGREE ON THE SECRET, AND THEIR DEFAULTS DO NOT.
+    #
+    # `middleware.ts` VERIFIES the session JWT (jose `jwtVerify`) rather than just
+    # looking for the cookie, and falls back to 'change-this-in-production'. The
+    # backend signs with `settings.SECRET_KEY`, which falls back to
+    # 'dev-secret-key-change-in-production'. Different literals for the same
+    # secret, so a deployment that sets neither signs tokens the frontend rejects
+    # and bounces every authed page to /login.
+    #
+    # docker-compose hides this by handing all three services one value. The E2E
+    # job set neither, and 13 specs reported it as "flow list did not render" —
+    # a product symptom for a configuration cause, and the fifth time on this
+    # branch that a workflow ran a differently-shaped deployment than the one
+    # that ships.
+    mw = REPO_ROOT / "frontend" / "src" / "middleware.ts"
+    if mw.exists() and config_py.exists():
+        mw_body = mw.read_text(encoding="utf-8", errors="replace")
+        fe = re.search(r"process\.env\.SECRET_KEY\s*\?\?\s*['\"]([^'\"]+)['\"]", mw_body)
+        be = re.search(r"^\s+SECRET_KEY:\s*str\s*=\s*['\"]([^'\"]+)['\"]",
+                       config_py.read_text(encoding="utf-8", errors="replace"), re.M)
+        # Only a problem while the two disagree. Make the defaults equal and this
+        # check correctly stops caring.
+        if fe and be and fe.group(1) != be.group(1) and "jwtVerify" in mw_body:
+            wf_dir = REPO_ROOT / ".github" / "workflows"
+            for wf in sorted(wf_dir.glob("*.yml")) if wf_dir.exists() else []:
+                body = wf.read_text(encoding="utf-8", errors="replace")
+                # only workflows that run BOTH processes — one alone cannot mismatch
+                if not (re.search(r"uvicorn", body) and re.search(r"next start|npm run start", body)):
+                    continue
+                if not re.search(r"^\s*SECRET_KEY\s*:", body, re.M):
+                    rep.bad(
+                        f"{wf.name} runs the backend and the frontend without SECRET_KEY. "
+                        f"They default to different values ({be.group(1)!r} vs {fe.group(1)!r}), "
+                        f"so the middleware rejects every token the backend signs and each "
+                        f"authed page redirects to /login."
+                    )
 
     # A brand-new local suite is git-IGNORED, so it never shows in `git status`.
     # Advisory only: most stay local deliberately.

@@ -19,7 +19,28 @@ import types
 
 import pytest
 
+from app.services.agent_flows.tools.context import extract_chart_field_semantics
 from app.services.agent_flows.tools.packs import discover as D
+
+
+def _role(measure: str, dimension: str = "dataset_table_437.order_status") -> dict:
+    """A chart config in the shape the DATABASE stores, pollution included.
+
+    `baseFilters` carries the dataset's filterable columns, which is why a
+    substring search over the config blob matched every column on every chart of
+    a dataset. `_charts_on_table` reads the grouping key out of `roleConfig`
+    instead, so the fixture has to carry both halves or it tests neither.
+    """
+    return {
+        "chartType": "BAR",
+        "queryMode": "role",
+        "roleConfig": {"metrics": [{"field": measure, "agg": "auto"}],
+                       "dimension": dimension},
+        "baseFilters": [
+            {"field": "dataset_table_437.on_time_rate", "op": "in", "values": []},
+            {"field": "dataset_table_437.order_count", "op": "in", "values": []},
+        ],
+    }
 
 
 class _FakeChart:
@@ -46,6 +67,13 @@ class _FakeCtx:
         self._charts = charts
         self.allowed_chart_ids = set(allowed)
         self.db = types.SimpleNamespace(query=lambda _model: _Query(self._visible()))
+        # The same structured field extraction the runtime performs, from the
+        # same configs — so the matcher under test reads what it reads live.
+        self.chart_meta = {
+            c.id: {"name": c.name,
+                   "fields": extract_chart_field_semantics(c.config)}
+            for c in charts
+        }
 
     def _visible(self):
         # The real query filters by id IN allowed; the fake applies the same rule
@@ -55,10 +83,14 @@ class _FakeCtx:
 
 def _charts():
     return [
-        _FakeChart(683, "Giao đúng hẹn (%)", 437, {"measures": ["on_time_rate"]}),
-        _FakeChart(715, "Đơn trễ theo tháng", 437, {"measures": ["on_time_rate"]}),
-        _FakeChart(680, "Số đơn hàng", 437, {"measures": ["order_count"]}),
-        _FakeChart(999, "Biểu đồ báo cáo khác", 437, {"measures": ["on_time_rate"]}),
+        _FakeChart(683, "Giao đúng hẹn (%)", 437,
+                   _role("dataset_table_437.on_time_rate")),
+        _FakeChart(715, "Đơn trễ theo tháng", 437,
+                   _role("dataset_table_437.on_time_rate")),
+        _FakeChart(680, "Số đơn hàng", 437,
+                   _role("dataset_table_437.order_count")),
+        _FakeChart(999, "Biểu đồ báo cáo khác", 437,
+                   _role("dataset_table_437.on_time_rate")),
     ]
 
 

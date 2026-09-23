@@ -11,9 +11,13 @@
     "qa:module-routes": "node scripts/check-module-routes.mjs",
     "qa:theme": "node scripts/check-theme-presets.mjs",
     "qa:presentation": "node scripts/check-presentation-contract.mjs",
-    "qa": "npm run qa:module-routes && npm run qa:theme && npm run qa:presentation",
+    "qa": "npm run qa:module-routes && npm run qa:theme && npm run qa:presentation && npm run qa:answer-parity && npm run qa:node-topology && npm run qa:public-bundle && npm run qa:handler-arity",
     "test:e2e": "npm --prefix ../e2e test",
-    "test:e2e:critical": "npm --prefix ../e2e run test:critical"
+    "test:e2e:critical": "npm --prefix ../e2e run test:critical",
+    "qa:answer-parity": "node scripts/check-answer-parity.mjs",
+    "qa:node-topology": "node scripts/check-node-topology.mjs",
+    "qa:public-bundle": "node scripts/check-public-bundle.mjs",
+    "qa:handler-arity": "node scripts/check-handler-arity.mjs"
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.20.1",
@@ -39,7 +43,7 @@
     "jsqr": "^1.4.0",
     "leaflet": "^1.9.4",
     "lucide-react": "^0.309.0",
-    "next": "^14.2.25",
+    "next": "^15.5.26",
     "qrcode.react": "^4.2.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
@@ -58,7 +62,7 @@
     "@types/react-grid-layout": "^1.3.5",
     "autoprefixer": "^10.4.17",
     "eslint": "^8.56.0",
-    "eslint-config-next": "^14.2.25",
+    "eslint-config-next": "^15.5.26",
     "postcss": "^8.4.33",
     "tailwindcss": "^3.4.1",
     "tailwindcss-animate": "^1.0.7",

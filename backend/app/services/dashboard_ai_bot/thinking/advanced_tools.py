@@ -17,6 +17,7 @@ All tools share the ``ToolContext`` defined in ``tools.py`` and reuse
 """
 from __future__ import annotations
 
+import datetime as _dt
 import logging
 import math
 import re
@@ -72,11 +73,150 @@ def _looks_like_period_label(value: str) -> bool:
     return bool(_PERIOD_VALUE_RX.match(str(value or "")))
 
 
+#: The last calendar day of each month, indexed 1..12. February is handled by the
+#: leap rule below rather than by a table with two Februaries in it.
+_MONTH_LEN = (31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31)
+
+#: `2024-06`, `2024-06-15`, `2024`, `Q2 2024`/`2024-Q2`. The forms
+#: `_looks_like_period_label` already accepts, parsed rather than merely matched.
+_LBL_YMD = re.compile(r"^\s*(\d{4})[-/](\d{1,2})[-/](\d{1,2})\s*$")
+_LBL_YM = re.compile(r"^\s*(\d{4})[-/](\d{1,2})\s*$")
+_LBL_Y = re.compile(r"^\s*(\d{4})\s*$")
+_LBL_Q = re.compile(r"^\s*(?:Q([1-4])[\s\-/]?(\d{4})|(\d{4})[\s\-/]?Q([1-4]))\s*$",
+                    re.IGNORECASE)
+
+
+def _month_end(year: int, month: int) -> _dt.date:
+    last = _MONTH_LEN[month - 1]
+    if month == 2 and (year % 4 == 0 and (year % 100 != 0 or year % 400 == 0)):
+        last = 29
+    return _dt.date(year, month, last)
+
+
+def _period_end(label: str) -> _dt.date | None:
+    """The LAST calendar day the bucket named by this label covers.
+
+    `2018-09` ends 2018-09-30 whatever the chart holds for it. This is the fact
+    an incompleteness claim has to be measured against: a bucket is incomplete
+    when the data stops before its period does, not when its value is small.
+    """
+    text = str(label or "")
+    m = _LBL_YMD.match(text)
+    if m:
+        try:
+            return _dt.date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+        except ValueError:
+            return None
+    m = _LBL_YM.match(text)
+    if m:
+        year, month = int(m.group(1)), int(m.group(2))
+        return _month_end(year, month) if 1 <= month <= 12 else None
+    m = _LBL_Q.match(text)
+    if m:
+        quarter = int(m.group(1) or m.group(4))
+        year = int(m.group(2) or m.group(3))
+        return _month_end(year, quarter * 3)
+    m = _LBL_Y.match(text)
+    if m:
+        return _dt.date(int(m.group(1)), 12, 31)
+    return None
+
+
+def _as_bound_date(value: Any) -> _dt.date | None:
+    """A date from a filter value, or None. Filters carry strings far more often
+    than dates, and a bound we cannot read must not become a bound we invent."""
+    if isinstance(value, _dt.datetime):
+        return value.date()
+    if isinstance(value, _dt.date):
+        return value
+    if not isinstance(value, str):
+        return None
+    head = value.strip().split("T")[0].split(" ")[0]
+    for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%d/%m/%Y"):
+        try:
+            return _dt.datetime.strptime(head, fmt).date()
+        except ValueError:
+            continue
+    m = _LBL_YM.match(head)
+    if m:
+        year, month = int(m.group(1)), int(m.group(2))
+        return _month_end(year, month) if 1 <= month <= 12 else None
+    return None
+
+
+#: Filter operators that declare "the data stops here".
+_UPPER_OPS = {"<=", "<", "lte", "lt", "before", "until", "to", "max"}
+_RANGE_OPS = {"between", "range", "in_range", "date_between"}
+
+
+def _declared_data_ceiling(filters: Sequence[Any] | None) -> _dt.date | None:
+    """The latest date the APPLIED FILTERS admit, if they declare one.
+
+    THE ONLY COMPLETENESS FACT THIS TOOL CAN ACTUALLY REACH. The series it is
+    handed is already aggregated by period, so nothing in it can distinguish a
+    month that ended early from a month that went badly. `ToolContext` carries no
+    data-cutoff, and the authoritative last raw event date lives in a different
+    tool (`describe_time_coverage`) behind extra queries.
+
+    What IS here, free and structured, is the filter set every read was made
+    under. A filter saying `order_date <= 2018-09-04` on a `2018-09` bucket is a
+    DECLARATION that the bucket holds four days of a thirty-day month. That is
+    proof, and it is the only proof available at this cost.
+
+    The narrowest bound wins, and a bound we cannot parse is not a bound.
+    """
+    ceiling: _dt.date | None = None
+    for entry in filters or []:
+        if not isinstance(entry, dict):
+            continue
+        field = str(entry.get("field") or entry.get("column") or "")
+        if not _looks_like_datetime(field):
+            continue
+        op = str(entry.get("op") or entry.get("operator") or "=").strip().lower()
+        candidates: list[Any] = []
+        if op in _UPPER_OPS:
+            candidates.append(entry.get("value") if "value" in entry else entry.get("values"))
+        elif op in _RANGE_OPS:
+            values = entry.get("values") if entry.get("values") is not None else entry.get("value")
+            if isinstance(values, (list, tuple)) and len(values) >= 2:
+                candidates.append(values[1])
+        if op in ("<", "lt", "before"):
+            # `< X` admits up to the day before X; `<= X` admits X itself.
+            for raw in candidates:
+                bound = _as_bound_date(raw)
+                if bound is not None:
+                    bound -= _dt.timedelta(days=1)
+                    ceiling = bound if ceiling is None else min(ceiling, bound)
+            continue
+        for raw in candidates:
+            bound = _as_bound_date(raw)
+            if bound is not None:
+                ceiling = bound if ceiling is None else min(ceiling, bound)
+    return ceiling
+
+
+def _edge_is_proven_incomplete(label: str, filters: Sequence[Any] | None) -> bool:
+    """True only when the applied filters stop BEFORE this bucket's period does."""
+    end = _period_end(label)
+    if end is None:
+        return False
+    ceiling = _declared_data_ceiling(filters)
+    return ceiling is not None and ceiling < end
+
+
 def _trim_partial_edges(series: Sequence[tuple[str, float]], frac: float = 0.15):
     """Drop contiguous leading/trailing buckets whose value is a severe low
-    outlier vs the median — they are almost always INCOMPLETE periods (launch
-    month, data cutoff) that would distort a trend/forecast. Returns
-    ``(core, excluded, partial_first, partial_last)``."""
+    outlier vs the median.
+
+    A SEVERE LOW EDGE OUTLIER IS NOT A PROVEN INCOMPLETE PERIOD, and the version
+    of this docstring that said these are "almost always INCOMPLETE periods" was
+    the whole bug: a launch month, a data cutoff and a business that collapsed
+    produce the SAME value series, and this function sees nothing but values. It
+    is a trim for fitting a trend, which is a modelling choice and a defensible
+    one. It is not evidence about the calendar, and callers must not report it as
+    such — see `_edge_is_proven_incomplete` for the fact that can be proven.
+
+    Returns ``(core, excluded, low_edge_first, low_edge_last)``."""
     ys = [y for _, y in series]
     if len(ys) < 3:
         return list(series), [], False, False
@@ -223,6 +363,30 @@ def tool_compare_periods(ctx: ToolContext, args: dict) -> dict:
     if len(points) < 2:
         return _err("need at least 2 time points to compare")
 
+    # A SEVERE LOW EDGE IS A QUESTION, NOT AN ANSWER.
+    #
+    # Measured on the Olist report, this tool compared a data-cutoff stub as the
+    # latest real period — 2018-09 = 166.46 against 2018-08 = 1,003,308.47,
+    # reported as "-99.98%, worsening" in every mode. The first fix excluded the
+    # edge and called it `partial_last`, which traded one confident wrong answer
+    # for another: a business that genuinely collapsed to 166.46 produces the
+    # IDENTICAL value series, and the tool would have hidden the collapse and
+    # reported a calm -5% between the two months before it.
+    #
+    # So the magnitude test below decides only what the COMPARISON stands on. The
+    # claim about the calendar is made separately, from the applied filters, and
+    # only when they prove it. Everything else is reported as suspected.
+    #
+    # `custom` is deliberately above this: a caller who names both periods has
+    # said which ones they mean.
+    core, excluded, low_edge_first, low_edge_last = _trim_partial_edges(points)
+    filters_applied = data.get("filters_applied") or []
+    proven_first = bool(
+        low_edge_first and _edge_is_proven_incomplete(points[0][0], filters_applied))
+    proven_last = bool(
+        low_edge_last and _edge_is_proven_incomplete(points[-1][0], filters_applied))
+    observed_latest = {"label": points[-1][0], "value": _round(points[-1][1])}
+
     if mode == "custom":
         period_a = str(args.get("period_a") or "")
         period_b = str(args.get("period_b") or "")
@@ -243,6 +407,11 @@ def tool_compare_periods(ctx: ToolContext, args: dict) -> dict:
         return _ok(_attach_delta_unit(
             ctx, chart_id, columns[measure_idx],
             _compare_pair(a_val, b_val, period_a, period_b, columns[measure_idx])))
+
+    # COMPLETE PERIODS from here on. The partial edge is not hidden — it is
+    # named in the payload below — but it is not the headline `current` either.
+    if len(core) >= 2:
+        points = core
 
     # AUTO / MoM / QoQ / YoY all reduce to "compare last with N steps back".
     if mode in ("auto", "mom"):
@@ -272,6 +441,52 @@ def tool_compare_periods(ctx: ToolContext, args: dict) -> dict:
     recent_avg = statistics.fmean(y for _, y in points[-recent_n:])
     base_payload["recent_avg_last_3"] = _round(recent_avg)
     base_payload["points_used"] = len(points)
+    # SAID, NOT SWALLOWED — AND NOT OVERSTATED EITHER.
+    #
+    # `observed_latest` is unconditional: it is the real last point of the real
+    # series, present whether or not the comparison used it, whether or not it is
+    # low, and whether or not anything about it is suspected. A genuine collapse
+    # cannot fall out of this payload merely by being small, which is exactly how
+    # the first version of this fix would have lost it.
+    base_payload["excluded_periods"] = excluded
+    base_payload["observed_latest"] = observed_latest
+    base_payload["edge_completeness"] = (
+        "proven_incomplete" if proven_last
+        else "suspected_incomplete" if low_edge_last
+        else "not_suspected"
+    )
+    base_payload["edge_completeness_basis"] = (
+        "declared_filter_upper_bound" if proven_last
+        else "low_outlier_vs_median" if low_edge_last
+        else None
+    )
+    # `partial_*` keep their names and lose their guesswork: they now mean PROVEN,
+    # because a field a reader treats as a fact has to be one.
+    base_payload["partial_first"] = proven_first
+    base_payload["partial_last"] = proven_last
+    if low_edge_last and len(core) >= 2:
+        last = next((e for e in excluded if e.get("edge") == "last"), None)
+        label = (last or {}).get("label", observed_latest["label"])
+        value = (last or {}).get("value", observed_latest["value"])
+        if proven_last:
+            base_payload["note_partial"] = (
+                f"Kỳ {label} bị cắt bởi bộ lọc đang áp (dữ liệu dừng trước khi kỳ "
+                f"này kết thúc), nên giá trị {value} KHÔNG phải kết quả cả kỳ và "
+                "không được dùng làm kỳ hiện tại. So sánh này dùng các kỳ đã trọn."
+            )
+        else:
+            # THE HONEST STATE. Two readings fit the same numbers and nothing
+            # available here separates them, so both are handed over instead of
+            # one being chosen silently.
+            base_payload["note_partial"] = (
+                f"Kỳ {label} có giá trị {value}, thấp bất thường so với các kỳ "
+                "trước. KHÔNG có bằng chứng nào ở đây nói kỳ này thiếu dữ liệu — "
+                "một kỳ chưa kết thúc và một kỳ sụt giảm thật cho ra cùng con số. "
+                "So sánh dưới đây dùng các kỳ trước đó để tránh khẳng định sai; "
+                "hãy nêu cả giá trị quan sát được của kỳ cuối và nói rõ là chưa "
+                "xác định được nguyên nhân. Muốn chắc chắn, gọi "
+                "describe_time_coverage để biết dữ liệu thực sự dừng ở đâu."
+            )
     return _ok(_attach_delta_unit(ctx, chart_id, columns[measure_idx], base_payload))
 
 

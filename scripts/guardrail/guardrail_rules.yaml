@@ -22,6 +22,22 @@ layers:
     label: "Backend entrypoint / app wiring"
     may_depend_on: ["*"]           # composition root may wire everything
 
+  # TESTS ARE A LAYER TOO, and saying so is what stops every new spec from
+  # blocking. `e2e/tests/**` and `backend/tests/**` are both on
+  # `policy.unknown_policy.blocking_globs` — deliberately, because an unmapped
+  # file there is usually a new surface nobody classified. But NO layer claimed
+  # them, so `classify_file` returned None for every test file and an uncommitted
+  # new spec blocked the gate until it was committed, which is the wrong moment
+  # to find out. Declaring the layer is the remedy the policy note itself names;
+  # widening `blocking_globs` would have been the one it forbids.
+  #
+  # `may_depend_on: ["*"]` because a test exists to reach across layers: that is
+  # what makes it a test and not another module.
+  - id: tests
+    match: ["backend/tests/**", "e2e/tests/**", "qa/**", "scripts/ci/test_*.py"]
+    label: "Tests (backend suites, Playwright specs, QA harnesses)"
+    may_depend_on: ["*"]
+
   - id: be_core
     match: ["backend/app/core/**"]
     label: "Backend core (config, database, dependencies, crypto)"
@@ -58,7 +74,8 @@ layers:
     may_depend_on: ["*"]
 
   - id: repo_infra
-    match: ["scripts/ci/**", "scripts/guardrail/**", ".github/**", ".githooks/**",
+    match: ["scripts/ci/**", "scripts/guardrail/**", "scripts/cert/**",
+            ".github/**", ".githooks/**",
             ".claude/**", ".opencodereview/**", "AGENTS.md"]
     label: "Engineering infrastructure (gates, rule base, agent contract, CI)"
     # Tooling legitimately reads every layer; the risk here is not import
@@ -79,6 +96,24 @@ layers:
     match: ["frontend/src/types/**"]
     label: "Frontend shared types"
     may_depend_on: ["fe_types"]
+
+  # THE MESSAGE CATALOGS, which no layer described.
+  #
+  # Found by the PR gate, which is the first thing on this branch to run
+  # `--diff --base ...` across the whole range: `frontend/src/i18n/catalog/
+  # agent-flows.ts` sits on `policy.unknown_policy.blocking_globs`, matched no
+  # layer, and the guardrail exited BLOCK. Its own message named the remedy —
+  # teach the rule base what these are, and do NOT widen `blocking_globs` to
+  # make it pass.
+  #
+  # A catalog is a CONTRACTS LEAF like `fe_types`: every file here is a literal
+  # map of keys to strings, importing only the `ModuleCatalog` type from its own
+  # index. Nothing else may be imported into it, which is what keeps a
+  # translation from acquiring behaviour.
+  - id: fe_i18n
+    match: ["frontend/src/i18n/**"]
+    label: "Frontend message catalogs (i18n)"
+    may_depend_on: ["fe_i18n", "fe_types"]
 
   - id: fe_stores
     match: ["frontend/src/stores/**", "frontend/src/providers/**"]
@@ -173,7 +208,7 @@ protected:
       of an unrelated task. The trusted BASE copy of
       check_protection_integrity.py inspects base..head, so editing the checker
       in the same PR does not disable it.
-    required_tests: [agent_sdlc_meta, stop_gate_decision]
+    required_tests: [agent_sdlc_meta, stop_gate_decision, guardrail_diff_range]
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 3. FEATURES — impact map. A changed file that owns a feature drags in that
@@ -198,7 +233,7 @@ features:
   - id: join_resolution
     label: "Semantic join resolver (multi-hop, cardinality, role-play, chasm)"
     files: [backend/app/services/semantic_join_resolver.py]
-    keywords: [join, relationship, cardinality, snowflake, "many_to_one", chasm, "fan out"]
+    keywords: [join, joins, joined, relationship, cardinality, snowflake, "many_to_one", chasm, "fan out"]
     invariants: [model_autojoin_pk]
     required_tests: [galaxy_golden, filter_matrix, relationship_metadata]
 
@@ -223,7 +258,7 @@ features:
       - frontend/src/components/dashboards/ChartTile.tsx
       - frontend/src/components/dashboards/DashboardGrid.tsx
       - frontend/src/components/dashboards/DashboardCanvas.tsx
-    keywords: [dashboard, tile, chart render, "build screen", "khong align", "không align", flash, unfiltered, slicer default, draft, publish]
+    keywords: [dashboard, tile, tiles, chart render, "build screen", "khong align", "không align", flash, unfiltered, slicer default, draft, publish]
     invariants: [tile_fetch_seed_gate]
     required_tests: [tsc, browser_verify]
 
@@ -248,14 +283,16 @@ features:
   - id: auth_permissions
     label: "Auth / permissions"
     files: [backend/app/api/auth.py, backend/app/api/permissions.py, backend/app/core/dependencies.py, frontend/src/lib/auth.ts, frontend/src/hooks/use-permissions.ts]
-    keywords: [auth, login, token, permission, role, jwt, "access control"]
+    keywords: [auth, authentication, authorization, login, "sign in", token, tokens,
+               permission, permissions, role, roles, jwt, "access control", session]
     invariants: []
     required_tests: [import_smoke]
 
   - id: workboards
     label: "Workboards (mini-app) module"
     files: [backend/app/modules/workboards/**]
-    keywords: [workboard, screen, mini-app, "form", "RLS", "workspace", "cong"]
+    keywords: [workboard, workboards, screen, screens, mini-app, "form", "forms",
+               "RLS", "workspace", "cong"]
     invariants: []
     required_tests: [import_smoke]
 
@@ -266,14 +303,151 @@ features:
     invariants: []
     required_tests: [import_smoke]
 
+
+  - id: agent_flows
+    label: "Agent Flow Studio (authoring + runtime + node model)"
+    files:
+      - backend/app/services/agent_flows/**
+      - backend/app/modules/agent_flows/api.py
+      - frontend/src/lib/agentFlows.ts
+      - frontend/src/components/agent-flows/**
+      # The ONE answer renderer, shared by the Studio test panel, the dashboard
+      # component chat, the public bot and Direct Chat. It sits under dashboards/
+      # for historical reasons and so matched no feature at all: editing the
+      # component four surfaces render through resolved `tsc` and nothing else.
+      # The parity INVARIANT still fired (it matches diff content, not paths) —
+      # what was missing is the required-test set, which is path-matched.
+      - frontend/src/components/dashboards/AnswerBlocks.tsx
+      # THE TOOL BODIES THEMSELVES, which do not live under `agent_flows/`.
+      #
+      # `tools/packs/_source.py` is an explicit seam: the packs DECLARE what a
+      # tool is — name, cost, result kind, what it returns — while the body is
+      # still imported from `dashboard_ai_bot`, because that data path carries
+      # dozens of hard-won corrections and rewriting it from a clean sheet means
+      # finding those failures again in production.
+      #
+      # The seam was never reflected here, so the file that produces every
+      # analytical number in the product could be edited while the guardrail
+      # reported `ok`, 0 features touched and 0 required tests. Measured on all
+      # six of these files before this entry existed. `unknown` is not `safe`,
+      # and the same shape is already documented above for AnswerBlocks.tsx.
+      #
+      # Scoped to the ANALYTICAL SURFACE and no wider: the tool bodies, the data
+      # path every tool reads through, the governed scope/semantic helpers, the
+      # figure verifier and the external tool body. Deliberately NOT included —
+      # `events.py` (an event dataclass), `providers/**` (LLM adapters),
+      # `guard.py`, `prompts.py`, `govern_doc_*` — those are runtime support, and
+      # claiming them would make Agent Flow the owner of code it only consumes.
+      - backend/app/services/dashboard_ai_bot/thinking/tools.py
+      - backend/app/services/dashboard_ai_bot/thinking/advanced_tools.py
+      - backend/app/services/dashboard_ai_bot/tool_context.py
+      - backend/app/services/dashboard_ai_bot/govern_tools.py
+      - backend/app/services/dashboard_ai_bot/verifier.py
+      - backend/app/services/dashboard_ai_bot/web_search.py
+      # Found by the computed invariant in `scripts/ci/test_tool_bodies_are_guarded.py` on its
+      # first run — `recall_knowledge` lives here, and a hand-written list had missed it.
+      - backend/app/services/dashboard_ai_bot/knowledge.py
+      # THE CERTIFICATION SOURCE OF TRUTH.
+      #
+      # `scripts/cert/tool_certification.yaml` decides whether a tool counts as
+      # semantically VERIFIED. A file with that authority must not be editable
+      # without the gate that checks it: before this entry it matched no feature,
+      # so downgrading a tier or deleting an oracle reference pulled in no test
+      # at all. Listing it here makes `agent_flow_container` (which carries
+      # `test_tool_certification_matrix.py`) and `tier1_oracles_execute`
+      # required on any change to it.
+      - scripts/cert/**
+    # Whole-word matched (guardrail_core._keyword_pattern). "flow" alone is far too
+    # common in this repo to be a signal, so the phrases carry the weight.
+    keywords: ["agent flow", "agent flows", agentflow, brain, brains, brain_key,
+               "node topology", "node registry", nodespec, "child slot", "child slots",
+               coordinator, "coordinate node", specialist, specialists,
+               "switch branch", "flow canvas", "node inspector", "flow builder",
+               "answer envelope", "answer block", "answer blocks", "flow runtime",
+               executor, run_flow, "tool node", report_read]
+    invariants: [agent_flow_container_topology, agent_flow_answer_parity]
+    required_tests: [agent_flow_contract, agent_flow_replay, agent_flow_container,
+                     agent_flow_surface, agent_flow_evidence, tier1_oracles_execute]
+
+  - id: direct_chat
+    label: "Direct Chat (reader surface of Agent Flow)"
+    files:
+      - backend/app/services/agent_flows/direct_chat.py
+      - backend/app/modules/agent_flows/chat_api.py
+      - frontend/src/lib/directChat.ts
+      - frontend/src/components/chat/**
+      # Chat renders its answers through the shared component too — see the note
+      # on the same path under `agent_flows`.
+      - frontend/src/components/dashboards/AnswerBlocks.tsx
+    keywords: ["direct chat", "ai chat", "chat thread", "chat threads", assistant,
+               assistants, conversation, conversations, "thread access",
+               "thread sharing", "chat surface", "chat brain", "chat brains"]
+    invariants: [agent_flow_answer_parity]
+    required_tests: [direct_chat_contract, direct_chat_module_floor]
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 4. TESTS REGISTRY — from DA-Test/Regression-Catalog.md §1. `run` is the exact
 #    command; `locks` is what a green run guarantees.
 # ─────────────────────────────────────────────────────────────────────────────
 tests:
+  # ── Agent Flow / Direct Chat ────────────────────────────────────────────────
+  # Registered 2026-09-15. Twelve suites in this area were committed with
+  # `git add -f` but never allow-listed and never referenced by a workflow, so they
+  # passed locally and ran nowhere. `scripts/ci/audit_test_reachability.py` is the
+  # inventory that found them.
+  agent_flow_contract:
+    run: "pytest backend/tests/test_agent_flow_answer_contract.py backend/tests/test_agent_tool_registry.py backend/tests/test_tool_output_contract.py"
+    locks: "the flow contract, the tool registry and the answer envelope shape"
+  # REGISTERED 2026-09-20, after a red CI that a green `verify.py task` could not
+  # have predicted. These 20 suites were run by the workflow and named by NO gate,
+  # so the canonical Definition-of-Done command could not run them: the local gate
+  # and the CI gate were checking differently-shaped sets. Classified by IMPORT
+  # (they import app.services.agent_flows), not by filename.
+  # ADOPTED 2026-09-20 by dependency tracing, not by filename. Both were committed
+  # and referenced by no runner, and both guard something Waves 1-2 stand on.
+  agent_flow_evidence:
+    run: "pytest backend/tests/test_verifier_false_alarms.py"
+    locks: "the number verifier Agent Flow's evidence check calls at executor.py:1094 and agent.py:629 — a false alarm there re-flags correct answers, a missed one lets an invented figure through"
+  direct_chat_module_floor:
+    run: "pytest backend/tests/test_module_floor.py"
+    # Asserts every authed route refuses a caller holding nothing, by WALKING the
+    # route table. FastAPI >= 0.110 defers router inclusion, so on a machine whose
+    # FastAPI is newer than the pinned 0.109.0 the walk sees one route and the
+    # suite fails for an environment reason. CI installs the pin and runs it for
+    # real; `requires` makes that state explicit instead of a false red locally.
+    requires: pinned-fastapi
+    locks: "module_floor('chat') actually gating the Direct Chat router"
+
+  agent_flow_surface:
+    run: "pytest backend/tests/test_agent_flow_golden.py backend/tests/test_builder_error_messages.py backend/tests/test_chart_discovery_and_figure_correction.py backend/tests/test_chart_read_failure_reason.py backend/tests/test_discover_pack.py backend/tests/test_error_taxonomy_and_empty.py backend/tests/test_flow_attached_but_unreadable.py backend/tests/test_followup_and_freshness.py backend/tests/test_govern_doc_citation.py backend/tests/test_govern_doc_evidence_link.py backend/tests/test_govern_knowledge_tools.py backend/tests/test_i5_hard_gate_stays_lowest.py backend/tests/test_partial_context_admits_it.py backend/tests/test_report_read_scope.py backend/tests/test_tool_argument_contract.py backend/tests/test_tool_authorization_metadata.py backend/tests/test_tool_capability_gates.py backend/tests/test_tool_node.py backend/tests/test_tool_result_ceiling.py backend/tests/test_what_the_ai_sees.py"
+    locks: "the wider Agent Flow surface CI already ran — tools, discovery, read failures, builder errors, knowledge citation"
+
+  agent_flow_replay:
+    run: "pytest backend/tests/test_agent_flow_replay.py"
+    locks: "16 canonical fixtures replay with no semantic drift — the tripwire for any runtime or traversal change"
+  agent_flow_container:
+    run: "pytest backend/tests/test_coordinator_is_visible_to_the_flow.py backend/tests/test_flow_coordinate.py backend/tests/test_flow_synthesis_sees_all_steps.py backend/tests/test_flow_type.py backend/tests/test_node_child_slots.py backend/tests/test_read_status_survives_compaction.py backend/tests/test_diagnostics_tell_the_truth.py backend/tests/test_tree_validation_is_canonical.py backend/tests/test_nested_specialist_credentials.py backend/tests/test_authoring_is_strict.py backend/tests/test_asset_resolution.py backend/tests/test_context_handoff.py backend/tests/test_report_read_selection_is_explicit.py backend/tests/test_no_evidence_no_confident_number.py backend/tests/test_question_grounding.py backend/tests/test_reuse_evidence_equivalence.py backend/tests/test_time_axis_contract.py backend/tests/test_partial_period_comparison.py backend/tests/test_grant_has_a_way_in.py backend/tests/test_nonrecoverable_retry_policy.py backend/tests/test_dead_retry_costs_nothing.py backend/tests/test_dimension_is_not_a_measure.py backend/tests/test_requested_dimension_is_not_substituted.py backend/tests/test_analytical_tool_semantics.py backend/tests/test_tool_certification_matrix.py backend/tests/test_capability_serviced_the_intent.py backend/tests/test_qualifier_provenance.py backend/tests/test_eval_accounting.py backend/tests/test_cross_lingual_resolution.py"
+    locks: "every container node is walked by all_nodes(); a coordinator's lane is visible to every authoring check"
+  direct_chat_contract:
+    run: "pytest backend/tests/test_chat_thread_sharing.py backend/tests/test_chat_chart_scope.py backend/tests/test_notice_audience_boundary.py backend/tests/test_reader_capability_boundary.py backend/tests/test_reader_diagnostics_are_product_facing.py"
+    locks: "chat thread access levels, read-only shares, the chat surface's chart scope, and that a reader - including an anonymous one on a public link - is told WHY a step failed without being shown the tool id, chart id or raw column the author's trace keeps"
+
+  # ── Provider-neutral SDLC protection layer (from demo) ──────────────────────
   agent_sdlc_meta:
     run: "pytest scripts/ci/test_agent_sdlc.py"
     locks: "provider-neutral SDLC: adapters point at one executable contract, the server-side base..head diff sees the real changed files, architecture violations fail the gate, UNKNOWN is not reported safe, infrastructure failure is not reported pass, attempts to weaken the protection system are detected, and an ordinary clean change is not blocked"
+  guardrail_diff_range:
+    run: "pytest scripts/ci/test_guardrail_diff_range.py"
+    locks: "the guardrail tells an EMPTY diff from one it could not resolve: a real zero-change range is allowed, an unresolvable base/head or a git failure returns unknown and a non-zero exit, and --json stays valid JSON in every state"
+  tier1_oracles_execute:
+    run: "python scripts/ci/check_tier1_oracles.py"
+    locks: "every TIER-1 tool's declared semantic oracle NODE actually runs and passes — a missing, skipped, errored or failed node fails the gate, because a test file existing is not an oracle executing and `pytest.skip` on a refused valid fixture turns a product regression into a green suite"
+  tool_bodies_are_guarded:
+    run: "pytest scripts/ci/test_tool_bodies_are_guarded.py"
+    locks: "every file defining a registered tool is claimed by a guardrail feature and pulls in at least one required test, derived from the registry rather than a list; the seam under dashboard_ai_bot is named; runtime support (events.py) is deliberately NOT claimed"
+  ci_wiring_is_real:
+    run: "pytest scripts/ci/test_ci_wiring_is_real.py"
+    locks: "an allow-listed backend suite is actually PASSED TO PYTEST, not merely present somewhere in the workflow file: the per-line argument rule, a collapsed line continuation named with its line number, 'present mid-line' distinguished from 'absent', an allow-listed file that does not exist, and this repository's own workflow checked for the same collapse"
   stop_gate_decision:
     run: "pytest scripts/ci/test_stop_gate.py"
     locks: "Stop hook: green allows, FAILED blocks every time (including on retry), UNVERIFIED blocks once then allows, infrastructure failure never becomes green, override stays explicit"
@@ -355,6 +529,45 @@ tests:
 invariants:
   # GROUNDED (verified L3017/3115/3218/3037). Guards the PRESENCE of the
   # de-correlation fix — a diff removing its markers undoes it.
+  - id: agent_flow_container_topology
+    label: "A container node's child slots are declared once and every traversal reads them"
+    scope: ["frontend/src/lib/agentFlows.ts",
+            "backend/app/services/agent_flows/contract.py",
+            "backend/app/services/agent_flows/runtime/nodes.py"]
+    removed_patterns: ['child_slots', 'CHILD_SLOTS']
+    severity: high
+    message: >
+      A node type that HOLDS other nodes must declare WHERE its children live, and
+      every traversal must read that declaration instead of re-deriving it. The cost
+      of the old way is on the record: `coordinate` was added without teaching
+      `all_nodes()`, a specialist's lane became invisible to every authoring check at
+      once, and asked which category earned the most the flow answered
+      "13,591,643.70" — the report's grand total, no category named, no notice.
+    tests: [agent_flow_container, agent_flow_replay]
+
+  - id: agent_flow_answer_parity
+    label: "The answer envelope has one renderer; no surface flattens blocks privately"
+    scope: ["frontend/src/components/agent-flows/TestChat.tsx",
+            "frontend/src/components/chat/ConversationView.tsx",
+            "frontend/src/components/dashboards/AnswerBlocks.tsx"]
+    # SINGLE LINE, because a diff only carries the lines that CHANGED. The first
+    # attempt keyed on the full idiom `=> b.markdown).filter`, which spans two
+    # lines — the `.filter` is unchanged context and never reaches the matcher, so
+    # the guard silently passed a real reintroduction. Caught by mutation-testing
+    # it rather than by reading it.
+    #
+    # Safe to key this tightly now: the explanation in TestChat.tsx describes the
+    # bug in prose instead of quoting the code, so the guard no longer fires on the
+    # comment that documents it.
+    added_patterns: ['\.map\(\s*\(?\s*\w+\s*\)?\s*=>\s*\w+\.markdown\s*\)']
+    severity: high
+    message: >
+      Studio, Direct Chat and the dashboard bot read the same blocks. A surface that
+      flattens them to `.markdown` shows its author a degraded copy of what the reader
+      gets — measured: a valid `metric` answer rendered as an em-dash while the run
+      reported `ok` and raised no notice.
+    tests: [agent_flow_contract]
+
   - id: distinct_decorrelation_semijoin
     label: "Distinct cascade must stay a de-correlated UNION-DISTINCT / INNER JOIN semi-join (BigQuery)"
     scope: ["backend/app/services/dataset_model_service.py"]

@@ -38,7 +38,7 @@
   "status": "ok",
   "step_outputs": {
     "answer": "ok :: Kết quả của các bước trước, theo thứ tự đã chạy. Tổng hợp TẤT CẢ, không chỉ bước cuối; nếu hai bước mâu thuẫn thì nói rõ ra thay vì chọn bừa một bên:\n\n### read\n{\"scope\": {\"read\": 1, \"available\": 1}, \"",
-    "read": "{\"scope\": {\"read\": 1, \"available\": 1}, \"charts\": [{\"chart_id\": 41, \"title\": \"Doanh thu theo danh mục\", \"chart_type\": \"BAR\", \"indexed\": true, \"measures\": [{\"field\": \"revenue\", \"label\": \"\"}], \"dimensions\": [{\"field\": \"category\", \"label\": \"\"}], \"how_to_read\": \"Dùng rank_values / total_measure / share_of với chart_id này để lấy số chính xác.\"}], \"filters\": {\"ok\": true, \"kind\": \"table\", \"data\": {\"columns\": [\"category\", \"revenue\"], \"rows\": [[\"moveis\", 1200]]}}, \"read_ok\": true}"
+    "read": "{\"scope\": {\"read\": 1, \"available\": 1}, \"charts\": [{\"chart_id\": 41, \"title\": \"Doanh thu theo danh mục\", \"chart_type\": \"BAR\", \"indexed\": true, \"measures\": [{\"field\": \"revenue\", \"label\": \"\"}], \"dimensions\": [{\"field\": \"category\", \"label\": \"\"}], \"how_to_read\": \"Dùng rank_values / total_measure / share_of với chart_id này để lấy số chính xác.\"}], \"filters\": {\"ok\": true, \"kind\": \"table\", \"data\": {\"columns\": [\"category\", \"revenue\"], \"rows\": [[\"moveis\", 1200]]}}, \"selection\": {\"mode\": \"report_index\"}, \"read_ok\": true}"
   },
   "tool_calls": [
     {

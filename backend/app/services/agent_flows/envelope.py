@@ -446,6 +446,37 @@ class Notice(_Model):
     code: str
     text: str = ""
 
+    # STRUCTURED, AND ADDRESSED. Two additions, both optional so every existing
+    # producer and consumer is unchanged:
+    #
+    # `audience` separates what a READER is told about an answer from what an
+    # AUTHOR is told about their flow's configuration — they were one list, so
+    # maintenance advice could reach a viewer.
+    #
+    # `remedies` carries the suggested actions as data instead of welding them
+    # into a Vietnamese sentence, so a UI does not have to parse prose to know
+    # what to offer, and so a remedy can be omitted when it does not apply.
+    audience: Literal["reader", "author"] = "reader"
+    severity: Literal["info", "warning", "error"] = "info"
+    node_key: str = ""
+    facts: dict[str, Any] = Field(default_factory=dict)
+    remedies: list[str] = Field(default_factory=list)
+
+
+def reader_notices(notices: list["Notice"]) -> list["Notice"]:
+    """Only what a READER may be told.
+
+    `audience` is part of the runtime contract, not a rendering hint. Author
+    diagnostics name node keys, configuration and remedies — maintenance detail a
+    viewer cannot act on and should not see. Filtering only in the frontend would
+    leave it in the response body, so it is dropped at the reader boundary and
+    refused again at render: neither layer is trusted alone.
+
+    Author surfaces (Studio Test, Runs) call nothing here — they receive both and
+    present them apart.
+    """
+    return [n for n in notices if getattr(n, "audience", "reader") != "author"]
+
 
 class MemoryDelta(_Model):
     """What the run wants remembered for the next turn. Applied by the runtime to
@@ -531,8 +562,17 @@ class FlowOutput(_Model):
     trace: Trace = Field(default_factory=Trace)
     usage: Usage = Field(default_factory=Usage)
 
-    def to_dict(self) -> dict[str, Any]:
-        return self.model_dump(mode="json")
+    def to_dict(self, *, notices: list["Notice"] | None = None) -> dict[str, Any]:
+        """The envelope as JSON.
+
+        `notices` overrides what is SENT without touching what is recorded: a
+        reader surface passes `reader_notices(...)`, and the run row keeps the
+        full set so the author can still read their diagnostics in Runs.
+        """
+        out = self.model_dump(mode="json")
+        if notices is not None:
+            out["notices"] = [n.model_dump(mode="json") for n in notices]
+        return out
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

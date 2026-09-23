@@ -25,13 +25,10 @@ import { Input } from '@/components/ui/Input';
 import { Badge } from '@/components/ui/Badge';
 import { cn } from '@/lib/utils';
 import { useI18n } from '@/providers/LanguageProvider';
-import {
-  conversationDetail, getBrain, listNodeSpecs, runDetail, runStats,
-  type ConversationDetail, type FlowNode, type NodeSpec, type RunSourceFilter,
-  type RunDetail, type RunStats, type RunStep,
-} from '@/lib/agentFlows';
+import { authorNotices, conversationDetail, getBrain, listNodeSpecs, readerNotices, runDetail, runStats, type ConversationDetail, type FlowNode, type NodeSpec, type RunDetail, type RunSourceFilter, type RunStats, type RunStep } from '@/lib/agentFlows';
 import { FlowCanvas } from './FlowCanvas';
 import { ConversationsPanel } from './ConversationsPanel';
+import { noticeCandidates, noticeCandidatesHidden } from '@/lib/notices';
 import {
   RunStatusBadge, SourceFilter, Stat, StatStrip, formatWhen,
 } from './shared';
@@ -40,7 +37,14 @@ import {
 // conversations and feedback views render the same statuses, and three copies
 // would eventually disagree about what colour `partial` is.
 
-export function RunsTab({ brainKey }: { brainKey: string }) {
+export function RunsTab(
+  { brainKey, onOpenNode }: {
+    brainKey: string;
+    /** Open the node that produced a trace step in the Builder. Supplied by the
+     *  Builder, which owns navigation — Runs stays read-only and does not route. */
+    onOpenNode?: (nodeKey: string) => void;
+  },
+) {
   const { t, locale } = useI18n();
   const router = useRouter();
   const pathname = usePathname();
@@ -445,6 +449,17 @@ export function RunsTab({ brainKey }: { brainKey: string }) {
                     {selectedStep.name || selectedStep.key}
                   </b>
                   <div className="flex-1" />
+                  {/* THE LAST HOP OF THE DEBUGGING LOOP. Reading which step went
+                      wrong and then hunting that node by eye is where the trail
+                      went cold. This NAVIGATES only — no editing control joins
+                      Runs, and the canvas here stays read-only. */}
+                  {onOpenNode && (
+                    <button type="button" onClick={() => onOpenNode(selectedStep.key)}
+                      data-testid="open-in-builder"
+                      className="rounded border border-[rgb(var(--border-line))] px-2 py-0.5 text-tiny text-text-secondary transition hover:border-brand/40 hover:text-brand">
+                      {t('agentFlows.runs.openInBuilder')}
+                    </button>
+                  )}
                   <button type="button" onClick={() => setOpenStep(null)}
                     className="text-tiny text-text-tertiary hover:text-text-secondary">
                     ← Cả run
@@ -569,13 +584,41 @@ export function RunsTab({ brainKey }: { brainKey: string }) {
                   {detail.question || t('agentFlows.common.none')}
                 </p>
 
-                {!!detail.notices.length && (
+                {/* The heading said "notes for the viewer" over a list that also
+                    held author diagnostics. Two lists, two truthful headings. */}
+                {!!readerNotices(detail.notices).length && (
                   <>
                     <Label className="mt-3">{t('agentFlows.runs.viewerNotes')}</Label>
-                    {detail.notices.map((n, i) => (
+                    {readerNotices(detail.notices).map((n, i) => (
                       <p key={i} className="mt-1 rounded-md border border-warning/20 bg-warning/5 p-2 text-caption leading-relaxed text-warning">
                         {n.text}
                       </p>
+                    ))}
+                  </>
+                )}
+
+                {!!authorNotices(detail.notices).length && (
+                  <>
+                    <Label className="mt-3">{t('agentFlows.runs.authorDiagnostics')}</Label>
+                    {authorNotices(detail.notices).map((n, i) => (
+                      <div key={i} className="mt-1 rounded-md border border-[rgb(var(--border-line))] bg-surface-2 p-2 text-caption leading-relaxed text-text-secondary">
+                        {n.text}
+                        {!!noticeCandidates(n).length && (
+                          <ul className="mt-1 space-y-0.5 text-tiny text-text-tertiary">
+                            {noticeCandidates(n).map((c, k) => (
+                              <li key={k}>· {c.chart_name || c.chart_id}{c.why ? ` — ${c.why}` : ''}</li>
+                            ))}
+                            {noticeCandidatesHidden(n) > 0 && (
+                              <li className="italic">… còn {noticeCandidatesHidden(n)} khả năng nữa</li>
+                            )}
+                          </ul>
+                        )}
+                        {!!n.remedies?.length && (
+                          <ul className="mt-1 list-disc pl-4 text-tiny text-text-tertiary">
+                            {n.remedies.map((r, k) => <li key={k}>{r}</li>)}
+                          </ul>
+                        )}
+                      </div>
                     ))}
                   </>
                 )}

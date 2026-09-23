@@ -278,6 +278,19 @@ class ToolContext:
     #: has no way to know what "còn" refers to. Set per run by the executor;
     #: empty on turn one and on every path that has no conversation.
     prior_question: str = ""
+    #: THIS turn's question, set per run by `executor.run_flow`.
+    #:
+    #: It exists so the tool boundary can tell a grouped call that answers the
+    #: question from one that answers a different question. Measured: asked which
+    #: STATE had the highest revenue, the answering Agent called `rank_values` on
+    #: the revenue-by-CATEGORY chart and the ranking of categories became the
+    #: answer about states. Nothing at the tool boundary could see what had been
+    #: asked, so nothing could tell the two apart.
+    #:
+    #: Empty on any path that never set it, and empty means the dimension gate
+    #: stays silent — a scheduled digest or a replay must not start refusing
+    #: tools because it has no question to check against.
+    question: str = ""
     #: The most rows a single read may return, set per run from the binding's
     #: `capabilities.max_rows_per_call`. None means fall back to `MAX_TOP_N`.
     #:

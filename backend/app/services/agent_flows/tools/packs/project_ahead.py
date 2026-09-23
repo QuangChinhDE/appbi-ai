@@ -33,21 +33,21 @@ is the group where that is hardest and matters most.
 """
 from __future__ import annotations
 
-import re
 import statistics
 from typing import Any
 
 from app.services.agent_flows.tools import result as R
 from app.services.agent_flows.tools.packs import measure_meta
+from app.services.agent_flows.tools.packs._timefield import TIME_NAME_RX
 from app.services.dashboard_ai_bot.tool_context import (
     ToolContext, ToolError, _fetch_chart_data,
 )
 
-#: Column names that mark a time axis. Same vocabulary the coverage tool uses, so
-#: a report readable by one is readable by the other.
-_DATE_NAME = re.compile(
-    r"(date|ngay|ngày|thang|tháng|nam|năm|time|timestamp|_at|_dt|period|ky|kỳ|"
-    r"month|quarter|week|year)", re.IGNORECASE)
+#: Column names that mark a time axis. The comment that used to sit here claimed
+#: this was "the same vocabulary the coverage tool uses"; it was not, and had not
+#: been since the segment fix landed here alone. Both tools now read the one
+#: definition, so a report readable by one really is readable by the other.
+_DATE_NAME = TIME_NAME_RX
 
 #: Seasonal cycle lengths worth testing, by what a period usually is. Testing
 #: every lag up to n/2 finds a "pattern" in noise; these are the cycles a business

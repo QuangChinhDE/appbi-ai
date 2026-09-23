@@ -434,12 +434,36 @@ def check_logic_invariants(diff: str) -> dict[str, Any]:
 
 # ── 6. validate fix plan ─────────────────────────────────────────────────────
 
+@lru_cache(maxsize=512)
+def _keyword_pattern(kw: str) -> "re.Pattern[str]":
+    """A keyword matches whole words, not fragments of longer ones.
+
+    This was a plain `kw in text`, and the cost of that was not theoretical: the
+    word "**auth**oring" contains "auth", so a plan reading
+
+        "Rework Agent Flow Studio authoring UX"
+
+    matched `auth_permissions`, pointed the author at `api/auth.py` and
+    `core/dependencies.py`, and declared every file they actually meant to touch
+    out of scope. A confident wrong answer is worse than `unknown`, because
+    `unknown` at least says so.
+
+    Boundaries go on the ENDS THAT ARE WORD CHARACTERS, so multi-word phrases
+    ("access control") and keywords with punctuation still behave. `\\b` is
+    Unicode-aware here, which the Vietnamese keywords rely on.
+    """
+    esc = re.escape(kw)
+    lead = r"\b" if kw[:1].isalnum() or kw[:1] == "_" else ""
+    tail = r"\b" if kw[-1:].isalnum() or kw[-1:] == "_" else ""
+    return re.compile(lead + esc + tail, re.IGNORECASE | re.UNICODE)
+
+
 def _match_features_by_text(text: str) -> list[dict[str, Any]]:
     t = (text or "").lower()
     out = []
     for feat in load_rules().get("features", []):
         kws = [k.lower() for k in feat.get("keywords", [])]
-        matched = [k for k in kws if k in t]
+        matched = [k for k in kws if _keyword_pattern(k).search(t)]
         if matched:
             out.append({"id": feat["id"], "label": feat.get("label"),
                         "files": feat.get("files", []), "matched_keywords": matched,

@@ -14,9 +14,22 @@ export const BRAINS = `${API}/api/v1/agent-flows/brains`;
 /** Upsert a draft through the real write route. */
 export async function saveDraft(
   request: any, key: string, name: string, body: unknown,
+  /** Which surface the flow is for. A `chat` flow has no report to test against,
+   *  so its test panel needs no target picked — which is what lets a spec exercise
+   *  the panel itself without first arranging a binding. */
+  flowType?: 'bot' | 'chat',
 ) {
   const res = await request.put(BRAINS, { data: { brain_key: key, name, body } });
   expect(res.status(), await res.text()).toBeLessThan(400);
+  if (flowType) {
+    // A SEPARATE ENDPOINT, not a field on the upsert. Passing `flow_type` in the
+    // body is silently ignored, which reads as "the flow type did not stick" when
+    // the request in fact succeeded.
+    const typed = await request.put(`${BRAINS}/${key}/type`, {
+      data: { flow_type: flowType },
+    });
+    expect(typed.status(), await typed.text()).toBeLessThan(400);
+  }
   return res.json();
 }
 

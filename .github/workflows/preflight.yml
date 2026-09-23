@@ -18,6 +18,24 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # HISTORY, because this job now runs a history-dependent gate.
+          #
+          # The merge that brought demo's protection layer here also wired
+          # `test_agent_sdlc.py` into the step below, and one of its cases asks
+          # the guardrail what changed between base and head. `actions/checkout`
+          # defaults to `fetch-depth: 1`, so `git merge-base HEAD HEAD~1` cannot
+          # resolve, the test falls back to the literal string `HEAD~1`, and
+          # `guardrail_check.py --diff` answers "no changes to validate" in plain
+          # text — which the test then tries to parse as JSON.
+          #
+          # The history-dependent gate was wired into the one workflow that does
+          # not fetch history; `change-guardrail.yml` and `semantic-review.yml`,
+          # written for base..head comparison, both already set this. Giving the
+          # gate the repository shape it was written against is the fix — making
+          # the test tolerate a shallow clone would only teach it to pass where
+          # it cannot look.
+          fetch-depth: 0
 
       # ── 1. Alembic revision graph (no DB needed) ──────────────────────────
       - uses: actions/setup-python@v5
@@ -47,7 +65,7 @@ jobs:
       - name: Stop-hook decision tests (all-green / failed / unverified)
         run: |
           pip install pytest
-          python -m pytest -q scripts/ci/test_stop_gate.py scripts/ci/test_agent_sdlc.py
+          python -m pytest -q scripts/ci/test_stop_gate.py scripts/ci/test_agent_sdlc.py scripts/ci/test_guardrail_diff_range.py scripts/ci/test_ci_wiring_is_real.py scripts/ci/test_tool_bodies_are_guarded.py
 
       # ── 2. Frontend typecheck (uncommitted-provider / type breaks) ────────
       - uses: actions/setup-node@v4
@@ -83,4 +101,14 @@ jobs:
           ENVIRONMENT: "test"
           SECRET_KEY: "ci-preflight-secret-key-not-used-in-production-please-do-not-copy"
           DATASOURCE_ENCRYPTION_KEY: "0j7eUt3wx+0UtT7hH5LnuMpLiDmTN7f1WaRtPyEcjPw="
+          # THE FLAGGED MODULES HAVE TO BE IMPORTED, OR THIS SMOKE TEST IS BLIND.
+          #
+          # `api/__init__.py` imports the agent_flows and metadata_catalog routers
+          # only `if settings.METADATA_CATALOG_ENABLED`, which DEFAULTS TO FALSE.
+          # Measured: with the flag unset, `import app.main` pulls in ZERO
+          # agent_flows router modules — so a broken import in the largest module
+          # in the repo passed the gate whose entire purpose is "lazy imports hide
+          # breakage until runtime".
+          METADATA_CATALOG_ENABLED: "true"
+          GOVERN_ENABLED: "true"
         run: python -c "import app.main"

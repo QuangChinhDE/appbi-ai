@@ -113,7 +113,24 @@ test.describe('published bot surface @critical', () => {
 
       const env = (await run.json()).envelope;
       expect(env, 'no envelope came back').toBeTruthy();
-      expect(['ok', 'partial']).toContain(env.status);
+
+      // ONE ASSERTION NEEDS A PROVIDER; THE REST OF THIS TEST DOES NOT.
+      //
+      // `ok`/`partial` is a claim about a run that ANSWERED, and with no model
+      // credential the answering step errors and the run is `failed` — true, and
+      // nothing a fixture can seed around. Everything below it is about the tool
+      // step, which runs before the agent and records regardless: that the trace
+      // names which step made which call, and that nothing was refused inside the
+      // binding's scope. Skipping the whole test to protect one line would take
+      // the real bot surface — the thing seeding a link just made reachable —
+      // back out of CI, so the guard sits on the line that needs it.
+      //
+      // Deterministic cover for the skipped line, stubbed vendor, no spend:
+      // `test_agent_flow_golden.py`. WHAT STAYS UNVERIFIED IN CI: the live
+      // provider round-trip.
+      if (process.env.E2E_NO_MODEL !== '1') {
+        expect(['ok', 'partial']).toContain(env.status);
+      }
 
       // THE TOOL RAN, AND IT IS NAMED. An answer with no trace is an answer
       // nobody can check.

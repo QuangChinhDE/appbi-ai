@@ -57,6 +57,15 @@ class BudgetExhausted(Exception):
     """
 
 
+#: Dict keys whose numeric value identifies a record rather than measuring
+#: anything. Evidence is the pile an answer's figures are checked against, so a
+#: primary key in it is a false witness: it can only ever agree by coincidence.
+_IDENTIFIER_KEYS = frozenset({
+    "id", "chart_id", "dashboard_id", "doc_id", "dataset_id", "dataset_table_id",
+    "link_id", "binding_id", "run_id", "version", "flow_version",
+})
+
+
 @dataclass
 class Budget:
     """Ceilings for the WHOLE run.
@@ -143,6 +152,26 @@ class RunState:
     #: the thing `carried` could not do.
     outputs: dict[str, Any] = field(default_factory=dict)
     trace: list[TraceStep] = field(default_factory=list)
+    #: WHAT THE ANSWERING MODEL ACTUALLY SAW — which upstream steps reached it,
+    #: which were reduced, which did not fit. A node's output and a node's
+    #: contribution to the next prompt are different things, and an author who
+    #: inspects the first and assumes the second has been wrong before.
+    context_coverage: dict[str, Any] = field(default_factory=dict)
+    #: WHY THE EVIDENCE IS HERE — per read step. Numeric verification asks whether
+    #: a figure exists in the evidence; it cannot ask whether the evidence answers
+    #: the question. Recorded so a run can tell "selected for this question" from
+    #: "read through an explicit report-overview mode" from "unresolved", which
+    #: are three different grounds for the same set of numbers.
+    question_grounding: dict[str, Any] = field(default_factory=dict)
+    #: WHICH STEPS PRODUCED EVIDENCE. `evidence` is a flat list of numbers, so
+    #: "did this figure come from the step whose question never resolved" was
+    #: unanswerable — and without it, a grounding rule could only punish every run
+    #: with any unresolved source, including ones another capability answered
+    #: correctly. The smallest contract that makes the distinction safe.
+    evidence_sources: set[str] = field(default_factory=set)
+    #: The step currently producing evidence. Set by a handler at entry; read by
+    #: `add_evidence`, so call sites do not each have to remember to report.
+    evidence_source: str = ""
     #: Human-readable route, e.g. ["Path A", "Loop×4", "MEDIUM"]. What the Runs
     #: table shows in its "Execution path" column.
     path: list[str] = field(default_factory=list)
@@ -169,6 +198,17 @@ class RunState:
     #: inferring means guessing which shapes mean "skipped", and a guess in the
     #: trace is worse than no trace.
     skipped: dict[str, str] = field(default_factory=dict)
+    #: A breakdown the question asked for that no tool call ever delivered.
+    #:
+    #: ``{"requested": "<field>", "satisfied": bool}``, written when the dimension
+    #: gate refuses a grouped call and cleared when a grouped call succeeds on the
+    #: dimension that was asked for. Measured: once the gate started refusing the
+    #: category chart, two of three live runs stopped substituting a category —
+    #: and then answered about monthly GMV instead, which is neither the answer
+    #: nor an admission that the report cannot give it. The refusal fixed the
+    #: wrong answer and left a wandering one, so the fact has to survive to the
+    #: answer step where it can be said out loud.
+    dimension_gap: dict[str, Any] = field(default_factory=dict)
     #: Set by a Stop node, or by the executor when the budget runs out.
     stopped: bool = False
     stop_message: str = ""
@@ -201,6 +241,8 @@ class RunState:
         cells, and the check is "did this figure come from somewhere", not a full
         index of the warehouse.
         """
+        if depth == 0 and self.evidence_source:
+            self.evidence_sources.add(self.evidence_source)
         if depth > 6 or len(self.evidence) > 20000:
             return
         if isinstance(payload, bool):
@@ -216,7 +258,27 @@ class RunState:
                 self.evidence_labels.add(payload.strip().lower())
             return
         if isinstance(payload, dict):
-            for v in payload.values():
+            for k, v in payload.items():
+                # AN IDENTIFIER IS NOT A MEASUREMENT.
+                #
+                # `_route_call` in the read handler already refuses to harvest a
+                # chart listing for this reason — "chart 1001" must not vouch for
+                # a claim of 1001. But the DATA tools echo the id back inside
+                # their own result: `get_chart_data` returns
+                # `_ok({"chart_id": ..., "columns": ..., "rows": ...})` and an
+                # insight pack opens with `chart_id` plus a `related` list of
+                # other charts' ids. Those go through `_call`, so the ids landed
+                # in the ledger anyway and the invariant held only where nobody
+                # had looked. Observed: a one-chart read put 41 and 88 in the
+                # pile the figure checker matches against.
+                #
+                # Keyed on what the value IS, not on a list of field names that
+                # happened to be numeric: these keys name a row in a table, and a
+                # row number cannot support a statement about the world. Titles
+                # and names are deliberately NOT here — they are labels, and
+                # `_unknown_labels` needs them.
+                if isinstance(v, (int, float)) and k in _IDENTIFIER_KEYS:
+                    continue
                 self.add_evidence(v, depth=depth + 1)
             return
         if isinstance(payload, (list, tuple)):

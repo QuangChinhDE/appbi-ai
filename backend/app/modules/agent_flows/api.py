@@ -35,6 +35,7 @@ from app.services.agent_flows import permissions as perms
 from app.services.agent_flows import registry as reg
 from app.services.agent_flows import history as history_service
 from app.services.agent_flows import runs as runs_service
+from app.services.agent_flows.contract import strict_authoring_errors  # noqa: F401
 from app.services.agent_flows.contract import Flow, upgrade_body
 from app.services.agent_flows.models_catalogue import catalogue as model_catalogue
 from app.services.agent_flows.runtime.nodes import catalogue as node_catalogue
@@ -258,11 +259,17 @@ def import_draft(
     if not name:
         raise HTTPException(status_code=400, detail="Bản nháp thiếu 'name'")
 
+    _authoring = {**upgrade_body(data, key=key or "draft", name=name),
+                  "key": key or "draft", "name": name}
+    _unknown = strict_authoring_errors(_authoring)
+    if _unknown:
+        return {
+            "ok": False,
+            "errors": _unknown[:5],
+            "warnings": [],
+        }
     try:
-        flow = Flow.model_validate(
-            {**upgrade_body(data, key=key or "draft", name=name),
-             "key": key or "draft", "name": name}
-        )
+        flow = Flow.model_validate(_authoring)
     except Exception as exc:  # noqa: BLE001
         return {
             "ok": False,
@@ -446,11 +453,13 @@ def validate_flow(body: ValidateBody, _: User = Depends(can_view)) -> dict[str, 
     the author types. Without it the only way to see a warning was to SAVE, which
     used to mint a version — so the act of checking changed the thing being checked.
     """
+    _authoring = {**upgrade_body(body.body, key=body.brain_key, name=body.name),
+                  "key": body.brain_key, "name": body.name}
+    _unknown = strict_authoring_errors(_authoring)
+    if _unknown:
+        return {"ok": False, "errors": _unknown[:5], "warnings": []}
     try:
-        flow = Flow.model_validate(
-            {**upgrade_body(body.body, key=body.brain_key, name=body.name),
-             "key": body.brain_key, "name": body.name}
-        )
+        flow = Flow.model_validate(_authoring)
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "errors": [reg._first_message(exc)], "warnings": []}
 

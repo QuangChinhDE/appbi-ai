@@ -44,6 +44,34 @@ jobs:
       # default so any import-time engine creation succeeds.
       DATABASE_URL: "sqlite:///./ci_contract.db"
       PYTHONPATH: ${{ github.workspace }}/backend
+
+      # THE MODULES THE SUITE ASSERTS ABOUT HAVE TO EXIST.
+      #
+      # `permissions._OPTIONAL_MODULES` gates `govern`, `agent_flows` and `chat`
+      # behind METADATA_CATALOG_ENABLED and GOVERN_ENABLED, and both default to a
+      # deployment that has them off. With the flags unset, `MODULE_ALLOWED_LEVELS`
+      # simply has no `chat` key and a test asserting its permission ladder fails
+      # with `KeyError: 'chat'` — not because the ladder is wrong, but because the
+      # module was compiled out from under it.
+      #
+      # `.env.example` and docker-compose both turn these on, so this is the
+      # configuration that ships. It is the same flag whose absence left the E2E
+      # job with no `/agent-flows/*` routes at all.
+      METADATA_CATALOG_ENABLED: "true"
+      GOVERN_ENABLED: "true"
+
+      # `app.main` calls `validate_security_settings()` AT IMPORT, and it only
+      # returns early when ENVIRONMENT is dev/development/test. The code defaults
+      # are ENVIRONMENT=production with an insecure SECRET_KEY and an empty
+      # DATASOURCE_ENCRYPTION_KEY, so any suite that imports app.main dies before
+      # its first assertion. `test_module_floor` must import it — it walks the
+      # route table rather than hand-listing endpoints — and that is how adding
+      # one suite turned this job red without a product change.
+      #
+      # Every other backend job already sets this: integration-golden below,
+      # e2e.yml, preflight.yml. docker-compose supplies it from .env, so the
+      # shipping deployment never sees it. This job was the exception.
+      ENVIRONMENT: test
     steps:
       - uses: actions/checkout@v4
 
@@ -55,9 +83,27 @@ jobs:
       - name: Install backend dependencies
         run: pip install -r requirements.txt
 
+      # A TIER-1 ORACLE THAT SKIPS IS NOT COVERAGE.
+      #
+      # Its own step, before the suite, so the failure reads as "share_of's
+      # oracle skipped" rather than being one skipped line inside a 70-suite run
+      # that still exits 0. The declaration names node ids; this runs exactly
+      # those and fails on missing/skipped/errored/failed.
+      - name: Every tier-1 semantic oracle actually runs
+        working-directory: ${{ github.workspace }}
+        run: python scripts/ci/check_tier1_oracles.py
+
       - name: Run semantic-contract + engine unit tests (no BigQuery)
+        # THE FAILURE HAS TO BE READABLE BY WHOEVER SEES IT GO RED.
+        #
+        # Job logs need admin rights on this repository, so a red run showed
+        # "Process completed with exit code 1" and nothing else — which is how a
+        # pytest USAGE error (exit 4, the whole suite skipped) went unnoticed and
+        # looked the same as a real test failure. The job summary is readable
+        # without admin, so the tail of the run goes there on failure.
         run: |
-          python -m pytest -q \
+          set -o pipefail
+          python -m pytest -q --tb=short \
             tests/test_locked_contract.py \
             tests/test_phase2_filter_propagation.py \
             tests/test_phase4_symmetric_aggregates.py \
@@ -86,7 +132,72 @@ jobs:
             tests/test_i5_hard_gate_stays_lowest.py \
             tests/test_tool_output_contract.py \
             tests/test_tool_node.py \
-            tests/test_error_taxonomy_and_empty.py
+            tests/test_error_taxonomy_and_empty.py \
+            tests/test_chart_discovery_and_figure_correction.py \
+            tests/test_chat_thread_sharing.py \
+            tests/test_coordinator_is_visible_to_the_flow.py \
+            tests/test_flow_attached_but_unreadable.py \
+            tests/test_flow_coordinate.py \
+            tests/test_flow_synthesis_sees_all_steps.py \
+            tests/test_flow_type.py \
+            tests/test_followup_and_freshness.py \
+            tests/test_govern_doc_citation.py \
+            tests/test_govern_doc_evidence_link.py \
+            tests/test_govern_knowledge_tools.py \
+            tests/test_what_the_ai_sees.py \
+            tests/test_read_status_survives_compaction.py \
+            tests/test_diagnostics_tell_the_truth.py \
+            tests/test_tree_validation_is_canonical.py \
+            tests/test_nested_specialist_credentials.py \
+            tests/test_asset_resolution.py \
+            tests/test_context_handoff.py \
+            tests/test_verifier_false_alarms.py \
+            tests/test_module_floor.py \
+            tests/test_cross_lingual_resolution.py \
+            tests/test_question_grounding.py \
+            tests/test_reuse_evidence_equivalence.py \
+            tests/test_reader_capability_boundary.py \
+            tests/test_time_axis_contract.py \
+            tests/test_partial_period_comparison.py \
+            tests/test_grant_has_a_way_in.py \
+            tests/test_nonrecoverable_retry_policy.py \
+            tests/test_dead_retry_costs_nothing.py \
+            tests/test_dimension_is_not_a_measure.py \
+            tests/test_requested_dimension_is_not_substituted.py \
+            tests/test_analytical_tool_semantics.py \
+            tests/test_tool_certification_matrix.py \
+            tests/test_capability_serviced_the_intent.py \
+            tests/test_qualifier_provenance.py \
+            tests/test_eval_accounting.py \
+            tests/test_notice_audience_boundary.py \
+            tests/test_reader_diagnostics_are_product_facing.py \
+            tests/test_no_evidence_no_confident_number.py \
+            tests/test_report_read_selection_is_explicit.py \
+            tests/test_authoring_is_strict.py \
+            tests/test_node_child_slots.py 2>&1 | tee /tmp/pytest-unit.log
+      - name: Report the unit failure where it can be read
+        if: failure()
+        # AS ANNOTATIONS, not a job summary.
+        #
+        # `$GITHUB_STEP_SUMMARY` does not reach the check-run payload — it comes
+        # back empty to anyone reading the API. `::error::` lines do, through
+        # /check-runs/{id}/annotations, with no token: that is how the Playwright
+        # job's failures became readable. Job logs remain admin-only, which is the
+        # whole reason this step exists.
+        run: |
+          log=/tmp/pytest-unit.log
+          if [ ! -s "$log" ]; then
+            echo "::error::the unit step produced no log — it failed before pytest started"
+            exit 0
+          fi
+          # The short summary pytest prints at the end: one line per failure.
+          grep -E '^(FAILED|ERROR)' "$log" | head -n 25 | while IFS= read -r line; do
+            echo "::error::$line"
+          done
+          # And the counts, so "3 failed" is visible even if the names are cut.
+          tail -n 3 "$log" | while IFS= read -r line; do
+            [ -n "$line" ] && echo "::error::$line"
+          done
 
   # ── Tier 2: integration (golden replay on a real Postgres) ─────────────────
   integration-golden:

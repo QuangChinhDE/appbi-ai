@@ -33,6 +33,7 @@ from app.services.agent_flows import registry as reg
 from app.services.agent_flows import runs as runs_service
 from app.services.agent_flows.contract import Flow
 from app.services.agent_flows.envelope import (
+    reader_notices,
     ChartInfo,
     ConversationInfo,
     FieldRef,
@@ -526,7 +527,14 @@ async def run_for_link(
             if ev.type == "result":
                 out = FlowOutput.model_validate(ev.extra.get("envelope"))
                 out.notices = [*memory_notices, *out.notices]
-                ev.extra["envelope"] = out.to_dict()
+                # READER BOUNDARY — ON THE WAY OUT ONLY.
+                #
+                # What is SENT drops author diagnostics; what is RECORDED keeps
+                # them. Filtering before `record` stored the reader's copy, so a
+                # flow's real viewer traffic left no diagnostics in Runs at all —
+                # an author saw them only for questions they asked themselves,
+                # which is the opposite of where they are needed.
+                ev.extra["envelope"] = out.to_dict(notices=reader_notices(out.notices))
                 save_memory(
                     db, session_key=session_key, token=getattr(link, "token", ""),
                     fp=fp, out=out, flow=flow,
@@ -1070,7 +1078,14 @@ async def run_for_chat_thread(
             if ev.type == "result":
                 out = FlowOutput.model_validate(ev.extra.get("envelope"))
                 out.notices = [*memory_notices, *out.notices]
-                ev.extra["envelope"] = out.to_dict()
+                # READER BOUNDARY — ON THE WAY OUT ONLY.
+                #
+                # What is SENT drops author diagnostics; what is RECORDED keeps
+                # them. Filtering before `record` stored the reader's copy, so a
+                # flow's real viewer traffic left no diagnostics in Runs at all —
+                # an author saw them only for questions they asked themselves,
+                # which is the opposite of where they are needed.
+                ev.extra["envelope"] = out.to_dict(notices=reader_notices(out.notices))
                 save_memory(
                     db, session_key=thread.session_key, token=token,
                     fp=fp, out=out, flow=flow,

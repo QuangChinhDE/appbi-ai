@@ -39,17 +39,15 @@ import React from 'react';
 import { AppModalShell } from '@/components/common/AppModalShell';
 import { ChartNamesContext, RichMarkdown, extractFollowups } from '@/components/common/AiAnswer';
 import { CitationCards } from '@/components/common/CitationCards';
+import { AnswerBlocks } from '@/components/dashboards/AnswerBlocks';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
 import { Input, Textarea } from '@/components/ui/Input';
 import { toast } from '@/lib/toast';
 import { cn } from '@/lib/utils';
 import { useI18n } from '@/providers/LanguageProvider';
-import {
-  listTestTargetReports, rateRun, testFlow, testFlowAsChat, testFlowOnReport, walkNodes,
-  type ChatTestResult, type FlowLinkUsage, type FlowNode, type FlowType,
-  type ReportTestResult, type TestTargetReport,
-} from '@/lib/agentFlows';
+import { FlowNotice, authorNotices, listTestTargetReports, rateRun, readerNotices, testFlow, testFlowAsChat, testFlowOnReport, type AnswerBlock, type ChatTestResult, type FlowLinkUsage, type FlowNode, type FlowType, type ReportTestResult, type TestTargetReport, walkNodes } from '@/lib/agentFlows';
+import { noticeCandidates, noticeCandidatesHidden } from '@/lib/notices';
 
 /** One alternative a branching node can take, as something testable.
  *
@@ -111,8 +109,15 @@ export function branchProbes(nodes: FlowNode[]): BranchProbe[] {
 type Envelope = {
   status?: string;
   trace?: { path: string; steps: TraceStepView[] };
-  answer?: { blocks: { type: string; markdown?: string }[] };
-  notices?: { code: string; text: string }[];
+  /** THE FULL UNION, not a markdown-only shape.
+   *
+   *  Typing this as markdown-only is what let the panel rebuild the answer from
+   *  the markdown field alone without TypeScript objecting. `metric`, `table`,
+   *  `chart_ref` and `callout` carry none, so they were filtered out and an author
+   *  checking a flow saw an em-dash for an answer a reader would have seen
+   *  rendered. Widening it made the compiler reject the flatten immediately. */
+  answer?: { blocks: AnswerBlock[] };
+  notices?: FlowNotice[];
   /** Which passages the answer was built from. The runtime has recorded these for
    *  a while and nothing rendered them — an answer arrived with its evidence
    *  attached and the reader saw prose. */
@@ -140,6 +145,10 @@ type Turn = {
    *  and a verdict shown against a later turn's route would be a lie. */
   aimed?: string;
   answer: string;
+  /** The answer as the runtime produced it. The flattened `answer` above is still
+   *  used for the `[FOLLOWUP]` text convention and for a legacy envelope that
+   *  carries no blocks; where blocks exist they are what gets rendered. */
+  blocks?: AnswerBlock[];
   env?: Envelope;
   runId?: number;
   rating?: 'up' | 'down';
@@ -314,12 +323,17 @@ export function TestChat({
         }) as ReportTestResult;
       }
       const env = res.envelope as Envelope | undefined;
-      const answer = (env?.answer?.blocks || [])
-        .map((b) => b.markdown).filter(Boolean).join('\n\n');
+      const blocks = env?.answer?.blocks || [];
+      // TEXT ONLY, AND DELIBERATELY. This feeds the `[FOLLOWUP]` text convention
+      // and the fallback for a legacy envelope that carries no blocks. It is no
+      // longer "the answer" — `blocks` is, and it is what gets rendered.
+      const answer = blocks
+        .map((b) => (b.type === 'text' ? b.markdown : ''))
+        .filter(Boolean).join('\n\n');
       setReadiness(res.readiness);
       setReportInfo(res.report);
       setTurns((prev) => prev.map((tn, i) => (
-        i === at ? { ...tn, answer, env, runId: res.run_row_id ?? undefined } : tn
+        i === at ? { ...tn, answer, blocks, env, runId: res.run_row_id ?? undefined } : tn
       )));
       setOpenTurn(at);
     } catch (e: unknown) {
@@ -720,9 +734,30 @@ function TurnView({
           )}
 
           <div className="rounded-2xl rounded-bl-md border border-[rgb(var(--border-line))] bg-surface-1 px-3.5 py-2.5 text-caption leading-relaxed">
-            {answer.body
-              ? <RichMarkdown text={answer.body} />
-              : <span className="text-text-tertiary">—</span>}
+            {/* THE SAME RENDERER THE READER GETS.
+                The author's job on this screen is judging the answer, so it has to
+                BE the answer. Flattening to markdown dropped `metric`, `table`,
+                `chart_ref` and `callout` — which have no markdown — and printed an
+                em-dash while the run reported `ok`.
+                `onOpenChart` is deliberately omitted: there is no dashboard behind
+                this panel to open a chart in, and the renderer treats it as
+                optional. */}
+            {turn.blocks?.length ? (
+              <AnswerBlocks
+                blocks={turn.blocks}
+                renderMarkdown={(md) => <RichMarkdown text={md} />}
+                onAskFollowup={isLast && !busy ? onAsk : undefined}
+              />
+            ) : answer.body ? (
+              <RichMarkdown text={answer.body} />
+            ) : (
+              /* A run that produced NO blocks is a different fault from a run that
+                 produced blocks this panel could not show, and the author needs to
+                 tell them apart. The em-dash said neither. */
+              <span className="text-text-tertiary">
+                {t('agentFlows.test.noAnswerBlocks')}
+              </span>
+            )}
             {/* THE EVIDENCE, openable at the version it was cited from. Testing a
                 flow means checking WHERE its answers come from, and until now the
                 one screen built for that showed only the prose. */}
@@ -731,8 +766,17 @@ function TurnView({
 
           {/* THE SUGGESTIONS A VIEWER WOULD SEE, and they work here too. Clicking
               one asks it — which is also the shortest path to a second turn, where
-              reuse and transcript-reading branches start to matter. */}
-          {isLast && !!answer.suggestions.length && (
+              reuse and transcript-reading branches start to matter.
+
+              ONLY WHEN THERE ARE NO BLOCKS. `extractFollowups` ends in a heuristic
+              that scrapes trailing question lines out of prose, written for answers
+              that were nothing but prose. An envelope with blocks says what its
+              follow-ups are — the `followups` block — and `AnswerBlocks` renders
+              those as chips itself. Running the heuristic as well showed every
+              question twice: once in the text block, which is rendered verbatim and
+              correctly, and once as a chip scraped back out of it. Observed in the
+              browser against a live model. */}
+          {isLast && !turn.blocks?.length && !!answer.suggestions.length && (
             <div className="mt-1.5 flex flex-wrap gap-1.5">
               {answer.suggestions.map((q, i) => (
                 <button
@@ -811,16 +855,48 @@ function TurnView({
             )}
           </div>
 
-          {/* Notices explain an answer that would otherwise look unexplained — a
-              branch that matched nothing, a truncated read, a reset memory. */}
-          {!!(env.notices || []).length && (
+          {/* TWO AUDIENCES, TWO LISTS. Studio Test is an author surface that
+              PREVIEWS a reader answer, so it receives both kinds — and showing
+              them as one undifferentiated list told the author that maintenance
+              advice was something the viewer would read. */}
+          {!!readerNotices(env.notices).length && (
             <ul className="mt-2 space-y-1">
-              {env.notices!.map((n, i) => (
+              {readerNotices(env.notices).map((n, i) => (
                 <li key={i} className="rounded-md border border-[rgb(var(--border-line))] bg-surface-2 px-2.5 py-1.5 text-caption leading-relaxed text-text-secondary">
                   {n.text}
                 </li>
               ))}
             </ul>
+          )}
+
+          {!!authorNotices(env.notices).length && (
+            <div className="mt-2 rounded-lg border border-warning/25 bg-warning/5 p-2.5">
+              <p className="mb-1 text-micro font-emphasis uppercase tracking-wide text-warning">
+                {t('agentFlows.test.authorDiagnostics')}
+              </p>
+              <ul className="space-y-1.5">
+                {authorNotices(env.notices).map((n, i) => (
+                  <li key={i} className="text-caption leading-relaxed text-text-secondary">
+                    {n.text}
+                    {!!noticeCandidates(n).length && (
+                      <ul className="mt-1 space-y-0.5 text-tiny text-text-tertiary">
+                        {noticeCandidates(n).map((c, k) => (
+                          <li key={k}>· {c.chart_name || c.chart_id}{c.why ? ` — ${c.why}` : ''}</li>
+                        ))}
+                        {noticeCandidatesHidden(n) > 0 && (
+                          <li className="italic">… còn {noticeCandidatesHidden(n)} khả năng nữa</li>
+                        )}
+                      </ul>
+                    )}
+                    {!!n.remedies?.length && (
+                      <ul className="mt-1 list-disc pl-4 text-tiny text-text-tertiary">
+                        {n.remedies.map((r, k) => <li key={k}>{r}</li>)}
+                      </ul>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </div>
           )}
 
           {open && (

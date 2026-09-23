@@ -29,7 +29,7 @@ import { GripVertical, Plus } from 'lucide-react';
 
 import { cn } from '@/lib/utils';
 import { useI18n } from '@/providers/LanguageProvider';
-import type { FlowNode, InsertTarget, NodeSpec } from '@/lib/agentFlows';
+import { isBranching, isContainer, type FlowNode, type InsertTarget, type NodeSpec } from '@/lib/agentFlows';
 import { idBox, idInsert, idNode, idRule, useFlowEdges } from './useFlowEdges';
 import type { MiniRect } from './Minimap';
 
@@ -40,8 +40,19 @@ export interface CanvasProps {
   answerKey: string;
   onSelect: (key: string) => void;
   onInsert: (target: InsertTarget) => void;
-  /** node key → runs in the coverage window. `0` marks a branch nobody reaches. */
-  coverage?: Record<string, number>;
+  /** The step that is the canvas's single tab stop when NOTHING is selected.
+   *
+   *  Roving focus needs a door. Without this every card was `tabindex="-1"` on a
+   *  freshly loaded flow, so Tab walked past the drag handles and insert points
+   *  and never reached a step — the arrows worked, but only for someone who had
+   *  already clicked. A keyboard-only author could not enter the list at all. */
+  focusKey?: string | null;
+
+  /** node key → how many times it RAN in the window. `0` marks a branch nobody
+   *  reaches. Named for what it counts: `coverage` also means "which question
+   *  classes can this flow answer" on the Test tab, and one word for two
+   *  product concepts made both of them ambiguous. */
+  runCounts?: Record<string, number>;
   running?: Record<string, 'running' | 'done' | 'error' | 'skipped' | 'reused'>;
   zoom?: number;
   /** Dragging is owned by the parent so undo can capture the move as one step. */
@@ -131,7 +142,12 @@ export function FlowCanvas(props: CanvasProps) {
       ref={stageRef}
       style={{ transform: `scale(${zoom})`, transformOrigin: 'top center' }}
       className={cn(
-        'relative flex min-w-[860px] flex-col items-center px-10 pb-24 pt-6',
+        // 640, not 860. The old floor was set when the inspector was a fixed
+        // 400px; at the declared 1280px minimum with the inspector widened it
+        // forced horizontal scrolling on a canvas that had room. The container
+        // scrolls internally, so a floor only decides when that starts — and a
+        // single column of cards is comfortable well below 860.
+        'relative flex min-w-[640px] flex-col items-center px-10 pb-24 pt-6',
         drag.key && 'select-none',
       )}
     >
@@ -243,18 +259,18 @@ function InsertPoint({
 }
 
 function NodeCard({
-  node, spec, selected, isAnswer, onSelect, width, coverage, runState, register, drag, setDrag,
+  node, spec, selected, isTabStop, isAnswer, onSelect, width, runCount, runState, register, drag, setDrag,
   draggable,
 }: {
-  node: FlowNode; spec?: NodeSpec; selected: boolean; isAnswer: boolean;
-  onSelect: () => void; width: string; coverage?: number; runState?: string;
+  node: FlowNode; spec?: NodeSpec; selected: boolean; isTabStop?: boolean; isAnswer: boolean;
+  onSelect: () => void; width: string; runCount?: number; runState?: string;
   register: SharedProps['register']; drag: DragState;
   setDrag: (d: DragState) => void; draggable: boolean;
 }) {
   const { t, language } = useI18n();
   const specLabel = spec ? specText(spec, 'label', language) : '';
   const title = node.name || specLabel || node.type;
-  const never = coverage === 0;
+  const never = runCount === 0;
   return (
     <div
       ref={register(idNode(node.key))}
@@ -274,6 +290,12 @@ function NodeCard({
         <button
           type="button"
           aria-label={t('agentFlows.canvas.dragHandle')}
+          // NOT A TAB STOP. It only responds to a pointer, and Tab landing on it
+          // ahead of the step card is what made the canvas look keyboard-hostile:
+          // the author arrived somewhere that does nothing and had no way
+          // forward. Alt+Arrow on the card is the keyboard equivalent of this
+          // control.
+          tabIndex={-1}
           onPointerDown={(e) => {
             e.preventDefault();
             e.stopPropagation();
@@ -284,7 +306,16 @@ function NodeCard({
           <GripVertical className="h-3.5 w-3.5" />
         </button>
       )}
-      <button type="button" onClick={onSelect} className="w-full text-left">
+      {/* NAMED AND STATEFUL. It used to be an unlabelled button wrapping a div,
+          so a screen reader read the card's text with no indication of what
+          activating it does or whether this is the step currently open in the
+          inspector. `aria-pressed` is the honest role here: selecting a node is a
+          toggle-like state, not navigation. */}
+      <button type="button" onClick={onSelect} className="w-full text-left"
+        aria-pressed={selected}
+        aria-label={`${title} — ${specLabel || node.type}`}
+        tabIndex={selected || isTabStop ? 0 : -1}
+        data-node-button={node.key}>
         <div className="flex min-h-[44px] items-center gap-2 border-b border-[rgb(var(--border-line))] px-2.5 py-1.5">
           <span className={cn(
             'flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-md text-small',
@@ -412,8 +443,15 @@ function RuleCard({
       ref={register(id)}
       data-edge-id={id}
       onClick={onClick}
+      // A lane header is the same kind of control as a node card: activating it
+      // opens that branch in the inspector. Same state, said the same way.
+      aria-pressed={selected}
+      aria-label={`${label} — ${title}`}
       className={cn(
-        'relative z-10 w-[280px] overflow-hidden rounded-lg border bg-surface-1 text-left transition',
+        // `w-[280px]` was a fixed width inside a grid column that can now be as
+        // narrow as 220px; `max-w-full` keeps the card inside its lane instead of
+        // overhanging the one beside it.
+        'relative z-10 w-[280px] max-w-full overflow-hidden rounded-lg border bg-surface-1 text-left transition',
         selected ? 'border-brand ring-[3px] ring-brand/10'
           : 'border-[rgb(var(--border-strong))] hover:border-brand/40',
       )}
@@ -485,7 +523,8 @@ function Body({
 function NodeBlock({
   node, containerPath, ...rest
 }: SharedProps & { node: FlowNode; containerPath: string }) {
-  const { specs, selectedKey, answerKey, onSelect, onInsert, coverage, running, register, drag, setDrag } = rest;
+  const { specs, selectedKey, answerKey, onSelect, onInsert, runCounts, running, register, drag, setDrag } = rest;
+  void onInsert;
   const spec = specs[node.type];
   const width = containerPath ? '280px' : '360px';
 
@@ -493,17 +532,23 @@ function NodeBlock({
     <NodeCard
       node={node} spec={spec}
       selected={selectedKey === node.key}
+      isTabStop={(selectedKey || rest.focusKey) === node.key}
       isAnswer={node.key === answerKey}
       onSelect={() => onSelect(node.key)}
       width={width}
-      coverage={coverage?.[node.key]}
+      runCount={runCounts?.[node.key]}
       runState={running?.[node.key]}
       register={register} drag={drag} setDrag={setDrag}
       draggable={!!rest.onMove}
     />
   );
 
-  if (node.type === 'if' || node.type === 'switch' || node.type === 'coordinate') {
+  // WHICH NODES HAVE LANES is topology and comes from the declaration; WHAT EACH
+  // LANE SAYS is per-type and stays here — a specialist shows its `when`, an if
+  // path shows how many conditions it matches. Only the first of those was a
+  // duplicate of the backend's model, and only the first is what went missing when
+  // `coordinate` was added.
+  if (isBranching(node)) {
     const lanes = node.type === 'coordinate'
       // Drawn as lanes like a Switch, because that is what it is on the canvas:
       // parallel bodies, one per specialist. What differs is who chooses — a
@@ -569,7 +614,11 @@ function NodeBlock({
         <Gap short />
         <div
           className="relative grid w-full gap-8 pt-6"
-          style={{ gridTemplateColumns: `repeat(${Math.max(lanes.length, 1)}, minmax(0, 1fr))` }}
+          // `minmax(220px, 1fr)`, not `minmax(0, 1fr)`. Three specialists at
+          // 1280px with the inspector open divided the row into ~150px lanes and
+          // the cards inside them clipped. A floor turns that into the canvas's
+          // own horizontal scroll, which is the intentional kind.
+          style={{ gridTemplateColumns: `repeat(${Math.max(lanes.length, 1)}, minmax(220px, 1fr))` }}
         >
           {lanes.map((lane) => (
             <div key={lane.key} className="relative flex min-w-0 flex-col items-center">
@@ -597,7 +646,8 @@ function NodeBlock({
     );
   }
 
-  if (node.type === 'loop') {
+  if (isContainer(node)) {
+    // The non-branching container: one body, drawn as a box.
     return (
       <>
         {card}
