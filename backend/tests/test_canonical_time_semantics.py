@@ -51,7 +51,7 @@ CORPUS: tuple[tuple[str, bool, str], ...] = (
     ("holiday_flag", False, "`day` inside `holiday`"),
     ("payday_amount", False, "`day` inside `payday`"),
     ("monday_sales", False, "`day` inside `monday` — a weekday label, not an axis"),
-    ("quy_mo_doanh_nghiep", True, "`quy` IS a segment here; see the ambiguity note"),
+    ("quy_mo_doanh_nghiep", False, "AMBIGUOUS: `quy mo` is a size — values must decide"),
     # ── English time names ─────────────────────────────────────────────────
     ("created_at", True, "`at` — the one advanced_tools never learned"),
     ("updated_at", True, "same"),
@@ -71,12 +71,17 @@ CORPUS: tuple[tuple[str, bool, str], ...] = (
     ("nam_tai_chinh", True, "year as a leading segment"),
     ("tuan", True, "week — a token only advanced_tools carried"),
     ("tuần", True, "week, with diacritics"),
-    ("quy", True, "quarter — a token only advanced_tools carried"),
-    ("quý", True, "quarter, with diacritics"),
-    # ── knowingly ambiguous, pinned so it is a decision and not an accident ─
-    ("ky_bao_cao", True, "reporting period — the sense that appears on axes"),
-    ("ky_thuat", True, "engineering — accepted; no name-only rule separates it"),
-    ("quy_dinh", True, "regulation — same trade as ky_thuat"),
+    ("quy", False, "AMBIGUOUS without diacritics: `quý` quarter or `quy` rule"),
+    ("quý", True, "STRONG: the diacritics settle it"),
+    # ── AMBIGUOUS: the name suggests, the VALUES decide ────────────────────
+    # Session 1 pinned these True on the strength of a segment token, which
+    # let `analyze_trend` run time-series maths over ['engineering', 'sales'].
+    # `looks_like_time_name` is now STRONG-only; these names are not rejected,
+    # they are referred to their values. See
+    # `test_time_axis_needs_more_than_a_name.py`, which locks that behaviour.
+    ("ky_bao_cao", False, "AMBIGUOUS: a real axis, but only its VALUES can say so"),
+    ("ky_thuat", False, "AMBIGUOUS: `kỹ thuật` is engineering — the bug this closed"),
+    ("quy_dinh", False, "AMBIGUOUS: `quy định` is a regulation"),
     # ── non-time ───────────────────────────────────────────────────────────
     ("customer_state", False, "a dimension"),
     ("product_category", False, "a dimension"),
@@ -124,13 +129,18 @@ def test_every_implementation_agrees_on_every_name(name, expected, why):
     )
 
 
-def test_the_packs_aliases_are_the_canonical_object_not_a_copy():
-    """`coverage` and `project_ahead` must not drift by being re-implemented."""
+def test_the_packs_use_the_canonical_objects_and_the_right_tier():
+    """Neither pack may re-implement the rule, and each must pick its own tier.
+
+    `coverage` scores candidates and then PARSES their values, so it may consider
+    an ambiguous name. `project_ahead` projects, so its name hint is strong-only
+    and an ambiguous axis has to be proven from the labels.
+    """
     from app.services.agent_flows.tools.packs.coverage import _DATE_NAME as cov
     from app.services.agent_flows.tools.packs.project_ahead import _DATE_NAME as proj
-    from app.services.time_semantics import TIME_NAME_RX
+    from app.services.time_semantics import TIME_NAME_CANDIDATE_RX, TIME_NAME_RX
 
-    assert cov is TIME_NAME_RX
+    assert cov is TIME_NAME_CANDIDATE_RX
     assert proj is TIME_NAME_RX
 
 

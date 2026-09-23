@@ -38,7 +38,11 @@ from typing import Any
 
 from app.services.agent_flows.tools import result as R
 from app.services.agent_flows.tools.packs import measure_meta
-from app.services.time_semantics import TIME_NAME_RX
+from app.services.time_semantics import (
+    TIME_NAME_CANDIDATE_RX,
+    TIME_NAME_RX,
+    values_look_like_time,
+)
 from app.services.dashboard_ai_bot.tool_context import (
     ToolContext, ToolError, _fetch_chart_data,
 )
@@ -92,8 +96,19 @@ def _series(ctx: ToolContext, chart_id: int) -> tuple[list[tuple[str, float]], s
     fields = (ctx.chart_meta.get(chart_id) or {}).get("fields") or {}
     lower = {c.lower(): i for i, c in enumerate(columns)}
 
+    # PROJECTION IS TIME MATHS, so a name that only SUGGESTS time is not
+    # enough. A strong name is taken as-is; an ambiguous one (`ky_*`, `quy_*`)
+    # has to be proven by the column's own labels, which are already in hand.
     t_idx = next(
         (i for i, c in enumerate(columns) if _DATE_NAME.search(c or "")), None)
+    if t_idx is None:
+        for i, c in enumerate(columns):
+            if not TIME_NAME_CANDIDATE_RX.search(c or ""):
+                continue
+            labels = [r[i] for r in rows if i < len(r) and r[i] is not None][:12]
+            if values_look_like_time(labels):
+                t_idx = i
+                break
     if t_idx is None:
         return R.err(
             f"chart {chart_id} has no time axis — this tool needs one",

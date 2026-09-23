@@ -13,7 +13,7 @@ This makes the module trivial to unit-test without a database.
 """
 from __future__ import annotations
 
-from app.services.time_semantics import looks_like_time_name
+from app.services.time_semantics import accept_as_time_axis
 
 import math
 import numbers
@@ -182,6 +182,8 @@ def _looks_like_datetime_name(name: str) -> bool:
     `_classify_column` used it to label a column `datetime`, so `holiday_flag`
     became a time axis and `created_at` did not.
     """
+    from app.services.time_semantics import looks_like_time_name
+
     return looks_like_time_name(name)
 
 
@@ -193,7 +195,10 @@ def _classify_column(values: Sequence[Any], name: str) -> str:
     numeric_count = sum(1 for v in non_null if _is_number(v))
     if numeric_count == len(non_null):
         return "number"
-    if _looks_like_datetime_name(name) and numeric_count == 0:
+    # THE VALUES ARE RIGHT HERE, so an ambiguous name has no excuse to guess.
+    # `ky_thuat` over ['engineering', 'sales'] was labelled `datetime` and
+    # every downstream insight treated it as an axis.
+    if numeric_count == 0 and accept_as_time_axis(name, non_null):
         return "datetime"
     if numeric_count == 0:
         return "string"

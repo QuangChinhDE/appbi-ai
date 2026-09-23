@@ -937,8 +937,22 @@ def tool_detect_anomaly(ctx: ToolContext, args: dict) -> dict:
 
     if method in ("rolling", "changepoint"):
         dim_idx = _detect_dim_idx(columns, rows, measure_idx, prefer_datetime=True)
-        if dim_idx is None or not _looks_like_datetime(columns[dim_idx]):
+        # NAME, THEN VALUES - the same two-step the other three tools use.
+        # The name hint is STRONG-only, so `ky_bao_cao` would be refused on the
+        # name alone; that is a real axis and the labels can prove it. Without
+        # this fallback, tightening the name rule would have cost capability here
+        # rather than only removing the `ky_thuat` false positive.
+        if dim_idx is None:
             return _err(f"{method} requires a time dimension")
+        if not _looks_like_datetime(columns[dim_idx]):
+            labels = [str(r[dim_idx]) for r in rows
+                      if dim_idx < len(r) and r[dim_idx] is not None][:8]
+            if not any(_looks_like_period_label(s) for s in labels):
+                return _err(
+                    f"chart's dimension '{columns[dim_idx]}' is not a time axis "
+                    f"(e.g. {', '.join(labels[:5]) or 'n/a'}) - {method} needs a "
+                    "time series."
+                )
         sorted_rows = sorted(rows, key=lambda r: str(r[dim_idx]) if dim_idx < len(r) and r[dim_idx] is not None else "")
         points = [
             (str(r[dim_idx]), _to_number(r[measure_idx]))

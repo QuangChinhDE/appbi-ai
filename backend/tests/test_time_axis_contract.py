@@ -282,12 +282,24 @@ def test_coverage_and_seasonality_classify_a_name_identically(column):
     )
 
 
-def test_they_are_the_same_definition_and_not_two_that_happen_to_agree():
-    """Agreement reached by coincidence drifts again on the next edit."""
-    from app.services.agent_flows.tools.packs import coverage, project_ahead
-    from app.services.time_semantics import TIME_NAME_RX
+def test_they_come_from_one_definition_and_each_declares_its_tier():
+    """Agreement reached by coincidence drifts again on the next edit.
 
-    assert coverage._DATE_NAME is TIME_NAME_RX
+    Both objects still come from `app.services.time_semantics` — nothing is
+    re-implemented locally, which is the property this test was written for.
+    They are no longer the SAME object, and that is deliberate: a name-level
+    verdict now has three values, and these two tools sit at different tiers.
+
+    `coverage` scores candidates and then PARSES their values, requiring most to
+    be real dates, so it may consider an ambiguous name like `ky_bao_cao`.
+    `project_ahead` projects and detects seasonality, so its name hint is
+    strong-only and an ambiguous axis must be proven from the labels before it
+    will do calendar mathematics over them.
+    """
+    from app.services.agent_flows.tools.packs import coverage, project_ahead
+    from app.services.time_semantics import TIME_NAME_CANDIDATE_RX, TIME_NAME_RX
+
+    assert coverage._DATE_NAME is TIME_NAME_CANDIDATE_RX
     assert project_ahead._DATE_NAME is TIME_NAME_RX
 
 
