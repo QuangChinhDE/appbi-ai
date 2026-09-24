@@ -82,10 +82,30 @@ KnowledgeSourceKind = Literal["document", "semantic", "metric", "term"]
 #: door — which meant the author found out their assistant was unusable after
 #: building it, and meant nothing at all on the link side, where a chat-shaped flow
 #: could be assigned to a report with no check whatsoever.
-FlowType = Literal["bot", "chat"]
+FlowType = Literal["bot", "chat", "skill"]
 
 #: A grant naming a published Skill rather than a registry tool: `skill:<brain_key>`.
 SKILL_GRANT_PREFIX = "skill:"
+
+#: How a Skill is named TO A MODEL. Provider function names allow `[A-Za-z0-9_-]`
+#: only, so `skill:<key>` cannot be sent as-is.
+SKILL_FUNCTION_PREFIX = "skill__"
+
+#: How deep Skills may call Skills — a RUNTIME call stack of child runs, which is
+#: a different thing from how deeply one flow's nodes nest (`MAX_DEPTH`).
+MAX_SKILL_DEPTH = 3
+
+
+def skill_key_of_grant(tool: str) -> str | None:
+    return tool[len(SKILL_GRANT_PREFIX):] if tool.startswith(SKILL_GRANT_PREFIX) else None
+
+
+def skill_function_name(skill_key: str) -> str:
+    return f"{SKILL_FUNCTION_PREFIX}{skill_key}"
+
+
+def skill_key_of_function(name: str) -> str | None:
+    return name[len(SKILL_FUNCTION_PREFIX):] if name.startswith(SKILL_FUNCTION_PREFIX) else None
 
 #: The reasoning strategies an Agent step may name (`runtime/strategies/STRATEGIES`).
 AgentStrategyName = Literal["tool_calling"]
@@ -139,6 +159,11 @@ class ToolGrant(_Model):
 
     tool: str
     note: str = ""
+    #: For a Skill grant (`skill:<key>`) only: the EXACT published Skill version
+    #: this flow runs. Written at publish, so a published flow never silently
+    #: follows a newer Skill; empty on a draft, which resolves the latest
+    #: published version and says so in the trace.
+    version: int | None = None
 
     @field_validator("tool")
     @classmethod
@@ -913,10 +938,35 @@ class ToolNode(BaseNode):
         return v.strip()
 
 
+class SkillNode(BaseNode):
+    """Run a published Skill — a governed child flow — with inputs the author bound.
+
+    Deterministic, like a Tool step: no model decides WHETHER it runs. The Skill's
+    own flow decides how. Same invocation primitive as an Agent calling the Skill
+    as a capability (`services/agent_flows/skills.invoke_skill`), so there is one
+    path through version pinning, authority intersection, budget and trace.
+    """
+
+    type: Literal["skill"] = "skill"
+    skill_key: str
+    #: The exact published Skill version, pinned at publish. Empty on a draft.
+    version: int | None = None
+    inputs: dict[str, ToolInput] = Field(default_factory=dict)
+
+    @field_validator("skill_key")
+    @classmethod
+    def _named(cls, v: str) -> str:
+        v = (v or "").strip()
+        if not _KEY_RE.match(v):
+            raise ValueError("bước Skill phải chọn một Skill")
+        return v
+
+
 Node = Annotated[
     Union[
         AgentNode,
         ToolNode,
+        SkillNode,
         ReportReadNode,
         KnowledgeNode,
         WebNode,
@@ -1150,6 +1200,52 @@ def child_node_lists(node: Any) -> list[list[Any]]:
 
 
 # ═══ The flow ═════════════════════════════════════════════════════════════════
+class SkillInput(_Model):
+    """One typed input a Skill declares. The ONLY way data enters a Skill: nothing
+    from the caller's context arrives unless it is passed as an input."""
+
+    name: str
+    type: Literal["text", "number", "date", "chart_ref"] = "text"
+    required: bool = True
+    description: str = ""
+
+    @field_validator("name")
+    @classmethod
+    def _identifier(cls, v: str) -> str:
+        v = (v or "").strip()
+        if not re.fullmatch(r"[a-z][a-z0-9_]{0,39}", v):
+            raise ValueError("tên input của Skill phải là chữ thường/số/gạch dưới")
+        return v
+
+
+class SkillContract(_Model):
+    """What a flow promises when it is published as a Skill."""
+
+    inputs: list[SkillInput] = Field(default_factory=list)
+    #: What the Skill returns, in a sentence — shown to authors and to agents.
+    output: str = ""
+    #: When an Agent should reach for it. This is the Skill's description AS A
+    #: CAPABILITY, so it has to say something.
+    when_to_use: str = ""
+
+    @field_validator("when_to_use")
+    @classmethod
+    def _says_something(cls, v: str) -> str:
+        v = (v or "").strip()
+        if len(v) < 12:
+            raise ValueError("Skill cần mô tả khi nào nên dùng (ít nhất 12 ký tự)")
+        return v
+
+    @field_validator("inputs")
+    @classmethod
+    def _unique(cls, v: list[SkillInput]) -> list[SkillInput]:
+        names = [i.name for i in v]
+        dupes = {n for n in names if names.count(n) > 1}
+        if dupes:
+            raise ValueError(f"trùng tên input của Skill: {', '.join(sorted(dupes))}")
+        return v
+
+
 class Flow(_Model):
     """A tree of nodes. One node's text becomes the answer."""
 
@@ -1166,6 +1262,9 @@ class Flow(_Model):
     #: which is what a linear flow means anyway. Named rather than left implicit
     #: because with branches "the last one" stopped having an answer.
     answer_node: str = ""
+    #: Set when this flow is published as a Skill: its typed inputs, what it
+    #: returns, and when an Agent should use it. `{{input.<name>}}` reads an input.
+    skill: SkillContract | None = None
 
     @field_validator("key")
     @classmethod
@@ -1389,7 +1488,27 @@ class Flow(_Model):
                     out.add(n.collect_into)
             if isinstance(n, TransformNode) and n.target:
                 out.add(n.target.replace("[]", "").strip())
+        # A Skill's inputs are supplied by the CALLER at run time, the way a
+        # binding supplies requirements — produced, just not by a node.
+        if self.skill is not None:
+            out.add("input")
         return out
+
+    def skill_refs(self) -> list[tuple[str, int | None, str]]:
+        """Every Skill this flow can invoke: (skill_key, pinned version, node key).
+
+        From Agent grants (`skill:<key>`) and Skill steps, anywhere in the tree.
+        """
+        refs: list[tuple[str, int | None, str]] = []
+        for n in self.all_nodes():
+            if isinstance(n, SkillNode):
+                refs.append((n.skill_key, n.version, n.key))
+            elif isinstance(n, AgentNode):
+                for t in n.tools:
+                    key = skill_key_of_grant(t.tool)
+                    if key:
+                        refs.append((key, t.version, n.key))
+        return refs
 
     def warnings(self, flow_type: str = DEFAULT_FLOW_TYPE) -> list[str]:
         """What this flow gives up, said plainly rather than prevented.

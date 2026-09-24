@@ -901,6 +901,39 @@ def build_knowledge_scope(attachments: Any) -> dict[str, list]:
     return scope
 
 
+#: A value no real id takes, standing for "nothing". An EMPTY list means "no
+#: narrowing — everything the report is entitled to", so an intersection that
+#: comes out empty must not be written as an empty list.
+_NOTHING = {"doc_ids": [-1], "dataset_ids": [-1], "metric_names": ["\x00"], "term_fqns": ["\x00"]}
+
+
+def bounded_scope(ctx: Any, scope: dict[str, list]) -> dict[str, list]:
+    """A step's knowledge scope, never wider than the CEILING its run was given.
+
+    A step's attachments REPLACE the context's scope — that is how a step narrows.
+    Inside a Skill child run that would let the Skill's own attachments stand in
+    for the caller's: the ceiling (`ctx.knowledge_ceiling`, the caller's scope at
+    the moment it invoked the Skill) is what makes the child's reach
+    caller ∩ Skill rather than whatever the Skill attached. No ceiling = a
+    top-level run, and the scope is returned untouched.
+    """
+    ceiling = getattr(ctx, "knowledge_ceiling", None)
+    if not ceiling:
+        return scope
+    out: dict[str, list] = {}
+    for key in ("doc_ids", "dataset_ids", "metric_names", "term_fqns"):
+        cap = list(ceiling.get(key) or [])
+        own = list(scope.get(key) or [])
+        if not cap:
+            out[key] = own
+        elif not own:
+            out[key] = cap
+        else:
+            both = [x for x in own if x in cap]
+            out[key] = both or list(_NOTHING[key])
+    return out
+
+
 async def run_knowledge(
     node: KnowledgeNode, state: RunState, rctx: Any
 ) -> AsyncGenerator[AgentEvent, None]:
@@ -931,7 +964,7 @@ async def run_knowledge(
     previous_scope = getattr(rctx.ctx, "knowledge_scope", None)
     scope = build_knowledge_scope(node.knowledge)
     if hasattr(rctx.ctx, "knowledge_scope"):
-        rctx.ctx.knowledge_scope = scope
+        rctx.ctx.knowledge_scope = bounded_scope(rctx.ctx, scope)
 
     try:
         result = _call(rctx, state, "search_knowledge", {"query": query, "limit": node.top_k})

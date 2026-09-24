@@ -118,6 +118,20 @@ def _weighted_terms(spec: Any) -> dict[str, float]:
 
 
 @dataclass
+class ExtraCapability:
+    """A capability that is not a registry tool — today, a published Skill.
+
+    It is ranked, shown and discovered exactly like a tool; only its execution
+    differs (the Skill invoker, not `registry.execute`)."""
+
+    name: str
+    definition: dict
+    label: str
+    does: str
+    search: Any  # an object `_weighted_terms` can read
+
+
+@dataclass
 class CapabilityView:
     """What one Agent step may be shown, and what it was shown, round by round."""
 
@@ -137,6 +151,7 @@ class CapabilityView:
     invoked: list[str] = field(default_factory=list)
     rejected: list[dict[str, str]] = field(default_factory=list)
     _haystacks: dict[str, dict[str, float]] = field(default_factory=dict, repr=False)
+    extras: dict[str, ExtraCapability] = field(default_factory=dict, repr=False)
 
     # ── ranking ──────────────────────────────────────────────────────────────
     def _weights(self) -> dict[str, float]:
@@ -184,6 +199,7 @@ class CapabilityView:
 
     def schemas(self, *, web_enabled: bool) -> list[dict]:
         defs = tool_registry.definitions_for(set(self.visible), web_enabled=web_enabled)
+        defs += [self.extras[n].definition for n in self.visible if n in self.extras]
         # In the author's grant order, like every other list here.
         order = {n: i for i, n in enumerate(self.granted)}
         defs.sort(key=lambda d: order.get(d.get("name"), 1_000))
@@ -203,10 +219,11 @@ class CapabilityView:
         found = []
         for name, score in hits:
             spec = tools.get(name)
+            extra = self.extras.get(name)
             found.append({
                 "name": name,
-                "label": getattr(spec, "label_vi", "") or name,
-                "does": getattr(spec, "description_vi", "") or "",
+                "label": (extra.label if extra else getattr(spec, "label_vi", "")) or name,
+                "does": (extra.does if extra else getattr(spec, "description_vi", "")) or "",
                 "already_visible": name in self.visible,
             })
             if name not in self.sticky:
@@ -252,7 +269,10 @@ class CapabilityView:
         }
 
 
-def build_view(granted: list[str], ctx: Any, *, web_enabled: bool, limit: int | None = None) -> CapabilityView:
+def build_view(
+    granted: list[str], ctx: Any, *, web_enabled: bool, limit: int | None = None,
+    extras: list[ExtraCapability] | None = None, excluded_extras: dict[str, str] | None = None,
+) -> CapabilityView:
     """The capability view for one step: eligibility from the registry's own
     admission rule, shortlisting only when the eligible set exceeds `limit`.
 
@@ -265,7 +285,11 @@ def build_view(granted: list[str], ctx: Any, *, web_enabled: bool, limit: int | 
     excluded: dict[str, str] = {}
     tools = tool_registry.all_tools()
     offered_today = {d.get("name") for d in tool_registry.definitions_for(set(granted), web_enabled=web_enabled)}
-    for name in granted:
+    from app.services.agent_flows.contract import SKILL_GRANT_PREFIX
+
+    extras = list(extras or [])
+    tool_grants = [n for n in granted if not n.startswith(SKILL_GRANT_PREFIX)]
+    for name in tool_grants:
         if name not in tools:
             excluded[name] = "unknown_tool"
             continue
@@ -277,11 +301,18 @@ def build_view(granted: list[str], ctx: Any, *, web_enabled: bool, limit: int | 
             excluded[name] = str(refused.get("error_code") or "refused")
             continue
         eligible.append(name)
+    excluded.update(excluded_extras or {})
+    eligible += [e.name for e in extras]
     view = CapabilityView(
-        granted=list(granted), eligible=eligible, excluded=excluded, limit=limit,
-        shortlisted=len(offered_today) > limit,
+        granted=[*tool_grants, *[e.name for e in extras], *list(excluded_extras or {})],
+        eligible=eligible, excluded=excluded, limit=limit,
+        shortlisted=len(offered_today) + len(extras) > limit,
     )
-    view._haystacks = {n: _weighted_terms(tools[n]) for n in eligible}
+    view.extras = {e.name: e for e in extras}
+    view._haystacks = {
+        n: _weighted_terms(view.extras[n].search if n in view.extras else tools[n])
+        for n in eligible
+    }
     return view
 
 

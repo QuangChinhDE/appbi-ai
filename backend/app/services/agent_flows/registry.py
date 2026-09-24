@@ -410,6 +410,15 @@ def save_draft(
     problems = check_attachments(db, user, flow)
     if problems:
         raise BrainError(403, " ".join(problems))
+    # A SKILL THIS AUTHOR MAY NOT USE is not theirs to attach — the same rule as a
+    # document or a dataset. Attaching grants no data access at run time (the
+    # child runs on the caller's authority); this is about who may build on whose
+    # published work.
+    from app.services.agent_flows import skills as skills_service
+
+    problems = skills_service.attach_problems(db, user, flow)
+    if problems:
+        raise BrainError(403, " ".join(problems))
 
     latest = (
         db.query(AgentBrainVersion)
@@ -454,7 +463,7 @@ def save_draft(
             flow_type=(
                 str(getattr(latest, "flow_type", "") or DEFAULT_FLOW_TYPE)
                 if latest is not None
-                else (flow_type if flow_type in ("bot", "chat") else DEFAULT_FLOW_TYPE)
+                else (flow_type if flow_type in ("bot", "chat", "skill") else DEFAULT_FLOW_TYPE)
             ),
         )
         db.add(row)
@@ -508,6 +517,25 @@ def publish(
     # variable a future binding will supply, a flow mid-rewrite — passes
     # `acknowledge_problems` and the decision is theirs, on the record, instead of
     # being made silently by a default.
+    # SKILL RULES ARE NOT ACKNOWLEDGEABLE. A cycle or a chain past the depth limit
+    # cannot run however the author feels about it, and a Skill without a
+    # contract has nothing an Agent could be shown.
+    from app.services.agent_flows import skills as skills_service
+
+    hard = skills_service.publish_problems(db, row, flow)
+    if hard:
+        raise BrainError(
+            409,
+            "Chưa phát hành được:" + "".join(chr(10) + "• " + p for p in hard),
+        )
+    # PIN EVERY SKILL REFERENCE to the exact version live now, in the body that
+    # becomes this immutable published row — so publishing Skill v2 later never
+    # changes what this version runs.
+    pinned_body = skills_service.pin_skill_versions(db, row.body or {})
+    if pinned_body != (row.body or {}):
+        row.body = pinned_body
+        flow = parse_flow(row) or flow
+
     problems = flow.blocking_problems()
     if problems and not acknowledge_problems:
         raise BrainError(

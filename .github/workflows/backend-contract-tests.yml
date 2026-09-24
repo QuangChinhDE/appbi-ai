@@ -182,6 +182,7 @@ jobs:
             tests/test_reader_rating_reaches_the_run.py \
             tests/test_answer_text_is_published_not_rederived.py \
             tests/test_public_rating_trust_boundary.py \
+            tests/test_skills_run_as_governed_children.py \
             tests/test_capability_discovery.py \
             tests/test_compute_owns_the_number.py \
             tests/test_compute_lineage_in_a_run.py \

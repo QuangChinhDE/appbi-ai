@@ -261,10 +261,13 @@ def _apply_scope(ctx: Any, node: AgentNode) -> None:
     the picker worked and the boundary it configured did not. One builder, one
     set of keys, no room for the two to drift again.
     """
-    from app.services.agent_flows.runtime.handlers.data import build_knowledge_scope
+    from app.services.agent_flows.runtime.handlers.data import (
+        bounded_scope,
+        build_knowledge_scope,
+    )
 
     if hasattr(ctx, "knowledge_scope"):
-        ctx.knowledge_scope = build_knowledge_scope(node.knowledge)
+        ctx.knowledge_scope = bounded_scope(ctx, build_knowledge_scope(node.knowledge))
 
 
 # ═══ The runtime ═════════════════════════════════════════════════════════════
@@ -277,6 +280,48 @@ class ModelReply:
     tool_calls: list[AgentEvent] = field(default_factory=list)
     #: The round hit the run's deadline. The provider error is already recorded.
     timed_out: bool = False
+
+
+def _skill_capabilities(node: AgentNode, rctx: Any) -> tuple[list, dict[str, str]]:
+    """The Skills this step was granted, as capabilities — or why each is not one.
+
+    A Skill that cannot be resolved at its pinned version, or that is already on
+    this run's Skill call stack, is EXCLUDED with its reason rather than offered:
+    it would only be refused.
+    """
+    from types import SimpleNamespace
+
+    from app.services.agent_flows import skills
+    from app.services.agent_flows.contract import skill_function_name, skill_key_of_grant
+    from app.services.agent_flows.runtime.capabilities import ExtraCapability
+
+    extras: list = []
+    excluded: dict[str, str] = {}
+    stack = tuple(getattr(rctx, "skill_stack", ()) or ())
+    for grant in node.tools:
+        key = skill_key_of_grant(grant.tool)
+        if not key:
+            continue
+        name = skill_function_name(key)
+        found = skills.resolve_skill(getattr(rctx, "db", None), key, grant.version)
+        if found is None:
+            excluded[name] = "skill_not_found"
+            continue
+        row, flow = found
+        if key == rctx.flow.key or any(k == key for k, _ in stack):
+            excluded[name] = "skill_cycle"
+            continue
+        label = row.name or key
+        definition = skills.capability_definition(key, label, flow.skill)
+        extras.append(ExtraCapability(
+            name=name, definition=definition, label=label, does=flow.skill.when_to_use,
+            search=SimpleNamespace(
+                name=name, label_vi=label, label_en=label,
+                description_vi=f"{flow.skill.when_to_use} {flow.skill.output}",
+                answers_vi=(), returns={}, definition=definition,
+            ),
+        ))
+    return extras, excluded
 
 
 class AgentRuntime:
@@ -320,14 +365,17 @@ class AgentRuntime:
         #: `registry.execute()` still decides what may run.
         from app.services.agent_flows.runtime.capabilities import build_view
 
+        extras, excluded_extras = _skill_capabilities(node, rctx)
         self.view = build_view(
             node.tool_names(), rctx.ctx, web_enabled=self.web_enabled,
             limit=getattr(node, "visible_capabilities", None),
+            extras=extras, excluded_extras=excluded_extras,
         )
         #: The tool schemas the model is offered this round. A step whose grant
-        #: fits within the limit is offered exactly what it always was.
+        #: fits within the limit is offered exactly what it always was — plus the
+        #: Skills it was granted, which did not exist before.
         self.schemas: list[dict] = tool_registry.definitions_for(
-            self.allowed, web_enabled=self.web_enabled)
+            self.allowed, web_enabled=self.web_enabled) + [e.definition for e in extras]
         self._withdrawn = False
         try:
             self._ranking_text = " ".join(filter(None, [
@@ -506,6 +554,50 @@ class AgentRuntime:
         self.calls_made += 1
         return tool_registry.execute(self.rctx.ctx, name, args, allowed=self.allowed)
 
+    async def _invoke_skill(self, skill_key: str, call: AgentEvent) -> AsyncGenerator[AgentEvent, None]:
+        """A Skill the model asked for — through the ONE invocation path.
+
+        The grant is checked here (a Skill is not a registry tool, so
+        `registry.execute` cannot check it); everything else — version, ancestry,
+        authority, budget, child run — is `skills.invoke_skill`'s.
+        """
+        from app.services.agent_flows import skills
+        from app.services.agent_flows.contract import SKILL_GRANT_PREFIX
+
+        grant = next((t for t in self.node.tools
+                      if t.tool == f"{SKILL_GRANT_PREFIX}{skill_key}"), None)
+        if grant is None:
+            self.last_result = {
+                "ok": False, "error_code": "not_granted", "retryable": False,
+                "error": f"Skill '{skill_key}' không được cấp cho bước này",
+            }
+            return
+        # One call, like any capability: the node ceiling and the run budget see
+        # it. What the Skill does inside is charged to the same budget by the child.
+        self.state.budget.spend_tool()
+        self.calls_made += 1
+        outcome: dict = {}
+        async for ev in skills.invoke_skill(
+            self.state, self.rctx,
+            skill_key=skill_key, version=grant.version, inputs=dict(call.tool_args or {}),
+            invoked_as="coordinator_lane" if self.state.lane_depth else "agent_capability",
+            parent_step_key=self.node.key, outcome=outcome,
+        ):
+            yield ev
+        self.last_result = outcome.get("result") or {
+            "ok": False, "error_code": "skill_failed", "error": "Skill không chạy", "retryable": False}
+
+    def _after(self, call: AgentEvent, result: dict) -> None:
+        """Bookkeeping every executed capability shares: view, log, evidence."""
+        if result.get("ok"):
+            self.view.note_invoked(call.tool_name)
+        else:
+            self.view.note_rejected(call.tool_name, str(result.get("error_code") or "failed"))
+            self.state.tool_log.append(f"{call.tool_name}({result.get('error_code') or 'failed'})")
+        self.state.evidence_source = self.node.key
+        ref = self.state.record_evidence(result, tool=call.tool_name)
+        self.last_result = {**result, "evidence_ref": ref} if ref else result
+
     async def invoke(self, call: AgentEvent) -> AsyncGenerator[AgentEvent, None]:
         """Run one requested call under every rule. Yields the reader's status
         line and the tool_result event; the result is left on `last_result`."""
@@ -527,6 +619,9 @@ class AgentRuntime:
 
         view = self.view
         malformed = (call.extra or {}).get("malformed_args")
+        from app.services.agent_flows.contract import skill_key_of_function
+
+        skill_key = skill_key_of_function(call.tool_name or "")
         if view.shortlisted and call.tool_name == FIND_CAPABILITY and not malformed:
             # DISCOVERY. Answered by the view, not the registry: it reads no data
             # and it can only return what this step is already eligible for.
@@ -565,6 +660,19 @@ class AgentRuntime:
             view.note_rejected(call.tool_name, "capability_not_visible")
             state.tool_log.append(f"{call.tool_name}(capability_not_visible)")
             self.last_result = result
+            yield AgentEvent(
+                type="tool_result",
+                tool_call_id=call.tool_call_id,
+                tool_name=call.tool_name,
+                tool_result=result,
+            )
+            return
+        if skill_key and not malformed:
+            result = None
+            async for ev in self._invoke_skill(skill_key, call):
+                yield ev
+            result = self.last_result
+            self._after(call, result)
             yield AgentEvent(
                 type="tool_result",
                 tool_call_id=call.tool_call_id,

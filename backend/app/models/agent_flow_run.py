@@ -96,6 +96,14 @@ class AgentFlowRun(Base):
     #: unlike anything else a public client posts, it cannot smuggle in a claim.
     rating = Column(String(8), nullable=True)
 
+    #: SET WHEN THIS RUN IS A SKILL INVOKED BY ANOTHER RUN. The parent's `run_key`
+    #: (known when the parent turn starts, so a child records itself mid-turn),
+    #: the parent node that invoked it, and how: agent_capability | skill_node |
+    #: coordinator_lane. NULL = a top-level run.
+    parent_run_key = Column(String(64), nullable=True, index=True)
+    parent_step_key = Column(String(64), nullable=True)
+    invoked_as = Column(String(24), nullable=True)
+
     created_at = Column(
         DateTime(timezone=True), server_default=func.now(), nullable=False, index=True
     )
@@ -171,6 +179,9 @@ class AgentFlowRunStep(Base):
     prompt_tokens = Column(Integer, nullable=True)
     completion_tokens = Column(Integer, nullable=True)
     error = Column(Text, nullable=True)
+    #: An Agent step's capability view: granted, eligible (and why not), shown per
+    #: round, discovered, invoked, rejected. NULL for every other node type.
+    capability_trace = Column(JSONB, nullable=True)
 
     created_at = Column(
         DateTime(timezone=True), server_default=func.now(), nullable=False, index=True

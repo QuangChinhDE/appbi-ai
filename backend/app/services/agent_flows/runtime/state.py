@@ -252,6 +252,8 @@ class RunState:
     #: each round, what it discovered, invoked and had refused. Stamped onto the
     #: step's TraceStep by `record`, so every recording site carries it.
     capability_trace: dict[str, dict[str, Any]] = field(default_factory=dict)
+    #: >0 while a coordinator lane's body runs.
+    lane_depth: int = 0
 
     def record_evidence(self, result: Any, *, tool: str = "") -> str | None:
         """Register one capability result: give it a reference, then harvest it.

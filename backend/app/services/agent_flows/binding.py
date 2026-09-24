@@ -534,6 +534,13 @@ def _slowest_model(flow: Flow, cfg: dict | None) -> tuple[str, int]:
     return worst, _seconds_per_call(worst)
 
 
+#: What one Skill invocation is assumed to cost — (model calls, tool calls). The
+#: estimate cannot read the Skill's own body (it runs without a database), so it
+#: is a conservative constant; the RUN is what bounds it hard: a child spends the
+#: parent's budget and stops at half of what is left (`skills.child_budget`).
+SKILL_COST = (4, 8)
+
+
 def estimate_cost(flow: Flow, *, chart_count: int = 0) -> dict[str, int]:
     """Worst case for ONE question, walking the tree.
 
@@ -570,6 +577,13 @@ def estimate_cost(flow: Flow, *, chart_count: int = 0) -> dict[str, int]:
                 rounds = 1 + (n.max_tool_calls if n.tools else 0)
                 llm += rounds
                 tools += n.max_tool_calls if n.tools else 0
+                # Each Skill it may call is a child run on top.
+                skill_grants = sum(1 for t in n.tools if t.tool.startswith("skill:"))
+                llm += skill_grants * SKILL_COST[0]
+                tools += skill_grants * SKILL_COST[1]
+            elif n.type == "skill":
+                llm += SKILL_COST[0]
+                tools += SKILL_COST[1]
             elif n.type == "report_read":
                 tools += per_read
             elif n.type in {"knowledge", "web"}:

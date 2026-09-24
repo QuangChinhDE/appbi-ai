@@ -55,7 +55,9 @@ class _Model(BaseModel):
 # INPUT
 # ═══════════════════════════════════════════════════════════════════════════════
 Trigger = Literal[
-    "public_chat", "direct_chat", "studio_test", "node_test", "replay", "scheduled"
+    "public_chat", "direct_chat", "studio_test", "node_test", "replay", "scheduled",
+    # A Skill run invoked by another run (its parent is on the run row).
+    "skill",
 ]
 
 

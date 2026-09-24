@@ -104,6 +104,10 @@ class RunContext:
     answer_key: str = ""
     db: Any = None
     events: list[AgentEvent] = field(default_factory=list)
+    #: The Skill call stack this run sits in: `(skill_key, version)` of every Skill
+    #: between the top-level run and this one. Empty for a top-level run. Checked
+    #: on flow-VERSION identity, so A@v7 → B@v3 → A@v7 is a cycle.
+    skill_stack: tuple = ()
 
 
 async def run_flow(
@@ -114,8 +118,17 @@ async def run_flow(
     api_key: str = "",
     base_system_prompt: str = "",
     db: Any = None,
+    budget: Any = None,
+    skill_stack: tuple = (),
+    on_state: Any = None,
 ) -> AsyncGenerator[AgentEvent, None]:
-    """Run `flow` against `inp`. The last event is always `result`."""
+    """Run `flow` against `inp`. The last event is always `result`.
+
+    `budget`, `skill_stack` and `on_state` exist for a Skill child run only
+    (`services/agent_flows/skills.py`): the child spends the PARENT's budget, knows
+    the call stack it sits in, and hands its state back so the parent can take its
+    trusted evidence. Every other caller leaves them unset.
+    """
     started = time.monotonic()
     # THE QUESTION HAS TO REACH THE TOOL BOUNDARY.
     #
@@ -130,12 +143,14 @@ async def run_flow(
         pass
     state = RunState(
         vars=inp.seed_vars(),
-        budget=Budget(
+        budget=budget if budget is not None else Budget(
             max_llm_calls=inp.runtime.budget.max_llm_calls,
             max_tool_calls=inp.runtime.budget.max_tool_calls,
             max_seconds=inp.runtime.budget.max_seconds,
         ),
     )
+    if on_state is not None:
+        on_state(state)
     # THE EVIDENCE STORE REACHES THE TOOL BOUNDARY the same way the question does:
     # `compute` resolves `{ref, path}` variables against the results THIS run
     # produced, and a tool body can only see the context.
@@ -151,6 +166,7 @@ async def run_flow(
         base_system_prompt=base_system_prompt,
         answer_key=flow.answering_key(),
         db=db,
+        skill_stack=tuple(skill_stack or ()),
     )
 
     status = "ok"
@@ -970,6 +986,9 @@ async def _run_coordinate(
         # to the planner. Shown to the specialist too, it becomes the assignment,
         # which is the half of "coordination" that is not routing.
         state.set_var(_BRIEF_VAR, _specialist_brief(specialist))
+        # Inside a lane, so a Skill a specialist runs is recorded as that lane's
+        # work (`invoked_as="coordinator_lane"`).
+        state.lane_depth += 1
         try:
             with state.in_branch(specialist.name or specialist.key):
                 try:
@@ -980,6 +999,7 @@ async def _run_coordinate(
                     # cancel the others — being independent lanes is the point.
                     continue
         finally:
+            state.lane_depth -= 1
             state.set_var(_BRIEF_VAR, "")
 
 

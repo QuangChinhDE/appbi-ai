@@ -153,6 +153,21 @@ def list_tools(web_enabled: bool = False, _: User = Depends(can_view)) -> dict[s
     return {"packs": tool_catalogue(web_enabled=web_enabled)}
 
 
+@router.get("/skills")
+def list_skills(
+    db: Session = Depends(get_db), user: User = Depends(can_view)
+) -> dict[str, Any]:
+    """Published Skills THIS user may attach to an Agent step or a Skill step.
+
+    Server-side, like `/attachable`: sharing decides who may build on a Skill, and
+    the picker only shows what save will accept. Attaching grants no data access —
+    a Skill always runs on the caller's authority.
+    """
+    from app.services.agent_flows import skills
+
+    return {"skills": skills.list_attachable(db, user)}
+
+
 @router.get("/models")
 def list_models(_: User = Depends(can_view)) -> dict[str, Any]:
     return {"providers": model_catalogue()}
@@ -805,7 +820,7 @@ def unpublish_brain_version(
 
 
 class FlowTypeBody(BaseModel):
-    flow_type: Literal["bot", "chat"]
+    flow_type: Literal["bot", "chat", "skill"]
 
 
 @router.put("/brains/{brain_key}/type")
@@ -838,6 +853,25 @@ def set_flow_type(
         raise HTTPException(status_code=404, detail="Không tìm thấy flow")
 
     reasons: list[str] = []
+    if body.flow_type == "skill":
+        # A SKILL NEEDS A CONTRACT, and it does not serve report links: it is
+        # invoked by other flows, never by a viewer directly.
+        flow = reg.parse_flow(row)
+        if flow is None:
+            raise HTTPException(status_code=422, detail="Flow không hợp lệ")
+        if flow.skill is None:
+            raise HTTPException(
+                status_code=409,
+                detail="Khai báo đầu vào, kết quả và khi nào nên dùng của Skill trước "
+                       "(mục “Dùng như Skill”), rồi mới đổi loại.",
+            )
+        serving = reg.impact(db, brain_key).get("links") or []
+        if serving:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Flow này đang phục vụ {len(serving)} link báo cáo — gỡ khỏi "
+                       "các link đó trước, rồi mới đổi thành Skill.",
+            )
     if body.flow_type == "chat":
         flow = reg.parse_flow(row)
         if flow is None:
@@ -963,11 +997,17 @@ def _usable_flow(db: Session, user: User, brain_key: str) -> Flow:
             status_code=409, detail="Flow này chưa có bản phát hành nào để gán"
         )
     row = resolved[0]
-    if str(getattr(row, "flow_type", "") or "bot") != "bot":
+    kind = str(getattr(row, "flow_type", "") or "bot")
+    if kind != "bot":
         raise HTTPException(
             status_code=409,
-            detail="Flow này được tạo cho AI Chat, không gán được vào báo cáo. "
-                   "Hãy chọn một flow loại Bot, hoặc đổi loại của flow này.",
+            detail=(
+                "Flow này là một Skill — nó được các flow khác gọi, không gán thẳng "
+                "vào báo cáo. Hãy chọn một flow loại Bot."
+                if kind == "skill" else
+                "Flow này được tạo cho AI Chat, không gán được vào báo cáo. "
+                "Hãy chọn một flow loại Bot, hoặc đổi loại của flow này."
+            ),
         )
     return resolved[1]
 
