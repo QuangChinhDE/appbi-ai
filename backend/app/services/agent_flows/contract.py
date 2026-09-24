@@ -87,6 +87,9 @@ FlowType = Literal["bot", "chat"]
 #: A grant naming a published Skill rather than a registry tool: `skill:<brain_key>`.
 SKILL_GRANT_PREFIX = "skill:"
 
+#: The reasoning strategies an Agent step may name (`runtime/strategies/STRATEGIES`).
+AgentStrategyName = Literal["tool_calling"]
+
 #: The default for anything that predates the type or arrives without one. Every
 #: flow written before this existed was seeded `report_read → agent`, so it was
 #: written against a report whether or not anyone said so.
@@ -310,6 +313,11 @@ class AgentNode(BaseNode):
     tools: list[ToolGrant] = Field(default_factory=list)
     knowledge: list[KnowledgeAttachment] = Field(default_factory=list)
     max_tool_calls: int = Field(default=8, ge=1, le=MAX_TOOL_CALLS)
+    #: HOW this step reasons — see `runtime/strategies/`. Strategy decides, runtime
+    #: executes and governs; a new reasoning style is a new strategy, not a new
+    #: node type. One value exists, and it is what every Agent step has always
+    #: done, so the default changes nothing.
+    strategy: AgentStrategyName = "tool_calling"
     #: `chat` streams prose (the default, and what keeps authoring simple).
     #: `json` asks the model for typed answer blocks — richer, but not streamable,
     #: because a half-written JSON object cannot be rendered.
