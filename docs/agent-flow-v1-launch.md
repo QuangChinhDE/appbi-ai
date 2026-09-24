@@ -22,7 +22,7 @@ not repeated here.
 | session B2 | **author V1 complete** — P1-1, P1-2, P1-3 closed; golden E2E added |
 | `LAST_PRODUCT_COMMIT` before session C | `e7db7207aa1646d1bbfb8d5e42caaef15bd53f46` |
 | session C | **launch closure** — P1-4 and P1-5 closed at the root; reader golden E2E, feedback verified, pilot funnel, operator runbook |
-| next | **independent review** of the final V1 PR. No further product development. |
+| next | **push, then independent review.** The candidate is code-complete and verified locally; the push is blocked on git credentials (see HANDOFF). |
 
 **How a session records its own SHA.** It does not. A tracked file cannot contain
 the id of the commit that contains it, and session B learned that the expensive
@@ -536,6 +536,52 @@ Filter · ToolNode composition beyond a single configured step · Direct Chat.
 deterministic composition across tools · Knowledge retrieval hardening ·
 app-wide accessibility work including modal roles · reader-vocabulary sweep ·
 `ai_feedback` · Wave 3.
+
+---
+
+## HANDOFF — THE PUSH IS BLOCKED ON CREDENTIALS, NOT ON THE WORK
+
+Everything below the line is done, verified and **committed locally**. The branch
+could not be pushed, and therefore the final V1 PR could not be opened.
+
+```
+$ git -c credential.helper= push --dry-run origin HEAD:release/agent-flow-v1-candidate
+remote: No anonymous write access.
+fatal: Authentication failed for 'https://github.com/QuangChinhDE/appbi-ai/'
+```
+
+`git push` opened an interactive `git credential-manager get` prompt, which a
+non-interactive shell can never answer — the push sat on it for thirty minutes
+before it was diagnosed and stopped by PID. Read operations still work
+(`git ls-remote`, the anonymous check-runs API) because the repository is public;
+only writing needs the credential, and it has expired or been cleared on this
+machine.
+
+**Nothing was lost and nothing is half-applied.** The working tree is clean, all
+sixteen commits ahead of `demo` are present, and the five stashes on this machine
+all predate this session (July and August, belonging to the public-dashboard and
+workboards work streams) — the pre-push hook stashed nothing, because the tree
+was already clean when it ran.
+
+**To finish, from a shell that can authenticate:**
+
+```bash
+git checkout release/agent-flow-v1-candidate
+git log --oneline -1          # expect the session-C head recorded in the report
+git push origin HEAD:release/agent-flow-v1-candidate
+```
+
+Then open ONE PR, `release/agent-flow-v1-candidate` → `demo`, titled
+**Agent Flow V1 launch candidate**, and wait for `preflight`, `e2e`,
+`backend-contract-tests` and the change-guardrail checks on the PR head. The
+body should lead with what a V1 user can do, not with the diff.
+
+CI on this branch has been green on every push so far, read through the
+anonymous API:
+`https://api.github.com/repos/QuangChinhDE/appbi-ai/commits/<sha>/check-runs`.
+`gh` is not installed on this machine; that endpoint is the substitute, and a
+commit polled seconds after a push legitimately reports zero runs because the
+workflow has not started yet.
 
 ---
 
