@@ -165,3 +165,20 @@ def test_a_broken_lookup_never_raises_into_the_caller():
     assert runs_service.apply_rating(
         db, session_key="s1", link_token=LINK_A, answer_text=ANSWER, rating="up") is False
     assert db.rolled_back == 1
+
+
+def test_down_then_up_is_the_last_verdict(db):
+    rid = _run(db, session_key="s1", link_token=LINK_A, run_key="r1")
+    runs_service.apply_rating(db, session_key="s1", link_token=LINK_A, answer_text=ANSWER, rating="down")
+    runs_service.apply_rating(db, session_key="s1", link_token=LINK_A, answer_text=ANSWER, rating="up")
+    assert _rating(db, rid) == "up"
+
+
+def test_a_kpi_answer_with_formatted_figures_is_rated(db):
+    """The answers readers rate most are metric answers — bold figures, a
+    thousands separator, a percent sign. Exact match must hold for them."""
+    kpi = "**Doanh thu tháng 9:** 1.234.567.890 ₫ (tăng 12,5% so với tháng 8)."
+    rid = _run(db, session_key="s1", link_token=LINK_A, answer=kpi, run_key="r1")
+    assert runs_service.apply_rating(
+        db, session_key="s1", link_token=LINK_A, answer_text=kpi, rating="up") is True
+    assert _rating(db, rid) == "up"

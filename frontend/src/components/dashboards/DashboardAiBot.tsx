@@ -30,6 +30,7 @@ import {
   FlowNotice, outcomeOf, readerNotices, tallyStatus, type ToolStatusEntry,
 } from '@/lib/notices';
 import { cn } from '@/lib/utils';
+import { applyReaderRating, revertReaderRating } from '@/lib/readerRating';
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -1134,12 +1135,13 @@ export function DashboardAiBot({
 
   const handleRateMessage = useCallback((msgIndex: number, rating: 'up' | 'down') => {
     setMessages((prev) => {
-      const next = prev.map((m, i) => {
-        if (i !== msgIndex) return m;
-        // Toggle off if clicking the same rating again
-        return { ...m, rating: m.rating === rating ? undefined : rating };
-      });
-      // Persist ratings to DB (silent)
+      // One current verdict, never cleared — see lib/readerRating.ts. Clicking the
+      // selected thumb again keeps it: the run behind it cannot be un-rated.
+      const previous = prev[msgIndex]?.rating;
+      if (previous === rating) return prev;
+      const next = applyReaderRating(prev, msgIndex, rating);
+      // Persist ratings to DB. A failed save must not leave a thumb lit that the
+      // run never received, so it is undone.
       const safeMessages = next
         .filter((m) => m.role === 'user' || (m.role === 'assistant' && m.content))
         .map((m) => ({ role: m.role, content: m.content, ...(m.rating ? { rating: m.rating } : {}) }));
@@ -1153,7 +1155,9 @@ export function DashboardAiBot({
         turn_count: Math.ceil(next.filter((m) => m.role === 'user').length),
         prompt_tokens: totalPromptTokensRef.current,
         completion_tokens: totalCompletionTokensRef.current,
-      }, sessionToken ?? undefined).catch(() => { /* silent */ });
+      }, sessionToken ?? undefined).catch(() => {
+        setMessages((cur) => revertReaderRating(cur, msgIndex, rating, previous));
+      });
       return next;
     });
   }, [briefing, convState, modelId, provider, sessionKey, sessionToken, token]);

@@ -390,5 +390,20 @@ test.describe('V1 reader golden journey @critical', () => {
       await page.locator('button[aria-label*="AI"], button[title*="AI"]').first().click();
       await expect(page.getByTestId('rate-up').last())
         .toHaveClass(/text-success/, { timeout: 30_000 });
+
+      // ONE CURRENT VERDICT (lib/readerRating.ts). Clicking the selected thumb
+      // again keeps it — the run behind it cannot be un-rated, so the page must
+      // not pretend it was. The other thumb changes the verdict, durably.
+      const up = page.getByTestId('rate-up').last();
+      const down = page.getByTestId('rate-down').last();
+      await up.click();
+      await expect(up).toHaveClass(/text-success/);
+      await down.click();
+      await expect(down).toHaveClass(/text-danger/, { timeout: 10_000 });
+      await expect(up).not.toHaveClass(/text-success/);
+      await page.reload({ waitUntil: 'domcontentloaded' });
+      await page.locator('button[aria-label*="AI"], button[title*="AI"]').first().click();
+      await expect(page.getByTestId('rate-down').last())
+        .toHaveClass(/text-danger/, { timeout: 30_000 });
     });
 });
