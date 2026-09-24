@@ -177,6 +177,10 @@ jobs:
             tests/test_eval_provenance.py \
             tests/test_notice_audience_boundary.py \
             tests/test_reader_diagnostics_are_product_facing.py \
+            tests/test_reader_outcome_is_not_ok_flag.py \
+            tests/test_pilot_funnel_is_read_only.py \
+            tests/test_reader_rating_reaches_the_run.py \
+            tests/test_answer_text_is_published_not_rederived.py \
             tests/test_canonical_time_semantics.py \
             tests/test_time_axis_needs_more_than_a_name.py \
             tests/test_time_axis_at_the_tool_boundary.py \

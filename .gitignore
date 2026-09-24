@@ -46,6 +46,11 @@ docs/*
 # …except the feature-artifact templates and the policy for using them, which
 # the workflow refers to and so must exist on a fresh clone.
 !docs/features/
+# …and the operator runbook, for the same reason and more sharply: it is read by
+# somebody deploying or rolling back, on a machine that has just been cloned,
+# usually while something is wrong. A runbook that is only on the author's disk
+# is not a runbook.
+!docs/ops-runbook.md
 
 # Demo/test scripts (local only)
 seed_demo.py
@@ -331,6 +336,15 @@ backend/tests/.testdata/
 !backend/tests/test_tool_certification_matrix.py
 !backend/tests/test_capability_serviced_the_intent.py
 !backend/tests/test_qualifier_provenance.py
+!backend/tests/test_reader_outcome_is_not_ok_flag.py
+!backend/tests/test_pilot_funnel_is_read_only.py
+!backend/tests/test_reader_rating_reaches_the_run.py
+!backend/tests/test_answer_text_is_published_not_rederived.py
+
+# `verify.py` points its gates at a throwaway sqlite file in the backend
+# directory. It is scratch, it is created on every run, and it is one
+# `git add -A` away from being committed.
+backend/_verify_gate.db
 !backend/tests/test_eval_accounting.py
 !backend/tests/test_cross_lingual_resolution.py
 !backend/tests/test_reader_diagnostics_are_product_facing.py
