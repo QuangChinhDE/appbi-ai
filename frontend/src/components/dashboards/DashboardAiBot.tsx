@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Bot, X, Send, Square, Loader2, ChevronDown, Key, ExternalLink, AlertTriangle, CheckCircle2, Sparkles, ListChecks, BarChart3, Calculator, GitCompareArrows, Search, Filter, TrendingUp, Image as ImageIcon, Activity, Trash2, ThumbsUp, ThumbsDown, Brain, Zap } from 'lucide-react';
+import { Bot, X, Send, Square, Loader2, Info, ChevronDown, Key, ExternalLink, AlertTriangle, CheckCircle2, Sparkles, ListChecks, BarChart3, Calculator, GitCompareArrows, Search, Filter, TrendingUp, Image as ImageIcon, Activity, Trash2, ThumbsUp, ThumbsDown, Brain, Zap } from 'lucide-react';
 import { ConfirmDialog } from '@/components/common/ConfirmDialog';
 import {
   ChartChip, ChartNamesContext, ConfidenceBadge, InsightTypeChip, RichMarkdown,
@@ -26,7 +26,10 @@ import {
 import { BriefingWizard, type BriefingWizardResult } from './BriefingWizard';
 import type { AnswerBlock, FlowOutputEnvelope } from '@/lib/agentFlows';
 import { AnswerBlocks } from './AnswerBlocks';
-import { FlowNotice, readerNotices } from '@/lib/notices';
+import {
+  FlowNotice, outcomeOf, readerNotices, tallyStatus, type ToolStatusEntry,
+} from '@/lib/notices';
+import { cn } from '@/lib/utils';
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -239,7 +242,7 @@ interface ChatMessage extends AiChatMessage {
    *  minutes ago is how a bot loses trust it cannot win back. */
   notices?: FlowNotice[];
   /** Tool status notes accumulated while this assistant message was streaming. */
-  statusLog?: { tool: string; text: string; ok?: boolean; error?: string | null }[];
+  statusLog?: ToolStatusEntry[];
   /** User rating for this assistant message. */
   rating?: 'up' | 'down';
   /** Phase-15.71 — reading plan emitted by the bot before answering.
@@ -721,7 +724,32 @@ export function DashboardAiBot({
                 notices: envelope.notices || [],
                 // Keep the prose too: it is what gets persisted to the session and
                 // what a rating is matched against server-side.
-                content: answerSoFar || blocksToText(envelope.answer?.blocks || []),
+                // QUOTE WHAT THE SERVER SAID; DO NOT RE-DERIVE IT.
+                //
+                // A reader's thumb is attached to its run by matching this text
+                // against what the server stored, which is how a public page is
+                // stopped from rating words the server never produced. The
+                // server stores `Answer.plain_text()`. This line used to rebuild
+                // it with `blocksToText`, a second implementation that dropped
+                // metric blocks — so every KPI-shaped answer produced two
+                // different strings, the match found nothing, and the rating was
+                // silently absent from the column the operator reads.
+                //
+                // `answer.text` is that same `plain_text()`, published. The
+                // local fallback stays for a frontend talking to a backend that
+                // predates the field.
+                // THE SERVER'S TEXT WINS, including over the prose this client
+                // accumulated while streaming. `content` is not decoration: it
+                // is the string a rating is matched against, and the server
+                // matches it to `Answer.plain_text()`. The streamed
+                // accumulation is a near-miss of that — same words, different
+                // joins, and without the metric blocks rendered as
+                // `label: value` — so preferring it reintroduced exactly the
+                // bug this line exists to fix. Verified against a real KPI
+                // answer: with `answerSoFar` first the run stayed unrated.
+                content: envelope.answer?.text
+                  || answerSoFar
+                  || blocksToText(envelope.answer?.blocks || []),
               },
             ];
             setMessages(latestMessages);
@@ -1347,7 +1375,7 @@ function applyEvent(
   ops: {
     appendText: (chunk: string) => void;
     setStatus: (s: string) => void;
-    appendStatusLog: (entry: { tool: string; text: string; ok?: boolean; error?: string | null }) => void;
+    appendStatusLog: (entry: ToolStatusEntry) => void;
     setReadingPlan: (
       items: { step: number; chart_id: number | null; phase: string; question: string }[],
       overallGoal?: string | null,
@@ -1388,7 +1416,9 @@ function applyEvent(
     return;
   }
   if (ev.type === 'tool_result') {
-    ops.appendStatusLog({ tool: ev.tool, text: '', ok: ev.ok, error: ev.error ?? null });
+    ops.appendStatusLog({
+      tool: ev.tool, text: '', ok: ev.ok, outcome: ev.outcome, error: ev.error ?? null,
+    });
     return;
   }
   if (ev.type === 'reading_plan') {
@@ -1987,6 +2017,7 @@ function MessageBubble({
               }`}
               title={t('dashboards.aiBot.rateUpTitle')}
               aria-label={t('dashboards.aiBot.rateUpAria')}
+              data-testid="rate-up"
             >
               <ThumbsUp className="h-3 w-3" />
             </button>
@@ -2000,6 +2031,7 @@ function MessageBubble({
               }`}
               title={t('dashboards.aiBot.rateDownTitle')}
               aria-label={t('dashboards.aiBot.rateDownAria')}
+              data-testid="rate-down"
             >
               <ThumbsDown className="h-3 w-3" />
             </button>
@@ -2118,17 +2150,33 @@ function StatusLog({
   // summary that the user can expand. Mirrors how Claude/ChatGPT collapse
   // tool traces after the answer is ready.
   if (collapsed && !expanded) {
-    const errs = visible.filter((l) => l.ok === false || l.error).length;
+    // COUNTED BY MEANING. This line used to read `l.ok === false || l.error`
+    // and call the total "lỗi", so a link correctly withholding an out-of-scope
+    // chart was reported to a viewer as a failure — "3 lỗi" printed above a
+    // correct answer. `outcome` is the backend's own classification of the same
+    // refusal; the count and the icon now follow it.
+    const { errors, limitations } = tallyStatus(visible);
     return (
       <button
         type="button"
         onClick={() => setExpanded(true)}
-        className="mb-1.5 flex items-center gap-1.5 border-b border-[rgb(var(--border-line))]/40 pb-1.5 text-tiny text-text-tertiary transition-colors hover:text-text-secondary"
+        className={cn(
+          'mb-1.5 flex items-center gap-1.5 border-b border-[rgb(var(--border-line))]/40 pb-1.5 text-tiny transition-colors',
+          errors ? 'text-danger hover:text-danger' : 'text-text-tertiary hover:text-text-secondary',
+        )}
       >
-        <CheckCircle2 className="h-3 w-3 flex-shrink-0 text-success" />
+        {errors
+          ? <AlertTriangle className="h-3 w-3 flex-shrink-0 text-danger" />
+          : <CheckCircle2 className="h-3 w-3 flex-shrink-0 text-success" />}
         <span className="italic">
           {t('dashboards.aiBot.statusLogSummary', { count: visible.length })}
-          {errs ? t('dashboards.aiBot.statusLogErrorSuffix', { errs }) : ''}
+          {errors ? t('dashboards.aiBot.statusLogErrorSuffix', { errs: errors }) : ''}
+          {/* A limitation is NOT an error and never reads as one. It is still
+              said, because an answer narrowed by scope is a thing the reader
+              needs to know about. */}
+          {!errors && limitations
+            ? t('dashboards.aiBot.statusLogLimitSuffix', { count: limitations })
+            : ''}
           {t('dashboards.aiBot.statusLogViewDetail')}
         </span>
         <ChevronDown className="h-3 w-3" />
@@ -2146,20 +2194,29 @@ function StatusLog({
           {t('dashboards.aiBot.hideDetail')}
         </button>
       )}
-      {visible.map((entry, i) => (
-        <div key={i} className="flex items-start gap-1.5">
-          {entry.ok === false ? (
-            <AlertTriangle className="h-3 w-3 flex-shrink-0 text-warning" />
-          ) : entry.ok === true ? (
-            <CheckCircle2 className="h-3 w-3 flex-shrink-0 text-success" />
-          ) : (
-            <Loader2 className="h-3 w-3 flex-shrink-0" />
-          )}
-          <span className="italic">
-            {entry.text || (entry.error ? `${entry.tool}: ${entry.error}` : entry.tool)}
-          </span>
-        </div>
-      ))}
+      {/* EXPANDED, THE SAME CLASSIFICATION. A red triangle against a line that
+          says "this data is outside what the link shares" contradicts its own
+          sentence — the reader sees alarm and reads reassurance. Only a genuine
+          failure is marked as one. */}
+      {visible.map((entry, i) => {
+        const outcome = outcomeOf(entry);
+        return (
+          <div key={i} className="flex items-start gap-1.5">
+            {outcome === 'error' ? (
+              <AlertTriangle className="h-3 w-3 flex-shrink-0 text-danger" />
+            ) : outcome === 'limitation' || outcome === 'notice' ? (
+              <Info className="h-3 w-3 flex-shrink-0 text-text-quaternary" />
+            ) : entry.ok === true ? (
+              <CheckCircle2 className="h-3 w-3 flex-shrink-0 text-success" />
+            ) : (
+              <Loader2 className="h-3 w-3 flex-shrink-0" />
+            )}
+            <span className="italic">
+              {entry.text || (entry.error ? `${entry.tool}: ${entry.error}` : entry.tool)}
+            </span>
+          </div>
+        );
+      })}
     </div>
   );
 }

@@ -24,7 +24,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.services.agent_flows.reader_diagnostics import reader_error, tool_label
+from app.services.agent_flows.reader_diagnostics import (
+    reader_error,
+    reader_outcome,
+    tool_label,
+)
 
 
 def event_to_envelope(ev: Any) -> dict | None:
@@ -53,11 +57,20 @@ def event_to_envelope(ev: Any) -> dict | None:
     if et == "tool_result":
         # Send only ok/error so the FE can flag failures without leaking the
         # full payload (which can be large).
+        #
+        # `outcome` IS THE CLASSIFICATION, and `ok` is only the transport fact.
+        # Every reader surface used to count `ok == False` as an error, so a link
+        # correctly withholding an out-of-scope chart was reported to a viewer as
+        # a failure — "3 errors" printed above a correct answer. The distinction
+        # was already made upstream in `error_code`; it died here, one layer
+        # before the only consumer that needed it. `ok` stays exactly as it was
+        # so nothing that reads it breaks.
         result = ev.tool_result or {}
         return {
             "type": "tool_result",
             "tool": tool_label(ev.tool_name),
             "ok": bool(result.get("ok")),
+            "outcome": reader_outcome(result),
             "error": reader_error(result) or None,
         }
     if et == "reading_plan":
