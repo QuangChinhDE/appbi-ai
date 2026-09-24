@@ -40,7 +40,7 @@ import {
   type FlowBody, type FlowLinkUsage, type FlowNode, type FlowPath, type FlowType,
   type InsertTarget,
   type Attachable, type NodeSpec, type NodeType, type ProviderGroup,
-  type Specialist, type SwitchCase, type ToolPack,
+  type Specialist, type SwitchCase, type ToolPack, type ToolSpec,
   type ValidateResult,
 } from '@/lib/agentFlows';
 
@@ -119,6 +119,16 @@ export function BrainBuilder({
   const [specs, setSpecs] = React.useState<Record<string, NodeSpec>>({});
   const [specList, setSpecList] = React.useState<NodeSpec[]>([]);
   const [toolPacks, setToolPacks] = React.useState<ToolPack[]>([]);
+  /** Flattened tool catalogue, so the canvas can name a Tool step.
+   *
+   *  Derived from the packs already loaded for the inspector rather than fetched
+   *  again — one request, one source, and no window in which the card and the
+   *  panel beside it disagree about what a tool is called. */
+  const toolSpecsByName = React.useMemo(() => {
+    const out: Record<string, ToolSpec> = {};
+    for (const pack of toolPacks) for (const tool of pack.tools) out[tool.name] = tool;
+    return out;
+  }, [toolPacks]);
   const [providers, setProviders] = React.useState<ProviderGroup[]>([]);
   // What this author may point a step at. Null until it arrives, so the picker
   // can say "loading" rather than "nothing to attach" — the two look identical
@@ -615,14 +625,18 @@ export function BrainBuilder({
         <div className="sticky right-0 flex flex-shrink-0 items-center gap-2 bg-surface-1 pl-2">
         {validation && (
           validation.ok
-            ? <Badge size="xs" variant="success" dot>{t('agentFlows.builder.valid')}</Badge>
+            ? (
+              <Badge data-testid="flow-validity" size="xs" variant="success" dot>
+                {t('agentFlows.builder.valid')}
+              </Badge>
+            )
             : (
               // BOUNDED. The verdict lives in the sticky right group, so a long
               // error — and validation messages name the step and the reason —
               // grew that group until it covered the tab strip, and "Activity"
               // became unreachable at 1280. The full sentence is still one hover
               // away, and the Design tab shows it in full beside the step.
-              <Badge size="xs" variant="danger" title={validation.errors[0] || ''}>
+              <Badge data-testid="flow-validity" size="xs" variant="danger" title={validation.errors[0] || ''}>
                 <span className="block max-w-[200px] truncate 2xl:max-w-none">
                   {validation.errors[0] || t('agentFlows.builder.invalid')}
                 </span>
@@ -652,16 +666,16 @@ export function BrainBuilder({
             </IconBtn>
           </div>
         )}
-        <Button variant="secondary" size="xs" onClick={() => setTestOpen(true)}>
+        <Button data-testid="builder-test" variant="secondary" size="xs" onClick={() => setTestOpen(true)}>
           <Play className="h-3 w-3" /> {t('agentFlows.builder.test')}
         </Button>
         {canEdit && (
-          <Button variant="secondary" size="xs" onClick={save} loading={saving} disabled={!dirty}>
+          <Button data-testid="builder-save" variant="secondary" size="xs" onClick={save} loading={saving} disabled={!dirty}>
             <Save className="h-3 w-3" /> {t('agentFlows.builder.saveDraft')}
           </Button>
         )}
         {canPublish && (
-          <Button size="xs" onClick={() => setPublishOpen(true)} disabled={dirty}>
+          <Button data-testid="builder-publish" size="xs" onClick={() => setPublishOpen(true)} disabled={dirty}>
             <Send className="h-3 w-3" /> {t('agentFlows.builder.publish')}
           </Button>
         )}
@@ -694,6 +708,7 @@ export function BrainBuilder({
               <FlowCanvas
                 nodes={body.nodes}
                 specs={specs}
+                toolSpecs={toolSpecsByName}
                 selectedKey={selected}
                 // The door into the roving list: with nothing selected the
                 // FIRST step is the canvas's tab stop, so Tab reaches a step
@@ -814,7 +829,9 @@ export function BrainBuilder({
           </div>
         )}
 
-        {mode === 'runs' && <RunsTab brainKey={brainKey} onOpenNode={openNodeInBuilder} />}
+        {mode === 'runs' && (
+          <RunsTab brainKey={brainKey} onOpenNode={openNodeInBuilder} toolSpecs={toolSpecsByName} />
+        )}
         {mode === 'feedback' && (
           <FeedbackTab
             brainKey={brainKey}
@@ -898,7 +915,8 @@ function PublishDialog({
   const [accepted, setAccepted] = React.useState(false);
   const blocked = problems.length > 0 && !accepted;
   return (
-    <div className="absolute inset-0 z-50 flex items-center justify-center bg-[rgb(0_0_0/0.22)]">
+    <div data-testid="publish-dialog"
+      className="absolute inset-0 z-50 flex items-center justify-center bg-[rgb(0_0_0/0.22)]">
       <div className="w-[540px] rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 shadow-linear-lg">
         <div className="border-b border-[rgb(var(--border-line))] p-3.5">
           <b className="text-body font-strong">{t('agentFlows.publish.title', { version })}</b>
@@ -959,7 +977,7 @@ function PublishDialog({
         </div>
         <div className="flex justify-end gap-2 border-t border-[rgb(var(--border-line))] p-3">
           <Button variant="secondary" size="sm" onClick={onCancel}>{t('agentFlows.publish.cancel')}</Button>
-          <Button size="sm" onClick={() => onConfirm(accepted)} loading={busy} disabled={blocked}>
+          <Button data-testid="publish-confirm" size="sm" onClick={() => onConfirm(accepted)} loading={busy} disabled={blocked}>
             {t('agentFlows.builder.publish')}
           </Button>
         </div>

@@ -25,8 +25,9 @@ import { Input } from '@/components/ui/Input';
 import { Badge } from '@/components/ui/Badge';
 import { cn } from '@/lib/utils';
 import { useI18n } from '@/providers/LanguageProvider';
-import { authorNotices, conversationDetail, getBrain, listNodeSpecs, readerNotices, runDetail, runStats, type ConversationDetail, type FlowNode, type NodeSpec, type RunDetail, type RunSourceFilter, type RunStats, type RunStep } from '@/lib/agentFlows';
+import { authorNotices, conversationDetail, getBrain, listNodeSpecs, readerNotices, runDetail, runStats, type ConversationDetail, type FlowNode, type NodeSpec, type RunDetail, type RunSourceFilter, type RunStats, type RunStep, type ToolSpec } from '@/lib/agentFlows';
 import { FlowCanvas } from './FlowCanvas';
+import { toolLabel } from './inspector/ToolPicker';
 import { ConversationsPanel } from './ConversationsPanel';
 import { noticeCandidates, noticeCandidatesHidden } from '@/lib/notices';
 import {
@@ -38,14 +39,19 @@ import {
 // would eventually disagree about what colour `partial` is.
 
 export function RunsTab(
-  { brainKey, onOpenNode }: {
+  { brainKey, onOpenNode, toolSpecs }: {
     brainKey: string;
     /** Open the node that produced a trace step in the Builder. Supplied by the
      *  Builder, which owns navigation — Runs stays read-only and does not route. */
     onOpenNode?: (nodeKey: string) => void;
+    /** Tool name → catalogue entry, so an unnamed Tool step is readable here for
+     *  the same reason it had to become readable on the canvas: `tool_2 · tool`
+     *  names the implementation and nothing an author recognises. Optional
+     *  because Runs is also reachable before the catalogue has loaded. */
+    toolSpecs?: Record<string, ToolSpec>;
   },
 ) {
-  const { t, locale } = useI18n();
+  const { t, locale, language } = useI18n();
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
@@ -418,6 +424,7 @@ export function RunsTab(
               <FlowCanvas
                 nodes={flowBody}
                 specs={specs}
+                toolSpecs={toolSpecs}
                 selectedKey={openStep}
                 answerKey={answerKey}
                 onSelect={setOpenStep}
@@ -441,7 +448,7 @@ export function RunsTab(
             <>
               <div className="border-b border-[rgb(var(--border-line))] px-3 py-2.5">
                 <div className="text-tiny font-strong uppercase tracking-wider text-text-quaternary">
-                  Bước đã chọn
+                  {t('agentFlows.runs.selectedStep')}
                 </div>
                 <div className="mt-0.5 flex items-center gap-2">
                   <StepMark status={selectedStep.status} />
@@ -462,7 +469,7 @@ export function RunsTab(
                   )}
                   <button type="button" onClick={() => setOpenStep(null)}
                     className="text-tiny text-text-tertiary hover:text-text-secondary">
-                    ← Cả run
+                    {t('agentFlows.runs.backToWholeRun')}
                   </button>
                 </div>
                 <div className="mt-1 text-tiny text-text-tertiary">
@@ -688,12 +695,13 @@ export function RunsTab(
                       <button
                         key={`${s.seq}-${s.key}`}
                         type="button"
+                        data-testid="run-step"
                         onClick={() => setOpenStep(s.key)}
                         className="flex w-full items-start gap-2 border-t border-[rgb(var(--border-line))] p-2 text-left transition first:border-t-0 hover:bg-surface-2"
                       >
                         <StepMark status={s.status} />
                         <div className="min-w-0 flex-1">
-                          <b className="block text-tiny font-medium">{s.name || s.key}</b>
+                          <b className="block text-tiny font-medium">{stepTitle(s, toolSpecs, language)}</b>
                           <span className="block text-tiny text-text-tertiary">
                             {s.type} · {s.ms ?? 0}ms
                             {s.prompt_tokens != null && ` · ${tok.toLocaleString()} token`}
@@ -713,6 +721,25 @@ export function RunsTab(
       )}
     </div>
   );
+}
+
+/** What to call a step in the trace, most specific fact first.
+ *
+ *  The author's own name wins. Failing that, a Tool step is named by the tool it
+ *  CALLED — a fact the run already recorded, read here rather than re-derived, so
+ *  nothing about a stored run changes. A step that was skipped called nothing and
+ *  keeps its key, which is the truthful answer: there is no tool to name. */
+function stepTitle(
+  step: RunStep, toolSpecs: Record<string, ToolSpec> | undefined, language: 'en' | 'vi',
+): string {
+  if (step.name) return step.name;
+  if (step.type === 'tool') {
+    const called = step.tool_calls?.[0];
+    const spec = called ? toolSpecs?.[called] : undefined;
+    if (spec) return toolLabel(spec, language);
+    if (called) return called;
+  }
+  return step.key;
 }
 
 /** One step, opened up: what it ran with, what it got, what it produced.
