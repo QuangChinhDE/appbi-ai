@@ -14,8 +14,15 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+// Transpiled with the project's own `typescript`, not Node's type stripping:
+// CI runs this on Node 20, which cannot import a .ts file at all.
+const ts = (await import('typescript')).default;
+const { outputText } = ts.transpileModule(
+  readFileSync(resolve(ROOT, 'src/lib/readerRating.ts'), 'utf8'),
+  { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2020 } },
+);
 const { nextReaderRating, applyReaderRating, revertReaderRating, toSnapshotMessage } =
-  await import(new URL('../src/lib/readerRating.ts', import.meta.url).href);
+  await import('data:text/javascript;base64,' + Buffer.from(outputText).toString('base64'));
 
 const failures = [];
 const expect = (label, got, want) => {
