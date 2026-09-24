@@ -46,6 +46,7 @@ expect('a later click survives an earlier failure', revertReaderRating(later, 1,
 // the run kept "up".
 expect('snapshot keeps rating', toSnapshotMessage({ role: 'assistant', content: 'a', rating: 'down' }).rating, 'down');
 expect('snapshot keeps failed', toSnapshotMessage({ role: 'assistant', content: 'x', failed: true }).failed, true);
+expect('snapshot keeps local', toSnapshotMessage({ role: 'assistant', content: 'w', local: true }).local, true);
 expect('snapshot of an unrated answer has no rating', 'rating' in toSnapshotMessage({ role: 'assistant', content: 'a' }), false);
 
 // The component must use the contract, and must not grow its own toggle back.
@@ -65,7 +66,11 @@ if (/\(\{\s*role:\s*m\.role,\s*content:\s*m\.content\s*\}\)/.test(bot)) {
 }
 if (viaContract < saves) failures.push(`${saves} session saves but only ${viaContract} serialize through toSnapshotMessage`);
 // An error bubble is not an answer any run holds; it must not offer a thumb.
-if (!/!message\.failed\s*&&\s*onRate/.test(bot)) failures.push('the rating control is offered on a failed turn — no run can receive that verdict');
+if (!/!message\.failed\s*&&\s*!message\.local\s*&&\s*onRate/.test(bot)) failures.push('the rating control is offered on a failed turn or a page-written bubble — no run can receive that verdict');
+// Every welcome the page writes is marked local.
+const welcomes = (bot.match(/buildWelcomeMessage\(/g) ?? []).length - 1;
+const localWelcomes = (bot.match(/buildWelcomeMessage\([^)]*\)[^}]*local: true/g) ?? []).length;
+if (localWelcomes < welcomes) failures.push(`${welcomes} welcome bubbles but only ${localWelcomes} marked local — a reader could rate text no run holds`);
 
 if (failures.length) {
   console.error('✗ reader rating contract:\n  - ' + failures.join('\n  - '));

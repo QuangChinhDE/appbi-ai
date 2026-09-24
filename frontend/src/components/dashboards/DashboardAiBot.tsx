@@ -250,6 +250,10 @@ interface ChatMessage extends AiChatMessage {
    *  holds this text, so it cannot be rated: a lit thumb here would be a
    *  verdict the operator never receives. Persisted so a reload agrees. */
   failed?: true;
+  /** Written by this page, not by a run — the welcome, the tour pivot prompt.
+   *  Same reason as `failed`: no run holds this text, so it offers no thumb.
+   *  Persisted, because `isWelcome` is cleared after the first question. */
+  local?: true;
   /** Phase-15.71 — reading plan emitted by the bot before answering.
    *  Renders as a collapsible "AI đang đọc" panel above the answer.
    *  Phase 15.72 — each step carries a live status badge updated by
@@ -419,7 +423,7 @@ export function DashboardAiBot({
       // session or a briefing-wizard intro.
       setMessages((prev) => (
         prev.length === 0
-          ? [{ role: 'assistant', content: buildWelcomeMessage(r, dashboardName), isWelcome: true }]
+          ? [{ role: 'assistant', content: buildWelcomeMessage(r, dashboardName), isWelcome: true, local: true }]
           : prev
       ));
     } catch (err: unknown) {
@@ -609,6 +613,7 @@ export function DashboardAiBot({
         role: 'assistant',
         content: buildWelcomeMessage(recon, dashboardName),
         isWelcome: true,
+        local: true,
       }]);
     } else {
       setMessages([]);
@@ -644,6 +649,7 @@ export function DashboardAiBot({
           role: 'assistant',
           content: 'Bạn đang trong phần **hướng dẫn xem báo cáo**. Bạn muốn tôi chuyển sang **xem tổng quan** toàn báo cáo luôn, hay **tiếp tục hướng dẫn** từng bước?',
           pivotPending: text,
+          local: true,
         },
       ]);
       return;
@@ -1359,7 +1365,7 @@ export function DashboardAiBot({
           // Chat-first: stay in chat and reseed the recon welcome + starter
           // questions (no briefing-wizard gate on clear).
           if (recon) {
-            setMessages([{ role: 'assistant', content: buildWelcomeMessage(recon, dashboardName), isWelcome: true }]);
+            setMessages([{ role: 'assistant', content: buildWelcomeMessage(recon, dashboardName), isWelcome: true, local: true }]);
           } else {
             setMessages([]);
           }
@@ -2012,7 +2018,7 @@ function MessageBubble({
             ))}
           </div>
         )}
-        {!isUser && !streaming && message.content && !message.failed && onRate && (
+        {!isUser && !streaming && message.content && !message.failed && !message.local && onRate && (
           <div className="mt-1.5 flex items-center gap-1 border-t border-[rgb(var(--border-line))]/30 pt-1.5">
             <span className="text-micro text-text-quaternary mr-1">{t('dashboards.aiBot.ratingLabel')}</span>
             <button

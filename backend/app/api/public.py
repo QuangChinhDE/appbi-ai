@@ -3798,6 +3798,9 @@ async def save_ai_chat_session(
             # stored; the reader page keeps it unratable across a reload.
             if msg.get("failed") is True and role == "assistant":
                 entry["failed"] = True
+            # Likewise a bubble the page wrote itself (the welcome) — no run.
+            if msg.get("local") is True and role == "assistant":
+                entry["local"] = True
             safe_messages.append(entry)
 
     # THE THUMB HAS TO REACH THE RUN, NOT ONLY THE TRANSCRIPT.

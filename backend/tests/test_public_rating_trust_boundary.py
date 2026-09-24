@@ -169,12 +169,13 @@ def test_the_saved_transcript_keeps_rating_and_failed_flag(harness):
     keeps an error bubble unratable."""
     db = _DB()
     fn = inspect.unwrap(public.save_ai_chat_session)
-    msgs = RATED + [{"role": "user", "content": "q2"},
+    msgs = [{"role": "assistant", "content": "Xin chào!", "local": True}] + RATED + [{"role": "user", "content": "q2"},
                     {"role": "assistant", "content": "Lỗi: hết thời gian.", "failed": True},
                     {"role": "user", "content": "q3", "failed": True}]
     body = AiChatSessionSave(session_key="s1", messages=msgs)
     asyncio.run(fn(token=TOKEN, session_key="s1", body=body, request=None, db=db, x_public_session=None))
     stored = db.added[0].messages
-    assert stored[1]["rating"] == "down"
-    assert stored[3].get("failed") is True
-    assert "failed" not in stored[4], "only an assistant bubble can be a failed turn"
+    assert stored[0].get("local") is True
+    assert stored[2]["rating"] == "down"
+    assert stored[4].get("failed") is True
+    assert "failed" not in stored[5], "only an assistant bubble can be a failed turn"
