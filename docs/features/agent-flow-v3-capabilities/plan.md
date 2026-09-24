@@ -1,0 +1,94 @@
+# Agent Flow V3 capabilities — implementation plan
+
+## Guardrail scoping
+
+```bash
+python scripts/ci/guardrail_check.py --plan "Agent Flow V3: evidence-bound compute, AgentRuntime/Strategy split, capability shortlist router, Skill = published flow invoked as governed child run, bounded coordinator" --files <agent.py executor.py tools/registry.py contract.py registry.py permissions.py runs.py models/agent_flow_run.py thinking/tools.py ToolPicker.tsx>
+```
+
+- Verdict: **warn** (plan) — run the named suites. `unknown` on the model/migration file
+  pair: no rule covers `agent_flow_run.py` + a new column → handled with the
+  migration-checker agent and the alembic chain gate.
+- Feature touched: *Agent Flow Studio (authoring + runtime + node model)*.
+- Protected subsystems: **none directly** (not the semantic layer, not `api/public.py`).
+  Public reader behaviour is unchanged by design; the public-link suites still run.
+- Required: `agent_flow_container`, `agent_flow_contract`, `agent_flow_evidence`,
+  `agent_flow_replay`, `agent_flow_surface`, `tier1_oracles_execute`.
+
+## Sequence — seven PR-sized phases, each green on its own
+
+Order is dependency + risk: fix promises first, move code before adding behaviour behind
+it, add the Skill last because it depends on all of it.
+
+| # | Phase | Files (layer) | Behaviour change |
+|---|---|---|---|
+| **1** | Governance gaps (spec §6) | `tools/registry.py` (risk refusal), `contract.py` (`uses_capability` from registry; nested coordinator; unknown tool in `blocking_problems`), `binding.py` (coordinator cost) — services | deliberate, small, each tested |
+| **2** | Strategy / Runtime seam (spec §4) | new `runtime/agent_runtime.py`, `runtime/strategies/{__init__,tool_calling}.py`; `handlers/agent.py` becomes composition — services | **none**: canonical replay is the only acceptance criterion; any diff ⇒ revert, not "fix to match" |
+| **3** | Evidence-bound compute (spec §1) | `tools/packs/measure.py` → `local()` compute on the new contract using `verifier._matches`; `runtime/state.py` derived-evidence lineage — services | deliberate: unsourced inputs refused |
+| **4** | Capability shortlisting (spec §2) | new `tools/capability_router.py`; `find_capability` tool (discover pack); `AgentRuntime.exposure`; `/capabilities/search` endpoint; `ToolPicker.tsx` uses it | none for ≤ 8 grants (replay proves); > 8 → shortlist |
+| **5** | Skill backend (spec §3) | migration `parent_run_id/parent_step_seq`; `contract.py` (`skill` contract, `SkillNode`, `skill:` grants); new `skills/invoker.py`; `permissions.py` (intersection helper); `registry.py` (publish-time cycle/depth + version pin); `runs.py`/`history.py` (child runs); `api.py` (`/skills`) — models + services + api | new capability; existing flows unaffected |
+| **6** | Builder + Runs UX (spec UI) | `ToolPicker.tsx` grouping + Skills; flow settings contract editor; Skill node editor; `RunsTab.tsx` child expansion; `WhatTheAiSees.tsx` exposure; i18n `agent-flows.ts` VI/EN; `check-node-topology.mjs` learns `skill` — frontend | UI |
+| **7** | Docs + eval | V3 architecture doc: concept map, status per phase; migration-plan status; eval scenarios | — |
+
+No row crosses a boundary improperly: models gain columns only; new logic lives in
+`services/agent_flows/**`; `api.py` only wires endpoints; the public surface is untouched.
+
+## Risks
+
+| Risk | Would show up as | Caught by |
+|---|---|---|
+| Phase 2 changes behaviour while "only moving code" | a replay snapshot diff | `test_agent_flow_replay.py` (16 fixtures) — hard stop |
+| compute refusal breaks a real flow | answers that used to compute now refuse | no fixture or recorded run uses compute (checked: 0 of all local run steps); new test covers the recovery path (model reads the figure, retries, succeeds) |
+| Router hides the right tool | wrong/absent tool on a >8-grant agent | router test set (≥ 15 VI/EN questions → expected tool in shortlist); `find_capability` fallback; granted calls still allowed |
+| Skill widens access | child reads a chart the parent could not | permission-intersection tests per dimension (charts, columns, rows, web, actor) written **before** the invoker |
+| Skill recursion / budget starvation | runaway run, answer node out of budget | publish-time cycle test, runtime depth test, shared-budget + per-invocation-ceiling tests |
+| Child runs pollute Runs/funnel | inflated run counts | Runs + `pilot_funnel.sql` filter `parent_run_id IS NULL`; test |
+| Migration on a DB with data | crash-loop | additive nullable columns only; migration-checker agent; single head |
+| New node type drifts FE/BE | builder cannot render `skill` | `check-node-topology.mjs`, `nodes.py` import-time registry guard (`nodes.py:71-89`) |
+
+## Tests — decided now
+
+| Test | New/existing | Locks |
+|---|---|---|
+| `test_agent_flow_replay.py` | existing | phases 2 & 4: zero change for existing flows |
+| `test_governance_promises_are_kept.py` | new | risk_unknown refused; web set derived from `reaches_outside`; unknown ToolNode tool blocks publish; nested coordinator refused; coordinator cost counted |
+| `test_strategy_is_pure.py` | new | no strategy module imports providers or `registry.execute`; default strategy = tool_calling |
+| `test_compute_owns_the_number.py` | new | unsourced var refused (recoverable); sourced var → result + lineage; constants bounded; derived result accepted by verifier; chained compute; percent-form match |
+| `test_capability_shortlist.py` | new | ≤8 unchanged; >8 capped at 8 + core; web/raw-row pruned only when context forbids; sticky; `find_capability` never lists ungranted; ungranted call still `not_granted`; granted-unexposed call allowed; prompt size with 36 grants ≤ 50% of today; VI/EN intent set hits expected tool |
+| `test_skill_permission_intersection.py` | new | parent {A,B} ∩ skill {B,C} ⇒ B only, per charts/columns/raw rows/web/actor; owner-rights read at run time |
+| `test_skill_graph.py` | new | A→B→A refused at publish; depth 4 refused; pinned version used; deleted Skill → `skill_not_found` honest refusal |
+| `test_skill_execution.py` | new | Agent → Skill → child run: result + `parent_run_id` + child steps; Skill node deterministic (no LLM spend); inputs only explicit; shared budget; per-invocation ceiling; child notices propagate; child figures carry `skill:` source |
+| `test_skill_runs_visibility.py` | new | Runs list excludes children; run detail includes them; funnel counts top-level only |
+| `test_tool_capability_gates.py`, `test_tool_authorization_metadata.py`, `test_tool_node.py`, `test_report_read_scope.py`, `test_i5_hard_gate_stays_lowest.py` | existing | hard gates stay in registry/data layer (V3 invariant 11) |
+| replay fixtures `17_skill_node.json`, `18_agent_calls_skill.json`, `19_compute_lineage.json` | new | canonical behaviour of the new paths |
+| author golden E2E: publish a flow as Skill, attach it to an agent, test, see child steps in Runs | new | the user-visible journey |
+| `check-node-topology.mjs` / `check-starter-grants.mjs` | existing, extended | FE/BE node parity incl. `skill`; starter unchanged |
+
+Every new backend test: `.gitignore` allow-list + `backend-contract-tests.yml` +
+`git add -f` (verify.py checks).
+
+## Verification
+
+Per phase: targeted tests → `verify.py task` → replay. At the end, on a rebuilt stack:
+build a Skill "So sánh hai kỳ" from report-read + agent(compare_periods, compute), publish
+it, grant it to a Business-Analyst agent in a new flow alongside 20 tools, ask a period
+comparison on the Olist report, and confirm in Runs: exposure set ≤ 8, the Skill chosen,
+the child run's steps, the compute lineage, a verified answer. Then the same through a
+no-web link to prove intersection. Full E2E both modes; Live Agent Eval only against a
+deployment serving the exact SHA.
+
+## Rollback
+
+Phases 1–4 have no schema change: revert the commit. Phase 5 adds two nullable columns;
+`downgrade()` drops them and is tested before merge. Flows saved as `skill` or containing a
+`skill` node would fail validation after a code rollback — the rollback note says to
+unpublish Skills first; nothing else in existing data changes meaning.
+
+## Not built, and why
+
+- **Parallel specialists / planner strategy** — the seam in phase 2 makes them possible;
+  building them now is speculative (V3 §6: "Planner/Multi-Agent trước khi AgentStrategy ổn định").
+- **Runtime Layer Stack (V3.3)** — nothing here needs it; it stays in its own phase.
+- **Checkpoint/HITL, MCP/HTTP** — separate phases with their own risks.
+- **Embedding-based routing** — lexical + deterministic filtering reaches the goal without
+  a new model dependency in the hot path; revisit with pilot evidence.
