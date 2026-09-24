@@ -55,6 +55,12 @@ services:
     build:
       context: .
       dockerfile: backend/Dockerfile
+      args:
+        # Baked into the image so it can say what it is however it is started.
+        # `run.sh` resolves GIT_SHA from the working copy; a CI or deploy system
+        # can export its own. Empty is fine — health then falls back to
+        # "unknown" exactly as before.
+        APPBI_BUILD_SHA: ${GIT_SHA:-}
     restart: unless-stopped
     env_file:
       - .env
