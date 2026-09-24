@@ -41,6 +41,12 @@ export async function saveDraft(
  */
 export async function deleteFlow(request: any, key: string) {
   for (let version = 1; version <= 5; version += 1) {
+    // UNPUBLISH FIRST, OR THE ROW SURVIVES THE SWEEP. Deleting a live version is
+    // refused — `Phiên bản đang phát hành — hãy phát hành bản khác trước`, 409 —
+    // which is the right rule and is exactly why a suite that PUBLISHES has to
+    // undo that before it deletes. Without this, every run of the author golden
+    // spec left a published `e2e_*` flow in the list for ever.
+    await request.post(`${BRAINS}/${key}/${version}/unpublish`).catch(() => {});
     await request.delete(`${BRAINS}/${key}/${version}`).catch(() => {});
   }
 }
