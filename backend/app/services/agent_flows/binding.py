@@ -34,6 +34,7 @@ from app.services.agent_flows.contract import (
     AgentNode,
     Flow,
     LoopNode,
+    child_node_lists,
 )
 from app.services.agent_flows.envelope import (
     BindingInfo,
@@ -573,20 +574,34 @@ def estimate_cost(flow: Flow, *, chart_count: int = 0) -> dict[str, int]:
                 tools += per_read
             elif n.type in {"knowledge", "web"}:
                 tools += 3
+            # CHILDREN FROM THE CANONICAL TOPOLOGY (`child_node_lists`), so a
+            # container is never invisible here the way `coordinate` was: this
+            # used to walk loop/if/switch by hand and costed a coordinator — a
+            # planner call plus up to `max_specialists` lanes — at zero. Only how
+            # a container COMBINES its children is written out, per type.
+            groups = [cost(list(g)) for g in child_node_lists(n)]
+            if not groups:
+                continue
             if isinstance(n, LoopNode):
-                bl, bt = cost(list(n.body))
-                llm += bl * n.max_iterations
-                tools += bt * n.max_iterations
-            elif n.type == "if":
-                branches = [cost(list(p.body)) for p in n.paths] or [(0, 0)]
-                best = max(branches, key=lambda x: x[0] * 10 + x[1])
+                llm += sum(g[0] for g in groups) * n.max_iterations
+                tools += sum(g[1] for g in groups) * n.max_iterations
+            elif n.type == "coordinate":
+                # One planner call, then the most expensive `max_specialists`
+                # lanes (the fallback competes as a lane: it runs instead).
+                llm += 1
+                worst = sorted(groups, key=lambda x: x[0] * 10 + x[1], reverse=True)
+                chosen = worst[: n.max_specialists]
+                llm += sum(g[0] for g in chosen)
+                tools += sum(g[1] for g in chosen)
+            elif n.type in {"if", "switch"}:
+                best = max(groups, key=lambda x: x[0] * 10 + x[1])
                 llm += best[0]
                 tools += best[1]
-            elif n.type == "switch":
-                branches = [cost(list(c.body)) for c in n.cases] + [cost(list(n.fallback))]
-                best = max(branches or [(0, 0)], key=lambda x: x[0] * 10 + x[1])
-                llm += best[0]
-                tools += best[1]
+            else:
+                # A container this function has not been taught: assume every
+                # child list can run. Wrong upward, never downward.
+                llm += sum(g[0] for g in groups)
+                tools += sum(g[1] for g in groups)
         return llm, tools
 
     llm, tools = cost(list(flow.nodes))

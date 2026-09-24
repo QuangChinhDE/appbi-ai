@@ -84,6 +84,9 @@ KnowledgeSourceKind = Literal["document", "semantic", "metric", "term"]
 #: could be assigned to a report with no check whatsoever.
 FlowType = Literal["bot", "chat"]
 
+#: A grant naming a published Skill rather than a registry tool: `skill:<brain_key>`.
+SKILL_GRANT_PREFIX = "skill:"
+
 #: The default for anything that predates the type or arrives without one. Every
 #: flow written before this existed was seeded `report_read → agent`, so it was
 #: written against a report whether or not anyone said so.
@@ -1168,11 +1171,22 @@ class Flow(_Model):
         depth_seen = 0
         loops_on_path: list[int] = []
 
-        def walk(nodes: list[Any], depth: int, in_loop: bool) -> None:
+        def walk(nodes: list[Any], depth: int, in_loop: bool, in_coord: bool = False) -> None:
             nonlocal depth_seen
             depth_seen = max(depth_seen, depth)
             for n in nodes:
                 keys.append(n.key)
+                is_coord = isinstance(n, CoordinateNode)
+                if is_coord and in_coord:
+                    # BOUNDED MULTI-AGENT. A coordinator picks specialists from a
+                    # roster the author wrote; a coordinator inside a lane would
+                    # let one plan spawn another, and the cost of a question stops
+                    # being something an author can read off `max_specialists`.
+                    # Anywhere below a lane, not only its direct children.
+                    raise ValueError(
+                        f"bước điều phối “{n.name or n.key}” nằm trong một bước điều "
+                        "phối khác — chưa hỗ trợ điều phối lồng nhau"
+                    )
                 if n.run_policy != "every_turn" and in_loop:
                     # Each iteration is a different item, so "remember it across
                     # turns" cannot mean anything coherent here.
@@ -1197,7 +1211,7 @@ class Flow(_Model):
                             "theo cấp số nhân"
                         )
                 for group in child_node_lists(n):
-                    walk(group, depth + 1, in_loop or is_loop)
+                    walk(group, depth + 1, in_loop or is_loop, in_coord or is_coord)
 
         walk(list(self.nodes), 1, False)
 
@@ -1313,13 +1327,30 @@ class Flow(_Model):
                     out.append(k)
         return out
 
+    def granted_tool_names(self) -> set[str]:
+        """Every registry tool this flow can call: agent grants and Tool steps."""
+        names = {t.tool for n in self.agent_nodes() for t in n.tools}
+        names |= {n.tool for n in self.all_nodes() if isinstance(n, ToolNode)}
+        return names
+
     def uses_capability(self, name: str) -> bool:
+        """Does anything in this flow need the link capability `name`?
+
+        DERIVED FROM THE REGISTRY, not from a list written here. This used to name
+        `web_search`, `fetch_url` and `benchmark_compare` by hand, and the external
+        pack has five tools that leave AppBI: `research_web` and `browse_ai_answer`
+        were missing, so preflight never warned about a flow that needed them and
+        they were refused at run time with no word to the author. What a tool does
+        is declared once, on the tool (`reaches_outside`, `data_exposure`).
+        """
         if name == "web_search":
-            return any(isinstance(n, WebNode) for n in self.all_nodes()) or any(
-                t.tool in {"web_search", "fetch_url", "benchmark_compare"}
-                for n in self.agent_nodes()
-                for t in n.tools
-            )
+            if any(isinstance(n, WebNode) for n in self.all_nodes()):
+                return True
+            return any(getattr(s, "reaches_outside", False)
+                       for s in _tool_specs(self.granted_tool_names()))
+        if name == "read_rows":
+            return any(getattr(s, "data_exposure", "") == "raw_rows"
+                       for s in _tool_specs(self.granted_tool_names()))
         return name in (self.requirements.capabilities or [])
 
     def referenced_vars(self) -> set[str]:
@@ -1500,6 +1531,7 @@ class Flow(_Model):
             )
         # Named even when it is not the answering step: a node parked below a Stop
         # is invisible on the canvas — it looks exactly like a node that runs.
+        out.extend(self.unknown_capability_problems())
         dead = self.unreachable_nodes()
         if dead:
             out.append(
@@ -1537,6 +1569,30 @@ class Flow(_Model):
                 stopped_by = node.key
         return out
 
+    def unknown_capability_problems(self) -> list[str]:
+        """Steps naming a tool the registry does not have. A defect, not a choice.
+
+        The step fails with `unknown_tool` on the first question. `ToolNode.tool`
+        said it was "validated against the registry at publish time" and nothing
+        did. Resolved through the registry itself, so there is no second list of
+        tool names to fall out of date. Skill grants are resolved by the Skill
+        resolver, not here.
+        """
+        from app.services.agent_flows.tools import registry as tool_registry
+
+        known = set(tool_registry.all_tools())
+        out: list[str] = []
+        for n in self.all_nodes():
+            names = ([n.tool] if isinstance(n, ToolNode)
+                     else [t.tool for t in n.tools] if isinstance(n, AgentNode) else [])
+            for t in names:
+                if t not in known and not t.startswith(SKILL_GRANT_PREFIX):
+                    out.append(
+                        f"Bước “{n.name or n.key}” dùng công cụ “{t}” — hệ thống không "
+                        "có công cụ này, bước đó sẽ lỗi ngay lần chạy đầu."
+                    )
+        return out
+
     def blocking_problems(self) -> list[str]:
         """The subset of `warnings()` that is a DEFECT rather than a trade-off.
 
@@ -1567,6 +1623,7 @@ class Flow(_Model):
         # ends, `_final_answer` falls back to whatever an intermediate step left
         # behind, and the viewer is handed working notes. Blocking, so it is caught
         # at save time rather than by a reader.
+        out.extend(self.unknown_capability_problems())
         dead = self.unreachable_nodes()
         answer_key = self.answer_node or (self.nodes[-1].key if self.nodes else "")
         if answer_key and answer_key in dead:
@@ -1618,6 +1675,17 @@ def upgrade_body(body: dict[str, Any], *, key: str = "", name: str = "") -> dict
     if name:
         out["name"] = name
     return out
+
+
+def _tool_specs(names: set[str]) -> list[Any]:
+    """Registry specs for `names`; unknown names are skipped (reported elsewhere).
+
+    Imported lazily: the contract must stay importable without the tool package.
+    """
+    from app.services.agent_flows.tools import registry as tool_registry
+
+    tools = tool_registry.all_tools()
+    return [tools[n] for n in sorted(names) if n in tools]
 
 
 _TEMPLATE_RE = re.compile(r"\{\{\s*([a-zA-Z0-9_.\[\]]+)\s*\}\}")

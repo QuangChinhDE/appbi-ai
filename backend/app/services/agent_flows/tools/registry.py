@@ -891,6 +891,19 @@ def _capability_refusal(ctx: Any, spec: ToolSpec) -> dict | None:
     cannot see the binding and should not learn to — the same reason
     `max_rows_per_call` and `max_result_tokens` travel that way.
     """
+    # RISK FIRST, and FAIL CLOSED. `ToolSpec.risk` has promised since it was
+    # added that `unknown` "is not permitted to act" — and nothing enforced it,
+    # so the tool somebody adds next year and forgets to classify would run as
+    # harmless. `side_effect` / `destructive` need an approval step the runtime
+    # does not have yet (V3.6), so they cannot run either. This is the one risk
+    # rule: capability discovery reads the same function to decide eligibility.
+    if spec.risk != "read_only":
+        return R.err(
+            f"công cụ '{spec.name}' chưa được phân loại rủi ro là chỉ-đọc "
+            f"(risk={spec.risk}) — hệ thống không chạy công cụ có thể thay đổi dữ "
+            "liệu khi chưa có bước duyệt",
+            code="risk_unknown" if spec.risk == "unknown" else "needs_approval",
+        )
     if spec.reaches_outside and getattr(ctx, "web_search", True) is False:
         return R.err(
             f"công cụ '{spec.name}' cần quyền tìm kiếm web, link này không bật",
@@ -903,6 +916,20 @@ def _capability_refusal(ctx: Any, spec: ToolSpec) -> dict | None:
             code="not_granted",
         )
     return None
+
+
+def admission_refusal(ctx: Any, name: str) -> dict | None:
+    """Would the registry refuse `name` in `ctx` before running it? Public.
+
+    The SAME rule `execute()` applies, exposed so capability discovery can leave
+    out what is certain to be refused. Discovery only ever NARROWS what the model
+    is shown; `execute()` still runs this check itself, so a caller that skips
+    this function loses nothing but context.
+    """
+    spec = all_tools().get(name)
+    if spec is None:
+        return R.err(f"không có công cụ tên '{name}'", code="unknown_tool")
+    return _capability_refusal(ctx, spec)
 
 
 def execute(
