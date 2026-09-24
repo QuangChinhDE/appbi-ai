@@ -428,6 +428,37 @@ save it arrives inside).
 **Verified end to end, logged out, on a public link**: the thumb pressed, the run
 row rated, and the rating visible in the funnel's feedback line.
 
+### The public trust boundary, closed after independent review (session D)
+
+Two root issues were found in the path above and are closed.
+
+**The run match had no link scope.** `runs.apply_rating` matched session key +
+exact stored answer. Session keys are client-chosen, so a caller on link X could
+reach a run served on link Y by reusing a key. It now also requires the run's
+`link_token` to equal the link the caller is on, and returns whether it attached
+— the only verified result a caller may act on.
+
+**A public rating also rewrote institutional Knowledge — from the client's text,
+fuzzily, on every save.** The same endpoint called
+`dashboard_ai_bot.knowledge.apply_feedback` with the CLIENT-POSTED content,
+matching knowledge rows by 50% token overlap and able to promote, penalise,
+count contradictions and retire. It trusted the payload, it was fuzzy, and it
+replayed: the session is saved as a whole snapshot after every turn, so one thumb
+was re-applied on every later save. Anyone could retire a validated fact by
+posting overlapping text with "down" a few times.
+
+**V1 policy: that coupling is severed.** A public rating now changes exactly one
+thing — `agent_flow_runs.rating` on the verified run — which is what the Runs
+tab, the Feedback tab and the funnel read. The write is a value, not an
+increment, so replaying a snapshot is idempotent. Knowledge is advanced and not a
+V1 promise; learning from reader verdicts, if it returns, needs provenance to a
+run and exactly-once transitions, not a re-read of the transcript.
+
+Locked by `test_reader_rating_reaches_the_run.py` (now against a real database,
+including the cross-link case) and `test_public_rating_trust_boundary.py` (the
+endpoint itself, with spies: forged text and five replayed saves reach
+Knowledge zero times). Both were run red against the previous code first.
+
 ### The funnel
 
 `scripts/ops/pilot_funnel.sql` — read-only, bounded, three tables, no reader

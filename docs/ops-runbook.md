@@ -80,7 +80,10 @@ curl -s http://localhost:8000/api/v1/health
 `git_sha` answers in this order, most authoritative first:
 
 1. `GIT_SHA` in the container environment — a deployment stating its own identity.
-   `run.sh` sets it from `git rev-parse HEAD`.
+   `run.sh` sets it from `git rev-parse HEAD` **after** any `--pull` and only
+   when it is building, so it always names the code it just built. An
+   externally supplied `GIT_SHA` is never replaced. With `--no-build` it sets
+   nothing, so the existing image's own baked value (3) answers.
 2. `SOURCE_COMMIT` / `COMMIT_SHA`, for build systems that set those.
 3. `APPBI_BUILD_SHA`, **baked into the image at build time** from the same
    `GIT_SHA`. This is what answers when the stack is started by any route that
@@ -95,7 +98,9 @@ To confirm the running service is the commit you think it is:
 ```
 
 `MISMATCH` with a real SHA on both sides means the running image is a different
-commit from your working copy — usually a `--no-build` start after a pull.
+commit from your working copy — usually a `--no-build` start after a pull,
+which now truthfully reports the OLD commit the image was built from. That is
+the signal to rebuild, not a fault in the report.
 `unknown` means the image was built before the SHA was baked in; rebuild.
 
 `features` are **code constants**, not configuration. A flag being present proves

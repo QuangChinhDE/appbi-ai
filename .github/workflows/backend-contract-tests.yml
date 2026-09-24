@@ -181,6 +181,7 @@ jobs:
             tests/test_pilot_funnel_is_read_only.py \
             tests/test_reader_rating_reaches_the_run.py \
             tests/test_answer_text_is_published_not_rederived.py \
+            tests/test_public_rating_trust_boundary.py \
             tests/test_canonical_time_semantics.py \
             tests/test_time_axis_needs_more_than_a_name.py \
             tests/test_time_axis_at_the_tool_boundary.py \

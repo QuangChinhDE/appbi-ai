@@ -340,6 +340,7 @@ backend/tests/.testdata/
 !backend/tests/test_pilot_funnel_is_read_only.py
 !backend/tests/test_reader_rating_reaches_the_run.py
 !backend/tests/test_answer_text_is_published_not_rederived.py
+!backend/tests/test_public_rating_trust_boundary.py
 
 # `verify.py` points its gates at a throwaway sqlite file in the backend
 # directory. It is scratch, it is created on every run, and it is one
