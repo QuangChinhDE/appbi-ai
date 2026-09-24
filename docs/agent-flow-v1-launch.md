@@ -20,7 +20,9 @@ not repeated here.
 | session B | **P0-1 closed**; P1-1, P1-2, P1-3 carried forward |
 | `LAST_PRODUCT_COMMIT` before session B2 | `b7368b5cf680aed80628ce63199617a8e4a6e4d2` |
 | session B2 | **author V1 complete** — P1-1, P1-2, P1-3 closed; golden E2E added |
-| next | **V1-C** — reader and trust; see the last section |
+| `LAST_PRODUCT_COMMIT` before session C | `e7db7207aa1646d1bbfb8d5e42caaef15bd53f46` |
+| session C | **launch closure** — P1-4 and P1-5 closed at the root; reader golden E2E, feedback verified, pilot funnel, operator runbook |
+| next | **independent review** of the final V1 PR. No further product development. |
 
 **How a session records its own SHA.** It does not. A tracked file cannot contain
 the id of the commit that contains it, and session B learned that the expensive
@@ -288,29 +290,92 @@ parity project V1 policy defers. Recorded, not started.
 canvas cards, validity badge, activation strip and Test panel all Vietnamese, no
 horizontal overflow, no zero-sized control.
 
-### P1-4 — the reader sees a wall of caveats
+### P1-4 — reader notices — **CLOSED** (session C)
 
-**Evidence.** One answer carried three stacked notices (staleness, unit not
-established, two unmatched figures) above the text, under a header reading
-`Read 3 steps · 3 errors · view details`. Each notice is individually true and
-each guards a different thing. `3 errors` describes refusals that were correct.
+**What was wrong, and where it really was.** A correct answer carried
+`Đã đọc 3 bước · 3 lỗi · xem chi tiết`. None of the three was a failure.
 
-**Acceptance.** A reader can tell at a glance whether to trust the answer. Reduce
-by hierarchy, not by removing a guarantee.
+The count came from `DashboardAiBot`'s status line, which read
+`l.ok === false || l.error`. `ok` is a TRANSPORT fact — the call returned no
+payload — and says nothing about whether anything went wrong. So a link
+correctly withholding an out-of-scope chart, a tool correctly declining a chart
+with no date axis, and a warehouse that actually fell over were counted
+identically. A product that reports its own governance working as three failures
+teaches readers not to trust it, which is the opposite of what every guard in
+this module is for.
 
-**Session.** V1-C.
+**The classification was never missing.** `ErrorCode` in `tools/result.py`
+already separates `chart_out_of_scope` / `not_granted` / `gated` / `no_data` /
+`not_applicable` / `dimension_mismatch` from `query_failed` / `internal` /
+`unknown_tool` — `no_data` even carries the comment *"ran fine, found nothing —
+NOT an error to hide"*. And `reader_diagnostics.reader_error` was already
+translating that same code into the sentence the viewer reads. The severity was
+dropped one layer before the only consumer that needed it.
 
-### P1-5 — the deployment cannot say which commit it is
+**Fixed at the boundary, not on the page.**
 
-**Evidence.** `/api/v1/health` returns `git_sha: unknown`. The plumbing exists —
-`run.sh` resolves `HEAD` and `docker-compose.yml` forwards `GIT_SHA` — but the
-running container predates it, and a caller invoking `docker compose` directly
-must supply the variable itself.
+| layer | change |
+|---|---|
+| `reader_diagnostics.reader_outcome()` | the canonical `error_code` → `notice` / `limitation` / `error` map, beside the function that already owns the reader's translation of the same code |
+| `wire.py` `tool_result` | carries `outcome` next to the unchanged `ok`. This is the ONE SSE format behind `/d`, `/embed` and Direct Chat, so one change serves all three |
+| `lib/notices.ts` `tallyStatus()` | counts by meaning and deduplicates by `outcome + reader sentence`, so three refusals of three charts for the same reason are one thing to a reader |
+| `DashboardAiBot` status line | reads the tally; a limitation gets a neutral icon and its own wording, never a red triangle over a sentence that says "this is outside what the link shares" |
 
-**Acceptance.** A pilot deployment reports its commit, and the runbook says how to
-verify it.
+An unrecognised code maps to `error` deliberately. This module says less when
+unsure about TEXT; severity fails the other way, because quietly downgrading an
+unknown failure would hide real breakage.
 
-**Session.** V1-C.
+**Observed on the public reader, logged out.** Same question, same report, before
+and after: `Đã đọc 1 bước · 1 lỗi` → `Đã đọc 1 bước · 1 giới hạn dữ liệu`. The
+author's trace keeps the full technical message.
+
+**Locked by** `backend/tests/test_reader_outcome_is_not_ok_flag.py` — the three
+classes, the fail-closed default, that the wire carries it, and that `ok` keeps
+its old meaning.
+
+### P1-5 — the deployment can say which commit it is — **CLOSED** (session C)
+
+**What was wrong.** `/api/v1/health` returned `git_sha: "unknown"`. The commit
+was injected at RUN time from the host's working copy by one launch wrapper, so
+an image moved to another machine, a `docker compose up` typed by hand, or a
+restart on a box without the repo all produced a running service that could not
+say what it was. That is the thing that makes a rollback unknowable.
+
+**Fixed by giving the artifact its own identity.** `APPBI_BUILD_SHA` is baked
+into the backend image at build time (`ARG` → `ENV`, last layer, no cache cost),
+compose passes `GIT_SHA` as that build arg, and `main.py` consults it AFTER the
+explicit run-time values — so a deployment that knows its own identity still
+wins, and `ok`-path behaviour for anyone setting `GIT_SHA` is unchanged.
+
+**Proven, not reasoned.** Rebuilt, then started with `env -u GIT_SHA docker
+compose up -d backend` — the exact invocation that used to yield `"unknown"` —
+and health reported `e7db7207aa1646d1bbfb8d5e42caaef15bd53f46`, matching
+`git rev-parse HEAD`.
+
+---
+
+## OPERATIONS — verified by doing it
+
+| | state |
+|---|---|
+| health SHA | **correct on a fresh start with nothing exported** (P1-5) |
+| deploy path | `./run.sh`; exits non-zero if any service is unhealthy |
+| destructive commands on the normal path | **none** — `--down` is `docker compose down` with no `-v`, and no supported path drops the database |
+| restart persistence | **verified**: draft versions, published versions, active bindings, runs and a reader's rating all read back unchanged after `docker compose restart` |
+| migrations | alembic, applied at the entrypoint, **single head** (`20260914_0002`) |
+| migration rollback | **not automatic and not promised.** Application rollback is safe across additive migrations; a drop or rename needs a decision, not a command |
+| logs and support | `docs/ops-runbook.md` — user complaint → run row → flow version → deployed SHA, using records the product already keeps |
+| pilot funnel | `scripts/ops/pilot_funnel.sql`, read-only, run through the db service |
+| runbook | `docs/ops-runbook.md` |
+
+**One operability fact worth knowing.** `entrypoint.sh` derives `DATABASE_URL`
+from the `DB_*` variables and exports it into the server process only, so a shell
+opened with `docker exec` sees an empty `DATABASE_URL` and any Python importing
+`app.core` dies on `create_engine('')`. Backend tooling either runs through the
+entrypoint or is handed a URL. The funnel avoids the question by talking to the
+database service directly. Recorded rather than changed: the derivation has one
+home today, and giving it a second one at freeze time would be the duplication
+this document keeps warning about.
 
 ---
 
@@ -322,120 +387,174 @@ author parity · wider reader-vocabulary sweep · Knowledge retrieval hardening 
 
 ---
 
-## FEEDBACK AND TELEMETRY INVENTORY
+## FEEDBACK AND PILOT OBSERVABILITY — closed (session C)
 
-**It exists and is durable.** No new platform is needed.
-
-`agent_flow_runs` already carries, per run: `brain_key`, `version`, `binding_id`,
-`link_token`, `dashboard_id`, `session_key`, `status`, `trigger`, `is_test`,
-`latency_ms`, `llm_calls`, `tool_calls`, token counts, `usd`, `blocked_reason`,
+**No new platform was built, and none was needed.** `agent_flow_runs` already
+carries everything per run: `brain_key`, `version`, `binding_id`, `link_token`,
+`dashboard_id`, `session_key`, `status`, `trigger`, `is_test`, `latency_ms`,
+`llm_calls`, `tool_calls`, token counts, `usd`, `blocked_reason`,
 `missing_requirements`, `question_norm`, **`rating`**, `created_at`,
-`chat_thread_id`. `agent_flow_run_steps` and `agent_flow_run_content` hold the
-per-step detail.
+`chat_thread_id`.
 
-Current data on this environment: **692 runs — 524 ok, 104 partial, 36 failed, 32
-blocked**; 262 of them reader runs rather than tests; 31 saved flow versions.
+### The reader's thumb, and the bug that was swallowing it
 
-| funnel question | answerable today? |
-|---|---|
-| flows created / saved | yes — `agent_brain_versions` |
-| flow published | yes — version rows and run `version` |
-| validation failed | partly — server refusals are not counted as an event |
-| run started / ok / partial / failed / blocked | **yes** — `status` |
-| where failures concentrate | **yes** — `blocked_reason`, `missing_requirements`, run steps |
-| reader question vs test | **yes** — `is_test`, `link_token` |
-| answered vs refused | partly — `status` plus notices; no single refusal flag |
-| feedback positive / negative | **yes** — `rating`, but only **2 of 692 runs are rated** |
-| which users returned | yes — `session_key`, chat threads |
+The affordance was never missing: *Đánh giá tốt* / *Đánh giá chưa tốt* sit under
+every answer, on the public link, with no sign-in. What was missing was the
+second half of the trip.
 
-**The gap is adoption, not storage.** `ai_feedback` is a separate older table with
-**0 rows** and is not on the reader path; treat it as P2, not as the mechanism.
+A rating arrives inside the session blob and `runs.apply_rating` attaches it to
+the run by matching the answer TEXT within the caller's own session — narrow on
+purpose, because it means a public page can only rate words the server produced.
+The server stored `Answer.plain_text()`. The browser, holding only `blocks`,
+rebuilt the text with `blocksToText` — a second implementation of the same
+rendering, and **it dropped metric blocks**. So every KPI-shaped answer, the
+common case and the one with figures in it, produced two different strings, the
+match found nothing, and the thumb was recorded in a JSON column nobody reads and
+absent from the one an operator opens.
 
-V1-C should write the funnel as documented queries over these tables rather than
-adding duplicate tracking.
+Reproduced on a public link before it was fixed: the answer rated in the UI, the
+run row unrated in the database.
 
----
+**Fixed by publishing, not by synchronising.** `Answer.text` is that same
+`plain_text()`, serialised, so the client quotes the server instead of guessing.
+One rendering again. Additive — `blocks` is untouched.
 
-## OPERATIONS INVENTORY
+Locked by `test_answer_text_is_published_not_rederived.py` (including that the
+frontend actually prefers it — a cross-language pair no type checker spans) and
+`test_reader_rating_reaches_the_run.py` (the matcher's real contract: attaches
+within the session, refuses text the server never produced, never raises into the
+save it arrives inside).
 
-| | state |
-|---|---|
-| health endpoint | `/api/v1/health` — status, `git_sha`, `code_version`, feature flags |
-| deployed SHA | plumbed in `run.sh` and `docker-compose.yml`; **reports `unknown` on the running container** (P1-5) |
-| launch path | `run.sh`, with `run.ps1` as a thin wrapper — one implementation |
-| DB persistence | Postgres in compose with a named volume; runs, versions and feedback survive restart |
-| migrations | alembic, single head, applied by the backend entrypoint |
-| restart | `docker compose up -d <service>` |
-| rollback | **not documented** — and application rollback must be separated from migration rollback |
-| runbook | **does not exist** |
+**Verified end to end, logged out, on a public link**: the thumb pressed, the run
+row rated, and the rating visible in the funnel's feedback line.
 
-V1-C: one concise operator runbook — deploy, verify the deployed SHA, smoke, read
-logs, restart, roll back — and no automatic migration rollback.
+### The funnel
+
+`scripts/ops/pilot_funnel.sql` — read-only, bounded, three tables, no reader
+content. It answers: flows created and published · bindings by status · reports
+with an assistant · runs by outcome · author tests vs reader runs · last 7 days ·
+ratings positive/negative/unrated · distinct reader sessions and authors · top
+flows by run count · where failures concentrate · why runs were blocked.
+
+Run through the database service (`docs/ops-runbook.md` has the command; it is
+not `docker exec … python`, and the runbook says why).
+
+Locked by `test_pilot_funnel_is_read_only.py`: every statement is a SELECT, no
+mutating keyword survives, it reads only the pilot's own tables, no reader's
+question or session key is ever listed, every grouped listing is bounded, and
+every metric the launch contract named is still reported. Mutation-tested.
+
+**`ai_feedback` stays P2**: a separate older table with 0 rows, not on the reader
+path. It is not the mechanism and building on it would have been a second source
+of truth for a fact the runs table already holds.
 
 ---
 
 ## ACCEPTANCE TESTS
 
-`e2e/tests/agent-flow-v1-author-golden.spec.ts` is the launch gate for the author
-half, added in session B2. It walks the journey rather than the parts: New flow →
-the starter is offered first and selected → the dialog says what it will build →
-create → the saved body is the three-step shape, with no customer, no tools on the
-answering step and nothing gated granted → validates with no further setup → Test
-panel opens → edit → save → **hard reload** → the change survives → publish →
-the activation strip turns `attention` and its CTA points at `/dashboards` →
-a Tool step is named by its tool and an unconfigured one says so → a run is
-inspectable and *Open in builder* returns to the canvas.
+Two launch gates, both walking a journey rather than a part.
 
-It spends nothing on a model: the run it inspects comes from a deterministic
-`set_var`/`tool` flow through the same test endpoint the Test tab uses. It is
-picked up automatically by `npx playwright test` in `e2e.yml`.
+**`e2e/tests/agent-flow-v1-author-golden.spec.ts`** — New flow → the starter is
+offered first and selected → the dialog says what it will build → create → the
+SAVED body is the three-step shape with no customer in it, no tools on the
+answering step and nothing gated granted → validates with no further setup →
+Test panel opens → edit → save → **hard reload** → the change survived →
+publish → the activation strip turns `attention` and its CTA points at the
+surface that owns the binding → a Tool step is named by its tool and an
+unconfigured one says so → a run is inspectable and *Open in builder* returns to
+the canvas.
 
-**Suite result on this branch: 64 passed, 0 failed, 0 skipped.**
+**`e2e/tests/agent-flow-v1-reader-golden.spec.ts`** — in a logged-out browser,
+against a link and binding the suite creates and deletes itself: the assistant is
+reachable without signing in and the page calls **only** `/api/v1/public/…` ·
+an unknown token renders no report and says so · nothing internal reaches the
+reader, including inside the expanded details panel · a status line never calls a
+refusal an error · a rating registers and survives a reload.
 
-Still to come in V1-C: the reader half — ask → answer or refusal → citation → no
-internals; feedback submit → durable.
+Neither gate requires a model credential to pass its deterministic assertions,
+and both anchor "the turn finished" on the server's own run record rather than on
+a DOM signal — three earlier versions of that wait passed in about a second each
+against the greeting.
+
+**Suite result on this branch: 69 passed, 0 failed, 0 skipped.**
+
+Where the reader-notice severity guarantee is locked, and why not in E2E: a
+browser reproduction needs a refused tool call on a real turn, and the only path
+that emits one to a reader is an agent choosing to make it — a model decision.
+`test_reader_outcome_is_not_ok_flag.py` locks it deterministically instead, and
+it was additionally observed live on a public link.
 
 ---
 
 ## KNOWN V1 LIMITATIONS
 
-Vietnamese-first, not bilingual · Knowledge is advanced, not a promise · no
-deterministic chaining guarantee across tools · Switch/Loop/Coordinator are
-advanced blocks · Live Agent Eval is implemented but has never run against a
-configured deployment.
+Stated so nobody discovers them as surprises.
+
+- **Vietnamese-first, not bilingual.** The author journey is consistent in both
+  locales. The Dashboards module the activation CTA hands an author to is largely
+  English whatever the locale, as is the public "link unavailable" page.
+- **Knowledge is advanced, not promised.** The V1 starter works completely
+  without it, `check-starter-grants.mjs` refuses a starter that grants it, and
+  nothing in the V1 UI presents it as required.
+- **A Tool step is not narrated to the reader.** A ToolNode emits no
+  `tool_result` to the reader stream, so when one is refused the reader is told
+  nothing — they get an honest answer with no indication that a step was
+  withheld. Not on the V1 starter path (the starter has no Tool node, and an
+  agent's own tool calls ARE narrated), so it is recorded rather than changed at
+  freeze.
+- **No deterministic chaining guarantee across tools**; Switch, Loop, Coordinator
+  and Filter are advanced blocks.
+- **`AppModalShell` renders no `role="dialog"`**, so modals across the app are
+  not reachable by role. An accessibility gap, not a V1 journey blocker.
+- **Live Agent Eval** is implemented and has never run against a deployment
+  serving this candidate — see below.
 
 ---
 
-## NEXT SESSION — V1-C
+## LIVE AGENT EVAL
 
-Start from `release/agent-flow-v1-candidate`. Read `git ls-remote` for its head,
-then read this file at that commit.
+**NOT VERIFIED UNTIL DEPLOYMENT.** The code exists and its provenance gate
+requires `deployment_sha == candidate SHA`. No environment is currently serving
+this candidate, and calling a stale server and attributing the verdict to this
+branch is precisely what that gate was built to prevent. It is a post-merge
+certification step, not a blocker on the code candidate.
 
-**The author half of V1 is complete.** P0-1, P1-1, P1-2 and P1-3 are closed, the
-golden journey was walked in the running build in Vietnamese at 1280×800 and
-1440×900, and the golden E2E locks it. Do not reopen any of it without a
-reproduced regression.
+---
 
-V1-C is the reader and trust half, and nothing else:
+## V1 SCOPE — frozen
 
-1. **P1-4** — notice density. One answer carried three stacked notices under a
-   header reading `Read 3 steps · 3 errors`, where the `errors` were correct
-   refusals. Reduce by hierarchy, never by removing a guarantee.
-2. **Reader/public trust** — the `/d` and `/embed` surfaces against the starter,
-   not only against `revenue_v2`.
-3. **Feedback adoption** — `rating` exists and is durable; 2 of 692 runs are
-   rated. The gap is adoption, not storage.
-4. **Pilot funnel** — documented queries over `agent_flow_runs`, not new tracking.
-5. **Knowledge V1 boundary** — state it; do not build it.
+**Supported, and verified in the running product:** the Vietnamese-first author
+journey · the `Trợ lý BI cho báo cáo` starter · publish and report activation ·
+the grounded report reader on `/d` and `/embed` · Runs with per-step trace and
+*Open in builder* · a reader rating that reaches the run · the pilot funnel · the
+operator runbook.
 
-V1-D keeps: P1-5 deployed health SHA, operations, persistence, rollback, release
-freeze, and the final V1 PR.
+**Advanced, present but not promised:** Knowledge · Switch, Loop, Coordinator,
+Filter · ToolNode composition beyond a single configured step · Direct Chat.
 
-**One thing worth knowing before touching the starter.** Its read step is
-`detail: 'index'` with `match_question` OFF, and both are load-bearing. Measured on
-one report, one question, through the Test panel: question matching on, `compact`
-elsewhere → 16,774 tokens, 8 model turns, 9 tool calls, and a confident answer
-printed next to the diagnosis *"báo cáo này không có dữ liệu cho câu hỏi đó"* plus
-two figures the verifier could not trace. Index + no question matching → the same
-figure, **7,194 tokens, 3 model turns, 2 tool calls**, the source chart named, and
-no diagnostics at all.
+**V2 and later:** full bilingual parity · 36/36 `output_schema` · broad
+deterministic composition across tools · Knowledge retrieval hardening ·
+app-wide accessibility work including modal roles · reader-vocabulary sweep ·
+`ai_feedback` · Wave 3.
+
+---
+
+## NEXT — INDEPENDENT REVIEW
+
+The candidate is frozen. The next step is review of the final V1 PR, not more
+product development.
+
+For a reviewer, the three things most worth checking are the ones where a fix
+could have been a patch and was deliberately not:
+
+1. **P1-4** — severity is classified once, in `reader_diagnostics`, and carried
+   on the one SSE format all reader surfaces parse. The alternative was renaming
+   a heading in one React component.
+2. **P1-5** — the image carries its own commit, so it can say what it is however
+   it is started. The alternative was documenting that you must use `run.sh`.
+3. **Feedback** — the server publishes its own rendering of the answer, so there
+   is one implementation. The alternative was making the client's copy match, and
+   maintaining two.
+
+Post-merge, and not blocking the code: run the Live Agent Eval against a
+deployment actually serving the merged SHA.
