@@ -152,6 +152,29 @@ export function WhatTheAiSees({
               </SeenSection>
 
               <SeenSection title={t('agentFlows.seen.tools', { n: String(data.tools.length) })}>
+                {/* HOW THIS LIST WAS CHOSEN. A step granted more than the limit is
+                    shown a shortlist for the question; the rest stay granted and
+                    can be discovered. Said here, because otherwise a granted tool
+                    missing from this list looks like a bug. */}
+                {data.capabilities && (
+                  <p className="mb-1.5 text-tiny leading-snug text-text-tertiary">
+                    {data.capabilities.shortlisted
+                      ? t('agentFlows.seen.shortlisted', {
+                          shown: String(data.capabilities.visible?.length ?? data.tools.length),
+                          eligible: String(data.capabilities.eligible.length),
+                          granted: String(data.capabilities.granted.length),
+                        })
+                      : t('agentFlows.seen.allShown', { n: String(data.capabilities.eligible.length) })}
+                    {Object.keys(data.capabilities.excluded || {}).length > 0 && (
+                      <span className="block text-text-quaternary">
+                        {t('agentFlows.seen.excluded', {
+                          list: Object.entries(data.capabilities.excluded)
+                            .map(([n, why]) => `${n} (${why})`).join(', '),
+                        })}
+                      </span>
+                    )}
+                  </p>
+                )}
                 {data.tools.length === 0 ? (
                   <HintText>{t('agentFlows.seen.noTools')}</HintText>
                 ) : (
