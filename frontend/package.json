@@ -11,13 +11,14 @@
     "qa:module-routes": "node scripts/check-module-routes.mjs",
     "qa:theme": "node scripts/check-theme-presets.mjs",
     "qa:presentation": "node scripts/check-presentation-contract.mjs",
-    "qa": "npm run qa:module-routes && npm run qa:theme && npm run qa:presentation && npm run qa:answer-parity && npm run qa:node-topology && npm run qa:public-bundle && npm run qa:handler-arity",
+    "qa": "npm run qa:module-routes && npm run qa:theme && npm run qa:presentation && npm run qa:answer-parity && npm run qa:node-topology && npm run qa:public-bundle && npm run qa:handler-arity && npm run qa:starter-grants",
     "test:e2e": "npm --prefix ../e2e test",
     "test:e2e:critical": "npm --prefix ../e2e run test:critical",
     "qa:answer-parity": "node scripts/check-answer-parity.mjs",
     "qa:node-topology": "node scripts/check-node-topology.mjs",
     "qa:public-bundle": "node scripts/check-public-bundle.mjs",
-    "qa:handler-arity": "node scripts/check-handler-arity.mjs"
+    "qa:handler-arity": "node scripts/check-handler-arity.mjs",
+    "qa:starter-grants": "node scripts/check-starter-grants.mjs"
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.20.1",
