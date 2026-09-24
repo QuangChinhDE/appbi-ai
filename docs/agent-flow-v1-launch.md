@@ -471,12 +471,28 @@ an unknown token renders no report and says so · nothing internal reaches the
 reader, including inside the expanded details panel · a status line never calls a
 refusal an error · a rating registers and survives a reload.
 
-Neither gate requires a model credential to pass its deterministic assertions,
-and both anchor "the turn finished" on the server's own run record rather than on
-a DOM signal — three earlier versions of that wait passed in about a second each
+Both anchor "the turn finished" on the server's own run record rather than on a
+DOM signal — three earlier versions of that wait passed in about a second each
 against the greeting.
 
-**Suite result on this branch: 69 passed, 0 failed, 0 skipped.**
+**What runs where.** CI seeds no model credential (`E2E_NO_MODEL=1`), on purpose:
+a gate that spends money on every push is a gate somebody eventually turns off.
+Without one the assistant correctly renders its key-entry view, so the three
+reader tests that drive a real turn have nothing to drive and **skip with the
+reason stated** — they do not fail, and they are not silent. Locally, with a
+credential, all six run.
+
+| skipped on CI | covered instead by |
+|---|---|
+| reader sees no internal identifiers | `test_reader_diagnostics_are_product_facing.py`, `test_notice_audience_boundary.py` |
+| a refusal is not labelled an error | `test_reader_outcome_is_not_ok_flag.py` |
+| a rating reaches its run | `test_reader_rating_reaches_the_run.py`, `test_answer_text_is_published_not_rederived.py` |
+
+All three were also walked by hand on a public link. The skip is recorded here so
+a green CI run is never read as "the reader journey ran there".
+
+**Suite result locally, with a model credential: 69 passed, 0 failed, 0 skipped.**
+**On CI: 66 passed, 3 skipped for the reason above, 0 failed.**
 
 Where the reader-notice severity guarantee is locked, and why not in E2E: a
 browser reproduction needs a refused tool call on a real turn, and the only path

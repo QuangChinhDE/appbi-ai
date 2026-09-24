@@ -144,6 +144,33 @@ test.describe('V1 reader golden journey @critical', () => {
     await sweepLeftovers(request);
   });
 
+  /**
+   * A turn needs a model, and CI deliberately has none.
+   *
+   * `e2e.yml` sets `E2E_NO_MODEL=1` and seeds no provider credential, on
+   * purpose: a gate that spends money on every push is a gate somebody
+   * eventually turns off. Without one the assistant panel correctly renders its
+   * key-entry view instead of a chat box — there is no `textarea`, and the three
+   * tests below have nothing to drive. That is the product behaving properly,
+   * not a failure, so they SKIP with the reason stated rather than fail.
+   *
+   * What still runs on CI: that a logged-out reader reaches the assistant at all
+   * and the page calls only public endpoints, and that an unknown token renders
+   * no report. What does NOT run there, and where it is covered instead:
+   *
+   *   reader sees no internal identifiers  → also asserted by
+   *       `test_reader_diagnostics_are_product_facing.py` and
+   *       `test_notice_audience_boundary.py`, which build the reader envelope
+   *       directly and need no browser.
+   *   a refusal is not labelled an error   → `test_reader_outcome_is_not_ok_flag.py`
+   *   a rating reaches its run             → `test_reader_rating_reaches_the_run.py`
+   *       and `test_answer_text_is_published_not_rederived.py`
+   *
+   * All three were additionally walked by hand on a public link. The skip is
+   * recorded so a green CI run is never read as "the reader journey ran here".
+   */
+  const NO_MODEL = process.env.E2E_NO_MODEL === '1';
+
   /** A browser with no session at all — not merely a logged-out page object. */
   async function anonymous(page: Page) {
     await page.context().clearCookies();
@@ -260,6 +287,7 @@ test.describe('V1 reader golden journey @critical', () => {
   test('nothing internal reaches the reader, on the answer or in its details',
     async ({ page, request }) => {
       test.skip(!fixture, 'no link with an active binding on this deployment');
+      test.skip(NO_MODEL, 'no model credential on this deployment — the assistant renders its key-entry view, so there is no turn to drive');
       await anonymous(page);
 
       await page.goto(`/d/${fixture!.token}`);
@@ -289,6 +317,7 @@ test.describe('V1 reader golden journey @critical', () => {
   test('a status line, if the turn produced one, never calls a refusal an error',
     async ({ page, request }) => {
       test.skip(!fixture, 'no link with an active binding on this deployment');
+      test.skip(NO_MODEL, 'no model credential on this deployment — the assistant renders its key-entry view, so there is no turn to drive');
       await anonymous(page);
 
       await page.goto(`/d/${fixture!.token}`);
@@ -339,6 +368,7 @@ test.describe('V1 reader golden journey @critical', () => {
   test('a logged-out reader can rate an answer, and the verdict survives a reload',
     async ({ page, request }) => {
       test.skip(!fixture, 'no link with an active binding on this deployment');
+      test.skip(NO_MODEL, 'no model credential on this deployment — the assistant renders its key-entry view, so there is no turn to drive');
       await anonymous(page);
 
       await page.goto(`/d/${fixture!.token}`);
