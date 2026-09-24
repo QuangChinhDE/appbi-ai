@@ -527,9 +527,13 @@ class AgentRuntime:
         # grounding rule can tell them from a read step whose question never
         # resolved.
         state.evidence_source = self.node.key
-        state.add_evidence(result)
+        # Registered with a reference the model is shown, so a formula can name
+        # which result feeds it rather than copying a number out of it.
+        ref = state.record_evidence(result, tool=call.tool_name)
         _collect_citation(state, call.tool_name, call.tool_args, result)
-        self.last_result = result
+        # What the MODEL is shown carries the reference; the result itself is
+        # untouched (it may be a cached object shared with other runs).
+        self.last_result = {**result, "evidence_ref": ref} if ref else result
         yield AgentEvent(
             type="tool_result",
             tool_call_id=call.tool_call_id,

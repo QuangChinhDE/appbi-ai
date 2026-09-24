@@ -22,6 +22,40 @@ from app.services.agent_flows.runtime.state import RunState
 from app.services.dashboard_ai_bot.events import AgentEvent
 
 
+def evidence_index(state: RunState, *, exclude_step: str = "", limit: int = 20) -> str:
+    """Results EARLIER steps produced, by reference — what `compute` can name.
+
+    A step's own tool results arrive with their `evidence_ref`. A result a
+    previous step read (the report, a Tool step) reaches this step only as
+    projected text, so without this list a formula over report data could only
+    be written with typed numbers — which `compute` computes with and never
+    certifies. Only offered to a step that holds `compute`: to any other step it
+    is noise.
+    """
+    rows = []
+    for ref, entry in list(state.evidence_store.items())[-limit:]:
+        if entry.get("source") == exclude_step:
+            continue
+        result = entry.get("result") or {}
+        data = result.get("data")
+        if isinstance(data, dict):
+            shape = ", ".join(list(map(str, data))[:6])
+            if isinstance(data.get("rows"), list):
+                shape += f" ({len(data['rows'])} dòng)"
+        elif isinstance(data, list):
+            shape = f"danh sách {len(data)} phần tử"
+        else:
+            shape = type(data).__name__
+        rows.append(f"- {ref}: {entry.get('tool') or '?'} (bước {entry.get('source') or '?'}) — {shape}")
+    if not rows:
+        return ""
+    return (
+        "KẾT QUẢ ĐÃ CÓ TRONG LƯỢT NÀY, dùng làm biến cho `compute` bằng "
+        "{\"ref\": \"eN\", \"path\": \"...\"} — đường dẫn đọc bên trong `data`:\n"
+        + "\n".join(rows)
+    )
+
+
 class ToolCallingStrategy:
     name = "tool_calling"
 
@@ -46,6 +80,10 @@ class ToolCallingStrategy:
 
         self.system = context._system_prompt(self.node, self.state, self.rctx)
         self.messages = context._messages(self.node, self.state, self.rctx)
+        index = evidence_index(self.state, exclude_step=self.node.key) \
+            if "compute" in set(self.node.tool_names()) else ""
+        if index:
+            self.system = f"{self.system}\n\n{index}"
 
     def _language_reminder(self) -> str:
         from app.services.agent_flows.runtime.handlers import agent as context

@@ -60,6 +60,10 @@ class BudgetExhausted(Exception):
 #: Dict keys whose numeric value identifies a record rather than measuring
 #: anything. Evidence is the pile an answer's figures are checked against, so a
 #: primary key in it is a false witness: it can only ever agree by coincidence.
+#: How many results one run may register as referenceable evidence. A run has a
+#: tool budget of tens of calls; this only stops a runaway from growing the store.
+_MAX_EVIDENCE_REFS = 500
+
 _IDENTIFIER_KEYS = frozenset({
     "id", "chart_id", "dashboard_id", "doc_id", "dataset_id", "dataset_table_id",
     "link_id", "binding_id", "run_id", "version", "flow_version",
@@ -233,6 +237,52 @@ class RunState:
     #: slices this list per node, so every node type is covered by one append at
     #: each call site rather than by each handler remembering to report.
     tool_log: list[str] = field(default_factory=list)
+    #: EVERY RESULT THE RUNTIME PRODUCED, under a stable reference (`e1`, `e2`, …
+    #: in run order). The flat `evidence` list above answers "does this number
+    #: appear somewhere"; it cannot answer "which result is this number" — with
+    #: Revenue 2025 = 100 and Target = 100 in one run, value matching cannot tell
+    #: them apart. A reference can. `compute` resolves its variables through this
+    #: store, so the model names WHICH figure feeds a formula and the runtime
+    #: reads the value itself; the model never supplies a trusted number.
+    #:
+    #: Holds the result objects the runtime produced — the same objects already
+    #: held in the step's messages — plus which tool and step produced them.
+    evidence_store: dict[str, dict[str, Any]] = field(default_factory=dict)
+
+    def record_evidence(self, result: Any, *, tool: str = "") -> str | None:
+        """Register one capability result: give it a reference, then harvest it.
+
+        Returns the reference; the caller shows it to the model next to the data
+        it names. The result object is NOT modified: results are shared — the
+        registry's cross-run cache stores the very object it returns, and a
+        reference written into it would follow that figure into another run. A
+        failed result gets no reference — there is nothing in it a formula could
+        stand on.
+
+        A result that declares ``provenance: "unreferenced"`` is stored and
+        referenceable but NOT harvested into the trusted ledger: it is a figure
+        computed from a number the model supplied, and certifying it would let an
+        invented input vouch for itself.
+        """
+        if not isinstance(result, dict) or result.get("ok") is False:
+            self.add_evidence(result)
+            return None
+        if len(self.evidence_store) >= _MAX_EVIDENCE_REFS:
+            self.add_evidence(result)
+            return None
+        ref = f"e{len(self.evidence_store) + 1}"
+        self.evidence_store[ref] = {
+            "tool": tool,
+            "source": self.evidence_source,
+            "result": result,
+        }
+        data = result.get("data") if isinstance(result.get("data"), dict) else {}
+        if data.get("provenance") == "unreferenced":
+            if self.evidence_source:
+                self.evidence_sources.add(self.evidence_source)
+            return ref
+        self.add_evidence(result)
+        return ref
 
     def add_evidence(self, payload: Any, *, depth: int = 0) -> None:
         """Harvest numbers from a tool result.
@@ -278,6 +328,9 @@ class RunState:
                 # and names are deliberately NOT here — they are labels, and
                 # `_unknown_labels` needs them.
                 if isinstance(v, (int, float)) and k in _IDENTIFIER_KEYS:
+                    continue
+                # A reference names a result; it is neither a figure nor a label.
+                if k == "evidence_ref":
                     continue
                 self.add_evidence(v, depth=depth + 1)
             return

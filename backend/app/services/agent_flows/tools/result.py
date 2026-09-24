@@ -99,6 +99,15 @@ ErrorCode = Literal[
     "not_granted",         # the step was never given this tool
     "unknown_tool",        # no such tool
     "internal",            # a bug — the body raised
+    # ── governance (V3) ──
+    "risk_unknown",        # the tool never declared what it does to the world
+    "needs_approval",      # side_effect / destructive: no approval step exists yet
+    "capability_not_visible",  # granted, but not offered this turn — discover it first
+    # ── compute provenance (V3) ──
+    "evidence_ref_unknown",    # no result in this run carries that reference
+    "evidence_path_missing",   # the reference exists; nothing sits at that path
+    "evidence_not_numeric",    # the value there is not one finite number
+    "compute_invalid",         # the formula itself: syntax, operator, ÷0, overflow
 ]
 
 

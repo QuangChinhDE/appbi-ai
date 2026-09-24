@@ -67,8 +67,14 @@ def preview(node: AgentNode, state: RunState, rctx: Any) -> dict:
     previous_scope = getattr(rctx.ctx, "knowledge_scope", None)
     try:
         _apply_scope(rctx.ctx, node)
-        system = _system_prompt(node, state, rctx)
-        messages = _messages(node, state, rctx)
+        # The STRATEGY builds the request, exactly as a run does — so anything a
+        # strategy adds to the context (the evidence index a `compute` step is
+        # given) is on this screen too.
+        from app.services.agent_flows.runtime.strategies import strategy_for
+
+        strategy = strategy_for(node, state, rctx, max_rounds=MAX_ROUNDS)
+        strategy.build_request()
+        system, messages = strategy.system, strategy.messages
     finally:
         # Same restore discipline as `run`: a preview must not leave the context
         # holding a scope the next caller was never granted.

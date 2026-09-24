@@ -136,6 +136,13 @@ async def run_flow(
             max_seconds=inp.runtime.budget.max_seconds,
         ),
     )
+    # THE EVIDENCE STORE REACHES THE TOOL BOUNDARY the same way the question does:
+    # `compute` resolves `{ref, path}` variables against the results THIS run
+    # produced, and a tool body can only see the context.
+    try:
+        ctx.evidence_store = state.evidence_store
+    except Exception:                                           # noqa: BLE001
+        pass
     rctx = RunContext(
         inp=inp,
         flow=flow,
