@@ -173,7 +173,14 @@ test.describe('V1 author golden journey @critical', () => {
       await expect(nameField).toBeVisible({ timeout: 15_000 });
       await nameField.fill(`Đọc báo cáo ${STAMP}`);
       await expect(save).toBeEnabled({ timeout: 15_000 });
+      // Wait for the SAVE, not the button: Save is also disabled while its
+      // request is in flight, so `toBeDisabled` passed on "started", and on a
+      // cold stack the reload below then raced the request.
+      const saved = page.waitForResponse(
+        (r) => r.request().method() === 'PUT' && /\/agent-flows\/brains\/?$/.test(new URL(r.url()).pathname) && r.ok(),
+        { timeout: 30_000 });
       await save.click();
+      await saved;
       await expect(save).toBeDisabled({ timeout: 20_000 });
 
       // HARD RELOAD, not a client-side revisit: a builder that keeps its state in
