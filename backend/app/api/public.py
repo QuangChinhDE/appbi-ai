@@ -3794,6 +3794,13 @@ async def save_ai_chat_session(
             rating = msg.get("rating")
             if rating in ("up", "down"):
                 entry["rating"] = rating
+            # A failed turn's bubble holds an error, not an answer any run
+            # stored; the reader page keeps it unratable across a reload.
+            if msg.get("failed") is True and role == "assistant":
+                entry["failed"] = True
+            # Likewise a bubble the page wrote itself (the welcome) — no run.
+            if msg.get("local") is True and role == "assistant":
+                entry["local"] = True
             safe_messages.append(entry)
 
     # THE THUMB HAS TO REACH THE RUN, NOT ONLY THE TRANSCRIPT.
@@ -3811,7 +3818,7 @@ async def save_ai_chat_session(
             try:
                 from app.services.agent_flows import runs as _runs
                 _runs.apply_rating(
-                    db, session_key=session_key,
+                    db, session_key=session_key, link_token=token,
                     answer_text=entry["content"], rating=entry["rating"],
                 )
             except Exception:  # noqa: BLE001 — a rating must never fail a save
@@ -3841,33 +3848,27 @@ async def save_ai_chat_session(
 
     db.commit()
 
-    # ── Feedback signals only (P0-02) ───────────────────────────────────────
-    # Thumbs up/down IS a legitimate signal from the person reading the answer:
-    # it rates text the SERVER produced, so it can't be used to smuggle in a
-    # fabricated claim.
+    # ── NO KNOWLEDGE SIDE EFFECT FROM A PUBLIC RATING — V1 policy ────────────
     #
-    # What used to live here — mining `body.conv_state["findings"]` into the
-    # knowledge base — has been REMOVED. That payload is client-supplied on a
-    # public, unauthenticated endpoint, so anyone could POST invented "findings"
-    # and (with PROMOTE_SUPPORT=2) have them promoted to validated truth that
-    # every later viewer's prompt is grounded on. Findings are now distilled
-    # server-side from the turn's own tool_log in the chat endpoint, where the
-    # data provably came from real tool calls.
-    try:
-        from app.services.dashboard_ai_bot import knowledge as _kb
-        dash_id = getattr(_dash_for_kb, "id", None)
-        if isinstance(dash_id, int):
-            for m in safe_messages:
-                if m.get("role") == "assistant" and m.get("rating") in ("up", "down"):
-                    _kb.apply_feedback(
-                        db, dashboard_id=dash_id,
-                        claim_text=str(m.get("content") or ""),
-                        positive=(m.get("rating") == "up"),
-                    )
-            db.commit()
-    except Exception:
-        logger.warning("ai feedback apply failed", exc_info=True)
-        db.rollback()
+    # This used to call `dashboard_ai_bot.knowledge.apply_feedback` for every
+    # rated assistant message in the snapshot, with the CLIENT-POSTED content.
+    # That function matches institutional knowledge by 50% token overlap and can
+    # raise confidence, promote candidate → validated, count a contradiction, or
+    # retire a row. Three things made it unsafe on an anonymous endpoint:
+    #
+    #   * it trusted the payload. The run rating above is guarded by an exact
+    #     match to text the server stored; this was not, so any caller could post
+    #     invented text overlapping a validated fact and vote it down;
+    #   * it was fuzzy. Token overlap is not provenance;
+    #   * it replayed. A session is saved as a whole snapshot after every turn,
+    #     so one thumb was applied again on every later save — three more saves
+    #     counted as four independent human judgments, enough to retire a row.
+    #
+    # Knowledge is advanced and not a V1 promise; the V1 starter attaches none.
+    # So the coupling is severed rather than patched: a public rating now means
+    # exactly one thing — `agent_flow_runs.rating` on the verified run — and that
+    # is what the Runs tab, the Feedback tab and the pilot funnel read. Locked by
+    # backend/tests/test_public_rating_trust_boundary.py.
 
     return {"ok": True}
 

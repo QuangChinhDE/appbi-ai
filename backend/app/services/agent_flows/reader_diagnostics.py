@@ -91,6 +91,66 @@ def _dimension_sentence(detail: dict) -> str:
     )
 
 
+#: WHAT A REFUSED CALL MEANS TO A READER, as opposed to whether it succeeded.
+#:
+#: `ok: False` is a TRANSPORT fact — the call did not return a payload. It says
+#: nothing about whether the system failed, and every reader surface was deriving
+#: its error count from it. So a link that correctly withheld an out-of-scope
+#: chart, a tool that correctly declined a chart with no date axis, and a
+#: warehouse that actually fell over were all counted the same and printed as
+#: "3 errors" above a perfectly good answer. A product that reports its own
+#: governance working as three failures teaches readers to distrust it.
+#:
+#: The classification the reader needs already exists as `error_code`; it was
+#: simply thrown away one layer before the reader. Three classes, because that is
+#: what a reader can act on:
+#:
+#:   notice      the system behaved correctly and there is nothing to fix —
+#:               the data is out of scope, absent, or the calculation does not
+#:               apply. Not a failure in any sense the reader would recognise.
+#:   limitation  the answer is available but narrower than asked for; the request
+#:               could not be served exactly as put.
+#:   error       something actually broke.
+#:
+#: An unknown code maps to `error` ON PURPOSE. This module's allow-list style is
+#: "say less when unsure" for TEXT, but severity must fail the other way: quietly
+#: downgrading an unrecognised failure to a notice would hide real breakage, and
+#: hiding breakage is the one outcome worse than over-reporting it.
+_OUTCOME_BY_CODE: dict[str, str] = {
+    # Governance and scope boundaries. The system working as designed.
+    "dimension_mismatch": "notice",
+    "chart_out_of_scope": "notice",
+    "not_granted": "notice",
+    "gated": "notice",
+    # Ran fine, nothing to return. `result.py` says it outright: "NOT an error
+    # to hide".
+    "no_data": "notice",
+    "not_applicable": "notice",
+    # The request could not be served as asked, and the agent usually recovers
+    # by asking differently. Worth saying; not a breakage.
+    "chart_not_found": "limitation",
+    "bad_argument": "limitation",
+    # Real failures.
+    "query_failed": "error",
+    "internal": "error",
+    "unknown_tool": "error",
+}
+
+READER_OUTCOMES = ("ok", "notice", "limitation", "error")
+
+
+def reader_outcome(result: Any) -> str:
+    """How a READER should read this tool result: ok / notice / limitation / error.
+
+    Returns `"ok"` for anything that is not a failure, so a caller can classify
+    every result through one call.
+    """
+    if not isinstance(result, dict) or result.get("ok") is True:
+        return "ok"
+    code = str(result.get("error_code") or "").strip()
+    return _OUTCOME_BY_CODE.get(code, "error")
+
+
 def reader_error(result: Any) -> str:
     """A sentence a viewer can act on, built only from structured facts.
 

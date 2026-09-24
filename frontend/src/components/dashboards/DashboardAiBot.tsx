@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Bot, X, Send, Square, Loader2, ChevronDown, Key, ExternalLink, AlertTriangle, CheckCircle2, Sparkles, ListChecks, BarChart3, Calculator, GitCompareArrows, Search, Filter, TrendingUp, Image as ImageIcon, Activity, Trash2, ThumbsUp, ThumbsDown, Brain, Zap } from 'lucide-react';
+import { Bot, X, Send, Square, Loader2, Info, ChevronDown, Key, ExternalLink, AlertTriangle, CheckCircle2, Sparkles, ListChecks, BarChart3, Calculator, GitCompareArrows, Search, Filter, TrendingUp, Image as ImageIcon, Activity, Trash2, ThumbsUp, ThumbsDown, Brain, Zap } from 'lucide-react';
 import { ConfirmDialog } from '@/components/common/ConfirmDialog';
 import {
   ChartChip, ChartNamesContext, ConfidenceBadge, InsightTypeChip, RichMarkdown,
@@ -26,7 +26,11 @@ import {
 import { BriefingWizard, type BriefingWizardResult } from './BriefingWizard';
 import type { AnswerBlock, FlowOutputEnvelope } from '@/lib/agentFlows';
 import { AnswerBlocks } from './AnswerBlocks';
-import { FlowNotice, readerNotices } from '@/lib/notices';
+import {
+  FlowNotice, outcomeOf, readerNotices, tallyStatus, type ToolStatusEntry,
+} from '@/lib/notices';
+import { cn } from '@/lib/utils';
+import { applyReaderRating, revertReaderRating, toSnapshotMessage } from '@/lib/readerRating';
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -239,9 +243,17 @@ interface ChatMessage extends AiChatMessage {
    *  minutes ago is how a bot loses trust it cannot win back. */
   notices?: FlowNotice[];
   /** Tool status notes accumulated while this assistant message was streaming. */
-  statusLog?: { tool: string; text: string; ok?: boolean; error?: string | null }[];
+  statusLog?: ToolStatusEntry[];
   /** User rating for this assistant message. */
   rating?: 'up' | 'down';
+  /** The turn failed and this bubble carries the error, not an answer. No run
+   *  holds this text, so it cannot be rated: a lit thumb here would be a
+   *  verdict the operator never receives. Persisted so a reload agrees. */
+  failed?: true;
+  /** Written by this page, not by a run — the welcome, the tour pivot prompt.
+   *  Same reason as `failed`: no run holds this text, so it offers no thumb.
+   *  Persisted, because `isWelcome` is cleared after the first question. */
+  local?: true;
   /** Phase-15.71 — reading plan emitted by the bot before answering.
    *  Renders as a collapsible "AI đang đọc" panel above the answer.
    *  Phase 15.72 — each step carries a live status badge updated by
@@ -411,7 +423,7 @@ export function DashboardAiBot({
       // session or a briefing-wizard intro.
       setMessages((prev) => (
         prev.length === 0
-          ? [{ role: 'assistant', content: buildWelcomeMessage(r, dashboardName), isWelcome: true }]
+          ? [{ role: 'assistant', content: buildWelcomeMessage(r, dashboardName), isWelcome: true, local: true }]
           : prev
       ));
     } catch (err: unknown) {
@@ -577,7 +589,7 @@ export function DashboardAiBot({
       session_key: sessionKey,
       provider,
       model: modelId,
-      messages: initialMessages.map((m) => ({ role: m.role, content: m.content })),
+      messages: initialMessages.map(toSnapshotMessage),
       briefing: result.briefing as unknown as Record<string, unknown>,
       conv_state: initialState as unknown as Record<string, unknown>,
       turn_count: 0,
@@ -601,6 +613,7 @@ export function DashboardAiBot({
         role: 'assistant',
         content: buildWelcomeMessage(recon, dashboardName),
         isWelcome: true,
+        local: true,
       }]);
     } else {
       setMessages([]);
@@ -636,6 +649,7 @@ export function DashboardAiBot({
           role: 'assistant',
           content: 'Bạn đang trong phần **hướng dẫn xem báo cáo**. Bạn muốn tôi chuyển sang **xem tổng quan** toàn báo cáo luôn, hay **tiếp tục hướng dẫn** từng bước?',
           pivotPending: text,
+          local: true,
         },
       ]);
       return;
@@ -721,7 +735,32 @@ export function DashboardAiBot({
                 notices: envelope.notices || [],
                 // Keep the prose too: it is what gets persisted to the session and
                 // what a rating is matched against server-side.
-                content: answerSoFar || blocksToText(envelope.answer?.blocks || []),
+                // QUOTE WHAT THE SERVER SAID; DO NOT RE-DERIVE IT.
+                //
+                // A reader's thumb is attached to its run by matching this text
+                // against what the server stored, which is how a public page is
+                // stopped from rating words the server never produced. The
+                // server stores `Answer.plain_text()`. This line used to rebuild
+                // it with `blocksToText`, a second implementation that dropped
+                // metric blocks — so every KPI-shaped answer produced two
+                // different strings, the match found nothing, and the rating was
+                // silently absent from the column the operator reads.
+                //
+                // `answer.text` is that same `plain_text()`, published. The
+                // local fallback stays for a frontend talking to a backend that
+                // predates the field.
+                // THE SERVER'S TEXT WINS, including over the prose this client
+                // accumulated while streaming. `content` is not decoration: it
+                // is the string a rating is matched against, and the server
+                // matches it to `Answer.plain_text()`. The streamed
+                // accumulation is a near-miss of that — same words, different
+                // joins, and without the metric blocks rendered as
+                // `label: value` — so preferring it reintroduced exactly the
+                // bug this line exists to fix. Verified against a real KPI
+                // answer: with `answerSoFar` first the run stayed unrated.
+                content: envelope.answer?.text
+                  || answerSoFar
+                  || blocksToText(envelope.answer?.blocks || []),
               },
             ];
             setMessages(latestMessages);
@@ -801,7 +840,7 @@ export function DashboardAiBot({
         if (lastIdx >= 0 && latestMessages[lastIdx].role === 'assistant') {
           latestMessages = [
             ...latestMessages.slice(0, lastIdx),
-            { ...latestMessages[lastIdx], content: t('dashboards.aiBot.errorWrapper', { msg }) },
+            { ...latestMessages[lastIdx], content: t('dashboards.aiBot.errorWrapper', { msg }), failed: true },
           ];
         }
         setMessages(latestMessages);
@@ -813,7 +852,7 @@ export function DashboardAiBot({
       // Persist the session to DB so history survives F5
       const safeMessages = latestMessages
         .filter((m) => m.role === 'user' || (m.role === 'assistant' && m.content))
-        .map((m) => ({ role: m.role, content: m.content }));
+        .map(toSnapshotMessage);
       if (safeMessages.length > 0) {
         saveAiSession(token, sessionKey, {
           session_key: sessionKey,
@@ -948,7 +987,7 @@ export function DashboardAiBot({
       const aborted = abortRef.current || (err instanceof DOMException && err.name === 'AbortError');
       if (!aborted) {
         const msg = err instanceof Error ? err.message : t('dashboards.aiBot.unknownError');
-        patchLast((m) => ({ ...m, content: t('dashboards.aiBot.errorWrapper', { msg }) }));
+        patchLast((m) => ({ ...m, content: t('dashboards.aiBot.errorWrapper', { msg }), failed: true }));
       }
     } finally {
       abortControllerRef.current = null;
@@ -957,7 +996,7 @@ export function DashboardAiBot({
       // Persist like a chat turn so the exploration report survives F5.
       const safeMessages = latestMessages
         .filter((m) => m.role === 'user' || (m.role === 'assistant' && m.content))
-        .map((m) => ({ role: m.role, content: m.content }));
+        .map(toSnapshotMessage);
       if (safeMessages.length > 0) {
         saveAiSession(token, sessionKey, {
           session_key: sessionKey,
@@ -1106,15 +1145,16 @@ export function DashboardAiBot({
 
   const handleRateMessage = useCallback((msgIndex: number, rating: 'up' | 'down') => {
     setMessages((prev) => {
-      const next = prev.map((m, i) => {
-        if (i !== msgIndex) return m;
-        // Toggle off if clicking the same rating again
-        return { ...m, rating: m.rating === rating ? undefined : rating };
-      });
-      // Persist ratings to DB (silent)
+      // One current verdict, never cleared — see lib/readerRating.ts. Clicking the
+      // selected thumb again keeps it: the run behind it cannot be un-rated.
+      const previous = prev[msgIndex]?.rating;
+      if (previous === rating) return prev;
+      const next = applyReaderRating(prev, msgIndex, rating);
+      // Persist ratings to DB. A failed save must not leave a thumb lit that the
+      // run never received, so it is undone.
       const safeMessages = next
         .filter((m) => m.role === 'user' || (m.role === 'assistant' && m.content))
-        .map((m) => ({ role: m.role, content: m.content, ...(m.rating ? { rating: m.rating } : {}) }));
+        .map(toSnapshotMessage);
       saveAiSession(token, sessionKey, {
         session_key: sessionKey,
         provider,
@@ -1125,7 +1165,9 @@ export function DashboardAiBot({
         turn_count: Math.ceil(next.filter((m) => m.role === 'user').length),
         prompt_tokens: totalPromptTokensRef.current,
         completion_tokens: totalCompletionTokensRef.current,
-      }, sessionToken ?? undefined).catch(() => { /* silent */ });
+      }, sessionToken ?? undefined).catch(() => {
+        setMessages((cur) => revertReaderRating(cur, msgIndex, rating, previous));
+      });
       return next;
     });
   }, [briefing, convState, modelId, provider, sessionKey, sessionToken, token]);
@@ -1323,7 +1365,7 @@ export function DashboardAiBot({
           // Chat-first: stay in chat and reseed the recon welcome + starter
           // questions (no briefing-wizard gate on clear).
           if (recon) {
-            setMessages([{ role: 'assistant', content: buildWelcomeMessage(recon, dashboardName), isWelcome: true }]);
+            setMessages([{ role: 'assistant', content: buildWelcomeMessage(recon, dashboardName), isWelcome: true, local: true }]);
           } else {
             setMessages([]);
           }
@@ -1347,7 +1389,7 @@ function applyEvent(
   ops: {
     appendText: (chunk: string) => void;
     setStatus: (s: string) => void;
-    appendStatusLog: (entry: { tool: string; text: string; ok?: boolean; error?: string | null }) => void;
+    appendStatusLog: (entry: ToolStatusEntry) => void;
     setReadingPlan: (
       items: { step: number; chart_id: number | null; phase: string; question: string }[],
       overallGoal?: string | null,
@@ -1388,7 +1430,9 @@ function applyEvent(
     return;
   }
   if (ev.type === 'tool_result') {
-    ops.appendStatusLog({ tool: ev.tool, text: '', ok: ev.ok, error: ev.error ?? null });
+    ops.appendStatusLog({
+      tool: ev.tool, text: '', ok: ev.ok, outcome: ev.outcome, error: ev.error ?? null,
+    });
     return;
   }
   if (ev.type === 'reading_plan') {
@@ -1974,7 +2018,7 @@ function MessageBubble({
             ))}
           </div>
         )}
-        {!isUser && !streaming && message.content && onRate && (
+        {!isUser && !streaming && message.content && !message.failed && !message.local && onRate && (
           <div className="mt-1.5 flex items-center gap-1 border-t border-[rgb(var(--border-line))]/30 pt-1.5">
             <span className="text-micro text-text-quaternary mr-1">{t('dashboards.aiBot.ratingLabel')}</span>
             <button
@@ -1987,6 +2031,8 @@ function MessageBubble({
               }`}
               title={t('dashboards.aiBot.rateUpTitle')}
               aria-label={t('dashboards.aiBot.rateUpAria')}
+              aria-pressed={message.rating === 'up'}
+              data-testid="rate-up"
             >
               <ThumbsUp className="h-3 w-3" />
             </button>
@@ -2000,6 +2046,8 @@ function MessageBubble({
               }`}
               title={t('dashboards.aiBot.rateDownTitle')}
               aria-label={t('dashboards.aiBot.rateDownAria')}
+              aria-pressed={message.rating === 'down'}
+              data-testid="rate-down"
             >
               <ThumbsDown className="h-3 w-3" />
             </button>
@@ -2118,17 +2166,33 @@ function StatusLog({
   // summary that the user can expand. Mirrors how Claude/ChatGPT collapse
   // tool traces after the answer is ready.
   if (collapsed && !expanded) {
-    const errs = visible.filter((l) => l.ok === false || l.error).length;
+    // COUNTED BY MEANING. This line used to read `l.ok === false || l.error`
+    // and call the total "lỗi", so a link correctly withholding an out-of-scope
+    // chart was reported to a viewer as a failure — "3 lỗi" printed above a
+    // correct answer. `outcome` is the backend's own classification of the same
+    // refusal; the count and the icon now follow it.
+    const { errors, limitations } = tallyStatus(visible);
     return (
       <button
         type="button"
         onClick={() => setExpanded(true)}
-        className="mb-1.5 flex items-center gap-1.5 border-b border-[rgb(var(--border-line))]/40 pb-1.5 text-tiny text-text-tertiary transition-colors hover:text-text-secondary"
+        className={cn(
+          'mb-1.5 flex items-center gap-1.5 border-b border-[rgb(var(--border-line))]/40 pb-1.5 text-tiny transition-colors',
+          errors ? 'text-danger hover:text-danger' : 'text-text-tertiary hover:text-text-secondary',
+        )}
       >
-        <CheckCircle2 className="h-3 w-3 flex-shrink-0 text-success" />
+        {errors
+          ? <AlertTriangle className="h-3 w-3 flex-shrink-0 text-danger" />
+          : <CheckCircle2 className="h-3 w-3 flex-shrink-0 text-success" />}
         <span className="italic">
           {t('dashboards.aiBot.statusLogSummary', { count: visible.length })}
-          {errs ? t('dashboards.aiBot.statusLogErrorSuffix', { errs }) : ''}
+          {errors ? t('dashboards.aiBot.statusLogErrorSuffix', { errs: errors }) : ''}
+          {/* A limitation is NOT an error and never reads as one. It is still
+              said, because an answer narrowed by scope is a thing the reader
+              needs to know about. */}
+          {!errors && limitations
+            ? t('dashboards.aiBot.statusLogLimitSuffix', { count: limitations })
+            : ''}
           {t('dashboards.aiBot.statusLogViewDetail')}
         </span>
         <ChevronDown className="h-3 w-3" />
@@ -2146,20 +2210,29 @@ function StatusLog({
           {t('dashboards.aiBot.hideDetail')}
         </button>
       )}
-      {visible.map((entry, i) => (
-        <div key={i} className="flex items-start gap-1.5">
-          {entry.ok === false ? (
-            <AlertTriangle className="h-3 w-3 flex-shrink-0 text-warning" />
-          ) : entry.ok === true ? (
-            <CheckCircle2 className="h-3 w-3 flex-shrink-0 text-success" />
-          ) : (
-            <Loader2 className="h-3 w-3 flex-shrink-0" />
-          )}
-          <span className="italic">
-            {entry.text || (entry.error ? `${entry.tool}: ${entry.error}` : entry.tool)}
-          </span>
-        </div>
-      ))}
+      {/* EXPANDED, THE SAME CLASSIFICATION. A red triangle against a line that
+          says "this data is outside what the link shares" contradicts its own
+          sentence — the reader sees alarm and reads reassurance. Only a genuine
+          failure is marked as one. */}
+      {visible.map((entry, i) => {
+        const outcome = outcomeOf(entry);
+        return (
+          <div key={i} className="flex items-start gap-1.5">
+            {outcome === 'error' ? (
+              <AlertTriangle className="h-3 w-3 flex-shrink-0 text-danger" />
+            ) : outcome === 'limitation' || outcome === 'notice' ? (
+              <Info className="h-3 w-3 flex-shrink-0 text-text-quaternary" />
+            ) : entry.ok === true ? (
+              <CheckCircle2 className="h-3 w-3 flex-shrink-0 text-success" />
+            ) : (
+              <Loader2 className="h-3 w-3 flex-shrink-0" />
+            )}
+            <span className="italic">
+              {entry.text || (entry.error ? `${entry.tool}: ${entry.error}` : entry.tool)}
+            </span>
+          </div>
+        );
+      })}
     </div>
   );
 }

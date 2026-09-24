@@ -128,6 +128,7 @@ export function NodeLibrary({
                 <button
                   key={s.type}
                   type="button"
+                  data-testid={`node-type-${s.type}`}
                   onClick={() => onPick(s.type)}
                   className="flex min-h-[70px] gap-2 rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 p-2.5 text-left transition hover:border-brand/40 hover:bg-brand/[0.02]"
                 >
