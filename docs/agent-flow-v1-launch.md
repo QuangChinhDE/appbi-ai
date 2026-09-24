@@ -112,7 +112,7 @@ running build, locale `vi`, at 1280×800 and 1440×900.
 | first screen after create | **PASS** (B2) | a three-step flow that is already valid, with the activation strip saying what is left to do |
 | configure steps | **PASS** | inspector is complete; node palette carries 14 types with plain-language descriptions |
 | Tool node identity | **PASS** (B2) | `Tổng của một chỉ số / Gọi công cụ` + what the tool does; an unchosen tool reads `Chưa chọn công cụ.` |
-| report/context binding | **PASS** (B) | activation strip + CTA to the surface that owns the binding |
+| report/context binding | **PASS** (B2) | walked end to end through product behaviour, nothing seeded: strip `attention` → CTA → `/dashboards` → Public links → AI Bot tab → enable → pick the flow → grant charts → preflight → *Gán flow vào link* → back in the builder, `live` · `AI design parity check`. One gap fixed on the way: the list view had no Public-links control at all (grid 20, list 0), so the CTA could land on a page with no way to act |
 | validation | **PASS** | substantive and actionable; server enforces the same rule the UI states |
 | Test panel | **PASS** | picks a real report, runs, logs to Runs, marked as a test. Re-walked on the starter in B2: a supported question answered `10,748,221.50` and named its chart; `GDP của Việt Nam` was refused and the refusal listed what the report does cover |
 | save draft | **PASS** | `Unsaved` clears; a genuinely invalid flow is refused by the server with a readable reason |
@@ -277,6 +277,12 @@ panel. No second translation mechanism; `en` and `vi` remain key-for-key equal.
 **Scope held.** Not a repo-wide translation, not English author parity, not
 backend i18n. Debug output, JSON field names, registry ids and raw traces stay as
 they are.
+
+**One surface deliberately left alone.** The activation CTA hands the author to
+the Dashboards module, whose own list, share dialog and public-link manager are
+largely English regardless of locale. That is a different catalogue and a far
+wider surface than the V1 author journey, and translating it is the English/VI
+parity project V1 policy defers. Recorded, not started.
 
 **Observed at 1280×800 and 1440×900, locale `vi`.** Create dialog, builder chrome,
 canvas cards, validity badge, activation strip and Test panel all Vietnamese, no
