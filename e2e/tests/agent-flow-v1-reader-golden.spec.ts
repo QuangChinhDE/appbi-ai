@@ -379,17 +379,17 @@ test.describe('V1 reader golden journey @critical', () => {
       await expect(thumb).toBeVisible();
       await thumb.click();
 
-      // REGISTERED, not merely clicked. The control carries its state in its
-      // class; a button that accepts the press and shows nothing is the failure
-      // a reader would read as "my feedback went nowhere".
-      await expect(thumb).toHaveClass(/text-success/, { timeout: 10_000 });
+      // REGISTERED, not merely clicked. Asserted on `aria-pressed`, never on the
+      // class: an UNSELECTED thumb carries `hover:text-success`, so a class regex
+      // passed whether or not anything registered — it hid a lost rating.
+      await expect(thumb).toHaveAttribute('aria-pressed', 'true', { timeout: 10_000 });
 
       // DURABLE. A rating that lives only in React state is lost the moment the
       // reader refreshes, and they have no way to tell that it was.
       await page.reload({ waitUntil: 'domcontentloaded' });
       await page.locator('button[aria-label*="AI"], button[title*="AI"]').first().click();
       await expect(page.getByTestId('rate-up').last())
-        .toHaveClass(/text-success/, { timeout: 30_000 });
+        .toHaveAttribute('aria-pressed', 'true', { timeout: 30_000 });
 
       // ONE CURRENT VERDICT (lib/readerRating.ts). Clicking the selected thumb
       // again keeps it — the run behind it cannot be un-rated, so the page must
@@ -397,13 +397,53 @@ test.describe('V1 reader golden journey @critical', () => {
       const up = page.getByTestId('rate-up').last();
       const down = page.getByTestId('rate-down').last();
       await up.click();
-      await expect(up).toHaveClass(/text-success/);
+      await expect(up).toHaveAttribute('aria-pressed', 'true');
       await down.click();
-      await expect(down).toHaveClass(/text-danger/, { timeout: 10_000 });
-      await expect(up).not.toHaveClass(/text-success/);
+      await expect(down).toHaveAttribute('aria-pressed', 'true', { timeout: 10_000 });
+      await expect(up).toHaveAttribute('aria-pressed', 'false');
       await page.reload({ waitUntil: 'domcontentloaded' });
       await page.locator('button[aria-label*="AI"], button[title*="AI"]').first().click();
       await expect(page.getByTestId('rate-down').last())
-        .toHaveClass(/text-danger/, { timeout: 30_000 });
+        .toHaveAttribute('aria-pressed', 'true', { timeout: 30_000 });
+    });
+
+  test('a rating survives the reader asking another question',
+    async ({ page, request }) => {
+      // Every turn re-saves the whole session. A save that drops `rating` wipes
+      // the reader's thumb from the page on the next reload while the run keeps
+      // its verdict — the reader and the operator disagree, silently.
+      test.skip(!fixture, 'no link with an active binding on this deployment');
+      test.skip(NO_MODEL, 'no model credential on this deployment — the assistant renders its key-entry view, so there is no turn to drive');
+      await anonymous(page);
+
+      await page.goto(`/d/${fixture!.token}`);
+      await askAndWaitForAnswer(page, request, 'Doanh thu là bao nhiêu?');
+      const firstUp = page.getByTestId('rate-up').first();
+      await firstUp.click();
+      await expect(firstUp).toHaveAttribute('aria-pressed', 'true', { timeout: 10_000 });
+
+      // A second turn in the open panel (the helper would click the launcher
+      // again). What matters is the session save that ends the turn.
+      const saved = page.waitForResponse(
+        (r) => r.request().method() === 'PUT' && /\/ai\/session\//.test(r.url()) && r.ok()
+          && (() => {
+            // The save that ENDS the second turn: four messages, the last one
+            // the second answer, not the question alone.
+            try {
+              const m = JSON.parse(r.request().postData() ?? '{}').messages ?? [];
+              return m.length >= 4 && m[m.length - 1].role === 'assistant' && !!m[m.length - 1].content;
+            } catch { return false; }
+          })(),
+        { timeout: 180_000 });
+      const box = page.locator('textarea').first();
+      await box.fill('Có bao nhiêu đơn hàng?');
+      await box.press('Enter');
+      await expect(page.getByTestId('rate-up')).toHaveCount(2, { timeout: 180_000 });
+      await saved;
+
+      await page.reload({ waitUntil: 'domcontentloaded' });
+      await page.locator('button[aria-label*="AI"], button[title*="AI"]').first().click();
+      await expect(page.getByTestId('rate-up').first())
+        .toHaveAttribute('aria-pressed', 'true', { timeout: 30_000 });
     });
 });

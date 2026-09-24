@@ -14,7 +14,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const { nextReaderRating, applyReaderRating, revertReaderRating } =
+const { nextReaderRating, applyReaderRating, revertReaderRating, toSnapshotMessage } =
   await import(new URL('../src/lib/readerRating.ts', import.meta.url).href);
 
 const failures = [];
@@ -41,6 +41,13 @@ expect('failed save reverts', revertReaderRating(msgs, 1, 'up', undefined)[1].ra
 const later = applyReaderRating(msgs, 1, 'down');
 expect('a later click survives an earlier failure', revertReaderRating(later, 1, 'up', undefined)[1].rating, 'down');
 
+// Every snapshot save carries the verdict. Each turn re-saves the WHOLE session;
+// a serializer that dropped `rating` wiped the thumb on the next reload while
+// the run kept "up".
+expect('snapshot keeps rating', toSnapshotMessage({ role: 'assistant', content: 'a', rating: 'down' }).rating, 'down');
+expect('snapshot keeps failed', toSnapshotMessage({ role: 'assistant', content: 'x', failed: true }).failed, true);
+expect('snapshot of an unrated answer has no rating', 'rating' in toSnapshotMessage({ role: 'assistant', content: 'a' }), false);
+
 // The component must use the contract, and must not grow its own toggle back.
 const bot = readFileSync(resolve(ROOT, 'src/components/dashboards/DashboardAiBot.tsx'), 'utf8');
 const start = bot.indexOf('const handleRateMessage');
@@ -50,8 +57,18 @@ if (!handler.includes('applyReaderRating(')) failures.push('handleRateMessage do
 if (/\?\s*undefined\s*:\s*rating/.test(handler)) failures.push('handleRateMessage toggles a rating back to undefined — the run cannot be un-rated');
 if (!handler.includes('revertReaderRating(')) failures.push('a failed rating save is not undone — the thumb would claim a verdict the run never received');
 
+// No save may hand-roll its own message shape: that is how `rating` got lost.
+const saves = bot.split('saveAiSession(').length - 1;
+const viaContract = (bot.match(/\.map\(toSnapshotMessage\)/g) ?? []).length;
+if (/\(\{\s*role:\s*m\.role,\s*content:\s*m\.content\s*\}\)/.test(bot)) {
+  failures.push('a session save serializes messages as {role, content} — it drops the rating on every later turn');
+}
+if (viaContract < saves) failures.push(`${saves} session saves but only ${viaContract} serialize through toSnapshotMessage`);
+// An error bubble is not an answer any run holds; it must not offer a thumb.
+if (!/!message\.failed\s*&&\s*onRate/.test(bot)) failures.push('the rating control is offered on a failed turn — no run can receive that verdict');
+
 if (failures.length) {
   console.error('✗ reader rating contract:\n  - ' + failures.join('\n  - '));
   process.exit(1);
 }
-console.log('✓ reader rating: 6 transitions, idempotent repeat, failed-save undo, component wired');
+console.log('✓ reader rating: 6 transitions, idempotent repeat, failed-save undo, every save carries the verdict, failed turns unratable, component wired');

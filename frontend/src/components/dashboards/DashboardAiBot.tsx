@@ -30,7 +30,7 @@ import {
   FlowNotice, outcomeOf, readerNotices, tallyStatus, type ToolStatusEntry,
 } from '@/lib/notices';
 import { cn } from '@/lib/utils';
-import { applyReaderRating, revertReaderRating } from '@/lib/readerRating';
+import { applyReaderRating, revertReaderRating, toSnapshotMessage } from '@/lib/readerRating';
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -246,6 +246,10 @@ interface ChatMessage extends AiChatMessage {
   statusLog?: ToolStatusEntry[];
   /** User rating for this assistant message. */
   rating?: 'up' | 'down';
+  /** The turn failed and this bubble carries the error, not an answer. No run
+   *  holds this text, so it cannot be rated: a lit thumb here would be a
+   *  verdict the operator never receives. Persisted so a reload agrees. */
+  failed?: true;
   /** Phase-15.71 — reading plan emitted by the bot before answering.
    *  Renders as a collapsible "AI đang đọc" panel above the answer.
    *  Phase 15.72 — each step carries a live status badge updated by
@@ -581,7 +585,7 @@ export function DashboardAiBot({
       session_key: sessionKey,
       provider,
       model: modelId,
-      messages: initialMessages.map((m) => ({ role: m.role, content: m.content })),
+      messages: initialMessages.map(toSnapshotMessage),
       briefing: result.briefing as unknown as Record<string, unknown>,
       conv_state: initialState as unknown as Record<string, unknown>,
       turn_count: 0,
@@ -830,7 +834,7 @@ export function DashboardAiBot({
         if (lastIdx >= 0 && latestMessages[lastIdx].role === 'assistant') {
           latestMessages = [
             ...latestMessages.slice(0, lastIdx),
-            { ...latestMessages[lastIdx], content: t('dashboards.aiBot.errorWrapper', { msg }) },
+            { ...latestMessages[lastIdx], content: t('dashboards.aiBot.errorWrapper', { msg }), failed: true },
           ];
         }
         setMessages(latestMessages);
@@ -842,7 +846,7 @@ export function DashboardAiBot({
       // Persist the session to DB so history survives F5
       const safeMessages = latestMessages
         .filter((m) => m.role === 'user' || (m.role === 'assistant' && m.content))
-        .map((m) => ({ role: m.role, content: m.content }));
+        .map(toSnapshotMessage);
       if (safeMessages.length > 0) {
         saveAiSession(token, sessionKey, {
           session_key: sessionKey,
@@ -977,7 +981,7 @@ export function DashboardAiBot({
       const aborted = abortRef.current || (err instanceof DOMException && err.name === 'AbortError');
       if (!aborted) {
         const msg = err instanceof Error ? err.message : t('dashboards.aiBot.unknownError');
-        patchLast((m) => ({ ...m, content: t('dashboards.aiBot.errorWrapper', { msg }) }));
+        patchLast((m) => ({ ...m, content: t('dashboards.aiBot.errorWrapper', { msg }), failed: true }));
       }
     } finally {
       abortControllerRef.current = null;
@@ -986,7 +990,7 @@ export function DashboardAiBot({
       // Persist like a chat turn so the exploration report survives F5.
       const safeMessages = latestMessages
         .filter((m) => m.role === 'user' || (m.role === 'assistant' && m.content))
-        .map((m) => ({ role: m.role, content: m.content }));
+        .map(toSnapshotMessage);
       if (safeMessages.length > 0) {
         saveAiSession(token, sessionKey, {
           session_key: sessionKey,
@@ -1144,7 +1148,7 @@ export function DashboardAiBot({
       // run never received, so it is undone.
       const safeMessages = next
         .filter((m) => m.role === 'user' || (m.role === 'assistant' && m.content))
-        .map((m) => ({ role: m.role, content: m.content, ...(m.rating ? { rating: m.rating } : {}) }));
+        .map(toSnapshotMessage);
       saveAiSession(token, sessionKey, {
         session_key: sessionKey,
         provider,
@@ -2008,7 +2012,7 @@ function MessageBubble({
             ))}
           </div>
         )}
-        {!isUser && !streaming && message.content && onRate && (
+        {!isUser && !streaming && message.content && !message.failed && onRate && (
           <div className="mt-1.5 flex items-center gap-1 border-t border-[rgb(var(--border-line))]/30 pt-1.5">
             <span className="text-micro text-text-quaternary mr-1">{t('dashboards.aiBot.ratingLabel')}</span>
             <button
@@ -2021,6 +2025,7 @@ function MessageBubble({
               }`}
               title={t('dashboards.aiBot.rateUpTitle')}
               aria-label={t('dashboards.aiBot.rateUpAria')}
+              aria-pressed={message.rating === 'up'}
               data-testid="rate-up"
             >
               <ThumbsUp className="h-3 w-3" />
@@ -2035,6 +2040,7 @@ function MessageBubble({
               }`}
               title={t('dashboards.aiBot.rateDownTitle')}
               aria-label={t('dashboards.aiBot.rateDownAria')}
+              aria-pressed={message.rating === 'down'}
               data-testid="rate-down"
             >
               <ThumbsDown className="h-3 w-3" />

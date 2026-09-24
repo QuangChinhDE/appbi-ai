@@ -38,3 +38,21 @@ export function revertReaderRating<M extends { rating?: ReaderRating }>(
 ): M[] {
   return messages.map((m, i) => (i === index && m.rating === attempted ? { ...m, rating: previous } : m));
 }
+
+/**
+ * How ONE message is written into the saved session snapshot — for every save,
+ * not just the one a thumb triggers. Each turn re-saves the whole session, and
+ * a serializer that dropped `rating` wiped the reader's thumb on the next
+ * reload while the run kept its verdict. `failed` travels too, so an error
+ * bubble stays unratable after a reload.
+ */
+export function toSnapshotMessage<R extends string>(m: {
+  role: R; content: string; rating?: ReaderRating; failed?: true;
+}): { role: R; content: string; rating?: ReaderRating; failed?: true } {
+  return {
+    role: m.role,
+    content: m.content,
+    ...(m.rating ? { rating: m.rating } : {}),
+    ...(m.failed ? { failed: true as const } : {}),
+  };
+}

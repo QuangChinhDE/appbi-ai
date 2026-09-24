@@ -3794,6 +3794,10 @@ async def save_ai_chat_session(
             rating = msg.get("rating")
             if rating in ("up", "down"):
                 entry["rating"] = rating
+            # A failed turn's bubble holds an error, not an answer any run
+            # stored; the reader page keeps it unratable across a reload.
+            if msg.get("failed") is True and role == "assistant":
+                entry["failed"] = True
             safe_messages.append(entry)
 
     # THE THUMB HAS TO REACH THE RUN, NOT ONLY THE TRANSCRIPT.
