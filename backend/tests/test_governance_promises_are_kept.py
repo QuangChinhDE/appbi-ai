@@ -157,3 +157,34 @@ def test_existing_container_pricing_is_unchanged():
             "max_iterations": 3, "body": [_agent("in", ["rank_values"], max_tool_calls=1)]}
     est = estimate_cost(_flow(loop, _agent("answer")))
     assert est == {"max_llm_calls": 3 * 2 + 1, "max_tool_calls": 3}
+
+
+# ── 6. the registry loads once, atomically, under concurrency ────────────────
+def test_concurrent_first_use_of_the_registry_neither_crashes_nor_sees_half_of_it():
+    """Found by the E2E suite after capability checks started reading the
+    registry from request handlers: two requests arriving together both saw an
+    empty registry and both registered `discover` — a 500 on GET /brains — and a
+    request arriving mid-load could read a registry holding only the first packs."""
+    import threading
+
+    full = len(reg.all_tools())
+    reg._PACKS.clear()
+    reg._LOADED.clear()
+    seen: list[int] = []
+    errors: list[BaseException] = []
+    gate = threading.Barrier(16)
+
+    def hit():
+        try:
+            gate.wait()
+            seen.append(len(reg.all_tools()))
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = [threading.Thread(target=hit) for _ in range(16)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert errors == []
+    assert seen == [full] * 16

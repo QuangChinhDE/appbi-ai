@@ -511,7 +511,7 @@ class BrainWrite(BaseModel):
     #: Only read when this save CREATES the flow. Every later save carries the
     #: type forward; changing it goes through `PUT /brains/{key}/type`, which can
     #: refuse.
-    flow_type: Literal["bot", "chat"] | None = None
+    flow_type: Literal["bot", "chat", "skill"] | None = None
 
 
 @router.get("/brains")

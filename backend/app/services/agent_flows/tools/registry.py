@@ -55,6 +55,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
@@ -343,6 +344,10 @@ def register_pack(pack: ToolPack) -> None:
     _PACKS[pack.key] = pack
 
 
+_LOAD_LOCK = threading.RLock()
+_LOADED = threading.Event()
+
+
 def _load_packs() -> None:
     """Import the packs on first use.
 
@@ -353,18 +358,30 @@ def _load_packs() -> None:
     Order is the order an author reads them in: understand the report, get a
     number out of it, compare, diagnose, project, look something up, leave.
     """
-    if _PACKS:
+    # ONCE, AND ATOMICALLY. The check below used to be `if _PACKS: return` with
+    # nothing else, which is two bugs under a threaded server: two requests that
+    # arrive together both see an empty registry and both register `discover`
+    # ("redeclares tool(s) already registered" — a 500 on GET /brains), and a
+    # request arriving MID-load sees a registry holding only the first packs and
+    # answers from it. So the load runs under a lock, and a reader never sees a
+    # partial registry: `_LOADED` is set only after every pack is in.
+    if _LOADED.is_set():
         return
-    from app.services.agent_flows.tools.packs import (
-        compare, diagnose, discover, external, knowledge, measure, project, read,
-    )
+    with _LOAD_LOCK:
+        if _LOADED.is_set():
+            return
+        from app.services.agent_flows.tools.packs import (
+            compare, diagnose, discover, external, knowledge, measure, project, read,
+        )
 
-    # `discover` leads, because it is what a turn does first: work out WHICH
-    # asset the question is about. It was the missing step — 20 of these tools
-    # require a chart_id and, until this pack, one name-matching listing was the
-    # only thing that issued one.
-    for mod in (discover, read, measure, compare, diagnose, project, knowledge, external):
-        register_pack(mod.PACK)
+        # `discover` leads, because it is what a turn does first: work out WHICH
+        # asset the question is about. It was the missing step — 20 of these tools
+        # require a chart_id and, until this pack, one name-matching listing was the
+        # only thing that issued one.
+        for mod in (discover, read, measure, compare, diagnose, project, knowledge, external):
+            if mod.PACK.key not in _PACKS:
+                register_pack(mod.PACK)
+        _LOADED.set()
 
 
 def all_tools() -> dict[str, ToolSpec]:
