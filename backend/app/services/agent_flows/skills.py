@@ -91,8 +91,21 @@ class SkillBudget:
     def tools_left(self, *, answering: bool = False) -> int:
         # The PARENT's reserve for its own answering step is respected: a child is
         # never the parent's answer.
+        #
+        # A tool whose result no model call is left to read is not worth running.
+        if self.max_llm_calls - self.llm_calls <= 0:
+            return 0
         return max(0, min(self.parent.tools_left(answering=False),
                           self.max_tool_calls - self.tool_calls))
+
+    @property
+    def final_round(self) -> bool:
+        """THE CHILD'S LAST MODEL CALL IS ITS ANSWER. Measured on a link funded for
+        6 model calls: the Skill got 2, spent both asking for tools and died "hết số
+        lượt gọi mô hình" with nothing to hand back. Read by `AgentRuntime.ask`
+        right after spending a call: on the last one, no tools are offered, so the
+        model answers with what it has."""
+        return self.llm_calls >= self.max_llm_calls
 
     def check(self) -> None:
         self.parent.check()

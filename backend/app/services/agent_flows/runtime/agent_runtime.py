@@ -459,6 +459,12 @@ class AgentRuntime:
             self.view.refresh(self._ranking_text)
             if self.view.shortlisted:
                 self.schemas = self.view.schemas(web_enabled=self.web_enabled)
+        # A budget that knows this is its LAST model call (a Skill's) offers no
+        # tools on it: nothing would be left to read their results. The top-level
+        # run budget does not declare this, so its behaviour is unchanged.
+        offered = [] if getattr(state.budget, "final_round", False) else self.schemas
+        if not offered and self.schemas:
+            self.view.rounds[-1:] = [[]]
 
         # THE RUN BUDGET HAS TO BIND DURING A CALL, NOT ONLY BETWEEN NODES.
         #
@@ -471,7 +477,7 @@ class AgentRuntime:
             async with asyncio.timeout(remaining):
                 async for ev in self._stream(
                     provider=self.provider, api_key=self.api_key, model=self.model,
-                    system_prompt=system, messages=messages, tools=self.schemas,
+                    system_prompt=system, messages=messages, tools=offered,
                 ):
                     if ev.type == "tool_call":
                         reply.tool_calls.append(ev)

@@ -8,6 +8,78 @@ Dify". Phần đối chiếu Dify nằm ở [gap analysis](agent-flow-v3-dify-ga
 
 ---
 
+## 0. Hiện trạng — đã xây (2026-09, nhánh `feat/agent-flow-v3-capabilities`)
+
+> **User giữ cấu trúc. AI giữ suy luận cục bộ. Runtime giữ luật.**
+> Flow là nguồn sự thật về quyền điều phối; Runtime là nguồn sự thật về quyền,
+> phạm vi, ngân sách và bất biến thực thi.
+
+### Bản đồ khái niệm — đúng tên trong code
+
+| Khái niệm | Là gì | Ai quyết định bên trong | Ở đâu |
+|---|---|---|---|
+| **Flow** | kiến trúc ra quyết định do author vẽ: một cây node | author — thứ tự, nhánh, vùng tự chủ, grant, roster | `contract.py` `Flow` |
+| **Node** | primitive điều phối | tuỳ loại, dưới đây | `contract.py` union `Node` |
+| ToolNode | "chạy đúng capability này" | author; không model | `handlers/data.py:run_tool` |
+| If / Switch / Loop / Filter | định tuyến tất định | author; không model | `runtime/executor.py` |
+| **Skill node** | "chạy capability tái sử dụng có quản trị này" | author chọn *có chạy*; flow của Skill quyết *chạy thế nào* | `handlers/skill.py` |
+| **Agent** | vùng tự chủ: mục tiêu + capability được cấp | model, cục bộ, trong grant | `handlers/agent.py` |
+| **Coordinator** | chọn specialist có giới hạn | model chọn tập con roster, ≤ `max_specialists`; không lồng coordinator | `executor.py:_run_coordinate` |
+| **Tool** | capability nguyên tử | — | `tools/registry.py` |
+| **Skill** | flow đã publish có contract (input/output/khi nào dùng), chạy như child run | — | `services/agent_flows/skills.py` |
+| **Capability** | thứ Agent được cấp: Tool hoặc Skill | — | `runtime/capabilities.py` |
+| **Strategy** | cách Agent suy luận (hội thoại, khi nào gọi, khi nào dừng) | strategy — không I/O | `runtime/strategies/` |
+| **Runtime** | thực thi + cưỡng chế: provider, capability, budget, retry, trace, gate | runtime — không bao giờ là prompt | `runtime/agent_runtime.py`, `registry.execute` |
+
+Bất biến **A** (quyền điều phối): model không thể thêm, bỏ, đổi thứ tự hay thay node.
+Đầu ra mang tính cấu trúc của nó chỉ có hai: giá trị `choice` (kiểm tra trong code) và
+tập specialist (quét theo roster). V3 không thêm cái thứ ba.
+
+Bất biến **R** (luật): capability chỉ chạy nếu `registry.execute()` (tool) hoặc
+`skills.invoke_skill` (Skill) chấp nhận theo grant, scope, cờ năng lực, risk và budget.
+
+### Đã xây theo phase
+
+| Phase | Trạng thái | Gì thay đổi | Khoá bằng |
+|---|---|---|---|
+| 1 Governance | xong | `risk≠read_only` bị chặn (`risk_unknown`/`needs_approval`) — một luật trong `_capability_refusal`; nhu cầu web suy ra từ `reaches_outside`; tool không tồn tại chặn publish; coordinator lồng bị cấm ở validator; chi phí preflight đi theo `child_node_lists` | `test_governance_promises_are_kept.py` |
+| 2 Strategy/Runtime | xong | `AgentRuntime` + `ToolCallingStrategy`; `AgentNode.strategy` (một giá trị) | 16 replay fixture không đổi; `test_strategy_is_pure.py` |
+| 3 Compute | xong | biến = `{ref, path}` vào `RunState.evidence_store`; runtime tự đọc giá trị; literal mọi độ lớn; số tự gõ tính được nhưng **không bao giờ được xác thực** | `test_compute_owns_the_number.py`, `test_compute_lineage_in_a_run.py` |
+| 4 Capability discovery | xong | grant → eligible (luật admission của registry) → visible (≤ `AGENT_FLOW_VISIBLE_CAPABILITIES`, mặc định 12) + `find_capability`; gọi thứ chưa hiện → `capability_not_visible` | `test_capability_discovery.py` |
+| 5 Skill | xong | một primitive `invoke_skill`; child run có `parent_run_key`/`parent_step_key`/`invoked_as`; quyền = caller ∩ contract Skill; budget của cha; ghim version lúc publish; chặn vòng lặp theo (key, version), sâu ≤ 3 | `test_skills_run_as_governed_children.py` + script đột biến 8/8 |
+| 6 UX | xong | Skill trong picker; nhóm Dữ liệu/Phân tích/Tri thức/Bên ngoài (chỉ là trình bày); editor bước Skill; contract editor; Runs hiện child run và capability view | tsc, `npm run qa`, E2E |
+| 3.3 Runtime Layer Stack | **chưa** | không mục tiêu nào ở trên cần nó | — |
+| 3.5 / 3.6 Checkpoint, HITL | **chưa** | `needs_approval` là cửa chờ cho 3.6 | — |
+| 3.8 MCP/HTTP | **chưa** | `ExtraCapability` là chỗ để cắm vào catalogue | — |
+
+### Khác với kế hoạch ban đầu, và vì sao
+
+- **Provenance của compute bằng tham chiếu, không bằng khớp giá trị.** Khớp giá trị
+  không phân biệt được `Doanh thu 2025 = 100` với `Mục tiêu = 100`.
+- **Giới hạn hiển thị mặc định 12, không 8.** Starter V1 cấp 10 tool; giới hạn 8 sẽ đổi
+  một hành trình đã chứng nhận khi chưa có eval nói shortlist tốt hơn.
+- **Model chỉ gọi được thứ đang hiện hoặc đã tìm thấy.** Không có đường "nhớ tên thì gọi".
+- **Skill không chạy bằng quyền của owner.** Owner chỉ có ý nghĩa lúc author/publish.
+- **Child run nối bằng `parent_run_key`, không bằng FK id.** Child ghi xong giữa lượt,
+  trước khi hàng của cha tồn tại; và vẫn nối được khi người xem bỏ lượt giữa chừng.
+- **Child run không mang session/link của người đọc**, để rating công khai chỉ khớp run
+  người đọc thực sự nói chuyện.
+- **`compute` chưa khai báo `output_schema`** — contract yêu cầu kiểm với kết quả thật
+  của một báo cáo trước.
+- **Lỗi phát hiện dọc đường**: registry nạp pack không an toàn khi đa luồng (hai request
+  đầu tiên cùng đăng ký `discover` → 500). Sửa bằng khoá + cờ `_LOADED`.
+
+### Giới hạn còn lại
+
+- Skill không có khai báo chart riêng: child dùng đúng chart của caller.
+- `question` của child chỉ có khi Skill khai báo input tên `question`; không có thì
+  dimension gate trong child im lặng (theo thiết kế: không có câu hỏi để so).
+- Chi phí preflight của một Skill là hằng số bảo thủ; trần cứng là budget lúc chạy.
+- Lời nhắc ngôn ngữ sau vòng lặp vẫn "chết" như trước (giữ nguyên khi tách Strategy;
+  sửa là thay đổi hành vi riêng).
+
+---
+
 ## 1. Nguyên tắc
 
 ```

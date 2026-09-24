@@ -123,6 +123,9 @@ class _Model:
             self.rounds[role] += 1
             self.offered[role].append([t.get("name") for t in (tools or [])])
             step = self.scripts[role][i] if i < len(self.scripts[role]) else ("text", "xong")
+            if step[0] == "calls" and not tools:
+                # A real model cannot call a tool it was not offered.
+                step = ("text", "Trả lời bằng những gì đã có.")
             if step[0] == "calls":
                 for j, (name, args) in enumerate(step[1]):
                     yield AgentEvent(type="tool_call", tool_call_id=f"{role}{i}{j}",
@@ -533,3 +536,24 @@ def test_preflight_cost_counts_skill_invocations():
     assert with_skill["max_llm_calls"] - without["max_llm_calls"] == SKILL_COST[0]
     granted = estimate_cost(_flow(PARENT_GRANTING_SKILL, "c"))
     assert granted["max_tool_calls"] >= SKILL_COST[1]
+
+
+def test_a_skill_keeps_its_last_model_call_for_its_answer(monkeypatch, skill_db):
+    """Measured live on a link funded for 6 model calls: the Skill got 2, spent
+    both on tool rounds, and failed with nothing to hand back. Its last model
+    call is now its answer — no tools are offered on it."""
+    budget = Budget(max_llm_calls=6, max_tool_calls=30, max_seconds=60)
+    keep_calling = ("calls", [("total_measure", {"chart_id": 41})])
+    model = _Model(parent_script=[SKILL_CALL, ("text", "Xong.")],
+                   child_script=[keep_calling, keep_calling, keep_calling, ("text", "Kết quả Skill")])
+    _run(monkeypatch, skill_db.db, PARENT_GRANTING_SKILL, model, budget=budget)
+    [child] = _children(skill_db.db)
+    assert child.status in ("ok", "partial"), child.status
+    # The child's final round was offered no tools.
+    assert model.offered["VAI_TRO_CON"][-1] == []
+    b = skills.child_budget(Budget(max_llm_calls=4, max_tool_calls=30))
+    assert b.max_llm_calls == 2
+    b.spend_llm()
+    assert b.tools_left() > 0 and not b.final_round   # round 1 may use tools
+    b.spend_llm()
+    assert b.final_round                               # round 2 answers

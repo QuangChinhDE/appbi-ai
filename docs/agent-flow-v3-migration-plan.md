@@ -185,6 +185,8 @@ nguyên**, mỗi lần verify lại replay.
 
 ### V3.4 — `AgentRuntime` + `AgentStrategy`
 
+**Trạng thái: xong** (phase 2 của `docs/features/agent-flow-v3-capabilities`). Replay không đổi.
+
 | | |
 |---|---|
 | Đổi gì | Tách vòng reasoning. Runtime sở hữu provider/tool/budget/retry/trace; Strategy chỉ quyết định |
@@ -215,6 +217,8 @@ Strategy thứ hai là phase riêng.
 | Nghiệm thu | I1–I5 + **sanitize test** (nội dung model sinh render trong markdown) + **permission re-check lúc resume** (quyền thu hồi giữa chừng ⇒ fail có lý do) + UI hiện **một** FlowRun không phải nhiều run |
 
 ### V3.7 — `Skill` / Subflow
+
+**Trạng thái: xong** (phase 5). `invoke_skill`, không phải `ToolSpec.fn`; quyền = caller ∩ contract.
 
 | | |
 |---|---|
