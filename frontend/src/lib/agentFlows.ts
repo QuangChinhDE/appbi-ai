@@ -689,7 +689,10 @@ export interface FlowOutputEnvelope {
   schema_version: number;
   run_id: string;
   status: 'ok' | 'partial' | 'blocked' | 'failed';
-  answer: { blocks: AnswerBlock[] };
+  /** `text` is the SERVER's rendering of `blocks`, and is what a rating is
+   *  matched against. Optional so a frontend deployed ahead of the backend falls
+   *  back to rendering it locally rather than to `undefined`. */
+  answer: { blocks: AnswerBlock[]; text?: string };
   citations: { kind: string; ref: string; label?: string; url?: string; quote?: string }[];
   notices: FlowNotice[];
   trace: { path: string; steps: RunStep[] };
