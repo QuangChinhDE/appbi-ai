@@ -316,9 +316,24 @@ class AgentRuntime:
         #: outside it, whatever the model names.
         self.allowed = set(node.tool_names())
         self.web_enabled = bool(rctx.inp.binding.capabilities.web_search)
-        #: The tool schemas the model is offered this round.
+        #: WHAT THE MODEL MAY BE SHOWN (capability discovery). Visibility only:
+        #: `registry.execute()` still decides what may run.
+        from app.services.agent_flows.runtime.capabilities import build_view
+
+        self.view = build_view(
+            node.tool_names(), rctx.ctx, web_enabled=self.web_enabled,
+            limit=getattr(node, "visible_capabilities", None),
+        )
+        #: The tool schemas the model is offered this round. A step whose grant
+        #: fits within the limit is offered exactly what it always was.
         self.schemas: list[dict] = tool_registry.definitions_for(
             self.allowed, web_enabled=self.web_enabled)
+        self._withdrawn = False
+        try:
+            self._ranking_text = " ".join(filter(None, [
+                rctx.inp.question.text(), node.prompt or ""]))
+        except Exception:                                       # noqa: BLE001
+            self._ranking_text = node.prompt or ""
         #: Tool calls this step has made (the node ceiling reads it).
         self.calls_made = 0
         #: Requests this step has already had finally refused, so it does not spend
@@ -364,9 +379,14 @@ class AgentRuntime:
 
     def exit(self) -> None:
         """Restored even when the node raises, or the next node would inherit a
-        scope it was never granted — a silent widening of what the flow may read."""
+        scope it was never granted — a silent widening of what the flow may read.
+
+        Also leaves this step's capability view for the trace, whatever happened:
+        "what could it see, what did it try" matters most on a step that failed.
+        """
         if self._previous_scope is not None:
             self.rctx.ctx.knowledge_scope = self._previous_scope
+        self.state.capability_trace[self.node.key] = self.view.to_trace()
 
     # ── the model ────────────────────────────────────────────────────────────
     async def ask(
@@ -382,6 +402,15 @@ class AgentRuntime:
         state.budget.spend_llm()
         reply = ModelReply()
         self.last_reply = reply
+        # THE VIEW FOR THIS ROUND. Shortlisted: the model is shown the core, what
+        # it discovered or used, and the best-ranked for the question. Otherwise
+        # the schemas are untouched and the round is only recorded.
+        if self._withdrawn:
+            self.view.rounds.append([])
+        else:
+            self.view.refresh(self._ranking_text)
+            if self.view.shortlisted:
+                self.schemas = self.view.schemas(web_enabled=self.web_enabled)
 
         # THE RUN BUDGET HAS TO BIND DURING A CALL, NOT ONLY BETWEEN NODES.
         #
@@ -451,6 +480,7 @@ class AgentRuntime:
     def withdraw_tools(self) -> None:
         """No further tool calls are offered to the model in this step."""
         self.schemas = []
+        self._withdrawn = True
 
     @property
     def tools_offered(self) -> bool:
@@ -493,7 +523,55 @@ class AgentRuntime:
         # on a missing required field and the model had to guess at a fault the
         # runtime had already identified. Handing back the parse error instead
         # lets it correct the call on the next round.
+        from app.services.agent_flows.runtime.capabilities import FIND_CAPABILITY
+
+        view = self.view
         malformed = (call.extra or {}).get("malformed_args")
+        if view.shortlisted and call.tool_name == FIND_CAPABILITY and not malformed:
+            # DISCOVERY. Answered by the view, not the registry: it reads no data
+            # and it can only return what this step is already eligible for.
+            # Charged like any call, so a model cannot search forever for free.
+            state.budget.spend_tool()
+            self.calls_made += 1
+            query = str((call.tool_args or {}).get("query") or "")
+            result = view.discover(query)
+            view.note_invoked(FIND_CAPABILITY)
+            state.tool_log.append(FIND_CAPABILITY)
+            self.last_result = result
+            yield AgentEvent(
+                type="tool_result",
+                tool_call_id=call.tool_call_id,
+                tool_name=call.tool_name,
+                tool_result=result,
+            )
+            return
+        if view.shortlisted and not malformed and call.tool_name in view.eligible \
+                and not view.is_visible(call.tool_name):
+            # GRANTED, BUT NOT SHOWN THIS TURN. No invoking from memory: the model
+            # discovers it first, and then it is shown with its full definition.
+            # Charged — a call the model chose to make — and not memoised as a final
+            # refusal, because after discovery the same call is legitimate.
+            state.budget.spend_tool()
+            self.calls_made += 1
+            result = {
+                "ok": False,
+                "error_code": "capability_not_visible",
+                "error": (
+                    f"'{call.tool_name}' chưa được hiển thị ở lượt này — hãy gọi "
+                    f"{FIND_CAPABILITY} để lấy định nghĩa của nó trước."
+                ),
+                "retryable": True,
+            }
+            view.note_rejected(call.tool_name, "capability_not_visible")
+            state.tool_log.append(f"{call.tool_name}(capability_not_visible)")
+            self.last_result = result
+            yield AgentEvent(
+                type="tool_result",
+                tool_call_id=call.tool_call_id,
+                tool_name=call.tool_name,
+                tool_result=result,
+            )
+            return
         if malformed:
             # Still charged: this IS a new attempt by the model, just a broken
             # one. Only a request the runtime has already answered is free.
@@ -529,6 +607,10 @@ class AgentRuntime:
         state.evidence_source = self.node.key
         # Registered with a reference the model is shown, so a formula can name
         # which result feeds it rather than copying a number out of it.
+        if result.get("ok"):
+            view.note_invoked(call.tool_name)
+        else:
+            view.note_rejected(call.tool_name, str(result.get("error_code") or "failed"))
         ref = state.record_evidence(result, tool=call.tool_name)
         _collect_citation(state, call.tool_name, call.tool_args, result)
         # What the MODEL is shown carries the reference; the result itself is

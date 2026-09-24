@@ -88,6 +88,10 @@ export interface ToolSpec {
   /** One row per argument, FOR RENDERING A FORM. Not a schema to validate
    *  against: the backend is the only place an argument is judged. */
   inputs?: Record<string, { type: string; required: boolean; description: string }>;
+  /** Everything the tool can be FOUND by. The same text the runtime's capability
+   *  discovery ranks it on, so what an author can search for and what an Agent
+   *  can discover never disagree. */
+  search_text?: string;
 }
 
 export interface ToolPack {

@@ -510,6 +510,10 @@ class TraceStep(_Model):
     #: one node pasting a large context it did not need.
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    #: An Agent step's capability view: granted, eligible (and why the rest were
+    #: not), visible per round, discovered, invoked, rejected. The data behind
+    #: "What the AI sees" for a run that already happened.
+    capabilities: dict[str, Any] | None = None
 
 
 class Trace(_Model):

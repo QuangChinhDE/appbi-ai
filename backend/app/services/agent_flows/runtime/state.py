@@ -248,6 +248,10 @@ class RunState:
     #: Holds the result objects the runtime produced — the same objects already
     #: held in the step's messages — plus which tool and step produced them.
     evidence_store: dict[str, dict[str, Any]] = field(default_factory=dict)
+    #: Per Agent step: what it was granted, what was eligible, what it was shown
+    #: each round, what it discovered, invoked and had refused. Stamped onto the
+    #: step's TraceStep by `record`, so every recording site carries it.
+    capability_trace: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     def record_evidence(self, result: Any, *, tool: str = "") -> str | None:
         """Register one capability result: give it a reference, then harvest it.
@@ -404,6 +408,8 @@ class RunState:
         """
         if not step.branch and self.branch_stack:
             step.branch = self.branch_stack[-1]
+        if step.capabilities is None and step.key in self.capability_trace:
+            step.capabilities = self.capability_trace.pop(step.key)
         self.trace.append(step)
 
     def path_label(self) -> str:

@@ -168,7 +168,10 @@ export function foldSearch(s: string) {
  *  giảm", "top mấy" — long before they think in tool names. Matching names only
  *  would make the box work for people who already know the answer. */
 export function toolHaystack(tool: ToolPack['tools'][number]) {
-  return foldSearch([
+  /* The server's `search_text` when it sends one: ONE definition of what a tool
+   * can be found by, shared with the runtime's capability discovery. The local
+   * list is the fallback for an older backend. */
+  return foldSearch(tool.search_text || [
     tool.name, tool.label_vi, tool.label_en, tool.description_vi,
     ...(tool.answers_vi || []),
   ].filter(Boolean).join(' '));

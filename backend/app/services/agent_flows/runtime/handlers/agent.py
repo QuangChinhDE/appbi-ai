@@ -63,6 +63,20 @@ def preview(node: AgentNode, state: RunState, rctx: Any) -> dict:
     allowed = set(node.tool_names())
     web_enabled = bool(rctx.inp.binding.capabilities.web_search)
     schemas = tool_registry.definitions_for(allowed, web_enabled=web_enabled)
+    # THE SAME VIEW A RUN BUILDS for round one. A step granted more than the
+    # visibility limit is shown a shortlist; showing the author the full grant
+    # here would describe a prompt the model never receives.
+    from app.services.agent_flows.runtime.capabilities import build_view
+
+    view = build_view(node.tool_names(), rctx.ctx, web_enabled=web_enabled,
+                      limit=getattr(node, "visible_capabilities", None))
+    try:
+        ranking = " ".join(filter(None, [rctx.inp.question.text(), node.prompt or ""]))
+    except Exception:                                           # noqa: BLE001
+        ranking = node.prompt or ""
+    view.refresh(ranking)
+    if view.shortlisted:
+        schemas = view.schemas(web_enabled=web_enabled)
 
     previous_scope = getattr(rctx.ctx, "knowledge_scope", None)
     try:
@@ -138,6 +152,16 @@ def preview(node: AgentNode, state: RunState, rctx: Any) -> dict:
             "chars": len(_preview_text(m)),
         } for m in messages],
         "tools": tools,
+        #: Granted vs eligible vs shown on round one — and why anything granted
+        #: was left out. The model sees only `tools`; this says how it got there.
+        "capabilities": {
+            "granted": view.granted,
+            "eligible": view.eligible,
+            "excluded": view.excluded,
+            "limit": view.limit,
+            "shortlisted": view.shortlisted,
+            "visible": view.visible,
+        },
         "knowledge_scope": dict(getattr(rctx.ctx, "knowledge_scope", None) or {}),
         "budget": {
             "max_tool_calls": node.max_tool_calls,

@@ -269,7 +269,22 @@ class ToolSpec:
             "risk": self.risk,
             "output_schema": self.output_schema,
             "inputs": self.input_summary(),
+            # What this tool can be FOUND by — the same text capability discovery
+            # ranks it on, so the builder's search and the runtime's cannot drift.
+            "search_text": self.search_text(),
         }
+
+    def search_text(self) -> str:
+        """Everything a capability can be found by: ONE definition, two readers
+        (the builder's tool picker and `runtime/capabilities.py`)."""
+        definition = self.definition or {}
+        parts = [
+            self.name, self.name.replace("_", " "), self.label_vi, self.label_en,
+            self.description_vi, *self.answers_vi,
+            *[f"{k} {v}" for k, v in (self.returns or {}).items()],
+            str(definition.get("description") or ""),
+        ]
+        return " ".join(p for p in parts if p)
 
     def input_summary(self) -> dict[str, dict[str, Any]]:
         """One row per argument, for a form to render. Not a schema to reason with.

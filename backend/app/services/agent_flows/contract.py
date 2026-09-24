@@ -318,6 +318,10 @@ class AgentNode(BaseNode):
     #: node type. One value exists, and it is what every Agent step has always
     #: done, so the default changes nothing.
     strategy: AgentStrategyName = "tool_calling"
+    #: How many capabilities this step is SHOWN in full per round when it was
+    #: granted more. Empty = the runtime policy (`AGENT_FLOW_VISIBLE_CAPABILITIES`).
+    #: Visibility only; the grant is still what decides what may run.
+    visible_capabilities: int | None = Field(default=None, ge=1, le=40)
     #: `chat` streams prose (the default, and what keeps authoring simple).
     #: `json` asks the model for typed answer blocks — richer, but not streamable,
     #: because a half-written JSON object cannot be rendered.
