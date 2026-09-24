@@ -109,6 +109,37 @@ export function BrainBuilder({
   const [saving, setSaving] = React.useState(false);
   const [dirty, setDirty] = React.useState(false);
 
+  // UNSAVED WORK IS NEVER DROPPED SILENTLY. Every way out of the builder asks
+  // first while there are edits: the back arrow, a reload or tab close
+  // (`beforeunload`, the pattern workboard settings use), and any in-app link —
+  // the sidebar is a client-side navigation `beforeunload` never sees, so a
+  // capture-phase click guard asks before the router moves.
+  const dirtyRef = React.useRef(false);
+  dirtyRef.current = dirty;
+  const confirmLeave = React.useCallback(
+    () => !dirtyRef.current || window.confirm(t('agentFlows.builder.leaveUnsaved')), [t],
+  );
+  React.useEffect(() => {
+    if (!dirty) return;
+    const onUnload = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = ''; };
+    const onClick = (e: MouseEvent) => {
+      if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+      const a = (e.target as Element | null)?.closest?.('a[href]') as HTMLAnchorElement | null;
+      if (!a || a.target === '_blank' || a.hasAttribute('download')) return;
+      const url = new URL(a.href, window.location.href);
+      if (url.origin !== window.location.origin) return;
+      if (url.pathname === window.location.pathname && url.search === window.location.search) return;
+      if (!window.confirm(t('agentFlows.builder.leaveUnsaved'))) { e.preventDefault(); e.stopPropagation(); }
+    };
+    window.addEventListener('beforeunload', onUnload);
+    document.addEventListener('click', onClick, true);
+    return () => {
+      window.removeEventListener('beforeunload', onUnload);
+      document.removeEventListener('click', onClick, true);
+    };
+  }, [dirty, t]);
+  const leave = React.useCallback(() => { if (confirmLeave()) onBack(); }, [confirmLeave, onBack]);
+
   const [name, setName] = React.useState('');
   const [description, setDescription] = React.useState('');
   const [version, setVersion] = React.useState(0);
@@ -515,7 +546,7 @@ export function BrainBuilder({
             "Activity" unreachable at the width the product names as its floor.
             The label is the first thing on this row that costs width and carries
             no information the icon does not. */}
-        <button type="button" onClick={onBack} aria-label={t('agentFlows.title')}
+        <button type="button" onClick={leave} data-testid="builder-back" aria-label={t('agentFlows.title')}
           className="flex flex-shrink-0 items-center gap-1 text-caption text-text-tertiary hover:text-text-primary">
           <ArrowLeft className="h-3.5 w-3.5" />
           {/* `2xl`, not `xl`: Tailwind's `xl` is min-width 1280, so it MATCHES at

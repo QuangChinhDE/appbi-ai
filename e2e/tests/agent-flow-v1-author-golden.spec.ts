@@ -184,6 +184,31 @@ test.describe('V1 author golden journey @critical', () => {
       await expect(page.getByText(`Đọc báo cáo ${STAMP}`).first()).toBeVisible({ timeout: 20_000 });
     });
 
+  test('leaving with unsaved edits asks first, and staying keeps the edits',
+    async ({ page }) => {
+      await page.goto(`/agent-flows?flow=${STARTER_KEY}`);
+      await builderReady(page);
+      await page.locator('[data-node-button]').first().click();
+      const nameField = page.locator('aside input[type="text"], aside input:not([type])').first();
+      await expect(nameField).toBeVisible({ timeout: 15_000 });
+      const edited = `Chưa lưu ${STAMP}`;
+      await nameField.fill(edited);
+      await expect(page.getByTestId('builder-save')).toBeEnabled({ timeout: 15_000 });
+
+      // The back arrow and an in-app link (a client-side navigation that
+      // `beforeunload` never sees) both ask. Declining keeps the author here,
+      // with the edit still on screen.
+      const asked: string[] = [];
+      page.on('dialog', (d) => { asked.push(d.type()); void d.dismiss(); });
+      await page.getByTestId('builder-back').click();
+      const inAppLink = page.locator('nav a[href]:not([href*="agent-flows"])').first();
+      await inAppLink.click();
+      await expect.poll(() => asked.length).toBe(2);
+      expect(asked).toEqual(['confirm', 'confirm']);
+      await expect(page).toHaveURL(new RegExp(`flow=${STARTER_KEY}`));
+      await expect(nameField).toHaveValue(edited);
+    });
+
   // ── 4. publish, and the step after publish ───────────────────────────────
   test('publishing shows where the flow ended up, and offers the way to a report',
     async ({ page, request }) => {

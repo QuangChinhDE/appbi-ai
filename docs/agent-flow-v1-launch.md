@@ -22,7 +22,12 @@ not repeated here.
 | session B2 | **author V1 complete** — P1-1, P1-2, P1-3 closed; golden E2E added |
 | `LAST_PRODUCT_COMMIT` before session C | `e7db7207aa1646d1bbfb8d5e42caaef15bd53f46` |
 | session C | **launch closure** — P1-4 and P1-5 closed at the root; reader golden E2E, feedback verified, pilot funnel, operator runbook |
-| next | **push, then independent review.** The candidate is code-complete and verified locally; the push is blocked on git credentials (see HANDOFF). |
+| `LAST_PRODUCT_COMMIT` before session D | `3b19308e95ac877efdf471a45e65205fd93b2d86` — pushed, PR #3 opened, CI green |
+| session D | **independent-review closure** — deploy identity after `--pull`; public rating trust boundary (link scope, no Knowledge side effect) |
+| `LAST_PRODUCT_COMMIT` before session E | `a373d7df5ed4005ec5be172f4a6509cda63eb1c8` |
+| session E | **feedback consistency + module freeze** — one current verdict never cleared; every save carries it; error/welcome bubbles unratable; E2E asserts real state. Code frozen. |
+| session F | **release certification** — unsaved builder edits can no longer be dropped silently (back arrow, in-app link, reload/close all ask first) |
+| next | **merge PR #3 into demo, deploy the merged demo SHA, certify it** (health SHA match, real-model reader smoke, Live Agent Eval, restart). |
 
 **How a session records its own SHA.** It does not. A tracked file cannot contain
 the id of the commit that contains it, and session B learned that the expensive
@@ -354,6 +359,19 @@ and health reported `e7db7207aa1646d1bbfb8d5e42caaef15bd53f46`, matching
 
 ---
 
+## UNSAVED WORK — closed at certification (session F)
+
+The builder's back arrow and every in-app link left without asking, and nothing
+guarded a reload or tab close: an author's unsaved edits vanished with only an
+"unsaved" dot as warning. Every exit now asks while there are edits — the back
+arrow, a reload/close (`beforeunload`, the workboard-settings pattern), and any
+same-origin link through a capture-phase click guard, because the sidebar is a
+client-side navigation `beforeunload` never sees. Declining keeps the author and
+the edit in place. Locked by the author golden E2E *leaving with unsaved edits
+asks first*. The browser's own Back button (a history pop) is not intercepted.
+
+---
+
 ## OPERATIONS — verified by doing it
 
 | | state |
@@ -458,6 +476,32 @@ Locked by `test_reader_rating_reaches_the_run.py` (now against a real database,
 including the cross-link case) and `test_public_rating_trust_boundary.py` (the
 endpoint itself, with spies: forged text and five replayed saves reach
 Knowledge zero times). Both were run red against the previous code first.
+
+### The feedback contract, closed at freeze (session E)
+
+**One current verdict, never cleared.** `frontend/src/lib/readerRating.ts`:
+none → up/down; the selected thumb clicked again stays selected; the other thumb
+switches. The server only ever writes a verdict onto `agent_flow_runs.rating`,
+so a thumb that toggled itself off made the page say "no rating" while the run
+said "up". A failed save undoes the thumb instead of failing silently.
+
+**Every save carries the verdict.** Each turn re-saves the whole session, and
+every save except the thumb's own serialized messages as `{role, content}` — a
+reader who rated and then asked another question lost the thumb on reload while
+the run kept it (reproduced: stored session, 4 messages, no rating). All saves
+now go through `toSnapshotMessage`.
+
+**Only an answer a run holds can be rated.** An error bubble (`failed`) and the
+page's own welcome / tour prompt (`local`) offer no thumb; both flags persist
+through the public sanitizer so a reload agrees.
+
+**The E2E that could not see any of this.** It asserted `/text-success/` on the
+class, and an unselected thumb carries `hover:text-success`. Thumbs expose
+`aria-pressed`, and the reader golden asserts on it.
+
+Locked by `frontend/scripts/check-reader-rating.mjs` (`npm run qa`, run red on
+the previous component), `test_public_rating_trust_boundary.py`,
+`test_reader_rating_reaches_the_run.py` and the reader golden E2E.
 
 ### The funnel
 
@@ -586,56 +630,22 @@ app-wide accessibility work including modal roles · reader-vocabulary sweep ·
 
 ---
 
-## HANDOFF — THE PUSH IS BLOCKED ON CREDENTIALS, NOT ON THE WORK
+## HISTORICAL — the session-C push handoff
 
-Everything below the line is done, verified and **committed locally**. The branch
-could not be pushed, and therefore the final V1 PR could not be opened.
-
-```
-$ git -c credential.helper= push --dry-run origin HEAD:release/agent-flow-v1-candidate
-remote: No anonymous write access.
-fatal: Authentication failed for 'https://github.com/QuangChinhDE/appbi-ai/'
-```
-
-`git push` opened an interactive `git credential-manager get` prompt, which a
-non-interactive shell can never answer — the push sat on it for thirty minutes
-before it was diagnosed and stopped by PID. Read operations still work
-(`git ls-remote`, the anonymous check-runs API) because the repository is public;
-only writing needs the credential, and it has expired or been cleared on this
-machine.
-
-**Nothing was lost and nothing is half-applied.** The working tree is clean, all
-sixteen commits ahead of `demo` are present, and the five stashes on this machine
-all predate this session (July and August, belonging to the public-dashboard and
-workboards work streams) — the pre-push hook stashed nothing, because the tree
-was already clean when it ran.
-
-**To finish, from a shell that can authenticate:**
-
-```bash
-git checkout release/agent-flow-v1-candidate
-git log --oneline -1          # expect the session-C head recorded in the report
-git push origin HEAD:release/agent-flow-v1-candidate
-```
-
-Then open ONE PR, `release/agent-flow-v1-candidate` → `demo`, titled
-**Agent Flow V1 launch candidate**, and wait for `preflight`, `e2e`,
-`backend-contract-tests` and the change-guardrail checks on the PR head. The
-body should lead with what a V1 user can do, not with the diff.
-
-CI on this branch has been green on every push so far, read through the
-anonymous API:
-`https://api.github.com/repos/QuangChinhDE/appbi-ai/commits/<sha>/check-runs`.
-`gh` is not installed on this machine; that endpoint is the substitute, and a
-commit polled seconds after a push legitimately reports zero runs because the
-workflow has not started yet.
+Session C could not push (an expired credential blocked on an interactive
+prompt). Resolved in session D: the branch was pushed and PR #3 opened. Kept only
+as the record of why session C ended committed-but-unpushed.
 
 ---
 
-## NEXT — INDEPENDENT REVIEW
+## NEXT — MERGE AND DEPLOYMENT CERTIFICATION
 
-The candidate is frozen. The next step is review of the final V1 PR, not more
-product development.
+Independent review ran twice (sessions D and E) and found no remaining P0/P1.
+The code is frozen. What is left is not development: merge PR #3, deploy the
+merged demo SHA, and certify that exact deployment.
+
+What the reviews found most worth checking — where a fix could have been a patch
+and was deliberately not:
 
 For a reviewer, the three things most worth checking are the ones where a fix
 could have been a patch and was deliberately not:
