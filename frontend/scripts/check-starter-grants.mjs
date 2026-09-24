@@ -67,6 +67,20 @@ if (!granted || !granted.length) {
 // tools as the first positional string of each `local(` / `remote(` entry.
 const real = new Set();
 const gated = new Map(); // tool name -> the setting its pack requires
+const packOf = new Map(); // tool name -> its pack key
+
+//: PACKS THE V1 STARTER MAY NOT DRAW FROM, for reasons that are policy rather
+//: than mechanism — which is exactly why a check has to hold them.
+//:
+//: `knowledge` is not gated by any setting, so nothing would refuse a starter
+//: that granted `search_knowledge`. But V1 policy is that Knowledge is NOT a
+//: core promise: the recommended first flow must work completely without it, and
+//: granting it would make the product's own starter depend on an attachment the
+//: author has not made and may not have. Adding it is a decision to change that
+//: policy, and this is where that decision has to be visible.
+const PACKS_OFF_LIMITS = new Map([
+  ['knowledge', 'Knowledge is advanced in V1 — the starter must work without it'],
+]);
 
 let packFiles = [];
 try {
@@ -80,6 +94,7 @@ for (const file of packFiles) {
   // Only files that DECLARE a pack; `_source.py` and helpers do not.
   if (!/^PACK\s*=\s*ToolPack\(/m.test(src)) continue;
   const requires = /requires_setting\s*=\s*"([^"]+)"/.exec(src);
+  const packKey = (/key="([a-z0-9_]+)"/.exec(src) || [])[1] || '';
   // Each entry opens with the tool's own name as the first argument. The
   // constructor is not one fixed word - `spec`, `local` and `remote` are all in
   // use - so the SHAPE is matched rather than the name. Naming two of the three
@@ -87,6 +102,7 @@ for (const file of packFiles) {
   // forty and report the other four as invented by the starter.
   for (const m of src.matchAll(/^\s+[a-z_]+\(\s*\n\s*"([a-z0-9_]+)",/gm)) {
     real.add(m[1]);
+    if (packKey) packOf.set(m[1], packKey);
     if (requires) gated.set(m[1], requires[1]);
   }
 }
@@ -110,6 +126,10 @@ for (const tool of granted ?? []) {
     fail(`the starter grants '${tool}', whose pack requires '${gated.get(tool)}'. `
        + 'The recommended first flow must not depend on a per-link setting, and '
        + 'must never reach outside AppBI by default.');
+  } else if (PACKS_OFF_LIMITS.has(packOf.get(tool))) {
+    fail(`the starter grants '${tool}' from the '${packOf.get(tool)}' pack. `
+       + `${PACKS_OFF_LIMITS.get(packOf.get(tool))}. Changing that is a scope `
+       + 'decision, not a grant — say so in docs/agent-flow-v1-launch.md first.');
   }
 }
 
