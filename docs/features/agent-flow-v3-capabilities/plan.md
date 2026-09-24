@@ -92,3 +92,33 @@ unpublish Skills first; nothing else in existing data changes meaning.
 - **Checkpoint/HITL, MCP/HTTP** — separate phases with their own risks.
 - **Embedding-based routing** — lexical + deterministic filtering reaches the goal without
   a new model dependency in the hot path; revisit with pilot evidence.
+
+## Revision 2 — after approval (2026-09-25)
+
+Approved, with these changes folded into `spec.md`:
+
+- **Compute provenance is by structured reference** (`{ref, path}` into the run's evidence
+  store), not by value matching. Literals in the expression are allowed at any magnitude;
+  a bare number passed as a variable is computed with but never certified.
+- **Visibility vs authority.** The router controls visibility only; the model may invoke
+  only capabilities visible this turn or discovered via `find_capability`
+  (`capability_not_visible` otherwise). The limit is policy (default 8), not a constant.
+- **Skill authority** = caller authority ∩ parent grant ∩ Skill declared contract ∩
+  runtime policy. The Skill owner's rights are never a runtime source.
+- **Pinning** is to an immutable exact Skill version; cycles are detected on flow-version
+  ancestry; Skill call depth is a separate limit from flow tree nesting.
+- **One invocation primitive** for Agent capability, Skill node and coordinator lane.
+- **Trace hierarchy** made explicit: `parent_run_id`, `parent_step_seq`, `invoked_as` on
+  the child run; `capability_trace` on the step.
+- **Governance fixes derive from registry metadata** — no parallel hand lists.
+
+**Base branch.** V3 touches the same files PR #3 changes (`handlers/agent.py`,
+`contract.py`, `BrainBuilder.tsx`, `RunsTab.tsx`, `api/public.py` neighbours), so it is
+built on the PR #3 head `428f8355`, not on `demo`. When #3 merges, this branch's base is
+already in `demo`; its PR then targets `demo` with only V3 commits in the diff.
+
+**Eval.** Deterministic invariants are hard CI gates (the tests above). Model-quality
+behaviour — capability selection, discovery recovery, formula provenance, exposed schemas
+per turn, calls, tokens, specialist count, budget accounting, trace completeness — is a
+scripted eval (`backend/scripts/agent_flow_v3_eval.py`) reporting metrics, run against a
+live stack, not a CI gate.

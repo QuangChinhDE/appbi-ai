@@ -27,69 +27,94 @@ Invariant **R (rules):** a capability executes only if `registry.execute()` (too
 Skill invoker (skills) admits it against the grant, scope, capability flags, risk and
 budget. The router, prompt and model have no say.
 
-## 1. Evidence-bound compute — "AI creates the formula, runtime owns the result"
+## 1. Evidence-bound compute — "AI writes the formula, runtime owns the result"
 
-Today `compute(expression, vars, citations)` evaluates whatever numbers the model
-supplies (`thinking/tools.py:759-801`).
+*(Revision 2: provenance is by structured reference, not by value matching. Value
+matching cannot tell `Revenue 2025 = 100` from `Target = 100`.)*
 
-New contract (additive fields; old calls still parse):
+**Evidence references.** Every capability result the runtime harvests is registered in
+the run's evidence store under a stable id (`e1`, `e2`, ... in run order) and the model is
+shown that id with the result (`"evidence_ref": "e3"`). The store keeps the result object
+the runtime produced, not a copy the model can edit.
+
+**Canonical call:**
 
 ```
 compute(
   expression: "(cur - prev) / prev * 100",
-  vars:       {"cur": 10748221.5, "prev": 9120004},
-  constants:  {"pct": 100}              # optional, declared as constants
+  vars: {
+    "cur":  {"ref": "e3", "path": "rows[0].revenue"},
+    "prev": {"ref": "e5", "path": "value"}
+  }
 )
 ```
 
-Runtime, before evaluating:
+Runtime:
 
-1. Every value in `vars` must match a number already in the run's evidence ledger
-   (`RunState.evidence`, `runtime/state.py:221`), using the **same matcher and tolerance
-   the answer verifier uses** (`dashboard_ai_bot/verifier.py:_matches`, rel 0.005, ×/÷100
-   percent forms). One matcher, not two.
-2. A value that matches nothing → refused `unsourced_input`, **recoverable**, message
-   names the variable and tells the model to read it from a tool first. The dead-retry
-   policy already stops an identical re-send (`handlers/agent.py:253-278`).
-3. `constants` are allowed only as small exact numbers (|x| ≤ 1000, e.g. 100, 12, 7) and
-   are labelled `constant` in lineage — they cannot smuggle a business figure.
-4. Result payload: `{expression, result, inputs:[{name, value, source_label, source_step}],
-   constants}`. `source_label` comes from `evidence_labels`/`evidence_sources`
-   (`state.py:171, 226`). The result enters the ledger as **derived** evidence with that
-   lineage, so a later compute may use it and the verifier accepts it for the right reason.
+1. Resolves each reference against the store: missing ref -> `evidence_ref_unknown`;
+   path absent -> `evidence_path_missing`; value not a finite number (string, null,
+   bool, list) -> `evidence_not_numeric`. All recoverable, with a message naming the
+   variable and the shape it found.
+2. Parses `expression` with the existing AST whitelist (`thinking/tools.py:_safe_eval`):
+   numbers, names, `+ - * / % ** //`, unary +/-, parentheses; plus `abs`, `min`, `max`,
+   `round`. No attribute access, other calls, comprehensions or subscripts. Every name
+   must be a declared variable. Complexity bounded (<= 200 AST nodes, `**` exponent
+   <= 12, finite result); divide-by-zero -> `compute_invalid`.
+3. Numeric literals in the expression are **explicit mathematical literals** of any
+   value (100, 365, 1e6 ...), allowed, and recorded in lineage as `literals`.
+4. Returns `{expression, result, inputs:[{name, value, ref, path, source}], literals}`,
+   where `source` is the producing step/tool. The result is itself registered as new
+   evidence (`e7`) with this lineage, so it can feed a later compute.
 
-The model decides *that* a ratio is needed and *which* established figures feed it; the
-runtime refuses invented inputs and produces the number.
+**What the verifier may certify.** A compute result enters the trusted figure ledger only
+when every variable is a reference. Literals are allowed and never make a formula fail.
+A **bare number passed as a variable** (compatibility path: `"cur": 10748221.5`) is
+computed with, lineage marks it `unreferenced`, and the result is registered as evidence
+**without** entering the trusted ledger, so an answer quoting it gets the existing
+`figures_unverified` notice. An invented input can be computed with, never certified.
 
-## 2. Capability shortlisting — Router shortlists, runtime authorizes
+## 2. Capability discovery — visibility is the router's, authority is the registry's
 
-For an Agent whose granted capabilities (tools + skills) number **≤ 8**: unchanged — all
-schemas every round. This keeps every existing starter and fixture byte-identical.
+*(Revision 2: the model invokes only what the current turn has exposed or discovered;
+the limit is policy, not an architectural constant.)*
 
-For **> 8**, each round the strategy asks the runtime for an *exposure set*:
+Per agent round the runtime builds the capability view:
 
-1. **Deterministic filter** over the grant: drop capabilities that would be refused with
-   certainty in this context — `reaches_outside` when `ctx.web_search` is false,
-   `raw_rows` when `ctx.read_rows` is false, packs not available (`_pack_available`).
-   (They stay *granted*; calling one still gets the same refusal as today.)
-2. **Always-on core:** granted discover tools (`search_business_assets`,
-   `resolve_chart_candidates`), `compute`, and `find_capability`.
-3. **Intent shortlist:** lexical score of the question + last tool result against each
-   capability's `label_vi/label_en/description/answers_vi/returns` with Vietnamese
-   diacritic folding — the same haystack the builder picker already searches
-   (`ToolPicker.tsx` `toolHaystack`), moved to one backend function the picker can call.
-4. **Sticky:** a capability called earlier in this node stays exposed.
-5. Cap at 8 full schemas.
+```
+granted    node grants (tools + skills)
+eligible   granted AND runtime eligibility: pack available; not `reaches_outside` when
+           ctx.web_search is false; not `raw_rows` when ctx.read_rows is false; risk
+           admissible; Skill resolvable at its version and admissible in this context
+visible    all eligible, if |eligible| <= limit; otherwise
+           core (granted discover tools, compute, find_capability)
+           + sticky (discovered or invoked earlier in this node)
+           + top-ranked by intent, up to `limit`
+```
 
-`find_capability(query)` returns name + one line for matching *granted* capabilities; the
-next round exposes their schemas. It cannot list or expose anything ungranted.
+`limit` = `AgentNode.visible_capabilities` or the runtime policy default
+(`AGENT_FLOW_VISIBLE_CAPABILITIES`, default 8). Ranking is lexical over the question and
+the latest result against each capability's `label_vi/label_en/description/answers_vi/
+returns`, with Vietnamese diacritic folding: one scorer, also served to the builder picker.
 
-A model calling a granted capability that is not in the current exposure set is **allowed**
-— the grant is the authority, the shortlist is a context optimisation. An ungranted call is
-refused `not_granted` exactly as today (`registry.py:932`).
+`find_capability(query)` searches **eligible** capabilities only, returns name + one line
++ why it matched, and adds them to `sticky`, so their full schema is exposed on the next
+round. It never lists a capability that is ungranted, ineligible, out of scope, or a Skill
+the caller cannot resolve.
 
-Trace: each agent step records `exposed: [...]` per round, so "why didn't it use X" is
-answerable from Runs.
+Invocation:
+
+- visible -> normal execution; `registry.execute()` / the Skill invoker re-checks grant,
+  scope, capability flags, risk and budget. Nothing is trusted from the view.
+- granted but not visible this round -> refused `capability_not_visible`, recoverable:
+  "call find_capability first".
+- ungranted -> `not_granted`, exactly as today.
+
+When `|eligible| <= limit` every eligible capability is visible, which is every existing
+starter and fixture, so their behaviour is unchanged.
+
+Trace, per agent step: `granted`, `eligible` (with the reason each excluded capability was
+dropped), `visible` per round, `discovered`, `invoked`, `rejected` (+ code). This is the
+data behind "What the AI sees".
 
 ## 3. Skill — reusable governed flow capability
 
@@ -109,7 +134,7 @@ answerable from Runs.
 
 - **Agent grant:** an Agent's `tools` grant list may include `skill:<brain_key>`. It
   appears to the model as a capability with the contract as its input schema and
-  `when_to_use` as its description, subject to §2 shortlisting.
+  `when_to_use` as its description, subject to §2 discovery.
 - **Skill node** (new node type `skill`): `{skill_key, inputs: ToolInput[] (typed,
   variable|literal — the ToolNode binding model, contract.py:827-859), output_var}`.
   Deterministic: no model decides whether it runs.
@@ -117,35 +142,73 @@ answerable from Runs.
 
 ### Version
 
-A parent pins the Skill's published version at the parent's own publish (stored in the
-parent version's body as `skill_version`). Republishing the Skill does not change a
-published parent until the parent republishes; the builder shows "newer Skill version
-available". Draft/test runs use the Skill's current published version.
+*(Revision 2.)* A published parent references an **immutable exact Skill version**. At the
+parent's publish the runtime resolves each `skill:<key>` grant and Skill node to the
+Skill's current published version and stores it in the parent version's body. Publishing
+Skill v2 does not change a parent pinned to v1; the builder shows that a newer version
+exists and the author republishes the parent to adopt it. Draft and test runs resolve the
+Skill's latest published version and say so in the trace.
 
-### Execution — a real child FlowRun
+### Execution — one canonical invocation primitive
 
-`SkillInvoker` (a sibling of `registry.execute`, not a `ToolSpec.fn` — V3 §3.4):
+Agent capability, Skill node and coordinator lane all call the same `invoke_skill(...)`:
 
-1. **Cycle/depth:** refused at publish if the pinned Skill graph has a cycle or depth > 3;
-   re-checked at run time (`skill_depth_exceeded`).
-2. **Scope = intersection:** allowed charts = parent `allowed_chart_ids` ∩ Skill owner's
-   current rights ∩ Skill attachments (`permissions.run_scope`, `permissions.py:131-189`,
-   computed for the Skill owner, then intersected). `excluded_columns` = union.
-   `read_rows` = parent ∧ Skill; `web_search` = parent ∧ Skill; `actor_type` = parent's.
-   Never wider than the caller in any dimension.
-3. **Grants:** the Skill's nodes keep their own grants; the effective set is additionally
-   bounded by the parent context's flags (step 2). A Skill granting `web_search` called
-   from a no-web link cannot reach the web.
-4. **Budget:** the child runs on the **parent's `Budget` object** — every LLM/tool call
-   and second is charged to the parent; a child cannot exceed what the parent has left.
-   A per-invocation ceiling (default: half the parent's remaining tool calls) stops one
-   Skill from starving the answer.
-5. **Result:** the child's answer + its verified evidence numbers return to the parent as
-   a capability result; child figures enter the parent ledger with source
-   `skill:<key>@v<n>`. Child notices (e.g. `figures_unverified`) propagate.
-6. **Persistence:** the child is its own `agent_flow_runs` row with `parent_run_id`,
-   `parent_step_seq`, `trigger="skill"`; its steps are ordinary step rows. Runs lists
-   only top-level runs; a parent step "Skill: X" expands to the child's steps.
+```
+validate inputs against the contract
+-> resolve version (pinned; latest published only for draft/test)
+-> ancestry check: (skill_key, version) not already on the call stack; stack depth <= 3
+-> authority = parent context AND Skill declared contract
+-> child run on the parent's budget
+-> execute the Skill flow with its inputs only
+-> validate output
+-> return result + child run reference
+```
+
+**Depth vs nesting.** Flow tree nesting (`MAX_DEPTH=4`, `contract.py:98`) is structure
+inside one flow. Skill depth is the runtime call stack of child runs. They are separate
+limits. Skill depth defaults to 3 and is checked on the ancestry of **flow versions**
+(`A@v7 -> B@v3 -> C@v2 -> A@v7` is refused), both at publish over the pinned graph and at
+run time.
+
+**Authority: a Skill never runs on its owner's ambient rights.**
+
+```
+effective authority = caller authority        (the parent run's context:
+                                               run_scope AND link AND binding, as today)
+                    AND parent node grant      (the grant that lets it call the Skill)
+                    AND Skill declared contract (its nodes' grants, its declared resources)
+                    AND runtime policy          (read_rows, web_search, actor_type)
+```
+
+Concretely: allowed charts = parent `allowed_chart_ids` AND the Skill's declared chart
+dependencies (none declared -> the parent's charts); `excluded_columns` = union; knowledge
+scope = parent scope AND Skill-declared documents; `read_rows` and `web_search` = parent
+AND Skill; actor = parent's. The Skill owner's permissions matter only at authoring and
+publish (an owner may declare only resources they can access). They are never a runtime
+source: a resource the Skill author can see is not thereby visible to a caller.
+
+**Budget.** The child runs on the parent's `Budget` object: every model call, tool call and
+second counts against the parent; token and cost totals roll up into the parent run. A
+Skill cannot reset any limit. A per-invocation ceiling (default half the parent's remaining
+tool calls) keeps one Skill from starving the answering node. Coordinator lanes already
+share the run budget (`executor.py:893, 969`).
+
+**Result.** The Skill's answer is validated against its output contract. Its trusted
+figures enter the parent's trusted ledger with source `skill:<key>@v<n>`; its results are
+registered under new parent evidence refs; its notices propagate.
+
+**Trace.** The child is its own `agent_flow_runs` row with `parent_run_id`,
+`parent_step_seq`, `invoked_as` (`agent_capability | skill_node | coordinator_lane`) and its
+own `brain_key`/`version`, the exact Skill version. The parent's step records the child run
+id. Runs lists top-level runs; opening one shows:
+
+```
+FlowRun
+  step (node execution)
+    agent rounds: capability view, invocations
+      tool call            -- or --
+      Skill -> child FlowRun -> its steps
+```
 
 ## 4. Strategy / Runtime seam
 
@@ -169,27 +232,30 @@ Rule (tested): nothing under `runtime/strategies/` imports a provider module or
 - Preflight cost counts planner + `max_specialists` lanes.
 - Unchanged: sequential lanes, roster-scanned picks, shared budget, `no_specialist_picked`.
 
-## 6. Governance fixes
+## 6. Governance fixes — one source of truth each
 
-| Gap | Fix |
+| Gap | Fix at the root |
 |---|---|
-| `risk="unknown"` never enforced | `registry.execute` refuses `risk_unknown`; a test asserts all 36 tools declare a known risk |
-| `uses_capability("web_search")` misses 2 tools | derive the set from `reaches_outside` in the registry, not a hand list |
-| ToolNode name not checked at publish | `blocking_problems()` reports an unknown tool / unknown Skill |
-| nested Coordinate | §5 |
-| coordinator preflight cost | §5 |
+| `risk="unknown"` never enforced | inventory first (all 36 built-ins declare `read_only` today); `registry.execute` refuses `risk_unknown`; the rule lives in one function the router's eligibility also uses |
+| web capability list misses 2 tools | `Flow.uses_capability` derives from registry metadata (`reaches_outside`, `data_exposure`); the hand list is deleted |
+| ToolNode tool not validated at publish | `blocking_problems()` resolves ToolNode / Skill node / `skill:` grants through the registry and the Skill resolver |
+| nested Coordinator | refused anywhere below a Coordinate lane, over the whole subtree |
+| coordinator preflight cost | `estimate_cost` walks the canonical tree (`child_node_lists`) instead of its own traversal |
 
 ## Data
 
-Additive migration, one head:
+Additive migration, single head:
 
-- `agent_flow_runs.parent_run_id` (FK → `agent_flow_runs.id`, nullable, indexed),
-  `parent_step_seq` (int, nullable). Existing rows: NULL = top-level (their meaning today).
-- `flow_type` gains the value `skill` (string column; no enum change needed — verify at
-  implementation; if it is a DB enum, add the value additively).
-- Flow body JSON: optional `skill` contract block; `AgentNode.strategy` optional; new
-  `skill` node type. Old bodies parse unchanged (`extra="ignore"`, strict authoring only
-  rejects unknown fields on *new* saves).
+- `agent_flow_runs`: `parent_run_id` (FK -> `agent_flow_runs.id`, nullable, indexed),
+  `parent_step_seq` (int, nullable), `invoked_as` (String(24), nullable). Existing rows:
+  NULL = top-level, which is what they are.
+- `agent_flow_run_steps`: `capability_trace` (JSONB, nullable): the per-step view of §2
+  and child-run references.
+- `agent_brains.flow_type` is `String(8)` (`models/agent_brain.py:115`): `"skill"` fits,
+  no type change.
+- Flow body JSON: optional `skill` contract; optional `AgentNode.strategy`,
+  `AgentNode.visible_capabilities`; `skill:<key>` grants; new `skill` node type; pinned
+  Skill versions. Old bodies parse unchanged.
 
 ## API
 
@@ -220,9 +286,11 @@ author-facing message following `test_builder_error_messages.py`.
 
 ## Permissions
 
-Builder endpoints keep the `agent_flows` module gates. Attaching a Skill requires `view`
-on that Skill flow (share-to-attach, as knowledge attachments do today). At run time the
-Skill is bounded by §3 intersection — attaching grants no data access.
+Builder endpoints keep the `agent_flows` module gates. Attaching a Skill requires `view` on
+that Skill flow. Attaching grants **no data access**: at run time the Skill is bounded by
+the caller's authority (§3). Resources a Skill declares are validated against the
+publishing owner's access at publish, and bounded by the caller's context at every
+invocation.
 
 ## Edge cases
 

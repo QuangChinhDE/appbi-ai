@@ -1,6 +1,6 @@
 # Agent Flow V3 capabilities — intent
 
-**Status:** draft — awaiting approval
+**Status:** approved 2026-09-25 (revision 2, see plan.md)
 **Owner:** Agent Flow
 **Date:** 2026-09-24
 **Extends:** `docs/agent-flow-v3-target-architecture.md` (§3.3 Strategy, §3.4 Capability
@@ -106,13 +106,9 @@ every boundary, and traces every decision back to the flow the author built.
 10. Docs: one concept map (Node, Tool, Skill, Agent, Strategy, Coordinator, Runtime, Flow)
     in the V3 architecture doc, matching the code's terms.
 
-## Open questions
+## Decisions (were open questions)
 
-1. **Base branch.** PR #3 (V1) is not merged. This branch starts at the V1 candidate head
-   `428f8355`; its PR should target `demo` after #3 merges. Confirm.
-2. **Skill runs as whom.** Proposed: caller ∩ Skill owner ∩ Skill attachments (never the
-   owner's rights alone — that would let a Skill launder its author's access to a reader).
-   Confirm this is the product rule.
-3. **Skill version binding.** Proposed: a parent pins the Skill's published version at the
-   parent's publish time (same model as link pinning, `registry.py:519-537`); republishing
-   the Skill does not change a published parent until the parent republishes. Confirm.
+1. **Base branch:** built on the PR #3 head; see plan.md *Revision 2*.
+2. **Skill authority:** caller authority ∩ parent grant ∩ Skill declared contract ∩
+   runtime policy. Never the Skill owner's ambient rights.
+3. **Skill version:** published parents pin an immutable exact Skill version at publish.
