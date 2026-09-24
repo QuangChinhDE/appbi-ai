@@ -18,8 +18,19 @@ not repeated here.
 | session A | complete — foundation merged, contract locked, journeys walked |
 | session A commit | `736b71a7f4892b7e8b27664b94962827458b2cd6` |
 | session B | **P0-1 closed**; P1-1, P1-2, P1-3 carried forward |
-| session B commit | `48e424f94f5fad5af2ad63d9af3e9cc275df84ea` (+ this row's own correction) |
-| next | **V1-B continued** — see the last section |
+| `LAST_PRODUCT_COMMIT` before session B2 | `b7368b5cf680aed80628ce63199617a8e4a6e4d2` |
+| session B2 | **author V1 complete** — P1-1, P1-2, P1-3 closed; golden E2E added |
+| next | **V1-C** — reader and trust; see the last section |
+
+**How a session records its own SHA.** It does not. A tracked file cannot contain
+the id of the commit that contains it, and session B learned that the expensive
+way: it wrote a SHA, amended, and had to spend a second commit correcting a
+document that named a commit reachable from nothing. So this table records only
+`LAST_PRODUCT_COMMIT` — a commit that already existed when the row was written —
+and each session's own head is reported in its final message, not pretended here.
+The next session does not need it: `git ls-remote origin
+release/agent-flow-v1-candidate` is the authority on where the branch is, and this
+file is then read at that commit.
 
 PR #2 merged the platform foundation. Verified by content on demo, not by the
 merge message: canonical time semantics, Product gate, Product gate
@@ -89,19 +100,21 @@ it does — see P1-2.
 
 ## AUTHOR GOLDEN JOURNEY — observed
 
-Walked in the real UI on `V1_BASE_SHA`, logged in as a normal author.
+Walked in the real UI on `V1_BASE_SHA`, logged in as a normal author. Rows
+marked **(B)** / **(B2)** were re-walked after that session's change, in the
+running build, locale `vi`, at 1280×800 and 1440×900.
 
 | step | result | evidence |
 |---|---|---|
 | login | **PASS** | redirects to the requested page |
 | Agent Flows list | **PASS** | stats, filters, one-line explainer, per-flow status and step count |
-| create a flow | **CONFUSING** | good copy explaining the two surfaces and that the choice is irreversible — but mixed language, and no starter |
-| first blank screen | **CONFUSING** | two default steps appear (Read report → Answer viewer); nothing says what to do next |
+| create a flow | **PASS** (B2) | `Trợ lý BI cho báo cáo` offered first and selected; the dialog names the three steps it will build; one language |
+| first screen after create | **PASS** (B2) | a three-step flow that is already valid, with the activation strip saying what is left to do |
 | configure steps | **PASS** | inspector is complete; node palette carries 14 types with plain-language descriptions |
-| Tool node identity | **WRONG** | canvas card reads `Call a tool / Call a tool` with `total_measure` configured |
-| report/context binding | **DEAD END** | see P0-1 |
+| Tool node identity | **PASS** (B2) | `Tổng của một chỉ số / Gọi công cụ` + what the tool does; an unchosen tool reads `Chưa chọn công cụ.` |
+| report/context binding | **PASS** (B) | activation strip + CTA to the surface that owns the binding |
 | validation | **PASS** | substantive and actionable; server enforces the same rule the UI states |
-| Test panel | **PASS** | picks a real report, runs, logs to Runs, marked as a test |
+| Test panel | **PASS** | picks a real report, runs, logs to Runs, marked as a test. Re-walked on the starter in B2: a supported question answered `10,748,221.50` and named its chart; `GDP của Việt Nam` was refused and the refusal listed what the report does cover |
 | save draft | **PASS** | `Unsaved` clears; a genuinely invalid flow is refused by the server with a readable reason |
 | publish | **PASS** | `Draft v1` → `Running v1` in the header |
 | hard reload | **PASS** | version, steps, validity and tool selection all survive |
@@ -171,50 +184,103 @@ Unattached published flow: `attention` · CTA → `/dashboards`. Verified in the
 running build at 1920 and 1280 with no horizontal overflow. No link id, binding
 id or version id appears as a product label.
 
-### P1-1 — no first-success path
+### P1-1 — first-success path — **CLOSED** (session B2)
 
-**Evidence.** `New flow` offers exactly two routes. *Tự dựng* creates a
-two-step flow with no guidance. *Nhờ AI viết giúp* asks the user to copy a system
-description, paste it into ChatGPT or Claude, and paste JSON back. There is no
-template, preset or starter.
+**What was wrong.** `New flow` offered exactly two routes. *Tự dựng* created a
+two-step flow with no guidance. *Nhờ AI viết giúp* asked the author to copy a
+system description, paste it into ChatGPT or Claude, and paste JSON back. A
+non-technical pilot author either stared at a canvas or left the product.
 
-**Journey.** A non-technical pilot author either stares at a canvas or leaves the
-product to use a third-party model.
+**What it now does.** A third route, **`Trợ lý BI cho báo cáo`**, is first in the
+list and selected by default. The dialog states what will exist before it exists —
+the three steps, by name — and that nothing else has to be configured. The other
+two routes are untouched; the change is the hierarchy.
 
-**Acceptance.** One product-native starter — a BI report assistant — that creates
-the minimum structure needed to bind a report, answer grounded questions and run.
-No hardcoded report or account. No marketplace.
+**The starter.** `starterFlow()` in `lib/agentFlows.ts`, saved through the same
+`saveBrain` the blank path uses. It is a body, not a second creation mechanism:
+from the first second it is an ordinary flow.
 
-**Session.** V1-B.
+| step | why |
+|---|---|
+| `report_read` → `{{bao_cao}}`, `detail: 'index'` | the index of what the report holds — id, name, what each chart measures — with no rows. The contract documents this pairing: rows bought nothing when the next step can compute over all of them on demand |
+| `agent` *Tìm số liệu*, 10 tools | find the chart, establish scope, measure |
+| `agent` *Trả lời người xem*, **no tools** | writes the answer from figures that already passed through a step where they could be checked |
 
-### P1-2 — a Tool node does not say which tool
+**Three steps, not two, and the reason is the product's own review.** A single
+agent that both fetches and answers raises *"Bước trả lời … vẫn có công cụ"*.
+Shipping the recommended starting shape with a standing review note is how authors
+learn that notes are noise, so the shape was changed rather than the note. Measured
+against `Flow.warnings('bot')`: the two-step shape raises two notes, this one
+raises one — *"Flow này không gắn tri thức nào"*, which every report bot raises,
+whose own text says the design is correct, and which cannot be removed without
+making Knowledge a V1 dependency. Cost of the split: one model call per question.
 
-**Evidence.** With `total_measure` selected, the canvas card reads
-`Call a tool / Call a tool`. The Coordinator card beside it reads
-`Coordinate specialists · LLM · One agent picks from 2 specialists · at most 3 per
-question` and lists the specialists by name — so the rich-card pattern exists and
-the Tool node simply does not use it. The inspector picker already shows
-`Total a measure · total_measure`.
+**`match_question` is off, and that was found by running it.** With question
+matching on, `tổng doanh thu` matched no chart on a real sales report, so the read
+step handed over nothing and the author saw a confident answer beside the
+diagnosis *"báo cáo này không có dữ liệu cho câu hỏi đó"*. The dimension truth
+question mode was protecting is not lost: it lives in `resolve_chart_candidates`
+and the dimension gate on `get_chart_data`, both granted here and both enforced
+per tool call.
 
-**Acceptance.** The canvas card names the selected tool in the product's words.
+**What it does not grant.** Nothing from `external` (gated on
+`web_search_enabled`), nothing from `knowledge` (not a V1 promise, and it would
+make the starter depend on an attachment nobody has made), and not `list_charts`,
+whose result scales with the report. `frontend/scripts/check-starter-grants.mjs`
+enforces this against the registry on every `npm run qa`: a granted tool that no
+pack declares, a granted tool from a gated pack, or tools on the answering step
+each fail the build. Proven by mutation.
 
-**Session.** V1-B.
+**No customer in it.** No dashboard id, no report name, no measure name, no
+account. A bot flow is handed whichever report its link is showing.
 
-### P1-3 — the first author screen is mixed-language
+### P1-2 — a Tool node says which tool — **CLOSED** (session B2)
 
-**Evidence.** The create dialog renders `Tự dựng` and `Nhờ AI viết giúp` beside
-`Flow name*`, `What is this flow for?`, `Bot on a report`, `Description`, `Cancel`
-and `Create and open`. The assisted-authoring branch is fully Vietnamese; the
-build-it-yourself branch is English.
+**What was wrong.** With `total_measure` selected the canvas card read
+`Call a tool / Call a tool`, and a flow with four Tool steps drew four
+indistinguishable cards. `FlowCanvas` is handed `specs`, keyed by NODE TYPE; the
+tool catalogue was not among them, and the Tool case in `describe()` did not
+exist, so the body line was empty too.
 
-**Why it is P1 and not polish.** V1 is Vietnamese-first, and this is the first
-screen a pilot author sees. Mixed language here reads as an unfinished product,
-not as a language choice.
+**What it now does.** `BrainBuilder` passes the tool catalogue it already fetched
+for the inspector into the canvas, and the card renders through the same
+`toolLabel` the picker uses. Identity precedence: the author's own step name, then
+the tool's product label, then the node-type label, then the raw key.
 
-**Scope.** The create dialog and the builder chrome on the starter path only. Not
-the whole backend, not every author surface.
+Observed in the running build: `Tổng của một chỉ số / Gọi công cụ / Cộng chỉ số
+trên TOÀN BỘ dòng, kèm trung bình/nhỏ nhất/lớn nhất.` — `aria-label`
+`"Tổng của một chỉ số — Gọi công cụ"`. A step with no tool chosen reads
+`Chưa chọn công cụ.` and is not dressed up as configured; it cannot be saved at
+all — the server refuses it — so the state exists only while the author is still
+choosing.
 
-**Session.** V1-B.
+**No second label map.** The registry stays the one source; a map in the canvas
+would drift from the panel beside it the first time a tool was renamed. The same
+`toolLabel` now names an unnamed Tool step in the Runs trace, read from the tool
+the run recorded — no stored run is rewritten.
+
+**Locked by mutation.** Removing the catalogue from the canvas reproduces the
+original defect exactly: `["Call a tool — Call a tool", ×3]`.
+
+### P1-3 — Vietnamese-first first-run — **CLOSED** (session B2)
+
+**What was wrong.** The create dialog mixed hardcoded Vietnamese literals with
+translated strings, so neither locale was internally consistent: `Tự dựng` and
+`Nhờ AI viết giúp` sat beside `Flow name*`, `What is this flow for?` and
+`Create and open`.
+
+**What it now does.** Every literal on the first-success path goes through the
+existing catalogue — the create dialog including its assisted-authoring branch,
+the flow-opening states in `AgentFlowsPage`, and two strings in the Runs step
+panel. No second translation mechanism; `en` and `vi` remain key-for-key equal.
+
+**Scope held.** Not a repo-wide translation, not English author parity, not
+backend i18n. Debug output, JSON field names, registry ids and raw traces stay as
+they are.
+
+**Observed at 1280×800 and 1440×900, locale `vi`.** Create dialog, builder chrome,
+canvas cards, validity badge, activation strip and Test panel all Vietnamese, no
+horizontal overflow, no zero-sized control.
 
 ### P1-4 — the reader sees a wall of caveats
 
@@ -304,11 +370,24 @@ logs, restart, roll back — and no automatic migration rollback.
 
 ## ACCEPTANCE TESTS
 
-Existing E2E covers the builder surface, security contracts and the public
-surfaces (58 specs). **There is no single golden V1 journey test yet.** V1-C adds
-one: author create → configure → validate → test → save → publish → reload →
-execute → Runs → reopen; reader ask → answer/refusal → citation → no internals;
-feedback submit → durable.
+`e2e/tests/agent-flow-v1-author-golden.spec.ts` is the launch gate for the author
+half, added in session B2. It walks the journey rather than the parts: New flow →
+the starter is offered first and selected → the dialog says what it will build →
+create → the saved body is the three-step shape, with no customer, no tools on the
+answering step and nothing gated granted → validates with no further setup → Test
+panel opens → edit → save → **hard reload** → the change survives → publish →
+the activation strip turns `attention` and its CTA points at `/dashboards` →
+a Tool step is named by its tool and an unconfigured one says so → a run is
+inspectable and *Open in builder* returns to the canvas.
+
+It spends nothing on a model: the run it inspects comes from a deterministic
+`set_var`/`tool` flow through the same test endpoint the Test tab uses. It is
+picked up automatically by `npx playwright test` in `e2e.yml`.
+
+**Suite result on this branch: 64 passed, 0 failed, 0 skipped.**
+
+Still to come in V1-C: the reader half — ask → answer or refusal → citation → no
+internals; feedback submit → durable.
 
 ---
 
@@ -321,27 +400,36 @@ configured deployment.
 
 ---
 
-## NEXT SESSION — V1-B continued
+## NEXT SESSION — V1-C
 
-Start from this branch at the session-B commit recorded in CURRENT STATE.
+Start from `release/agent-flow-v1-candidate`. Read `git ls-remote` for its head,
+then read this file at that commit.
 
-P0-1 is closed. The three remaining author items are unchanged and were not
-started, so no half-finished work is in the tree:
+**The author half of V1 is complete.** P0-1, P1-1, P1-2 and P1-3 are closed, the
+golden journey was walked in the running build in Vietnamese at 1280×800 and
+1440×900, and the golden E2E locks it. Do not reopen any of it without a
+reproduced regression.
 
-1. **P1-1** — one product-native starter (`Trợ lý BI cho báo cáo`). The extension
-   point is the New-flow modal in `AgentFlowsPage`/`BrainList`; creation already
-   produces a two-node flow, so the starter is a richer default body plus a
-   third choice beside *Tự dựng* and *Nhờ AI viết giúp*.
-2. **P1-2** — the Tool node names its tool on the canvas. `FlowCanvas` line ~272
-   computes `node.name || specLabel || node.type`, where `specLabel` is the NODE
-   TYPE label. The tool catalogue is **not** in the canvas tree today: `specs` is
-   `Record<string, NodeSpec>` keyed by node type. The work is to pass the tool
-   catalogue the inspector already uses into `FlowCanvas` and insert the registry
-   label between `node.name` and `specLabel`. Do not build a second label map.
-3. **P1-3** — Vietnamese on the create dialog and the starter path, through the
-   existing `i18n/catalog/agent-flows.ts`. The activation strip added in session B
-   already carries both locales.
+V1-C is the reader and trust half, and nothing else:
 
-Then the V1 author golden E2E, once the starter exists to anchor it.
+1. **P1-4** — notice density. One answer carried three stacked notices under a
+   header reading `Read 3 steps · 3 errors`, where the `errors` were correct
+   refusals. Reduce by hierarchy, never by removing a guarantee.
+2. **Reader/public trust** — the `/d` and `/embed` surfaces against the starter,
+   not only against `revenue_v2`.
+3. **Feedback adoption** — `rating` exists and is durable; 2 of 692 runs are
+   rated. The gap is adoption, not storage.
+4. **Pilot funnel** — documented queries over `agent_flow_runs`, not new tracking.
+5. **Knowledge V1 boundary** — state it; do not build it.
 
-Do not start P1-4 or P1-5; those are V1-C and V1-D.
+V1-D keeps: P1-5 deployed health SHA, operations, persistence, rollback, release
+freeze, and the final V1 PR.
+
+**One thing worth knowing before touching the starter.** Its read step is
+`detail: 'index'` with `match_question` OFF, and both are load-bearing. Measured on
+one report, one question, through the Test panel: question matching on, `compact`
+elsewhere → 16,774 tokens, 8 model turns, 9 tool calls, and a confident answer
+printed next to the diagnosis *"báo cáo này không có dữ liệu cho câu hỏi đó"* plus
+two figures the verifier could not trace. Index + no question matching → the same
+figure, **7,194 tokens, 3 model turns, 2 tool calls**, the source chart named, and
+no diagnostics at all.
