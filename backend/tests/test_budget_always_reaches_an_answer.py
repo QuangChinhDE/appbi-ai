@@ -247,6 +247,10 @@ def test_greedy_specialists_cannot_spend_the_answering_steps_call(monkeypatch):
     # Every specialist round that ended the specialist's budget was answer-only.
     lanes = model.by("CHUYEN_GIA")
     assert lanes and lanes[-1]["offered"] == []
+    # BOTH chosen specialists ran: the first could not spend the second's call.
+    steps = {s["key"]: s for s in _steps(env)}
+    assert steps["a1"]["status"] == "ok" and steps["b1"]["status"] == "ok"
+    assert steps["a1"]["budget"]["llm_reserved_for_later"] >= 2   # lane b + the answer
 
 
 # ── 4. nothing resets, nothing eats the reservation ─────────────────────────

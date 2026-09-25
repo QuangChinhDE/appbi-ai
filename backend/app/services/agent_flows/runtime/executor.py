@@ -1023,7 +1023,14 @@ async def _run_coordinate(
                     pass
         return
 
-    for specialist in picked:
+    # EVERY CHOSEN SPECIALIST GETS TO RUN. The planner picked them for this
+    # question; a greedy first lane spending what the next one needs would turn
+    # a decomposition into "whoever went first". Each lane runs with the minimum
+    # of the lanes after it reserved (the steps after the coordinator are already
+    # reserved by the enclosing body).
+    lane_minimum = [sum(_minimum(n, rctx)[0] for n in s.body) for s in picked]
+    lane_tools = [sum(_minimum(n, rctx)[1] for n in s.body) for s in picked]
+    for index, specialist in enumerate(picked):
         # LANES ARE SIBLINGS, NOT A CHAIN.
         #
         # Each specialist starts from what the coordinator was handed. Without
@@ -1055,7 +1062,8 @@ async def _run_coordinate(
         # work (`invoked_as="coordinator_lane"`).
         state.lane_depth += 1
         try:
-            with state.in_branch(specialist.name or specialist.key):
+            with state.in_branch(specialist.name or specialist.key), state.budget.reserve(
+                    llm=sum(lane_minimum[index + 1:]), tools=sum(lane_tools[index + 1:])):
                 try:
                     async for ev in _run_body(specialist.body, state, rctx):
                         yield ev

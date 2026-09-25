@@ -463,19 +463,32 @@ nơi đọc policy, không phải để tầng dưới bớt việc.
 
 ## 4. Bất biến của V3
 
-Mỗi câu là một test. Kiểm ở cuối **mỗi** phase.
+Mỗi dòng là một test — **và điều đó được kiểm**: `tests/test_documented_invariants_are_enforced.py`
+đọc bảng này, yêu cầu mọi test được nêu tồn tại và nằm trong CI, và một bất biến không
+có test chỉ được phép ở đây nếu ghi rõ **chưa áp dụng** kèm lý do. Tài liệu nói một
+bất biến mà không test nào giữ là một lỗi của tài liệu, và CI nói ra điều đó.
 
-1. Tool chạm resource ngoài grant → `chart_out_of_scope` / `not_granted`.
-2. `read_rows=False` → tool `raw_rows` bị chặn, tool `derived` **vẫn chạy**.
-3. `web_search=False` → mọi tool `reaches_outside` bị chặn tại call-time.
-4. Không result nào vượt `max_result_tokens` mà vào prompt.
-5. Skill không bao giờ nới quyền của caller.
-6. Resume re-check quyền hiện tại, không dùng quyền đã snapshot.
-7. Tool `risk` ∈ {side_effect, destructive} không chạy khi chưa duyệt; `unknown` không chạy.
-8. Mọi con số trong câu trả lời trace được về evidence.
-9. Fallback listing không bao giờ được caller tất định coi là match.
-10. Flow đã lưu trước V3 chạy ra **cùng kết quả** sau V3.
-11. **[A1]** Mọi hard gate vẫn enforce tại registry/data layer, kể cả khi đã có layer tương ứng. Xoá gate ở tầng dưới = vi phạm, dù layer đang xanh.
+| # | Bất biến | Khoá bằng |
+|---|---|---|
+| 1 | Tool chạm resource ngoài grant → `chart_out_of_scope` / `not_granted` | `tests/test_agent_flow_replay.py::test_the_chart_scope_taxonomy_defect_is_fixed_and_stays_fixed`, `tests/test_i5_hard_gate_stays_lowest.py::test_resource_scope_is_enforced_inside_the_tool_not_only_above_it` |
+| 2 | `read_rows=False` → tool `raw_rows` bị chặn, tool `derived` vẫn chạy | `tests/test_i5_hard_gate_stays_lowest.py::test_a_row_exposing_body_never_runs_when_rows_are_withheld`, `tests/test_i5_hard_gate_stays_lowest.py::test_a_computing_body_still_runs_when_rows_are_withheld` |
+| 3 | `web_search=False` → mọi tool `reaches_outside` bị chặn tại call-time | `tests/test_i5_hard_gate_stays_lowest.py::test_an_external_body_never_runs_when_web_is_withheld` |
+| 4 | Không result nào vượt `max_result_tokens` mà vào prompt | `tests/test_tool_result_ceiling.py::test_a_result_over_the_ceiling_does_not_reach_the_caller_intact` |
+| 5 | Skill không bao giờ nới quyền của caller (chart, rows, web, tri thức; không dùng quyền của owner Skill) | `tests/test_skills_run_as_governed_children.py::test_the_child_cannot_exceed_the_callers_web_rows_or_charts`, `tests/test_skills_run_as_governed_children.py::test_an_empty_caller_scope_still_bounds_the_skills_explicit_grants` |
+| 6 | Resume re-check quyền hiện tại, không dùng quyền đã snapshot | **chưa áp dụng** — checkpoint/resume chưa xây (§3.5); không có đường resume nào để kiểm |
+| 7 | Tool `risk` ∉ {read_only} không chạy khi chưa duyệt; `unknown` không chạy | `tests/test_governance_promises_are_kept.py::test_a_tool_not_classified_read_only_is_refused_before_it_runs` |
+| 8 | Mọi con số trong câu trả lời trace được về evidence; số AI tự gõ không bao giờ được xác thực | `tests/test_chart_discovery_and_figure_correction.py::test_a_figure_absent_from_the_evidence_is_named_not_hedged`, `tests/test_compute_owns_the_number.py::test_a_bare_number_as_a_variable_is_computed_but_marked_unreferenced` |
+| 9 | Fallback listing không bao giờ được caller tất định coi là match | `tests/test_report_read_scope.py::test_the_real_tool_reports_none_when_the_question_matches_nothing` |
+| 10 | Flow đã lưu trước V3 chạy ra cùng kết quả sau V3 (mọi khác biệt là có chủ đích và ghi lại) | `tests/test_agent_flow_replay.py::test_replay_matches_the_committed_snapshot` |
+| 11 | **[A1]** Mọi hard gate vẫn enforce tại registry/data layer | `tests/test_i5_hard_gate_stays_lowest.py::test_the_capability_gate_is_wired_into_execute`, `tests/test_i5_hard_gate_stays_lowest.py::test_the_gate_runs_before_the_cache` |
+| 12 | Routing chỉ quyết định cái gì HIỆN; không khả năng nào ngoài grant được nạp, liệt kê hay phân biệt được qua discovery | `tests/test_capability_routing_eval.py::test_no_intent_can_route_or_discover_outside_the_grant`, `tests/test_capability_discovery.py::test_an_ungranted_name_gets_the_same_answer_as_one_that_does_not_exist` |
+| 13 | Khả năng chưa hiện không chạy từ trí nhớ; khả năng ngoài grant vẫn bị registry từ chối | `tests/test_capability_discovery.py::test_an_unshown_capability_is_not_run_from_memory_but_is_loaded_for_next_round`, `tests/test_capability_discovery.py::test_an_ungranted_capability_is_still_refused_by_the_registry` |
+| 14 | Chất lượng routing được đo, không được giả định: khả năng câu hỏi cần được nạp ngay lượt đầu; context không tăng theo catalogue | `tests/test_capability_routing_eval.py::test_the_capability_a_question_needs_is_loaded_on_round_one`, `tests/test_capability_routing_eval.py::test_routing_holds_and_context_stays_flat_as_the_catalogue_grows` |
+| 15 | Run đủ ngân sách luôn tới được bước trả lời; child, lane, discovery, lượt sửa không ăn phần được giữ | `tests/test_budget_always_reaches_an_answer.py::test_a_gathering_step_cannot_spend_the_answering_steps_call`, `tests/test_budget_always_reaches_an_answer.py::test_a_mandatory_verifier_skill_and_the_answer_run_on_the_minimum_budget`, `tests/test_budget_always_reaches_an_answer.py::test_greedy_specialists_cannot_spend_the_answering_steps_call` |
+| 16 | Instruction tới đúng vòng suy luận nó cần tác động | `tests/test_instruction_lifecycle.py::test_the_round_that_reads_tool_results_reads_the_language_reminder_right_after_them`, `tests/test_instruction_lifecycle.py::test_the_budget_final_round_is_told_it_is_final_and_offered_no_tools` |
+| 17 | Version Skill bị vô hiệu hoá không chạy dù đã ghim, không bị nâng âm thầm; rút chia sẻ có hiệu lực ở lần gọi kế tiếp | `tests/test_skill_lifecycle_and_revocation.py::test_a_disabled_version_is_not_offered_and_is_refused_even_when_pinned`, `tests/test_skill_lifecycle_and_revocation.py::test_an_unshare_after_publish_stops_the_next_run` |
+| 18 | Không lồng điều phối trong điều phối — kể cả qua Skill, bắc cầu | `tests/test_governance_promises_are_kept.py::test_a_coordinator_inside_a_coordinator_lane_is_refused_at_publish_not_at_load`, `tests/test_skill_lifecycle_and_revocation.py::test_a_coordinator_is_found_through_a_chain_of_skills` |
+| 19 | Đầu ra có kiểu được giữ ở ranh giới: sai kiểu thì dừng; taint đi qua Skill | `tests/test_compute_typed_contract.py::test_a_result_that_does_not_fit_its_schema_stops_the_step`, `tests/test_compute_typed_contract.py::test_a_figure_the_skill_built_on_a_typed_number_stays_uncertified` |
 
 ---
 
