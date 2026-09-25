@@ -291,6 +291,15 @@ class ToolContext:
     #: stays silent — a scheduled digest or a replay must not start refusing
     #: tools because it has no question to check against.
     question: str = ""
+    #: The run's evidence store (`RunState.evidence_store`), set per run by
+    #: `executor.run_flow`. `compute` resolves `{ref, path}` variables here, so the
+    #: value in a formula is the value the runtime produced, not one the model typed.
+    evidence_store: dict[str, Any] = field(default_factory=dict)
+    #: Set only on a SKILL child run: the caller's knowledge scope at the moment it
+    #: invoked the Skill. Every step inside the child narrows within it
+    #: (`handlers/data.bounded_scope`), so a Skill's own attachments cannot widen
+    #: what the caller was allowed to read.
+    knowledge_ceiling: dict[str, Any] | None = None
     #: The most rows a single read may return, set per run from the binding's
     #: `capabilities.max_rows_per_call`. None means fall back to `MAX_TOP_N`.
     #:

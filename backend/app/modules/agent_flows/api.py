@@ -153,6 +153,21 @@ def list_tools(web_enabled: bool = False, _: User = Depends(can_view)) -> dict[s
     return {"packs": tool_catalogue(web_enabled=web_enabled)}
 
 
+@router.get("/skills")
+def list_skills(
+    db: Session = Depends(get_db), user: User = Depends(can_view)
+) -> dict[str, Any]:
+    """Published Skills THIS user may attach to an Agent step or a Skill step.
+
+    Server-side, like `/attachable`: sharing decides who may build on a Skill, and
+    the picker only shows what save will accept. Attaching grants no data access —
+    a Skill always runs on the caller's authority.
+    """
+    from app.services.agent_flows import skills
+
+    return {"skills": skills.list_attachable(db, user)}
+
+
 @router.get("/models")
 def list_models(_: User = Depends(can_view)) -> dict[str, Any]:
     return {"providers": model_catalogue()}
@@ -442,7 +457,10 @@ class ValidateBody(BaseModel):
     #: consequence that only holds on a report, so checking a chat flow against the
     #: bot reading tells its author the opposite of the truth. Defaults to `bot`, so
     #: a caller that has not been updated behaves exactly as before.
-    flow_type: Literal["bot", "chat"] = "bot"
+    #: `skill` too: the Skill builder sends its own type, and refusing it (422)
+    #: meant a Skill never showed "Flow valid" — found in the browser. The saved-
+    #: flow view already reads a Skill's warnings as `skill` (registry).
+    flow_type: Literal["bot", "chat", "skill"] = "bot"
 
 
 @router.post("/validate")
@@ -496,7 +514,7 @@ class BrainWrite(BaseModel):
     #: Only read when this save CREATES the flow. Every later save carries the
     #: type forward; changing it goes through `PUT /brains/{key}/type`, which can
     #: refuse.
-    flow_type: Literal["bot", "chat"] | None = None
+    flow_type: Literal["bot", "chat", "skill"] | None = None
 
 
 @router.get("/brains")
@@ -552,6 +570,8 @@ def brain_versions(
         .order_by(AgentBrainVersion.version.desc())
         .all()
     )
+    from app.services.agent_flows import skills as skills_service
+
     return {
         "versions": [
             {
@@ -559,10 +579,42 @@ def brain_versions(
                 "created_by": r.created_by,
                 "updated_at": r.updated_at.isoformat() if r.updated_at else None,
                 "published_at": r.published_at.isoformat() if r.published_at else None,
+                # Whether this exact version may still be INVOKED — separate from
+                # which version is live (`status`). Always present; `active` for
+                # every non-Skill flow and every version never stopped.
+                "lifecycle": skills_service.lifecycle_dict(r),
+                "flow_type": str(getattr(r, "flow_type", "") or "bot"),
             }
             for r in rows
         ]
     }
+
+
+class SkillLifecycleBody(BaseModel):
+    """Stop, deprecate or re-activate Skill versions. `versions` empty = all."""
+
+    state: Literal["active", "deprecated", "disabled"]
+    reason: str = Field(default="", max_length=500)
+    versions: list[int] = Field(default_factory=list)
+
+
+@router.post("/brains/{brain_key}/lifecycle")
+def set_skill_lifecycle(
+    brain_key: str, body: SkillLifecycleBody,
+    db: Session = Depends(get_db), user: User = Depends(can_edit),
+) -> dict[str, Any]:
+    """The operator's stop switch for a Skill version.
+
+    A pin decides WHICH version a parent runs; this decides WHETHER it may. Same
+    gate as unpublish — whoever may manage the Skill may stop it — and audited.
+    """
+    from app.services.agent_flows import skills as skills_service
+
+    _may_manage_flow(db, user, brain_key)
+    return {"versions": _run(lambda: skills_service.set_lifecycle(
+        db, key=brain_key, versions=list(body.versions) or None, state=body.state,
+        reason=body.reason, actor_email=_actor(user),
+    ))}
 
 
 @router.get("/brains/{brain_key}/activity")
@@ -715,6 +767,14 @@ def brain_run_detail(
     out = runs_service.run_detail(db, brain_key=brain_key, run_id=run_id)
     if out is None:
         raise HTTPException(status_code=404, detail="Không tìm thấy run")
+    # A CHILD RUN CARRIES ITS PARENT'S DATA. Reading the Skill is not enough:
+    # the reader must also be allowed to read the flow that invoked it. Found by
+    # review — the Skill's sharees could otherwise read its callers' answers.
+    parent = out.get("parent") or {}
+    if out.get("parent") is not None:
+        if not parent.get("brain_key"):
+            raise HTTPException(status_code=404, detail="Không tìm thấy run")
+        _may_read_flow(db, user, parent["brain_key"])
     return out
 
 
@@ -805,7 +865,7 @@ def unpublish_brain_version(
 
 
 class FlowTypeBody(BaseModel):
-    flow_type: Literal["bot", "chat"]
+    flow_type: Literal["bot", "chat", "skill"]
 
 
 @router.put("/brains/{brain_key}/type")
@@ -838,6 +898,25 @@ def set_flow_type(
         raise HTTPException(status_code=404, detail="Không tìm thấy flow")
 
     reasons: list[str] = []
+    if body.flow_type == "skill":
+        # A SKILL NEEDS A CONTRACT, and it does not serve report links: it is
+        # invoked by other flows, never by a viewer directly.
+        flow = reg.parse_flow(row)
+        if flow is None:
+            raise HTTPException(status_code=422, detail="Flow không hợp lệ")
+        if flow.skill is None:
+            raise HTTPException(
+                status_code=409,
+                detail="Khai báo đầu vào, kết quả và khi nào nên dùng của Skill trước "
+                       "(mục “Dùng như Skill”), rồi mới đổi loại.",
+            )
+        serving = reg.impact(db, brain_key).get("links") or []
+        if serving:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Flow này đang phục vụ {len(serving)} link báo cáo — gỡ khỏi "
+                       "các link đó trước, rồi mới đổi thành Skill.",
+            )
     if body.flow_type == "chat":
         flow = reg.parse_flow(row)
         if flow is None:
@@ -963,11 +1042,17 @@ def _usable_flow(db: Session, user: User, brain_key: str) -> Flow:
             status_code=409, detail="Flow này chưa có bản phát hành nào để gán"
         )
     row = resolved[0]
-    if str(getattr(row, "flow_type", "") or "bot") != "bot":
+    kind = str(getattr(row, "flow_type", "") or "bot")
+    if kind != "bot":
         raise HTTPException(
             status_code=409,
-            detail="Flow này được tạo cho AI Chat, không gán được vào báo cáo. "
-                   "Hãy chọn một flow loại Bot, hoặc đổi loại của flow này.",
+            detail=(
+                "Flow này là một Skill — nó được các flow khác gọi, không gán thẳng "
+                "vào báo cáo. Hãy chọn một flow loại Bot."
+                if kind == "skill" else
+                "Flow này được tạo cho AI Chat, không gán được vào báo cáo. "
+                "Hãy chọn một flow loại Bot, hoặc đổi loại của flow này."
+            ),
         )
     return resolved[1]
 
@@ -1580,7 +1665,7 @@ def preview_step(
             flow=flow, version=detail["version"], node_key=node_key,
             binding=binding, dashboard=dashboard, ctx=ctx,
             question=body.question or "", history=body.history,
-            provider=provider, model="", base_system_prompt=base_prompt,
+            provider=provider, model="", base_system_prompt=base_prompt, db=db,
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc

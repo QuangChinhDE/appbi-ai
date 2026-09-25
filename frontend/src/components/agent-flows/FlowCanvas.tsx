@@ -418,6 +418,13 @@ function describe(
       // Unknown tool name, or a catalogue that has not arrived yet: say which
       // tool was configured rather than pretend the step is unconfigured.
       return toolSpec ? '' : node.tool;
+    case 'skill':
+      // Which Skill, and which version runs — the two facts that decide what
+      // this step does. The Skill's own name is on its card in the picker.
+      if (!node.skill_key) return t('agentFlows.canvas.describe.noSkill');
+      return node.version
+        ? t('agentFlows.canvas.describe.skillPinned', { key: node.skill_key, version: node.version })
+        : t('agentFlows.canvas.describe.skillLatest', { key: node.skill_key });
     case 'agent':
       return node.prompt?.slice(0, 140) || t('agentFlows.canvas.describe.noPrompt');
     case 'report_read': {

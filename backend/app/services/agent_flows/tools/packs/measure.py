@@ -29,6 +29,7 @@ the step do a percentage without also letting it invent an input.
 """
 from __future__ import annotations
 
+from app.services.agent_flows.tools import compute as compute_tool
 from app.services.agent_flows.tools.packs import derived
 from app.services.agent_flows.tools.packs._source import local, spec
 from app.services.agent_flows.tools.registry import ToolPack
@@ -188,19 +189,37 @@ PACK = ToolPack(
             resource_refs={"chart_id": "chart"},
             risk="read_only",
         ),
-        spec(
+        # THE AI WRITES THE FORMULA; THE RUNTIME OWNS THE RESULT. Written against
+        # the contract (`tools/compute.py`), not wrapped from the legacy bot: the
+        # legacy body took the model's numbers on trust and its result was
+        # certified as evidence. Variables are references into results this run
+        # produced; a typed number is computed with but never certified.
+        local(
             "compute",
+            compute_tool.tool_compute,
+            compute_tool.DEFINITION,
             label_vi="Tính toán",
             label_en="Compute",
-            description_vi="Tính một biểu thức số học trên các giá trị đã lấy được.",
+            description_vi=(
+                "Tính một công thức trên các số đã lấy được. AI viết công thức, hệ "
+                "thống đọc đúng giá trị từ kết quả trước đó và tính — không tự gõ số."
+            ),
             result_kind="value",
             returns={
-                "result": "kết quả của biểu thức",
-                "vars": "các giá trị đầu vào đã dùng",
-                "citations": "số này lấy từ đâu",
+                "result": "kết quả của công thức",
+                "inputs": "mỗi biến: giá trị, lấy từ kết quả nào (ref, path, công cụ)",
+                "literals": "các hằng số viết thẳng trong công thức",
+                "provenance": "referenced = mọi biến trỏ tới kết quả; unreferenced = có số tự nhập, không được xác thực",
             },
-            answers_vi=("Tính tỉ lệ giữa hai số vừa đọc",),
+            answers_vi=("Tính tỉ lệ giữa hai số vừa đọc", "Tăng bao nhiêu phần trăm so với kỳ trước"),
+            data_exposure="derived",
             risk="read_only",
+            # NOT CACHEABLE. Its inputs live in THIS run's evidence store, which is
+            # not part of the cross-run cache key, and refs restart at e1 in every
+            # run — so a cached result served run B the figure run A computed, and
+            # certified it. Deterministic in its inputs, not in its arguments.
+            deterministic=False,
+            output_schema=compute_tool.OUTPUT_SCHEMA,
         ),
     ],
 )

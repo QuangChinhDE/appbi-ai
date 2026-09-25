@@ -1,6 +1,7 @@
 {
   "covers": [
-    "budget exhaustion"
+    "budget exhaustion",
+    "budget reservation: a greedy loop cannot spend the answering step's call"
   ],
   "envelope": {
     "runtime": {

@@ -71,7 +71,8 @@ SELECT
     count(*) FILTER (WHERE NOT is_test)                   AS runs_reader,
     count(*) FILTER (WHERE NOT is_test AND link_token IS NOT NULL)
                                                           AS runs_public_link
-FROM agent_flow_runs;
+FROM agent_flow_runs
+WHERE parent_run_key IS NULL;
 
 \echo ''
 \echo '-- Runs, last 7 days'
@@ -84,7 +85,7 @@ SELECT
     count(*) FILTER (WHERE status = 'blocked') AS blocked_7d,
     count(*) FILTER (WHERE NOT is_test)        AS reader_runs_7d
 FROM agent_flow_runs
-WHERE created_at >= now() - interval '7 days';
+WHERE parent_run_key IS NULL AND created_at >= now() - interval '7 days';
 
 \echo ''
 \echo '-- Feedback. `unrated` is the pilot number to move, not a defect.'
@@ -96,7 +97,8 @@ SELECT
     count(*) FILTER (WHERE rating = 'down')          AS negative,
     count(*) FILTER (WHERE rating IS NULL)           AS unrated,
     count(rating) FILTER (WHERE NOT is_test)         AS rated_by_readers
-FROM agent_flow_runs;
+FROM agent_flow_runs
+WHERE parent_run_key IS NULL;
 
 \echo ''
 \echo '-- Reach: how many distinct reader sessions and authors the pilot has'
@@ -106,7 +108,8 @@ SELECT
                                                      AS distinct_reader_sessions,
     count(DISTINCT link_token)  FILTER (WHERE link_token IS NOT NULL)
                                                      AS distinct_links_used
-FROM agent_flow_runs;
+FROM agent_flow_runs
+WHERE parent_run_key IS NULL;
 
 SELECT count(DISTINCT created_by) AS distinct_authors FROM agent_brain_versions;
 
@@ -120,7 +123,7 @@ SELECT
     count(rating)                              AS rated,
     count(*) FILTER (WHERE rating = 'down')    AS negative
 FROM agent_flow_runs
-WHERE NOT is_test
+WHERE parent_run_key IS NULL AND NOT is_test
 GROUP BY brain_key
 ORDER BY runs DESC
 LIMIT 10;
@@ -135,7 +138,7 @@ SELECT
     round(100.0 * count(*) FILTER (WHERE status IN ('failed', 'blocked'))
           / count(*), 1)                                                AS bad_pct
 FROM agent_flow_runs
-WHERE NOT is_test
+WHERE parent_run_key IS NULL AND NOT is_test
 GROUP BY brain_key
 HAVING count(*) >= 5
 ORDER BY bad_pct DESC, runs DESC
@@ -148,7 +151,22 @@ SELECT
     coalesce(blocked_reason, '(none)') AS blocked_reason,
     count(*)                           AS runs
 FROM agent_flow_runs
-WHERE status = 'blocked'
+WHERE parent_run_key IS NULL AND status = 'blocked'
 GROUP BY blocked_reason
 ORDER BY runs DESC
 LIMIT 10;
+
+-- ── Skills: child runs, counted on their own ───────────────────────────────
+-- Every query above excludes them (parent_run_key IS NULL): a Skill invoked
+-- inside a reader's turn is part of that turn, not a second reader run.
+SELECT
+    brain_key                                   AS skill,
+    invoked_as,
+    count(*)                                    AS invocations,
+    count(*) FILTER (WHERE status = 'ok')       AS ok,
+    count(*) FILTER (WHERE status <> 'ok')      AS not_ok
+FROM agent_flow_runs
+WHERE parent_run_key IS NOT NULL
+GROUP BY brain_key, invoked_as
+ORDER BY invocations DESC
+LIMIT 20;

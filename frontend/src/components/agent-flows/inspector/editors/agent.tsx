@@ -166,6 +166,7 @@ export function AgentEditor(props: NodeEditorProps) {
             <SectionTitle>{t('agentFlows.inspector.grantedTools')}</SectionTitle>
             <ToolPicker
               packs={toolPacks}
+              skills={props.skills}
               granted={(node.tools || []).map((t) => t.tool)}
               onToggle={(name, on) => set({
                 tools: on

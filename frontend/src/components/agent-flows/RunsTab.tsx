@@ -25,7 +25,7 @@ import { Input } from '@/components/ui/Input';
 import { Badge } from '@/components/ui/Badge';
 import { cn } from '@/lib/utils';
 import { useI18n } from '@/providers/LanguageProvider';
-import { authorNotices, conversationDetail, getBrain, listNodeSpecs, readerNotices, runDetail, runStats, type ConversationDetail, type FlowNode, type NodeSpec, type RunDetail, type RunSourceFilter, type RunStats, type RunStep, type ToolSpec } from '@/lib/agentFlows';
+import { authorNotices, conversationDetail, getBrain, listNodeSpecs, readerNotices, runDetail, runStats, type ConversationDetail, type FlowNode, type NodeSpec, type RunDetail, type RunSourceFilter, type RunStats, type RunStep, type ToolSpec, type ChildRun, type CapabilityTrace, type StepBudget } from '@/lib/agentFlows';
 import { FlowCanvas } from './FlowCanvas';
 import { toolLabel } from './inspector/ToolPicker';
 import { ConversationsPanel } from './ConversationsPanel';
@@ -517,6 +517,17 @@ export function RunsTab(
                 {detail.version != null && <Badge size="xs" variant="neutral">v{detail.version}</Badge>}
               </div>
               <div className="p-3">
+                {detail.parent && (
+                  <a
+                    href={detail.parent.brain_key && detail.parent.id
+                      ? `/agent-flows?flow=${encodeURIComponent(detail.parent.brain_key)}&tab=runs&run=${detail.parent.id}`
+                      : undefined}
+                    className="mb-2 block rounded-md border border-brand/25 bg-brand/5 px-2.5 py-1.5 text-caption text-text-secondary hover:border-brand/50">
+                    Run này là một Skill được gọi từ flow <b>{detail.parent.brain_key || '?'}</b>
+                    {detail.parent.step_key ? <> (bước <b>{detail.parent.step_key}</b>)</> : null}
+                    {' '}— mở run cha.
+                  </a>
+                )}
                 {/* Lifted to the top of the run summary: this is what somebody
                     who opened a run BECAUSE the answer looked wrong needs first.
                     Same detector as the builder's badge — it just was not on this
@@ -742,6 +753,121 @@ function stepTitle(
   return step.key;
 }
 
+/** SKILLS THIS STEP RAN, each a run of its own. Opened in the Skill's own Runs
+ *  tab, where its steps are — the parent keeps only the link, so the two traces
+ *  cannot disagree. */
+const INVOKED_AS_LABEL: Record<string, string> = {
+  agent_capability: 'Agent gọi như một khả năng',
+  skill_node: 'bước Skill',
+  coordinator_lane: 'trong một nhánh điều phối',
+};
+
+function ChildRuns({ runs }: { runs: ChildRun[] }) {
+  return (
+    <div className="mt-1.5">
+      <div className="mb-1 text-tiny font-strong uppercase tracking-wider text-text-quaternary">
+        Skill đã chạy ({runs.length})
+      </div>
+      <div className="space-y-1">
+        {runs.map((c) => (
+          <a key={c.run_key}
+            href={`/agent-flows?flow=${encodeURIComponent(c.brain_key)}&tab=runs&run=${c.id}`}
+            className="flex flex-wrap items-center gap-1.5 rounded border border-[rgb(var(--border-line))] bg-surface-1 px-1.5 py-1 text-tiny hover:border-brand/40">
+            <b className="font-mono text-text-secondary">{c.brain_key}</b>
+            <span className="text-text-tertiary">v{c.version ?? '?'}</span>
+            <span className="text-text-tertiary">· {INVOKED_AS_LABEL[c.invoked_as || ''] || c.invoked_as}</span>
+            <span className={c.status === 'ok' ? 'text-success' : 'text-warning'}>· {c.status}</span>
+            <span className="text-text-quaternary">· {c.llm_calls} model · {c.tool_calls} tool · {c.tokens} token</span>
+          </a>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** WHAT THIS STEP COULD SEE, AND WHAT IT TRIED. Granted vs eligible vs shown each
+ *  round, what it discovered, what it invoked and what was refused — the run-time
+ *  half of "What the AI sees". */
+function CapabilityView({ view }: { view: CapabilityTrace }) {
+  const rounds = view.visible_per_round || [];
+  const chars = view.schema_chars_per_round || [];
+  const excluded = Object.entries(view.excluded || {});
+  const hasView = (view.granted || []).length > 0;
+  return (
+    <div className="mt-1.5 rounded border border-[rgb(var(--border-line))] bg-surface-1 p-1.5 text-tiny text-text-secondary">
+      <div className="mb-1 font-strong uppercase tracking-wider text-text-quaternary">
+        Khả năng của bước này
+      </div>
+      {hasView && (
+        <p>
+          Được cấp {view.granted.length} · dùng được ở đây {view.eligible.length}
+          {view.shortlisted
+            ? (view.schema_budget
+              ? ` · mỗi lượt nạp đủ định nghĩa trong ~${view.schema_budget.toLocaleString()} ký tự (theo câu hỏi); phần còn lại nằm trong danh mục của find_capability`
+              : ` · mỗi lượt nạp tối đa ${view.limit} (tác giả đặt)`)
+            : ' · hiện đủ mọi khả năng'}
+        </p>
+      )}
+      {rounds.map((r, i) => (
+        <p key={i} className="mt-0.5 text-text-tertiary">
+          Lượt {i + 1}{chars[i] != null ? ` (${chars[i].toLocaleString()} ký tự schema)` : ''}:{' '}
+          {r.length ? r.join(', ') : '(không được đưa công cụ — lượt trả lời)'}
+        </p>
+      ))}
+      {(view.discoveries || []).map((d, i) => (
+        <p key={`d${i}`} className="mt-0.5">
+          Lượt {d.round}: tìm “{d.need || d.names.join(', ')}” → nạp{' '}
+          {d.loaded.length ? d.loaded.join(', ') : '(không có gì mới)'}
+          {!!d.not_available.length && ` · không có: ${d.not_available.join(', ')}`}
+        </p>
+      ))}
+      {!view.discoveries?.length && !!view.discovered?.length && (
+        <p className="mt-0.5">Tự tìm thêm: {view.discovered.join(', ')}</p>
+      )}
+      {!!view.auto_loaded?.length && (
+        <p className="mt-0.5 text-text-tertiary">
+          Gọi khi chưa có định nghĩa → nạp cho lượt sau:{' '}
+          {view.auto_loaded.map((a) => `${a.name} (lượt ${a.round})`).join(', ')}
+        </p>
+      )}
+      {!!view.final_rounds && (
+        <p className="mt-0.5 text-text-tertiary">
+          {view.final_rounds} lượt cuối không được đưa công cụ (hết lượt dành cho bước này) — bước trả lời bằng những gì đã có.
+        </p>
+      )}
+      {!!view.evidence?.length && (
+        <p className="mt-0.5 text-text-tertiary">
+          Kết quả tạo ra: {view.evidence.map((e) => `${e.ref} (${e.tool})`).join(', ')}
+        </p>
+      )}
+      {!!view.invoked?.length && <p className="mt-0.5">Đã dùng: {view.invoked.join(', ')}</p>}
+      {!!view.rejected?.length && (
+        <p className="mt-0.5 text-warning">
+          Bị từ chối: {view.rejected.map((r) => `${r.name} (${r.code})`).join(', ')}
+        </p>
+      )}
+      {!!excluded.length && (
+        <p className="mt-0.5 text-text-quaternary">
+          Không hiện vì: {excluded.map(([n, why]) => `${n} (${why})`).join(', ')}
+        </p>
+      )}
+    </div>
+  );
+}
+
+/** WHERE THE BUDGET WENT, for this step: what it could spend when it started,
+ *  what it had to leave for the steps after it, and what it spent. */
+function BudgetLine({ budget }: { budget: StepBudget }) {
+  return (
+    <p className="mt-1 text-tiny text-text-tertiary">
+      Ngân sách: dùng {budget.llm_calls} lượt mô hình · {budget.tool_calls} lượt công cụ
+      {' '}(được dùng tối đa {budget.llm_available_at_start} lượt mô hình khi bắt đầu
+      {budget.llm_reserved_for_later > 0
+        ? `; ${budget.llm_reserved_for_later} lượt giữ cho các bước sau` : ''})
+    </p>
+  );
+}
+
 /** One step, opened up: what it ran with, what it got, what it produced.
  *
  *  INPUT and OUTPUT sit next to each other on purpose. With only the output, a
@@ -830,6 +956,9 @@ function StepInspector({ step, configSource }: { step: RunStep; configSource?: s
               </div>
             </div>
           )}
+          {!!step.children?.length && <ChildRuns runs={step.children} />}
+          {step.capabilities && <CapabilityView view={step.capabilities} />}
+          {step.budget && <BudgetLine budget={step.budget} />}
         </>
       )}
 

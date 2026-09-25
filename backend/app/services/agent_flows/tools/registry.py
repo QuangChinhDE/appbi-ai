@@ -53,8 +53,11 @@ itself, and a brain's steps ARE the plan, so it is not registered here.
 """
 from __future__ import annotations
 
+import re
+
 import json
 import logging
+import threading
 import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
@@ -269,7 +272,22 @@ class ToolSpec:
             "risk": self.risk,
             "output_schema": self.output_schema,
             "inputs": self.input_summary(),
+            # What this tool can be FOUND by — the same text capability discovery
+            # ranks it on, so the builder's search and the runtime's cannot drift.
+            "search_text": self.search_text(),
         }
+
+    def search_text(self) -> str:
+        """Everything a capability can be found by: ONE definition, two readers
+        (the builder's tool picker and `runtime/capabilities.py`)."""
+        definition = self.definition or {}
+        parts = [
+            self.name, self.name.replace("_", " "), self.label_vi, self.label_en,
+            self.description_vi, *self.answers_vi,
+            *[f"{k} {v}" for k, v in (self.returns or {}).items()],
+            str(definition.get("description") or ""),
+        ]
+        return " ".join(p for p in parts if p)
 
     def input_summary(self) -> dict[str, dict[str, Any]]:
         """One row per argument, for a form to render. Not a schema to reason with.
@@ -328,6 +346,10 @@ def register_pack(pack: ToolPack) -> None:
     _PACKS[pack.key] = pack
 
 
+_LOAD_LOCK = threading.RLock()
+_LOADED = threading.Event()
+
+
 def _load_packs() -> None:
     """Import the packs on first use.
 
@@ -338,18 +360,30 @@ def _load_packs() -> None:
     Order is the order an author reads them in: understand the report, get a
     number out of it, compare, diagnose, project, look something up, leave.
     """
-    if _PACKS:
+    # ONCE, AND ATOMICALLY. The check below used to be `if _PACKS: return` with
+    # nothing else, which is two bugs under a threaded server: two requests that
+    # arrive together both see an empty registry and both register `discover`
+    # ("redeclares tool(s) already registered" — a 500 on GET /brains), and a
+    # request arriving MID-load sees a registry holding only the first packs and
+    # answers from it. So the load runs under a lock, and a reader never sees a
+    # partial registry: `_LOADED` is set only after every pack is in.
+    if _LOADED.is_set():
         return
-    from app.services.agent_flows.tools.packs import (
-        compare, diagnose, discover, external, knowledge, measure, project, read,
-    )
+    with _LOAD_LOCK:
+        if _LOADED.is_set():
+            return
+        from app.services.agent_flows.tools.packs import (
+            compare, diagnose, discover, external, knowledge, measure, project, read,
+        )
 
-    # `discover` leads, because it is what a turn does first: work out WHICH
-    # asset the question is about. It was the missing step — 20 of these tools
-    # require a chart_id and, until this pack, one name-matching listing was the
-    # only thing that issued one.
-    for mod in (discover, read, measure, compare, diagnose, project, knowledge, external):
-        register_pack(mod.PACK)
+        # `discover` leads, because it is what a turn does first: work out WHICH
+        # asset the question is about. It was the missing step — 20 of these tools
+        # require a chart_id and, until this pack, one name-matching listing was the
+        # only thing that issued one.
+        for mod in (discover, read, measure, compare, diagnose, project, knowledge, external):
+            if mod.PACK.key not in _PACKS:
+                register_pack(mod.PACK)
+        _LOADED.set()
 
 
 def all_tools() -> dict[str, ToolSpec]:
@@ -891,6 +925,19 @@ def _capability_refusal(ctx: Any, spec: ToolSpec) -> dict | None:
     cannot see the binding and should not learn to — the same reason
     `max_rows_per_call` and `max_result_tokens` travel that way.
     """
+    # RISK FIRST, and FAIL CLOSED. `ToolSpec.risk` has promised since it was
+    # added that `unknown` "is not permitted to act" — and nothing enforced it,
+    # so the tool somebody adds next year and forgets to classify would run as
+    # harmless. `side_effect` / `destructive` need an approval step the runtime
+    # does not have yet (V3.6), so they cannot run either. This is the one risk
+    # rule: capability discovery reads the same function to decide eligibility.
+    if spec.risk != "read_only":
+        return R.err(
+            f"công cụ '{spec.name}' chưa được phân loại rủi ro là chỉ-đọc "
+            f"(risk={spec.risk}) — hệ thống không chạy công cụ có thể thay đổi dữ "
+            "liệu khi chưa có bước duyệt",
+            code="risk_unknown" if spec.risk == "unknown" else "needs_approval",
+        )
     if spec.reaches_outside and getattr(ctx, "web_search", True) is False:
         return R.err(
             f"công cụ '{spec.name}' cần quyền tìm kiếm web, link này không bật",
@@ -903,6 +950,50 @@ def _capability_refusal(ctx: Any, spec: ToolSpec) -> dict | None:
             code="not_granted",
         )
     return None
+
+
+def admission_refusal(ctx: Any, name: str) -> dict | None:
+    """Would the registry refuse `name` in `ctx` before running it? Public.
+
+    The SAME rule `execute()` applies, exposed so capability discovery can leave
+    out what is certain to be refused. Discovery only ever NARROWS what the model
+    is shown; `execute()` still runs this check itself, so a caller that skips
+    this function loses nothing but context.
+    """
+    spec = all_tools().get(name)
+    if spec is None:
+        return R.err(f"không có công cụ tên '{name}'", code="unknown_tool")
+    return _capability_refusal(ctx, spec)
+
+
+_INT_STRING = re.compile(r"^\s*-?[0-9]{1,18}\s*$", re.ASCII)
+_NUM_STRING = re.compile(r"^\s*-?[0-9]{1,18}(\.[0-9]{1,18})?\s*$", re.ASCII)
+
+
+def _coerce_numeric_args(spec: "ToolSpec", args: dict) -> dict:
+    """`"686"` for an integer argument IS 686 — said once, here, for every tool.
+
+    Measured live: models pass ids as strings often enough that `rank_values`
+    refused `chart_id` as `bad_argument` in both the full-visibility and the
+    routed arm, three times in a row on one question, and the step answered "no
+    data" for a report that had it. Only a string that is EXACTLY a number, only
+    for a property the tool's own schema types as integer/number; anything else
+    is left for the tool to refuse. A new dict: the caller's is not mutated.
+    """
+    definition = spec.definition or {}
+    props = ((definition.get("input_schema") or definition.get("parameters") or {})
+             .get("properties") or {})
+    out = dict(args)
+    for key, value in args.items():
+        kind = (props.get(key) or {}).get("type")
+        if kind == "integer":
+            if isinstance(value, str) and _INT_STRING.match(value):
+                out[key] = int(value)
+            elif isinstance(value, float) and value.is_integer():
+                out[key] = int(value)
+        elif kind == "number" and isinstance(value, str) and _NUM_STRING.match(value):
+            out[key] = float(value)
+    return out
 
 
 def execute(
@@ -941,7 +1032,9 @@ def execute(
     if denied is not None:
         return denied
 
-    args = args or {}
+    if args is not None and not isinstance(args, dict):
+        return R.err("tham số của công cụ phải là một object", code="bad_argument")
+    args = _coerce_numeric_args(spec, args or {})
     # AND THE QUESTION'S OWN BREAKDOWN, for tools whose result IS per-group.
     #
     # Measured: asked which STATE had the highest revenue, the answering Agent

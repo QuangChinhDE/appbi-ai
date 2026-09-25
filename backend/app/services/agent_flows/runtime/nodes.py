@@ -101,10 +101,11 @@ def _load() -> None:
         agent as _agent,
         data as _data,
         logic as _logic,
+        skill as _skill,
         util as _util,
     )
 
-    for mod in (_agent, _data, _logic, _util):
+    for mod in (_agent, _data, _logic, _skill, _util):
         for spec in mod.SPECS:
             register(spec)
 

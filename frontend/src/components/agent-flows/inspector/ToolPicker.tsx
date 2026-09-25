@@ -13,7 +13,8 @@ import { Input, Textarea } from '@/components/ui/Input';
 import { Button } from '@/components/ui/Button';
 import { cn } from '@/lib/utils';
 import { useI18n } from '@/providers/LanguageProvider';
-import type { ToolInput, ToolPack, FlowNode } from '@/lib/agentFlows';
+import { SKILL_GRANT_PREFIX } from '@/lib/agentFlows';
+import type { ToolInput, ToolPack, FlowNode, SkillSummary } from '@/lib/agentFlows';
 import { SectionTitle, HintText, CostChip, COST_HINT_KEY } from '../shared';
 import { Field, Select, Toggle, NumberField } from './fields';
 
@@ -57,7 +58,20 @@ export function ToolArguments({
   if (!args.length) {
     return <HintText>{t('agentFlows.inspector.tool.noArgs')}</HintText>;
   }
+  return <BindingRows args={args} value={value} onChange={onChange} />;
+}
 
+/** One row per argument, each bound to a variable or a literal. Shared by the Tool
+ *  step (arguments from the registry) and the Skill step (inputs from the Skill's
+ *  published contract), so both bind the same way and store the same shape. */
+export function BindingRows({
+  args, value, onChange,
+}: {
+  args: [string, { type: string; required: boolean; description?: string } | undefined][];
+  value: Record<string, ToolInput>;
+  onChange: (v: Record<string, ToolInput>) => void;
+}) {
+  const { t } = useI18n();
   const bind = (name: string, next: ToolInput) =>
     onChange({ ...value, [name]: next });
 
@@ -168,7 +182,10 @@ export function foldSearch(s: string) {
  *  giảm", "top mấy" — long before they think in tool names. Matching names only
  *  would make the box work for people who already know the answer. */
 export function toolHaystack(tool: ToolPack['tools'][number]) {
-  return foldSearch([
+  /* The server's `search_text` when it sends one: ONE definition of what a tool
+   * can be found by, shared with the runtime's capability discovery. The local
+   * list is the fallback for an older backend. */
+  return foldSearch(tool.search_text || [
     tool.name, tool.label_vi, tool.label_en, tool.description_vi,
     ...(tool.answers_vi || []),
   ].filter(Boolean).join(' '));
@@ -179,9 +196,22 @@ export function packHaystack(pack: ToolPack) {
     .filter(Boolean).join(' '));
 }
 
+/** Where a pack sits in the author's picture of what an agent can do. PRESENTATION
+ *  ONLY — the runtime knows packs and tools, not these headings. */
+const PACK_CATEGORY: Record<string, 'data' | 'analysis' | 'knowledge' | 'external'> = {
+  discover: 'data', read: 'data',
+  measure: 'analysis', compare: 'analysis', diagnose: 'analysis', project: 'analysis',
+  knowledge: 'knowledge', external: 'external',
+};
+const CATEGORY_ORDER = ['data', 'analysis', 'knowledge', 'external', 'other'] as const;
+
 export function ToolPicker({
-  packs, granted, onToggle,
-}: { packs: ToolPack[]; granted: string[]; onToggle: (name: string, on: boolean) => void }) {
+  packs, granted, onToggle, skills = [],
+}: {
+  packs: ToolPack[]; granted: string[]; onToggle: (name: string, on: boolean) => void;
+  /** Published Skills this author may attach. Granted as `skill:<key>`. */
+  skills?: SkillSummary[];
+}) {
   const { t, language } = useI18n();
   const [query, setQuery] = React.useState('');
   /* EVERY WORD, NOT THE WHOLE PHRASE.
@@ -274,7 +304,71 @@ export function ToolPicker({
               : t('agentFlows.toolPicker.searchHits', { count: String(hitCount) })}
         </p>
       )}
-      {shown.map((pack) => {
+      {(() => {
+        /* SKILLS FIRST. A Skill is a whole flow somebody already made work —
+         * "so sánh hai kỳ", "phân tích nguyên nhân" — and it is what most authors
+         * mean when they want an agent to be able to do something. Granted the
+         * same way as a tool; run as a governed child flow on this flow's rights. */
+        const wantedSkills = needles.length
+          ? skills.filter((sk) => {
+              const hay = foldSearch([sk.key, sk.name, sk.contract.when_to_use, sk.contract.output].join(' '));
+              return needles.some((w) => hay.includes(w));
+            })
+          : skills;
+        const grantedSkills = granted.filter((g) => g.startsWith(SKILL_GRANT_PREFIX));
+        const missing = grantedSkills.filter((g) => !skills.some((sk) => sk.grant === g));
+        if (!wantedSkills.length && !missing.length) return null;
+        return (
+          <div className="space-y-1">
+            <p className="px-0.5 text-micro font-medium uppercase tracking-wide text-text-quaternary">
+              {t('agentFlows.toolPicker.category.skills')}
+            </p>
+            <div className="rounded-md border border-[rgb(var(--border-line))] p-1.5">
+              {wantedSkills.map((sk) => {
+                const on = granted.includes(sk.grant);
+                return (
+                  <label key={sk.key}
+                    className="flex cursor-pointer items-start gap-2 rounded-md px-1.5 py-1 hover:bg-surface-2">
+                    <input type="checkbox" checked={on} className="mt-0.5"
+                      onChange={(e) => onToggle(sk.grant, e.target.checked)} />
+                    <span className="min-w-0 flex-1">
+                      <span className="flex flex-wrap items-center gap-1">
+                        <b className="text-caption font-medium">{sk.name}</b>
+                        <span className="rounded border border-[rgb(var(--border-line))] px-1 text-tiny text-text-tertiary">
+                          Skill · v{sk.version}
+                        </span>
+                        {sk.lifecycle?.lifecycle === 'deprecated' && (
+                          <span className="rounded bg-warning/10 px-1 text-tiny text-warning"
+                            title={sk.lifecycle.reason}>
+                            {t('agentFlows.toolPicker.skillDeprecated')}
+                          </span>
+                        )}
+                      </span>
+                      <span className="block text-caption leading-snug text-text-tertiary">
+                        {sk.contract.when_to_use}
+                      </span>
+                    </span>
+                  </label>
+                );
+              })}
+              {missing.map((g) => (
+                <p key={g} className="px-1.5 py-1 text-caption text-warning">
+                  {t('agentFlows.toolPicker.skillUnavailable', { key: g.slice(SKILL_GRANT_PREFIX.length) })}
+                </p>
+              ))}
+            </div>
+          </div>
+        );
+      })()}
+      {CATEGORY_ORDER.map((cat) => {
+        const inCat = shown.filter((pack) => (PACK_CATEGORY[pack.key] || 'other') === cat);
+        if (!inCat.length) return null;
+        return (
+          <div key={cat} className="space-y-1.5">
+            <p className="px-0.5 text-micro font-medium uppercase tracking-wide text-text-quaternary">
+              {t('agentFlows.toolPicker.category.' + cat)}
+            </p>
+      {inCat.map((pack) => {
         const names = pack.tools.map((t) => t.name);
         /* A PACK WITH NOTHING GRANTED IS A HEADING, NOT A LIST.
          *
@@ -408,6 +502,9 @@ export function ToolPicker({
               })}
             </div>
           </PackBlock>
+        );
+      })}
+          </div>
         );
       })}
     </div>

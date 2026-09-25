@@ -50,8 +50,9 @@ def _call(rctx: Any, state: RunState, tool: str, args: dict) -> Any:
         tool if result.get("ok")
         else f"{tool}({result.get('error_code') or 'failed'})"
     )
-    # Everything the run READ, so the answer's figures can be checked against it.
-    state.add_evidence(result)
+    # Everything the run READ, so the answer's figures can be checked against it —
+    # and referenceable, so a later `compute` can name exactly which figure it used.
+    state.record_evidence(result, tool=tool, args=args)
     return result
 
 
@@ -900,6 +901,71 @@ def build_knowledge_scope(attachments: Any) -> dict[str, list]:
     return scope
 
 
+#: A value no real id takes, standing for "nothing". An EMPTY list means "no
+#: narrowing — everything the report is entitled to", so an intersection that
+#: comes out empty must not be written as an empty list.
+_NOTHING = {"doc_ids": [-1], "dataset_ids": [-1], "metric_names": ["\x00"], "term_fqns": ["\x00"]}
+
+
+def bounded_scope(ctx: Any, scope: dict[str, list]) -> dict[str, list]:
+    """A step's knowledge scope, never wider than the CEILING its run was given.
+
+    A step's attachments REPLACE the context's scope — that is how a step narrows.
+    Inside a Skill child run that would let the Skill's own attachments stand in
+    for the caller's: the ceiling (`ctx.knowledge_ceiling`, the caller's scope at
+    the moment it invoked the Skill) is what makes the child's reach
+    caller ∩ Skill rather than whatever the Skill attached. No ceiling = a
+    top-level run, and the scope is returned untouched.
+    """
+    ceiling = getattr(ctx, "knowledge_ceiling", None)
+    if ceiling is None:
+        return scope
+    out: dict[str, list] = {}
+    for key in ("doc_ids", "dataset_ids", "metric_names", "term_fqns"):
+        cap = list(ceiling.get(key) or [])
+        own = list(scope.get(key) or [])
+        if not cap:
+            # THE CALLER DID NOT NARROW THIS KIND — it reads what its REPORT is
+            # entitled to. The Skill's own list is then NOT a grant: an explicit
+            # document or dataset grant is allowed to reach outside the report
+            # (`govern_tools._visible_doc_ids`) because it was checked against the
+            # FLOW author's rights, and a Skill's was checked against the SKILL
+            # author's. Found by review: an empty caller scope let a Skill's
+            # attachment reach a document the caller could not read. So it is cut
+            # to the report's entitlement here, and fails CLOSED if that cannot be
+            # computed.
+            out[key] = _within_entitlement(ctx, key, own) if own else own
+        elif not own:
+            out[key] = cap
+        else:
+            both = [x for x in own if x in cap]
+            out[key] = both or list(_NOTHING[key])
+    return out
+
+
+def _within_entitlement(ctx: Any, key: str, own: list) -> list:
+    """A Skill's explicit list, narrowed to what the caller's REPORT may read."""
+    if key == "metric_names":
+        # Metric attachments only narrow (entitlement is applied first in
+        # `govern_tools._metrics_in_scope`), so they cannot widen anything.
+        return own
+    if key == "term_fqns":
+        # An attached term is reached regardless of report; without a caller
+        # grant the child keeps the caller's own reach (vocabulary / measure).
+        return []
+    try:
+        from app.services.dashboard_ai_bot import govern_tools
+
+        if key == "doc_ids":
+            allowed = govern_tools._entitled_doc_ids(ctx)
+        else:
+            allowed = govern_tools._scope(ctx)[1]
+        kept = [x for x in own if int(x) in allowed]
+    except Exception:                                           # noqa: BLE001
+        kept = []
+    return kept or list(_NOTHING[key])
+
+
 async def run_knowledge(
     node: KnowledgeNode, state: RunState, rctx: Any
 ) -> AsyncGenerator[AgentEvent, None]:
@@ -930,7 +996,7 @@ async def run_knowledge(
     previous_scope = getattr(rctx.ctx, "knowledge_scope", None)
     scope = build_knowledge_scope(node.knowledge)
     if hasattr(rctx.ctx, "knowledge_scope"):
-        rctx.ctx.knowledge_scope = scope
+        rctx.ctx.knowledge_scope = bounded_scope(rctx.ctx, scope)
 
     try:
         result = _call(rctx, state, "search_knowledge", {"query": query, "limit": node.top_k})
@@ -1036,6 +1102,16 @@ async def run_web(
             url = (item or {}).get("url") or ""
             if not url or not _domain_ok(url, node.allowed_domains):
                 continue
+            # OPTIONAL READS STOP AT THE RESERVATION. The search was this step's
+            # minimum; each page is extra, and an extra call may not spend what
+            # the steps after it are owed (found by review: three fetches ran
+            # the run out before its answer).
+            if state.budget.tools_left() <= 0:
+                state.notices.append(Notice(
+                    code="web_pages_skipped_for_budget", severity="info", node_key=node.key,
+                    text="Bỏ bớt trang web cần đọc vì số lượt công cụ còn lại được giữ cho các bước sau.",
+                ))
+                break
             pages.append(_call(rctx, state, "fetch_url", {"url": url}))
 
     for item in kept[:5]:
@@ -1096,7 +1172,7 @@ async def run_tool(
         node.tool if result.get("ok")
         else f"{node.tool}({result.get('error_code') or 'failed'})"
     )
-    state.add_evidence(result)
+    state.record_evidence(result, tool=node.tool, args=args)
 
     if not result.get("ok"):
         # RAISED, not swallowed. `on_error` on the node decides what happens next —
@@ -1104,6 +1180,17 @@ async def run_tool(
         # publish a value the next step would read as data.
         detail = result.get("detail") or result.get("error") or "công cụ lỗi"
         raise RuntimeError(f"{node.tool}: {detail}")
+
+    # A DECLARED SCHEMA IS A PROMISE TO THE NEXT STEP — checked where it is relied
+    # on. A result that does not fit is refused here, as a step error, rather
+    # than wired into a typed binding downstream as something it is not.
+    spec = tool_registry.all_tools().get(node.tool)
+    if spec is not None and spec.output_schema:
+        from app.services.agent_flows.tools.schema_check import problems as _schema_problems
+
+        wrong = _schema_problems(result.get("data"), spec.output_schema)
+        if wrong:
+            raise RuntimeError(f"{node.tool}: kết quả không đúng kiểu đã khai báo ({wrong[0]})")
 
     # WHAT THE NEXT STEP READS IS `data`, NOT THE ENVELOPE.
     #
@@ -1134,6 +1221,15 @@ def _resolve_inputs(node: ToolNode, state: RunState) -> dict:
         if binding.ref in state.vars:
             out[name] = state.vars[binding.ref]
             continue
+        # A FIELD OF A TYPED RESULT: `calc.result`, `ranking.items[0].value`. Read
+        # through the one template resolver, which keeps the type of a sole
+        # reference — a number stays a number.
+        head = binding.ref.split(".", 1)[0].split("[", 1)[0]
+        if head != binding.ref and head in state.vars:
+            value = state.resolve("{{%s}}" % binding.ref)
+            if value is not None and value != "":
+                out[name] = value
+                continue
         # A MISSING VARIABLE IS NOT AN EMPTY ONE. Passing `None` would let the tool
         # refuse for a reason that names the ARGUMENT instead of the BINDING, and
         # an author would go looking at the tool.

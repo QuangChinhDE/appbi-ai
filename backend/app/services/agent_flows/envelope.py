@@ -55,7 +55,9 @@ class _Model(BaseModel):
 # INPUT
 # ═══════════════════════════════════════════════════════════════════════════════
 Trigger = Literal[
-    "public_chat", "direct_chat", "studio_test", "node_test", "replay", "scheduled"
+    "public_chat", "direct_chat", "studio_test", "node_test", "replay", "scheduled",
+    # A Skill run invoked by another run (its parent is on the run row).
+    "skill",
 ]
 
 
@@ -510,6 +512,14 @@ class TraceStep(_Model):
     #: one node pasting a large context it did not need.
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    #: An Agent step's capability view: granted, eligible (and why the rest were
+    #: not), visible per round, discovered, invoked, rejected. The data behind
+    #: "What the AI sees" for a run that already happened.
+    capabilities: dict[str, Any] | None = None
+    #: Where the budget went: model/tool calls this step spent (children included
+    #: for a container), what it had available when it started, and what it was
+    #: made to leave for the steps after it.
+    budget: dict[str, Any] | None = None
 
 
 class Trace(_Model):

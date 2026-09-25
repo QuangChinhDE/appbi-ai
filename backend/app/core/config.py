@@ -145,6 +145,34 @@ class Settings(BaseSettings):
     # Govern = Metrics/Glossary/Classification; Observability = Data Quality/Incidents/Alerts.
     GOVERN_ENABLED: bool = True
     OBSERVABILITY_ENABLED: bool = True
+    # ── Agent Flow capability discovery ─────────────────────────────────
+    # How many capabilities an Agent step is SHOWN in full per reasoning round
+    # when it was granted more (runtime/capabilities.py). Visibility only — what
+    # may run is still decided by the registry and the grant. A node can set its
+    # own `visible_capabilities` to opt in to a tighter shortlist.
+    #
+    # 40 — ABOVE TODAY'S WHOLE CATALOGUE (36 tools), set by measurement. Three live
+    # A/B runs on one 32-capability grant (scripts/agent_flow_v3_eval.py):
+    # shortlisted at 12 answered 3, 5, 4 of 6; shown in full 6, 6, 5 of 6, for a
+    # 10-25% token saving. A shortlist that costs answers is not worth it while
+    # the full list still fits, so by default it engages only once a grant
+    # outgrows what can sensibly be sent in full — Skills and future packs.
+    AGENT_FLOW_VISIBLE_CAPABILITIES: int = 40
+    # How many CHARACTERS of capability schema a routed step is shown per round
+    # (runtime/capabilities.py). A grant whose schemas fit is shown whole — the V1
+    # starter's ten tools are ~8.5k. A larger grant is shown the core (every way in
+    # to a chart id, and compute), what the question ranks highest, and whatever
+    # it has loaded, up to this; the rest is one line each inside find_capability.
+    #
+    # 10500, set by measurement on the labelled intents (tests/fixtures/
+    # capability_routing): 10000 loaded the right capability on round one for 47
+    # of 48 (42 at 8000); the core then gained its chart READER (get_chart_summary,
+    # ~460 chars — see runtime/capabilities._core) and the budget grew by the same
+    # amount so the share left for question-ranked capabilities is unchanged:
+    # 51 of 52 intents, ~11.3k characters per round against 24.2k shown in full,
+    # and flat as the catalogue grows. A per-node `visible_capabilities` count
+    # replaces it.
+    AGENT_FLOW_CAPABILITY_SCHEMA_BUDGET: int = 10500
 
     # ── AI Intelligence (docs/Intelligence/appbi_intelligence_backend_redesign_v2.md) ──
     # Every switch below defaults to the pre-v2 behaviour, so a deployment that

@@ -17,7 +17,7 @@
  */
 import {
   AlertTriangle, ArrowLeft, Check, LayoutDashboard, Loader2, Maximize2,
-  MessagesSquare, Minus, Play, Plus, Redo2, Save, Send, Undo2, X,
+  MessagesSquare, Minus, Play, Plus, Puzzle, Redo2, Save, Send, Trash2, Undo2, X,
 } from 'lucide-react';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { FlowActivation } from './FlowActivation';
@@ -34,12 +34,13 @@ import { useI18n } from '@/providers/LanguageProvider';
 import {
   blankNode, branchCoverage, brainImpact, canDropInto, findNode, getBrain, insertNode,
   isBranching, isContainer,
-  listAttachable, listNodeSpecs, listProviders, listToolPacks, moveNode,
+  listAttachable, listNodeSpecs, listProviders, listSkills, listToolPacks, moveNode,
   publishBrain, removeNode,
   replaceNode, saveBrain, setFlowType, validateFlow, walkNodes,
   type FlowBody, type FlowLinkUsage, type FlowNode, type FlowPath, type FlowType,
   type InsertTarget,
   type Attachable, type NodeSpec, type NodeType, type ProviderGroup,
+  type SkillContract, type SkillInput, type SkillSummary,
   type Specialist, type SwitchCase, type ToolPack, type ToolSpec,
   type ValidateResult,
 } from '@/lib/agentFlows';
@@ -165,6 +166,8 @@ export function BrainBuilder({
   // can say "loading" rather than "nothing to attach" — the two look identical
   // in an empty dropdown and mean opposite things.
   const [attachable, setAttachable] = React.useState<Attachable | null>(null);
+  /** Published Skills this author may attach — server-side, like `attachable`. */
+  const [skills, setSkills] = React.useState<SkillSummary[]>([]);
   // RUN COUNTS per node, not question coverage. Two different product
   // concepts were both called `coverage`: this one counts how often a branch
   // ran, and the one on the Test tab is which question CLASSES the flow can
@@ -217,6 +220,7 @@ export function BrainBuilder({
       // Fetched separately and non-blocking: a slow governance query must not
       // hold up opening the flow, and a step with nothing attached still works.
       listAttachable().then(setAttachable).catch(() => setAttachable(null));
+      listSkills().then(setSkills).catch(() => setSkills([]));
       setName(detail.name);
       setDescription(detail.description || '');
       setVersion(detail.version);
@@ -264,10 +268,18 @@ export function BrainBuilder({
    *  sentence names the links or the steps, and a generic "không đổi được" would
    *  throw that away.
    */
-  const applyType = React.useCallback(async (next: FlowType) => {
+  const applyType = React.useCallback(async (next: FlowType, contract?: SkillContract) => {
     setTypeBusy(true);
     try {
-      await setFlowType(brainKey, next);
+      if (next === 'skill' && contract) {
+        const nextBody = { ...body, skill: contract };
+        const detail = await saveBrain({ brain_key: brainKey, name, description, body: nextBody });
+        setVersion(detail.version);
+        setStatus(detail.status);
+        setBody(detail.body);
+        setDirty(false);
+      }
+      if (next !== flowType) await setFlowType(brainKey, next);
       setType(next);
       setTypeOpen(false);
       toast.success(t('agentFlows.builder.type.changed'));
@@ -278,7 +290,7 @@ export function BrainBuilder({
     } finally {
       setTypeBusy(false);
     }
-  }, [brainKey, t]);
+  }, [body, brainKey, description, flowType, name, t]);
 
   // ── tree edits ────────────────────────────────────────────────────────────
 
@@ -842,6 +854,7 @@ export function BrainBuilder({
                   spec={sel.node ? specs[sel.node.type] : undefined}
                   specs={specs}
                   toolPacks={toolPacks}
+                  skills={skills}
                   providers={providers}
                   attachable={attachable}
                   isAnswerNode={sel.node?.key === answerKey}
@@ -901,6 +914,7 @@ export function BrainBuilder({
       {typeOpen && (
         <FlowTypeDialog
           current={flowType}
+          contract={body.skill ?? null}
           blockers={validation?.chat_blockers ?? []}
           busy={typeBusy}
           onClose={() => setTypeOpen(false)}
@@ -1045,7 +1059,7 @@ function IconBtn({
 
 /* ── which surface this flow is for ───────────────────────────────────────── */
 
-const TYPE_ICON = { bot: LayoutDashboard, chat: MessagesSquare } as const;
+const TYPE_ICON = { bot: LayoutDashboard, chat: MessagesSquare, skill: Puzzle } as const;
 
 /** The header chip. States the type, and warns when the flow has drifted out of
  *  it — a chat flow that grew a report-reading step is still labelled Chat and can
@@ -1094,16 +1108,29 @@ function FlowTypeChip({
  *  picking happens rather than in a toast after a refusal.
  */
 function FlowTypeDialog({
-  current, blockers, busy, onClose, onPick,
+  current, contract, blockers, busy, onClose, onPick,
 }: {
   current: FlowType;
+  contract: SkillContract | null;
   blockers: string[];
   busy: boolean;
   onClose: () => void;
-  onPick: (next: FlowType) => void;
+  onPick: (next: FlowType, contract?: SkillContract) => void;
 }) {
   const { t } = useI18n();
   const [picked, setPicked] = React.useState<FlowType>(current);
+  /* A SKILL IS A PROMISE: what goes in, what comes out, when to reach for it.
+   * Edited here, next to the choice that makes it a Skill, because the server
+   * refuses a Skill without it and an agent is shown exactly these words. */
+  const [draft, setDraft] = React.useState<SkillContract>(
+    contract ?? { inputs: [{ name: 'question', type: 'text', required: true, description: '' }],
+                  output: '', when_to_use: '' });
+  const contractOk = draft.when_to_use.trim().length >= 12
+    && draft.inputs.every((i) => /^[a-z][a-z0-9_]{0,39}$/.test(i.name));
+  const contractChanged = JSON.stringify(draft) !== JSON.stringify(contract);
+  const canApply = picked === 'skill'
+    ? contractOk && (picked !== current || contractChanged)
+    : picked !== current && !(picked === 'chat' && blockers.length > 0);
 
   return (
     <AppModalShell
@@ -1121,8 +1148,8 @@ function FlowTypeDialog({
           <Button
             size="sm"
             loading={busy}
-            disabled={picked === current || (picked === 'chat' && blockers.length > 0)}
-            onClick={() => onPick(picked)}
+            disabled={!canApply}
+            onClick={() => onPick(picked, picked === 'skill' ? draft : undefined)}
           >
             {t('agentFlows.builder.type.apply')}
           </Button>
@@ -1130,7 +1157,7 @@ function FlowTypeDialog({
       )}
     >
       <div className="space-y-2">
-        {(['bot', 'chat'] as const).map((kind) => {
+        {(['bot', 'chat', 'skill'] as const).map((kind) => {
           const Icon = TYPE_ICON[kind];
           // A bot flow is never refused: a report hands a flow strictly more than
           // chat does, so anything that runs in Chat runs on a report.
@@ -1175,7 +1202,121 @@ function FlowTypeDialog({
             </button>
           );
         })}
+        {picked === 'skill' && (
+          <SkillContractEditor value={draft} onChange={setDraft} />
+        )}
       </div>
     </AppModalShell>
+  );
+}
+
+/** The contract a Skill publishes. Inputs are the ONLY data that reaches a Skill,
+ *  so each one is named here rather than inferred from the prompt. */
+function SkillContractEditor({
+  value, onChange,
+}: { value: SkillContract; onChange: (v: SkillContract) => void }) {
+  const { t } = useI18n();
+  const setInput = (i: number, patch: Partial<SkillInput>) => onChange({
+    ...value, inputs: value.inputs.map((x, j) => (j === i ? { ...x, ...patch } : x)),
+  });
+  return (
+    <div className="space-y-2 rounded-lg border border-[rgb(var(--border-line))] p-3">
+      <label className="block">
+        <span className="text-caption font-strong">{t('agentFlows.builder.skill.whenToUse')}</span>
+        <Textarea
+          id="skill-when-to-use"
+          rows={2}
+          value={value.when_to_use}
+          placeholder={t('agentFlows.builder.skill.whenToUsePlaceholder')}
+          onChange={(e) => onChange({ ...value, when_to_use: e.target.value })} />
+        <span className="mt-0.5 block text-tiny text-text-tertiary">{t('agentFlows.builder.skill.whenToUseHint')}</span>
+      </label>
+      <label className="block">
+        <span className="text-caption font-strong">{t('agentFlows.builder.skill.output')}</span>
+        <Input
+          id="skill-output"
+          value={value.output}
+          placeholder={t('agentFlows.builder.skill.outputPlaceholder')}
+          onChange={(e) => onChange({ ...value, output: e.target.value })} />
+      </label>
+      <div className="flex flex-wrap items-end gap-1.5">
+        <label className="block">
+          <span className="text-caption font-strong">{t('agentFlows.builder.skill.returns')}</span>
+          <select
+            id="skill-returns"
+            className="mt-0.5 block h-8 rounded-md border border-[rgb(var(--border-line))] bg-surface px-1 text-caption"
+            value={value.returns || 'text'}
+            onChange={(e) => onChange({ ...value, returns: e.target.value as 'text' | 'number' })}>
+            <option value="text">{t('agentFlows.builder.skill.returns.text')}</option>
+            <option value="number">{t('agentFlows.builder.skill.returns.number')}</option>
+          </select>
+        </label>
+        {value.returns === 'number' && (
+          <>
+            <label className="block">
+              <span className="text-tiny text-text-tertiary">{t('agentFlows.builder.skill.valueStep')}</span>
+              <Input id="skill-value-step" className="h-8 w-36" value={value.value_step || ''}
+                placeholder="tinh_ty_le"
+                onChange={(e) => onChange({ ...value, value_step: e.target.value.trim() })} />
+            </label>
+            <label className="block">
+              <span className="text-tiny text-text-tertiary">{t('agentFlows.builder.skill.valuePath')}</span>
+              <Input id="skill-value-path" className="h-8 w-36" value={value.value_path || ''}
+                placeholder="result"
+                onChange={(e) => onChange({ ...value, value_path: e.target.value.trim() })} />
+            </label>
+          </>
+        )}
+      </div>
+      {value.returns === 'number' && (
+        <span className="block text-tiny text-text-tertiary">{t('agentFlows.builder.skill.returnsNumberHint')}</span>
+      )}
+      <div>
+        <span className="text-caption font-strong">{t('agentFlows.builder.skill.inputs')}</span>
+        <span className="block text-tiny text-text-tertiary">{t('agentFlows.builder.skill.inputsHint')}</span>
+        <div className="mt-1 space-y-1.5">
+          {value.inputs.map((inp, i) => (
+            <div key={i} className="flex items-center gap-1.5">
+              <Input
+                id={`skill-input-name-${i}`}
+                className="h-8 w-32"
+                value={inp.name}
+                placeholder="ten_input"
+                onChange={(e) => setInput(i, { name: e.target.value.trim() })} />
+              <select
+                id={`skill-input-type-${i}`}
+                className="h-8 rounded-md border border-[rgb(var(--border-line))] bg-surface px-1 text-caption"
+                value={inp.type}
+                onChange={(e) => setInput(i, { type: e.target.value as SkillInput['type'] })}>
+                {(['text', 'number', 'date', 'chart_ref'] as const).map((k) => (
+                  <option key={k} value={k}>{t('agentFlows.builder.skill.type.' + k)}</option>
+                ))}
+              </select>
+              <Input
+                id={`skill-input-desc-${i}`}
+                className="h-8 flex-1"
+                value={inp.description || ''}
+                placeholder={t('agentFlows.builder.skill.inputDescription')}
+                onChange={(e) => setInput(i, { description: e.target.value })} />
+              <label className="flex items-center gap-1 text-tiny text-text-tertiary">
+                <input type="checkbox" checked={inp.required}
+                  onChange={(e) => setInput(i, { required: e.target.checked })} />
+                {t('agentFlows.builder.skill.required')}
+              </label>
+              <button type="button" aria-label={t('agentFlows.builder.skill.removeInput')}
+                onClick={() => onChange({ ...value, inputs: value.inputs.filter((_, j) => j !== i) })}
+                className="rounded p-1 text-text-tertiary hover:text-danger">
+                <Trash2 className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          ))}
+        </div>
+        <Button variant="secondary" size="xs" className="mt-1.5"
+          onClick={() => onChange({ ...value, inputs: [...value.inputs,
+            { name: '', type: 'text', required: false, description: '' }] })}>
+          {t('agentFlows.builder.skill.addInput')}
+        </Button>
+      </div>
+    </div>
   );
 }

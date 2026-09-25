@@ -410,6 +410,15 @@ def save_draft(
     problems = check_attachments(db, user, flow)
     if problems:
         raise BrainError(403, " ".join(problems))
+    # A SKILL THIS AUTHOR MAY NOT USE is not theirs to attach — the same rule as a
+    # document or a dataset. Attaching grants no data access at run time (the
+    # child runs on the caller's authority); this is about who may build on whose
+    # published work.
+    from app.services.agent_flows import skills as skills_service
+
+    problems = skills_service.attach_problems(db, user, flow)
+    if problems:
+        raise BrainError(403, " ".join(problems))
 
     latest = (
         db.query(AgentBrainVersion)
@@ -454,7 +463,7 @@ def save_draft(
             flow_type=(
                 str(getattr(latest, "flow_type", "") or DEFAULT_FLOW_TYPE)
                 if latest is not None
-                else (flow_type if flow_type in ("bot", "chat") else DEFAULT_FLOW_TYPE)
+                else (flow_type if flow_type in ("bot", "chat", "skill") else DEFAULT_FLOW_TYPE)
             ),
         )
         db.add(row)
@@ -474,6 +483,7 @@ def save_draft(
 def publish(
     db: Session, brain_key: str, version: int, actor_email: str, *,
     pin_incompatible: bool = True, acknowledge_problems: bool = False,
+    allow_deprecated_pins: bool = False,
 ) -> dict[str, Any]:
     """Make one version live, pinning the links it would break.
 
@@ -508,7 +518,29 @@ def publish(
     # variable a future binding will supply, a flow mid-rewrite — passes
     # `acknowledge_problems` and the decision is theirs, on the record, instead of
     # being made silently by a default.
-    problems = flow.blocking_problems()
+    # SKILL RULES ARE NOT ACKNOWLEDGEABLE. A cycle or a chain past the depth limit
+    # cannot run however the author feels about it, and a Skill without a
+    # contract has nothing an Agent could be shown.
+    from app.services.agent_flows import skills as skills_service
+
+    hard = skills_service.publish_problems(db, row, flow)
+    if hard:
+        raise BrainError(
+            409,
+            "Chưa phát hành được:" + "".join(chr(10) + "• " + p for p in hard),
+        )
+    # PIN EVERY SKILL REFERENCE to the exact version live now, in the body that
+    # becomes this immutable published row — so publishing Skill v2 later never
+    # changes what this version runs.
+    pinned_body = skills_service.pin_skill_versions(db, row.body or {})
+    if pinned_body != (row.body or {}):
+        row.body = pinned_body
+        flow = parse_flow(row) or flow
+
+    # A DEPRECATED PIN may keep running, but republishing onto it is the author's
+    # decision on the record, not a default: acknowledgeable, like the rest.
+    problems = flow.blocking_problems() + (
+        [] if allow_deprecated_pins else skills_service.deprecated_pins(db, flow))
     if problems and not acknowledge_problems:
         raise BrainError(
             409,
@@ -617,7 +649,12 @@ def rollback(db: Session, brain_key: str, actor_email: str) -> dict[str, Any]:
     )
     if prev is None:
         raise BrainError(409, "Chưa có phiên bản nào từng phát hành để quay lại")
-    out = publish(db, brain_key, prev.version, actor_email, pin_incompatible=False)
+    # Re-publishing a version that already ran: its deprecated Skill pins were
+    # accepted once and keep running anyway — refusing the rollback over them
+    # would leave only the broken current version (found by review). Disabled
+    # pins and every other hard rule still apply inside `publish`.
+    out = publish(db, brain_key, prev.version, actor_email, pin_incompatible=False,
+                  allow_deprecated_pins=True)
     _audit(db, "AGENT_FLOW_ROLLED_BACK", brain_key, actor_email, {"version": prev.version})
     return out
 
@@ -692,6 +729,19 @@ def delete_version(db: Session, brain_key: str, version: int, actor_email: str =
         raise BrainError(404, "Không tìm thấy phiên bản này")
     if row.status == PUBLISHED:
         raise BrainError(409, "Phiên bản đang phát hành — hãy phát hành bản khác trước")
+    # A PINNED SKILL VERSION IS HISTORY OTHER FLOWS RUN ON. Deleting it would turn
+    # every pin into "not found" and make their past runs unexplainable; stopping
+    # it is what `disabled` is for, and it keeps the body.
+    if str(getattr(row, "flow_type", "") or "") == "skill":
+        from app.services.agent_flows import skills as skills_service
+
+        pinning = skills_service.pinned_by(db, brain_key, version)
+        if pinning:
+            raise BrainError(
+                409,
+                f"Phiên bản Skill này đang được ghim bởi {', '.join(pinning[:3])}"
+                f"{'…' if len(pinning) > 3 else ''} — hãy vô hiệu hoá thay vì xoá.",
+            )
 
     # A DELETE MAY NOT LEAVE A LINK POINTING AT NOTHING.
     #

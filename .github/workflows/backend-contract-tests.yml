@@ -169,6 +169,7 @@ jobs:
             tests/test_dead_retry_costs_nothing.py \
             tests/test_dimension_is_not_a_measure.py \
             tests/test_requested_dimension_is_not_substituted.py \
+            tests/test_skill_surfaces_found_in_the_browser.py \
             tests/test_analytical_tool_semantics.py \
             tests/test_tool_certification_matrix.py \
             tests/test_capability_serviced_the_intent.py \
@@ -182,6 +183,21 @@ jobs:
             tests/test_reader_rating_reaches_the_run.py \
             tests/test_answer_text_is_published_not_rederived.py \
             tests/test_public_rating_trust_boundary.py \
+            tests/test_adversarial_review_v3_round2.py \
+            tests/test_resolver_speaks_the_questions_words.py \
+            tests/test_adversarial_review_v3_closure.py \
+            tests/test_documented_invariants_are_enforced.py \
+            tests/test_skill_lifecycle_and_revocation.py \
+            tests/test_compute_typed_contract.py \
+            tests/test_budget_always_reaches_an_answer.py \
+            tests/test_instruction_lifecycle.py \
+            tests/test_skills_run_as_governed_children.py \
+            tests/test_capability_discovery.py \
+            tests/test_capability_routing_eval.py \
+            tests/test_compute_owns_the_number.py \
+            tests/test_compute_lineage_in_a_run.py \
+            tests/test_strategy_is_pure.py \
+            tests/test_governance_promises_are_kept.py \
             tests/test_canonical_time_semantics.py \
             tests/test_time_axis_needs_more_than_a_name.py \
             tests/test_time_axis_at_the_tool_boundary.py \
