@@ -2071,11 +2071,13 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
     return (
       <div key={dashboardChart.id.toString()} data-grid-item-id={dashboardChart.id} className="h-full">
         {frameless ? (
-          <div className="h-full w-full">
+          <div className="h-full w-full" data-tile-id={dashboardChart.id} data-tile-kind="widget">
             <DashboardWidget widget={dashboardChart} />
           </div>
         ) : (
           <div
+            data-tile-id={dashboardChart.id}
+            data-tile-kind="widget"
             className="dashboard-tile h-full w-full overflow-hidden rounded-lg border bg-surface-1"
             style={{
               borderRadius: 'var(--dashboard-card-radius, 0.5rem)',

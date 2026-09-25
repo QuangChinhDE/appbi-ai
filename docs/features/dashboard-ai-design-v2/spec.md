@@ -96,3 +96,42 @@ repair contract later.
   would render below its readable width. Phone (`deriveStackedLayout`) is a stack in
   reading order with a height floor per tile kind.
 - The public view and the builder's narrow projection use the same functions.
+
+## Hardening round (review of PR #5)
+
+### Presentation lifecycle: one draft, one publish
+
+- **Draft, not live.** A theme change (AI Apply, the theme menu, or undo) is an unsaved edit, exactly like a drag. It never writes the live `theme_config`.
+- **Save draft** stages three things into `draft_snapshot`:
+  - layout, via `draft-layout`;
+  - theme, via `draft-filters.theme_config`;
+  - slicer cluster, flushed immediately rather than after the 500 ms debounce.
+
+  If any of the three fails, the user is told so, and nothing is reported as saved.
+- **Publish** runs only when every part has been staged. The server then applies tiles, theme, filters and slicers in **one transaction**:
+  - a 409 conflict applies nothing and keeps the draft;
+  - Discard drops the staged theme too.
+- **Editor view.** The editor's GET overlays the staged theme, so a reload shows the draft. `/d` and `/embed` read only the live row.
+- **Public cache.** `/d` and `/embed` serve a structure cached per token (60 s TTL). Publish now clears that cache (`query_cache.invalidate_all_public_meta`), so the published presentation is visible on the viewer's next load.
+- **Preview == Apply.**
+  - The preview shows the whole theme patch, filter dock and slicer variant included; previously the dock was held back until Apply.
+  - A follow-up turn replaces a tile's style rather than merging it back, so a key removed by turn 2 does not come back from turn 1.
+  - A follow-up turn plans against the previewed theme.
+
+### Intent: fail safe
+
+- A bare noun ("layout", "bố cục") grants nothing.
+- STRUCTURE needs a move or size verb **and** something to move: a KPI, a chart, the filters, or "this / it" when visuals are selected.
+- REDESIGN needs an explicit rebuild ("redesign", "change the whole layout", "đổi bố cục") or an explicit rearrange ("rearrange", "sắp xếp lại").
+- Negations ("don't move", "no need to rearrange", "không cần sắp xếp", "chỉ đổi màu") beat everything.
+- A move that a lock makes impossible is reported in the change notes, not claimed.
+
+### What the quality gate measures, and what it does not
+
+- **The DOM render audit measures:** title clipping, content overflow, sub-readable tile size, tile overlap, off-canvas tiles, and title contrast against its computed surface.
+- **The e2e gate measures:**
+  - rendered geometry relative to the grid;
+  - frame, surface and theme attributes;
+  - builder vs `/d` vs `/embed` frame, surface, title typography and reading order;
+  - no sideways scroll at 1440, 820 and 390 px.
+- **It does NOT measure aesthetic quality** (hierarchy, balance, "looks premium"). That would need a vision critic, which is deferred; see `plan.md`.
