@@ -251,7 +251,7 @@ def requested_dimension(ctx: Any) -> str | None:
     question = str(getattr(ctx, "question", "") or "").strip()
     # KEYED ON THE QUESTION. A Skill's child context is a shallow copy of its
     # caller's, so it shares this dict — found by review: a child asked "Tổng
-    # doanh thu là bao nhiêu?" inherited its parent's "customer_state".
+    # doanh thu là bao nhiêu?" was gated by its parent's "customer_state".
     if question in cache:
         return cache[question]
     if not question:
@@ -292,19 +292,13 @@ def _question_names_this_chart_dimension(ctx: Any, chart_id: int) -> bool:
     refuse a call that answers exactly what was asked. So a chart whose own
     breakdown is named in the question is never refused, whatever won the ranking.
     """
-    return any(question_names_dimension(ctx, ref) for ref in _chart_dimensions(ctx, chart_id))
-
-
-def question_names_dimension(ctx: Any, dimension: str) -> bool:
-    """Does the viewer's question name THIS breakdown, by the words the report
-    uses for it? The same vocabulary and rule as the gate's safety valve."""
     question = str(getattr(ctx, "question", "") or "")
     wanted, wanted_raw = _dimension_terms(ctx, question)
     if not wanted and not wanted_raw:
         return False
-    key = field_key(dimension)
+    mine = set(_chart_dimensions(ctx, chart_id))
     for ref, field_words, title_words in _chart_dimension_vocabulary(ctx):
-        if field_key(ref) == key and (wanted & field_words or title_hits(ctx, wanted_raw, title_words)):
+        if ref in mine and (wanted & field_words or title_hits(ctx, wanted_raw, title_words)):
             return True
     return False
 

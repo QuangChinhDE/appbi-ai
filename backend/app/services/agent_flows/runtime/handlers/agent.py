@@ -419,42 +419,6 @@ async def run(
                         )
                     )
 
-        # A FIGURE GIVEN TO A MEMBER OF A BREAKDOWN MUST BE THAT BREAKDOWN'S.
-        #
-        # "Bang SP … 1,258,681.34 … 9.26%" (a category's figures) and "Bang SP
-        # chiếm 100%" (a row count read as a percentage) both verified clean and
-        # shipped `ok`. `dimension_attribution.check` asks what each figure IS,
-        # from the grain the ledger recorded; it never fires when the run holds
-        # figures of that breakdown's members. Same shape as the retries above:
-        # one round, kept only if it flags fewer, keeps every total, and adds no
-        # unsupported figure; what it could not fix leaves the run `partial`.
-        if node.key == rctx.answer_key and text and not provider_error:
-            from app.services.agent_flows.runtime import dimension_attribution as DA
-
-            fact = DA.check(state, getattr(rctx, "ctx", None), text)
-            if fact.get("flagged"):
-                before = fact["flagged"]
-                unsupported_before, _ = _figure_check(text, state)
-                fixed = await _retry_attribution(
-                    node, state, system, messages, text, fact,
-                    provider=provider, api_key=api_key, model=model, rt=rt,
-                )
-                if fixed and not _echoes_instruction(fixed):
-                    after = DA.check(state, getattr(rctx, "ctx", None), fixed)
-                    left, _ = _figure_check(fixed, state)
-                    if (len(after.get("flagged") or []) < len(before)
-                            and DA.kept_whole(state, fixed) >= DA.kept_whole(state, text)
-                            and len(left) <= len(unsupported_before)):
-                        text = fixed
-                        fact = {**after, "corrected": True, "flagged_before": before}
-                # Flagged at all means the run never read what was asked: the
-                # question is unanswered even when the rewrite is honest.
-                if not state.dimension_gap:
-                    state.dimension_gap = {"requested": fact["requested"], "label": fact["label"],
-                                           "satisfied": False, "source": "answer"}
-            if fact:
-                state.capability_trace.setdefault(node.key, {})["dimension"] = fact
-
         asked = getattr(getattr(rctx, "inp", None), "question", None)
         asked_text = asked.text() if hasattr(asked, "text") else ""
         if (
@@ -703,40 +667,6 @@ async def _retry_figures(
     ]
     return await _correction(state, system, retry_messages, rt=rt, provider=provider,
                              api_key=api_key, model=model, what="figure")
-
-async def _retry_attribution(
-    node: AgentNode, state: RunState, system: str, messages: list[dict], said: str,
-    fact: dict, *, provider: str, api_key: str, model: str, rt: Any = None,
-) -> str:
-    """Name each figure that cannot belong to the breakdown asked about, and why."""
-    label = str(fact.get("label") or fact.get("requested") or "chiều được hỏi")
-    lines = []
-    for f in (fact.get("flagged") or [])[:6]:
-        shown = _fmt_figure(f["value"])
-        if f.get("why") == "member_of":
-            lines.append(f"- {shown}: là số của một giá trị thuộc chiều khác "
-                         f"({', '.join(f.get('of_labels') or f.get('of') or [])}), không phải của một {label}.")
-        else:
-            lines.append(f"- {shown}%: không tỷ lệ nào trong dữ liệu đã đọc cho ra con số này.")
-    retry_messages = [
-        *messages,
-        {"role": "assistant", "content": said},
-        {
-            "role": "user",
-            "content": (
-                f"Câu hỏi hỏi theo “{label}”, nhưng không số liệu nào bạn đã đọc được tách "
-                f"theo từng {label}. Những con số sau trong câu trả lời trên không thể là số "
-                f"của một {label}:" + chr(10) + chr(10).join(lines) + chr(10) +
-                "Bỏ các con số đó (hoặc nêu đúng ý nghĩa thật của chúng) và nói thẳng báo cáo "
-                f"này không tách được số liệu được hỏi theo {label}. Giữ nguyên các con số khác, "
-                "như tổng của toàn bộ, và các dòng [FOLLOWUP] (đúng số dòng, vẫn bắt đầu bằng "
-                "[FOLLOWUP]). Không thêm phân tích mới."
-            ),
-        },
-    ]
-    return await _correction(state, system, retry_messages, rt=rt, provider=provider,
-                             api_key=api_key, model=model, what="attribution")
-
 
 async def _retry_qualifiers(
     node: AgentNode, state: RunState, system: str, messages: list[dict], said: str,

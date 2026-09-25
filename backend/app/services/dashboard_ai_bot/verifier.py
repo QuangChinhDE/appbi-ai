@@ -228,12 +228,6 @@ def _claim_alternates(answer: str) -> dict[float, tuple[float, ...]]:
 
 def extract_answer_numbers(answer: str) -> list[float]:
     """Every figure the answer actually CLAIMS, in order of appearance."""
-    return [v for v, _pct in extract_answer_claims(answer)]
-
-
-def extract_answer_claims(answer: str) -> list[tuple[float, bool]]:
-    """`extract_answer_numbers`, with whether each figure was written as a
-    percentage — the one parser, so the two can never disagree on a figure."""
     text = answer or ""
     for pattern in _STRIP_SPANS:
         text = pattern.sub(" ", text)
@@ -241,7 +235,7 @@ def extract_answer_claims(answer: str) -> list[tuple[float, bool]]:
     ordinals = {m.group(1) for m in _ORDINAL_RE.finditer(text)}
     text = _ORDINAL_RE.sub(" ", text)
 
-    out: list[tuple[float, bool]] = []
+    out: list[float] = []
     for m in _NUMBER_RE.finditer(text):
         raw = m.group("num")
         value = parse_number(raw)
@@ -267,7 +261,7 @@ def extract_answer_claims(answer: str) -> list[tuple[float, bool]]:
                 continue
             if raw in ordinals and value <= 20:
                 continue
-        out.append((value, is_pct))
+        out.append(value)
     return out
 
 

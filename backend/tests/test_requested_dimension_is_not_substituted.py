@@ -725,3 +725,21 @@ def test_a_gap_with_no_label_still_reads_as_words():
 
     assert G.dimension_label(Bare(), "dataset_table_441.customer_state") \
         == "customer state"
+
+
+def test_the_requested_dimension_is_resolved_per_question(undeclared):
+    """Found by review: a Skill's child context is a shallow copy of its caller's
+    and shared the cache, so a child asked "Tổng doanh thu là bao nhiêu?" was gated
+    by its parent's breakdown."""
+    import copy as _copy
+    from app.services.agent_flows.tools import dimension_gate as G
+
+    parent = undeclared([684, 685, 686, 687], "Bang nào có doanh thu cao nhất?")
+    assert G.requested_dimension(parent) == "dataset_table_441.customer_state"
+    child = _copy.copy(parent)
+    child.question = "Tổng doanh thu là bao nhiêu?"
+    assert G.requested_dimension(child) is None
+    res = _run(child, "rank_values", chart_id=CATEGORY_CHART)
+    assert res.get("error_code") != "dimension_mismatch", res
+    assert G.requested_dimension(parent) == "dataset_table_441.customer_state"
+

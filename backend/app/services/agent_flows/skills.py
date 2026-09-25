@@ -801,11 +801,6 @@ async def invoke_skill(
     if child_state is not None:
         state.evidence.extend(child_state.evidence)
         state.evidence_labels |= child_state.evidence_labels
-        # What those figures are OF travels with them (`runtime/grain.py`).
-        for dim, nums in (getattr(child_state, "member_figures", None) or {}).items():
-            state.member_figures.setdefault(dim, []).extend(nums)
-        state.whole_figures.extend(getattr(child_state, "whole_figures", None) or [])
-        state.ratio_figures.extend(getattr(child_state, "ratio_figures", None) or [])
         state.evidence_sources.add(f"skill:{skill_key}")
         state.prompt_tokens += child_state.prompt_tokens
         state.completion_tokens += child_state.completion_tokens

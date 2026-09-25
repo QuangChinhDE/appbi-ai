@@ -305,12 +305,6 @@ class RunState:
     #: wrong answer and left a wandering one, so the fact has to survive to the
     #: answer step where it can be said out loud.
     dimension_gap: dict[str, Any] = field(default_factory=dict)
-    #: WHAT EACH TRUSTED FIGURE IS A FIGURE OF (`runtime/grain.py`): per breakdown,
-    #: the figures of single members; the whole-report figures; the proportions.
-    #: Written only where the ledger is written, from the tools' own structure.
-    member_figures: dict[str, list[float]] = field(default_factory=dict)
-    whole_figures: list[float] = field(default_factory=list)
-    ratio_figures: list[float] = field(default_factory=list)
     #: Set by a Stop node, or by the executor when the budget runs out.
     stopped: bool = False
     stop_message: str = ""
@@ -375,28 +369,6 @@ class RunState:
         if not isinstance(result, dict) or result.get("ok") is False:
             self.add_evidence(result)
             return None
-        start = len(self.evidence)
-        try:
-            return self._register(result, tool=tool, args=args)
-        finally:
-            self.note_grain(result, self.evidence[start:])
-
-    def note_grain(self, result: Any, trusted: list[float]) -> None:
-        """Sort the figures the ledger just kept from `result` (see grain.py)."""
-        if not trusted:
-            return
-        from app.services.agent_flows.runtime.grain import sort_figures
-
-        try:
-            by_dim, whole, ratios = sort_figures(result, trusted)
-        except Exception:                                       # noqa: BLE001
-            by_dim, whole, ratios = {}, list(trusted), []
-        for d, nums in by_dim.items():
-            self.member_figures.setdefault(d, []).extend(nums)
-        self.whole_figures.extend(whole)
-        self.ratio_figures.extend(ratios)
-
-    def _register(self, result: Any, *, tool: str, args: Any) -> str | None:
         if len(self.evidence_store) >= _MAX_EVIDENCE_REFS:
             self.add_evidence(result)
             return None
