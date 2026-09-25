@@ -233,13 +233,17 @@ def test_web_capabilities_are_neither_routed_nor_listed_when_web_is_off():
 def test_a_cluster_of_near_identical_capabilities_loads_two_not_all():
     """A catalogue grows in clusters; copies of one idea do not get to fill the
     budget. The real registry has no such pair (most alike: 0.16 overlap)."""
+    # Likeness is not transitive (A~B, A~C, B!~C), so the bound is on a CLIQUE:
+    # a candidate alike to MAX_ALIKE already-loaded ones is skipped, so no
+    # MAX_ALIKE+1 loaded capabilities are all alike to each other.
+    from itertools import combinations
+
     extras = distractors(200)
     for it in INTENTS:
         view = _view(it["q"], extras=extras)
         loaded = [n for n in view.visible if n.startswith("ext")]
-        for a in loaded:
-            alike = [b for b in loaded if b != a and view._similar(a, b)]
-            assert len(alike) < CAP.MAX_ALIKE, (it["q"], a, alike)
+        for group in combinations(loaded, CAP.MAX_ALIKE + 1):
+            assert not all(view._similar(a, b) for a, b in combinations(group, 2)), (it["q"], group)
     real = CAP.build_view(NON_WEB, _ctx(), web_enabled=True, question="x")
     names = list(real._haystacks)
     assert not any(real._similar(a, b) for i, a in enumerate(names) for b in names[i + 1:]), \
