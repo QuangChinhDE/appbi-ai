@@ -199,6 +199,13 @@ export function applyStructureOperations(
           r.y += band;
         }
         rects = settle({ rects, moved, fixed, vacated });
+        // A locked visual in the way can make "to the top" impossible — the
+        // tile is routed below it and may end up where it started. Say so,
+        // rather than report a move that did not happen.
+        const blockedIds = ids.filter((id) => rects.get(id)!.y >= before.get(id)!.y);
+        if (blockedIds.length > 0) {
+          notes.push(`${blockedIds.length} visual(s) could not move above a locked visual, so they stayed below it.`);
+        }
         break;
       }
       case 'move_to_bottom': {

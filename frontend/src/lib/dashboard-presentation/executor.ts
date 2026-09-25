@@ -449,11 +449,12 @@ export function composeMutations(first: PresentationMutation, second: Presentati
   for (const [rawId, next] of Object.entries(second.layoutOverrides)) {
     const id = Number(rawId);
     const prev = (layoutOverrides[id] ?? {}) as Record<string, any>;
-    const merged: Record<string, any> = { ...prev, ...(next as Record<string, any>) };
-    if ((prev as any).styleConfigOverride || (next as any).styleConfigOverride) {
-      merged.styleConfigOverride = { ...((prev as any).styleConfigOverride ?? {}), ...((next as any).styleConfigOverride ?? {}) };
-    }
-    layoutOverrides[id] = merged as Partial<DashboardChartLayout>;
+    // The second mutation was BUILT on the preview, so a styleConfigOverride it
+    // carries is already the tile's complete style after both turns (it merged
+    // over the previewed style itself). Merging it again key-by-key would bring
+    // back a key the second turn removed — a theme reset that clears a per-tile
+    // surface, say — so it REPLACES. Geometry keys likewise take the later value.
+    layoutOverrides[id] = { ...prev, ...(next as Record<string, any>) } as Partial<DashboardChartLayout>;
   }
   const rank: Record<DesignLayer, number> = { style: 0, structure: 1, redesign: 2 };
   return {

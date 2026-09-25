@@ -1689,31 +1689,73 @@ const STYLE_REPLY = {
 
 check('the user\'s words grant the layer; ambiguity is style', () => {
   const cases = [
+    // — style: looks, brands, moods; nouns alone grant nothing —
     ['Make this dashboard prettier', 'style'],
     ['Làm dashboard này đẹp hơn', 'style'],
     ['Make it more premium, like an enterprise SaaS', 'style'],
     ['Đổi sang style tối giản', 'style'],
     ['dark mode please', 'style'],
     ['Apply our brand colours #1E3A8A', 'style'],
+    ['Make the layout feel cleaner and more modern', 'style'],
+    ['I want a calmer layout', 'style'],
+    ['Bố cục trông rối quá, làm cho sạch sẽ hơn', 'style'],
+    ['Cho bố cục nhìn chuyên nghiệp hơn', 'style'],
+    ['Make the title font bigger', 'style'],
+    ['Tăng cỡ chữ tiêu đề', 'style'],
+    ['make it bigger', 'style'],                  // no selection → "it" names nothing
+    ['Cho nó tối hơn một chút', 'style'],
+    // — negation and "keep" win, including multi-intent sentences —
     ['Giữ nguyên bố cục, làm cho sang hơn', 'style'],
     ['keep the layout but make it modern', 'style'],
     ['Rearrange it to look nicer but don\'t move anything', 'style'],
+    ['No need to rearrange, just make it dark', 'style'],
+    ['Không cần sắp xếp lại, chỉ đổi màu', 'style'],
+    ['Đừng di chuyển chart nào, làm đẹp hơn thôi', 'style'],
+    ['Chỉ đổi màu thôi', 'style'],
+    ['Make it dark without moving the charts', 'style'],
+    // — structure: a move/size verb AND something to move —
     ['Gom KPI lên trên', 'structure'],
     ['Put the KPIs on top', 'structure'],
     ['Make the revenue chart bigger', 'structure'],
     ['Đưa filter sang trái', 'structure'],
     ['Cho Revenue làm chart chính', 'structure'],
     ['move the table to the bottom', 'structure'],
+    ['Make it dark and put the KPIs in one row at the top', 'structure'],
+    ['Làm biểu đồ doanh thu to hơn', 'structure'],
+    ['Đặt hai biểu đồ cạnh nhau', 'structure'],
+    ['sắp xếp KPI lên trên cùng', 'structure'],
+    // — redesign: an explicit request to rebuild or rearrange the page —
     ['Sắp xếp lại cho đẹp hơn', 'redesign'],
     ['rearrange this page', 'redesign'],
     ['Redesign this page for the CEO', 'redesign'],
     ['Thiết kế lại trang này cho CEO', 'redesign'],
     ['Biến nó thành executive report', 'redesign'],
     ['Create an executive dashboard composition', 'redesign'],
+    ['Give me a completely different layout', 'redesign'],
+    ['Đổi bố cục', 'redesign'],
+    ['change the whole layout', 'redesign'],
   ];
+  const wrong = [];
   for (const [prompt, expected] of cases) {
-    assertEqual(intentMod.inferDesignLayer(prompt).layer, expected, `"${prompt}"`);
+    const got = intentMod.inferDesignLayer(prompt).layer;
+    if (got !== expected) wrong.push(`"${prompt}" → ${got} (expected ${expected})`);
   }
+  assertEqual(wrong, [], 'intent misread');
+});
+
+check('with a selection, "this / it" names something to move — without one, it does not', () => {
+  assertEqual(intentMod.inferDesignLayer('make it bigger', { hasSelection: true }).layer, 'structure', 'a selected visual could not be resized by "it"');
+  assertEqual(intentMod.inferDesignLayer('Cho cái này rộng hơn', { hasSelection: true }).layer, 'structure', 'VI selection reference missed');
+  assertEqual(intentMod.inferDesignLayer('make it darker', { hasSelection: true }).layer, 'style', 'a colour request on a selection became a move');
+  assertEqual(intentMod.inferDesignLayer('make it bigger', { hasSelection: false }).layer, 'style', '"it" without a selection granted a move');
+});
+
+check('the permission is enforced at the boundary, not trusted to the model', () => {
+  // Even a model that answers "redesign" to "make it prettier" is clamped.
+  const granted = intentMod.inferDesignLayer('make it prettier').layer;
+  const { plan } = validator.coerceModelPlan({ layer: 'redesign', direction: {}, sections: [{ primitive: 'full_width', visuals: [105] }] }, { grantedLayer: granted });
+  assertEqual(plan.layer, 'style', 'the model widened its own permission');
+  assertEqual(plan.sections, [], 'the recomposition survived the clamp');
 });
 
 check('a plan can ask for less than was granted, never more', () => {
@@ -1955,6 +1997,16 @@ check('STRUCTURE proof: "KPIs on top" moves the KPIs and only shifts the rest do
   assert(bottom <= Math.max(...Object.values(before).map((r) => r.y + r.h)), 'moving the KPIs grew the page');
 });
 
+check('STRUCTURE proof: a move a lock makes impossible is reported, not claimed', () => {
+  // The locked trend spans x 0–24 from y=0; the table (14 rows) cannot fit above it.
+  const tiles = authoredPage().map((t) => (t.id === 1 ? { ...t, layout: { ...t.layout, locked: true } } : t));
+  const built = build(tiles, { layer: 'structure', direction: {}, sections: [], visualPreferences: {}, structure: { operations: [{ op: 'move_to_top', visuals: [3] }] } });
+  assert(built.ok, 'refused');
+  const after = rectsById(executor.applyMutationToTiles(tiles, built.mutation));
+  assertEqual(after[1], rectsById(tiles)[1], 'the locked visual moved');
+  assert(built.mutation.notes.some((n) => /could not move above a locked/.test(n)), 'the impossible move was not disclosed');
+});
+
 check('STRUCTURE proof: "make this bigger" disturbs only what it would cover', () => {
   const tiles = authoredPage();
   const built = build(tiles, { layer: 'structure', direction: {}, sections: [], visualPreferences: {}, structure: { operations: [{ op: 'resize', visuals: [3], size: 'larger' }] } });
@@ -2024,6 +2076,27 @@ check('PREVIEW proof: a follow-up on an unapplied preview composes, and the comp
     composed.map((t) => t.layout.styleConfigOverride ?? null),
     sequential.map((t) => t.layout.styleConfigOverride ?? null),
     'the composite does not reproduce what the user saw (style)',
+  );
+});
+
+check('PREVIEW proof: a follow-up turn that REMOVES a style key does not resurrect it', () => {
+  // Turn 1 darkens a chart; turn 2 changes the report theme, which resets
+  // per-tile surfaces so the new theme shows. The composite must be what the
+  // user saw after turn 2 — no dark chart coming back from turn 1.
+  const tiles = makeTiles();
+  const first = build(tiles, { layer: 'style', direction: {}, sections: [], visualPreferences: {}, tileStyles: { 105: { chartSurface: 'dark' } } }, { targets: [105] });
+  assert(first.ok, 'turn 1 refused');
+  const previewed = executor.applyMutationToTiles(tiles, first.mutation);
+  const second = build(previewed, { layer: 'style', direction: {}, sections: [], visualPreferences: {}, themeIntent: { colorway: 'indigo', accent: '#1E3A8A' } });
+  assert(second.ok, 'turn 2 refused');
+  const sequential = executor.applyMutationToTiles(previewed, second.mutation);
+  assert(!('chartSurface' in (sequential.find((t) => t.id === 105).layout.styleConfigOverride ?? {})), 'fixture: turn 2 did not reset the surface');
+  const composite = executor.composeMutations(first.mutation, second.mutation);
+  const composed = executor.applyMutationToTiles(tiles, composite);
+  assertEqual(
+    composed.find((t) => t.id === 105).layout.styleConfigOverride ?? {},
+    sequential.find((t) => t.id === 105).layout.styleConfigOverride ?? {},
+    'a style key turn 2 removed came back from turn 1',
   );
 });
 

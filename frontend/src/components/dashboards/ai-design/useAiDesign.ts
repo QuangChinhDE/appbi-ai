@@ -107,10 +107,18 @@ export function useAiDesign(input: UseAiDesignInput) {
     [committedTiles, pending],
   );
 
+  /** The theme the user SEES: the page theme with an unapplied preview's theme
+   *  laid over it. A follow-up turn is planned and resolved against this, so
+   *  "now a bit lighter" builds on the previewed look, not the one before it. */
+  const seenTheme = React.useMemo(() => {
+    if (!pending || Object.keys(pending.mutation.themePatch ?? {}).length === 0) return input.currentTheme;
+    return { ...(input.currentTheme ?? {}), ...pending.mutation.themePatch } as DashboardThemeConfig;
+  }, [input.currentTheme, pending]);
+
   const snapshot = React.useMemo(() => {
     if (!input.dashboard) return null;
     return buildPresentationSnapshot({
-      dashboard: input.dashboard,
+      dashboard: { ...input.dashboard, theme_config: seenTheme ?? input.dashboard.theme_config } as Dashboard,
       tiles: baselineTiles,
       pageId: input.activePageId,
       pageName: input.activePageName,
@@ -120,7 +128,7 @@ export function useAiDesign(input: UseAiDesignInput) {
       fieldMeta: input.fieldMeta,
     });
   }, [
-    input.dashboard, baselineTiles, input.activePageId, input.activePageName,
+    input.dashboard, seenTheme, baselineTiles, input.activePageId, input.activePageName,
     input.pageCount, input.slicers, input.slicerDock, input.fieldMeta,
   ]);
 
@@ -139,19 +147,19 @@ export function useAiDesign(input: UseAiDesignInput) {
       snapshot: snapshot!,
       tiles: baselineTiles,
       pageId: input.activePageId,
-      currentTheme: input.currentTheme,
+      currentTheme: seenTheme,
       gridGapPx: input.gridGapPx,
       targets,
     });
     built.mutation.notes = [...boundaryNotes, ...built.mutation.notes];
     return { plan, built };
-  }, [snapshot, baselineTiles, input.activePageId, input.currentTheme, input.gridGapPx]);
+  }, [snapshot, baselineTiles, input.activePageId, seenTheme, input.gridGapPx]);
 
   const submit = React.useCallback(async (prompt: string, images?: string[]) => {
     if (!snapshot || busy) return;
     const refs = (images ?? []).filter((img) => typeof img === 'string' && img.length > 0);
     const targets = [...selected];
-    const granted = inferDesignLayer(prompt).layer;
+    const granted = inferDesignLayer(prompt, { hasSelection: targets.length > 0 }).layer;
     setBusy(true);
     setTurns((previous) => [...previous, { role: 'user', text: prompt, images: refs.length ? refs : undefined }]);
 
