@@ -207,6 +207,16 @@ class ToolCallingStrategy:
                 })
 
             for call in runnable:
+                # THE ROOM IS RE-READ PER CALL, not once per batch: a Skill in the
+                # batch spends its child's share, and the next call's room is what
+                # is left after that (found by review: the batch overshot the run
+                # ceiling and the step died before the answer).
+                if rt.tool_room() <= 0:
+                    messages.append({
+                        "role": "tool", "tool_call_id": call.tool_call_id,
+                        "name": call.tool_name, "result": rt.budget_exhausted(),
+                    })
+                    continue
                 async for ev in rt.invoke(call):
                     yield ev
                 messages.append({

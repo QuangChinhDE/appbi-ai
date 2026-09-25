@@ -84,11 +84,19 @@ class _Refused(Exception):
         self.code = code
 
 
+#: What compute IS, said on every refusal. Measured live: a step with no way to
+#: read a KPI's value called `compute` to read it, was refused, and answered "no
+#: data". Compute works on results already read; it never reads the report.
+_RECOVERY = ("compute chỉ tính trên kết quả công cụ ĐÃ CÓ trong lượt này (evidence_ref); "
+             "nó không tự đọc số liệu từ báo cáo. Muốn có giá trị của một chỉ số, đọc nó "
+             "bằng một khả năng đọc số liệu trước (dùng find_capability nếu chưa có).")
+
+
 def _err(code: str, message: str) -> dict:
     # NOT retryable: the same arguments give the same answer, so the retry policy
     # may stop an identical repeat. Changing the arguments — the fix every one of
     # these messages names — always runs again.
-    return R.err(message, code=code, retryable=False)
+    return R.err(message, code=code, retryable=False, recovery=_RECOVERY)
 
 
 # ── references ───────────────────────────────────────────────────────────────
@@ -201,13 +209,27 @@ def resolve_reference(store: dict[str, Any], ref: str, path: str) -> tuple[float
         root = result["data"]
     value = _walk(root, segments, path) if segments else result.get("data")
     data = result.get("data") if isinstance(result.get("data"), dict) else {}
+    trusted = data.get("provenance") not in ("unreferenced",)
+    # A RESULT THAT SAYS WHICH OF ITS NUMBERS IT VOUCHES FOR IS TAKEN AT ITS WORD.
+    # `compute` and a Skill declare `evidence_paths`: the fields that hold a
+    # certified figure (compute: `result`, when referenced; a number Skill:
+    # `value`, when its child certified it; a text Skill: none). Everything else
+    # in them — `literals`, echoed `inputs[*].value`, a Skill's prose `answer` —
+    # is a number the result MENTIONS, not one it vouches for. Found by review:
+    # `literals[0]` of a referenced compute, and a text Skill's answer "13590000",
+    # were both certified by the next compute. Structural, by field, never by
+    # matching values.
+    if isinstance(data, dict) and ("evidence_paths" in data or "evidence_values" in data):
+        fields = list(segments[1:]) if root is result and segments[:1] == ["data"] else list(segments)
+        head = fields[0] if fields and isinstance(fields[0], str) else ""
+        trusted = trusted and head in set(data.get("evidence_paths") or [])
     return _numeric(value, f"{ref}:{path or '(gốc)'}"), {
         "tool": entry.get("tool") or "",
         "step": entry.get("source") or "",
         # TAINT TRAVELS. A reference to a result that was itself built on a typed
         # number is not evidence: without this, pointing a second formula at the
         # first one's `result` laundered an invented input into a certified one.
-        "trusted": data.get("provenance") not in ("unreferenced",),
+        "trusted": trusted,
     }
 
 
@@ -358,6 +380,9 @@ def tool_compute(ctx: Any, args: dict) -> dict:
     # otherwise. Declared rather than left to the harvester, which would also
     # pick up `literals` and the echoed input values.
     data["evidence_values"] = [data["result"]] if referenced else []
+    # …and WHERE: only `result`. `literals` and the echoed input values are
+    # numbers this result mentions, not ones it vouches for.
+    data["evidence_paths"] = ["result"] if referenced else []
     if not referenced:
         loose = [i["name"] for i in inputs if not i["referenced"]]
         data["note"] = (
@@ -450,7 +475,9 @@ OUTPUT_SCHEMA = {
         "literals": {"type": "array", "items": {"type": "number"}},
         "provenance": {"type": "string", "enum": ["referenced", "unreferenced"]},
         "evidence_values": {"type": "array", "items": {"type": "number"}},
+        "evidence_paths": {"type": "array", "items": {"type": "string"}},
         "note": {"type": "string"},
     },
-    "required": ["expression", "result", "inputs", "literals", "provenance", "evidence_values"],
+    "required": ["expression", "result", "inputs", "literals", "provenance", "evidence_values",
+                 "evidence_paths"],
 }

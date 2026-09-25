@@ -304,7 +304,14 @@ class CapabilityView:
                     chosen.append(name)
             used = sum(self._schema_size(n) for n in chosen)
             ranked = [(n, s) for n, s in self.rank(self.question, context=self.context) if s > 0]
-            top = ranked[0][1] if ranked else 0.0
+            # THE CUTOFF IS RELATIVE TO THE BEST CANDIDATE, not to the core. The
+            # core is loaded whatever it scores; letting a core tool set the bar
+            # meant a question that names a metric ("tỷ lệ giao đúng hẹn là bao
+            # nhiêu") ranked `search_business_assets` at 83 and cut
+            # `total_measure` at 16 — measured live: the routed step then had no
+            # way to read a KPI's value and answered "no data".
+            candidates = [s for n, s in ranked if n not in chosen]
+            top = candidates[0] if candidates else 0.0
             for name, score in ranked:
                 if len(chosen) >= self.limit or score < top * RELATIVE_CUTOFF:
                     break
@@ -480,12 +487,19 @@ class CapabilityView:
             },
         }
 
-    def load_on_refusal(self, name: str) -> None:
+    def load_on_refusal(self, name: str) -> bool:
         """An eligible capability the model called without having been shown it:
-        refused for this call, loaded for the next."""
-        if name in self.eligible and name not in self.sticky:
-            self.sticky.append(name)
-            self.auto_loaded.append({"round": len(self.rounds), "name": name})
+        refused for this call, loaded for the next — at most `MAX_LOAD` per step.
+        Found by review: uncapped, a model spraying names grew one round from 6
+        loaded capabilities to 29 with no discovery, which is full exposure again
+        by another door. Past the cap it is refused and pointed at discovery."""
+        if name in self.sticky:
+            return True
+        if name not in self.eligible or len(self.auto_loaded) >= MAX_LOAD:
+            return False
+        self.sticky.append(name)
+        self.auto_loaded.append({"round": len(self.rounds), "name": name})
+        return True
 
     # ── bookkeeping ──────────────────────────────────────────────────────────
     def note_invoked(self, name: str) -> None:

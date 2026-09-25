@@ -21,7 +21,9 @@ that only recognises its own examples is not a router.
 
 THE BARS, AND WHERE THEY CAME FROM
 ----------------------------------
-Measured when this landed (budget 10000): round-one recall 47/48, discovery 46/48,
+Measured when this landed (budget 10000): round-one recall 47/48, discovery 46/48
+(then 50/52 and 49/52 once the KPI-value intents were added — the class the first
+live eval showed the set was missing),
 ~10.5k schema characters per round against 24.2k shown in full; with 500
 distractors 46/48 at ~11.7k against 321k. The bars below sit under those numbers
 with room for one or two intents of noise — they exist to catch a regression, not
@@ -145,7 +147,7 @@ def _measure(extras=None) -> dict:
 
 
 def test_there_are_enough_intents_to_mean_something():
-    assert len(INTENTS) >= 40
+    assert len(INTENTS) >= 50
     vi = sum(1 for it in INTENTS if any(ch in it["q"] for ch in "ăâđêôơưàáảãạ"))
     assert vi >= 15 and len(INTENTS) - vi >= 15, "both languages are measured"
     names = set(tool_registry.all_tools())
@@ -155,12 +157,12 @@ def test_there_are_enough_intents_to_mean_something():
 
 def test_the_capability_a_question_needs_is_loaded_on_round_one():
     m = _measure()
-    assert m["served"] >= 44, (m["served"], m["misses"])
+    assert m["served"] >= 0.9 * len(INTENTS), (m["served"], m["misses"])
 
 
 def test_describing_the_need_finds_what_the_question_needs():
     m = _measure()
-    assert m["discovered"] >= 43, m["discovered"]
+    assert m["discovered"] >= 0.88 * len(INTENTS), m["discovered"]
 
 
 def test_a_routed_round_costs_about_half_of_showing_everything():

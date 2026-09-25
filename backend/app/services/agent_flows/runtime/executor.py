@@ -561,6 +561,7 @@ async def _run_node(
     input_before = _vars_preview(state)
     attempts = node.retry.max_attempts if node.retry else 1
     last_error = ""
+    budget_refused = False
 
     for attempt in range(1, attempts + 1):
         try:
@@ -656,6 +657,7 @@ async def _run_node(
             last_error = str(exc)[:300]
             logger.warning("[flow] node '%s' attempt %s failed: %s", node.key, attempt, exc)
             if isinstance(exc, StepBudgetExhausted):
+                budget_refused = True
                 # Retrying cannot conjure calls the rest of the flow is owed. Said
                 # once, to the reader: the answer exists but did not get every step.
                 if not any(n.code == "steps_skipped_for_budget" for n in state.notices):
@@ -695,7 +697,12 @@ async def _run_node(
             text=f"Bước “{label}” gặp lỗi và bị bỏ qua.",
             extra={"step": node.key},
         )
-        if node.on_error == "stop":
+        # A BUDGET REFUSAL IS NOT THE STEP FAILING. The step was never allowed to
+        # start, so that the steps after it could run; honouring `on_error="stop"`
+        # here would stop the very steps the refusal exists to protect. Found by
+        # review: a loop body with on_error=stop, refused budget on iteration 2,
+        # ended the run before its answer.
+        if node.on_error == "stop" and not budget_refused:
             state.stopped = True
         return
 
@@ -1030,7 +1037,8 @@ async def _run_coordinate(
     # reserved by the enclosing body).
     lane_minimum = [sum(_minimum(n, rctx)[0] for n in s.body) for s in picked]
     lane_tools = [sum(_minimum(n, rctx)[1] for n in s.body) for s in picked]
-    for index, specialist in enumerate(picked):
+    for specialist in picked:
+        index = picked.index(specialist)
         # LANES ARE SIBLINGS, NOT A CHAIN.
         #
         # Each specialist starts from what the coordinator was handed. Without

@@ -97,7 +97,9 @@ def skill_lookup_for(db: Any) -> SkillLookup | None:
         ident = (key, version)
         if ident not in cache:
             found = skills.resolve_skill(db, key, version)
-            cache[ident] = found[1] if found else None
+            # A disabled version is refused at invocation, which costs nothing:
+            # reserving for it would starve the steps that will actually run.
+            cache[ident] = found[1] if found and skills.lifecycle_of(found[0]) != skills.DISABLED else None
         return cache[ident]
 
     return lookup

@@ -182,6 +182,7 @@ jobs:
             tests/test_reader_rating_reaches_the_run.py \
             tests/test_answer_text_is_published_not_rederived.py \
             tests/test_public_rating_trust_boundary.py \
+            tests/test_adversarial_review_v3_closure.py \
             tests/test_documented_invariants_are_enforced.py \
             tests/test_skill_lifecycle_and_revocation.py \
             tests/test_compute_typed_contract.py \

@@ -483,6 +483,7 @@ def save_draft(
 def publish(
     db: Session, brain_key: str, version: int, actor_email: str, *,
     pin_incompatible: bool = True, acknowledge_problems: bool = False,
+    allow_deprecated_pins: bool = False,
 ) -> dict[str, Any]:
     """Make one version live, pinning the links it would break.
 
@@ -538,7 +539,8 @@ def publish(
 
     # A DEPRECATED PIN may keep running, but republishing onto it is the author's
     # decision on the record, not a default: acknowledgeable, like the rest.
-    problems = flow.blocking_problems() + skills_service.deprecated_pins(db, flow)
+    problems = flow.blocking_problems() + (
+        [] if allow_deprecated_pins else skills_service.deprecated_pins(db, flow))
     if problems and not acknowledge_problems:
         raise BrainError(
             409,
@@ -647,7 +649,12 @@ def rollback(db: Session, brain_key: str, actor_email: str) -> dict[str, Any]:
     )
     if prev is None:
         raise BrainError(409, "Chưa có phiên bản nào từng phát hành để quay lại")
-    out = publish(db, brain_key, prev.version, actor_email, pin_incompatible=False)
+    # Re-publishing a version that already ran: its deprecated Skill pins were
+    # accepted once and keep running anyway — refusing the rollback over them
+    # would leave only the broken current version (found by review). Disabled
+    # pins and every other hard rule still apply inside `publish`.
+    out = publish(db, brain_key, prev.version, actor_email, pin_incompatible=False,
+                  allow_deprecated_pins=True)
     _audit(db, "AGENT_FLOW_ROLLED_BACK", brain_key, actor_email, {"version": prev.version})
     return out
 

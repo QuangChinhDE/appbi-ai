@@ -1102,6 +1102,16 @@ async def run_web(
             url = (item or {}).get("url") or ""
             if not url or not _domain_ok(url, node.allowed_domains):
                 continue
+            # OPTIONAL READS STOP AT THE RESERVATION. The search was this step's
+            # minimum; each page is extra, and an extra call may not spend what
+            # the steps after it are owed (found by review: three fetches ran
+            # the run out before its answer).
+            if state.budget.tools_left() <= 0:
+                state.notices.append(Notice(
+                    code="web_pages_skipped_for_budget", severity="info", node_key=node.key,
+                    text="Bỏ bớt trang web cần đọc vì số lượt công cụ còn lại được giữ cho các bước sau.",
+                ))
+                break
             pages.append(_call(rctx, state, "fetch_url", {"url": url}))
 
     for item in kept[:5]:

@@ -167,15 +167,17 @@ class Budget:
             raise BudgetExhausted("câu hỏi này đã chạy quá thời gian cho phép")
 
     def check(self) -> None:
-        """Every ceiling at once — for the executor, BETWEEN nodes.
+        """For the executor, BETWEEN nodes: may ANY step still run?
 
-        Not for spending: a ceiling must gate the resource it counts and nothing
-        else. See `spend_llm` / `spend_tool`.
+        Only when nothing can: both ceilings spent, or the clock. One ceiling
+        spent is not the end of the run — a Tool step that used the last tool call
+        must not stop the answering agent, which needs only a model call. Found by
+        review: `[tool step, agent]` funded 5 model calls and 1 tool call died
+        `budget_exhausted` before the answer, on a link preflight accepted. Each
+        resource is still gated where it is SPENT (`spend_llm`, `spend_tool`).
         """
-        if self.llm_calls >= self.max_llm_calls:
-            raise BudgetExhausted("đã dùng hết số lượt gọi mô hình cho câu hỏi này")
-        if self.tool_calls >= self.max_tool_calls:
-            raise BudgetExhausted("đã dùng hết số lượt gọi công cụ cho câu hỏi này")
+        if self.llm_calls >= self.max_llm_calls and self.tool_calls >= self.max_tool_calls:
+            raise BudgetExhausted("đã dùng hết số lượt gọi mô hình và công cụ cho câu hỏi này")
         self._check_clock()
 
     def spend_llm(self) -> None:
@@ -425,7 +427,10 @@ class RunState:
         a genuinely misspelled variable is `Flow.warnings()` at authoring time,
         where the author can still see it.
         """
-        parts = [p for p in (dotted or "").split(".") if p]
+        # `items[0].value` and `items.0.value` are the same path — the bracket
+        # form is what a JSON reader writes and what the builder documents.
+        dotted = (dotted or "").replace("[", ".").replace("]", "")
+        parts = [p.strip() for p in dotted.split(".") if p.strip()]
         if not parts:
             return None
         head, *rest = parts

@@ -53,6 +53,8 @@ itself, and a brain's steps ARE the plan, so it is not registered here.
 """
 from __future__ import annotations
 
+import re
+
 import json
 import logging
 import threading
@@ -964,6 +966,36 @@ def admission_refusal(ctx: Any, name: str) -> dict | None:
     return _capability_refusal(ctx, spec)
 
 
+_INT_STRING = re.compile(r"^\s*-?\d+\s*$")
+_NUM_STRING = re.compile(r"^\s*-?\d+(\.\d+)?\s*$")
+
+
+def _coerce_numeric_args(spec: "ToolSpec", args: dict) -> dict:
+    """`"686"` for an integer argument IS 686 — said once, here, for every tool.
+
+    Measured live: models pass ids as strings often enough that `rank_values`
+    refused `chart_id` as `bad_argument` in both the full-visibility and the
+    routed arm, three times in a row on one question, and the step answered "no
+    data" for a report that had it. Only a string that is EXACTLY a number, only
+    for a property the tool's own schema types as integer/number; anything else
+    is left for the tool to refuse. A new dict: the caller's is not mutated.
+    """
+    definition = spec.definition or {}
+    props = ((definition.get("input_schema") or definition.get("parameters") or {})
+             .get("properties") or {})
+    out = dict(args)
+    for key, value in args.items():
+        kind = (props.get(key) or {}).get("type")
+        if kind == "integer":
+            if isinstance(value, str) and _INT_STRING.match(value):
+                out[key] = int(value)
+            elif isinstance(value, float) and value.is_integer():
+                out[key] = int(value)
+        elif kind == "number" and isinstance(value, str) and _NUM_STRING.match(value):
+            out[key] = float(value)
+    return out
+
+
 def execute(
     ctx: Any,
     name: str,
@@ -1000,7 +1032,7 @@ def execute(
     if denied is not None:
         return denied
 
-    args = args or {}
+    args = _coerce_numeric_args(spec, args or {})
     # AND THE QUESTION'S OWN BREAKDOWN, for tools whose result IS per-group.
     #
     # Measured: asked which STATE had the highest revenue, the answering Agent

@@ -184,7 +184,7 @@ class SkillBudget:
 PARENT_ANSWER_RESERVE = 1
 
 
-def child_budget(parent: Any, *, reading_round: int = 1) -> SkillBudget:
+def child_budget(parent: Any, *, reading_round: int = 1, mandatory: bool = False) -> SkillBudget:
     """Everything the CALLING step may still spend, minus the round in which it
     reads the Skill's result.
 
@@ -201,7 +201,10 @@ def child_budget(parent: Any, *, reading_round: int = 1) -> SkillBudget:
     same rule through `tools_left(answering=False)`, which already holds back the
     parent's answer reserve.
     """
-    tools_left = parent.tools_left(answering=False)
+    # A mandatory Skill STEP is bounded by the hard reservation only; the soft
+    # `answer_reserve` (tools kept back for the answering agent's own reading)
+    # would otherwise starve a verifier that preflight accepted (found by review).
+    tools_left = parent.tools_left(answering=mandatory)
     llm_left = parent.llm_available() if hasattr(parent, "llm_available") \
         else max(0, parent.max_llm_calls - parent.llm_calls)
     return SkillBudget(parent, tool_cap=tools_left,
@@ -706,7 +709,8 @@ async def invoke_skill(
     # the executor's reservation. Charging a Skill step for a reading round that
     # never happens is how a mandatory verifier was refused on the minimum budget.
     budget = child_budget(state.budget,
-                          reading_round=PARENT_ANSWER_RESERVE if caller_reads_result else 0)
+                          reading_round=PARENT_ANSWER_RESERVE if caller_reads_result else 0,
+                          mandatory=not caller_reads_result)
     if budget.max_tool_calls <= 0 and budget.max_llm_calls <= 0:
         outcome["result"] = _err("không còn ngân sách cho Skill ở lượt này", "budget_exhausted")
         return
@@ -799,8 +803,10 @@ async def invoke_skill(
         "child_run_key": child_inp.request.id,
         # Vouches for NO number itself: the child's trusted ledger was merged
         # above, figure by figure. Harvesting this payload would certify an
-        # answer string that happens to parse as a number.
+        # answer string that happens to parse as a number — and so would a
+        # formula pointed at `answer` (`evidence_paths` says: no field).
         "evidence_values": [],
+        "evidence_paths": [],
     }
     if contract.returns == "number":
         # THE DECLARED TYPE, OR NOTHING. Read by the runtime from the ONE result the
@@ -827,6 +833,7 @@ async def invoke_skill(
             # A figure the child certified is certified here; one it built on a
             # typed number is not — by provenance, never by matching values.
             "evidence_values": [figure] if trusted else [],
+            "evidence_paths": ["value"] if trusted else [],
         })
         if not trusted:
             data["note"] = "Con số này được Skill tính từ một số chưa được xác thực."

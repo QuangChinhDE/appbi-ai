@@ -428,6 +428,8 @@ class AgentRuntime:
         #: run log can do.
         self.provider_error = ""
         self.last_reply = ModelReply()
+        #: None until the first round is asked (nothing to compare against yet).
+        self.offered_names: set[str] | None = None
         self.last_result: dict = {}
         self._previous_scope: Any = None
         #: Rounds this step was made to answer on (no tools offered) — recorded so
@@ -548,16 +550,28 @@ class AgentRuntime:
         # THE VIEW FOR THIS ROUND. Shortlisted: the model is shown the core, what
         # it discovered or used, and the best-ranked for the question. Otherwise
         # the schemas are untouched and the round is only recorded.
-        if self._withdrawn:
+        if self._withdrawn or (final and self.schemas):
+            # Nothing is offered on this round, so nothing is shown, sized or
+            # recorded as shown.
             self.view.rounds.append([])
+            self.view.rounds_chars.append(0)
+            if not self._withdrawn:
+                self.final_rounds += 1
         else:
             self.view.refresh()
             if self.view.shortlisted:
                 self.schemas = self.view.schemas(web_enabled=self.web_enabled)
-        offered = [] if final else self.schemas
-        if not offered and self.schemas:
-            self.view.rounds[-1:] = [[]]
-            self.final_rounds += 1
+        offered = [] if (final or self._withdrawn) else self.schemas
+        #: This round was DELIBERATELY answer-only: the step has tools, and this
+        #: round offers none (its last call, or tools withdrawn). Distinct from a
+        #: step that never had an eligible tool — there a call must still reach
+        #: the registry, so its refusal (`not_granted`, the I5 tripwire) fires.
+        self.answer_only_round = bool(self._withdrawn or (final and self.schemas))
+        #: What the model could call THIS round — `invoke` refuses anything else,
+        #: so a call a model produces on an answer-only round (or on a name it
+        #: remembers) does not run.
+        self.offered_names = {str(d.get("name") or (d.get("function") or {}).get("name") or "")
+                              for d in offered}
 
         # THE RUN BUDGET HAS TO BIND DURING A CALL, NOT ONLY BETWEEN NODES.
         #
@@ -649,6 +663,10 @@ class AgentRuntime:
         # guard — so a request the runtime had already refused still cost a tool
         # call. Spending inside the executor makes the two inseparable: a call
         # that does not reach `tool_registry.execute` does not reach the budget.
+        # Never past the ceiling, whatever the strategy counted: a call with no
+        # room is answered, not raised — a raise here ends the whole run.
+        if self.tool_room() <= 0:
+            return self.budget_exhausted()
         self.state.budget.spend_tool()
         self.calls_made += 1
         return tool_registry.execute(self.rctx.ctx, name, args, allowed=self.allowed)
@@ -673,6 +691,9 @@ class AgentRuntime:
             return
         # One call, like any capability: the node ceiling and the run budget see
         # it. What the Skill does inside is charged to the same budget by the child.
+        if self.tool_room() <= 0:
+            self.last_result = self.budget_exhausted()
+            return
         self.state.budget.spend_tool()
         self.calls_made += 1
         outcome: dict = {}
@@ -729,6 +750,19 @@ class AgentRuntime:
         from app.services.agent_flows.contract import skill_key_of_function
 
         skill_key = skill_key_of_function(call.tool_name or "")
+        if getattr(self, "answer_only_round", False):
+            # NOTHING WAS OFFERED THIS ROUND — an answer-only round (the budget's
+            # last call, the round ceiling, or tools withdrawn). A call the model
+            # produced anyway does not run — not a tool, not a Skill, not even
+            # discovery. Found by review: it passed `is_visible` and executed.
+            result = {"ok": False, "error_code": "tools_withdrawn", "retryable": False,
+                      "error": "Lượt này không có công cụ — hãy trả lời bằng những gì đã có."}
+            view.note_rejected(call.tool_name, "tools_withdrawn")
+            state.tool_log.append(f"{call.tool_name}(tools_withdrawn)")
+            self.last_result = result
+            yield AgentEvent(type="tool_result", tool_call_id=call.tool_call_id,
+                             tool_name=call.tool_name, tool_result=result)
+            return
         if view.shortlisted and call.tool_name == FIND_CAPABILITY and not malformed:
             # DISCOVERY. Answered by the view, not the registry: it reads no data
             # and it can only load what this step is already eligible for.
@@ -737,7 +771,7 @@ class AgentRuntime:
             args = call.tool_args or {}
             need = str(args.get("need") or args.get("query") or "")
             names = args.get("names") if isinstance(args.get("names"), list) else []
-            result = view.discover(need, names)
+            result = view.discover(need, names) if self.tool_room() > 0 else self.budget_exhausted()
             if result.get("ok"):
                 state.budget.spend_tool()
                 self.calls_made += 1
@@ -755,13 +789,13 @@ class AgentRuntime:
             )
             return
         if view.shortlisted and not malformed and call.tool_name in view.eligible \
-                and not view.is_visible(call.tool_name):
+                and call.tool_name not in (self.offered_names or ()):
             # GRANTED, BUT NOT SHOWN THIS TURN. Not run from memory: the model has
             # not seen the schema it is filling in. It IS eligible, so it is loaded
             # for the next round — the correction costs no search. Not charged
             # (nothing ran), and not memoised as a final refusal, because on the
             # next round the same call is legitimate.
-            view.load_on_refusal(call.tool_name)
+            loaded = view.load_on_refusal(call.tool_name)
             result = {
                 "ok": False,
                 "error_code": "capability_not_visible",
@@ -769,6 +803,9 @@ class AgentRuntime:
                     f"'{call.tool_name}' chưa có định nghĩa đầy đủ ở lượt này nên chưa "
                     "chạy. Định nghĩa của nó đã được nạp — gọi lại ở lượt tiếp theo với "
                     "tham số đúng theo định nghĩa."
+                    if loaded else
+                    f"'{call.tool_name}' chưa có định nghĩa ở lượt này và bước đã tự nạp đủ "
+                    f"số khả năng cho phép — dùng {FIND_CAPABILITY} để nạp đúng thứ cần."
                 ),
                 "retryable": True,
             }
