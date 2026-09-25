@@ -681,6 +681,7 @@ def preview_step(
     provider: str = "",
     model: str = "",
     base_system_prompt: str = "",
+    db: Any = None,
 ) -> dict:
     """What ONE step will hand the model, for a question the author types.
 
@@ -733,7 +734,11 @@ def preview_step(
     rctx = executor.RunContext(
         inp=inp, flow=flow, ctx=ctx, api_key="",
         base_system_prompt=base_system_prompt,
-        answer_key=flow.answering_key(), db=None,
+        # THE DATABASE, for reads only: a granted Skill is resolved (and its
+        # lifecycle and sharing checked) exactly as a run resolves it. With
+        # `db=None` every Skill read as `skill_not_found` — found in the browser,
+        # on a flow whose real runs discover and call that Skill.
+        answer_key=flow.answering_key(), db=db,
     )
     out = agent_handler.preview(node, state, rctx)
     # EARLIER STEPS HAVE NOT RUN, and the preview must not imply they have. A step

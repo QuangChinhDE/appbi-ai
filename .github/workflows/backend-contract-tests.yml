@@ -169,6 +169,7 @@ jobs:
             tests/test_dead_retry_costs_nothing.py \
             tests/test_dimension_is_not_a_measure.py \
             tests/test_requested_dimension_is_not_substituted.py \
+            tests/test_skill_surfaces_found_in_the_browser.py \
             tests/test_analytical_tool_semantics.py \
             tests/test_tool_certification_matrix.py \
             tests/test_capability_serviced_the_intent.py \

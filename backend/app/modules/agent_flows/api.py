@@ -457,7 +457,10 @@ class ValidateBody(BaseModel):
     #: consequence that only holds on a report, so checking a chat flow against the
     #: bot reading tells its author the opposite of the truth. Defaults to `bot`, so
     #: a caller that has not been updated behaves exactly as before.
-    flow_type: Literal["bot", "chat"] = "bot"
+    #: `skill` too: the Skill builder sends its own type, and refusing it (422)
+    #: meant a Skill never showed "Flow valid" — found in the browser. The saved-
+    #: flow view already reads a Skill's warnings as `skill` (registry).
+    flow_type: Literal["bot", "chat", "skill"] = "bot"
 
 
 @router.post("/validate")
@@ -1662,7 +1665,7 @@ def preview_step(
             flow=flow, version=detail["version"], node_key=node_key,
             binding=binding, dashboard=dashboard, ctx=ctx,
             question=body.question or "", history=body.history,
-            provider=provider, model="", base_system_prompt=base_prompt,
+            provider=provider, model="", base_system_prompt=base_prompt, db=db,
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
