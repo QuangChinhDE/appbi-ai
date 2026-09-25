@@ -53,7 +53,7 @@ import {
 } from '@/lib/explore-query';
 import type { ChartDebugInfo, ChartMetadataUpsert, ChartParameterCreate } from '@/types/api';
 import { useDatasetModel, type DatasetModelView } from '@/hooks/use-dataset-model';
-import { buildSemanticLabelMap, buildSemanticFormatMap } from '@/lib/chart-semantic-maps';
+import { buildSemanticLabelMap, buildSemanticFormatMap, buildSemanticCurrencyMap } from '@/lib/chart-semantic-maps';
 import { getReachableViews, computeStrictReachableViews } from '@/lib/dataset-model-graph';
 
 type ChartType = ExploreChartType;
@@ -1219,6 +1219,7 @@ export function ExploreEditor({
     () => buildSemanticFormatMap(datasetModel?.views),
     [datasetModel],
   );
+  const semanticCurrencyMap = useMemo(() => buildSemanticCurrencyMap(datasetModel?.views), [datasetModel]);
 
   const skipNextSourceResetRef = useRef(false);
   const seedAppliedRef = useRef(false);
@@ -3453,6 +3454,7 @@ export function ExploreEditor({
                           preAggregated={displayedQueryState.chartPreAggregated}
                           labelMap={semanticLabelMap}
                           formatMap={semanticFormatMap}
+              currencyMap={semanticCurrencyMap}
                         />
                       </ChartErrorBoundary>
                     </div>

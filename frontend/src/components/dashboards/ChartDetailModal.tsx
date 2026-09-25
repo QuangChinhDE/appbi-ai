@@ -21,7 +21,7 @@ import { buildExploreChartModel } from '@/components/explore/chartDataAdapter';
 import { useChart, useChartData } from '@/hooks/use-charts';
 import { useDataset } from '@/hooks/use-datasets';
 import { useDatasetModel } from '@/hooks/use-dataset-model';
-import { buildSemanticLabelMap, buildSemanticFormatMap } from '@/lib/chart-semantic-maps';
+import { buildSemanticLabelMap, buildSemanticFormatMap, buildSemanticCurrencyMap } from '@/lib/chart-semantic-maps';
 import { chartApi } from '@/lib/api/charts';
 import { dashboardApi } from '@/lib/api/dashboards';
 import { getActiveChartRoleConfig, getSavedChartQueryMode } from '@/lib/chart-config';
@@ -382,6 +382,7 @@ export function ChartDetailModal({
     () => buildSemanticFormatMap(detailDatasetModel?.views),
     [detailDatasetModel],
   );
+  const detailCurrencyMap = useMemo(() => buildSemanticCurrencyMap(detailDatasetModel?.views), [detailDatasetModel]);
   const datasetTable = useMemo(
     () => dataset?.tables?.find((table) => table.id === chart?.dataset_table_id) ?? null,
     [chart?.dataset_table_id, dataset?.tables],
@@ -690,6 +691,7 @@ export function ChartDetailModal({
                 styleConfig={previewStyleConfig}
                 labelMap={detailLabelMap}
                 formatMap={detailFormatMap}
+              currencyMap={detailCurrencyMap}
                 onStyleConfigChange={setDraftStyleConfig}
                 preAggregated={chartRuntime.pre_aggregated ?? false}
               />
