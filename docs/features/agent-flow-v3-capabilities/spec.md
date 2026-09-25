@@ -189,7 +189,7 @@ source: a resource the Skill author can see is not thereby visible to a caller.
 
 **Budget.** The child runs on the parent's `Budget` object: every model call, tool call and
 second counts against the parent; token and cost totals roll up into the parent run. A
-Skill cannot reset any limit. A per-invocation ceiling (default half the parent's remaining
+Skill cannot reset any limit. *(Revision 3, measured live: "half" starved the Skill.)* The child may use everything the parent has left except the parent's answer round (1 model call) and its answering tool reserve. (Previously: a per-invocation ceiling of half the parent's remaining
 tool calls) keeps one Skill from starving the answering node. Coordinator lanes already
 share the run budget (`executor.py:893, 969`).
 

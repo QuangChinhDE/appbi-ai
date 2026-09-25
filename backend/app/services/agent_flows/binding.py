@@ -537,7 +537,7 @@ def _slowest_model(flow: Flow, cfg: dict | None) -> tuple[str, int]:
 #: What one Skill invocation is assumed to cost — (model calls, tool calls). The
 #: estimate cannot read the Skill's own body (it runs without a database), so it
 #: is a conservative constant; the RUN is what bounds it hard: a child spends the
-#: parent's budget and stops at half of what is left (`skills.child_budget`).
+#: parent's budget and leaves the parent its answer round (`skills.child_budget`).
 SKILL_COST = (4, 8)
 
 

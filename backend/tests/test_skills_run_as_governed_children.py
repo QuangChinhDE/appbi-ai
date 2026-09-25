@@ -16,7 +16,8 @@ What these tests pin (V3 phase 5, docs/features/agent-flow-v3-capabilities):
                memory reaches the child — only declared inputs.
   STACK        cycles refused on flow-version identity; depth ≤ MAX_SKILL_DEPTH;
                both at publish (pinned graph) and at run time.
-  BUDGET       the child spends the PARENT's budget and stops at half of it.
+  BUDGET       the child spends the PARENT's budget, and leaves the parent
+               the model call it needs to answer.
   PINNING      publish writes the exact Skill version into the parent's body;
                a pinned version still resolves after the Skill moves on.
 """
@@ -459,7 +460,7 @@ def test_a_flow_referencing_itself_as_a_skill_is_refused_at_publish(skill_db):
 
 
 # ── 5. budget: the parent's, never a new one ─────────────────────────────────
-def test_the_child_spends_the_parents_budget_and_stops_at_half(monkeypatch, skill_db):
+def test_the_child_spends_the_parents_budget_and_leaves_it_its_answer(monkeypatch, skill_db):
     budget = Budget(max_llm_calls=12, max_tool_calls=12, max_seconds=60)
     many = ("calls", [("total_measure", {"chart_id": 41})] * 8)
     model = _Model(parent_script=[SKILL_CALL, ("text", "Xong.")],
@@ -469,8 +470,10 @@ def test_the_child_spends_the_parents_budget_and_stops_at_half(monkeypatch, skil
     # Every child call is a parent call: the parent's counters include them.
     assert budget.tool_calls >= 1 + child.tool_calls
     assert budget.llm_calls >= 2 + child.llm_calls
-    # Half of what the parent had left (12 - 6 reserve - 1 for the call itself).
-    assert child.tool_calls <= (12 - min(6, 12 // 3) - 1) // 2
+    # Never past the parent's own answer reserve for tools...
+    assert child.tool_calls <= 12 - min(6, 12 // 3) - 1
+    # ...and the parent still had its answer round: the run answered.
+    assert budget.llm_calls <= budget.max_llm_calls
 
 
 def test_a_skill_budget_cannot_be_spent_past_its_cap():
@@ -551,8 +554,8 @@ def test_a_skill_keeps_its_last_model_call_for_its_answer(monkeypatch, skill_db)
     assert child.status in ("ok", "partial"), child.status
     # The child's final round was offered no tools.
     assert model.offered["VAI_TRO_CON"][-1] == []
-    b = skills.child_budget(Budget(max_llm_calls=4, max_tool_calls=30))
-    assert b.max_llm_calls == 2
+    b = skills.child_budget(Budget(max_llm_calls=3, max_tool_calls=30))
+    assert b.max_llm_calls == 2          # 3 left, 1 kept for the parent's answer
     b.spend_llm()
     assert b.tools_left() > 0 and not b.final_round   # round 1 may use tools
     b.spend_llm()

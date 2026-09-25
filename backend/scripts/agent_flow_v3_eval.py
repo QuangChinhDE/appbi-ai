@@ -177,6 +177,8 @@ def main() -> int:
             "discovered": cap.get("discovered") or [],
             "skill_runs": [{"version": c["version"], "status": c["status"], "invoked_as": c["invoked_as"],
                             "llm_calls": c["llm_calls"], "tool_calls": c["tool_calls"]} for c in children],
+            # What the Skill actually DID — "it ran" and "it did the work" differ.
+            "skill_tool_calls": child_calls,
             "escalation_ran": sorted({c for c in child_calls if "(" not in c} & WEB_TOOLS)
                               + sorted(ran & case.get("must_not_run", set())),
             "unreferenced_compute": any(n.get("code") == "figures_unverified" for n in (env.get("notices") or [])),

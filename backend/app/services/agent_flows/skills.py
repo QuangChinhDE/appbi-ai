@@ -27,9 +27,10 @@ THE RULES
              Skill was published.
   inputs     the ONLY data that crosses: nothing of the parent's variables,
              requirements, conversation or memory reaches the child.
-  budget     the child spends the PARENT's budget (`SkillBudget`); a per-invocation
-             ceiling of half of what is left keeps one Skill from starving the
-             step that answers. A Skill cannot reset any limit.
+  budget     the child spends the PARENT's budget (`SkillBudget`) and may use
+             all of it except what the parent needs to answer afterwards — one
+             model call, and the parent's own tool reserve for its answering
+             step. A Skill cannot reset any limit.
   stack      (skill_key, version) ancestry, checked on flow-VERSION identity;
              depth ≤ MAX_SKILL_DEPTH. Refused at publish over the pinned graph and
              again at run time.
@@ -127,12 +128,26 @@ class SkillBudget:
         self.tool_calls += 1
 
 
+#: Model calls the parent keeps for itself when it hands work to a Skill: the
+#: round in which it reads the Skill's result and answers.
+PARENT_ANSWER_RESERVE = 1
+
+
 def child_budget(parent: Any) -> SkillBudget:
-    """Half of what the parent has left, so the parent can still answer."""
+    """Everything the parent has left, minus what it needs to answer afterwards.
+
+    NOT "HALF", which was the first rule and was measured wrong: on a link funded
+    for 6 model calls the Skill got 2 — one tool round and its answer round — ran a
+    single `search_business_assets`, and handed back instructions ("bạn có thể sử
+    dụng…") instead of a result, recorded `ok`. The parent does not need half; it
+    needs the one round in which it reads the result and answers. Tools follow the
+    same rule through `tools_left(answering=False)`, which already holds back the
+    parent's answer reserve.
+    """
     tools_left = parent.tools_left(answering=False)
     llm_left = max(0, parent.max_llm_calls - parent.llm_calls)
-    return SkillBudget(parent, tool_cap=max(0, tools_left // 2) or min(1, tools_left),
-                       llm_cap=max(0, llm_left // 2) or min(1, llm_left))
+    return SkillBudget(parent, tool_cap=tools_left,
+                       llm_cap=max(0, llm_left - PARENT_ANSWER_RESERVE))
 
 
 # ═══ Resolution ═══════════════════════════════════════════════════════════════
