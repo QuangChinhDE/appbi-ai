@@ -184,6 +184,7 @@ jobs:
             tests/test_public_rating_trust_boundary.py \
             tests/test_skills_run_as_governed_children.py \
             tests/test_capability_discovery.py \
+            tests/test_capability_routing_eval.py \
             tests/test_compute_owns_the_number.py \
             tests/test_compute_lineage_in_a_run.py \
             tests/test_strategy_is_pure.py \

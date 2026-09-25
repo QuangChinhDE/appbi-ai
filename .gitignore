@@ -343,6 +343,7 @@ backend/tests/.testdata/
 !backend/tests/test_public_rating_trust_boundary.py
 !backend/tests/test_skills_run_as_governed_children.py
 !backend/tests/test_capability_discovery.py
+!backend/tests/test_capability_routing_eval.py
 !backend/tests/test_compute_owns_the_number.py
 !backend/tests/test_compute_lineage_in_a_run.py
 !backend/tests/test_strategy_is_pure.py

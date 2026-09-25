@@ -122,3 +122,19 @@ behaviour — capability selection, discovery recovery, formula provenance, expo
 per turn, calls, tokens, specialist count, budget accounting, trace completeness — is a
 scripted eval (`backend/scripts/agent_flow_v3_eval.py`) reporting metrics, run against a
 live stack, not a CI gate.
+
+## Revision 4 — closing the remaining gaps (2026-09-25)
+
+The V3 report listed limitations that are themselves DoD items. This revision closes them;
+"the class exists" is not accepted as done for any of them — each has a behavioural test
+and, where only a model can show it, a live eval arm.
+
+| Gap (as-built §0) | Closed by | Proven by |
+|---|---|---|
+| Default visibility 40 = everything shown; `find_capability` never used live | **Tiered view**: full schemas only for core ∪ question-ranked ∪ loaded (default 8); a bounded catalogue (≤30 `name — purpose` lines) inside `find_capability`'s own description; `find_capability(need, names)` loads by intent or by listed name; an unshown eligible call is refused *and* loaded; ≤3 discoveries per step | deterministic router eval over labelled VI/EN intents on the real registry (+200 synthetic distractors: recall and schema size stay flat); live A/B/C: full vs routed vs stress (limit 4) |
+| Top-level run can spend its last model call on tools | **Budget reserve by structure**: before each node the executor reserves the minimum model calls the rest of the flow needs; a step's last available call offers no tools; post-answer corrections honour the reserve; per-step budget ledger in the trace | small-budget tests: BA→Skill→Answer on the minimum budget still answers; child, lane and discovery cannot touch the reserve |
+| Language reminder appended after the loop (dead) | **Instruction lifecycle**: each injected instruction has a declared phase (system / after-tools / final-round / correction); the strategy places it on the round it governs; corrections go through the runtime (deadline, reserve, usage) | recorded-provider test asserting which instruction each round actually received |
+| Revoked/unshared Skill still runs from a pin | **Skill lifecycle** per version: active / deprecated / disabled (+reason, actor, time); disabled refuses at invocation with the reason; deprecated runs with a notice and cannot be newly pinned; sharing re-checked against the parent owner at invocation; typed output (`text` / `number` with provenance) validated | lifecycle tests incl. pinned parent + disabled version, unshare after publish, malformed typed output; migration up/down/up |
+| `compute` has no declared output contract; unusable from a ToolNode | typed `output_schema` verified in CI against real results (compute is pure); `{step, path}` variables so a deterministic ToolNode can compute over an earlier step | schema validated on every result shape; ToolNode→compute→Skill number chain |
+
+Schema: one additive migration (`agent_brain_versions.lifecycle*`, `agent_flow_run_steps.budget`).

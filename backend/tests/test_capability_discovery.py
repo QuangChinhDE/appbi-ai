@@ -5,16 +5,22 @@ Every granted tool used to reach the model as a full schema on every round, so a
 step's context grew linearly with its grant — ~28.5k characters for the whole
 catalogue, per round. These tests pin the V3 phase 4 contract:
 
-  * a step whose grant fits within the limit is shown exactly what it always was;
-  * a larger grant is shown at most `limit` capabilities (+ `find_capability`),
-    chosen for the question, always including discovery and compute;
+  * a step whose grant fits (the schema budget, or the author's count) is shown
+    exactly what it always was;
+  * a larger grant is ROUTED: the core, what the question ranks highest and what
+    the step has loaded, in full; everything else one line each inside
+    `find_capability`'s own definition;
   * eligibility is the registry's own admission rule — a capability certain to be
-    refused (web off, raw rows off) is never shown and never discoverable;
-  * `find_capability` searches ONLY eligible grants — never an ungranted tool;
-  * a granted-but-unshown capability cannot be invoked from memory
-    (`capability_not_visible`) until it is discovered; an ungranted one is still
-    `not_granted` from the registry;
-  * the whole view is in the step's trace.
+    refused (web off, raw rows off) is never shown, listed or loadable;
+  * `find_capability` loads ONLY eligible grants, by need or by name, and answers
+    an ungranted name exactly as it answers a nonexistent one; it is capped per step;
+  * a granted-but-unshown capability is not run from memory
+    (`capability_not_visible`) — it is loaded for the next round; an ungranted one
+    is still `not_granted` from the registry;
+  * the whole view, including every discovery, is in the step's trace.
+
+The routing QUALITY (does the right capability load?) is measured separately, on
+labelled intents: `test_capability_routing_eval.py`.
 """
 from __future__ import annotations
 
@@ -63,26 +69,41 @@ def test_the_default_limit_keeps_the_v1_starter_unshortlisted():
     assert CAP.default_limit() >= len(STARTER)
 
 
-def test_by_default_no_grant_from_todays_catalogue_is_shortlisted():
-    """Set by three live A/B runs: shortlisting a 32-capability grant at 12 cost
-    answers (3/5/4 of 6 vs 6/6/5 shown in full). While the whole catalogue fits,
-    it is shown whole; a node can still opt in with `visible_capabilities`."""
-    assert CAP.default_limit() >= len(ALL)
-    assert not CAP.build_view(ALL, _ctx(), web_enabled=True).shortlisted
+def test_by_default_a_small_grant_is_whole_and_the_catalogue_is_routed():
+    """The policy is a schema BUDGET in characters, not a count. The V1 starter's
+    ten tools fit and are shown whole; the whole non-web catalogue does not, and is
+    routed. (The previous default — a count of 40, above the whole catalogue —
+    avoided the quality question by never routing at all.)"""
+    assert not CAP.build_view(STARTER, _ctx(), web_enabled=True).shortlisted
+    view = CAP.build_view(NON_WEB, _ctx(), web_enabled=True, question="Tổng doanh thu?")
+    assert view.shortlisted
+    assert view.schema_budget == CAP.default_schema_budget()
 
 
-def test_a_shortlisted_step_is_told_by_name_what_else_it_may_use():
-    """Measured: a shortlisted step never called find_capability in three live
-    runs — it cannot look for what it does not know exists."""
+def test_what_is_not_loaded_is_listed_inside_find_capabilitys_own_definition():
+    """Measured: with the rest named in the SYSTEM prompt, a shortlisted step never
+    called find_capability in five live runs. The catalogue now sits where a model
+    looks when choosing a tool — the tool's own description — bounded in lines."""
     grant = [n for n in NON_WEB if n != "forecast_measure"]
     view = CAP.build_view(grant, _ctx(), web_enabled=True, limit=8)
     view.refresh("doanh thu")
-    index = view.hidden_index()
+    text = view.find_definition()["description"]
     hidden = [n for n in view.eligible if n not in view.visible]
-    assert hidden and all(f"- {n}" in index for n in hidden)
-    assert "forecast_measure" not in index, "never names an ungranted capability"
-    assert not any(f"- {n}:" in index for n in view.visible)
-    assert CAP.build_view(STARTER, _ctx(), web_enabled=True).hidden_index() == ""
+    assert hidden and all(f"- {n} —" in text for n in hidden)
+    assert "forecast_measure" not in text, "never names an ungranted capability"
+    assert not any(f"- {n} —" in text for n in view.visible)
+    assert CAP.FIND_CAPABILITY in view.routing_note()
+    assert CAP.build_view(STARTER, _ctx(), web_enabled=True).routing_note() == ""
+
+
+def test_the_catalogue_is_bounded_however_large_the_grant():
+    view = CAP.build_view(NON_WEB, _ctx(), web_enabled=True, limit=2)
+    view.refresh("doanh thu")
+    text = view.find_definition()["description"]
+    listed = [ln for ln in text.splitlines() if ln.startswith("- ")]
+    assert len(listed) <= CAP.CATALOGUE_LINES
+    if len(view.eligible) - len(view.visible) > CAP.CATALOGUE_LINES:
+        assert "more" in text
 
 
 def test_a_large_grant_is_shortlisted_to_the_limit_with_the_core_always_in():
@@ -136,17 +157,57 @@ def test_a_capability_certain_to_be_refused_is_never_shown_or_discoverable():
         assert web_tool not in view.eligible
     assert view.excluded["get_chart_data"] == "not_granted"      # raw rows off
     view.refresh("tìm trên web")
-    found = {f["name"] for f in view.discover("tìm kiếm web internet")["data"]["found"]}
+    data = view.discover("tìm kiếm web internet", ["research_web", "web_search"])["data"]
+    found = {f["name"] for f in data["loaded"] + data["already_loaded"]}
     assert not found & {"research_web", "web_search", "fetch_url", "browse_ai_answer"}
+    assert set(data["not_available"]) == {"research_web", "web_search"}
+    assert "research_web" not in view.find_definition()["description"]
 
 
 def test_find_capability_never_reveals_an_ungranted_capability():
     grant = [n for n in NON_WEB if n != "forecast_measure"]
     view = CAP.build_view(grant, _ctx(), web_enabled=True, limit=8)
     view.refresh("x")
-    found = {f["name"] for f in view.discover("dự báo tháng sau forecast")["data"]["found"]}
+    data = view.discover("dự báo tháng sau forecast")["data"]
+    found = {f["name"] for f in data["loaded"] + data["already_loaded"]}
     assert "forecast_measure" not in found
     assert found <= set(grant)
+
+
+def test_an_ungranted_name_gets_the_same_answer_as_one_that_does_not_exist():
+    """Discovery must not be an oracle for what exists outside the grant."""
+    grant = [n for n in NON_WEB if n != "forecast_measure"]
+    view = CAP.build_view(grant, _ctx(), web_enabled=True, limit=8)
+    view.refresh("x")
+    a = view.discover("", ["forecast_measure"])["data"]
+    b = view.discover("", ["no_such_capability"])["data"]
+    assert a["not_available"] == ["forecast_measure"] and b["not_available"] == ["no_such_capability"]
+    assert {k: v for k, v in a.items() if k not in ("not_available", "discoveries_left")} == \
+        {k: v for k, v in b.items() if k not in ("not_available", "discoveries_left")}
+    assert "forecast_measure" not in view.visible
+
+
+def test_discovery_loads_by_name_from_the_catalogue():
+    view = CAP.build_view(NON_WEB, _ctx(), web_enabled=True, limit=8)
+    view.refresh("Danh mục nào có doanh thu cao nhất?")
+    assert "detect_seasonality" not in view.visible
+    data = view.discover("", ["detect_seasonality"])["data"]
+    assert [r["name"] for r in data["loaded"]] == ["detect_seasonality"]
+    assert data["loaded"][0]["needs"], "the result says what the capability needs"
+    view.refresh()
+    assert "detect_seasonality" in view.visible
+
+
+def test_discovery_is_bounded_per_step():
+    view = CAP.build_view(NON_WEB, _ctx(), web_enabled=True, limit=8)
+    view.refresh("doanh thu")
+    for _ in range(CAP.MAX_DISCOVERIES):
+        assert view.discover("dự báo")["ok"] is True
+    out = view.discover("dự báo")
+    assert out["ok"] is False and out["error_code"] == "discovery_exhausted"
+    assert out["retryable"] is False
+    loaded = view.sticky
+    assert len(loaded) <= CAP.MAX_DISCOVERIES * CAP.MAX_LOAD
 
 
 def test_discovery_makes_a_capability_visible_on_the_next_round():
@@ -221,20 +282,36 @@ def test_a_shortlisted_step_offers_at_most_the_limit_plus_discovery(monkeypatch)
     assert set(offered) - {CAP.FIND_CAPABILITY} <= set(NON_WEB)
 
 
-def test_an_unshown_capability_must_be_discovered_before_it_runs(monkeypatch):
+def test_an_unshown_capability_is_not_run_from_memory_but_is_loaded_for_next_round(monkeypatch):
+    """The model has not seen the schema it is filling in, so that call does not
+    run. The capability is eligible, so it is loaded: the next round offers it and
+    the same call runs — no search round, and the refusal costs no tool call."""
     model = _Model([
         [("correlate_charts", {"chart_ids": [41, 42]})],                # from memory
-        [(CAP.FIND_CAPABILITY, {"query": "tương quan giữa hai biểu đồ"})],  # discover
         [("correlate_charts", {"chart_ids": [41, 42]})],                # now shown
         [],
     ])
     env = _run(monkeypatch, model, NON_WEB)
     assert "correlate_charts" not in model.offered[0]
-    assert "correlate_charts" in model.offered[2]
+    assert "correlate_charts" in model.offered[1]
     calls = _step(env).get("tool_calls") or []
     assert calls[0] == "correlate_charts(capability_not_visible)"
-    assert calls[1] == CAP.FIND_CAPABILITY
-    assert calls[2] == "correlate_charts"
+    assert calls[1] == "correlate_charts"
+    assert (env.get("usage") or {}).get("tool_calls") == 1
+    cap = _step(env).get("capabilities") or {}
+    assert cap["auto_loaded"] == [{"round": 1, "name": "correlate_charts"}]
+
+
+def test_discovery_by_need_loads_for_the_next_round(monkeypatch):
+    model = _Model([
+        [(CAP.FIND_CAPABILITY, {"need": "tương quan giữa hai biểu đồ"})],
+        [("correlate_charts", {"chart_ids": [41, 42]})],
+        [],
+    ])
+    env = _run(monkeypatch, model, NON_WEB)
+    assert "correlate_charts" not in model.offered[0]
+    assert "correlate_charts" in model.offered[1]
+    assert (_step(env).get("tool_calls") or [])[:2] == [CAP.FIND_CAPABILITY, "correlate_charts"]
 
 
 def test_an_ungranted_capability_is_still_refused_by_the_registry(monkeypatch):
@@ -254,6 +331,12 @@ def test_the_step_trace_carries_the_whole_view(monkeypatch):
     assert "forecast_measure" in cap["invoked"]
     assert len(cap["visible_per_round"]) >= 2
     assert all(len(r) <= 9 for r in cap["visible_per_round"])
+    # WHAT WAS SEEN, WHEN, AND WHY — the debugging truth, not a summary of it.
+    assert cap["initially_visible"] == cap["visible_per_round"][0]
+    assert "forecast_measure" not in cap["initially_visible"]
+    assert cap["discoveries"][0]["need"] == "dự báo"
+    assert "forecast_measure" in cap["discoveries"][0]["loaded"]
+    assert len(cap["schema_chars_per_round"]) == len(cap["visible_per_round"])
 
 
 def test_an_unshortlisted_step_records_its_view_too_and_behaves_as_before(monkeypatch):

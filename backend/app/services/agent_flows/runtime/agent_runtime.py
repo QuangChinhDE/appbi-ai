@@ -324,6 +324,35 @@ def _skill_capabilities(node: AgentNode, rctx: Any) -> tuple[list, dict[str, str
     return extras, excluded
 
 
+def build_step_view(node: AgentNode, rctx: Any, *, web_enabled: bool,
+                    extras: list | None = None, excluded_extras: dict | None = None):
+    """The capability view for one Agent step — ONE builder, for the run and for
+    "What the AI sees", so the preview cannot describe a view the run never builds.
+
+    Ranked on the viewer's QUESTION, with the node prompt as a bounded tilt and the
+    author's per-grant notes as part of each capability's own description."""
+    from app.services.agent_flows.contract import skill_function_name, skill_key_of_grant
+    from app.services.agent_flows.runtime.capabilities import build_view
+
+    notes: dict[str, str] = {}
+    for grant in node.tools:
+        note = (grant.note or "").strip()
+        if not note:
+            continue
+        key = skill_key_of_grant(grant.tool)
+        notes[skill_function_name(key) if key else grant.tool] = note
+    try:
+        question = rctx.inp.question.text()
+    except Exception:                                           # noqa: BLE001
+        question = ""
+    return build_view(
+        node.tool_names(), rctx.ctx, web_enabled=web_enabled,
+        limit=getattr(node, "visible_capabilities", None),
+        extras=extras, excluded_extras=excluded_extras, notes=notes,
+        question=question, context=node.prompt or "",
+    )
+
+
 class AgentRuntime:
     """Executes one Agent step's requests and enforces every rule around them.
 
@@ -361,27 +390,17 @@ class AgentRuntime:
         #: outside it, whatever the model names.
         self.allowed = set(node.tool_names())
         self.web_enabled = bool(rctx.inp.binding.capabilities.web_search)
-        #: WHAT THE MODEL MAY BE SHOWN (capability discovery). Visibility only:
+        #: WHAT THE MODEL MAY BE SHOWN (capability routing). Visibility only:
         #: `registry.execute()` still decides what may run.
-        from app.services.agent_flows.runtime.capabilities import build_view
-
         extras, excluded_extras = _skill_capabilities(node, rctx)
-        self.view = build_view(
-            node.tool_names(), rctx.ctx, web_enabled=self.web_enabled,
-            limit=getattr(node, "visible_capabilities", None),
-            extras=extras, excluded_extras=excluded_extras,
-        )
+        self.view = build_step_view(node, rctx, web_enabled=self.web_enabled,
+                                    extras=extras, excluded_extras=excluded_extras)
         #: The tool schemas the model is offered this round. A step whose grant
         #: fits within the limit is offered exactly what it always was — plus the
         #: Skills it was granted, which did not exist before.
         self.schemas: list[dict] = tool_registry.definitions_for(
             self.allowed, web_enabled=self.web_enabled) + [e.definition for e in extras]
         self._withdrawn = False
-        try:
-            self._ranking_text = " ".join(filter(None, [
-                rctx.inp.question.text(), node.prompt or ""]))
-        except Exception:                                       # noqa: BLE001
-            self._ranking_text = node.prompt or ""
         #: Tool calls this step has made (the node ceiling reads it).
         self.calls_made = 0
         #: Requests this step has already had finally refused, so it does not spend
@@ -456,7 +475,7 @@ class AgentRuntime:
         if self._withdrawn:
             self.view.rounds.append([])
         else:
-            self.view.refresh(self._ranking_text)
+            self.view.refresh()
             if self.view.shortlisted:
                 self.schemas = self.view.schemas(web_enabled=self.web_enabled)
         # A budget that knows this is its LAST model call (a Skill's) offers no
@@ -638,14 +657,21 @@ class AgentRuntime:
         skill_key = skill_key_of_function(call.tool_name or "")
         if view.shortlisted and call.tool_name == FIND_CAPABILITY and not malformed:
             # DISCOVERY. Answered by the view, not the registry: it reads no data
-            # and it can only return what this step is already eligible for.
-            # Charged like any call, so a model cannot search forever for free.
-            state.budget.spend_tool()
-            self.calls_made += 1
-            query = str((call.tool_args or {}).get("query") or "")
-            result = view.discover(query)
-            view.note_invoked(FIND_CAPABILITY)
-            state.tool_log.append(FIND_CAPABILITY)
+            # and it can only load what this step is already eligible for.
+            # Charged like any call and capped per step (`MAX_DISCOVERIES`), so a
+            # model can neither search for free nor search forever.
+            args = call.tool_args or {}
+            need = str(args.get("need") or args.get("query") or "")
+            names = args.get("names") if isinstance(args.get("names"), list) else []
+            result = view.discover(need, names)
+            if result.get("ok"):
+                state.budget.spend_tool()
+                self.calls_made += 1
+                view.note_invoked(FIND_CAPABILITY)
+                state.tool_log.append(FIND_CAPABILITY)
+            else:
+                view.note_rejected(FIND_CAPABILITY, str(result.get("error_code")))
+                state.tool_log.append(f"{FIND_CAPABILITY}({result.get('error_code')})")
             self.last_result = result
             yield AgentEvent(
                 type="tool_result",
@@ -656,18 +682,19 @@ class AgentRuntime:
             return
         if view.shortlisted and not malformed and call.tool_name in view.eligible \
                 and not view.is_visible(call.tool_name):
-            # GRANTED, BUT NOT SHOWN THIS TURN. No invoking from memory: the model
-            # discovers it first, and then it is shown with its full definition.
-            # Charged — a call the model chose to make — and not memoised as a final
-            # refusal, because after discovery the same call is legitimate.
-            state.budget.spend_tool()
-            self.calls_made += 1
+            # GRANTED, BUT NOT SHOWN THIS TURN. Not run from memory: the model has
+            # not seen the schema it is filling in. It IS eligible, so it is loaded
+            # for the next round — the correction costs no search. Not charged
+            # (nothing ran), and not memoised as a final refusal, because on the
+            # next round the same call is legitimate.
+            view.load_on_refusal(call.tool_name)
             result = {
                 "ok": False,
                 "error_code": "capability_not_visible",
                 "error": (
-                    f"'{call.tool_name}' chưa được hiển thị ở lượt này — hãy gọi "
-                    f"{FIND_CAPABILITY} để lấy định nghĩa của nó trước."
+                    f"'{call.tool_name}' chưa có định nghĩa đầy đủ ở lượt này nên chưa "
+                    "chạy. Định nghĩa của nó đã được nạp — gọi lại ở lượt tiếp theo với "
+                    "tham số đúng theo định nghĩa."
                 ),
                 "retryable": True,
             }

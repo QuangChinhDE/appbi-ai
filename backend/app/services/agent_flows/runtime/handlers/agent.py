@@ -66,22 +66,19 @@ def preview(node: AgentNode, state: RunState, rctx: Any) -> dict:
     # THE SAME VIEW A RUN BUILDS for round one. A step granted more than the
     # visibility limit is shown a shortlist; showing the author the full grant
     # here would describe a prompt the model never receives.
-    from app.services.agent_flows.runtime.capabilities import build_view
-
-    from app.services.agent_flows.runtime.agent_runtime import _skill_capabilities
+    from app.services.agent_flows.runtime.agent_runtime import (
+        _skill_capabilities,
+        build_step_view,
+    )
 
     try:
         extras, excluded_extras = _skill_capabilities(node, rctx)
     except Exception:                                           # noqa: BLE001
         extras, excluded_extras = [], {}
-    view = build_view(node.tool_names(), rctx.ctx, web_enabled=web_enabled,
-                      limit=getattr(node, "visible_capabilities", None),
-                      extras=extras, excluded_extras=excluded_extras)
-    try:
-        ranking = " ".join(filter(None, [rctx.inp.question.text(), node.prompt or ""]))
-    except Exception:                                           # noqa: BLE001
-        ranking = node.prompt or ""
-    view.refresh(ranking)
+    view = build_step_view(node, rctx, web_enabled=web_enabled,
+                           extras=extras, excluded_extras=excluded_extras)
+    view.refresh()
+    from app.services.agent_flows.runtime.capabilities import schema_chars
     if view.shortlisted:
         schemas = view.schemas(web_enabled=web_enabled)
     else:
@@ -100,9 +97,9 @@ def preview(node: AgentNode, state: RunState, rctx: Any) -> dict:
         strategy.build_request()
         system, messages = strategy.system, strategy.messages
         # The run appends this in `ToolCallingStrategy.run`; the preview must too.
-        hidden = view.hidden_index()
-        if hidden:
-            system = f"{system}\n\n{hidden}"
+        note = view.routing_note()
+        if note:
+            system = f"{system}\n\n{note}"
     finally:
         # Same restore discipline as `run`: a preview must not leave the context
         # holding a scope the next caller was never granted.
@@ -173,8 +170,12 @@ def preview(node: AgentNode, state: RunState, rctx: Any) -> dict:
             "eligible": view.eligible,
             "excluded": view.excluded,
             "limit": view.limit,
+            "schema_budget": view.schema_budget,
             "shortlisted": view.shortlisted,
             "visible": view.visible,
+            #: Listed, one line each, inside `find_capability` — loadable on demand.
+            "catalogue": view.catalogue(),
+            "schema_chars": schema_chars(schemas),
         },
         "knowledge_scope": dict(getattr(rctx.ctx, "knowledge_scope", None) or {}),
         "budget": {

@@ -158,6 +158,18 @@ class Settings(BaseSettings):
     # the full list still fits, so by default it engages only once a grant
     # outgrows what can sensibly be sent in full — Skills and future packs.
     AGENT_FLOW_VISIBLE_CAPABILITIES: int = 40
+    # How many CHARACTERS of capability schema a routed step is shown per round
+    # (runtime/capabilities.py). A grant whose schemas fit is shown whole — the V1
+    # starter's ten tools are ~8.5k. A larger grant is shown the core (every way in
+    # to a chart id, and compute), what the question ranks highest, and whatever
+    # it has loaded, up to this; the rest is one line each inside find_capability.
+    #
+    # 10000, set by measurement on 48 labelled intents (tests/fixtures/
+    # capability_routing): the right capability loaded on round one for 47 of 48
+    # at 10000 (42 at 8000), for ~10.5k characters per round against 24.2k shown
+    # in full — and ~11.7k with 500 distractor capabilities, where full would be
+    # 321k. A per-node `visible_capabilities` count replaces it.
+    AGENT_FLOW_CAPABILITY_SCHEMA_BUDGET: int = 10000
 
     # ── AI Intelligence (docs/Intelligence/appbi_intelligence_backend_redesign_v2.md) ──
     # Every switch below defaults to the pre-v2 behaviour, so a deployment that

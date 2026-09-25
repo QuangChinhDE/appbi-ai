@@ -94,11 +94,12 @@ class ToolCallingStrategy:
     async def run(self, rt: Any) -> AsyncGenerator[AgentEvent, None]:
         """Drive the step. `rt` is the `AgentRuntime`: the only way out of here."""
         self.build_request()
-        # A SHORTLISTED step is told, by name, what else it may use — the view
-        # is the runtime's; saying it to the model is the strategy's.
-        hidden = rt.view.hidden_index() if getattr(rt, "view", None) else ""
-        if hidden:
-            self.system = f"{self.system}\n\n{hidden}"
+        # A ROUTED step is told that more is available and how to load it — the
+        # view is the runtime's; saying it to the model is the strategy's. The
+        # catalogue itself travels in `find_capability`'s own definition.
+        note = rt.view.routing_note() if getattr(rt, "view", None) else ""
+        if note:
+            self.system = f"{self.system}\n\n{note}"
         node, messages = self.node, self.messages
         # Only the answering node's prose reaches the viewer, and only when it IS
         # prose: a half-written JSON object cannot be rendered.
