@@ -337,6 +337,12 @@ export function ToolPicker({
                         <span className="rounded border border-[rgb(var(--border-line))] px-1 text-tiny text-text-tertiary">
                           Skill · v{sk.version}
                         </span>
+                        {sk.lifecycle?.lifecycle === 'deprecated' && (
+                          <span className="rounded bg-warning/10 px-1 text-tiny text-warning"
+                            title={sk.lifecycle.reason}>
+                            {t('agentFlows.toolPicker.skillDeprecated')}
+                          </span>
+                        )}
                       </span>
                       <span className="block text-caption leading-snug text-text-tertiary">
                         {sk.contract.when_to_use}

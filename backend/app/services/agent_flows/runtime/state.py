@@ -316,6 +316,7 @@ class RunState:
     #: Per step, while it runs: the budget it started with and was made to leave
     #: for later steps. `record` turns it into the step's budget ledger.
     step_budget: dict[str, dict[str, Any]] = field(default_factory=dict)
+    _evidence_recorded: set[str] = field(default_factory=set)
 
     def record_evidence(self, result: Any, *, tool: str = "") -> str | None:
         """Register one capability result: give it a reference, then harvest it.
@@ -480,6 +481,15 @@ class RunState:
             step.branch = self.branch_stack[-1]
         if step.capabilities is None and step.key in self.capability_trace:
             step.capabilities = self.capability_trace.pop(step.key)
+        # WHICH EVIDENCE THIS STEP CREATED — the references a later formula or a
+        # debugger can name. Children record before their container, so a lane's
+        # evidence is on the lane's step, not repeated on the coordinator.
+        made = [{"ref": ref, "tool": entry.get("tool") or ""}
+                for ref, entry in self.evidence_store.items()
+                if entry.get("source") == step.key and ref not in self._evidence_recorded]
+        if made:
+            self._evidence_recorded.update(m["ref"] for m in made)
+            step.capabilities = {**(step.capabilities or {}), "evidence": made}
         if step.budget is None and step.key in self.step_budget:
             start = self.step_budget.pop(step.key)
             step.budget = {

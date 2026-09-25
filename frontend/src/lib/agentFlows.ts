@@ -403,6 +403,21 @@ export interface SkillContract {
   inputs: SkillInput[];
   output: string;
   when_to_use: string;
+  /** What crosses back to the caller, typed: prose, or ONE number the runtime
+   *  reads from `value_step`'s result (never parsed out of prose). */
+  returns?: 'text' | 'number';
+  value_step?: string;
+  value_path?: string;
+}
+
+/** Whether one exact Skill version may still be INVOKED — separate from which
+ *  version is live. A pin decides WHICH version runs; this decides WHETHER. */
+export interface SkillLifecycle {
+  version: number;
+  lifecycle: 'active' | 'deprecated' | 'disabled';
+  reason: string;
+  by: string;
+  at: string | null;
 }
 
 /** A published Skill this user may attach (from `/skills`). */
@@ -413,6 +428,7 @@ export interface SkillSummary {
   description: string;
   grant: string;
   contract: SkillContract;
+  lifecycle?: SkillLifecycle;
 }
 
 /** What a flow needs from whichever link runs it.
@@ -487,6 +503,8 @@ export interface BrainVersionRow {
   created_by: string | null;
   updated_at?: string | null;
   published_at: string | null;
+  flow_type?: string;
+  lifecycle?: SkillLifecycle;
 }
 
 export interface ValidateResult {
@@ -645,8 +663,19 @@ export interface RunStep {
   /** An Agent step's capability view — what it was granted, what was eligible,
    *  what it was shown each round, what it discovered, invoked and had refused. */
   capabilities?: CapabilityTrace | null;
+  /** Where the budget went: what the step spent, had at the start, and was made
+   *  to leave for the steps after it. `null` on runs before ledgers existed. */
+  budget?: StepBudget | null;
   /** Skill runs this step created. */
   children?: ChildRun[];
+}
+
+export interface StepBudget {
+  llm_calls: number;
+  tool_calls: number;
+  llm_available_at_start: number;
+  llm_reserved_for_later: number;
+  tools_reserved_for_later: number;
 }
 
 export interface CapabilityTrace {
@@ -654,12 +683,29 @@ export interface CapabilityTrace {
   eligible: string[];
   excluded: Record<string, string>;
   limit: number;
+  /** Characters of schema a routed round may carry (0 = the author set a count). */
+  schema_budget?: number;
   shortlisted: boolean;
+  initially_visible?: string[];
   visible_per_round?: string[][];
+  schema_chars_per_round?: number[];
   visible?: string[];
+  /** Listed one line each inside find_capability — loadable on demand (preview). */
+  catalogue?: string[];
+  schema_chars?: number | null;
   discovered?: string[];
+  discoveries?: {
+    round: number; need: string; names: string[];
+    loaded: string[]; already_loaded: string[]; not_available: string[];
+  }[];
+  auto_loaded?: { round: number; name: string }[];
   invoked?: string[];
-  rejected?: { name: string; code: string }[];
+  rejected?: { name: string; code: string; round?: number }[];
+  /** Rounds the step was offered no tools because its budget or round ceiling
+   *  made them its last — it answered with what it had. */
+  final_rounds?: number;
+  /** Evidence references this step created (what a formula can name). */
+  evidence?: { ref: string; tool: string }[];
 }
 
 /** A Skill run created by another run. */
@@ -1025,6 +1071,15 @@ export async function restoreToDraft(key: string, version: number): Promise<Brai
 
 export async function deleteBrainVersion(key: string, version: number): Promise<void> {
   await apiClient.delete(`${BASE}/brains/${encodeURIComponent(key)}/${version}`);
+}
+
+/** Stop, deprecate or re-activate Skill versions (none listed = all). */
+export async function setSkillLifecycle(
+  key: string, state: SkillLifecycle['lifecycle'], reason: string, versions: number[] = [],
+): Promise<SkillLifecycle[]> {
+  const { data } = await apiClient.post<{ versions: SkillLifecycle[] }>(
+    `${BASE}/brains/${encodeURIComponent(key)}/lifecycle`, { state, reason, versions });
+  return data.versions || [];
 }
 
 export async function listVersions(key: string): Promise<BrainVersionRow[]> {

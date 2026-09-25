@@ -1239,6 +1239,38 @@ function SkillContractEditor({
           placeholder={t('agentFlows.builder.skill.outputPlaceholder')}
           onChange={(e) => onChange({ ...value, output: e.target.value })} />
       </label>
+      <div className="flex flex-wrap items-end gap-1.5">
+        <label className="block">
+          <span className="text-caption font-strong">{t('agentFlows.builder.skill.returns')}</span>
+          <select
+            id="skill-returns"
+            className="mt-0.5 block h-8 rounded-md border border-[rgb(var(--border-line))] bg-surface px-1 text-caption"
+            value={value.returns || 'text'}
+            onChange={(e) => onChange({ ...value, returns: e.target.value as 'text' | 'number' })}>
+            <option value="text">{t('agentFlows.builder.skill.returns.text')}</option>
+            <option value="number">{t('agentFlows.builder.skill.returns.number')}</option>
+          </select>
+        </label>
+        {value.returns === 'number' && (
+          <>
+            <label className="block">
+              <span className="text-tiny text-text-tertiary">{t('agentFlows.builder.skill.valueStep')}</span>
+              <Input id="skill-value-step" className="h-8 w-36" value={value.value_step || ''}
+                placeholder="tinh_ty_le"
+                onChange={(e) => onChange({ ...value, value_step: e.target.value.trim() })} />
+            </label>
+            <label className="block">
+              <span className="text-tiny text-text-tertiary">{t('agentFlows.builder.skill.valuePath')}</span>
+              <Input id="skill-value-path" className="h-8 w-36" value={value.value_path || ''}
+                placeholder="result"
+                onChange={(e) => onChange({ ...value, value_path: e.target.value.trim() })} />
+            </label>
+          </>
+        )}
+      </div>
+      {value.returns === 'number' && (
+        <span className="block text-tiny text-text-tertiary">{t('agentFlows.builder.skill.returnsNumberHint')}</span>
+      )}
       <div>
         <span className="text-caption font-strong">{t('agentFlows.builder.skill.inputs')}</span>
         <span className="block text-tiny text-text-tertiary">{t('agentFlows.builder.skill.inputsHint')}</span>

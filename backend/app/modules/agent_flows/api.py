@@ -580,6 +580,7 @@ def brain_versions(
                 # which version is live (`status`). Always present; `active` for
                 # every non-Skill flow and every version never stopped.
                 "lifecycle": skills_service.lifecycle_dict(r),
+                "flow_type": str(getattr(r, "flow_type", "") or "bot"),
             }
             for r in rows
         ]

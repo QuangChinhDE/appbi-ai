@@ -165,6 +165,22 @@ export function WhatTheAiSees({
                           granted: String(data.capabilities.granted.length),
                         })
                       : t('agentFlows.seen.allShown', { n: String(data.capabilities.eligible.length) })}
+                    {data.capabilities.shortlisted && !!data.capabilities.catalogue?.length && (
+                      <span className="block">
+                        {t('agentFlows.seen.catalogue', {
+                          n: String(data.capabilities.catalogue.length),
+                          list: data.capabilities.catalogue.slice(0, 12).join(', ')
+                            + (data.capabilities.catalogue.length > 12 ? '…' : ''),
+                        })}
+                      </span>
+                    )}
+                    {data.capabilities.schema_chars != null && (
+                      <span className="block text-text-quaternary">
+                        {t('agentFlows.seen.schemaChars', {
+                          chars: data.capabilities.schema_chars.toLocaleString(),
+                        })}
+                      </span>
+                    )}
                     {Object.keys(data.capabilities.excluded || {}).length > 0 && (
                       <span className="block text-text-quaternary">
                         {t('agentFlows.seen.excluded', {

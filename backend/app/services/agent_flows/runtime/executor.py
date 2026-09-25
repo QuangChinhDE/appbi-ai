@@ -992,6 +992,13 @@ async def _run_coordinate(
     state.outputs[node.key] = {
         "picked": [s.key for s in picked],
         "considered": [s.key for s in roster],
+        # WHY, not only WHO: the author's `when` for each chosen specialist is the
+        # ground the planner chose on, and what it actually said is what the
+        # choice was parsed from. Bounded by `max_specialists`, recorded so a
+        # reader can see the ceiling that applied.
+        "why": {s.key: s.when for s in picked},
+        "max_specialists": node.max_specialists,
+        "planner_said": str(plan if isinstance(plan, str) else (plan or {}).get("choice") or plan or "")[:200],
     }
     yield AgentEvent(
         type="branch_taken",
