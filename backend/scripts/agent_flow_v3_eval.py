@@ -234,6 +234,7 @@ def _ask(token: str, link: int, case: dict, granted: set[str]) -> dict:
         "expected_capability_used": (not case["expect"]) or bool(ran_names & case["expect"]),
         "invoked": sorted(ran_names), "refused": [c for c in calls if "(" in c],
         "shortlisted": cap.get("shortlisted"), "granted": len(cap.get("granted") or []),
+        "limit": cap.get("limit"), "schema_budget": cap.get("schema_budget"),
         "initially_visible": len(cap.get("initially_visible") or []),
         "schema_chars_per_round": cap.get("schema_chars_per_round") or [],
         "discoveries": cap.get("discoveries") or [],
@@ -269,6 +270,9 @@ def _agg(rows: list[dict]) -> dict:
         "avg_prompt_tokens": round(sum(r["prompt_tokens"] for r in rows) / n),
         "avg_seconds": round(sum(r["seconds"] for r in rows) / n, 1),
         "failed_runs": sum(r["status"] == "failed" for r in rows),
+        # A row whose trace does not show its arm's visibility ran under another
+        # arm's flow (two evals publishing the same parent): not evidence.
+        "arm_mismatch": sum(not r.get("arm_ok", True) for r in rows),
     }
 
 
@@ -297,6 +301,9 @@ def main() -> int:
         for rep in range(args.reps):
             for case in cases:
                 row = {"arm": arm, "rep": rep, "parent_version": version, **_ask(token, args.link, case, granted)}
+                row["arm_ok"] = (row["shortlisted"] is False if arm == "full" else
+                                 row["limit"] == 4 if arm == "stress" else
+                                 bool(row["schema_budget"]))
                 rows.append(row)
                 print(json.dumps({k: row[k] for k in ("arm", "rep", "id", "status", "correct", "invoked",
                                                       "discoveries", "tokens", "seconds")},
@@ -307,7 +314,9 @@ def main() -> int:
     with open(args.out, "w", encoding="utf-8") as f:
         json.dump({"summary": summary, "rows": rows}, f, ensure_ascii=False, indent=2, default=str)
     print("SUMMARY", json.dumps(summary, ensure_ascii=False))
-    return 0 if all(summary[a]["outside_authority"] == 0 for a in args.arms.split(",")) else 1
+    ok = all(summary[a]["outside_authority"] == 0 and summary[a]["arm_mismatch"] == 0
+             for a in args.arms.split(","))
+    return 0 if ok else 1
 
 
 if __name__ == "__main__":
