@@ -59,8 +59,30 @@ def test_a_grant_that_fits_is_shown_whole_and_unchanged():
 
 
 def test_the_default_limit_keeps_the_v1_starter_unshortlisted():
-    """12, not 8: the certified V1 starter grants 10 tools."""
+    """The certified V1 starter grants 10 tools."""
     assert CAP.default_limit() >= len(STARTER)
+
+
+def test_by_default_no_grant_from_todays_catalogue_is_shortlisted():
+    """Set by three live A/B runs: shortlisting a 32-capability grant at 12 cost
+    answers (3/5/4 of 6 vs 6/6/5 shown in full). While the whole catalogue fits,
+    it is shown whole; a node can still opt in with `visible_capabilities`."""
+    assert CAP.default_limit() >= len(ALL)
+    assert not CAP.build_view(ALL, _ctx(), web_enabled=True).shortlisted
+
+
+def test_a_shortlisted_step_is_told_by_name_what_else_it_may_use():
+    """Measured: a shortlisted step never called find_capability in three live
+    runs — it cannot look for what it does not know exists."""
+    grant = [n for n in NON_WEB if n != "forecast_measure"]
+    view = CAP.build_view(grant, _ctx(), web_enabled=True, limit=8)
+    view.refresh("doanh thu")
+    index = view.hidden_index()
+    hidden = [n for n in view.eligible if n not in view.visible]
+    assert hidden and all(f"- {n}" in index for n in hidden)
+    assert "forecast_measure" not in index, "never names an ungranted capability"
+    assert not any(f"- {n}:" in index for n in view.visible)
+    assert CAP.build_view(STARTER, _ctx(), web_enabled=True).hidden_index() == ""
 
 
 def test_a_large_grant_is_shortlisted_to_the_limit_with_the_core_always_in():

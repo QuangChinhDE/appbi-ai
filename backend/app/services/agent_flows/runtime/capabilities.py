@@ -87,9 +87,9 @@ def default_limit() -> int:
     try:
         from app.core.config import settings
 
-        return max(1, int(getattr(settings, "AGENT_FLOW_VISIBLE_CAPABILITIES", 12)))
+        return max(1, int(getattr(settings, "AGENT_FLOW_VISIBLE_CAPABILITIES", 40)))
     except Exception:                                           # noqa: BLE001
-        return 12
+        return 40
 
 
 def _fold(text: str) -> str:
@@ -222,6 +222,35 @@ class CapabilityView:
 
     def is_visible(self, name: str) -> bool:
         return name in self.visible
+
+    def hidden_index(self, *, limit: int = 60) -> str:
+        """The eligible capabilities NOT shown in full, by name and label only.
+
+        MEASURED: across three live runs a shortlisted step never once called
+        `find_capability` — it cannot look for what it does not know exists. A
+        line per capability is a few tokens; its full schema is hundreds. Names
+        only, of ELIGIBLE capabilities: nothing ungranted or inadmissible is ever
+        named here, exactly as discovery would never return it.
+        """
+        if not self.shortlisted:
+            return ""
+        tools = tool_registry.all_tools()
+        rows = []
+        for name in self.eligible:
+            if name in self.visible:
+                continue
+            extra = self.extras.get(name)
+            label = extra.label if extra else getattr(tools.get(name), "label_vi", "") or ""
+            rows.append(f"- {name}: {label}" if label else f"- {name}")
+            if len(rows) >= limit:
+                break
+        if not rows:
+            return ""
+        return (
+            "CÁC KHẢ NĂNG KHÁC BẠN ĐƯỢC PHÉP DÙNG nhưng chưa hiện định nghĩa đầy đủ "
+            f"— gọi {FIND_CAPABILITY} với mô tả việc cần làm để lấy định nghĩa:\n"
+            + "\n".join(rows)
+        )
 
     # ── discovery ────────────────────────────────────────────────────────────
     def discover(self, query: str, *, top: int = 5) -> dict:

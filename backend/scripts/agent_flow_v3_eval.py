@@ -133,7 +133,9 @@ def main() -> int:
     all_tools = [t["name"] for p in packs["packs"] for t in p["tools"]]
 
     skill_version = _publish(token, SKILL_KEY, "V3 · So sánh hai kỳ", SKILL_BODY, "skill")
-    variants = {"shortlist": None, "all_shown": 40}
+    # Explicit on both sides, so the A/B does not silently change meaning when
+    # the policy default moves: the default is now 40 (see core/config.py).
+    variants = {"shortlist": 12, "all_shown": 40}
     rows = []
     parent_version = 0
     for variant, visible in variants.items():

@@ -148,11 +148,16 @@ class Settings(BaseSettings):
     # ── Agent Flow capability discovery ─────────────────────────────────
     # How many capabilities an Agent step is SHOWN in full per reasoning round
     # when it was granted more (runtime/capabilities.py). Visibility only — what
-    # may run is still decided by the registry and the grant. 12, not 8: the V1
-    # BI starter grants 10 tools, and a limit below that would change a certified
-    # journey without an eval saying the shortlist is better. A node can set its
-    # own `visible_capabilities`.
-    AGENT_FLOW_VISIBLE_CAPABILITIES: int = 12
+    # may run is still decided by the registry and the grant. A node can set its
+    # own `visible_capabilities` to opt in to a tighter shortlist.
+    #
+    # 40 — ABOVE TODAY'S WHOLE CATALOGUE (36 tools), set by measurement. Three live
+    # A/B runs on one 32-capability grant (scripts/agent_flow_v3_eval.py):
+    # shortlisted at 12 answered 3, 5, 4 of 6; shown in full 6, 6, 5 of 6, for a
+    # 10-25% token saving. A shortlist that costs answers is not worth it while
+    # the full list still fits, so by default it engages only once a grant
+    # outgrows what can sensibly be sent in full — Skills and future packs.
+    AGENT_FLOW_VISIBLE_CAPABILITIES: int = 40
 
     # ── AI Intelligence (docs/Intelligence/appbi_intelligence_backend_redesign_v2.md) ──
     # Every switch below defaults to the pre-v2 behaviour, so a deployment that
