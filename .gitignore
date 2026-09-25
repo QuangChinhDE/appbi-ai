@@ -341,6 +341,7 @@ backend/tests/.testdata/
 !backend/tests/test_reader_rating_reaches_the_run.py
 !backend/tests/test_answer_text_is_published_not_rederived.py
 !backend/tests/test_public_rating_trust_boundary.py
+!backend/tests/test_resolver_speaks_the_questions_words.py
 !backend/tests/test_adversarial_review_v3_closure.py
 !backend/tests/test_documented_invariants_are_enforced.py
 !backend/tests/test_skill_lifecycle_and_revocation.py

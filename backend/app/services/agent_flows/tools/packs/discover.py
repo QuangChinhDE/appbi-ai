@@ -459,8 +459,66 @@ def _field_matches(needle: str, entries: Any) -> bool:
     return False
 
 
+def _vocabulary(ctx: Any, phrase: str, kind: str) -> list[str]:
+    """The identifiers the GOVERNED vocabulary gives a phrase, for one kind.
+
+    `resolve_chart_candidates` has always promised `measure` "as the question
+    phrases it — e.g. 'doanh thu' … works without anything being registered
+    first", and matched only a field's exact name or label. Asked for
+    "doanh thu" by "danh mục sản phẩm" on the Olist report it answered "no chart
+    shows that" — while chart 686, revenue by product category, sat in scope —
+    and the live model told the viewer the report had no such data.
+
+    The bridge is the one `search_business_assets` already uses: semantic fields
+    of the right KIND whose name, label or description answer to the phrase, and
+    — for a measure — the fields a governed metric of that name is bound to. No
+    translation, no model: governed vocabulary only. A phrase that is already an
+    identifier stays first, so an exact caller is matched exactly as before.
+    """
+    phrase = (phrase or "").strip()
+    if not phrase:
+        return []
+    out = [phrase]
+    wanted = _terms_of(phrase)
+    if not wanted:
+        return out
+    need = min(2, len(wanted))
+    once = _Once(ctx, phrase)
+    try:
+        fields = _fields(ctx, phrase, wanted, once)
+    except Exception:  # noqa: BLE001 — vocabulary is never worth failing a lookup over
+        logger.debug("[discover] vocabulary lookup failed", exc_info=True)
+        fields = []
+    for f in fields:
+        fk = str(f.get("field_kind") or "unknown")
+        if kind == "measure" and fk == "dimension" or kind == "dimension" and fk == "measure":
+            continue
+        hay = " ".join(str(f.get(k) or "") for k in ("id", "name", "detail"))
+        if _score(hay, wanted) >= need and f.get("id") and f["id"] not in out:
+            out.append(str(f["id"]))
+    if kind == "measure":
+        try:
+            metrics = once.metrics()
+        except Exception:  # noqa: BLE001
+            metrics = []
+        from app.services.governance_service import GovernanceService
+
+        for m in metrics:
+            if _score(" ".join(str(x or "") for x in (m.name, m.display_name)), wanted) < need:
+                continue
+            for row in GovernanceService.metric_binding_details(ctx.db, m) or []:
+                ref = str(row.get("measure_ref") or "")
+                if row.get("status") == "ok" and ref:
+                    key = ref.rsplit(".", 1)[-1]
+                    if key not in out:
+                        out.append(key)
+    return out
+
+
 def _charts_on_table(ctx: Any, table_id: int, measure: str | None,
-                     dimension: str | None = None) -> list[dict]:
+                     dimension: str | None = None, *,
+                     measure_aliases: list[str] | None = None,
+                     dimension_aliases: list[str] | None = None) -> list[dict]:
     """Charts in THIS step's scope built on a table, best match first.
 
     `ctx.allowed_chart_ids` is the boundary and it is applied here rather than
@@ -506,8 +564,10 @@ def _charts_on_table(ctx: Any, table_id: int, measure: str | None,
         # second place for it to be wrong.
         fields = (getattr(ctx, "chart_meta", None) or {}).get(c.id) or {}
         fields = fields.get("fields") or {}
-        m_hit = bool(m_needle) and _field_matches(m_needle, fields.get("measures"))
-        d_hit = bool(d_needle) and _field_matches(d_needle, fields.get("dimensions"))
+        m_hit = bool(m_needle) and any(
+            _field_matches(a, fields.get("measures")) for a in (measure_aliases or [m_needle]))
+        d_hit = bool(d_needle) and any(
+            _field_matches(a, fields.get("dimensions")) for a in (dimension_aliases or [d_needle]))
         # THE DISTINCTION THE CALLER HAS TO SEE.
         #
         # "Same table" and "same measure" are not the same claim. A chart on the
@@ -627,9 +687,15 @@ def tool_resolve_chart_candidates(ctx: Any, args: dict) -> dict:
         tables = [(t, measure or None) for t in sorted(tids)]
         resolved_via = "semantic_field" if measure else "dimension"
 
+    # THE PHRASE, AND WHAT THE GOVERNED VOCABULARY SAYS IT MEANS — for the
+    # caller's free text only. A metric binding already names its field exactly.
+    d_aliases = _vocabulary(ctx, dimension, "dimension") if dimension else []
+    phrase_aliases = _vocabulary(ctx, measure, "measure") if measure and not metric_name else []
     seen: dict[int, dict] = {}
     for tid, meas in tables:
-        for row in _charts_on_table(ctx, tid, meas, dimension):
+        m_aliases = phrase_aliases or ([meas] if meas else [])
+        for row in _charts_on_table(ctx, tid, meas, dimension,
+                                    measure_aliases=m_aliases, dimension_aliases=d_aliases):
             prev = seen.get(row["chart_id"])
             better = (not row["complete"], _MATCH_RANK[row["match"]])
             if prev is None or better < (not prev["complete"],
@@ -656,6 +722,12 @@ def tool_resolve_chart_candidates(ctx: Any, args: dict) -> dict:
             "resolved_via": resolved_via,
             "asked": metric_name or measure,
             "asked_dimension": dimension or None,
+            # Which identifiers the phrases were matched through — so a match
+            # made via the vocabulary is visible, not a black box.
+            "matched_via": {
+                "measure": phrase_aliases[1:],
+                "dimension": d_aliases[1:],
+            },
             "total": len(ranked),
             "returned": len(candidates),
             "exact": len(exact),
