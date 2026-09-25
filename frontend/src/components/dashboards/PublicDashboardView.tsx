@@ -47,7 +47,10 @@ import {
   getDashboardChartPageId,
   getDashboardChartsForPage,
   normalizeDashboardPages,
-  deriveStackedLayout,
+  buildResponsiveReportLayouts,
+  reportBreakpointFor,
+  REPORT_RESPONSIVE_BREAKPOINTS,
+  REPORT_RESPONSIVE_COLS,
   computeReportRowHeight,
   dashboardRowHeight,
   DASHBOARD_GRID_COLS,
@@ -61,9 +64,15 @@ import { buildPublicLinkTheme } from '@/lib/public-link-appearance';
 import { buildPublicDashboardFilterRuntime } from '@/lib/public-dashboard-runtime';
 import { mergeSeedWithViewerSelections, resolvePublicPageFilterContext } from '@/lib/public-page-filters';
 import type { ChartDataResponse, Dashboard, DashboardChart } from '@/types/api';
+import { tileKindOf } from '@/lib/dashboard-presentation/tile-frame';
+import { auditRenderedTiles } from '@/lib/dashboard-presentation/render-audit';
+import { SectionBands } from './SectionBands';
 
 // Phase-B5 / Phase-B9 — responsive "Fit to width" grid for the public report.
-// Two breakpoints ONLY:
+// (Now THREE breakpoints: a tablet band between them is derived by
+// `deriveTabletLayout`, which leaves the authored layout untouched unless a tile
+// would render below its readable width — see buildResponsiveReportLayouts.)
+// Originally two:
 //   • lg  (≥ REPORT_STACK_BREAKPOINT grid px): 12 columns, the EXACT authored
 //     layout — so a desktop resize stays in lg and never reflows/jumps. The row
 //     height scales WITH the grid width (see computeReportRowHeight) so tiles keep
@@ -74,10 +83,10 @@ import type { ChartDataResponse, Dashboard, DashboardChart } from '@/types/api';
 // auto-generates (and never reflows) a layout. compactType=null +
 // preventCollision preserve coordinates exactly as provided.
 const ResponsiveReportGrid = WidthProvider(Responsive);
-const REPORT_BREAKPOINTS = { lg: REPORT_STACK_BREAKPOINT, xs: 0 };
+const REPORT_BREAKPOINTS = REPORT_RESPONSIVE_BREAKPOINTS;
 // Finer grid: 36 cols on desktop/tablet (matches the builder; ×3-migrated coords
 // render identically). Phone stack stays 1-col.
-const REPORT_COLS = { lg: DASHBOARD_GRID_COLS, xs: 1 };
+const REPORT_COLS = REPORT_RESPONSIVE_COLS;
 
 // Measure an element's CONTENT width (excludes padding) via ResizeObserver and
 // keep it in state. Used to drive the report grid's proportional row height from
@@ -462,6 +471,12 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
   // with it, so tiles keep their authored aspect ratio from phone to TV. The
   // ref-callback attaches to whichever of the two grid branches is mounted.
   const [gridMeasureRef, gridWidth] = useContentWidth();
+  // The render-quality probe the e2e gate calls on the published report — the
+  // same DOM audit the builder's AI Design preview runs. Read-only, no network.
+  useEffect(() => {
+    (window as any).__APPBI_RENDER_AUDIT__ = () => auditRenderedTiles(document);
+    return () => { delete (window as any).__APPBI_RENDER_AUDIT__; };
+  }, []);
   // Finer grid: row height couples to the theme gap so the ×3-migrated layout
   // renders pixel-identical to the builder (see dashboardRowHeight).
   const reportRowHeight = computeReportRowHeight(gridWidth, getDashboardGridMargin(dashboard?.theme_config)[1]);
@@ -1655,6 +1670,19 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
     };
   });
 
+  // Desktop is authored; tablet and phone are derived from it by the same rules
+  // the builder's narrow projection uses (lib/dashboard-pages).
+  // Plain computation, not a hook: it sits below early returns and is cheap.
+  const tileKindById = new Map(visibleDashboardCharts.map((dc) => [
+    String(dc.id), tileKindOf(dc.chart?.chart_type, dc.widget_type),
+  ]));
+  const responsiveLayouts = buildResponsiveReportLayouts(layouts, {
+    kindOf: (item) => tileKindById.get(item.i) ?? 'chart',
+    gridWidth,
+    gridGap: getDashboardGridMargin(dashboard?.theme_config)[1],
+  });
+  const activeBreakpoint = reportBreakpointFor(gridWidth);
+
   // Phase-G — single SlicerCluster node reused in both placements:
   // stacked above the grid (top) or as a left column (left). Defined
   // here so it can sit beside the grid section in left mode.
@@ -2041,7 +2069,7 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
     const selfStyled = wtype === 'section_header' || wtype === 'callout' || wtype === 'hero_strip';
     const frameless = wtype === 'shape' || wtype === 'parameter_switcher' || selfStyled || transparentWidget;
     return (
-      <div key={dashboardChart.id.toString()} className="h-full">
+      <div key={dashboardChart.id.toString()} data-grid-item-id={dashboardChart.id} className="h-full">
         {frameless ? (
           <div className="h-full w-full">
             <DashboardWidget widget={dashboardChart} />
@@ -2076,10 +2104,11 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
     const title = dashboardChart.layout.custom_title ?? '';
 
     return (
-      <div key={dashboardChart.id.toString()} data-chart-id={dashboardChart.chart_id} className="h-full rounded-xl transition-all duration-300">
+      <div key={dashboardChart.id.toString()} data-grid-item-id={dashboardChart.id} data-chart-id={dashboardChart.chart_id} className="h-full rounded-xl transition-all duration-300">
         <ChartErrorBoundary chartId={dashboardChart.chart_id}>
           <ReadonlyChartTile
             chart={chart}
+            dashboardChartId={dashboardChart.id}
             chartData={payload}
             error={chartError}
             title={title}
@@ -2134,9 +2163,20 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
             ref={gridMeasureRef}
             className={`${publicTheme.density.compact ? 'px-2 pb-2 pt-0' : 'px-3 pb-3 pt-0.5'}`}
           >
+            <div className="relative">
+            {activeBreakpoint !== 'xs' && gridWidth ? (
+              <SectionBands
+                layouts={responsiveLayouts[activeBreakpoint]}
+                dashboardCharts={visibleDashboardCharts}
+                cols={REPORT_COLS[activeBreakpoint]}
+                rowH={reportRowHeight}
+                margin={getDashboardGridMargin(dashboard?.theme_config)}
+                width={gridWidth}
+              />
+            ) : null}
             <ResponsiveReportGrid
               className="layout"
-              layouts={{ lg: layouts, xs: deriveStackedLayout(layouts) }}
+              layouts={responsiveLayouts}
               breakpoints={REPORT_BREAKPOINTS}
               cols={REPORT_COLS}
               rowHeight={reportRowHeight}
@@ -2148,6 +2188,7 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
             >
               {visibleDashboardCharts.map(renderTileNode)}
             </ResponsiveReportGrid>
+            </div>
           </div>
         )}
       </section>
@@ -2594,9 +2635,20 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
               ref={gridMeasureRef}
               className={`${publicTheme.density.compact ? 'px-2 pb-2 pt-0' : 'px-3 pb-3 pt-0.5'}`}
             >
+              <div className="relative">
+              {activeBreakpoint !== 'xs' && gridWidth ? (
+                <SectionBands
+                  layouts={responsiveLayouts[activeBreakpoint]}
+                  dashboardCharts={visibleDashboardCharts}
+                  cols={REPORT_COLS[activeBreakpoint]}
+                  rowH={reportRowHeight}
+                  margin={getDashboardGridMargin(dashboard?.theme_config)}
+                  width={gridWidth}
+                />
+              ) : null}
               <ResponsiveReportGrid
                 className="layout"
-                layouts={{ lg: layouts, xs: deriveStackedLayout(layouts) }}
+                layouts={responsiveLayouts}
                 breakpoints={REPORT_BREAKPOINTS}
                 cols={REPORT_COLS}
                 rowHeight={reportRowHeight}
@@ -2623,10 +2675,11 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
                   const title = dashboardChart.layout.custom_title ?? '';
 
                   return (
-                    <div key={dashboardChart.id.toString()} data-chart-id={dashboardChart.chart_id} className="h-full rounded-xl transition-all duration-300">
+                    <div key={dashboardChart.id.toString()} data-grid-item-id={dashboardChart.id} data-chart-id={dashboardChart.chart_id} className="h-full rounded-xl transition-all duration-300">
                       <ChartErrorBoundary chartId={dashboardChart.chart_id}>
                         <ReadonlyChartTile
                           chart={chart}
+                          dashboardChartId={dashboardChart.id}
                           chartData={payload}
                           error={chartError}
                           title={title}
@@ -2661,6 +2714,7 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
                   );
                 })}
               </ResponsiveReportGrid>
+              </div>
             </div>
           )}
         </section>
