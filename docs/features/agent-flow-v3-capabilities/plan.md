@@ -102,7 +102,7 @@ Approved, with these changes folded into `spec.md`:
   a bare number passed as a variable is computed with but never certified.
 - **Visibility vs authority.** The router controls visibility only; the model may invoke
   only capabilities visible this turn or discovered via `find_capability`
-  (`capability_not_visible` otherwise). The limit is policy (default 8), not a constant.
+  (`capability_not_visible` otherwise). The limit is policy, not a constant — default 40 after live A/B evidence (see architecture doc §0).
 - **Skill authority** = caller authority ∩ parent grant ∩ Skill declared contract ∩
   runtime policy. The Skill owner's rights are never a runtime source.
 - **Pinning** is to an immutable exact Skill version; cycles are detected on flow-version

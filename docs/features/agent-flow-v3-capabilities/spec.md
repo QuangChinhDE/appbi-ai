@@ -92,7 +92,7 @@ visible    all eligible, if |eligible| <= limit; otherwise
 ```
 
 `limit` = `AgentNode.visible_capabilities` or the runtime policy default
-(`AGENT_FLOW_VISIBLE_CAPABILITIES`, default 8). Ranking is lexical over the question and
+(`AGENT_FLOW_VISIBLE_CAPABILITIES`, default 40 — set by live A/B, see architecture doc §0; a shortlisted step's prompt also names the eligible capabilities it is not shown). Ranking is lexical over the question and
 the latest result against each capability's `label_vi/label_en/description/answers_vi/
 returns`, with Vietnamese diacritic folding: one scorer, also served to the builder picker.
 

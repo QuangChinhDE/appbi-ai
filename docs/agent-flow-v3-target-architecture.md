@@ -45,7 +45,7 @@ Bất biến **R** (luật): capability chỉ chạy nếu `registry.execute()` 
 | 1 Governance | xong | `risk≠read_only` bị chặn (`risk_unknown`/`needs_approval`) — một luật trong `_capability_refusal`; nhu cầu web suy ra từ `reaches_outside`; tool không tồn tại chặn publish; coordinator lồng bị cấm ở validator; chi phí preflight đi theo `child_node_lists` | `test_governance_promises_are_kept.py` |
 | 2 Strategy/Runtime | xong | `AgentRuntime` + `ToolCallingStrategy`; `AgentNode.strategy` (một giá trị) | 16 replay fixture không đổi; `test_strategy_is_pure.py` |
 | 3 Compute | xong | biến = `{ref, path}` vào `RunState.evidence_store`; runtime tự đọc giá trị; literal mọi độ lớn; số tự gõ tính được nhưng **không bao giờ được xác thực** | `test_compute_owns_the_number.py`, `test_compute_lineage_in_a_run.py` |
-| 4 Capability discovery | xong | grant → eligible (luật admission của registry) → visible (≤ `AGENT_FLOW_VISIBLE_CAPABILITIES`, mặc định 12) + `find_capability`; gọi thứ chưa hiện → `capability_not_visible` | `test_capability_discovery.py` |
+| 4 Capability discovery | xong | grant → eligible (luật admission của registry) → visible (≤ `AGENT_FLOW_VISIBLE_CAPABILITIES`, mặc định 40) + `find_capability` + danh sách tên các khả năng bị ẩn; gọi thứ chưa hiện → `capability_not_visible` | `test_capability_discovery.py` |
 | 5 Skill | xong | một primitive `invoke_skill`; child run có `parent_run_key`/`parent_step_key`/`invoked_as`; quyền = caller ∩ contract Skill; budget của cha; ghim version lúc publish; chặn vòng lặp theo (key, version), sâu ≤ 3 | `test_skills_run_as_governed_children.py` + script đột biến 8/8 |
 | 6 UX | xong | Skill trong picker; nhóm Dữ liệu/Phân tích/Tri thức/Bên ngoài (chỉ là trình bày); editor bước Skill; contract editor; Runs hiện child run và capability view | tsc, `npm run qa`, E2E |
 | 3.3 Runtime Layer Stack | **chưa** | không mục tiêu nào ở trên cần nó | — |
@@ -56,7 +56,7 @@ Bất biến **R** (luật): capability chỉ chạy nếu `registry.execute()` 
 
 - **Provenance của compute bằng tham chiếu, không bằng khớp giá trị.** Khớp giá trị
   không phân biệt được `Doanh thu 2025 = 100` với `Mục tiêu = 100`.
-- **Giới hạn hiển thị mặc định 12, không 8.** Starter V1 cấp 10 tool; giới hạn 8 sẽ đổi
+- **Giới hạn hiển thị mặc định 40 — theo đo đạc, không theo kế hoạch.** Ba lần A/B live trên cùng một grant 32 khả năng: rút gọn còn 12 trả lời được 3, 5, 4/6; hiện đủ 6, 6, 5/6, chỉ tốn thêm 10-25% token; và `find_capability` không được dùng lần nào. Vì vậy mặc định hiện đủ cả catalogue hôm nay (36 tool), rút gọn chỉ bật khi grant vượt mức đó hoặc khi node tự đặt `visible_capabilities`; bước bị rút gọn được liệt kê tên các khả năng bị ẩn để có thể tìm. (Kế hoạch ban đầu là 8, rồi 12 vì starter V1 cấp 10 tool; giới hạn 8 sẽ đổi
   một hành trình đã chứng nhận khi chưa có eval nói shortlist tốt hơn.
 - **Model chỉ gọi được thứ đang hiện hoặc đã tìm thấy.** Không có đường "nhớ tên thì gọi".
 - **Skill không chạy bằng quyền của owner.** Owner chỉ có ý nghĩa lúc author/publish.
