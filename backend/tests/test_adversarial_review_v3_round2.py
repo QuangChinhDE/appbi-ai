@@ -295,4 +295,27 @@ def test_a_category_written_as_a_person_writes_it_is_the_value(monkeypatch):
     assert round(out["data"]["share_pct"], 2) == round(1258681.34 / sum(r[1] for r in ROWS) * 100, 2)
 
 
+def test_a_kpi_tile_refusal_names_the_charts_that_break_the_measure_down():
+    from app.services.agent_flows.tools.packs import derived
+
+    ctx = SimpleNamespace(allowed_chart_ids={679, 686}, chart_meta={
+        679: {"name": "Doanh thu sản phẩm", "fields": {
+            "measures": [{"field": "dataset_table_438.total_revenue", "label": "Total revenue"}],
+            "dimensions": []}},
+        686: {"name": "Doanh thu theo danh mục", **_derived_ctx().chart_meta[686]}})
+    got = derived._resolve(ctx, 679, ["dataset_table_438.total_revenue"], [[13591643.7]],
+                           measure=None, dimension=None)
+    assert isinstance(got, dict) and got["error_code"] == "not_applicable"
+    assert "686" in got["error"], got["error"]
+
+
+def test_a_measure_phrase_maps_through_the_governed_vocabulary(monkeypatch):
+    from app.services.agent_flows.tools.packs import derived, discover
+
+    monkeypatch.setattr(discover, "_vocabulary", lambda ctx, phrase, kind: [phrase, "total_revenue"]
+                        if kind == "measure" else [phrase])
+    got = derived._resolve(_derived_ctx(), 686, COLUMNS, ROWS, measure="doanh thu", dimension=None)
+    assert isinstance(got, tuple) and got[2] == "dataset_table_438.total_revenue"
+
+
 from test_skills_run_as_governed_children import skill_db  # noqa: E402,F401

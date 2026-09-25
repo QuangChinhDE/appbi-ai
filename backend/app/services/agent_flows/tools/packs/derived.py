@@ -150,6 +150,20 @@ def _resolve(
                     for candidate in (entry.get("field"), entry.get("label")):
                         if candidate and candidate.lower() in lower:
                             return lower[candidate.lower()]
+            # A PHRASE ("doanh thu"), through the ONE governed vocabulary the
+            # resolver uses — never a guess: only a declared field of THIS chart
+            # that the vocabulary maps the phrase to.
+            from app.services.agent_flows.tools.packs.discover import _field_matches, _vocabulary
+
+            try:
+                aliases = _vocabulary(ctx, explicit, "measure" if want_numeric else "dimension")[1:]
+            except Exception:  # noqa: BLE001
+                aliases = []
+            for entry in declared:
+                if any(_field_matches(a, [entry]) for a in aliases):
+                    for candidate in (entry.get("field"), entry.get("label")):
+                        if candidate and candidate.lower() in lower:
+                            return lower[candidate.lower()]
             return None
         for entry in declared:
             for candidate in (entry.get("field"), entry.get("label")):
@@ -184,8 +198,23 @@ def _resolve(
         # to the author of a flow and the model is the one holding the error. Given
         # only the refusal, it reached for `total_measure` on the same KPI tile and
         # reported the report's grand total as the highest-earning category.
+        # WHERE THE BREAKDOWN IS, read from the charts in scope rather than
+        # written as advice: charts that plot this same measure AND group it.
+        # Measured live: refused on a KPI tile, the model gave up instead of
+        # finding revenue-by-category two charts away.
+        measure_key = field_key(columns[m_idx])
+        elsewhere = []
+        for cid, meta in sorted((getattr(ctx, "chart_meta", None) or {}).items()):
+            if cid == chart_id or cid not in (getattr(ctx, "allowed_chart_ids", None) or set()):
+                continue
+            f = (meta or {}).get("fields") or {}
+            if f.get("dimensions") and any(field_key(str(m.get("field") or "")) == measure_key
+                                           for m in f.get("measures") or [] if isinstance(m, dict)):
+                elsewhere.append(f"{cid} ({(meta or {}).get('name') or ''})".strip())
         return R.err(
-            f"chart {chart_id} has no grouping column to rank by",
+            f"chart {chart_id} has no grouping column to rank by"
+            + (f" — charts in this report that break this measure down: {', '.join(elsewhere[:5])}"
+               if elsewhere else ""),
             code="not_applicable",
             # POINTS AT THE STRONGEST ROUTE FIRST, and that ordering is the
             # whole value of the hint. This said "call list_charts" because it was
