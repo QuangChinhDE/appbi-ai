@@ -42,62 +42,133 @@ Bất biến **R** (luật): capability chỉ chạy nếu `registry.execute()` 
 
 | Phase | Trạng thái | Gì thay đổi | Khoá bằng |
 |---|---|---|---|
-| 1 Governance | xong | `risk≠read_only` bị chặn (`risk_unknown`/`needs_approval`) — một luật trong `_capability_refusal`; nhu cầu web suy ra từ `reaches_outside`; tool không tồn tại chặn publish; coordinator lồng bị cấm ở validator; chi phí preflight đi theo `child_node_lists` | `test_governance_promises_are_kept.py` |
-| 2 Strategy/Runtime | xong | `AgentRuntime` + `ToolCallingStrategy`; `AgentNode.strategy` (một giá trị) | 16 replay fixture không đổi; `test_strategy_is_pure.py` |
-| 3 Compute | xong | biến = `{ref, path}` vào `RunState.evidence_store`; runtime tự đọc giá trị; literal mọi độ lớn; số tự gõ tính được nhưng **không bao giờ được xác thực** | `test_compute_owns_the_number.py`, `test_compute_lineage_in_a_run.py` |
-| 4 Capability discovery | xong | grant → eligible (luật admission của registry) → visible (≤ `AGENT_FLOW_VISIBLE_CAPABILITIES`, mặc định 40) + `find_capability` + danh sách tên các khả năng bị ẩn; gọi thứ chưa hiện → `capability_not_visible` | `test_capability_discovery.py` |
-| 5 Skill | xong | một primitive `invoke_skill`; child run có `parent_run_key`/`parent_step_key`/`invoked_as`; quyền = caller ∩ contract Skill; budget của cha; ghim version lúc publish; chặn vòng lặp theo (key, version), sâu ≤ 3 | `test_skills_run_as_governed_children.py` + script đột biến 8/8 |
-| 6 UX | xong | Skill trong picker; nhóm Dữ liệu/Phân tích/Tri thức/Bên ngoài (chỉ là trình bày); editor bước Skill; contract editor; Runs hiện child run và capability view | tsc, `npm run qa`, E2E |
-| 3.3 Runtime Layer Stack | **chưa** | không mục tiêu nào ở trên cần nó | — |
+| 1 Governance | xong | `risk≠read_only` bị chặn; nhu cầu web suy ra từ `reaches_outside`; tool không tồn tại chặn publish; coordinator lồng bị cấm ở publish; preflight đi theo `child_node_lists` | `test_governance_promises_are_kept.py` |
+| 2 Strategy/Runtime | xong | `AgentRuntime` + `ToolCallingStrategy`; runtime không soạn hội thoại | `test_strategy_is_pure.py`, `test_instruction_lifecycle.py::test_the_runtime_composes_no_conversation` |
+| 3 Compute | xong | biến = `{ref, path}` (Agent) hoặc `{step, path}` (ToolNode); runtime tự đọc giá trị; chỉ trường kết quả tự bảo chứng (`evidence_paths`) mới được tin; `output_schema` có kiểu, kiểm trong CI | `test_compute_owns_the_number.py`, `test_compute_typed_contract.py`, `test_adversarial_review_v3_closure.py` |
+| 4 Capability routing | xong (thiết kế lại) | eligible = luật admission; nạp đầy đủ = core (tra chart + đọc chart + `compute`) ∪ theo câu hỏi ∪ đã nạp, trong **ngân sách schema** (10.500 ký tự; số do tác giả đặt giữ đúng core cũ); tối đa 2 khả năng gần trùng mỗi câu hỏi (so theo định danh); phần còn lại một dòng mỗi thứ **trong mô tả của `find_capability`**; nạp theo ý định hoặc theo tên; ≤3 lần/bước; gọi thứ chưa hiện → từ chối + nạp cho lượt sau | `test_capability_discovery.py`, `test_capability_routing_eval.py` (52 intent VI/EN, tới 600 khả năng nhiễu) |
+| 5 Skill | xong | một primitive `invoke_skill`; child run; quyền = caller ∩ Skill; ghim version; vòng đời theo version (active/deprecated/disabled) kiểm ở MỌI lần gọi; chia sẻ kiểm lại theo chủ flow gọi; đầu ra có kiểu (`text` / `number` kèm provenance); không lồng điều phối qua Skill | `test_skills_run_as_governed_children.py`, `test_skill_lifecycle_and_revocation.py` |
+| 6 Budget | xong | trước mỗi node, runtime giữ lại mức tối thiểu các node sau cần (`runtime/reserve.py`); lượt cuối một bước được phép không có tool → bước luôn kết thúc bằng câu trả lời; lane đã chọn đều được chạy; sổ ngân sách từng bước | `test_budget_always_reaches_an_answer.py` |
+| 7 Trace/UX | xong | mỗi bước: cấp/đủ điều kiện/bị loại + lý do, hiện ban đầu, schema/vòng, mọi lần discovery, tự nạp, lượt chỉ trả lời, evidence tạo ra, ngân sách; coordinator ghi vì sao chọn; UI Runs/What the AI sees/vòng đời Skill | tsc, `npm run qa`, E2E |
+| 3.3 Runtime Layer Stack | **chưa** | không mục tiêu nào cần nó | — |
 | 3.5 / 3.6 Checkpoint, HITL | **chưa** | `needs_approval` là cửa chờ cho 3.6 | — |
-| 3.8 MCP/HTTP | **chưa** | `ExtraCapability` là chỗ để cắm vào catalogue | — |
+| 3.8 MCP/HTTP | **chưa** | `ExtraCapability` là chỗ cắm vào catalogue | — |
+
+### Eval — routing so với hiện đủ, chấm theo câu trả lời
+
+Bản triển khai: `7ef703c4` · 1×3 rep · 14 case
+
+| Chỉ số | full (hiện đủ 40) | routed (mặc định) | stress (hiện 4) |
+|---|---|---|---|
+| Đúng (chấm theo ground truth ToolNode) | **40/42** | **39/42** | **34/42** |
+| Dùng đúng khả năng mong đợi | 40/42 | 39/42 | 38/42 |
+| Ca có gọi discovery | 0/42 | 3/42 | 38/42 |
+| …và chạy thứ vừa tìm | 0 | 0 | 33 |
+| Tự nạp sau khi gọi thứ chưa hiện | 0 | 0 | 0 |
+| Chạy ngoài quyền | 0 | 0 | 0 |
+| Schema/vòng (ký tự, TB) | ~24.200¹ | 10,871 | 7,729 |
+| Token/ca (TB) | 18,817 | 13,407 | 14,885 |
+| Prompt token/ca (TB) | 18,571 | 13,148 | 14,640 |
+| Lượt model/ca (TB) | 3.57 | 3.88 | 4.48 |
+| Giây/ca (TB) | 8.4 | 8.1 | 8.0 |
+| Run `failed` | 0 | 0 | 0 |
+| Hàng chạy nhầm nhánh | 0 | 0 | 0 |
+
+¹ nhánh full không routing nên trace không ghi kích thước theo vòng; số là đo tất định toàn bộ 40 schema (`test_capability_routing_eval.py`).
+
+Ca sai theo nhánh:
+
+- full (hiện đủ 40): `share_category`×2
+- routed (mặc định): `mom`×2, `share_category`×1
+- stress (hiện 4): `mom`×3, `on_time`×3, `share_category`×1, `state_revenue_share`×1
+
+Luồng sản phẩm (Đọc báo cáo → Chuyên viên phân tích → bước Skill kiểm chứng → Trả lời, báo cáo 67, ngân sách mặc định): 7/9 đúng theo bộ chấm; 1 ca bộ chấm sai (nhãn dịch "Sức khỏe & Sắc đẹp"), 1 ca sai thật (tự tính phần trăm). Các lượt trước ở `83bf3fd2`: 9/9.
+
 
 ### Khác với kế hoạch ban đầu, và vì sao
 
-- **Provenance của compute bằng tham chiếu, không bằng khớp giá trị.** Khớp giá trị
-  không phân biệt được `Doanh thu 2025 = 100` với `Mục tiêu = 100`.
-- **Giới hạn hiển thị mặc định 40 — theo đo đạc, không theo kế hoạch.** Ba lần A/B live trên cùng một grant 32 khả năng: rút gọn còn 12 trả lời được 3, 5, 4/6; hiện đủ 6, 6, 5/6, chỉ tốn thêm 10-25% token; và `find_capability` không được dùng lần nào. Vì vậy mặc định hiện đủ cả catalogue hôm nay (36 tool), rút gọn chỉ bật khi grant vượt mức đó hoặc khi node tự đặt `visible_capabilities`; bước bị rút gọn được liệt kê tên các khả năng bị ẩn để có thể tìm. (Kế hoạch ban đầu là 8, rồi 12 vì starter V1 cấp 10 tool; giới hạn 8 sẽ đổi
-  một hành trình đã chứng nhận khi chưa có eval nói shortlist tốt hơn.
-- **Model chỉ gọi được thứ đang hiện hoặc đã tìm thấy.** Không có đường "nhớ tên thì gọi".
-- **Skill không chạy bằng quyền của owner.** Owner chỉ có ý nghĩa lúc author/publish.
-- **Child run nối bằng `parent_run_key`, không bằng FK id.** Child ghi xong giữa lượt,
-  trước khi hàng của cha tồn tại; và vẫn nối được khi người xem bỏ lượt giữa chừng.
-- **Child run không mang session/link của người đọc**, để rating công khai chỉ khớp run
-  người đọc thực sự nói chuyện.
-- **`compute` chưa khai báo `output_schema`** — contract yêu cầu kiểm với kết quả thật
-  của một báo cáo trước.
-- **Lỗi phát hiện dọc đường**: registry nạp pack không an toàn khi đa luồng (hai request
-  đầu tiên cùng đăng ký `discover` → 500). Sửa bằng khoá + cờ `_LOADED`.
+- **Provenance của compute bằng tham chiếu và theo trường, không bằng khớp giá trị.**
+  Một kết quả tự khai trường nào nó bảo chứng (`evidence_paths`); literal hay văn
+  xuôi của Skill là số nó *nhắc tới*, không phải số nó *bảo chứng*.
+- **Routing theo ngân sách ký tự, không theo số lượng cố định.** Mặc định 40 của vòng
+  trước né câu hỏi chất lượng bằng cách không bao giờ rút gọn. Đo trên intent có nhãn:
+  xếp hạng theo "câu hỏi + prompt" nạp đúng 27/48; theo câu hỏi (prompt chỉ nghiêng
+  ≤30%, BM25, stem nhẹ) 47/48.
+- **Core có trình đọc chart (`get_chart_summary`).** Đo live: câu hỏi giá trị KPI ở
+  nhánh routed/stress tìm đúng chart nhưng không có tool đọc được nạp, thử `compute` rồi
+  trả lời "không có dữ liệu" ở mọi lượt. Ngân sách tăng đúng bằng kích thước tool đó
+  (10.000 → 10.500) nên phần dành cho khả năng xếp theo câu hỏi không đổi.
+- **Không quá 2 khả năng gần trùng (Jaccard ≥ 0,4 trên mô tả) mỗi câu hỏi.** Hai tool
+  thật giống nhau nhất chỉ trùng 0,16; biến thể cùng chủ đề từ 0,46. Tìm ra bằng eval
+  khả năng nhiễu: một câu hỏi tra cứu nạp sáu bản sao.
+- **Danh mục nằm trong mô tả của `find_capability`, không trong system prompt** — nơi
+  model nhìn khi chọn công cụ. Model live không dùng discovery lần nào ở vòng trước.
+- **Ngân sách giữ lại theo cấu trúc flow, không bằng prompt** — và `check()` giữa các
+  node chỉ dừng khi cả hai trần đã hết.
+- **Skill không chạy bằng quyền của owner**; chia sẻ kiểm lại ở mỗi lần gọi theo chủ
+  của flow GỌI; version bị vô hiệu hoá không bao giờ được thay bằng version khác.
+- **Child run nối bằng `parent_run_key`**; không mang session/link của người đọc.
+- **Lỗi phát hiện dọc đường**: registry nạp pack không an toàn đa luồng; Tool step ghi
+  evidence dưới khoá bước trước; loop gom kết quả cũ cho lượt lỗi; binding theo biến
+  không được quét lúc publish; ngưỡng routing bị một tool core đặt; model truyền id
+  dạng chuỗi.
 
-### Review đối kháng trước khi đẩy — tìm thấy và đã sửa
+### Review đối kháng — ba vòng, tìm thấy và đã sửa
 
-| Mức | Lỗi | Sửa ở gốc |
-|---|---|---|
-| P0 | `compute` bị cache xuyên lượt: ref `e1` bắt đầu lại mỗi lượt, store không nằm trong khoá cache → lượt B nhận (và xác thực) con số của lượt A | `compute` không cacheable |
-| P0 | `compute` vẫn xác thực số bịa: không có biến (`all([])`), `x*0+N`, rửa qua kết quả chưa xác thực, trỏ vào `chart_id` | chỉ xác thực khi có ≥1 biến tham chiếu tin cậy VÀ kết quả phụ thuộc vào chúng (thử nhiễu); taint lan qua ref; khoá định danh bị từ chối; kết quả tự khai `evidence_values` (literal không bao giờ vào sổ) |
-| P0 | Skill vượt phạm vi tri thức của caller khi caller để trống (chế độ "theo báo cáo"): grant tường minh của Skill được phép ra ngoài báo cáo | trong child, grant tường minh bị cắt về đúng quyền của báo cáo; không tính được thì ĐÓNG |
-| P0 | Child run lưu câu hỏi/đáp dù link tắt lưu nội dung, và người được chia sẻ Skill đọc được | child theo `store_content` của caller; danh sách Runs chỉ run gốc; xem child cần quyền đọc flow cha |
-| P1 | Luật coordinator lồng nằm ở validator → flow cũ dạng đó không mở được | chuyển sang luật publish (không bỏ qua được) + cảnh báo |
-| P2 | `evidence_ref` đổi prompt của mọi flow cũ | chỉ hiện khi bước có `compute` |
-| P2 | preview thiếu Skill và danh sách khả năng ẩn; `SkillBudget.check` cắt bước không cần model; `db=None`; input Skill chưa kiểm | đã sửa |
+| Vòng | Mức | Lỗi | Sửa ở gốc |
+|---|---|---|---|
+| 1 | P0 | `compute` bị cache xuyên lượt | không cacheable |
+| 1 | P0 | `compute` xác thực số bịa (không biến, `x*0+N`, rửa, `chart_id`) | ≥1 tham chiếu tin cậy + phụ thuộc thật; taint lan; định danh bị từ chối |
+| 1 | P0 | Skill vượt phạm vi tri thức của caller | grant tường minh bị cắt về quyền báo cáo; không tính được thì đóng |
+| 1 | P0 | child run lưu nội dung dù link tắt, sharee đọc được | theo `store_content` của caller; xem child cần quyền flow cha |
+| 2 | P0 | văn xuôi của Skill text được `compute` xác thực | `evidence_paths` |
+| 2 | P0 | `literals[0]` của compute đã xác thực bị rửa qua compute kế tiếp | `evidence_paths` |
+| 2 | P1 | hết trần tool giết bước trả lời chỉ cần model | `check()` chỉ dừng khi cả hai trần hết |
+| 2 | P1 | web fetch và batch song song vượt trần/ăn phần giữ lại | dừng ở phần giữ lại; room đọc lại mỗi lời gọi; runtime không bao giờ vượt trần |
+| 2 | P1 | từ chối vì ngân sách kích hoạt `on_error=stop` | không bao giờ |
+| 2 | P2 | tự nạp không giới hạn; lượt chỉ-trả-lời vẫn chạy tool; bracket path; Skill disabled vẫn được giữ chỗ; rollback bị chặn vì pin deprecated; Anthropic từ chối lượt cuối có lịch sử tool | đã sửa, mỗi cái một test |
+| 3 | P0 | số model gõ vào lời gọi (query `"13590000"`, `target` của caller) được tool trả lại và được xác thực | mục evidence nhớ số của chính lời gọi (`caller_numbers`); tool suy ra từ target của caller khai `evidence_paths` |
+| 3 | P1 | từ vựng tự do biến measure khác thành alias (mô tả nhắc "doanh thu"; định danh chính xác bị mở rộng; binding mất bảng) | định danh khớp chính xác; chỉ tên/nhãn, đủ mọi từ, khớp sát nhất; binding giữ tên có bảng |
+| 3 | P1 | tiêu đề biểu đồ cho dimension trái với nhãn semantic; "bảng" gập dấu thành "bang"; ReportRead chọn theo tiêu đề | tiêu đề chỉ dùng khi dimension không có nhãn và cụm từ không khớp trường nào; giữ dấu; ReportRead không bao giờ chọn theo tiêu đề |
+| 3 | P1 | cổng dimension bị vô hiệu bởi "theo" | một định nghĩa dùng chung (`chart_dimension_words`); bỏ từ đa số tiêu đề đều có |
+| 3 | P1 | hết trần tool trong bước dữ liệu vẫn giết run | `BudgetExhausted.resource`: hết tool chỉ dừng bước cần tool khi model còn gọi được |
 
 ### Giới hạn còn lại
 
+- **CÒN MỞ — gán con số cho thành viên của một chiều run chưa đọc** ("Bang SP chiếm 100%",
+  số của danh mục trình bày như của bang). Eval cuối: 1/42 ở nhánh stress; D2 live 6/6 trả
+  lời trung thực. Hai thiết kế tại câu trả lời đã được xây và rút lại sau review đối kháng
+  (`7181790a`, `8cbe3790`) vì vừa bỏ sót vừa viết lại câu trả lời đúng. Sửa đúng cần
+  provenance từng con số theo MEASURE × chiều × thành viên tại ranh giới tool, và cách nhận
+  diện chiều trong câu hỏi mạnh hơn một từ trùng.
+- Model đôi khi tự chia phần trăm thay vì gọi `compute` (luồng sản phẩm: 19,78% thay vì
+  5,23% — sai tháng so sánh); bộ kiểm số liệu gắn cờ số không có nguồn nhưng một lượt sửa
+  có thể giữ lại phép tính.
+
+- Chất lượng câu trả lời phụ thuộc model: eval live có dao động giữa các lượt; con số ở
+  trên là từng lượt, không phải trung bình dài hạn.
+- `find_capability` xếp hạng theo từ vựng (không embedding): một nhu cầu diễn đạt bằng
+  từ hoàn toàn khác mô tả có thể không tìm thấy — danh mục tên trong định nghĩa là
+  đường thứ hai.
 - Skill không có khai báo chart riêng: child dùng đúng chart của caller.
-- `question` của child chỉ có khi Skill khai báo input tên `question`; không có thì
-  dimension gate trong child im lặng (theo thiết kế: không có câu hỏi để so).
-- Chi phí preflight của một Skill là hằng số bảo thủ; trần cứng là budget lúc chạy.
-- Lời nhắc ngôn ngữ sau vòng lặp vẫn "chết" như trước (giữ nguyên khi tách Strategy;
-  sửa là thay đổi hành vi riêng).
-- Rút chia sẻ hoặc gỡ phát hành một Skill không chặn các flow đã ghim version: version
-  ghim là bất biến có chủ đích; kiểm tra chia sẻ chạy lúc lưu/phát hành.
-- `uses_capability("web_search")` nay tính mọi tool `reaches_outside`, nên Direct Chat bật
-  web cho flow cấp `research_web`/`browse_ai_answer` (trước đây bị từ chối âm thầm) —
-  vẫn dưới cờ `web_search_enabled` của deployment.
-- Một formula cộng một literal lớn vào số liệu thật (`x + 13590001`) vẫn được xác thực:
-  literal là toán học theo quyết định sản phẩm; nó nằm rõ trong lineage.
-- Ngân sách lượt cấp cao nhất không giữ lại lượt cuối để trả lời (hành vi cũ): một câu
-  hỏi báo cáo không trả lời được có thể kết thúc "hết lượt gọi mô hình".
+- Một formula cộng literal lớn vào số thật (`x + 13590001`) vẫn được xác thực: literal
+  là toán học theo quyết định sản phẩm; nó nằm rõ trong lineage.
+- Model đôi khi gắn nhãn sai measure cho một con số đúng (tỷ trọng SỐ ĐƠN của một bang được
+  gọi là tỷ trọng doanh thu). Cổng hiện chặn thay thế DIMENSION, chưa chặn thay thế MEASURE:
+  một cổng measure dựa trên từ vựng hiện có sẽ từ chối nhầm câu hợp lệ ("doanh thu trung
+  bình mỗi đơn" là AOV). Bộ kiểm qualifier sau câu trả lời chưa bắt dạng này.
+- Skill do Agent gọi mà không đủ cho một vòng tool bị từ chối trước khi chạy
+  (`reserve.working_minimum`). Skill đủ một vòng nhưng cần nhiều vòng (so sánh hai kỳ cần
+  3–4) vẫn có thể trả lời thiếu trên link 6 lượt nếu bước gọi đã tiêu phần lớn ngân sách:
+  số lượt của link là quyết định của tác giả, runtime chỉ bảo đảm run kết thúc và nói thật.
+- Hỏi theo một GIÁ TRỊ viết kiểu nhãn ("Health & beauty" trong khi dữ liệu là
+  `health_beauty`): `share_of`/`rank_values` khớp được, nhưng công cụ discovery tìm theo
+  tên tài sản chứ không theo giá trị, nên đôi khi model kết luận "không có" trước khi gọi
+  chúng. Sai ở cả nhánh full lẫn routed — không do routing.
+- Bộ chấm eval dựa trên cụm từ: một câu từ chối đúng nhưng diễn đạt khác ("không tách
+  được") bị chấm sai. Mọi ca sai trong bảng trên đã được đọc lại bằng mắt; số liệu giữ
+  nguyên như bộ chấm cho ra, không sửa bộ chấm giữa chừng.
+- Loop không chia ngân sách đều giữa các vòng: vòng đầu có thể dùng hết phần của vòng
+  sau (bước trả lời vẫn được giữ; run ghi `steps_skipped_for_budget`).
 
 ---
 
