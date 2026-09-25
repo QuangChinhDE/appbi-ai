@@ -248,12 +248,14 @@ def requested_dimension(ctx: Any) -> str | None:
             ctx._dimension_cache = cache
         except Exception:                                       # noqa: BLE001
             pass
-    if "value" in cache:
-        return cache["value"]
-
     question = str(getattr(ctx, "question", "") or "").strip()
+    # KEYED ON THE QUESTION. A Skill's child context is a shallow copy of its
+    # caller's, so it shares this dict — found by review: a child asked "Tổng
+    # doanh thu là bao nhiêu?" inherited its parent's "customer_state".
+    if question in cache:
+        return cache[question]
     if not question:
-        cache["value"] = None
+        cache[question] = None
         return None
 
     wanted = _terms_of(question)
@@ -277,8 +279,8 @@ def requested_dimension(ctx: Any) -> str | None:
             if score >= _MIN_DIMENSION_SCORE and (best is None or score > best[0]):
                 best = (score, ref)
 
-    cache["value"] = best[1] if best else None
-    return cache["value"]
+    cache[question] = best[1] if best else None
+    return cache[question]
 
 
 def _question_names_this_chart_dimension(ctx: Any, chart_id: int) -> bool:
@@ -290,13 +292,19 @@ def _question_names_this_chart_dimension(ctx: Any, chart_id: int) -> bool:
     refuse a call that answers exactly what was asked. So a chart whose own
     breakdown is named in the question is never refused, whatever won the ranking.
     """
+    return any(question_names_dimension(ctx, ref) for ref in _chart_dimensions(ctx, chart_id))
+
+
+def question_names_dimension(ctx: Any, dimension: str) -> bool:
+    """Does the viewer's question name THIS breakdown, by the words the report
+    uses for it? The same vocabulary and rule as the gate's safety valve."""
     question = str(getattr(ctx, "question", "") or "")
     wanted, wanted_raw = _dimension_terms(ctx, question)
     if not wanted and not wanted_raw:
         return False
-    mine = set(_chart_dimensions(ctx, chart_id))
+    key = field_key(dimension)
     for ref, field_words, title_words in _chart_dimension_vocabulary(ctx):
-        if ref in mine and (wanted & field_words or title_hits(ctx, wanted_raw, title_words)):
+        if field_key(ref) == key and (wanted & field_words or title_hits(ctx, wanted_raw, title_words)):
             return True
     return False
 

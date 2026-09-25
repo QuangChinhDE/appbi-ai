@@ -158,9 +158,15 @@ def _note_dimension_outcome(state: RunState, result: Any) -> None:
         return
     if result.get("ok") is not True or not state.dimension_gap:
         return
+    from app.services.agent_flows.runtime.grain import per_member_dimensions
+
+    # PER-MEMBER, BY THE RESULT'S OWN STRUCTURE: a declared `dimension`, a
+    # summary's `primary_dimension`, or ROWS whose labels are that breakdown.
+    # Found by review: refused on the category chart, the model did what the
+    # refusal said — read the state chart's rows — and the gap stayed open,
+    # because rows declare no `dimension`; the correct answer was marked partial.
     data = result.get("data") if isinstance(result.get("data"), dict) else {}
-    got = field_key(str(data.get("dimension") or ""))
-    if got and got == field_key(str(state.dimension_gap.get("requested") or "")):
+    if field_key(str(state.dimension_gap.get("requested") or "")) in per_member_dimensions(data):
         state.dimension_gap["satisfied"] = True
 
 

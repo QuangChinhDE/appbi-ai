@@ -701,7 +701,12 @@ def restore_report_read_provenance(value: Any, state: RunState, *,
             continue
         for field in ("summary", "data"):
             if entry.get(field) is not None:
+                start = len(state.evidence)
                 state.add_evidence(entry[field])
+                # And what those figures are OF — or a reused read would look,
+                # to the answer's attribution check, like a run that read nothing
+                # per member (found by review: a correct follow-up rewritten).
+                state.note_grain(entry[field], state.evidence[start:])
         if "value" in entry:
             state.add_evidence(entry["value"])
             if entry.get("value_of"):
