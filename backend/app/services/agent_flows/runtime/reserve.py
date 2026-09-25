@@ -85,6 +85,29 @@ def minimum_calls(nodes: list[Any], *, skill_lookup: SkillLookup | None = None,
     return llm, tools
 
 
+def working_minimum(nodes: list[Any], *, skill_lookup: SkillLookup | None = None) -> tuple[int, int]:
+    """(model calls, tool calls) a Skill needs to do ANY of its tool work.
+
+    A DIFFERENT QUESTION from `minimum_calls`. The reservation asks "can every
+    mandatory step still END" — an Agent step that can only speak still ends, so it
+    counts 1. Invoking a Skill from an Agent asks "can the Skill do what it is for":
+    a Skill whose steps call tools and is handed only its answer round runs no tool,
+    answers from nothing and records `ok` — measured live on a 6-call link, where a
+    comparison Skill handed back "bạn có thể sử dụng compare_periods…" instead of a
+    comparison. So: the reservation minimum, plus one round in which a tool can be
+    called when any Agent step in the Skill has tools (and one tool call for it).
+    """
+    llm, tools = minimum_calls(nodes, skill_lookup=skill_lookup)
+
+    def uses_tools(ns: list[Any]) -> bool:
+        return any((isinstance(n, AgentNode) and bool(n.tools))
+                   or any(uses_tools(list(g)) for g in child_node_lists(n)) for n in ns)
+
+    if uses_tools(nodes):
+        return llm + 1, max(tools, 1)
+    return llm, tools
+
+
 def skill_lookup_for(db: Any, *, include_disabled: bool = False) -> SkillLookup | None:
     """Resolve a Skill reference to its pinned Flow, through the ONE resolver."""
     if db is None:

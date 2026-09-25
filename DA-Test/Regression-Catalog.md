@@ -195,6 +195,9 @@ Legend for **Test**: ✅ = locked by a named test; ⚠️ = partial; ❌ **GAP**
 | `[tool step, agent]` with the last tool call spent: answer never ran | `Budget.check()` stopped on ONE spent ceiling | stop only when both spent (`d2968cca`) | ✅ `test_adversarial_review_v3_closure.py` |
 | KPI question ("tỷ lệ giao đúng hẹn là bao nhiêu") routed with no value reader | relative cutoff set by a core tool's score | cutoff relative to best non-core candidate (`d2968cca`) | ✅ `test_adversarial_review_v3_closure.py`, KPI intents |
 | `rank_values(bad_argument)` ×3 → "no data" | model passed `chart_id` as `"686"` | exact numeric strings coerced once in `registry.execute` (`d2968cca`) | ✅ `test_adversarial_review_v3_closure.py` |
+| KPI-value question in routed/stress arms answered "no data" every run | chart found, no reader loaded; the model tried `compute` | `get_chart_summary` in the routing core; budget +500 = its size (`a5fc26d7`) | ✅ `test_capability_routing_eval.py` |
+| One lookup question loaded six near-identical capabilities | nothing bounded copies of one idea once the cutoff became relative | ≤2 near-duplicates (Jaccard ≥ 0.4) per question (`a5fc26d7`, clique bound `583c9373`) | ✅ `test_capability_routing_eval.py::test_a_cluster_of_near_identical_capabilities_loads_two_not_all` |
+| Skill invoked on a 6-call link got only its answer round, ran no tool, returned "bạn có thể sử dụng compare_periods…" as `ok` | the reservation minimum (can a step END) was the only check; nothing asked whether the Skill could WORK | `reserve.working_minimum`; an Agent-invoked Skill below it is refused before it spends anything | ✅ `test_budget_always_reaches_an_answer.py::test_a_skill_handed_less_than_one_tool_round_is_refused_before_it_runs` |
 ### O. Dashboard theme (skin / preset)
 
 | Bug | Root cause | Fix | Test |

@@ -231,6 +231,80 @@ def test_a_skill_the_answering_agent_calls_leaves_it_its_reading_round(monkeypat
     assert "TRA_LOI" in _answer(env) and env["status"] == "ok"
 
 
+def _calls_skill_whenever_offered():
+    class M(_Greedy):
+        def stream(self):
+            inner = super().stream()
+
+            async def fake(**kw):
+                if "TRA_LOI" in kw["system_prompt"] and kw["tools"]:
+                    self.calls.append({"role": "TRA_LOI", "offered": [t["name"] for t in kw["tools"]],
+                                       "last_user": ""})
+                    yield AgentEvent(type="tool_call", tool_call_id=f"s{len(self.calls)}",
+                                     tool_name="skill__so_sanh",
+                                     tool_args={"question": "Doanh thu?", "chart_id": 41})
+                    return
+                async for ev in inner(**kw):
+                    yield ev
+            return fake
+    return M()
+
+
+_CALLS_SKILL = {"answer_node": "tl", "nodes": [{
+    "key": "tl", "name": "tl", "type": "agent", "prompt": "TRA_LOI",
+    "max_tool_calls": 10, "tools": [{"tool": "skill:so_sanh", "version": 2}]}]}
+
+
+def test_the_working_minimum_is_a_different_question_from_the_reservation(skill_db):
+    from app.services.agent_flows.runtime.reserve import working_minimum
+
+    skill = _flow(SKILL_BODY, key="so_sanh")
+    # The reservation: its one agent step can END on one call.
+    assert minimum_calls(list(skill.nodes)) == (1, 0)
+    # Doing what it is for: that step has tools, so one round that can call one.
+    assert working_minimum(list(skill.nodes)) == (2, 1)
+    speaks_only = copy.deepcopy(SKILL_BODY)
+    speaks_only["nodes"][0]["tools"] = []
+    assert working_minimum(list(_flow(speaks_only, key="so_sanh").nodes)) == (1, 0)
+
+
+def test_a_skill_handed_less_than_one_tool_round_is_refused_before_it_runs(monkeypatch, skill_db):
+    """Measured live on a 6-call link: the child got its answer round only, ran no
+    tool, and handed back "bạn có thể sử dụng compare_periods…", recorded `ok`.
+    3 calls − 1 asked − 1 kept to read leaves the Skill 1: not enough for a tool
+    round, so it is not started and the calling step keeps its calls."""
+    env, model, state = _run(monkeypatch, _CALLS_SKILL, llm=3, db=skill_db.db,
+                             model=_calls_skill_whenever_offered())
+    assert model.by("VAI_TRO_CON") == [], "the starved Skill never ran"
+    assert _children(skill_db.db) == [], "and never recorded a child run"
+    refusals = [e["result"] for e in state.evidence_store.values()] if state else []
+    assert refusals == [], "a refusal is not evidence"
+    step = next(s for s in _steps(env) if s["key"] == "tl")
+    assert "skill__so_sanh(budget_exhausted)" in (step.get("tool_calls") or []), step.get("tool_calls")
+    assert model.by("TRA_LOI")[-1]["offered"] == [] and "TRA_LOI" in _answer(env)
+    assert env["status"] == "ok"
+    assert state.budget.llm_calls == 3, "the refused Skill spent nothing of its own"
+
+
+def test_the_refusal_says_why_and_that_retrying_cannot_help(monkeypatch, skill_db):
+    from app.services.agent_flows import skills
+
+    seen = {}
+    real = skills.invoke_skill
+
+    async def spy(*a, **kw):
+        async for ev in real(*a, **kw):
+            yield ev
+        seen.setdefault("results", []).append(kw["outcome"].get("result"))
+
+    monkeypatch.setattr(skills, "invoke_skill", spy)
+    _run(monkeypatch, _CALLS_SKILL, llm=3, db=skill_db.db, model=_calls_skill_whenever_offered())
+    first = seen["results"][0]
+    assert first["ok"] is False and first["error_code"] == "budget_exhausted"
+    assert first["retryable"] is False and "cần ít nhất 2 lượt" in first["error"]
+    assert "Không gọi lại Skill này" in first["recovery"]
+
+
 # ── 3. coordinator lanes spend the parent's budget, never the answer's ──────
 def test_greedy_specialists_cannot_spend_the_answering_steps_call(monkeypatch):
     body = {"answer_node": "tl", "nodes": [

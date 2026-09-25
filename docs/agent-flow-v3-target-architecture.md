@@ -489,6 +489,7 @@ bất biến mà không test nào giữ là một lỗi của tài liệu, và C
 | 17 | Version Skill bị vô hiệu hoá không chạy dù đã ghim, không bị nâng âm thầm; rút chia sẻ có hiệu lực ở lần gọi kế tiếp | `tests/test_skill_lifecycle_and_revocation.py::test_a_disabled_version_is_not_offered_and_is_refused_even_when_pinned`, `tests/test_skill_lifecycle_and_revocation.py::test_an_unshare_after_publish_stops_the_next_run` |
 | 18 | Không lồng điều phối trong điều phối — kể cả qua Skill, bắc cầu | `tests/test_governance_promises_are_kept.py::test_a_coordinator_inside_a_coordinator_lane_is_refused_at_publish_not_at_load`, `tests/test_skill_lifecycle_and_revocation.py::test_a_coordinator_is_found_through_a_chain_of_skills` |
 | 19 | Đầu ra có kiểu được giữ ở ranh giới: sai kiểu thì dừng; taint đi qua Skill | `tests/test_compute_typed_contract.py::test_a_result_that_does_not_fit_its_schema_stops_the_step`, `tests/test_compute_typed_contract.py::test_a_figure_the_skill_built_on_a_typed_number_stays_uncertified` |
+| 20 | Một Skill do Agent gọi chỉ được khởi chạy khi phần ngân sách của nó đủ cho ít nhất một vòng gọi công cụ; không đủ thì bị từ chối trước khi tốn gì, có lý do và cách khắc phục | `tests/test_budget_always_reaches_an_answer.py::test_a_skill_handed_less_than_one_tool_round_is_refused_before_it_runs`, `tests/test_budget_always_reaches_an_answer.py::test_the_refusal_says_why_and_that_retrying_cannot_help` |
 
 ---
 

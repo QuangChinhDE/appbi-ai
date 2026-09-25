@@ -595,8 +595,11 @@ def search_text(key: str, name: str, contract: SkillContract) -> str:
 
 # ═══ Invocation — the one path ═══════════════════════════════════════════════
 
-def _err(message: str, code: str) -> dict:
-    return {"ok": False, "error_code": code, "error": message, "retryable": False}
+def _err(message: str, code: str, recovery: str = "") -> dict:
+    out = {"ok": False, "error_code": code, "error": message, "retryable": False}
+    if recovery:
+        out["recovery"] = recovery
+    return out
 
 
 def _validate_inputs(contract: SkillContract, inputs: dict) -> tuple[dict, str]:
@@ -714,6 +717,27 @@ async def invoke_skill(
     if budget.max_tool_calls <= 0 and budget.max_llm_calls <= 0:
         outcome["result"] = _err("không còn ngân sách cho Skill ở lượt này", "budget_exhausted")
         return
+    if caller_reads_result:
+        # NOT STARTED rather than started to fail: a Skill handed less than one
+        # tool round answers from nothing. Refused before it spends anything, so
+        # the calling step keeps those calls for its own tools or its answer.
+        # (A Skill STEP is funded by the executor's reservation instead: the
+        # author put it in the structure, and the preflight checked the link.)
+        from app.services.agent_flows.runtime import reserve
+
+        need_llm, need_tools = reserve.working_minimum(
+            list(skill_flow.nodes), skill_lookup=reserve.skill_lookup_for(db))
+        if budget.max_llm_calls < need_llm or budget.max_tool_calls < need_tools:
+            outcome["result"] = _err(
+                f"không đủ ngân sách để chạy Skill “{skill_key}”: cần ít nhất {need_llm} lượt gọi "
+                f"mô hình và {need_tools} lượt gọi công cụ, bước này chỉ còn "
+                f"{budget.max_llm_calls} và {budget.max_tool_calls} cho nó",
+                "budget_exhausted",
+                recovery=("Không gọi lại Skill này trong lượt hỏi này — ngân sách không tăng thêm. "
+                          "Dùng trực tiếp công cụ cần thiết nếu còn lượt, hoặc trả lời bằng những gì "
+                          "đã có và nói rõ phần chưa làm được."),
+            )
+            return
 
     # ── the child's authority: the CALLER's context, and nothing wider ───────
     child_ctx = copy.copy(rctx.ctx)
