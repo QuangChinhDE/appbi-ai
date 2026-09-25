@@ -20,30 +20,32 @@
  */
 import { TEMPLATE_KEYS, COLORWAY_KEYS, TEMPLATES, COLORWAYS } from '@/lib/dashboard-theme-catalog';
 import {
-  DECORATIVE_WIDGET_TYPES,
+  DESIGN_LAYERS,
   LAYOUT_PRIMITIVES,
   PRESENTATION_ROLES,
-  PRESENTATION_SPANS,
   PRESENTATION_EMPHASES,
   PRESENTATION_DENSITIES,
   COMPOSITION_STYLES,
+  STRUCTURE_OPS,
+  STRUCTURE_SIZES,
 } from './types';
 
-export type AiPresentationCapabilities = {
-  grid: true;
-  theme: true;
-  tileStyle: true;
-  slicerPresentation: true;
-  decorativeWidgets: true;
-};
-
-export const AI_PRESENTATION_CAPABILITIES: AiPresentationCapabilities = {
-  grid: true,
+/**
+ * What a plan may reach, per permission layer.
+ *
+ * Decorative widgets used to be listed here. They were validated and then never
+ * created — the compiler always returned `createdWidgets: []` — so the model was
+ * being offered a capability that silently did nothing, and its rationale could
+ * claim a section header nobody would ever see. A capability is listed only when
+ * the mutation path actually applies it.
+ */
+export const AI_PRESENTATION_CAPABILITIES = {
   theme: true,
   tileStyle: true,
   slicerPresentation: true,
-  decorativeWidgets: true,
-};
+  structureOperations: true,
+  composition: true,
+} as const;
 
 // ── Per-tile chart style ────────────────────────────────────────────────────
 
@@ -83,6 +85,10 @@ export const AI_ALLOWED_CHART_STYLE_KEYS = [
   // so "make this chart dark" works for ANY chart type. The tile flips its text,
   // axis and grid colours to stay readable; the data is untouched.
   'chartSurface',
+  // Frame — how much container a tile wears: a contained card, a subtle tinted
+  // panel with no border, or flush on the canvas with no chrome at all. This is
+  // the vocabulary that lets a report stop being a wall of identical cards.
+  'tileFrame',
   // KPI presentation (applies to KPI tiles only; inert on a chart)
   'kpiBackgroundMode',
   'kpiAccentColor',
@@ -100,6 +106,59 @@ export const KPI_ONLY_STYLE_KEYS: ReadonlySet<string> = new Set([
   'kpiBackgroundMode', 'kpiAccentColor', 'kpiAccentBorder', 'kpiGradientBg',
   'kpiValueFontSize', 'kpiIconName', 'kpiIconColor',
 ]);
+
+/**
+ * The closed value domain of every enumerable style key.
+ *
+ * The key allow-list alone let a plan write `palette: "emerald"` or
+ * `chartSurface: "navy"`: a legal key with a value no renderer recognises, which
+ * renders as nothing while the diff reports "restyled 1 visual". A value outside
+ * its domain is dropped at the boundary with a note, so a restyle can never
+ * claim a change that does not paint.
+ */
+export const STYLE_VALUE_DOMAINS: Readonly<Record<string, readonly (string | boolean)[]>> = {
+  transparentBackground: [true, false],
+  showGrid: [true, false],
+  showDataLabels: [true, false],
+  showDots: [true, false],
+  kpiAccentBorder: [true, false],
+  kpiGradientBg: [true, false],
+  legendPosition: ['top', 'bottom', 'left', 'right', 'none'],
+  dataLabelPosition: ['top', 'center', 'inside', 'outside'],
+  lineStyle: ['solid', 'dashed'],
+  palette: ['default', 'vibrant', 'classic', 'monochrome', 'pastel'],
+  numberFormat: ['auto', 'number', 'compact', 'percent', 'currency'],
+  axisDisplayUnits: ['auto', 'none', 'thousands', 'millions', 'billions', 'percent'],
+  chartSurface: ['dark', 'light'],
+  tileFrame: ['card', 'subtle', 'flush'],
+  kpiBackgroundMode: ['auto', 'none', 'accent', 'status'],
+};
+
+/** Numeric style keys and the range a renderer draws sensibly. */
+export const STYLE_NUMERIC_RANGES: Readonly<Record<string, readonly [number, number]>> = {
+  fontSize: [9, 20],
+  chartTitleFontSize: [10, 28],
+  kpiValueFontSize: [16, 72],
+  barRadius: [0, 16],
+  barSize: [4, 80],
+  lineWidth: [1, 6],
+  areaOpacity: [0, 1],
+  pieInnerRadius: [0, 80],
+  decimalPlaces: [0, 4],
+};
+
+const HEX = /^#[0-9a-fA-F]{6}$/;
+
+/** Is `value` something the renderer actually draws for `key`? */
+export function isValidStyleValue(key: string, value: unknown): boolean {
+  const domain = STYLE_VALUE_DOMAINS[key];
+  if (domain) return domain.includes(value as any);
+  const range = STYLE_NUMERIC_RANGES[key];
+  if (range) return typeof value === 'number' && Number.isFinite(value) && value >= range[0] && value <= range[1];
+  if (key === 'kpiAccentColor' || key === 'kpiIconColor') return typeof value === 'string' && HEX.test(value);
+  if (key === 'kpiIconName') return typeof value === 'string' && /^[a-z0-9-]{1,40}$/i.test(value);
+  return false;
+}
 
 export type AiAllowedChartStyleKey = (typeof AI_ALLOWED_CHART_STYLE_KEYS)[number];
 
@@ -223,11 +282,12 @@ export const SLICER_SEMANTIC_KEYS = [
   'scope', 'pageScope', 'locked', 'hidden', 'linkedField', 'type',
 ] as const;
 
-// ── Grid ────────────────────────────────────────────────────────────────────
+/** Slicer presentation keys that are pure paint. `dock` is not among them: it
+ *  moves the filter cluster and reflows the grid beside it, so it is STRUCTURE
+ *  and a style-only request may not touch it. */
+export const SLICER_STYLE_ONLY_KEYS = ['variant', 'style', 'density'] as const;
 
-/** Column spans the compiler will emit. Constraining to a small set keeps
- *  compositions from breaking at the responsive breakpoints (§27). */
-export const AI_ALLOWED_SPANS = [9, 12, 18, 24, 27, 36] as const;
+// ── Grid ────────────────────────────────────────────────────────────────────
 
 export const MIN_TILE_W = 6;
 export const MIN_TILE_H = 2;
@@ -236,11 +296,19 @@ export const MAX_TILE_H = 24;
 // ── The schema handed to the planner ────────────────────────────────────────
 
 /** The capability document sent with every prompt. This is the ONLY vocabulary
- *  a plan may draw on; the validator rejects anything outside it. */
+ *  a plan may draw on; the validator rejects anything outside it, and the
+ *  executor enforces which parts the granted layer may use. */
 export function buildCapabilitySchema() {
   return {
     capabilities: AI_PRESENTATION_CAPABILITIES,
-    grid: { columns: 36, allowedSpans: [...AI_ALLOWED_SPANS] },
+    layers: {
+      values: [...DESIGN_LAYERS],
+      style: 'appearance only — theme, fonts, palette, tile frames/surfaces, KPI look, slicer look. No visual moves or resizes.',
+      structure: 'targeted arrangement through `structure.operations`; untouched visuals keep their place.',
+      redesign: 'full recomposition through `sections`; locked visuals stay where they are.',
+    },
+    grid: { columns: 36 },
+    structure: { operations: [...STRUCTURE_OPS], sizes: [...STRUCTURE_SIZES] },
     composition: {
       primitives: [...LAYOUT_PRIMITIVES],
       styles: [...COMPOSITION_STYLES],
@@ -248,7 +316,6 @@ export function buildCapabilitySchema() {
     },
     visual: {
       roles: [...PRESENTATION_ROLES],
-      spans: [...PRESENTATION_SPANS],
       emphasis: [...PRESENTATION_EMPHASES],
     },
     theme: {
@@ -256,6 +323,7 @@ export function buildCapabilitySchema() {
       colorways: colorwayIds(),
       modes: ['light', 'dark'],
       cardTreatments: ['clean', 'soft', 'tinted', 'elevated', 'glass', 'outline', 'frameless'],
+      fonts: [...AI_ALLOWED_FONTS],
       // The mood behind each id, so "dark, violet, modern" can be chosen rather
       // than guessed. Match a requested colour to a colorway's `accent`, a
       // dark/night request to one whose `mode` is dark, and a "modern" request
@@ -268,7 +336,10 @@ export function buildCapabilitySchema() {
       variants: [...AI_ALLOWED_SLICER_VARIANTS],
       styles: [...AI_ALLOWED_SLICER_STYLES],
     },
-    tileStyle: { allowedKeys: [...AI_ALLOWED_CHART_STYLE_KEYS] },
-    decorative: { widgetTypes: [...DECORATIVE_WIDGET_TYPES] },
+    tileStyle: {
+      allowedKeys: [...AI_ALLOWED_CHART_STYLE_KEYS],
+      values: STYLE_VALUE_DOMAINS,
+      ranges: STYLE_NUMERIC_RANGES,
+    },
   };
 }

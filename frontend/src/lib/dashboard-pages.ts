@@ -273,23 +273,90 @@ export function defaultSizeForChartType(chartType: string | null | undefined): {
   return { w: base.w * GRID_FINER, h: base.h * GRID_FINER };
 }
 
+/** What a tile is, for responsive sizing rules. */
+export type ResponsiveTileKind = 'kpi' | 'chart' | 'table' | 'widget';
+
+/** Narrowest a tile stays readable at, in pixels — the same floors the render
+ *  audit enforces, so a derived layout never produces what the gate rejects. */
+export const RESPONSIVE_MIN_WIDTH_PX: Record<ResponsiveTileKind, number> = {
+  kpi: 150, chart: 260, table: 320, widget: 0,
+};
+/** Shortest a tile may be in the phone stack (px), so a KPI authored as a slim
+ *  strip or a chart authored short still reads when it becomes full-width. */
+export const STACK_MIN_HEIGHT_PX: Record<ResponsiveTileKind, number> = {
+  kpi: 96, chart: 220, table: 260, widget: 0,
+};
+
 /**
- * Derive a 1-column mobile/tablet stack from a desktop layout: every tile
- * full-width (x=0, w=1 in a 1-col grid), stacked top-to-bottom in the SAME
- * reading order (sorted by y then x), heights preserved. Used as the explicit
- * `xs` layout for the responsive public grid so the small-screen view is a
- * clean vertical stack — WITHOUT touching the desktop `lg` layout (so desktop
- * resize never crosses a breakpoint in normal use → no "jumping").
+ * Derive a 1-column phone stack from a desktop layout: every tile full-width,
+ * stacked in the SAME reading order (y, then x). Heights are preserved, raised
+ * to a readable floor per kind when `kindOf` is given (a KPI authored 60px tall
+ * reads fine in a 4-across strip and cramped as a full-width card). Used as the
+ * explicit `xs` layout of the public grid AND as the builder's narrow
+ * projection, so the phone view is the same logic in both.
  */
-export function deriveStackedLayout<T extends { x: number; y: number; w: number; h: number }>(layouts: T[]): T[] {
+export function deriveStackedLayout<T extends { i?: string; x: number; y: number; w: number; h: number }>(
+  layouts: T[],
+  opts?: { kindOf?: (item: T) => ResponsiveTileKind; rowPitchPx?: number; cols?: number },
+): T[] {
   if (!Array.isArray(layouts) || layouts.length === 0) return layouts;
   const sorted = [...layouts].sort((a, b) => (a.y - b.y) || (a.x - b.x));
+  const pitch = opts?.rowPitchPx && opts.rowPitchPx > 0 ? opts.rowPitchPx : 0;
   let cursorY = 0;
   return sorted.map((item) => {
-    const h = Math.max(1, Math.round(Number(item.h)) || 1);
-    const stacked = { ...item, x: 0, y: cursorY, w: 1, h };
+    let h = Math.max(1, Math.round(Number(item.h)) || 1);
+    if (opts?.kindOf && pitch > 0) {
+      const minPx = STACK_MIN_HEIGHT_PX[opts.kindOf(item)] ?? 0;
+      h = Math.max(h, Math.ceil(minPx / pitch));
+    }
+    const stacked = { ...item, x: 0, y: cursorY, w: opts?.cols ?? 1, h };
     cursorY += h;
     return stacked;
+  });
+}
+
+/** Tablet band: between the phone stack and a layout wide enough to show the
+ *  authored grid as-is. */
+export const REPORT_TABLET_BREAKPOINT = 1024;
+const TABLET_SPANS = [9, 12, 18, 24, 36];
+
+/**
+ * Derive the tablet layout from the desktop one, deterministically.
+ *
+ * At tablet width the authored grid mostly still works — a tile at 12 of 36
+ * columns is ~280px — so the rule is to change NOTHING unless some tile would
+ * render below its readable width (`RESPONSIVE_MIN_WIDTH_PX`). Those tiles are
+ * widened to the next standard span, and the page is re-flowed in reading order
+ * with each tile keeping its height. A layout that is already fine at tablet
+ * width comes back byte-identical, so most dashboards look exactly as authored.
+ */
+export function deriveTabletLayout<T extends { x: number; y: number; w: number; h: number }>(
+  layouts: T[],
+  opts: { kindOf: (item: T) => ResponsiveTileKind; referenceWidthPx?: number; cols?: number },
+): T[] {
+  if (!Array.isArray(layouts) || layouts.length === 0) return layouts;
+  const cols = opts.cols ?? DASHBOARD_GRID_COLS;
+  const colPx = (opts.referenceWidthPx ?? 820) / cols;
+  let widened = false;
+  const sized = layouts.map((item) => {
+    const minPx = RESPONSIVE_MIN_WIDTH_PX[opts.kindOf(item)] ?? 0;
+    const need = Math.ceil(minPx / colPx);
+    if (item.w >= need) return { item, w: item.w };
+    widened = true;
+    const span = TABLET_SPANS.find((s) => s >= need && s <= cols) ?? cols;
+    return { item, w: span };
+  });
+  if (!widened) return layouts;
+  const ordered = [...sized].sort((a, b) => (a.item.y - b.item.y) || (a.item.x - b.item.x));
+  let x = 0;
+  let y = 0;
+  let rowH = 0;
+  return ordered.map(({ item, w }) => {
+    if (x + w > cols && x > 0) { y += rowH; x = 0; rowH = 0; }
+    const placed = { ...item, x, y, w };
+    x += w;
+    rowH = Math.max(rowH, item.h);
+    return placed;
   });
 }
 
@@ -357,9 +424,55 @@ export function liftLayoutToTop<T extends { y: number }>(layouts: T[]): T[] {
  * importance signal); only x/y/h are normalized. Returns one record per input
  * tile, keyed by id — apply via the existing layout-save path.
  */
+type GridTile = { id: number; x: number; y: number; w: number; h: number };
+
+function tilesOverlap(a: GridTile, b: GridTile): boolean {
+  return !(a.x + a.w <= b.x || b.x + b.w <= a.x || a.y + a.h <= b.y || b.y + b.h <= a.y);
+}
+
+/** Push each movable tile (in reading order) down just far enough to clear the
+ *  fixed tiles and everything already placed. Fixed tiles never move. */
+function routeAroundFixed(movable: GridTile[], fixed: GridTile[]): GridTile[] {
+  const placed: GridTile[] = [...fixed];
+  const out: GridTile[] = [];
+  for (const tile of [...movable].sort((a, b) => a.y - b.y || a.x - b.x)) {
+    const next = { ...tile };
+    for (let guard = 0; guard < 500; guard += 1) {
+      const blocker = placed.find((p) => tilesOverlap(next, p));
+      if (!blocker) break;
+      next.y = blocker.y + blocker.h;
+    }
+    placed.push(next);
+    out.push(next);
+  }
+  return out;
+}
+
+/**
+ * "Dồn lên trên" that respects locks: removes the empty band above the page's
+ * content by lifting the MOVABLE tiles, never a locked one, and never into a
+ * locked one. Returns null when there is nothing to lift.
+ */
+export function compactPageUp(tiles: GridTile[], lockedIds: ReadonlySet<number> = new Set()): GridTile[] | null {
+  const movable = tiles.filter((t) => !lockedIds.has(t.id));
+  if (movable.length === 0) return null;
+  const minY = Math.min(...tiles.map((t) => t.y));
+  if (!Number.isFinite(minY) || minY <= 0) return null;
+  const fixed = tiles.filter((t) => lockedIds.has(t.id));
+  const routed = routeAroundFixed(movable.map((t) => ({ ...t, y: t.y - minY })), fixed);
+  return [...routed, ...fixed];
+}
+
 export function tidyPageLayout(
-  tiles: Array<{ id: number; x: number; y: number; w: number; h: number }>,
-): Array<{ id: number; x: number; y: number; w: number; h: number }> {
+  tiles: GridTile[],
+  lockedIds: ReadonlySet<number> = new Set(),
+): GridTile[] {
+  if (lockedIds.size > 0) {
+    // Locked tiles are obstacles: tidy the rest, then route it around them.
+    const fixed = tiles.filter((t) => lockedIds.has(t.id));
+    const tidied = tidyPageLayout(tiles.filter((t) => !lockedIds.has(t.id)));
+    return [...routeAroundFixed(tidied, fixed), ...fixed];
+  }
   const norm = tiles.map((t) => ({
     id: t.id,
     x: Math.max(0, Math.floor(Number(t.x) || 0)),
@@ -404,4 +517,37 @@ export function tidyPageLayout(
     y += r.maxH;
   }
   return out;
+}
+
+/** The public report's breakpoints, in measured GRID px: phone stack below
+ *  `md`, the tablet derivation between `md` and `lg`, the authored grid above. */
+export const REPORT_RESPONSIVE_BREAKPOINTS = { lg: REPORT_TABLET_BREAKPOINT, md: REPORT_STACK_BREAKPOINT, xs: 0 };
+export const REPORT_RESPONSIVE_COLS = { lg: DASHBOARD_GRID_COLS, md: DASHBOARD_GRID_COLS, xs: 1 };
+
+/**
+ * Every breakpoint's layout from the ONE authored desktop layout. Desktop is
+ * the source; tablet and phone are derived, deterministically, and never saved.
+ * The builder's narrow projection calls the same function, so what an author
+ * previews by narrowing the window is what a viewer gets on that device.
+ */
+export function buildResponsiveReportLayouts<T extends { i: string; x: number; y: number; w: number; h: number }>(
+  layouts: T[],
+  opts: { kindOf: (item: T) => ResponsiveTileKind; gridWidth?: number | null; gridGap?: number },
+): { lg: T[]; md: T[]; xs: T[] } {
+  const gap = Number(opts.gridGap) || 0;
+  const width = Number(opts.gridWidth) || 0;
+  const tabletRef = width >= REPORT_STACK_BREAKPOINT && width < REPORT_TABLET_BREAKPOINT ? width : 820;
+  const stackPitch = computeReportRowHeight(REPORT_STACK_BREAKPOINT - 1, gap) + gap;
+  return {
+    lg: layouts,
+    md: deriveTabletLayout(layouts, { kindOf: opts.kindOf, referenceWidthPx: tabletRef }),
+    xs: deriveStackedLayout(layouts, { kindOf: opts.kindOf, rowPitchPx: stackPitch }),
+  };
+}
+
+/** Which breakpoint a measured grid width falls in. */
+export function reportBreakpointFor(width: number | null | undefined): 'lg' | 'md' | 'xs' {
+  const w = Number(width) || 0;
+  if (w <= 0 || w >= REPORT_TABLET_BREAKPOINT) return 'lg';
+  return w >= REPORT_STACK_BREAKPOINT ? 'md' : 'xs';
 }

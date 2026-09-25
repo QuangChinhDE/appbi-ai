@@ -22,6 +22,8 @@ import {
   scaleGridLayoutForRender,
 } from '@/lib/dashboard-pages';
 import { buildCapabilitySchema, AI_ALLOWED_CHART_STYLE_KEYS } from './capabilities';
+import { buildVisualMeaning, EMPTY_MEANING } from './design-context';
+import type { FieldMetaIndex } from './design-context';
 import { inferPresentationRole, isDataVisual } from './roles';
 import type {
   DashboardPresentationSnapshot,
@@ -128,9 +130,9 @@ export function buildPresentationFingerprint(tiles: DashboardChart[]): Presentat
 /** Which allow-listed style keys are meaningful for this chart type. Sending a
  *  donut's plan `barRadius` wastes tokens and invites nonsense. */
 function styleCapabilitiesFor(chartType: string, widgetType: string): string[] {
-  if (!isDataVisual(widgetType)) return ['transparentBackground'];
+  if (!isDataVisual(widgetType)) return [];
   const type = chartType.toUpperCase();
-  const common = ['transparentBackground', 'fontSize', 'chartTitleFontSize', 'palette', 'numberFormat', 'decimalPlaces'];
+  const common = ['tileFrame', 'chartSurface', 'fontSize', 'chartTitleFontSize', 'palette', 'numberFormat', 'decimalPlaces'];
   if (type === 'KPI' || type === 'GAUGE' || type === 'CARD') {
     return [...common, 'kpiBackgroundMode', 'kpiAccentColor', 'kpiAccentBorder', 'kpiGradientBg', 'kpiValueFontSize', 'kpiIconName', 'kpiIconColor'];
   }
@@ -168,22 +170,57 @@ export interface BuildSnapshotInput {
   pageCount: number;
   slicers: Array<Record<string, any>>;
   slicerDock: string;
+  /** Labels/types/descriptions from the dataset models the builder already
+   *  loaded. Optional: without it measure names are humanised instead. */
+  fieldMeta?: FieldMetaIndex;
+}
+
+/** The allow-listed style keys a tile already carries on this dashboard. */
+function currentStyleOf(tile: DashboardChart): Record<string, unknown> {
+  const override = ((tile.layout as any)?.styleConfigOverride ?? {}) as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+  for (const key of AI_ALLOWED_CHART_STYLE_KEYS) {
+    if (override[key] !== undefined) out[key] = override[key];
+  }
+  return out;
 }
 
 export function buildPresentationSnapshot(input: BuildSnapshotInput): DashboardPresentationSnapshot {
   const { dashboard, tiles, pageId, pageName, pageCount, slicers, slicerDock } = input;
   const theme = (dashboard.theme_config ?? {}) as Record<string, any>;
 
-  const visuals: SnapshotVisual[] = tiles.map((tile) => {
-    // Read through the same upscaler the renderer uses, so a legacy 12-column
-    // tile is described to the planner at the coordinates it actually occupies.
-    const layout = (scaleGridLayoutForRender(tile.layout as any) ?? {}) as Record<string, any>;
+  // Reading order: top to bottom, left to right, in the coordinates the renderer
+  // actually draws (legacy 12-col tiles upscaled first).
+  const rendered = tiles.map((tile) => ({
+    tile,
+    layout: (scaleGridLayoutForRender(tile.layout as any) ?? {}) as Record<string, any>,
+  }));
+  const order = new Map<number, number>();
+  [...rendered]
+    .sort((a, b) => (Number(a.layout.y) || 0) - (Number(b.layout.y) || 0)
+      || (Number(a.layout.x) || 0) - (Number(b.layout.x) || 0)
+      || a.tile.id - b.tile.id)
+    .forEach((entry, index) => order.set(entry.tile.id, index + 1));
+
+  const visuals: SnapshotVisual[] = rendered.map(({ tile, layout }) => {
     const chartType = chartTypeOf(tile);
     const widgetType = String(tile.widget_type ?? 'chart');
     const x = Number(layout.x) || 0;
     const y = Number(layout.y) || 0;
     const w = Number(layout.w) || 0;
     const h = Number(layout.h) || 0;
+    const meaning = isDataVisual(widgetType)
+      ? buildVisualMeaning({
+          chart: tile.chart as any,
+          // Base style ⊕ this dashboard's override — the same precedence the tile
+          // renders with, merged here without the renderer's normaliser.
+          styleConfig: {
+            ...(((tile.chart as any)?.config?.styleConfig ?? {}) as Record<string, unknown>),
+            ...(((tile.layout as any)?.styleConfigOverride ?? {}) as Record<string, unknown>),
+          },
+          fieldMeta: input.fieldMeta,
+        })
+      : EMPTY_MEANING;
     return {
       dashboardChartId: tile.id,
       chartType: chartType || (widgetType === 'chart' ? 'UNKNOWN' : widgetType.toUpperCase()),
@@ -191,11 +228,16 @@ export function buildPresentationSnapshot(input: BuildSnapshotInput): DashboardP
       currentLayout: { x, y, w, h },
       displayRoleHint: inferPresentationRole({
         chartType, widgetType, w, y, gridColumns: DASHBOARD_GRID_COLS,
+        temporal: meaning.temporal, intent: meaning.intent,
       }),
       isWidget: !isDataVisual(widgetType),
       widgetType,
       styleCapabilities: styleCapabilitiesFor(chartType, widgetType),
       renderAspect: renderAspectFor(chartType, widgetType),
+      readingOrder: order.get(tile.id) ?? 0,
+      locked: (tile.layout as any)?.locked === true,
+      meaning,
+      currentStyle: currentStyleOf(tile),
     };
   });
 
@@ -211,6 +253,9 @@ export function buildPresentationSnapshot(input: BuildSnapshotInput): DashboardP
   return {
     dashboard: {
       name: String(dashboard.name ?? ''),
+      ...(typeof (dashboard as any).description === 'string' && (dashboard as any).description.trim()
+        ? { description: String((dashboard as any).description).trim().slice(0, 240) }
+        : {}),
       currentPageId: pageId,
       pageCount,
     },
