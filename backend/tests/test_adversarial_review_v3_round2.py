@@ -256,4 +256,43 @@ def test_the_preflight_minimum_still_counts_a_disabled_skill(skill_db):
     assert minimum_calls(flow.nodes, skill_lookup=skill_lookup_for(skill_db.db)) == (1, 0)
 
 
+# ── found by the live eval: the names a model actually passes ─────────────
+def _derived_ctx():
+    return SimpleNamespace(chart_meta={686: {"fields": {
+        "measures": [{"field": "dataset_table_438.total_revenue", "label": "Total revenue"}],
+        "dimensions": [{"field": "dataset_table_445.product_category_name_english",
+                        "label": "Product category name english"}]}}})
+
+
+COLUMNS = ["dataset_table_445.product_category_name_english", "dataset_table_438.total_revenue"]
+ROWS = [["health_beauty", 1258681.34], ["watches_gifts", 1205005.68], ["bed_bath_table", 1036988.68]]
+
+
+@pytest.mark.parametrize("said", ["Total revenue", "total_revenue", "dataset_table_438.total_revenue"])
+def test_the_measure_said_another_way_is_the_same_column(said):
+    from app.services.agent_flows.tools.packs import derived
+
+    got = derived._resolve(_derived_ctx(), 686, COLUMNS, ROWS, measure=said, dimension=None)
+    assert isinstance(got, tuple) and got[2] == "dataset_table_438.total_revenue", got
+
+
+def test_a_measure_that_is_not_there_is_still_refused_with_the_valid_names():
+    from app.services.agent_flows.tools.packs import derived
+
+    got = derived._resolve(_derived_ctx(), 686, COLUMNS, ROWS, measure="lợi nhuận", dimension=None)
+    assert isinstance(got, dict) and got["error_code"] == "bad_argument"
+    assert "dataset_table_438.total_revenue" in got.get("recovery", "")
+
+
+def test_a_category_written_as_a_person_writes_it_is_the_value(monkeypatch):
+    from app.services.agent_flows.tools.packs import derived
+
+    monkeypatch.setattr(derived, "_load", lambda ctx, args: (COLUMNS, ROWS, []))
+    monkeypatch.setattr(derived.measure_meta, "describe_measure",
+                        lambda ctx, cid, col: {"additive": True, "agg": "sum", "format_kind": "", "unit": None})
+    out = derived.tool_share_of(_derived_ctx(), {"chart_id": 686, "item": "Health & beauty"})
+    assert out["ok"] is True and out["data"]["item"] in ("Health & beauty", "health_beauty")
+    assert round(out["data"]["share_pct"], 2) == round(1258681.34 / sum(r[1] for r in ROWS) * 100, 2)
+
+
 from test_skills_run_as_governed_children import skill_db  # noqa: E402,F401
