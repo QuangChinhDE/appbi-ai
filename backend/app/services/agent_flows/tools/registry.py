@@ -966,8 +966,8 @@ def admission_refusal(ctx: Any, name: str) -> dict | None:
     return _capability_refusal(ctx, spec)
 
 
-_INT_STRING = re.compile(r"^\s*-?\d+\s*$")
-_NUM_STRING = re.compile(r"^\s*-?\d+(\.\d+)?\s*$")
+_INT_STRING = re.compile(r"^\s*-?[0-9]{1,18}\s*$", re.ASCII)
+_NUM_STRING = re.compile(r"^\s*-?[0-9]{1,18}(\.[0-9]{1,18})?\s*$", re.ASCII)
 
 
 def _coerce_numeric_args(spec: "ToolSpec", args: dict) -> dict:
@@ -1032,6 +1032,8 @@ def execute(
     if denied is not None:
         return denied
 
+    if args is not None and not isinstance(args, dict):
+        return R.err("tham số của công cụ phải là một object", code="bad_argument")
     args = _coerce_numeric_args(spec, args or {})
     # AND THE QUESTION'S OWN BREAKDOWN, for tools whose result IS per-group.
     #

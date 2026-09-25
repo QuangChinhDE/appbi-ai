@@ -723,7 +723,7 @@ class AgentRuntime:
             self.view.note_rejected(call.tool_name, str(result.get("error_code") or "failed"))
             self.state.tool_log.append(f"{call.tool_name}({result.get('error_code') or 'failed'})")
         self.state.evidence_source = self.node.key
-        ref = self.state.record_evidence(result, tool=call.tool_name)
+        ref = self.state.record_evidence(result, tool=call.tool_name, args=call.tool_args)
         self.last_result = self._shown(result, ref)
 
     async def invoke(self, call: AgentEvent) -> AsyncGenerator[AgentEvent, None]:
@@ -871,7 +871,7 @@ class AgentRuntime:
             view.note_invoked(call.tool_name)
         else:
             view.note_rejected(call.tool_name, str(result.get("error_code") or "failed"))
-        ref = state.record_evidence(result, tool=call.tool_name)
+        ref = state.record_evidence(result, tool=call.tool_name, args=call.tool_args)
         _collect_citation(state, call.tool_name, call.tool_args, result)
         # What the MODEL is shown carries the reference; the result itself is
         # untouched (it may be a cached object shared with other runs).

@@ -447,6 +447,12 @@ def _field_matches(needle: str, entries: Any) -> bool:
     want = field_key(needle)
     if not want:
         return False
+    # A TABLE-QUALIFIED needle (a governed binding) names one column of one
+    # table, and matches only that.
+    if "." in str(needle) and not str(needle).startswith("."):
+        full = _fold(str(needle))
+        return any(_fold(str((e.get("field") if isinstance(e, dict) else e) or "")) == full
+                   for e in entries or [])
     for entry in entries or []:
         if not isinstance(entry, dict):
             if field_key(entry) == want:
@@ -479,23 +485,37 @@ def _vocabulary(ctx: Any, phrase: str, kind: str) -> list[str]:
     if not phrase:
         return []
     out = [phrase]
+    # AN IDENTIFIER IS MATCHED EXACTLY, as it always was — `total_revenue` must
+    # not also become every field whose words overlap it (found by review: it
+    # matched an AOV chart). Only a phrase is translated.
+    if re.fullmatch(r"[A-Za-z0-9_.]+", phrase) and ("_" in phrase or "." in phrase):
+        return out
     wanted = _terms_of(phrase)
     if not wanted:
         return out
-    need = min(2, len(wanted))
     once = _Once(ctx, phrase)
     try:
         fields = _fields(ctx, phrase, wanted, once)
     except Exception:  # noqa: BLE001 — vocabulary is never worth failing a lookup over
         logger.debug("[discover] vocabulary lookup failed", exc_info=True)
         fields = []
+
+    def fit(*texts: str) -> int | None:
+        """How closely a NAME/LABEL states the phrase: every phrase word must be
+        in it; fewer extra words is closer. None = it does not state it. The
+        description is not read — "doanh thu" in an AOV field's description does
+        not make AOV revenue (found by review)."""
+        words = set().union(*(_terms_of(t) for t in texts))
+        return len(words - wanted) if wanted <= words else None
+
+    scored: list[tuple[int, str]] = []
     for f in fields:
         fk = str(f.get("field_kind") or "unknown")
         if kind == "measure" and fk == "dimension" or kind == "dimension" and fk == "measure":
             continue
-        hay = " ".join(str(f.get(k) or "") for k in ("id", "name", "detail"))
-        if _score(hay, wanted) >= need and f.get("id") and f["id"] not in out:
-            out.append(str(f["id"]))
+        extra = fit(str(f.get("id") or ""), str(f.get("name") or ""))
+        if extra is not None and f.get("id"):
+            scored.append((extra, str(f["id"])))
     if kind == "measure":
         try:
             metrics = once.metrics()
@@ -504,15 +524,35 @@ def _vocabulary(ctx: Any, phrase: str, kind: str) -> list[str]:
         from app.services.governance_service import GovernanceService
 
         for m in metrics:
-            if _score(" ".join(str(x or "") for x in (m.name, m.display_name)), wanted) < need:
+            extra = fit(str(m.name or ""), str(m.display_name or ""))
+            if extra is None:
                 continue
             for row in GovernanceService.metric_binding_details(ctx.db, m) or []:
                 ref = str(row.get("measure_ref") or "")
                 if row.get("status") == "ok" and ref:
-                    key = ref.rsplit(".", 1)[-1]
-                    if key not in out:
-                        out.append(key)
+                    # TABLE-QUALIFIED: a binding names one column of one table; a
+                    # same-named column elsewhere is a different figure.
+                    scored.append((extra, ref))
+    if scored:
+        best = min(extra for extra, _ in scored)
+        for extra, ident in scored:
+            if extra == best and ident not in out:
+                out.append(ident)
     return out
+
+
+def _labelled_dimensions(ctx: Any) -> set[str]:
+    """Field keys of dimensions the semantic model gives a label."""
+    try:
+        from app.services.dashboard_ai_bot.govern_tools import tool_describe_semantic_model
+
+        res = tool_describe_semantic_model(ctx, {"query": ""})
+        data = (res.get("data") if isinstance(res.get("data"), dict) else res) if isinstance(res, dict) else {}
+    except Exception:  # noqa: BLE001
+        return set()
+    return {field_key(str(f.get("name") or "")) for f in (data.get("fields") or [])
+            if isinstance(f, dict) and str(f.get("kind") or "").lower() == "dimension"
+            and str(f.get("label") or "").strip()}
 
 
 def _charts_on_table(ctx: Any, table_id: int, measure: str | None,
@@ -538,6 +578,10 @@ def _charts_on_table(ctx: Any, table_id: int, measure: str | None,
     out = []
     m_needle = (measure or "").strip()
     d_needle = (dimension or "").strip()
+    # A title may name the breakdown only when the governed vocabulary gave the
+    # phrase no field at all (it is then the only words there are).
+    title_allowed = bool(d_needle) and list(dimension_aliases or [d_needle]) == [d_needle]
+    labelled_dims = _labelled_dimensions(ctx) if title_allowed else set()
     for c in rows:
         # THE GROUPING KEY, NOT A SUBSTRING OF THE CONFIG.
         #
@@ -577,10 +621,23 @@ def _charts_on_table(ctx: Any, table_id: int, measure: str | None,
         # and it is reported as what it is (`dimension_match_basis`). The measure
         # half is never matched by title.
         d_basis = "field" if d_hit else ""
-        if d_needle and not d_hit and (fields.get("dimensions") or []):
-            want = _terms_of(d_needle)
-            if want and _score(c.name or "", want) >= min(2, len(want)):
-                d_hit, d_basis = True, "chart_title"
+        if d_needle and not d_hit and title_allowed:
+            from app.services.agent_flows.tools.dimension_gate import (
+                _raw_terms,
+                chart_dimension_words,
+                title_hits,
+            )
+
+            asked = _raw_terms(d_needle)
+            for ref, _fw, title_words in chart_dimension_words(ctx).get(c.id, []):
+                # Only a breakdown the semantic model has no word for can be named
+                # by a title: a LABELLED dimension already says what it is, and a
+                # title saying something else is not evidence against it.
+                if field_key(ref) in labelled_dims:
+                    continue
+                if asked and len(title_hits(ctx, asked, title_words)) >= min(2, len(asked)):
+                    d_hit, d_basis = True, "chart_title"
+                    break
         # THE DISTINCTION THE CALLER HAS TO SEE.
         #
         # "Same table" and "same measure" are not the same claim. A chart on the

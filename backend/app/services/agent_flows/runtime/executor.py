@@ -617,6 +617,23 @@ async def _run_node(
             )
             raise
         except BudgetExhausted as exc:
+            # ONE SPENT CEILING ENDS ONLY THE STEPS THAT NEED IT. A data step that
+            # hit the TOOL ceiling fails as a step; the run walks on while the model
+            # can still be asked, so the answering step says what was gathered.
+            # Found by review: a loop of Tool steps funded at its minimum died on
+            # iteration 2 and the answer never ran.
+            if getattr(exc, "resource", "all") == "tools" \
+                    and state.budget.llm_calls < state.budget.max_llm_calls:
+                budget_refused = True
+                last_error = str(exc)
+                if not any(n.code == "steps_skipped_for_budget" for n in state.notices):
+                    state.notices.append(Notice(
+                        code="steps_skipped_for_budget", severity="warning", node_key=node.key,
+                        text=("Một số bước không chạy hết vì đã dùng hết số lượt gọi công cụ — "
+                              "câu trả lời có thể chưa đầy đủ."),
+                        facts=state.budget.ledger(),
+                    ))
+                break
             # Same reasoning as BranchStopped above, and the same failure when it
             # was missing: raising straight through left the trace EMPTY, so a run
             # that spent its whole budget on one node reported "no answer" with

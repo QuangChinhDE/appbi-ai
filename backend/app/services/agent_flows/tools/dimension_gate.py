@@ -34,6 +34,9 @@ measure down that way — which is a better answer than a confident wrong one.
 """
 from __future__ import annotations
 
+import re
+import unicodedata
+from collections import Counter
 from typing import Any
 
 from app.services.agent_flows.tools import result as R
@@ -87,7 +90,94 @@ def _semantic_fields(ctx: Any) -> list[dict]:
     return [f for f in (data.get("fields") or []) if isinstance(f, dict)]
 
 
-def _chart_dimension_vocabulary(ctx: Any) -> list[tuple[str, set[str]]]:
+_RAW_WORD = re.compile(r"[0-9a-zà-ỹđ]+")
+
+
+def _raw_terms(text: str) -> set[str]:
+    """Words AS WRITTEN — lower-cased, diacritics kept. "bảng" (a table) and
+    "bang" (a state) are different words; folding made them one, and a category
+    chart titled "Bảng doanh thu theo danh mục" then answered for states."""
+    t = unicodedata.normalize("NFC", str(text or "").lower())
+    return {w for w in _RAW_WORD.findall(t) if len(w) > 1}
+
+
+def _fold_word(word: str) -> str:
+    return next(iter(_terms_of(word)), word)
+
+
+def chart_dimension_words(ctx: Any) -> dict[int, list[tuple[str, set[str], set[str]]]]:
+    """Per chart in scope: (grouping field, its field words, its TITLE words).
+
+    ONE DEFINITION for the gate here and for `resolve_chart_candidates`, so the
+    two cannot disagree about what a chart's breakdown is called.
+
+    Title words are kept as written (see `_raw_terms`) and a word most titles
+    share is dropped: "Olist · X theo Y · page-1" puts "olist", "theo" and "page"
+    in every title, and a question saying "theo" then named every breakdown at
+    once — found by review, the gate let the category chart answer "doanh thu
+    theo bang?".
+    """
+    allowed = tuple(sorted(getattr(ctx, "allowed_chart_ids", None) or set()))
+    cached = getattr(ctx, "_dimension_words_cache", None)
+    if cached and cached[0] == allowed:
+        return cached[1]
+    meta_all = getattr(ctx, "chart_meta", None) or {}
+    titled: dict[int, set[str]] = {}
+    for cid in allowed:
+        meta = meta_all.get(cid) or {}
+        if ((meta.get("fields") or {}).get("dimensions") or []):
+            titled[cid] = _raw_terms(str(meta.get("name") or ""))
+    common: set[str] = set()
+    if len(titled) >= 3:
+        counts = Counter(w for words in titled.values() for w in words)
+        common = {w for w, n in counts.items() if n >= 3 and n > len(titled) / 2}
+    out: dict[int, list[tuple[str, set[str], set[str]]]] = {}
+    for cid, words in titled.items():
+        for d in ((meta_all.get(cid) or {}).get("fields") or {}).get("dimensions") or []:
+            ref = d.get("field") if isinstance(d, dict) else d
+            if not ref:
+                continue
+            field_words = _terms_of(field_key(ref))
+            if isinstance(d, dict):
+                field_words |= _terms_of(str(d.get("label") or ""))
+            out.setdefault(cid, []).append((str(ref), field_words, words - common))
+    try:
+        ctx._dimension_words_cache = (allowed, out)
+    except Exception:                                           # noqa: BLE001
+        pass
+    return out
+
+
+def _ambiguous_folds(ctx: Any) -> set[str]:
+    """Folded forms two different written words share across the titles in
+    scope ("bang" ← "bang", "bảng"). An unaccented question word matching one of
+    these cannot say which it meant, so it matches only the unaccented one."""
+    by_fold: dict[str, set[str]] = {}
+    for rows in chart_dimension_words(ctx).values():
+        for _ref, _fw, tw in rows:
+            for w in tw:
+                by_fold.setdefault(_fold_word(w), set()).add(w)
+    return {f for f, forms in by_fold.items() if len(forms) > 1}
+
+
+def title_hits(ctx: Any, asked: set[str], title_words: set[str]) -> set[str]:
+    """Which of the asked words (as written) the title carries. An unaccented
+    asked word also matches an accented title word it folds to — unless the
+    report's titles use that folded form for two different words."""
+    hits = asked & title_words
+    ambiguous = _ambiguous_folds(ctx)
+    for q in asked - title_words:
+        fq = _fold_word(q)
+        if fq in ambiguous:
+            continue
+        # Either side may be the one written without accents; the fold is
+        # trusted only when the report's titles never use it for two words.
+        if any(_fold_word(t) == fq and (q.isascii() or t.isascii()) for t in title_words):
+            hits.add(q)
+    return hits
+
+
+def _chart_dimension_vocabulary(ctx: Any) -> list[tuple[str, set[str], set[str]]]:
     """Every breakdown this report offers, and the words that name it.
 
     THE GOVERNED `kind` IS NOT ENOUGH ON ITS OWN, and measuring that is what this
@@ -107,27 +197,10 @@ def _chart_dimension_vocabulary(ctx: Any) -> list[tuple[str, set[str]]]:
     `_dimension_terms` — because a BI title reads "<measure> theo <dimension>"
     and the measure words are in both the title and the question.
     """
-    out: list[tuple[str, set[str]]] = []
-    meta_all = getattr(ctx, "chart_meta", None) or {}
-    for cid in sorted(getattr(ctx, "allowed_chart_ids", None) or set()):
-        meta = meta_all.get(cid) or {}
-        fields = meta.get("fields") or {}
-        dims = fields.get("dimensions") or []
-        if not dims:
-            continue
-        name_words = _terms_of(str(meta.get("name") or ""))
-        for d in dims:
-            ref = d.get("field") if isinstance(d, dict) else d
-            if not ref:
-                continue
-            words = _terms_of(field_key(ref))
-            if isinstance(d, dict):
-                words |= _terms_of(str(d.get("label") or ""))
-            out.append((str(ref), words | name_words))
-    return out
+    return [row for rows in chart_dimension_words(ctx).values() for row in rows]
 
 
-def _dimension_terms(ctx: Any, question: str) -> set[str]:
+def _dimension_terms(ctx: Any, question: str) -> tuple[set[str], set[str]]:
     """The question's words, minus the ones that name a MEASURE.
 
     A WORD THAT NAMES WHAT IS BEING MEASURED IS NOT NAMING THE BREAKDOWN, and
@@ -153,7 +226,9 @@ def _dimension_terms(ctx: Any, question: str) -> set[str]:
     stripped = terms - measure_words
     # Never strip the question down to nothing: a question made ENTIRELY of
     # measure words names no breakdown, and an empty set says that honestly.
-    return stripped
+    # The words AS WRITTEN, for titles; minus the same measure words.
+    raw = {w for w in _raw_terms(question) if _fold_word(w) not in measure_words}
+    return stripped, raw
 
 
 def requested_dimension(ctx: Any) -> str | None:
@@ -196,9 +271,9 @@ def requested_dimension(ctx: Any) -> str | None:
             best = (score, name)
 
     if best is None:
-        narrowed = _dimension_terms(ctx, question)
-        for ref, words in _chart_dimension_vocabulary(ctx):
-            score = len(narrowed & words)
+        narrowed, narrowed_raw = _dimension_terms(ctx, question)
+        for ref, field_words, title_words in _chart_dimension_vocabulary(ctx):
+            score = len(narrowed & field_words) + len(title_hits(ctx, narrowed_raw, title_words))
             if score >= _MIN_DIMENSION_SCORE and (best is None or score > best[0]):
                 best = (score, ref)
 
@@ -216,12 +291,12 @@ def _question_names_this_chart_dimension(ctx: Any, chart_id: int) -> bool:
     breakdown is named in the question is never refused, whatever won the ranking.
     """
     question = str(getattr(ctx, "question", "") or "")
-    wanted = _dimension_terms(ctx, question)
-    if not wanted:
+    wanted, wanted_raw = _dimension_terms(ctx, question)
+    if not wanted and not wanted_raw:
         return False
     mine = set(_chart_dimensions(ctx, chart_id))
-    for ref, words in _chart_dimension_vocabulary(ctx):
-        if ref in mine and wanted & words:
+    for ref, field_words, title_words in _chart_dimension_vocabulary(ctx):
+        if ref in mine and (wanted & field_words or title_hits(ctx, wanted_raw, title_words)):
             return True
     return False
 

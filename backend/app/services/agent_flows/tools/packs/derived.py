@@ -128,12 +128,29 @@ def _resolve(
     lower = {c.lower(): i for i, c in enumerate(columns)}
     fields = (ctx.chart_meta.get(chart_id) or {}).get("fields") or {}
 
+    from app.services.agent_flows.tools.packs.discover import _fold, field_key
+
     def pick(explicit: str | None, declared: list[dict], want_numeric: bool) -> int | None:
         if explicit:
             idx = lower.get(explicit.lower())
-            if idx is None:
-                return None
-            return idx
+            if idx is not None:
+                return idx
+            # THE NAMES A MODEL ACTUALLY PASSES. Measured live: `measure` came as
+            # "Total revenue" or "total_revenue" for a column named
+            # `dataset_table_438.total_revenue`, was refused as bad_argument three
+            # times, and the step answered "no data". The same field said
+            # another way — without its table prefix, or by the label the chart
+            # declares for it — is the same field. Anything else is still refused.
+            key = field_key(explicit)
+            for i, col in enumerate(columns):
+                if field_key(col) == key:
+                    return i
+            for entry in declared:
+                if key in (field_key(str(entry.get("field") or "")), _fold(str(entry.get("label") or ""))):
+                    for candidate in (entry.get("field"), entry.get("label")):
+                        if candidate and candidate.lower() in lower:
+                            return lower[candidate.lower()]
+            return None
         for entry in declared:
             for candidate in (entry.get("field"), entry.get("label")):
                 if candidate and candidate.lower() in lower:
@@ -154,6 +171,8 @@ def _resolve(
             + (f" (tried '{measure}')" if measure else ""),
             code="bad_argument" if measure else "not_applicable",
             detail={"columns": columns},
+            recovery=("Omit `measure` to use the chart's own measure, or pass one of: "
+                      + ", ".join(columns)) if measure else "",
         )
     d_idx = pick(dimension, fields.get("dimensions") or [], False)
     if d_idx is None or d_idx == m_idx:
@@ -491,6 +510,20 @@ def tool_share_of(ctx: ToolContext, args: dict) -> dict:
 
     wanted = item.strip().lower()
     matched = next((k for k in sums if k.lower() == wanted), None)
+    if matched is None:
+        # "Health & beauty" and `health_beauty` name the same value: compared
+        # without punctuation, spacing or case (measured live: refused, and the
+        # step said the report had no such category).
+        import re as _re
+
+        def squash(v: str) -> str:
+            return _re.sub(r"[^0-9a-z]+", "", _fold(v))
+
+        from app.services.agent_flows.tools.packs.discover import _fold
+
+        same = [k for k in sums if squash(k) == squash(item)]
+        if len(same) == 1:
+            matched = same[0]
     if matched is None:
         # Substring, so a viewer asking about "health" finds "health_beauty" —
         # the labels are warehouse values and rarely what a person types.

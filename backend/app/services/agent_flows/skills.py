@@ -174,7 +174,8 @@ class SkillBudget:
 
     def spend_tool(self) -> None:
         if self.tool_calls >= self.max_tool_calls:
-            raise BudgetExhausted("Skill đã dùng hết số lượt gọi công cụ được cấp cho nó")
+            raise BudgetExhausted("Skill đã dùng hết số lượt gọi công cụ được cấp cho nó",
+                                  resource="tools")
         self.parent.spend_tool()
         self.tool_calls += 1
 
@@ -184,7 +185,7 @@ class SkillBudget:
 PARENT_ANSWER_RESERVE = 1
 
 
-def child_budget(parent: Any, *, reading_round: int = 1, mandatory: bool = False) -> SkillBudget:
+def child_budget(parent: Any, *, reading_round: int = 1) -> SkillBudget:
     """Everything the CALLING step may still spend, minus the round in which it
     reads the Skill's result.
 
@@ -201,10 +202,10 @@ def child_budget(parent: Any, *, reading_round: int = 1, mandatory: bool = False
     same rule through `tools_left(answering=False)`, which already holds back the
     parent's answer reserve.
     """
-    # A mandatory Skill STEP is bounded by the hard reservation only; the soft
-    # `answer_reserve` (tools kept back for the answering agent's own reading)
-    # would otherwise starve a verifier that preflight accepted (found by review).
-    tools_left = parent.tools_left(answering=mandatory)
+    # The soft `answer_reserve` (tools kept for the answering step) holds for a
+    # Skill step too: letting a step spend it was tried and reverted — review
+    # showed a Skill's deterministic tool steps could then leave the answer none.
+    tools_left = parent.tools_left(answering=False)
     llm_left = parent.llm_available() if hasattr(parent, "llm_available") \
         else max(0, parent.max_llm_calls - parent.llm_calls)
     return SkillBudget(parent, tool_cap=tools_left,
@@ -709,8 +710,7 @@ async def invoke_skill(
     # the executor's reservation. Charging a Skill step for a reading round that
     # never happens is how a mandatory verifier was refused on the minimum budget.
     budget = child_budget(state.budget,
-                          reading_round=PARENT_ANSWER_RESERVE if caller_reads_result else 0,
-                          mandatory=not caller_reads_result)
+                          reading_round=PARENT_ANSWER_RESERVE if caller_reads_result else 0)
     if budget.max_tool_calls <= 0 and budget.max_llm_calls <= 0:
         outcome["result"] = _err("không còn ngân sách cho Skill ở lượt này", "budget_exhausted")
         return

@@ -457,7 +457,10 @@ def preflight(
     #      time. That is not "tight", it is a flow that cannot run as designed.
     from app.services.agent_flows.runtime.reserve import minimum_calls, skill_lookup_for
 
-    need_llm, need_tools = minimum_calls(list(flow.nodes), skill_lookup=skill_lookup_for(db))
+    # A disabled Skill is still counted here: it can be re-enabled without this
+    # link being re-checked, and a link funded without it would then be short.
+    need_llm, need_tools = minimum_calls(list(flow.nodes),
+                                         skill_lookup=skill_lookup_for(db, include_disabled=True))
     if need_llm > contract.budget.max_llm_calls or need_tools > contract.budget.max_tool_calls:
         errors.append({
             "code": "budget_below_minimum",

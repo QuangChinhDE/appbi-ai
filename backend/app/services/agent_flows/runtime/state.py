@@ -54,7 +54,13 @@ class BudgetExhausted(Exception):
 
     Not an error the viewer sees as a failure: the executor catches it, stops
     walking, and the answer is produced from what has already been gathered.
+    `resource` says which ceiling: a spent TOOL ceiling stops the step that
+    needed a tool, not the run — the answering step may need only the model.
     """
+
+    def __init__(self, message: str = "", *, resource: str = "all") -> None:
+        super().__init__(message)
+        self.resource = resource
 
 
 class StepBudgetExhausted(Exception):
@@ -79,6 +85,30 @@ _IDENTIFIER_KEYS = frozenset({
     "id", "chart_id", "dashboard_id", "doc_id", "dataset_id", "dataset_table_id",
     "link_id", "binding_id", "run_id", "version", "flow_version",
 })
+
+
+def caller_numbers(args: Any, *, depth: int = 0) -> list[float]:
+    """Every number the caller put into a call's arguments (numbers and numeric
+    strings, a few levels deep). Bounded: arguments are small by contract."""
+    out: list[float] = []
+    if depth > 3 or args is None or isinstance(args, bool):
+        return out
+    if isinstance(args, (int, float)):
+        return [float(args)]
+    if isinstance(args, str):
+        n = _num(args)
+        return [n] if n is not None else []
+    if isinstance(args, dict):
+        for v in list(args.values())[:50]:
+            out += caller_numbers(v, depth=depth + 1)
+    elif isinstance(args, (list, tuple)):
+        for v in list(args)[:50]:
+            out += caller_numbers(v, depth=depth + 1)
+    return out
+
+
+def _is_caller_number(value: float, caller: list[float] | None) -> bool:
+    return any(abs(value - c) <= 1e-9 * max(1.0, abs(c)) for c in (caller or ()))
 
 
 @dataclass
@@ -203,7 +233,8 @@ class Budget:
         thrown away at the last step instead of being used.
         """
         if self.tool_calls >= self.max_tool_calls:
-            raise BudgetExhausted("đã dùng hết số lượt gọi công cụ cho câu hỏi này")
+            raise BudgetExhausted("đã dùng hết số lượt gọi công cụ cho câu hỏi này",
+                                  resource="tools")
         self._check_clock()
         self.tool_calls += 1
 
@@ -320,7 +351,7 @@ class RunState:
     step_budget: dict[str, dict[str, Any]] = field(default_factory=dict)
     _evidence_recorded: set[str] = field(default_factory=set)
 
-    def record_evidence(self, result: Any, *, tool: str = "") -> str | None:
+    def record_evidence(self, result: Any, *, tool: str = "", args: Any = None) -> str | None:
         """Register one capability result: give it a reference, then harvest it.
 
         Returns the reference; the caller shows it to the model next to the data
@@ -342,10 +373,18 @@ class RunState:
             self.add_evidence(result)
             return None
         ref = f"e{len(self.evidence_store) + 1}"
+        # WHAT THE CALLER TYPED INTO THIS CALL. A tool that echoes an argument —
+        # `search_business_assets` returns its query, `compare_to_target` its
+        # caller-supplied target — would otherwise hand the model's own number
+        # back as a result the ledger and `compute` trust (found by review:
+        # query "13590000" became a certified figure). A number the model supplied
+        # to a call cannot vouch for itself in that call's result.
+        caller = caller_numbers(args)
         self.evidence_store[ref] = {
             "tool": tool,
             "source": self.evidence_source,
             "result": result,
+            "caller_numbers": caller,
         }
         data = result.get("data") if isinstance(result.get("data"), dict) else {}
         # A RESULT MAY DECLARE WHICH NUMBERS IT VOUCHES FOR (`evidence_values`):
@@ -358,10 +397,18 @@ class RunState:
             for v in data.get("evidence_values") or []:
                 self.add_evidence(v, depth=1)
             return ref
-        self.add_evidence(result)
+        if "evidence_paths" in data:
+            # A result that says which of its fields it vouches for is harvested
+            # from those fields only (e.g. a projection against a caller target).
+            if self.evidence_source:
+                self.evidence_sources.add(self.evidence_source)
+            for key in data.get("evidence_paths") or []:
+                self.add_evidence(data.get(key), depth=1, exclude=caller)
+            return ref
+        self.add_evidence(result, exclude=caller)
         return ref
 
-    def add_evidence(self, payload: Any, *, depth: int = 0) -> None:
+    def add_evidence(self, payload: Any, *, depth: int = 0, exclude: list[float] | None = None) -> None:
         """Harvest numbers from a tool result.
 
         Bounded on depth and count: a chart payload can be tens of thousands of
@@ -375,12 +422,14 @@ class RunState:
         if isinstance(payload, bool):
             return
         if isinstance(payload, (int, float)):
-            self.evidence.append(float(payload))
+            if not _is_caller_number(float(payload), exclude):
+                self.evidence.append(float(payload))
             return
         if isinstance(payload, str):
             n = _num(payload)
             if n is not None:
-                self.evidence.append(n)
+                if not _is_caller_number(n, exclude):
+                    self.evidence.append(n)
             elif 1 < len(payload) <= 80 and len(self.evidence_labels) < 5000:
                 self.evidence_labels.add(payload.strip().lower())
             return
@@ -409,11 +458,11 @@ class RunState:
                 # A reference names a result; it is neither a figure nor a label.
                 if k == "evidence_ref":
                     continue
-                self.add_evidence(v, depth=depth + 1)
+                self.add_evidence(v, depth=depth + 1, exclude=exclude)
             return
         if isinstance(payload, (list, tuple)):
             for v in payload:
-                self.add_evidence(v, depth=depth + 1)
+                self.add_evidence(v, depth=depth + 1, exclude=exclude)
 
     def set_var(self, name: str, value: Any) -> None:
         if name:

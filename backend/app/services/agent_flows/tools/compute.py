@@ -219,11 +219,20 @@ def resolve_reference(store: dict[str, Any], ref: str, path: str) -> tuple[float
     # `literals[0]` of a referenced compute, and a text Skill's answer "13590000",
     # were both certified by the next compute. Structural, by field, never by
     # matching values.
+    number = _numeric(value, f"{ref}:{path or '(gốc)'}")
+    # A NUMBER THE CALLER TYPED INTO THAT CALL is its own echo, not evidence —
+    # whatever field of the result it sits in (`coverage.query`, a caller
+    # `target`). Found by review: `search_business_assets(query="13590000")`
+    # then compute over `coverage.query` certified 13590000.
+    from app.services.agent_flows.runtime.state import _is_caller_number
+
+    if _is_caller_number(number, entry.get("caller_numbers")):
+        trusted = False
     if isinstance(data, dict) and ("evidence_paths" in data or "evidence_values" in data):
         fields = list(segments[1:]) if root is result and segments[:1] == ["data"] else list(segments)
         head = fields[0] if fields and isinstance(fields[0], str) else ""
         trusted = trusted and head in set(data.get("evidence_paths") or [])
-    return _numeric(value, f"{ref}:{path or '(gốc)'}"), {
+    return number, {
         "tool": entry.get("tool") or "",
         "step": entry.get("source") or "",
         # TAINT TRAVELS. A reference to a result that was itself built on a typed

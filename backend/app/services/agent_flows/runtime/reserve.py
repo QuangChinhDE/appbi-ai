@@ -85,7 +85,7 @@ def minimum_calls(nodes: list[Any], *, skill_lookup: SkillLookup | None = None,
     return llm, tools
 
 
-def skill_lookup_for(db: Any) -> SkillLookup | None:
+def skill_lookup_for(db: Any, *, include_disabled: bool = False) -> SkillLookup | None:
     """Resolve a Skill reference to its pinned Flow, through the ONE resolver."""
     if db is None:
         return None
@@ -99,7 +99,8 @@ def skill_lookup_for(db: Any) -> SkillLookup | None:
             found = skills.resolve_skill(db, key, version)
             # A disabled version is refused at invocation, which costs nothing:
             # reserving for it would starve the steps that will actually run.
-            cache[ident] = found[1] if found and skills.lifecycle_of(found[0]) != skills.DISABLED else None
+            usable = found and (include_disabled or skills.lifecycle_of(found[0]) != skills.DISABLED)
+            cache[ident] = found[1] if usable else None
         return cache[ident]
 
     return lookup

@@ -33,7 +33,7 @@ async def run_skill(node: SkillNode, state: RunState, rctx: Any) -> AsyncGenerat
     ):
         yield ev
     result = outcome.get("result") or {"ok": False, "error": "Skill không chạy"}
-    state.record_evidence(result, tool=f"skill:{node.skill_key}")
+    state.record_evidence(result, tool=f"skill:{node.skill_key}", args=inputs)
     if not result.get("ok"):
         # Raised, like a failed Tool step: `on_error` decides what happens next,
         # and a failed Skill must not publish a value the next step reads as data.

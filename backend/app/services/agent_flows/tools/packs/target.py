@@ -213,6 +213,9 @@ def tool_compare_to_target(ctx: ToolContext, args: dict) -> dict:
         # own unit. Naming both stops one being read as the other, the mistake
         # the percentage-points work in this group was about.
         "attainment_pct": round(attainment, 2),
+        # A CALLER-SUPPLIED target makes gap and attainment the caller's
+        # arithmetic, not the report's: only `actual` is vouched for then.
+        **({"evidence_paths": ["actual", "rows_counted"]} if source == "caller" else {}),
         "status": "on_or_above_target" if gap >= 0 else "below_target",
         "shortfall_pct": None if gap >= 0 else round(-gap / target * 100.0, 2),
         "rows_counted": counted,

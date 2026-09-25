@@ -52,7 +52,7 @@ def _call(rctx: Any, state: RunState, tool: str, args: dict) -> Any:
     )
     # Everything the run READ, so the answer's figures can be checked against it —
     # and referenceable, so a later `compute` can name exactly which figure it used.
-    state.record_evidence(result, tool=tool)
+    state.record_evidence(result, tool=tool, args=args)
     return result
 
 
@@ -1172,7 +1172,7 @@ async def run_tool(
         node.tool if result.get("ok")
         else f"{node.tool}({result.get('error_code') or 'failed'})"
     )
-    state.record_evidence(result, tool=node.tool)
+    state.record_evidence(result, tool=node.tool, args=args)
 
     if not result.get("ok"):
         # RAISED, not swallowed. `on_error` on the node decides what happens next —
