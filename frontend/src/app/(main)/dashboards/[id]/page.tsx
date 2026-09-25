@@ -22,6 +22,8 @@ import { DashboardThemeProvider, getDashboardGridMargin } from '@/components/das
 import { resolveStyleTokens } from '@/lib/dashboard-theme-tokens';
 import { AiDesignPanel } from '@/components/dashboards/ai-design/AiDesignPanel';
 import { planFromTemplate } from '@/lib/dashboard-presentation/templates';
+import { buildFieldMetaIndex } from '@/lib/dashboard-presentation/design-context';
+import { auditRenderedTiles } from '@/lib/dashboard-presentation/render-audit';
 import { buildPresentationSnapshot, tilesOnPage } from '@/lib/dashboard-presentation/snapshot';
 import { buildPresentationMutation, tilesWithLocalEdits, toLocalLayoutOverrides } from '@/lib/dashboard-presentation/executor';
 import { useAiDesign } from '@/components/dashboards/ai-design/useAiDesign';
@@ -81,6 +83,7 @@ import {
   getDashboardChartsForPage,
   normalizeDashboardPages,
   tidyPageLayout,
+  compactPageUp,
   normalizeDashboardGridForRender,
   GRID_VERSION,
 } from '@/lib/dashboard-pages';
@@ -869,6 +872,37 @@ export default function DashboardDetailPage() {
   // because in AI mode a focused tile scopes the redesign to that one visual
   // (click-chart-to-edit), so the hook needs to read it.
   const [focusedTileId, setFocusedTileId] = useState<number | null>(null);
+  // AI Design scope = what is selected on the canvas. Click selects one visual,
+  // Shift/Ctrl/⌘+click adds or removes one; clicking the only selected visual
+  // again clears it. Outside AI mode selection is the single focus highlight.
+  const [selectedTileIds, setSelectedTileIds] = useState<number[]>([]);
+  const handleTileFocus = React.useCallback((id: number, additive?: boolean) => {
+    setFocusedTileId(id);
+    setSelectedTileIds((current) => {
+      if (additive) return current.includes(id) ? current.filter((x) => x !== id) : [...current, id];
+      return current.length === 1 && current[0] === id ? [] : [id];
+    });
+  }, []);
+  const clearTileSelection = React.useCallback(() => {
+    setSelectedTileIds([]);
+    setFocusedTileId(null);
+  }, []);
+  // A selection belongs to the page it was made on.
+  React.useEffect(() => { setSelectedTileIds([]); }, [activePageId]);
+  const canvasRootRef = React.useRef<HTMLDivElement | null>(null);
+  const getCanvasRoot = React.useCallback(() => canvasRootRef.current, []);
+  // The render-quality probe (see lib/dashboard-presentation/render-audit):
+  // the e2e gate calls it on the builder canvas and on the published report.
+  React.useEffect(() => {
+    (window as any).__APPBI_RENDER_AUDIT__ = () => auditRenderedTiles(canvasRootRef.current ?? document);
+    return () => { delete (window as any).__APPBI_RENDER_AUDIT__; };
+  }, []);
+  // Design Context: labels, types and formats from the semantic models this page
+  // has already loaded — no extra request, nothing the page does not show.
+  const designFieldMeta = React.useMemo(
+    () => buildFieldMetaIndex(Array.from(datasetModelsById.values()).map((model) => (model as any)?.views)),
+    [datasetModelsById],
+  );
 
   const aiDesign = useAiDesign({
     dashboardId: Number(dashboardId),
@@ -882,8 +916,10 @@ export default function DashboardDetailPage() {
     currentTheme: dashboard?.theme_config,
     slicerClusterLayout: draftSlicerClusterLayout,
     gridGapPx: getDashboardGridMargin(dashboard?.theme_config)[1],
-    // Only a click while the AI panel is open means "restyle just this one".
-    focusedChartId: designMode === 'ai' ? focusedTileId : null,
+    // Only a selection made while the AI panel is open scopes a request.
+    selectedIds: designMode === 'ai' ? selectedTileIds : [],
+    fieldMeta: designFieldMeta,
+    getCanvasRoot,
     onCommit: commitPresentation,
   });
 
@@ -898,11 +934,11 @@ export default function DashboardDetailPage() {
   // Clicking a chart while the AI panel is minimised should bring the panel
   // back — otherwise the "Editing: X" chip the click just armed is invisible.
   React.useEffect(() => {
-    if (designMode === 'ai' && focusedTileId != null && aiPanelCollapsed) {
+    if (designMode === 'ai' && selectedTileIds.length > 0 && aiPanelCollapsed) {
       setAiPanelCollapsed(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [focusedTileId, designMode]);
+  }, [selectedTileIds, designMode]);
 
   // A report-scoped redesign changes the SURFACE — a dark ground, a violet
   // accent, softer cards — and that is the biggest thing "make this a dark
@@ -1233,6 +1269,40 @@ export default function DashboardDetailPage() {
     setLocalLayoutOverrides(nextOverrides);
   };
 
+  // Lock is layout state, so it goes through the same local-override → draft →
+  // publish path as a drag: undoable, visible immediately (the grid reads the
+  // merged layout), and never lost when a draft saved BEFORE the lock is
+  // published. It used to write the live row directly, which a stale draft
+  // entry then overwrote on publish — the lock silently came undone.
+  const handleToggleTileLock = useCallback((dashboardChartId: number, next: boolean) => {
+    const prevOverrides = localLayoutOverridesRef.current;
+    const merged = {
+      ...prevOverrides,
+      [dashboardChartId]: { ...resolveDashboardChartLayout(dashboardChartId, prevOverrides), locked: next },
+    };
+    pushUndo({ kind: 'layout', prev: prevOverrides, next: merged });
+    setLocalLayoutOverrides(merged);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [resolveDashboardChartLayout]);
+
+  // The persisted layout of each tile (server row ⊕ saved draft), WITHOUT the
+  // unsaved local edits or an AI preview. Tile-level toggles that still write
+  // the live row (highlight opt-out, date-grain lock, title) spread THIS, so an
+  // unsaved drag or a design being previewed can never leak into the live
+  // report through an unrelated click.
+  const persistedLayoutById = React.useMemo(() => {
+    const map: Record<number, Record<string, any>> = {};
+    for (const dc of serverDashboard?.dashboard_charts ?? []) {
+      map[dc.id] = resolveDashboardChartLayout(dc.id, {}) as Record<string, any>;
+    }
+    return map;
+  }, [serverDashboard, resolveDashboardChartLayout]);
+  const persistedLayoutRef = React.useRef(persistedLayoutById);
+  persistedLayoutRef.current = persistedLayoutById;
+  // Stable getter: tiles are memoised and must not re-render on every refetch
+  // just to see a fresher persisted layout — they read it at write time.
+  const getPersistedLayout = useCallback((id: number) => persistedLayoutRef.current[id], []);
+
   // Phase-18 — "Sắp xếp gọn": re-flow the active page's tiles into a clean,
   // aligned, equal-height-row grid (kills the ragged "thò thụt" look). Writes
   // to the same local-override → Save-draft path as a manual drag, so it's
@@ -1248,7 +1318,10 @@ export default function DashboardDetailPage() {
       w: Number(dc.layout?.w) || 4,
       h: Number(dc.layout?.h) || 4,
     }));
-    const tidied = tidyPageLayout(tiles);
+    // Locked tiles are obstacles, not participants: they keep their rectangle
+    // and the re-flow routes around them.
+    const lockedIds = new Set(pageCharts.filter((dc) => (dc.layout as any)?.locked === true).map((dc) => dc.id));
+    const tidied = tidyPageLayout(tiles, lockedIds);
     const next: Record<number, Record<string, any>> = {};
     for (const t of tidied) {
       next[t.id] = mergeGridLayout(resolveDashboardChartLayout(t.id), t);
@@ -1276,14 +1349,15 @@ export default function DashboardDetailPage() {
       w: Number(dc.layout?.w) || 4,
       h: Number(dc.layout?.h) || 4,
     }));
-    const minY = Math.min(...tiles.map((tl) => tl.y));
-    if (!Number.isFinite(minY) || minY <= 0) {
+    const lockedIds = new Set(pageCharts.filter((dc) => (dc.layout as any)?.locked === true).map((dc) => dc.id));
+    const lifted = compactPageUp(tiles, lockedIds);
+    if (!lifted) {
       toast.info(t('dashboards.detail.compactUpNoop'));
       return;
     }
     const next: Record<number, Record<string, any>> = {};
-    for (const tl of tiles) {
-      next[tl.id] = mergeGridLayout(resolveDashboardChartLayout(tl.id), { x: tl.x, y: tl.y - minY, w: tl.w, h: tl.h });
+    for (const tl of lifted) {
+      next[tl.id] = mergeGridLayout(resolveDashboardChartLayout(tl.id), { x: tl.x, y: tl.y, w: tl.w, h: tl.h });
     }
     const prevOverrides = localLayoutOverridesRef.current;
     const merged = { ...prevOverrides, ...next };
@@ -2797,16 +2871,14 @@ export default function DashboardDetailPage() {
       ?? t('dashboards.detail.chartFallbackName', { id: crossFilterState.sourceChartId }))
     : null;
 
-  // The name of the tile the user clicked to restyle in AI mode — shown as the
-  // "Editing: X" chip. Only meaningful while the AI panel is open.
-  const focusedChartName = (designMode === 'ai' && focusedTileId != null)
-    ? (() => {
-        const dc = visibleDashboardCharts.find((c) => c.id === focusedTileId);
-        return dc?.layout?.custom_title
-          ?? dc?.chart?.name
-          ?? t('dashboards.detail.chartFallbackName', { id: focusedTileId });
-      })()
-    : null;
+  // Titles of the visuals selected for AI Design — the panel's scope strip.
+  const selectionNames = designMode === 'ai'
+    ? selectedTileIds
+        .map((id) => visibleDashboardCharts.find((c) => c.id === id))
+        .filter(Boolean)
+        .map((dc) => String(dc!.layout?.custom_title || dc!.chart?.name || t('dashboards.detail.chartFallbackName', { id: dc!.id })))
+    : [];
+  const lockedTileCount = visibleDashboardCharts.filter((dc) => (dc.layout as any)?.locked === true).length;
 
   return (
     <DashboardThemeProvider theme={previewTheme} className="min-h-full bg-surface-2">
@@ -3383,6 +3455,7 @@ export default function DashboardDetailPage() {
                         type="button"
                         role="radio"
                         aria-checked={active}
+                        data-testid={`design-mode-${mode}`}
                         onClick={() => {
                           // Leaving AI mode drops a preview rather than keeping
                           // it invisibly pending — an unapplied design that
@@ -3586,6 +3659,7 @@ export default function DashboardDetailPage() {
           </div>
         )}
         <ExportModeContext.Provider value={exportRenderMode}>
+        <div ref={canvasRootRef} data-dashboard-canvas-root="builder">
         {(dashboard?.layout_mode ?? 'grid') === 'canvas' ? (
           <DashboardCanvas
             dashboardId={dashboardId}
@@ -3638,13 +3712,17 @@ export default function DashboardDetailPage() {
             onMoveChartToPage={canEditThisPage ? handleMoveChartToPage : undefined}
             emptyMessage={emptyPageMessage}
             focusedDashboardChartId={focusedTileId}
-            onFocusChart={setFocusedTileId}
+            selectedDashboardChartIds={designMode === 'ai' ? selectedTileIds : undefined}
+            onFocusChart={handleTileFocus}
             aiDesignMode={designMode === 'ai'}
+            onToggleLock={canEditThisPage ? handleToggleTileLock : undefined}
+            getPersistedLayout={getPersistedLayout}
             params={paramValues}
             onParamChange={handleParamChange}
             onBindParameter={canEditThisPage ? setBindingChartId : undefined}
           />
         )}
+        </div>
         </ExportModeContext.Provider>
         </div>
         </div>{/* /Phase-G3 slicer-cluster arrangement wrapper */}
@@ -3702,8 +3780,6 @@ export default function DashboardDetailPage() {
             <AiDesignPanel
               turns={aiDesign.turns}
               busy={aiDesign.busy}
-              scope={aiDesign.scope}
-              onScopeChange={aiDesign.setScope}
               onSubmit={aiDesign.submit}
               pendingDiff={aiDesign.pending?.diff ?? null}
               onApply={aiDesign.apply}
@@ -3712,9 +3788,9 @@ export default function DashboardDetailPage() {
               onClose={() => { aiDesign.discard(); setDesignMode('manual'); }}
               visualCount={aiDesign.visualCount}
               pageName={currentPage?.name ?? activePageId}
-              focusedChartName={focusedChartName}
-              onClearFocus={() => setFocusedTileId(null)}
-              onRetryEntireReport={aiDesign.retryEntireReport}
+              selectionNames={selectionNames}
+              onClearSelection={clearTileSelection}
+              lockedCount={lockedTileCount}
             />
           </div>
         ))}
@@ -3996,7 +4072,7 @@ export default function DashboardDetailPage() {
                 // Layout only. Picking a template in the modal already applies
                 // its colours through the theme path; re-applying them here
                 // would repaint every page as a side effect of a layout button.
-                const plan = planFromTemplate(templateId, snapshot, 'page');
+                const plan = planFromTemplate(templateId, snapshot);
                 const built = buildPresentationMutation({
                   plan,
                   snapshot,

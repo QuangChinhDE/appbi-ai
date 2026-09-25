@@ -433,8 +433,11 @@ export const dashboardApi = {
        *  that comes back is validated and compiled here before it can touch a
        *  tile, so an image can never change what a chart shows. */
       images?: string[];
-      /** When the user clicked one chart to restyle only it. */
-      focusedChartId?: number | null;
+      /** The permission the user's words granted (style/structure/redesign).
+       *  Advisory for the model; the client clamps and enforces it regardless. */
+      grantedLayer?: 'style' | 'structure' | 'redesign';
+      /** The visuals the user selected. Empty = the whole page. */
+      targetIds?: number[];
     },
   ): Promise<{ plan: unknown }> => {
     const response = await apiClient.post(`/dashboards/${dashboardId}/presentation-plan`, {
@@ -442,7 +445,8 @@ export const dashboardApi = {
       snapshot: input.snapshot,
       conversation: input.conversation ?? null,
       images: input.images && input.images.length > 0 ? input.images : null,
-      focused_chart_id: input.focusedChartId ?? null,
+      granted_layer: input.grantedLayer ?? 'style',
+      target_ids: input.targetIds && input.targetIds.length > 0 ? input.targetIds : null,
     });
     return response.data;
   },
