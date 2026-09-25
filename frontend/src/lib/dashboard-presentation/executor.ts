@@ -20,6 +20,7 @@ import type { Dashboard, DashboardChart, DashboardChartLayout, DashboardThemeCon
 import { COLORWAYS, COLORWAY_KEYS, TEMPLATES, TEMPLATE_KEYS } from '@/lib/dashboard-theme-catalog';
 import { GRID_VERSION, scaleGridLayoutForRender } from '@/lib/dashboard-pages';
 import { compilePresentationPlan } from './compiler';
+import { blockWidgetConfig } from './blocks';
 import { isAllowedChartStyleKey, isAllowedThemeKey, isAllowedFont, isValidStyleValue, KPI_ONLY_STYLE_KEYS } from './capabilities';
 import { buildPresentationFingerprint } from './snapshot';
 import { applyStructureOperations, avoidFixed } from './structure';
@@ -27,6 +28,7 @@ import type { Rect } from './structure';
 import { STRUCTURAL_THEME_KEYS, validatePresentationMutation, validatePresentationPlan } from './validator';
 import type { ValidationResult } from './validator';
 import type {
+  CreatedBlock,
   DashboardPresentationSnapshot,
   DesignLayer,
   PresentationMutation,
@@ -246,7 +248,10 @@ export function buildPresentationMutation(input: BuildMutationInput): BuildMutat
     layoutOverrides: {}, themePatch: {}, slicerClusterPatch: {}, notes: [], layer,
   };
 
-  const planValidation = validatePresentationPlan(plan, tiles.map((t) => t.id));
+  const planValidation = validatePresentationPlan(
+    plan,
+    [...tiles.map((t) => t.id), ...(layer === 'redesign' ? (plan.blocks ?? []).map((b) => b.id) : [])],
+  );
   if (!planValidation.ok && !planValidation.repairable) {
     return {
       ok: false,
@@ -292,13 +297,28 @@ export function buildPresentationMutation(input: BuildMutationInput): BuildMutat
       const id = Number(rawId);
       next.set(id, { x: Number(layout.x), y: Number(layout.y), w: Number(layout.w), h: Number(layout.h) });
     }
-    if (fixed.size > 0) {
-      const routed = avoidFixed(next, fixed);
-      writeRects(routed);
-      if (locked.size > 0) mutation.notes.push(`${locked.size} locked visual(s) kept their place.`);
-    } else {
-      writeRects(next);
+    const routed = fixed.size > 0 ? avoidFixed(next, fixed) : next;
+    if (fixed.size > 0 && locked.size > 0) mutation.notes.push(`${locked.size} locked visual(s) kept their place.`);
+    // Blocks (negative ids) leave the tile geometry here and become rows to
+    // create; the validator below only ever sees tiles that exist.
+    const blocks = new Map((plan.blocks ?? []).map((b) => [b.id, b]));
+    const created: CreatedBlock[] = [];
+    const tileRects = new Map<VisualId, Rect>();
+    for (const [id, rect] of routed) {
+      const block = blocks.get(id);
+      if (block) {
+        created.push({
+          tempId: id,
+          widgetType: 'narrative',
+          widgetConfig: blockWidgetConfig(block),
+          layout: { x: rect.x, y: rect.y, w: rect.w, h: rect.h, gv: GRID_VERSION, pageId },
+        });
+      } else if (id >= 0) {
+        tileRects.set(id, rect);
+      }
     }
+    writeRects(tileRects);
+    if (created.length) mutation.createdBlocks = created;
   }
   // layer === 'style': no branch writes a coordinate.
 
@@ -457,12 +477,16 @@ export function composeMutations(first: PresentationMutation, second: Presentati
     layoutOverrides[id] = { ...prev, ...(next as Record<string, any>) } as Partial<DashboardChartLayout>;
   }
   const rank: Record<DesignLayer, number> = { style: 0, structure: 1, redesign: 2 };
+  // The blocks on screen are the later turn's when it laid the page out again,
+  // otherwise the earlier turn's — never both (that would stack two headlines).
+  const createdBlocks = second.createdBlocks ?? (second.layer === 'redesign' ? undefined : first.createdBlocks);
   return {
     layoutOverrides,
     themePatch: { ...first.themePatch, ...second.themePatch },
     slicerClusterPatch: { ...first.slicerClusterPatch, ...second.slicerClusterPatch },
     notes: [...second.notes],
     layer: rank[second.layer] >= rank[first.layer] ? second.layer : first.layer,
+    ...(createdBlocks?.length ? { createdBlocks } : {}),
   };
 }
 

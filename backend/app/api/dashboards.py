@@ -2075,6 +2075,13 @@ def add_widget_to_dashboard(
     widget_type = request.widget_type or "text"
     if widget_type == "chart":
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Use /charts endpoint for chart widgets")
+    # A draft-only block belongs to the draft of whoever created it — stamped
+    # here, never taken from the client, so another editor's publish cannot
+    # publish it and another editor's discard cannot delete it.
+    if getattr(request.layout, "draftOnly", False):
+        request.layout.draftOwner = str(current_user.id)
+    elif hasattr(request.layout, "draftOwner"):
+        delattr(request.layout, "draftOwner")
     try:
         dashboard = DashboardService.add_widget(
             db,
@@ -2398,6 +2405,14 @@ def publish_dashboard_draft(
         row.layout = merged
         flag_modified(row, "layout")
 
+    # ── Blocks this user's AI Design created in the draft go live now, in the
+    #    same commit as the layout: flag cleared, owner mark dropped. ──
+    for row in rows:
+        lay = row.layout if isinstance(row.layout, dict) else None
+        if lay and lay.get("draftOnly") and str(lay.get("draftOwner") or user_key) == user_key:
+            row.layout = {k: v for k, v in lay.items() if k not in ("draftOnly", "draftOwner")}
+            flag_modified(row, "layout")
+
     # ── Filter / slicer slots (still a shared draft — applied + cleared here) ──
     draft_filters_config = snapshot.get("filters_config")
     if isinstance(draft_filters_config, list):
@@ -2452,6 +2467,13 @@ def discard_dashboard_draft(
     if not dash:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dashboard not found")
     require_edit_access(db, current_user, dash, "dashboards")
+    # Blocks this user's draft created were never published: discarding the
+    # draft removes them. Published rows are never touched here.
+    user_key = str(current_user.id)
+    for row in db.query(DashboardChart).filter(DashboardChart.dashboard_id == dashboard_id).all():
+        lay = row.layout if isinstance(row.layout, dict) else None
+        if lay and lay.get("draftOnly") and str(lay.get("draftOwner") or user_key) == user_key:
+            db.delete(row)
     dash.draft_snapshot = None
     flag_modified(dash, "draft_snapshot")
     db.commit()

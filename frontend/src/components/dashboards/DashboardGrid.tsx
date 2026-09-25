@@ -17,6 +17,7 @@ import { DASHBOARD_GRID_COLS, REPORT_STACK_BREAKPOINT, dashboardRowHeight, deriv
 import { tileKindOf } from '@/lib/dashboard-presentation/tile-frame';
 import { useExportMode } from '@/lib/export-mode';
 import { useI18n } from '@/providers/LanguageProvider';
+import { ReportEvidenceProvider } from '@/lib/report-evidence';
 
 // Non-responsive grid: a single 12-column layout that simply scales cell
 // width with the container. Avoiding ResponsiveGridLayout means opening
@@ -120,7 +121,7 @@ interface DashboardGridProps {
 }
 
 
-export function DashboardGrid({
+function DashboardGridInner({
   dashboardId,
   dashboardCharts,
   onLayoutChange,
@@ -350,7 +351,7 @@ export function DashboardGrid({
             }`}
             title={canEdit ? t('dashboards.grid.dragToMove') : undefined}
           >
-            <DashboardWidget widget={dc} params={params} onParamChange={onParamChange} />
+            <DashboardWidget widget={dc} params={params} onParamChange={onParamChange} editing={canEdit} />
             {canEdit && (
               <div className="no-drag absolute right-2 top-2 z-20 flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100">
                 {onEditWidget && (
@@ -438,5 +439,15 @@ export function DashboardGrid({
       })}
     </FixedGridLayout>
     </div>
+  );
+}
+
+/** Every tile and narrative block of one rendered report shares one evidence
+ *  store, so a sentence states exactly what its tile is showing. */
+export function DashboardGrid(props: React.ComponentProps<typeof DashboardGridInner>) {
+  return (
+    <ReportEvidenceProvider>
+      <DashboardGridInner {...props} />
+    </ReportEvidenceProvider>
   );
 }

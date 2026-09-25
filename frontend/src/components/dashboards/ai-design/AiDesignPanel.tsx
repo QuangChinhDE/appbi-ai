@@ -4,6 +4,7 @@ import React from 'react';
 import {
   ArrowUp, Check, Crosshair, Info, LayoutGrid, Lightbulb, Loader2, Lock, Maximize2, Minus, Move,
   Palette, Paperclip, ShieldAlert, SlidersHorizontal, Sparkles, Wand2, X,
+  Type,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { useI18n } from '@/providers/LanguageProvider';
@@ -52,6 +53,8 @@ export interface AiDesignPanelProps {
   turns: AiDesignTurn[];
   busy: boolean;
   onSubmit: (prompt: string, images?: string[]) => void;
+  /** Recompose the page with a design direction (a redesign, previewed first). */
+  onDirection?: (direction: 'executive' | 'operations' | 'editorial') => void;
   /** Non-null while a design is previewed but not applied. */
   pendingDiff: PresentationDiff | null;
   onApply: () => void;
@@ -74,6 +77,7 @@ const CHIP_ICONS = {
   restyled: Palette,
   filters: SlidersHorizontal,
   theme: Palette,
+  blocks: Type,
 } as const;
 
 const LAYER_CHIP = {
@@ -88,6 +92,7 @@ function DiffChips({ diff }: { diff: PresentationDiff }) {
   if (diff.moved.length) chips.push({ key: 'moved', label: t('dashboards.aiDesign.movedCount', { count: diff.moved.length }) });
   if (diff.resized.length) chips.push({ key: 'resized', label: t('dashboards.aiDesign.resizedCount', { count: diff.resized.length }) });
   if (diff.restyled.length) chips.push({ key: 'restyled', label: t('dashboards.aiDesign.restyledCount', { count: diff.restyled.length }) });
+  if (diff.addedBlocks) chips.push({ key: 'blocks', label: t('dashboards.aiDesign.addedBlocks', { count: diff.addedBlocks }) });
   if (diff.slicerKeys.length) chips.push({ key: 'filters', label: t('dashboards.aiDesign.chipFilters') });
   if (diff.themeKeys.length) chips.push({ key: 'theme', label: t('dashboards.aiDesign.chipTheme') });
   const layerChip = LAYER_CHIP[diff.layer] ?? LAYER_CHIP.style;
@@ -217,7 +222,7 @@ function Turn({ turn }: { turn: AiDesignTurn }) {
 }
 
 export function AiDesignPanel({
-  turns, busy, onSubmit,
+  turns, busy, onSubmit, onDirection,
   pendingDiff, onApply, onDiscard, onCollapse, onClose, visualCount, pageName,
   selectionNames = [], onClearSelection, lockedCount = 0,
 }: AiDesignPanelProps) {
@@ -467,6 +472,29 @@ export function AiDesignPanel({
               </p>
             ) : (
               <>
+                {onDirection && (
+                  <div className="mb-4" data-testid="ai-design-directions">
+                    <p className="text-[11px] font-[510] uppercase tracking-wide text-text-quaternary">
+                      {t('dashboards.aiDesign.directionsTitle')}
+                    </p>
+                    <p className="mt-1 text-[11px] leading-relaxed text-text-tertiary">{t('dashboards.aiDesign.directionsHint')}</p>
+                    <div className="mt-2 grid grid-cols-1 gap-1.5">
+                      {(['executive', 'operations', 'editorial'] as const).map((direction) => (
+                        <button
+                          key={direction}
+                          type="button"
+                          data-testid={`ai-design-direction-${direction}`}
+                          onClick={() => onDirection(direction)}
+                          disabled={disabled}
+                          className="flex w-full flex-col items-start rounded-lg border border-[rgb(var(--border-line))] px-2.5 py-2 text-left transition-colors hover:border-brand/40 hover:bg-brand/[0.04] disabled:opacity-50"
+                        >
+                          <span className="text-[12px] font-[560] text-text-primary">{t(`dashboards.aiDesign.direction.${direction}`)}</span>
+                          <span className="text-[11px] leading-relaxed text-text-tertiary">{t(`dashboards.aiDesign.direction.${direction}Hint`)}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
                 <p className="text-[11px] font-[510] uppercase tracking-wide text-text-quaternary">
                   {t('dashboards.aiDesign.examplesTitle')}
                 </p>

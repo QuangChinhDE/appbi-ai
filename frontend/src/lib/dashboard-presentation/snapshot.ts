@@ -25,6 +25,8 @@ import { buildCapabilitySchema, AI_ALLOWED_CHART_STYLE_KEYS } from './capabiliti
 import { buildVisualMeaning, EMPTY_MEANING } from './design-context';
 import type { FieldMetaIndex } from './design-context';
 import { inferPresentationRole, isDataVisual } from './roles';
+import { possibleFindingKinds } from '@/lib/report-findings';
+import { BLOCK_VARIANTS } from './types';
 import type {
   DashboardPresentationSnapshot,
   PresentationFingerprint,
@@ -49,6 +51,11 @@ function titleOf(tile: DashboardChart): string {
   if (typeof custom === 'string' && custom.trim()) return custom.trim();
   const widgetTitle = (tile.widget_config as any)?.title ?? (tile.widget_config as any)?.text;
   if (typeof widgetTitle === 'string' && widgetTitle.trim()) return widgetTitle.trim();
+  // The title the reader SEES on the tile (the tile title rule: custom title,
+  // then the chart's configured title, then its name). The internal chart name
+  // ("Olist · Revenue by month (3)") is not a heading anyone should read.
+  const configured = (tile.chart as any)?.config?.styleConfig?.chartTitle ?? (tile.chart as any)?.config?.title;
+  if (typeof configured === 'string' && configured.trim()) return configured.trim();
   return String(tile.chart?.name ?? '').trim() || `Visual ${tile.id}`;
 }
 
@@ -238,6 +245,16 @@ export function buildPresentationSnapshot(input: BuildSnapshotInput): DashboardP
       locked: (tile.layout as any)?.locked === true,
       meaning,
       currentStyle: currentStyleOf(tile),
+      ...(isDataVisual(widgetType) ? {
+        findingKinds: possibleFindingKinds(
+          String(chartType || '').toUpperCase(),
+          meaning.temporal,
+          meaning.dimensions.length > 0,
+          meaning.measures[0]?.additive === true,
+          meaning.hasBenchmark,
+        ),
+      } : {}),
+      ...(widgetType === 'narrative' ? { block: blockOf(tile) } : {}),
     };
   });
 
@@ -270,5 +287,16 @@ export function buildPresentationSnapshot(input: BuildSnapshotInput): DashboardP
       cardTreatment: typeof theme.cardTreatment === 'string' ? theme.cardTreatment : undefined,
     },
     capabilities: buildCapabilitySchema(),
+  };
+}
+
+function blockOf(tile: DashboardChart): NonNullable<SnapshotVisual['block']> {
+  const cfg = ((tile as any).widget_config ?? {}) as Record<string, any>;
+  const variant = BLOCK_VARIANTS.includes(cfg.variant) ? cfg.variant : 'summary';
+  return {
+    variant,
+    ...(cfg.origin === 'ai' || cfg.origin === 'author' ? { origin: cfg.origin } : {}),
+    ...((tile.layout as any)?.draftOnly ? { draftOnly: true } : {}),
+    findings: Array.isArray(cfg.items) ? cfg.items.map((i: any) => String(i?.finding ?? '')).filter(Boolean) : [],
   };
 }

@@ -228,7 +228,9 @@ export type DashboardWidgetType =
   | 'hero_strip'
   // A block of imported source markup AppBI has no native visual for, kept as
   // sanitized static HTML instead of dropped.
-  | 'html_fragment';
+  | 'html_fragment'
+  // Words bound to findings computed from the report's own tiles (no stored numbers).
+  | 'narrative';
 
 export interface DashboardThemeConfig {
   mode?: 'light' | 'dark';
@@ -853,6 +855,13 @@ export interface ChartDebugInfo {
   dropped_filters?: DroppedFilterInfo[];
 }
 
+export interface TimeCompleteness {
+  field: string;
+  grain: string;
+  partial: { bucket: string; reason: 'in_progress' | 'edge_low_volume'; value?: number; median?: number }[];
+  rule?: { edge_low_volume_ratio?: number };
+}
+
 export interface ChartDataResponse {
   chart: Chart;
   data: Record<string, any>[];
@@ -861,6 +870,8 @@ export interface ChartDataResponse {
   warnings?: string[];
   /** Phase-15.9: debug payload, omitted on cache hits / older clients. */
   debug?: ChartDebugInfo;
+  /** Time-axis buckets that are not whole periods, with the rule that flagged them. */
+  time_completeness?: TimeCompleteness | null;
   meta?: {
     row_count?: number;
     execution_time_ms?: number;

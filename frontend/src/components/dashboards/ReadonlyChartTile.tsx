@@ -8,8 +8,9 @@ import { ExploreChart } from '@/components/explore/ExploreChart';
 import { useDashboardChartTheme } from '@/components/dashboards/DashboardThemeProvider';
 import { useDatasetModel } from '@/hooks/use-dataset-model';
 import { useI18n } from '@/providers/LanguageProvider';
-import { buildSemanticLabelMap, buildSemanticFormatMap } from '@/lib/chart-semantic-maps';
-import { metricKey, metricLabel } from '@/components/explore/ExploreChartConfig';
+import { buildSemanticLabelMap, buildSemanticFormatMap, buildSemanticCurrencyMap } from '@/lib/chart-semantic-maps';
+import { buildTileEvidence, usePublishTileEvidence } from '@/lib/report-evidence';
+import { metricKey, metricLabel, normalizeRoleConfig } from '@/components/explore/ExploreChartConfig';
 import { getActiveChartRoleConfig } from '@/lib/chart-config';
 import { getEffectiveDashboardChartStyleConfig } from '@/lib/dashboard-chart-style';
 import {
@@ -151,6 +152,7 @@ export function ReadonlyChartTile({
     : hookDatasetModel;
   const roLabelMap = useMemo(() => buildSemanticLabelMap(roDatasetModel?.views), [roDatasetModel]);
   const roFormatMap = useMemo(() => buildSemanticFormatMap(roDatasetModel?.views), [roDatasetModel]);
+  const roCurrencyMap = useMemo(() => buildSemanticCurrencyMap(roDatasetModel?.views), [roDatasetModel]);
   const effectiveStyleConfig = useMemo(
     () => getEffectiveDashboardChartStyleConfig(chart, layout),
     [chart, layout],
@@ -197,6 +199,22 @@ export function ReadonlyChartTile({
   // so a viewer/public reader saw a number silently computed WITHOUT the
   // filter they applied (the DA's "mông lung"). PowerBI shows every consumer
   // when a slicer doesn't reach a visual; we do the same here.
+  // Report evidence — the rows this published tile shows, for narrative blocks
+  // on the same report (builder, /d and /embed alike).
+  const tileEvidence = useMemo(() => {
+    if (!roleConfig || dashboardChartId == null) return null;
+    const type = String(chart?.chart_type || '');
+    return buildTileEvidence({
+      tileId: dashboardChartId,
+      chartType: type,
+      title: (isKpiCard ? kpiHeaderTitle : displayTitle) || chartNameTrim,
+      roleConfig: normalizeRoleConfig(type, roleConfig as any),
+      styleConfig: effectiveStyleConfig,
+      response: chartData ?? null,
+      views: roDatasetModel?.views as any,
+    });
+  }, [roleConfig, dashboardChartId, chart?.chart_type, isKpiCard, kpiHeaderTitle, displayTitle, chartNameTrim, effectiveStyleConfig, chartData, roDatasetModel]);
+  usePublishTileEvidence(dashboardChartId, tileEvidence, !chartData && !error);
   const droppedByBackend = chartData?.debug?.dropped_filters ?? [];
   const chartRenderStyleConfig = useMemo(() => {
     if (!effectiveStyleConfig.chartTitle) return effectiveStyleConfig;
@@ -586,8 +604,10 @@ export function ReadonlyChartTile({
               styleConfig={chartRenderStyleConfig}
               labelMap={roLabelMap}
               formatMap={roFormatMap}
+              currencyMap={roCurrencyMap}
               havingFilters={havingFilters}
               preAggregated={chartData.pre_aggregated ?? false}
+              timeCompleteness={chartData.time_completeness ?? undefined}
               embedded
               kpiLabelInHeader={isKpiCard}
               viewerGrain={viewerGrain}

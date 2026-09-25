@@ -67,6 +67,7 @@ import type { ChartDataResponse, Dashboard, DashboardChart } from '@/types/api';
 import { tileKindOf } from '@/lib/dashboard-presentation/tile-frame';
 import { auditRenderedTiles } from '@/lib/dashboard-presentation/render-audit';
 import { SectionBands } from './SectionBands';
+import { ReportEvidenceProvider } from '@/lib/report-evidence';
 
 // Phase-B5 / Phase-B9 — responsive "Fit to width" grid for the public report.
 // (Now THREE breakpoints: a tablet band between them is derived by
@@ -353,7 +354,7 @@ function formatSnapshotAsOf(value: string | null | undefined): string {
   });
 }
 
-export function PublicDashboardView({ variant = 'public' }: { variant?: 'public' | 'embed' }) {
+function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' | 'embed' }) {
   const params = useParams();
   const token = params.token as string;
   // Embed renders inside a host <iframe>: it grows to its content height and
@@ -2753,5 +2754,15 @@ export function PublicDashboardView({ variant = 'public' }: { variant?: 'public'
         />
       )}
     </DashboardThemeProvider>
+  );
+}
+
+/** Every tile and narrative block of one rendered report shares one evidence
+ *  store, so a sentence states exactly what its tile is showing. */
+export function PublicDashboardView(props: React.ComponentProps<typeof PublicDashboardViewInner>) {
+  return (
+    <ReportEvidenceProvider>
+      <PublicDashboardViewInner {...props} />
+    </ReportEvidenceProvider>
   );
 }

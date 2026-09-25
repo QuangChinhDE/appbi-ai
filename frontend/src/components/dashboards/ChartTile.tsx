@@ -4,7 +4,8 @@ import React, { useMemo, useState, useRef, useEffect, useCallback } from 'react'
 import { X, Loader2, Pencil, Check, SlidersHorizontal, Eye, Palette, MoreHorizontal, ArrowRightLeft, ExternalLink, AlertTriangle, RefreshCw, Sparkles, Lock, CalendarClock } from 'lucide-react';
 import { useChart, useChartData } from '@/hooks/use-charts';
 import { useDatasetModel } from '@/hooks/use-dataset-model';
-import { buildSemanticLabelMap, buildSemanticFormatMap } from '@/lib/chart-semantic-maps';
+import { buildSemanticLabelMap, buildSemanticFormatMap, buildSemanticCurrencyMap } from '@/lib/chart-semantic-maps';
+import { buildTileEvidence, usePublishTileEvidence } from '@/lib/report-evidence';
 import { ChartPreview } from '@/components/charts/ChartPreview';
 import { ExploreChart } from '@/components/explore/ExploreChart';
 import { useDashboardChartTheme } from '@/components/dashboards/DashboardThemeProvider';
@@ -300,6 +301,7 @@ function ChartTileBase({
     () => buildSemanticFormatMap(tileDatasetModel?.views),
     [tileDatasetModel],
   );
+  const tileCurrencyMap = useMemo(() => buildSemanticCurrencyMap(tileDatasetModel?.views), [tileDatasetModel]);
 
   const parameterFilters = useMemo(() => {
     if (!chart?.parameters?.length || !instanceParameters) return [];
@@ -822,6 +824,24 @@ function ChartTileBase({
     }
   }, [chartData?.data, onDataLoaded, chartId, exploreConfig]);
 
+  // Report evidence — what this tile is showing, for the narrative blocks that
+  // state findings about it. `pending` while (re)fetching so a sentence never
+  // sits beside new numbers still stating the old ones.
+  const tileEvidence = useMemo(
+    () => (exploreConfig
+      ? buildTileEvidence({
+        tileId: dashboardChartId,
+        chartType: exploreConfig.chartType,
+        title: kpiHeaderTitle || displayTitle,
+        roleConfig: exploreConfig.roleConfig,
+        styleConfig: exploreConfig.styleConfig,
+        response: chartData ?? null,
+        views: tileDatasetModel?.views as any,
+      })
+      : null),
+    [exploreConfig, dashboardChartId, kpiHeaderTitle, displayTitle, chartData, tileDatasetModel],
+  );
+  usePublishTileEvidence(dashboardChartId, tileEvidence, isLoadingData || isFetchingData);
   const rawRows: Record<string, any>[] = chartData?.data ?? [];
   const preAggregated = chartData?.pre_aggregated ?? false;
   // Phase-15.78 — BE now reports filters it dropped before SQL (binding
@@ -1645,8 +1665,10 @@ function ChartTileBase({
               styleConfig={exploreConfig.styleConfig}
               labelMap={tileLabelMap}
               formatMap={tileFormatMap}
+              currencyMap={tileCurrencyMap}
               havingFilters={havingFilters}
               preAggregated={preAggregated}
+              timeCompleteness={chartData?.time_completeness ?? undefined}
               embedded
               kpiLabelInHeader={isKpiCard}
               onViewerDrill={setViewerGrain}

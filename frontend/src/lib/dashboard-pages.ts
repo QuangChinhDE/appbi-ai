@@ -302,17 +302,46 @@ export function deriveStackedLayout<T extends { i?: string; x: number; y: number
   if (!Array.isArray(layouts) || layouts.length === 0) return layouts;
   const sorted = [...layouts].sort((a, b) => (a.y - b.y) || (a.x - b.x));
   const pitch = opts?.rowPitchPx && opts.rowPitchPx > 0 ? opts.rowPitchPx : 0;
-  let cursorY = 0;
-  return sorted.map((item) => {
+  const cols = opts?.cols ?? 1;
+  const heightOf = (item: T) => {
     let h = Math.max(1, Math.round(Number(item.h)) || 1);
+    // Words re-wrap when a wide block becomes a phone column: a headline
+    // authored across the page needs more lines, so it gets proportionally
+    // more height instead of scrolling inside its own box.
+    if (opts?.kindOf && opts.kindOf(item) === 'widget' && cols < DASHBOARD_GRID_COLS) {
+      const widthShare = Math.min(1, Math.max(0, Number(item.w) / DASHBOARD_GRID_COLS));
+      h = Math.round(h * Math.min(2.6, Math.max(1, widthShare * 2.6)));
+    }
     if (opts?.kindOf && pitch > 0) {
       const minPx = STACK_MIN_HEIGHT_PX[opts.kindOf(item)] ?? 0;
       h = Math.max(h, Math.ceil(minPx / pitch));
     }
-    const stacked = { ...item, x: 0, y: cursorY, w: opts?.cols ?? 1, h };
+    return h;
+  };
+  // Reading plan, not geometry: headline numbers the author put side by side
+  // stay side by side as a 2-up grid (four KPIs are one glance, not four
+  // screens of tall cards); everything else is full width in reading order.
+  const out: T[] = [];
+  let cursorY = 0;
+  for (let i = 0; i < sorted.length; i += 1) {
+    const item = sorted[i];
+    const next = sorted[i + 1];
+    const pairable = cols >= 2 && opts?.kindOf
+      && opts.kindOf(item) === 'kpi' && next && opts.kindOf(next) === 'kpi' && next.y === item.y;
+    if (pairable) {
+      const half = Math.floor(cols / 2);
+      const h = Math.max(heightOf(item), heightOf(next));
+      out.push({ ...item, x: 0, y: cursorY, w: half, h });
+      out.push({ ...next, x: half, y: cursorY, w: cols - half, h });
+      cursorY += h;
+      i += 1;
+      continue;
+    }
+    const h = heightOf(item);
+    out.push({ ...item, x: 0, y: cursorY, w: cols, h });
     cursorY += h;
-    return stacked;
-  });
+  }
+  return out;
 }
 
 /** Tablet band: between the phone stack and a layout wide enough to show the
@@ -522,7 +551,7 @@ export function tidyPageLayout(
 /** The public report's breakpoints, in measured GRID px: phone stack below
  *  `md`, the tablet derivation between `md` and `lg`, the authored grid above. */
 export const REPORT_RESPONSIVE_BREAKPOINTS = { lg: REPORT_TABLET_BREAKPOINT, md: REPORT_STACK_BREAKPOINT, xs: 0 };
-export const REPORT_RESPONSIVE_COLS = { lg: DASHBOARD_GRID_COLS, md: DASHBOARD_GRID_COLS, xs: 1 };
+export const REPORT_RESPONSIVE_COLS = { lg: DASHBOARD_GRID_COLS, md: DASHBOARD_GRID_COLS, xs: 2 };
 
 /**
  * Every breakpoint's layout from the ONE authored desktop layout. Desktop is
@@ -541,7 +570,7 @@ export function buildResponsiveReportLayouts<T extends { i: string; x: number; y
   return {
     lg: layouts,
     md: deriveTabletLayout(layouts, { kindOf: opts.kindOf, referenceWidthPx: tabletRef }),
-    xs: deriveStackedLayout(layouts, { kindOf: opts.kindOf, rowPitchPx: stackPitch }),
+    xs: deriveStackedLayout(layouts, { kindOf: opts.kindOf, rowPitchPx: stackPitch, cols: REPORT_RESPONSIVE_COLS.xs }),
   };
 }
 

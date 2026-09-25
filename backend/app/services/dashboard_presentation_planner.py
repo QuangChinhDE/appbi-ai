@@ -83,12 +83,19 @@ Choosing a template changes the look, never the layout.
 Size to shape when you arrange: `aspect` "square" (gauge/pie/donut) wants a \
 compact slot, "wide" (line/bar/table) wants width, "tall" (funnel) wants height.
 
+WHAT THE REPORT SAYS. `INPUT.findings` lists facts the page's charts support right now, computed from their live rows under the current filters: "says" is how a reader would read it, "key" is how you cite it. Use them to decide what LEADS — the verdict, the hero, the order. Each visual lists `findingKinds` it can back.
+
+BLOCKS (redesign only). A report is more than tiles: you may add `blocks` — a `headline` (the verdict, one or two findings), a `summary` beside the hero ("what moved", up to four findings), a `chapter` before a chart (a heading and the findings that chart shows), a `takeaway` card (the latest period of one series). A block cites findings BY KEY and never contains a number: every figure is filled in from live data and changes with the filters. Headings are plain words with no digits. Place blocks in `sections` by their id ("b1"). Do not repeat a block that `visuals[].block` shows is already there.
+
+DIRECTIONS. `direction.style` "executive", "operations" or "editorial" names a reading experience AppBI composes for you — verdict-first brief; status, exceptions and density; or a chaptered story. Choose one when the request is about who reads the report; you may leave `sections` and `blocks` empty and AppBI builds the composition, keeping your palette choices.
+
 HONESTY: claim in `rationale` only what the plan actually does. If the user \
 asks for something not expressible (an unlisted font, a gradient, an image, a \
-section header), say briefly it is not available. If a different chart TYPE or \
+section header outside a redesign), say briefly it is not available. If a different chart TYPE or \
 metric would tell the story better, you may say so in `suggestions` — a list of \
-{"visual": id, "text": "..."} that is shown to the user and never applied. Never \
-state a finding about the data, quote a number, or claim something grew or fell.
+{"visual": id, "text": "..."} that is shown to the user and never applied. \
+Never type a number or say in your own words that something grew or fell: \
+cite a finding key and let AppBI state it from the data.
 
 If a REFERENCE IMAGE is attached, read its COMPOSITION and SURFACE, never its \
 content: where headline numbers sit, the density, dark or light, the accent. \
@@ -131,6 +138,15 @@ PLAN_SCHEMA_HINT: Dict[str, Any] = {
     "visualPreferences": {
         "<dashboardChartId>": {"role": "one of capabilities.visual.roles", "emphasis": "low | normal | high"}
     },
+    "blocks": [
+        {
+            "id": "b1 (redesign only — place it in a section like a visual: \"b1\")",
+            "variant": "headline | summary | chapter | takeaway | callout",
+            "eyebrow": "optional short label, NO digits",
+            "title": "optional heading in plain words, NO digits",
+            "findings": ["finding keys from INPUT.findings / visuals[].findingKinds, e.g. trend:12"],
+        }
+    ],
     "suggestions": [{"visual": "dashboardChartId", "text": "a non-presentation idea, shown not applied"}],
     "rationale": "one sentence on what you changed and why",
 }
@@ -183,7 +199,31 @@ def _visual_digest(snapshot: Dict[str, Any]) -> List[Dict[str, Any]]:
         style = visual.get("currentStyle") or {}
         if style:
             entry["currentStyle"] = style
+        kinds = [str(k) for k in (visual.get("findingKinds") or []) if isinstance(k, str)][:8]
+        if kinds:
+            # What this visual can back up. A block cites `kind:id`.
+            entry["findingKinds"] = kinds
+        block = visual.get("block")
+        if isinstance(block, dict):
+            entry["block"] = {k: block.get(k) for k in ("variant", "origin") if block.get(k)}
         out.append(entry)
+    return out
+
+
+def _findings_digest(snapshot: Dict[str, Any]) -> List[Dict[str, str]]:
+    """The findings the page's tiles support right now, as a reader reads them.
+
+    Aggregates computed in the browser from the rows the tiles already show —
+    the sentence is context for deciding what leads; the KEY is what a block
+    cites. No rows ever reach the model."""
+    out: List[Dict[str, str]] = []
+    for f in (snapshot.get("findings") or [])[:40]:
+        if not isinstance(f, dict):
+            continue
+        key = str(f.get("key") or "")
+        sentence = str(f.get("sentence") or "")[:220]
+        if key and sentence:
+            out.append({"key": key, "says": sentence})
     return out
 
 
@@ -216,6 +256,7 @@ def build_planner_prompt(
             "currentPage": page.get("name"),
         },
         "visuals": _visual_digest(snapshot),
+        "findings": _findings_digest(snapshot),
         "slicers": [
             {"id": s.get("id"), "label": s.get("displayLabel"), "position": s.get("currentPosition")}
             for s in (snapshot.get("slicers") or [])
@@ -236,7 +277,7 @@ def build_planner_prompt(
             'Your entire reply must be one JSON object whose top-level keys are '
             '"layer" and "direction", plus whichever of "themeIntent", '
             '"tileStyles", "slicerPresentation", "structure", "sections", '
-            '"visualPreferences", "suggestions", "rationale" the layer allows. '
+            '"visualPreferences", "blocks", "suggestions", "rationale" the layer allows. '
             'Do not echo the input. Do not wrap the object in another object. '
             'Start your reply with {"layer":'
         ),

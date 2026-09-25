@@ -26,6 +26,8 @@ export interface FieldMeta {
   type?: string;
   /** A measure's declared display format (percent, currency, …). */
   format?: string;
+  /** A measure's aggregation (sum, count, avg, formula …). */
+  measureType?: string;
 }
 
 /** {qualified-or-bare field → meta}, built once per render from the dataset
@@ -35,7 +37,7 @@ export type FieldMetaIndex = Map<string, FieldMeta>;
 interface ViewLike {
   name: string;
   dimensions?: Array<{ name: string; label?: string; description?: string; type?: string; hidden?: boolean }>;
-  measures?: Array<{ name: string; label?: string; description?: string; format?: { kind?: string } | null; hidden?: boolean }>;
+  measures?: Array<{ name: string; label?: string; description?: string; type?: string; format?: { kind?: string } | null; hidden?: boolean }>;
 }
 
 export function buildFieldMetaIndex(viewsList: Array<ViewLike[] | undefined | null>): FieldMetaIndex {
@@ -59,6 +61,7 @@ export function buildFieldMetaIndex(viewsList: Array<ViewLike[] | undefined | nu
           label: measure.label?.trim() || undefined,
           description: measure.description?.trim() || undefined,
           format: measure.format?.kind || undefined,
+          measureType: measure.type || undefined,
         };
         put(`${view.name}.${measure.name}`, meta);
         put(measure.name, meta);
@@ -114,6 +117,9 @@ export function buildVisualMeaning(input: MeaningInput): VisualMeaning {
       label: meta?.label || (typeof metric?.label === 'string' && metric.label.trim()) || humanizeField(field),
       ...(metric?.agg ? { agg: String(metric.agg) } : {}),
       ...(meta?.format ? { format: meta.format } : {}),
+      additive: ['sum', 'count'].includes(
+        String(metric?.agg && metric.agg !== 'auto' ? metric.agg : meta?.measureType ?? '').toLowerCase(),
+      ),
       ...(clip(meta?.description, 120) ? { description: clip(meta?.description, 120) } : {}),
     });
   };
