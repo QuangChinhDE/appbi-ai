@@ -47,9 +47,22 @@ from app.services.agent_flows.tools import registry as tool_registry
 FIND_CAPABILITY = "find_capability"
 
 #: Offered on every round of a shortlisted step, when granted and eligible: the
-#: two tools that find WHAT to read, and the one that computes over it. Without
-#: them a narrowed step cannot orient itself.
-CORE = ("search_business_assets", "resolve_chart_candidates", "compute")
+#: tools that hand out the chart ids every analytical tool needs (the contract's
+#: own `_CHART_LOOKUP_TOOLS` — one definition of "a way in"), and the one that
+#: computes over what they find.
+#:
+#: MEASURED, NOT ASSUMED. The first core held only the two discover tools. Live,
+#: on the same 32-capability grant, the shortlisted step answered 3 of 6 questions
+#: and the unshortlisted one 6 of 6: with everything shown the model opened with
+#: `list_charts`, got real ids and ranked; shortlisted, `list_charts` was not
+#: there, so it guessed ids and was refused (`bad_argument`, `chart_out_of_scope`).
+def _core() -> tuple[str, ...]:
+    from app.services.agent_flows.contract import _CHART_LOOKUP_TOOLS
+
+    return (*sorted(_CHART_LOOKUP_TOOLS), "compute")
+
+
+CORE = _core()
 
 _WORD_RE = re.compile(r"[0-9A-Za-zÀ-ỹ]+", re.UNICODE)
 
