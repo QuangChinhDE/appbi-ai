@@ -122,9 +122,19 @@ function timeSeries(t: TileEvidence): { complete: TimePoint[]; excluded: string[
   return { complete: points, excluded: excluded.sort() };
 }
 
-function timeFindings(t: TileEvidence): Finding[] {
+/** The grain a series' buckets actually have, when the chart did not declare
+ *  one: every bucket on the 1st of a month → month; on Jan 1st → year. */
+function inferGrain(points: TimePoint[]): string | undefined {
+  if (points.length < 2) return undefined;
+  const firstOfMonth = points.every((p) => p.date.getUTCDate() === 1 && p.date.getUTCHours() === 0);
+  if (!firstOfMonth) return undefined;
+  return points.every((p) => p.date.getUTCMonth() === 0) ? 'year' : 'month';
+}
+
+function timeFindings(input: TileEvidence): Finding[] {
   const out: Finding[] = [];
-  const { complete, excluded } = timeSeries(t);
+  const { complete, excluded } = timeSeries(input);
+  const t = input.grain ? input : { ...input, grain: inferGrain(complete) };
   const base = { tileId: t.tileId, measureLabel: t.measureLabel, format: t.format, grain: t.grain };
   if (excluded.length) {
     out.push({ ...base, key: `partial_periods:${t.tileId}`, kind: 'partial_periods', values: { count: excluded.length },

@@ -31,6 +31,9 @@ export interface NarrativeConfig {
   origin?: 'ai' | 'author';
 }
 
+/** Facts that only exist when the data has them — their absence is not a gap. */
+const CONDITIONAL_KINDS = new Set(['partial_periods', 'concentration', 'attainment']);
+
 function tileIdOf(key: string): number | null {
   const n = Number(key.split(':')[1]);
   return Number.isFinite(n) ? n : null;
@@ -48,8 +51,12 @@ export function NarrativeWidget({ config, editing = false }: { config: Narrative
     const st = tileId == null ? 'unknown' : status(tileId);
     if (f) return { key, state: 'ready' as const, text: renderFindingSentence(f, t, locale), finding: f };
     if (st === 'pending' || st === 'unknown') return { key, state: 'pending' as const, text: t('report.finding.pending') };
+    // A conditional fact that does not apply under these filters (no partial
+    // period, too few categories for a top-3) is simply not stated. A core
+    // claim that the data no longer supports says so instead.
+    if (CONDITIONAL_KINDS.has(key.split(':')[0])) return null;
     return { key, state: 'unavailable' as const, text: t('report.finding.unavailable') };
-  });
+  }).filter((l): l is NonNullable<typeof l> => l !== null);
 
   const headFigure = variant === 'takeaway' || variant === 'callout'
     ? lines.map((l) => (l.state === 'ready' ? findingHeadlineFigure(l.finding!, locale) : null)).find(Boolean)

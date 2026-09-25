@@ -183,6 +183,12 @@ check('same-months year-over-year pairs only months present in both years', () =
   assert(pc.labels.previousYear === '2017', 'wrong comparison year');
 });
 
+check('an undeclared grain is read from the buckets, so a monthly series still compares like months', () => {
+  const rows = series([...Array(12).fill(100), 110, 120, 130], 'rev');
+  const pc = findings.findingsForReport([evidence({ rows, grain: undefined })]).get('period_comparison:5');
+  assert(pc && pc.values.months === 3, 'no same-months comparison without a declared grain');
+});
+
 check('a share of the total is never claimed for a non-additive measure', () => {
   const rows = [{ c: 'a', v: 4.5 }, { c: 'b', v: 4.2 }, { c: 'c', v: 3.9 }, { c: 'd', v: 3.1 }];
   const base = { tileId: 10, chartType: 'BAR', title: 'Review by state', measureField: 'v', measureLabel: 'Avg review', format: {}, dimensionField: 'c', rows };
