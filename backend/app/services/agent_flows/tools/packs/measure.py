@@ -219,6 +219,7 @@ PACK = ToolPack(
             # run — so a cached result served run B the figure run A computed, and
             # certified it. Deterministic in its inputs, not in its arguments.
             deterministic=False,
+            output_schema=compute_tool.OUTPUT_SCHEMA,
         ),
     ],
 )

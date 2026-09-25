@@ -1227,6 +1227,15 @@ class SkillContract(_Model):
     #: When an Agent should reach for it. This is the Skill's description AS A
     #: CAPABILITY, so it has to say something.
     when_to_use: str = ""
+    #: WHAT CROSSES BACK, TYPED. `text`: the child's answer, as prose. `number`:
+    #: ONE figure the runtime reads from the result a named step of the Skill
+    #: produced (`value_step`, `value_path`) — never parsed out of the prose — with
+    #: its provenance, so a parent's `compute` can reference it and a figure the
+    #: Skill computed from a typed number stays uncertified across the boundary.
+    #: A Skill that cannot produce its declared type fails (`skill_output_invalid`).
+    returns: Literal["text", "number"] = "text"
+    value_step: str = ""
+    value_path: str = ""
 
     @field_validator("when_to_use")
     @classmethod
@@ -1235,6 +1244,12 @@ class SkillContract(_Model):
         if len(v) < 12:
             raise ValueError("Skill cần mô tả khi nào nên dùng (ít nhất 12 ký tự)")
         return v
+
+    @model_validator(mode="after")
+    def _typed_output_says_where(self) -> "SkillContract":
+        if self.returns == "number" and not self.value_step.strip():
+            raise ValueError("Skill trả về một con số phải nêu bước tạo ra con số đó (value_step)")
+        return self
 
     @field_validator("inputs")
     @classmethod
@@ -1863,6 +1878,13 @@ def node_referenced_vars(node: Any) -> set[str]:
     for text in _templated_strings(node):
         for m in _TEMPLATE_RE.finditer(text or ""):
             found.add(m.group(1).split(".")[0].strip())
+    # TYPED BINDINGS READ VARIABLES TOO. A Tool or Skill step binding
+    # `chart_id → {{sales_chart}}` depends on that variable exactly as a prompt
+    # does; left out, a binding to a variable no step writes was found only when a
+    # viewer's run raised "chưa bước nào tạo ra biến đó".
+    for binding in (getattr(node, "inputs", None) or {}).values():
+        if getattr(binding, "source", "") == "variable" and getattr(binding, "ref", ""):
+            found.add(re.split(r"[.\[]", binding.ref, maxsplit=1)[0].strip())
     return found
 
 

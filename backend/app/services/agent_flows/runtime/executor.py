@@ -579,6 +579,11 @@ async def _run_node(
             elif isinstance(node, FilterNode):
                 _run_filter(node, state)
             else:
+                # WHOSE EVIDENCE THIS IS, set once for every leaf handler. A Tool
+                # step used to record its result under whichever step ran before
+                # it — so `{step: "tong"}` found nothing and a lineage named the
+                # wrong step. Agent steps set it again per call; same key.
+                state.evidence_source = node.key
                 handler = node_registry.handler_for(node.type)
                 if handler is None:
                     # Unreachable through the API — the contract only accepts types

@@ -1,0 +1,60 @@
+{
+  "answer_shape": {
+    "block_count": 1,
+    "citation_count": 0,
+    "figure_count": 0,
+    "has_answer": true
+  },
+  "citations": [],
+  "counts": {
+    "llm_calls": 1,
+    "steps": 4,
+    "tool_calls": 3
+  },
+  "execution_path": [
+    {
+      "key": "tong",
+      "status": "ok",
+      "type": "tool"
+    },
+    {
+      "key": "truoc",
+      "status": "ok",
+      "type": "tool"
+    },
+    {
+      "key": "calc",
+      "status": "ok",
+      "type": "tool"
+    },
+    {
+      "key": "answer",
+      "status": "ok",
+      "type": "agent"
+    }
+  ],
+  "fixture": "17_tool_compute_chain",
+  "memory_set_keys": [],
+  "notice_codes": [],
+  "status": "ok",
+  "step_outputs": {
+    "answer": "ok :: Kết quả của các bước trước, theo thứ tự đã chạy. Tổng hợp TẤT CẢ, không chỉ bước cuối; nếu hai bước mâu thuẫn thì nói rõ ra thay vì chọn bừa một bên:\n\n### Ky nay\n{\"formatted\": \"1.200\", \"rows_counted\":",
+    "calc": "{\"expression\": \"(a - b) / b * 100\", \"result\": 20.0, \"inputs\": [{\"name\": \"a\", \"value\": 1200.0, \"referenced\": true, \"ref\": \"e1\", \"path\": \"value\", \"tool\": \"total_measure\", \"step\": \"tong\"}, {\"name\": \"b\", \"value\": 1000.0, \"referenced\": true, \"ref\": \"e2\", \"path\": \"value\", \"tool\": \"share_of\", \"step\": \"truoc\"}], \"literals\": [100.0], \"provenance\": \"referenced\", \"evidence_values\": [20.0]}",
+    "tong": "{\"formatted\": \"1.200\", \"rows_counted\": 3, \"value\": 1200.0}",
+    "truoc": "{\"matched_exactly\": true, \"rank\": 1, \"share_pct\": 40.0, \"value\": 1000.0}"
+  },
+  "tool_calls": [
+    {
+      "step": "tong",
+      "tool": "total_measure"
+    },
+    {
+      "step": "truoc",
+      "tool": "share_of"
+    },
+    {
+      "step": "calc",
+      "tool": "compute"
+    }
+  ]
+}

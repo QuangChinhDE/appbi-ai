@@ -315,6 +315,12 @@ def _skill_capabilities(node: AgentNode, rctx: Any) -> tuple[list, dict[str, str
         if key == rctx.flow.key or any(k == key for k, _ in stack):
             excluded[name] = "skill_cycle"
             continue
+        # NOT SHOWN what would only be refused — disabled, or no longer shared.
+        # Visibility only: `invoke_skill` re-checks both, whatever is shown.
+        refused = skills.invocation_refusal(getattr(rctx, "db", None), rctx, row, key)
+        if refused is not None:
+            excluded[name] = str(refused.get("error_code") or "refused")
+            continue
         label = row.name or key
         definition = skills.capability_definition(key, label, flow.skill)
         extras.append(ExtraCapability(

@@ -182,6 +182,9 @@ class AgentFlowRunStep(Base):
     #: An Agent step's capability view: granted, eligible (and why not), shown per
     #: round, discovered, invoked, rejected. NULL for every other node type.
     capability_trace = Column(JSONB, nullable=True)
+    #: Where the budget went: calls spent, what was available at the start, what
+    #: the step was made to leave for later steps. NULL on rows before ledgers.
+    budget = Column(JSONB, nullable=True)
 
     created_at = Column(
         DateTime(timezone=True), server_default=func.now(), nullable=False, index=True

@@ -567,6 +567,8 @@ def brain_versions(
         .order_by(AgentBrainVersion.version.desc())
         .all()
     )
+    from app.services.agent_flows import skills as skills_service
+
     return {
         "versions": [
             {
@@ -574,10 +576,41 @@ def brain_versions(
                 "created_by": r.created_by,
                 "updated_at": r.updated_at.isoformat() if r.updated_at else None,
                 "published_at": r.published_at.isoformat() if r.published_at else None,
+                # Whether this exact version may still be INVOKED — separate from
+                # which version is live (`status`). Always present; `active` for
+                # every non-Skill flow and every version never stopped.
+                "lifecycle": skills_service.lifecycle_dict(r),
             }
             for r in rows
         ]
     }
+
+
+class SkillLifecycleBody(BaseModel):
+    """Stop, deprecate or re-activate Skill versions. `versions` empty = all."""
+
+    state: Literal["active", "deprecated", "disabled"]
+    reason: str = Field(default="", max_length=500)
+    versions: list[int] = Field(default_factory=list)
+
+
+@router.post("/brains/{brain_key}/lifecycle")
+def set_skill_lifecycle(
+    brain_key: str, body: SkillLifecycleBody,
+    db: Session = Depends(get_db), user: User = Depends(can_edit),
+) -> dict[str, Any]:
+    """The operator's stop switch for a Skill version.
+
+    A pin decides WHICH version a parent runs; this decides WHETHER it may. Same
+    gate as unpublish — whoever may manage the Skill may stop it — and audited.
+    """
+    from app.services.agent_flows import skills as skills_service
+
+    _may_manage_flow(db, user, brain_key)
+    return {"versions": _run(lambda: skills_service.set_lifecycle(
+        db, key=brain_key, versions=list(body.versions) or None, state=body.state,
+        reason=body.reason, actor_email=_actor(user),
+    ))}
 
 
 @router.get("/brains/{brain_key}/activity")

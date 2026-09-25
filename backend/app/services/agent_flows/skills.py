@@ -36,6 +36,13 @@ THE RULES
              again at run time.
   trace      the child is its own run row with `parent_run_key`,
              `parent_step_key` and `invoked_as`.
+  lifecycle  every version is active, deprecated or disabled (`set_lifecycle`),
+             checked at EVERY invocation, pinned or not: a disabled version is
+             refused with its reason; a deprecated one runs with a notice and
+             cannot be newly pinned. Nothing is ever silently upgraded.
+  sharing    re-checked at every invocation against the CALLING flow's owner —
+             the same rule that decided whether it could be attached — so an
+             unshare stops the next run, not the next publish.
 """
 from __future__ import annotations
 
@@ -61,6 +68,11 @@ from app.services.dashboard_ai_bot.events import AgentEvent
 logger = logging.getLogger(__name__)
 
 SKILL_FLOW_TYPE = "skill"
+
+ACTIVE = "active"
+DEPRECATED = "deprecated"
+DISABLED = "disabled"
+LIFECYCLES = (ACTIVE, DEPRECATED, DISABLED)
 #: Longest text a Skill input may carry — a question or a label, not a document.
 MAX_TEXT_INPUT = 2000
 INVOKED_AS = ("agent_capability", "skill_node", "coordinator_lane")
@@ -221,6 +233,133 @@ def resolve_skill(db: Any, key: str, version: int | None) -> tuple[Any, Flow] | 
     return row, flow
 
 
+# ═══ Lifecycle: a pinned version is reproducible, not unstoppable ═════════════
+
+def lifecycle_of(row: Any) -> str:
+    """NULL is active: every version written before lifecycles existed."""
+    value = str(getattr(row, "lifecycle", "") or "").strip()
+    return value if value in LIFECYCLES else ACTIVE
+
+
+def _lifecycle_label(row: Any) -> str:
+    reason = str(getattr(row, "lifecycle_reason", "") or "").strip()
+    return f" — {reason}" if reason else ""
+
+
+def set_lifecycle(db: Any, *, key: str, versions: list[int] | None, state: str,
+                  reason: str, actor_email: str) -> list[dict]:
+    """Deprecate, disable or re-activate Skill versions (`versions=None`: all).
+
+    Draft versions are refused: a draft is not a governed release, nothing can
+    pin it, and there is nothing to stop. A reason is required to deprecate or
+    disable — it is what every refused caller will read.
+    """
+    from datetime import datetime, timezone
+
+    from app.models.agent_brain import AgentBrainVersion
+    from app.services.agent_flows.registry import DRAFT, BrainError, _audit
+
+    if state not in LIFECYCLES:
+        raise BrainError(422, f"trạng thái phải là một trong {', '.join(LIFECYCLES)}")
+    reason = (reason or "").strip()
+    if state != ACTIVE and len(reason) < 8:
+        raise BrainError(422, "Hãy ghi lý do (ít nhất 8 ký tự) — người gọi Skill sẽ đọc nó.")
+    q = db.query(AgentBrainVersion).filter(AgentBrainVersion.brain_key == key)
+    rows = q.all()
+    if not rows:
+        raise BrainError(404, "Không tìm thấy Skill này")
+    if any(getattr(r, "flow_type", "") != SKILL_FLOW_TYPE for r in rows):
+        raise BrainError(409, "Chỉ flow loại Skill mới có vòng đời phiên bản")
+    targets = [r for r in rows if (versions is None or r.version in versions) and r.status != DRAFT]
+    if versions is not None and len(targets) != len(set(versions)):
+        raise BrainError(409, "Chỉ phiên bản đã phát hành (hoặc đã lưu trữ) mới đổi được vòng đời")
+    now = datetime.now(timezone.utc)
+    for r in targets:
+        r.lifecycle = None if state == ACTIVE else state
+        r.lifecycle_reason = None if state == ACTIVE else reason
+        r.lifecycle_by = actor_email
+        r.lifecycle_at = now
+    db.commit()
+    _audit(db, "AGENT_FLOW_SKILL_LIFECYCLE", key, actor_email,
+           {"versions": sorted(r.version for r in targets), "state": state, "reason": reason})
+    return [lifecycle_dict(r) for r in sorted(targets, key=lambda r: r.version)]
+
+
+def lifecycle_dict(row: Any) -> dict:
+    at = getattr(row, "lifecycle_at", None)
+    return {
+        "version": getattr(row, "version", None),
+        "lifecycle": lifecycle_of(row),
+        "reason": getattr(row, "lifecycle_reason", None) or "",
+        "by": getattr(row, "lifecycle_by", None) or "",
+        "at": at.isoformat() if at is not None else None,
+    }
+
+
+def caller_may_use(db: Any, caller_key: str, skill_key: str) -> bool:
+    """May the CALLING flow's owner still build on this Skill — now?
+
+    The same rule that decided whether it could be attached (`usable_brains`:
+    theirs, or shared with them), re-asked at invocation, so an unshare takes
+    effect on the next run rather than the next publish. Fails closed: an owner
+    that cannot be resolved may use nothing.
+    """
+    from app.models.agent_brain import AgentBrainVersion
+    from app.services.agent_flows.permissions import _resolve_owner, usable_brains
+
+    caller = (db.query(AgentBrainVersion)
+              .filter(AgentBrainVersion.brain_key == caller_key)
+              .order_by(AgentBrainVersion.version.desc()).first())
+    if caller is None:
+        return False
+    owner = _resolve_owner(db, caller)
+    if owner is None:
+        return False
+    return usable_brains(db, owner).filter(AgentBrainVersion.brain_key == skill_key).first() is not None
+
+
+def invocation_refusal(db: Any, rctx: Any, row: Any, skill_key: str) -> dict | None:
+    """Why this exact Skill version may not run for this caller now, if it may not.
+
+    Checked at EVERY invocation — Agent capability, Skill step, coordinator lane
+    all come through `invoke_skill` — because a pin decides WHICH version runs,
+    never WHETHER it may.
+    """
+    version = getattr(row, "version", None)
+    name = getattr(row, "name", None) or skill_key
+    if lifecycle_of(row) == DISABLED:
+        return _err(f"Skill “{name}” v{version} đã bị vô hiệu hoá{_lifecycle_label(row)}. "
+                    "Không chạy phiên bản này; hãy trả lời bằng những gì đã có.", "skill_disabled")
+    try:
+        allowed = caller_may_use(db, rctx.flow.key, skill_key)
+    except Exception:                                           # noqa: BLE001
+        logger.warning("[skill] access re-check failed for %s → %s", rctx.flow.key, skill_key,
+                       exc_info=True)
+        allowed = False
+    if not allowed:
+        return _err(f"Skill “{name}” không còn được chia sẻ cho chủ của flow này — "
+                    "không chạy.", "skill_access_revoked")
+    return None
+
+
+def pinned_by(db: Any, skill_key: str, version: int) -> list[str]:
+    """Published or archived flows whose body pins this exact Skill version."""
+    from app.models.agent_brain import AgentBrainVersion
+    from app.services.agent_flows.registry import DRAFT, parse_flow
+
+    out: list[str] = []
+    rows = db.query(AgentBrainVersion).filter(AgentBrainVersion.status != DRAFT).all()
+    for r in rows:
+        if r.brain_key == skill_key:
+            continue
+        flow = parse_flow(r)
+        if flow is None:
+            continue
+        if any(k == skill_key and v == version for k, v, _ in flow.skill_refs()):
+            out.append(f"{r.brain_key} v{r.version}")
+    return out
+
+
 def skill_graph_problems(db: Any, flow: Flow, *, self_key: str) -> list[str]:
     """Why this flow's Skill references cannot be published, if they cannot.
 
@@ -243,6 +382,10 @@ def skill_graph_problems(db: Any, flow: Flow, *, self_key: str) -> list[str]:
                                 "phát hành của Skill này.")
                 continue
             row, child = found
+            if lifecycle_of(row) == DISABLED:
+                problems.append(f"Bước “{node_key}” dùng Skill “{key}” v{row.version} — phiên "
+                                f"bản này đã bị vô hiệu hoá{_lifecycle_label(row)}.")
+                continue
             ident = (key, row.version)
             if ident in path:
                 chain = " → ".join(f"{k}@v{v}" for k, v in (*path, ident))
@@ -266,21 +409,30 @@ def pin_skill_versions(db: Any, body: dict) -> dict:
     """
     body = copy.deepcopy(body)
 
+    def pinnable(key: str) -> int | None:
+        # NOTHING NEW PINS A STOPPED VERSION: deprecation means "do not build on
+        # this", so an unpinned reference to a deprecated or disabled release is
+        # left unpinned — and refused by `publish_problems`, which names it.
+        found = resolve_skill(db, key, None)
+        if found and lifecycle_of(found[0]) == ACTIVE:
+            return found[0].version
+        return None
+
     def pin(nodes: list) -> None:
         for node in nodes or []:
             if not isinstance(node, dict):
                 continue
             if node.get("type") == "skill" and not node.get("version"):
-                found = resolve_skill(db, str(node.get("skill_key") or ""), None)
-                if found:
-                    node["version"] = found[0].version
+                version = pinnable(str(node.get("skill_key") or ""))
+                if version:
+                    node["version"] = version
             if node.get("type") == "agent":
                 for grant in node.get("tools") or []:
                     key = skill_key_of_grant(str((grant or {}).get("tool") or ""))
                     if key and not grant.get("version"):
-                        found = resolve_skill(db, key, None)
-                        if found:
-                            grant["version"] = found[0].version
+                        version = pinnable(key)
+                        if version:
+                            grant["version"] = version
             for group in raw_child_groups(node):
                 pin(group)
 
@@ -296,9 +448,68 @@ def publish_problems(db: Any, row: Any, flow: Flow) -> list[str]:
     problems: list[str] = []
     if str(getattr(row, "flow_type", "") or "") == SKILL_FLOW_TYPE and flow.skill is None:
         problems.append("Flow loại Skill phải khai báo đầu vào, kết quả và khi nào nên dùng.")
+    if flow.skill is not None and flow.skill.returns == "number":
+        keys = {getattr(n, "key", "") for n in flow.all_nodes()}
+        if flow.skill.value_step not in keys:
+            problems.append(f"Skill trả về một con số từ bước “{flow.skill.value_step}”, nhưng flow "
+                            "không có bước đó.")
     problems += skill_graph_problems(db, flow, self_key=str(getattr(row, "brain_key", "") or flow.key))
-    # Structural bound on multi-agent, refused at the same door.
+    for key, version, node_key in flow.skill_refs():
+        if version is None:
+            found = resolve_skill(db, key, None)
+            if found and lifecycle_of(found[0]) != ACTIVE:
+                problems.append(f"Bước “{node_key}”: Skill “{key}” v{found[0].version} đang "
+                                f"{'ngừng khuyến nghị' if lifecycle_of(found[0]) == DEPRECATED else 'bị vô hiệu hoá'}"
+                                f"{_lifecycle_label(found[0])} — không ghim được phiên bản mới vào nó.")
+    # Structural bound on multi-agent, refused at the same door — including a
+    # coordinator reached THROUGH a Skill from inside a coordinator lane.
     problems += flow.nested_coordinator_problems()
+    problems += coordinator_through_skill_problems(db, flow)
+    return problems
+
+
+def deprecated_pins(db: Any, flow: Flow) -> list[str]:
+    """Pinned Skill versions that are deprecated: allowed to keep running, but
+    republishing onto them is a decision the author acknowledges, not a default."""
+    out: list[str] = []
+    for key, version, node_key in flow.skill_refs():
+        if version is None:
+            continue
+        found = resolve_skill(db, key, version)
+        if found and lifecycle_of(found[0]) == DEPRECATED:
+            out.append(f"Bước “{node_key}” ghim Skill “{key}” v{version} — phiên bản này đã "
+                       f"ngừng khuyến nghị{_lifecycle_label(found[0])}.")
+    return out
+
+
+def _reaches_coordinator(db: Any, flow: Flow, depth: int = 0) -> bool:
+    """Does this flow run a coordinator — itself, or through any Skill it pins,
+    transitively? Bounded by `MAX_SKILL_DEPTH`, like every Skill chain."""
+    if any(getattr(n, "type", "") == "coordinate" for n in flow.all_nodes()):
+        return True
+    if depth >= MAX_SKILL_DEPTH:
+        return False
+    for key, version, _ in flow.skill_refs():
+        found = resolve_skill(db, key, version)
+        if found and _reaches_coordinator(db, found[1], depth + 1):
+            return True
+    return False
+
+
+def coordinator_through_skill_problems(db: Any, flow: Flow) -> list[str]:
+    """No coordinator inside a coordinator lane — also when the inner one is a
+    Skill's. The runtime refuses it too (`invoke_skill`); this says it at publish."""
+    problems: list[str] = []
+    for node in flow.all_nodes():
+        if getattr(node, "type", "") != "coordinate":
+            continue
+        for spec in getattr(node, "specialists", []) or []:
+            lane = Flow.model_construct(key="lane", name="lane", nodes=list(spec.body))
+            for key, version, node_key in lane.skill_refs():
+                found = resolve_skill(db, key, version)
+                if found and _reaches_coordinator(db, found[1], 1):
+                    problems.append(f"Chuyên gia “{spec.key}” gọi Skill “{key}” có bước điều phối "
+                                    "bên trong — không lồng điều phối trong điều phối.")
     return problems
 
 
@@ -330,7 +541,7 @@ def list_attachable(db: Any, user: Any) -> list[dict]:
             if getattr(r, "status", "") == PUBLISHED and getattr(r, "flow_type", "") == SKILL_FLOW_TYPE]
     for r in sorted(rows, key=lambda x: (x.name or x.brain_key).lower()):
         flow = parse_flow(r)
-        if flow is None or flow.skill is None:
+        if flow is None or flow.skill is None or lifecycle_of(r) == DISABLED:
             continue
         out.append({
             "key": r.brain_key,
@@ -339,6 +550,7 @@ def list_attachable(db: Any, user: Any) -> list[dict]:
             "description": r.description or "",
             "grant": f"{SKILL_GRANT_PREFIX}{r.brain_key}",
             "contract": flow.skill.model_dump(mode="json"),
+            "lifecycle": lifecycle_dict(r),
         })
     return out
 
@@ -356,11 +568,13 @@ def capability_definition(key: str, name: str, contract: SkillContract) -> dict:
         }
         if i.required:
             required.append(i.name)
+    returns = (" — one verified number (its result carries an evidence_ref for compute)"
+               if contract.returns == "number" else "")
     return {
         "name": skill_function_name(key),
         "description": (
             f"Skill “{name}”: {contract.when_to_use}"
-            + (f" Returns: {contract.output}" if contract.output else "")
+            + (f" Returns: {contract.output}{returns}." if contract.output or returns else "")
             + " Runs as its own governed sub-flow; pass every input it needs — it "
               "sees nothing else of this conversation."
         ),
@@ -460,6 +674,28 @@ async def invoke_skill(
         outcome["result"] = _err(f"Skill lồng quá {MAX_SKILL_DEPTH} cấp", "skill_depth_exceeded")
         return
 
+    refused = invocation_refusal(db, rctx, row, skill_key)
+    if refused is not None:
+        outcome["result"] = refused
+        return
+    # A COORDINATOR REACHED THROUGH A SKILL is still a coordinator inside a lane.
+    if getattr(state, "lane_depth", 0) and _reaches_coordinator(db, skill_flow, len(stack) + 1):
+        outcome["result"] = _err(f"Skill “{skill_key}” có bước điều phối — không chạy trong "
+                                 "một làn chuyên gia (không lồng điều phối).", "nested_coordinator")
+        return
+    if lifecycle_of(row) == DEPRECATED:
+        from app.services.agent_flows.envelope import Notice
+
+        if not any(n.code == "skill_deprecated" and n.facts.get("skill") == skill_key
+                   for n in state.notices):
+            state.notices.append(Notice(
+                code="skill_deprecated", audience="author", severity="warning",
+                node_key=parent_step_key,
+                text=f"Skill “{row.name or skill_key}” v{row.version} đã ngừng khuyến nghị"
+                     f"{_lifecycle_label(row)}.",
+                facts={"skill": skill_key, "version": row.version},
+            ))
+
     clean, problem = _validate_inputs(skill_flow.skill, inputs)
     if problem:
         outcome["result"] = _err(problem, "bad_argument")
@@ -546,25 +782,52 @@ async def invoke_skill(
     answer = child_out.answer.plain_text().strip() if child_out else ""
     status = child_out.status if child_out else "failed"
     notices = [n.code for n in (child_out.notices if child_out else [])]
-    if status not in ("ok", "partial") or not answer:
+    outcome["child_run_key"] = child_inp.request.id
+    contract = skill_flow.skill
+    if status not in ("ok", "partial") or (contract.returns == "text" and not answer):
         outcome["result"] = _err(
             f"Skill “{skill_key}” v{row.version} không trả về kết quả ({status})", "skill_failed")
-        outcome["child_run_key"] = child_inp.request.id
         return
-    outcome["child_run_key"] = child_inp.request.id
-    outcome["result"] = {
-        "ok": True,
-        "kind": "value",
-        "data": {
-            "skill": skill_key,
-            "version": row.version,
-            "answer": answer,
-            "status": status,
-            "notices": notices,
-            "child_run_key": child_inp.request.id,
-            # Vouches for NO number itself: the child's trusted ledger was merged
-            # above, figure by figure. Harvesting this payload would certify an
-            # answer string that happens to parse as a number.
-            "evidence_values": [],
-        },
+    data: dict[str, Any] = {
+        "skill": skill_key,
+        "version": row.version,
+        "lifecycle": lifecycle_of(row),
+        "returns": contract.returns,
+        "answer": answer,
+        "status": status,
+        "notices": notices,
+        "child_run_key": child_inp.request.id,
+        # Vouches for NO number itself: the child's trusted ledger was merged
+        # above, figure by figure. Harvesting this payload would certify an
+        # answer string that happens to parse as a number.
+        "evidence_values": [],
     }
+    if contract.returns == "number":
+        # THE DECLARED TYPE, OR NOTHING. Read by the runtime from the ONE result the
+        # declared step produced in the CHILD's run — the same resolver `compute`
+        # uses, so taint and identifier refusal cross the boundary intact.
+        from app.services.agent_flows.tools import compute as compute_tool
+
+        store = getattr(child_state, "evidence_store", None) or {}
+        try:
+            _ref, value, origin = compute_tool.resolve_step_reference(
+                store, contract.value_step, contract.value_path)
+        except compute_tool._Refused as exc:
+            outcome["result"] = _err(
+                f"Skill “{skill_key}” v{row.version} không trả về đúng kiểu đã khai báo (một con "
+                f"số từ bước “{contract.value_step}”): {exc}", "skill_output_invalid")
+            return
+        trusted = bool(origin.pop("trusted", True))
+        figure = compute_tool._round(value)
+        data.update({
+            "value": figure,
+            "provenance": "referenced" if trusted else "unreferenced",
+            "source": {"step": contract.value_step, "path": contract.value_path,
+                       "tool": origin.get("tool") or ""},
+            # A figure the child certified is certified here; one it built on a
+            # typed number is not — by provenance, never by matching values.
+            "evidence_values": [figure] if trusted else [],
+        })
+        if not trusted:
+            data["note"] = "Con số này được Skill tính từ một số chưa được xác thực."
+    outcome["result"] = {"ok": True, "kind": "value", "data": data}

@@ -1171,6 +1171,17 @@ async def run_tool(
         detail = result.get("detail") or result.get("error") or "công cụ lỗi"
         raise RuntimeError(f"{node.tool}: {detail}")
 
+    # A DECLARED SCHEMA IS A PROMISE TO THE NEXT STEP — checked where it is relied
+    # on. A result that does not fit is refused here, as a step error, rather
+    # than wired into a typed binding downstream as something it is not.
+    spec = tool_registry.all_tools().get(node.tool)
+    if spec is not None and spec.output_schema:
+        from app.services.agent_flows.tools.schema_check import problems as _schema_problems
+
+        wrong = _schema_problems(result.get("data"), spec.output_schema)
+        if wrong:
+            raise RuntimeError(f"{node.tool}: kết quả không đúng kiểu đã khai báo ({wrong[0]})")
+
     # WHAT THE NEXT STEP READS IS `data`, NOT THE ENVELOPE.
     #
     # `ok` / `kind` / `coverage` are the platform's contract and `output_schema`
@@ -1200,6 +1211,15 @@ def _resolve_inputs(node: ToolNode, state: RunState) -> dict:
         if binding.ref in state.vars:
             out[name] = state.vars[binding.ref]
             continue
+        # A FIELD OF A TYPED RESULT: `calc.result`, `ranking.items[0].value`. Read
+        # through the one template resolver, which keeps the type of a sole
+        # reference — a number stays a number.
+        head = binding.ref.split(".", 1)[0].split("[", 1)[0]
+        if head != binding.ref and head in state.vars:
+            value = state.resolve("{{%s}}" % binding.ref)
+            if value is not None and value != "":
+                out[name] = value
+                continue
         # A MISSING VARIABLE IS NOT AN EMPTY ONE. Passing `None` would let the tool
         # refuse for a reason that names the ARGUMENT instead of the BINDING, and
         # an author would go looking at the tool.

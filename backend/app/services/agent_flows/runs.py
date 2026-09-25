@@ -148,6 +148,7 @@ def record(
                     completion_tokens=step.completion_tokens or None,
                     error=step.error or None,
                     capability_trace=step.capabilities or None,
+                    budget=step.budget or None,
                 )
             )
         db.commit()
@@ -433,6 +434,7 @@ def run_detail(db: Session, *, brain_key: str, run_id: int) -> dict[str, Any] | 
                 # What an Agent step could see and what it tried — granted,
                 # eligible, shown per round, discovered, invoked, rejected.
                 "capabilities": s.capability_trace,
+                "budget": getattr(s, "budget", None),
                 "children": [c for c in child_rows if c["parent_step_key"] == s.node_key],
             }
             for s in steps

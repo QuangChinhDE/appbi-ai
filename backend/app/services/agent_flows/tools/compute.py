@@ -18,6 +18,21 @@ from — `{"ref": "e3", "path": "rows[0].revenue"}` — and the runtime reads th
 value itself from the result it produced (`RunState.evidence_store`). The model
 chooses the reference; it never copies a trusted value.
 
+TWO WAYS TO NAME A RESULT, ONE RESOLVER
+---------------------------------------
+    {"ref": "e3", "path": "..."}     a result THIS run produced, by its reference —
+                                     what an Agent sees next to each result
+    {"step": "tong", "path": "..."}  the result a named STEP produced — what a
+                                     deterministic ToolNode can write at authoring
+                                     time, when no run and no `e3` exists yet;
+                                     refused if that step produced more than one.
+                                     Not in the model-facing definition: an Agent
+                                     is shown `e3` next to every result, and one
+                                     way to name a result is what it is taught
+
+Both resolve through `resolve_reference`, so taint, identifier refusal and
+lineage cannot differ by spelling.
+
 LITERALS ARE MATHEMATICS, NOT EVIDENCE
 --------------------------------------
 100, 365, 1e6 in the expression are explicit literals — allowed at any
@@ -196,6 +211,21 @@ def resolve_reference(store: dict[str, Any], ref: str, path: str) -> tuple[float
     }
 
 
+def resolve_step_reference(store: dict[str, Any], step: str, path: str) -> tuple[str, float, dict]:
+    """`{step, path}`: the ONE result that step produced this run, then as `ref`."""
+    step = str(step or "").strip()
+    refs = [ref for ref, entry in store.items() if entry.get("source") == step]
+    if not refs:
+        raise _Refused("evidence_ref_unknown",
+                       f"bước {step!r} chưa tạo kết quả nào trong lượt này")
+    if len(refs) > 1:
+        raise _Refused("evidence_ref_ambiguous",
+                       f"bước {step!r} tạo {len(refs)} kết quả ({', '.join(refs[-6:])}) — "
+                       "dùng {\"ref\": \"eN\", \"path\": ...} để chỉ rõ kết quả nào")
+    value, origin = resolve_reference(store, refs[0], path)
+    return refs[0], value, origin
+
+
 # ── the expression ───────────────────────────────────────────────────────────
 def _evaluate(expression: str, names: dict[str, float]) -> tuple[float, list[float]]:
     try:
@@ -284,12 +314,17 @@ def tool_compute(ctx: Any, args: dict) -> dict:
             if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
                 raise _Refused("bad_argument", f"tên biến {name!r} không hợp lệ")
             if isinstance(spec, dict):
-                value, origin = resolve_reference(store, spec.get("ref"), str(spec.get("path") or ""))
+                path = str(spec.get("path") or "")
+                if spec.get("step") and not spec.get("ref"):
+                    ref, value, origin = resolve_step_reference(store, spec.get("step"), path)
+                else:
+                    ref = str(spec.get("ref"))
+                    value, origin = resolve_reference(store, ref, path)
                 trusted = origin.pop("trusted", True)
                 names[name] = value
                 inputs.append({
                     "name": name, "value": _round(value), "referenced": bool(trusted),
-                    "ref": str(spec.get("ref")), "path": str(spec.get("path") or ""),
+                    "ref": ref, "path": path,
                     **origin,
                     **({} if trusted else {"note": "tham chiếu tới một kết quả chưa được xác thực"}),
                 })
@@ -387,18 +422,35 @@ DEFINITION = {
     },
 }
 
-#: The shape `tool_compute` returns under `data`. NOT yet declared on the spec:
-#: `test_tool_output_contract` requires a schema to be verified against a real
-#: report result first, and that has not been done for this tool.
+#: The shape `tool_compute` returns under `data` — DECLARED on the spec, typed to
+#: the leaf: a typed consumer (a ToolNode wiring `{{calc.result}}`, a Skill
+#: returning a number) relies on every key here. Verified in CI against real
+#: results — compute is pure, so no warehouse is needed — by
+#: `test_compute_typed_contract.py`, every result shape, success and taint alike.
+_INPUT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "name": {"type": "string"},
+        "value": {"type": "number"},
+        "referenced": {"type": "boolean"},
+        "ref": {"type": "string"},
+        "path": {"type": "string"},
+        "tool": {"type": "string"},
+        "step": {"type": "string"},
+        "note": {"type": "string"},
+    },
+    "required": ["name", "value", "referenced"],
+}
 OUTPUT_SCHEMA = {
     "type": "object",
     "properties": {
         "expression": {"type": "string"},
         "result": {"type": "number"},
-        "inputs": {"type": "array", "items": {"type": "object"}},
+        "inputs": {"type": "array", "items": _INPUT_SCHEMA},
         "literals": {"type": "array", "items": {"type": "number"}},
         "provenance": {"type": "string", "enum": ["referenced", "unreferenced"]},
+        "evidence_values": {"type": "array", "items": {"type": "number"}},
         "note": {"type": "string"},
     },
-    "required": ["expression", "result", "inputs", "provenance"],
+    "required": ["expression", "result", "inputs", "literals", "provenance", "evidence_values"],
 }

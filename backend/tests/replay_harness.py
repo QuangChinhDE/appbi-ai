@@ -163,8 +163,15 @@ def _scripted_tools(script: dict, *, real: bool):
         "ok": True, "kind": "table",
         "data": {"columns": ["category", "revenue"], "rows": [["moveis", 1200]]},
     }
+    # TOOLS THAT RUN FOR REAL beside scripted ones: a pure tool (`compute`) whose
+    # behaviour over the scripted results IS what the fixture pins. Captured
+    # before the harness replaces `execute`, so it is the genuine registry.
+    real_tools = set(script.get("real_tools") or [])
+    genuine = tool_registry.execute
 
     def fake(ctx, name, args, allowed=None, use_cache=True):
+        if name in real_tools:
+            return genuine(ctx, name, args, allowed=allowed, use_cache=False)
         return by_name.get(name, default)
 
     return fake

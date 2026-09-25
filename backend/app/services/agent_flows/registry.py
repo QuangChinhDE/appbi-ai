@@ -536,7 +536,9 @@ def publish(
         row.body = pinned_body
         flow = parse_flow(row) or flow
 
-    problems = flow.blocking_problems()
+    # A DEPRECATED PIN may keep running, but republishing onto it is the author's
+    # decision on the record, not a default: acknowledgeable, like the rest.
+    problems = flow.blocking_problems() + skills_service.deprecated_pins(db, flow)
     if problems and not acknowledge_problems:
         raise BrainError(
             409,
@@ -720,6 +722,19 @@ def delete_version(db: Session, brain_key: str, version: int, actor_email: str =
         raise BrainError(404, "Không tìm thấy phiên bản này")
     if row.status == PUBLISHED:
         raise BrainError(409, "Phiên bản đang phát hành — hãy phát hành bản khác trước")
+    # A PINNED SKILL VERSION IS HISTORY OTHER FLOWS RUN ON. Deleting it would turn
+    # every pin into "not found" and make their past runs unexplainable; stopping
+    # it is what `disabled` is for, and it keeps the body.
+    if str(getattr(row, "flow_type", "") or "") == "skill":
+        from app.services.agent_flows import skills as skills_service
+
+        pinning = skills_service.pinned_by(db, brain_key, version)
+        if pinning:
+            raise BrainError(
+                409,
+                f"Phiên bản Skill này đang được ghim bởi {', '.join(pinning[:3])}"
+                f"{'…' if len(pinning) > 3 else ''} — hãy vô hiệu hoá thay vì xoá.",
+            )
 
     # A DELETE MAY NOT LEAVE A LINK POINTING AT NOTHING.
     #

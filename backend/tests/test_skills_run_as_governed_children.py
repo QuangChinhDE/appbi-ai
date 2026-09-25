@@ -104,7 +104,12 @@ def skill_db(monkeypatch):
         return registry.get((key, version))
 
     monkeypatch.setattr(skills, "resolve_skill", resolve)
-    yield SimpleNamespace(db=session, registry=registry)
+    # Who may still build on which Skill, re-asked at every invocation
+    # (`skills.caller_may_use`). This store has no flow table, so sharing is
+    # modelled here explicitly — and a test can revoke it mid-life.
+    shared = {"so_sanh"}
+    monkeypatch.setattr(skills, "caller_may_use", lambda db, caller, key: key in shared)
+    yield SimpleNamespace(db=session, registry=registry, shared=shared)
     session.close()
 
 
