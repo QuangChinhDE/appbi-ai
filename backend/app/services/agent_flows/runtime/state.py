@@ -305,11 +305,6 @@ class RunState:
     #: wrong answer and left a wandering one, so the fact has to survive to the
     #: answer step where it can be said out loud.
     dimension_gap: dict[str, Any] = field(default_factory=dict)
-    #: Every chart a successful call read (`chart_id` of its arguments), across
-    #: every step — Agent tools, Tool steps and report reads all register their
-    #: results through `record_evidence`. Lets the answer ask "did this run ever
-    #: touch the breakdown the question named?" from facts, not prose.
-    charts_read: set[int] = field(default_factory=set)
     #: Set by a Stop node, or by the executor when the budget runs out.
     stopped: bool = False
     stop_message: str = ""
@@ -374,9 +369,6 @@ class RunState:
         if not isinstance(result, dict) or result.get("ok") is False:
             self.add_evidence(result)
             return None
-        chart = args.get("chart_id") if isinstance(args, dict) else None
-        if isinstance(chart, int) and not isinstance(chart, bool):
-            self.charts_read.add(chart)
         if len(self.evidence_store) >= _MAX_EVIDENCE_REFS:
             self.add_evidence(result)
             return None

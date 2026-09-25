@@ -169,7 +169,6 @@ jobs:
             tests/test_dead_retry_costs_nothing.py \
             tests/test_dimension_is_not_a_measure.py \
             tests/test_requested_dimension_is_not_substituted.py \
-            tests/test_dimension_gap_reaches_the_answer.py \
             tests/test_analytical_tool_semantics.py \
             tests/test_tool_certification_matrix.py \
             tests/test_capability_serviced_the_intent.py \

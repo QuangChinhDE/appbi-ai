@@ -419,38 +419,6 @@ async def run(
                         )
                     )
 
-        # THE BREAKDOWN THE QUESTION NAMED, AND WHETHER THE RUN EVER HAD IT.
-        #
-        # A gap used to change only the verdict: the run was marked `partial` and
-        # the reader still read "Bang SP chiếm 100% tổng doanh thu" — the
-        # all-states total, attributed to one state. Measured live on the final
-        # eval, twice (once with the gap open from a refusal, once with no refusal
-        # at all). Same place and shape as the figure and qualifier retries: the
-        # fact is structured (`note_question_dimension_gap`), the correction is
-        # one round, and it is kept only if it adds no unsupported figure.
-        if node.key == rctx.answer_key and text and not provider_error:
-            from app.services.agent_flows.runtime.agent_runtime import note_question_dimension_gap
-            from app.services.dashboard_ai_bot.verifier import extract_answer_numbers
-
-            fact = note_question_dimension_gap(state, getattr(rctx, "ctx", None))
-            if fact:
-                state.capability_trace.setdefault(node.key, {})["dimension"] = fact
-            gap = state.dimension_gap or {}
-            if gap and not gap.get("satisfied") and extract_answer_numbers(text):
-                unsupported_before, _ = _figure_check(text, state)
-                fixed = await _retry_dimension(
-                    node, state, system, messages, text, gap,
-                    provider=provider, api_key=api_key, model=model, rt=rt,
-                )
-                if fixed and not _echoes_instruction(fixed):
-                    left, _ = _figure_check(fixed, state)
-                    if len(left) <= len(unsupported_before):
-                        logger.info("[flow] %s: dimension correction (%s)", node.key,
-                                    gap.get("requested"))
-                        text = fixed
-                        if fact:
-                            state.capability_trace[node.key]["dimension"]["corrected"] = True
-
         asked = getattr(getattr(rctx, "inp", None), "question", None)
         asked_text = asked.text() if hasattr(asked, "text") else ""
         if (
@@ -699,39 +667,6 @@ async def _retry_figures(
     ]
     return await _correction(state, system, retry_messages, rt=rt, provider=provider,
                              api_key=api_key, model=model, what="figure")
-
-async def _retry_dimension(
-    node: AgentNode, state: RunState, system: str, messages: list[dict], said: str,
-    gap: dict, *, provider: str, api_key: str, model: str, rt: Any = None,
-) -> str:
-    """The question named a breakdown the run never delivered: say so, once.
-
-    States the FACT — no result read was grouped or filtered by it — and the one
-    thing that follows: no figure may be attributed to a member of that breakdown,
-    including by substituting the overall total or another breakdown's figure.
-    """
-    label = str(gap.get("label") or gap.get("requested") or "chiều được hỏi")
-    retry_messages = [
-        *messages,
-        {"role": "assistant", "content": said},
-        {
-            "role": "user",
-            "content": (
-                f"Câu hỏi hỏi theo “{label}”, nhưng không kết quả nào bạn đã đọc được "
-                f"nhóm hay lọc theo “{label}”. Vì vậy KHÔNG được gán con số nào — giá "
-                f"trị, tỷ trọng hay thứ hạng — cho một {label} cụ thể, kể cả bằng con "
-                "số tổng chung hay số của một chiều khác (danh mục, tháng, …) đặt vào "
-                "chỗ đó.\nViết lại câu trả lời: nói thẳng báo cáo này không tách được "
-                f"số liệu được hỏi theo “{label}”; số liệu nào đã đọc được thì chỉ nêu "
-                "với đúng ý nghĩa của nó (ví dụ: tổng của toàn bộ). Giữ các dòng "
-                "[FOLLOWUP] (đúng số dòng, vẫn bắt đầu bằng [FOLLOWUP]). Không thêm "
-                "phân tích mới."
-            ),
-        },
-    ]
-    return await _correction(state, system, retry_messages, rt=rt, provider=provider,
-                             api_key=api_key, model=model, what="dimension")
-
 
 async def _retry_qualifiers(
     node: AgentNode, state: RunState, system: str, messages: list[dict], said: str,

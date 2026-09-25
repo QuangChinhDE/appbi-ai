@@ -429,3 +429,45 @@ def test_minimum_is_the_one_definition_the_preflight_reads():
         _agent("tl", "TRA_LOI")]})
     # the most demanding branch (2) + the answer (1); one read
     assert minimum_calls(branchy.nodes) == (3, 1)
+
+
+def test_a_skill_that_failed_inside_may_be_asked_again(monkeypatch, skill_db):
+    """Found by review: every Skill error carries retryable=False, so a child that
+    died on a provider 503 was memoised and the identical retry answered
+    `already_refused` without running. `skill_failed` may be transient; it is the
+    one Skill refusal the retry policy does not remember."""
+    from test_skills_run_as_governed_children import _row
+
+    child = {"answer_node": "c", "skill": {
+        "inputs": [{"name": "question", "type": "text", "required": True, "description": "câu hỏi"}],
+        "output": "Tổng doanh thu", "when_to_use": "Khi cần tổng doanh thu của báo cáo"},
+        "nodes": [{"key": "c", "name": "c", "type": "agent", "prompt": "VAI_TRO_CON {{input.question}}",
+                   "max_tool_calls": 2, "tools": [{"tool": "total_measure"}]}]}
+    skill_db.registry[("t", 1)] = (_row("t", 1, name="T"), _flow(child, key="t"))
+    skill_db.shared.add("t")
+    seen = {"child": 0}
+
+    class M(_Greedy):
+        def stream(self):
+            async def fake(*, provider, api_key, model, system_prompt, messages, tools):
+                if "VAI_TRO_CON" in system_prompt:
+                    seen["child"] += 1
+                    if seen["child"] == 1:
+                        raise RuntimeError("provider 503")
+                    yield AgentEvent(type="text", text="Tổng là 1234,5.")
+                else:
+                    done = sum(1 for m in messages if m.get("role") == "tool")
+                    if tools and done < 2:
+                        yield AgentEvent(type="tool_call", tool_call_id=f"p{done}", tool_name="skill__t",
+                                         tool_args={"question": "Tổng?"})
+                    else:
+                        yield AgentEvent(type="text", text="TRA_LOI xong.")
+                yield AgentEvent(type="usage", extra={"prompt_tokens": 5, "completion_tokens": 2})
+            return fake
+
+    body = {"answer_node": "tl", "nodes": [{"key": "tl", "name": "tl", "type": "agent", "prompt": "TRA_LOI",
+            "max_tool_calls": 4, "tools": [{"tool": "skill:t", "version": 1}]}]}
+    env, _, _ = _run(monkeypatch, body, llm=12, tools=12, db=skill_db.db, model=M())
+    calls = next(s for s in _steps(env) if s["key"] == "tl").get("tool_calls") or []
+    assert "skill__t(already_refused)" not in calls, calls
+    assert seen["child"] >= 2, "the retry ran the Skill again"

@@ -241,9 +241,6 @@ def _ask(token: str, link: int, case: dict, granted: set[str]) -> dict:
         "discovered_then_ran": sorted(set(discovered) & ran_names),
         "auto_loaded": cap.get("auto_loaded") or [],
         "final_rounds": cap.get("final_rounds") or 0,
-        # The breakdown the question named and whether the run delivered it
-        # (`note_question_dimension_gap`) — how a false gap would show up.
-        "dimension": cap.get("dimension") or {},
         "skill_runs": [{"version": c["version"], "status": c["status"], "llm_calls": c["llm_calls"],
                         "tool_calls": c["tool_calls"]} for c in children],
         "skill_tool_calls": child_calls,
