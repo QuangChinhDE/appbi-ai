@@ -55,3 +55,34 @@ def test_a_measure_phrase_never_matches_a_dimension_field(report):
 def test_an_exact_identifier_is_matched_exactly_as_before(report):
     data = resolve(report, measure="revenue", dimension="customer_state")
     assert ids(data, match="both") == [684]
+
+
+# ── when the semantic model has no word for the breakdown ───────────────────
+def _unlabelled(report, monkeypatch):
+    """The Olist deployment: dimensions carry no label, charts carry titles."""
+    import test_dimension_is_not_a_measure as T
+
+    fields = [f for f in T.FIELDS if f["kind"] == "measure"] + [
+        {"name": "customer_state", "label": "", "kind": "dimension"},
+        {"name": "product_category_name_english", "label": "", "kind": "dimension"}]
+    monkeypatch.setattr(
+        "app.services.dashboard_ai_bot.govern_tools.tool_describe_semantic_model",
+        lambda ctx, args: {"ok": True, "data": {"fields": fields}}, raising=False)
+    return report
+
+
+def test_the_charts_own_title_names_the_breakdown_when_nothing_else_does(report, monkeypatch):
+    ctx = _unlabelled(report, monkeypatch)
+    data = resolve(ctx, measure="doanh thu", dimension="danh mục")
+    [best] = [c for c in data["candidates"] if c["complete"]]
+    assert best["chart_id"] == 686 and best["dimension_match_basis"] == "chart_title"
+    assert best["confidence"] == "medium", "weaker than a field match, and says so"
+
+
+def test_a_title_never_supplies_the_measure_half(report, monkeypatch):
+    """Revenue by STATE: the state chart's title says 'bang' but it counts ORDERS,
+    so it is not an answer — the substitution the B2 fix exists to stop."""
+    ctx = _unlabelled(report, monkeypatch)
+    data = resolve(ctx, measure="doanh thu", dimension="bang")
+    complete = [c["chart_id"] for c in data["candidates"] if c["complete"]]
+    assert 690 not in complete

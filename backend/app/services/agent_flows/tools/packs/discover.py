@@ -568,6 +568,19 @@ def _charts_on_table(ctx: Any, table_id: int, measure: str | None,
             _field_matches(a, fields.get("measures")) for a in (measure_aliases or [m_needle]))
         d_hit = bool(d_needle) and any(
             _field_matches(a, fields.get("dimensions")) for a in (dimension_aliases or [d_needle]))
+        # THE AUTHOR'S OWN WORDS FOR THE BREAKDOWN, when the semantic model has
+        # none. Measured on the Olist report: its category dimension carries no
+        # label in any language, so "danh mục" reaches it through nothing — while
+        # the chart is titled "Doanh thu theo danh mục". A title is weaker than a
+        # field, so it counts only for a chart that STRUCTURALLY has a grouping
+        # dimension (never a KPI tile), only when the title carries the phrase,
+        # and it is reported as what it is (`dimension_match_basis`). The measure
+        # half is never matched by title.
+        d_basis = "field" if d_hit else ""
+        if d_needle and not d_hit and (fields.get("dimensions") or []):
+            want = _terms_of(d_needle)
+            if want and _score(c.name or "", want) >= min(2, len(want)):
+                d_hit, d_basis = True, "chart_title"
         # THE DISTINCTION THE CALLER HAS TO SEE.
         #
         # "Same table" and "same measure" are not the same claim. A chart on the
@@ -593,15 +606,18 @@ def _charts_on_table(ctx: Any, table_id: int, measure: str | None,
         # "matched the measure". Asked for a measure alone, matching it IS the
         # complete answer; asked for both, matching one half is not.
         complete = (m_hit or not m_needle) and (d_hit or not d_needle)
-        out.append({
+        row = {
             "chart_id": c.id,
             "chart_name": c.name or f"Chart {c.id}",
             "match": match,
             "measure_match": m_hit,
             "dimension_match": d_hit,
             "complete": complete,
-            "confidence": "high" if complete else "low",
-        })
+            "confidence": ("medium" if d_basis == "chart_title" else "high") if complete else "low",
+        }
+        if d_basis:
+            row["dimension_match_basis"] = d_basis
+        out.append(row)
     out.sort(key=lambda r: (not r["complete"], _MATCH_RANK[r["match"]], r["chart_id"]))
     return out
 
