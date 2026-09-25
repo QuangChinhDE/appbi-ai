@@ -7,12 +7,14 @@ import 'react-resizable/css/styles.css';
 import { ChartTile } from './ChartTile';
 import { ChartErrorBoundary } from './ChartErrorBoundary';
 import { DashboardWidget } from './DashboardWidget';
+import { SectionBands } from './SectionBands';
 import { DashboardChart, DashboardPageConfig, DashboardThemeConfig } from '@/types/api';
 import { DashboardFilter } from '@/lib/filters';
 import type { BaseFilter } from '@/lib/filters';
 import { Loader2, LayoutDashboard } from 'lucide-react';
 import { getDashboardGridMargin } from './DashboardThemeProvider';
-import { DASHBOARD_GRID_COLS, dashboardRowHeight } from '@/lib/dashboard-pages';
+import { DASHBOARD_GRID_COLS, REPORT_STACK_BREAKPOINT, dashboardRowHeight, deriveStackedLayout } from '@/lib/dashboard-pages';
+import { tileKindOf } from '@/lib/dashboard-presentation/tile-frame';
 import { useExportMode } from '@/lib/export-mode';
 import { useI18n } from '@/providers/LanguageProvider';
 
@@ -96,7 +98,14 @@ interface DashboardGridProps {
    *  focusedDashboardChartId through so the focused tile renders a
    *  brand-ring while editing, and click toggles focus. */
   focusedDashboardChartId?: number | null;
-  onFocusChart?: (dashboardChartId: number) => void;
+  /** AI Design selection. When given, it — not the single focus — decides
+   *  which tiles show the selection ring. */
+  selectedDashboardChartIds?: number[];
+  onFocusChart?: (dashboardChartId: number, additive?: boolean) => void;
+  /** Lock/unlock a tile through the page's draft buffer. */
+  onToggleLock?: (dashboardChartId: number, next: boolean) => void;
+  /** Persisted (server ⊕ saved draft) layout for tile-level live toggles. */
+  getPersistedLayout?: (dashboardChartId: number) => Record<string, any> | undefined;
   /** AI Design mode — tiles become click-to-focus targets (no drag handle) so a
    *  click anywhere on a tile scopes an AI restyle to just that visual. */
   aiDesignMode?: boolean;
@@ -110,95 +119,6 @@ interface DashboardGridProps {
   onBindParameter?: (dashboardChartId: number) => void;
 }
 
-
-/**
- * The surface behind a group of tiles.
- *
- * A report with only ONE surface depth — page under card — reads as a bag of
- * loose tiles however well each tile is styled, and no amount of card polish
- * fixes it, because grouping is a surface, not a border on each member. This
- * draws that missing level: a `section_header` widget opens a band, the band
- * runs until the next header, and every tile in between sits on it.
- *
- * Drawn as a backdrop layer rather than as a real container because
- * react-grid-layout positions children absolutely from the layout array — a
- * wrapper element would have to become a grid item and would then be draggable,
- * resizable and collide with its own contents. The geometry is deterministic,
- * so the band can be computed from the same numbers the library uses:
- *
- *   colWidth = (W - mx*(cols+1)) / cols
- *   x_px     = colWidth*x + (x+1)*mx        w_px = w*colWidth + (w-1)*mx
- *   y_px     = rowH*y     + (y+1)*my        h_px = h*rowH     + (h-1)*my
- *
- * Bands are inert to the pointer so dragging, resizing and tile clicks behave
- * exactly as before.
- */
-function SectionBands({
-  layouts, dashboardCharts, cols, rowH, margin, width,
-}: {
-  layouts: Layout[];
-  dashboardCharts: any[];
-  cols: number;
-  rowH: number;
-  margin: [number, number];
-  width: number;
-}) {
-  const bands = React.useMemo(() => {
-    if (!width) return [];
-    const [mx, my] = margin;
-    const typeById = new Map<string, string>(
-      dashboardCharts.map((dc) => [String(dc.id), String(dc.widget_type ?? 'chart')]),
-    );
-    const sorted = [...layouts].sort((a, b) => a.y - b.y || a.x - b.x);
-    const headers = sorted.filter((l) => typeById.get(l.i) === 'section_header');
-    if (!headers.length) return [];
-
-    const colWidth = (width - mx * (cols + 1)) / cols;
-    const out: { key: string; left: number; top: number; width: number; height: number }[] = [];
-
-    headers.forEach((header, idx) => {
-      const next = headers[idx + 1];
-      // Members are the tiles between this header and the next one. The header
-      // itself is included so the band starts at its top edge.
-      const members = sorted.filter((l) =>
-        l.y >= header.y && (next ? l.y < next.y : true));
-      if (members.length < 2) return; // a header with nothing under it is not a group
-
-      const minX = Math.min(...members.map((l) => l.x));
-      const maxX = Math.max(...members.map((l) => l.x + l.w));
-      const minY = Math.min(...members.map((l) => l.y));
-      const maxY = Math.max(...members.map((l) => l.y + l.h));
-
-      const left = colWidth * minX + (minX + 1) * mx;
-      const right = colWidth * maxX + maxX * mx;
-      const top = rowH * minY + (minY + 1) * my;
-      const bottom = rowH * maxY + maxY * my;
-      out.push({
-        key: header.i,
-        // Bleed a little past the tiles so the band reads as containing them
-        // rather than as a rectangle drawn exactly under them.
-        left: left - mx / 2,
-        top: top - my / 2,
-        width: (right - left) + mx,
-        height: (bottom - top) + my,
-      });
-    });
-    return out;
-  }, [layouts, dashboardCharts, cols, rowH, margin, width]);
-
-  if (!bands.length) return null;
-  return (
-    <div className="pointer-events-none absolute inset-0 z-0" aria-hidden="true">
-      {bands.map((b) => (
-        <div
-          key={b.key}
-          className="dashboard-section-band absolute"
-          style={{ left: b.left, top: b.top, width: b.width, height: b.height }}
-        />
-      ))}
-    </div>
-  );
-}
 
 export function DashboardGrid({
   dashboardId,
@@ -224,7 +144,10 @@ export function DashboardGrid({
   themeConfig = null,
   disableLazy = false,
   focusedDashboardChartId = null,
+  selectedDashboardChartIds,
   onFocusChart,
+  onToggleLock,
+  getPersistedLayout,
   aiDesignMode = false,
   presenceByChart,
   params = {},
@@ -268,11 +191,11 @@ export function DashboardGrid({
     return () => ro.disconnect();
   }, []);
 
-  // Below this the 12-column arrangement stops being readable rather than
-  // merely tight: measured on a 4-KPI console at 390px, each card came out
-  // 53px wide and "16.0M" rendered as "1".
-  const NARROW_GRID_PX = 700;
-  const isNarrow = gridWidth > 0 && gridWidth < NARROW_GRID_PX;
+  // Below the report's phone breakpoint the authored arrangement stops being
+  // readable rather than merely tight (a 4-KPI console at 390px gave 53px cards
+  // and "16.0M" rendered as "1"). The SAME threshold and the SAME stack rule as
+  // the published report, so narrowing the builder previews the phone view.
+  const isNarrow = gridWidth > 0 && gridWidth < REPORT_STACK_BREAKPOINT;
 
   const authoredLayouts = dashboardCharts.map((dc) => {
     const layout = dc.layout;
@@ -298,29 +221,21 @@ export function DashboardGrid({
   /**
    * The same tiles, stacked, for a viewport too narrow to hold the grid.
    *
-   * This is a PROJECTION, never a save. `ResponsiveGridLayout` was rejected for
-   * exactly that reason -- it reflows onto a breakpoint and then reports the
-   * reflowed positions through `onLayoutChange`, so opening DevTools once would
-   * rewrite a report's desktop layout. Deriving the narrow arrangement here and
-   * refusing to persist it keeps the authored geometry the single source of
-   * truth: widen the window and the original comes back untouched.
-   *
-   * Reading order is the authored one -- top to bottom, left to right -- so a
-   * KPI strip stays above the charts it introduces.
+   * This is a PROJECTION, never a save: widen the window and the original comes
+   * back untouched. It is the published report's phone stack (reading order,
+   * readable height floor per kind), laid on this grid's 36 columns.
    */
   const narrowLayouts = React.useMemo(() => {
     if (!isNarrow) return authoredLayouts;
-    const byReadingOrder = [...authoredLayouts].sort((a, b) => (a.y - b.y) || (a.x - b.x));
-    let cursor = 0;
-    return byReadingOrder.map((item) => {
-      // Full width, and tall enough that a chart squeezed to one column is
-      // still worth looking at.
-      const height = Math.max(item.h, item.minH ?? 3);
-      const placed = { ...item, x: 0, y: cursor, w: DASHBOARD_GRID_COLS, h: height, static: true };
-      cursor += height;
-      return placed;
-    });
-  }, [isNarrow, authoredLayouts]);
+    const kindById = new Map(dashboardCharts.map((dc) => [String(dc.id), tileKindOf(dc.chart?.chart_type, dc.widget_type)]));
+    const gap = getDashboardGridMargin(themeConfig)[1];
+    return deriveStackedLayout(authoredLayouts, {
+      kindOf: (item) => kindById.get(item.i) ?? 'chart',
+      rowPitchPx: dashboardRowHeight(gap) + gap,
+      cols: DASHBOARD_GRID_COLS,
+    }).map((item) => ({ ...item, static: true }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isNarrow, JSON.stringify(authoredLayouts), dashboardCharts, themeConfig]);
 
   const layouts = isNarrow ? narrowLayouts : authoredLayouts;
 
@@ -426,7 +341,9 @@ export function DashboardGrid({
           // where it was 25% of the tile. draggableCancel (on the grid) stops a
           // drag from starting on the edit/delete buttons or any form control.
           <div
-            className={`group relative h-full w-full ${canEdit ? 'drag-handle cursor-move' : ''} ${
+            data-tile-id={dc.id}
+            data-tile-kind="widget"
+            className={`group relative h-full w-full ${canEdit && !(dc.layout as any)?.locked ? 'drag-handle cursor-move' : ''} ${
               framelessWidget
                 ? ''
                 : 'dashboard-tile bi-card-hover rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 overflow-hidden'
@@ -498,14 +415,16 @@ export function DashboardGrid({
             availablePages={availablePages}
             currentPageId={typeof dc.layout?.pageId === 'string' ? dc.layout.pageId : (availablePages[0]?.id ?? null)}
             onMoveToPage={onMoveChartToPage ? (pageId) => onMoveChartToPage(dc.id, pageId) : undefined}
-            isFocused={focusedDashboardChartId === dc.id}
+            isFocused={selectedDashboardChartIds ? selectedDashboardChartIds.includes(dc.id) : focusedDashboardChartId === dc.id}
             onFocus={onFocusChart}
+            onToggleLock={onToggleLock}
+            getPersistedLayout={getPersistedLayout}
             aiDesignMode={aiDesignMode}
             editingBy={presenceByChart?.[dc.id] ?? null}
           />
         );
         return (
-          <div key={dc.id.toString()}>
+          <div key={dc.id.toString()} data-grid-item-id={dc.id}>
             <ChartErrorBoundary
               chartId={dc.chart_id}
               dashboardChartId={dc.id}

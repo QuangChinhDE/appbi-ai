@@ -338,3 +338,5 @@ backend/tests/.testdata/
 !backend/tests/test_time_axis_needs_more_than_a_name.py
 !backend/tests/test_time_axis_at_the_tool_boundary.py
 !backend/tests/test_eval_provenance.py
+!backend/tests/test_presentation_planner_reference_image.py
+!backend/tests/test_dashboard_presentation_publish_is_atomic.py

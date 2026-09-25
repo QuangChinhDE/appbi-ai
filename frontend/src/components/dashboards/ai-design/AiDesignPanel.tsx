@@ -2,20 +2,20 @@
 
 import React from 'react';
 import {
-  ArrowUp, Check, Crosshair, Info, Layers, Lightbulb, Loader2, Maximize2, Minus, Move,
-  Palette, Paperclip, ShieldAlert, SlidersHorizontal, Sparkles, X,
+  ArrowUp, Check, Crosshair, Info, LayoutGrid, Lightbulb, Loader2, Lock, Maximize2, Minus, Move,
+  Palette, Paperclip, ShieldAlert, SlidersHorizontal, Sparkles, Wand2, X,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { useI18n } from '@/providers/LanguageProvider';
 import type { PresentationDiff } from '@/lib/dashboard-presentation/diff';
 import type { Violation } from '@/lib/dashboard-presentation/validator';
-import type { PresentationScope } from '@/lib/dashboard-presentation/types';
+import type { DesignSuggestion } from '@/lib/dashboard-presentation/types';
 
 /**
  * The chat side of AI Design.
  *
- * It renders a conversation, a scope selector, a change summary and two
- * buttons, and it owns none of the rules. Everything deciding whether a design
+ * It renders a conversation, what the next request will act on, a change
+ * summary and two buttons, and it owns none of the rules. Everything deciding whether a design
  * is legal, what it compiles to, or how it reaches the draft lives in
  * `lib/dashboard-presentation` — so this component cannot be the place a
  * capability quietly widens.
@@ -29,8 +29,9 @@ import type { PresentationScope } from '@/lib/dashboard-presentation/types';
  *     the counts. They are where the system admits to approximating something,
  *     and burying them next to a success message would make the summary a lie
  *     by omission.
- *   - the scope selector is a control, not a hint, and it says out loud when
- *     the chosen scope is the one that repaints every page.
+ *   - there is no mode switch. Whether a request may move things is read from
+ *     the words (style unless the user asked to rearrange), and every result
+ *     SAYS which it was — "Layout kept" is a chip, not a promise.
  */
 
 export interface AiDesignTurn {
@@ -43,17 +44,13 @@ export interface AiDesignTurn {
   /** Reference images (data URLs) the user attached to THIS turn, shown back as
    *  thumbnails so the conversation records what the design was matched against. */
   images?: string[];
-  /** The user asked for a theme/colour change on PAGE scope, where theme is
-   *  left alone (it is shared by every page). Set so the turn can offer a
-   *  one-click "apply to the whole report" instead of silently doing nothing. */
-  themeDeferred?: boolean;
+  /** Ideas that are not presentation (a better chart type…). Shown, never applied. */
+  suggestions?: DesignSuggestion[];
 }
 
 export interface AiDesignPanelProps {
   turns: AiDesignTurn[];
   busy: boolean;
-  scope: PresentationScope;
-  onScopeChange: (scope: PresentationScope) => void;
   onSubmit: (prompt: string, images?: string[]) => void;
   /** Non-null while a design is previewed but not applied. */
   pendingDiff: PresentationDiff | null;
@@ -64,13 +61,11 @@ export interface AiDesignPanelProps {
   onClose: () => void;
   visualCount: number;
   pageName: string;
-  /** When the user clicked a chart to restyle just it — its title, and a way to
-   *  return to whole-page editing. */
-  focusedChartName?: string | null;
-  onClearFocus?: () => void;
-  /** Re-run the last request with the scope flipped to the whole report, so a
-   *  theme/colour change that page scope deferred can be applied in one click. */
-  onRetryEntireReport?: () => void;
+  /** Titles of the visuals the user selected on the canvas; empty = whole page. */
+  selectionNames?: string[];
+  onClearSelection?: () => void;
+  /** How many visuals on this page are locked — they will not move. */
+  lockedCount?: number;
 }
 
 const CHIP_ICONS = {
@@ -79,7 +74,12 @@ const CHIP_ICONS = {
   restyled: Palette,
   filters: SlidersHorizontal,
   theme: Palette,
-  sections: Layers,
+} as const;
+
+const LAYER_CHIP = {
+  style: { icon: Lock, key: 'dashboards.aiDesign.layerStyle' },
+  structure: { icon: Move, key: 'dashboards.aiDesign.layerStructure' },
+  redesign: { icon: LayoutGrid, key: 'dashboards.aiDesign.layerRedesign' },
 } as const;
 
 function DiffChips({ diff }: { diff: PresentationDiff }) {
@@ -90,9 +90,8 @@ function DiffChips({ diff }: { diff: PresentationDiff }) {
   if (diff.restyled.length) chips.push({ key: 'restyled', label: t('dashboards.aiDesign.restyledCount', { count: diff.restyled.length }) });
   if (diff.slicerKeys.length) chips.push({ key: 'filters', label: t('dashboards.aiDesign.chipFilters') });
   if (diff.themeKeys.length) chips.push({ key: 'theme', label: t('dashboards.aiDesign.chipTheme') });
-  if (diff.createdWidgetCount) {
-    chips.push({ key: 'sections', label: t('dashboards.aiDesign.chipSections', { count: diff.createdWidgetCount }) });
-  }
+  const layerChip = LAYER_CHIP[diff.layer] ?? LAYER_CHIP.style;
+  const LayerIcon = layerChip.icon;
 
   if (chips.length === 0 && diff.notes.length === 0) {
     return (
@@ -102,6 +101,14 @@ function DiffChips({ diff }: { diff: PresentationDiff }) {
 
   return (
     <div className="mt-2 space-y-2">
+      <p
+        data-testid="ai-design-layer"
+        data-layer={diff.layer}
+        className="inline-flex items-center gap-1 rounded-full bg-brand/10 px-2 py-0.5 text-[11px] font-[560] text-brand"
+      >
+        <LayerIcon className="h-3 w-3" />
+        {t(layerChip.key)}
+      </p>
       {chips.length > 0 && (
         <div className="flex flex-wrap gap-1.5">
           {chips.map((chip) => {
@@ -132,7 +139,7 @@ function DiffChips({ diff }: { diff: PresentationDiff }) {
   );
 }
 
-function Turn({ turn, onRetryEntireReport, scope }: { turn: AiDesignTurn; onRetryEntireReport?: () => void; scope: PresentationScope }) {
+function Turn({ turn }: { turn: AiDesignTurn }) {
   const { t } = useI18n();
 
   if (turn.role === 'user') {
@@ -177,22 +184,16 @@ function Turn({ turn, onRetryEntireReport, scope }: { turn: AiDesignTurn; onRetr
       <div className="min-w-0 flex-1">
         <p className="text-caption leading-relaxed text-text-secondary">{turn.text}</p>
         {turn.diff && <DiffChips diff={turn.diff} />}
-        {turn.themeDeferred && scope === 'page' && onRetryEntireReport && (
-          // The colour/theme part of this request needs report scope. Rather
-          // than leave the user staring at an unchanged theme, offer the switch.
-          <div className="mt-2 rounded-lg border border-[rgb(var(--accent))]/30 bg-[rgb(var(--accent))]/[0.06] px-2.5 py-2">
-            <p className="mb-1.5 flex gap-1.5 text-[11px] leading-relaxed text-text-secondary">
-              <Palette className="mt-[2px] h-3 w-3 shrink-0 text-[rgb(var(--accent))]" />
-              <span>{t('dashboards.aiDesign.themeNeedsReport')}</span>
+        {turn.suggestions && turn.suggestions.length > 0 && (
+          // Not presentation, so never applied — a pointer to the Chart Editor.
+          <div className="mt-2 rounded-lg border border-[rgb(var(--border-line))] px-2.5 py-2">
+            <p className="mb-1 flex items-center gap-1.5 text-[11px] font-[560] text-text-secondary">
+              <Wand2 className="h-3 w-3 text-text-quaternary" />
+              {t('dashboards.aiDesign.suggestionsTitle')}
             </p>
-            <button
-              type="button"
-              onClick={onRetryEntireReport}
-              className="inline-flex items-center gap-1.5 rounded-md bg-brand px-2.5 py-1 text-[11px] font-[560] text-white transition-colors hover:bg-brand-hover"
-            >
-              <Sparkles className="h-3 w-3" />
-              {t('dashboards.aiDesign.applyToWholeReport')}
-            </button>
+            {turn.suggestions.map((suggestion, index) => (
+              <p key={index} className="text-[11px] leading-relaxed text-text-tertiary">• {suggestion.text}</p>
+            ))}
           </div>
         )}
         {refused && (
@@ -216,9 +217,9 @@ function Turn({ turn, onRetryEntireReport, scope }: { turn: AiDesignTurn; onRetr
 }
 
 export function AiDesignPanel({
-  turns, busy, scope, onScopeChange, onSubmit,
+  turns, busy, onSubmit,
   pendingDiff, onApply, onDiscard, onCollapse, onClose, visualCount, pageName,
-  focusedChartName, onClearFocus, onRetryEntireReport,
+  selectionNames = [], onClearSelection, lockedCount = 0,
 }: AiDesignPanelProps) {
   const { t } = useI18n();
   const [draft, setDraft] = React.useState('');
@@ -424,67 +425,38 @@ export function AiDesignPanel({
         </div>
       )}
 
-      {focusedChartName ? (
-        // The user clicked one visual. The scope selector is meaningless here —
-        // this turn restyles exactly that tile — so it is replaced by a chip
-        // that names the target and offers the way back to whole-page editing.
-        <div className="border-b border-[rgb(var(--border-line))] px-4 py-2.5">
+      <div className="border-b border-[rgb(var(--border-line))] px-4 py-2.5" data-testid="ai-design-target">
+        {selectionNames.length > 0 ? (
+          // What the next request acts on. Selecting on the canvas IS the scope
+          // control — there is no second one to keep in sync.
           <div className="flex items-center gap-2 rounded-lg border border-[rgb(var(--accent))]/35 bg-[rgb(var(--accent))]/10 px-2.5 py-1.5">
             <Crosshair className="h-3.5 w-3.5 shrink-0 text-[rgb(var(--accent))]" />
-            <span className="min-w-0 flex-1 truncate text-[11px] font-[560] text-text-primary">
-              {t('dashboards.aiDesign.focusEditing', { chart: focusedChartName })}
+            <span className="min-w-0 flex-1 truncate text-[11px] font-[560] text-text-primary" title={selectionNames.join(', ')}>
+              {selectionNames.length === 1
+                ? t('dashboards.aiDesign.focusEditing', { chart: selectionNames[0] })
+                : t('dashboards.aiDesign.selectionEditing', { count: selectionNames.length })}
             </span>
             <button
               type="button"
-              onClick={() => onClearFocus?.()}
+              onClick={() => onClearSelection?.()}
               className="shrink-0 rounded-md px-1.5 py-0.5 text-[11px] font-[510] text-text-tertiary transition-colors hover:bg-surface-2 hover:text-text-secondary"
             >
               {t('dashboards.aiDesign.focusClear')}
             </button>
           </div>
-          <p className="mt-1.5 flex gap-1.5 text-[11px] leading-relaxed text-text-tertiary">
+        ) : (
+          <p className="flex gap-1.5 text-[11px] leading-relaxed text-text-tertiary">
             <Info className="mt-[3px] h-3 w-3 shrink-0" />
-            <span>{t('dashboards.aiDesign.focusHint')}</span>
+            <span>{t('dashboards.aiDesign.pageHint', { page: pageName })}</span>
           </p>
-        </div>
-      ) : (
-        <div className="border-b border-[rgb(var(--border-line))] px-4 py-2.5">
-          <div
-            className="flex rounded-lg bg-surface-2 p-0.5"
-            role="radiogroup"
-            aria-label={t('dashboards.aiDesign.scopeLabel')}
-          >
-            {(['page', 'report'] as PresentationScope[]).map((value) => {
-              const active = scope === value;
-              return (
-                <button
-                  key={value}
-                  type="button"
-                  role="radio"
-                  aria-checked={active}
-                  onClick={() => onScopeChange(value)}
-                  title={value === 'page' ? pageName : undefined}
-                  className={`min-w-0 flex-1 truncate rounded-md px-2 py-1 text-[11px] font-[510] transition-colors ${
-                    active
-                      ? 'bg-surface-1 text-text-primary shadow-sm'
-                      : 'text-text-tertiary hover:text-text-secondary'
-                  }`}
-                >
-                  {value === 'page' ? t('dashboards.aiDesign.scopePage') : t('dashboards.aiDesign.scopeReport')}
-                </button>
-              );
-            })}
-          </div>
+        )}
+        {lockedCount > 0 && (
           <p className="mt-1.5 flex gap-1.5 text-[11px] leading-relaxed text-text-tertiary">
-            <Info className="mt-[3px] h-3 w-3 shrink-0" />
-            <span>
-              {scope === 'report'
-                ? t('dashboards.aiDesign.scopeReportWarning')
-                : t('dashboards.aiDesign.scopePageHint', { page: pageName })}
-            </span>
+            <Lock className="mt-[3px] h-3 w-3 shrink-0" />
+            <span>{t('dashboards.aiDesign.lockedHint', { count: lockedCount })}</span>
           </p>
-        </div>
-      )}
+        )}
+      </div>
 
       <div ref={scrollRef} className="min-h-0 flex-1 space-y-3.5 overflow-y-auto px-4 py-3.5">
         {turns.length === 0 && (
@@ -518,7 +490,7 @@ export function AiDesignPanel({
         )}
 
         {turns.map((turn, index) => (
-          <Turn key={`${turn.role}-${index}`} turn={turn} onRetryEntireReport={onRetryEntireReport} scope={scope} />
+          <Turn key={`${turn.role}-${index}`} turn={turn} />
         ))}
 
         {busy && (
@@ -546,6 +518,7 @@ export function AiDesignPanel({
             <button
               type="button"
               onClick={onDiscard}
+              data-testid="ai-design-discard"
               className="flex-1 rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-2 py-1.5 text-[12px] font-[510] text-text-secondary transition-colors hover:bg-surface-2 hover:text-text-primary"
             >
               {t('dashboards.aiDesign.discard')}
@@ -553,6 +526,7 @@ export function AiDesignPanel({
             <button
               type="button"
               onClick={onApply}
+              data-testid="ai-design-apply"
               className="inline-flex flex-1 items-center justify-center gap-1 rounded-md bg-brand px-2 py-1.5 text-[12px] font-[510] text-white transition-colors hover:bg-brand-hover"
             >
               <Check className="h-3 w-3" />
@@ -613,6 +587,7 @@ export function AiDesignPanel({
               }
             }}
             rows={2}
+            data-testid="ai-design-input"
             disabled={disabled}
             placeholder={t('dashboards.aiDesign.placeholder')}
             className="block w-full resize-none rounded-xl bg-transparent py-2.5 pl-9 pr-10 text-caption leading-relaxed text-text-primary outline-none placeholder:text-text-quaternary disabled:opacity-50"
@@ -638,6 +613,7 @@ export function AiDesignPanel({
           <button
             type="button"
             onClick={send}
+            data-testid="ai-design-send"
             disabled={disabled || (!draft.trim() && attached.length === 0)}
             aria-label={t('dashboards.aiDesign.send')}
             className="absolute bottom-2 right-2 inline-flex h-6 w-6 items-center justify-center rounded-md bg-brand text-white transition-colors hover:bg-brand-hover disabled:bg-surface-2 disabled:text-text-quaternary"

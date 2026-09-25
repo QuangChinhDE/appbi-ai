@@ -28,176 +28,162 @@ logger = logging.getLogger(__name__)
 # costs real money.
 MAX_PLAN_TOKENS = 3000
 
-SYSTEM_PROMPT = """You are the AppBI Presentation Designer.
+SYSTEM_PROMPT = """You are the AppBI Presentation Designer — a design copilot.
 
-Your task is to redesign the PRESENTATION of an existing dashboard using only \
-the capabilities explicitly supplied to you.
+The person who built this dashboard owns its content AND its layout. You change \
+how it LOOKS, and you move things only as far as they allowed.
 
-You are NOT a dashboard generator.
+You are NOT a dashboard generator. Every existing data visual is trusted and \
+must be preserved. Never delete, duplicate, replace or change the type of a \
+chart. Never change datasets, dimensions, measures, aggregations, filters, \
+queries, parameters or semantic bindings. Never move a visual to another page. \
+Never change what a slicer filters.
 
-The dashboard already contains trusted charts, metrics, data bindings, filters \
-and pages. You must preserve every existing data visual.
+PERMISSION. The input carries `permission.layer` — how much of the page the \
+user's own words handed over. You may answer with that layer or a SMALLER one, \
+never a larger one; anything beyond it is discarded by the client.
+- "style": appearance only. Return `themeIntent`, `tileStyles` and/or \
+  `slicerPresentation` (variant/style only — no dock). Do NOT return \
+  `sections` or `structure`. Not one visual moves or resizes. This is the \
+  default: "make it prettier / premium / modern / SaaS / dark / clean" is style.
+- "structure": the user asked for a specific arrangement ("KPIs on top", \
+  "make the trend bigger", "filters on the left"). Return \
+  `structure.operations` naming ONLY the visuals the request is about; \
+  everything else stays where the author put it. Do not return `sections`.
+- "redesign": the user handed over the page ("redesign for the CEO", \
+  "rearrange everything"). Return `sections` recomposing the page.
+If `permission.targets` is non-empty the user SELECTED those visuals: change only \
+them, and leave the report theme alone. Visuals with `locked: true` never move \
+at any layer — do not name them in operations or sections.
 
-Never delete, duplicate, replace or change the type of an existing data chart.
-Never change datasets, dimensions, measures, aggregations, filters, queries, \
-parameters or semantic bindings.
-Never move a visual to another page.
-Never change the meaning of a slicer.
+Use ONLY values in the supplied capability schema. Do not generate HTML, CSS or \
+React. Do not invent keys. Do not emit x/y/w/h — geometry is computed by code.
 
-You may only:
-- reorganize existing visuals;
-- assign presentation roles;
-- request supported grid compositions;
-- resize visuals;
-- change supported theme intents;
-- change supported per-tile presentation options;
-- change supported slicer presentation/layout;
-- suggest supported decorative elements.
+READ WHAT EACH VISUAL SAYS. `meaning` lists its measures, dimensions, whether it \
+is over time, its description and intent. Hierarchy follows meaning: the \
+headline business numbers first, the series that carries the argument (usually \
+the temporal one about the main measure) as the hero, compositions and \
+rankings as support, detail tables last. `readingOrder` is where the author \
+placed it — respect it unless the request is to rearrange.
 
-Use ONLY values contained in the supplied capability schema.
+A good report has one obvious hierarchy, a limited palette, consistent \
+spacing, intentional whitespace and compact controls. Not everything should be \
+a card: `tileFrame` "flush" lets a KPI or chart sit directly on the canvas, \
+"subtle" gives a quiet tinted panel without a border, "card" is the contained \
+tile. Premium/editorial/minimal looks usually mean flush KPIs and fewer borders; \
+dense operational looks keep cards. Commit to the look that was asked for.
 
-Do not generate HTML. Do not generate CSS. Do not generate React. Do not invent \
-capability keys. Do not emit x/y/w/h coordinates — the compiler decides \
-geometry from the roles and primitives you choose.
+Theme: pick a colorway whose `mode` matches a dark/light request, a template \
+whose `skin` is modern for a modern look, and the colorway whose `accent` is \
+closest to a named colour. For an exact brand colour also set \
+`themeIntent.accent` to the #RRGGBB; a second brand colour goes in \
+`dataColors`. Fonts: inter, roboto, dm-sans, jakarta, grotesk, serif, mono. \
+Choosing a template changes the look, never the layout.
 
-When a user's request cannot be represented by the provided capabilities, \
-choose the nearest supported presentation, and say so in `rationale`.
+Size to shape when you arrange: `aspect` "square" (gauge/pie/donut) wants a \
+compact slot, "wide" (line/bar/table) wants width, "tall" (funnel) wants height.
 
-Prefer strong visual hierarchy over decorating every element. A good report \
-normally has one obvious visual hierarchy, limited competing colours, \
-consistent spacing, intentional whitespace, clear primary and secondary \
-visuals, compact controls, readable KPI emphasis and predictable sections.
-
-When the user asks for a specific look, a named style, or a full redesign — \
-"make this a modern SaaS analytics report", "dark dashboard", "redesign like \
-this reference" — commit to it, do not merely nudge. Build the composition that \
-reads that way: put the headline numbers in a `kpi_strip`, give the argument one \
-large hero with a vertical rail of two or three secondary charts beside it using \
-the `hero_with_rail` primitive, and send tables to the bottom. Choose a \
-`themeIntent` that matches the words: a colorway whose `mode` is dark for a \
-dark or night look, a template whose `skin` is modern for a modern look, and \
-the colorway whose `accent` is closest to any colour they name (the \
-capabilities `theme.colorwayGuide` and `theme.templateGuide` give you the mode, \
-accent and skin of every option). When the user names a SPECIFIC colour — a hex \
-like "#1E3A8A" or a precise brand colour ("deep blue", "electric orange") — do \
-NOT settle for the nearest named colorway: still pick the closest colorway for \
-the data palette and surface, and ALSO set `themeIntent.accent` to the exact \
-`#RRGGBB` so the report shows the real colour, not an approximation. `accent` \
-must be a 6-digit hex or it is refused. When the user names TWO brand colours \
-("deep blue AND electric orange"), the first is the `accent` (KPIs, bars, \
-buttons) and BOTH go into `dataColors` as `#RRGGBB` so the chart series show the \
-pair — that is the only place a second colour lands. For a FONT, set `fontFamily` \
-to one of inter, roboto, dm-sans, jakarta, grotesk, serif, mono (map "Inter" or \
-"modern sans-serif" -> inter; "Georgia/serif" -> serif; "monospace" -> mono). \
-HONESTY: claim in `rationale` ONLY what you actually put in the plan; if the user \
-asks for something not expressible here (an unlisted font, a gradient, an image), \
-do NOT say you applied it — state briefly that it is not available. \
-A bold composition is still a restrained \
-one: commit to the arrangement, keep the hierarchy singular and the palette limited.
+HONESTY: claim in `rationale` only what the plan actually does. If the user \
+asks for something not expressible (an unlisted font, a gradient, an image, a \
+section header), say briefly it is not available. If a different chart TYPE or \
+metric would tell the story better, you may say so in `suggestions` — a list of \
+{"visual": id, "text": "..."} that is shown to the user and never applied. Never \
+state a finding about the data, quote a number, or claim something grew or fell.
 
 If a REFERENCE IMAGE is attached, read its COMPOSITION and SURFACE, never its \
-content. Take from it where the headline numbers sit, whether there is one hero \
-with a rail of smaller charts beside it, how dense the grid is, whether it is \
-dark or light, and its accent colour — and reproduce that ARRANGEMENT and MOOD \
-using THIS report's existing visuals. Do not copy the image's numbers, labels, \
-words, series or chart types; they belong to someone else's data. You are \
-matching how a report looks, not what it says. Map what you see to the supplied \
-primitives and theme options — an image can never justify a capability that is \
-not in the schema.
-
-Avoid making every card equally loud. Avoid unnecessary gradients. Avoid \
-excessive shadows. Avoid turning every element into a floating card.
-
-Size a chart to the shape it renders in — each visual carries an `aspect`:
-- `square` (a gauge, pie or donut) draws a circle that shrinks to the shorter \
-side, so a full-width band turns it into a dot in a field of whitespace. Give \
-it a COMPACT, roughly-square slot — put several across in a `three_equal`, a \
-`kpi_strip`, or a rail; never `full_width` or `table_full`.
-- `wide` (a line, time series, bar or table) needs horizontal room for its axis \
-or columns — give it a `full_width`, `two_one` lead, or the hero of a \
-`hero_with_rail`.
-- `tall` (a funnel) wants height, not width — a narrower column reads better \
-than a wide strip.
-Do NOT stretch a single square chart across the whole page.
-
-Preserve the user's existing information architecture unless their prompt \
-explicitly requests reorganization.
-
-Every visual in the snapshot must appear in exactly one section. Decorative \
-elements are only appropriate when the user asks for sections, a header or a \
-report-style layout — do not add them merely to rearrange. Decorative text must \
-be a structural heading; never state a finding about the data, never quote a \
-number, never claim something grew or fell.
-
-If the user asks to change a chart's TYPE, a metric, a filter's field, or \
-anything about the data, do not attempt it. Return the current arrangement \
-unchanged and explain in `rationale` that this belongs in the Chart Editor.
+content: where headline numbers sit, the density, dark or light, the accent. \
+Reproduce the MOOD with this report's visuals within the permission layer. Do \
+not copy the image's numbers, labels, words, series or chart types.
 
 Return only a valid PresentationPlan JSON object matching the supplied schema.
 """
 
 PLAN_SCHEMA_HINT: Dict[str, Any] = {
-    "scope": "page | report",
+    "layer": "style | structure | redesign  (never above permission.layer)",
     "direction": {
         "style": "executive | saas | editorial | operations | finance | minimal | presentation",
         "density": "compact | balanced | spacious",
     },
-    "sections": [
-        {
-            "primitive": "one of capabilities.composition.primitives",
-            "visuals": ["dashboardChartId, in the order they should appear"],
-            "title": "only for section_break",
-        }
-    ],
-    "visualPreferences": {
-        "<dashboardChartId>": {
-            "role": "one of capabilities.visual.roles",
-            "span": "one of capabilities.visual.spans",
-            "emphasis": "one of capabilities.visual.emphasis",
-        }
-    },
-    "slicerPresentation": {
-        "dock": "one of capabilities.slicer.docks",
-        "variant": "one of capabilities.slicer.variants",
-        "style": "one of capabilities.slicer.styles",
-    },
     "themeIntent": {
         "template": "one of capabilities.theme.templates",
         "colorway": "one of capabilities.theme.colorways",
-        "accent": "optional exact brand colour as #RRGGBB (overrides the colorway accent)",
-        "dataColors": "optional array of #RRGGBB for the chart series palette (home for a SECOND brand colour)",
-        "fontFamily": "optional report font: inter | roboto | dm-sans | jakarta | grotesk | serif | mono",
+        "accent": "optional exact brand colour as #RRGGBB",
+        "dataColors": "optional array of #RRGGBB for the chart series palette",
+        "fontFamily": "optional: inter | roboto | dm-sans | jakarta | grotesk | serif | mono",
         "mode": "light | dark",
+        "density": "compact | balanced | spacious",
+        "cardTreatment": "one of capabilities.theme.cardTreatments",
     },
-    "decorativeElements": [
-        {"widgetType": "section_header | callout | hero_strip", "text": "structural heading", "beforeSection": 0}
+    "tileStyles": {"<dashboardChartId>": {"<key from capabilities.tileStyle.allowedKeys>": "value from capabilities.tileStyle.values / ranges"}},
+    "slicerPresentation": {
+        "dock": "structure/redesign only — one of capabilities.slicer.docks",
+        "variant": "one of capabilities.slicer.variants",
+        "style": "one of capabilities.slicer.styles",
+    },
+    "structure": {
+        "operations": [
+            {"op": "one of capabilities.structure.operations", "visuals": ["dashboardChartId"], "size": "resize only: larger | smaller | full_width"}
+        ]
+    },
+    "sections": [
+        {"primitive": "redesign only — one of capabilities.composition.primitives", "visuals": ["dashboardChartId, in order"]}
     ],
-    "tileStyles": {"<dashboardChartId>": {"<key from capabilities.tileStyle.allowedKeys>": "value"}},
+    "visualPreferences": {
+        "<dashboardChartId>": {"role": "one of capabilities.visual.roles", "emphasis": "low | normal | high"}
+    },
+    "suggestions": [{"visual": "dashboardChartId", "text": "a non-presentation idea, shown not applied"}],
     "rationale": "one sentence on what you changed and why",
 }
 
 
 def _visual_digest(snapshot: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """The visual list, trimmed to what a composition decision needs.
+    """The visual list, trimmed to what a design decision needs.
 
-    The snapshot the client builds is already free of data-source detail; this
-    trims further, because every field sent is a field the model may try to
-    reason about. A planner that can see `styleCapabilities` for all 20 tiles
-    starts suggesting per-tile styling nobody asked for.
+    The client builds the snapshot and has already removed every data-source
+    detail (no SQL, dataset ids, rows). This keeps the fields a designer reads —
+    what the visual SAYS (`meaning`), where the author put it, whether it is
+    locked, what it currently wears — and drops the rest. Each `meaning` list is
+    capped so a 30-tile page stays a small prompt.
     """
     out: List[Dict[str, Any]] = []
     for visual in snapshot.get("visuals") or []:
         layout = visual.get("currentLayout") or {}
-        out.append({
+        meaning = visual.get("meaning") or {}
+        entry: Dict[str, Any] = {
             "id": visual.get("dashboardChartId"),
             "type": visual.get("chartType"),
             "title": visual.get("title"),
-            "currentRole": visual.get("displayRoleHint"),
+            "role": visual.get("displayRoleHint"),
             "isDecorative": bool(visual.get("isWidget")),
-            "currentSize": {"w": layout.get("w"), "h": layout.get("h")},
-            # The shape this chart renders best in — size it accordingly.
+            "readingOrder": visual.get("readingOrder"),
+            "position": {"x": layout.get("x"), "y": layout.get("y"), "w": layout.get("w"), "h": layout.get("h")},
+            "locked": bool(visual.get("locked")),
             "aspect": visual.get("renderAspect"),
-        })
+        }
+        compact_meaning: Dict[str, Any] = {}
+        measures = [m for m in (meaning.get("measures") or [])[:3] if isinstance(m, dict)]
+        if measures:
+            compact_meaning["measures"] = [
+                {k: v for k, v in m.items() if k in ("label", "agg", "format", "description") and v}
+                for m in measures
+            ]
+        dims = [d for d in (meaning.get("dimensions") or [])[:3] if isinstance(d, dict)]
+        if dims:
+            compact_meaning["dimensions"] = [
+                {k: v for k, v in d.items() if k in ("label", "temporal") and v} for d in dims
+            ]
+        for key in ("temporal", "hasBenchmark"):
+            if meaning.get(key):
+                compact_meaning[key] = True
+        for key in ("description", "intent", "goodDirection"):
+            if meaning.get(key):
+                compact_meaning[key] = str(meaning[key])[:200]
+        if compact_meaning:
+            entry["meaning"] = compact_meaning
+        style = visual.get("currentStyle") or {}
+        if style:
+            entry["currentStyle"] = style
+        out.append(entry)
     return out
 
 
@@ -207,7 +193,8 @@ def build_planner_prompt(
     user_prompt: str,
     conversation: Optional[List[Dict[str, str]]] = None,
     has_reference: bool = False,
-    focused_chart_id: Optional[int] = None,
+    granted_layer: str = "style",
+    target_ids: Optional[List[int]] = None,
 ) -> str:
     """Assemble the user-side message.
 
@@ -218,9 +205,13 @@ def build_planner_prompt(
     """
     dashboard = snapshot.get("dashboard") or {}
     page = snapshot.get("currentPage") or {}
+    layer = granted_layer if granted_layer in ("style", "structure", "redesign") else "style"
+    targets = [int(t) for t in (target_ids or []) if isinstance(t, (int, float, str)) and str(t).lstrip("-").isdigit()]
     payload = {
+        "permission": {"layer": layer, "targets": targets},
         "report": {
             "name": dashboard.get("name"),
+            "description": dashboard.get("description"),
             "pageCount": dashboard.get("pageCount"),
             "currentPage": page.get("name"),
         },
@@ -243,10 +234,11 @@ def build_planner_prompt(
         "TASK: return a PresentationPlan JSON object.",
         (
             'Your entire reply must be one JSON object whose top-level keys are '
-            'exactly: "scope", "direction", "sections", "visualPreferences", and '
-            'optionally "slicerPresentation", "themeIntent", "decorativeElements", '
-            '"tileStyles", "rationale". Do not echo the input. Do not wrap the '
-            'object in another object. Start your reply with {"scope":'
+            '"layer" and "direction", plus whichever of "themeIntent", '
+            '"tileStyles", "slicerPresentation", "structure", "sections", '
+            '"visualPreferences", "suggestions", "rationale" the layer allows. '
+            'Do not echo the input. Do not wrap the object in another object. '
+            'Start your reply with {"layer":'
         ),
         f"PLAN SCHEMA:\n{json.dumps(PLAN_SCHEMA_HINT, ensure_ascii=False)}\n",
     ]
@@ -274,33 +266,26 @@ def build_planner_prompt(
             "labels, words and chart types are another report's content, not this "
             "one's. Match the presentation, never the data.\n"
         )
-    if focused_chart_id is not None:
+    if targets:
         parts.append(
-            f"FOCUSED EDIT: the user clicked ONE visual — id {focused_chart_id} — "
-            "and wants to restyle only it. Return a plan whose `tileStyles` has an "
-            f"entry for {focused_chart_id} with the requested per-tile presentation "
-            "keys, and NOTHING else: no other tileStyles, no themeIntent, no "
-            "slicerPresentation, no decorativeElements. Sections/visualPreferences "
-            "may be omitted or minimal — the layout is not changing. Only keys in "
-            "capabilities.tileStyle.allowedKeys are permitted (they are visual "
-            "only; a data/semantic key is refused).\n"
-            "To change THIS chart's BACKGROUND / theme / make it dark or light — "
-            'for ANY chart type — set `chartSurface`: "dark" or "light". It repaints '
-            "the card and keeps the text, axis and grid readable. The `kpi*` keys "
-            "(kpiBackgroundMode, kpiAccentColor, kpiGradientBg, …) style a KPI card "
-            "ONLY and are ignored on a chart — never use them to darken a chart.\n"
-            "For colours, `palette` accepts ONLY these named sets: \"default\", "
-            '"vibrant", "classic", "monochrome", "pastel". Never invent a palette '
-            "name (e.g. \"emerald\", \"ocean\") — it is silently ignored. There is no "
-            "free per-series colour key, so a single-series chart cannot be recoloured "
-            "to an arbitrary colour; pick the closest named palette instead.\n"
+            f"SELECTION: the user selected visual(s) {targets}. Change ONLY those — "
+            "their tileStyles, or (if the layer allows) operations naming them. "
+            "No themeIntent, no slicerPresentation, nothing about other visuals.\n"
+        )
+    if layer == "style":
+        parts.append(
+            "PERMISSION IS STYLE: the layout is the author's and stays exactly as it is. "
+            "Answer with themeIntent / tileStyles / slicer look only.\n"
+            "To make one chart dark or light set `chartSurface`; to drop or soften its "
+            "container set `tileFrame` (card | subtle | flush). `palette` accepts only "
+            "the named sets in capabilities.tileStyle.values.palette.\n"
         )
     parts.append(f"THE USER ASKS:\n{user_prompt.strip()}\n")
     parts.append(
         "Now return the PresentationPlan. "
-        + ("" if focused_chart_id is not None
-           else "Every visual id in INPUT.visuals must appear in exactly one section. ")
-        + 'Begin with {"scope":'
+        + ("For a redesign, every unlocked visual id must appear in exactly one section. "
+           if layer == "redesign" else "")
+        + 'Begin with {"layer":'
     )
     return "\n".join(parts)
 
@@ -315,13 +300,19 @@ def _looks_like_a_plan(candidate: Any) -> bool:
     """
     if not isinstance(candidate, dict):
         return False
-    if "direction" not in candidate:
+    if "direction" not in candidate and "layer" not in candidate:
         return False
-    # A whole-page plan arranges tiles into `sections`; a focused single-chart
-    # restyle legitimately carries none and answers with `tileStyles` alone.
-    # Either shape counts as "the model answered" — the client's validator still
-    # decides whether the answer is legal.
-    return isinstance(candidate.get("sections"), list) or isinstance(candidate.get("tileStyles"), dict)
+    # A redesign arranges tiles into `sections`, a structure change answers with
+    # `structure`, and a style change legitimately carries only theme/tile/slicer
+    # look. Any of those counts as "the model answered" — the client's validator
+    # still decides whether the answer is legal.
+    return (
+        isinstance(candidate.get("sections"), list)
+        or isinstance(candidate.get("tileStyles"), dict)
+        or isinstance(candidate.get("themeIntent"), dict)
+        or isinstance(candidate.get("structure"), dict)
+        or isinstance(candidate.get("slicerPresentation"), dict)
+    )
 
 
 class PresentationPlanUnavailable(RuntimeError):
@@ -334,7 +325,8 @@ def plan_presentation(
     user_prompt: str,
     conversation: Optional[List[Dict[str, str]]] = None,
     images: Optional[List[str]] = None,
-    focused_chart_id: Optional[int] = None,
+    granted_layer: str = "style",
+    target_ids: Optional[List[int]] = None,
 ) -> Dict[str, Any]:
     """Return a PresentationPlan dict. Raises when no model answered.
 
@@ -353,7 +345,7 @@ def plan_presentation(
     clean_images = [img for img in (images or []) if isinstance(img, str) and img.strip()]
     prompt = build_planner_prompt(
         snapshot=snapshot, user_prompt=user_prompt, conversation=conversation,
-        has_reference=bool(clean_images), focused_chart_id=focused_chart_id,
+        has_reference=bool(clean_images), granted_layer=granted_layer, target_ids=target_ids,
     )
     result = LLMClient.complete_json_multimodal(
         prompt=prompt,
@@ -372,8 +364,8 @@ def plan_presentation(
         result = LLMClient.complete_json_multimodal(
             prompt=(
                 "Your previous reply was not a PresentationPlan — it repeated the input.\n"
-                'Reply with ONLY the plan object: {"scope": ..., "direction": {...}, '
-                '"sections": [...], "visualPreferences": {...}}.\n\n'
+                'Reply with ONLY the plan object: {"layer": ..., "direction": {...}, '
+                '...the keys your layer allows...}.\n\n'
                 + prompt
             ),
             system=SYSTEM_PROMPT,

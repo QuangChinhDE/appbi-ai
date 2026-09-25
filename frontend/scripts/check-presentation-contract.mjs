@@ -145,7 +145,7 @@ function makeSnapshot(tiles) {
 function planFor(tiles) {
   const kpis = tiles.filter((t) => t.chart.chart_type === 'KPI').map((t) => t.id);
   return {
-    scope: 'page',
+    layer: 'redesign',
     direction: { style: 'executive', density: 'balanced' },
     sections: [
       { primitive: 'kpi_strip', visuals: kpis },
@@ -154,10 +154,10 @@ function planFor(tiles) {
       { primitive: 'table_full', visuals: [108] },
     ],
     visualPreferences: {
-      105: { role: 'primary', span: 'large', emphasis: 'high' },
-      106: { role: 'breakdown', span: 'small', emphasis: 'normal' },
-      107: { role: 'secondary', span: 'full', emphasis: 'normal' },
-      108: { role: 'table', span: 'full', emphasis: 'low' },
+      105: { role: 'primary', emphasis: 'high' },
+      106: { role: 'breakdown', emphasis: 'normal' },
+      107: { role: 'secondary', emphasis: 'normal' },
+      108: { role: 'table', emphasis: 'low' },
     },
   };
 }
@@ -232,13 +232,23 @@ check('the rail primitive is advertised to the planner', () => {
 
 // ── Role inference ──────────────────────────────────────────────────────────
 
-check('role inference reads chart type and authored size', () => {
+check('role inference reads meaning first, geometry last', () => {
   const kpi = roles.inferPresentationRole({ chartType: 'KPI', widgetType: 'chart', w: 9, y: 0, gridColumns: COLS });
-  assertEqual(kpi, 'kpi', 'a narrow KPI is a strip KPI');
-  const headline = roles.inferPresentationRole({ chartType: 'KPI', widgetType: 'chart', w: 36, y: 0, gridColumns: COLS });
-  assertEqual(headline, 'headline', 'a full-width KPI at the top is the headline');
-  const trend = roles.inferPresentationRole({ chartType: 'LINE', widgetType: 'chart', w: 24, y: 2, gridColumns: COLS });
-  assertEqual(trend, 'primary', 'a wide trend carries the page');
+  assertEqual(kpi, 'kpi', 'a KPI is a KPI');
+  // Geometry no longer promotes a number to the headline: that was the layout
+  // re-confirming itself. The planner chooses a headline from meaning.
+  const wideKpi = roles.inferPresentationRole({ chartType: 'KPI', widgetType: 'chart', w: 36, y: 0, gridColumns: COLS });
+  assertEqual(wideKpi, 'kpi', 'a KPI was promoted by its width alone');
+  // A series over time carries the argument however narrow the author made it.
+  const narrowTrend = roles.inferPresentationRole({ chartType: 'LINE', widgetType: 'chart', w: 9, y: 20, gridColumns: COLS });
+  assertEqual(narrowTrend, 'primary', 'a narrow trend was demoted by its width');
+  const temporalBar = roles.inferPresentationRole({ chartType: 'BAR', widgetType: 'chart', w: 9, y: 20, gridColumns: COLS, temporal: true });
+  assertEqual(temporalBar, 'primary', 'a bar over time was not read as the argument');
+  const ranking = roles.inferPresentationRole({ chartType: 'BAR', widgetType: 'chart', w: 30, y: 0, gridColumns: COLS, intent: 'ranking' });
+  assertEqual(ranking, 'secondary', 'metadata intent did not outrank width');
+  // With no meaning to go on, the author's sizing is still evidence.
+  const wideBar = roles.inferPresentationRole({ chartType: 'BAR', widgetType: 'chart', w: 30, y: 0, gridColumns: COLS });
+  assertEqual(wideBar, 'primary', 'a wide bar with no other signal lost its prominence');
   const table = roles.inferPresentationRole({ chartType: 'TABLE', widgetType: 'chart', w: 36, y: 9, gridColumns: COLS });
   assertEqual(table, 'table', 'tables are detail');
 });
@@ -304,7 +314,7 @@ check('a KPI never gets a column count too narrow for its title', () => {
     }
     const ids = extra.map((t) => t.id);
     const plan = {
-      scope: 'page',
+      layer: 'redesign',
       direction: { style: 'executive', density: 'balanced' },
       sections: [{ primitive: 'kpi_strip', visuals: ids }],
       visualPreferences: {},
@@ -336,7 +346,7 @@ check('a chart never gets fewer than a third of the width', () => {
   const tiles = makeTiles();
   const charts = [105, 106, 107, 108];
   const plan = {
-    scope: 'page',
+    layer: 'redesign',
     direction: { style: 'saas', density: 'balanced' },
     sections: [{ primitive: 'two_equal', visuals: charts }], // declares 2, holds 4
     visualPreferences: {},
@@ -353,7 +363,7 @@ check('a primitive that fits its section is honoured, not capped', () => {
   // one. Capping everything at a third would erase intentional compositions.
   const tiles = makeTiles();
   const plan = {
-    scope: 'page',
+    layer: 'redesign',
     direction: { style: 'saas', density: 'balanced' },
     sections: [{ primitive: 'analysis_with_sidebar', visuals: [105, 106] }],
     visualPreferences: {},
@@ -366,13 +376,13 @@ check('a primitive that fits its section is honoured, not capped', () => {
 check('hero_with_rail stacks a vertical rail beside a full-height hero', () => {
   const tiles = makeTiles();
   const plan = {
-    scope: 'page',
+    layer: 'redesign',
     direction: { style: 'saas', density: 'balanced' },
     sections: [{ primitive: 'hero_with_rail', visuals: [105, 106, 107] }],
     visualPreferences: {
-      105: { role: 'primary', span: 'large', emphasis: 'high' },
-      106: { role: 'secondary', span: 'medium', emphasis: 'normal' },
-      107: { role: 'breakdown', span: 'small', emphasis: 'normal' },
+      105: { role: 'primary', emphasis: 'high' },
+      106: { role: 'secondary', emphasis: 'normal' },
+      107: { role: 'breakdown', emphasis: 'normal' },
     },
   };
   const { mutation } = compile(tiles, plan);
@@ -403,7 +413,7 @@ check('hero_with_rail keeps identity and semantics like any other primitive', ()
   const tiles = makeTiles();
   const before = snapshotMod.buildPresentationFingerprint(tiles);
   const plan = {
-    scope: 'page',
+    layer: 'redesign',
     direction: { style: 'saas', density: 'balanced' },
     sections: [
       { primitive: 'kpi_strip', visuals: [101, 102, 103, 104] },
@@ -411,9 +421,9 @@ check('hero_with_rail keeps identity and semantics like any other primitive', ()
       { primitive: 'table_full', visuals: [108] },
     ],
     visualPreferences: {
-      105: { role: 'primary', span: 'large', emphasis: 'high' },
-      106: { role: 'secondary', span: 'medium', emphasis: 'normal' },
-      107: { role: 'breakdown', span: 'small', emphasis: 'normal' },
+      105: { role: 'primary', emphasis: 'high' },
+      106: { role: 'secondary', emphasis: 'normal' },
+      107: { role: 'breakdown', emphasis: 'normal' },
     },
   };
   const { mutation, orphanIds } = compile(tiles, plan);
@@ -427,14 +437,14 @@ check('hero_with_rail degrades to something sane when it holds too few or too ma
   const tiles = makeTiles();
   // One visual: no rail to build, so it is simply full width.
   const single = compile(tiles, {
-    scope: 'page', direction: { style: 'saas', density: 'balanced' },
+    layer: 'redesign', direction: { style: 'saas', density: 'balanced' },
     sections: [{ primitive: 'hero_with_rail', visuals: [105] }], visualPreferences: {},
   });
   assertEqual(single.mutation.layoutOverrides[105].w, COLS, 'a lone hero was not made full width');
   // Six visuals: too many for a legible rail, so it falls back to a clean wall
   // rather than a column of slivers.
   const many = compile(tiles, {
-    scope: 'page', direction: { style: 'saas', density: 'balanced' },
+    layer: 'redesign', direction: { style: 'saas', density: 'balanced' },
     sections: [{ primitive: 'hero_with_rail', visuals: [101, 102, 103, 104, 105, 106] }], visualPreferences: {},
   });
   assertEqual(validator.findOverlaps(many.mutation.layoutOverrides), [], 'the oversized rail fell back into overlaps');
@@ -479,7 +489,7 @@ check('every primitive compiles without overlap or overflow', () => {
     const count = declared ? declared.length : 4;
     const visuals = tiles.slice(0, count).map((t) => t.id);
     const plan = {
-      scope: 'page',
+      layer: 'redesign',
       direction: { style: 'saas', density: 'balanced' },
       sections: [{ primitive, visuals }],
       visualPreferences: {},
@@ -504,7 +514,7 @@ check('KPIs asked for at half-page width are folded into a strip', () => {
   // two_equal pairs, each 18 columns wide and two rows tall.
   const tiles = makeTiles();
   const plan = {
-    scope: 'page',
+    layer: 'redesign',
     direction: { style: 'saas', density: 'balanced' },
     sections: [
       { primitive: 'two_equal', visuals: [101, 102] },
@@ -512,10 +522,10 @@ check('KPIs asked for at half-page width are folded into a strip', () => {
       { primitive: 'two_one', visuals: [105, 106] },
     ],
     visualPreferences: {
-      101: { role: 'kpi', span: 'small', emphasis: 'normal' },
-      102: { role: 'kpi', span: 'small', emphasis: 'normal' },
-      103: { role: 'kpi', span: 'small', emphasis: 'normal' },
-      104: { role: 'kpi', span: 'small', emphasis: 'normal' },
+      101: { role: 'kpi', emphasis: 'normal' },
+      102: { role: 'kpi', emphasis: 'normal' },
+      103: { role: 'kpi', emphasis: 'normal' },
+      104: { role: 'kpi', emphasis: 'normal' },
     },
   };
   const { mutation } = compile(tiles, plan);
@@ -533,12 +543,12 @@ check('a mixed section is left alone', () => {
   // deliberately beside a chart is a composition, not a mistake.
   const tiles = makeTiles();
   const plan = {
-    scope: 'page',
+    layer: 'redesign',
     direction: { style: 'saas', density: 'balanced' },
     sections: [{ primitive: 'two_equal', visuals: [101, 105] }],
     visualPreferences: {
-      101: { role: 'kpi', span: 'small', emphasis: 'normal' },
-      105: { role: 'primary', span: 'large', emphasis: 'high' },
+      101: { role: 'kpi', emphasis: 'normal' },
+      105: { role: 'primary', emphasis: 'high' },
     },
   };
   const { mutation } = compile(tiles, plan);
@@ -585,9 +595,9 @@ check('a gauge/funnel keeps chart height even when the role is a compact KPI', (
     const tiles = makeTiles();
     tiles[0].chart.chart_type = type; // 101 becomes a gauge/funnel
     const plan = {
-      scope: 'page', direction: { style: 'saas', density: 'balanced' },
+      layer: 'redesign', direction: { style: 'saas', density: 'balanced' },
       sections: [{ primitive: 'full_width', visuals: [101] }],
-      visualPreferences: { 101: { role: 'kpi', span: 'small', emphasis: 'normal' } },
+      visualPreferences: { 101: { role: 'kpi', emphasis: 'normal' } },
     };
     const { mutation } = compile(tiles, plan);
     const px = tileHeightPx(mutation.layoutOverrides[101].h);
@@ -601,11 +611,11 @@ check('no data visual compiles below the readable floor, at any density', () => 
   // every combination audited.
   const tiles = makeTiles();
   for (const density of ['compact', 'balanced', 'spacious']) {
-    for (const span of ['small', 'medium', 'large', 'full']) {
+    for (const span of ['low', 'normal', 'high']) {
       const prefs = {};
       for (const tile of tiles) prefs[tile.id] = { role: 'kpi', span, emphasis: 'low' };
       const plan = {
-        scope: 'page',
+        layer: 'redesign',
         direction: { style: 'minimal', density },
         sections: [{ primitive: 'full_width', visuals: [108] }],
         visualPreferences: prefs,
@@ -682,8 +692,8 @@ check('a style-only override (no x/y/w/h) is not rejected for phantom geometry',
   const tiles = makeTiles();
   const before = snapshotMod.buildPresentationFingerprint(tiles);
   const mutation = {
-    layoutOverrides: { 105: { styleConfigOverride: { lineWidth: 'thick', showGrid: false, showDots: true } } },
-    themePatch: {}, slicerClusterPatch: {}, createdWidgets: [], notes: [],
+    layoutOverrides: { 105: { styleConfigOverride: { lineWidth: 3, showGrid: false, showDots: true } } },
+    themePatch: {}, slicerClusterPatch: {}, notes: [], layer: 'redesign',
   };
   const after = snapshotMod.buildPresentationFingerprint(applyMutation(tiles, mutation));
   const result = validator.validatePresentationMutation({ before, after, mutation, pageId: 'page-1' });
@@ -696,7 +706,7 @@ check('a removed chart is caught', () => {
   const before = snapshotMod.buildPresentationFingerprint(tiles);
   const after = snapshotMod.buildPresentationFingerprint(tiles.filter((t) => t.id !== 106));
   const result = validator.validatePresentationMutation({
-    before, after, mutation: { layoutOverrides: {}, themePatch: {}, slicerClusterPatch: {}, createdWidgets: [], notes: [] },
+    before, after, mutation: { layoutOverrides: {}, themePatch: {}, slicerClusterPatch: {}, notes: [], layer: 'redesign' },
     pageId: 'page-1',
   });
   assert(!result.ok && !result.repairable, 'a missing chart was not a hard failure');
@@ -709,7 +719,7 @@ check('BAR becoming LINE is caught', () => {
   const mutated = tiles.map((t) => (t.id === 107 ? { ...t, chart: { ...t.chart, chart_type: 'LINE' } } : t));
   const after = snapshotMod.buildPresentationFingerprint(mutated);
   const result = validator.validatePresentationMutation({
-    before, after, mutation: { layoutOverrides: {}, themePatch: {}, slicerClusterPatch: {}, createdWidgets: [], notes: [] },
+    before, after, mutation: { layoutOverrides: {}, themePatch: {}, slicerClusterPatch: {}, notes: [], layer: 'redesign' },
     pageId: 'page-1',
   });
   assert(result.violations.some((v) => v.code === 'identity.chartType'), 'chart-type change slipped through');
@@ -723,7 +733,7 @@ check('a changed Top-N is caught even though it lives in styleConfigOverride', (
     : t));
   const after = snapshotMod.buildPresentationFingerprint(mutated);
   const result = validator.validatePresentationMutation({
-    before, after, mutation: { layoutOverrides: {}, themePatch: {}, slicerClusterPatch: {}, createdWidgets: [], notes: [] },
+    before, after, mutation: { layoutOverrides: {}, themePatch: {}, slicerClusterPatch: {}, notes: [], layer: 'redesign' },
     pageId: 'page-1',
   });
   assert(result.violations.some((v) => v.code === 'identity.semantics'), 'a row limit passed as a restyle');
@@ -737,7 +747,7 @@ check('a purely visual restyle is NOT flagged as semantic', () => {
     : t));
   const after = snapshotMod.buildPresentationFingerprint(mutated);
   const result = validator.validatePresentationMutation({
-    before, after, mutation: { layoutOverrides: {}, themePatch: {}, slicerClusterPatch: {}, createdWidgets: [], notes: [] },
+    before, after, mutation: { layoutOverrides: {}, themePatch: {}, slicerClusterPatch: {}, notes: [], layer: 'redesign' },
     pageId: 'page-1',
   });
   assert(result.ok, `a legitimate restyle was rejected: ${JSON.stringify(result.violations)}`);
@@ -748,7 +758,7 @@ check('moving a visual to another page is caught', () => {
   const before = snapshotMod.buildPresentationFingerprint(tiles);
   const mutation = {
     layoutOverrides: { 105: { x: 0, y: 0, w: 18, h: 4, pageId: 'page-2' } },
-    themePatch: {}, slicerClusterPatch: {}, createdWidgets: [], notes: [],
+    themePatch: {}, slicerClusterPatch: {}, notes: [], layer: 'redesign',
   };
   const after = snapshotMod.buildPresentationFingerprint(applyMutation(tiles, mutation));
   const result = validator.validatePresentationMutation({ before, after, mutation, pageId: 'page-1' });
@@ -807,21 +817,38 @@ check('a decorative caption may name a section but not state a finding', () => {
   assert(validator.looksLikeAFabricatedFinding('Best performing region'), 'a superlative passed');
 });
 
-check('a generated widget must be stamped and markup-free', () => {
-  const base = {
-    layoutOverrides: {}, themePatch: {}, slicerClusterPatch: {}, notes: [],
-  };
-  const unstamped = validator.validatePresentationMutation({
-    before: {}, after: {}, pageId: 'page-1',
-    mutation: { ...base, createdWidgets: [{ widgetType: 'section_header', widgetConfig: { title: 'Overview' }, layout: {} }] },
-  });
-  assert(unstamped.violations.some((v) => v.code === 'widget.provenance'), 'an unstamped widget was accepted');
+check('decorative widgets are not advertised, and asking for one is disclosed', () => {
+  // They were validated and then never created — a capability the model was
+  // offered that silently did nothing. Removed from the contract until real.
+  const schema = capabilities.buildCapabilitySchema();
+  assert(!('decorative' in schema), 'the schema still advertises decorative widgets');
+  assert(!('decorativeWidgets' in schema.capabilities), 'decorative widgets still listed as a capability');
+  const { plan, notes } = validator.coerceModelPlan(
+    { layer: 'redesign', direction: {}, sections: [], decorativeElements: [{ widgetType: 'section_header', text: 'Overview' }] },
+    { grantedLayer: 'redesign' },
+  );
+  assert(!('decorativeElements' in plan), 'a decorative element survived coercion');
+  assert(notes.some((n) => /section header/i.test(n)), 'the user was not told no header was created');
+});
 
-  const markup = validator.validatePresentationMutation({
-    before: {}, after: {}, pageId: 'page-1',
-    mutation: { ...base, createdWidgets: [{ widgetType: 'section_header', widgetConfig: { createdBy: 'ai-presentation', title: '<b>Overview</b>' }, layout: {} }] },
-  });
-  assert(markup.violations.some((v) => v.code === 'widget.markup'), 'markup reached a widget');
+check('span is no longer a lever, emphasis is — and it really changes height', () => {
+  const schema = capabilities.buildCapabilitySchema();
+  assert(!('spans' in schema.visual), 'the schema still offers span');
+  assert(!('allowedSpans' in (schema.grid ?? {})), 'the schema still offers allowedSpans');
+  const tiles = makeTiles();
+  const base = { layer: 'redesign', direction: { style: 'saas', density: 'balanced' }, sections: [{ primitive: 'full_width', visuals: [105] }] };
+  const low = compile(tiles, { ...base, visualPreferences: { 105: { role: 'primary', emphasis: 'low' } } }).mutation.layoutOverrides[105].h;
+  const high = compile(tiles, { ...base, visualPreferences: { 105: { role: 'primary', emphasis: 'high' } } }).mutation.layoutOverrides[105].h;
+  assert(high > low, `emphasis did not change height (low ${low}, high ${high})`);
+});
+
+check('section_break is read as what it did — full width — not as a heading', () => {
+  const { plan } = validator.coerceModelPlan(
+    { layer: 'redesign', direction: {}, sections: [{ primitive: 'section_break', visuals: [105], title: 'Trends' }] },
+    { grantedLayer: 'redesign' },
+  );
+  assertEqual(plan.sections[0].primitive, 'full_width', 'section_break was not mapped');
+  assert(!('title' in plan.sections[0]), 'a heading nobody renders survived');
 });
 
 check('geometry problems are repairable, semantic problems are not', () => {
@@ -829,7 +856,7 @@ check('geometry problems are repairable, semantic problems are not', () => {
     before: {}, after: {}, pageId: 'page-1',
     mutation: {
       layoutOverrides: { 1: { x: 30, y: 0, w: 12, h: 4 } }, // ends at column 42
-      themePatch: {}, slicerClusterPatch: {}, createdWidgets: [], notes: [],
+      themePatch: {}, slicerClusterPatch: {}, notes: [], layer: 'redesign',
     },
   });
   assert(!geometryOnly.ok, 'an overflowing tile was accepted');
@@ -838,15 +865,65 @@ check('geometry problems are repairable, semantic problems are not', () => {
 
 // ── Snapshot hygiene ────────────────────────────────────────────────────────
 
-check('the snapshot carries no data-source information', () => {
-  const tiles = makeTiles();
+check('the snapshot carries meaning as labels, never data-source identity', () => {
+  // The Design Context must say what a visual is ABOUT (measure/dimension
+  // labels, time, description) without exposing where the data comes from.
+  const tiles = makeTiles().map((t) => (t.id === 105
+    ? {
+        ...t,
+        chart: {
+          ...t.chart,
+          description: 'Monthly revenue',
+          config: {
+            roleConfig: {
+              dimension: 'orders.order_purchase_date',
+              metrics: [{ field: 'orders.total_revenue', agg: 'sum' }],
+              timeGrains: { 'orders.order_purchase_date': 'month' },
+            },
+            customSql: 'SELECT secret FROM warehouse',
+            semanticBinding: { datasetId: 111 },
+          },
+        },
+      }
+    : t));
   const snapshot = makeSnapshot(tiles);
   const serialized = JSON.stringify(snapshot);
-  for (const forbidden of ['dataset_id', 'datasetId', 'SELECT', 'config', 'measures', 'dimensions', 'payment_type']) {
+  for (const forbidden of ['dataset_id', 'datasetId', 'SELECT', 'secret', '"config"', 'payment_type', 'orders.total_revenue', 'orders.order_purchase_date']) {
     assert(!serialized.includes(forbidden), `the snapshot leaks "${forbidden}"`);
   }
+  const trend = snapshot.visuals.find((v) => v.dashboardChartId === 105);
+  assertEqual(trend.meaning.measures[0].label, 'Total revenue', 'the measure was not described');
+  assertEqual(trend.meaning.temporal, true, 'a time series was not recognised as temporal');
+  assertEqual(trend.meaning.description, 'Monthly revenue', 'the chart description was not carried');
   assertEqual(snapshot.visuals.length, tiles.length, 'snapshot lost a visual');
   assertEqual(snapshot.slicers[0].displayLabel, 'Payment Type', 'slicer label missing');
+});
+
+check('semantic labels from the dataset model win over humanised field names', () => {
+  const designContext = load('lib/dashboard-presentation/design-context.ts');
+  const index = designContext.buildFieldMetaIndex([[
+    { name: 'orders', dimensions: [{ name: 'created', label: 'Order date', type: 'date' }], measures: [{ name: 'gmv', label: 'GMV', format: { kind: 'currency' } }] },
+  ]]);
+  const meaning = designContext.buildVisualMeaning({
+    chart: { chart_type: 'BAR', config: { roleConfig: { dimension: 'orders.created', metrics: [{ field: 'orders.gmv', agg: 'sum' }] } } },
+    fieldMeta: index,
+  });
+  assertEqual(meaning.measures[0].label, 'GMV', 'the semantic label was not used');
+  assertEqual(meaning.measures[0].format, 'currency', 'the measure format was not carried');
+  assertEqual(meaning.dimensions[0].label, 'Order date', 'the dimension label was not used');
+  assertEqual(meaning.temporal, true, 'a date-typed dimension was not temporal');
+  // Graceful with nothing: an empty chart has an empty meaning, not an error.
+  const empty = designContext.buildVisualMeaning({ chart: null });
+  assertEqual(empty.measures, [], 'an empty chart produced measures');
+});
+
+check('the snapshot records reading order and locks', () => {
+  const tiles = makeTiles().map((t) => (t.id === 106 ? { ...t, layout: { ...t.layout, locked: true } } : t));
+  const snapshot = makeSnapshot(tiles);
+  const orders = snapshot.visuals.map((v) => v.readingOrder).sort((a, b) => a - b);
+  assertEqual(orders, tiles.map((_, i) => i + 1), 'reading order is not a permutation');
+  assertEqual(snapshot.visuals.find((v) => v.dashboardChartId === 101).readingOrder, 1, 'top-left is not first');
+  assertEqual(snapshot.visuals.find((v) => v.dashboardChartId === 106).locked, true, 'a lock was not reported');
 });
 
 check('the snapshot describes tiles at their rendered coordinates', () => {
@@ -953,9 +1030,11 @@ check('the four KPIs land on one row', () => {
 const executor = load('lib/dashboard-presentation/executor.ts');
 const diffMod = load('lib/dashboard-presentation/diff.ts');
 
-function buildFor(tiles, plan, theme = {}) {
+/** Whole-page build. These checks exercise recomposition, so an unlabelled
+ *  plan is a redesign; the layer checks below label theirs explicitly. */
+function buildFor(tiles, plan, theme = {}, targets = []) {
   return executor.buildPresentationMutation({
-    plan, snapshot: makeSnapshot(tiles), tiles, pageId: 'page-1', currentTheme: theme,
+    plan: { layer: 'redesign', ...plan }, snapshot: makeSnapshot(tiles), tiles, pageId: 'page-1', currentTheme: theme, targets,
   });
 }
 
@@ -967,12 +1046,12 @@ check('a focused restyle applies only that tile and survives a stray direction',
   const tiles = makeTiles();
   const built = executor.buildPresentationMutation({
     plan: {
-      scope: 'page',
+      layer: 'style',
       direction: { style: 'executive', density: 'spacious' },
-      tileStyles: { 105: { lineWidth: 'thick', showGrid: false, showDots: true } },
+      tileStyles: { 105: { lineWidth: 3, showGrid: false, showDots: true } },
       rationale: 'thicker line',
     },
-    snapshot: makeSnapshot(tiles), tiles, pageId: 'page-1', currentTheme: {}, focusedChartId: 105,
+    snapshot: makeSnapshot(tiles), tiles, pageId: 'page-1', currentTheme: {}, targets: [105],
   });
   assert(built.ok, `focused restyle was refused: ${JSON.stringify(built.mutationValidation?.violations)}`);
   const ids = Object.keys(built.mutation.layoutOverrides);
@@ -984,28 +1063,28 @@ check('a focused restyle applies only that tile and survives a stray direction',
   assert(Object.keys(built.mutation.themePatch).length === 0, 'focused restyle leaked a theme patch');
 });
 
-check('a focused restyle cannot smuggle a data-semantic key', () => {
-  // resolveTileStyles drops anything off the allow-list, so a plan that tries a
-  // data key (Top-N) produces an empty no-op mutation, never a data change.
+check('a selected-visual restyle cannot smuggle a data-semantic key', () => {
+  // The plan is refused whole (plan.styleKey) and nothing is written.
   const tiles = makeTiles();
   const built = executor.buildPresentationMutation({
     plan: {
-      scope: 'page', direction: { style: 'executive', density: 'spacious' },
+      layer: 'style', direction: { style: 'executive', density: 'spacious' },
       tileStyles: { 105: { dataLimit: 5 } }, rationale: 'sneaky',
     },
-    snapshot: makeSnapshot(tiles), tiles, pageId: 'page-1', currentTheme: {}, focusedChartId: 105,
+    snapshot: makeSnapshot(tiles), tiles, pageId: 'page-1', currentTheme: {}, targets: [105],
   });
-  assertEqual(Object.keys(built.mutation.layoutOverrides).length, 0, 'a data key survived a focused restyle');
+  assertEqual(Object.keys(built.mutation.layoutOverrides).length, 0, 'a data key survived a restyle');
+  assert(!built.ok, 'a plan carrying a row limit was accepted');
 });
 
 check('chartSurface repaints any chart type via a focused restyle', () => {
   const tiles = makeTiles(); // 105 is a LINE chart
   const built = executor.buildPresentationMutation({
     plan: {
-      scope: 'page', direction: { style: 'executive', density: 'spacious' },
+      layer: 'style', direction: { style: 'executive', density: 'spacious' },
       tileStyles: { 105: { chartSurface: 'dark' } }, rationale: 'dark chart',
     },
-    snapshot: makeSnapshot(tiles), tiles, pageId: 'page-1', currentTheme: {}, focusedChartId: 105,
+    snapshot: makeSnapshot(tiles), tiles, pageId: 'page-1', currentTheme: {}, targets: [105],
   });
   assert(built.ok, `chartSurface restyle refused: ${JSON.stringify(built.mutationValidation?.violations)}`);
   assertEqual(built.mutation.layoutOverrides[105].styleConfigOverride.chartSurface, 'dark', 'chartSurface was dropped');
@@ -1014,15 +1093,15 @@ check('chartSurface repaints any chart type via a focused restyle', () => {
 check('a KPI-only key is dropped on a chart but kept on a KPI', () => {
   const tiles = makeTiles(); // 105 LINE, 101 KPI
   const onChart = executor.buildPresentationMutation({
-    plan: { scope: 'page', direction: { style: 'x', density: 'y' }, tileStyles: { 105: { kpiBackgroundMode: 'dark' } }, rationale: 'r' },
-    snapshot: makeSnapshot(tiles), tiles, pageId: 'page-1', currentTheme: {}, focusedChartId: 105,
+    plan: { layer: 'style', direction: { style: 'x', density: 'y' }, tileStyles: { 105: { kpiBackgroundMode: 'accent' } }, rationale: 'r' },
+    snapshot: makeSnapshot(tiles), tiles, pageId: 'page-1', currentTheme: {}, targets: [105],
   });
   assertEqual(Object.keys(onChart.mutation.layoutOverrides).length, 0, 'a kpi-only key rendered on a chart');
   const onKpi = executor.buildPresentationMutation({
-    plan: { scope: 'page', direction: { style: 'x', density: 'y' }, tileStyles: { 101: { kpiBackgroundMode: 'dark' } }, rationale: 'r' },
-    snapshot: makeSnapshot(tiles), tiles, pageId: 'page-1', currentTheme: {}, focusedChartId: 101,
+    plan: { layer: 'style', direction: { style: 'x', density: 'y' }, tileStyles: { 101: { kpiBackgroundMode: 'accent' } }, rationale: 'r' },
+    snapshot: makeSnapshot(tiles), tiles, pageId: 'page-1', currentTheme: {}, targets: [101],
   });
-  assertEqual(onKpi.mutation.layoutOverrides[101].styleConfigOverride.kpiBackgroundMode, 'dark', 'a kpi key was dropped from a KPI');
+  assertEqual(onKpi.mutation.layoutOverrides[101].styleConfigOverride.kpiBackgroundMode, 'accent', 'a kpi key was dropped from a KPI');
 });
 
 check('a report theme change resets per-tile colour but keeps non-colour styles', () => {
@@ -1030,11 +1109,11 @@ check('a report theme change resets per-tile colour but keeps non-colour styles'
   // theme change must clear the colour (so the new theme shows) but keep the
   // line width (not a colour, not the theme's business).
   const tiles = makeTiles().map((t) => (t.id === 101
-    ? { ...t, layout: { ...t.layout, styleConfigOverride: { kpiAccentColor: 'blue', lineWidth: 'thick' } } }
+    ? { ...t, layout: { ...t.layout, styleConfigOverride: { kpiAccentColor: 'blue', lineWidth: 3 } } }
     : t));
   const built = executor.buildPresentationMutation({
     plan: {
-      scope: 'report',
+      layer: 'redesign',
       direction: { style: 'saas', density: 'balanced' },
       sections: [{ primitive: 'kpi_strip', visuals: [101, 102, 103, 104] }, { primitive: 'full_width', visuals: [105] }],
       visualPreferences: {},
@@ -1046,17 +1125,17 @@ check('a report theme change resets per-tile colour but keeps non-colour styles'
   const ov = built.mutation.layoutOverrides[101]?.styleConfigOverride ?? {};
   // The KPI's own colour follows the new theme accent (not blanked to plain text).
   assertEqual(ov.kpiAccentColor, '#1E3A8A', 'a KPI colour did not follow the new theme accent');
-  assertEqual(ov.lineWidth, 'thick', 'a non-colour per-tile style was wrongly cleared');
+  assertEqual(ov.lineWidth, 3, 'a non-colour per-tile style was wrongly cleared');
   assert(Object.keys(built.mutation.themePatch).length > 0, 'the theme patch was not written');
 });
 
 check('a mode/surface per-tile key is reset (not re-pointed) by a report theme change', () => {
   const tiles = makeTiles().map((t) => (t.id === 105
-    ? { ...t, layout: { ...t.layout, styleConfigOverride: { chartSurface: 'dark', lineWidth: 'thick' } } }
+    ? { ...t, layout: { ...t.layout, styleConfigOverride: { chartSurface: 'dark', lineWidth: 3 } } }
     : t));
   const built = executor.buildPresentationMutation({
     plan: {
-      scope: 'report', direction: { style: 'saas', density: 'balanced' },
+      layer: 'redesign', direction: { style: 'saas', density: 'balanced' },
       sections: [{ primitive: 'kpi_strip', visuals: [101, 102, 103, 104] }, { primitive: 'full_width', visuals: [105] }],
       visualPreferences: {}, themeIntent: { colorway: 'indigo', accent: '#1E3A8A' }, rationale: 'deep blue',
     },
@@ -1064,7 +1143,7 @@ check('a mode/surface per-tile key is reset (not re-pointed) by a report theme c
   });
   const ov = built.mutation.layoutOverrides[105]?.styleConfigOverride ?? {};
   assert(!('chartSurface' in ov), 'a per-tile surface survived a report theme change');
-  assertEqual(ov.lineWidth, 'thick', 'a non-colour per-tile style was wrongly cleared');
+  assertEqual(ov.lineWidth, 3, 'a non-colour per-tile style was wrongly cleared');
 });
 
 check('a page-scoped or layout-only redesign never clears per-tile colour', () => {
@@ -1074,7 +1153,7 @@ check('a page-scoped or layout-only redesign never clears per-tile colour', () =
   // Report scope but NO themeIntent → not a theme change → colour is kept.
   const built = executor.buildPresentationMutation({
     plan: {
-      scope: 'report', direction: { style: 'saas', density: 'balanced' },
+      layer: 'redesign', direction: { style: 'saas', density: 'balanced' },
       sections: [{ primitive: 'kpi_strip', visuals: [101, 102, 103, 104] }, { primitive: 'full_width', visuals: [105] }],
       visualPreferences: {}, rationale: 'layout only',
     },
@@ -1115,8 +1194,8 @@ check('an unshipped font and non-hex palette entries are dropped', () => {
   assertEqual(patch.dataColors, ['#1E3A8A'], 'a non-hex palette entry survived');
   // And coerce discloses the dropped font rather than hard-failing.
   const { plan, notes } = validator.coerceModelPlan(
-    { scope: 'report', direction: { style: 'x', density: 'y' }, sections: [], themeIntent: { fontFamily: 'comic sans' } },
-    { scope: 'report' },
+    { layer: 'redesign', direction: { style: 'x', density: 'y' }, sections: [], themeIntent: { fontFamily: 'comic sans' } },
+    { grantedLayer: 'redesign' },
   );
   assert(!(plan.themeIntent && 'fontFamily' in plan.themeIntent), 'an unshipped font survived coercion');
   assert(notes.some((n) => /font/i.test(n)), 'the dropped font was not disclosed');
@@ -1124,8 +1203,8 @@ check('an unshipped font and non-hex palette entries are dropped', () => {
 
 check('an invalid accent is dropped with a note, not hard-failed', () => {
   const { plan, notes } = validator.coerceModelPlan(
-    { scope: 'report', direction: { style: 'x', density: 'y' }, sections: [], themeIntent: { colorway: 'indigo', accent: 'deep blue' } },
-    { scope: 'report' },
+    { layer: 'redesign', direction: { style: 'x', density: 'y' }, sections: [], themeIntent: { colorway: 'indigo', accent: 'deep blue' } },
+    { grantedLayer: 'redesign' },
   );
   assert(!(plan.themeIntent && 'accent' in plan.themeIntent), 'a non-hex accent survived coercion');
   assert(notes.some((n) => /#RRGGBB|colour/.test(n)), 'the dropped accent was not disclosed');
@@ -1139,11 +1218,11 @@ check('a focused restyle is reported as restyled only, never moved or resized', 
   const tiles = makeTiles();
   const built = executor.buildPresentationMutation({
     plan: {
-      scope: 'page', direction: { style: 'executive', density: 'spacious' },
-      tileStyles: { 105: { lineWidth: 'thick', showGrid: false, showDots: true } },
+      layer: 'redesign', direction: { style: 'executive', density: 'spacious' },
+      tileStyles: { 105: { lineWidth: 3, showGrid: false, showDots: true } },
       rationale: 'thicker line',
     },
-    snapshot: makeSnapshot(tiles), tiles, pageId: 'page-1', currentTheme: {}, focusedChartId: 105,
+    snapshot: makeSnapshot(tiles), tiles, pageId: 'page-1', currentTheme: {}, targets: [105],
   });
   const diff = diffMod.diffPresentation(tiles, built.mutation);
   assertEqual(diff.moved, [], 'a pure restyle was counted as a move');
@@ -1156,7 +1235,7 @@ check('a focused restyle is reported as restyled only, never moved or resized', 
  *  the model chose for itself, empty section titles. Kept as-is so the boundary
  *  is tested against what happens, not against what the schema says. */
 const REAL_MODEL_REPLY = {
-  scope: 'report',
+  layer: 'redesign',
   direction: { style: 'executive', density: 'balanced' },
   sections: [
     { primitive: 'kpi_strip', visuals: ['101', '102', '103', '104'], title: '' },
@@ -1165,8 +1244,8 @@ const REAL_MODEL_REPLY = {
     { primitive: 'two_equal', visuals: ['106', '107'], title: '' },
   ],
   visualPreferences: {
-    101: { role: 'kpi', span: 'small', emphasis: 'normal' },
-    105: { role: 'primary', span: 'large', emphasis: 'high' },
+    101: { role: 'kpi', emphasis: 'normal' },
+    105: { role: 'primary', emphasis: 'high' },
   },
   themeIntent: { template: 'brief', colorway: 'slate' },
   rationale: 'Executive layout.',
@@ -1174,7 +1253,7 @@ const REAL_MODEL_REPLY = {
 
 check('string visual ids from a model are accepted, not read as hallucinations', () => {
   const tiles = makeTiles();
-  const { plan } = validator.coerceModelPlan(REAL_MODEL_REPLY, { scope: 'page' });
+  const { plan } = validator.coerceModelPlan(REAL_MODEL_REPLY, { grantedLayer: 'redesign' });
   for (const section of plan.sections) {
     for (const id of section.visuals) {
       assertEqual(typeof id, 'number', 'a visual id survived as a string');
@@ -1190,7 +1269,7 @@ check('a composition style used as a template name is translated, not refused', 
   // and a good layout was thrown away over the name.
   const tiles = makeTiles();
   const reply = { ...REAL_MODEL_REPLY, themeIntent: { template: 'saas', colorway: 'slate' } };
-  const { plan, notes } = validator.coerceModelPlan(reply, { scope: 'report' });
+  const { plan, notes } = validator.coerceModelPlan(reply, { grantedLayer: 'redesign' });
   assertEqual(plan.themeIntent.template, 'console', '"saas" was not read as the console template');
   assert(notes.some((n) => /saas/.test(n)), 'the translation was not disclosed');
   const result = validator.validatePresentationPlan(plan, tiles.map((t) => t.id));
@@ -1200,7 +1279,7 @@ check('a composition style used as a template name is translated, not refused', 
 check('an unrecognisable theme name is dropped, not fatal', () => {
   const tiles = makeTiles();
   const reply = { ...REAL_MODEL_REPLY, themeIntent: { template: 'cyberpunk', colorway: 'neon' } };
-  const { plan, notes } = validator.coerceModelPlan(reply, { scope: 'report' });
+  const { plan, notes } = validator.coerceModelPlan(reply, { grantedLayer: 'redesign' });
   assertEqual(plan.themeIntent, undefined, 'an invented theme survived coercion');
   assertEqual(notes.length, 2, 'the user was not told both names were dropped');
   const result = validator.validatePresentationPlan(plan, tiles.map((t) => t.id));
@@ -1211,41 +1290,44 @@ check('a semantic violation is still fatal after coercion', () => {
   // Leniency about cosmetic names must not have softened the real gate.
   const tiles = makeTiles();
   const reply = { ...REAL_MODEL_REPLY, tileStyles: { 105: { dataLimit: 5 } } };
-  const { plan } = validator.coerceModelPlan(reply, { scope: 'page' });
+  const { plan } = validator.coerceModelPlan(reply, { grantedLayer: 'redesign' });
   const result = validator.validatePresentationPlan(plan, tiles.map((t) => t.id));
   assert(!result.ok && !result.repairable, 'a row limit survived the softened boundary');
 });
 
-check('the panel decides LAYOUT scope, not the model', () => {
-  // The reply above asks for 'report'. The user chose this page; the scope the
-  // model wanted is imposed back to the panel's choice for LAYOUT reach. (Theme
-  // is report-wide by nature and applies whenever requested — see below.)
-  const { plan } = validator.coerceModelPlan(REAL_MODEL_REPLY, { scope: 'page' });
-  assertEqual(plan.scope, 'page', 'the model widened its own blast radius');
+check("the user's words decide the layer, not the model", () => {
+  // The model asks to recompose; the user only asked for a look. The plan is
+  // clamped to style: its sections are removed, the user is told, and the rest
+  // (the theme) still applies.
+  const { plan, notes } = validator.coerceModelPlan({ ...REAL_MODEL_REPLY, layer: 'redesign' }, { grantedLayer: 'style' });
+  assertEqual(plan.layer, 'style', 'the model widened its own permission');
+  assertEqual(plan.sections, [], 'a style plan kept a recomposition');
+  assert(plan.themeIntent && plan.themeIntent.template === 'brief', 'the look was lost with the layout');
+  assert(notes.some((n) => /layout/i.test(n)), 'the clamp was not disclosed');
+  // A model may always ask for LESS than was granted.
+  const lower = validator.coerceModelPlan({ layer: 'style', direction: {} }, { grantedLayer: 'redesign' });
+  assertEqual(lower.plan.layer, 'style', 'a narrower answer was widened');
 });
 
 check('a real model reply compiles to a clean page', () => {
   const tiles = makeTiles();
-  const { plan } = validator.coerceModelPlan(REAL_MODEL_REPLY, { scope: 'page' });
+  const { plan } = validator.coerceModelPlan(REAL_MODEL_REPLY, { grantedLayer: 'redesign' });
   const result = buildFor(tiles, plan);
   assert(result.ok, `the reply did not survive the contract: ${JSON.stringify(result.mutationValidation.violations)}`);
   assertEqual(validator.findOverlaps(result.mutation.layoutOverrides), [], 'overlaps');
   assertEqual(Object.keys(result.mutation.layoutOverrides).length, tiles.length, 'a visual was lost');
 });
 
-check('an echoed prompt is refused rather than compiled', () => {
+check('an echoed prompt changes nothing — it is not a request to re-pack', () => {
   // The planner's first deployed reply was the input payload echoed back. The
-  // server now catches that, but the client must not depend on it.
+  // old compiler read "no sections" as "append everything two per row" and
+  // rearranged the page. An empty plan is a no-op, even at redesign.
   const tiles = makeTiles();
   const echoed = { report: {}, visuals: [], capabilities: {}, planSchema: {} };
-  const { plan } = validator.coerceModelPlan(echoed, { scope: 'page' });
+  const { plan } = validator.coerceModelPlan(echoed, { grantedLayer: 'redesign' });
   const result = buildFor(tiles, plan);
   const diff = diffMod.diffPresentation(tiles, result.mutation);
-  // No sections means nothing was asked for; every visual is appended in
-  // reading order rather than the page being silently emptied.
-  assertEqual(Object.keys(result.mutation.layoutOverrides).length, tiles.length, 'an empty plan lost visuals');
-  assert(result.mutation.notes.some((n) => /not placed/.test(n)), 'the user was not warned the plan was empty');
-  void diff;
+  assert(diffMod.isEmptyDiff(diff), `an empty plan moved things: ${JSON.stringify(diff)}`);
 });
 
 // ── Executor: scope, baseline and the single write path ─────────────────────
@@ -1254,7 +1336,8 @@ check('theme applies whenever requested; a layout-only redesign writes no theme'
   const tiles = makeTiles();
   // Theme is a report-level property, so a theme intent applies report-wide the
   // moment it is asked for — even on page scope. No deferral, no "switch scope".
-  const themed = buildFor(tiles, { ...planFor(tiles), scope: 'page', themeIntent: { template: 'ops', colorway: 'slate' } });
+  const themed = buildFor(tiles, { ...planFor(tiles), themeIntent: { template: 'ops', colorway: 'slate' } });
+  assert(themed.ok, `a themed redesign was refused: ${JSON.stringify(themed.mutationValidation.violations)}`);
   assert(Object.keys(themed.mutation.themePatch).length > 0, 'a requested theme was deferred instead of applied');
   assert(!themed.mutation.notes.some((n) => /Entire report/i.test(n)), 'a stale "switch scope" note was emitted');
   // But a redesign that asked for NO theme (planFor carries none) must never
@@ -1265,7 +1348,7 @@ check('theme applies whenever requested; a layout-only redesign writes no theme'
 
 check('a report-scoped redesign writes theme keys from the catalog', () => {
   const tiles = makeTiles();
-  const plan = { ...planFor(tiles), scope: 'report', themeIntent: { template: 'ops', colorway: 'slate' } };
+  const plan = { ...planFor(tiles), layer: 'redesign', themeIntent: { template: 'ops', colorway: 'slate' } };
   const result = buildFor(tiles, plan);
   // The whole build must SURVIVE validation — a template switch clears the
   // inline legacy-look keys (cardShadow, titleFontSize, …) by setting them to
@@ -1288,12 +1371,12 @@ check('clearing a legacy-look key is allowed; setting a bad key is not', () => {
   const before = snapshotMod.buildPresentationFingerprint(makeTiles());
   const okClear = validator.validatePresentationMutation({
     before, after: before, pageId: 'page-1',
-    mutation: { layoutOverrides: {}, themePatch: { cardShadow: undefined, titleFontSize: undefined, accent: '#325ac2' }, slicerClusterPatch: {}, createdWidgets: [], notes: [] },
+    mutation: { layoutOverrides: {}, themePatch: { cardShadow: undefined, titleFontSize: undefined, accent: '#325ac2' }, slicerClusterPatch: {}, notes: [], layer: 'redesign' },
   });
   assert(okClear.ok, `clearing legacy keys was refused: ${JSON.stringify(okClear.violations)}`);
   const badSet = validator.validatePresentationMutation({
     before, after: before, pageId: 'page-1',
-    mutation: { layoutOverrides: {}, themePatch: { cardShadow: '0 4px 20px red' }, slicerClusterPatch: {}, createdWidgets: [], notes: [] },
+    mutation: { layoutOverrides: {}, themePatch: { cardShadow: '0 4px 20px red' }, slicerClusterPatch: {}, notes: [], layer: 'redesign' },
   });
   assert(badSet.violations.some((v) => v.code === 'theme.key'), 'a real value for a disallowed key slipped through');
 });
@@ -1309,7 +1392,7 @@ check('a theme patch cannot carry a key outside the catalog allow-list', () => {
 
 check('a dock change writes the field the renderer actually reads', () => {
   const tiles = makeTiles();
-  const plan = { ...planFor(tiles), scope: 'report', slicerPresentation: { dock: 'left', variant: 'compact' } };
+  const plan = { ...planFor(tiles), layer: 'redesign', slicerPresentation: { dock: 'left', variant: 'compact' } };
   const result = buildFor(tiles, plan);
   // slicer_cluster_layout.position outranks theme.filterDock — writing only the
   // theme key would look like the dock change did nothing.
@@ -1559,6 +1642,553 @@ if (!real) {
     }
   });
 }
+
+// ══ AI Design v2 — the permission contract ══════════════════════════════════
+//
+// These are the proofs the product promise rests on: the author owns the
+// layout; AI changes only what the user's words (and selection) hand over;
+// locks hold on every path; semantics never move; preview is what Apply writes.
+
+const intentMod = load('lib/dashboard-presentation/intent.ts');
+const structureMod = load('lib/dashboard-presentation/structure.ts');
+const tileFrameMod = load('lib/dashboard-presentation/tile-frame.ts');
+const renderAudit = load('lib/dashboard-presentation/render-audit.ts');
+
+/** Every tile's rendered rectangle, keyed by id. */
+function rectsById(tiles) {
+  const out = {};
+  for (const t of tiles) {
+    const l = pages.scaleGridLayoutForRender(t.layout);
+    out[t.id] = { x: l.x, y: l.y, w: l.w, h: l.h };
+  }
+  return out;
+}
+
+function build(tiles, plan, extra = {}) {
+  return executor.buildPresentationMutation({
+    plan, snapshot: makeSnapshot(tiles), tiles, pageId: 'page-1', currentTheme: {}, ...extra,
+  });
+}
+
+/** A whole-page style request as a model actually answers it. */
+const STYLE_REPLY = {
+  layer: 'style',
+  direction: { style: 'saas', density: 'balanced' },
+  themeIntent: { template: 'console', colorway: 'graphite', fontFamily: 'inter' },
+  tileStyles: {
+    101: { tileFrame: 'flush', kpiValueFontSize: 36 },
+    102: { tileFrame: 'flush' },
+    105: { chartSurface: 'dark', lineWidth: 3 },
+    108: { tileFrame: 'subtle' },
+  },
+  slicerPresentation: { style: 'pill' },
+  rationale: 'Premium dark SaaS look, layout unchanged.',
+};
+
+// ── Intent → permission ─────────────────────────────────────────────────────
+
+check('the user\'s words grant the layer; ambiguity is style', () => {
+  const cases = [
+    // — style: looks, brands, moods; nouns alone grant nothing —
+    ['Make this dashboard prettier', 'style'],
+    ['Làm dashboard này đẹp hơn', 'style'],
+    ['Make it more premium, like an enterprise SaaS', 'style'],
+    ['Đổi sang style tối giản', 'style'],
+    ['dark mode please', 'style'],
+    ['Apply our brand colours #1E3A8A', 'style'],
+    ['Make the layout feel cleaner and more modern', 'style'],
+    ['I want a calmer layout', 'style'],
+    ['Bố cục trông rối quá, làm cho sạch sẽ hơn', 'style'],
+    ['Cho bố cục nhìn chuyên nghiệp hơn', 'style'],
+    ['Make the title font bigger', 'style'],
+    ['Tăng cỡ chữ tiêu đề', 'style'],
+    ['make it bigger', 'style'],                  // no selection → "it" names nothing
+    ['Cho nó tối hơn một chút', 'style'],
+    // — negation and "keep" win, including multi-intent sentences —
+    ['Giữ nguyên bố cục, làm cho sang hơn', 'style'],
+    ['keep the layout but make it modern', 'style'],
+    ['Rearrange it to look nicer but don\'t move anything', 'style'],
+    ['No need to rearrange, just make it dark', 'style'],
+    ['Không cần sắp xếp lại, chỉ đổi màu', 'style'],
+    ['Đừng di chuyển chart nào, làm đẹp hơn thôi', 'style'],
+    ['Chỉ đổi màu thôi', 'style'],
+    ['Make it dark without moving the charts', 'style'],
+    // — structure: a move/size verb AND something to move —
+    ['Gom KPI lên trên', 'structure'],
+    ['Put the KPIs on top', 'structure'],
+    ['Make the revenue chart bigger', 'structure'],
+    ['Đưa filter sang trái', 'structure'],
+    ['Cho Revenue làm chart chính', 'structure'],
+    ['move the table to the bottom', 'structure'],
+    ['Make it dark and put the KPIs in one row at the top', 'structure'],
+    ['Làm biểu đồ doanh thu to hơn', 'structure'],
+    ['Đặt hai biểu đồ cạnh nhau', 'structure'],
+    ['sắp xếp KPI lên trên cùng', 'structure'],
+    // — redesign: an explicit request to rebuild or rearrange the page —
+    ['Sắp xếp lại cho đẹp hơn', 'redesign'],
+    ['rearrange this page', 'redesign'],
+    ['Redesign this page for the CEO', 'redesign'],
+    ['Thiết kế lại trang này cho CEO', 'redesign'],
+    ['Biến nó thành executive report', 'redesign'],
+    ['Create an executive dashboard composition', 'redesign'],
+    ['Give me a completely different layout', 'redesign'],
+    ['Đổi bố cục', 'redesign'],
+    ['change the whole layout', 'redesign'],
+  ];
+  const wrong = [];
+  for (const [prompt, expected] of cases) {
+    const got = intentMod.inferDesignLayer(prompt).layer;
+    if (got !== expected) wrong.push(`"${prompt}" → ${got} (expected ${expected})`);
+  }
+  assertEqual(wrong, [], 'intent misread');
+});
+
+check('with a selection, "this / it" names something to move — without one, it does not', () => {
+  assertEqual(intentMod.inferDesignLayer('make it bigger', { hasSelection: true }).layer, 'structure', 'a selected visual could not be resized by "it"');
+  assertEqual(intentMod.inferDesignLayer('Cho cái này rộng hơn', { hasSelection: true }).layer, 'structure', 'VI selection reference missed');
+  assertEqual(intentMod.inferDesignLayer('make it darker', { hasSelection: true }).layer, 'style', 'a colour request on a selection became a move');
+  assertEqual(intentMod.inferDesignLayer('make it bigger', { hasSelection: false }).layer, 'style', '"it" without a selection granted a move');
+});
+
+check('the permission is enforced at the boundary, not trusted to the model', () => {
+  // Even a model that answers "redesign" to "make it prettier" is clamped.
+  const granted = intentMod.inferDesignLayer('make it prettier').layer;
+  const { plan } = validator.coerceModelPlan({ layer: 'redesign', direction: {}, sections: [{ primitive: 'full_width', visuals: [105] }] }, { grantedLayer: granted });
+  assertEqual(plan.layer, 'style', 'the model widened its own permission');
+  assertEqual(plan.sections, [], 'the recomposition survived the clamp');
+});
+
+check('a plan can ask for less than was granted, never more', () => {
+  assertEqual(intentMod.clampLayer('redesign', 'style'), 'style', 'redesign escaped a style grant');
+  assertEqual(intentMod.clampLayer('structure', 'style'), 'style', 'structure escaped a style grant');
+  assertEqual(intentMod.clampLayer('style', 'redesign'), 'style', 'a narrower answer was widened');
+  assertEqual(intentMod.clampLayer(undefined, 'structure'), 'structure', 'no answer did not default to the grant');
+});
+
+// ── Style-only is a hard invariant ──────────────────────────────────────────
+
+check('STYLE proof: whole-page restyle — geometry identical, semantics identical, look changed', () => {
+  const tiles = makeTiles();
+  const { plan } = validator.coerceModelPlan(STYLE_REPLY, { grantedLayer: 'style' });
+  const built = build(tiles, plan);
+  assert(built.ok, `a style plan was refused: ${JSON.stringify([...built.planValidation.violations, ...built.mutationValidation.violations])}`);
+  const after = executor.applyMutationToTiles(tiles, built.mutation);
+  assertEqual(rectsById(after), rectsById(tiles), 'a style-only change moved or resized a visual');
+  for (const t of after) {
+    assertEqual(t.layout.pageId, 'page-1', `visual ${t.id} changed page`);
+  }
+  const before = snapshotMod.buildPresentationFingerprint(tiles);
+  const afterFp = snapshotMod.buildPresentationFingerprint(after);
+  assertEqual(afterFp, before, 'a style-only change moved a semantic fingerprint');
+  // …and it really did something.
+  assert(Object.keys(built.mutation.themePatch).length > 0, 'the theme did not change');
+  assertEqual(after.find((t) => t.id === 101).layout.styleConfigOverride.tileFrame, 'flush', 'the KPI frame did not change');
+  assertEqual(after.find((t) => t.id === 105).layout.styleConfigOverride.chartSurface, 'dark', 'the chart surface did not change');
+  assertEqual(built.mutation.themePatch.slicerStyle, 'pill', 'the slicer look did not change');
+  for (const override of Object.values(built.mutation.layoutOverrides)) {
+    for (const key of ['x', 'y', 'w', 'h']) {
+      assert(!(key in override), `a style mutation wrote "${key}"`);
+    }
+  }
+});
+
+check('STYLE proof: a model that recomposes anyway is clamped, not obeyed', () => {
+  const tiles = makeTiles();
+  const greedy = { ...REAL_MODEL_REPLY, layer: 'redesign', structure: { operations: [{ op: 'move_to_top', visuals: [108] }] } };
+  const { plan } = validator.coerceModelPlan(greedy, { grantedLayer: 'style' });
+  const built = build(tiles, plan);
+  assert(built.ok, 'the clamped plan was refused');
+  assertEqual(rectsById(executor.applyMutationToTiles(tiles, built.mutation)), rectsById(tiles), 'a clamped plan still moved tiles');
+});
+
+check('STYLE proof: the validator refuses a style mutation that writes geometry, whatever built it', () => {
+  const tiles = makeTiles();
+  const mutation = {
+    layoutOverrides: { 105: { x: 0, y: 0, w: 36, h: 12, gv: 2, pageId: 'page-1' } },
+    themePatch: {}, slicerClusterPatch: {}, notes: [], layer: 'style',
+  };
+  const result = executor.validateMutationAgainst({ tiles, mutation, pageId: 'page-1' });
+  assert(!result.ok && !result.repairable, 'a style mutation moving a tile was accepted');
+  assert(result.violations.some((v) => v.code === 'layer.styleGeometry'), 'wrong violation code');
+  // A dock move is structure too.
+  const dock = executor.validateMutationAgainst({
+    tiles, pageId: 'page-1',
+    mutation: { layoutOverrides: {}, themePatch: { filterDock: 'left' }, slicerClusterPatch: { position: 'left' }, notes: [], layer: 'style' },
+  });
+  assert(dock.violations.some((v) => v.code === 'layer.slicerDock'), 'a style change moved the filters');
+});
+
+check('STYLE proof: choosing a template changes the look, never the filter dock', () => {
+  const tiles = makeTiles();
+  // `brief` carries filterDock: left. Under style it must not move the filters.
+  const built = build(tiles, { layer: 'style', direction: {}, sections: [], visualPreferences: {}, themeIntent: { template: 'brief' } });
+  assert(built.ok, `template restyle refused: ${JSON.stringify(built.mutationValidation.violations)}`);
+  assert(!('filterDock' in built.mutation.themePatch), 'a template restyle moved the filter dock');
+  assertEqual(built.mutation.slicerClusterPatch, {}, 'a template restyle wrote the slicer cluster position');
+  assertEqual(built.mutation.themePatch.templateId, 'brief', 'the template look was not applied');
+});
+
+check('STYLE proof: a style value the renderer cannot draw is dropped with a note', () => {
+  const { plan, notes } = validator.coerceModelPlan(
+    { layer: 'style', tileStyles: { 105: { palette: 'emerald', chartSurface: 'navy', lineWidth: 'thick', showGrid: false } } },
+    { grantedLayer: 'style' },
+  );
+  assertEqual(plan.tileStyles, { 105: { showGrid: false } }, 'an unrenderable value survived');
+  assert(notes.some((n) => /cannot render/.test(n)), 'the drop was not disclosed');
+});
+
+// ── Locks hold on every path ────────────────────────────────────────────────
+
+function withLock(tiles, id) {
+  return tiles.map((t) => (t.id === id ? { ...t, layout: { ...t.layout, locked: true } } : t));
+}
+
+check('LOCK proof: AI structure cannot move or resize a locked visual', () => {
+  const tiles = withLock(makeTiles(), 105);
+  for (const operation of [
+    { op: 'move_to_top', visuals: [105, 108] },
+    { op: 'resize', visuals: [105], size: 'larger' },
+    { op: 'swap', visuals: [105, 106] },
+    { op: 'arrange_row', visuals: [105, 106, 107] },
+  ]) {
+    const built = build(tiles, { layer: 'structure', direction: {}, sections: [], visualPreferences: {}, structure: { operations: [operation] } });
+    assert(built.ok, `${operation.op}: refused ${JSON.stringify(built.mutationValidation.violations)}`);
+    const after = rectsById(executor.applyMutationToTiles(tiles, built.mutation));
+    assertEqual(after[105], rectsById(tiles)[105], `${operation.op} moved the locked visual`);
+    assertEqual(validator.findOverlaps(after), [], `${operation.op} produced overlaps`);
+    assert(!(105 in built.mutation.layoutOverrides), `${operation.op} wrote the locked visual`);
+  }
+});
+
+check('LOCK proof: a neighbour growing into a locked visual stops short of it', () => {
+  // 104 sits beside 105 in the fixture's second row; growing it must not cover 105.
+  const tiles = withLock(makeTiles(), 105);
+  const built = build(tiles, { layer: 'structure', direction: {}, sections: [], visualPreferences: {}, structure: { operations: [{ op: 'resize', visuals: [104], size: 'larger' }] } });
+  assert(built.ok, 'resize beside a lock was refused');
+  const after = rectsById(executor.applyMutationToTiles(tiles, built.mutation));
+  assertEqual(after[105], rectsById(tiles)[105], 'the locked visual was displaced');
+  assertEqual(validator.findOverlaps(after), [], 'the grown tile covers the locked one');
+});
+
+check('LOCK proof: AI redesign and template re-arrange route around a locked visual', () => {
+  const tiles = withLock(makeTiles(), 106);
+  const snapshot = makeSnapshot(tiles);
+  const plans = [planFor(tiles), ...templates.templateIntentIds().map((id) => templates.planFromTemplate(id, snapshot))];
+  for (const plan of plans) {
+    const built = build(tiles, { ...plan, layer: 'redesign' });
+    assert(built.ok, `redesign refused: ${JSON.stringify(built.mutationValidation.violations)}`);
+    const after = rectsById(executor.applyMutationToTiles(tiles, built.mutation));
+    assertEqual(after[106], rectsById(tiles)[106], 'a redesign moved the locked visual');
+    assertEqual(validator.findOverlaps(after), [], 'a redesign overlapped the locked visual');
+  }
+});
+
+check('LOCK proof: a mutation that moves a locked visual or flips a lock is refused', () => {
+  const tiles = withLock(makeTiles(), 105);
+  const moved = executor.validateMutationAgainst({
+    tiles, pageId: 'page-1',
+    mutation: { layoutOverrides: { 105: { x: 0, y: 40, w: 12, h: 12 } }, themePatch: {}, slicerClusterPatch: {}, notes: [], layer: 'redesign' },
+  });
+  assert(moved.violations.some((v) => v.code === 'lock.geometry'), 'moving a locked tile was not refused');
+  const unlocked = executor.validateMutationAgainst({
+    tiles, pageId: 'page-1',
+    mutation: { layoutOverrides: { 105: { locked: false } }, themePatch: {}, slicerClusterPatch: {}, notes: [], layer: 'style' },
+  });
+  assert(unlocked.violations.some((v) => v.code === 'lock.write'), 'AI unlocked a visual');
+});
+
+check('LOCK proof: tidy and compact-up leave locked tiles where they are', () => {
+  const tiles = [
+    { id: 1, x: 0, y: 6, w: 12, h: 6 },
+    { id: 2, x: 12, y: 6, w: 12, h: 6 },
+    { id: 3, x: 0, y: 14, w: 36, h: 6 },
+  ];
+  const locked = new Set([2]);
+  const tidied = pages.tidyPageLayout(tiles, locked);
+  assertEqual(tidied.find((t) => t.id === 2), tiles[1], 'tidy moved a locked tile');
+  const up = pages.compactPageUp(tiles, locked);
+  assertEqual(up.find((t) => t.id === 2), tiles[1], 'compact-up moved a locked tile');
+  for (const result of [tidied, up]) {
+    for (let i = 0; i < result.length; i += 1) {
+      for (let j = i + 1; j < result.length; j += 1) {
+        assert(!structureMod.overlaps(result[i], result[j]), `tiles ${result[i].id} and ${result[j].id} overlap`);
+      }
+    }
+  }
+});
+
+// ── Scope follows the selection ─────────────────────────────────────────────
+
+check('SCOPE proof: selected visuals change; unselected ones and the theme do not', () => {
+  const tiles = makeTiles();
+  const targets = [105, 106];
+  const { plan, notes } = validator.coerceModelPlan(STYLE_REPLY, { grantedLayer: 'style', targets });
+  assert(!plan.themeIntent, 'a selection-scoped request kept a report theme');
+  assert(notes.some((n) => /theme/i.test(n)), 'dropping the theme was not disclosed');
+  const built = build(tiles, plan, { targets });
+  assert(built.ok, `scoped restyle refused: ${JSON.stringify(built.mutationValidation.violations)}`);
+  const touched = Object.keys(built.mutation.layoutOverrides).map(Number).sort((a, b) => a - b);
+  assert(touched.every((id) => targets.includes(id)), `touched outside the selection: ${touched}`);
+  assertEqual(built.mutation.themePatch, {}, 'a scoped change repainted the report');
+  assertEqual(built.mutation.slicerClusterPatch, {}, 'a scoped change touched the filters');
+});
+
+check('SCOPE proof: a structure change on a selection never displaces the rest', () => {
+  const tiles = makeTiles();
+  const targets = [106, 107];
+  const built = build(tiles, { layer: 'structure', direction: {}, sections: [], visualPreferences: {}, structure: { operations: [{ op: 'arrange_row', visuals: targets }] } }, { targets });
+  assert(built.ok, `scoped arrangement refused: ${JSON.stringify(built.mutationValidation.violations)}`);
+  const before = rectsById(tiles);
+  const after = rectsById(executor.applyMutationToTiles(tiles, built.mutation));
+  for (const tile of tiles) {
+    if (targets.includes(tile.id)) continue;
+    assertEqual(after[tile.id], before[tile.id], `unselected visual ${tile.id} moved`);
+  }
+  assertEqual(validator.findOverlaps(after), [], 'the scoped arrangement overlaps');
+});
+
+check('SCOPE proof: the validator refuses a change outside the selection', () => {
+  const tiles = makeTiles();
+  const result = executor.validateMutationAgainst({
+    tiles, pageId: 'page-1', targets: [105],
+    mutation: { layoutOverrides: { 107: { styleConfigOverride: { showGrid: false } } }, themePatch: { accent: '#112233' }, slicerClusterPatch: {}, notes: [], layer: 'style' },
+  });
+  assert(result.violations.some((v) => v.code === 'scope.outside'), 'an unselected visual was restyled');
+  assert(result.violations.some((v) => v.code === 'scope.theme'), 'a scoped change repainted the report');
+});
+
+// ── Structure has a blast radius the size of the request ────────────────────
+
+/** A realistic authored page: KPIs at the BOTTOM, an intentional gap on the
+ *  right of the chart row. */
+function authoredPage() {
+  const L = (id, type, x, y, w, h) => ({
+    id, chart_id: 900 + id, widget_type: 'chart',
+    layout: { x, y, w, h, gv: 2, pageId: 'page-1' },
+    chart: { id: 900 + id, name: `V${id}`, chart_type: type, dataset_id: 1, config: {} },
+  });
+  return [
+    L(1, 'LINE', 0, 0, 24, 14),
+    L(2, 'DONUT', 24, 0, 8, 14),      // columns 32–36 intentionally empty
+    L(3, 'BAR', 0, 14, 18, 12),
+    L(4, 'TABLE', 18, 14, 18, 12),
+    L(5, 'KPI', 0, 26, 9, 5),
+    L(6, 'KPI', 9, 26, 9, 5),
+  ];
+}
+
+check('STRUCTURE proof: "KPIs on top" moves the KPIs and only shifts the rest down', () => {
+  const tiles = authoredPage();
+  const built = build(tiles, { layer: 'structure', direction: {}, sections: [], visualPreferences: {}, structure: { operations: [{ op: 'move_to_top', visuals: [5, 6] }] } });
+  assert(built.ok, `move_to_top refused: ${JSON.stringify(built.mutationValidation.violations)}`);
+  const before = rectsById(tiles);
+  const after = rectsById(executor.applyMutationToTiles(tiles, built.mutation));
+  assertEqual([after[5].y, after[6].y], [0, 0], 'the KPIs are not on top');
+  for (const id of [1, 2, 3, 4]) {
+    assertEqual([after[id].x, after[id].w, after[id].h], [before[id].x, before[id].w, before[id].h], `visual ${id} was rearranged, not just shifted`);
+  }
+  // Relative arrangement of the untouched content is preserved exactly.
+  assertEqual(after[3].y - after[1].y, before[3].y - before[1].y, 'the untouched rows changed spacing');
+  // The author's intentional gap (columns 32–36 beside the donut) survives.
+  assertEqual(after[2].x + after[2].w, 32, 'the intentional gap was filled');
+  assertEqual(validator.findOverlaps(after), [], 'move_to_top overlaps');
+  // And the KPIs' old row did not leave a hole at the bottom.
+  const bottom = Math.max(...Object.values(after).map((r) => r.y + r.h));
+  assert(bottom <= Math.max(...Object.values(before).map((r) => r.y + r.h)), 'moving the KPIs grew the page');
+});
+
+check('STRUCTURE proof: a move a lock makes impossible is reported, not claimed', () => {
+  // The locked trend spans x 0–24 from y=0; the table (14 rows) cannot fit above it.
+  const tiles = authoredPage().map((t) => (t.id === 1 ? { ...t, layout: { ...t.layout, locked: true } } : t));
+  const built = build(tiles, { layer: 'structure', direction: {}, sections: [], visualPreferences: {}, structure: { operations: [{ op: 'move_to_top', visuals: [3] }] } });
+  assert(built.ok, 'refused');
+  const after = rectsById(executor.applyMutationToTiles(tiles, built.mutation));
+  assertEqual(after[1], rectsById(tiles)[1], 'the locked visual moved');
+  assert(built.mutation.notes.some((n) => /could not move above a locked/.test(n)), 'the impossible move was not disclosed');
+});
+
+check('STRUCTURE proof: "make this bigger" disturbs only what it would cover', () => {
+  const tiles = authoredPage();
+  const built = build(tiles, { layer: 'structure', direction: {}, sections: [], visualPreferences: {}, structure: { operations: [{ op: 'resize', visuals: [3], size: 'larger' }] } });
+  assert(built.ok, 'resize refused');
+  const before = rectsById(tiles);
+  const after = rectsById(executor.applyMutationToTiles(tiles, built.mutation));
+  assert(after[3].w > before[3].w && after[3].h > before[3].h, 'the visual did not grow');
+  // Nothing above the grown tile moved.
+  for (const id of [1, 2]) assertEqual(after[id], before[id], `visual ${id} above the change moved`);
+  assertEqual(validator.findOverlaps(after), [], 'the grown tile overlaps');
+});
+
+// ── Safety is unchanged ─────────────────────────────────────────────────────
+
+check('SAFETY proof: no layer can change semantics through the presentation path', () => {
+  const tiles = makeTiles();
+  for (const layer of ['style', 'structure', 'redesign']) {
+    const { plan } = validator.coerceModelPlan(
+      { ...REAL_MODEL_REPLY, layer, tileStyles: { 105: { dataLimit: 3, chartSortRules: [], seriesRenderAs: { a: 'line' } } } },
+      { grantedLayer: layer },
+    );
+    const built = build(tiles, plan);
+    assert(!built.ok, `${layer}: a semantic key was accepted`);
+    assertEqual(built.mutation.layoutOverrides, {}, `${layer}: a refused plan still wrote layout`);
+  }
+  // A semantic change smuggled into the tiles themselves is caught by the fingerprint.
+  const tampered = executor.validateMutationAgainst({
+    tiles, pageId: 'page-1',
+    mutation: { layoutOverrides: { 105: { styleConfigOverride: { dataLimit: 3 } } }, themePatch: {}, slicerClusterPatch: {}, notes: [], layer: 'style' },
+  });
+  assert(tampered.violations.some((v) => v.code === 'identity.semantics'), 'a Top-N passed as a restyle');
+});
+
+// ── Preview is what Apply writes ────────────────────────────────────────────
+
+check('PREVIEW proof: the previewed tiles equal the tiles after Apply', () => {
+  const tiles = makeTiles();
+  for (const plan of [
+    validator.coerceModelPlan(STYLE_REPLY, { grantedLayer: 'style' }).plan,
+    { layer: 'structure', direction: {}, sections: [], visualPreferences: {}, structure: { operations: [{ op: 'move_to_top', visuals: [108] }] } },
+    { ...planFor(tiles), layer: 'redesign' },
+  ]) {
+    const built = build(tiles, plan);
+    assert(built.ok, `${plan.layer}: refused`);
+    const preview = executor.applyMutationToTiles(tiles, built.mutation);
+    // Apply: the mutation becomes localLayoutOverrides, the page re-reads its tiles through them.
+    const local = executor.toLocalLayoutOverrides(built.mutation, {});
+    const applied = executor.tilesWithLocalEdits(null, local, tiles);
+    assertEqual(applied.map((t) => t.layout), preview.map((t) => t.layout), `${plan.layer}: Apply differs from the preview`);
+  }
+});
+
+check('PREVIEW proof: a follow-up on an unapplied preview composes, and the composite is what applies', () => {
+  const tiles = makeTiles();
+  const first = build(tiles, { layer: 'structure', direction: {}, sections: [], visualPreferences: {}, structure: { operations: [{ op: 'move_to_top', visuals: [108] }] } });
+  const previewed = executor.applyMutationToTiles(tiles, first.mutation);
+  const second = build(previewed, validator.coerceModelPlan(STYLE_REPLY, { grantedLayer: 'style' }).plan);
+  assert(first.ok && second.ok, 'a step was refused');
+  const composite = executor.composeMutations(first.mutation, second.mutation);
+  const check2 = executor.validateMutationAgainst({ tiles, mutation: composite, pageId: 'page-1' });
+  assert(check2.ok, `the composite was refused: ${JSON.stringify(check2.violations)}`);
+  assertEqual(composite.layer, 'structure', 'the composite lost the wider layer');
+  const sequential = executor.applyMutationToTiles(previewed, second.mutation);
+  const composed = executor.applyMutationToTiles(tiles, composite);
+  assertEqual(rectsById(composed), rectsById(sequential), 'the composite does not reproduce what the user saw (geometry)');
+  assertEqual(
+    composed.map((t) => t.layout.styleConfigOverride ?? null),
+    sequential.map((t) => t.layout.styleConfigOverride ?? null),
+    'the composite does not reproduce what the user saw (style)',
+  );
+});
+
+check('PREVIEW proof: a follow-up turn that REMOVES a style key does not resurrect it', () => {
+  // Turn 1 darkens a chart; turn 2 changes the report theme, which resets
+  // per-tile surfaces so the new theme shows. The composite must be what the
+  // user saw after turn 2 — no dark chart coming back from turn 1.
+  const tiles = makeTiles();
+  const first = build(tiles, { layer: 'style', direction: {}, sections: [], visualPreferences: {}, tileStyles: { 105: { chartSurface: 'dark' } } }, { targets: [105] });
+  assert(first.ok, 'turn 1 refused');
+  const previewed = executor.applyMutationToTiles(tiles, first.mutation);
+  const second = build(previewed, { layer: 'style', direction: {}, sections: [], visualPreferences: {}, themeIntent: { colorway: 'indigo', accent: '#1E3A8A' } });
+  assert(second.ok, 'turn 2 refused');
+  const sequential = executor.applyMutationToTiles(previewed, second.mutation);
+  assert(!('chartSurface' in (sequential.find((t) => t.id === 105).layout.styleConfigOverride ?? {})), 'fixture: turn 2 did not reset the surface');
+  const composite = executor.composeMutations(first.mutation, second.mutation);
+  const composed = executor.applyMutationToTiles(tiles, composite);
+  assertEqual(
+    composed.find((t) => t.id === 105).layout.styleConfigOverride ?? {},
+    sequential.find((t) => t.id === 105).layout.styleConfigOverride ?? {},
+    'a style key turn 2 removed came back from turn 1',
+  );
+});
+
+// ── One presentation definition for builder and published tiles ────────────
+
+check('PARITY proof: builder and published tiles resolve their frame from ONE module', () => {
+  const tileSrc = readFileSync(resolve(SRC, 'components/dashboards/ChartTile.tsx'), 'utf8');
+  const readonlySrc = readFileSync(resolve(SRC, 'components/dashboards/ReadonlyChartTile.tsx'), 'utf8');
+  for (const [name, src] of [['ChartTile', tileSrc], ['ReadonlyChartTile', readonlySrc]]) {
+    assert(src.includes('resolveTileFrameStyle('), `${name} does not use the shared frame resolver`);
+    assert(src.includes('TILE_TITLE_CLASS') && src.includes('TILE_KPI_LABEL_CLASS'), `${name} does not use the shared title typography`);
+    assert(src.includes('{...tileFrame.dataAttributes}'), `${name} does not publish its frame attributes`);
+    // A second copy of the surface palette is how the two drifted before.
+    assert(!src.includes("'#0f172a'") && !src.includes('surfaceVars'), `${name} carries its own surface palette again`);
+    assert(src.includes('data-tile-id='), `${name} tiles cannot be paired for parity checks`);
+  }
+  const publicSrc = readFileSync(resolve(SRC, 'components/dashboards/PublicDashboardView.tsx'), 'utf8');
+  const gridSrc = readFileSync(resolve(SRC, 'components/dashboards/DashboardGrid.tsx'), 'utf8');
+  assert(publicSrc.includes('<SectionBands') && gridSrc.includes('<SectionBands'), 'section surfaces are drawn on only one side');
+});
+
+check('PARITY proof: the frame vocabulary resolves deterministically and honours legacy flags', () => {
+  const card = tileFrameMod.resolveTileFrameStyle({ style: {} });
+  assertEqual(card.frame, 'card', 'default is not a card');
+  assert(card.className.includes('border') && card.className.includes('bg-surface-1'), 'a card has no container');
+  const legacy = tileFrameMod.resolveTileFrameStyle({ style: { transparentBackground: true } });
+  assertEqual(legacy.frame, 'flush', 'transparentBackground no longer means flush');
+  const flush = tileFrameMod.resolveTileFrameStyle({ style: { tileFrame: 'flush', chartSurface: 'dark' } });
+  assertEqual(flush.style.borderWidth, 0, 'flush kept a border');
+  assertEqual(flush.style.boxShadow, 'none', 'flush kept a shadow');
+  assertEqual(flush.style.background, 'transparent', 'a flush tile painted a surface behind itself');
+  assertEqual(flush.style['--text-primary'], '226 232 240', 'a dark surface on a flush tile did not flip its text tokens');
+  assertEqual(flush.dataAttributes['data-tile-frame'], 'flush', 'the frame attribute is missing');
+  const subtle = tileFrameMod.resolveTileFrameStyle({ style: { tileFrame: 'subtle' } });
+  assert(!subtle.className.includes(' border'), 'subtle kept a border class');
+  assertEqual(JSON.stringify(tileFrameMod.resolveTileFrameStyle({ style: { tileFrame: 'subtle' } })), JSON.stringify(subtle), 'not deterministic');
+});
+
+// ── Responsive is derived, not configured ───────────────────────────────────
+
+check('RESPONSIVE proof: a layout that already reads at tablet width is left exactly as authored', () => {
+  const layout = [
+    { i: '1', x: 0, y: 0, w: 12, h: 5 }, { i: '2', x: 12, y: 0, w: 12, h: 5 }, { i: '3', x: 24, y: 0, w: 12, h: 5 },
+    { i: '4', x: 0, y: 5, w: 24, h: 14 }, { i: '5', x: 24, y: 5, w: 12, h: 14 },
+  ];
+  const out = pages.deriveTabletLayout(layout, { kindOf: (it) => (Number(it.i) <= 3 ? 'kpi' : 'chart'), referenceWidthPx: 820 });
+  assert(out === layout, 'a readable layout was re-flowed at tablet width');
+});
+
+check('RESPONSIVE proof: slivers are widened at tablet width, in reading order, without overlap', () => {
+  const layout = [1, 2, 3, 4, 5, 6].map((n) => ({ i: String(n), x: (n - 1) * 6, y: 0, w: 6, h: 5 }))
+    .concat([{ i: '7', x: 0, y: 5, w: 9, h: 14 }, { i: '8', x: 9, y: 5, w: 27, h: 14 }]);
+  const kindOf = (it) => (Number(it.i) <= 6 ? 'kpi' : 'chart');
+  const out = pages.deriveTabletLayout(layout, { kindOf, referenceWidthPx: 820 });
+  const colPx = 820 / 36;
+  for (const item of out) {
+    const min = pages.RESPONSIVE_MIN_WIDTH_PX[kindOf(item)];
+    assert(item.w * colPx >= min, `tile ${item.i} is ${Math.round(item.w * colPx)}px at tablet width (min ${min})`);
+    assert(item.x + item.w <= 36, `tile ${item.i} overflows`);
+  }
+  for (let a = 0; a < out.length; a += 1) {
+    for (let b = a + 1; b < out.length; b += 1) {
+      assert(!structureMod.overlaps(out[a], out[b]), `tablet tiles ${out[a].i}/${out[b].i} overlap`);
+    }
+  }
+  const order = [...out].sort((p, q) => p.y - q.y || p.x - q.x).map((it) => it.i);
+  assertEqual(order, ['1', '2', '3', '4', '5', '6', '7', '8'], 'reading order changed');
+});
+
+check('RESPONSIVE proof: the phone stack keeps order and a readable height per kind', () => {
+  const layout = [{ i: 'k', x: 20, y: 0, w: 8, h: 2 }, { i: 'c', x: 0, y: 0, w: 20, h: 4 }];
+  const out = pages.deriveStackedLayout(layout, { kindOf: (it) => (it.i === 'k' ? 'kpi' : 'chart'), rowPitchPx: 24 });
+  assertEqual(out.map((it) => it.i), ['c', 'k'], 'reading order lost in the stack');
+  assert(out.find((it) => it.i === 'k').h * 24 >= pages.STACK_MIN_HEIGHT_PX.kpi, 'a stacked KPI is too short');
+  assert(out.find((it) => it.i === 'c').h * 24 >= pages.STACK_MIN_HEIGHT_PX.chart, 'a stacked chart is too short');
+  // The builder's narrow projection is the same rule, not a second one.
+  const gridSrc = readFileSync(resolve(SRC, 'components/dashboards/DashboardGrid.tsx'), 'utf8');
+  assert(gridSrc.includes('REPORT_STACK_BREAKPOINT') && gridSrc.includes('deriveStackedLayout('), 'the builder projects narrow screens differently from the report');
+});
+
+// ── The render audit's arithmetic ───────────────────────────────────────────
+
+check('render audit: contrast arithmetic matches WCAG reference values', () => {
+  const white = [255, 255, 255, 1];
+  const black = [0, 0, 0, 1];
+  assert(Math.abs(renderAudit.contrastRatio(white, black) - 21) < 0.01, 'black on white is not 21:1');
+  const grey = [148, 163, 184, 1];     // text-tertiary on the dark surface
+  const navy = [15, 23, 42, 1];
+  assert(renderAudit.contrastRatio(grey, navy) >= renderAudit.MIN_TITLE_CONTRAST, 'the dark surface token pair fails its own gate');
+  const pale = [203, 213, 225, 1];
+  assert(renderAudit.contrastRatio(pale, white) < renderAudit.MIN_TITLE_CONTRAST, 'light grey on white passed the contrast gate');
+});
 
 // ── i18n interpolation ──────────────────────────────────────────────────────
 

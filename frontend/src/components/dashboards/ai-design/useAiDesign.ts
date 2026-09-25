@@ -8,14 +8,19 @@ import type { Dashboard, DashboardChart, DashboardThemeConfig } from '@/types/ap
 import {
   buildPresentationMutation,
   applyMutationToTiles,
+  composeMutations,
   toLocalLayoutOverrides,
   tilesWithLocalEdits,
+  validateMutationAgainst,
 } from '@/lib/dashboard-presentation/executor';
 import { buildPresentationSnapshot, tilesOnPage } from '@/lib/dashboard-presentation/snapshot';
+import type { FieldMetaIndex } from '@/lib/dashboard-presentation/design-context';
 import { coerceModelPlan } from '@/lib/dashboard-presentation/validator';
+import { inferDesignLayer } from '@/lib/dashboard-presentation/intent';
 import { diffPresentation, isEmptyDiff } from '@/lib/dashboard-presentation/diff';
 import type { PresentationDiff } from '@/lib/dashboard-presentation/diff';
-import type { PresentationMutation, PresentationScope } from '@/lib/dashboard-presentation/types';
+import type { DesignLayer, PresentationMutation } from '@/lib/dashboard-presentation/types';
+import { critiquePreview } from '@/lib/dashboard-presentation/critic';
 import type { AiDesignTurn } from './AiDesignPanel';
 
 /**
@@ -23,16 +28,16 @@ import type { AiDesignTurn } from './AiDesignPanel';
  *
  * The sequencing here is the feature's whole safety story, so it is worth
  * stating in order: the baseline is the tiles the user is LOOKING at (server
- * state with unsaved drags merged in), the snapshot is built from those, the
- * model answers with a plan, the plan is coerced at the boundary, validated,
- * compiled, and only then previewed. Apply writes into `localLayoutOverrides`
- * — the same buffer a mouse drag fills — so Save Draft and Publish need to know
- * nothing about any of this.
+ * state with unsaved drags merged in), the permission is read from the user's
+ * words (style unless they asked for more), the targets are what they selected,
+ * the model answers with a plan, the plan is coerced and clamped at the
+ * boundary, validated, built, and only then previewed. Apply writes into
+ * `localLayoutOverrides` — the same buffer a mouse drag fills — so Save Draft
+ * and Publish need to know nothing about any of this.
  *
  * Iteration works by re-reading the CURRENT state each turn rather than
  * replaying plans. "Now make the main chart bigger" is planned against the
- * preview on screen, which is why the second request refines the first instead
- * of starting over (§12).
+ * preview on screen, which is why the second request refines the first.
  */
 
 export interface UseAiDesignInput {
@@ -49,9 +54,12 @@ export interface UseAiDesignInput {
   /** Theme grid gap, so compiled tiles are sized in the density the report
    *  actually renders at. */
   gridGapPx?: number;
-  /** The DashboardChart id the user clicked to restyle on its own; null for a
-   *  whole-page/report redesign. Set → the redesign scopes to just this tile. */
-  focusedChartId?: number | null;
+  /** The visuals the user selected on the canvas. Empty = the whole page. */
+  selectedIds?: number[];
+  /** Semantic labels/types for the Design Context. */
+  fieldMeta?: FieldMetaIndex;
+  /** The rendered preview, for the post-render quality pass. */
+  getCanvasRoot?: () => HTMLElement | null;
   /** Commit a design. One call, one undo entry. */
   onCommit: (input: {
     layoutOverrides: Record<number, Record<string, any>>;
@@ -64,96 +72,121 @@ interface PendingDesign {
   mutation: PresentationMutation;
   diff: PresentationDiff;
   previewTiles: DashboardChart[];
-  /** The page and scope this preview was compiled for. A preview is geometry
-   *  for one page; rendered over another it paints the wrong tiles, and its
-   *  theme patch was decided by the scope in force when it was built. Both are
-   *  recorded so a page switch or a scope flip drops it instead of applying it
-   *  blind (§18, §24). */
+  /** The page and selection this preview was built for. A preview is geometry
+   *  and style for exactly those tiles; rendered over another page, or applied
+   *  after the selection changed, it would commit a change the user never
+   *  reviewed — so either divergence drops it. */
   pageId: string;
-  scope: PresentationScope;
+  targetsKey: string;
+  /** Monotonic id so the post-render pass can tell it is still looking at the
+   *  preview it was started for. */
+  seq: number;
 }
+
+const keyOf = (ids: number[] | undefined): string => [...(ids ?? [])].sort((a, b) => a - b).join(',');
 
 export function useAiDesign(input: UseAiDesignInput) {
   const { t } = useI18n();
   const [turns, setTurns] = React.useState<AiDesignTurn[]>([]);
   const [busy, setBusy] = React.useState(false);
-  const [scope, setScope] = React.useState<PresentationScope>('page');
   const [pending, setPending] = React.useState<PendingDesign | null>(null);
+  const seqRef = React.useRef(0);
+  const selected = React.useMemo(() => input.selectedIds ?? [], [input.selectedIds]);
+  const targetsKey = keyOf(selected);
 
-  /** The tiles as the user sees them right now — the baseline §24 insists on.
-   *  While a design is previewed, THAT is what the user sees, so a follow-up
-   *  request plans against the preview and not the state before it. */
-  const baselineTiles = React.useMemo(() => {
+  /** The page as it stands, unsaved drags included — what Apply writes onto. */
+  const committedTiles = React.useMemo(() => {
     const onPage = tilesOnPage(input.dashboard, input.activePageId);
-    const withLocal = tilesWithLocalEdits(input.dashboard, input.localLayoutOverrides, onPage);
-    if (!pending) return withLocal;
-    return applyMutationToTiles(withLocal, pending.mutation);
-  }, [input.dashboard, input.activePageId, input.localLayoutOverrides, pending]);
+    return tilesWithLocalEdits(input.dashboard, input.localLayoutOverrides, onPage);
+  }, [input.dashboard, input.activePageId, input.localLayoutOverrides]);
+
+  /** The tiles as the user SEES them. While a design is previewed, that is the
+   *  preview, so a follow-up request plans against it. */
+  const baselineTiles = React.useMemo(
+    () => (pending ? applyMutationToTiles(committedTiles, pending.mutation) : committedTiles),
+    [committedTiles, pending],
+  );
+
+  /** The theme the user SEES: the page theme with an unapplied preview's theme
+   *  laid over it. A follow-up turn is planned and resolved against this, so
+   *  "now a bit lighter" builds on the previewed look, not the one before it. */
+  const seenTheme = React.useMemo(() => {
+    if (!pending || Object.keys(pending.mutation.themePatch ?? {}).length === 0) return input.currentTheme;
+    return { ...(input.currentTheme ?? {}), ...pending.mutation.themePatch } as DashboardThemeConfig;
+  }, [input.currentTheme, pending]);
 
   const snapshot = React.useMemo(() => {
     if (!input.dashboard) return null;
     return buildPresentationSnapshot({
-      dashboard: input.dashboard,
+      dashboard: { ...input.dashboard, theme_config: seenTheme ?? input.dashboard.theme_config } as Dashboard,
       tiles: baselineTiles,
       pageId: input.activePageId,
       pageName: input.activePageName,
       pageCount: input.pageCount,
       slicers: input.slicers,
       slicerDock: input.slicerDock,
+      fieldMeta: input.fieldMeta,
     });
   }, [
-    input.dashboard, baselineTiles, input.activePageId, input.activePageName,
-    input.pageCount, input.slicers, input.slicerDock,
+    input.dashboard, seenTheme, baselineTiles, input.activePageId, input.activePageName,
+    input.pageCount, input.slicers, input.slicerDock, input.fieldMeta,
   ]);
 
-  // A preview outlives neither the page it was drawn for nor the scope it was
-  // compiled under. Switching either while one is on screen would leave an
-  // overlay describing tiles the user is no longer looking at, so it is dropped
-  // the moment they diverge — the user re-runs against what they can now see.
+  // A preview outlives neither the page it was drawn for nor the selection it
+  // was scoped to.
   React.useEffect(() => {
     setPending((current) =>
-      current && (current.pageId !== input.activePageId || current.scope !== scope) ? null : current,
+      current && (current.pageId !== input.activePageId || current.targetsKey !== targetsKey) ? null : current,
     );
-  }, [input.activePageId, scope]);
+  }, [input.activePageId, targetsKey]);
 
-  const submit = React.useCallback(async (prompt: string, images?: string[], scopeOverride?: PresentationScope) => {
+  const build = React.useCallback((rawPlan: unknown, grantedLayer: DesignLayer, targets: number[]) => {
+    const { plan, notes: boundaryNotes } = coerceModelPlan(rawPlan, { grantedLayer, targets });
+    const built = buildPresentationMutation({
+      plan,
+      snapshot: snapshot!,
+      tiles: baselineTiles,
+      pageId: input.activePageId,
+      currentTheme: seenTheme,
+      gridGapPx: input.gridGapPx,
+      targets,
+    });
+    built.mutation.notes = [...boundaryNotes, ...built.mutation.notes];
+    return { plan, built };
+  }, [snapshot, baselineTiles, input.activePageId, seenTheme, input.gridGapPx]);
+
+  const submit = React.useCallback(async (prompt: string, images?: string[]) => {
     if (!snapshot || busy) return;
-    // A one-click "apply to the whole report" re-runs the last prompt with the
-    // scope forced to report; the state setter has not settled yet, so the
-    // override travels as an argument rather than being read from `scope`.
-    const effScope = scopeOverride ?? scope;
     const refs = (images ?? []).filter((img) => typeof img === 'string' && img.length > 0);
+    const targets = [...selected];
+    const granted = inferDesignLayer(prompt, { hasSelection: targets.length > 0 }).layer;
     setBusy(true);
     setTurns((previous) => [...previous, { role: 'user', text: prompt, images: refs.length ? refs : undefined }]);
 
     try {
-      // Only the intent of earlier turns travels, never their images — a
-      // reference belongs to the turn that attached it, and re-sending it would
-      // make "now make it denser" silently re-apply the old look (§12).
+      // Only the intent of earlier turns travels, never their images.
       const conversation = turns.slice(-6).map((turn) => ({ role: turn.role, text: turn.text }));
       const response = await dashboardApi.planPresentation(input.dashboardId, {
         prompt, snapshot, conversation, images: refs.length ? refs : undefined,
-        focusedChartId: input.focusedChartId ?? null,
+        grantedLayer: granted,
+        targetIds: targets,
       });
 
-      // Scope is imposed, not read. A model that decided for itself to redesign
-      // the whole report because the prompt mentioned colour is the silent
-      // blast radius the scope selector exists to prevent.
-      const { plan, notes: boundaryNotes } = coerceModelPlan(response?.plan, { scope: effScope });
-      // Theme now applies report-wide the moment it is requested (theme is a
-      // report-level property; there is no page-scoped theme), so it is never
-      // deferred and no "apply to the whole report" prompt is needed.
-      const themeDeferred = false;
+      const { plan, built } = build(response?.plan, granted, targets);
 
-      const built = buildPresentationMutation({
-        plan,
-        snapshot,
-        tiles: baselineTiles,
-        pageId: input.activePageId,
-        currentTheme: input.currentTheme,
-        gridGapPx: input.gridGapPx,
-        focusedChartId: input.focusedChartId ?? null,
-      });
+      // A follow-up on an unapplied preview composes onto it, and the composite
+      // is what gets validated, previewed and — on Apply — written.
+      let finalMutation = built.mutation;
+      if (built.ok && pending) {
+        finalMutation = composeMutations(pending.mutation, built.mutation);
+        const recheck = validateMutationAgainst({
+          tiles: committedTiles, mutation: finalMutation, pageId: input.activePageId, targets,
+        });
+        if (!recheck.ok) {
+          built.ok = false;
+          built.mutationValidation = recheck;
+        }
+      }
 
       if (!built.ok) {
         const violations = [
@@ -168,45 +201,34 @@ export function useAiDesign(input: UseAiDesignInput) {
         return;
       }
 
-      // Approximations made at the transport boundary belong in the same list
-      // the compiler's own notes go into — the user should see one honest
-      // account of what was changed and what was interpreted.
-      built.mutation.notes = [...boundaryNotes, ...built.mutation.notes];
-      // When the turn will carry the actionable "apply to the whole report"
-      // affordance, drop the compiler's prose note that says the same thing — one
-      // clear control beats a note and a button repeating each other.
-      if (themeDeferred) {
-        built.mutation.notes = built.mutation.notes.filter((n) => !/Entire report/i.test(n));
-      }
-      const diff = diffPresentation(baselineTiles, built.mutation);
+      const diff = diffPresentation(committedTiles, finalMutation);
       if (isEmptyDiff(diff)) {
         setTurns((previous) => [...previous, {
           role: 'assistant',
           text: plan.rationale || t('dashboards.aiDesign.noChange'),
           diff,
-          themeDeferred,
+          suggestions: plan.suggestions,
         }]);
         return;
       }
 
+      seqRef.current += 1;
       setPending({
-        mutation: built.mutation,
+        mutation: finalMutation,
         diff,
-        previewTiles: applyMutationToTiles(baselineTiles, built.mutation),
+        previewTiles: applyMutationToTiles(committedTiles, finalMutation),
         pageId: input.activePageId,
-        scope: effScope,
+        targetsKey: keyOf(targets),
+        seq: seqRef.current,
       });
       setTurns((previous) => [...previous, {
         role: 'assistant',
         text: plan.rationale || t('dashboards.aiDesign.suggestedChanges'),
         diff,
-        themeDeferred,
+        suggestions: plan.suggestions,
       }]);
     } catch (error: any) {
       const status = error?.response?.status;
-      // 503 means no model answered — that is an availability problem and
-      // saying "the design could not be generated" would send someone looking
-      // for a mistake in their prompt.
       const message = status === 503
         ? (error?.response?.data?.detail || t('dashboards.aiDesign.unavailable'))
         : t('dashboards.aiDesign.failed');
@@ -214,17 +236,67 @@ export function useAiDesign(input: UseAiDesignInput) {
     } finally {
       setBusy(false);
     }
-  }, [
-    snapshot, busy, turns, scope, baselineTiles, input.dashboardId,
-    input.activePageId, input.currentTheme, input.gridGapPx, input.focusedChartId, t,
-  ]);
+  }, [snapshot, busy, turns, selected, build, committedTiles, pending, input.dashboardId, input.activePageId, t]);
+
+  // ── Post-render quality pass (bounded, never widens permission) ───────────
+  // Once the preview has painted, inspect the REAL rendered tiles for defects a
+  // plan cannot see — a clipped title, a chart squeezed below readable size, a
+  // title unreadable against its surface — and repair what the preview's own
+  // layer allows. One pass, deterministic, and a failure leaves the original
+  // preview exactly as it was.
+  const critiquedSeq = React.useRef(0);
+  React.useEffect(() => {
+    if (!pending || critiquedSeq.current === pending.seq || !input.getCanvasRoot) return;
+    const seq = pending.seq;
+    const timer = window.setTimeout(() => {
+      critiquedSeq.current = seq;
+      try {
+        const root = input.getCanvasRoot?.();
+        if (!root) return;
+        const review = critiquePreview({
+          root,
+          mutation: pending.mutation,
+          tiles: committedTiles,
+          targets: selected,
+        });
+        if (!review.repair) {
+          if (review.findings.length > 0) {
+            setPending((current) => (current && current.seq === seq
+              ? { ...current, diff: { ...current.diff, notes: [...current.diff.notes, ...review.notes] } }
+              : current));
+          }
+          return;
+        }
+        const repaired = review.repair;
+        // The repair goes through the same gate as the design it repairs: a
+        // repair that would move a locked tile, leave the layer or touch an
+        // unselected visual is discarded and the original preview stands.
+        const verdict = validateMutationAgainst({
+          tiles: committedTiles, mutation: repaired, pageId: pending.pageId, targets: selected,
+        });
+        if (!verdict.ok) return;
+        setPending((current) => {
+          if (!current || current.seq !== seq) return current;
+          const diff = diffPresentation(committedTiles, repaired);
+          diff.notes = [...diff.notes, ...review.notes];
+          return {
+            ...current,
+            mutation: repaired,
+            diff,
+            previewTiles: applyMutationToTiles(committedTiles, repaired),
+          };
+        });
+      } catch {
+        // The quality pass is advisory. Whatever went wrong, the preview the
+        // user is looking at stays the one the validator already accepted.
+      }
+    }, 900);
+    return () => window.clearTimeout(timer);
+  }, [pending, input.getCanvasRoot, committedTiles, selected]);
 
   const apply = React.useCallback(() => {
     if (!pending) return;
-    // Belt to the effect's braces: never commit a preview built for a different
-    // page or scope than the one in force now. The effect already clears it on
-    // divergence, but Apply is the irreversible step, so it checks again.
-    if (pending.pageId !== input.activePageId || pending.scope !== scope) {
+    if (pending.pageId !== input.activePageId || pending.targetsKey !== targetsKey) {
       setPending(null);
       toast.info(t('dashboards.aiDesign.discarded'));
       return;
@@ -240,35 +312,23 @@ export function useAiDesign(input: UseAiDesignInput) {
     });
     setPending(null);
     toast.success(t('dashboards.aiDesign.applied'));
-  }, [pending, input, scope, t]);
+  }, [pending, input, targetsKey, t]);
 
   const discard = React.useCallback(() => {
     setPending(null);
     toast.info(t('dashboards.aiDesign.discarded'));
   }, [t]);
 
-  // Re-run the most recent request against the whole report — the one-click fix
-  // for a theme/colour change that page scope deferred. Flips the scope (so the
-  // selector and future turns follow) and forces it on this run via the arg.
-  const retryEntireReport = React.useCallback(() => {
-    const lastUser = [...turns].reverse().find((turn) => turn.role === 'user');
-    if (!lastUser?.text) return;
-    setScope('report');
-    void submit(lastUser.text, undefined, 'report');
-  }, [turns, submit]);
-
   return {
     turns,
     busy,
-    scope,
-    setScope,
     submit,
-    retryEntireReport,
     apply,
     discard,
     pending,
     /** Tiles to render while previewing; null means render the real state. */
     previewTiles: pending?.previewTiles ?? null,
     visualCount: snapshot?.visuals.length ?? 0,
+    selectedCount: selected.length,
   };
 }

@@ -1646,6 +1646,10 @@ def _serialize_dashboard_with_draft(db: Session, dash: Dashboard, current_user: 
     draft_pages_config = (
         snapshot.get("pages_config") if isinstance(snapshot, dict) else None
     )
+    # The staged report theme (AI Design Apply / theme menu → Save draft).
+    draft_theme_config = (
+        snapshot.get("theme_config") if isinstance(snapshot, dict) else None
+    )
 
     # Round-trip via from_attributes for the live fields, then override.
     base = DashboardResponse.model_validate(dash, from_attributes=True)
@@ -1660,12 +1664,15 @@ def _serialize_dashboard_with_draft(db: Session, dash: Dashboard, current_user: 
         overrides["slicer_cluster_layout"] = draft_slicer_cluster_layout
     if isinstance(draft_pages_config, list):
         overrides["pages_config"] = draft_pages_config
+    if isinstance(draft_theme_config, dict):
+        overrides["theme_config"] = draft_theme_config
 
     has_filter_draft = (
         isinstance(draft_filters_config, list)
         or isinstance(draft_slicers_config, list)
         or isinstance(draft_slicer_cluster_layout, dict)
         or isinstance(draft_pages_config, list)
+        or isinstance(draft_theme_config, dict)
     )
     overrides["has_draft"] = bool(normalized_layouts) or has_filter_draft
 
@@ -2033,7 +2040,9 @@ def plan_dashboard_presentation(
             user_prompt=request.prompt,
             conversation=request.conversation,
             images=request.images,
-            focused_chart_id=request.focused_chart_id,
+            granted_layer=request.granted_layer,
+            target_ids=request.target_ids
+            or ([request.focused_chart_id] if request.focused_chart_id is not None else None),
         )
     except PresentationPlanUnavailable as exc:
         # 503, not 500: the report is fine and the request was valid — there is
@@ -2204,10 +2213,10 @@ def update_dashboard_layout(
 # `layout` column on DashboardChart rows — they only see the new layout
 # AFTER the editor clicks "Publish".
 #
-# Other mutations (add chart, rename, theme, widget edit) keep auto-
-# saving to the live columns. The most disruptive class of edit — fast
-# drag/resize on the grid — is the one that benefits most from draft
-# isolation, so we scope the column to layout for now.
+# The report theme joins the draft too (`draft-filters` → `theme_config`),
+# so the presentation an editor approves is published as one unit. Other
+# mutations (add chart, rename, widget edit) keep auto-saving to the live
+# columns. PUT /{id} can still write `theme_config` directly for API clients.
 
 
 @router.put("/{dashboard_id}/draft-layout", response_model=DashboardResponse)
@@ -2284,6 +2293,8 @@ def update_dashboard_draft_filters(
         snapshot["slicer_cluster_layout"] = dict(request.slicer_cluster_layout)
     if request.pages_config is not None:
         snapshot["pages_config"] = list(request.pages_config)
+    if request.theme_config is not None:
+        snapshot["theme_config"] = dict(request.theme_config)
     dash.draft_snapshot = snapshot
     flag_modified(dash, "draft_snapshot")
     db.commit()
@@ -2404,6 +2415,12 @@ def publish_dashboard_draft(
     if isinstance(draft_pages_config, list):
         dash.pages_config = draft_pages_config
         flag_modified(dash, "pages_config")
+    # The staged theme goes live in the same commit as the tiles above: either
+    # the whole approved presentation is published, or (on 409 / error) none.
+    draft_theme_config = snapshot.get("theme_config")
+    if isinstance(draft_theme_config, dict):
+        dash.theme_config = draft_theme_config
+        flag_modified(dash, "theme_config")
 
     # ── Clear ONLY this user's layout bucket + the applied filter drafts.
     #    Other users' pending layout buckets survive. ──
@@ -2417,6 +2434,10 @@ def publish_dashboard_draft(
     dash.last_published_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(dash)
+    # Public/embed serve a cached structure (short TTL, keyed by token). A
+    # publish must be visible on the next view, not a minute later.
+    from app.services import query_cache as _qc
+    _qc.invalidate_all_public_meta()
     return _serialize_dashboard_with_draft(db, dash, current_user)
 
 

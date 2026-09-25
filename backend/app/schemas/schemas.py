@@ -2,7 +2,7 @@
 Pydantic schemas for request/response validation.
 """
 from pydantic import BaseModel, Field, ConfigDict, model_validator, field_serializer, field_validator
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Literal
 from datetime import datetime
 from enum import Enum
 from uuid import UUID
@@ -408,6 +408,10 @@ class ChartMetadataResponse(ChartMetadataUpsert):
     """Schema for chart metadata response."""
     id: int
     chart_id: int
+    # The chart's written business description (AI-generated or user-edited).
+    # Read-only here; it is what the AI Design context uses to understand what
+    # a visual is FOR. Already stored — this only stops dropping it on the way out.
+    auto_description: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 
@@ -718,14 +722,22 @@ class PresentationPlanRequest(BaseModel):
             "returns still cannot change any chart's data."
         ),
     )
-    focused_chart_id: Optional[int] = Field(
-        None,
+    granted_layer: Literal["style", "structure", "redesign"] = Field(
+        "style",
         description=(
-            "When set, the user clicked ONE visual and is restyling only it. The "
-            "plan must touch that visual's appearance and nothing else — no layout "
-            "move, no other tile, no theme."
+            "How much of the page the user's words handed over, inferred by the "
+            "client (style unless they asked to rearrange). Advisory for the "
+            "model; the client clamps the returned plan to it and enforces it."
         ),
     )
+    target_ids: Optional[List[int]] = Field(
+        None,
+        max_length=200,
+        description="The visuals the user selected. Empty/None = the whole page.",
+    )
+    # Accepted for older clients and ignored: a single focused chart is now a
+    # one-element `target_ids`.
+    focused_chart_id: Optional[int] = Field(None, exclude=True)
 
     @field_validator("images")
     @classmethod
@@ -802,6 +814,11 @@ class DashboardUpdateDraftFiltersRequest(BaseModel):
     filters_config: Optional[List[Dict[str, Any]]] = None
     slicers_config: Optional[List[Dict[str, Any]]] = None
     slicer_cluster_layout: Optional[Dict[str, Any]] = None
+    # The report theme, staged like the rest of the presentation: the editor
+    # sees it (overlaid on GET), public/embed keep the published theme, and
+    # POST /publish applies it in the SAME transaction as the layouts — so a
+    # dashboard is never published half-old, half-new.
+    theme_config: Optional[Dict[str, Any]] = None
     pages_config: Optional[List[Dict[str, Any]]] = None
 
 

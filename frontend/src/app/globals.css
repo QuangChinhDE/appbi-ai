@@ -1207,9 +1207,43 @@
   border-width: 1.5px;
   border-color: color-mix(in srgb, var(--dashboard-accent, #5b5bd6) 32%, rgb(var(--border-line)));
 }
+/* Frameless means NO container: no border, no fill, no shadow, no tint/accent
+   wash. It used to clear only the colours, so a "frameless" report still drew
+   1px borders' worth of space, theme shadows and the accent-bar gradient. */
 [data-dashboard-cardtreatment="frameless"] .dashboard-tile {
   border-color: transparent;
   background-color: transparent;
+  background-image: none;
+  box-shadow: none;
+}
+
+/* ── Per-tile frame (tileFrame / AI Design) ──────────────────────────────────
+   Set by lib/dashboard-presentation/tile-frame.ts on BOTH the builder tile and
+   the published tile. A per-tile frame outranks the report's card treatment,
+   KPI wash and accent bar — that is what "this KPI frameless, the rest carded"
+   means — so these carry !important against the theme's selector-level rules.
+   State rings (focus, cross-filter) are Tailwind ring = box-shadow on the
+   builder only, and are re-allowed below for the selected tile. */
+.dashboard-tile[data-tile-frame="flush"] {
+  border-width: 0 !important;
+  border-color: transparent !important;
+  background-color: transparent !important;
+  background-image: none !important;
+  box-shadow: none !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+.dashboard-tile[data-tile-frame="subtle"] {
+  border-width: 0 !important;
+  border-color: transparent !important;
+  background-image: none !important;
+  box-shadow: none !important;
+}
+.dashboard-tile[data-tile-frame="flush"].ring-2,
+.dashboard-tile[data-tile-frame="subtle"].ring-2,
+.dashboard-tile[data-tile-frame="flush"].ring-1,
+.dashboard-tile[data-tile-frame="subtle"].ring-1 {
+  box-shadow: var(--tw-ring-inset, ) 0 0 0 calc(var(--tw-ring-offset-width, 0px) + 2px) var(--tw-ring-color) !important;
 }
 [data-dashboard-cardtreatment="glass"] .dashboard-tile {
   background-color: color-mix(in srgb, rgb(var(--surface-1)) calc(var(--dash-card-opacity, 1) * 100%), transparent);

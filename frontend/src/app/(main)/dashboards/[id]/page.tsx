@@ -22,6 +22,8 @@ import { DashboardThemeProvider, getDashboardGridMargin } from '@/components/das
 import { resolveStyleTokens } from '@/lib/dashboard-theme-tokens';
 import { AiDesignPanel } from '@/components/dashboards/ai-design/AiDesignPanel';
 import { planFromTemplate } from '@/lib/dashboard-presentation/templates';
+import { buildFieldMetaIndex } from '@/lib/dashboard-presentation/design-context';
+import { auditRenderedTiles } from '@/lib/dashboard-presentation/render-audit';
 import { buildPresentationSnapshot, tilesOnPage } from '@/lib/dashboard-presentation/snapshot';
 import { buildPresentationMutation, tilesWithLocalEdits, toLocalLayoutOverrides } from '@/lib/dashboard-presentation/executor';
 import { useAiDesign } from '@/components/dashboards/ai-design/useAiDesign';
@@ -81,6 +83,7 @@ import {
   getDashboardChartsForPage,
   normalizeDashboardPages,
   tidyPageLayout,
+  compactPageUp,
   normalizeDashboardGridForRender,
   GRID_VERSION,
 } from '@/lib/dashboard-pages';
@@ -210,6 +213,14 @@ function normalizeLegacyDateFilter(filter: TypedFilter, dateColumn: ColumnInfo |
 // Filter state lives in dashboard.filters_config + pages_config —
 // no second source of truth needed.
 
+/** Drop keys whose value is `undefined` — a theme patch uses them to CLEAR a
+ *  key, and a cleared key must not be persisted as an explicit null. */
+function stripUndefined<T extends Record<string, any>>(value: T): T {
+  const out: Record<string, any> = {};
+  for (const [key, v] of Object.entries(value)) if (v !== undefined) out[key] = v;
+  return out as T;
+}
+
 export default function DashboardDetailPage() {
   const { t } = useI18n();
   const params = useParams();
@@ -245,12 +256,19 @@ export default function DashboardDetailPage() {
   // Phase-G — cluster-level layout (position/direction/gap/etc.).
   const [draftSlicerClusterLayout, setDraftSlicerClusterLayout] = useState<any | null>(null);
   const [appliedSlicerClusterLayout, setAppliedSlicerClusterLayout] = useState<any | null>(null);
-  // An AI-Design theme that has been APPLIED to the draft but NOT persisted. A
-  // manual theme change (the modal) saves instantly; an AI redesign must not,
-  // because "Apply" is a draft step — the report only truly changes colour on
-  // Save/Publish, and Discard drops it. Painted into the query cache for the
-  // preview; the server keeps the published theme until a save flushes this.
+  // A theme change (AI Design Apply, the theme menu, an undo) that is not yet
+  // saved. It is an unsaved edit exactly like a drag: rendered immediately,
+  // staged into the server DRAFT on Save draft, and published — together with
+  // the layout, in one server transaction — on Publish. Nothing writes the
+  // published theme directly any more. Discard drops it.
   const [pendingThemeConfig, setPendingThemeConfig] = useState<any | null>(null);
+  // An AI design being LOOKED at: the theme keys and slicer-cluster keys it
+  // would write. A view layer only — never staged — so the preview shows the
+  // dock/variant/density exactly as Apply will, and Discard is free.
+  const [previewPresentation, setPreviewPresentation] = useState<{
+    theme: Record<string, any>;
+    slicerCluster: Record<string, any>;
+  } | null>(null);
   const slicersSeededRef = React.useRef(false);
   const [isApplyingFilters, setIsApplyingFilters] = useState(false);
   const [crossFilterState, setCrossFilterState] = useState<{
@@ -334,6 +352,11 @@ export default function DashboardDetailPage() {
   >({});
   const hasLocalLayoutChanges = Object.keys(localLayoutOverrides).length > 0;
   const hasAnyPendingChanges = hasLocalLayoutChanges || Boolean(serverDashboard?.has_draft) || Boolean(pendingThemeConfig);
+  /** Unsaved = not yet in the server draft: local layout edits or a theme. */
+  const hasUnsavedPresentation = hasLocalLayoutChanges || Boolean(pendingThemeConfig);
+  /** True for the WHOLE save (layout, then theme, then filters) — not just the
+   *  layout request — so the controls never report "saved" half-way through. */
+  const [isStagingDraft, setIsStagingDraft] = useState(false);
   // Always-current mirror of localLayoutOverrides so undo-capture can read the
   // pre-change value without adding it to every handler's dep array.
   const localLayoutOverridesRef = React.useRef(localLayoutOverrides);
@@ -357,12 +380,14 @@ export default function DashboardDetailPage() {
     if (
       !hasLocalLayoutChanges
       && !previewLayoutOverrides
+      && !pendingThemeConfig
       && (!beDrafts || Object.keys(beDrafts).length === 0)
     ) {
       return serverDashboard;
     }
     return {
       ...serverDashboard,
+      ...(pendingThemeConfig ? { theme_config: pendingThemeConfig } : {}),
       dashboard_charts: serverDashboard.dashboard_charts.map((dc) => {
         const beOverride = beDrafts
           ? (beDrafts[dc.id] ?? beDrafts[String(dc.id) as any])
@@ -381,7 +406,7 @@ export default function DashboardDetailPage() {
         };
       }),
     };
-  }, [serverDashboard, localLayoutOverrides, hasLocalLayoutChanges, previewLayoutOverrides]);
+  }, [serverDashboard, localLayoutOverrides, hasLocalLayoutChanges, previewLayoutOverrides, pendingThemeConfig]);
 
   // The dock the CLUSTER will actually use. Resolved here too so the wrapper
   // that positions the cluster beside the grid cannot disagree with the
@@ -399,10 +424,24 @@ export default function DashboardDetailPage() {
     return () => window.removeEventListener('resize', onResize);
   }, []);
 
+  // What the page RENDERS: the draft, with an AI design under preview laid over
+  // it. Staging always reads `draftSlicerClusterLayout`; only the view reads this.
+  const viewSlicerClusterLayout = React.useMemo(
+    () => (previewPresentation && Object.keys(previewPresentation.slicerCluster).length > 0
+      ? { ...(draftSlicerClusterLayout ?? {}), ...previewPresentation.slicerCluster }
+      : draftSlicerClusterLayout),
+    [draftSlicerClusterLayout, previewPresentation],
+  );
+  const viewThemeConfig = React.useMemo(
+    () => (previewPresentation && Object.keys(previewPresentation.theme).length > 0
+      ? { ...(dashboard?.theme_config ?? {}), ...previewPresentation.theme }
+      : dashboard?.theme_config),
+    [dashboard?.theme_config, previewPresentation],
+  );
   const preferredFilterDock = React.useMemo(
-    () => draftSlicerClusterLayout?.position
-      ?? resolveStyleTokens((dashboard?.theme_config ?? null) as any).filterDock,
-    [draftSlicerClusterLayout?.position, dashboard?.theme_config],
+    () => viewSlicerClusterLayout?.position
+      ?? resolveStyleTokens((viewThemeConfig ?? null) as any).filterDock,
+    [viewSlicerClusterLayout?.position, viewThemeConfig],
   );
 
 
@@ -487,18 +526,13 @@ export default function DashboardDetailPage() {
       bumpHistory();
     }
   };
-  // Apply a theme_config (live update) — reused by the modal onSave and by theme
-  // undo/redo so both go through one path. Persist, then AUTHORITATIVELY patch the
-  // detail cache so the theme provider repaints live. A plain invalidate+refetch
-  // did NOT repaint in-session: the dashboard GET can be response-cached and
-  // return the pre-change theme, leaving the cached dashboard stale until a hard
-  // reload. setQueryData (the same pattern the draft-layout save uses, which is
-  // why layout edits repaint live) guarantees the in-session restyle for BOTH a
-  // manual theme change AND theme undo/redo. Only the LIST is invalidated (card
-  // refresh); the detail query is written directly to avoid racing a stale refetch.
+  // Apply a theme_config — reused by the theme menu and by theme undo/redo so
+  // both go through one path. It is an unsaved DRAFT edit: rendered at once
+  // through the page memo (so a refetch cannot undo it), staged on Save draft,
+  // published with the layout on Publish.
   /**
-   * Persist a theme, and hand the filter dock back to it when the user picked a
-   * LAYOUT.
+   * Apply a theme as a draft edit, and hand the filter dock back to it when the
+   * user picked a LAYOUT.
    *
    * `slicer_cluster_layout.position` outranks the theme's `filterDock` on
    * purpose — an author who drags the filter rail somewhere must keep it. The
@@ -514,50 +548,54 @@ export default function DashboardDetailPage() {
    * afterwards writes it back and that choice sticks until the next template.
    */
   const applyThemeConfig = async (theme: any, opts?: { releaseDock?: boolean }) => {
-    // Optimistic-first: repaint the cached dashboard IMMEDIATELY so a manual theme
-    // change and (especially) Ctrl+Z undo feel instant, then persist in the
-    // background. On success reconcile with the server-normalized value; on
-    // failure a reload reconciles (the theme is already visually applied).
-    queryClient.setQueryData(['dashboards', dashboardId], (old: any) =>
-      old ? { ...old, theme_config: theme } : old);
-    // Local draft state first, so the rail moves on the same frame as the paint.
-    const clearedDock = opts?.releaseDock && draftSlicerClusterLayout
-      ? { ...draftSlicerClusterLayout, position: undefined, direction: undefined }
-      : null;
-    if (clearedDock) {
-      setDraftSlicerClusterLayout(clearedDock);
-      setAppliedSlicerClusterLayout(clearedDock);
-    }
-    try {
-      const updated = await dashboardApi.update(dashboardId, {
-        theme_config: theme,
-        ...(clearedDock ? { slicer_cluster_layout: clearedDock } : {}),
-      } as any);
-      queryClient.setQueryData(['dashboards', dashboardId], (old: any) =>
-        old ? { ...old, theme_config: updated?.theme_config ?? theme } : old);
-      queryClient.invalidateQueries({ queryKey: ['dashboards'], exact: true });
-    } catch (err) {
-      console.error('Failed to persist theme:', err);
+    // A theme change is an unsaved edit: rendered now, saved with the draft,
+    // published with the layout. (It used to PUT the live theme_config at once,
+    // so picking a colour in the menu — or an AI "Save draft" — repainted the
+    // PUBLISHED report while its layout was still the old one.)
+    paintThemeDraft(theme);
+    // Picking a template releases a stored dock so the template drives it. The
+    // draft cluster layout is auto-staged; it is NOT marked applied here, or the
+    // stage would never run.
+    if (opts?.releaseDock && draftSlicerClusterLayout) {
+      setDraftSlicerClusterLayout({ ...draftSlicerClusterLayout, position: undefined, direction: undefined });
     }
   };
-  /** Paint an AI-Design theme WITHOUT persisting — the draft path. The report
-   *  shows the new surface immediately (cache paint), the server keeps the
-   *  published theme, and `persistPendingTheme` / Discard decide its fate. */
+  /** Render a theme as an unsaved edit. The page memo overlays it, so a refetch
+   *  cannot wipe it; Save draft stages it, Discard drops it. */
   const paintThemeDraft = (theme: any) => {
     setPendingThemeConfig(theme);
-    queryClient.setQueryData(['dashboards', dashboardId], (old: any) =>
-      old ? { ...old, theme_config: theme } : old);
   };
 
-  /** Flush a drafted AI theme to the server. Called by Save draft and Publish so
-   *  the colour only becomes real when the author commits, matching the layout. */
-  const persistPendingTheme = async (): Promise<boolean> => {
+  /** Stage the unsaved theme into the SERVER DRAFT (never the live row). Returns
+   *  false — and leaves it unsaved — when the server refused, so Save/Publish
+   *  can say so instead of reporting a success that did not happen. */
+  const stagePendingTheme = async (): Promise<boolean> => {
     if (!pendingThemeConfig) return true;
+    const theme = pendingThemeConfig;
     try {
-      await applyThemeConfig(pendingThemeConfig);
-      setPendingThemeConfig(null);
+      const updated = await dashboardApi.updateDraftFilters(dashboardId, { theme_config: theme });
+      if (updated) queryClient.setQueryData(['dashboards', dashboardId], updated);
+      // Only clear it if nothing newer was painted while the request was in flight.
+      setPendingThemeConfig((current: any) => (current === theme ? null : current));
       return true;
-    } catch {
+    } catch (err) {
+      console.error('Failed to stage theme draft:', err);
+      return false;
+    }
+  };
+
+  /** Stage the slicer-cluster draft NOW (it is normally staged 500ms after a
+   *  change). Save/Publish must not race that debounce, or a dock change made
+   *  just before publishing would be left out of the published report. */
+  const stageSlicerClusterLayout = async (): Promise<boolean> => {
+    if (JSON.stringify(draftSlicerClusterLayout) === JSON.stringify(appliedSlicerClusterLayout)) return true;
+    const cluster = draftSlicerClusterLayout;
+    try {
+      await dashboardApi.updateDraftFilters(dashboardId, { slicer_cluster_layout: cluster ?? {} });
+      setAppliedSlicerClusterLayout(cluster);
+      return true;
+    } catch (err) {
+      console.error('Failed to stage slicer cluster layout:', err);
       return false;
     }
   };
@@ -569,8 +607,9 @@ export default function DashboardDetailPage() {
       const state = value as PresentationState;
       setLocalLayoutOverrides(state.layout);
       if (state.slicerCluster !== undefined) {
+        // Draft only: the auto-stage sees draft ≠ applied and writes it, so an
+        // undone dock change also leaves the server draft.
         setDraftSlicerClusterLayout(state.slicerCluster);
-        setAppliedSlicerClusterLayout(state.slicerCluster);
       }
       // Undo/redo of an AI redesign stays in the DRAFT — repaint the theme
       // without persisting, the same way Apply did, so a stray Ctrl+Z can never
@@ -834,7 +873,7 @@ export default function DashboardDetailPage() {
     // from live state, rather than being handed in — a caller that snapshotted
     // earlier would record a baseline that has since moved.
     const nextTheme = commit.themePatch
-      ? { ...(dashboard?.theme_config ?? {}), ...commit.themePatch }
+      ? stripUndefined({ ...(dashboard?.theme_config ?? {}), ...commit.themePatch })
       : undefined;
     const nextCluster = commit.slicerClusterPatch
       ? { ...(draftSlicerClusterLayout ?? {}), ...commit.slicerClusterPatch }
@@ -855,10 +894,13 @@ export default function DashboardDetailPage() {
     });
 
     setPreviewLayoutOverrides(null);
+    setPreviewPresentation(null);
     setLocalLayoutOverrides(commit.layoutOverrides);
     if (nextCluster !== undefined) {
+      // Draft only. Marking it applied as well (as this used to) told the
+      // auto-stage there was nothing to send, so an AI dock change never
+      // reached the server draft and was silently absent from Publish.
       setDraftSlicerClusterLayout(nextCluster);
-      setAppliedSlicerClusterLayout(nextCluster);
     }
     // Draft, don't persist: the colour lands on Save/Publish and Discard drops
     // it — an AI Apply must not silently repaint the live report (§ theme-draft).
@@ -869,6 +911,37 @@ export default function DashboardDetailPage() {
   // because in AI mode a focused tile scopes the redesign to that one visual
   // (click-chart-to-edit), so the hook needs to read it.
   const [focusedTileId, setFocusedTileId] = useState<number | null>(null);
+  // AI Design scope = what is selected on the canvas. Click selects one visual,
+  // Shift/Ctrl/⌘+click adds or removes one; clicking the only selected visual
+  // again clears it. Outside AI mode selection is the single focus highlight.
+  const [selectedTileIds, setSelectedTileIds] = useState<number[]>([]);
+  const handleTileFocus = React.useCallback((id: number, additive?: boolean) => {
+    setFocusedTileId(id);
+    setSelectedTileIds((current) => {
+      if (additive) return current.includes(id) ? current.filter((x) => x !== id) : [...current, id];
+      return current.length === 1 && current[0] === id ? [] : [id];
+    });
+  }, []);
+  const clearTileSelection = React.useCallback(() => {
+    setSelectedTileIds([]);
+    setFocusedTileId(null);
+  }, []);
+  // A selection belongs to the page it was made on.
+  React.useEffect(() => { setSelectedTileIds([]); }, [activePageId]);
+  const canvasRootRef = React.useRef<HTMLDivElement | null>(null);
+  const getCanvasRoot = React.useCallback(() => canvasRootRef.current, []);
+  // The render-quality probe (see lib/dashboard-presentation/render-audit):
+  // the e2e gate calls it on the builder canvas and on the published report.
+  React.useEffect(() => {
+    (window as any).__APPBI_RENDER_AUDIT__ = () => auditRenderedTiles(canvasRootRef.current ?? document);
+    return () => { delete (window as any).__APPBI_RENDER_AUDIT__; };
+  }, []);
+  // Design Context: labels, types and formats from the semantic models this page
+  // has already loaded — no extra request, nothing the page does not show.
+  const designFieldMeta = React.useMemo(
+    () => buildFieldMetaIndex(Array.from(datasetModelsById.values()).map((model) => (model as any)?.views)),
+    [datasetModelsById],
+  );
 
   const aiDesign = useAiDesign({
     dashboardId: Number(dashboardId),
@@ -880,10 +953,12 @@ export default function DashboardDetailPage() {
     slicers: [...draftGlobalSlicers, ...draftPageSlicers],
     slicerDock: effectiveFilterDock,
     currentTheme: dashboard?.theme_config,
-    slicerClusterLayout: draftSlicerClusterLayout,
+    slicerClusterLayout: viewSlicerClusterLayout,
     gridGapPx: getDashboardGridMargin(dashboard?.theme_config)[1],
-    // Only a click while the AI panel is open means "restyle just this one".
-    focusedChartId: designMode === 'ai' ? focusedTileId : null,
+    // Only a selection made while the AI panel is open scopes a request.
+    selectedIds: designMode === 'ai' ? selectedTileIds : [],
+    fieldMeta: designFieldMeta,
+    getCanvasRoot,
     onCommit: commitPresentation,
   });
 
@@ -893,16 +968,24 @@ export default function DashboardDetailPage() {
     setPreviewLayoutOverrides(
       aiDesign.pending ? (aiDesign.pending.mutation.layoutOverrides as any) : null,
     );
+    setPreviewPresentation(
+      aiDesign.pending
+        ? {
+            theme: (aiDesign.pending.mutation.themePatch ?? {}) as Record<string, any>,
+            slicerCluster: (aiDesign.pending.mutation.slicerClusterPatch ?? {}) as Record<string, any>,
+          }
+        : null,
+    );
   }, [aiDesign.pending]);
 
   // Clicking a chart while the AI panel is minimised should bring the panel
   // back — otherwise the "Editing: X" chip the click just armed is invisible.
   React.useEffect(() => {
-    if (designMode === 'ai' && focusedTileId != null && aiPanelCollapsed) {
+    if (designMode === 'ai' && selectedTileIds.length > 0 && aiPanelCollapsed) {
       setAiPanelCollapsed(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [focusedTileId, designMode]);
+  }, [selectedTileIds, designMode]);
 
   // A report-scoped redesign changes the SURFACE — a dark ground, a violet
   // accent, softer cards — and that is the biggest thing "make this a dark
@@ -911,19 +994,11 @@ export default function DashboardDetailPage() {
   // as the preview is on screen. It is derived from `pending`, never stored, so
   // Discard reverts it for free. Page-scoped previews carry no theme patch, so
   // this is exactly the live theme for them.
-  const previewTheme = React.useMemo(() => {
-    const patch = aiDesign.pending?.mutation.themePatch;
-    if (!patch || Object.keys(patch).length === 0) return dashboard?.theme_config;
-    // Preview the SURFACE and the slicer's LOOK, but not its POSITION. The dock
-    // and variant reflow the filter cluster — reflowing it mid-preview shoves the
-    // whole grid sideways (the "charts jumping" §) — so those land on Apply.
-    // `slicerStyle` (card/pill/glass/…) only repaints the chips, no reflow, so it
-    // rides in the preview: a "modern glass filter" should look modern before you
-    // commit, not after.
-    const { filterDock, slicerVariant, ...surface } = patch as Record<string, any>;
-    void filterDock; void slicerVariant;
-    return { ...(dashboard?.theme_config ?? {}), ...surface };
-  }, [aiDesign.pending, dashboard?.theme_config]);
+  // The theme the page RENDERS: the (draft) theme with an AI design under
+  // preview laid over it — the WHOLE patch, dock and variant included. The dock
+  // used to be held back until Apply ("charts jumping"); that made Apply show a
+  // layout the preview never did. What the user approves is what they saw.
+  const previewTheme = viewThemeConfig;
 
   const pageSlicersServerSignatureRef = React.useRef<string>('');
   React.useEffect(() => {
@@ -1233,6 +1308,40 @@ export default function DashboardDetailPage() {
     setLocalLayoutOverrides(nextOverrides);
   };
 
+  // Lock is layout state, so it goes through the same local-override → draft →
+  // publish path as a drag: undoable, visible immediately (the grid reads the
+  // merged layout), and never lost when a draft saved BEFORE the lock is
+  // published. It used to write the live row directly, which a stale draft
+  // entry then overwrote on publish — the lock silently came undone.
+  const handleToggleTileLock = useCallback((dashboardChartId: number, next: boolean) => {
+    const prevOverrides = localLayoutOverridesRef.current;
+    const merged = {
+      ...prevOverrides,
+      [dashboardChartId]: { ...resolveDashboardChartLayout(dashboardChartId, prevOverrides), locked: next },
+    };
+    pushUndo({ kind: 'layout', prev: prevOverrides, next: merged });
+    setLocalLayoutOverrides(merged);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [resolveDashboardChartLayout]);
+
+  // The persisted layout of each tile (server row ⊕ saved draft), WITHOUT the
+  // unsaved local edits or an AI preview. Tile-level toggles that still write
+  // the live row (highlight opt-out, date-grain lock, title) spread THIS, so an
+  // unsaved drag or a design being previewed can never leak into the live
+  // report through an unrelated click.
+  const persistedLayoutById = React.useMemo(() => {
+    const map: Record<number, Record<string, any>> = {};
+    for (const dc of serverDashboard?.dashboard_charts ?? []) {
+      map[dc.id] = resolveDashboardChartLayout(dc.id, {}) as Record<string, any>;
+    }
+    return map;
+  }, [serverDashboard, resolveDashboardChartLayout]);
+  const persistedLayoutRef = React.useRef(persistedLayoutById);
+  persistedLayoutRef.current = persistedLayoutById;
+  // Stable getter: tiles are memoised and must not re-render on every refetch
+  // just to see a fresher persisted layout — they read it at write time.
+  const getPersistedLayout = useCallback((id: number) => persistedLayoutRef.current[id], []);
+
   // Phase-18 — "Sắp xếp gọn": re-flow the active page's tiles into a clean,
   // aligned, equal-height-row grid (kills the ragged "thò thụt" look). Writes
   // to the same local-override → Save-draft path as a manual drag, so it's
@@ -1248,7 +1357,10 @@ export default function DashboardDetailPage() {
       w: Number(dc.layout?.w) || 4,
       h: Number(dc.layout?.h) || 4,
     }));
-    const tidied = tidyPageLayout(tiles);
+    // Locked tiles are obstacles, not participants: they keep their rectangle
+    // and the re-flow routes around them.
+    const lockedIds = new Set(pageCharts.filter((dc) => (dc.layout as any)?.locked === true).map((dc) => dc.id));
+    const tidied = tidyPageLayout(tiles, lockedIds);
     const next: Record<number, Record<string, any>> = {};
     for (const t of tidied) {
       next[t.id] = mergeGridLayout(resolveDashboardChartLayout(t.id), t);
@@ -1276,14 +1388,15 @@ export default function DashboardDetailPage() {
       w: Number(dc.layout?.w) || 4,
       h: Number(dc.layout?.h) || 4,
     }));
-    const minY = Math.min(...tiles.map((tl) => tl.y));
-    if (!Number.isFinite(minY) || minY <= 0) {
+    const lockedIds = new Set(pageCharts.filter((dc) => (dc.layout as any)?.locked === true).map((dc) => dc.id));
+    const lifted = compactPageUp(tiles, lockedIds);
+    if (!lifted) {
       toast.info(t('dashboards.detail.compactUpNoop'));
       return;
     }
     const next: Record<number, Record<string, any>> = {};
-    for (const tl of tiles) {
-      next[tl.id] = mergeGridLayout(resolveDashboardChartLayout(tl.id), { x: tl.x, y: tl.y - minY, w: tl.w, h: tl.h });
+    for (const tl of lifted) {
+      next[tl.id] = mergeGridLayout(resolveDashboardChartLayout(tl.id), { x: tl.x, y: tl.y, w: tl.w, h: tl.h });
     }
     const prevOverrides = localLayoutOverridesRef.current;
     const merged = { ...prevOverrides, ...next };
@@ -1340,10 +1453,24 @@ export default function DashboardDetailPage() {
     }
   };
 
+  /** Stage everything unsaved into the server draft. All-or-report: each part
+   *  is attempted, and the caller learns which failed — nothing is reported as
+   *  saved that the server did not accept. */
+  const stageAllToDraft = async (): Promise<{ ok: boolean; failed: string[] }> => {
+    const failed: string[] = [];
+    setIsStagingDraft(true);
+    try {
+      if (!(await flushLocalLayoutsToDraft())) failed.push('layout');
+      if (!(await stagePendingTheme())) failed.push('theme');
+      if (!(await stageSlicerClusterLayout())) failed.push('filters');
+    } finally {
+      setIsStagingDraft(false);
+    }
+    return { ok: failed.length === 0, failed };
+  };
+
   const handleSaveDraft = async () => {
-    const ok = await flushLocalLayoutsToDraft();
-    // A drafted AI theme becomes real on Save, together with the layout.
-    await persistPendingTheme();
+    const { ok } = await stageAllToDraft();
     if (ok) {
       // Save flushes local overrides → the pre-save snapshots in the undo stack
       // no longer map cleanly onto the now-empty override buffer, so clear the
@@ -1351,6 +1478,7 @@ export default function DashboardDetailPage() {
       resetUndo();
       toast.success(t('dashboards.detail.draftSaved'));
     } else {
+      // What failed stays unsaved and on screen; nothing was published.
       toast.error(t('dashboards.detail.draftSaveFailed'));
     }
   };
@@ -1380,7 +1508,7 @@ export default function DashboardDetailPage() {
   // mounted once but always sees current state.
   const ctrlSRef = React.useRef<() => void>(() => {});
   ctrlSRef.current = () => {
-    if (hasLocalLayoutChanges) handleSaveDraft();
+    if (hasUnsavedPresentation) handleSaveDraft();
   };
   React.useEffect(() => {
     if (!canEditResource) return;
@@ -1435,13 +1563,14 @@ export default function DashboardDetailPage() {
   const handlePublish = async () => {
     // Capture base versions BEFORE the flush clears local overrides.
     const tileBaseV = buildTileBaseV();
-    const ok = await flushLocalLayoutsToDraft();
-    if (!ok) {
+    // Everything is staged first; Publish runs only if ALL of it was accepted.
+    // The server then applies layout + theme + filters in one transaction, so a
+    // failed stage or a 409 leaves the published report exactly as it was.
+    const staged = await stageAllToDraft();
+    if (!staged.ok) {
       toast.error(t('dashboards.detail.publishAbortedDraftFailed'));
       return;
     }
-    // A drafted AI theme becomes real on Publish, together with the layout.
-    await persistPendingTheme();
     resetUndo();
     try {
       await publishDashboardMutation.mutateAsync({ dashboardId, tileBaseV });
@@ -1471,12 +1600,9 @@ export default function DashboardDetailPage() {
 
   const handleDiscardAll = async () => {
     setLocalLayoutOverrides({});
-    // A drafted AI theme was only painted into the cache, never persisted — drop
-    // it and refetch the server's published theme so Discard reverts colour too.
-    if (pendingThemeConfig) {
-      setPendingThemeConfig(null);
-      queryClient.invalidateQueries({ queryKey: ['dashboards', dashboardId] });
-    }
+    // An unsaved theme lives only in page state — dropping it reverts colour.
+    // A STAGED theme is in the server draft and goes with discard-draft below.
+    setPendingThemeConfig(null);
     resetUndo();
     if (serverDashboard?.has_draft) {
       try {
@@ -2797,16 +2923,14 @@ export default function DashboardDetailPage() {
       ?? t('dashboards.detail.chartFallbackName', { id: crossFilterState.sourceChartId }))
     : null;
 
-  // The name of the tile the user clicked to restyle in AI mode — shown as the
-  // "Editing: X" chip. Only meaningful while the AI panel is open.
-  const focusedChartName = (designMode === 'ai' && focusedTileId != null)
-    ? (() => {
-        const dc = visibleDashboardCharts.find((c) => c.id === focusedTileId);
-        return dc?.layout?.custom_title
-          ?? dc?.chart?.name
-          ?? t('dashboards.detail.chartFallbackName', { id: focusedTileId });
-      })()
-    : null;
+  // Titles of the visuals selected for AI Design — the panel's scope strip.
+  const selectionNames = designMode === 'ai'
+    ? selectedTileIds
+        .map((id) => visibleDashboardCharts.find((c) => c.id === id))
+        .filter(Boolean)
+        .map((dc) => String(dc!.layout?.custom_title || dc!.chart?.name || t('dashboards.detail.chartFallbackName', { id: dc!.id })))
+    : [];
+  const lockedTileCount = visibleDashboardCharts.filter((dc) => (dc.layout as any)?.locked === true).length;
 
   return (
     <DashboardThemeProvider theme={previewTheme} className="min-h-full bg-surface-2">
@@ -3073,37 +3197,42 @@ export default function DashboardDetailPage() {
                     <div className="ml-2 flex shrink-0 items-center gap-1.5">
                       <span
                         className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-[600] uppercase tracking-wide ${
-                          hasLocalLayoutChanges
+                          hasUnsavedPresentation
                             ? 'bg-warning/20 text-warning'
                             : 'bg-warning/10 text-warning'
                         }`}
                         title={
-                          hasLocalLayoutChanges
+                          hasUnsavedPresentation
                             ? t('dashboards.detail.unsavedTooltip')
                             : t('dashboards.detail.draftTooltip')
                         }
                       >
-                        {hasLocalLayoutChanges ? t('dashboards.detail.badgeUnsaved') : t('dashboards.detail.badgeDraft')}
+                        {hasUnsavedPresentation ? t('dashboards.detail.badgeUnsaved') : t('dashboards.detail.badgeDraft')}
                       </span>
                       <button
                         type="button"
                         onClick={handleSaveDraft}
+                        data-testid="dashboard-save-draft"
+                        data-state={isStagingDraft ? 'saving' : hasUnsavedPresentation ? 'unsaved' : 'saved'}
                         disabled={
-                          !hasLocalLayoutChanges
+                          !hasUnsavedPresentation
+                          || isStagingDraft
                           || updateDraftLayoutMutation.isPending
                         }
                         className="inline-flex h-7 items-center gap-1 rounded-md border border-[rgba(255,255,255,0.08)] bg-[rgba(255,255,255,0.02)] px-2.5 text-[12px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] disabled:opacity-50"
                         title={t('dashboards.detail.saveDraftTooltip')}
                       >
-                        {updateDraftLayoutMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
+                        {isStagingDraft || updateDraftLayoutMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
                         {t('dashboards.detail.saveDraft')}
                         <kbd className="ml-1 hidden rounded bg-[rgba(255,255,255,0.08)] px-1 text-[9px] text-text-tertiary sm:inline">⌘S</kbd>
                       </button>
                       <button
                         type="button"
                         onClick={handlePublish}
+                        data-testid="dashboard-publish"
                         disabled={
                           publishDashboardMutation.isPending
+                          || isStagingDraft
                           || updateDraftLayoutMutation.isPending
                         }
                         className="inline-flex h-7 items-center gap-1 rounded-md bg-brand px-2.5 text-[12px] font-[510] text-white transition-colors hover:bg-brand-hover disabled:opacity-50"
@@ -3115,6 +3244,7 @@ export default function DashboardDetailPage() {
                       <button
                         type="button"
                         onClick={() => setIsDiscardConfirmOpen(true)}
+                        data-testid="dashboard-discard"
                         disabled={discardDraftMutation.isPending}
                         className="inline-flex h-7 items-center rounded-md border border-[rgba(255,255,255,0.08)] bg-[rgba(255,255,255,0.02)] px-2 text-[12px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] disabled:opacity-50"
                         title={t('dashboards.detail.discardTooltip')}
@@ -3383,6 +3513,7 @@ export default function DashboardDetailPage() {
                         type="button"
                         role="radio"
                         aria-checked={active}
+                        data-testid={`design-mode-${mode}`}
                         onClick={() => {
                           // Leaving AI mode drops a preview rather than keeping
                           // it invisibly pending — an unapplied design that
@@ -3473,7 +3604,7 @@ export default function DashboardDetailPage() {
             // (only slicers that filter the active page are applied).
             items={orderedSlicerChildren}
             onChildrenChange={handleSlicerChildrenChange}
-            layout={draftSlicerClusterLayout}
+            layout={viewSlicerClusterLayout}
             onLayoutChange={setDraftSlicerClusterLayout}
             columns={resolvedAvailableColumns}
             columnChartCount={resolvedColumnChartCount}
@@ -3586,6 +3717,7 @@ export default function DashboardDetailPage() {
           </div>
         )}
         <ExportModeContext.Provider value={exportRenderMode}>
+        <div ref={canvasRootRef} data-dashboard-canvas-root="builder">
         {(dashboard?.layout_mode ?? 'grid') === 'canvas' ? (
           <DashboardCanvas
             dashboardId={dashboardId}
@@ -3638,13 +3770,17 @@ export default function DashboardDetailPage() {
             onMoveChartToPage={canEditThisPage ? handleMoveChartToPage : undefined}
             emptyMessage={emptyPageMessage}
             focusedDashboardChartId={focusedTileId}
-            onFocusChart={setFocusedTileId}
+            selectedDashboardChartIds={designMode === 'ai' ? selectedTileIds : undefined}
+            onFocusChart={handleTileFocus}
             aiDesignMode={designMode === 'ai'}
+            onToggleLock={canEditThisPage ? handleToggleTileLock : undefined}
+            getPersistedLayout={getPersistedLayout}
             params={paramValues}
             onParamChange={handleParamChange}
             onBindParameter={canEditThisPage ? setBindingChartId : undefined}
           />
         )}
+        </div>
         </ExportModeContext.Provider>
         </div>
         </div>{/* /Phase-G3 slicer-cluster arrangement wrapper */}
@@ -3702,8 +3838,6 @@ export default function DashboardDetailPage() {
             <AiDesignPanel
               turns={aiDesign.turns}
               busy={aiDesign.busy}
-              scope={aiDesign.scope}
-              onScopeChange={aiDesign.setScope}
               onSubmit={aiDesign.submit}
               pendingDiff={aiDesign.pending?.diff ?? null}
               onApply={aiDesign.apply}
@@ -3712,9 +3846,9 @@ export default function DashboardDetailPage() {
               onClose={() => { aiDesign.discard(); setDesignMode('manual'); }}
               visualCount={aiDesign.visualCount}
               pageName={currentPage?.name ?? activePageId}
-              focusedChartName={focusedChartName}
-              onClearFocus={() => setFocusedTileId(null)}
-              onRetryEntireReport={aiDesign.retryEntireReport}
+              selectionNames={selectionNames}
+              onClearSelection={clearTileSelection}
+              lockedCount={lockedTileCount}
             />
           </div>
         ))}
@@ -3996,7 +4130,7 @@ export default function DashboardDetailPage() {
                 // Layout only. Picking a template in the modal already applies
                 // its colours through the theme path; re-applying them here
                 // would repaint every page as a side effect of a layout button.
-                const plan = planFromTemplate(templateId, snapshot, 'page');
+                const plan = planFromTemplate(templateId, snapshot);
                 const built = buildPresentationMutation({
                   plan,
                   snapshot,

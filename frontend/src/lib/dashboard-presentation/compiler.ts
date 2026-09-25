@@ -19,8 +19,8 @@ import type {
   PresentationDensity,
   PresentationMutation,
   PresentationPlan,
+  PresentationEmphasis,
   PresentationSection,
-  PresentationSpan,
   SnapshotVisual,
   VisualId,
 } from './types';
@@ -75,6 +75,10 @@ const MIN_DECORATIVE_PX = 56;
  *  chart floor, and holding it to the chart floor left a strip of tall cards
  *  with a lot of empty space under each number (§ KPI-too-tall). */
 const MIN_KPI_PX = 95;
+/** A table is read row by row; below ~8 rows plus a header it stops being the
+ *  detail people open it for. Low emphasis may quiet it, not truncate it. */
+const MIN_TABLE_PX = 380;
+const TABLE_TYPES_FOR_FLOOR: ReadonlySet<string> = new Set(['TABLE', 'MATRIX', 'PIVOT', 'PIVOT_TABLE']);
 const KPI_ROLES: ReadonlySet<string> = new Set(['kpi', 'headline']);
 
 /**
@@ -109,7 +113,6 @@ const PRIMITIVE_SPANS: Record<LayoutPrimitive, number[] | null> = {
   // Self-sizing, like the KPI strip: the hero and the rail do not share a row,
   // so a single span table cannot describe them. `placeRail` owns the geometry.
   hero_with_rail: null,
-  section_break: [COLS],
 };
 
 /** The hero/rail split, in columns. A rail tile at 12 of 36 sits exactly on the
@@ -211,8 +214,11 @@ function spansForSection(section: PresentationSection): number[] {
   return declared;
 }
 
-const SPAN_WEIGHT: Record<PresentationSpan, number> = {
-  small: 0.6, medium: 1, large: 1.4, full: 2,
+/** Height multiplier per emphasis. This is what makes "make this one stand
+ *  out" read as bigger — a high-emphasis visual is taller than its role's
+ *  default, a low-emphasis one shorter (the floors below still hold). */
+const EMPHASIS_HEIGHT: Record<PresentationEmphasis, number> = {
+  low: 0.88, normal: 1, high: 1.15,
 };
 
 export interface CompileInput {
@@ -226,6 +232,9 @@ export interface CompileInput {
    *  default rather than being required, so a caller that does not care still
    *  gets sensible sizes. */
   gridGapPx?: number;
+  /** Tiles the recomposition must not place — locked visuals. They keep their
+   *  own rectangles and the executor routes the compiled tiles around them. */
+  fixed?: ReadonlySet<VisualId>;
 }
 
 const DEFAULT_GRID_GAP_PX = 8;
@@ -314,8 +323,11 @@ function normalizeSections(
 export function compilePresentationPlan(input: CompileInput): CompileResult {
   const { plan, snapshot, pageId } = input;
   const notes: string[] = [];
+  const fixed = input.fixed ?? new Set<VisualId>();
   const byId = new Map<VisualId, SnapshotVisual>();
-  for (const visual of snapshot.visuals) byId.set(visual.dashboardChartId, visual);
+  for (const visual of snapshot.visuals) {
+    if (!fixed.has(visual.dashboardChartId)) byId.set(visual.dashboardChartId, visual);
+  }
 
   const density = plan.direction?.density ?? 'balanced';
   const heightScale = DENSITY_HEIGHT_SCALE[density] ?? 1;
@@ -334,12 +346,9 @@ export function compilePresentationPlan(input: CompileInput): CompileResult {
       const visual = byId.get(id);
       const pref = plan.visualPreferences?.[String(id)];
       const role = pref?.role ?? visual?.displayRoleHint ?? 'supporting';
-      const weight = SPAN_WEIGHT[pref?.span ?? 'medium'] ?? 1;
       const scaled = (TARGET_HEIGHT_PX[role] ?? TARGET_HEIGHT_PX.supporting)
         * heightScale
-        // An emphasised visual earns a little more height, so "make this one
-        // bigger" reads as bigger and not merely wider.
-        * (weight > 1 ? 1.12 : 1);
+        * (EMPHASIS_HEIGHT[pref?.emphasis ?? 'normal'] ?? 1);
       // A section header is meant to be a thin band; a chart is not. Only a
       // real widget gets the low floor — an unknown tile is treated as a chart,
       // because being too tall is a nuisance and being too short hides data.
@@ -349,7 +358,9 @@ export function compilePresentationPlan(input: CompileInput): CompileResult {
       // A gauge/funnel/donut keeps the height its shape needs even when the role
       // would make it a compact card.
       const chartFloorPx = CHART_TYPE_MIN_PX[String(visual?.chartType ?? '').toUpperCase()] ?? 0;
-      const floorPx = Math.max(roleFloorPx, chartFloorPx);
+      const tableFloorPx = role === 'table' || TABLE_TYPES_FOR_FLOOR.has(String(visual?.chartType ?? '').toUpperCase())
+        ? MIN_TABLE_PX : 0;
+      const floorPx = Math.max(roleFloorPx, chartFloorPx, tableFloorPx);
       return Math.max(rowsForHeight(scaled, gapPx), rowsAtLeast(floorPx, gapPx));
     });
     const rowH = heights.length > 0 ? Math.max(...heights) : MIN_TILE_H;
@@ -372,9 +383,8 @@ export function compilePresentationPlan(input: CompileInput): CompileResult {
     const visual = byId.get(id);
     const pref = plan.visualPreferences?.[String(id)];
     const role = pref?.role ?? visual?.displayRoleHint ?? 'supporting';
-    const weight = SPAN_WEIGHT[pref?.span ?? 'medium'] ?? 1;
     const scaled = (TARGET_HEIGHT_PX[role] ?? TARGET_HEIGHT_PX.supporting)
-      * heightScale * extraScale * (weight > 1 ? 1.12 : 1);
+      * heightScale * extraScale * (EMPHASIS_HEIGHT[pref?.emphasis ?? 'normal'] ?? 1);
     const floorPx = visual?.isWidget ? MIN_DECORATIVE_PX : MIN_DATA_VISUAL_PX;
     return Math.max(rowsForHeight(scaled, gapPx), rowsAtLeast(floorPx, gapPx));
   };
@@ -492,7 +502,7 @@ export function compilePresentationPlan(input: CompileInput): CompileResult {
   // the user should know was incomplete.
   const orphanIds: VisualId[] = [];
   for (const visual of snapshot.visuals) {
-    if (placed.has(visual.dashboardChartId)) continue;
+    if (placed.has(visual.dashboardChartId) || fixed.has(visual.dashboardChartId)) continue;
     orphanIds.push(visual.dashboardChartId);
   }
   if (orphanIds.length > 0) {
@@ -507,8 +517,8 @@ export function compilePresentationPlan(input: CompileInput): CompileResult {
       layoutOverrides,
       themePatch: {},
       slicerClusterPatch: {},
-      createdWidgets: [],
       notes,
+      layer: 'redesign',
     },
     orphanIds,
   };
