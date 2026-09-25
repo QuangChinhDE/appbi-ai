@@ -20,12 +20,21 @@ from __future__ import annotations
 import pytest
 from fastapi import HTTPException
 from sqlalchemy import create_engine
+from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.orm import Session
 
 from app.api import dashboards as api
 from app.core.database import Base
 from app.models.models import Dashboard, DashboardChart
 from app.schemas.schemas import DashboardUpdateDraftFiltersRequest, DashboardUpdateLayoutRequest
+
+
+@compiles(UUID, "sqlite")
+def _uuid_on_sqlite(_type, _compiler, **_kw):
+    # The pinned SQLAlchemy (requirements.txt) cannot render the Postgres UUID
+    # owner_id column on SQLite; newer releases can, which hid this locally.
+    return "CHAR(36)"
 
 
 class _User:
