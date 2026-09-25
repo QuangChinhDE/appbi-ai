@@ -116,12 +116,14 @@ def test_a_large_grant_is_shortlisted_to_the_limit_with_the_core_always_in():
     assert "compare_periods" in view.visible
 
 
-def test_the_core_is_every_way_in_to_a_chart_id_plus_compute():
+def test_the_core_is_every_way_in_to_a_chart_id_its_reader_and_compute():
     """Measured live: without `list_charts` in the core, a shortlisted step guessed
     chart ids and answered 3 of 6; with everything shown, 6 of 6."""
     from app.services.agent_flows.contract import _CHART_LOOKUP_TOOLS
 
-    assert set(CAP.CORE) == set(_CHART_LOOKUP_TOOLS) | {"compute"}
+    # + the reader of what they find: measured, a KPI-value question with no
+    # reader loaded answered "no data" in every routed run (see capabilities._core).
+    assert set(CAP.CORE) == set(_CHART_LOOKUP_TOOLS) | {"get_chart_summary", "compute"}
 
 
 @pytest.mark.parametrize("question,expected", [

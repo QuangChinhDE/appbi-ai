@@ -228,3 +228,19 @@ def test_web_capabilities_are_neither_routed_nor_listed_when_web_is_off():
         assert not set(view.visible) & set(web)
         assert not {r["name"] for r in data["loaded"]} & set(web)
         assert not any(w in view.find_definition()["description"] for w in web)
+
+
+def test_a_cluster_of_near_identical_capabilities_loads_two_not_all():
+    """A catalogue grows in clusters; copies of one idea do not get to fill the
+    budget. The real registry has no such pair (most alike: 0.16 overlap)."""
+    extras = distractors(200)
+    for it in INTENTS:
+        view = _view(it["q"], extras=extras)
+        loaded = [n for n in view.visible if n.startswith("ext")]
+        for a in loaded:
+            alike = [b for b in loaded if b != a and view._similar(a, b)]
+            assert len(alike) < CAP.MAX_ALIKE, (it["q"], a, alike)
+    real = CAP.build_view(NON_WEB, _ctx(), web_enabled=True, question="x")
+    names = list(real._haystacks)
+    assert not any(real._similar(a, b) for i, a in enumerate(names) for b in names[i + 1:]), \
+        "the threshold must never treat two distinct real tools as copies"

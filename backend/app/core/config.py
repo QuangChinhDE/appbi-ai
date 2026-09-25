@@ -164,12 +164,15 @@ class Settings(BaseSettings):
     # to a chart id, and compute), what the question ranks highest, and whatever
     # it has loaded, up to this; the rest is one line each inside find_capability.
     #
-    # 10000, set by measurement on 48 labelled intents (tests/fixtures/
-    # capability_routing): the right capability loaded on round one for 47 of 48
-    # at 10000 (42 at 8000), for ~10.5k characters per round against 24.2k shown
-    # in full — and ~11.7k with 500 distractor capabilities, where full would be
-    # 321k. A per-node `visible_capabilities` count replaces it.
-    AGENT_FLOW_CAPABILITY_SCHEMA_BUDGET: int = 10000
+    # 10500, set by measurement on the labelled intents (tests/fixtures/
+    # capability_routing): 10000 loaded the right capability on round one for 47
+    # of 48 (42 at 8000); the core then gained its chart READER (get_chart_summary,
+    # ~460 chars — see runtime/capabilities._core) and the budget grew by the same
+    # amount so the share left for question-ranked capabilities is unchanged:
+    # 51 of 52 intents, ~11.3k characters per round against 24.2k shown in full,
+    # and flat as the catalogue grows. A per-node `visible_capabilities` count
+    # replaces it.
+    AGENT_FLOW_CAPABILITY_SCHEMA_BUDGET: int = 10500
 
     # ── AI Intelligence (docs/Intelligence/appbi_intelligence_backend_redesign_v2.md) ──
     # Every switch below defaults to the pre-v2 behaviour, so a deployment that

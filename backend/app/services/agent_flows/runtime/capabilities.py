@@ -85,6 +85,13 @@ CATALOGUE_LINES = 30
 RELATIVE_CUTOFF = 0.25
 #: Weight of the node prompt relative to the question when ranking.
 PROMPT_WEIGHT = 0.3
+#: How many near-duplicate capabilities (description overlap ≥ ALIKE_JACCARD)
+#: routing loads for one question; the rest stay in the catalogue.
+#: 0.4 by measurement: the two most alike REAL tools (get_chart_data,
+#: smart_drilldown) overlap 0.16; same-topic variants of one capability overlap
+#: 0.46 and up. The line sits well clear of every real pair.
+MAX_ALIKE = 2
+ALIKE_JACCARD = 0.4
 
 
 def _core() -> tuple[str, ...]:
@@ -95,10 +102,17 @@ def _core() -> tuple[str, ...]:
 
     MEASURED, NOT ASSUMED. The first core held only the two discover tools; live,
     the shortlisted step answered 3 of 6 because `list_charts` was not there and it
-    guessed chart ids."""
+    guessed chart ids.
+
+    And the one that READS what a way in found. Measured on the routing eval: a
+    KPI-value question ("tỷ lệ giao đúng hẹn là bao nhiêu?") found its chart and
+    then, with no reader loaded, tried `compute` on the lookup result and answered
+    "no data" in every routed and stress run, while the full arm read it with
+    `get_chart_summary`/`get_chart_data`. `get_chart_summary` is the reader that
+    works on any chart without raw-row access."""
     from app.services.agent_flows.contract import _CHART_LOOKUP_TOOLS
 
-    return (*sorted(_CHART_LOOKUP_TOOLS), "compute")
+    return (*sorted(_CHART_LOOKUP_TOOLS), "get_chart_summary", "compute")
 
 
 CORE = _core()
@@ -113,9 +127,9 @@ def default_schema_budget() -> int:
     try:
         from app.core.config import settings
 
-        return max(1000, int(getattr(settings, "AGENT_FLOW_CAPABILITY_SCHEMA_BUDGET", 10000)))
+        return max(1000, int(getattr(settings, "AGENT_FLOW_CAPABILITY_SCHEMA_BUDGET", 10500)))
     except Exception:                                           # noqa: BLE001
-        return 10000
+        return 10500
 
 
 def default_limit() -> int:
@@ -312,19 +326,35 @@ class CapabilityView:
             # way to read a KPI's value and answered "no data".
             candidates = [s for n, s in ranked if n not in chosen]
             top = candidates[0] if candidates else 0.0
+            picked: list[str] = []
             for name, score in ranked:
                 if len(chosen) >= self.limit or score < top * RELATIVE_CUTOFF:
                     break
                 if name in chosen:
                     continue
+                # NEAR-DUPLICATES ADD LITTLE. A catalogue grows in clusters —
+                # "export revenue by sales rep" for eight departments — and a
+                # cluster sharing the question's one common word would otherwise
+                # fill the budget with copies. Two of a kind are loaded; the rest
+                # stay in the catalogue, one line each, loadable on demand.
+                if sum(1 for p in picked if self._similar(name, p)) >= MAX_ALIKE:
+                    continue
                 size = self._schema_size(name)
                 if self.schema_budget and used + size > self.schema_budget:
                     continue  # a smaller one further down may still fit
                 chosen.append(name)
+                picked.append(name)
                 used += size
             self.visible = chosen
         self.rounds.append(list(self.visible))
         return self.visible
+
+    def _similar(self, a: str, b: str) -> bool:
+        ta = set(self._haystacks.get(a, {}))
+        tb = set(self._haystacks.get(b, {}))
+        if not ta or not tb:
+            return False
+        return len(ta & tb) / len(ta | tb) >= ALIKE_JACCARD
 
     def catalogue(self) -> list[str]:
         """Eligible capabilities not loaded this round, most relevant first."""
