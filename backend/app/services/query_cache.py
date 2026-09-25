@@ -720,6 +720,27 @@ def set_public_meta(token: str, data: Dict[str, Any]) -> None:
         _log_shared_cache_failure("pubmeta-write", exc)
 
 
+def invalidate_all_public_meta() -> int:
+    """Drop every cached public-report structure. Called on Publish.
+
+    The structure is keyed by TOKEN (public link, share token, rotating embed
+    grants), and one dashboard can be reached through many of them, so the
+    namespace is cleared as a whole rather than hunting for keys. Publishing is
+    rare; the cost is one rebuild per report on its next view. Without this, a
+    viewer who opened /d or /embed in the minute before Publish kept receiving
+    the pre-publish layout and theme for up to the TTL — the report was
+    published, but not what the author approved. NEVER raises.
+    """
+    store = _get_shared_store()
+    if store is None:
+        return 0
+    try:
+        return int(store.invalidate_datasource(_PUBLIC_META_NS) or 0)
+    except Exception as exc:  # noqa: BLE001
+        _log_shared_cache_failure("pubmeta-invalidate", exc)
+        return 0
+
+
 def begin_coalesced_public_meta(
     token: str, *, wait_timeout: float = 15.0, poll_interval: float = 0.2,
     on_wait: Optional[Callable[[], None]] = None,

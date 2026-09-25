@@ -814,6 +814,11 @@ class DashboardUpdateDraftFiltersRequest(BaseModel):
     filters_config: Optional[List[Dict[str, Any]]] = None
     slicers_config: Optional[List[Dict[str, Any]]] = None
     slicer_cluster_layout: Optional[Dict[str, Any]] = None
+    # The report theme, staged like the rest of the presentation: the editor
+    # sees it (overlaid on GET), public/embed keep the published theme, and
+    # POST /publish applies it in the SAME transaction as the layouts — so a
+    # dashboard is never published half-old, half-new.
+    theme_config: Optional[Dict[str, Any]] = None
     pages_config: Optional[List[Dict[str, Any]]] = None
 
 

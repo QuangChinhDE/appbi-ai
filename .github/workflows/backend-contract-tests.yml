@@ -184,7 +184,7 @@ jobs:
             tests/test_report_read_selection_is_explicit.py \
             tests/test_authoring_is_strict.py \
             tests/test_node_child_slots.py \
-            tests/test_presentation_planner_reference_image.py --junitxml=/tmp/unit.xml 2>&1 | tee /tmp/pytest-unit.log
+            tests/test_presentation_planner_reference_image.py \n            tests/test_dashboard_presentation_publish_is_atomic.py --junitxml=/tmp/unit.xml 2>&1 | tee /tmp/pytest-unit.log
       # WHAT ACTUALLY RAN, ON A GREEN RUN TOO.
       #
       # The step below reports failures. Nothing reported SUCCESS, so a

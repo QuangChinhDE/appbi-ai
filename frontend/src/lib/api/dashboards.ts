@@ -210,6 +210,9 @@ export const dashboardApi = {
       slicers_config?: Array<Record<string, any>>;
       slicer_cluster_layout?: Record<string, any>;
       pages_config?: Array<Record<string, any>>;
+      /** The report theme, staged with the rest of the presentation and
+       *  published by POST /publish in the same transaction. */
+      theme_config?: Record<string, any>;
     }
   ): Promise<Dashboard> => {
     const response = await apiClient.put(`/dashboards/${dashboardId}/draft-filters`, body);
