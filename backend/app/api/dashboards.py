@@ -2033,7 +2033,9 @@ def plan_dashboard_presentation(
             user_prompt=request.prompt,
             conversation=request.conversation,
             images=request.images,
-            focused_chart_id=request.focused_chart_id,
+            granted_layer=request.granted_layer,
+            target_ids=request.target_ids
+            or ([request.focused_chart_id] if request.focused_chart_id is not None else None),
         )
     except PresentationPlanUnavailable as exc:
         # 503, not 500: the report is fine and the request was valid — there is
