@@ -138,3 +138,15 @@ and, where only a model can show it, a live eval arm.
 | `compute` has no declared output contract; unusable from a ToolNode | typed `output_schema` verified in CI against real results (compute is pure); `{step, path}` variables so a deterministic ToolNode can compute over an earlier step | schema validated on every result shape; ToolNode→compute→Skill number chain |
 
 Schema: one additive migration (`agent_brain_versions.lifecycle*`, `agent_flow_run_steps.budget`).
+
+### Revision 4 — status
+
+All five rows closed, each by a behavioural test and (where only a model can show it) the
+live eval; two further independent adversarial reviews ran against the fixes themselves and
+every finding was fixed with a test that fails on the previous code
+(`test_adversarial_review_v3_closure.py`, `test_adversarial_review_v3_round2.py`). The live
+eval also exposed product defects outside the plan — tools that refused the right chart for
+the way a model names a column (`resolve_chart_candidates`, `rank_values`, `total_measure`,
+`share_of`) — which were the largest single cause of wrong answers in every arm, including
+full visibility, and are fixed at the tool. As-built detail, eval tables and the remaining
+limits: `docs/agent-flow-v3-target-architecture.md` §0; invariant → test map: §4.

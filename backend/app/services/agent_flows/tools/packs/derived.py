@@ -103,6 +103,75 @@ def _column_is_numeric(rows: list[list], idx: int) -> bool:
     return seen > 0 and hits >= seen * 0.8
 
 
+def _named_column(ctx: Any, chart_id: int, columns: list[str], explicit: str,
+                  declared: list[dict], want_numeric: bool) -> int | None:
+    """The column an EXPLICIT measure/dimension argument names, or None.
+
+    ONE matcher for every tool that takes a column by name (`rank_values`,
+    `share_of`, `total_measure`, …) — they had two, and the second still matched
+    only the exact column string, so `total_measure(measure="Total revenue")` was
+    refused three times in a row live.
+
+    The names a model actually passes: the column itself; the same field
+    without its table prefix; the label the chart declares; a phrase mapped
+    through the governed vocabulary to a field THIS chart declares; and — for a
+    breakdown — the chart's own title, by the shared rule the dimension gate
+    uses. Anything else is not this chart's column.
+    """
+    from app.services.agent_flows.tools.packs.discover import (
+        _field_matches,
+        _fold,
+        _vocabulary,
+        field_key,
+    )
+
+    lower = {c.lower(): i for i, c in enumerate(columns)}
+    idx = lower.get(explicit.lower())
+    if idx is not None:
+        return idx
+    key = field_key(explicit)
+    for i, col in enumerate(columns):
+        if field_key(col) == key:
+            return i
+
+    def column_of(entry: dict) -> int | None:
+        for candidate in (entry.get("field"), entry.get("label")):
+            if candidate and candidate.lower() in lower:
+                return lower[candidate.lower()]
+        return None
+
+    for entry in declared:
+        if key in (field_key(str(entry.get("field") or "")), _fold(str(entry.get("label") or ""))):
+            found = column_of(entry)
+            if found is not None:
+                return found
+    try:
+        aliases = _vocabulary(ctx, explicit, "measure" if want_numeric else "dimension")[1:]
+    except Exception:  # noqa: BLE001
+        aliases = []
+    for entry in declared:
+        if any(_field_matches(a, [entry]) for a in aliases):
+            found = column_of(entry)
+            if found is not None:
+                return found
+    if not want_numeric:
+        from app.services.agent_flows.tools.dimension_gate import (
+            _raw_terms,
+            chart_dimension_words,
+            title_hits,
+        )
+
+        asked = _raw_terms(explicit)
+        for ref, _fw, title_words in chart_dimension_words(ctx).get(chart_id, []):
+            if asked and len(title_hits(ctx, asked, title_words)) >= min(2, len(asked)):
+                entry = next((e for e in declared if isinstance(e, dict)
+                              and field_key(str(e.get("field") or "")) == field_key(ref)), {"field": ref})
+                found = column_of(entry)
+                if found is not None:
+                    return found
+    return None
+
+
 def _resolve(
     ctx: ToolContext,
     chart_id: int,
@@ -125,46 +194,14 @@ def _resolve(
     Returns `(measure_idx, dimension_idx, measure_name, dimension_name)`, or an
     error result if the chart has no usable pair.
     """
+    from app.services.agent_flows.tools.packs.discover import field_key
+
     lower = {c.lower(): i for i, c in enumerate(columns)}
     fields = (ctx.chart_meta.get(chart_id) or {}).get("fields") or {}
 
-    from app.services.agent_flows.tools.packs.discover import _fold, field_key
-
     def pick(explicit: str | None, declared: list[dict], want_numeric: bool) -> int | None:
         if explicit:
-            idx = lower.get(explicit.lower())
-            if idx is not None:
-                return idx
-            # THE NAMES A MODEL ACTUALLY PASSES. Measured live: `measure` came as
-            # "Total revenue" or "total_revenue" for a column named
-            # `dataset_table_438.total_revenue`, was refused as bad_argument three
-            # times, and the step answered "no data". The same field said
-            # another way — without its table prefix, or by the label the chart
-            # declares for it — is the same field. Anything else is still refused.
-            key = field_key(explicit)
-            for i, col in enumerate(columns):
-                if field_key(col) == key:
-                    return i
-            for entry in declared:
-                if key in (field_key(str(entry.get("field") or "")), _fold(str(entry.get("label") or ""))):
-                    for candidate in (entry.get("field"), entry.get("label")):
-                        if candidate and candidate.lower() in lower:
-                            return lower[candidate.lower()]
-            # A PHRASE ("doanh thu"), through the ONE governed vocabulary the
-            # resolver uses — never a guess: only a declared field of THIS chart
-            # that the vocabulary maps the phrase to.
-            from app.services.agent_flows.tools.packs.discover import _field_matches, _vocabulary
-
-            try:
-                aliases = _vocabulary(ctx, explicit, "measure" if want_numeric else "dimension")[1:]
-            except Exception:  # noqa: BLE001
-                aliases = []
-            for entry in declared:
-                if any(_field_matches(a, [entry]) for a in aliases):
-                    for candidate in (entry.get("field"), entry.get("label")):
-                        if candidate and candidate.lower() in lower:
-                            return lower[candidate.lower()]
-            return None
+            return _named_column(ctx, chart_id, columns, explicit, declared, want_numeric)
         for entry in declared:
             for candidate in (entry.get("field"), entry.get("label")):
                 if candidate and candidate.lower() in lower:
@@ -189,6 +226,21 @@ def _resolve(
                       + ", ".join(columns)) if measure else "",
         )
     d_idx = pick(dimension, fields.get("dimensions") or [], False)
+    if dimension and d_idx is None:
+        own = pick(None, fields.get("dimensions") or [], False)
+        if own is not None and own != m_idx:
+            # NOT "no grouping column" — the chart HAS one, the argument named
+            # another. Said that way, the model believed the chart could not be
+            # ranked and answered "no data" (measured live, three times).
+            return R.err(
+                f"chart {chart_id} is not broken down by '{dimension}' — it groups by "
+                f"'{columns[own]}'",
+                code="bad_argument",
+                recovery=(f"Omit `dimension` to rank by this chart's own grouping "
+                          f"('{columns[own]}') if that is what was asked; otherwise find a "
+                          "chart broken down by what was asked (resolve_chart_candidates)."),
+                detail={"columns": columns, "groups_by": columns[own]},
+            )
     if d_idx is None or d_idx == m_idx:
         # A single-value chart (a KPI tile) genuinely has no grouping column.
         # Reported as not_applicable so a flow can branch to a different tool
@@ -403,11 +455,14 @@ def tool_total_measure(ctx: ToolContext, args: dict) -> dict:
     measure = args.get("measure")
     m_idx: int | None = None
     if measure:
-        m_idx = lower.get(str(measure).lower())
+        fields = (ctx.chart_meta.get(chart_id) or {}).get("fields") or {}
+        m_idx = _named_column(ctx, chart_id, columns, str(measure), fields.get("measures") or [], True)
         if m_idx is None:
             return R.err(
                 f"'{measure}' is not a column of chart {chart_id}",
                 code="bad_argument", detail={"columns": columns},
+                recovery=("Omit `measure` to total the chart's own measure, or pass one of: "
+                          + ", ".join(columns)),
             )
     else:
         fields = (ctx.chart_meta.get(chart_id) or {}).get("fields") or {}

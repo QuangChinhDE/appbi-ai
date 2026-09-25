@@ -318,4 +318,25 @@ def test_a_measure_phrase_maps_through_the_governed_vocabulary(monkeypatch):
     assert isinstance(got, tuple) and got[2] == "dataset_table_438.total_revenue"
 
 
+def test_a_breakdown_named_in_words_is_not_told_the_chart_has_no_grouping(monkeypatch):
+    """Live: rank_values(chart 686, dimension='danh mục') came back 'chart 686 has
+    no grouping column' three times; the model believed it and answered 'no data'."""
+    from app.services.agent_flows.tools.packs import derived
+
+    got = derived._resolve(_derived_ctx(), 686, COLUMNS, ROWS, measure=None, dimension="thành phố")
+    assert isinstance(got, dict) and got["error_code"] == "bad_argument"
+    assert "no grouping column" not in got["error"] and "groups by" in got["error"]
+    assert "Omit `dimension`" in got.get("recovery", "")
+
+
+def test_total_measure_takes_the_measure_the_way_rank_values_does(monkeypatch):
+    from app.services.agent_flows.tools.packs import derived
+
+    monkeypatch.setattr(derived, "_load", lambda ctx, args: (COLUMNS, ROWS, []))
+    monkeypatch.setattr(derived.measure_meta, "describe_measure",
+                        lambda ctx, cid, col: {"additive": True, "agg": "sum", "format_kind": "", "unit": None})
+    out = derived.tool_total_measure(_derived_ctx(), {"chart_id": 686, "measure": "Total revenue"})
+    assert out["ok"] is True and round(out["data"]["value"], 2) == round(sum(r[1] for r in ROWS), 2)
+
+
 from test_skills_run_as_governed_children import skill_db  # noqa: E402,F401
