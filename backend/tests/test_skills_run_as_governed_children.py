@@ -559,10 +559,11 @@ def test_a_skill_keeps_its_last_model_call_for_its_answer(monkeypatch, skill_db)
     assert model.offered["VAI_TRO_CON"][-1] == []
     b = skills.child_budget(Budget(max_llm_calls=3, max_tool_calls=30))
     assert b.max_llm_calls == 2          # 3 left, 1 kept for the parent's answer
+    assert b.llm_available() == 2        # round 1 is not the last: tools offered
     b.spend_llm()
-    assert b.tools_left() > 0 and not b.final_round   # round 1 may use tools
+    assert b.tools_left() > 0 and b.llm_available() == 1   # round 2 is the last: it answers
     b.spend_llm()
-    assert b.final_round                               # round 2 answers
+    assert b.llm_available() == 0 and b.tools_left() == 0
 
 
 def test_an_empty_caller_scope_still_bounds_the_skills_explicit_grants(monkeypatch):

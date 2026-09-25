@@ -63,6 +63,7 @@ from app.services.agent_flows.runtime.state import (
     Budget,
     BudgetExhausted,
     RunState,
+    StepBudgetExhausted,
     as_list,
     evaluate,
     evaluate_all,
@@ -75,7 +76,7 @@ logger = logging.getLogger(__name__)
 #: that ran, ran without error. They downgrade `ok` to `partial`, because a run
 #: whose branches all missed is not a success — it is a question the flow was not
 #: shaped to answer, and the operator has to be able to see that in the numbers.
-DEGRADING_NOTICES = frozenset({"branch_unmatched"})
+DEGRADING_NOTICES = frozenset({"branch_unmatched", "steps_skipped_for_budget"})
 
 
 
@@ -112,6 +113,10 @@ class RunContext:
     #: (a link's `store_question_content`), carried so a Skill child run obeys the
     #: same choice instead of defaulting to storing.
     store_content: bool = True
+    #: Minimum-need memo for the budget reservation, by node identity: a body is
+    #: walked once per node it contains, and a Skill's pinned flow is resolved once.
+    minimum_cache: dict = field(default_factory=dict)
+    skill_lookup: Any = None
 
 
 async def run_flow(
@@ -448,14 +453,34 @@ async def run_flow(
 
 
 # ═══ Walking ══════════════════════════════════════════════════════════════════
+def _minimum(node: Any, rctx: RunContext) -> tuple[int, int]:
+    from app.services.agent_flows.runtime.reserve import node_minimum, skill_lookup_for
+
+    key = id(node)
+    if key not in rctx.minimum_cache:
+        if rctx.skill_lookup is None:
+            rctx.skill_lookup = skill_lookup_for(rctx.db) or (lambda k, v: None)
+        rctx.minimum_cache[key] = node_minimum(
+            node, skill_lookup=rctx.skill_lookup, depth=len(rctx.skill_stack))
+    return rctx.minimum_cache[key]
+
+
 async def _run_body(
     body: list[Any], state: RunState, rctx: RunContext
 ) -> AsyncGenerator[AgentEvent, None]:
-    for node in body:
+    for i, node in enumerate(body):
         if state.stopped:
             return
-        async for ev in _run_node(node, state, rctx):
-            yield ev
+        # THE REST OF THIS BODY IS GUARANTEED WHAT IT NEEDS TO RUN AT ALL.
+        #
+        # Held back for the duration of this node, at every level of nesting
+        # (a lane's body reserves for the lane's later steps; the coordinator's
+        # own body reserves for the steps after the coordinator). Budget is a
+        # runtime rule: no prompt tells a step to leave something for the answer.
+        rest = [_minimum(n, rctx) for n in body[i + 1:]]
+        with state.budget.reserve(llm=sum(r[0] for r in rest), tools=sum(r[1] for r in rest)):
+            async for ev in _run_node(node, state, rctx):
+                yield ev
 
 
 async def _run_node(
@@ -463,6 +488,15 @@ async def _run_node(
 ) -> AsyncGenerator[AgentEvent, None]:
     label = node.name or node.key
     state.budget.check()
+    # WHERE THE BUDGET WENT, per step — what it had, what it was made to leave for
+    # the steps after it, and what it spent. Stamped on every row this node records.
+    before = state.budget.ledger()
+    state.step_budget[node.key] = {
+        "llm_available_at_start": state.budget.llm_available(),
+        "llm_reserved_for_later": before["llm_reserved"],
+        "tools_reserved_for_later": before["tools_reserved"],
+        "_llm0": before["llm_calls"], "_tools0": before["tool_calls"],
+    }
 
     reused = _reuse(node, state, rctx)
     if reused is not None:
@@ -616,6 +650,19 @@ async def _run_node(
         except Exception as exc:  # noqa: BLE001
             last_error = str(exc)[:300]
             logger.warning("[flow] node '%s' attempt %s failed: %s", node.key, attempt, exc)
+            if isinstance(exc, StepBudgetExhausted):
+                # Retrying cannot conjure calls the rest of the flow is owed. Said
+                # once, to the reader: the answer exists but did not get every step.
+                if not any(n.code == "steps_skipped_for_budget" for n in state.notices):
+                    state.notices.append(Notice(
+                        code="steps_skipped_for_budget", severity="warning",
+                        node_key=node.key,
+                        text=("Một số bước không chạy vì số lượt gọi mô hình còn lại được "
+                              "giữ cho các bước bắt buộc phía sau — câu trả lời có thể "
+                              "chưa đầy đủ."),
+                        facts=state.budget.ledger(),
+                    ))
+                break
             if node.retry and attempt < attempts:
                 import asyncio
 
@@ -1134,6 +1181,13 @@ async def _run_loop(
                 type="loop_iteration",
                 extra={"step": node.key, "index": index, "total": len(items)},
             )
+            # AN ITERATION THAT PRODUCED NOTHING COLLECTS NOTHING. The body's last
+            # output survives from the previous iteration, so an iteration whose
+            # step failed (or was refused budget) used to be collected as a copy of
+            # the one before — five "results" from one run. Found when the budget
+            # reservation made later iterations decline: the loop reported 5 of 5.
+            if node.body:
+                state.outputs.pop(node.body[-1].key, None)
             try:
                 async for ev in _run_body(node.body, state, rctx):
                     yield ev

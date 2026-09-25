@@ -56,6 +56,15 @@ def evidence_index(state: RunState, *, exclude_step: str = "", limit: int = 20) 
     )
 
 
+#: The `final` phase: the round a step is offered no tools on, because it is the
+#: last call its budget or round ceiling allows.
+FINAL_ROUND = (
+    "This is your last turn in this step: no further tool calls are available. "
+    "Answer now with what you already have, and say plainly what you could not "
+    "check. Reply in the language of the user's question."
+)
+
+
 class ToolCallingStrategy:
     name = "tool_calling"
 
@@ -68,6 +77,7 @@ class ToolCallingStrategy:
         self.messages: list[dict] = []
         #: Every round's prose, concatenated — the step's raw text.
         self.collected = ""
+        self._reminder: dict | None = None
 
     # ── context ──────────────────────────────────────────────────────────────
     def build_request(self) -> None:
@@ -90,6 +100,37 @@ class ToolCallingStrategy:
 
         return context._language_reminder(self.rctx)
 
+    # ── instructions, each on the round it governs ───────────────────────────
+    #
+    # AN INSTRUCTION THE MODEL READS AFTER IT HAS DECIDED IS NOT AN INSTRUCTION.
+    #
+    # Every instruction this strategy adds has a PHASE, and is placed so that the
+    # round it is meant to govern is the round that reads it:
+    #
+    #   system       every round — base, node prompt, grants' notes, sources,
+    #                routing note, evidence index (`build_request`, `run`)
+    #   after_tools  the round that reads a batch of tool results — the language
+    #                reminder, right after the results it competes with; one copy,
+    #                moved forward each round rather than piling up
+    #   final        the round offered no tools — "answer now with what you have"
+    #   correction   a verifier's own round (`handlers/agent._retry_*`), which
+    #                reuses `messages` and so also reads the latest reminder
+    #
+    # The language reminder used to be appended AFTER the loop: the model that
+    # wrote the answer never read it, only the correction calls did.
+    def _after_tools(self) -> None:
+        reminder = {"role": "user", "content": self._language_reminder()}
+        if self._reminder is not None:
+            try:
+                self.messages.remove(self._reminder)
+            except ValueError:
+                pass
+        self.messages.append(reminder)
+        self._reminder = reminder
+
+    def _final(self) -> None:
+        self.messages.append({"role": "user", "content": FINAL_ROUND})
+
     # ── the loop ─────────────────────────────────────────────────────────────
     async def run(self, rt: Any) -> AsyncGenerator[AgentEvent, None]:
         """Drive the step. `rt` is the `AgentRuntime`: the only way out of here."""
@@ -106,7 +147,13 @@ class ToolCallingStrategy:
         stream_text = rt.is_answering and node.output_format == "chat"
 
         for _round in range(self.max_rounds):
-            async for ev in rt.ask(self.system, messages, stream_text=stream_text):
+            last = _round == self.max_rounds - 1
+            if _round and not rt.can_ask():
+                # What is left belongs to later steps; this step has spoken.
+                break
+            if rt.next_round_is_final(last=last):
+                self._final()
+            async for ev in rt.ask(self.system, messages, stream_text=stream_text, last=last):
                 yield ev
             reply = rt.last_reply
             if reply.timed_out:
@@ -172,6 +219,11 @@ class ToolCallingStrategy:
                     # about a report it had never actually been shown.
                     "result": rt.last_result,
                 })
+            # THE LANGUAGE CONSTRAINT SITS NEXT TO THE RESULTS IT COMPETES WITH.
+            # A tool result is a large English payload, and next to a ten-word
+            # Vietnamese question the model follows the payload.
+            if runnable:
+                self._after_tools()
 
             # A RECOVERY THE MODEL WILL NOT READ IS NOT A RECOVERY.
             #
@@ -192,16 +244,3 @@ class ToolCallingStrategy:
                 })
                 rt.withdraw_tools()
 
-        # THE LANGUAGE CONSTRAINT HAS TO SIT NEXT TO THE DECISION.
-        #
-        # A tool result is a large English payload, and next to a ten-word
-        # Vietnamese question the model follows the payload. One short line, only
-        # when a tool actually ran — a flow that never calls one never had the
-        # problem.
-        #
-        # KNOWN, AND KEPT AS-IS BY THIS MOVE: it is appended after the loop, so the
-        # model that wrote the answer never reads it — only the correction calls
-        # (`_retry_*`) that reuse `messages` do. Fixing that is a behaviour change
-        # and belongs in its own commit, not in a refactor.
-        if rt.calls_made:
-            messages.append({"role": "user", "content": self._language_reminder()})

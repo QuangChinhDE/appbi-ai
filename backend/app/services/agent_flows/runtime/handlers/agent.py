@@ -287,7 +287,7 @@ async def run(
         if picked is None and not provider_error:
             picked = await _retry_choice(
                 node, state, system, messages, text,
-                provider=provider, api_key=api_key, model=model,
+                provider=provider, api_key=api_key, model=model, rt=rt,
             )
         if picked is None:
             raise RuntimeError(
@@ -339,7 +339,7 @@ async def run(
             if unsupported:
                 fixed = await _retry_figures(
                     node, state, system, messages, text, unsupported,
-                    provider=provider, api_key=api_key, model=model,
+                    provider=provider, api_key=api_key, model=model, rt=rt,
                 )
                 if fixed and not _echoes_instruction(fixed):
                     left, kept = _figure_check(fixed, state)
@@ -389,7 +389,7 @@ async def run(
                 _, supported_before = _figure_check(text, state)
                 fixed = await _retry_qualifiers(
                     node, state, system, messages, text, violations,
-                    provider=provider, api_key=api_key, model=model,
+                    provider=provider, api_key=api_key, model=model, rt=rt,
                 )
                 if fixed and not _echoes_instruction(fixed):
                     left = check_qualifiers(fixed, tool_results, tools_called)
@@ -430,7 +430,7 @@ async def run(
             fixed = await _retry_language(
                 node, state, system, messages, text,
                 provider=provider, api_key=api_key, model=model,
-                locale=_locale_of(rctx),
+                locale=_locale_of(rctx), rt=rt,
             )
             # Only if the second attempt is actually better. A restatement that
             # still reads as the wrong language is not worth losing the first
@@ -594,9 +594,48 @@ def _fmt_figure(value: float) -> str:
     return str(int(value)) if float(value).is_integer() else ("%g" % value)
 
 
+def _spend_optional(state: RunState) -> bool:
+    """An optional correction call: only from what this step may spend — never a
+    later step's reservation (`Budget.try_spend_llm`). A budget without the
+    method (a test double) is charged the old way."""
+    spend = getattr(state.budget, "try_spend_llm", None)
+    if spend is not None:
+        return bool(spend())
+    try:
+        state.budget.spend_llm()
+    except Exception:  # noqa: BLE001 — out of budget is not this step's failure
+        return False
+    return True
+
+
+async def _correction(state: RunState, system: str, messages: list[dict], *, rt: Any,
+                      provider: str, api_key: str, model: str, what: str) -> str:
+    """One correction round. Through the RUNTIME when there is one (deadline,
+    usage, reservation — `AgentRuntime.correct`); directly otherwise."""
+    if rt is not None:
+        return await rt.correct(system, messages)
+    if not _spend_optional(state):
+        return ""
+    out = ""
+    try:
+        async for ev in _stream(
+            provider=provider, api_key=api_key, model=model,
+            system_prompt=system, messages=messages, tools=[],
+        ):
+            if ev.type == "text":
+                out += ev.text
+            elif ev.type == "usage":
+                state.prompt_tokens += int(ev.extra.get("prompt_tokens") or 0)
+                state.completion_tokens += int(ev.extra.get("completion_tokens") or 0)
+    except Exception:  # noqa: BLE001 — a failed correction keeps the first answer
+        logger.warning("[flow] %s correction failed", what, exc_info=True)
+        return ""
+    return out.strip()
+
+
 async def _retry_figures(
     node: AgentNode, state: RunState, system: str, messages: list[dict], said: str,
-    unsupported: list[float], *, provider: str, api_key: str, model: str,
+    unsupported: list[float], *, provider: str, api_key: str, model: str, rt: Any = None,
 ) -> str:
     """Name the figures that trace to nothing, and ask for one correction.
 
@@ -626,30 +665,12 @@ async def _retry_figures(
             ),
         },
     ]
-    try:
-        state.budget.spend_llm()
-    except Exception:  # noqa: BLE001 — out of budget is not this step's failure
-        return ""
-    out = ""
-    try:
-        async for ev in _stream(
-            provider=provider, api_key=api_key, model=model,
-            system_prompt=system, messages=retry_messages, tools=[],
-        ):
-            if ev.type == "text":
-                out += ev.text
-            elif ev.type == "usage":
-                state.prompt_tokens += int(ev.extra.get("prompt_tokens") or 0)
-                state.completion_tokens += int(ev.extra.get("completion_tokens") or 0)
-    except Exception:  # noqa: BLE001 — a failed correction keeps the first answer
-        logger.warning("[flow] figure correction failed", exc_info=True)
-        return ""
-    return out.strip()
-
+    return await _correction(state, system, retry_messages, rt=rt, provider=provider,
+                             api_key=api_key, model=model, what="figure")
 
 async def _retry_qualifiers(
     node: AgentNode, state: RunState, system: str, messages: list[dict], said: str,
-    violations: list[dict], *, provider: str, api_key: str, model: str,
+    violations: list[dict], *, provider: str, api_key: str, model: str, rt: Any = None,
 ) -> str:
     """Name the unsourced qualifiers and ask for one correction.
 
@@ -674,30 +695,12 @@ async def _retry_qualifiers(
             ),
         },
     ]
-    try:
-        state.budget.spend_llm()
-    except Exception:  # noqa: BLE001 — out of budget is not this step's failure
-        return ""
-    out = ""
-    try:
-        async for ev in _stream(
-            provider=provider, api_key=api_key, model=model,
-            system_prompt=system, messages=retry_messages, tools=[],
-        ):
-            if ev.type == "text":
-                out += ev.text
-            elif ev.type == "usage":
-                state.prompt_tokens += int(ev.extra.get("prompt_tokens") or 0)
-                state.completion_tokens += int(ev.extra.get("completion_tokens") or 0)
-    except Exception:  # noqa: BLE001 — a failed correction keeps the first answer
-        logger.warning("[flow] qualifier correction failed", exc_info=True)
-        return ""
-    return out.strip()
-
+    return await _correction(state, system, retry_messages, rt=rt, provider=provider,
+                             api_key=api_key, model=model, what="qualifier")
 
 async def _retry_language(
     node: AgentNode, state: RunState, system: str, messages: list[dict], said: str,
-    *, provider: str, api_key: str, model: str, locale: str,
+    *, provider: str, api_key: str, model: str, rt: Any = None, locale: str,
 ) -> str:
     """Ask once for the same answer in the right language.
 
@@ -719,30 +722,12 @@ async def _retry_language(
             ),
         },
     ]
-    try:
-        state.budget.spend_llm()
-    except Exception:  # noqa: BLE001 — out of budget is not this step's failure
-        return ""
-    out = ""
-    try:
-        async for ev in _stream(
-            provider=provider, api_key=api_key, model=model,
-            system_prompt=system, messages=retry_messages, tools=[],
-        ):
-            if ev.type == "text":
-                out += ev.text
-            elif ev.type == "usage":
-                state.prompt_tokens += int(ev.extra.get("prompt_tokens") or 0)
-                state.completion_tokens += int(ev.extra.get("completion_tokens") or 0)
-    except Exception:  # noqa: BLE001 — a failed correction keeps the first answer
-        logger.warning("[flow] language restatement failed", exc_info=True)
-        return ""
-    return out.strip()
-
+    return await _correction(state, system, retry_messages, rt=rt, provider=provider,
+                             api_key=api_key, model=model, what="language")
 
 async def _retry_choice(
     node: AgentNode, state: RunState, system: str, messages: list[dict], said: str,
-    *, provider: str, api_key: str, model: str,
+    *, provider: str, api_key: str, model: str, rt: Any = None,
 ) -> str | None:
     """One more round, with the miss quoted back. Returns the value, or None.
 
@@ -750,10 +735,6 @@ async def _retry_choice(
     has no budget left for it — a classifier is a cheap step and must not be the
     reason an answer never gets written.
     """
-    try:
-        state.budget.spend_llm()
-    except Exception:  # noqa: BLE001 — out of budget is not this step's failure
-        return None
     retry_messages = [
         *messages,
         {"role": "assistant", "content": said},
@@ -766,16 +747,10 @@ async def _retry_choice(
             ),
         },
     ]
-    got = ""
-    async for ev in _stream(
-        provider=provider, api_key=api_key, model=model,
-        system_prompt=system, messages=retry_messages, tools=[],
-    ):
-        if ev.type == "text":
-            got += ev.text
-        elif ev.type == "usage":
-            state.prompt_tokens += int(ev.extra.get("prompt_tokens") or 0)
-            state.completion_tokens += int(ev.extra.get("completion_tokens") or 0)
+    got = await _correction(state, system, retry_messages, rt=rt, provider=provider,
+                            api_key=api_key, model=model, what="choice")
+    if not got:
+        return None
     return _match_choice(got, node.choices)
 
 

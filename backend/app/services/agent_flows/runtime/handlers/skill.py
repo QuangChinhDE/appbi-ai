@@ -28,6 +28,8 @@ async def run_skill(node: SkillNode, state: RunState, rctx: Any) -> AsyncGenerat
         invoked_as="coordinator_lane" if state.lane_depth else "skill_node",
         parent_step_key=node.key,
         outcome=outcome,
+        # A step, not an agent: nobody spends a round reading this result.
+        caller_reads_result=False,
     ):
         yield ev
     result = outcome.get("result") or {"ok": False, "error": "Skill không chạy"}

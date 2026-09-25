@@ -53,6 +53,8 @@ from app.services.agent_flows.contract import (
     skill_function_name,
     skill_key_of_grant,
 )
+from contextlib import contextmanager
+
 from app.services.agent_flows.runtime.state import BudgetExhausted
 from app.services.dashboard_ai_bot.events import AgentEvent
 
@@ -83,6 +85,10 @@ class SkillBudget:
         self.answer_reserve = 0
         self.tool_calls = 0
         self.llm_calls = 0
+        #: The child's OWN reservations, for the steps inside the Skill — the same
+        #: rule as `Budget.reserve`, one level down.
+        self.llm_reserve_stack: list[int] = []
+        self.tool_reserve_stack: list[int] = []
 
     @property
     def started_at(self) -> float:
@@ -99,16 +105,44 @@ class SkillBudget:
         if self.max_llm_calls - self.llm_calls <= 0:
             return 0
         return max(0, min(self.parent.tools_left(answering=False),
-                          self.max_tool_calls - self.tool_calls))
+                          self.max_tool_calls - self.tool_calls) - sum(self.tool_reserve_stack))
 
-    @property
-    def final_round(self) -> bool:
-        """THE CHILD'S LAST MODEL CALL IS ITS ANSWER. Measured on a link funded for
-        6 model calls: the Skill got 2, spent both asking for tools and died "hết số
-        lượt gọi mô hình" with nothing to hand back. Read by `AgentRuntime.ask`
-        right after spending a call: on the last one, no tools are offered, so the
-        model answers with what it has."""
-        return self.llm_calls >= self.max_llm_calls
+    def llm_available(self) -> int:
+        """THE CHILD'S LAST MODEL CALL IS ITS ANSWER — by the one rule every step
+        follows (`AgentRuntime.ask`: a step whose available calls are down to one
+        is offered no tools). Measured on a link funded for 6 model calls before
+        this: the Skill got 2, spent both asking for tools and died "hết số lượt gọi
+        mô hình" with nothing to hand back."""
+        own = self.max_llm_calls - self.llm_calls
+        parents = self.parent.max_llm_calls - self.parent.llm_calls
+        return max(0, min(own, parents) - sum(self.llm_reserve_stack))
+
+    @contextmanager
+    def reserve(self, *, llm: int, tools: int):
+        self.llm_reserve_stack.append(max(0, int(llm)))
+        self.tool_reserve_stack.append(max(0, int(tools)))
+        try:
+            yield
+        finally:
+            self.llm_reserve_stack.pop()
+            self.tool_reserve_stack.pop()
+
+    def try_spend_llm(self) -> bool:
+        if self.llm_available() <= 0:
+            return False
+        try:
+            self.spend_llm()
+        except BudgetExhausted:
+            return False
+        return True
+
+    def ledger(self) -> dict[str, int]:
+        return {
+            "llm_calls": self.llm_calls, "max_llm_calls": self.max_llm_calls,
+            "tool_calls": self.tool_calls, "max_tool_calls": self.max_tool_calls,
+            "llm_reserved": sum(self.llm_reserve_stack),
+            "tools_reserved": sum(self.tool_reserve_stack),
+        }
 
     def check(self) -> None:
         """Between nodes: the PARENT's ceilings and the shared clock only.
@@ -138,8 +172,14 @@ class SkillBudget:
 PARENT_ANSWER_RESERVE = 1
 
 
-def child_budget(parent: Any) -> SkillBudget:
-    """Everything the parent has left, minus what it needs to answer afterwards.
+def child_budget(parent: Any, *, reading_round: int = 1) -> SkillBudget:
+    """Everything the CALLING step may still spend, minus the round in which it
+    reads the Skill's result.
+
+    "May still spend" is `llm_available()`: what is left after the reservation for
+    the parent flow's later steps — so a Skill invoked early in a flow can never
+    spend the model call its parent's answering step is owed, and a Skill invoked
+    by the answering step leaves that step its reading round.
 
     NOT "HALF", which was the first rule and was measured wrong: on a link funded
     for 6 model calls the Skill got 2 — one tool round and its answer round — ran a
@@ -150,9 +190,10 @@ def child_budget(parent: Any) -> SkillBudget:
     parent's answer reserve.
     """
     tools_left = parent.tools_left(answering=False)
-    llm_left = max(0, parent.max_llm_calls - parent.llm_calls)
+    llm_left = parent.llm_available() if hasattr(parent, "llm_available") \
+        else max(0, parent.max_llm_calls - parent.llm_calls)
     return SkillBudget(parent, tool_cap=tools_left,
-                       llm_cap=max(0, llm_left - PARENT_ANSWER_RESERVE))
+                       llm_cap=max(0, llm_left - max(0, int(reading_round))))
 
 
 # ═══ Resolution ═══════════════════════════════════════════════════════════════
@@ -382,6 +423,7 @@ async def invoke_skill(
     invoked_as: str,
     parent_step_key: str,
     outcome: dict,
+    caller_reads_result: bool = True,
 ) -> AsyncGenerator[AgentEvent, None]:
     """Run one Skill as a child FlowRun of this run. Result left in `outcome["result"]`.
 
@@ -423,7 +465,12 @@ async def invoke_skill(
         outcome["result"] = _err(problem, "bad_argument")
         return
 
-    budget = child_budget(state.budget)
+    # An AGENT that called the Skill needs one more round to read what it
+    # returns; a Skill STEP does not — the steps after it are already covered by
+    # the executor's reservation. Charging a Skill step for a reading round that
+    # never happens is how a mandatory verifier was refused on the minimum budget.
+    budget = child_budget(state.budget,
+                          reading_round=PARENT_ANSWER_RESERVE if caller_reads_result else 0)
     if budget.max_tool_calls <= 0 and budget.max_llm_calls <= 0:
         outcome["result"] = _err("không còn ngân sách cho Skill ở lượt này", "budget_exhausted")
         return

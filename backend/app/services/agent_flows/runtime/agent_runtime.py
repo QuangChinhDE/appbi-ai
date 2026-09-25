@@ -35,7 +35,11 @@ from dataclasses import dataclass, field
 from typing import Any, AsyncGenerator, Callable
 
 from app.services.agent_flows.contract import AgentNode
-from app.services.agent_flows.runtime.state import RunState
+from app.services.agent_flows.runtime.state import (
+    BudgetExhausted,
+    RunState,
+    StepBudgetExhausted,
+)
 from app.services.agent_flows.tools import registry as tool_registry
 from app.services.dashboard_ai_bot.events import AgentEvent
 
@@ -420,6 +424,9 @@ class AgentRuntime:
         self.last_reply = ModelReply()
         self.last_result: dict = {}
         self._previous_scope: Any = None
+        #: Rounds this step was made to answer on (no tools offered) — recorded so
+        #: a trace can say "it answered because its budget said so".
+        self.final_rounds = 0
 
     # ── scope ────────────────────────────────────────────────────────────────
     def enter(self) -> None:
@@ -453,20 +460,83 @@ class AgentRuntime:
         """
         if self._previous_scope is not None:
             self.rctx.ctx.knowledge_scope = self._previous_scope
-        self.state.capability_trace[self.node.key] = self.view.to_trace()
+        self.state.capability_trace[self.node.key] = {
+            **self.view.to_trace(), "final_rounds": self.final_rounds,
+        }
+
+    # ── corrections ──────────────────────────────────────────────────────────
+    async def correct(self, system: str, messages: list[dict]) -> str:
+        """One OPTIONAL model call with no tools — a verifier's correction round.
+
+        Through the runtime like every other call: the same deadline, the same
+        usage accounting, and the budget's `try_spend_llm`, so a correction spends
+        only what this step may spend and never a later step's reservation. Not
+        making it is not a failure: the first answer stands.
+        """
+        state = self.state
+        if not state.budget.try_spend_llm():
+            return ""
+        remaining = max(5.0, state.budget.max_seconds - state.budget.elapsed())
+        out = ""
+        try:
+            async with asyncio.timeout(remaining):
+                async for ev in self._stream(
+                    provider=self.provider, api_key=self.api_key, model=self.model,
+                    system_prompt=system, messages=messages, tools=[],
+                ):
+                    if ev.type == "text":
+                        out += ev.text
+                    elif ev.type == "usage":
+                        state.prompt_tokens += int(ev.extra.get("prompt_tokens") or 0)
+                        state.completion_tokens += int(ev.extra.get("completion_tokens") or 0)
+        except Exception:  # noqa: BLE001 — a failed correction keeps the first answer
+            logger.warning("[flow] correction round failed", exc_info=True)
+            return ""
+        return out.strip()
 
     # ── the model ────────────────────────────────────────────────────────────
+    # ── the budget, as the strategy needs to know it ─────────────────────────
+    def can_ask(self) -> bool:
+        """May this step make another model call at all?"""
+        return self.state.budget.llm_available() > 0
+
+    def next_round_is_final(self, *, last: bool = False) -> bool:
+        """Will the next round be offered no tools? True when it is the last call
+        this step may make — the budget's (`llm_available() == 1`) or the
+        strategy's own round ceiling (`last`)."""
+        return bool(self.schemas) and (last or self.state.budget.llm_available() <= 1)
+
     async def ask(
-        self, system: str, messages: list[dict], *, stream_text: bool,
+        self, system: str, messages: list[dict], *, stream_text: bool, last: bool = False,
     ) -> AsyncGenerator[AgentEvent, None]:
         """One model round. Yields the events a reader may see; the round's text
         and tool calls are left on `last_reply`.
 
         `stream_text` is the strategy's choice of whether this round's prose is
-        the reader's answer as it is written.
+        the reader's answer as it is written; `last` says the strategy will not
+        ask again after this round.
+
+        A STEP ALWAYS ENDS BY SPEAKING. The last call a step may make — by the
+        budget (what is left after the reservation for later steps) or by `last`
+        — is offered no tools: a tool asked for on the last call is a result
+        nobody will read, and it is exactly how a run with its evidence in hand
+        used to end "đã dùng hết số lượt gọi mô hình". A step with no call left
+        at all raises: `BudgetExhausted` when the run itself is spent,
+        `StepBudgetExhausted` when what is left belongs to later steps.
         """
         state = self.state
-        state.budget.spend_llm()
+        budget = state.budget
+        available = budget.llm_available()
+        if available <= 0:
+            left = budget.max_llm_calls - budget.llm_calls
+            if left <= 0:
+                raise BudgetExhausted("đã dùng hết số lượt gọi mô hình cho câu hỏi này")
+            raise StepBudgetExhausted(
+                f"bước này không còn lượt gọi mô hình để dùng: {left} lượt còn lại được "
+                "giữ cho các bước bắt buộc phía sau"
+            )
+        final = last or available == 1
+        budget.spend_llm()
         reply = ModelReply()
         self.last_reply = reply
         # THE VIEW FOR THIS ROUND. Shortlisted: the model is shown the core, what
@@ -478,12 +548,10 @@ class AgentRuntime:
             self.view.refresh()
             if self.view.shortlisted:
                 self.schemas = self.view.schemas(web_enabled=self.web_enabled)
-        # A budget that knows this is its LAST model call (a Skill's) offers no
-        # tools on it: nothing would be left to read their results. The top-level
-        # run budget does not declare this, so its behaviour is unchanged.
-        offered = [] if getattr(state.budget, "final_round", False) else self.schemas
+        offered = [] if final else self.schemas
         if not offered and self.schemas:
             self.view.rounds[-1:] = [[]]
+            self.final_rounds += 1
 
         # THE RUN BUDGET HAS TO BIND DURING A CALL, NOT ONLY BETWEEN NODES.
         #

@@ -57,6 +57,17 @@ class BudgetExhausted(Exception):
     """
 
 
+class StepBudgetExhausted(Exception):
+    """THIS step may not make a model call: what is left is reserved for the steps
+    after it (`Budget.llm_reserve_stack`).
+
+    Not `BudgetExhausted`: the run is not over — the step is recorded as an error
+    naming the reservation, and the executor walks on to the steps the reservation
+    exists for. A gathering step that cannot gather must never be the reason the
+    answering step cannot answer.
+    """
+
+
 #: Dict keys whose numeric value identifies a record rather than measuring
 #: anything. Evidence is the pile an answer's figures are checked against, so a
 #: primary key in it is a false witness: it can only ever agree by coincidence.
@@ -86,6 +97,18 @@ class Budget:
     tool_calls: int = 0
     started_at: float = field(default_factory=time.monotonic)
 
+    #: WHAT THE REST OF THE FLOW STILL NEEDS, pushed by the executor around every
+    #: node (`executor._run_body`): the minimum model / tool calls of the nodes
+    #: after it, at every level of nesting. A step spends only what is left above
+    #: that, so no step — a gathering agent, a coordinator lane, a Skill's child —
+    #: can spend the call a later mandatory step needs in order to run at all.
+    #:
+    #: Measured before this existed: an agent that found its evidence and then
+    #: asked for one more tool on its last model call ended the run "đã dùng hết
+    #: số lượt gọi mô hình" with the evidence in hand and nothing said.
+    llm_reserve_stack: list[int] = field(default_factory=list)
+    tool_reserve_stack: list[int] = field(default_factory=list)
+
     #: Tool calls kept back for the step that actually answers. A gathering step
     #: reads a fixed cost per chart, so on a wide report it can spend the whole
     #: turn's budget before the answering step asks its first question — and the
@@ -98,10 +121,46 @@ class Budget:
 
     def tools_left(self, *, answering: bool = False) -> int:
         """Tool calls still available to this kind of step."""
-        ceiling = self.max_tool_calls
+        ceiling = self.max_tool_calls - sum(self.tool_reserve_stack)
         if not answering:
             ceiling -= min(self.answer_reserve, self.max_tool_calls // 3)
         return max(0, ceiling - self.tool_calls)
+
+    def llm_available(self) -> int:
+        """Model calls the CURRENT step may still make: what is left, minus what
+        the steps after it are guaranteed."""
+        return max(0, self.max_llm_calls - self.llm_calls - sum(self.llm_reserve_stack))
+
+    @contextmanager
+    def reserve(self, *, llm: int, tools: int) -> Iterator[None]:
+        """Hold `llm` / `tools` back for the steps after the one about to run."""
+        self.llm_reserve_stack.append(max(0, int(llm)))
+        self.tool_reserve_stack.append(max(0, int(tools)))
+        try:
+            yield
+        finally:
+            self.llm_reserve_stack.pop()
+            self.tool_reserve_stack.pop()
+
+    def try_spend_llm(self) -> bool:
+        """An OPTIONAL model call — a correction — spends only what is available
+        to this step; it never eats a later step's reservation, and it never
+        raises: not making an optional call is not a failure."""
+        if self.llm_available() <= 0:
+            return False
+        try:
+            self.spend_llm()
+        except BudgetExhausted:
+            return False
+        return True
+
+    def ledger(self) -> dict[str, int]:
+        return {
+            "llm_calls": self.llm_calls, "max_llm_calls": self.max_llm_calls,
+            "tool_calls": self.tool_calls, "max_tool_calls": self.max_tool_calls,
+            "llm_reserved": sum(self.llm_reserve_stack),
+            "tools_reserved": sum(self.tool_reserve_stack),
+        }
 
     def _check_clock(self) -> None:
         if self.elapsed() >= self.max_seconds:
@@ -254,6 +313,9 @@ class RunState:
     capability_trace: dict[str, dict[str, Any]] = field(default_factory=dict)
     #: >0 while a coordinator lane's body runs.
     lane_depth: int = 0
+    #: Per step, while it runs: the budget it started with and was made to leave
+    #: for later steps. `record` turns it into the step's budget ledger.
+    step_budget: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     def record_evidence(self, result: Any, *, tool: str = "") -> str | None:
         """Register one capability result: give it a reference, then harvest it.
@@ -418,6 +480,13 @@ class RunState:
             step.branch = self.branch_stack[-1]
         if step.capabilities is None and step.key in self.capability_trace:
             step.capabilities = self.capability_trace.pop(step.key)
+        if step.budget is None and step.key in self.step_budget:
+            start = self.step_budget.pop(step.key)
+            step.budget = {
+                **{k: v for k, v in start.items() if not k.startswith("_")},
+                "llm_calls": self.budget.llm_calls - int(start.get("_llm0", 0)),
+                "tool_calls": self.budget.tool_calls - int(start.get("_tools0", 0)),
+            }
         self.trace.append(step)
 
     def path_label(self) -> str:

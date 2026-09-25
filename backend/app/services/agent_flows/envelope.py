@@ -516,6 +516,10 @@ class TraceStep(_Model):
     #: not), visible per round, discovered, invoked, rejected. The data behind
     #: "What the AI sees" for a run that already happened.
     capabilities: dict[str, Any] | None = None
+    #: Where the budget went: model/tool calls this step spent (children included
+    #: for a container), what it had available when it started, and what it was
+    #: made to leave for the steps after it.
+    budget: dict[str, Any] | None = None
 
 
 class Trace(_Model):
