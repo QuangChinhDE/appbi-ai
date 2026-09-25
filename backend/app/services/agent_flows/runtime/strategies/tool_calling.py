@@ -161,6 +161,18 @@ class ToolCallingStrategy:
 
             self.collected += reply.text
             if not reply.tool_calls:
+                # THE DRAFT IS REVIEWED WHILE TOOLS REMAIN (phase: review). The
+                # runtime decides whether its figures stand; if not, the draft
+                # goes back with the reason and the loop continues — so the
+                # model can fetch the right figure instead of only being told,
+                # after the loop, that it has none.
+                review = rt.review_draft(reply.text) if hasattr(rt, "review_draft") else ""
+                if review:
+                    messages.append({"role": "assistant", "content": reply.text})
+                    messages.append({"role": "user", "content": review})
+                    if reply.text:
+                        self.collected = self.collected[: len(self.collected) - len(reply.text)]
+                    continue
                 break
 
             room = rt.tool_room()

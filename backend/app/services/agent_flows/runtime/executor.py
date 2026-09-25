@@ -159,6 +159,14 @@ async def run_flow(
             max_seconds=inp.runtime.budget.max_seconds,
         ),
     )
+    # Each chart's grouping, so a result naming only its chart can be placed.
+    try:
+        for cid, meta in (getattr(ctx, "chart_meta", None) or {}).items():
+            dims = ((meta or {}).get("fields") or {}).get("dimensions") or []
+            state.chart_dims[int(cid)] = [str(d.get("field") if isinstance(d, dict) else d)
+                                          for d in dims if d]
+    except Exception:                                           # noqa: BLE001
+        pass
     if on_state is not None:
         on_state(state)
     # THE EVIDENCE STORE REACHES THE TOOL BOUNDARY the same way the question does:
@@ -295,6 +303,18 @@ async def run_flow(
     # is what survived that — an answer whose figures the model was given a chance
     # to fix and did not, which is worth saying out loud.
     verification = _verify_figures(state, answer)
+    # A FIGURE WITH THE WRONG MEANING IS NOT A VERIFIED ONE (`claim_check`): the
+    # answering step already marked it for the reader; the verdict says so too.
+    if getattr(state, "unverified_claims", None):
+        verification = {**(verification or {}), "claims_unverified": list(state.unverified_claims)}
+        state.notices.append(Notice(
+            code="claims_unverified", audience="reader", severity="warning",
+            text=(f"{len(state.unverified_claims)} con số trong câu trả lời không có nguồn phù "
+                  "hợp với điều được hỏi (sai đại lượng, sai chiều/đối tượng, hoặc tự tính) — "
+                  "chúng được đánh dấu chưa kiểm chứng."),
+            facts={"flagged": [{k: f.get(k) for k in ("value", "pct", "why")}
+                               for f in state.unverified_claims[:8]]},
+        ))
     status = _status_after_verification(status, verification)
     if verification:
         yield AgentEvent(type="verification", extra={"verification": verification})
@@ -1321,6 +1341,8 @@ def _status_after_verification(status: str, verification: dict | None) -> str:
     """
     if status != "ok" or not verification:
         return status
+    if verification.get("claims_unverified"):
+        return "partial"
     grounding = verification.get("grounding") or {}
     if grounding.get("all_evidence_unresolved"):
         return "partial"

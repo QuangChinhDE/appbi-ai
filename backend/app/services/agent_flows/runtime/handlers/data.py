@@ -701,7 +701,12 @@ def restore_report_read_provenance(value: Any, state: RunState, *,
             continue
         for field in ("summary", "data"):
             if entry.get(field) is not None:
+                start = len(state.evidence)
                 state.add_evidence(entry[field])
+                # And what those figures MEAN, or a reused read looks, to the
+                # answer's claim check, like a run that read nothing.
+                state.note_claims("get_chart_summary" if field == "summary" else "get_chart_data",
+                                  entry[field], state.evidence[start:])
         if "value" in entry:
             state.add_evidence(entry["value"])
             if entry.get("value_of"):

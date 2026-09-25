@@ -305,6 +305,16 @@ class RunState:
     #: wrong answer and left a wandering one, so the fact has to survive to the
     #: answer step where it can be said out loud.
     dimension_gap: dict[str, Any] = field(default_factory=dict)
+    #: WHAT EACH TRUSTED FIGURE MEANS (`runtime/claim_scope.py`): one entry per
+    #: figure — value, measure, dimension, member, ratio, ref. Written only where the
+    #: ledger is written; read by `claim_check` at the answer.
+    claim_ledger: list[dict[str, Any]] = field(default_factory=list)
+    #: chart id → its grouping fields, from the report's chart metadata (set by the
+    #: executor), so a result that names only its chart can still be placed.
+    chart_dims: dict[int, list[str]] = field(default_factory=dict)
+    #: Figures the answer states that the claim check could not stand behind,
+    #: after the step's own review — each {value, why, ...}. Surfaced to the reader.
+    unverified_claims: list[dict[str, Any]] = field(default_factory=list)
     #: Set by a Stop node, or by the executor when the budget runs out.
     stopped: bool = False
     stop_message: str = ""
@@ -369,6 +379,31 @@ class RunState:
         if not isinstance(result, dict) or result.get("ok") is False:
             self.add_evidence(result)
             return None
+        start = len(self.evidence)
+        ref = None
+        try:
+            ref = self._register(result, tool=tool, args=args)
+            return ref
+        finally:
+            self.note_claims(tool, result, self.evidence[start:], ref=ref)
+
+    def note_claims(self, tool: str, result: Any, trusted: list[float], *, ref: str | None = None) -> None:
+        """Describe the figures the ledger just kept from `result` (claim_scope)."""
+        if not trusted:
+            return
+        from app.services.agent_flows.runtime import claim_scope
+
+        try:
+            described = claim_scope.describe(tool, result, chart_dims=self.chart_dims,
+                                             ledger=self.claim_ledger)
+        except Exception:                                       # noqa: BLE001
+            described = []
+        kept = set(trusted)
+        for e in described:
+            if e.get("value") in kept and len(self.claim_ledger) < 50000:
+                self.claim_ledger.append({**e, "ref": ref, "tool": tool})
+
+    def _register(self, result: Any, *, tool: str, args: Any) -> str | None:
         if len(self.evidence_store) >= _MAX_EVIDENCE_REFS:
             self.add_evidence(result)
             return None

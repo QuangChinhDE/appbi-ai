@@ -439,6 +439,9 @@ class AgentRuntime:
         #: Rounds this step was made to answer on (no tools offered) — recorded so
         #: a trace can say "it answered because its budget said so".
         self.final_rounds = 0
+        #: The answer draft this step's claim review sent back, if any — for the
+        #: trace: what was flagged and why, before the model wrote its answer.
+        self.claim_review: dict = {}
 
     # ── scope ────────────────────────────────────────────────────────────────
     def enter(self) -> None:
@@ -474,6 +477,7 @@ class AgentRuntime:
             self.rctx.ctx.knowledge_scope = self._previous_scope
         self.state.capability_trace[self.node.key] = {
             **self.view.to_trace(), "final_rounds": self.final_rounds,
+            **({"claim_review": self.claim_review} if self.claim_review else {}),
         }
 
     # ── corrections ──────────────────────────────────────────────────────────
@@ -508,6 +512,39 @@ class AgentRuntime:
 
     # ── the model ────────────────────────────────────────────────────────────
     # ── the budget, as the strategy needs to know it ─────────────────────────
+    def review_draft(self, text: str) -> str:
+        """THE RUNTIME OWNS WHAT A FIGURE MEANS — checked while tools remain.
+
+        An answering step's draft, before it becomes the answer: every figure is
+        judged against what the run read (`claim_check`). A figure that belongs to
+        another breakdown, measure or member, or a percentage no tool produced, is
+        sent back ONCE with the reason, while the step can still call a tool —
+        `compare_periods` for a change, `share_of` for a share, `compute` over
+        references for anything derived. Measured live: a month-on-month change
+        the model divided out itself (19,78% from the wrong months; the report's
+        own comparison says 5,23%) and a category's figures given to a state.
+
+        Returns the message to send back, or "" to accept the draft.
+        """
+        if not self.is_answering or self.claim_review or not text.strip() or not self.can_ask():
+            return ""
+        from app.services.agent_flows.runtime import claim_check
+
+        try:
+            result = claim_check.check(self.state, getattr(self.rctx, "ctx", None), text)
+        except Exception:                                       # noqa: BLE001
+            logger.warning("[flow] claim review failed", exc_info=True)
+            return ""
+        # Only what NEEDS a tool to fix: a figure with the wrong meaning, or a
+        # percentage no tool produced. An invented plain figure is the figure
+        # verifier's, after the loop (`_retry_figures`) — one owner per fault.
+        flagged = [f for f in result.get("flagged") or []
+                   if f.get("why") != "unsupported" or f.get("pct")]
+        if not flagged:
+            return ""
+        self.claim_review = {"flagged": flagged, "target": result.get("target")}
+        return claim_check.review_message(flagged, result.get("target") or {})
+
     def can_ask(self) -> bool:
         """May this step make another model call at all?"""
         return self.state.budget.llm_available() > 0

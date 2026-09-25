@@ -84,6 +84,10 @@ _STRIP_SPANS = [
     re.compile(r"[\"“][^\"”]*[A-Za-zÀ-ỹ][^\"”]*[\"”]"),
 ]
 
+#: "100 phần trăm" is a percentage as surely as "100%" (found by review: the
+#: words form escaped the percentage rules entirely).
+_PCT_WORDS = re.compile(r"(?<=\d)\s*(?:phần\s*trăm|phan\s*tram|percent)(?!\w)", re.IGNORECASE)
+
 # Bare integers in this range read as years far more often than as figures.
 _YEAR_MIN, _YEAR_MAX = 1900, 2100
 
@@ -228,14 +232,21 @@ def _claim_alternates(answer: str) -> dict[float, tuple[float, ...]]:
 
 def extract_answer_numbers(answer: str) -> list[float]:
     """Every figure the answer actually CLAIMS, in order of appearance."""
-    text = answer or ""
+    return [v for v, _pct in extract_answer_claims(answer)]
+
+
+def extract_answer_claims(answer: str) -> list[tuple[float, bool]]:
+    """`extract_answer_numbers`, with whether each figure was written as a
+    percentage (a `%` sign, or the words "phần trăm"/"percent") — one parser, so
+    the two can never disagree about a figure."""
+    text = _PCT_WORDS.sub("%", answer or "")
     for pattern in _STRIP_SPANS:
         text = pattern.sub(" ", text)
 
     ordinals = {m.group(1) for m in _ORDINAL_RE.finditer(text)}
     text = _ORDINAL_RE.sub(" ", text)
 
-    out: list[float] = []
+    out: list[tuple[float, bool]] = []
     for m in _NUMBER_RE.finditer(text):
         raw = m.group("num")
         value = parse_number(raw)
@@ -261,7 +272,7 @@ def extract_answer_numbers(answer: str) -> list[float]:
                 continue
             if raw in ordinals and value <= 20:
                 continue
-        out.append(value)
+        out.append((value, is_pct))
     return out
 
 

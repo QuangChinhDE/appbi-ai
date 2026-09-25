@@ -437,6 +437,23 @@ async def run(
             # answer's figures over.
             if fixed and not _looks_wrong_language(fixed, _locale_of(rctx), asked_text):
                 text = fixed
+        # WHAT STILL DOES NOT STAND, SAID TO THE READER — never rewritten. The draft
+        # review inside the loop already gave the model its chance, with tools;
+        # what remains is shown as unverified and the run is `partial`, so a
+        # figure with the wrong meaning is never published as a verified one.
+        if node.key == rctx.answer_key and text and not provider_error:
+            from app.services.agent_flows.runtime import claim_check
+
+            try:
+                final = claim_check.check(state, getattr(rctx, "ctx", None), text)
+            except Exception:                                   # noqa: BLE001
+                final = {}
+            if final.get("flagged"):
+                state.unverified_claims = final["flagged"]
+                text = text.rstrip() + chr(10) + chr(10) + claim_check.reader_note(
+                    final["flagged"], _locale_of(rctx))
+            if final:
+                state.capability_trace.setdefault(node.key, {})["claims"] = final
         state.outputs[node.key] = text
 
 

@@ -801,6 +801,9 @@ async def invoke_skill(
     if child_state is not None:
         state.evidence.extend(child_state.evidence)
         state.evidence_labels |= child_state.evidence_labels
+        # What those figures MEAN travels with them (`runtime/claim_scope.py`).
+        state.claim_ledger.extend(
+            {**e, "ref": None} for e in (getattr(child_state, "claim_ledger", None) or []))
         state.evidence_sources.add(f"skill:{skill_key}")
         state.prompt_tokens += child_state.prompt_tokens
         state.completion_tokens += child_state.completion_tokens
