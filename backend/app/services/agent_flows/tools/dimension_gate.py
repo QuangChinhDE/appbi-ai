@@ -56,6 +56,13 @@ from app.services.agent_flows.tools.packs.discover import (
 #: with one more step in front of it, and closing the first substitution route
 #: while leaving the second open closes nothing.
 #:
+#: `get_chart_summary` for the same reason, measured the same way. It joined the
+#: routing core so KPI questions could be read — and on a grouped chart its
+#: `top_values` ARE per-group figures. Live, asked "Bang SP chiếm bao nhiêu phần
+#: trăm tổng doanh thu?", a run summarised the revenue-by-CATEGORY chart and
+#: answered "Bang SP … 1,258,681.34 … 9.26%" — health_beauty's figures, presented
+#: as a state's. On a chart with no grouping (a KPI tile) the gate stays silent.
+#:
 #: Still deliberately short. `total_measure` is a scalar and `compare_periods`
 #: groups by time because that is what it is FOR — neither turns the chart's
 #: dimension into the noun of the answer.
@@ -66,6 +73,7 @@ DIMENSION_SENSITIVE = frozenset({
     "compare_segments",
     "segment_compare",
     "get_chart_data",
+    "get_chart_summary",
 })
 
 #: A dimension is usually named in ONE word — "bang", "state", "danh mục" — so

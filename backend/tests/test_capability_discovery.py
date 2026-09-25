@@ -111,7 +111,10 @@ def test_a_large_grant_is_shortlisted_to_the_limit_with_the_core_always_in():
     assert view.shortlisted
     view.refresh("Doanh thu tháng này tăng bao nhiêu phần trăm so với kỳ trước?")
     assert len(view.visible) <= 8
-    for core in CAP.CORE:
+    # An AUTHOR count (limit=8): the core under it is COUNT_CORE — the same set
+    # this test asserted when it was written (lookup + compute). See
+    # `test_an_author_count_is_what_it_was_before_the_reader_joined_the_core`.
+    for core in CAP.COUNT_CORE:
         assert core in view.visible
     assert "compare_periods" in view.visible
 
@@ -377,3 +380,24 @@ def test_a_step_that_cannot_compute_is_not_shown_evidence_references(monkeypatch
         seen["results"] = model.results
     _run(monkeypatch, model, ["rank_values", "total_measure"], limit=None)
     assert model.results and all("evidence_ref" not in (r or {}) for r in model.results)
+
+
+def test_an_author_count_is_what_it_was_before_the_reader_joined_the_core():
+    """Found by review: the reader joining the core took a slot from every
+    author-set count — `visible_capabilities=4` showed 5, and at 5 the one
+    question-ranked capability was gone. Under an author's count the core is the
+    one it always was; the reader competes by rank there."""
+    q = "Dự báo doanh thu tháng tới"
+    for limit in (4, 5, 6):
+        view = CAP.build_view(NON_WEB, _ctx(), web_enabled=True, question=q, limit=limit)
+        view.refresh()
+        assert len(view.visible) == limit, (limit, view.visible)
+        assert [n for n in view.visible if n in CAP.COUNT_CORE] == \
+            [n for n in CAP.COUNT_CORE if n in view.eligible]
+    five = CAP.build_view(NON_WEB, _ctx(), web_enabled=True, question=q, limit=5)
+    five.refresh()
+    assert "forecast_measure" in five.visible, five.visible
+    # Under the runtime's own policy (no author count) the reader IS core.
+    budgeted = CAP.build_view(NON_WEB, _ctx(), web_enabled=True, question=q)
+    budgeted.refresh()
+    assert "get_chart_summary" in budgeted.visible

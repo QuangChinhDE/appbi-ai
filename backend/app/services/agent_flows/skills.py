@@ -719,8 +719,10 @@ async def invoke_skill(
         return
     if caller_reads_result:
         # NOT STARTED rather than started to fail: a Skill handed less than one
-        # tool round answers from nothing. Refused before it spends anything, so
-        # the calling step keeps those calls for its own tools or its answer.
+        # tool round answers from nothing. Refused before the Skill runs or spends
+        # a model call, so the calling step keeps those for its own tools or its
+        # answer. The call itself is counted like any refused call; asked again
+        # with the same inputs it is answered free (the runtime's retry policy).
         # (A Skill STEP is funded by the executor's reservation instead: the
         # author put it in the structure, and the preflight checked the link.)
         from app.services.agent_flows.runtime import reserve

@@ -85,11 +85,12 @@ CATALOGUE_LINES = 30
 RELATIVE_CUTOFF = 0.25
 #: Weight of the node prompt relative to the question when ranking.
 PROMPT_WEIGHT = 0.3
-#: How many near-duplicate capabilities (description overlap ≥ ALIKE_JACCARD)
-#: routing loads for one question; the rest stay in the catalogue.
-#: 0.4 by measurement: the two most alike REAL tools (get_chart_data,
-#: smart_drilldown) overlap 0.16; same-topic variants of one capability overlap
-#: 0.46 and up. The line sits well clear of every real pair.
+#: How many near-duplicate capabilities (IDENTITY overlap ≥ ALIKE_JACCARD — see
+#: `_identity_terms`) routing loads for one question; the rest stay in the
+#: catalogue. 0.4 by measurement on identity terms: the two most alike REAL tools
+#: (get_chart_data, smart_drilldown) overlap 0.23; distinct Skills 0.15 at most
+#: (and ≤ 0.09 with the closest tool); same-topic variants of one capability 0.46
+#: up to 0.72. The line sits well clear of every real pair.
 MAX_ALIKE = 2
 ALIKE_JACCARD = 0.4
 
@@ -116,6 +117,14 @@ def _core() -> tuple[str, ...]:
 
 
 CORE = _core()
+#: The core when the AUTHOR set a count (`visible_capabilities`): the core as it
+#: was before the reader joined it. Found by review: the reader took a slot from
+#: every author-set count — N=4 showed 5, N=5 lost its one question-ranked
+#: capability. The count is the author's word, so under it the core is exactly
+#: what it always was and the reader competes by rank like everything else. The
+#: reader joins the core only under the runtime's own policy, the schema budget,
+#: which grew by exactly its size.
+COUNT_CORE = tuple(c for c in CORE if c != "get_chart_summary")
 
 _WORD_RE = re.compile(r"[0-9A-Za-zÀ-ỹ]+", re.UNICODE)
 _SUFFIXES = ("ations", "ation", "ities", "ity", "ings", "ing", "ions", "ion", "ies",
@@ -197,6 +206,26 @@ def _weighted_terms(spec: Any, note: str = "") -> dict[str, float]:
     return out
 
 
+def _identity_terms(spec: Any) -> set[str]:
+    """What a capability IS, for telling copies apart: its label, its example
+    questions and its own description — never the grant note, never the
+    model-facing definition.
+
+    Found by review: likeness over the ranking haystack judged four unrelated
+    Skills "copies" (0.34–0.55), because every Skill's definition carries the same
+    wrapper sentence, and a note repeated on every grant made 339 real tool pairs
+    "alike". A note says why the AUTHOR granted it and a wrapper says how it runs;
+    neither says what it is. The ranker still reads both — only likeness does not.
+    """
+    returns = getattr(spec, "returns", None) or {}
+    text = " ".join(filter(None, [
+        getattr(spec, "name", "").replace("_", " "), getattr(spec, "label_vi", ""),
+        getattr(spec, "label_en", ""), " ".join(getattr(spec, "answers_vi", ()) or ()),
+        getattr(spec, "description_vi", ""), *[f"{k} {v}" for k, v in returns.items()],
+    ]))
+    return _terms(text)
+
+
 def schema_chars(defs: list[dict]) -> int:
     """How much schema text a round carries — what routing exists to bound."""
     return sum(len(json.dumps(d, ensure_ascii=False)) for d in defs)
@@ -244,6 +273,8 @@ class CapabilityView:
     question: str = ""
     context: str = ""
     _haystacks: dict[str, dict[str, float]] = field(default_factory=dict, repr=False)
+    #: What each capability IS (`_identity_terms`) — likeness only, never ranking.
+    _identities: dict[str, set[str]] = field(default_factory=dict, repr=False)
     _sizes: dict[str, int] = field(default_factory=dict, repr=False)
     #: The haystacks never change after `build_view`, so neither do the weights.
     _idf: dict[str, float] | None = field(default=None, repr=False)
@@ -313,7 +344,8 @@ class CapabilityView:
             self.visible = list(self.eligible)
         else:
             chosen: list[str] = []
-            for name in [*(c for c in CORE if c in self.eligible), *self.sticky]:
+            core = CORE if self.schema_budget else COUNT_CORE
+            for name in [*(c for c in core if c in self.eligible), *self.sticky]:
                 if name not in chosen:
                     chosen.append(name)
             used = sum(self._schema_size(n) for n in chosen)
@@ -350,8 +382,8 @@ class CapabilityView:
         return self.visible
 
     def _similar(self, a: str, b: str) -> bool:
-        ta = set(self._haystacks.get(a, {}))
-        tb = set(self._haystacks.get(b, {}))
+        ta = self._identities.get(a) or set()
+        tb = self._identities.get(b) or set()
         if not ta or not tb:
             return False
         return len(ta & tb) / len(ta | tb) >= ALIKE_JACCARD
@@ -615,6 +647,10 @@ def build_view(
     notes = notes or {}
     view._haystacks = {
         n: _weighted_terms(view.extras[n].search if n in view.extras else tools[n], notes.get(n, ""))
+        for n in eligible
+    }
+    view._identities = {
+        n: _identity_terms(view.extras[n].search if n in view.extras else tools[n])
         for n in eligible
     }
     return view

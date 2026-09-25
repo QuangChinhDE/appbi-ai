@@ -245,6 +245,76 @@ def test_a_cluster_of_near_identical_capabilities_loads_two_not_all():
         for group in combinations(loaded, CAP.MAX_ALIKE + 1):
             assert not all(view._similar(a, b) for a, b in combinations(group, 2)), (it["q"], group)
     real = CAP.build_view(NON_WEB, _ctx(), web_enabled=True, question="x")
-    names = list(real._haystacks)
+    names = list(real.eligible)
     assert not any(real._similar(a, b) for i, a in enumerate(names) for b in names[i + 1:]), \
         "the threshold must never treat two distinct real tools as copies"
+
+
+def _skill_extra(key, label, when, output):
+    """A Skill exactly as `agent_runtime._skill_capabilities` builds one."""
+    from app.services.agent_flows import skills
+    from app.services.agent_flows.contract import SkillContract, SkillInput, skill_function_name
+
+    contract = SkillContract(inputs=[SkillInput(name="question", type="text", description="câu hỏi")],
+                             output=output, when_to_use=when)
+    name = skill_function_name(key)
+    definition = skills.capability_definition(key, label, contract)
+    return CAP.ExtraCapability(
+        name=name, definition=definition, label=label, does=when,
+        search=SimpleNamespace(name=name, label_vi=label, label_en=label,
+                               description_vi=f"{when} {output}", answers_vi=(), returns={},
+                               definition=definition))
+
+
+_DISTINCT_SKILLS = [
+    _skill_extra("so_sanh_ky", "So sánh kỳ", "Khi cần so sánh doanh thu giữa hai kỳ liên tiếp",
+                 "Mức thay đổi giữa hai kỳ"),
+    _skill_extra("du_bao_ton_kho", "Dự báo tồn kho", "Khi cần dự báo tồn kho tháng tới theo kho hàng",
+                 "Số tồn kho dự kiến"),
+    _skill_extra("kiem_chung_so", "Kiểm chứng số liệu", "Khi cần kiểm chứng một con số trước khi trả lời",
+                 "Kết luận đúng hay sai kèm nguồn"),
+    _skill_extra("phan_tich_churn", "Phân tích rời bỏ", "Khi cần giải thích vì sao khách hàng rời bỏ",
+                 "Các nguyên nhân chính kèm tỷ trọng"),
+    _skill_extra("so_sanh", "So sánh kỳ", "So sánh doanh thu hai kỳ", "Mức thay đổi"),
+    _skill_extra("du_bao", "Dự báo", "Dự báo doanh thu tháng tới", "Số dự báo"),
+    _skill_extra("kiem_chung", "Kiểm chứng", "Kiểm chứng một con số", "Đúng hay sai"),
+]
+
+
+def test_distinct_skills_and_a_note_on_every_grant_are_never_copies():
+    """Found by review: every Skill definition carries one wrapper sentence, so
+    four unrelated Skills scored 0.34–0.55 and a compare/forecast/verify trio was
+    a clique of "copies"; one note repeated on every grant made 339 real tool
+    pairs alike. Likeness reads what a capability IS, not how it runs or why the
+    author granted it."""
+    note = ("Chỉ dùng cho báo cáo tổng quan của ban giám đốc, đọc kỹ phạm vi dữ liệu "
+            "trước khi trả lời và luôn nêu nguồn biểu đồ. ") * 6
+    four = _DISTINCT_SKILLS[:4]
+    view = CAP.build_view(NON_WEB, _ctx(), web_enabled=True, extras=four,
+                          notes={n: note for n in NON_WEB}, question="x")
+    names = list(view.eligible)
+    alike = [(a, b) for i, a in enumerate(names) for b in names[i + 1:] if view._similar(a, b)]
+    assert alike == [], alike
+    # …and a real copy is still one: the same Skill published twice under two keys.
+    twice = CAP.build_view(NON_WEB, _ctx(), web_enabled=True,
+                           extras=[_DISTINCT_SKILLS[0], _DISTINCT_SKILLS[4]], question="x")
+    assert twice._similar("skill__so_sanh_ky", "skill__so_sanh")
+
+
+def test_a_question_naming_three_different_skills_loads_all_three():
+    q = "So sánh doanh thu hai kỳ, dự báo tháng tới và kiểm chứng con số giúp tôi"
+    trio = [e for e in _DISTINCT_SKILLS if e.name in ("skill__so_sanh", "skill__du_bao", "skill__kiem_chung")]
+
+    def loaded(cap):
+        saved = CAP.MAX_ALIKE
+        CAP.MAX_ALIKE = cap
+        try:
+            v = CAP.build_view(NON_WEB, _ctx(), web_enabled=True, extras=trio, question=q, context=PROMPT)
+            return v.refresh()
+        finally:
+            CAP.MAX_ALIKE = saved
+
+    with_cap, without = loaded(CAP.MAX_ALIKE), loaded(10_000)
+    assert set(without) - set(with_cap) == set(), "the cap dropped a capability that is no copy"
+    assert {e.name for e in trio} <= set(with_cap)
+

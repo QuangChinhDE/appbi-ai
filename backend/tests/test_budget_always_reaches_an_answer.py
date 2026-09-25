@@ -233,6 +233,8 @@ def test_a_skill_the_answering_agent_calls_leaves_it_its_reading_round(monkeypat
 
 def _calls_skill_whenever_offered():
     class M(_Greedy):
+        skill_fn = "skill__so_sanh"
+
         def stream(self):
             inner = super().stream()
 
@@ -241,7 +243,7 @@ def _calls_skill_whenever_offered():
                     self.calls.append({"role": "TRA_LOI", "offered": [t["name"] for t in kw["tools"]],
                                        "last_user": ""})
                     yield AgentEvent(type="tool_call", tool_call_id=f"s{len(self.calls)}",
-                                     tool_name="skill__so_sanh",
+                                     tool_name=self.skill_fn,
                                      tool_args={"question": "Doanh thu?", "chart_id": 41})
                     return
                 async for ev in inner(**kw):
@@ -277,13 +279,48 @@ def test_a_skill_handed_less_than_one_tool_round_is_refused_before_it_runs(monke
                              model=_calls_skill_whenever_offered())
     assert model.by("VAI_TRO_CON") == [], "the starved Skill never ran"
     assert _children(skill_db.db) == [], "and never recorded a child run"
-    refusals = [e["result"] for e in state.evidence_store.values()] if state else []
-    assert refusals == [], "a refusal is not evidence"
+    assert state.evidence == [], "no figure entered the ledger: nothing of the Skill ran"
     step = next(s for s in _steps(env) if s["key"] == "tl")
-    assert "skill__so_sanh(budget_exhausted)" in (step.get("tool_calls") or []), step.get("tool_calls")
+    # Asked twice (the model keeps asking while it is offered): the first refusal
+    # is counted like any refused call; the identical second one is answered from
+    # the retry policy and charged nothing — the budget can only have shrunk.
+    assert step.get("tool_calls") == ["skill__so_sanh(budget_exhausted)",
+                                      "skill__so_sanh(already_refused)"], step.get("tool_calls")
+    assert state.budget.tool_calls == 1
+    # Every model call was the PARENT's: 2 asking rounds and its answer.
+    assert len(model.by("TRA_LOI")) == 3 == state.budget.llm_calls
     assert model.by("TRA_LOI")[-1]["offered"] == [] and "TRA_LOI" in _answer(env)
     assert env["status"] == "ok"
-    assert state.budget.llm_calls == 3, "the refused Skill spent nothing of its own"
+
+
+_WRAPS_SO_SANH = {"answer_node": "n", "skill": SKILL_BODY["skill"], "nodes": [{
+    "key": "n", "name": "n", "type": "skill", "skill_key": "so_sanh", "version": 2,
+    "inputs": {"question": {"source": "literal", "value": "Doanh thu?"},
+               "chart_id": {"source": "literal", "value": 41}}}]}
+
+
+def test_a_skill_that_wraps_a_tool_using_skill_needs_its_tool_round(monkeypatch, skill_db):
+    """Found by review: `working_minimum` stopped at a Skill STEP, so a Skill that
+    only wraps a tool-using one looked tool-free, was admitted on 1 call, and its
+    inner Agent answered without a tool round — recorded `ok` twice over."""
+    from app.services.agent_flows.runtime.reserve import skill_lookup_for, working_minimum
+    from test_skills_run_as_governed_children import _row
+
+    skill_db.registry[("wrap", 1)] = (_row("wrap", 1), _flow(_WRAPS_SO_SANH, key="wrap"))
+    skill_db.shared.add("wrap")
+    lookup = skill_lookup_for(skill_db.db)
+    assert working_minimum(list(_flow(_WRAPS_SO_SANH, key="wrap").nodes), skill_lookup=lookup) == (2, 1)
+
+    body = {"answer_node": "tl", "nodes": [{
+        "key": "tl", "name": "tl", "type": "agent", "prompt": "TRA_LOI", "max_tool_calls": 10,
+        "tools": [{"tool": "skill:wrap", "version": 1}]}]}
+    model = _calls_skill_whenever_offered()
+    model.skill_fn = "skill__wrap"
+    env, model, state = _run(monkeypatch, body, llm=3, db=skill_db.db, model=model)
+    assert model.by("VAI_TRO_CON") == [], "the wrapped Skill's Agent never ran starved"
+    assert _children(skill_db.db) == []
+    step = next(s for s in _steps(env) if s["key"] == "tl")
+    assert (step.get("tool_calls") or [])[0] == "skill__wrap(budget_exhausted)"
 
 
 def test_the_refusal_says_why_and_that_retrying_cannot_help(monkeypatch, skill_db):

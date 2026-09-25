@@ -241,6 +241,9 @@ def _ask(token: str, link: int, case: dict, granted: set[str]) -> dict:
         "discovered_then_ran": sorted(set(discovered) & ran_names),
         "auto_loaded": cap.get("auto_loaded") or [],
         "final_rounds": cap.get("final_rounds") or 0,
+        # The breakdown the question named and whether the run delivered it
+        # (`note_question_dimension_gap`) — how a false gap would show up.
+        "dimension": cap.get("dimension") or {},
         "skill_runs": [{"version": c["version"], "status": c["status"], "llm_calls": c["llm_calls"],
                         "tool_calls": c["tool_calls"]} for c in children],
         "skill_tool_calls": child_calls,
@@ -269,10 +272,15 @@ def _agg(rows: list[dict]) -> dict:
         "avg_tokens": round(sum(r["tokens"] for r in rows) / n),
         "avg_prompt_tokens": round(sum(r["prompt_tokens"] for r in rows) / n),
         "avg_seconds": round(sum(r["seconds"] for r in rows) / n, 1),
-        "failed_runs": sum(r["status"] == "failed" for r in rows),
+        # A request that never produced an envelope (HTTP error: status None) is
+        # a failed run too, not a missing row.
+        "failed_runs": sum(r["status"] in ("failed", None) for r in rows),
         # A row whose trace does not show its arm's visibility ran under another
         # arm's flow (two evals publishing the same parent): not evidence.
-        "arm_mismatch": sum(not r.get("arm_ok", True) for r in rows),
+        "arm_mismatch": sum(r.get("arm_ok") is False for r in rows),
+        # A row with NO capability trace at all (a failed or empty run) says
+        # nothing about which flow it ran — reported, never counted as a mismatch.
+        "no_trace": sum(r.get("arm_ok") is None for r in rows),
     }
 
 
@@ -301,9 +309,11 @@ def main() -> int:
         for rep in range(args.reps):
             for case in cases:
                 row = {"arm": arm, "rep": rep, "parent_version": version, **_ask(token, args.link, case, granted)}
-                row["arm_ok"] = (row["shortlisted"] is False if arm == "full" else
-                                 row["limit"] == 4 if arm == "stress" else
-                                 bool(row["schema_budget"]))
+                traced = any(row.get(k) is not None for k in ("shortlisted", "limit", "schema_budget"))
+                row["arm_ok"] = None if not traced else (
+                    row["shortlisted"] is False if arm == "full" else
+                    row["limit"] == 4 if arm == "stress" else
+                    bool(row["schema_budget"]))
                 rows.append(row)
                 print(json.dumps({k: row[k] for k in ("arm", "rep", "id", "status", "correct", "invoked",
                                                       "discoveries", "tokens", "seconds")},

@@ -99,11 +99,26 @@ def working_minimum(nodes: list[Any], *, skill_lookup: SkillLookup | None = None
     """
     llm, tools = minimum_calls(nodes, skill_lookup=skill_lookup)
 
-    def uses_tools(ns: list[Any]) -> bool:
-        return any((isinstance(n, AgentNode) and bool(n.tools))
-                   or any(uses_tools(list(g)) for g in child_node_lists(n)) for n in ns)
+    def uses_tools(ns: list[Any], depth: int) -> bool:
+        for n in ns:
+            if isinstance(n, AgentNode) and n.tools:
+                return True
+            if any(uses_tools(list(g), depth) for g in child_node_lists(n)):
+                return True
+            # A SKILL STEP IS NOT A LEAF. Found by review: a Skill that only wraps
+            # another Skill looked tool-free — the wrapped Skill's Agent then ran
+            # its answer round only and recorded `ok`. Followed through the same
+            # lookup `minimum_calls` uses, bounded the same way.
+            if getattr(n, "type", "") == "skill" and skill_lookup is not None and depth < MAX_SKILL_DEPTH:
+                try:
+                    inner = skill_lookup(str(getattr(n, "skill_key", "")), getattr(n, "version", None))
+                except Exception:                               # noqa: BLE001
+                    inner = None
+                if inner is not None and uses_tools(list(inner.nodes), depth + 1):
+                    return True
+        return False
 
-    if uses_tools(nodes):
+    if uses_tools(nodes, 0):
         return llm + 1, max(tools, 1)
     return llm, tools
 

@@ -100,6 +100,20 @@ def _retry_key(tool_name: str, args: Any) -> str:
     return f"{tool_name}::{body}"
 
 
+def _already_refused(tool_name: str, previous: str) -> dict:
+    return {
+        "ok": False,
+        "error_code": "already_refused",
+        "error": (
+            f"công cụ '{tool_name}' đã bị từ chối với đúng tham số này "
+            f"({previous}) — gọi lại y hệt sẽ cho cùng kết quả. Hãy đổi tham "
+            "số, dùng công cụ khác, hoặc trả lời bằng những gì đã có và nói "
+            "rõ phần không lấy được."
+        ),
+        "retryable": False,
+    }
+
+
 def _call_with_retry_policy(tool_name: str, args: Any, seen: dict, execute) -> dict:
     """Run the tool unless this exact request has already been finally refused.
 
@@ -111,17 +125,7 @@ def _call_with_retry_policy(tool_name: str, args: Any, seen: dict, execute) -> d
     key = _retry_key(tool_name, args)
     previous = seen.get(key)
     if previous:
-        return {
-            "ok": False,
-            "error_code": "already_refused",
-            "error": (
-                f"công cụ '{tool_name}' đã bị từ chối với đúng tham số này "
-                f"({previous}) — gọi lại y hệt sẽ cho cùng kết quả. Hãy đổi tham "
-                "số, dùng công cụ khác, hoặc trả lời bằng những gì đã có và nói "
-                "rõ phần không lấy được."
-            ),
-            "retryable": False,
-        }
+        return _already_refused(tool_name, previous)
     result = execute(tool_name, args)
     if _is_final_refusal(result):
         seen[key] = str(result.get("error_code") or "refused")
@@ -154,10 +158,69 @@ def _note_dimension_outcome(state: RunState, result: Any) -> None:
         return
     if result.get("ok") is not True or not state.dimension_gap:
         return
-    data = result.get("data") if isinstance(result.get("data"), dict) else {}
-    got = field_key(str(data.get("dimension") or ""))
+    got = _declared_dimension(result)
     if got and got == field_key(str(state.dimension_gap.get("requested") or "")):
         state.dimension_gap["satisfied"] = True
+
+
+def _declared_dimension(result: Any) -> str:
+    """The grouping a successful result SAYS it has: `dimension` (the grouped
+    tools) or `primary_dimension` (a chart summary). Field key, or ""."""
+    from app.services.agent_flows.tools.dimension_gate import field_key
+
+    data = result.get("data") if isinstance(result, dict) and isinstance(result.get("data"), dict) else {}
+    return field_key(str(data.get("dimension") or data.get("primary_dimension") or ""))
+
+
+def note_question_dimension_gap(state: RunState, ctx: Any) -> dict:
+    """At the answer: did this run ever TOUCH the breakdown the question named?
+
+    THE ROUTE THE TOOL GATE CANNOT SEE. The gate refuses a grouped call on the
+    wrong chart — but a run that never makes a grouped call is never refused.
+    Measured live: "Bang SP chiếm bao nhiêu phần trăm tổng doanh thu?" called
+    `total_measure` twice, read the all-states total, and answered "Bang SP chiếm
+    100%" — recorded `ok`, because no refusal ever opened a gap.
+
+    So the gap also opens here, from the same two kinds of structured fact the
+    gate uses and nothing else: the dimension the question names
+    (`requested_dimension`, the gate's own resolution) and what the run read —
+    the grouping of every chart a successful call read (`state.charts_read`) and
+    the grouping every result declares. Opened ONLY when the run touched that
+    breakdown NOWHERE: a month question answered from the monthly chart has
+    touched "month" whatever tool it used, so it is never flagged.
+
+    Returns the fact for the trace, opened or not — what the question asked
+    for and what the run delivered is exactly what an author debugs.
+    """
+    from app.services.agent_flows.tools.dimension_gate import (
+        _chart_dimensions,
+        dimension_label,
+        field_key,
+        requested_dimension,
+    )
+
+    try:
+        wanted = requested_dimension(ctx)
+    except Exception:                                           # noqa: BLE001
+        wanted = None
+    if not wanted:
+        return {}
+    key = field_key(wanted)
+    fact = {"requested": key, "label": dimension_label(ctx, wanted)}
+    if state.dimension_gap:
+        # A refusal already opened it (and a grouped result may have closed it).
+        return {**fact, "delivered": bool(state.dimension_gap.get("satisfied")),
+                "gap_source": state.dimension_gap.get("source") or "refusal"}
+    touched = any(field_key(d) == key for cid in state.charts_read
+                  for d in _chart_dimensions(ctx, cid))
+    if not touched:
+        touched = any(_declared_dimension(e.get("result")) == key
+                      for e in (state.evidence_store or {}).values())
+    if touched:
+        return {**fact, "delivered": True}
+    state.dimension_gap = {"requested": key, "label": fact["label"], "satisfied": False,
+                           "source": "question"}
+    return {**fact, "delivered": False, "gap_source": "question"}
 
 
 def _collect_citation(state: RunState, tool: str, args: dict, result: Any) -> None:
@@ -689,6 +752,17 @@ class AgentRuntime:
                 "error": f"Skill '{skill_key}' không được cấp cho bước này",
             }
             return
+        # THE SAME RETRY POLICY AS A TOOL. Found by review: a Skill refused for
+        # budget stayed offered, the model asked again, and the identical refusal
+        # was charged a second time — while the budget can only shrink. A final
+        # refusal, asked again with the same inputs, is answered from memory:
+        # nothing runs and nothing is charged.
+        key = _retry_key(call.tool_name, call.tool_args)
+        previous = self.final_refusals.get(key)
+        if previous:
+            self.ignored_recoveries += 1
+            self.last_result = _already_refused(call.tool_name, previous)
+            return
         # One call, like any capability: the node ceiling and the run budget see
         # it. What the Skill does inside is charged to the same budget by the child.
         if self.tool_room() <= 0:
@@ -706,6 +780,8 @@ class AgentRuntime:
             yield ev
         self.last_result = outcome.get("result") or {
             "ok": False, "error_code": "skill_failed", "error": "Skill không chạy", "retryable": False}
+        if _is_final_refusal(self.last_result):
+            self.final_refusals[key] = str(self.last_result.get("error_code") or "refused")
 
     def _shown(self, result: dict, ref: str | None) -> dict:
         """The copy of a result the MODEL reads. Carries its `evidence_ref` only
