@@ -1,5 +1,6 @@
 'use client';
 
+import type { ContentProposal } from '@/lib/dashboard-presentation/proposals';
 import React from 'react';
 import {
   ArrowUp, Check, Crosshair, Info, LayoutGrid, Lightbulb, Loader2, Lock, Maximize2, Minus, Move,
@@ -55,6 +56,9 @@ export interface AiDesignPanelProps {
   onSubmit: (prompt: string, images?: string[]) => void;
   /** Recompose the page with a design direction (a redesign, previewed first). */
   onDirection?: (direction: 'executive' | 'operations' | 'editorial') => void;
+  /** Changes to what a tile SAYS, waiting for the author's decision. */
+  proposals?: ContentProposal[];
+  onDecideProposal?: (proposal: ContentProposal, accepted: boolean) => void;
   /** Non-null while a design is previewed but not applied. */
   pendingDiff: PresentationDiff | null;
   onApply: () => void;
@@ -222,7 +226,7 @@ function Turn({ turn }: { turn: AiDesignTurn }) {
 }
 
 export function AiDesignPanel({
-  turns, busy, onSubmit, onDirection,
+  turns, busy, onSubmit, onDirection, proposals = [], onDecideProposal,
   pendingDiff, onApply, onDiscard, onCollapse, onClose, visualCount, pageName,
   selectionNames = [], onClearSelection, lockedCount = 0,
 }: AiDesignPanelProps) {
@@ -520,6 +524,31 @@ export function AiDesignPanel({
         {turns.map((turn, index) => (
           <Turn key={`${turn.role}-${index}`} turn={turn} />
         ))}
+
+        {proposals.length > 0 && onDecideProposal && (
+          <div className="rounded-lg border border-amber-500/30 bg-amber-500/[0.05] p-2.5" data-testid="ai-design-proposals">
+            <p className="text-[11px] font-[560] uppercase tracking-wide text-text-secondary">{t('dashboards.aiDesign.proposalsTitle')}</p>
+            <p className="mt-0.5 text-[11px] leading-relaxed text-text-tertiary">{t('dashboards.aiDesign.proposalsHint')}</p>
+            <div className="mt-2 space-y-2">
+              {proposals.slice(0, 6).map((p) => (
+                <div key={p.id} className="rounded-md border border-[rgb(var(--border-line))] bg-surface-1 p-2" data-testid={'ai-design-proposal-' + p.kind}>
+                  <p className="text-[12px] font-[560] text-text-primary">{t('dashboards.aiDesign.proposal.' + p.kind)}</p>
+                  <p className="mt-1 text-[11px] leading-relaxed text-text-tertiary">
+                    <span className="line-through opacity-70">{p.before}</span>
+                    <span className="mx-1">→</span>
+                    <span className="text-text-secondary">{p.after}</span>
+                  </p>
+                  <div className="mt-1.5 flex gap-1.5">
+                    <button type="button" onClick={() => onDecideProposal(p, true)} data-testid="ai-design-proposal-accept"
+                      className="rounded-md bg-brand px-2 py-1 text-[11px] font-[560] text-white hover:bg-brand/90">{t('dashboards.aiDesign.proposalAccept')}</button>
+                    <button type="button" onClick={() => onDecideProposal(p, false)} data-testid="ai-design-proposal-reject"
+                      className="rounded-md border border-[rgb(var(--border-line))] px-2 py-1 text-[11px] text-text-secondary hover:bg-surface-2">{t('dashboards.aiDesign.proposalReject')}</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         {busy && (
           <div className="flex gap-2">

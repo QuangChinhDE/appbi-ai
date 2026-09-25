@@ -78,6 +78,8 @@ export function usePublishTileEvidence(tileId: number | undefined, evidence: Til
 
 export interface ReportFindingsState {
   findings: Map<string, Finding>;
+  /** The rows each ready tile is showing (for rule-based content proposals). */
+  evidence: TileEvidence[];
   status: (tileId: number) => 'pending' | 'ready' | 'none' | 'unknown';
 }
 
@@ -91,11 +93,12 @@ export function useReportFindings(): ReportFindingsState {
     store?.getVersion ?? (() => 0),
   );
   return useMemo(() => {
-    if (!store) return { findings: new Map(), status: () => 'unknown' as const };
+    if (!store) return { findings: new Map(), evidence: [], status: () => 'unknown' as const };
     const ready: TileEvidence[] = [];
     store.all().forEach((e) => { if (e.status === 'ready') ready.push(e.evidence); });
     return {
       findings: findingsForReport(ready),
+      evidence: ready,
       status: (tileId: number) => store.get(tileId)?.status ?? 'unknown',
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps

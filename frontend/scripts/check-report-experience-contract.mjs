@@ -336,6 +336,53 @@ check('an existing AI block is reused in its slot, not duplicated', () => {
   assert(second.built.mutation.layoutOverrides[500], 'the existing headline was not placed');
 });
 
+// ── content proposals ───────────────────────────────────────────────────────
+
+const proposals = load('lib/dashboard-presentation/proposals.ts');
+
+check('an unsorted ranking gets a sort proposal; one the author ordered does not', () => {
+  const e = { tileId: 10, chartType: 'BAR', title: 'Review score', measureField: 'n', measureLabel: 'Reviews', additive: true,
+    format: {}, dimensionField: 's', rows: [{ s: '1', n: 11 }, { s: '3', n: 8 }, { s: '5', n: 57 }, { s: '2', n: 3 }] };
+  const tiles = new Map([[10, { tileId: 10, title: 'Review score', currentSortRules: [] }]]);
+  const out = proposals.deriveProposals([e], tiles);
+  assert(out.length === 1 && out[0].kind === 'sort_by_value' && out[0].after.startsWith('5'), JSON.stringify(out));
+  assert(out[0].patch.styleConfigOverride.chartSortRules[0].direction === 'desc', 'wrong sort');
+  const authored = new Map([[10, { tileId: 10, title: 'Review score', currentSortRules: [{ field: 's', direction: 'asc' }] }]]);
+  assert(proposals.deriveProposals([e], authored).length === 0, "overrode the author's own order");
+});
+
+check('a model retitle is a proposal, never an applied change, and carries no typed figure', () => {
+  const tiles = new Map([[5, { tileId: 5, title: 'Revenue by month' }]]);
+  const ok = proposals.coerceModelProposals([{ kind: 'retitle', visual: 5, title: 'Monthly revenue since launch' }], tiles);
+  assert(ok.length === 1 && ok[0].patch.custom_title === 'Monthly revenue since launch', 'retitle not proposed');
+  assert(proposals.coerceModelProposals([{ kind: 'retitle', visual: 5, title: 'Revenue up 137%' }], tiles).length === 0, 'a figure in a title survived');
+  assert(proposals.coerceModelProposals([{ kind: 'chart_type', visual: 5, to: 'PIE' }], tiles).length === 0, 'an unknown kind became a proposal');
+  // A design plan cannot smuggle a title in: text keys stay outside the mutation path.
+  const r = build('executive');
+  for (const o of Object.values(r.built.mutation.layoutOverrides)) assert(!('custom_title' in o), 'a design wrote a title');
+});
+
+// ── visual review repairs ───────────────────────────────────────────────────
+
+const vision = load('lib/dashboard-presentation/vision-review.ts');
+
+check('a visual review can only repair presentation, only in scope', () => {
+  const mutation = { layoutOverrides: {}, themePatch: {}, slicerClusterPatch: {}, notes: [], layer: 'style' };
+  const review = { scores: { hierarchy: 3 }, overall: 3, summary: '', issues: [
+    { visual: 7, problem: 'crowded', fix: { key: 'showDataLabels', value: false } },
+    { visual: 7, problem: 'wants top 5', fix: { key: 'dataLimit', value: 5 } },
+    { visual: 8, problem: 'outside the selection', fix: { key: 'tileFrame', value: 'flush' } },
+    { visual: 7, problem: 'bad value', fix: { key: 'tileFrame', value: 'glow' } },
+  ] };
+  const out = vision.applyReviewRepairs(mutation, review, { allowed: new Set([7]), currentStyle: () => ({ lineWidth: 2 }) });
+  assert(out.applied === 1, `applied ${out.applied}`);
+  assert(out.mutation.layoutOverrides[7].styleConfigOverride.showDataLabels === false, 'fix not applied');
+  assert(out.mutation.layoutOverrides[7].styleConfigOverride.lineWidth === 2, 'existing style lost');
+  assert(!('dataLimit' in out.mutation.layoutOverrides[7].styleConfigOverride), 'a semantic key (Top-N) became a repair');
+  assert(!out.mutation.layoutOverrides[8], 'an out-of-scope tile was repaired');
+  assert(!('x' in out.mutation.layoutOverrides[7]), 'a review moved a tile');
+});
+
 // ── responsive + currency ───────────────────────────────────────────────────
 
 check('the phone stack keeps side-by-side KPIs as a 2-up grid; charts stay full width', () => {

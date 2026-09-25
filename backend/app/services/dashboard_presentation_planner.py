@@ -147,6 +147,9 @@ PLAN_SCHEMA_HINT: Dict[str, Any] = {
             "findings": ["finding keys from INPUT.findings / visuals[].findingKinds, e.g. trend:12"],
         }
     ],
+    "proposals": [
+        {"kind": "retitle", "visual": "dashboardChartId", "title": "a clearer title in plain words, NO digits — the author must accept it"}
+    ],
     "suggestions": [{"visual": "dashboardChartId", "text": "a non-presentation idea, shown not applied"}],
     "rationale": "one sentence on what you changed and why",
 }

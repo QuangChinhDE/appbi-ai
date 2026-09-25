@@ -204,3 +204,35 @@ def test_discard_removes_the_creators_unpublished_block(blocks):
     assert db.query(DashboardChart).filter(DashboardChart.id == row.id).first() is None
     # the published text widget is untouched
     assert db.query(DashboardChart).filter(DashboardChart.id == 10).first() is not None
+
+
+# ── Content proposals: a change to what a tile SAYS is audited ───────────────
+
+def test_a_content_proposal_decision_is_audited_with_before_and_after(db, monkeypatch):
+    from app.services import audit_service
+    calls = []
+    monkeypatch.setattr(audit_service, "audit", lambda _db, action, **kw: calls.append((action, kw)))
+    body = api.ContentProposalDecision(decision="accepted", kind="sort_by_value", tile_id=10,
+                                       before=None, after=[{"field": "rev", "direction": "desc"}], source="rule")
+    assert api.record_content_proposal_decision(1, body, None, db, _User())["ok"] is True
+    action, kw = calls[0]
+    assert action.value == "dashboard_content_proposal_accepted"
+    assert kw["details"]["kind"] == "sort_by_value" and kw["details"]["after"][0]["direction"] == "desc"
+    assert kw["user_id"] == _User.id and kw["resource_id"] == "1"
+
+
+def test_a_decision_on_a_tile_of_another_dashboard_is_refused(db):
+    body = api.ContentProposalDecision(decision="rejected", kind="retitle", tile_id=999)
+    with pytest.raises(HTTPException) as exc:
+        api.record_content_proposal_decision(1, body, None, db, _User())
+    assert exc.value.status_code == 404
+
+
+def test_only_an_editor_can_decide(db, monkeypatch):
+    def deny(*a, **k):
+        raise HTTPException(status_code=403, detail="no")
+    monkeypatch.setattr(api, "require_edit_access", deny)
+    body = api.ContentProposalDecision(decision="accepted", kind="retitle", tile_id=10)
+    with pytest.raises(HTTPException) as exc:
+        api.record_content_proposal_decision(1, body, None, db, _User())
+    assert exc.value.status_code == 403

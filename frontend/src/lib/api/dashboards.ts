@@ -134,6 +134,15 @@ export const dashboardApi = {
     return response.data;
   },
 
+  /** Audit a person's decision on an AI Design content proposal. */
+  recordProposalDecision: async (
+    dashboardId: number,
+    body: { decision: 'accepted' | 'rejected'; kind: string; tile_id: number; before?: unknown; after?: unknown; source: 'ai' | 'rule' },
+  ): Promise<{ ok: boolean }> => {
+    const response = await apiClient.post(`/dashboards/${dashboardId}/content-proposals/decision`, body);
+    return response.data;
+  },
+
   addWidget: async (
     dashboardId: number,
     widgetType: string,
@@ -426,6 +435,15 @@ export const dashboardApi = {
    * draft. The server is a proxy so the API key stays server-side; it has no
    * opinion about what a legal plan is.
    */
+  /** One visual review of a rendered AI Design preview (503 when no vision model). */
+  critiquePresentation: async (
+    dashboardId: number,
+    body: { image: string; tiles: { id: number; kind: string; title: string }[]; direction?: string | null },
+  ): Promise<import('@/lib/dashboard-presentation/vision-review').VisionReview> => {
+    const response = await apiClient.post(`/dashboards/${dashboardId}/presentation-critique`, body, { timeout: 90_000 });
+    return response.data;
+  },
+
   planPresentation: async (
     dashboardId: number,
     input: {

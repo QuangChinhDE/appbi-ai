@@ -97,6 +97,7 @@ import { toast } from '@/lib/toast';
 import { useI18n } from '@/providers/LanguageProvider';
 import { ReportEvidenceProvider, useReportFindings } from '@/lib/report-evidence';
 import { renderFindingSentence } from '@/lib/report-findings';
+import { coerceModelProposals, deriveProposals, type ContentProposal, type TileContext } from '@/lib/dashboard-presentation/proposals';
 
 function semanticDimensionToFilterType(type: string | undefined): FilterType {
   switch ((type ?? '').toLowerCase()) {
@@ -1021,6 +1022,53 @@ function DashboardDetailPageInner() {
     getCanvasRoot,
     onCommit: commitPresentation,
   });
+
+  // ── Content proposals ─────────────────────────────────────────────────────
+  // Changes to what a tile SAYS (its order, its title): listed with before →
+  // after, applied only on the author's Accept as a draft edit (one undo,
+  // published on Publish), and audited either way.
+  const [decidedProposals, setDecidedProposals] = useState<Set<string>>(() => new Set());
+  const proposalTiles = React.useMemo(() => {
+    const map = new Map<number, TileContext>();
+    for (const dc of (dashboard?.dashboard_charts ?? []) as any[]) {
+      if (dc.widget_type && dc.widget_type !== 'chart') continue;
+      const override = (dc.layout?.styleConfigOverride ?? {}) as Record<string, unknown>;
+      const base = (dc.chart?.config?.styleConfig ?? {}) as Record<string, unknown>;
+      map.set(dc.id, {
+        tileId: dc.id,
+        title: String(dc.layout?.custom_title || base.chartTitle || dc.chart?.name || ''),
+        currentSortRules: (override.chartSortRules ?? base.chartSortRules) as unknown[] | undefined,
+        currentStyleOverride: override,
+      });
+    }
+    return map;
+  }, [dashboard?.dashboard_charts]);
+  const contentProposals = React.useMemo(() => {
+    const all = [
+      ...deriveProposals(reportFindings.evidence, proposalTiles),
+      ...coerceModelProposals(aiDesign.modelProposals, proposalTiles),
+    ];
+    const seen = new Set<string>();
+    return all.filter((p) => {
+      if (decidedProposals.has(p.id) || seen.has(p.id)) return false;
+      seen.add(p.id);
+      return true;
+    });
+  }, [reportFindings.evidence, proposalTiles, aiDesign.modelProposals, decidedProposals]);
+  const decideProposal = React.useCallback((proposal: ContentProposal, accepted: boolean) => {
+    setDecidedProposals((current) => new Set(current).add(proposal.id));
+    if (accepted) {
+      const prev = localLayoutOverrides;
+      const next = { ...prev, [proposal.tileId]: { ...(prev[proposal.tileId] ?? {}), ...proposal.patch } };
+      pushUndo({ kind: 'layout', prev, next });
+      setLocalLayoutOverrides(next);
+    }
+    void dashboardApi.recordProposalDecision(dashboardId, {
+      decision: accepted ? 'accepted' : 'rejected', kind: proposal.kind, tile_id: proposal.tileId,
+      before: proposal.auditBefore, after: proposal.auditAfter, source: proposal.source,
+    }).catch((err) => console.error('Failed to record proposal decision:', err));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [localLayoutOverrides, dashboardId]);
 
   // The preview is a view layer, so it is pushed into the render overlay rather
   // than returned by the hook and threaded through every child.
@@ -3908,6 +3956,8 @@ function DashboardDetailPageInner() {
               busy={aiDesign.busy}
               onSubmit={aiDesign.submit}
               onDirection={aiDesign.applyDirection}
+              proposals={contentProposals}
+              onDecideProposal={decideProposal}
               pendingDiff={aiDesign.pending?.diff ?? null}
               onApply={aiDesign.apply}
               onDiscard={aiDesign.discard}

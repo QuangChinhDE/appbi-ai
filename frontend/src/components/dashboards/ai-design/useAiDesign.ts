@@ -3,6 +3,7 @@
 import React from 'react';
 import { DIRECTION_IDS, planForDirection, type DirectionId } from '@/lib/dashboard-presentation/directions';
 import { toast } from 'sonner';
+import { applyReviewRepairs, capturePreview, reviewNote, type VisionReview } from '@/lib/dashboard-presentation/vision-review';
 import { dashboardApi } from '@/lib/api/dashboards';
 import { useI18n } from '@/providers/LanguageProvider';
 import type { Dashboard, DashboardChart, DashboardThemeConfig } from '@/types/api';
@@ -77,6 +78,8 @@ export interface UseAiDesignInput {
 }
 
 interface PendingDesign {
+  /** The visual review of the rendered preview, when one ran. */
+  review?: VisionReview;
   mutation: PresentationMutation;
   diff: PresentationDiff;
   previewTiles: DashboardChart[];
@@ -157,8 +160,14 @@ export function useAiDesign(input: UseAiDesignInput) {
     );
   }, [input.activePageId, targetsKey]);
 
+  const [modelProposals, setModelProposals] = React.useState<unknown[]>([]);
+
   const build = React.useCallback((rawPlan: unknown, grantedLayer: DesignLayer, targets: number[]) => {
     const coerced = coerceModelPlan(rawPlan, { grantedLayer, targets, knownTileIds: baselineTiles.map((t) => t.id) });
+    // Content proposals travel beside the design, never inside it: they wait
+    // for a person's Accept.
+    const rawProposals = (rawPlan as any)?.proposals;
+    if (Array.isArray(rawProposals) && rawProposals.length) setModelProposals(rawProposals);
     let plan = coerced.plan;
     const boundaryNotes = coerced.notes;
     // A redesign that names one of the direction grammars and brings no blocks
@@ -325,6 +334,56 @@ export function useAiDesign(input: UseAiDesignInput) {
     return () => window.clearTimeout(timer);
   }, [pending, input.getCanvasRoot, committedTiles, selected]);
 
+  // ── Visual review (bounded: one vision call per preview) ─────────────────
+  // After the deterministic pass, look at the RENDERED preview as an image and
+  // ask a vision model to review it against the rubric. Its repairs go through
+  // the allow-list and the validator, inside the granted scope; its scores are
+  // shown as advice. No model / any failure → the preview stands as it is.
+  const reviewedSeq = React.useRef(0);
+  React.useEffect(() => {
+    if (!pending || reviewedSeq.current === pending.seq || !input.getCanvasRoot) return;
+    const seq = pending.seq;
+    const timer = window.setTimeout(async () => {
+      reviewedSeq.current = seq;
+      const root = input.getCanvasRoot?.();
+      if (!root) return;
+      const image = await capturePreview(root);
+      if (!image) return;
+      const tilesForReview = committedTiles.map((tile) => ({
+        id: tile.id,
+        kind: String(tile.widget_type && tile.widget_type !== 'chart' ? tile.widget_type : tile.chart?.chart_type ?? 'visual'),
+        title: String((tile.layout as any)?.custom_title || (tile.chart as any)?.config?.styleConfig?.chartTitle || tile.chart?.name || ''),
+      }));
+      let review: VisionReview;
+      try {
+        review = await dashboardApi.critiquePresentation(input.dashboardId, {
+          image, tiles: tilesForReview, direction: pending.mutation.layer === 'redesign' ? 'redesign' : pending.mutation.layer,
+        });
+      } catch {
+        return; // no vision model or a failed call: the deterministic review stands
+      }
+      const scope = new Set<number>(selected.length ? selected : committedTiles.map((tile) => tile.id));
+      setPending((current) => {
+        if (!current || current.seq !== seq) return current;
+        const { mutation, applied } = applyReviewRepairs(current.mutation, review, {
+          allowed: scope,
+          currentStyle: (id) => ((committedTiles.find((tile) => tile.id === id)?.layout as any)?.styleConfigOverride ?? {}),
+        });
+        const verdict = applied > 0
+          ? validateMutationAgainst({ tiles: committedTiles, mutation, pageId: current.pageId, targets: selected })
+          : { ok: false };
+        const next = verdict.ok ? mutation : current.mutation;
+        const note = reviewNote(review, verdict.ok ? applied : 0);
+        const diff = diffPresentation(committedTiles, next);
+        diff.notes = [...current.diff.notes, note];
+        // The review is part of the conversation the author reads.
+        setTurns((previous) => [...previous, { role: 'assistant', text: note }]);
+        return { ...current, mutation: next, diff, previewTiles: applyMutationToTiles(committedTiles, next), review };
+      });
+    }, 2600);
+    return () => window.clearTimeout(timer);
+  }, [pending, input.getCanvasRoot, input.dashboardId, committedTiles, selected]);
+
   const apply = React.useCallback(() => {
     if (!pending) return;
     if (pending.pageId !== input.activePageId || pending.targetsKey !== targetsKey) {
@@ -390,6 +449,8 @@ export function useAiDesign(input: UseAiDesignInput) {
     apply,
     discard,
     applyDirection,
+    /** Raw proposals the model returned (coerced by the page against its tiles). */
+    modelProposals,
     pending,
     /** Tiles to render while previewing; null means render the real state. */
     previewTiles: pending?.previewTiles ?? null,
