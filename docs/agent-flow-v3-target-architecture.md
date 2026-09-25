@@ -69,6 +69,18 @@ Bất biến **R** (luật): capability chỉ chạy nếu `registry.execute()` 
 - **Lỗi phát hiện dọc đường**: registry nạp pack không an toàn khi đa luồng (hai request
   đầu tiên cùng đăng ký `discover` → 500). Sửa bằng khoá + cờ `_LOADED`.
 
+### Review đối kháng trước khi đẩy — tìm thấy và đã sửa
+
+| Mức | Lỗi | Sửa ở gốc |
+|---|---|---|
+| P0 | `compute` bị cache xuyên lượt: ref `e1` bắt đầu lại mỗi lượt, store không nằm trong khoá cache → lượt B nhận (và xác thực) con số của lượt A | `compute` không cacheable |
+| P0 | `compute` vẫn xác thực số bịa: không có biến (`all([])`), `x*0+N`, rửa qua kết quả chưa xác thực, trỏ vào `chart_id` | chỉ xác thực khi có ≥1 biến tham chiếu tin cậy VÀ kết quả phụ thuộc vào chúng (thử nhiễu); taint lan qua ref; khoá định danh bị từ chối; kết quả tự khai `evidence_values` (literal không bao giờ vào sổ) |
+| P0 | Skill vượt phạm vi tri thức của caller khi caller để trống (chế độ "theo báo cáo"): grant tường minh của Skill được phép ra ngoài báo cáo | trong child, grant tường minh bị cắt về đúng quyền của báo cáo; không tính được thì ĐÓNG |
+| P0 | Child run lưu câu hỏi/đáp dù link tắt lưu nội dung, và người được chia sẻ Skill đọc được | child theo `store_content` của caller; danh sách Runs chỉ run gốc; xem child cần quyền đọc flow cha |
+| P1 | Luật coordinator lồng nằm ở validator → flow cũ dạng đó không mở được | chuyển sang luật publish (không bỏ qua được) + cảnh báo |
+| P2 | `evidence_ref` đổi prompt của mọi flow cũ | chỉ hiện khi bước có `compute` |
+| P2 | preview thiếu Skill và danh sách khả năng ẩn; `SkillBudget.check` cắt bước không cần model; `db=None`; input Skill chưa kiểm | đã sửa |
+
 ### Giới hạn còn lại
 
 - Skill không có khai báo chart riêng: child dùng đúng chart của caller.
@@ -77,6 +89,15 @@ Bất biến **R** (luật): capability chỉ chạy nếu `registry.execute()` 
 - Chi phí preflight của một Skill là hằng số bảo thủ; trần cứng là budget lúc chạy.
 - Lời nhắc ngôn ngữ sau vòng lặp vẫn "chết" như trước (giữ nguyên khi tách Strategy;
   sửa là thay đổi hành vi riêng).
+- Rút chia sẻ hoặc gỡ phát hành một Skill không chặn các flow đã ghim version: version
+  ghim là bất biến có chủ đích; kiểm tra chia sẻ chạy lúc lưu/phát hành.
+- `uses_capability("web_search")` nay tính mọi tool `reaches_outside`, nên Direct Chat bật
+  web cho flow cấp `research_web`/`browse_ai_answer` (trước đây bị từ chối âm thầm) —
+  vẫn dưới cờ `web_search_enabled` của deployment.
+- Một formula cộng một literal lớn vào số liệu thật (`x + 13590001`) vẫn được xác thực:
+  literal là toán học theo quyết định sản phẩm; nó nằm rõ trong lineage.
+- Ngân sách lượt cấp cao nhất không giữ lại lượt cuối để trả lời (hành vi cũ): một câu
+  hỏi báo cáo không trả lời được có thể kết thúc "hết lượt gọi mô hình".
 
 ---
 

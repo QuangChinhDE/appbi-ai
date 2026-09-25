@@ -275,3 +275,20 @@ def test_the_catalogue_serves_the_text_discovery_ranks_on():
     spec = tool_registry.all_tools()["forecast_measure"]
     served = spec.to_dict()["search_text"]
     assert served == spec.search_text() and spec.label_vi in served
+
+
+def test_a_step_that_cannot_compute_is_not_shown_evidence_references(monkeypatch):
+    """References exist for `compute`; any other step's prompt stays exactly what
+    it was before they existed (found by review: every tool result changed)."""
+    seen = {}
+
+    class M(_Model):
+        pass
+    model = M([[("rank_values", {"chart_id": 41})], []])
+
+    async def fake(**kw):
+        async for ev in model.stream()(**kw):
+            yield ev
+        seen["results"] = model.results
+    _run(monkeypatch, model, ["rank_values", "total_measure"], limit=None)
+    assert model.results and all("evidence_ref" not in (r or {}) for r in model.results)

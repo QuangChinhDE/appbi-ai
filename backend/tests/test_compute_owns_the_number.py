@@ -108,7 +108,7 @@ def test_non_numeric_evidence_is_refused(value):
 # ── literals are mathematics ─────────────────────────────────────────────────
 @pytest.mark.parametrize("expr,want", [
     ("x / 1000000", 0.0012), ("x * 365", 438000.0), ("x / 12", 100.0),
-    ("round(x / 7, 2)", 171.43), ("max(x, 5000) - min(x, 10)", 4990.0), ("abs(-x)", 1200.0),
+    ("round(x / 7, 2)", 171.43), ("max(x, 5000) - x", 3800.0), ("abs(-x)", 1200.0),
 ])
 def test_literals_of_any_magnitude_are_allowed_and_recorded(expr, want):
     out = _run(_state_with(REVENUE), expr, {"x": {"ref": "e1", "path": "value"}})
@@ -123,7 +123,7 @@ def test_a_bare_number_as_a_variable_is_computed_but_marked_unreferenced():
     assert out["data"]["result"] == 21496443.0
     assert out["data"]["provenance"] == "unreferenced"
     assert out["data"]["inputs"] == [{"name": "a", "value": 10748221.5, "referenced": False}]
-    assert "KHÔNG được coi là số liệu đã kiểm chứng" in out["data"]["note"]
+    assert "không được coi là số liệu đã kiểm chứng" in out["data"]["note"]
 
 
 def test_the_verifier_cannot_certify_a_result_built_on_an_invented_input():
@@ -193,3 +193,73 @@ def test_compute_runs_through_the_registry_as_a_read_only_derived_tool():
     out = reg.execute(ctx, "compute", {"expression": "x / 2", "vars": {"x": {"ref": "e1", "path": "value"}}},
                       allowed={"compute"})
     assert out["ok"] is True and out["data"]["result"] == 600.0
+
+
+
+# ── found by adversarial review: ways an invented number got certified ───────
+def _certified(state: RunState, out: dict) -> bool:
+    before = len(state.evidence)
+    state.record_evidence(out, tool="compute")
+    return out["data"]["result"] in state.evidence[before:]
+
+
+def test_a_formula_with_no_variables_is_not_certified():
+    """`all([])` is True: "13590000" with no vars counted as referenced."""
+    state = RunState()
+    out = _run(state, "13590000", {})
+    assert out["data"]["provenance"] == "unreferenced"
+    assert not _certified(state, out)
+
+
+@pytest.mark.parametrize("expr", ["x*0 + 13590001", "x - x + 13590001", "x / x * 13590001",
+                                  "max(x, 5000) - min(x, 10)"])
+def test_a_result_that_does_not_depend_on_its_evidence_is_not_certified(expr):
+    state = _state_with(REVENUE)
+    out = _run(state, expr, {"x": {"ref": "e1", "path": "value"}})
+    assert out["data"]["provenance"] == "unreferenced", expr
+    assert not _certified(state, out)
+
+
+def test_an_unreferenced_result_cannot_be_laundered_through_a_second_formula():
+    state = RunState()
+    first = _run(state, "a * 1", {"a": 777.0})
+    state.record_evidence(first, tool="compute")                      # e1, tainted
+    second = _run(state, "y + 0.5", {"y": {"ref": "e1", "path": "result"}})
+    assert second["data"]["provenance"] == "unreferenced"
+    assert second["data"]["inputs"][0]["referenced"] is False
+    assert not _certified(state, second)
+
+
+def test_literals_themselves_are_never_certified():
+    state = _state_with(REVENUE)
+    out = _run(state, "x * 13590000", {"x": {"ref": "e1", "path": "value"}})
+    state.record_evidence(out, tool="compute")
+    assert 13590000.0 not in state.evidence
+    assert out["data"]["result"] in state.evidence
+
+
+@pytest.mark.parametrize("key", ["chart_id", "id", "dataset_id"])
+def test_an_identifier_is_not_a_figure(key):
+    state = _state_with(("read", "t", {key: 41, "value": 5}))
+    out = _run(state, "x + 1", {"x": {"ref": "e1", "path": key}})
+    assert out["error_code"] == "evidence_not_numeric"
+
+
+def test_compute_is_never_served_from_the_cross_run_cache():
+    """Refs restart at e1 in every run and the store is not in the cache key: a
+    cached result served run B the figure run A computed, and certified it."""
+    spec = reg.all_tools()["compute"]
+    assert spec.cacheable is False
+
+    def ctx_for(value):
+        state = _state_with(("read", "total_measure", {"value": value}))
+        return SimpleNamespace(evidence_store=state.evidence_store, web_search=True,
+                               read_rows=True, question="", dashboard=SimpleNamespace(id=67),
+                               public_filters=[], allowed_chart_ids={41}, excluded_columns=set(),
+                               knowledge_scope={}, actor_type="public_session", actor_ref=None)
+
+    args = {"expression": "x * 2", "vars": {"x": {"ref": "e1", "path": "value"}}}
+    a = reg.execute(ctx_for(1000), "compute", args, allowed={"compute"})
+    b = reg.execute(ctx_for(5), "compute", args, allowed={"compute"})
+    assert a["data"]["result"] == 2000.0
+    assert b["data"]["result"] == 10.0 and not b.get("cached")

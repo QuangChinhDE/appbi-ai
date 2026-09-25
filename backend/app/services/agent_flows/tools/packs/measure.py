@@ -214,6 +214,11 @@ PACK = ToolPack(
             answers_vi=("Tính tỉ lệ giữa hai số vừa đọc", "Tăng bao nhiêu phần trăm so với kỳ trước"),
             data_exposure="derived",
             risk="read_only",
+            # NOT CACHEABLE. Its inputs live in THIS run's evidence store, which is
+            # not part of the cross-run cache key, and refs restart at e1 in every
+            # run — so a cached result served run B the figure run A computed, and
+            # certified it. Deterministic in its inputs, not in its arguments.
+            deterministic=False,
         ),
     ],
 )

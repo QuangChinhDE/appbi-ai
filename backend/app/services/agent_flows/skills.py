@@ -59,6 +59,8 @@ from app.services.dashboard_ai_bot.events import AgentEvent
 logger = logging.getLogger(__name__)
 
 SKILL_FLOW_TYPE = "skill"
+#: Longest text a Skill input may carry — a question or a label, not a document.
+MAX_TEXT_INPUT = 2000
 INVOKED_AS = ("agent_capability", "skill_node", "coordinator_lane")
 
 
@@ -109,11 +111,14 @@ class SkillBudget:
         return self.llm_calls >= self.max_llm_calls
 
     def check(self) -> None:
+        """Between nodes: the PARENT's ceilings and the shared clock only.
+
+        The child's own caps are enforced where they are SPENT (`spend_llm`,
+        `spend_tool`). Checking them here cut off steps that need neither — a
+        Skill with no model step and a model cap of 0 died on its first node, and
+        a Skill whose last node runs after its last model call never reached it.
+        """
         self.parent.check()
-        if self.llm_calls >= self.max_llm_calls:
-            raise BudgetExhausted("Skill đã dùng hết số lượt gọi mô hình được cấp cho nó")
-        if self.tool_calls >= self.max_tool_calls:
-            raise BudgetExhausted("Skill đã dùng hết số lượt gọi công cụ được cấp cho nó")
 
     def spend_llm(self) -> None:
         if self.llm_calls >= self.max_llm_calls:
@@ -161,6 +166,9 @@ def resolve_skill(db: Any, key: str, version: int | None) -> tuple[Any, Flow] | 
     """
     from app.services.agent_flows import registry
 
+    if db is None:
+        # No database, no governed release to resolve — refused, never guessed.
+        return None
     found = registry.resolve_version(db, key, version)
     if not found:
         return None
@@ -248,6 +256,8 @@ def publish_problems(db: Any, row: Any, flow: Flow) -> list[str]:
     if str(getattr(row, "flow_type", "") or "") == SKILL_FLOW_TYPE and flow.skill is None:
         problems.append("Flow loại Skill phải khai báo đầu vào, kết quả và khi nào nên dùng.")
     problems += skill_graph_problems(db, flow, self_key=str(getattr(row, "brain_key", "") or flow.key))
+    # Structural bound on multi-agent, refused at the same door.
+    problems += flow.nested_coordinator_problems()
     return problems
 
 
@@ -343,6 +353,21 @@ def _validate_inputs(contract: SkillContract, inputs: dict) -> tuple[dict, str]:
                 value = float(value)
             except (TypeError, ValueError):
                 return {}, f"input “{spec.name}” phải là một con số"
+        elif spec.type == "chart_ref":
+            try:
+                value = int(value)
+            except (TypeError, ValueError):
+                return {}, f"input “{spec.name}” phải là mã biểu đồ (số nguyên)"
+        elif spec.type == "date":
+            import re as _re
+
+            value = str(value).strip()
+            if not _re.fullmatch(r"\d{4}(-\d{2}(-\d{2})?)?", value):
+                return {}, f"input “{spec.name}” phải là ngày dạng YYYY, YYYY-MM hoặc YYYY-MM-DD"
+        else:
+            value = str(value)
+            if len(value) > MAX_TEXT_INPUT:
+                return {}, f"input “{spec.name}” dài quá {MAX_TEXT_INPUT} ký tự"
         out[spec.name] = value
     return out, ""
 
@@ -406,6 +431,8 @@ async def invoke_skill(
     # ── the child's authority: the CALLER's context, and nothing wider ───────
     child_ctx = copy.copy(rctx.ctx)
     try:
+        # Always set, even when EMPTY: an empty caller scope is still a ceiling
+        # (the report's entitlement), not the absence of one.
         child_ctx.knowledge_ceiling = dict(getattr(rctx.ctx, "knowledge_scope", None) or {})
     except Exception:                                           # noqa: BLE001
         pass
@@ -437,6 +464,7 @@ async def invoke_skill(
         child_inp, flow=skill_flow, ctx=child_ctx, api_key=rctx.api_key,
         base_system_prompt=rctx.base_system_prompt, db=db,
         budget=budget, skill_stack=(*stack, ident), on_state=keep_state,
+        store_content=bool(getattr(rctx, "store_content", True)),
     ):
         if ev.type == "result":
             envelope = ev.extra.get("envelope") or {}
@@ -450,6 +478,10 @@ async def invoke_skill(
             binding_id=parent_inp.binding.id or None,
             parent_run_key=parent_inp.request.id, parent_step_key=parent_step_key,
             invoked_as=invoked_as if invoked_as in INVOKED_AS else "agent_capability",
+            # The CALLER's privacy choice, not the default. Found by review: a link
+            # with `store_question_content=False` still had its question and answer
+            # stored — under the Skill, where the Skill's sharees could read them.
+            store_content=bool(getattr(rctx, "store_content", True)),
         )
 
     # ── what the parent inherits: the child's TRUSTED evidence, not its words ─
@@ -483,5 +515,9 @@ async def invoke_skill(
             "status": status,
             "notices": notices,
             "child_run_key": child_inp.request.id,
+            # Vouches for NO number itself: the child's trusted ledger was merged
+            # above, figure by figure. Harvesting this payload would certify an
+            # answer string that happens to parse as a number.
+            "evidence_values": [],
         },
     }

@@ -108,6 +108,10 @@ class RunContext:
     #: between the top-level run and this one. Empty for a top-level run. Checked
     #: on flow-VERSION identity, so A@v7 → B@v3 → A@v7 is a cycle.
     skill_stack: tuple = ()
+    #: Whether this run's question and answer may be stored. The CALLER's setting
+    #: (a link's `store_question_content`), carried so a Skill child run obeys the
+    #: same choice instead of defaulting to storing.
+    store_content: bool = True
 
 
 async def run_flow(
@@ -121,6 +125,7 @@ async def run_flow(
     budget: Any = None,
     skill_stack: tuple = (),
     on_state: Any = None,
+    store_content: bool = True,
 ) -> AsyncGenerator[AgentEvent, None]:
     """Run `flow` against `inp`. The last event is always `result`.
 
@@ -167,6 +172,7 @@ async def run_flow(
         answer_key=flow.answering_key(),
         db=db,
         skill_stack=tuple(skill_stack or ()),
+        store_content=bool(store_content),
     )
 
     status = "ok"

@@ -167,7 +167,8 @@ PARENT_GRANTING_SKILL = {
 }
 
 
-def _run(monkeypatch, db, body, model, *, ctx=None, envelope=None, budget=None, key="cha"):
+def _run(monkeypatch, db, body, model, *, ctx=None, envelope=None, budget=None, key="cha",
+         store_content=True):
     monkeypatch.setattr(AH, "_stream", model.stream())
     monkeypatch.setattr(tool_registry, "execute", _tools)
     flow = _flow(body, key)
@@ -180,6 +181,7 @@ def _run(monkeypatch, db, body, model, *, ctx=None, envelope=None, budget=None, 
         out = None
         async for ev in executor.run_flow(inp, flow=flow, ctx=ctx, api_key="k",
                                           base_system_prompt="BASE", db=db, budget=budget,
+                                          store_content=store_content,
                                           on_state=lambda s: holder.setdefault("state", s)):
             if ev.type == "result":
                 out = ev.extra.get("envelope")
@@ -245,7 +247,8 @@ def test_the_skill_result_the_parent_sees_names_its_child_run(monkeypatch, skill
     assert data["skill"] == "so_sanh" and data["version"] == 2
     assert data["answer"] == "Kết quả của Skill"
     assert data["child_run_key"] == _children(skill_db.db)[0].run_key
-    assert seen["result"]["evidence_ref"].startswith("e")
+    # This parent holds no `compute`, so it is not shown references (review P2).
+    assert "evidence_ref" not in seen["result"]
 
 
 # ── 2. the deterministic surfaces share the same path ────────────────────────
@@ -560,3 +563,106 @@ def test_a_skill_keeps_its_last_model_call_for_its_answer(monkeypatch, skill_db)
     assert b.tools_left() > 0 and not b.final_round   # round 1 may use tools
     b.spend_llm()
     assert b.final_round                               # round 2 answers
+
+
+def test_an_empty_caller_scope_still_bounds_the_skills_explicit_grants(monkeypatch):
+    """Found by review: with the caller in entitlement mode (empty lists), a
+    Skill's attached document 77 — checked against the SKILL author's rights,
+    outside this report — passed straight through as an explicit grant, and an
+    explicit grant may reach outside the report."""
+    from app.services.dashboard_ai_bot import govern_tools
+
+    monkeypatch.setattr(govern_tools, "_entitled_doc_ids", lambda ctx: {1, 2})
+    monkeypatch.setattr(govern_tools, "_scope", lambda ctx: (set(), {5}))
+    empty = {"doc_ids": [], "dataset_ids": [], "metric_names": [], "term_fqns": []}
+    ctx = SimpleNamespace(knowledge_ceiling=dict(empty))
+    assert bounded_scope(ctx, {**empty, "doc_ids": [77]})["doc_ids"] == [-1]
+    assert bounded_scope(ctx, {**empty, "doc_ids": [2, 77]})["doc_ids"] == [2]
+    assert bounded_scope(ctx, {**empty, "dataset_ids": [9]})["dataset_ids"] == [-1]
+    assert bounded_scope(ctx, {**empty, "dataset_ids": [5, 9]})["dataset_ids"] == [5]
+    assert bounded_scope(ctx, {**empty, "term_fqns": ["g.t"]})["term_fqns"] == []
+    # A caller that narrowed documents does not thereby open datasets.
+    ctx2 = SimpleNamespace(knowledge_ceiling={**empty, "doc_ids": [1]})
+    assert bounded_scope(ctx2, {**empty, "dataset_ids": [9]})["dataset_ids"] == [-1]
+
+
+def test_when_entitlement_cannot_be_computed_the_child_reads_nothing_extra(monkeypatch):
+    from app.services.dashboard_ai_bot import govern_tools
+
+    def boom(ctx):
+        raise RuntimeError("no db")
+    monkeypatch.setattr(govern_tools, "_entitled_doc_ids", boom)
+    empty = {"doc_ids": [], "dataset_ids": [], "metric_names": [], "term_fqns": []}
+    ctx = SimpleNamespace(knowledge_ceiling=dict(empty))
+    assert bounded_scope(ctx, {**empty, "doc_ids": [77]})["doc_ids"] == [-1]
+
+
+
+# ── found by review: a child run carries its caller's data ───────────────────
+def test_a_child_run_obeys_the_callers_content_setting(monkeypatch, skill_db):
+    """A link with store_question_content=False still had its question and answer
+    stored — under the Skill, where the Skill's sharees could read them."""
+    model = _Model(parent_script=[SKILL_CALL, ("text", "Xong.")], child_script=[("text", "ok")])
+    _run(monkeypatch, skill_db.db, PARENT_GRANTING_SKILL, model, store_content=False)
+    [child] = _children(skill_db.db)
+    assert skill_db.db.query(AgentFlowRunContent).filter(
+        AgentFlowRunContent.run_id == child.id).count() == 0
+
+
+def test_a_skills_run_list_does_not_list_its_callers_runs(monkeypatch, skill_db):
+    model = _Model(parent_script=[SKILL_CALL, ("text", "Xong.")], child_script=[("text", "ok")])
+    _run(monkeypatch, skill_db.db, PARENT_GRANTING_SKILL, model)
+    assert len(_children(skill_db.db)) == 1
+    listed = runs_service.list_runs(skill_db.db, brain_key="so_sanh", include_tests=True,
+                                    since_hours=24 * 365)
+    assert listed["runs"] == []
+
+
+def test_a_child_runs_detail_also_requires_access_to_the_parent_flow(monkeypatch):
+    from app.modules.agent_flows import api
+
+    checked: list[str] = []
+    monkeypatch.setattr(api, "_may_read_flow", lambda db, user, key: checked.append(key))
+    monkeypatch.setattr(api.runs_service, "run_detail", lambda db, **k: {
+        "id": 9, "parent": {"run_key": "r1", "brain_key": "cha", "step_key": "s", "id": 3}})
+    api.brain_run_detail("so_sanh", 9, db=None, user=None)
+    assert checked == ["so_sanh", "cha"]
+    checked.clear()
+    monkeypatch.setattr(api.runs_service, "run_detail", lambda db, **k: {"id": 9, "parent": None})
+    api.brain_run_detail("so_sanh", 9, db=None, user=None)
+    assert checked == ["so_sanh"]
+
+
+# ── P2 hardening from review ─────────────────────────────────────────────────
+def test_the_skill_budget_check_between_nodes_does_not_cut_off_steps_that_need_no_model():
+    b = skills.SkillBudget(Budget(max_llm_calls=10, max_tool_calls=10), tool_cap=0, llm_cap=0)
+    b.check()   # a Skill made only of deterministic steps is not refused up front
+    from app.services.agent_flows.runtime.state import BudgetExhausted
+
+    with pytest.raises(BudgetExhausted):
+        b.spend_llm()
+
+
+def test_without_a_database_no_skill_resolves():
+    assert skills.resolve_skill(None, "so_sanh", None) is None
+
+
+def test_skill_inputs_are_validated_by_their_declared_type():
+    from app.services.agent_flows.contract import SkillContract
+
+    contract = SkillContract(when_to_use="khi cần kiểm tra đầu vào", inputs=[
+        {"name": "c", "type": "chart_ref"}, {"name": "d", "type": "date"}, {"name": "t", "type": "text"}])
+    ok, err = skills._validate_inputs(contract, {"c": "41", "d": "2024-09", "t": "x"})
+    assert err == "" and ok == {"c": 41, "d": "2024-09", "t": "x"}
+    assert skills._validate_inputs(contract, {"c": "abc", "d": "2024", "t": "x"})[1]
+    assert skills._validate_inputs(contract, {"c": 1, "d": "tháng 9", "t": "x"})[1]
+    assert skills._validate_inputs(contract, {"c": 1, "d": "2024", "t": "x" * 5000})[1]
+
+
+def test_a_skill_result_vouches_for_no_number_itself():
+    from app.services.agent_flows.runtime.state import RunState
+
+    state = RunState()
+    state.record_evidence({"ok": True, "kind": "value", "data": {
+        "skill": "s", "answer": "13590000", "evidence_values": []}}, tool="skill:s")
+    assert 13590000.0 not in state.evidence

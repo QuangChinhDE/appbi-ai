@@ -119,10 +119,17 @@ def _coord(key: str, lanes: list[list[dict]]) -> dict:
          "body": body} for i, body in enumerate(lanes)]}
 
 
-def test_a_coordinator_inside_a_coordinator_lane_is_refused():
+def test_a_coordinator_inside_a_coordinator_lane_is_refused_at_publish_not_at_load():
+    """Refused at PUBLISH (not acknowledgeable). As a parse error it would have
+    made any stored flow of this shape fail to load — found by review."""
+    from app.services.agent_flows import skills
+
     inner = _coord("inner", [[_agent("i1")], [_agent("i2")]])
-    with pytest.raises(ValidationError, match="điều phối lồng nhau"):
-        _flow(_coord("outer", [[inner], [_agent("o2")]]), _agent("answer"))
+    flow = _flow(_coord("outer", [[inner], [_agent("o2")]]), _agent("answer"))  # still loads
+    assert any("điều phối lồng nhau" in p for p in flow.nested_coordinator_problems())
+    assert any("điều phối lồng nhau" in w for w in flow.warnings())
+    row = SimpleNamespace(flow_type="bot", brain_key="f")
+    assert any("điều phối lồng nhau" in p for p in skills.publish_problems(None, row, flow))
 
 
 def test_nesting_is_refused_anywhere_below_a_lane_not_only_directly():
@@ -132,13 +139,14 @@ def test_nesting_is_refused_anywhere_below_a_lane_not_only_directly():
          "conditions": [{"left": "{{question}}", "op": "equals", "right": "x"}]},
         {"key": "p2", "name": "p2", "kind": "fallback", "body": [_agent("x")]},
     ]}
-    with pytest.raises(ValidationError, match="điều phối lồng nhau"):
-        _flow(_coord("outer", [[deep], [_agent("o2")]]), _agent("answer"))
+    flow = _flow(_coord("outer", [[deep], [_agent("o2")]]), _agent("answer"))
+    assert any("điều phối lồng nhau" in p for p in flow.nested_coordinator_problems())
 
 
 def test_sibling_coordinators_are_still_allowed():
-    _flow(_coord("c1", [[_agent("a1")], [_agent("a2")]]),
-          _coord("c2", [[_agent("b1")], [_agent("b2")]]), _agent("answer"))
+    flow = _flow(_coord("c1", [[_agent("a1")], [_agent("a2")]]),
+                 _coord("c2", [[_agent("b1")], [_agent("b2")]]), _agent("answer"))
+    assert flow.nested_coordinator_problems() == []
 
 
 # ── 5. cost follows the canonical tree ───────────────────────────────────────

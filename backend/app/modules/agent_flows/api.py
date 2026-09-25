@@ -730,6 +730,14 @@ def brain_run_detail(
     out = runs_service.run_detail(db, brain_key=brain_key, run_id=run_id)
     if out is None:
         raise HTTPException(status_code=404, detail="Không tìm thấy run")
+    # A CHILD RUN CARRIES ITS PARENT'S DATA. Reading the Skill is not enough:
+    # the reader must also be allowed to read the flow that invoked it. Found by
+    # review — the Skill's sharees could otherwise read its callers' answers.
+    parent = out.get("parent") or {}
+    if out.get("parent") is not None:
+        if not parent.get("brain_key"):
+            raise HTTPException(status_code=404, detail="Không tìm thấy run")
+        _may_read_flow(db, user, parent["brain_key"])
     return out
 
 

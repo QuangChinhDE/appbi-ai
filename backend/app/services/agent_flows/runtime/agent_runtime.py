@@ -593,6 +593,14 @@ class AgentRuntime:
         self.last_result = outcome.get("result") or {
             "ok": False, "error_code": "skill_failed", "error": "Skill không chạy", "retryable": False}
 
+    def _shown(self, result: dict, ref: str | None) -> dict:
+        """The copy of a result the MODEL reads. Carries its `evidence_ref` only
+        when this step can use one (it holds `compute`) — every other step's
+        prompt stays exactly what it was before references existed."""
+        if ref and "compute" in self.allowed:
+            return {**result, "evidence_ref": ref}
+        return result
+
     def _after(self, call: AgentEvent, result: dict) -> None:
         """Bookkeeping every executed capability shares: view, log, evidence."""
         if result.get("ok"):
@@ -602,7 +610,7 @@ class AgentRuntime:
             self.state.tool_log.append(f"{call.tool_name}({result.get('error_code') or 'failed'})")
         self.state.evidence_source = self.node.key
         ref = self.state.record_evidence(result, tool=call.tool_name)
-        self.last_result = {**result, "evidence_ref": ref} if ref else result
+        self.last_result = self._shown(result, ref)
 
     async def invoke(self, call: AgentEvent) -> AsyncGenerator[AgentEvent, None]:
         """Run one requested call under every rule. Yields the reader's status
@@ -729,7 +737,7 @@ class AgentRuntime:
         _collect_citation(state, call.tool_name, call.tool_args, result)
         # What the MODEL is shown carries the reference; the result itself is
         # untouched (it may be a cached object shared with other runs).
-        self.last_result = {**result, "evidence_ref": ref} if ref else result
+        self.last_result = self._shown(result, ref)
         yield AgentEvent(
             type="tool_result",
             tool_call_id=call.tool_call_id,

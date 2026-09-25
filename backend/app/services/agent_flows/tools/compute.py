@@ -169,14 +169,30 @@ def resolve_reference(store: dict[str, Any], ref: str, path: str) -> tuple[float
         )
     result = entry.get("result") or {}
     segments = _parse_path(path)
+    # AN IDENTIFIER IS NOT A MEASUREMENT — the same rule the evidence ledger
+    # applies (`state._IDENTIFIER_KEYS`). A formula over `chart_id` would
+    # otherwise certify a primary key as a figure.
+    from app.services.agent_flows.runtime.state import _IDENTIFIER_KEYS
+
+    last_key = next((s for s in reversed(segments) if isinstance(s, str)), "")
+    if last_key in _IDENTIFIER_KEYS:
+        raise _Refused(
+            "evidence_not_numeric",
+            f"{ref}:{path} là một mã định danh ({last_key}), không phải một số liệu",
+        )
     root: Any = result
     if segments and isinstance(result, dict) and segments[0] not in result \
             and isinstance(result.get("data"), (dict, list)):
         root = result["data"]
     value = _walk(root, segments, path) if segments else result.get("data")
+    data = result.get("data") if isinstance(result.get("data"), dict) else {}
     return _numeric(value, f"{ref}:{path or '(gốc)'}"), {
         "tool": entry.get("tool") or "",
         "step": entry.get("source") or "",
+        # TAINT TRAVELS. A reference to a result that was itself built on a typed
+        # number is not evidence: without this, pointing a second formula at the
+        # first one's `result` laundered an invented input into a certified one.
+        "trusted": data.get("provenance") not in ("unreferenced",),
     }
 
 
@@ -269,11 +285,13 @@ def tool_compute(ctx: Any, args: dict) -> dict:
                 raise _Refused("bad_argument", f"tên biến {name!r} không hợp lệ")
             if isinstance(spec, dict):
                 value, origin = resolve_reference(store, spec.get("ref"), str(spec.get("path") or ""))
+                trusted = origin.pop("trusted", True)
                 names[name] = value
                 inputs.append({
-                    "name": name, "value": _round(value), "referenced": True,
+                    "name": name, "value": _round(value), "referenced": bool(trusted),
                     "ref": str(spec.get("ref")), "path": str(spec.get("path") or ""),
                     **origin,
+                    **({} if trusted else {"note": "tham chiếu tới một kết quả chưa được xác thực"}),
                 })
             else:
                 # The old calling convention: a number the model typed. Computed
@@ -285,7 +303,15 @@ def tool_compute(ctx: Any, args: dict) -> dict:
     except _Refused as exc:
         return _err(exc.code, str(exc))
 
-    referenced = all(i["referenced"] for i in inputs)
+    # CERTIFIED ONLY IF THE RESULT IS A FUNCTION OF EVIDENCE:
+    #   * at least one variable — `all([])` is True, so a formula with no
+    #     variables ("13590000") used to count as referenced;
+    #   * every variable a reference to a trusted result;
+    #   * and the result actually DEPENDS on them — `x*0 + 13590001` references x
+    #     and certifies a number the model typed. Recomputed with every variable
+    #     perturbed: if nothing moves, the evidence is decoration.
+    referenced = bool(inputs) and all(i["referenced"] for i in inputs) \
+        and _depends_on_inputs(expression, names, value)
     data: dict[str, Any] = {
         "expression": expression,
         "result": _round(value),
@@ -293,14 +319,35 @@ def tool_compute(ctx: Any, args: dict) -> dict:
         "literals": sorted(set(_round(l) for l in literals)),
         "provenance": "referenced" if referenced else "unreferenced",
     }
+    # WHICH NUMBERS THIS RESULT VOUCHES FOR — the result, when certified; nothing
+    # otherwise. Declared rather than left to the harvester, which would also
+    # pick up `literals` and the echoed input values.
+    data["evidence_values"] = [data["result"]] if referenced else []
     if not referenced:
         loose = [i["name"] for i in inputs if not i["referenced"]]
         data["note"] = (
-            "Kết quả này dùng số tự nhập (" + ", ".join(loose) + ") thay vì tham "
-            "chiếu tới kết quả công cụ, nên KHÔNG được coi là số liệu đã kiểm chứng. "
-            "Dùng {\"ref\": \"eN\", \"path\": \"...\"} để kết quả được xác thực."
+            "Kết quả này không được coi là số liệu đã kiểm chứng: "
+            + ("dùng số tự nhập hoặc tham chiếu chưa xác thực (" + ", ".join(loose) + ")"
+               if loose else "công thức không phụ thuộc vào số liệu nào đã đọc")
+            + ". Dùng {\"ref\": \"eN\", \"path\": \"...\"} tới kết quả công cụ để "
+              "kết quả được xác thực."
         )
     return R.ok(data, kind="value")
+
+
+def _depends_on_inputs(expression: str, names: dict[str, float], value: float) -> bool:
+    """Does the result change when the variables change? Two perturbations, so a
+    formula that is flat at one point by coincidence is not misread."""
+    if not names:
+        return False
+    for factor, shift in ((1.37, 3.1), (0.61, -7.3)):
+        try:
+            moved, _ = _evaluate(expression, {k: v * factor + shift for k, v in names.items()})
+        except _Refused:
+            return True  # e.g. a perturbation hit ÷0: it clearly depends on them
+        if abs(moved - value) > 1e-9 * max(1.0, abs(value)):
+            return True
+    return False
 
 
 DEFINITION = {

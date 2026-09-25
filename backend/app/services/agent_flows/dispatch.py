@@ -523,6 +523,9 @@ async def run_for_link(
         async for ev in executor.run_flow(
             inp, flow=flow, ctx=ctx, api_key=api_key,
             base_system_prompt=base_system_prompt, db=db,
+            # The link's privacy choice binds every run this turn creates —
+            # including a Skill's child run.
+            store_content=bool(binding.store_question_content),
         ):
             if ev.type == "result":
                 out = FlowOutput.model_validate(ev.extra.get("envelope"))

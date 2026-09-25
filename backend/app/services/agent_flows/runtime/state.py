@@ -283,9 +283,15 @@ class RunState:
             "result": result,
         }
         data = result.get("data") if isinstance(result.get("data"), dict) else {}
-        if data.get("provenance") == "unreferenced":
+        # A RESULT MAY DECLARE WHICH NUMBERS IT VOUCHES FOR (`evidence_values`):
+        # `compute` names only its certified result, never its literals or echoed
+        # inputs; a Skill names nothing (its child's ledger is merged directly).
+        # Everything else is harvested as it always was.
+        if "evidence_values" in data or data.get("provenance") == "unreferenced":
             if self.evidence_source:
                 self.evidence_sources.add(self.evidence_source)
+            for v in data.get("evidence_values") or []:
+                self.add_evidence(v, depth=1)
             return ref
         self.add_evidence(result)
         return ref

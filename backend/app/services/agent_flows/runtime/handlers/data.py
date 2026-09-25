@@ -918,20 +918,52 @@ def bounded_scope(ctx: Any, scope: dict[str, list]) -> dict[str, list]:
     top-level run, and the scope is returned untouched.
     """
     ceiling = getattr(ctx, "knowledge_ceiling", None)
-    if not ceiling:
+    if ceiling is None:
         return scope
     out: dict[str, list] = {}
     for key in ("doc_ids", "dataset_ids", "metric_names", "term_fqns"):
         cap = list(ceiling.get(key) or [])
         own = list(scope.get(key) or [])
         if not cap:
-            out[key] = own
+            # THE CALLER DID NOT NARROW THIS KIND — it reads what its REPORT is
+            # entitled to. The Skill's own list is then NOT a grant: an explicit
+            # document or dataset grant is allowed to reach outside the report
+            # (`govern_tools._visible_doc_ids`) because it was checked against the
+            # FLOW author's rights, and a Skill's was checked against the SKILL
+            # author's. Found by review: an empty caller scope let a Skill's
+            # attachment reach a document the caller could not read. So it is cut
+            # to the report's entitlement here, and fails CLOSED if that cannot be
+            # computed.
+            out[key] = _within_entitlement(ctx, key, own) if own else own
         elif not own:
             out[key] = cap
         else:
             both = [x for x in own if x in cap]
             out[key] = both or list(_NOTHING[key])
     return out
+
+
+def _within_entitlement(ctx: Any, key: str, own: list) -> list:
+    """A Skill's explicit list, narrowed to what the caller's REPORT may read."""
+    if key == "metric_names":
+        # Metric attachments only narrow (entitlement is applied first in
+        # `govern_tools._metrics_in_scope`), so they cannot widen anything.
+        return own
+    if key == "term_fqns":
+        # An attached term is reached regardless of report; without a caller
+        # grant the child keeps the caller's own reach (vocabulary / measure).
+        return []
+    try:
+        from app.services.dashboard_ai_bot import govern_tools
+
+        if key == "doc_ids":
+            allowed = govern_tools._entitled_doc_ids(ctx)
+        else:
+            allowed = govern_tools._scope(ctx)[1]
+        kept = [x for x in own if int(x) in allowed]
+    except Exception:                                           # noqa: BLE001
+        kept = []
+    return kept or list(_NOTHING[key])
 
 
 async def run_knowledge(

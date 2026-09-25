@@ -265,7 +265,11 @@ def list_runs(
     limit: int = 50,
     offset: int = 0,
 ) -> dict[str, Any]:
-    q = db.query(AgentFlowRun).filter(AgentFlowRun.brain_key == brain_key)
+    # TOP-LEVEL RUNS ONLY. A Skill's invocations by other flows carry THOSE
+    # flows' data; they are opened from the parent run, whose readers own it —
+    # not listed to everyone the Skill is shared with.
+    q = db.query(AgentFlowRun).filter(
+        AgentFlowRun.brain_key == brain_key, AgentFlowRun.parent_run_key.is_(None))
     if not include_tests:
         # The author's own trials are excluded by default: without this the first
         # week of every flow's numbers is mostly its author.

@@ -68,8 +68,15 @@ def preview(node: AgentNode, state: RunState, rctx: Any) -> dict:
     # here would describe a prompt the model never receives.
     from app.services.agent_flows.runtime.capabilities import build_view
 
+    from app.services.agent_flows.runtime.agent_runtime import _skill_capabilities
+
+    try:
+        extras, excluded_extras = _skill_capabilities(node, rctx)
+    except Exception:                                           # noqa: BLE001
+        extras, excluded_extras = [], {}
     view = build_view(node.tool_names(), rctx.ctx, web_enabled=web_enabled,
-                      limit=getattr(node, "visible_capabilities", None))
+                      limit=getattr(node, "visible_capabilities", None),
+                      extras=extras, excluded_extras=excluded_extras)
     try:
         ranking = " ".join(filter(None, [rctx.inp.question.text(), node.prompt or ""]))
     except Exception:                                           # noqa: BLE001
@@ -77,6 +84,9 @@ def preview(node: AgentNode, state: RunState, rctx: Any) -> dict:
     view.refresh(ranking)
     if view.shortlisted:
         schemas = view.schemas(web_enabled=web_enabled)
+    else:
+        # A run offers granted Skills alongside the tools; so does the preview.
+        schemas = schemas + [e.definition for e in extras]
 
     previous_scope = getattr(rctx.ctx, "knowledge_scope", None)
     try:
@@ -89,6 +99,10 @@ def preview(node: AgentNode, state: RunState, rctx: Any) -> dict:
         strategy = strategy_for(node, state, rctx, max_rounds=MAX_ROUNDS)
         strategy.build_request()
         system, messages = strategy.system, strategy.messages
+        # The run appends this in `ToolCallingStrategy.run`; the preview must too.
+        hidden = view.hidden_index()
+        if hidden:
+            system = f"{system}\n\n{hidden}"
     finally:
         # Same restore discipline as `run`: a preview must not leave the context
         # holding a scope the next caller was never granted.

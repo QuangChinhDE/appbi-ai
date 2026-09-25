@@ -299,7 +299,7 @@ class ToolContext:
     #: invoked the Skill. Every step inside the child narrows within it
     #: (`handlers/data.bounded_scope`), so a Skill's own attachments cannot widen
     #: what the caller was allowed to read.
-    knowledge_ceiling: dict[str, Any] = field(default_factory=dict)
+    knowledge_ceiling: dict[str, Any] | None = None
     #: The most rows a single read may return, set per run from the binding's
     #: `capabilities.max_rows_per_call`. None means fall back to `MAX_TOP_N`.
     #:
