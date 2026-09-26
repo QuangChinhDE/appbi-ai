@@ -247,6 +247,10 @@ def _ask(token: str, link: int, case: dict, granted: set[str]) -> dict:
             child_calls += s.get("tool_calls") or []
     answer = "".join(b.get("markdown") or b.get("text") or "" for b in ((env.get("answer") or {}).get("blocks") or []))
     answer_body = answer.split("[FOLLOWUP]")[0]
+    # The runtime's own "⚠️ …" lines are DISCLAIMERS about figures it could not
+    # stand behind, not claims: a flagged "100%" listed there must not grade the
+    # answer as having asserted it. Graded: what the answer itself says.
+    answer_body = chr(10).join(l for l in answer_body.split(chr(10)) if not l.strip().startswith("⚠️"))
     discovered = [d for disc in (cap.get("discoveries") or []) for d in disc.get("loaded") or []]
     usage = detail.get("usage") or {}
     outside = sorted((ran_names - granted - {"find_capability"})

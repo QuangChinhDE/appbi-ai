@@ -310,3 +310,14 @@ def reader_note(flagged: list[dict], locale: str = "vi") -> str:
         lines.append(f"⚠️ Chưa kiểm chứng: {shown} — dữ liệu mà câu trả lời đã đọc không cho ra các "
                      "con số này cho đúng điều được hỏi. Đừng dùng chúng khi chưa đối chiếu.")
     return "\n".join(lines)
+
+
+def with_reader_note(text: str, note: str) -> str:
+    """The answer with `note` placed in the body - before any [FOLLOWUP] line."""
+    if not note:
+        return text
+    nl = chr(10)
+    lines = text.rstrip().split(nl)
+    at = next((i for i, l in enumerate(lines) if l.strip().startswith("[FOLLOWUP]")), len(lines))
+    body, rest = nl.join(lines[:at]).rstrip(), lines[at:]
+    return nl.join([body, "", note, *([""] + rest if rest else [])])

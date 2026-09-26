@@ -452,8 +452,10 @@ async def run(
                 final = {}
             if final.get("flagged"):
                 state.unverified_claims = final["flagged"]
-                text = text.rstrip() + chr(10) + chr(10) + claim_check.reader_note(
-                    final["flagged"], _locale_of(rctx))
+                # BEFORE the follow-up suggestions: those lines become chips, and a
+                # note placed after them was cut off with them (found live).
+                text = claim_check.with_reader_note(
+                    text, claim_check.reader_note(final["flagged"], _locale_of(rctx)))
             if final:
                 state.capability_trace.setdefault(node.key, {})["claims"] = final
         state.outputs[node.key] = text

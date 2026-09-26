@@ -424,3 +424,12 @@ def test_a_correct_month_on_month_with_period_labels_and_a_worded_sign(world):
     ctx, state = world(MOM_Q, asked=("gmv",))
     _rec(state, "compare_periods", _compare(1003308.47, 1058728.03, -5.23), {"chart_id": MONTHLY})
     assert _why(state, ctx, text) == []
+
+
+def test_the_reader_note_goes_before_the_follow_up_lines():
+    """Live D2: the note was appended after [FOLLOWUP] lines and cut off with them."""
+    text = "Tổng doanh thu là 13.591.643,70.\n[FOLLOWUP] Doanh thu theo danh mục?\n[FOLLOWUP] Theo tháng?"
+    out = CC.with_reader_note(text, "⚠️ Số của toàn bộ báo cáo: 13,591,643.7")
+    body = out.split("[FOLLOWUP]")[0]
+    assert "⚠️ Số của toàn bộ báo cáo" in body and out.count("[FOLLOWUP]") == 2
+    assert CC.with_reader_note("Không có số.", "") == "Không có số."
