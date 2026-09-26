@@ -884,6 +884,12 @@ function CapabilityView({ view }: { view: CapabilityTrace }) {
         <div className="mt-1 rounded bg-danger/5 p-1 text-danger">
           <p className="font-strong">{t('agentFlows.trace.claimsUnverified')}</p>
           <ul>{view.claims.flagged.map((f, i) => <li key={i}>{figure(f)} — {whyClaim(f)}</li>)}</ul>
+          {!!view.claims.draft && (
+            <details className="mt-1 text-text-secondary">
+              <summary className="cursor-pointer">{t('agentFlows.trace.draftBeforeWithholding')}</summary>
+              <p className="mt-0.5 whitespace-pre-wrap break-words">{view.claims.draft}</p>
+            </details>
+          )}
         </div>
       )}
     </div>

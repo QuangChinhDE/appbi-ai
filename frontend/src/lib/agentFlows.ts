@@ -712,7 +712,7 @@ export interface CapabilityTrace {
    *  match the question, or percentages no tool produced. */
   claim_review?: { flagged: ClaimFlag[] };
   /** The final check of the answer's figures (what is still unverified). */
-  claims?: { flagged: ClaimFlag[] };
+  claims?: { flagged: ClaimFlag[]; draft?: string };
 }
 
 export interface ClaimFlag {
