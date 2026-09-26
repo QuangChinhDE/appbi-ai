@@ -137,7 +137,10 @@ def test_a_row_count_is_not_a_percentage_and_a_kpi_share_is_not_a_share(world):
     _rec(state, "total_measure", derived.tool_total_measure(ctx, {"chart_id": KPI}), {"chart_id": KPI})
     _rec(state, "get_chart_summary", _pack(KPI, "Tổng doanh thu", ["dataset_table_438.total_revenue"],
                                            [[13591643.7]]), {"chart_id": KPI})
-    assert _why(state, ctx, "Bang SP chiếm 100% tổng doanh thu, tức 13.591.643,70.") == [(100.0, "unsupported")]
+    # 100% has no proportion behind it; the total is the WHOLE report's, and the
+    # report has no revenue by state — both said to the reader.
+    assert _why(state, ctx, "Bang SP chiếm 100% tổng doanh thu, tức 13.591.643,70.") == [
+        (100.0, "unsupported"), (13591643.7, "whole_as_member")]
 
 
 def test_an_orders_share_called_a_revenue_share_is_flagged(world):
@@ -174,10 +177,32 @@ def test_state_rows_answer_an_orders_question(world):
     assert _why(state, ctx, "Bang SP có 41.746 đơn hàng, chiếm phần lớn.") == []
 
 
-def test_an_honest_refusal_that_states_the_total_is_left_alone(world):
+def test_an_honest_refusal_keeps_its_total_with_a_neutral_note(world):
+    """The total is TRUE as the total; the report has no revenue by state. The
+    check cannot read prose, so it never calls it wrong: the only flag is the
+    neutral "whole report" note — never `unsupported`, never a rewrite."""
     ctx, state = world(STATE_Q)
     _rec(state, "total_measure", derived.tool_total_measure(ctx, {"chart_id": KPI}), {"chart_id": KPI})
-    assert _why(state, ctx, "Báo cáo không tách được doanh thu theo bang; tổng doanh thu là 13.591.643,70.") == []
+    text = "Báo cáo không tách được doanh thu theo bang; tổng doanh thu là 13.591.643,70."
+    assert _why(state, ctx, text) == [(13591643.7, "whole_as_member")]
+    assert "Số của toàn bộ báo cáo" in CC.reader_note(CC.check(state, ctx, text)["flagged"])
+
+
+def test_a_total_given_as_the_top_state_is_flagged(world):
+    """D2 live: "Bang có doanh thu cao nhất là bang mà tổng doanh thu đạt 13,59M"."""
+    ctx, state = world("Bang nào có doanh thu cao nhất?")
+    _rec(state, "total_measure", derived.tool_total_measure(ctx, {"chart_id": KPI}), {"chart_id": KPI})
+    assert _why(state, ctx, "Bang có doanh thu cao nhất đạt 13.591.643,70.") == [(13591643.7, "whole_as_member")]
+
+
+def test_orders_by_state_do_not_deliver_revenue_by_state(world):
+    """Review round 6's P0: the delivery test was measure-blind."""
+    ctx, state = world(STATE_Q)
+    _rec(state, "get_chart_data", {"ok": True, "kind": "table", "data": {
+        "chart_id": STATE_ORDERS_CHART, "columns": STATE_COLS, "rows": STATE_ROWS}},
+        {"chart_id": STATE_ORDERS_CHART})
+    _rec(state, "total_measure", derived.tool_total_measure(ctx, {"chart_id": KPI}), {"chart_id": KPI})
+    assert _why(state, ctx, "Doanh thu của bang SP là 13.591.643,70.") == [(13591643.7, "whole_as_member")]
 
 
 def test_a_certified_compute_rate_is_a_percentage_even_on_a_spurious_breakdown(world):

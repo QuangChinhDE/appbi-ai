@@ -232,15 +232,18 @@ def describe(tool: str, result: Any, *, chart_dims: dict[int, list[str]] | None 
             if n is not None:
                 out.append(_entry(n, measure=measure, dimension=dims_of[0] if dims_of else None))
         return out
-    # Everything else: what it declares, whole, ratios by field name.
+    # Everything else — an ANALYSIS of the chart it names (distribution,
+    # anomalies, drill-down…): its figures are about that chart's breakdown, so
+    # they carry it; declared dimension first. Ratios by field name.
+    analysed = dimension or (dims_of[0] if dims_of else None)
     out = []
     for k, v in data.items():
         n = _num(v)
         if n is None or k in ("chart_id",):
             continue
-        out.append(_entry(n, measure=measure, dimension=dimension, ratio=_is_ratio_name(k)
+        out.append(_entry(n, measure=measure, dimension=analysed, ratio=_is_ratio_name(k)
                           or bool(measure and _RATIO_MEASURE.search(_key(measure) or ""))))
-    return out + _ratio_fields(data, measure=measure)
+    return out + _ratio_fields(data, measure=measure, dimension=analysed)
 
 
 def _inherit(inputs: list, ledger: list[dict]) -> dict:

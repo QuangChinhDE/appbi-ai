@@ -56,6 +56,10 @@ def _is_time(dim: str | None) -> bool:
     return looks_like_time_name(dim)
 
 
+#: ctx id -> the words of the measures the question named (see `_confirmed`).
+_MEASURE_WORDS: dict[int, set[str]] = {}
+
+
 def _question_measures(ctx: Any, question: str) -> set[str]:
     """Field keys of the measures the question names STRONGLY — the resolver's own
     threshold (two shared terms, or every term of a short question) over the
@@ -86,6 +90,8 @@ def _question_measures(ctx: Any, question: str) -> set[str]:
             if ident and (strength >= 2 or (strength and strength == len(terms))):
                 for alias in _vocabulary(ctx, str(ident), "measure") or [ident]:
                     measures.add(field_key(str(alias)))
+                _MEASURE_WORDS.setdefault(id(ctx), set()).update(
+                    _terms_of(" ".join(str(asset.get(k) or "") for k in ("id", "name"))))
     except Exception:                                           # noqa: BLE001
         measures = set()
     return measures
@@ -124,6 +130,29 @@ def target_of(state: Any, ctx: Any) -> dict:
             member = sm
             break
     return {"measures": {m for m in measures if m}, "dimension": dim_key, "member": member}
+
+
+def _confirmed(ctx: Any, dim: str | None) -> bool:
+    """Did the question name this breakdown with words that are NOT the words of
+    a measure it names? "Bang SP chiếm … doanh thu" names state by "bang"; "Tỷ lệ
+    khách hàng quay lại" reaches customer_state only through "khách", a word of
+    the measure — that is not a question about states."""
+    if not dim:
+        return False
+    from app.services.agent_flows.tools.dimension_gate import (
+        _chart_dimension_vocabulary, _dimension_terms, field_key, title_hits,
+    )
+
+    wanted, raw = _dimension_terms(ctx, str(getattr(ctx, "question", "") or ""))
+    measure_words = _MEASURE_WORDS.get(id(ctx), set())
+    hits: set[str] = set()
+    for ref, field_words, title_words in _chart_dimension_vocabulary(ctx):
+        if field_key(ref) == dim:
+            hits |= (wanted & field_words) | set(title_hits(ctx, raw, title_words))
+    from app.services.agent_flows.tools.packs.discover import _terms_of
+
+    folded = {t for h in hits for t in _terms_of(h)} or hits
+    return bool(folded - measure_words)
 
 
 def _names_dimension(ctx: Any, dim: str) -> bool:
@@ -178,6 +207,12 @@ def check(state: Any, ctx: Any, text: str) -> dict:
         return {}
     t = target_of(state, ctx)
     flagged: list[dict] = []
+    # WAS THE BREAKDOWN DELIVERED FOR THE MEASURE ASKED? Orders by state do not
+    # deliver revenue by state (found by review: measure-blind "delivered").
+    wants_member = bool(t["dimension"] and t["measures"] and _confirmed(ctx, t["dimension"]))
+    delivered = any(e.get("dimension") == t["dimension"] and
+                    (e.get("measure") in t["measures"] or not e.get("measure"))
+                    for e in ledger) if wants_member else True
     for value, pct in extract_answer_claims(text):
         if pct:
             support = [e for e in ledger if e.get("ratio") and
@@ -197,6 +232,17 @@ def check(state: Any, ctx: Any, text: str) -> dict:
                 flagged.append({"value": value, "pct": pct, "why": "unsupported"})
             continue
         reasons = [_contradiction(e, t, ctx) for e in support]
+        if not all(reasons) and not delivered and all(
+                not e.get("dimension") and (not e.get("measure") or e.get("measure") in t["measures"])
+                for e, r in zip(support, reasons) if not r):
+            # The only support is a WHOLE-REPORT figure of the measure asked, and
+            # the report never gave that measure by the breakdown asked: stated
+            # as a member's figure it is wrong, stated as the total it is true —
+            # the reader is told which it is (never rewritten).
+            flagged.append({"value": value, "pct": pct, "why": "whole_as_member",
+                            "of": {"measure": next(iter(sorted(t["measures"])), None),
+                                   "dimension": None, "member": None}})
+            continue
         if all(reasons):
             e = support[0]
             flagged.append({"value": value, "pct": pct, "why": reasons[0],
@@ -221,6 +267,8 @@ _WHY = {
     "other_measure": "đo {what} — không phải đại lượng câu hỏi hỏi",
     "other_member": "là số của {what} — không phải đối tượng câu hỏi hỏi",
     "unsupported": "không công cụ nào trong lượt này tạo ra con số này",
+    "whole_as_member": ("là số của TOÀN BỘ báo cáo — báo cáo không có số liệu này theo chiều "
+                        "được hỏi; nếu giữ, phải nói rõ đó là tổng toàn bộ"),
 }
 
 
@@ -240,9 +288,23 @@ def review_message(flagged: list[dict], target: dict) -> str:
 
 def reader_note(flagged: list[dict], locale: str = "vi") -> str:
     """The line a READER sees under an answer whose figures could not be backed."""
+    whole = [f for f in flagged if f.get("why") == "whole_as_member"]
+    flagged = [f for f in flagged if f.get("why") != "whole_as_member"]
+    lines = []
+    if whole:
+        shown_w = ", ".join(_fmt(f["value"], f.get("pct")) for f in whole[:6])
+        lines.append(
+            f"⚠️ Report totals: {shown_w} — figures for the whole report; this report does not "
+            "give them for the breakdown asked about." if str(locale or "").lower().startswith("en")
+            else f"⚠️ Số của toàn bộ báo cáo: {shown_w} — báo cáo không có số liệu này theo chiều "
+                 "được hỏi, nên đây không phải số của một đối tượng cụ thể.")
+    if not flagged:
+        return "\n".join(lines)
     shown = ", ".join(_fmt(f["value"], f.get("pct")) for f in flagged[:6])
     if str(locale or "").lower().startswith("en"):
-        return (f"⚠️ Not verified: {shown} — the data this answer read does not produce "
-                "these figures for what was asked. Do not rely on them.")
-    return (f"⚠️ Chưa kiểm chứng: {shown} — dữ liệu mà câu trả lời đã đọc không cho ra các "
-            "con số này cho đúng điều được hỏi. Đừng dùng chúng khi chưa đối chiếu.")
+        lines.append(f"⚠️ Not verified: {shown} — the data this answer read does not produce "
+                     "these figures for what was asked. Do not rely on them.")
+    else:
+        lines.append(f"⚠️ Chưa kiểm chứng: {shown} — dữ liệu mà câu trả lời đã đọc không cho ra các "
+                     "con số này cho đúng điều được hỏi. Đừng dùng chúng khi chưa đối chiếu.")
+    return "\n".join(lines)
