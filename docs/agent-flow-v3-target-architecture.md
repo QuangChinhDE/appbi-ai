@@ -55,33 +55,35 @@ Bất biến **R** (luật): capability chỉ chạy nếu `registry.execute()` 
 
 ### Eval — routing so với hiện đủ, chấm theo câu trả lời
 
-Bản triển khai: `7ef703c4` · 1×3 rep · 14 case
+Deployment: `a4783e48` · 1×3 rep · 14 case
 
-| Chỉ số | full (hiện đủ 40) | routed (mặc định) | stress (hiện 4) |
+| Metric | full (all 40 shown) | routed (default) | stress (4 shown) |
 |---|---|---|---|
-| Đúng (chấm theo ground truth ToolNode) | **40/42** | **39/42** | **34/42** |
-| Dùng đúng khả năng mong đợi | 40/42 | 39/42 | 38/42 |
-| Ca có gọi discovery | 0/42 | 3/42 | 38/42 |
-| …và chạy thứ vừa tìm | 0 | 0 | 33 |
-| Tự nạp sau khi gọi thứ chưa hiện | 0 | 0 | 0 |
-| Chạy ngoài quyền | 0 | 0 | 0 |
-| Schema/vòng (ký tự, TB) | ~24.200¹ | 10,871 | 7,729 |
-| Token/ca (TB) | 18,817 | 13,407 | 14,885 |
-| Prompt token/ca (TB) | 18,571 | 13,148 | 14,640 |
-| Lượt model/ca (TB) | 3.57 | 3.88 | 4.48 |
-| Giây/ca (TB) | 8.4 | 8.1 | 8.0 |
-| Run `failed` | 0 | 0 | 0 |
-| Hàng chạy nhầm nhánh | 0 | 0 | 0 |
+| Correct (graded against ToolNode ground truth) | **42/42** | **37/42** | **35/42** |
+| Used the expected capability | 41/42 | 33/42 | 35/42 |
+| Cases that called discovery | 0/42 | 6/42 | 35/42 |
+| …and ran what they found | 0 | 2 | 31 |
+| Auto-loaded after an unshown call | 0 | 0 | 0 |
+| Ran outside authority | 0 | 0 | 0 |
+| Schema per round (chars, avg) | ~24,200¹ | 10,322 | 7,690 |
+| Tokens per case (avg) | 20,571 | 14,207 | 13,624 |
+| Prompt tokens per case (avg) | 20,314 | 13,957 | 13,384 |
+| Model calls per case (avg) | 3.76 | 3.90 | 4.33 |
+| Seconds per case (avg) | 5.9 | 6.0 | 6.0 |
+| `failed` runs | 0 | 0 | 0 |
+| Rows run under the wrong arm | 0 | 0 | 0 |
 
-¹ nhánh full không routing nên trace không ghi kích thước theo vòng; số là đo tất định toàn bộ 40 schema (`test_capability_routing_eval.py`).
+¹ the full arm is not routed, so the trace records no per-round size; the figure is the deterministic measurement of all 40 schemas (`test_capability_routing_eval.py`).
 
-Ca sai theo nhánh:
+Wrong cases by arm:
 
-- full (hiện đủ 40): `share_category`×2
-- routed (mặc định): `mom`×2, `share_category`×1
-- stress (hiện 4): `mom`×3, `on_time`×3, `share_category`×1, `state_revenue_share`×1
+- full (all 40 shown): none
+- routed (default): `mom`×3, `share_category`×2
+- stress (4 shown): `mom`×2, `on_time`×3, `rank_top`×1, `total`×1
 
-Luồng sản phẩm (Đọc báo cáo → Chuyên viên phân tích → bước Skill kiểm chứng → Trả lời, báo cáo 67, ngân sách mặc định): 7/9 đúng theo bộ chấm; 1 ca bộ chấm sai (nhãn dịch "Sức khỏe & Sắc đẹp"), 1 ca sai thật (tự tính phần trăm). Các lượt trước ở `83bf3fd2`: 9/9.
+Lần chạy trước trên cùng stack (`b471576b`, cùng cơ chế claim): full 41/42 · routed **42/42** · stress 36/42.
+
+Luồng sản phẩm (Đọc báo cáo → Chuyên viên phân tích → bước Skill kiểm chứng → Trả lời, báo cáo 67, ngân sách mặc định) trên `a4783e48`: **9/9** (chấm theo nghĩa; MoM 3/3). D2 trên `a4783e48`: 6/6 trả lời trung thực, không lượt nào gán số cho bang; ghi chú "số của toàn bộ báo cáo" xuất hiện ở 2 lượt có nêu tổng.
 
 
 ### Khác với kế hoạch ban đầu, và vì sao
@@ -134,16 +136,16 @@ Luồng sản phẩm (Đọc báo cáo → Chuyên viên phân tích → bước
 
 ### Giới hạn còn lại
 
-- **CÒN MỞ — gán con số cho thành viên của một chiều run chưa đọc** ("Bang SP chiếm 100%",
-  số của danh mục trình bày như của bang). Eval cuối: 1/42 ở nhánh stress; D2 live 6/6 trả
-  lời trung thực. Hai thiết kế tại câu trả lời đã được xây và rút lại sau review đối kháng
-  (`7181790a`, `8cbe3790`) vì vừa bỏ sót vừa viết lại câu trả lời đúng. Sửa đúng cần
-  provenance từng con số theo MEASURE × chiều × thành viên tại ranh giới tool, và cách nhận
-  diện chiều trong câu hỏi mạnh hơn một từ trùng.
-- Model đôi khi tự chia phần trăm thay vì gọi `compute` (luồng sản phẩm: 19,78% thay vì
-  5,23% — sai tháng so sánh); bộ kiểm số liệu gắn cờ số không có nguồn nhưng một lượt sửa
-  có thể giữ lại phép tính.
-
+- **Đã đóng — con số phải mang đúng nghĩa của câu hỏi** (measure × chiều × thành viên):
+  sổ claim tại ranh giới tool (`claim_scope`), kiểm tại câu trả lời (`claim_check`),
+  nháp bị trả lại trong vòng tool khi còn lượt, phần còn lại được đánh dấu cho người đọc
+  và run `partial` — không bao giờ viết lại câu trả lời. Hai thiết kế trước đó đã được rút
+  sau review đối kháng (`7181790a`, `8cbe3790`).
+- Skill do Agent gọi trên link 6 lượt đôi khi chỉ kịp trả lời bằng hướng dẫn (MoM ở
+  nhánh routed dao động 3/3 → 0/3 giữa hai lần chạy); không phát sinh con số sai.
+- Hỏi theo một giá trị viết kiểu nhãn ("Health & beauty") đôi khi bị kết luận "không có"
+  trước khi gọi `share_of`, ở cả nhánh full lẫn routed.
+- Kiểm tra số không khẳng định chiều tăng/giảm (khớp theo độ lớn).
 - Chất lượng câu trả lời phụ thuộc model: eval live có dao động giữa các lượt; con số ở
   trên là từng lượt, không phải trung bình dài hạn.
 - `find_capability` xếp hạng theo từ vựng (không embedding): một nhu cầu diễn đạt bằng
