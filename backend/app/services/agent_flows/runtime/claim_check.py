@@ -253,6 +253,20 @@ def _derived(value: float, operands: list[float]) -> bool:
     return False
 
 
+def _derived_plain(value: float, operands: list[float]) -> bool:
+    """A plain figure that IS the sum, difference or quotient of two figures the
+    answer states and the evidence holds — checked by arithmetic. GMV minus
+    revenue, revenue per order: correct and not invented (acceptance)."""
+    for i, a in enumerate(operands):
+        for j, b in enumerate(operands):
+            if i == j:
+                continue
+            for x in (a + b, a - b, a / b if b else None):
+                if x is not None and abs(abs(value) - abs(x)) <= max(0.011, 1e-6 * abs(x)):
+                    return True
+    return False
+
+
 def _names_measure(ctx: Any, measure: str) -> bool:
     from app.services.agent_flows.tools.packs.discover import _score, _terms_of
 
@@ -289,8 +303,25 @@ def check(state: Any, ctx: Any, text: str) -> dict:
         """The figure verifier's own test: this number WAS read (any reading)."""
         return bool(evidence) and (_matches(v, evidence, DEFAULT_TOLERANCE) or any(
             _matches(a, evidence, DEFAULT_TOLERANCE) for a in alternates.get(v, ())))
-    if not ledger or ctx is None:
+    if ctx is None:
         return {}
+    if not ledger:
+        # NOTHING WAS READ, YET A FIGURE WAS STATED. Found in acceptance: the only
+        # data call was refused and "tỷ lệ giao đúng hẹn tháng 9/2016 là 89,48%"
+        # was published — the early return left it unchecked. A figure no evidence,
+        # arithmetic or earlier answer supports is withheld. A cited document may
+        # carry figures this ledger does not describe, so a cited answer is left
+        # to the figure verifier.
+        if getattr(state, "citations", None):
+            return {}
+        history = list(getattr(state, "history_figures", None) or [])
+        claims = extract_answer_claims(text)
+        operands = [v for v, p in claims if not p and v and in_evidence(v)]
+        flagged = [{"value": v, "pct": p, "why": "unsupported"} for v, p in claims
+                   if not in_evidence(v) and (p or abs(v) >= 1000 or v != int(v))
+                   and not any(_close(v, h) for h in history)
+                   and not (_derived(v, operands) if p else _derived_plain(v, operands))]
+        return {"target": {}, "flagged": flagged} if flagged else {}
     t = target_of(state, ctx)
     flagged: list[dict] = []
     # WAS THE BREAKDOWN DELIVERED FOR THE MEASURE ASKED? Orders by state do not
@@ -302,6 +333,7 @@ def check(state: Any, ctx: Any, text: str) -> dict:
     claims = extract_answer_claims(text)
     # Figures the answer states AND a tool read: the only operands a percentage
     # the model worked out itself may be checked against (see `_derived`).
+    history = list(getattr(state, "history_figures", None) or [])
     operands = [v for v, p in claims if not p and v and in_evidence(v)]
     for value, pct in claims:
         if pct:
@@ -318,11 +350,13 @@ def check(state: Any, ctx: Any, text: str) -> dict:
             if pct:
                 if not any(_close(value, float(e["value"])) for e in ledger if e.get("ratio"))                         and not _derived(value, operands):
                     flagged.append({"value": value, "pct": pct, "why": "unsupported"})
-            elif not in_evidence(value) and (abs(value) >= 1000 or value != int(value)):
+            elif not in_evidence(value) and (abs(value) >= 1000 or value != int(value))                     and not _derived_plain(value, operands)                     and not any(_close(value, h) for h in history):
                 flagged.append({"value": value, "pct": pct, "why": "unsupported"})
             continue
         if pct:
-            signed = [e for e in support if e.get("ratio") and float(e["value"]) != 0]
+            # Direction belongs to a CHANGE between periods, not to a level: a rate
+            # of 78.64% in a sentence saying "giảm" is not a wrong direction.
+            signed = [e for e in support if e.get("ratio") and "periods" in e and float(e["value"]) != 0]
             said = _direction_said(text, value)
             if signed and said and all((float(e["value"]) < 0) != (said == "down") for e in signed):
                 flagged.append({"value": value, "pct": pct, "why": "wrong_direction",

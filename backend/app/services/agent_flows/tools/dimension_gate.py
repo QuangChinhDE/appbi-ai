@@ -126,7 +126,11 @@ def chart_dimension_words(ctx: Any) -> dict[int, list[tuple[str, set[str], set[s
     for cid in allowed:
         meta = meta_all.get(cid) or {}
         if ((meta.get("fields") or {}).get("dimensions") or []):
-            titled[cid] = _raw_terms(str(meta.get("name") or ""))
+            # A PARENTHESISED WORD QUALIFIES THE BREAKDOWN, IT DOES NOT NAME IT.
+            # "Số đơn theo bang (khách)": found in acceptance, a question about
+            # "tiền khách đã thanh toán" became a question BY STATE, and its
+            # correct total was withheld as a whole-report figure.
+            titled[cid] = _raw_terms(re.sub(r"\([^)]*\)", " ", str(meta.get("name") or "")))
     common: set[str] = set()
     if len(titled) >= 3:
         counts = Counter(w for words in titled.values() for w in words)

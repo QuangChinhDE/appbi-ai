@@ -822,3 +822,12 @@ def test_reading_the_all_time_tile_as_rows_is_refused_too_when_a_period_is_named
     ctx = _with_kpi(_Ctx([684], question="GMV tháng 11/2017 là bao nhiêu?"))
     assert G.period_refusal(ctx, "get_chart_data", {"chart_id": 906})["detail"]["charts_by_period"] == [684]
     assert G.period_refusal(ctx, "get_chart_data", {"chart_id": 684}) is None
+
+
+def test_a_parenthesised_title_word_does_not_name_a_breakdown():
+    """Acceptance g1_payment: "Tổng số tiền khách đã thanh toán" matched the
+    "(khách)" of "Số đơn theo bang (khách)" and became a by-state question."""
+    from app.services.agent_flows.tools import dimension_gate as G
+
+    assert G.requested_dimension(_Ctx([687, 701], question="Tổng số tiền khách đã thanh toán là bao nhiêu?")) is None
+    assert G.requested_dimension(_Ctx([687, 701], question="Bang nào có nhiều đơn nhất?")) is not None

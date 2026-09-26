@@ -536,3 +536,47 @@ def test_a_definition_word_does_not_make_a_measure_asked(monkeypatch):
     assert CC._question_measures(ctx, ctx.question) == set()
     ctx2 = SimpleNamespace(question="Tỷ lệ giao đúng hẹn là bao nhiêu phần trăm?")
     assert CC._question_measures(ctx2, ctx2.question), "the named measure is still found"
+
+
+# ── acceptance checkpoint (dc618ba0): three more correct answers withheld ────
+
+def _value(state, v, measure):
+    _rec(state, "total_measure", {"ok": True, "kind": "value", "data": {
+        "chart_id": KPI, "value": v, "measure": measure}}, {"chart_id": KPI})
+
+
+def test_a_difference_of_two_stated_figures_is_checked_by_arithmetic(world):
+    ctx, state = world("GMV lớn hơn doanh thu sản phẩm bao nhiêu?", asked=("gmv", "total_revenue"))
+    _value(state, 15843553.24, "dataset_table_438.gmv")
+    _value(state, 13591643.7, "dataset_table_438.total_revenue")
+    good = "GMV 15,843,553.24 trừ doanh thu 13,591,643.70 là 2,251,909.54."
+    assert _why(state, ctx, good) == []
+    bad = "GMV 15,843,553.24 trừ doanh thu 13,591,643.70 là 2,241,909.54."
+    assert (2241909.54, "unsupported") in _why(state, ctx, bad), "a subtraction error stays withheld"
+
+
+def test_a_follow_up_may_restate_the_previous_answers_figure(world):
+    ctx, state = world("Còn bang RJ thì sao?")
+    _rec(state, "total_measure", derived.tool_total_measure(ctx, {"chart_id": KPI}), {"chart_id": KPI})
+    state.history_figures = [41746.0]
+    assert _why(state, ctx, "SP có 41,746 đơn như đã nói.") == []
+    state.history_figures = []
+    assert (41746.0, "unsupported") in _why(state, ctx, "SP có 41,746 đơn như đã nói.")
+
+
+def test_a_rates_value_per_period_is_a_proportion(world):
+    ctx, state = world("Tỷ lệ giao đúng hẹn tháng 3/2018 so với tháng 2/2018?", asked=("on_time_rate",))
+    res = _compare(78.64, 84.0, -5.36)
+    res["data"]["measure"] = "dataset_table_437.on_time_rate"
+    res["data"]["current"]["label"], res["data"]["baseline"]["label"] = "2018-03", "2018-02"
+    _rec(state, "compare_periods", res, {"chart_id": MONTHLY})
+    text = "Tháng 3/2018 là 78.64%, tháng 2/2018 là 84.0% — giảm 5.36 điểm phần trăm."
+    assert _why(state, ctx, text) == []
+
+
+def test_a_figure_stated_when_nothing_was_read_is_withheld(world):
+    """Acceptance t_zero_ontime: the only data call was refused (empty ledger) and
+    an invented 89.48% for September 2016 was published."""
+    ctx, state = world("Tỷ lệ giao đúng hẹn tháng 9/2016 là bao nhiêu?", asked=("on_time_rate",))
+    assert (89.48, "unsupported") in _why(state, ctx, "Tỷ lệ giao đúng hẹn là 89.48%, trên 23 đơn.")
+    assert _why(state, ctx, "Báo cáo không có số liệu cho tháng 9/2016.") == []

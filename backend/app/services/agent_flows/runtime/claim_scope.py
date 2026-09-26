@@ -197,7 +197,11 @@ def describe(tool: str, result: Any, *, chart_dims: dict[int, list[str]] | None 
             s = data.get(side) if isinstance(data.get(side), dict) else {}
             n = _num(s.get("value"))
             if n is not None:
-                out.append(_entry(n, measure=measure, dimension="__time__", member=s.get("label")))
+                # A RATE's value per period is a proportion (t_pp_vs_pct: 78.64% and
+                # 84.0% for two months were withheld as percentages nothing produced).
+                out.append(_entry(n, measure=measure, dimension="__time__", member=s.get("label"),
+                                  ratio=bool(isinstance(measure, str)
+                                             and _RATIO_MEASURE.search(_key(measure) or ""))))
         # THE CHANGE IS BETWEEN TWO PERIODS, and says which: a -5.23% between
         # 2018-08 and 2018-07 is not a whole-report figure (found in acceptance:
         # it was flagged as another period's number), and a change between two
