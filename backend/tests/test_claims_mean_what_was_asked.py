@@ -456,3 +456,33 @@ def test_a_decrease_stated_as_an_increase_is_flagged(world):
     _rec(state, "compare_periods", _compare(1003308.47, 1058728.03, -5.23), {"chart_id": MONTHLY})
     assert (5.23, "wrong_direction") in _why(state, ctx, "GMV tháng 8 tăng 5,23% so với tháng 7.")
     assert _why(state, ctx, "GMV tháng 8 giảm 5,23% so với tháng 7.") == []
+
+
+# ── acceptance: a figure of another period (or of all time) ──────────────────
+
+def test_an_all_time_total_given_as_one_quarters_figure_is_flagged(world):
+    """Acceptance g4_q4_vs_q3_r67: the all-time total was given for BOTH quarters."""
+    ctx, state = world("Doanh thu quý 4/2017 so với quý 3/2017 thế nào?")
+    _rec(state, "total_measure", derived.tool_total_measure(ctx, {"chart_id": KPI}), {"chart_id": KPI})
+    text = "Doanh thu quý 4/2017 là 13,591,643.7 và quý 3/2017 cũng là 13,591,643.7."
+    assert (13591643.7, "wrong_period") in _why(state, ctx, text)
+
+
+def test_an_all_time_total_framed_as_the_overall_total_is_left_alone(world):
+    ctx, state = world("Doanh thu quý 4/2017 là bao nhiêu?")
+    _rec(state, "total_measure", derived.tool_total_measure(ctx, {"chart_id": KPI}), {"chart_id": KPI})
+    text = "Báo cáo không tách theo quý; tổng doanh thu toàn bộ báo cáo là 13,591,643.7."
+    assert _why(state, ctx, text) == []
+
+
+def test_without_a_named_period_a_total_is_not_a_period_claim(world):
+    ctx, state = world("Tổng doanh thu là bao nhiêu?")
+    _rec(state, "total_measure", derived.tool_total_measure(ctx, {"chart_id": KPI}), {"chart_id": KPI})
+    assert _why(state, ctx, "Tổng doanh thu là 13,591,643.7.") == []
+
+
+def test_periods_are_read_as_written():
+    assert CC._periods("Tỷ lệ giao đúng hẹn tháng 3/2018?") == {("m", 2018, 3)}
+    assert CC._periods("quý 4/2017 so với quý 3/2017") == {("q", 2017, 4), ("q", 2017, 3)}
+    assert CC._periods("GMV tháng 11 năm 2017") == {("m", 2017, 11)}
+    assert CC._periods("Bang nào cao nhất?") == set()

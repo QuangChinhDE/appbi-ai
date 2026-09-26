@@ -354,19 +354,60 @@ def refusal(ctx: Any, tool_name: str, args: dict | None) -> dict | None:
         return None
 
     shown = ", ".join(field_key(h) or h for h in have)
+    # THE WAY OUT, NAMED. Live on a 70-chart report the model tried six wrong
+    # charts and never called the resolver this refusal pointed it to. The
+    # authorised charts that DO group by the asked breakdown are known right here
+    # — same scope, same grouping keys — so the refusal hands their ids over.
+    # Charts sharing the refused chart's measure come first.
+    options = charts_grouped_by(ctx, want_key, prefer_like=chart_id)
+    if options:
+        listed = "; ".join(f"{o['chart_id']} ({o['name']})" for o in options)
+        recovery = (f"Các biểu đồ trong phạm vi nhóm theo '{want_key}': {listed}. Dùng đúng "
+                    "biểu đồ có số đo được hỏi trong số này (hoặc gọi resolve_chart_candidates "
+                    f"với dimension='{want_key}' kèm measure để tìm thêm). Nếu không biểu đồ nào có số đo "
+                    f"được hỏi, nói thẳng là báo cáo không tách số đó theo '{want_key}' — "
+                    "đừng thay bằng một chiều khác.")
+    else:
+        recovery = (f"Không biểu đồ nào trong phạm vi nhóm theo '{want_key}' (resolve_chart_candidates "
+                    f"với dimension='{want_key}' cũng sẽ không tìm thấy). Nói thẳng là báo "
+                    f"cáo này không tách được số liệu theo '{want_key}' — đừng thay bằng một "
+                    "chiều khác.")
     return R.err(
         f"biểu đồ {chart_id} nhóm theo '{shown}', không phải theo '{want_key}' — "
         f"câu hỏi đang hỏi theo '{want_key}'. Kết quả của công cụ này sẽ đúng cho "
         f"'{shown}' và KHÔNG trả lời được câu hỏi đã đặt.",
         code="dimension_mismatch",
         retryable=False,
-        recovery=(
-            f"Gọi resolve_chart_candidates với dimension='{want_key}' (kèm measure "
-            "nếu câu hỏi có nêu) để tìm biểu đồ thực sự nhóm theo chiều này. Nếu "
-            "không có biểu đồ nào, hãy nói thẳng là báo cáo này không tách được số "
-            f"liệu theo '{want_key}' — đừng thay bằng một chiều khác."
-        ),
+        recovery=recovery,
         detail={"requested_dimension": want_key,
                 "requested_label": dimension_label(ctx, wanted),
-                "chart_dimensions": have, "chart_id": chart_id},
+                "chart_dimensions": have, "chart_id": chart_id,
+                "charts_with_dimension": [o["chart_id"] for o in options]},
     )
+
+
+def _chart_measures(ctx: Any, chart_id: int) -> set[str]:
+    meta = (getattr(ctx, "chart_meta", None) or {}).get(chart_id) or {}
+    out = set()
+    for m in (meta.get("fields") or {}).get("measures") or []:
+        ref = m.get("field") if isinstance(m, dict) else m
+        if ref:
+            out.add(field_key(str(ref)))
+    return out
+
+
+def charts_grouped_by(ctx: Any, want_key: str, *, prefer_like: int | None = None,
+                      limit: int = 6) -> list[dict]:
+    """Authorised charts whose grouping key IS `want_key` — the same scope and the
+    same structured keys the gate reads; charts sharing `prefer_like`'s measure first."""
+    meta = getattr(ctx, "chart_meta", None) or {}
+    allowed = getattr(ctx, "allowed_chart_ids", None) or set()
+    like = _chart_measures(ctx, prefer_like) if prefer_like is not None else set()
+    found = []
+    for cid in sorted(allowed):
+        if cid == prefer_like or cid not in meta:
+            continue
+        if any(field_key(d) == want_key for d in _chart_dimensions(ctx, cid)):
+            found.append((0 if like & _chart_measures(ctx, cid) else 1, cid))
+    return [{"chart_id": cid, "name": str((meta.get(cid) or {}).get("name") or f"Chart {cid}")[:60]}
+            for _, cid in sorted(found)[:limit]]

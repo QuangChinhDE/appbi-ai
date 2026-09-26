@@ -743,3 +743,26 @@ def test_the_requested_dimension_is_resolved_per_question(undeclared):
     assert res.get("error_code") != "dimension_mismatch", res
     assert G.requested_dimension(parent) == "dataset_table_441.customer_state"
 
+
+
+# ── acceptance: the refusal names the way out ────────────────────────────────
+
+def test_a_dimension_refusal_names_the_authorised_charts_that_answer_it():
+    """Live, report 67 (70 charts): the model tried six wrong charts and never
+    called the resolver the refusal pointed to. The refusal now carries the ids."""
+    ctx = _Ctx([684, 685, 686, 687, 701], question="Bang nào có doanh thu cao nhất?")
+    res = R.execute(ctx, "rank_values", {"chart_id": CATEGORY_CHART})
+    assert res["error_code"] == "dimension_mismatch"
+    assert res["detail"]["charts_with_dimension"] == [STATE_REVENUE_CHART, STATE_ORDERS_CHART], \
+        "the chart with the refused chart's measure (revenue) comes first"
+    assert "701" in res["recovery"] and "686" not in res["recovery"]
+
+
+def test_a_dimension_refusal_with_no_matching_chart_says_so():
+    ctx = _Ctx([684, 685, 686], question="Bang nào có doanh thu cao nhất?")
+    from app.services.agent_flows.tools import dimension_gate as G
+
+    res = G.refusal(ctx, "rank_values", {"chart_id": CATEGORY_CHART})
+    if res is not None:          # no state chart at all: the gate may have no dimension to hold
+        assert res["detail"]["charts_with_dimension"] == []
+        assert "Không biểu đồ nào" in res["recovery"]

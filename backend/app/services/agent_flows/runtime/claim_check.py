@@ -192,6 +192,61 @@ def _direction_said(text: str, value: float) -> str | None:
     return "up" if up and not down else "down" if down and not up else None
 
 
+_WHOLE_WORDS = ("toan bo", "toan ky", "tong cong", "ca giai doan", "tat ca cac thang", "chung",
+                "overall", "all-time", "all time", "whole report", "in total", "trung binh toan")
+
+
+def _periods(text: str) -> set[tuple]:
+    """Explicit calendar periods named in `text`: ("m", y, m), ("q", y, q), ("y", y)."""
+    import re
+
+    t = _fold(text)
+    out: set[tuple] = set()
+    for m in re.finditer(r"((?:19|20)\d{2})\s*-\s*(\d{1,2})(?!\d)", t):
+        if 1 <= int(m.group(2)) <= 12:
+            out.add(("m", int(m.group(1)), int(m.group(2))))
+    for m in re.finditer(r"(?:thang|thg|month)\s*(\d{1,2})\s*(?:/|-|\.|nam|of|,)?\s*((?:19|20)\d{2})", t):
+        if 1 <= int(m.group(1)) <= 12:
+            out.add(("m", int(m.group(2)), int(m.group(1))))
+    for m in re.finditer(r"(?<![\d/])(\d{1,2})/((?:19|20)\d{2})", t):
+        if re.search(r"(?:quy|q|quarter)\s*$", t[max(0, m.start() - 9):m.start()]):
+            continue                      # "quý 4/2017" is a quarter, not April
+        if 1 <= int(m.group(1)) <= 12:
+            out.add(("m", int(m.group(2)), int(m.group(1))))
+    for m in re.finditer(r"(?:quy|q|quarter)\s*([1-4])\s*(?:/|-|nam|of|,)?\s*((?:19|20)\d{2})", t):
+        out.add(("q", int(m.group(2)), int(m.group(1))))
+    for m in re.finditer(r"((?:19|20)\d{2})\s*-?\s*q([1-4])", t):
+        out.add(("q", int(m.group(1)), int(m.group(2))))
+    if not out:
+        for m in re.finditer(r"nam\s*((?:19|20)\d{2})|(?:in|year)\s*((?:19|20)\d{2})", t):
+            out.add(("y", int(m.group(1) or m.group(2))))
+    return out
+
+
+def _wrong_period(support: list[dict], asked: set[tuple], sentence: str) -> bool:
+    """The question names a period; is every reading of this figure some OTHER scope?
+
+    Two shapes, both measured in acceptance: an all-time KPI given as one month's
+    figure ("giao đúng hẹn tháng 3/2018 là 91,89%" — the all-time rate), and one
+    total given for two quarters. A figure the sentence frames as the overall
+    total is left alone; a change between periods (compare_periods) is left alone.
+    """
+    grains = {p[0] for p in asked}
+    if any(e.get("dimension") == "__time__" and not e.get("member") for e in support):
+        return False
+    whole = [e for e in support if not e.get("dimension") and not e.get("member")]
+    if len(whole) == len(support):
+        return not any(w in sentence for w in _WHOLE_WORDS)
+    timed = [e for e in support if _is_time(e.get("dimension")) and e.get("member")]
+    if len(timed) != len(support):
+        return False
+    labels = [_periods(str(e["member"]).replace("Q", " q")) or _periods("nam " + str(e["member"]))
+              for e in timed]
+    if not all(labels) or not all({p[0] for p in lab} & grains for lab in labels):
+        return False
+    return not any(lab & asked for lab in labels)
+
+
 def _names_measure(ctx: Any, measure: str) -> bool:
     from app.services.agent_flows.tools.packs.discover import _score, _terms_of
 
@@ -263,6 +318,12 @@ def check(state: Any, ctx: Any, text: str) -> dict:
                 flagged.append({"value": value, "pct": pct, "why": "wrong_direction",
                                 "of": {"measure": signed[0].get("measure"), "dimension": None, "member": None}})
                 continue
+        asked_periods = _periods(str(getattr(ctx, "question", "") or ""))
+        if asked_periods and _wrong_period(support, asked_periods, _sentence_of(text, value)):
+            flagged.append({"value": value, "pct": pct, "why": "wrong_period",
+                            "of": {"measure": support[0].get("measure"), "dimension": None,
+                                   "member": support[0].get("member")}})
+            continue
         reasons = [_contradiction(e, t, ctx) for e in support]
         if not all(reasons) and not delivered and all(
                 not e.get("dimension") and (not e.get("measure") or e.get("measure") in t["measures"])
@@ -302,6 +363,7 @@ _WHY = {
     "whole_as_member": ("là số của TOÀN BỘ báo cáo — báo cáo không có số liệu này theo chiều "
                         "được hỏi; nếu giữ, phải nói rõ đó là tổng toàn bộ"),
     "wrong_direction": "câu nói chiều ngược với dấu của con số đã tính (tăng ↔ giảm)",
+    "wrong_period": "là số của một kỳ khác (hoặc của toàn bộ thời gian), không phải của kỳ được hỏi",
 }
 
 
