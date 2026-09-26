@@ -812,3 +812,13 @@ def test_an_automatic_comparison_is_refused_when_the_question_names_the_periods(
         "period_a": "2018-03", "period_b": "2018-02"}
     assert G.period_refusal(_Ctx([684], question="GMV tháng này so với tháng trước?"),
                             "compare_periods", {"chart_id": 684}) is None, "no named period: auto is right"
+
+
+def test_reading_the_all_time_tile_as_rows_is_refused_too_when_a_period_is_named():
+    """Live: asked on-time for 3/2018, the agent read three all-period tiles through
+    get_chart_data, never the monthly chart."""
+    from app.services.agent_flows.tools import dimension_gate as G
+
+    ctx = _with_kpi(_Ctx([684], question="GMV tháng 11/2017 là bao nhiêu?"))
+    assert G.period_refusal(ctx, "get_chart_data", {"chart_id": 906})["detail"]["charts_by_period"] == [684]
+    assert G.period_refusal(ctx, "get_chart_data", {"chart_id": 684}) is None

@@ -414,7 +414,7 @@ def charts_grouped_by(ctx: Any, want_key: str, *, prefer_like: int | None = None
 
 
 #: Tools that read ONE figure of a chart as it stands — its whole period.
-PERIOD_SENSITIVE = frozenset({"total_measure", "get_chart_summary"})
+PERIOD_SENSITIVE = frozenset({"total_measure", "get_chart_summary", "get_chart_data"})
 
 
 def period_refusal(ctx: Any, tool_name: str, args: dict | None) -> dict | None:

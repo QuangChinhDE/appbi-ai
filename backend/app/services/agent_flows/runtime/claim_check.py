@@ -360,7 +360,9 @@ _WHY = {
     "whole_as_member": ("là số của TOÀN BỘ báo cáo — báo cáo không có số liệu này theo chiều "
                         "được hỏi; nếu giữ, phải nói rõ đó là tổng toàn bộ"),
     "wrong_direction": "câu nói chiều ngược với dấu của con số đã tính (tăng ↔ giảm)",
-    "wrong_period": "là số của một kỳ khác (hoặc của toàn bộ thời gian), không phải của kỳ được hỏi",
+    "wrong_period": ("là số của một kỳ khác (hoặc của toàn bộ thời gian), không phải của kỳ được "
+                     "hỏi — tìm biểu đồ có số đo này THEO KỲ (list_charts / resolve_chart_candidates) "
+                     "và đọc đúng kỳ được hỏi; chỉ khi không có biểu đồ nào như vậy mới nói là không có"),
 }
 
 
