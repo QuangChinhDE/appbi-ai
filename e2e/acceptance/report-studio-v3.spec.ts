@@ -220,6 +220,14 @@ test('S1 create a report from data (two datasets with independent semantics)', a
     const hard = (a?.findings ?? []).filter((f) => HARD.includes(f.code));
     check(r, `${tag}: builder has no render defect`, hard.length === 0, hard.map((f) => `${f.code}@${f.tileId}`).join(','));
     r.metrics[`${tag}_charts`] = charts.map((c: any) => `${c.chart?.chart_type}:${c.chart?.config?.styleConfig?.chartTitle ?? c.chart?.name}`);
+    if (tag === 'olist') {
+      // Olist's first and last months are incomplete: they must be drawn apart
+      // (dashed), not as a collapse to zero on the solid line.
+      const dashed = await page.locator('.recharts-line-curve[stroke-dasharray="4 4"]').count();
+      check(r, 'olist: incomplete months are drawn apart from the complete line', dashed > 0, `${dashed} dashed segment(s)`);
+      const scope = await page.locator('.dashboard-kpi-scope').count();
+      check(r, 'olist: the revenue KPI states the span its total covers', scope > 0, `${scope}`);
+    }
     r.metrics[`${tag}_headline`] = states[0]?.text;
     await shot(page, r, `s1-${tag}-builder-1440`);
     await page.getByTestId('dashboard-publish').click().catch(() => {});
@@ -411,6 +419,16 @@ test('S5 reference image → native live-data report', async ({ page, request })
   const bound = await page.evaluate(() => Array.from(document.querySelectorAll('main [data-grid-item-id]'))
     .every((el) => el.querySelector('[data-chart-id], [data-testid="narrative-widget"], .dashboard-kpi-label, svg, table') !== null));
   check(r, 'every tile of the result is a native, data-bound visual (no static picture)', bound);
+  // The reference opens with a headline band: the native result must open with
+  // a headline too — structure, not only fonts and colours.
+  const opening = await page.evaluate(() => {
+    const g = document.querySelector('main .react-grid-layout')?.getBoundingClientRect();
+    const tiles = Array.from(document.querySelectorAll('main [data-grid-item-id]'))
+      .map((e) => ({ top: Math.round(e.getBoundingClientRect().top - (g?.top ?? 0)), headline: !!e.querySelector('[data-narrative-variant="headline"]') }))
+      .sort((a, b) => a.top - b.top);
+    return tiles[0]?.headline ?? false;
+  });
+  check(r, 'the result opens with a headline, as the reference does', opening);
   const imgs = await page.locator('main [data-grid-item-id] img').count();
   check(r, 'the reference image itself is not placed on the report', imgs === 0, `${imgs} <img>`);
   const a = await audit(page);
@@ -554,6 +572,10 @@ test('S8 builder, /d, /embed and the exported PDF show the same report', async (
       const bytes = fs.readFileSync((await file.path())!);
       check(r, 'the export is a PDF', bytes.subarray(0, 4).toString() === '%PDF');
       check(r, 'the export is not empty', bytes.length > 20_000, `${bytes.length} bytes`);
+      const outcome = await p.evaluate(() => (window as any).__APPBI_LAST_EXPORT__ ?? null);
+      r.metrics.s8_export = outcome;
+      check(r, 'the export of the published report has nothing missing', !!outcome && outcome.warnings.filter((w: any) => w.kind === 'incomplete').length === 0, JSON.stringify(outcome?.warnings ?? []));
+      check(r, 'every sheet prints at a readable size', !!outcome && outcome.minPrintScale >= 0.62, `min scale ${outcome?.minPrintScale}`);
       fs.writeFileSync(path.join(EVIDENCE, 's8-export.pdf'), bytes);
       r.evidence.push('s8-export.pdf');
     }

@@ -226,3 +226,8 @@ def test_no_vision_model_means_no_review_not_a_made_up_one(monkeypatch):
 def test_the_reference_clause_asks_what_carried_over():
     with_ref = planner.build_planner_prompt(snapshot=_SNAPSHOT, user_prompt="match this", has_reference=True)
     assert "referenceReport" in with_ref and "cannot reproduce" in with_ref
+
+
+def test_the_reference_clause_asks_for_its_structure_not_only_its_look():
+    with_ref = planner.build_planner_prompt(snapshot=_SNAPSHOT, user_prompt="match this", has_reference=True)
+    assert "STRUCTURE" in with_ref and '"headline" block' in with_ref
