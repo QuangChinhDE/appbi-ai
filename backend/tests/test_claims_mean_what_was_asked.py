@@ -326,12 +326,17 @@ def test_the_draft_goes_back_and_the_model_fetches_the_right_figure(monkeypatch,
     assert (step.get("capabilities") or {}).get("claim_review", {}).get("flagged")
 
 
-def test_a_figure_the_model_will_not_fix_is_shown_unverified_never_rewritten(monkeypatch, undeclared):
+def test_a_figure_the_model_will_not_fix_is_withheld_never_published(monkeypatch, undeclared):
+    """Acceptance brief: a wrong figure is not published beside a warning. The
+    digits are withheld in the public answer; the draft stays in the audit trace."""
     model = _Model(obey=False)
     env = _flow_run(monkeypatch, undeclared, model)
     answer = _answer(env)
-    assert answer.startswith("GMV tăng 19,78% so với tháng trước."), "the model's words are kept"
-    assert "Chưa kiểm chứng: 19.78%" in answer
+    assert "19,78" not in answer and "19.78" not in answer
+    assert answer.startswith("GMV tăng [đã ẩn: chưa kiểm chứng] so với tháng trước.")
+    assert "Đã ẩn số chưa kiểm chứng" in answer
+    step = next(s for s in (env.get("trace") or {}).get("steps") or [] if s["key"] == "tl")
+    assert "19,78%" in ((step.get("capabilities") or {}).get("claims") or {}).get("draft", "")
     assert env["status"] == "partial"
     assert any(n.get("code") == "claims_unverified" for n in env.get("notices") or [])
 
@@ -433,3 +438,21 @@ def test_the_reader_note_goes_before_the_follow_up_lines():
     body = out.split("[FOLLOWUP]")[0]
     assert "⚠️ Số của toàn bộ báo cáo" in body and out.count("[FOLLOWUP]") == 2
     assert CC.with_reader_note("Không có số.", "") == "Không có số."
+
+
+# ── acceptance: withheld figures, direction ──────────────────────────────────
+
+def test_redact_withholds_only_the_flagged_figure():
+    text = "Tổng 13.591.643,70; bang SP chiếm 19,78% và RJ 12,1%."
+    out = CC.redact(text, [{"value": 19.78, "pct": True, "why": "other_dimension"}], "vi")
+    assert "19,78" not in out and "13.591.643,70" in out and "12,1%" in out
+    en = CC.redact("SP holds 19.78%.", [{"value": 19.78, "pct": True}], "en")
+    assert en == "SP holds [withheld: not verified]."
+    assert CC.redact("x 5", [], "vi") == "x 5"
+
+
+def test_a_decrease_stated_as_an_increase_is_flagged(world):
+    ctx, state = world(MOM_Q, asked=("gmv",))
+    _rec(state, "compare_periods", _compare(1003308.47, 1058728.03, -5.23), {"chart_id": MONTHLY})
+    assert (5.23, "wrong_direction") in _why(state, ctx, "GMV tháng 8 tăng 5,23% so với tháng 7.")
+    assert _why(state, ctx, "GMV tháng 8 giảm 5,23% so với tháng 7.") == []

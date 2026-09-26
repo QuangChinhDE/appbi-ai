@@ -131,11 +131,13 @@ def test_a_formula_over_references_yields_a_verified_answer(monkeypatch):
 
 
 def test_a_formula_over_typed_numbers_is_computed_but_not_certified(monkeypatch):
-    """1300 was never read. The formula runs; the answer is flagged."""
+    """1300 was never read. The formula runs; the figure is not certified, so it is
+    WITHHELD from the public answer (acceptance brief), never shown beside a warning."""
     model = _Model(reference=False)
     env = _run(monkeypatch, model)
-    assert "30.0%" in _answer(env)
-    assert "figures_unverified" in _notice_codes(env), _notice_codes(env)
+    assert "30.0%" not in _answer(env) and "[đã ẩn: chưa kiểm chứng]" in _answer(env)
+    assert {"figures_unverified", "claims_unverified"} & _notice_codes(env), _notice_codes(env)
+    assert env["status"] == "partial"
 
 
 def test_a_compute_step_is_given_the_results_earlier_steps_produced():

@@ -252,7 +252,7 @@ def test_the_preflight_minimum_still_counts_a_disabled_skill(skill_db):
     flow = B._flow({"answer_node": "tl", "nodes": [
         {"key": "k", "type": "skill", "skill_key": "so_sanh", "version": 2, "inputs": {}},
         B._agent("tl", "TRA_LOI", tools=())]})
-    assert minimum_calls(flow.nodes, skill_lookup=skill_lookup_for(skill_db.db, include_disabled=True)) == (2, 0)
+    assert minimum_calls(flow.nodes, skill_lookup=skill_lookup_for(skill_db.db, include_disabled=True)) == (3, 1)  # its reading round too
     assert minimum_calls(flow.nodes, skill_lookup=skill_lookup_for(skill_db.db)) == (1, 0)
 
 

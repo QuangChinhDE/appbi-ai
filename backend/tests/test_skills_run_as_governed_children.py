@@ -246,7 +246,7 @@ def test_the_skill_result_the_parent_sees_names_its_child_run(monkeypatch, skill
         return "xong"
 
     model = _Model(parent_script=[SKILL_CALL, ("text", capture)],
-                   child_script=[("text", "Kết quả của Skill")])
+                   child_script=[("calls", [("total_measure", {"chart_id": 41})]), ("text", "Kết quả của Skill")])
     _run(monkeypatch, skill_db.db, PARENT_GRANTING_SKILL, model)
     data = seen["result"]["data"]
     assert data["skill"] == "so_sanh" and data["version"] == 2
@@ -276,7 +276,7 @@ def _skill_step_flow(in_lane: bool = False) -> dict:
 
 def test_a_skill_step_runs_the_same_governed_child_without_a_model_deciding(monkeypatch, skill_db):
     model = _Model(parent_script=[("text", "Đã nói lại.")],
-                   child_script=[("text", "Kết quả Skill")])
+                   child_script=[("calls", [("total_measure", {"chart_id": 41})]), ("text", "Kết quả Skill")])
     env, state, _ = _run(monkeypatch, skill_db.db, _skill_step_flow(), model)
     [child] = _children(skill_db.db)
     assert child.invoked_as == "skill_node" and child.parent_step_key == "chay_skill"
@@ -672,3 +672,19 @@ def test_a_skill_result_vouches_for_no_number_itself():
     state.record_evidence({"ok": True, "kind": "value", "data": {
         "skill": "s", "answer": "13590000", "evidence_values": []}}, tool="skill:s")
     assert 13590000.0 not in state.evidence
+
+
+# ── acceptance: a Skill that read nothing has not finished ───────────────────
+
+def test_a_skill_whose_steps_read_nothing_is_incomplete_not_ok():
+    from app.services.agent_flows.skills import _did_no_work
+
+    flow = _flow(SKILL_BODY, "so_sanh")
+    idle = SimpleNamespace(evidence=[], citations=[], evidence_store={})
+    worked = SimpleNamespace(evidence=[1003308.47], citations=[], evidence_store={"s1": {}})
+    assert _did_no_work(flow, idle) is True
+    assert _did_no_work(flow, worked) is False
+    words_only = {**copy.deepcopy(SKILL_BODY)}
+    words_only["nodes"] = [{**SKILL_BODY["nodes"][0], "tools": []}]
+    assert _did_no_work(_flow(words_only, "loi_khuyen"), idle) is False, \
+        "a Skill that was never meant to read data is not held to it"

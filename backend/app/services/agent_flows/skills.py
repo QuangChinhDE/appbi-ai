@@ -602,6 +602,20 @@ def _err(message: str, code: str, recovery: str = "") -> dict:
     return out
 
 
+_READING_NODES = ("report_read", "tool", "knowledge", "web", "skill")
+
+
+def _did_no_work(flow: Flow, child_state: Any) -> bool:
+    """True when the Skill's steps were meant to read data and none did."""
+    reads = any(getattr(n, "type", "") in _READING_NODES
+                or (getattr(n, "type", "") == "agent" and getattr(n, "tools", None))
+                for n in flow.all_nodes())
+    if not reads or child_state is None:
+        return False
+    return not (getattr(child_state, "evidence", None) or getattr(child_state, "citations", None)
+                or getattr(child_state, "evidence_store", None))
+
+
 def _validate_inputs(contract: SkillContract, inputs: dict) -> tuple[dict, str]:
     out: dict[str, Any] = {}
     for spec in contract.inputs:
@@ -820,6 +834,15 @@ async def invoke_skill(
     if status not in ("ok", "partial") or (contract.returns == "text" and not answer):
         outcome["result"] = _err(
             f"Skill “{skill_key}” v{row.version} không trả về kết quả ({status})", "skill_failed")
+        return
+    if _did_no_work(skill_flow, child_state):
+        # A Skill whose steps read data but which read NOTHING has not done its
+        # job: its prose is generic advice, not an analysis. Returning `ok` let a
+        # parent present it as a finished result (acceptance brief).
+        outcome["result"] = _err(
+            f"Skill “{skill_key}” v{row.version} chưa hoàn thành: không bước nào đọc được dữ liệu "
+            f"({status}).", "skill_incomplete",
+            "Không dùng lời của Skill như một kết quả; tự đọc dữ liệu hoặc nói rõ phần chưa làm được.")
         return
     data: dict[str, Any] = {
         "skill": skill_key,

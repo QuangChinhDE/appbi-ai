@@ -181,15 +181,18 @@ BA_SKILL_ANSWER = {
 def test_the_minimum_of_a_flow_counts_its_skill_and_its_answer(skill_db):
     from app.services.agent_flows.runtime.reserve import skill_lookup_for
 
-    # analyst 1 + the Skill's own agent 1 + the answer 1; no Tool step anywhere
-    assert minimum_calls(_flow(BA_SKILL_ANSWER).nodes, skill_lookup=skill_lookup_for(skill_db.db)) == (3, 0)
+    # analyst 1 + the Skill's own agent 2 (it reads data: a reading round with one
+    # tool call, then its answer) + the answer 1. Reserved its answer round alone,
+    # the Skill answered from nothing and was recorded `ok` (acceptance, routed MoM).
+    assert minimum_calls(_flow(BA_SKILL_ANSWER).nodes, skill_lookup=skill_lookup_for(skill_db.db)) == (4, 1)
 
 
 def test_a_mandatory_verifier_skill_and_the_answer_run_on_the_minimum_budget(monkeypatch, skill_db):
-    env, model, _ = _run(monkeypatch, BA_SKILL_ANSWER, llm=3, db=skill_db.db)
+    env, model, _ = _run(monkeypatch, BA_SKILL_ANSWER, llm=4, db=skill_db.db)
     assert len(model.by("GOM")) == 1 and model.by("GOM")[0]["offered"] == [], \
         "the analyst gets exactly what is not owed to the verifier and the answer"
-    assert len(model.by("VAI_TRO_CON")) == 1, "the verifier Skill ran"
+    child_rounds = model.by("VAI_TRO_CON")
+    assert len(child_rounds) == 2 and child_rounds[0]["offered"], "the verifier Skill READ, then answered"
     [child] = _children(skill_db.db)
     assert child.status in ("ok", "partial")
     assert len(model.by("TRA_LOI")) == 1 and env["status"] == "ok"
@@ -197,7 +200,7 @@ def test_a_mandatory_verifier_skill_and_the_answer_run_on_the_minimum_budget(mon
 
 def test_with_room_the_analyst_uses_it_and_nothing_downstream_is_starved(monkeypatch, skill_db):
     env, model, state = _run(monkeypatch, BA_SKILL_ANSWER, llm=8, db=skill_db.db)
-    assert len(model.by("GOM")) == 6          # 8 − (verifier 1 + answer 1)
+    assert len(model.by("GOM")) == 5          # 8 − (verifier 2 + answer 1)
     assert model.by("GOM")[-1]["offered"] == []
     assert model.by("VAI_TRO_CON") and model.by("TRA_LOI")
     assert env["status"] == "ok"

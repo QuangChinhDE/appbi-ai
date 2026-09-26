@@ -10,7 +10,8 @@ MINIMUM, PER NODE
 -----------------
     agent        1 model call — its answer round (a step with no tools left is
                  still a step that can say what it found)
-    skill        the minimum of the Skill's own pinned flow
+    skill        the WORKING minimum of the Skill's own pinned flow — one
+                 reading round more when any of its steps reads data
     tool, read,
     knowledge,
     web          1 tool call
@@ -57,7 +58,10 @@ def node_minimum(node: Any, *, skill_lookup: SkillLookup | None = None,
         if flow is None:
             # Unresolvable: it will be refused at invocation, which costs nothing.
             return 0, 0
-        return minimum_calls(list(flow.nodes), skill_lookup=skill_lookup, depth=depth + 1)
+        # A Skill STEP is reserved what it needs to DO its work, not only to end:
+        # reserved its answer round alone, a reading Skill answered from nothing
+        # and was recorded `ok` (acceptance, routed month-on-month).
+        return working_minimum(list(flow.nodes), skill_lookup=skill_lookup, depth=depth + 1)
     if kind in ("tool", "report_read", "knowledge", "web"):
         return 0, 1
     groups = [minimum_calls(list(g), skill_lookup=skill_lookup, depth=depth)
@@ -85,7 +89,8 @@ def minimum_calls(nodes: list[Any], *, skill_lookup: SkillLookup | None = None,
     return llm, tools
 
 
-def working_minimum(nodes: list[Any], *, skill_lookup: SkillLookup | None = None) -> tuple[int, int]:
+def working_minimum(nodes: list[Any], *, skill_lookup: SkillLookup | None = None,
+                    depth: int = 0) -> tuple[int, int]:
     """(model calls, tool calls) a Skill needs to do ANY of its tool work.
 
     A DIFFERENT QUESTION from `minimum_calls`. The reservation asks "can every
@@ -97,7 +102,7 @@ def working_minimum(nodes: list[Any], *, skill_lookup: SkillLookup | None = None
     comparison. So: the reservation minimum, plus one round in which a tool can be
     called when any Agent step in the Skill has tools (and one tool call for it).
     """
-    llm, tools = minimum_calls(nodes, skill_lookup=skill_lookup)
+    llm, tools = minimum_calls(nodes, skill_lookup=skill_lookup, depth=depth)
 
     def uses_tools(ns: list[Any], depth: int) -> bool:
         for n in ns:
@@ -105,20 +110,11 @@ def working_minimum(nodes: list[Any], *, skill_lookup: SkillLookup | None = None
                 return True
             if any(uses_tools(list(g), depth) for g in child_node_lists(n)):
                 return True
-            # A SKILL STEP IS NOT A LEAF. Found by review: a Skill that only wraps
-            # another Skill looked tool-free — the wrapped Skill's Agent then ran
-            # its answer round only and recorded `ok`. Followed through the same
-            # lookup `minimum_calls` uses, bounded the same way.
-            if getattr(n, "type", "") == "skill" and skill_lookup is not None and depth < MAX_SKILL_DEPTH:
-                try:
-                    inner = skill_lookup(str(getattr(n, "skill_key", "")), getattr(n, "version", None))
-                except Exception:                               # noqa: BLE001
-                    inner = None
-                if inner is not None and uses_tools(list(inner.nodes), depth + 1):
-                    return True
+            # A wrapped Skill's reading round is already inside its own
+            # `node_minimum` (its working minimum), so it is not added twice here.
         return False
 
-    if uses_tools(nodes, 0):
+    if uses_tools(nodes, depth):
         return llm + 1, max(tools, 1)
     return llm, tools
 

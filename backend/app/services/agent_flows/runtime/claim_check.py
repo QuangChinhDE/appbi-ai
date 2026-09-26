@@ -169,6 +169,29 @@ def _names_dimension(ctx: Any, dim: str) -> bool:
     return False
 
 
+_UP = ("tang", "increase", "increas", "rose", "grew", "growth", "cao hon", "higher")
+_DOWN = ("giam", "sut", "decrease", "decreas", "declin", "drop", "fell", "thap hon", "lower")
+
+
+def _sentence_of(text: str, value: float) -> str:
+    """The sentence of `text` in which `value` is written (folded), or ""."""
+    import re
+
+    from app.services.dashboard_ai_bot.verifier import extract_answer_claims
+
+    for sent in re.split(r"(?<=[.!?;])\s+|\n+", text or ""):
+        if any(_close(value, v) for v, _ in extract_answer_claims(sent)):
+            return _fold(sent)
+    return ""
+
+
+def _direction_said(text: str, value: float) -> str | None:
+    """"up" / "down" when the sentence carrying the figure says exactly one."""
+    sent = _sentence_of(text, value)
+    up, down = any(w in sent for w in _UP), any(w in sent for w in _DOWN)
+    return "up" if up and not down else "down" if down and not up else None
+
+
 def _names_measure(ctx: Any, measure: str) -> bool:
     from app.services.agent_flows.tools.packs.discover import _score, _terms_of
 
@@ -233,6 +256,13 @@ def check(state: Any, ctx: Any, text: str) -> dict:
             elif not in_evidence(value) and (abs(value) >= 1000 or value != int(value)):
                 flagged.append({"value": value, "pct": pct, "why": "unsupported"})
             continue
+        if pct:
+            signed = [e for e in support if e.get("ratio") and float(e["value"]) != 0]
+            said = _direction_said(text, value)
+            if signed and said and all((float(e["value"]) < 0) != (said == "down") for e in signed):
+                flagged.append({"value": value, "pct": pct, "why": "wrong_direction",
+                                "of": {"measure": signed[0].get("measure"), "dimension": None, "member": None}})
+                continue
         reasons = [_contradiction(e, t, ctx) for e in support]
         if not all(reasons) and not delivered and all(
                 not e.get("dimension") and (not e.get("measure") or e.get("measure") in t["measures"])
@@ -271,6 +301,7 @@ _WHY = {
     "unsupported": "không công cụ nào trong lượt này tạo ra con số này",
     "whole_as_member": ("là số của TOÀN BỘ báo cáo — báo cáo không có số liệu này theo chiều "
                         "được hỏi; nếu giữ, phải nói rõ đó là tổng toàn bộ"),
+    "wrong_direction": "câu nói chiều ngược với dấu của con số đã tính (tăng ↔ giảm)",
 }
 
 
@@ -302,13 +333,12 @@ def reader_note(flagged: list[dict], locale: str = "vi") -> str:
                  "được hỏi, nên đây không phải số của một đối tượng cụ thể.")
     if not flagged:
         return "\n".join(lines)
-    shown = ", ".join(_fmt(f["value"], f.get("pct")) for f in flagged[:6])
     if str(locale or "").lower().startswith("en"):
-        lines.append(f"⚠️ Not verified: {shown} — the data this answer read does not produce "
-                     "these figures for what was asked. Do not rely on them.")
+        lines.append("⚠️ Withheld: the data this answer read does not produce these figures "
+                     "for what was asked, so they are not shown.")
     else:
-        lines.append(f"⚠️ Chưa kiểm chứng: {shown} — dữ liệu mà câu trả lời đã đọc không cho ra các "
-                     "con số này cho đúng điều được hỏi. Đừng dùng chúng khi chưa đối chiếu.")
+        lines.append("⚠️ Đã ẩn số chưa kiểm chứng: dữ liệu mà câu trả lời đã đọc không cho ra các "
+                     "con số này cho đúng điều được hỏi, nên chúng không được hiển thị.")
     return "\n".join(lines)
 
 
@@ -321,3 +351,36 @@ def with_reader_note(text: str, note: str) -> str:
     at = next((i for i, l in enumerate(lines) if l.strip().startswith("[FOLLOWUP]")), len(lines))
     body, rest = nl.join(lines[:at]).rstrip(), lines[at:]
     return nl.join([body, "", note, *([""] + rest if rest else [])])
+
+
+PLACEHOLDER = {"vi": "[đã ẩn: chưa kiểm chứng]", "en": "[withheld: not verified]"}
+
+
+def redact(text: str, flagged: list[dict], locale: str = "vi") -> str:
+    """The public answer with every flagged figure WITHHELD — the digits are
+    replaced, never re-worded. A figure with the wrong meaning is not published
+    beside a warning; the original draft stays in the run's audit trace."""
+    import re
+
+    from app.services.dashboard_ai_bot.verifier import _NUMBER_RE, _SCALE_WORDS, parse_number
+
+    if not flagged:
+        return text
+    mark = PLACEHOLDER["en" if str(locale or "").lower().startswith("en") else "vi"]
+    values = [(float(f["value"]), bool(f.get("pct"))) for f in flagged]
+    out, last = [], 0
+    for m in _NUMBER_RE.finditer(text or ""):
+        v = parse_number(m.group("num"))
+        if v is None:
+            continue
+        scale = (m.group("scale") or "").strip().lower()
+        if scale:
+            v *= _SCALE_WORDS.get(scale, 1.0)
+        is_pct = bool(m.group("pct"))
+        if any(_close(v, fv) and (is_pct or not fp) for fv, fp in values):
+            out.append(text[last:m.start()])
+            out.append(mark)
+            last = m.end()
+    out.append(text[last:])
+    return re.sub(r"\s+(?=[.,;:])", "", "".join(out))
+

@@ -216,6 +216,9 @@ def _parent_body(tools: list[str], *, visible: int | None) -> dict:
     return {"answer_node": "phan_tich", "nodes": [{
         **extra, "key": "phan_tich", "name": "Chuyên viên phân tích", "type": "agent",
         "prompt": PROMPT, "max_tool_calls": 8, "tools": grants,
+        # A conversation assistant reads the last turns: follow-ups ("nó chiếm
+        # bao nhiêu %?") are part of the acceptance suite.
+        "context_policy": "last_3",
     }]}
 
 

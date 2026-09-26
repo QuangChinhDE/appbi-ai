@@ -452,10 +452,14 @@ async def run(
                 final = {}
             if final.get("flagged"):
                 state.unverified_claims = final["flagged"]
-                # BEFORE the follow-up suggestions: those lines become chips, and a
-                # note placed after them was cut off with them (found live).
+                # THE PUBLIC ANSWER NEVER CARRIES A FLAGGED FIGURE: it is withheld
+                # (the draft stays in the audit trace), a whole-report total is
+                # restated with its true meaning, and the reader is told why.
+                final["draft"] = text
+                loc = _locale_of(rctx)
+                text = claim_check.redact(text, final["flagged"], loc)
                 text = claim_check.with_reader_note(
-                    text, claim_check.reader_note(final["flagged"], _locale_of(rctx)))
+                    text, claim_check.reader_note(final["flagged"], loc))
             if final:
                 state.capability_trace.setdefault(node.key, {})["claims"] = final
         state.outputs[node.key] = text
