@@ -766,3 +766,33 @@ def test_a_dimension_refusal_with_no_matching_chart_says_so():
     if res is not None:          # no state chart at all: the gate may have no dimension to hold
         assert res["detail"]["charts_with_dimension"] == []
         assert "Không biểu đồ nào" in res["recovery"]
+
+
+# ── acceptance: an all-period figure is not a period's figure ────────────────
+
+def _with_kpi(ctx):
+    CHARTS.setdefault(906, ("Olist · GMV (hàng + ship)", _config("", "dataset_table_438.gmv")))
+    ctx.allowed_chart_ids.add(906)
+    ctx.chart_meta[906] = {"name": CHARTS[906][0], "fields": {
+        "measures": [{"field": "dataset_table_438.gmv"}], "dimensions": []}}
+    return ctx
+
+
+def test_a_named_month_refuses_the_all_time_tile_and_names_the_monthly_chart():
+    from app.services.agent_flows.tools import dimension_gate as G
+
+    ctx = _with_kpi(_Ctx([684, 686], question="GMV tháng 11/2017 là bao nhiêu?"))
+    res = G.period_refusal(ctx, "total_measure", {"chart_id": 906})
+    assert res["error_code"] == "period_not_in_chart"
+    assert res["detail"]["charts_by_period"] == [684] and "684" in res["recovery"]
+
+
+def test_no_named_period_or_no_period_chart_leaves_the_tile_alone():
+    from app.services.agent_flows.tools import dimension_gate as G
+
+    assert G.period_refusal(_with_kpi(_Ctx([684], question="Tổng GMV là bao nhiêu?")),
+                            "total_measure", {"chart_id": 906}) is None
+    assert G.period_refusal(_with_kpi(_Ctx([686], question="GMV tháng 11/2017?")),
+                            "total_measure", {"chart_id": 906}) is None, "no chart gives GMV by month"
+    assert G.period_refusal(_with_kpi(_Ctx([684], question="GMV tháng 11/2017?")),
+                            "total_measure", {"chart_id": 684}) is None, "the monthly chart itself"

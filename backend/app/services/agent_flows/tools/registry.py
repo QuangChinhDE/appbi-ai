@@ -1045,7 +1045,7 @@ def execute(
     # is here, one line after the capability gate, for the same reason.
     from app.services.agent_flows.tools import dimension_gate
 
-    mismatched = dimension_gate.refusal(ctx, name, args)
+    mismatched = dimension_gate.refusal(ctx, name, args) or dimension_gate.period_refusal(ctx, name, args)
     if mismatched is not None:
         return mismatched
     key = None

@@ -273,3 +273,31 @@ def accept_as_time_axis(name: str | None, values: Iterable[Any] | None = None) -
     if verdict == "none":
         return False
     return values is not None and values_look_like_time(values)
+
+
+def named_periods(text: str) -> set[tuple]:
+    """Explicit calendar periods named in `text`: ("m", y, m), ("q", y, q), ("y", y)."""
+    import unicodedata
+
+    t = unicodedata.normalize("NFKD", text or "")
+    t = "".join(c for c in t if not unicodedata.combining(c)).lower().replace("đ", "d")
+    out: set[tuple] = set()
+    for m in re.finditer(r"((?:19|20)\d{2})\s*-\s*(\d{1,2})(?!\d)", t):
+        if 1 <= int(m.group(2)) <= 12:
+            out.add(("m", int(m.group(1)), int(m.group(2))))
+    for m in re.finditer(r"(?:thang|thg|month)\s*(\d{1,2})\s*(?:/|-|\.|nam|of|,)?\s*((?:19|20)\d{2})", t):
+        if 1 <= int(m.group(1)) <= 12:
+            out.add(("m", int(m.group(2)), int(m.group(1))))
+    for m in re.finditer(r"(?<![\d/])(\d{1,2})/((?:19|20)\d{2})", t):
+        if re.search(r"(?:quy|q|quarter)\s*$", t[max(0, m.start() - 9):m.start()]):
+            continue                      # "quý 4/2017" is a quarter, not April
+        if 1 <= int(m.group(1)) <= 12:
+            out.add(("m", int(m.group(2)), int(m.group(1))))
+    for m in re.finditer(r"(?:quy|q|quarter)\s*([1-4])\s*(?:/|-|nam|of|,)?\s*((?:19|20)\d{2})", t):
+        out.add(("q", int(m.group(2)), int(m.group(1))))
+    for m in re.finditer(r"((?:19|20)\d{2})\s*-?\s*q([1-4])", t):
+        out.add(("q", int(m.group(1)), int(m.group(2))))
+    if not out:
+        for m in re.finditer(r"nam\s*((?:19|20)\d{2})|(?:in|year)\s*((?:19|20)\d{2})", t):
+            out.add(("y", int(m.group(1) or m.group(2))))
+    return out

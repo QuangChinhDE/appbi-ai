@@ -411,3 +411,51 @@ def charts_grouped_by(ctx: Any, want_key: str, *, prefer_like: int | None = None
             found.append((0 if like & _chart_measures(ctx, cid) else 1, cid))
     return [{"chart_id": cid, "name": str((meta.get(cid) or {}).get("name") or f"Chart {cid}")[:60]}
             for _, cid in sorted(found)[:limit]]
+
+
+#: Tools that read ONE figure of a chart as it stands — its whole period.
+PERIOD_SENSITIVE = frozenset({"total_measure", "get_chart_summary"})
+
+
+def period_refusal(ctx: Any, tool_name: str, args: dict | None) -> dict | None:
+    """Asked about an explicit period, reading an all-period figure is refused when
+    an authorised chart gives the same measure BY PERIOD.
+
+    Measured in acceptance on report 67: asked "tỷ lệ giao đúng hẹn tháng 3/2018",
+    the agent read the all-time KPI tile and called it March's, although chart 712
+    gives the rate month by month. When no chart splits the measure by period the
+    read is allowed — the answer must then say it is the overall figure, which the
+    claim check holds it to.
+    """
+    if tool_name not in PERIOD_SENSITIVE:
+        return None
+    chart_id = (args or {}).get("chart_id")
+    if not isinstance(chart_id, int) or (args or {}).get("filters"):
+        return None
+    from app.services.time_semantics import looks_like_time_name, named_periods
+
+    if not named_periods(str(getattr(ctx, "question", "") or "")):
+        return None
+    if any(looks_like_time_name(d) for d in _chart_dimensions(ctx, chart_id)):
+        return None
+    like = _chart_measures(ctx, chart_id)
+    if not like:
+        return None
+    meta = getattr(ctx, "chart_meta", None) or {}
+    options = [cid for cid in sorted(getattr(ctx, "allowed_chart_ids", None) or set())
+               if cid != chart_id and cid in meta
+               and any(looks_like_time_name(d) for d in _chart_dimensions(ctx, cid))
+               and like & _chart_measures(ctx, cid)][:6]
+    if not options:
+        return None
+    listed = "; ".join(f"{cid} ({str((meta.get(cid) or {}).get('name') or '')[:60]})" for cid in options)
+    return R.err(
+        f"biểu đồ {chart_id} cho số của TOÀN BỘ thời gian, còn câu hỏi hỏi về một kỳ cụ thể — "
+        "con số này không phải số của kỳ được hỏi.",
+        code="period_not_in_chart",
+        retryable=False,
+        recovery=(f"Các biểu đồ trong phạm vi cho cùng số đo theo từng kỳ: {listed}. Đọc đúng kỳ "
+                  "được hỏi từ một biểu đồ này (get_chart_data / compare_periods). Nếu kỳ đó không "
+                  "có trong dữ liệu, nói thẳng như vậy."),
+        detail={"chart_id": chart_id, "charts_by_period": options},
+    )
