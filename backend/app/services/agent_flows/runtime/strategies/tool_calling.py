@@ -166,7 +166,9 @@ class ToolCallingStrategy:
                 # goes back with the reason and the loop continues — so the
                 # model can fetch the right figure instead of only being told,
                 # after the loop, that it has none.
-                review = rt.review_draft(reply.text) if hasattr(rt, "review_draft") else ""
+                # Never on the last round: no round would follow, and dropping the
+                # draft there left the answer EMPTY (found by review).
+                review = rt.review_draft(reply.text) if hasattr(rt, "review_draft") and not last else ""
                 if review:
                     messages.append({"role": "assistant", "content": reply.text})
                     messages.append({"role": "user", "content": review})

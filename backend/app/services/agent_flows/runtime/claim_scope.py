@@ -37,6 +37,14 @@ _RATIO_FIELDS = frozenset({
     "mom_pct", "cagr_pct",
 })
 _RATIO_MEASURE = re.compile(r"(?:^|_)(?:rate|ratio|pct|percent|ty_le|tile)(?:_|$)", re.I)
+#: A field NAMED as a proportion: *_pct, *_share*, *_rate, *_ratio, pct_*, share_*.
+_RATIO_NAME = re.compile(r"(?:^|_)(?:pct|percent|percentage|share|ratio|rate)(?:_|\d|$)", re.I)
+#: "top10_share_pct" names its own basis: the top 10%.
+_TOP_N = re.compile(r"top_?(\d{1,3})", re.I)
+
+
+def _is_ratio_name(k: Any) -> bool:
+    return isinstance(k, str) and (k in _RATIO_FIELDS or bool(_RATIO_NAME.search(k)))
 
 
 def _key(name: Any) -> str | None:
@@ -73,8 +81,15 @@ def _whole(data: dict, measure: Any, keys: tuple[str, ...]) -> list[dict]:
 
 
 def _ratio_fields(d: dict, **scope) -> list[dict]:
-    return [_entry(n, ratio=True, **scope) for k in _RATIO_FIELDS
-            if (n := _num(d.get(k))) is not None]
+    out = []
+    for k, v in d.items():
+        n = _num(v)
+        if n is not None and _is_ratio_name(k):
+            out.append(_entry(n, ratio=True, **scope))
+            m = _TOP_N.search(k)
+            if m:
+                out.append({**_entry(float(m.group(1)), ratio=True, **scope), "basis": True})
+    return out
 
 
 # ── one adapter per result shape ────────────────────────────────────────────
@@ -90,7 +105,8 @@ def _member_list(data: dict, list_key: str, measure: Any, dimension: Any) -> lis
             if n is None or k in ("rank",):
                 continue
             out.append(_entry(n, measure=measure, dimension=dimension, member=label,
-                              ratio=k in _RATIO_FIELDS))
+                              ratio=_is_ratio_name(k) or bool(
+                                  isinstance(measure, str) and _RATIO_MEASURE.search(_key(measure) or ""))))
     return out
 
 
@@ -110,8 +126,10 @@ def _rows(data: dict, dimension_hint: Any = None) -> list[dict]:
             n = _num(v)
             if n is None or i == label_i:
                 continue
-            out.append(_entry(n, measure=names[i] if i < len(names) else None,
-                              dimension=dim if member is not None else None, member=member))
+            col = names[i] if i < len(names) else None
+            out.append(_entry(n, measure=col, dimension=dim if member is not None else None,
+                              member=member, ratio=bool(col and (_is_ratio_name(_key(col) or "")
+                                                                 or _RATIO_MEASURE.search(_key(col) or "")))))
     return out
 
 
@@ -220,9 +238,9 @@ def describe(tool: str, result: Any, *, chart_dims: dict[int, list[str]] | None 
         n = _num(v)
         if n is None or k in ("chart_id",):
             continue
-        out.append(_entry(n, measure=measure, dimension=dimension, ratio=k in _RATIO_FIELDS
+        out.append(_entry(n, measure=measure, dimension=dimension, ratio=_is_ratio_name(k)
                           or bool(measure and _RATIO_MEASURE.search(_key(measure) or ""))))
-    return out
+    return out + _ratio_fields(data, measure=measure)
 
 
 def _inherit(inputs: list, ledger: list[dict]) -> dict:

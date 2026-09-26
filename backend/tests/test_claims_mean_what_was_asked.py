@@ -309,3 +309,80 @@ def test_a_figure_the_model_will_not_fix_is_shown_unverified_never_rewritten(mon
     assert "Chưa kiểm chứng: 19.78%" in answer
     assert env["status"] == "partial"
     assert any(n.get("code") == "claims_unverified" for n in env.get("notices") or [])
+
+
+# ── review round 7: never empty the answer; described-or-read is supported ──
+
+def test_a_distribution_share_and_its_stated_basis_are_proportions(world):
+    ctx, state = world("Doanh thu giữa các danh mục có tập trung không?")
+    res = AT.tool_describe_distribution(ctx, {"chart_id": CATEGORY_CHART})
+    _rec(state, "describe_distribution", res, {"chart_id": CATEGORY_CHART})
+    share = round(res["data"]["top10_share_pct"], 2)
+    assert _why(state, ctx, f"Top 10% danh mục chiếm {share}% doanh thu.".replace(".", ",")) == []
+
+
+def test_a_figure_the_evidence_holds_is_never_called_invented(world):
+    """The claim ledger describes what it has adapters for; the evidence ledger
+    holds everything read — a nested anomaly row, an ambiguous-dot reading."""
+    ctx, state = world("Có danh mục nào bất thường không?")
+    _rec(state, "detect_anomaly", {"ok": True, "kind": "list", "data": {
+        "chart_id": CATEGORY_CHART, "measure": "total_revenue", "anomalies": [
+            {"row": {"cat": "health_beauty", "total_revenue": 1258681.34}, "value": 1258681.34}]}},
+        {"chart_id": CATEGORY_CHART})
+    assert _why(state, ctx, "health_beauty có doanh thu 1.258.681,34.") == []
+    _rec(state, "total_measure", {"ok": True, "kind": "value", "data": {
+        "chart_id": KPI, "measure": "avg_review", "value": 4.0864, "rows_counted": 1}}, {"chart_id": KPI})
+    assert _why(state, ctx, "Điểm trung bình là 4.086.") == []
+
+
+def test_a_rate_column_in_rows_is_a_proportion(world):
+    ctx, state = world("Tỷ lệ hủy đơn của bang SP là bao nhiêu?", asked=("cancel_rate",))
+    _rec(state, "get_chart_data", {"ok": True, "kind": "table", "data": {
+        "chart_id": STATE_ORDERS_CHART, "columns": ["customer_state", "cancel_rate"],
+        "rows": [["SP", 3.12], ["RJ", 4.4]]}}, {"chart_id": STATE_ORDERS_CHART})
+    assert _why(state, ctx, "Tỷ lệ hủy đơn của bang SP là 3,12%.") == []
+
+
+def test_a_flagged_draft_on_the_last_round_is_kept_not_emptied(monkeypatch):
+    """Review round 7: a draft flagged on the LAST round was dropped and the
+    answer came back empty — the reader had already seen it stream."""
+    from app.services.agent_flows.runtime.strategies.tool_calling import ToolCallingStrategy
+
+    class RT:
+        is_answering = True
+        view = None
+        tools_offered = True
+        recoveries_ignored = False
+
+        def __init__(self):
+            self.calls = 0
+            self.last_reply = None
+
+        def can_ask(self):
+            return True
+
+        def next_round_is_final(self, last=False):
+            return last
+
+        async def ask(self, system, messages, stream_text, last=False):
+            self.calls += 1
+            self.last_reply = type("R", (), {"text": "Bang SP chiếm 19,78%.", "tool_calls": [],
+                                             "timed_out": False})()
+            if False:
+                yield None
+
+        def review_draft(self, text):
+            return "send it back"
+
+    strategy = ToolCallingStrategy.__new__(ToolCallingStrategy)
+    strategy.max_rounds, strategy.messages, strategy.collected, strategy.system = 1, [], "", "S"
+    strategy.node = type("N", (), {"output_format": "chat"})()
+    strategy._reminder = None
+    monkeypatch.setattr(ToolCallingStrategy, "build_request", lambda self: None)
+    rt = RT()
+
+    async def go():
+        async for _ in strategy.run(rt):
+            pass
+    asyncio.run(go())
+    assert rt.calls == 1 and strategy.collected == "Bang SP chiếm 19,78%."

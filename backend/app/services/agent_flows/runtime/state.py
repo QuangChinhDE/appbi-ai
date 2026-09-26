@@ -400,7 +400,9 @@ class RunState:
             described = []
         kept = set(trusted)
         for e in described:
-            if e.get("value") in kept and len(self.claim_ledger) < 50000:
+            # A share's stated BASIS ("top10_share_pct" -> the top 10%) is named
+            # by the tool, not read as a figure: kept, as a proportion.
+            if (e.get("value") in kept or e.get("basis")) and len(self.claim_ledger) < 50000:
                 self.claim_ledger.append({**e, "ref": ref, "tool": tool})
 
     def _register(self, result: Any, *, tool: str, args: Any) -> str | None:

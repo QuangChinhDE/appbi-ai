@@ -93,13 +93,19 @@ def _question_measures(ctx: Any, question: str) -> set[str]:
 
 def target_of(state: Any, ctx: Any) -> dict:
     """The question's measure keys, breakdown and member — cached on the state."""
-    cached = getattr(state, "_claim_target", None)
-    if cached is not None:
-        return cached
     from app.services.agent_flows.tools.dimension_gate import field_key, requested_dimension
 
     question = str(getattr(ctx, "question", "") or "")
-    measures = _question_measures(ctx, question)
+    # The question's measures cost a search: resolved once per run. Its member is
+    # re-read each time — a member label read after the first check must count.
+    cache = getattr(state, "_claim_measures", None)
+    if cache is None or cache[0] != question:
+        cache = (question, _question_measures(ctx, question))
+        try:
+            state._claim_measures = cache
+        except Exception:                                       # noqa: BLE001
+            pass
+    measures = cache[1]
     try:
         dim = requested_dimension(ctx)
     except Exception:                                           # noqa: BLE001
@@ -117,12 +123,7 @@ def target_of(state: Any, ctx: Any) -> dict:
         if (len(sm) <= 3 and sm in words) or (len(sm) > 3 and sm in _squash(question)):
             member = sm
             break
-    out = {"measures": {m for m in measures if m}, "dimension": dim_key, "member": member}
-    try:
-        state._claim_target = out
-    except Exception:                                           # noqa: BLE001
-        pass
-    return out
+    return {"measures": {m for m in measures if m}, "dimension": dim_key, "member": member}
 
 
 def _names_dimension(ctx: Any, dim: str) -> bool:
@@ -161,9 +162,18 @@ def _contradiction(e: dict, t: dict, ctx: Any) -> str | None:
 
 def check(state: Any, ctx: Any, text: str) -> dict:
     """{target, flagged: [{value, pct, why, of}]} for one answer text."""
-    from app.services.dashboard_ai_bot.verifier import extract_answer_claims
+    from app.services.dashboard_ai_bot.verifier import (
+        DEFAULT_TOLERANCE, _claim_alternates, _matches, extract_answer_claims,
+    )
 
     ledger = getattr(state, "claim_ledger", None) or []
+    evidence = list(getattr(state, "evidence", None) or [])
+    alternates = _claim_alternates(text)
+
+    def in_evidence(v: float) -> bool:
+        """The figure verifier's own test: this number WAS read (any reading)."""
+        return bool(evidence) and (_matches(v, evidence, DEFAULT_TOLERANCE) or any(
+            _matches(a, evidence, DEFAULT_TOLERANCE) for a in alternates.get(v, ())))
     if not ledger or ctx is None:
         return {}
     t = target_of(state, ctx)
@@ -175,9 +185,15 @@ def check(state: Any, ctx: Any, text: str) -> dict:
         else:
             support = [e for e in ledger if _close(value, float(e["value"]))]
         if not support:
-            # A percentage no proportion produced, or a figure large or precise
-            # enough to be a measurement the model made up or divided out itself.
-            if pct or abs(value) >= 1000 or value != int(value):
+            # NOT DESCRIBED IS NOT INVENTED. The claim ledger describes the tools
+            # it has adapters for; the evidence ledger holds everything read. A
+            # plain figure the evidence holds is supported (its meaning unknown,
+            # so never contradicted). Only a percentage no proportion produced,
+            # or a figure nothing read at all, is unsupported.
+            if pct:
+                if not any(_close(value, float(e["value"])) for e in ledger if e.get("ratio")):
+                    flagged.append({"value": value, "pct": pct, "why": "unsupported"})
+            elif not in_evidence(value) and (abs(value) >= 1000 or value != int(value)):
                 flagged.append({"value": value, "pct": pct, "why": "unsupported"})
             continue
         reasons = [_contradiction(e, t, ctx) for e in support]
