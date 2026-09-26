@@ -796,3 +796,19 @@ def test_no_named_period_or_no_period_chart_leaves_the_tile_alone():
                             "total_measure", {"chart_id": 906}) is None, "no chart gives GMV by month"
     assert G.period_refusal(_with_kpi(_Ctx([684], question="GMV tháng 11/2017?")),
                             "total_measure", {"chart_id": 684}) is None, "the monthly chart itself"
+
+
+def test_an_automatic_comparison_is_refused_when_the_question_names_the_periods():
+    from app.services.agent_flows.tools import dimension_gate as G
+
+    ctx = _Ctx([684], question="GMV tháng 1/2018 so với tháng 12/2017 thay đổi bao nhiêu phần trăm?")
+    res = G.period_refusal(ctx, "compare_periods", {"chart_id": 684})
+    assert res["error_code"] == "period_not_in_chart"
+    assert res["detail"] == {"period_a": "2018-01", "period_b": "2017-12"}
+    assert G.period_refusal(ctx, "compare_periods", {"chart_id": 684, "mode": "custom",
+                                                     "period_a": "2018-01", "period_b": "2017-12"}) is None
+    one = _Ctx([684], question="Tỷ lệ giao đúng hẹn tháng 3/2018 so với tháng trước?")
+    assert G.period_refusal(one, "compare_periods", {"chart_id": 684})["detail"] == {
+        "period_a": "2018-03", "period_b": "2018-02"}
+    assert G.period_refusal(_Ctx([684], question="GMV tháng này so với tháng trước?"),
+                            "compare_periods", {"chart_id": 684}) is None, "no named period: auto is right"

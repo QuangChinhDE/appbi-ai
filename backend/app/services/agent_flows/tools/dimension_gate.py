@@ -427,6 +427,8 @@ def period_refusal(ctx: Any, tool_name: str, args: dict | None) -> dict | None:
     read is allowed — the answer must then say it is the overall figure, which the
     claim check holds it to.
     """
+    if tool_name == "compare_periods":
+        return _compare_periods_refusal(ctx, args or {})
     if tool_name not in PERIOD_SENSITIVE:
         return None
     chart_id = (args or {}).get("chart_id")
@@ -458,4 +460,43 @@ def period_refusal(ctx: Any, tool_name: str, args: dict | None) -> dict | None:
                   "được hỏi từ một biểu đồ này (get_chart_data / compare_periods). Nếu kỳ đó không "
                   "có trong dữ liệu, nói thẳng như vậy."),
         detail={"chart_id": chart_id, "charts_by_period": options},
+    )
+
+
+def _label(period: tuple) -> str:
+    if period[0] == "m":
+        return f"{period[1]}-{period[2]:02d}"
+    if period[0] == "q":
+        return f"{period[1]}-Q{period[2]}"
+    return str(period[1])
+
+
+def _compare_periods_refusal(ctx: Any, args: dict) -> dict | None:
+    """The question names the periods; an automatic comparison of the LAST two is
+    another question. Measured in acceptance: asked "tháng 1/2018 so với tháng
+    12/2017", a Skill ran compare_periods(mode=auto) and compared 2018-09 with
+    2018-08. Refused with the exact custom call instead of silently re-pointed."""
+    if str(args.get("mode") or "auto").lower() == "custom":
+        return None
+    from app.services.time_semantics import named_periods
+
+    asked = sorted(named_periods(str(getattr(ctx, "question", "") or "")), reverse=True)
+    grains = {p[0] for p in asked}
+    if not asked or len(asked) > 2 or len(grains) != 1 or asked[0][0] == "y":
+        return None
+    if len(asked) == 1:
+        g, y, n = asked[0]
+        size = 12 if g == "m" else 4
+        prev = (g, y - 1, size) if n == 1 else (g, y, n - 1)
+        asked = [asked[0], prev]
+    a, b = _label(asked[0]), _label(asked[1])
+    return R.err(
+        f"câu hỏi nêu kỳ {a} và {b}; compare_periods ở chế độ tự động so hai kỳ CUỐI của "
+        "biểu đồ — không phải hai kỳ được hỏi.",
+        code="period_not_in_chart",
+        retryable=False,
+        recovery=(f"Gọi lại compare_periods với mode='custom', period_a='{a}', period_b='{b}' "
+                  "(cùng chart_id). Nếu nhãn kỳ của biểu đồ khác dạng, lỗi trả về sẽ liệt kê các "
+                  "nhãn hợp lệ — chọn đúng hai kỳ được hỏi trong danh sách đó."),
+        detail={"period_a": a, "period_b": b},
     )
