@@ -1801,7 +1801,14 @@ class Flow(_Model):
         # {'matched': 'dm', 'label': 'danh mục'} while the branch agent's real
         # answer was discarded — and validation said ok.
         answer_node = next((n for n in self.all_nodes() if n.key == answer_key), None)
-        if answer_node is not None and getattr(answer_node, "type", "") in _ROUTER_TYPES:
+        def stops_everywhere(n: Any) -> bool:
+            paths = getattr(n, "paths", None) or getattr(n, "cases", None) or []
+            return bool(paths) and all(
+                (getattr(p, "body", None) or []) and getattr(p.body[-1], "type", "") == "stop"
+                for p in paths)
+
+        if answer_node is not None and getattr(answer_node, "type", "") in _ROUTER_TYPES \
+                and not stops_everywhere(answer_node):
             out.append(
                 f"Bước trả lời “{answer_node.name or answer_key}” là bước rẽ nhánh/điều phối — "
                 "người xem sẽ nhận dữ liệu định tuyến thay vì câu trả lời. Thêm một bước Agent "

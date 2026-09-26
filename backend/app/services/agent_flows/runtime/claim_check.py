@@ -196,7 +196,7 @@ def _direction_said(text: str, value: float) -> str | None:
     return "up" if up and not down else "down" if down and not up else None
 
 
-_WHOLE_WORDS = ("toan bo", "toan ky", "tong cong", "ca giai doan", "tat ca cac thang", "chung",
+_WHOLE_WORDS = ("toan bo", "toan ky", "ca giai doan", "tat ca cac thang", "toan thoi gian",
                 "overall", "all-time", "all time", "whole report", "in total", "trung binh toan")
 
 
@@ -206,7 +206,7 @@ def _periods(text: str) -> set[tuple]:
     return named_periods(text)
 
 
-def _wrong_period(support: list[dict], asked: set[tuple], sentence: str) -> bool:
+def _wrong_period(support: list[dict], asked: set[tuple], sentence: str, question: str = "") -> bool:
     """The question names a period; is every reading of this figure some OTHER scope?
 
     Two shapes, both measured in acceptance: an all-time KPI given as one month's
@@ -214,8 +214,18 @@ def _wrong_period(support: list[dict], asked: set[tuple], sentence: str) -> bool
     total given for two quarters. A figure the sentence frames as the overall
     total is left alone; a change between periods (compare_periods) is left alone.
     """
+    import re
+
+    from app.services.time_semantics import comparison_baseline
+
     grains = {p[0] for p in asked}
     changes = [e for e in support if e.get("dimension") == "__time__" and not e.get("member")]
+    if changes and len(asked) == 1:
+        # One named period in a comparison: the change must be against the
+        # baseline the question means ("cùng kỳ năm trước" is not last month).
+        base = comparison_baseline(question, next(iter(asked)))
+        if base:
+            asked = {*asked, base}
     if changes:
         # A change between periods: right when it is between the periods asked.
         for e in changes:
@@ -228,7 +238,9 @@ def _wrong_period(support: list[dict], asked: set[tuple], sentence: str) -> bool
         return True
     whole = [e for e in support if not e.get("dimension") and not e.get("member")]
     if len(whole) == len(support):
-        return not any(w in sentence for w in _WHOLE_WORDS)
+        # WORD-BOUNDED: "chung" inside "nhìn chung"/"kiểm chứng" let an all-time
+        # figure pass as a quarter's (adversarial review).
+        return not any(re.search(rf"(?<!\w){re.escape(w)}(?!\w)", sentence) for w in _WHOLE_WORDS)
     timed = [e for e in support if _is_time(e.get("dimension")) and e.get("member")]
     if len(timed) != len(support):
         return False
@@ -239,17 +251,43 @@ def _wrong_period(support: list[dict], asked: set[tuple], sentence: str) -> bool
     return not any(lab & asked for lab in labels)
 
 
-def _derived(value: float, operands: list[float]) -> bool:
+_MAX_OPERANDS = 6
+
+
+def _resolve_derived(pending, claims, flagged, in_evidence, text) -> list[dict]:
+    """Flags for figures only arithmetic could support. Operands: figures the
+    answer states, a tool read, and that were NOT themselves flagged; at most
+    `_MAX_OPERANDS`, so pair combinations stay too few to match by chance."""
+    bad = [float(f["value"]) for f in flagged]
+    operands = [v for v, p in claims if not p and v and in_evidence(v)
+                and not any(_close(v, b) for b in bad)]
+    if len(operands) > _MAX_OPERANDS:
+        operands = []
+    out = []
+    for value, pct in pending:
+        ok = _derived(value, operands, text) if pct else _derived_plain(value, operands)
+        if not ok:
+            out.append({"value": value, "pct": pct, "why": "unsupported"})
+    return out
+
+
+def _derived(value: float, operands: list[float], text: str = "") -> bool:
     """Is this percentage the change or the share between two figures the answer
     states and the evidence holds? Checked by arithmetic, to 0.05 points — a
     correct "(1,107,301.89 - 863,547.10) / 863,547.10 = 28.23%" is not invented."""
+    said = _direction_said(text, value) if text else None
     for i, a in enumerate(operands):
         for j, b in enumerate(operands):
             if i == j or not b:
                 continue
-            for x in ((a - b) / b * 100, a / b * 100):
-                if abs(abs(value) - abs(x)) <= 0.05:
-                    return True
+            change = (a - b) / b * 100
+            # THE DIRECTION OF A WORKED-OUT CHANGE IS CHECKED TOO (review: "giảm
+            # 28,23%" for a rise passed on magnitude alone). The two orderings
+            # give different magnitudes, so the matching one fixes the sign.
+            if abs(abs(value) - abs(change)) <= 0.05 and not (said and (change < 0) != (said == "down")):
+                return True
+            if abs(abs(value) - a / b * 100) <= 0.05:
+                return True
     return False
 
 
@@ -314,13 +352,10 @@ def check(state: Any, ctx: Any, text: str) -> dict:
         # to the figure verifier.
         if getattr(state, "citations", None):
             return {}
-        history = list(getattr(state, "history_figures", None) or [])
         claims = extract_answer_claims(text)
-        operands = [v for v, p in claims if not p and v and in_evidence(v)]
-        flagged = [{"value": v, "pct": p, "why": "unsupported"} for v, p in claims
-                   if not in_evidence(v) and (p or abs(v) >= 1000 or v != int(v))
-                   and not any(_close(v, h) for h in history)
-                   and not (_derived(v, operands) if p else _derived_plain(v, operands))]
+        pending = [(v, p) for v, p in claims
+                   if not in_evidence(v) and (p or abs(v) >= 1000 or v != int(v))]
+        flagged = _resolve_derived(pending, claims, [], in_evidence, text)
         return {"target": {}, "flagged": flagged} if flagged else {}
     t = target_of(state, ctx)
     flagged: list[dict] = []
@@ -331,10 +366,11 @@ def check(state: Any, ctx: Any, text: str) -> dict:
                     (e.get("measure") in t["measures"] or not e.get("measure"))
                     for e in ledger) if wants_member else True
     claims = extract_answer_claims(text)
-    # Figures the answer states AND a tool read: the only operands a percentage
-    # the model worked out itself may be checked against (see `_derived`).
-    history = list(getattr(state, "history_figures", None) or [])
-    operands = [v for v, p in claims if not p and v and in_evidence(v)]
+    # A figure only arithmetic could support is decided AFTER the loop, against
+    # operands that were not themselves flagged (review: a share of two withheld
+    # all-time totals was published).
+    pending: list[tuple[float, bool]] = []
+    question = str(getattr(ctx, "question", "") or "")
     for value, pct in claims:
         if pct:
             support = [e for e in ledger if e.get("ratio") and
@@ -348,10 +384,10 @@ def check(state: Any, ctx: Any, text: str) -> dict:
             # so never contradicted). Only a percentage no proportion produced,
             # or a figure nothing read at all, is unsupported.
             if pct:
-                if not any(_close(value, float(e["value"])) for e in ledger if e.get("ratio"))                         and not _derived(value, operands):
-                    flagged.append({"value": value, "pct": pct, "why": "unsupported"})
-            elif not in_evidence(value) and (abs(value) >= 1000 or value != int(value))                     and not _derived_plain(value, operands)                     and not any(_close(value, h) for h in history):
-                flagged.append({"value": value, "pct": pct, "why": "unsupported"})
+                if not any(_close(value, float(e["value"])) for e in ledger if e.get("ratio")):
+                    pending.append((value, pct))
+            elif not in_evidence(value) and (abs(value) >= 1000 or value != int(value)):
+                pending.append((value, pct))
             continue
         if pct:
             # Direction belongs to a CHANGE between periods, not to a level: a rate
@@ -362,8 +398,8 @@ def check(state: Any, ctx: Any, text: str) -> dict:
                 flagged.append({"value": value, "pct": pct, "why": "wrong_direction",
                                 "of": {"measure": signed[0].get("measure"), "dimension": None, "member": None}})
                 continue
-        asked_periods = _periods(str(getattr(ctx, "question", "") or ""))
-        if asked_periods and _wrong_period(support, asked_periods, _sentence_of(text, value)):
+        asked_periods = _periods(question)
+        if asked_periods and _wrong_period(support, asked_periods, _sentence_of(text, value), question):
             flagged.append({"value": value, "pct": pct, "why": "wrong_period",
                             "of": {"measure": support[0].get("measure"), "dimension": None,
                                    "member": support[0].get("member")}})
@@ -384,6 +420,7 @@ def check(state: Any, ctx: Any, text: str) -> dict:
             e = support[0]
             flagged.append({"value": value, "pct": pct, "why": reasons[0],
                             "of": {k: e.get(k) for k in ("measure", "dimension", "member")}})
+    flagged += _resolve_derived(pending, claims, flagged, in_evidence, text)
     return {"target": {**t, "measures": sorted(t["measures"])}, "flagged": flagged}
 
 
@@ -462,6 +499,13 @@ def with_reader_note(text: str, note: str) -> str:
 
 
 PLACEHOLDER = {"vi": "[đã ẩn: chưa kiểm chứng]", "en": "[withheld: not verified]"}
+#: Written like "phần trăm"/"percent" instead of "%": the check reads it as a
+#: percentage, so redaction must too (review: 91,89 phần trăm stayed visible).
+_PCT_AFTER = __import__("re").compile(r"\s*(?:phần\s*trăm|phan\s*tram|percent)", __import__("re").I)
+#: Spans that are labels, not figures: [chart:3], 3/2018, 2018-03, 2017-Q4, Q4.
+_PROTECTED = __import__("re").compile(
+    r"\[[^\]]*\]|(?<!\d)\d{1,2}/(?:19|20)\d{2}(?!\d)|(?<!\d)(?:19|20)\d{2}-(?:\d{1,2}|Q[1-4])(?!\d)"
+    r"|(?<!\w)Q[1-4](?!\w)", __import__("re").I)
 
 
 def redact(text: str, flagged: list[dict], locale: str = "vi") -> str:
@@ -476,6 +520,7 @@ def redact(text: str, flagged: list[dict], locale: str = "vi") -> str:
         return text
     mark = PLACEHOLDER["en" if str(locale or "").lower().startswith("en") else "vi"]
     values = [(float(f["value"]), bool(f.get("pct"))) for f in flagged]
+    protected = [(m.start(), m.end()) for m in _PROTECTED.finditer(text or "")]
     out, last = [], 0
     for m in _NUMBER_RE.finditer(text or ""):
         v = parse_number(m.group("num"))
@@ -484,8 +529,11 @@ def redact(text: str, flagged: list[dict], locale: str = "vi") -> str:
         scale = (m.group("scale") or "").strip().lower()
         if scale:
             v *= _SCALE_WORDS.get(scale, 1.0)
-        is_pct = bool(m.group("pct"))
-        if any(_close(v, fv) and (is_pct or not fp) for fv, fp in values):
+        if any(a <= m.start() < b or a < m.end() <= b for a, b in protected):
+            continue                      # a period label or a [chart:3] reference
+        is_pct = bool(m.group("pct")) or bool(_PCT_AFTER.match(text, m.end()))
+        if any(abs(abs(v) - abs(fv)) <= 1e-9 * max(1.0, abs(fv)) and (is_pct or not fp)
+               for fv, fp in values):
             out.append(text[last:m.start()])
             out.append(mark)
             last = m.end()

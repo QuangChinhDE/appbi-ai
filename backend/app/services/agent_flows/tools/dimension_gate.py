@@ -489,10 +489,9 @@ def _compare_periods_refusal(ctx: Any, args: dict) -> dict | None:
     if not asked or len(asked) > 2 or len(grains) != 1 or asked[0][0] == "y":
         return None
     if len(asked) == 1:
-        g, y, n = asked[0]
-        size = 12 if g == "m" else 4
-        prev = (g, y - 1, size) if n == 1 else (g, y, n - 1)
-        asked = [asked[0], prev]
+        from app.services.time_semantics import comparison_baseline
+
+        asked = [asked[0], comparison_baseline(str(getattr(ctx, "question", "") or ""), asked[0])]
     a, b = _label(asked[0]), _label(asked[1])
     return R.err(
         f"câu hỏi nêu kỳ {a} và {b}; compare_periods ở chế độ tự động so hai kỳ CUỐI của "

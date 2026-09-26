@@ -439,6 +439,8 @@ class AgentRuntime:
         #: Rounds this step was made to answer on (no tools offered) — recorded so
         #: a trace can say "it answered because its budget said so".
         self.final_rounds = 0
+        #: The model asked for a tool after the step's room ran out.
+        self.wanted_past_ceiling = False
         #: The answer draft this step's claim review sent back, if any — for the
         #: trace: what was flagged and why, before the model wrote its answer.
         self.claim_review: dict = {}

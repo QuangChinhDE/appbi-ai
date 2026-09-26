@@ -555,12 +555,11 @@ def test_a_difference_of_two_stated_figures_is_checked_by_arithmetic(world):
     assert (2241909.54, "unsupported") in _why(state, ctx, bad), "a subtraction error stays withheld"
 
 
-def test_a_follow_up_may_restate_the_previous_answers_figure(world):
+def test_a_follow_up_does_not_borrow_the_previous_answers_figures(world):
+    """Review: history figures let any earlier figure be re-attributed (and a
+    public client supplies the history). A follow-up must re-read what it states."""
     ctx, state = world("Còn bang RJ thì sao?")
     _rec(state, "total_measure", derived.tool_total_measure(ctx, {"chart_id": KPI}), {"chart_id": KPI})
-    state.history_figures = [41746.0]
-    assert _why(state, ctx, "SP có 41,746 đơn như đã nói.") == []
-    state.history_figures = []
     assert (41746.0, "unsupported") in _why(state, ctx, "SP có 41,746 đơn như đã nói.")
 
 
@@ -580,3 +579,62 @@ def test_a_figure_stated_when_nothing_was_read_is_withheld(world):
     ctx, state = world("Tỷ lệ giao đúng hẹn tháng 9/2016 là bao nhiêu?", asked=("on_time_rate",))
     assert (89.48, "unsupported") in _why(state, ctx, "Tỷ lệ giao đúng hẹn là 89.48%, trên 23 đơn.")
     assert _why(state, ctx, "Báo cáo không có số liệu cho tháng 9/2016.") == []
+
+
+# ── adversarial review round ────────────────────────────────────────────────
+
+def test_redact_hides_a_percentage_written_in_words_and_spares_labels():
+    out = CC.redact("Tỷ lệ tháng 3/2018 là 91,89 phần trăm [chart:3].", [{"value": 91.89, "pct": True}])
+    assert "91,89" not in out and "3/2018" in out and "[chart:3]" in out
+    out = CC.redact("Tháng 3/2018 có 3 đơn.", [{"value": 3.0, "pct": False}])
+    assert "3/2018" in out
+
+
+def test_overall_words_are_whole_words(world):
+    ctx, state = world("Doanh thu quý 4/2017 là bao nhiêu?")
+    _rec(state, "total_measure", derived.tool_total_measure(ctx, {"chart_id": KPI}), {"chart_id": KPI})
+    for text in ("Nhìn chung, doanh thu quý 4/2017 là 13,591,643.7.",
+                 "Doanh thu quý 4/2017 là 13,591,643.7 (số liệu đã kiểm chứng)."):
+        assert (13591643.7, "wrong_period") in _why(state, ctx, text), text
+
+
+def test_a_share_of_withheld_figures_is_withheld(world):
+    ctx, state = world("Doanh thu quý 4/2017 chiếm bao nhiêu phần trăm tổng?")
+    _value(state, 13591643.7, "dataset_table_438.total_revenue")
+    _value(state, 3397910.93, "dataset_table_438.total_revenue")
+    text = "Quý 4/2017 là 3,397,910.93 trên tổng 13,591,643.70, tức 25%."
+    assert (25.0, "unsupported") in _why(state, ctx, text)
+
+
+def test_a_worked_out_change_in_the_wrong_direction_is_withheld(world):
+    ctx, state = world(MOM_Q, asked=("gmv",))
+    _value(state, 1107301.89, "dataset_table_438.gmv")
+    _value(state, 863547.10, "dataset_table_438.gmv")
+    assert (28.23, "unsupported") in _why(state, ctx, "Tháng này 1,107,301.89, tháng trước 863,547.10: giảm 28.23%.")
+    assert _why(state, ctx, "Tháng này 1,107,301.89, tháng trước 863,547.10: tăng 28.23%.") == []
+
+
+def test_same_period_last_year_is_not_month_on_month(world):
+    from app.services.time_semantics import comparison_baseline
+
+    assert comparison_baseline("tháng 3/2018 so với cùng kỳ năm trước", ("m", 2018, 3)) == ("m", 2017, 3)
+    assert comparison_baseline("tháng 3/2018 so với tháng trước", ("m", 2018, 3)) == ("m", 2018, 2)
+    ctx, state = world("GMV tháng 3/2018 so với cùng kỳ năm trước thay đổi bao nhiêu?", asked=("gmv",))
+    res = _compare(1000.0, 1100.0, -9.09)
+    res["data"]["current"]["label"], res["data"]["baseline"]["label"] = "2018-03", "2018-02"
+    _rec(state, "compare_periods", res, {"chart_id": MONTHLY})
+    assert (9.09, "wrong_period") in _why(state, ctx, "GMV tháng 3/2018 giảm 9.09% so với cùng kỳ.")
+
+
+def test_a_read_filtered_to_the_period_is_that_periods_figure(world):
+    ctx, state = world("Doanh thu tháng 3/2018 là bao nhiêu?")
+    _rec(state, "total_measure", {"ok": True, "kind": "value", "data": {
+        "chart_id": KPI, "value": 1160785.48, "measure": "dataset_table_438.total_revenue",
+        "filters_applied": [{"field": "year_month", "op": "in", "values": ["2018-03"]}]}}, {"chart_id": KPI})
+    assert _why(state, ctx, "Doanh thu tháng 3/2018 là 1,160,785.48.") == []
+
+
+def test_periods_named_together_share_their_year():
+    assert CC._periods("tháng 3 và tháng 4 năm 2018") == {("m", 2018, 3), ("m", 2018, 4)}
+    assert CC._periods("Q4 2017 vs Q3") == {("q", 2017, 4), ("q", 2017, 3)}
+    assert CC._periods("Doanh thu Việt Nam 2018") == set()

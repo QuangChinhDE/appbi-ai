@@ -318,10 +318,7 @@ class RunState:
     #: The answering step ran out of tool calls and was made to answer anyway —
     #: its "no data" may be the budget's, not the data's (acceptance journey J12).
     tool_budget_reached: bool = False
-    #: Figures this conversation's earlier ANSWERS stated. Each passed its own
-    #: run's checks (a flagged one was withheld, so it is not in the text); a
-    #: follow-up restating one is not inventing it (acceptance g8_state_then_rj).
-    history_figures: list[float] = field(default_factory=list)
+
     #: Set by a Stop node, or by the executor when the budget runs out.
     stopped: bool = False
     stop_message: str = ""

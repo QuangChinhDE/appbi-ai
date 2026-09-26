@@ -443,7 +443,10 @@ async def run(
         # review inside the loop already gave the model its chance, with tools;
         # what remains is shown as unverified and the run is `partial`, so a
         # figure with the wrong meaning is never published as a verified one.
-        if node.key == rctx.answer_key and node.tools and rt.calls_made >= node.max_tool_calls:
+        # Only when the step WANTED more: a call refused at the ceiling, or a round
+        # forced to answer with tools still granted (review: a step that read once
+        # and answered fully was marked incomplete).
+        if node.key == rctx.answer_key and node.tools and getattr(rt, "wanted_past_ceiling", False):
             state.tool_budget_reached = True
         if node.key == rctx.answer_key and text and not provider_error:
             from app.services.agent_flows.runtime import claim_check

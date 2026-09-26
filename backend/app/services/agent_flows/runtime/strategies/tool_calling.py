@@ -179,6 +179,7 @@ class ToolCallingStrategy:
 
             room = rt.tool_room()
             if room <= 0:
+                rt.wanted_past_ceiling = True
                 # Out of budget: tell the model so it answers with what it has,
                 # rather than cutting it off mid-thought.
                 messages.append({
@@ -213,6 +214,7 @@ class ToolCallingStrategy:
             # whole request, so a refused call must still be answered — with the
             # reason, which is also the more useful thing for the model to read.
             for call in refused:
+                rt.wanted_past_ceiling = True
                 messages.append({
                     "role": "tool",
                     "tool_call_id": call.tool_call_id,
@@ -226,6 +228,7 @@ class ToolCallingStrategy:
                 # is left after that (found by review: the batch overshot the run
                 # ceiling and the step died before the answer).
                 if rt.tool_room() <= 0:
+                    rt.wanted_past_ceiling = True
                     messages.append({
                         "role": "tool", "tool_call_id": call.tool_call_id,
                         "name": call.tool_name, "result": rt.budget_exhausted(),

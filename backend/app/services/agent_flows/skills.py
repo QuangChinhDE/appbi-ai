@@ -612,8 +612,14 @@ _DISCOVERY_TOOLS = frozenset({
 
 def _did_no_work(flow: Flow, child_state: Any) -> bool:
     """True when the Skill's steps were meant to read data and none did."""
+    def reading_agent(n: Any) -> bool:
+        # A Skill granted ONLY discovery tools (a coverage or glossary Skill) is
+        # doing its job by looking (review: it was called incomplete).
+        return any(str(getattr(g, "tool", "") or "") not in _DISCOVERY_TOOLS
+                   for g in (getattr(n, "tools", None) or []))
+
     reads = any(getattr(n, "type", "") in _READING_NODES
-                or (getattr(n, "type", "") == "agent" and getattr(n, "tools", None))
+                or (getattr(n, "type", "") == "agent" and reading_agent(n))
                 for n in flow.all_nodes())
     if not reads or child_state is None:
         return False

@@ -159,15 +159,6 @@ async def run_flow(
             max_seconds=inp.runtime.budget.max_seconds,
         ),
     )
-    try:
-        from app.services.dashboard_ai_bot.verifier import extract_answer_claims
-
-        for turn in (inp.conversation.history or [])[-6:]:
-            if getattr(turn, "role", "") == "assistant":
-                state.history_figures.extend(v for v, _ in extract_answer_claims(
-                    str(getattr(turn, "content", "") or "")))
-    except Exception:                                           # noqa: BLE001
-        pass
     # Each chart's grouping, so a result naming only its chart can be placed.
     try:
         for cid, meta in (getattr(ctx, "chart_meta", None) or {}).items():

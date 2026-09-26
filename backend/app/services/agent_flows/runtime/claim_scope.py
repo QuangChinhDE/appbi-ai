@@ -163,6 +163,33 @@ def _summary(data: dict, chart_dims: list[str]) -> list[dict]:
 def describe(tool: str, result: Any, *, chart_dims: dict[int, list[str]] | None = None,
              ledger: list[dict] | None = None) -> list[dict]:
     """Every figure this result carries, with what it means (see module doc)."""
+    out = _describe(tool, result, chart_dims=chart_dims, ledger=ledger)
+    # A READ FILTERED TO ONE PERIOD IS THAT PERIOD'S FIGURE (review: a correct
+    # total_measure(filters=[month=2018-03]) was withheld as an all-time number).
+    label = _filtered_period(result)
+    if label:
+        out = [{**e, "dimension": "__time__", "member": label}
+               if not e.get("dimension") and not e.get("member") else e for e in out]
+    return out
+
+
+def _filtered_period(result: Any) -> str | None:
+    from app.services.time_semantics import named_periods
+
+    data = result.get("data") if isinstance(result, dict) and isinstance(result.get("data"), dict) else {}
+    filters = data.get("filters_applied") or (result.get("filters_applied") if isinstance(result, dict) else None)
+    labels = set()
+    for f in filters or []:
+        values = f.get("values") if isinstance(f, dict) else None
+        values = values if isinstance(values, list) else [f.get("value")] if isinstance(f, dict) else []
+        for v in values:
+            if isinstance(v, str) and (named_periods(v.replace("Q", " q")) or named_periods("nam " + v)):
+                labels.add(v)
+    return next(iter(labels)) if len(labels) == 1 else None
+
+
+def _describe(tool: str, result: Any, *, chart_dims: dict[int, list[str]] | None = None,
+              ledger: list[dict] | None = None) -> list[dict]:
     data = result.get("data") if isinstance(result, dict) and isinstance(result.get("data"), dict) else {}
     if not data:
         return []
