@@ -341,3 +341,4 @@ backend/tests/.testdata/
 !backend/tests/test_presentation_planner_reference_image.py
 !backend/tests/test_dashboard_presentation_publish_is_atomic.py
 !backend/tests/test_chart_value_normalization.py
+!backend/tests/test_report_starter.py

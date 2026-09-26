@@ -244,6 +244,14 @@ check('a finding reference to a chart not on the page, or an unknown kind, is dr
   assert(blocks[0].findings.join() === 'peak:5', blocks[0].findings.join());
 });
 
+check('a block does not restate a KPI tile ("Revenue is R$13.6M"); it keeps what the tiles do not say', () => {
+  const { blocks } = blocksMod.coercePlanBlocks(
+    [{ id: 'b1', variant: 'headline', findings: ['kpi_value:5', 'trend:6', 'attainment:5'] },
+     { id: 'b2', variant: 'summary', findings: ['kpi_value:5'] }], new Set([5, 6]));
+  assert(blocks.length === 1, 'a block made only of restated KPI values was created');
+  assert(blocks[0].findings.join() === 'trend:6,attainment:5', blocks[0].findings.join());
+});
+
 check('blocks exist only in a redesign; sections place them by the model id', () => {
   const raw = { layer: 'redesign', direction: { style: 'executive' }, blocks: [{ id: 'b1', variant: 'headline', findings: ['trend:5'] }],
     sections: [{ primitive: 'full_width', visuals: ['b1'] }, { primitive: 'full_width', visuals: [5] }] };

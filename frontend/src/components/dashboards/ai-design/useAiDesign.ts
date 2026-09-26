@@ -3,7 +3,7 @@
 import React from 'react';
 import { DIRECTION_IDS, planForDirection, type DirectionId } from '@/lib/dashboard-presentation/directions';
 import { toast } from 'sonner';
-import { applyReviewRepairs, capturePreview, reviewNote, type VisionReview } from '@/lib/dashboard-presentation/vision-review';
+import { applyReviewRepairs, capturePreview, reviewNote, waitForSettledRender, type VisionReview } from '@/lib/dashboard-presentation/vision-review';
 import { dashboardApi } from '@/lib/api/dashboards';
 import { useI18n } from '@/providers/LanguageProvider';
 import type { Dashboard, DashboardChart, DashboardThemeConfig } from '@/types/api';
@@ -347,6 +347,15 @@ export function useAiDesign(input: UseAiDesignInput) {
       reviewedSeq.current = seq;
       const root = input.getCanvasRoot?.();
       if (!root) return;
+      // Review the FINISHED report, never a loading placeholder.
+      const readiness = await waitForSettledRender(root);
+      if (!readiness.ready) {
+        setTurns((previous) => [...previous, {
+          role: 'assistant',
+          text: t('dashboards.aiDesign.reviewSkipped', { reason: readiness.reason ?? '' }),
+        }]);
+        return;
+      }
       const image = await capturePreview(root);
       if (!image) return;
       const tilesForReview = committedTiles.map((tile) => ({
@@ -382,7 +391,7 @@ export function useAiDesign(input: UseAiDesignInput) {
       });
     }, 2600);
     return () => window.clearTimeout(timer);
-  }, [pending, input.getCanvasRoot, input.dashboardId, committedTiles, selected]);
+  }, [pending, input.getCanvasRoot, input.dashboardId, committedTiles, selected, t]);
 
   const apply = React.useCallback(() => {
     if (!pending) return;

@@ -9,6 +9,7 @@ export const dashboardsAiDesignCatalog: ModuleCatalog = {
   en: {
     'dashboards.aiDesign.modeLabel': 'Design mode',
     'dashboards.aiDesign.directionsTitle': 'Design directions',
+    'dashboards.aiDesign.reviewSkipped': 'Visual review skipped — the preview had not finished rendering ({{reason}}). Nothing was scored.',
     'dashboards.aiDesign.proposalsTitle': 'Needs your approval',
     'dashboards.aiDesign.proposalsHint': 'These change what a chart says, so they are applied only if you accept. Accepted changes are saved with the draft and recorded.',
     'dashboards.aiDesign.proposal.sort_by_value': 'Sort this ranking by value, largest first',
@@ -158,6 +159,7 @@ export const dashboardsAiDesignCatalog: ModuleCatalog = {
     'dashboards.aiDesign.layerRedesign': 'Đã bố cục lại trang',
     'dashboards.aiDesign.suggestionsTitle': 'Gợi ý (chưa áp dụng)',
     'dashboards.aiDesign.directionsTitle': 'Hướng thiết kế',
+    'dashboards.aiDesign.reviewSkipped': 'Bỏ qua review hình ảnh — bản xem trước chưa render xong ({{reason}}). Không chấm điểm.',
     'dashboards.aiDesign.proposalsTitle': 'Cần bạn duyệt',
     'dashboards.aiDesign.proposalsHint': 'Các đề xuất này thay đổi điều chart nói, nên chỉ áp dụng khi bạn chấp nhận. Thay đổi được lưu cùng bản nháp và được ghi nhận.',
     'dashboards.aiDesign.proposal.sort_by_value': 'Sắp xếp xếp hạng này theo giá trị, lớn nhất trước',

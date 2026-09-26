@@ -10,6 +10,7 @@ import { useDatasetModel } from '@/hooks/use-dataset-model';
 import { useI18n } from '@/providers/LanguageProvider';
 import { buildSemanticLabelMap, buildSemanticFormatMap, buildSemanticCurrencyMap } from '@/lib/chart-semantic-maps';
 import { buildTileEvidence, usePublishTileEvidence } from '@/lib/report-evidence';
+import { KpiContext } from './KpiContext';
 import { metricKey, metricLabel, normalizeRoleConfig } from '@/components/explore/ExploreChartConfig';
 import { getActiveChartRoleConfig } from '@/lib/chart-config';
 import { getEffectiveDashboardChartStyleConfig } from '@/lib/dashboard-chart-style';
@@ -446,12 +447,14 @@ export function ReadonlyChartTile({
           if (isKpiCard) {
             if (!kpiHeaderTitle && !hasActions) return null;
             return (
-              <div className={`mb-2 flex min-h-[1.5rem] items-start gap-3 ${compact ? 'text-xs' : 'text-[13px]'}`}>
+              <div className={`relative mb-2 flex min-h-[1.5rem] items-start gap-3 ${compact ? 'text-xs' : 'text-[13px]'}`}>
                 {kpiHeaderTitle && (
                   <p data-pdf-tile-title className={TILE_KPI_LABEL_CLASS} style={themeTitleStyle} title={kpiHeaderTitle}>{kpiHeaderTitle}</p>
                 )}
+                {/* Overlaid, not in the row: on a 2-up phone KPI the (hover-only)
+                    actions otherwise take the width the label needs. */}
                 {hasActions && (
-                  <div className="ml-auto flex flex-shrink-0 items-center gap-1">
+                  <div className="absolute right-0 top-0 flex items-center gap-1">
                     {droppedBadge}
                     {havingToggle}
                     {exportButton}
@@ -632,6 +635,12 @@ export function ReadonlyChartTile({
             />
           )}
         </div>
+        {isKpiCard && chartData && (roleConfig as any)?.metrics?.[0]?.field ? (
+          <KpiContext
+            measureField={(roleConfig as any).metrics[0].field}
+            goalDirection={(effectiveStyleConfig as any)?.kpiGoalDirection ?? null}
+          />
+        ) : null}
       </div>
     </div>
   );

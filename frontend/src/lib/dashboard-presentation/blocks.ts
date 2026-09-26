@@ -60,6 +60,9 @@ export function coercePlanBlocks(raw: unknown, knownTileIds: ReadonlySet<VisualI
         droppedRefs += 1;
         continue;
       }
+      // "Revenue is R$13.6M" only repeats a KPI tile on the same page; a
+      // block says what the tiles do not (change, peak, leader, attainment).
+      if (parsed.kind === 'kpi_value') continue;
       const key = `${parsed.kind}:${parsed.tileId}`;
       if (!findings.includes(key)) findings.push(key);
     }

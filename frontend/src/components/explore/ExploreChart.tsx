@@ -1179,6 +1179,17 @@ function parseDateAxisValue(value: unknown): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+/** A formatter for an axis whose buckets are all months, else null. */
+function monthlyAxisFormatter(values: unknown[]): ((v: unknown) => string) | null {
+  const dates = values.filter((v) => v != null && v !== '').map((v) => parseBucket(v as any));
+  if (dates.length < 2 || dates.some((d) => !d || d.getUTCDate() !== 1)) return null;
+  const fmt = new Intl.DateTimeFormat(undefined, { month: 'short', year: '2-digit', timeZone: 'UTC' });
+  return (v: unknown) => {
+    const d = v == null || v === '' ? null : parseBucket(v as any);
+    return d ? fmt.format(d) : String(v ?? '');
+  };
+}
+
 function isDateLikeAxis(data: Record<string, any>[], field?: string, label?: string): boolean {
   if (!field) return false;
   const axisText = `${field} ${label ?? ''}`.toLowerCase();
@@ -2375,8 +2386,11 @@ function ExploreChartInner({
   // xAxisLabel/yAxisLabel always win. Only auto-name the metric axis when a
   // single metric is plotted (multi-metric → legend disambiguates, so a
   // single Y title would be misleading).
-  const derivedDimLabel = fieldLabel(xField, labelMap);
-  const derivedMetricLabel = metrics.length === 1 ? metricLabel(metrics[0], labelMap) : undefined;
+  // A dashboard tile already carries its title; a derived axis title there is
+  // usually the raw field name ("order_purchase_date") and only costs plot
+  // space. Embedded tiles show an axis title only when the author set one.
+  const derivedDimLabel = embedded ? undefined : fieldLabel(xField, labelMap);
+  const derivedMetricLabel = embedded || metrics.length !== 1 ? undefined : metricLabel(metrics[0], labelMap);
   const xAxisLabel = style.xAxisLabel || derivedDimLabel || undefined;
   const yAxisLabel = style.yAxisLabel || derivedMetricLabel || undefined;
   // HBAR swaps orientation: category on Y, value on X.
@@ -2421,12 +2435,23 @@ function ExploreChartInner({
     // #1 fix — measure the longest rendered label so the axis rotates for long
     // string labels, not only for high category counts.
     const labelSample = (categoricalData.length ? categoricalData : data).slice(0, 80);
+    // Month buckets (every value on the 1st) read as "Sep 16", not "01/09/2016".
+    const dateFormatter = dateLike ? monthlyAxisFormatter(labelSample.map((r) => r?.[dataKey])) ?? formatDateAxisValue : undefined;
     const maxLabelChars = labelSample.reduce((m, r) => {
       const v = r?.[dataKey];
-      const s = dateLike ? formatDateAxisValue(v) : (v == null || v === '' ? '(blank)' : String(v));
+      const s = dateFormatter ? dateFormatter(v) : (v == null || v === '' ? '(blank)' : String(v));
       return Math.max(m, s.length);
     }, 0);
-    const { angle, height, textAnchor, interval } = buildXAxisProps(count, fontSize, xAxisLabel, maxLabelChars, responsive.maxXBand);
+    let { angle, height, textAnchor, interval } = buildXAxisProps(count, fontSize, xAxisLabel, maxLabelChars, responsive.maxXBand);
+    // A time axis is read as a sequence, so thin its ticks to what fits the
+    // measured width horizontally rather than rotating 30 overlapping dates.
+    if (dateLike && rootSize.width > 0) {
+      const slots = Math.max(2, Math.floor((rootSize.width - 60) / (maxLabelChars * fontSize * 0.62 + 14)));
+      if (count > slots) {
+        interval = Math.ceil(count / slots) - 1;
+        angle = 0; textAnchor = 'middle'; height = 30;
+      }
+    }
     // On a very short tile drop the tick-label band entirely (keep a thin axis
     // line) so the plot stays usable — values remain on hover. PBI-parity.
     if (!responsive.showAxisLabels) {
@@ -2442,7 +2467,7 @@ function ExploreChartInner({
             angle={angle}
             textAnchor={textAnchor}
             fontSize={fontSize}
-            formatter={dateLike ? formatDateAxisValue : undefined}
+            formatter={dateFormatter}
             orientation="x"
             fill={axisTickFill}
           />
@@ -2582,7 +2607,10 @@ function ExploreChartInner({
       // (Radix popover) + click-to-toggle visibility. handleLegendClick
       // is now unused for the popover path but kept for series visibility
       // when the popover is dismissed via the label click.
-      content={(props: any) => (
+      // On a dashboard tile a one-entry legend only repeats the tile title
+      // ("Revenue" under "Revenue by region"); it shows as soon as the chart
+      // has a second series.
+      content={(props: any) => (embedded && (props?.payload ?? []).length <= 1) ? null : (
         <CustomLegend
           payload={props?.payload ?? []}
           hiddenSeries={hiddenSeries}

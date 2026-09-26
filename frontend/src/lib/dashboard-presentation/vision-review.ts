@@ -21,6 +21,56 @@ export interface VisionReview {
   issues: { visual?: number; problem: string; fix?: { key: string; value: unknown } }[];
 }
 
+export interface RenderReadiness { ready: boolean; reason?: string; waitedMs: number }
+
+function pendingWork(root: HTMLElement): string | null {
+  const spinning = root.querySelectorAll('.animate-spin, [aria-busy="true"], [data-loading="true"]').length;
+  if (spinning) return `${spinning} visual(s) still loading`;
+  const updating = root.querySelectorAll('.dashboard-narrative__item.is-pending').length;
+  if (updating) return `${updating} finding(s) still updating`;
+  const images = Array.from(root.querySelectorAll('img')).filter((img) => !(img as HTMLImageElement).complete).length;
+  if (images) return `${images} image(s) not loaded`;
+  return null;
+}
+
+function layoutSignature(root: HTMLElement): string {
+  return Array.from(root.querySelectorAll('[data-grid-item-id]'))
+    .map((el) => { const r = el.getBoundingClientRect(); return `${Math.round(r.left)},${Math.round(r.top)},${Math.round(r.width)},${Math.round(r.height)}`; })
+    .join('|');
+}
+
+/**
+ * Wait until the preview is a FINISHED report: every lazy tile mounted (the
+ * canvas is scrolled through once to mount them), no spinner or "updating"
+ * sentence, fonts and images loaded, and the layout still for two polls. A
+ * placeholder is never reviewed as if it were the design: on timeout the
+ * review is skipped and the reason is said.
+ */
+export async function waitForSettledRender(root: HTMLElement, timeoutMs = 20_000): Promise<RenderReadiness> {
+  const started = Date.now();
+  const scroller = (root.closest('main') as HTMLElement | null) ?? (document.scrollingElement as HTMLElement | null);
+  if (scroller) {
+    const back = scroller.scrollTop;
+    for (let y = 0; y <= scroller.scrollHeight; y += Math.max(300, scroller.clientHeight / 2)) {
+      scroller.scrollTop = y;
+      await new Promise((r) => setTimeout(r, 120));
+    }
+    scroller.scrollTop = back;
+  }
+  try { await (document as any).fonts?.ready; } catch { /* fonts API absent: nothing to wait for */ }
+  let last = '';
+  let stable = 0;
+  while (Date.now() - started < timeoutMs) {
+    const pending = pendingWork(root);
+    const sig = layoutSignature(root);
+    stable = !pending && sig === last ? stable + 1 : 0;
+    last = sig;
+    if (stable >= 2) return { ready: true, waitedMs: Date.now() - started };
+    await new Promise((r) => setTimeout(r, 400));
+  }
+  return { ready: false, reason: pendingWork(root) ?? 'the layout kept moving', waitedMs: Date.now() - started };
+}
+
 /** The preview as a compact JPEG data URL (≤ 1280px wide). */
 export async function capturePreview(root: HTMLElement): Promise<string | null> {
   try {

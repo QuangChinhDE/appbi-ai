@@ -22,6 +22,7 @@ import { BulkActionBar } from '@/components/common/BulkActionBar';
 import { OwnerBadge } from '@/components/common/OwnerBadge';
 import { Modal } from '@/components/common/Modal';
 import { DashboardHtmlImportModal } from '@/components/dashboards/DashboardHtmlImportModal';
+import { ReportStarterModal } from '@/components/dashboards/ReportStarterModal';
 import { Button, IconButton } from '@/components/ui/Button';
 import { FilterTag } from '@/components/ui/FilterTag';
 import { Input, Textarea, FieldGroup } from '@/components/ui/Input';
@@ -58,6 +59,7 @@ export default function DashboardsPage() {
   const [publicShareDash, setPublicShareDash] = useState<Dashboard | null>(null);
   const [shareDash, setShareDash] = useState<Dashboard | null>(null);
   const [isHtmlImportOpen, setIsHtmlImportOpen] = useState(false);
+  const [isStarterOpen, setIsStarterOpen] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [isBulkDeleting, setIsBulkDeleting] = useState(false);
   const [showBulkConfirm, setShowBulkConfirm] = useState(false);
@@ -247,6 +249,15 @@ export default function DashboardsPage() {
               onClick={() => setIsHtmlImportOpen(true)}
             >
               Import HTML
+            </Button>
+            <Button
+              variant="secondary"
+              size="sm"
+              data-testid="report-starter-open"
+              leadingIcon={<Plus className="h-3.5 w-3.5" />}
+              onClick={() => setIsStarterOpen(true)}
+            >
+              {t('report.starter.open')}
             </Button>
             <Button
               variant="primary"
@@ -587,6 +598,14 @@ export default function DashboardsPage() {
           resourceId={shareDash.id}
           resourceName={shareDash.name}
           onClose={() => setShareDash(null)}
+        />
+      )}
+
+      {isStarterOpen && (
+        <ReportStarterModal
+          datasets={datasets.map((d: any) => ({ id: d.id, name: d.name }))}
+          onClose={() => setIsStarterOpen(false)}
+          onCreated={(id) => router.push(`/dashboards/${id}`)}
         />
       )}
 

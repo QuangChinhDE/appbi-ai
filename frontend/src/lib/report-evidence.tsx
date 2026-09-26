@@ -168,3 +168,18 @@ export function buildTileEvidence(input: BuildEvidenceInput): TileEvidence | nul
     target,
   };
 }
+
+/** Dashboard-chart ids cited by narrative blocks (`kind:tileId` finding keys).
+ *  Those tiles load with the page on every surface: a headline must not wait
+ *  for the reader to scroll to its evidence. */
+export function citedTilesOf(charts: { widget_type?: string | null; widget_config?: any }[] | undefined | null): Set<number> {
+  const out = new Set<number>();
+  for (const dc of charts ?? []) {
+    if (dc.widget_type !== 'narrative') continue;
+    for (const item of (dc.widget_config?.items ?? []) as { finding?: string }[]) {
+      const id = Number(String(item?.finding ?? '').split(':')[1]);
+      if (Number.isFinite(id)) out.add(id);
+    }
+  }
+  return out;
+}

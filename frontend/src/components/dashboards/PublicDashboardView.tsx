@@ -64,6 +64,7 @@ import { buildPublicLinkTheme } from '@/lib/public-link-appearance';
 import { buildPublicDashboardFilterRuntime } from '@/lib/public-dashboard-runtime';
 import { mergeSeedWithViewerSelections, resolvePublicPageFilterContext } from '@/lib/public-page-filters';
 import type { ChartDataResponse, Dashboard, DashboardChart } from '@/types/api';
+import { citedTilesOf } from '@/lib/report-evidence';
 import { tileKindOf } from '@/lib/dashboard-presentation/tile-frame';
 import { auditRenderedTiles } from '@/lib/dashboard-presentation/render-audit';
 import { SectionBands } from './SectionBands';
@@ -466,6 +467,10 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
   // via onVisible; the fetch effect uses this set to gate which charts to request.
   const [visibleChartIds, setVisibleChartIds] = useState<Set<number>>(() => new Set());
   const [forceVisibleAll, setForceVisibleAll] = useState(false);
+  // Tiles a narrative block cites load with the page, not when scrolled to: a
+  // headline at the top must not say "updating" because its evidence is a
+  // chart below the fold.
+  const citedTileIds = useMemo(() => citedTilesOf(dashboard?.dashboard_charts), [dashboard?.dashboard_charts]);
   const publicContentRef = useRef<HTMLElement>(null);
   const gridSectionRef = useRef<HTMLElement>(null);
   // "Fit to width": measure the grid wrapper and scale the react-grid row height
@@ -1049,7 +1054,8 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
     // the printed report would come out empty below the fold.
     const lazyIds = targetCharts
       .map((dc) => dc.chart_id)
-      .filter((id) => forceVisibleAll || visibleChartIds.has(id));
+      .filter((id) => forceVisibleAll || visibleChartIds.has(id)
+        || targetCharts.some((dc) => dc.chart_id === id && citedTileIds.has(dc.id)));
     if (lazyIds.length === 0) {
       // Nothing visible yet (initial mount before IntersectionObserver fires).
       // Skip — the visibility effect will trigger fetch as tiles report in.
@@ -1059,7 +1065,7 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
     fetchChartsForPage(activePageId, storedSession ?? undefined, crossFilterState, {
       chartIds: lazyIds,
     });
-  }, [activePageId, crossFilterState, dashboard, fetchChartsForPage, filtersSeeded, forceVisibleAll, pageState, token, visibleChartIds]);
+  }, [activePageId, crossFilterState, dashboard, fetchChartsForPage, filtersSeeded, forceVisibleAll, pageState, token, visibleChartIds, citedTileIds]);
 
   const handlePasswordSubmit = useCallback(async (password: string) => {
     setAuthSubmitting(true);
@@ -2123,7 +2129,7 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
             highlightFilter={crossFilterState?.sourceChartId === dashboardChart.chart_id && (dashboardChart.layout as any)?.highlightEnabled !== false ? (crossFilterState?.filter ?? null) : null}
             isHighlightSource={crossFilterState?.sourceChartId === dashboardChart.chart_id}
             highlightData={null}
-            forceVisible={forceVisibleAll}
+            forceVisible={forceVisibleAll || citedTileIds.has(dashboardChart.id)}
             publicDatasetModels={(dashboard as any)?.public_dataset_models ?? null}
             viewerGrain={chartGrains[dashboardChart.chart_id]}
             onViewerDrill={(g) => handleChartDrill(dashboardChart.chart_id, g)}
@@ -2697,7 +2703,7 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
                           highlightFilter={crossFilterState?.sourceChartId === dashboardChart.chart_id && (dashboardChart.layout as any)?.highlightEnabled !== false ? (crossFilterState?.filter ?? null) : null}
                           isHighlightSource={crossFilterState?.sourceChartId === dashboardChart.chart_id}
                           highlightData={null}
-                          forceVisible={forceVisibleAll}
+                          forceVisible={forceVisibleAll || citedTileIds.has(dashboardChart.id)}
                           publicDatasetModels={(dashboard as any)?.public_dataset_models ?? null}
                           viewerGrain={chartGrains[dashboardChart.chart_id]}
                           onViewerDrill={(g) => handleChartDrill(dashboardChart.chart_id, g)}
@@ -2766,3 +2772,4 @@ export function PublicDashboardView(props: React.ComponentProps<typeof PublicDas
     </ReportEvidenceProvider>
   );
 }
+

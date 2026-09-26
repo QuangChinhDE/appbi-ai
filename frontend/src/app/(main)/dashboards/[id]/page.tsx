@@ -511,8 +511,10 @@ function DashboardDetailPageInner() {
     layout: Record<number, Record<string, any>>;
     theme: any;
     slicerCluster: any;
-    /** Draft-only blocks this step created (next side only). Undo removes them. */
+    /** Draft-only blocks this step created (next side only). Undo removes them;
+     *  redo creates them again from `createdBlockSpecs` and records the new ids. */
     createdBlockIds?: number[];
+    createdBlockSpecs?: { widgetType: string; widgetConfig: Record<string, unknown>; layout: Record<string, unknown> }[];
   };
   type UndoEntry =
     | { kind: 'layout'; prev: Record<number, Record<string, any>>; next: Record<number, Record<string, any>> }
@@ -621,7 +623,26 @@ function DashboardDetailPageInner() {
       if (dir === 'prev' && created.length) {
         void Promise.all(created.map((id) => dashboardApi.removeChart(dashboardId, id).catch(() => null)))
           .then(() => queryClient.invalidateQueries({ queryKey: ['dashboards', dashboardId] }));
-        redoRef.current = redoRef.current.filter((e) => e !== entry);
+      }
+      const specs = entry.next.createdBlockSpecs ?? [];
+      if (dir === 'next' && specs.length) {
+        // Redo re-creates the blocks the design added (as draft-only rows) and
+        // records their new ids, so a further undo removes the right rows.
+        void (async () => {
+          const ids: number[] = [];
+          for (const spec of specs) {
+            const before = new Set(((queryClient.getQueryData(['dashboards', dashboardId]) as any)?.dashboard_charts ?? []).map((d: any) => d.id));
+            try {
+              const updated: any = await dashboardApi.addWidget(dashboardId, spec.widgetType, { ...spec.layout, draftOnly: true } as any, spec.widgetConfig as any);
+              if (updated) queryClient.setQueryData(['dashboards', dashboardId], updated);
+              const fresh = (updated?.dashboard_charts ?? []).find((d: any) => !before.has(d.id) && d.widget_type === spec.widgetType);
+              if (fresh) ids.push(fresh.id);
+            } catch (err) {
+              console.error('Redo could not re-create a design block:', err);
+            }
+          }
+          entry.next.createdBlockIds = ids;
+        })();
       }
       setLocalLayoutOverrides(state.layout);
       if (state.slicerCluster !== undefined) {
@@ -933,6 +954,11 @@ function DashboardDetailPageInner() {
         theme: nextTheme,
         slicerCluster: nextCluster,
         createdBlockIds: createdIds,
+        createdBlockSpecs: (commit.createdBlocks ?? []).map((b) => ({
+          widgetType: b.widgetType,
+          widgetConfig: b.widgetConfig as Record<string, unknown>,
+          layout: { ...b.layout, ...(commit.layoutOverrides[b.tempId] ?? {}), pageId: b.layout.pageId ?? activePageId } as Record<string, unknown>,
+        })),
       },
     });
 

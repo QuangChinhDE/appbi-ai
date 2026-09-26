@@ -6,6 +6,7 @@ import { useChart, useChartData } from '@/hooks/use-charts';
 import { useDatasetModel } from '@/hooks/use-dataset-model';
 import { buildSemanticLabelMap, buildSemanticFormatMap, buildSemanticCurrencyMap } from '@/lib/chart-semantic-maps';
 import { buildTileEvidence, usePublishTileEvidence } from '@/lib/report-evidence';
+import { KpiContext } from './KpiContext';
 import { ChartPreview } from '@/components/charts/ChartPreview';
 import { ExploreChart } from '@/components/explore/ExploreChart';
 import { useDashboardChartTheme } from '@/components/dashboards/DashboardThemeProvider';
@@ -1159,7 +1160,7 @@ function ChartTileBase({
           for a scoped restyle, not start a grid drag. */}
       <div className={`mb-2 flex flex-col gap-1 pr-8 ${aiDesignMode ? '' : 'drag-handle cursor-grab active:cursor-grabbing'}`}>
         {/* Title row */}
-        <div className="flex items-center gap-1.5 min-h-[1.5rem]">
+        <div className="dashboard-tile-title-row flex items-center gap-1.5 min-h-[1.5rem]" data-kpi={isKpiCard ? '' : undefined}>
         {isEditingTitle ? (
           <>
             <input
@@ -1705,6 +1706,12 @@ function ChartTileBase({
           </div>
         ) : null}
       </div>
+      {isKpiCard && chartData && exploreConfig?.roleConfig?.metrics?.[0]?.field ? (
+          <KpiContext
+            measureField={exploreConfig.roleConfig.metrics[0].field}
+            goalDirection={(exploreConfig.styleConfig as any)?.kpiGoalDirection ?? null}
+          />
+        ) : null}
 
       <ChartDetailModal
         chartId={chartId}

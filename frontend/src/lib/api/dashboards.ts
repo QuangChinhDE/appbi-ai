@@ -67,6 +67,15 @@ export const dashboardApi = {
     await apiClient.delete(`/dashboards/${id}`);
   },
 
+  // Start a report from a dataset: charts are chosen from its semantic model
+  // and each is run before it is kept (POST /dashboards/report-starter).
+  reportStarter: async (body: { dataset_id: number; goal?: string; name?: string }): Promise<{
+    dashboard_id: number; name: string; charts: unknown[]; source: 'model' | 'rules'; candidates: number; probed: number; elapsed_ms: number;
+  }> => {
+    const response = await apiClient.post('/dashboards/report-starter', body, { timeout: 90_000 });
+    return response.data;
+  },
+
   // Deep-clone a dashboard into an independent copy (own chart rows).
   duplicate: async (id: number): Promise<Dashboard> => {
     const response = await apiClient.post(`/dashboards/${id}/duplicate`);
