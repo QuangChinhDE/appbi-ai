@@ -89,7 +89,11 @@ def _question_measures(ctx: Any, question: str) -> set[str]:
             ident = asset.get("id") or asset.get("name") or ""
             hay = " ".join(str(asset.get(k) or "") for k in ("id", "name", "detail"))
             strength = _score(hay, terms)
-            if ident and (strength >= 2 or (strength and strength == len(terms))):
+            # THE NAME MUST BE ASKED FOR. A word found only in a definition
+            # ("phần trăm", "chiếm") made "Nó chiếm bao nhiêu phần trăm?" ask for
+            # the on-time rate, and correct revenue figures were withheld.
+            named = _score(" ".join(str(asset.get(k) or "") for k in ("id", "name")), terms)
+            if ident and named and (strength >= 2 or (strength and strength == len(terms))):
                 for alias in _vocabulary(ctx, str(ident), "measure") or [ident]:
                     measures.add(field_key(str(alias)))
                 _MEASURE_WORDS.setdefault(id(ctx), set()).update(
@@ -211,8 +215,17 @@ def _wrong_period(support: list[dict], asked: set[tuple], sentence: str) -> bool
     total is left alone; a change between periods (compare_periods) is left alone.
     """
     grains = {p[0] for p in asked}
-    if any(e.get("dimension") == "__time__" and not e.get("member") for e in support):
-        return False
+    changes = [e for e in support if e.get("dimension") == "__time__" and not e.get("member")]
+    if changes:
+        # A change between periods: right when it is between the periods asked.
+        for e in changes:
+            between: set[tuple] = set()
+            for label in e.get("periods") or []:
+                between |= _periods(str(label).replace("Q", " q")) or _periods("nam " + str(label))
+            same = {p for p in asked if p[0] in {b[0] for b in between}}
+            if not between or not same or same <= between:
+                return False
+        return True
     whole = [e for e in support if not e.get("dimension") and not e.get("member")]
     if len(whole) == len(support):
         return not any(w in sentence for w in _WHOLE_WORDS)

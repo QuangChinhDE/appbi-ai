@@ -899,6 +899,10 @@ class ToolInput(_Model):
         return self
 
 
+#: Node types whose output is routing data, never an answer for a reader.
+_ROUTER_TYPES = frozenset({"if", "switch", "coordinate", "loop"})
+
+
 class ToolNode(BaseNode):
     """Call ONE tool with arguments the author decided. No model involved.
 
@@ -1792,6 +1796,17 @@ class Flow(_Model):
         out.extend(self.nested_coordinator_problems())
         dead = self.unreachable_nodes()
         answer_key = self.answer_node or (self.nodes[-1].key if self.nodes else "")
+        # A ROUTER IS NOT AN ANSWER. Found by the acceptance journeys: an If at the
+        # root with no answering step after it handed the viewer
+        # {'matched': 'dm', 'label': 'danh mục'} while the branch agent's real
+        # answer was discarded — and validation said ok.
+        answer_node = next((n for n in self.all_nodes() if n.key == answer_key), None)
+        if answer_node is not None and getattr(answer_node, "type", "") in _ROUTER_TYPES:
+            out.append(
+                f"Bước trả lời “{answer_node.name or answer_key}” là bước rẽ nhánh/điều phối — "
+                "người xem sẽ nhận dữ liệu định tuyến thay vì câu trả lời. Thêm một bước Agent "
+                "trả lời sau nó (hoặc chọn một bước Agent làm bước trả lời)."
+            )
         if answer_key and answer_key in dead:
             out.append(
                 f"Bước trả lời “{answer_key}” nằm sau một bước Stop nên không bao "

@@ -126,7 +126,7 @@ def _steps(env) -> list[dict]:
 
 def _agent(key, marker, *, tools=("total_measure",), **kw):
     return {"key": key, "name": key, "type": "agent", "prompt": f"{marker} làm việc",
-            "max_tool_calls": 10, "tools": [{"tool": t} for t in tools], **kw}
+            "tools": [{"tool": t} for t in tools], **{"max_tool_calls": 10, **kw}}
 
 
 # ── 1. the answering step itself ────────────────────────────────────────────
@@ -474,3 +474,13 @@ def test_a_skill_that_failed_inside_may_be_asked_again(monkeypatch, skill_db):
     calls = next(s for s in _steps(env) if s["key"] == "tl").get("tool_calls") or []
     assert "skill__t(already_refused)" not in calls, calls
     assert seen["child"] >= 2, "the retry ran the Skill again"
+
+
+def test_an_answer_forced_by_the_step_tool_ceiling_is_partial_and_says_why(monkeypatch):
+    """Acceptance journey J12c: max_tool_calls 1, and the answer said "no data" with
+    status ok — the budget ran out, not the data."""
+    env, model, _ = _run(monkeypatch, {"answer_node": "tl", "nodes": [
+        _agent("tl", "TRA_LOI", max_tool_calls=1)]}, llm=6)
+    assert len(model.by("TRA_LOI")) >= 2 and model.by("TRA_LOI")[-1]["offered"] == []
+    assert env["status"] == "partial"
+    assert "tool_budget_reached" in _codes(env)

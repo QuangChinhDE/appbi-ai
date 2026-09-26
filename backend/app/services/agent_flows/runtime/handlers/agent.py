@@ -443,6 +443,8 @@ async def run(
         # review inside the loop already gave the model its chance, with tools;
         # what remains is shown as unverified and the run is `partial`, so a
         # figure with the wrong meaning is never published as a verified one.
+        if node.key == rctx.answer_key and node.tools and rt.calls_made >= node.max_tool_calls:
+            state.tool_budget_reached = True
         if node.key == rctx.answer_key and text and not provider_error:
             from app.services.agent_flows.runtime import claim_check
 

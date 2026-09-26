@@ -500,3 +500,39 @@ def test_a_change_worked_out_from_two_stated_figures_is_checked_by_arithmetic(wo
     assert _why(state, ctx, good) == []
     bad = "GMV tháng 1/2018 là 1,107,301.89, tháng 12/2017 là 863,547.10: tăng 31.5%."
     assert (31.5, "unsupported") in _why(state, ctx, bad)
+
+
+# ── acceptance journeys: two correct answers that were withheld ─────────────
+
+def test_a_change_between_the_asked_periods_is_not_another_periods_figure(world):
+    """J9 (coordinator): the lane's correct -5.23% was flagged wrong_period."""
+    ctx, state = world("GMV tháng 8/2018 so với tháng 7/2018 thay đổi bao nhiêu phần trăm?", asked=("gmv",))
+    res = _compare(1003308.47, 1058728.03, -5.23)
+    res["data"]["current"]["label"], res["data"]["baseline"]["label"] = "2018-08", "2018-07"
+    _rec(state, "compare_periods", res, {"chart_id": MONTHLY})
+    assert _why(state, ctx, "GMV tháng 8/2018 giảm 5.23% so với tháng 7/2018.") == []
+
+
+def test_a_change_between_other_periods_is_flagged(world):
+    """J4 / acceptance: a Skill compared 2018-09 with 2018-08 for a Jan/Dec question."""
+    ctx, state = world("GMV tháng 1/2018 so với tháng 12/2017 thay đổi bao nhiêu phần trăm?", asked=("gmv",))
+    res = _compare(1003308.47, 1058728.03, -5.23)
+    res["data"]["current"]["label"], res["data"]["baseline"]["label"] = "2018-08", "2018-07"
+    _rec(state, "compare_periods", res, {"chart_id": MONTHLY})
+    assert (5.23, "wrong_period") in _why(state, ctx, "GMV tháng 1/2018 giảm 5.23% so với tháng 12/2017.")
+
+
+def test_a_definition_word_does_not_make_a_measure_asked(monkeypatch):
+    """J14 follow-up: "Nó chiếm bao nhiêu phần trăm?" matched metrics by DEFINITION."""
+    from types import SimpleNamespace
+
+    from app.services.agent_flows.tools.packs import discover as D
+
+    monkeypatch.setattr(D, "tool_search_business_assets", lambda ctx, a: {"ok": True, "data": {"results": [
+        {"type": "metric", "id": "ty_le_giao_dung_hen", "name": "Tỷ lệ giao đúng hẹn",
+         "detail": "Phần trăm đơn giao đúng hẹn, chiếm trong tổng đơn đã giao."}]}})
+    monkeypatch.setattr(D, "_vocabulary", lambda ctx, ident, kind: [ident])
+    ctx = SimpleNamespace(question="Nó chiếm bao nhiêu phần trăm?")
+    assert CC._question_measures(ctx, ctx.question) == set()
+    ctx2 = SimpleNamespace(question="Tỷ lệ giao đúng hẹn là bao nhiêu phần trăm?")
+    assert CC._question_measures(ctx2, ctx2.question), "the named measure is still found"

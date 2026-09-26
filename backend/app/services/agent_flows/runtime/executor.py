@@ -310,10 +310,18 @@ async def run_flow(
         state.notices.append(Notice(
             code="claims_unverified", audience="reader", severity="warning",
             text=(f"{len(state.unverified_claims)} con số trong câu trả lời không có nguồn phù "
-                  "hợp với điều được hỏi (sai đại lượng, sai chiều/đối tượng, hoặc tự tính) — "
-                  "chúng được đánh dấu chưa kiểm chứng."),
+                  "hợp với điều được hỏi (sai đại lượng, sai kỳ, sai chiều/đối tượng, hoặc tự tính) "
+                  "— chúng đã bị ẩn khỏi câu trả lời."),
             facts={"flagged": [{k: f.get(k) for k in ("value", "pct", "why")}
                                for f in state.unverified_claims[:8]]},
+        ))
+    if getattr(state, "tool_budget_reached", False):
+        verification = {**(verification or {}), "tool_budget_reached": True}
+        state.notices.append(Notice(
+            code="tool_budget_reached", audience="reader", severity="warning",
+            text=("Bước trả lời đã dùng hết số lượt gọi công cụ được cấp nên phải trả lời bằng những gì "
+                  "đã đọc — câu trả lời có thể chưa đầy đủ, và \"không có dữ liệu\" có thể là do hết "
+                  "lượt chứ không phải do báo cáo không có."),
         ))
     status = _status_after_verification(status, verification)
     if verification:
@@ -1341,7 +1349,7 @@ def _status_after_verification(status: str, verification: dict | None) -> str:
     """
     if status != "ok" or not verification:
         return status
-    if verification.get("claims_unverified"):
+    if verification.get("claims_unverified") or verification.get("tool_budget_reached"):
         return "partial"
     grounding = verification.get("grounding") or {}
     if grounding.get("all_evidence_unresolved"):

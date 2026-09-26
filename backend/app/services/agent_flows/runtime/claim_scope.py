@@ -198,8 +198,14 @@ def describe(tool: str, result: Any, *, chart_dims: dict[int, list[str]] | None 
             n = _num(s.get("value"))
             if n is not None:
                 out.append(_entry(n, measure=measure, dimension="__time__", member=s.get("label")))
-        out += _whole(data, measure, ("delta",))
-        return out + _ratio_fields(data, measure=measure)
+        # THE CHANGE IS BETWEEN TWO PERIODS, and says which: a -5.23% between
+        # 2018-08 and 2018-07 is not a whole-report figure (found in acceptance:
+        # it was flagged as another period's number), and a change between two
+        # OTHER periods than the ones asked is (`claim_check._wrong_period`).
+        between = [str((data.get(side) or {}).get("label") or "") for side in ("current", "baseline")
+                   if isinstance(data.get(side), dict)]
+        change = _whole(data, measure, ("delta",)) + _ratio_fields(data, measure=measure)
+        return out + [{**e, "dimension": "__time__", "periods": between} for e in change]
     if name in ("compare_segments", "segment_compare") or ("segment_a" in data and "segment_b" in data):
         out = []
         for side in ("segment_a", "segment_b"):

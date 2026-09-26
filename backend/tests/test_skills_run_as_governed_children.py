@@ -680,10 +680,15 @@ def test_a_skill_whose_steps_read_nothing_is_incomplete_not_ok():
     from app.services.agent_flows.skills import _did_no_work
 
     flow = _flow(SKILL_BODY, "so_sanh")
-    idle = SimpleNamespace(evidence=[], citations=[], evidence_store={})
-    worked = SimpleNamespace(evidence=[1003308.47], citations=[], evidence_store={"s1": {}})
+    idle = SimpleNamespace(claim_ledger=[], citations=[], tool_log=[])
+    worked = SimpleNamespace(claim_ledger=[{"value": 1003308.47}], citations=[], tool_log=["compare_periods"])
     assert _did_no_work(flow, idle) is True
     assert _did_no_work(flow, worked) is False
+    # Journeys J5/J6: looking is not reading.
+    looked = SimpleNamespace(claim_ledger=[], citations=[],
+                             tool_log=["list_charts", "resolve_chart_candidates", "compare_periods(bad_argument)"])
+    assert _did_no_work(flow, looked) is True
+    assert _did_no_work(flow, SimpleNamespace(claim_ledger=[], citations=[], tool_log=["forecast_measure"])) is False
     words_only = {**copy.deepcopy(SKILL_BODY)}
     words_only["nodes"] = [{**SKILL_BODY["nodes"][0], "tools": []}]
     assert _did_no_work(_flow(words_only, "loi_khuyen"), idle) is False, \
@@ -715,3 +720,18 @@ def test_a_figure_the_child_withheld_leaves_the_parent_run_partial(monkeypatch, 
     assert state.unverified_claims, "the child's withheld figure is carried to the parent"
     assert env["status"] == "partial"
     assert any(n.get("code") == "claims_unverified" for n in env.get("notices") or [])
+
+
+def test_a_router_as_the_answering_step_is_a_blocking_problem():
+    """Acceptance journey J7: an If at the root with no answer step after it showed
+    the viewer the routing dict, and validation said ok."""
+    branch = {"key": "a_dm", "name": "a_dm", "type": "agent", "prompt": "VAI_TRO_CHA trả lời"}
+    routed = {"nodes": [{"key": "r", "name": "r", "type": "if", "paths": [
+        {"key": "dm", "name": "danh mục", "kind": "rules", "match": "all",
+         "conditions": [{"left": "{{question}}", "op": "contains", "right": "danh mục"}], "body": [branch]},
+        {"key": "khac", "name": "khác", "kind": "fallback", "body": [{**branch, "key": "a_khac", "name": "a_khac"}]}]}]}
+    problems = _flow(routed, "rc_router").blocking_problems()
+    assert any("rẽ nhánh" in p for p in problems), problems
+    answered = {**routed, "answer_node": "tl", "nodes": routed["nodes"] + [
+        {"key": "tl", "name": "tl", "type": "agent", "prompt": "VAI_TRO_CHA tổng hợp"}]}
+    assert not any("rẽ nhánh" in p for p in _flow(answered, "rc_router2").blocking_problems())

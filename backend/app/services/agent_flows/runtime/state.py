@@ -315,6 +315,9 @@ class RunState:
     #: Figures the answer states that the claim check could not stand behind,
     #: after the step's own review — each {value, why, ...}. Surfaced to the reader.
     unverified_claims: list[dict[str, Any]] = field(default_factory=list)
+    #: The answering step ran out of tool calls and was made to answer anyway —
+    #: its "no data" may be the budget's, not the data's (acceptance journey J12).
+    tool_budget_reached: bool = False
     #: Set by a Stop node, or by the executor when the budget runs out.
     stopped: bool = False
     stop_message: str = ""

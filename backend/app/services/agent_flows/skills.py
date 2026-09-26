@@ -603,6 +603,11 @@ def _err(message: str, code: str, recovery: str = "") -> dict:
 
 
 _READING_NODES = ("report_read", "tool", "knowledge", "web", "skill")
+#: Tools that find WHERE data is; none of them is an analysis result.
+_DISCOVERY_TOOLS = frozenset({
+    "list_charts", "search_business_assets", "resolve_chart_candidates", "describe_semantic_model",
+    "get_chart_glossary", "inspect_filters", "describe_time_coverage", "find_capability",
+})
 
 
 def _did_no_work(flow: Flow, child_state: Any) -> bool:
@@ -612,8 +617,19 @@ def _did_no_work(flow: Flow, child_state: Any) -> bool:
                 for n in flow.all_nodes())
     if not reads or child_state is None:
         return False
-    return not (getattr(child_state, "evidence", None) or getattr(child_state, "citations", None)
-                or getattr(child_state, "evidence_store", None))
+    # LOOKING IS NOT READING. Found by the acceptance journeys: a comparison Skill
+    # that only listed charts, and a "verifier" that only resolved candidates,
+    # both came back `ok` — their discovery results sat in the evidence store.
+    # Work is a figure some tool produced (the claim ledger), a citation, or a
+    # successful call to anything that is not discovery.
+    if getattr(child_state, "claim_ledger", None) or getattr(child_state, "citations", None):
+        return False
+    for entry in getattr(child_state, "tool_log", None) or []:
+        name = str(entry)
+        if "(" in name or name.startswith(SKILL_GRANT_PREFIX) or name in _DISCOVERY_TOOLS:
+            continue
+        return False
+    return True
 
 
 def _validate_inputs(contract: SkillContract, inputs: dict) -> tuple[dict, str]:
