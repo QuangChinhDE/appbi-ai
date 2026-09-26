@@ -61,3 +61,25 @@ def test_no_model_means_the_rules_decide(monkeypatch):
     import app.services.llm_client as llm
     monkeypatch.setattr(llm.LLMClient, "complete_json", staticmethod(lambda **kw: None))
     assert rs._model_order("anything", rs.enumerate_candidates(MODEL)) is None
+
+
+def test_the_layout_leaves_no_hole_and_opens_with_the_headline():
+    cursor = {"y": rs.HEADLINE_H + 6, "col": 0, "top": rs.HEADLINE_H}
+    kpis = [rs._layout("kpi", i, 3, cursor) for i in range(3)]
+    assert all(k["y"] == rs.HEADLINE_H for k in kpis), "the numbers sit under the headline"
+    rows = [rs._layout("category", i, 3, cursor) for i in range(3)]
+    assert rows[2]["w"] == 36, "the last of an odd number of breakdowns left half a row empty"
+    table = rs._layout("table", 0, 1, cursor)
+    assert table["w"] == 36 and table["y"] >= rows[2]["y"] + rows[2]["h"]
+
+
+def test_the_headline_is_keys_only_and_skips_what_the_report_lacks():
+    assert rs._headline_items({"time": [11], "category": [12]}) == [
+        {"finding": "period_comparison:11"}, {"finding": "trend:11"}, {"finding": "top_item:12"}]
+    assert rs._headline_items({"kpi": [1]}) == [], "no series and no breakdown: nothing to claim"
+
+
+def test_the_slicer_filters_by_the_lead_breakdown():
+    kept = [c for c in rs.enumerate_candidates(MODEL) if c["kind"] == "category"][:1]
+    s = rs._slicer_for(MODEL, kept, 7)
+    assert s and s["fieldKey"] == kept[0]["role"]["dimension"] and s["datasetId"] == 7 and s["operator"] == "in"

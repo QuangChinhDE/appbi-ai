@@ -6,6 +6,7 @@ import {
   ArrowUp, Check, Crosshair, Info, LayoutGrid, Lightbulb, Loader2, Lock, Maximize2, Minus, Move,
   Palette, Paperclip, ShieldAlert, SlidersHorizontal, Sparkles, Wand2, X,
   Type,
+  Columns2,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { useI18n } from '@/providers/LanguageProvider';
@@ -63,6 +64,8 @@ export interface AiDesignPanelProps {
   pendingDiff: PresentationDiff | null;
   onApply: () => void;
   onDiscard: () => void;
+  /** Opens the full-report preview (before/after, device widths). */
+  onPreview?: () => void;
   /** Collapse the panel to a floating bubble, revealing the full report. */
   onCollapse?: () => void;
   onClose: () => void;
@@ -227,7 +230,7 @@ function Turn({ turn }: { turn: AiDesignTurn }) {
 
 export function AiDesignPanel({
   turns, busy, onSubmit, onDirection, proposals = [], onDecideProposal,
-  pendingDiff, onApply, onDiscard, onCollapse, onClose, visualCount, pageName,
+  pendingDiff, onApply, onDiscard, onPreview, onCollapse, onClose, visualCount, pageName,
   selectionNames = [], onClearSelection, lockedCount = 0,
 }: AiDesignPanelProps) {
   const { t } = useI18n();
@@ -571,6 +574,17 @@ export function AiDesignPanel({
             </span>
             {t('dashboards.aiDesign.previewing')}
           </p>
+          {onPreview ? (
+            <button
+              type="button"
+              onClick={onPreview}
+              data-testid="ai-design-preview-full"
+              className="mt-2 inline-flex w-full items-center justify-center gap-1.5 rounded-md border border-brand/40 bg-brand/5 px-2 py-1.5 text-[12px] font-[560] text-brand transition-colors hover:bg-brand/10"
+            >
+              <Columns2 className="h-3.5 w-3.5" />
+              {t('dashboards.studio.openFull')}
+            </button>
+          ) : null}
           <div className="mt-2 flex gap-1.5">
             <button
               type="button"

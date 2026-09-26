@@ -108,6 +108,10 @@ const BLOCK_TARGET_PX: Record<BlockVariant, number> = {
   takeaway: 170,
 };
 
+/** A section heading is a thin band; a narrative block sizes by its variant. */
+const HEADING_TARGET_PX = 64;
+const blockTargetPx = (block: PlanBlock) => (block.heading ? HEADING_TARGET_PX : BLOCK_TARGET_PX[block.variant]);
+
 /** How a primitive divides a row. `null` means "share equally between however
  *  many visuals the section holds", which is what the KPI strip needs. */
 const PRIMITIVE_SPANS: Record<LayoutPrimitive, number[] | null> = {
@@ -362,7 +366,7 @@ export function compilePresentationPlan(input: CompileInput): CompileResult {
     // design. A row is a band; the tallest thing in it sets the band.
     const heights = ids.map((id) => {
       const block = blockById.get(id);
-      if (block) return rowsAtLeast(Math.max(MIN_DECORATIVE_PX, BLOCK_TARGET_PX[block.variant] * heightScale), gapPx);
+      if (block) return rowsAtLeast(Math.max(MIN_DECORATIVE_PX, blockTargetPx(block) * heightScale), gapPx);
       const visual = byId.get(id);
       const pref = plan.visualPreferences?.[String(id)];
       const role = pref?.role ?? visual?.displayRoleHint ?? 'supporting';
@@ -401,7 +405,7 @@ export function compilePresentationPlan(input: CompileInput): CompileResult {
   // one place tiles that are NOT in a shared row get sized individually.
   const rowsForRole = (id: VisualId, extraScale: number): number => {
     const block = blockById.get(id);
-    if (block) return rowsAtLeast(Math.max(MIN_DECORATIVE_PX, BLOCK_TARGET_PX[block.variant] * heightScale * extraScale), gapPx);
+    if (block) return rowsAtLeast(Math.max(MIN_DECORATIVE_PX, blockTargetPx(block) * heightScale * extraScale), gapPx);
     const visual = byId.get(id);
     const pref = plan.visualPreferences?.[String(id)];
     const role = pref?.role ?? visual?.displayRoleHint ?? 'supporting';
@@ -458,6 +462,16 @@ export function compilePresentationPlan(input: CompileInput): CompileResult {
     plan.visualPreferences?.[String(id)]?.role ?? byId.get(id)?.displayRoleHint ?? 'supporting';
   const normalized = normalizeSections(plan.sections ?? [], roleOf);
   notes.push(...normalized.notes);
+
+  // A report's opening headline the plan forgot is not an orphan to append at
+  // the END: it is the page's first line. Everything the plan did place follows.
+  const planned = new Set<VisualId>(normalized.sections.flatMap((s) => s.visuals ?? []));
+  const openingIds = snapshot.visuals
+    .filter((v) => v.block?.variant === 'headline' && !planned.has(v.dashboardChartId) && !fixed.has(v.dashboardChartId))
+    .sort((a, b) => a.readingOrder - b.readingOrder)
+    .map((v) => v.dashboardChartId);
+  for (const id of openingIds) placeRow([id], [COLS]);
+  if (openingIds.length) notes.push('The report headline the plan did not place was kept at the top of the page.');
 
   for (const section of normalized.sections) {
     // De-duplicate defensively: a plan that lists the same visual in two

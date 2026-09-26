@@ -12,6 +12,7 @@
  * certify nothing.
  */
 import { isAllowedChartStyleKey, isValidStyleValue } from './capabilities';
+import { auditRenderedTiles, type RenderFinding } from './render-audit';
 import type { PresentationMutation, VisualId } from './types';
 
 export interface VisionReview {
@@ -23,7 +24,8 @@ export interface VisionReview {
 
 export interface RenderReadiness { ready: boolean; reason?: string; waitedMs: number }
 
-function pendingWork(root: HTMLElement): string | null {
+/** What is still loading inside `root`, or null when the render has settled. */
+export function pendingWork(root: HTMLElement): string | null {
   const spinning = root.querySelectorAll('.animate-spin, [aria-busy="true"], [data-loading="true"]').length;
   if (spinning) return `${spinning} visual(s) still loading`;
   const updating = root.querySelectorAll('.dashboard-narrative__item.is-pending').length;
@@ -84,13 +86,78 @@ export async function capturePreview(root: HTMLElement): Promise<string | null> 
   }
 }
 
+/** At most this many reviews per preview: the first, and one re-check of the
+ *  repaired render. The re-check never repairs again — it reports. */
+export const MAX_REVIEW_ROUNDS = 2;
+
+/** What a style repair cannot fix: the render itself failed (no marks, content
+ *  cut off, a tile off the canvas or on top of another). Reported as such,
+ *  never scored as a design choice and never "repaired" with a style token. */
+const RENDER_DEFECT_CODES = new Set(['chart.noMarks', 'content.overflow', 'tile.offCanvas', 'tile.overlap']);
+export function renderDefects(root: ParentNode): RenderFinding[] {
+  try {
+    return auditRenderedTiles(root).findings.filter((f) => RENDER_DEFECT_CODES.has(f.code));
+  } catch {
+    return [];
+  }
+}
+
+export interface RepairRecord { visual: VisualId; key: string; problem: string }
+
+export interface ReviewOutcome {
+  /** Repaired issues the re-check no longer reports on that visual. */
+  resolved: RepairRecord[];
+  /** Repaired issues whose visual the re-check still flags. */
+  persisting: Array<RepairRecord & { now: string }>;
+  /** Legibility the re-check scored below "acceptable" (3/5). */
+  lowLegibility: boolean;
+}
+
+/**
+ * Compare the re-check with the repairs made after the first look. A repair is
+ * only "resolved" when the re-rendered image no longer shows a problem on that
+ * visual; a changed style token alone proves nothing.
+ */
+export function reviewOutcome(repaired: RepairRecord[], recheck: VisionReview): ReviewOutcome {
+  const flagged = new Map<number, string>();
+  for (const issue of recheck.issues) if (issue.visual !== undefined) flagged.set(issue.visual, issue.problem);
+  const resolved: RepairRecord[] = [];
+  const persisting: Array<RepairRecord & { now: string }> = [];
+  for (const r of repaired) {
+    const now = flagged.get(r.visual);
+    if (now) persisting.push({ ...r, now });
+    else resolved.push(r);
+  }
+  const legibility = Number(recheck.scores?.legibility);
+  return { resolved, persisting, lowLegibility: Number.isFinite(legibility) && legibility < 3 };
+}
+
+export function recheckNote(outcome: ReviewOutcome, recheck: VisionReview): string {
+  const parts = Object.entries(recheck.scores).map(([k, v]) => `${k} ${v}/5`).join(', ');
+  const total = outcome.resolved.length + outcome.persisting.length;
+  const head = `Re-checked the repaired preview (advice, not a certificate): ${parts || 'no scores'}.`;
+  const fixed = total ? ` ${outcome.resolved.length} of ${total} repaired issue(s) no longer visible.` : '';
+  const still = outcome.persisting.length
+    ? ` Still visible: ${outcome.persisting.map((p) => `visual ${p.visual} — ${p.now}`).join('; ')}.`
+    : '';
+  const legible = outcome.lowLegibility ? ' Legibility is still below acceptable; the design is not accepted on looks.' : '';
+  return `${head}${fixed}${still}${legible}`;
+}
+
+export function renderDefectNote(defects: RenderFinding[]): string {
+  if (defects.length === 0) return '';
+  const byTile = defects.slice(0, 4).map((d) => `visual ${d.tileId}: ${d.detail ?? d.code}`).join('; ');
+  return `Render defects, not design choices (a style change cannot fix them): ${byTile}${defects.length > 4 ? ` and ${defects.length - 4} more` : ''}.`;
+}
+
 /** Fold the review's repairs into the preview's mutation, within scope. */
 export function applyReviewRepairs(
   mutation: PresentationMutation,
   review: VisionReview,
   opts: { allowed: ReadonlySet<VisualId>; currentStyle: (id: VisualId) => Record<string, unknown> },
-): { mutation: PresentationMutation; applied: number } {
+): { mutation: PresentationMutation; applied: number; repaired: RepairRecord[] } {
   const layoutOverrides = { ...mutation.layoutOverrides };
+  const repaired: RepairRecord[] = [];
   let applied = 0;
   for (const issue of review.issues) {
     const fix = issue.fix;
@@ -101,8 +168,9 @@ export function applyReviewRepairs(
     const style = { ...(prev.styleConfigOverride ?? opts.currentStyle(id)), [fix.key]: fix.value };
     layoutOverrides[id] = { ...prev, styleConfigOverride: style } as any;
     applied += 1;
+    repaired.push({ visual: id, key: fix.key, problem: issue.problem });
   }
-  return { mutation: { ...mutation, layoutOverrides }, applied };
+  return { mutation: { ...mutation, layoutOverrides }, applied, repaired };
 }
 
 export function reviewNote(review: VisionReview, applied: number): string {

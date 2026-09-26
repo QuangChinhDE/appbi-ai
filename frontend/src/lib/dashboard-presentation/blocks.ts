@@ -101,8 +101,14 @@ export function resolveSectionRef(ref: unknown, idMap: Map<string, VisualId>): V
   return Number.isFinite(n) && s !== '' ? n : null;
 }
 
+/** The widget a created block becomes: a heading is a section header. */
+export function blockWidgetType(block: PlanBlock): 'narrative' | 'section_header' {
+  return block.heading ? 'section_header' : 'narrative';
+}
+
 /** The widget config a created block is stored with. */
 export function blockWidgetConfig(block: PlanBlock): Record<string, unknown> {
+  if (block.heading) return { title: block.title ?? '', origin: 'ai' };
   return {
     variant: block.variant,
     ...(block.eyebrow ? { eyebrow: block.eyebrow } : {}),

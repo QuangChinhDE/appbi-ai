@@ -233,13 +233,24 @@ def _layout(kind: str, index_in_kind: int, count_in_kind: int, cursor: Dict[str,
     """A plain starter grid the user (or a design direction) reshapes."""
     if kind == "kpi":
         w = 36 // max(1, count_in_kind)
-        return {"x": index_in_kind * w, "y": 0, "w": w, "h": 6}
+        return {"x": index_in_kind * w, "y": cursor.get("top", 0), "w": w, "h": 6}
+    if kind == "table":
+        if cursor["col"] == 1:  # an odd breakdown left half a row open
+            cursor["y"] += 14
+            cursor["col"] = 0
+        lay = {"x": 0, "y": cursor["y"], "w": 36, "h": 14}
+        cursor["y"] += 14
+        return lay
     y = cursor["y"]
     if kind == "time":
         lay = {"x": 0, "y": y, "w": 36, "h": 14}
         cursor["y"] += 14
         return lay
     col = cursor["col"]
+    if col == 0 and index_in_kind == count_in_kind - 1:
+        # The last of an odd number of breakdowns takes the row, not half of it.
+        cursor["y"] += 14
+        return {"x": 0, "y": y, "w": 36, "h": 14}
     lay = {"x": col * 18, "y": y, "w": 18, "h": 14}
     if col == 1:
         cursor["y"] += 14
@@ -292,6 +303,11 @@ def build_report_starter(db: Session, *, dataset_id: int, goal: str, name: Optio
     kind_order = {"kpi": 0, "time": 1, "category": 2}
     chosen.sort(key=lambda pair: kind_order[pair[0]["kind"]])
     kept = [c for c, _ in chosen]
+    # Detail: the lead breakdown as a table of the headline measures, run like
+    # every other chart; only when the dataset supports one.
+    detail = _detail_table(db, kept) if time.time() - started <= PROBE_BUDGET_S else None
+    if detail:
+        chosen.append((detail, ""))
 
     dash = Dashboard(name=_unique_name(db, name or report_name or "New report"),
                      description=goal.strip()[:500] or None, owner_id=owner_id,
@@ -302,8 +318,10 @@ def build_report_starter(db: Session, *, dataset_id: int, goal: str, name: Optio
     for c, _t in chosen:
         counts[c["kind"]] = counts.get(c["kind"], 0) + 1
     seen: Dict[str, int] = {}
-    cursor = {"y": 6 if counts.get("kpi") else 0, "col": 0}
+    top = HEADLINE_H
+    cursor = {"y": top + (6 if counts.get("kpi") else 0), "col": 0, "top": top}
     created = []
+    placed: Dict[str, List[int]] = {}
     for c, title in chosen:
         k = c["kind"]
         idx = seen.get(k, 0)
@@ -317,12 +335,87 @@ def build_report_starter(db: Session, *, dataset_id: int, goal: str, name: Optio
                                                     chart_type=c["type"], dataset_table_id=c["table"], config=cfg),
                                     owner_id=owner_id)
         lay = _layout(k, idx, counts[k], cursor)
-        db.add(DashboardChart(dashboard_id=dash.id, chart_id=chart.id, widget_type="chart",
-                              layout={**lay, "gv": 2, "pageId": PAGE}))
+        dc = DashboardChart(dashboard_id=dash.id, chart_id=chart.id, widget_type="chart",
+                            layout={**lay, "gv": 2, "pageId": PAGE})
+        db.add(dc)
+        db.flush()
+        placed.setdefault(k, []).append(dc.id)
         created.append({"chart_id": chart.id, "type": c["type"], "title": shown})
+
+    # The report's opening: what it is for (the author's own words, when given)
+    # and the lead findings — bound by key to the charts above, computed live,
+    # so no number here is written by anyone.
+    headline = _headline_items(placed)
+    if headline or goal.strip():
+        db.add(DashboardChart(
+            dashboard_id=dash.id, chart_id=None, widget_type="narrative",
+            widget_config={"variant": "headline", "items": headline, "origin": "ai",
+                           **({"prose": goal.strip()[:280]} if goal.strip() else {})},
+            layout={"x": 0, "y": 0, "w": 36, "h": HEADLINE_H, "gv": 2, "pageId": PAGE},
+        ))
+    slicer = _slicer_for(model, kept, dataset_id)
+    if slicer:
+        dash.slicers_config = [slicer]
     db.commit()
     return {"dashboard_id": dash.id, "name": dash.name, "charts": created, "source": source,
-            "candidates": len(cands), "probed": probed, "elapsed_ms": round((time.time() - started) * 1000)}
+            "candidates": len(cands), "probed": probed, "headline": [i["finding"] for i in headline],
+            "slicer": slicer["fieldKey"] if slicer else None, "detail_table": bool(detail),
+            "elapsed_ms": round((time.time() - started) * 1000)}
+
+
+HEADLINE_H = 5
+
+
+def _headline_items(placed: Dict[str, List[int]]) -> List[Dict[str, str]]:
+    """Finding keys for the opening block: how the lead series changed against
+    its comparable period (else its trend) and the leader of the lead breakdown.
+    Keys only — the sentence and its numbers are computed from the rendered
+    charts, and a finding the data does not support is not stated."""
+    items: List[Dict[str, str]] = []
+    series = (placed.get("time") or [None])[0]
+    breakdown = (placed.get("category") or [None])[0]
+    if series is not None:
+        items.append({"finding": f"period_comparison:{series}"})
+        items.append({"finding": f"trend:{series}"})
+    if breakdown is not None:
+        items.append({"finding": f"top_item:{breakdown}"})
+    return items
+
+
+def _detail_table(db: Session, kept: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """The lead breakdown as a table of up to three headline measures."""
+    lead = next((c for c in kept if c["kind"] == "category"), None)
+    if not lead:
+        return None
+    metrics = [lead["role"]["metrics"][0]]
+    for c in kept:
+        m = c["role"]["metrics"][0]
+        if c["kind"] == "kpi" and m["field"] != metrics[0]["field"] and len(metrics) < 3:
+            metrics.append(m)
+    for attempt in (metrics, metrics[:1]):
+        cand = {"id": f"{lead['id']}-table", "kind": "table", "type": "TABLE", "table": lead["table"],
+                "role": {"metrics": attempt, "dimension": lead["role"]["dimension"]},
+                "title": f"{lead.get('dimension_label') or 'Detail'} — detail", "measure": lead["measure"],
+                "style": {"dataLimit": 25}}
+        if _runs(db, cand):
+            return cand
+    return None
+
+
+def _slicer_for(model: Dict[str, Any], kept: List[Dict[str, Any]], dataset_id: int) -> Optional[Dict[str, Any]]:
+    """A dropdown slicer on the lead breakdown's dimension (every chart filters by it)."""
+    lead = next((c for c in kept if c["kind"] == "category"), None)
+    if not lead:
+        return None
+    ref = lead["role"]["dimension"]
+    view_name, _, dim_name = ref.partition(".")
+    view = next((v for v in model.get("views") or [] if v.get("name") == view_name), None)
+    dim = next((d for d in (view or {}).get("dimensions") or [] if d.get("name") == dim_name), None)
+    if not dim:
+        return None
+    return {"id": f"slicer-{dim_name}", "field": str(dim.get("sql") or dim_name), "fieldKey": ref, "semanticField": ref,
+            "datasetId": dataset_id, "type": "dropdown", "operator": "in", "value": [],
+            "label": lead.get("dimension_label") or _label(dim), "scope": "all"}
 
 
 def _unique_name(db: Session, base: str) -> str:

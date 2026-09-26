@@ -47,6 +47,8 @@ export const reportExperienceCatalog: ModuleCatalog = {
     'report.starter.failed': 'Could not start the report',
     'report.direction.latestStatus': 'Latest period',
     'report.direction.detail': 'Detail',
+    'report.direction.needsAttention': 'Needs attention',
+    'report.direction.keepInMind': 'What to keep in mind',
   },
   vi: {
     'report.finding.kpi_value': '{{measure}} là {{value}}.',
@@ -90,5 +92,7 @@ export const reportExperienceCatalog: ModuleCatalog = {
     'report.starter.failed': 'Không tạo được báo cáo',
     'report.direction.latestStatus': 'Kỳ gần nhất',
     'report.direction.detail': 'Chi tiết',
+    'report.direction.needsAttention': 'Cần chú ý',
+    'report.direction.keepInMind': 'Điều cần lưu ý',
   },
 };

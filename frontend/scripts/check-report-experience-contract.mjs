@@ -137,8 +137,11 @@ function snap(tiles) {
     slicers: [{ id: 's1', label: 'State', type: 'dropdown' }], slicerDock: 'top', fieldMeta: FIELD_META,
   });
 }
-function build(direction, tiles = olistTiles()) {
-  const snapshot = snap(tiles);
+// What the Olist report supports right now: its breakdowns are concentrated and
+// its lead series has incomplete edge months (the conditional findings).
+const OLIST_LIVE = ['concentration:7', 'concentration:8', 'partial_periods:5'];
+function build(direction, tiles = olistTiles(), live = OLIST_LIVE) {
+  const snapshot = { ...snap(tiles), findings: live.map((key) => ({ key, sentence: key })) };
   const plan = directions.planForDirection(direction, snapshot);
   const built = executor.buildPresentationMutation({ plan, snapshot, tiles, pageId: 'page-1', currentTheme: {}, gridGapPx: 8, targets: [] });
   return { plan, built, snapshot };
@@ -283,6 +286,12 @@ check('each direction is valid, loses no visual and creates live-bound blocks', 
     assert(created.length > 0, `${d}: no blocks`);
     for (const b of created) {
       assert(!/\d/.test(JSON.stringify(b.widgetConfig.title ?? '')), `${d}: a block title carries a figure`);
+      if (b.widgetType === 'section_header') {
+        // A heading introduces a section: words only, never a finding or a figure.
+        assert(b.widgetConfig.title && !('items' in b.widgetConfig), `${d}: a heading without a title, or with findings`);
+        continue;
+      }
+      assert(b.widgetType === 'narrative' && b.widgetConfig.items.length > 0, `${d}: a narrative block states nothing`);
       for (const i of b.widgetConfig.items) assert(/^[a-z_]+:\d+$/.test(i.finding), `${d}: bad finding ref ${i.finding}`);
     }
   }
@@ -333,6 +342,75 @@ check('the grammar adapts to a report of a different shape (no time series, no K
     for (const b of r.plan.blocks ?? []) for (const f of b.findings) assert(!/^(trend|peak|latest|period_comparison)/.test(f), `${d} cited a time finding on a report with no time axis: ${f}`);
   }
   assert((build('editorial', tiles).plan.blocks ?? []).some((b) => b.variant === 'chapter' && b.findings.some((f) => f.startsWith('top_item'))), 'editorial chapters lost their category findings');
+});
+
+check('a direction says each finding once per page — no chapter repeats the headline', () => {
+  const shapes = [olistTiles(), [
+    roleTile(21, 'BAR', 'Tickets by team', { metrics: [M('p.value')], dimension: 'p.type' }, 0, 0, 18, 12),
+    roleTile(22, 'PIE', 'Tickets by channel', { metrics: [M('p.value')], dimension: 'c.category' }, 0, 18, 18, 12),
+  ]];
+  for (const tiles of shapes) for (const d of directions.DIRECTION_IDS) {
+    const said = new Map();
+    for (const b of build(d, tiles).plan.blocks ?? []) for (const f of b.findings) {
+      assert(!said.has(f), `${d}: ${f} is said by a ${said.get(f)} and again by a ${b.variant}`);
+      said.set(f, b.variant);
+    }
+  }
+});
+
+check('operations reads current state → exceptions → monitoring → drill-down, and flags only what the data flags', () => {
+  const r = build('operations');
+  const order = r.plan.sections.map((s) => s.primitive);
+  assert(order[0] === 'kpi_strip', `operations opens with ${order[0]}`);
+  const blocks = r.plan.blocks ?? [];
+  const attention = blocks.find((b) => b.variant === 'callout');
+  assert(attention, 'operations has no exceptions');
+  for (const f of attention.findings) assert(/^(attainment|concentration|partial_periods):/.test(f), `an exception that is not an exception: ${f}`);
+  const pos = (id) => r.plan.sections.findIndex((s) => s.visuals.includes(id));
+  const heading = blocks.find((b) => b.variant === 'chapter' && b.findings.length === 0);
+  assert(heading, 'no drill-down heading');
+  assert(pos(attention.id) < pos(heading.id) && pos(heading.id) < pos(12), 'exceptions, then drill-down, then the table');
+  assert(pos(attention.id) === pos(5), 'the exception list is not beside the series it is about');
+  // The fixture has no target: no attainment is claimed anywhere.
+  for (const d of directions.DIRECTION_IDS) for (const b of build(d).plan.blocks ?? []) {
+    assert(!b.findings.some((f) => f.startsWith('attainment:')), `${d} claimed a target the data has none of`);
+  }
+});
+
+check('a conditional finding the data does not support is never planned — no empty "Needs attention" card', () => {
+  for (const d of directions.DIRECTION_IDS) {
+    const r = build(d, olistTiles(), []);
+    for (const b of r.plan.blocks ?? []) {
+      assert(!b.findings.some((f) => /^(concentration|partial_periods|attainment):/.test(f)), `${d}: planned an unsupported ${b.findings}`);
+      assert(b.heading || b.findings.length > 0, `${d}: a ${b.variant} block with nothing to state`);
+    }
+    assert(!(r.plan.blocks ?? []).some((b) => b.variant === 'callout'), `${d}: an exceptions/caveats card with nothing in it`);
+  }
+});
+
+check('editorial ends on what to keep in mind: caveats, said once, last', () => {
+  const r = build('editorial');
+  const blocks = r.plan.blocks ?? [];
+  const caveats = blocks.find((b) => b.variant === 'callout');
+  assert(caveats, 'editorial has no caveats');
+  for (const f of caveats.findings) assert(/^(partial_periods|concentration|attainment):/.test(f), `a caveat that is not a caveat: ${f}`);
+  const last = r.plan.sections.map((s) => s.visuals).flat().filter((id) => id < 0).pop();
+  assert(last === caveats.id, 'the caveats are not the last word');
+});
+
+check('a redesign that forgets the report headline keeps it as the first line, not an appendix', () => {
+  const headlineTile = { id: 600, chart_id: null, widget_type: 'narrative', chart: null, parameters: null,
+    widget_config: { variant: 'headline', items: [{ finding: 'trend:5' }], origin: 'ai' },
+    layout: { x: 0, y: 0, w: 36, h: 5, gv: 2, pageId: 'page-1' } };
+  const tiles = [headlineTile, ...olistTiles().map((tile) => ({ ...tile, layout: { ...tile.layout, y: tile.layout.y + 5 } }))];
+  const snapshot = snap(tiles);
+  const plan = { layer: 'redesign', direction: { style: 'executive', density: 'balanced' }, visualPreferences: {},
+    sections: [{ primitive: 'kpi_strip', visuals: [1, 2, 3, 4] }, { primitive: 'full_width', visuals: [5] }] };
+  const built = executor.buildPresentationMutation({ plan, snapshot, tiles, pageId: 'page-1', currentTheme: {}, gridGapPx: 8, targets: [] });
+  assert(built.ok, JSON.stringify(built.mutationValidation?.violations?.slice(0, 2)));
+  const o = built.mutation.layoutOverrides;
+  assert(o[600] && o[600].y === 0, `the headline was placed at y=${o[600]?.y}`);
+  assert(o[1].y >= o[600].y + o[600].h, 'the numbers were placed over or above the headline');
 });
 
 check('an existing AI block is reused in its slot, not duplicated', () => {
@@ -389,6 +467,31 @@ check('a visual review can only repair presentation, only in scope', () => {
   assert(!('dataLimit' in out.mutation.layoutOverrides[7].styleConfigOverride), 'a semantic key (Top-N) became a repair');
   assert(!out.mutation.layoutOverrides[8], 'an out-of-scope tile was repaired');
   assert(!('x' in out.mutation.layoutOverrides[7]), 'a review moved a tile');
+});
+
+check('the review loop is closed: a repair is resolved only when the re-rendered image no longer shows it', () => {
+  const mutation = { layoutOverrides: {}, themePatch: {}, slicerClusterPatch: {}, notes: [], layer: 'style' };
+  const first = { scores: { legibility: 2 }, overall: 2, summary: '', issues: [
+    { visual: 7, problem: 'labels overlap', fix: { key: 'showDataLabels', value: false } },
+    { visual: 9, problem: 'title too faint', fix: { key: 'tileFrame', value: 'card' } },
+  ] };
+  const out = vision.applyReviewRepairs(mutation, first, { allowed: new Set([7, 9]), currentStyle: () => ({}) });
+  assert(out.repaired.length === 2 && out.repaired[0].visual === 7, JSON.stringify(out.repaired));
+  // The re-check still sees a problem on 9, and legibility is still low.
+  const recheck = { scores: { legibility: 2 }, overall: 2, summary: '', issues: [{ visual: 9, problem: 'title still faint' }] };
+  const outcome = vision.reviewOutcome(out.repaired, recheck);
+  assert(outcome.resolved.map((r) => r.visual).join() === '7', 'a repair still visible was counted as resolved');
+  assert(outcome.persisting.map((r) => r.visual).join() === '9', 'the persisting issue was lost');
+  assert(outcome.lowLegibility, 'low legibility after repair was not flagged');
+  const note = vision.recheckNote(outcome, recheck);
+  assert(/1 of 2/.test(note) && /Still visible: visual 9/.test(note) && /not accepted/.test(note), note);
+  assert(vision.MAX_REVIEW_ROUNDS === 2, 'the loop is not bounded to one re-check');
+});
+
+check('a render defect is reported as a render defect, not as a design issue', () => {
+  const note = vision.renderDefectNote([{ code: 'chart.noMarks', tileId: 4, detail: 'the chart rendered axes but no data marks' }]);
+  assert(/Render defects, not design choices/.test(note) && /visual 4/.test(note), note);
+  assert(vision.renderDefectNote([]) === '', 'an empty defect list produced a note');
 });
 
 // ── responsive + currency ───────────────────────────────────────────────────

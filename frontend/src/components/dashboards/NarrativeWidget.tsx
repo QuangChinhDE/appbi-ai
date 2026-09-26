@@ -18,7 +18,7 @@
 import React from 'react';
 
 import { useReportFindings } from '@/lib/report-evidence';
-import { renderFindingSentence, findingHeadlineFigure } from '@/lib/report-findings';
+import { renderFindingSentence, findingHeadlineFigure, CONDITIONAL_FINDING_KINDS } from '@/lib/report-findings';
 import { useI18n } from '@/providers/LanguageProvider';
 
 export interface NarrativeConfig {
@@ -32,7 +32,7 @@ export interface NarrativeConfig {
 }
 
 /** Facts that only exist when the data has them — their absence is not a gap. */
-const CONDITIONAL_KINDS = new Set(['partial_periods', 'concentration', 'attainment']);
+const CONDITIONAL_KINDS = CONDITIONAL_FINDING_KINDS;
 
 function tileIdOf(key: string): number | null {
   const n = Number(key.split(':')[1]);
@@ -58,6 +58,10 @@ export function NarrativeWidget({ config, editing = false }: { config: Narrative
     return { key, state: 'unavailable' as const, text: t('report.finding.unavailable') };
   }).filter((l): l is NonNullable<typeof l> => l !== null);
 
+  // An untitled headline states its first READY finding as the headline; a
+  // finding still computing (or not supported by the data) does not hold the
+  // slot empty while the rest of the block reads beneath it.
+  const lead = variant === 'headline' && !config.title ? lines.find((l) => l.state === 'ready') : undefined;
   const headFigure = variant === 'takeaway' || variant === 'callout'
     ? lines.map((l) => (l.state === 'ready' ? findingHeadlineFigure(l.finding!, locale) : null)).find(Boolean)
     : null;
@@ -79,8 +83,8 @@ export function NarrativeWidget({ config, editing = false }: { config: Narrative
             ? <h2 className="dashboard-narrative__headline">{config.title}</h2>
             : <h3 className="dashboard-narrative__title">{config.title}</h3>
         ) : null}
-        {variant === 'headline' && !config.title && lines[0]?.state === 'ready' ? (
-          <h2 className="dashboard-narrative__headline" data-finding={lines[0].key}>{lines[0].text}</h2>
+        {lead ? (
+          <h2 className="dashboard-narrative__headline" data-finding={lead.key}>{lead.text}</h2>
         ) : null}
         {config.prose ? (
           <p className="dashboard-narrative__prose" data-static-text>
@@ -89,13 +93,14 @@ export function NarrativeWidget({ config, editing = false }: { config: Narrative
         ) : null}
         {lines.length > 0 ? (
           <ul className="dashboard-narrative__list">
-            {lines.slice(variant === 'headline' && !config.title ? 1 : 0).map((l) => (
+            {lines.filter((l) => l !== lead).map((l) => (
               <li key={l.key} className={`dashboard-narrative__item is-${l.state}`} data-finding={l.key}>
                 {l.text}
               </li>
             ))}
           </ul>
-        ) : editing ? (
+        ) : editing && !config.title ? (
+          // A titled block with no findings is a section heading, not an empty block.
           <p className="dashboard-narrative__hint">{t('report.narrative.emptyHint')}</p>
         ) : null}
         {editing && config.prose ? <p className="dashboard-narrative__hint">{t('report.narrative.static')}</p> : null}

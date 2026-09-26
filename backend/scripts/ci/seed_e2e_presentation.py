@@ -169,8 +169,12 @@ def main() -> int:
                 description="Fixture for dashboard-presentation.spec.ts",
                 owner_id=user.id,
                 pages_config=[{"id": PAGE, "name": "Overview"}],
+                # Shaped exactly as the builder writes a slicer: bound to the
+                # dataset and the semantic field, so /d can list its values.
                 slicers_config=[{
                     "id": "slicer-region", "field": "region", "label": "Region",
+                    "fieldKey": f"{view_name}.region", "semanticField": f"{view_name}.region",
+                    "datasetId": int(dataset_id),
                     "type": "dropdown", "operator": "in", "value": [], "scope": "all",
                 }],
                 theme_config={"templateId": "brief", "colorwayId": "slate"},
